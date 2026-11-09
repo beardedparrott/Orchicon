@@ -5,10 +5,8 @@ import (
 	"time"
 )
 
-// The TTL resolver is the sweep's only safety instrument, so its failure mode is
-// the one worth pinning: a malformed or non-positive env value must NOT collapse
-// the window, because a zero window means "everything is abandoned" and the
-// sweep would delete live jobs' records.
+// The TTL resolver is the sweep's only safety instrument, so its failure mode is the one worth
+// pinning: a malformed or non-positive env value must NOT collapse the window.
 func TestTTLFromEnvNeverCollapsesTheWindow(t *testing.T) {
 	cases := []struct {
 		env  string

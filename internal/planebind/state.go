@@ -33,9 +33,8 @@ const (
 	StatePlaneError = "plane-error"
 )
 
-// Classify maps a status + a health probe onto a state and the detail that names
-// WHAT WAS FOUND (the URL, the status code, the drift verdict) — never a generic
-// "error".
+// Classify maps a status + a health probe onto a state and the detail that names WHAT WAS FOUND
+// (the URL, the status code, the drift verdict) — never a generic "error".
 func Classify(st planecontrol.Status, h planecontrol.Health) (state, detail string) {
 	url := st.HealthURL
 	if url == "" {
@@ -52,9 +51,7 @@ func Classify(st planecontrol.Status, h planecontrol.Health) (state, detail stri
 		return StatePlaneError, fmt.Sprintf("answers HTTP %d at %s (expected 200)", h.StatusCode, url)
 	}
 
-	// 3. It answers 200 — but WHICH binary? An install replaces the binary under a
-	// running process, so a healthy plane can be serving superseded code. That is a
-	// plane-error, not a connection success.
+	// 3.
 	if st.Drift == planecontrol.Drifted {
 		who := st.Binary
 		if who == "" {

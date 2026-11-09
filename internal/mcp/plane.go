@@ -17,38 +17,18 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// planeRegistry implements ToolRegistry for the plane channel
-// (`orchicon-plane` MCP server). The `orchicon_plane_*` tools talk to the
-// REAL instance's Connect API using a short-lived, role-scoped worker
-// credential (ORCHICON_PLANE_TOKEN) — no Postgres DSN, no sandbox. The
-// plane enforces RBAC authoritatively server-side; this registry only
-// exposes the whitelisted tools (deny-by-default: the runtime lifecycle
-// mints the credential only for published role-bound workers).
+// planeRegistry implements ToolRegistry for the plane channel (`orchicon-plane` MCP server).
 type planeRegistry struct {
 	log *slog.Logger
-	// runContext is the owning workflow run's run_context JSONB captured
-	// ONCE at registry construction: the automation provenance block a
-	// recurring fire writes at fire time, injected by the CONTROL PLANE via
-	// ORCHICON_RUN_CONTEXT at credential-mint time (runtime/lifecycle.go
-	// mintPlaneCredential — the same trusted path that mints the scoped
-	// token, the same model as the sandbox channel, feature 4.1 AC2).
-	// A bare run ID is NOT a run_context: ProvenanceFromRunContext
-	// unmarshal-fails on it and stamping silently no-ops (the bug this
-	// replaces). The value is loaded at construction so the idea tools'
-	// loud-no-op gate sees the SAME block every call (stale-binary runs —
-	// the 04:12 failure — gate identically instead of reading a
-	// mid-process-swapped env).
+	// runContext is the owning workflow run's run_context JSONB captured ONCE at registry construction:
+	// the automation provenance block a recurring fire writes at fire time.
 	runContext []byte
 	token      string
 	wi         apiv1connect.WorkItemServiceClient
 	ai         apiv1connect.AIGatewayServiceClient
 }
 
-// NewPlaneRegistry returns a ToolRegistry backed by the plane's Connect
-// API. url is the plane's public API base (ORCHICON_PLANE_URL); token is
-// the run's scoped worker credential (ORCHICON_PLANE_TOKEN); the owning
-// run's run_context JSONB arrives via ORCHICON_RUN_CONTEXT (empty for
-// runs without one — creates then behave as plain human-path creates).
+// NewPlaneRegistry returns a ToolRegistry backed by the plane's Connect API.
 func NewPlaneRegistry(url, token string, log *slog.Logger) ToolRegistry {
 	rt := &headerAuthTransport{base: http.DefaultTransport, token: token}
 	hc := &http.Client{Transport: rt, Timeout: 60 * time.Second}
@@ -61,12 +41,7 @@ func NewPlaneRegistry(url, token string, log *slog.Logger) ToolRegistry {
 	}
 }
 
-// loadRunContextOnce reads ORCHICON_RUN_CONTEXT once, up front. The
-// sandbox channel does exactly this (internal/mcp/server.go loadRunContext
-// at registration): reading at constructor time keeps the provenance block
-// stable for the process lifetime so every idea-spawn decision is made
-// against the same trusted input the token was minted with. Deliberately
-// not logged — the block is automation metadata, not log fodder.
+// loadRunContextOnce reads ORCHICON_RUN_CONTEXT once, up front.
 func loadRunContextOnce() []byte {
 	v := strings.TrimSpace(os.Getenv("ORCHICON_RUN_CONTEXT"))
 	if v == "" {
@@ -75,9 +50,8 @@ func loadRunContextOnce() []byte {
 	return []byte(v)
 }
 
-// headerAuthTransport adds the Authorization bearer header to every
-// request — the same header the plane's ResolveAuth middleware parses
-// (internal/middleware/auth.go).
+// headerAuthTransport adds the Authorization bearer header to every request — the same header the
+// plane's ResolveAuth middleware parses (internal/middleware/auth.go).
 type headerAuthTransport struct {
 	base  http.RoundTripper
 	token string
@@ -195,9 +169,9 @@ func (p *planeRegistry) listWorkItems(ctx context.Context, raw json.RawMessage) 
 			req.Status = &st
 		}
 	}
-	// idea_scope="only" reads the Idea Cloud (idea-state items are hidden
-	// from the normal list server-side) — the plane surface of the
-	// automation-spawn dedupe gate ("check the Idea Cloud first").
+	// idea_scope="only" reads the Idea Cloud (idea-state items are hidden from the normal list
+	// server-side) — the plane surface of the automation-spawn dedupe gate ("check the Idea Cloud
+	// first").
 	if strings.TrimSpace(strings.ToLower(a.IdeaScope)) == "only" {
 		req.IdeaScope = apiv1.IdeaScope_IDEA_SCOPE_ONLY_IDEA
 	}
@@ -208,15 +182,11 @@ func (p *planeRegistry) listWorkItems(ctx context.Context, raw json.RawMessage) 
 	return compactPlaneWorkItems(resp.Msg.WorkItems)
 }
 
-// planeListCap caps how many items the plane channel's list tools return in
-// one call. A list is for orienting — the worker branches to get_work_item
-// for detail. Unbounded full-message lists were the "the list is HUGE"
-// context bloat on the real backlog.
+// planeListCap caps how many items the plane channel's list tools return in one call.
 const planeListCap = 25
 
-// compactPlaneWorkItems wraps a work-item page in the bounded envelope
-// {count, truncated, note, items} with readable kind/status labels, so the
-// model sees a consumable backlog and knows when to narrow or branch.
+// compactPlaneWorkItems wraps a work-item page in the bounded envelope {count, truncated, note,
+// items} with readable kind/status labels.
 func compactPlaneWorkItems(items []*apiv1.WorkItem) (json.RawMessage, error) {
 	rows := make([]map[string]any, 0, len(items))
 	for _, it := range items {
@@ -298,14 +268,7 @@ func (p *planeRegistry) createWorkItem(ctx context.Context, raw json.RawMessage)
 	return compactPlaneWorkItemCreated(resp.Msg)
 }
 
-// compactPlaneWorkItemCreated wraps the create response in a compact
-// labeled envelope. The raw proto JSON marshals status as a bare enum
-// NUMBER (`status: 1` = pending), which a worker can misread as
-// confirmation of a different landing state (the concrete failure that
-// motivated this branch: a synthesizer believed status=1 meant IDEA and
-// reported success while every item landed plain pending). Labeled
-// strings + explicit landed-state fields make the result impossible to
-// misinterpret.
+// compactPlaneWorkItemCreated wraps the create response in a compact labeled envelope.
 func compactPlaneWorkItemCreated(msg *apiv1.CreateWorkItemResponse) (json.RawMessage, error) {
 	wi := msg.GetWorkItem()
 	if wi == nil {
@@ -326,21 +289,14 @@ func compactPlaneWorkItemCreated(msg *apiv1.CreateWorkItemResponse) (json.RawMes
 	return json.Marshal(out)
 }
 
-// ideaProvenance classifies the run context into what the idea tools
-// require: a parsed provenance block with the recurrence's outputs_mode.
-// Missing keys -> zero strings (a run without a provenance block is a
-// plain run, not an error).
+// ideaProvenance classifies the run context into what the idea tools require: a parsed provenance
+// block with the recurrence's outputs_mode.
 func ideaProvenance(rc []byte) (spawnedBy, runID, mode string) {
 	return db.ProvenanceFromRunContext(rc)
 }
 
-// refuseIdeaSpawn is the loud-no-op gate the idea tools enforce BEFORE any
-// write: it fails the call with the exact reason, so a spawn can NEVER
-// silently land as a plain pending item (the failure mode that shipped
-// twice — the bare-run-ID relay and the 04:12 stale-sidecar run whose
-// create reported a bare `status: 1` with no idea_state field). Compare
-// with the old model: server-side stamping no-op'd silently on a missing
-// block and the worker had no signal at all.
+// refuseIdeaSpawn is the loud-no-op gate the idea tools enforce BEFORE any write: it fails the call
+// with the exact reason.
 func refuseIdeaSpawn(rc []byte) error {
 	spawnedBy, _, mode := ideaProvenance(rc)
 	if spawnedBy == "" {
@@ -369,10 +325,8 @@ func (p *planeRegistry) listIdeaItems(ctx context.Context, raw json.RawMessage) 
 		PageSize:  planeListCap + 1,
 		IdeaScope: apiv1.IdeaScope_IDEA_SCOPE_ONLY_IDEA,
 	}
-	// state="rejected" reads the rejected graveyard: dismissed idea spawns
-	// (status='cancelled' WITH spawned provenance), surfaced through the
-	// dedicated ListIdeas RPC. The dedupe gate contract is "ACTIVE then
-	// REJECTED before spawning" — a human's rejection is durable memory.
+	// state="rejected" reads the rejected graveyard: dismissed idea spawns (status='cancelled' WITH
+	// spawned provenance), surfaced through the dedicated ListIdeas RPC.
 	if strings.TrimSpace(strings.ToLower(a.State)) == "rejected" {
 		ideaResp, err := p.wi.ListIdeas(ctx, connect.NewRequest(&apiv1.ListIdeasRequest{
 			ProjectId:      a.ProjectID,
@@ -393,10 +347,8 @@ func (p *planeRegistry) listIdeaItems(ctx context.Context, raw json.RawMessage) 
 }
 
 func (p *planeRegistry) createIdeaItem(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
-	// GATE FIRST, before any network write: no provenance / wrong outputs
-	// mode -> the spawn refuses with the reason. A stale sidecar binary
-	// (no idea tools at all) fails the other direction — the worker sees
-	// "unknown tool" instead of a wrong landing.
+	// GATE FIRST, before any network write: no provenance / wrong outputs mode -> the spawn refuses
+	// with the reason.
 	if err := refuseIdeaSpawn(p.runContext); err != nil {
 		return nil, err
 	}
@@ -419,11 +371,8 @@ func (p *planeRegistry) createIdeaItem(ctx context.Context, raw json.RawMessage)
 			kind = k
 		}
 	}
-	// Provenance rides the RELAYED run_context — the same trusted block the
-	// gate checked — never call arguments. The server's stamping path
-	// (workitem service CreateWorkItem -> ApplyAutomationProvenance via
-	// msg.RunContext) lands the item in IDEA state with spawned_by /
-	// spawned_by_run_id exactly like the human-path sandbox channel.
+	// Provenance rides the RELAYED run_context — the same trusted block the gate checked — never call
+	// arguments.
 	req := &apiv1.CreateWorkItemRequest{
 		ProjectId:          a.ProjectID,
 		ParentId:           a.ParentID,
@@ -438,20 +387,16 @@ func (p *planeRegistry) createIdeaItem(ctx context.Context, raw json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
-	// Trust-but-verify the landed state: the gate proves the relayed
-	// context was spawn-worthy, but the SERVER decides the final status.
-	// If the landing is not idea despite a spawn-worthy context, the
-	// response is an error envelope, never a success-shaped one.
+	// Trust-but-verify the landed state: the gate proves the relayed context was spawn-worthy, but the
+	// SERVER decides the final status.
 	if wi := resp.Msg.GetWorkItem(); wi == nil || wi.GetStatus() != apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA {
 		return compactIdeaEnvelopeError(resp.Msg.GetWorkItem())
 	}
 	return compactPlaneWorkItemCreated(resp.Msg)
 }
 
-// compactIdeaEnvelopeError wraps a create response whose landed state is
-// NOT idea despite the gate passing: the server-side stamp silently no-op'd
-// (or an old plane binary mishandled the relayed run_context). The worker
-// must never misread this as success; the error names the exact mismatch.
+// compactIdeaEnvelopeError wraps a create response whose landed state is NOT idea despite the gate
+// passing: the server-side stamp silently no-op'd (or an old plane binary mishandled the relayed.
 func compactIdeaEnvelopeError(wi *apiv1.WorkItem) (json.RawMessage, error) {
 	if wi == nil {
 		return json.Marshal(map[string]any{"error": "create returned no work item"})

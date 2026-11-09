@@ -19,15 +19,8 @@ type AnthropicUsage struct {
 	ReasoningTokens          int64
 }
 
-// UsageFromAnthropic maps an Anthropic/Claude Code usage object onto the
-// canonical provider-agnostic UsageInput. It is pure: it only fills the
-// token buckets on the supplied base input, leaving identity/context
-// fields (TenantID, Provider, Model, CorrelationID, ...) untouched.
-//
-// TotalTokens is deliberately left unset here — it is owned by
-// UsageRecorder.Record, which derives it as the four-bucket sum (reasoning
-// not additive). This keeps the "one owner, one change" invariant: the
-// transformer normalizes shape, the gateway applies the accounting rule.
+// UsageFromAnthropic maps an Anthropic/Claude Code usage object onto the canonical
+// provider-agnostic UsageInput.
 func UsageFromAnthropic(usage AnthropicUsage, base UsageInput) UsageInput {
 	base.PromptTokens = usage.InputTokens
 	base.CacheReadTokens = usage.CacheReadInputTokens

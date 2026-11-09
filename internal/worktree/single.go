@@ -1,24 +1,5 @@
-// Single-op wrappers + the `list` and `todoread` tools for the composite
-// worktree tool suite (D1/D2 of the core-tool-suite work item).
-//
-// The batch tools (batch_read / batch_grep / batch_write) remain the
-// documented PREFERRED interface for independent operations — one call
-// carrying several operations is one turn instead of N. The single-op
-// variants below are THIN WRAPPERS over the same batch engine (a
-// one-element batch call) so a worker that genuinely needs one read/grep/
-// write/edit does not pay batch-arg overhead. Every path still goes
-// through safeResolve, so the wrappers inherit the same project-dir +
-// /tmp containment as the batch tools.
-//
-// `list` is a directory-listing tool (the `ls`-equivalent the work item
-// lists alongside glob): traversal-safe, bounded, and cheap — it enumerates
-// names, never content, so it stays a low-token path-enumeration call.
-//
-// `todoread` reads back the worker's LATEST todo list. In the DB-less
-// worktree sidecar there is no Postgres transcript, so the worker session
-// writes its current todo snapshot to a sidecar file under .orchicon/ and
-// todoread returns it verbatim — the same shape the GetExecutionTodos RPC
-// surfaces for DB-backed sessions (native surface by construction).
+// Single-op wrappers + the `list` and `todoread` tools for the composite worktree tool suite (D1/D2
+// of the core-tool-suite work item).
 package worktree
 
 import (
@@ -44,11 +25,7 @@ type ListArgs struct {
 	MaxEntries int `json:"max_entries,omitempty"`
 }
 
-// List implements `list`: a directory listing equivalent of glob. It
-// returns, per requested path, the names of the entries inside it
-// (directories suffixed with "/") plus a one-line stat hint, bounded and
-// traversal-safe. A path naming a regular file is reported as a single
-// entry with its size.
+// List implements `list`: a directory listing equivalent of glob.
 func List(b Base, args ListArgs) (string, error) {
 	paths := args.Paths
 	if len(paths) == 0 {
@@ -130,15 +107,8 @@ type TodoItem struct {
 	Priority string `json:"priority"`
 }
 
-// todoSnapshotFile is the sidecar file the DB-less worktree sidecar uses
-// to persist the worker's latest todo list (mirrors the durable
-// transcript's latest todowrite payload for DB-backed sessions). The
-// .orchicon/ directory is gitignored, so the snapshot never lands in the
-// repo; it is pruned with the worktree.
-//
-// IT IS NOT THE AUTHORITATIVE COPY — see TodoSnapshotName. This one is
-// worktree-scoped and therefore dies with the worktree, so it serves only
-// `todoread` inside the same live session.
+// todoSnapshotFile is the sidecar file the DB-less worktree sidecar uses to persist the worker's
+// latest todo list (mirrors the durable transcript's latest todowrite payload for DB-backed.
 const todoSnapshotFile = ".orchicon/todos.json"
 
 // TodoSnapshotName is the RUN-STATE todo snapshot's file name, written under
@@ -162,22 +132,6 @@ const todoSnapshotFile = ".orchicon/todos.json"
 const TodoSnapshotName = "todos.json"
 
 // RunStateDir returns the run-state directory for a run: <projectDir>/.orchicon/<runID>.
-// Empty when either input is empty — the caller then has no run-state channel
-// and must fall back.
-//
-// A RELATIVE projectDir IS REFUSED, NOT RESOLVED. This is the same rule
-// LoadOrCreateKEK follows, for the same reason and after the same class of
-// damage: a relative path is resolved against whatever working directory the
-// process happens to have, so the directory gets created in a place nobody
-// chose. Measured on a Windows install — a .orchicon/<runid>/todos.json tree
-// appeared under a directory literally named "C␺projects␼weatherapp" (U+F03A
-// for ':' and U+F05C for '\', i.e. a path carved into one component), because
-// the value handed to the MCP sidecar was not absolute and the sidecar's CWD
-// was the project root.
-//
-// Refusing costs a reported run-state channel (the todo panel falls back to the
-// transcript, and todowrite says so); silently resolving it costs a directory
-// full of garbage that outlives the run.
 func RunStateDir(projectDir, runID string) string {
 	if projectDir == "" || runID == "" {
 		return ""
@@ -188,15 +142,8 @@ func RunStateDir(projectDir, runID string) string {
 	return filepath.Join(projectDir, ".orchicon", runID)
 }
 
-// SaveRunTodoSnapshot writes the worker's latest todo list into the RUN-STATE
-// directory, which is the authoritative copy the todo panel reads.
-//
-// Unlike SaveTodoSnapshot it RETURNS an error rather than swallowing it. The
-// silent version is exactly how the panel came to show nothing while the tool
-// reported success: the write failed, nothing said so, and the caller had no
-// way to know. An empty list is skipped rather than written, matching
-// replacement semantics — a malformed payload must not clobber a good list
-// (parseTodoItems yields nil for malformed input).
+// SaveRunTodoSnapshot writes the worker's latest todo list into the RUN-STATE directory, which is
+// the authoritative copy the todo panel reads.
 func SaveRunTodoSnapshot(runStateDir string, items []TodoItem) error {
 	if runStateDir == "" {
 		return fmt.Errorf("no run-state directory: the tool was not told its run")
@@ -222,9 +169,7 @@ func SaveRunTodoSnapshot(runStateDir string, items []TodoItem) error {
 	return nil
 }
 
-// ReadRunTodoSnapshot reads the run-state todo snapshot. ok=false means there
-// is none (the worker never wrote one, or the run predates this file) — which
-// is not an error and not a failure, so the caller falls back.
+// ReadRunTodoSnapshot reads the run-state todo snapshot.
 func ReadRunTodoSnapshot(runStateDir string) ([]TodoItem, bool) {
 	if runStateDir == "" {
 		return nil, false
@@ -259,11 +204,8 @@ func RenderTodoList(items []TodoItem) string {
 	return sb.String()
 }
 
-// SaveTodoSnapshot persists the worker's latest todo list to the sidecar
-// file so `todoread` can read it back without a Postgres transcript. The
-// file is written atomically (temp + rename) and best-effort: a failed
-// snapshot write is a log-level concern, never a tool failure — the
-// todowrite call itself (an opencode built-in) already succeeded.
+// SaveTodoSnapshot persists the worker's latest todo list to the sidecar file so `todoread` can
+// read it back without a Postgres transcript.
 func SaveTodoSnapshot(b Base, items []TodoItem) {
 	if len(items) == 0 {
 		return
@@ -290,12 +232,8 @@ func SaveTodoSnapshot(b Base, items []TodoItem) {
 // tool returns the latest snapshot).
 type TodoReadArgs struct{}
 
-// TodoRead implements `todoread`: it reads back the worker's latest todo
-// list snapshot (the same shape GetExecutionTodos returns for DB-backed
-// sessions). Returns a human-readable rendering plus the raw JSON array.
-// When no snapshot exists yet (no todowrite has been issued in this
-// session), it returns an explicit empty-list message instead of an error
-// — a worker that just started has no todos, which is not a failure.
+// TodoRead implements `todoread`: it reads back the worker's latest todo list snapshot (the same
+// shape GetExecutionTodos returns for DB-backed sessions).
 func TodoRead(b Base, _ TodoReadArgs) (string, error) {
 	abs, err := safeResolve(b, todoSnapshotFile, false)
 	if err != nil {

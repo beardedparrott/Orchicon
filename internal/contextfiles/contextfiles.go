@@ -1,14 +1,4 @@
-// Package contextfiles is the shared implementation of Orchicon's
-// "context paths" model. Both projects.context_files and
-// work_items.context_files hold a JSON array of absolute paths that may
-// be files OR directories; this package provides the one validator, the
-// one path resolver, and the one prompt-section renderer so projects and
-// work items behave identically (AGENTS.md: fix the whole class, don't
-// copy-paste).
-//
-// The package is a leaf: it imports only the standard library so both
-// the project service and the work-item service can call it without an
-// import cycle.
+// Package contextfiles is the shared implementation of Orchicon's "context paths" model.
 package contextfiles
 
 import (
@@ -25,49 +15,22 @@ import (
 const (
 	// MaxContextFiles is the max number of entries in a context_files list.
 	MaxContextFiles = 1000
-	// MaxManifestEntries caps how many files a DIRECTORY context path lists in the rendered
-	// manifest. It is deliberately far below MaxContextFiles.
-	//
-	// MAXCONTEXTFILES IS AN INPUT BOUND; THIS IS A PROMPT BOUND, and conflating them was costing
-	// whole model windows. A directory path expands to one manifest line per file, and each line is
-	// re-sent to the model on every turn. Measured on a real repository: internal/ rendered 94 KB
-	// (≈23,400 tokens) and a project root 137 KB (≈34,400 tokens) — four times the entire static
-	// system prompt, for a nested tree an agent could just as well SEARCH.
-	//
-	// A manifest's job is to make the shape of a directory legible and point at the right files; it
-	// is not a filesystem dump, and an agent cannot read 1000 paths anyway. 120 entries per path
-	// keeps a large package identifiable while the block tells the model to use glob/grep beyond it —
-	// which is the cheaper and more accurate route for anything this list cannot cover.
+	// MaxManifestEntries caps how many files a DIRECTORY context path lists in the rendered manifest.
 	MaxManifestEntries = 120
 	// MaxFilePathLen is the max length of a single context path.
 	MaxFilePathLen = 4096
-	// MaxInlineFileBytes caps a single file's contents inlined into the
-	// worker prompt. Directory expansion multiplies content, so a cap is
-	// mandatory to keep prompts bounded (the old unbounded os.ReadFile of
-	// a single huge file could already blow a prompt — this is a strict
-	// improvement). Beyond the cap the worker is told to read the file
-	// from disk. The project-directory read tool uses the same cap as its
-	// default read bound.
+	// MaxInlineFileBytes caps a single file's contents inlined into the worker prompt.
 	MaxInlineFileBytes = 64 * 1024 // 64 KiB — a big single file stays on disk
-	// MaxInlineContextBytes is the CUMULATIVE budget for ALL inlined
-	// context (file contents + directory listings) rendered into one prompt
-	// section. Each inlined byte is re-sent to the model on EVERY tool call
-	// of the run, so the sum — not any single file — is what inflates
-	// context. Beyond this budget later paths degrade to a "read from disk"
-	// note instead of inlining, keeping the section bounded.
+	// MaxInlineContextBytes is the CUMULATIVE budget for ALL inlined context (file contents + directory
+	// listings) rendered into one prompt section.
 	MaxInlineContextBytes = 384 * 1024 // 384 KiB ≈ ~90k tokens max per context section
-	// ManifestInlineMaxBytes is the per-file inline floor for the manifest
-	// renderer (RenderManifest): files at or under this size are inlined so
-	// a worker can never be blind to a small, core file; files larger than
-	// this become manifest entries (path + size + "read on demand") instead
-	// of being dumped wholesale. This is the context-by-reference win —
-	// only what the model actually needs gets fetched, the index is cheap.
+	// ManifestInlineMaxBytes is the per-file inline floor for the manifest renderer (RenderManifest):
+	// files at or under this size are inlined so a worker can never be blind to a small, core file.
 	ManifestInlineMaxBytes = 4 * 1024 // 4 KiB ≈ ~1k tokens per small file
 )
 
-// noiseDirNames are VCS/build/runtime-cache directories skipped when
-// expanding a directory into the prompt. Listing them adds nothing for
-// the model and would otherwise balloon the prompt.
+// noiseDirNames are VCS/build/runtime-cache directories skipped when expanding a directory into the
+// prompt.
 var noiseDirNames = map[string]bool{
 	".git":         true,
 	".hg":          true,
@@ -82,17 +45,13 @@ var noiseDirNames = map[string]bool{
 	".cache":       true,
 }
 
-// IsNoiseDir reports whether name is a VCS/build/runtime-cache directory
-// skipped when expanding a directory into a listing. This is the same set
-// WalkDir skips, exposed for the project-directory list tool.
+// IsNoiseDir reports whether name is a VCS/build/runtime-cache directory skipped when expanding a
+// directory into a listing.
 func IsNoiseDir(name string) bool {
 	return noiseDirNames[name]
 }
 
-// Validate checks a list of context paths. Each path must be non-empty,
-// not exceed the max length, must be absolute, and must not contain
-// path-traversal components like "..". These are exactly the rules the
-// project service used to enforce in validateContextFiles.
+// Validate checks a list of context paths.
 func Validate(paths []string) error {
 	if len(paths) > MaxContextFiles {
 		return fmt.Errorf("context_files exceeds max of %d entries", MaxContextFiles)
@@ -115,13 +74,8 @@ func Validate(paths []string) error {
 	return nil
 }
 
-// ValidateWithin runs Validate and additionally requires every path to be
-// the project directory itself or a descendant of it (lexical check). The
-// project directory is the only directory guaranteed to be mounted into the
-// container where workers run, so a context path outside it would be
-// invisible to the worker — selecting it is pointless. projectDir == ""
-// (no directory configured yet) skips the within-check; Validate still
-// applies.
+// ValidateWithin runs Validate and additionally requires every path to be the project directory
+// itself or a descendant of it (lexical check).
 func ValidateWithin(paths []string, projectDir string) error {
 	if err := Validate(paths); err != nil {
 		return err
@@ -150,9 +104,6 @@ func ToJSON(paths []string) ([]byte, error) {
 }
 
 // FromJSON unmarshals the JSONB column value back to a path list.
-// Returns nil for empty input. A malformed payload is returned as an
-// error so callers can decide how to degrade (the project service treats
-// it as an empty list).
 func FromJSON(data []byte) ([]string, error) {
 	if len(data) == 0 {
 		return nil, nil
@@ -165,10 +116,6 @@ func FromJSON(data []byte) ([]string, error) {
 }
 
 // Resolve normalizes a context path to an absolute, cleaned path.
-// Absolute paths pass through; relative paths are joined to projectDir
-// (backward compatibility — the project service historically allowed
-// relative entries). Returns "" when the path still isn't absolute after
-// resolution so callers can skip it.
 func Resolve(p, projectDir string) string {
 	resolved := strings.TrimSpace(p)
 	if !filepath.IsAbs(resolved) && projectDir != "" {
@@ -257,10 +204,8 @@ func within(root, target string) error {
 	return nil
 }
 
-// WalkDir lists the files under root recursively, bounded to maxEntries
-// results and skipping VCS/build noise directories. Symlinked
-// directories are not followed (fs.WalkDir semantics). The returned
-// paths are absolute.
+// WalkDir lists the files under root recursively, bounded to maxEntries results and skipping
+// VCS/build noise directories.
 func WalkDir(root string, maxEntries int) ([]string, error) {
 	var out []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -288,13 +233,7 @@ func WalkDir(root string, maxEntries int) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("walk %q: %w", root, err)
 	}
-	// SORT THE WALK. filepath.WalkDir's order is filesystem-dependent
-	// (fs.ReadDir order, not lexical), so an unsorted result would make the
-	// rendered directory manifest — and therefore the prompt's cached static
-	// prefix (ADR-0009 D5) — differ between machines and even between passes on
-	// one machine. Sorting here makes every caller deterministic
-	// (renderDirectoryManifest, renderDirectory, and the fingerprint stamp,
-	// which already sorts its own copy for the same reason).
+	// SORT THE WALK.
 	sort.Strings(out)
 	return out, nil
 }
@@ -324,9 +263,8 @@ func Render(rootNote string, paths []string, projectDir string) string {
 		fmt.Fprintf(&sb, "%s\n\n", strings.TrimSpace(rootNote))
 	}
 	wroteAny := false
-	// Cumulative budget: track total rendered bytes so a large set of
-	// context files can't blow the prompt (every inlined byte is re-sent on
-	// every tool call). Beyond the budget, later paths degrade to a note.
+	// Cumulative budget: track total rendered bytes so a large set of context files can't blow the
+	// prompt (every inlined byte is re-sent on every tool call).
 	budget := &renderBudget{remaining: MaxInlineContextBytes}
 	for _, p := range paths {
 		if budget.exhausted() {
@@ -362,29 +300,14 @@ func Render(rootNote string, paths []string, projectDir string) string {
 }
 
 // ManifestPolicy selects how a manifest treats a file that is too big to inline.
-//
-// WHY A POLICY RATHER THAN ONE BUDGET. The inline floor protects a TOKEN budget, which is the platform's
-// concern for context it injects (project context files, worker context) — but a SKILL is not the platform's
-// context, it is the operator's own instruction set. Capping that was a category error: a skill is meant to be
-// READ by the agent, an operator who writes a large one has made a deliberate choice about their own prompt,
-// and silently degrading it to a path means the agent never reads it at all. Measured: the project's own
-// skills/ directory rendered as `path (7275 bytes)` — 446 bytes of manifest and no content — so every agent
-// in this repository was told a skill existed and shown none of it.
 type ManifestPolicy int
 
 const (
 	// ManifestPolicyContext is the CONTEXT-FILE policy: a file over ManifestInlineMaxBytes becomes a
-	// path+size entry with a "read on demand" instruction. Right for platform-injected context, where the
-	// budget belongs to the platform and a large file should stay on disk until a task needs it.
+	// path+size entry with a "read on demand" instruction.
 	ManifestPolicyContext ManifestPolicy = iota
-	// ManifestPolicySkill is the SKILL policy: file contents are ALWAYS inlined (bounded only by the hard
-	// per-file cap), and a directory's skill files are inlined too rather than merely listed. The operator
-	// selected these files to instruct the agent; a reference the agent must choose to follow is not an
-	// instruction, so there is no size floor here.
-	//
-	// It is NOT unbounded: MaxInlineFileBytes still caps one file, and the cumulative budget still applies,
-	// because a prompt large enough to exceed a model's window fails the run outright — which is a worse
-	// outcome than a truncated file, and it is loud either way.
+	// ManifestPolicySkill is the SKILL policy: file contents are ALWAYS inlined (bounded only by the
+	// hard per-file cap), and a directory's skill files are inlined too rather than merely listed.
 	ManifestPolicySkill
 )
 
@@ -411,9 +334,7 @@ func RenderManifest(rootNote string, paths []string, projectDir string) string {
 	return RenderManifestWithPolicy(rootNote, paths, projectDir, ManifestPolicyContext)
 }
 
-// RenderManifestWithPolicy is RenderManifest with the inline policy made explicit. Callers that inject
-// PLATFORM context keep ManifestPolicyContext; the SKILL renderer passes ManifestPolicySkill so an operator's
-// skill is read rather than referenced.
+// RenderManifestWithPolicy is RenderManifest with the inline policy made explicit.
 func RenderManifestWithPolicy(rootNote string, paths []string, projectDir string, policy ManifestPolicy) string {
 	var sb strings.Builder
 	if len(paths) == 0 {
@@ -432,13 +353,7 @@ func RenderManifestWithPolicy(rootNote string, paths []string, projectDir string
 	wroteAny := false
 	budget := &renderBudget{remaining: MaxInlineContextBytes}
 	initLen := sb.Len()
-	// DETERMINISTIC ORDER. The manifest lands inside the prompt's cached static
-	// prefix (ADR-0009 D5), so the order the caller supplied — or the order a
-	// filesystem walk returns — must never reach the bytes: a differing order is
-	// a differing prefix, i.e. a prefix-cache miss on every turn. Sorting the
-	// resolved paths makes two renders of the SAME selection byte-identical.
-	// The budget also degrades later paths first, which is precisely why the
-	// order has to be a property of the selection rather than of the caller.
+	// DETERMINISTIC ORDER.
 	for _, p := range sortedByResolved(paths, projectDir) {
 		if budget.exhausted() {
 			fmt.Fprintf(&sb, "**Note:** manifest budget reached — read `%s` from disk only if needed\n\n", p)
@@ -461,10 +376,7 @@ func RenderManifestWithPolicy(rootNote string, paths []string, projectDir string
 			continue
 		}
 		if info.Mode().IsRegular() {
-			// SKILL FILES ARE ALWAYS INLINED. The inline floor exists to protect a token budget for
-			// platform-injected context; a skill is the operator's own instruction set, and degrading it to a
-			// path means the agent is told a skill exists and shown none of it — which is what happened to
-			// this repository's own skills/ directory (7,275 bytes rendered as a 446-byte listing).
+			// SKILL FILES ARE ALWAYS INLINED.
 			if policy == ManifestPolicySkill || info.Size() <= int64(ManifestInlineMaxBytes) {
 				wroteAny = renderFile(&sb, resolved, budget) || wroteAny
 			} else {
@@ -497,9 +409,7 @@ func renderDirectoryManifest(sb *strings.Builder, path string, budget *renderBud
 		return true
 	}
 
-	// A SKILLS DIRECTORY INLINES ITS FILES. Listing them would reproduce the defect one level up: the
-	// operator pointed at a directory of instructions and the agent received a table of contents. Each file
-	// still goes through renderFile, so MaxInlineFileBytes and the cumulative budget still bound it.
+	// A SKILLS DIRECTORY INLINES ITS FILES.
 	if policy == ManifestPolicySkill {
 		fmt.Fprintf(sb, "## %s (skills — follow these)\n\n", path)
 		for _, e := range entries {
@@ -535,10 +445,7 @@ func renderDirectoryManifest(sb *strings.Builder, path string, budget *renderBud
 	return true
 }
 
-// renderBudget tracks the remaining cumulative-inline bytes for a context
-// section. Costs are charged against the FULL rendered length (directive +
-// file body + headers), because that is what actually re-enters the model on
-// every turn.
+// renderBudget tracks the remaining cumulative-inline bytes for a context section.
 type renderBudget struct {
 	remaining int
 }
@@ -577,10 +484,8 @@ func renderFile(sb *strings.Builder, path string, budget *renderBudget) bool {
 	return true
 }
 
-// renderDirectory emits the "directory as context" block: an explicit
-// instruction that the path is a directory (read every file below, do
-// NOT open the directory path itself) followed by the bounded file listing.
-// Returns true when a section was written.
+// renderDirectory emits the "directory as context" block: an explicit instruction that the path is
+// a directory (read every file below.
 func renderDirectory(sb *strings.Builder, path string, budget *renderBudget) bool {
 	before := sb.Len()
 	entries, err := WalkDir(path, MaxContextFiles)

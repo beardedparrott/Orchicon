@@ -1,14 +1,6 @@
 package orchicon
 
 // mcptools_worker_test.go — AC 1 (native half) and AC 3 (native half).
-//
-// AC 1: the native path must LOG the resolved MCP set WITH provenance. Before
-// this child the native path logged nothing, which is why an MCP problem was
-// unfalsifiable: the operator saw only the model reporting it could not call a
-// tool.
-//
-// AC 3: a server that cannot run must fail the session ACTIONABLY, naming the
-// server AND the scope it came from — never a silently degraded session.
 
 import (
 	"bytes"
@@ -23,9 +15,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// stubScopeResolver is the ONE resolution seam, backed by literals, so a native
-// test can drive the execution path without storage. It also records the ref the
-// bridge asked for, so the SCOPE itself is assertable.
+// stubScopeResolver is the ONE resolution seam, backed by literals, so a native test can drive the
+// execution path without storage.
 type stubScopeResolver struct {
 	res mcpclient.Resolution
 	got mcpclient.ScopeRef
@@ -50,9 +41,8 @@ func nativeWorkerResolution() mcpclient.Resolution {
 	}
 }
 
-// AC 2/AC 1 (native leg): the execution path resolves the WORKER scope carrying
-// the version's inline permissions and logs the set WITH provenance, WITHOUT
-// connecting (a resolution is an observation).
+// AC 2/AC 1 (native leg): the execution path resolves the WORKER scope carrying the version's
+// inline permissions and logs the set WITH provenance.
 func TestResolveExecutionMCPUsesWorkerScopeAndCarriesVersionSpecs(t *testing.T) {
 	stub := &stubScopeResolver{res: nativeWorkerResolution()}
 	b := NewBridge(nil, t.TempDir(), slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
@@ -106,9 +96,8 @@ func TestMCPResolutionLogsProvenance(t *testing.T) {
 		t.Cleanup(func() { _ = mt.Close() })
 	}
 	if err != nil {
-		// A connect failure is allowed here (the fake /bin/true is not an MCP
-		// server) — the LOG LINE is written before the connect, so the assertion
-		// still holds. What must never happen is the line being absent.
+		// A connect failure is allowed here (the fake /bin/true is not an MCP server) — the LOG LINE is
+		// written before the connect, so the assertion still holds.
 		if !strings.Contains(err.Error(), "MCP connect") {
 			t.Fatalf("mcpResolveAndStart: %v", err)
 		}
@@ -156,10 +145,8 @@ func TestMCPConnectFailureNamesServerAndScope(t *testing.T) {
 	}
 }
 
-// AC 3 (native half, parity with claude): a spec whose secret reference cannot
-// be resolved ALSO fails the session, and the failure names the server AND the
-// scope it came from — the same annotation claude applies in its own error path
-// (session.go). Without this the native secret failure named only the server.
+// AC 3 (native half, parity with claude): a spec whose secret reference cannot be resolved ALSO
+// fails the session, and the failure names the server AND the scope it came.
 func TestMCPSecretFailureNamesServerAndScope(t *testing.T) {
 	stub := &stubScopeResolver{res: mcpclient.Resolution{
 		Servers: []mcpclient.ScopedServer{

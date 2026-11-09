@@ -10,12 +10,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// DB-backed tests for the create_workflow tool path. They guard the
-// ghost-record fix: toolCreateWorkflow must produce a draft version-1 row
-// (steps persisted), a workflow.created audit row, and a publishable
-// workflow — not the header-only husk the old implementation created
-// (which also silently dropped the steps argument). Skipped unless
-// ORCHICON_TEST_DSN is set; shared helpers live in tool_workers_test.go.
+// DB-backed tests for the create_workflow tool path.
 
 func createWorkflowViaTool(t *testing.T, ctx context.Context, pool *db.Pool, args string) (db.WorkflowRow, map[string]any) {
 	t.Helper()

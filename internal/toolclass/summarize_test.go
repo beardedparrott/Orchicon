@@ -23,11 +23,7 @@ type fixture struct {
 }
 
 // TestSummarizeAgainstSharedFixture drives Summarize from internal/toolclass/testdata/
-// rollup_fixture.json — the SAME file the GUI's Vitest test reads (child 5), so the terminal and
-// the browser cannot render different numbers from one ledger JSON. Precedent: the TUI's
-// grouping_test.go:5-6 ports sessionItems.test.ts's cases verbatim for the same reason.
-//
-// issued_at_unix_ms/now/window in the fixture are epoch MILLISECONDS.
+// rollup_fixture.json — the SAME file the GUI's Vitest test reads (child 5).
 func TestSummarizeAgainstSharedFixture(t *testing.T) {
 	raw, err := os.ReadFile("testdata/rollup_fixture.json")
 	if err != nil {
@@ -72,9 +68,8 @@ func TestSummarizeAcceptanceExample(t *testing.T) {
 	}
 }
 
-// TestSummarizeFormatEdgeCases pins the format rules that are easy to regress: singular/plural,
-// the omission of a zero class, the absence of a dangling separator, the fixed ordering, and the
-// load-bearing empty string when nothing was counted (AC6, AC7).
+// TestSummarizeFormatEdgeCases pins the format rules that are easy to regress: singular/plural, the
+// omission of a zero class, the absence of a dangling separator, the fixed ordering.
 func TestSummarizeFormatEdgeCases(t *testing.T) {
 	now := time.UnixMilli(100_000)
 	cases := []struct {
@@ -118,9 +113,7 @@ func TestSummarizeFormatEdgeCases(t *testing.T) {
 }
 
 // TestSummarizeWindowIsReal is AC5: the window actually filters, and the boundary is stated and
-// tested rather than left to an off-by-one. The rule implemented is INCLUSIVE on the left — an
-// entry exactly `window` old is counted — because the window is "the last 30s" and the canonical
-// example sits exactly on that edge.
+// tested rather than left to an off-by-one.
 func TestSummarizeWindowIsReal(t *testing.T) {
 	now := time.UnixMilli(40_000)
 	ledger := `[
@@ -144,8 +137,7 @@ func TestSummarizeWindowIsReal(t *testing.T) {
 }
 
 // TestSummarizeIsPureAndTotal is AC8: no I/O, no clock of its own, and NO PANIC on any input a
-// caller can hand it — malformed, empty, nil, a JSON object, a ledger of only ignored tools, an
-// entry with a missing or zero timestamp, a future timestamp, and a window of zero.
+// caller can hand it — malformed, empty, nil, a JSON object, a ledger of only ignored tools.
 func TestSummarizeIsPureAndTotal(t *testing.T) {
 	now := time.UnixMilli(50_000)
 	cases := []struct {
@@ -189,8 +181,7 @@ func TestSummarizeIsPureAndTotal(t *testing.T) {
 }
 
 // TestSummarizeIsIdempotentAndClockless pins purity: the same inputs give the same output twice,
-// and the ONLY time input is `now` — the function owns no clock, so two calls a second apart over
-// the same `now` agree.
+// and the ONLY time input is `now` — the function owns no clock.
 func TestSummarizeIsIdempotentAndClockless(t *testing.T) {
 	in := []byte(`[{"function_name":"write","issued_at_unix_ms":10000},{"function_name":"read","issued_at_unix_ms":15000}]`)
 	now := time.UnixMilli(40_000)
@@ -213,8 +204,7 @@ func TestSummarizeIsIdempotentAndClockless(t *testing.T) {
 }
 
 // TestSummarizeRoundsTheAgeLikeTheActivityLine pins the rounding rule against the line the string
-// is appended to: internal/tui/app.go computes `int(d.Round(time.Second)/time.Second)`, so the two
-// numbers must agree at the halfway point. 500ms rounds UP here, exactly as it does there.
+// is appended to: internal/tui/app.go computes `int(d.Round(time.Second)/time.Second)`.
 func TestSummarizeRoundsTheAgeLikeTheActivityLine(t *testing.T) {
 	now := time.UnixMilli(10_500)
 	ledger := `[{"function_name":"write","issued_at_unix_ms":10000}]`
@@ -232,12 +222,7 @@ func itoaLikeAppDotGo(deltaMs int64) string {
 }
 
 // TestSummarizeAgeIsTheNewestCountedEntryNotZero pins the invariant QA found broken: the trailing
-// age is the age of the NEWEST COUNTED entry, and it must be derived from that entry even when its
-// stamp is a malformed NEGATIVE value. Seeding `newest` at 0 and taking the max left the age
-// measured from the EPOCH (here `now - 0` = an age of 10s) instead of from the entry that was
-// actually counted (an age of 15s) — the "who is newest" sentinel must be the first counted entry, not 0.
-// Unreachable from the real producer (time.UnixMilli is always positive), but a total function
-// must not violate its own stated contract on malformed input.
+// age is the age of the NEWEST COUNTED entry.
 func TestSummarizeAgeIsTheNewestCountedEntryNotZero(t *testing.T) {
 	now := time.UnixMilli(10_000)
 	ledger := `[{"function_name":"write","issued_at_unix_ms":-5000}]`

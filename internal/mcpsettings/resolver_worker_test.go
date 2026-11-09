@@ -1,15 +1,6 @@
 package mcpsettings_test
 
 // resolver_worker_test.go — AC 2 and AC 4 (DB-backed).
-//
-// AC 2: a worker version's inline `permissions.mcp_servers` specs actually reach
-// the resolver and are applied, unioned with the project's own, whether the
-// caller CARRIES them (a pinned dispatch: ScopeRef.OwnPermissions, from
-// ExecutionManifest.Permissions) or not (the storage fallback).
-//
-// AC 4: a PUBLISHED version's inline specs cannot be edited — asserted against
-// db.UpdateDraftVersion's `WHERE status = 'draft'` clause, the property that is
-// the whole reason worker definitions live inline rather than as owner rows.
 
 import (
 	"context"
@@ -26,9 +17,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// workerUnionFixture is the shared seed: one project, one project-owned MCP
-// definition, one worker with a published version carrying a version-only inline
-// spec. It returns the ids and the two server ids the assertions key on.
+// workerUnionFixture is the shared seed: one project, one project-owned MCP definition, one worker
+// with a published version carrying a version-only inline spec.
 type workerUnionFixture struct {
 	tenantID     string
 	projectID    string
@@ -208,10 +198,7 @@ func TestResolveWorkerFallsBackToStoredVersionSpecs(t *testing.T) {
 	}
 }
 
-// AC 4: a PUBLISHED version's inline specs are immutable. db.UpdateDraftVersion
-// is the only writer of a version row's permissions and it gates on
-// `AND status = 'draft'`, so the update must match NO row (ErrNotFound) and the
-// stored permissions must be byte-identical afterwards.
+// AC 4: a PUBLISHED version's inline specs are immutable.
 func TestPublishedVersionInlineSpecsAreImmutable(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {
@@ -252,10 +239,7 @@ func TestPublishedVersionInlineSpecsAreImmutable(t *testing.T) {
 		t.Fatalf("editing a published version's permissions returned %v, want db.ErrNotFound", err)
 	}
 
-	// Re-read: the stored specs are UNCHANGED. Compare SEMANTICALLY (jsonb
-	// normalises key order, so a byte comparison would be a false failure): the
-	// stored permissions must still carry the published version's definition and
-	// NOT the tampered one.
+	// Re-read: the stored specs are UNCHANGED.
 	after, err := db.GetLatestWorkerVersion(ctx, tx.Tx, f.tenantID, f.workerID, true)
 	if err != nil {
 		t.Fatalf("re-read published version: %v", err)

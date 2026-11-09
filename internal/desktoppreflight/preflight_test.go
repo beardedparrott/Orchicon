@@ -6,9 +6,8 @@ import (
 	"testing"
 )
 
-// fakeProbe builds a Probe whose every capability is a table-controlled answer, so
-// the decision can be exercised on a CI runner that has no webview, no ldconfig
-// output worth trusting and no Windows registry at all.
+// fakeProbe builds a Probe whose every capability is a table-controlled answer, so the decision can
+// be exercised on a CI runner that has no webview.
 type fakeProbe struct {
 	have     []string // binaries Lookup resolves
 	run      map[string]string
@@ -56,9 +55,8 @@ func (f fakeProbe) probe() Probe {
 
 const pvKey = `\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`
 
-// TestEvaluateLinuxWebKitGTK covers every way the Linux branch can be decided: the
-// two sonames (a 4.0 distro and a 4.1 distro), the pkg-config fallback, a loader
-// that has neither, and a host with no prober at all.
+// TestEvaluateLinuxWebKitGTK covers every way the Linux branch can be decided: the two sonames (a
+// 4.0 distro and a 4.1 distro), the pkg-config fallback, a loader that has neither.
 func TestEvaluateLinuxWebKitGTK(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -143,9 +141,8 @@ func TestEvaluateLinuxPkgConfigFallback(t *testing.T) {
 	}
 }
 
-// TestEvaluateWindowsWebView2 covers the four registry locations, the filesystem
-// fallback, and the not-installed case — the last of which is the Windows 10
-// machine this whole work item exists for.
+// TestEvaluateWindowsWebView2 covers the four registry locations, the filesystem fallback, and the
+// not-installed case — the last of which is the Windows 10 machine this whole work item exists for.
 func TestEvaluateWindowsWebView2(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -194,9 +191,8 @@ func TestEvaluateWindowsWebView2(t *testing.T) {
 	}
 }
 
-// TestDarwinIsAlwaysOK pins the decision that macOS needs no webview probe: WKWebView
-// is part of the OS, and the macOS user-facing risk is signing, not the webview. If
-// this ever needs to fail, the remedy text has to change with it.
+// TestDarwinIsAlwaysOK pins the decision that macOS needs no webview probe: WKWebView is part of
+// the OS, and the macOS user-facing risk is signing, not the webview.
 func TestDarwinIsAlwaysOK(t *testing.T) {
 	got := Evaluate("darwin", Probe{})
 	if !got.OK {

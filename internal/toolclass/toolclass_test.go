@@ -31,10 +31,8 @@ func TestClassify(t *testing.T) {
 		{"glob", Read},
 		{"todoread", Read},
 
-		// Other — REAL WORK this classifier cannot bucket: an MCP tool, a product tool, a name
-		// nobody classified (the under-report fix). Counted, never silently dropped.
-		// Ignore — only the shapes excluded BEFORE the default: a card, a decision record, the
-		// empty name, and todowrite.
+		// Other — REAL WORK this classifier cannot bucket: an MCP tool, a product tool, a name nobody
+		// classified (the under-report fix).
 		{"orchicon_ask_user", Ignore},
 		{"ask_user", Ignore},
 		{"askuser", Ignore},
@@ -46,9 +44,8 @@ func TestClassify(t *testing.T) {
 		{"orchicon_list_projects", Other},
 		{"", Ignore},
 		{"who_knows", Other},
-		// todowrite is Ignore DELIBERATELY, and the divergence from orchicon.ConsentReadOnlyTools
-		// is a decision rather than an oversight (D7): "reads" on this line means reading the
-		// REPOSITORY, and a todo update neither reads the repo nor changes the work.
+		// todowrite is Ignore DELIBERATELY, and the divergence from orchicon.ConsentReadOnlyTools is a
+		// decision rather than an oversight (D7): "reads" on this line means reading the REPOSITORY.
 		{"todowrite", Ignore},
 	}
 	for _, c := range cases {
@@ -61,9 +58,7 @@ func TestClassify(t *testing.T) {
 }
 
 // TestClassifyAskUserIsNeverCounted is AC2 stated as its own assertion: orchicon_ask_user puts a
-// CARD on screen, so it must contribute nothing to ANY count. Summed over a ledger of ask_user
-// calls alone the line must be empty — the caller appends it to a live line, and a count here
-// would claim work that did not happen.
+// CARD on screen, so it must contribute nothing to ANY count.
 func TestClassifyAskUserNeverCounted(t *testing.T) {
 	for _, n := range []string{"orchicon_ask_user", "ask_user", "askuser"} {
 		c := Classify(n)
@@ -74,9 +69,7 @@ func TestClassifyAskUserNeverCounted(t *testing.T) {
 }
 
 // TestClassifyPermissionRecordsNeverCounted is AC3: recordPermission (tool_ledger.go:74) appends a
-// synthetic "permission.<verdict>" tool call for every consent decision, so an APPROVAL of a write
-// must not itself read as a write. The check is on the PREFIX, so every verdict — including ones
-// invented later — is covered.
+// synthetic "permission.<verdict>" tool call for every consent decision.
 func TestClassifyPermissionRecordsNeverCounted(t *testing.T) {
 	for _, n := range []string{
 		"permission.allow_once", "permission.allow_always", "permission.deny",
@@ -89,10 +82,7 @@ func TestClassifyPermissionRecordsNeverCounted(t *testing.T) {
 }
 
 // TestClassifyUnknownIsCountedAsOther is the AC2 fix stated as its own assertion: a name this
-// package does not recognise is REAL WORK and must be COUNTED as `Other`. The old default was
-// `Ignore`, which silently dropped 93 of the 94 native Ask product tools — the operator saw
-// "3 bash" on a twelve-call turn. Silence over real work is the defect; a mis-filed bucket is not.
-// The EMPTY name is the one case that is not work: nobody made that call, so it must not count.
+// package does not recognise is REAL WORK and must be COUNTED as `Other`.
 func TestClassifyUnknownIsCountedAsOther(t *testing.T) {
 	for _, n := range []string{
 		"mcp__github__create_issue", "mcp__slack__post_message", "mcp__orchicon__create_work_item",

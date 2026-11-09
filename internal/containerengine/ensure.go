@@ -42,10 +42,7 @@ type EnsureResult struct {
 }
 
 // EnsureReady detects the engine, brings a podman machine up if that is what is missing, and proves
-// the result by running a trivial container. Output (the engine's own messages and ours) is written
-// to out so a streaming RPC can relay it verbatim.
-//
-// It never prompts and never elevates.
+// the result by running a trivial container.
 func EnsureReady(ctx context.Context, p Probe, out io.Writer) EnsureResult {
 	if out == nil {
 		out = io.Discard
@@ -79,9 +76,7 @@ func EnsureReady(ctx context.Context, p Probe, out io.Writer) EnsureResult {
 		return res
 	}
 
-	// THE MACHINE STEP IS THE ONE THAT ACTUALLY FIXES SOMETHING on a desktop host. Recorded so the
-	// caller can say what it did — a repair nobody reports is indistinguishable from a repair that
-	// did not happen.
+	// THE MACHINE STEP IS THE ONE THAT ACTUALLY FIXES SOMETHING on a desktop host.
 	before, _, _ := MachineStatus(ctx, p, e)
 	ms, merr := EnsureMachine(ctx, p, e, out)
 	res.Status.Machine = ms

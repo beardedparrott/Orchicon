@@ -63,48 +63,24 @@ type askAction struct {
 	// CallID is the tool call the ask belongs to (opencode emits it alongside
 	// the ask id); advisory, used for transcript correlation.
 	CallID string
-	// AskID is the ADAPTER's id for the consent ask this action gated (the
-	// `permission.asked` id, or the native bridge's permission id).
-	//
-	// IT IS PERSISTED, and that is the whole reason it is here. The decision the
-	// operator makes is written into the turn's ledger as a synthetic
-	// `permission.<verdict>` record, which becomes part of the assistant message in
-	// the database — so it is DURABLE, where the live stream event is not. Carrying
-	// the id on that record is what lets ANY client reconcile its copy of a card
-	// against server truth: a second tab, a device, or the same page after a
-	// reload, none of which ever see the live event that settled it. Without the id
-	// the record is a decision nobody can attach to the ask it decided, which is
-	// exactly why this stayed broken through several attempts to fix it in the
-	// stream.
+	// AskID is the ADAPTER's id for the consent ask this action gated (the `permission.asked` id, or
+	// the native bridge's permission id).
 	AskID string
-	// Key is the grant/deny KEY (C4): a cleaned directory. For a file action it
-	// is the target's directory; for bash it is the cwd's directory. It is set
-	// by resolveAskKey (the extraction is scope-blind; the scope is not known
-	// until the decision).
+	// Key is the grant/deny KEY (C4): a cleaned directory.
 	Key string
-	// Input is the correlated tool-call ARGS of the call this ask gates (the
-	// adapter attaches them as Detail["toolInput"], see
-	// internal/opencode toolCallIndex). They are the ONLY detail an MCP /
-	// host-suite ask has: opencode gates such a call by its tool key and emits
-	// `patterns: ["*"], metadata: {}`. Nil when the call was not observed.
+	// They are the ONLY detail an MCP / host-suite ask has: opencode gates such a call by its tool key
+	// and emits `patterns: ["*"], metadata: {}`.
 	Input map[string]any
 }
 
-// askActionResolved reports whether the ask carries something to KEY a
-// decision on: real target path(s) or a command. An ask that resolves to
-// neither is kept deliberately distinct from one that resolves to the scope
-// directory — treating the two the same is what let a sibling-path write
-// through an `orchicon_*` tool be approved silently (see decide's fail-closed
-// arm).
+// askActionResolved reports whether the ask carries something to KEY a decision on: real target
+// path(s) or a command.
 func askActionResolved(a askAction) bool {
 	return len(realTargets(a.Targets)) > 0 || strings.TrimSpace(a.Command) != ""
 }
 
-// isWildcardPattern reports whether a permission pattern is opencode's
-// "everything" rule rather than a path — `*`, `**`, `*/*`, `/**`. Such an entry
-// is the permission RULE an MCP-tool ask carries, never a target: keying it as
-// one resolves to <scope>/*, which looks like the scope directory and therefore
-// like "inside the project".
+// isWildcardPattern reports whether a permission pattern is opencode's "everything" rule rather
+// than a path — `*`, `**`, `*/*`, `/**`.
 func isWildcardPattern(s string) bool {
 	star := false
 	for _, r := range s {
@@ -149,11 +125,7 @@ func anyList(v any) []any {
 	return nil
 }
 
-// toolInputTargets pulls the paths out of a correlated tool call's args. The
-// host suite's mutating tools spell them `filePath` (write/edit) and `path`
-// (batch_write's per-write entries, `paths` for a list); other MCP tools use
-// their own vocabulary, so the candidates stay defensive — the same shape the
-// built-in ask's `metadata.filepath` uses.
+// toolInputTargets pulls the paths out of a correlated tool call's args.
 func toolInputTargets(in map[string]any) []string {
 	if len(in) == 0 {
 		return nil
@@ -180,18 +152,8 @@ func toolInputCommand(in map[string]any) string {
 	return detailString(in, "command", "cmd", "script", "shellCommand")
 }
 
-// compactArgs renders a call's arguments for the card: SCALARS ONLY, and a
-// shape (a count) for anything nested. It is the fallback for a card when NO
-// target or command could be recognised, so the operator sees what the tool
-// will do rather than only its name.
-//
-// It deliberately does NOT fall back to fmt's %v for a value it does not
-// understand. That is exactly what put a Go struct literal on an operator's
-// card — "writes=[map[mode:edit new:type chatBus struct {…]", truncated
-// mid-struct at 80 chars — because a []map[string]any rendered through %v is
-// Go's own debug formatting. An unrecognised shape is reported as an ellipsis:
-// the card's job is to say what will happen, and a dump of internal structure
-// says nothing while making the card unreadable.
+// compactArgs renders a call's arguments for the card: SCALARS ONLY, and a shape (a count) for
+// anything nested.
 func compactArgs(in map[string]any) string {
 	keys := make([]string, 0, len(in))
 	for k := range in {
@@ -210,9 +172,7 @@ func compactArgs(in map[string]any) string {
 	return b.String()
 }
 
-// scalarArg renders one argument value. Scalars are shown as themselves,
-// containers are summarised by SIZE, and anything else is an ellipsis — never a
-// formatted dump of the value (see compactArgs).
+// scalarArg renders one argument value.
 func scalarArg(v any) string {
 	switch t := v.(type) {
 	case nil:
@@ -251,10 +211,7 @@ func truncateArg(s string) string {
 	return s
 }
 
-// isBashAsk reports whether a tool name is a shell-command ask. A shell command
-// has no target path — it is NOT path-scopable (`curl`, `systemctl status`,
-// `ps aux` all have no target directory), so it is keyed on the cwd and shown
-// as a command.
+// isBashAsk reports whether a tool name is a shell-command ask.
 func isBashAsk(tool string) bool {
 	t := strings.ToLower(strings.TrimSpace(tool))
 	return t == "bash" || t == "shell" || t == "sh" || strings.Contains(t, "bash")
@@ -298,28 +255,10 @@ func detailStrings(m map[string]any, keys ...string) []string {
 	return nil
 }
 
-// extractAskAction turns a permission event's raw properties into an askAction.
-//
-// This is the ONLY place the opencode property vocabulary is interpreted, so a
-// serve build that spells a field differently is fixed in one place. The
-// candidate keys are DEFENSIVE (C7) because the tree's only fixture
-// (chat_session_test.go busPermissionAsked) is our own belief; the captured
-// golden payload (internal/opencode/testdata/permission_asked_golden.json) is
-// the authority — if the live shape disagrees, the golden file wins and the
-// candidates below are corrected.
-//
-// Pure: no ctx, no db.
+// This is the ONLY place the opencode property vocabulary is interpreted, so a serve build that
+// spells a field differently is fixed in one place.
 func extractAskAction(evt scheduler.SessionEvent) askAction {
 	// TYPED CONSENT FIELDS FIRST (adapter-neutral).
-	//
-	// An adapter that can name the action directly — the native bridge knows the
-	// tool, its command and its argument JSON at the moment it is about to run it
-	// — must not have to shape them into opencode's property vocabulary. This is
-	// the same rule the typed tool_result fields follow, and it is what lets a
-	// second adapter raise a real ask without imitating the first.
-	//
-	// The Detail path below stays authoritative for opencode, which is the only
-	// adapter that emits it.
 	if evt.Tool != "" {
 		a := askAction{
 			Tool:    evt.Tool,
@@ -330,9 +269,8 @@ func extractAskAction(evt scheduler.SessionEvent) askAction {
 			var in map[string]any
 			if err := json.Unmarshal([]byte(evt.InputJSON), &in); err == nil {
 				a.Input = in
-				// The arguments carry the target/command for a call whose own ask
-				// named neither (an MCP/host-suite tool), so they are the fallback
-				// rather than the override.
+				// The arguments carry the target/command for a call whose own ask named neither (an MCP/host-suite
+				// tool), so they are the fallback rather than the override.
 				if len(a.Targets) == 0 {
 					a.Targets = toolInputTargets(in)
 				}
@@ -370,22 +308,14 @@ func extractAskAction(evt scheduler.SessionEvent) askAction {
 		Tool:   detailString(d, "permission", "action", "tool", "title"),
 		CallID: detailString(d, "callID", "callId", "call_id", "partID", "requestID"),
 	}
-	// The REAL schema nests the tool call under `tool` ({messageID, callID}) and
-	// has no top-level callID, so the flat candidates above never match a live
-	// payload. Kept for older/other shapes; the nested read is the real one.
+	// The REAL schema nests the tool call under `tool` ({messageID, callID}) and has no top-level
+	// callID, so the flat candidates above never match a live payload.
 	if a.CallID == "" {
 		if tl, ok := d["tool"].(map[string]any); ok {
 			a.CallID = detailString(tl, "callID", "callId", "call_id")
 		}
 	}
-	// The ask's own target(s). opencode's built-in write/edit ask carries them
-	// TWICE: `patterns` is worktree-RELATIVE and `metadata.filepath` is
-	// ABSOLUTE. The ABSOLUTE one wins — the Ask serve runs with NO
-	// `--directory` (servehost.go), so its worktree base is the plane's cwd,
-	// NOT the conversation's project dir; a relative pattern joined to the
-	// project dir can therefore resolve INSIDE the project for a file opencode
-	// itself placed outside, and be approved silently (AC1). `patterns` stays
-	// the fallback for an ask that carries no path in its metadata.
+	// The ask's own target(s).
 	meta, _ := d["metadata"].(map[string]any)
 	if meta != nil {
 		if p := detailString(meta, "filePath", "filepath", "path", "file"); p != "" {
@@ -394,16 +324,11 @@ func extractAskAction(evt scheduler.SessionEvent) askAction {
 		a.Command = detailString(meta, "command")
 	}
 	if len(a.Targets) == 0 {
-		// `resources` IS 2.x'S SPELLING OF `patterns` — see the measured payload above. `realTargets` drops
-		// the wildcard an MCP/host-suite ask ships (`["*"]`), so that case still (correctly) resolves to no
-		// target and fails closed to a card rather than claiming to know a path it was never told.
+		// `resources` IS 2.x'S SPELLING OF `patterns` — see the measured payload above.
 		a.Targets = realTargets(detailStrings(d, "resources", "patterns", "pattern"))
 	}
-	// The correlated tool-call args (see internal/opencode toolCallIndex) are
-	// the ONLY detail an MCP / host-suite ask has: such an ask ships
-	// `patterns: ["*"]` and `metadata: {}`, so without this the action has no
-	// target and no command — the shape that used to be judged "inside the
-	// project" and silently approved.
+	// The correlated tool-call args (see internal/opencode toolCallIndex) are the ONLY detail an MCP /
+	// host-suite ask has: such an ask ships `patterns: ["*"]` and `metadata: {}`.
 	if in, ok := d["toolInput"].(map[string]any); ok && len(in) > 0 {
 		a.Input = in
 		if len(a.Targets) == 0 {
@@ -424,11 +349,8 @@ func extractAskAction(evt scheduler.SessionEvent) askAction {
 	return a
 }
 
-// binaryClassRefusal returns a refusal string when a bash action's command is a
-// member of the never-allow binary class (C6). The class is checked ABOVE
-// permpolicy.Decide on purpose: its own doc says it stops below the class, and
-// the class must NEVER prompt, so it is refused before a card is ever emitted.
-// Empty for a non-bash action or a command the class does not name.
+// The class is checked ABOVE permpolicy.Decide on purpose: its own doc says it stops below the
+// class, and the class must NEVER prompt, so it is refused before a card is ever emitted.
 func binaryClassRefusal(a askAction) string {
 	if !isBashAsk(a.Tool) || strings.TrimSpace(a.Command) == "" {
 		return ""
@@ -442,11 +364,7 @@ func binaryClassRefusal(a askAction) string {
 	return ""
 }
 
-// shellGlobMatch matches an opencode permission pattern against a command
-// string. The class's patterns are SHELL globs: `*` deliberately crosses
-// everything, including `/` and shell operators (`* && sudo *` must match a
-// smuggled invocation), which doublestar's path semantics would refuse. Only
-// `*` and `?` are significant; every other character is literal.
+// shellGlobMatch matches an opencode permission pattern against a command string.
 func shellGlobMatch(pat, s string) bool {
 	var b strings.Builder
 	b.WriteString("^")
@@ -491,48 +409,20 @@ func resolveAskKey(a askAction, dir string) string {
 	return grantScopeKey(abs)
 }
 
-// decisionTarget is one path the consent DECISION covers: the absolute path the
-// policy is consulted on, plus the directory its grant/project inputs are read
-// from.
+// decisionTarget is one path the consent DECISION covers: the absolute path the policy is consulted
+// on, plus the directory its grant/project inputs are read from.
 type decisionTarget struct {
 	abstarget string
 	key       string
 }
 
-// grantScopeKey is the directory a session grant must name to silence the ask about
-// target: the target's own directory, EXCEPT that it is never the filesystem root.
-//
-// WHY THE ROOT IS EXCLUDED, and it is not a style preference. A grant is what the
-// card's session row OFFERS and what `grantStore.Has`/`Roots` then honour, and
-// `Roots` is what the execution guard's shim is handed as its allowed directories
-// (ask_guard.go). So a key of "/" does not widen consent for one directory — it
-// offers "Never ask again in / this session", one click away, and hands the shim
-// the whole filesystem as a granted root.
-//
-// The operator hit it on an ordinary command: `cd /tmp && …` names /tmp, whose
-// directory is /, so the card for it offered to grant /. Nothing about that is
-// exotic — /tmp, /etc, /usr, /var, /mnt, /opt and /srv all have the root as their
-// parent, so ANY command that touches a top-level directory offered it.
-//
-// The failure is in the DERIVATION, not in the decision: the operator is entitled to
-// silence a directory, but "everything" is not a directory. When the only derivable
-// scope would be the root, the grant narrows to the target itself, which is the most
-// that can honestly be offered — and for the common case (a named directory) that is
-// exactly the scope the operator wanted.
-//
-// The SCOPE DIRECTORY is deliberately not passed through here: it is the work area
-// the operator chose for the conversation, not a path derived from a tool call, so
-// keying on it is their own declared decision rather than an inference.
+// grantScopeKey is the directory a session grant must name to silence the ask about target: the
+// target's own directory, EXCEPT that it is never the filesystem root.
 func grantScopeKey(target string) string {
 	target = filepath.Clean(target)
 	if target == "." || isFilesystemRoot(target) {
-		// The TARGET is itself a volume root, so there is no directory that scopes it and a grant naming the
-		// root would be a grant for everything. No key is the FAIL-CLOSED answer: Has("") is false, so no
-		// session grant can ever cover it and the ask keeps asking. That is the honest outcome — an operator
-		// may silence a directory, but nothing can silence the whole filesystem in one click.
-		//
-		// ("." is included because filepath.Clean("") is ".", so an empty target would otherwise key on the
-		// current directory — a scope nobody asked for.)
+		// The TARGET is itself a volume root, so there is no directory that scopes it and a grant naming
+		// the root would be a grant for everything.
 		return ""
 	}
 	if dir := filepath.Dir(target); !isFilesystemRoot(dir) {
@@ -541,9 +431,7 @@ func grantScopeKey(target string) string {
 	return target
 }
 
-// isFilesystemRoot reports whether p is a volume root. The test is that Dir leaves it
-// unchanged (Dir("/") == "/", Dir("C:\\") == "C:\\"), which is exactly what makes it a
-// fixed point and works for every platform's volume spelling without a special case.
+// isFilesystemRoot reports whether p is a volume root.
 func isFilesystemRoot(p string) bool {
 	return filepath.Dir(p) == p
 }
@@ -551,10 +439,8 @@ func isFilesystemRoot(p string) bool {
 // (commandPaths lives below decisionTargets — see its own comment for what it does
 // and does not extract.)
 
-// absAskTarget returns the absolute path the policy is consulted on for the
-// action's KEY target: the first target for a file action (resolved against
-// the scope dir when relative), or the scope directory itself for a bash
-// action. See decisionTargets for the paths the DECISION covers.
+// absAskTarget returns the absolute path the policy is consulted on for the action's KEY target:
+// the first target for a file action (resolved against the scope dir when relative).
 func absAskTarget(a askAction, dir string) string {
 	if len(a.Targets) == 0 || isBashAsk(a.Tool) {
 		return filepath.Clean(dir)
@@ -653,18 +539,14 @@ func commandPaths(cmd string) []string {
 	return out
 }
 
-// cmdToken is one word of a shell command, with whether it came from a QUOTED span. The
-// distinction is why this is a scanner rather than strings.Fields: a quoted word is DATA
-// (a program, a regex, a literal), and treating it as an argument is how an awk program's
-// regex became a consent target.
+// cmdToken is one word of a shell command, with whether it came from a QUOTED span.
 type cmdToken struct {
 	tok    string
 	quoted bool
 }
 
-// commandTokens splits a command into words the way a shell would for the purposes of THIS
-// scan: whitespace separates words, a quoted span is ONE word with its quotes removed (so a
-// quoted path containing a space survives), and an escaped character does not end a word.
+// commandTokens splits a command into words the way a shell would for the purposes of THIS scan:
+// whitespace separates words.
 func commandTokens(cmd string) []cmdToken {
 	var out []cmdToken
 	var b strings.Builder
@@ -704,31 +586,13 @@ func commandTokens(cmd string) []cmdToken {
 	return out
 }
 
-// hasShellMetachar reports whether a token contains a character that makes it a PATTERN
-// rather than a path we could judge — a regex or glob operator, or a shell expansion.
-// `$` is in the set for the expansion reason: the consent layer sees the command TEXT, so
-// `/a$b` is not the path the shell would pass, and judging the literal would invent a
-// target. A real path may legally contain most of these, but the two mistakes do not cost
-// the same: a MISSED mention is still covered by the policy's deny list and by the
-// execution guard, while an INVENTED one produces an ask nothing can answer.
+// hasShellMetachar reports whether a token contains a character that makes it a PATTERN rather than
+// a path we could judge — a regex or glob operator, or a shell expansion.
 func hasShellMetachar(tok string) bool {
 	return strings.ContainsAny(tok, "^+!*,?$[]{}()|\\")
 }
 
-// harmlessDevicePath reports whether tok names one of the STANDARD device nodes — the
-// ones a shell uses as a sink or a stream rather than as a file it is acting on:
-// /dev/null above all, which appears in ordinary work constantly (`2>/dev/null`,
-// `> /dev/null`, `curl -o /dev/null`).
-//
-// THEY ARE SKIPPED BECAUSE A CONSENT DECISION ABOUT THEM IS MEANINGLESS. "May this command
-// touch /dev/null?" has one answer, and asking it is pure friction — the operator was
-// granting the project directory and being asked about /dev for a command that only threw
-// its stderr away.
-//
-// THE LIST IS EXPLICIT AND MUST STAY THAT WAY. A blanket "skip /dev" would wave through
-// `rm -rf /dev/sda` and `dd of=/dev/nvme0n1`, which are exactly the catastrophic writes
-// this gate exists to stop — so only the members that hold no state and cannot be damaged
-// are named here. `mkfs`/`dd` are separately refused outright by the never-allow class.
+// THE LIST IS EXPLICIT AND MUST STAY THAT WAY.
 func harmlessDevicePath(tok string) bool {
 	switch filepath.Clean(tok) {
 	case "/dev/null", "/dev/zero", "/dev/full",
@@ -787,11 +651,7 @@ func procIntrospectionPath(tok string) bool {
 	return false
 }
 
-// looksLikePath reports whether a QUOTED token is plausibly a filesystem path. A quoted
-// span is data, so the bar is higher than for an unquoted argument: it must be
-// home-relative or carry at least two path segments, and it may not END in a slash —
-// because that is how a regex is delimited. `/func /` (a grep pattern) has two slashes and
-// would otherwise pass; `/etc/b` is a path; `/return` is neither.
+// looksLikePath reports whether a QUOTED token is plausibly a filesystem path.
 func looksLikePath(tok string) bool {
 	if strings.HasSuffix(tok, "/") {
 		return false
@@ -802,20 +662,8 @@ func looksLikePath(tok string) bool {
 	return strings.Count(tok, "/") >= 2
 }
 
-// stripHeredocBodies removes every heredoc BODY from a command, keeping the `<<DELIM`
-// operator, the delimiter and the rest of the opening line — so the redirect target is
-// still visible to commandPaths.
-//
-// A heredoc body is text about to be WRITTEN TO A FILE, so a path in it is not a path this
-// command touches. Judging them meant that writing a test file whose CONTENT mentioned a
-// /tmp path raised a consent ask about /tmp: the file's content was being read as though it
-// were an argument, which is both wrong and a source of asks the operator cannot satisfy by
-// granting the directory they are actually working in.
-//
-// LIMITS, stated rather than hidden: `<<-` (tab-stripped terminators) is not special-cased,
-// and an operator after an unbalanced quote is not found. Both leave the body in the text,
-// which is the CONSERVATIVE direction — those paths come back and may raise an ask, rather
-// than a body being dropped that held a real argument.
+// stripHeredocBodies removes every heredoc BODY from a command, keeping the `<<DELIM` operator, the
+// delimiter and the rest of the opening line.
 func stripHeredocBodies(cmd string) string {
 	var out strings.Builder
 	rest := cmd
@@ -919,15 +767,6 @@ func cutHeredocBody(s, delim string) string {
 
 // commandInvokesScopedBinary reports whether a shell command invokes one of the binaries the
 // execution guard intercepts, which is the set whose TARGETS the shim judges.
-//
-// IT IS DELIBERATELY A TOKEN SCAN RATHER THAN A PARSE, and it is not the enforcement: the shim
-// intercepts by PATH lookup, so it sees an invocation however it was built (`$(echo rm) -rf x` still
-// resolves through the shimmed PATH). This only decides whether the consent layer should apply the
-// protected-path rule EARLY, and a scan that errs toward "yes" is the safe direction for that — the
-// cost of a false positive is a refusal of something the shim would refuse anyway.
-//
-// An assignment (`HOME=/home/me`) and a bare mention (`cat /home/me/file`) are NOT invocations of a
-// scoped binary, which is exactly the distinction the ungated version was missing.
 func commandInvokesScopedBinary(cmd string) bool {
 	scoped := guard.ScopedBinaryNames()
 	if len(scoped) == 0 || strings.TrimSpace(cmd) == "" {
@@ -957,34 +796,13 @@ func commandInvokesScopedBinary(cmd string) bool {
 	return false
 }
 
-// decisionTargets returns EVERY path a file action touches, so the decision
-// covers a batch write's second (and later) targets instead of only the first.
-// Judging only the first is the silent approval the MCP-ask fix closed, one
-// path over: a batch_write whose first path is inside the conversation's
-// project and whose second is a sibling path would ride the first path's
-// verdict. This is C4's own rationale — "a second directory in the batch asks
-// again". The grant KEY stays the first target's directory (C4); each target is
-// judged on its own absolute path (C5: deny names files) with its own
-// directory's grant read.
-//
-// A bash action is not path-scopable (C4), so it yields the single scope-dir
-// entry, as does an action that resolved no target at all (the fail-closed
-// card case).
+// decisionTargets returns EVERY path a file action touches, so the decision covers a batch write's
+// second (and later) targets instead of only the first.
 func decisionTargets(a askAction, dir string) []decisionTarget {
 	if isBashAsk(a.Tool) {
 		cwd := filepath.Clean(dir)
 		out := []decisionTarget{{abstarget: cwd, key: cwd}}
 		// ALSO JUDGE THE PATHS THE COMMAND NAMES.
-		//
-		// A shell command's consent KEY is its cwd, so one "allow for this session"
-		// on the project directory would otherwise cover every command run there —
-		// including `cp ~/secret /etc/x`, which touches nothing inside the project.
-		// The operator's decision: "also judge the paths a command mentions."
-		//
-		// The cwd stays FIRST because it is the grant KEY (C4): a grant is still
-		// given for the directory the command runs in. Each mentioned path is then
-		// judged on its own absolute value, so a path outside every granted
-		// directory raises an ask of its own.
 		seen := map[string]bool{cwd: true}
 		for _, p := range commandPaths(a.Command) {
 			if seen[p] {
@@ -1010,13 +828,8 @@ func decisionTargets(a askAction, dir string) []decisionTarget {
 	return out
 }
 
-// askSummary states WHAT THE CALL WILL DO and to WHAT, in the operator's terms:
-// "modify /p/a.go", "run a shell command: go test ./...". It is the whole
-// content of the decision — "approve" is meaningless without it — so it must
-// never leak a raw argument dump. An earlier version concatenated the parsed
-// args with fmt's %v, which put a Go struct literal on an operator's card
-// ("batch_write writes=[map[mode:edit new:type chatBus struct {…]") for any
-// tool whose args are nested. See scalarArg.
+// askSummary states WHAT THE CALL WILL DO and to WHAT, in the operator's terms: "modify /p/a.go",
+// "run a shell command: go test ./...".
 func askSummary(a askAction) string {
 	verb := toolIntentVerb(a.Tool)
 	var out string
@@ -1036,11 +849,7 @@ func askSummary(a askAction) string {
 	default:
 		out = verb
 	}
-	// THE TOOL NAME STAYS ON THE CARD, beside the intent. The verb says what
-	// will happen; the tool says who does it, and an operator diagnosing an
-	// unexpected ask wants both ("modify /p/a.go (batch_write)" reads as one
-	// action, where either half alone is ambiguous about the other). Skipped
-	// when the text already contains it.
+	// THE TOOL NAME STAYS ON THE CARD, beside the intent.
 	if a.Tool != "" && !strings.Contains(out, a.Tool) {
 		out += " (" + a.Tool + ")"
 	}
@@ -1048,10 +857,6 @@ func askSummary(a askAction) string {
 }
 
 // toolIntentVerb maps a tool name onto what the call will DO, in plain terms.
-// The ask is answered by a human, so the verb is the point: "batch_write" says
-// nothing to an operator, "modify" does. Matching is on the tool name because
-// the vocabulary is open (opencode, MCP, and the native suite all name their
-// tools differently), so the classes are deliberately broad.
 func toolIntentVerb(tool string) string {
 	t := strings.ToLower(strings.TrimSpace(tool))
 	switch {
@@ -1077,11 +882,7 @@ func toolIntentVerb(tool string) string {
 // The grant store (in-memory, per conversation, directory-keyed)
 // ---------------------------------------------------------------------------
 
-// grantStore records session grants: "allow for this directory" answers. It is
-// deliberately IN MEMORY with no persistence (C9): a plane restart clears it,
-// and a new conversation asks again. Keyed conversation id -> cleaned directory,
-// valued with the time the grant was recorded (the client lists grants and says
-// when each was given).
+// grantStore records session grants: "allow for this directory" answers.
 type grantStore struct {
 	mu     sync.Mutex
 	byConv map[string]map[string]time.Time
@@ -1092,18 +893,6 @@ func newGrantStore() *grantStore {
 }
 
 // Grant records a session grant for dir under convID.
-//
-// IT REFUSES A VOLUME ROOT, AND THE REFUSAL IS SILENT BY DESIGN. A root grant is not a scope, it is
-// everything: `Has` would then answer yes for the root itself, and `Roots` — which is what the execution
-// guard's shim is handed as its allowed directories (ask_guard.go) — would report the whole filesystem as
-// granted. That is the one outcome this store must never hold, so it is refused here rather than trusted to
-// stay unreachable: the caller that used to derive a root key (`filepath.Dir("/tmp")`) is fixed, and this is
-// the second line of defence behind it.
-//
-// The silence is acceptable BECAUSE it is unreachable by construction — grantScopeKey never yields a root, and
-// the RPC path grants the SERVER's own derived key rather than anything a client sent (see
-// consent_service.go) — so a refusal here means a bug upstream, and failing closed on a bug is the right
-// posture for a permission.
 func (g *grantStore) Grant(convID, dir string) {
 	if g == nil || convID == "" || strings.TrimSpace(dir) == "" {
 		return
@@ -1123,16 +912,6 @@ func (g *grantStore) Grant(convID, dir string) {
 }
 
 // Has reports whether convID holds a grant covering dir.
-//
-// A GRANT COVERS ITS SUBTREE. "Allow for this session" on a directory means that
-// directory AND everything under it — a grant was matched by EXACT string before,
-// so granting a project root did not cover its packages and the operator got a
-// card per directory. That is precisely the per-command friction that pushes
-// people to approve without reading, which is the failure the gate exists to
-// prevent.
-//
-// The separator matters: a prefix test alone would make /foo cover /foobar. The
-// grant must be the target itself or a proper ancestor of it.
 func (g *grantStore) Has(convID, dir string) bool {
 	if g == nil || convID == "" || strings.TrimSpace(dir) == "" {
 		return false
@@ -1172,10 +951,7 @@ func (g *grantStore) Len(convID string) int {
 	return len(g.byConv[convID])
 }
 
-// Roots returns the conversation's session-granted directories, cleaned and
-// sorted. It is the guard shim's read of "the directories this conversation may
-// write to": the interactive profile honours these in addition to the
-// conversation's project. Nil when the conversation holds nothing.
+// Roots returns the conversation's session-granted directories, cleaned and sorted.
 func (g *grantStore) Roots(convID string) []string {
 	if g == nil || convID == "" {
 		return nil
@@ -1201,10 +977,7 @@ type sessionGrant struct {
 	GrantedAt time.Time
 }
 
-// Revoke drops one session grant for a conversation. It reports whether a grant
-// was actually removed, so an unknown directory is never a silent success. The
-// next tool call for that directory asks again: the guard shim reads Roots on
-// every decision (ask_guard.go), so there is no cache to invalidate.
+// Revoke drops one session grant for a conversation.
 func (g *grantStore) Revoke(convID, dir string) bool {
 	if g == nil || convID == "" || strings.TrimSpace(dir) == "" {
 		return false
@@ -1249,12 +1022,7 @@ func (g *grantStore) List(convID string) []sessionGrant {
 // The once-target store (in-memory, per conversation)
 // ---------------------------------------------------------------------------
 
-// onceStore records the ABSOLUTE targets the operator answered ALLOW_ONCE for,
-// per conversation. It exists because the shim cannot ask: when the consent core
-// answers an ask with `once`, the very command the operator just approved must
-// not then be refused by the guard shim — while a SIBLING path a subprocess
-// inside it targets still is. In memory like grantStore (a restart clears it; a
-// new conversation asks again).
+// onceStore records the ABSOLUTE targets the operator answered ALLOW_ONCE for, per conversation.
 type onceStore struct {
 	mu     sync.Mutex
 	byConv map[string]map[string]bool
@@ -1348,28 +1116,18 @@ type pendingAsk struct {
 	InsideProject bool
 	// Summary is the one-line card text (never just an opaque id).
 	Summary string
-	// DenyBelow are the operator's persistent DENY entries at or below
-	// Directory: a session grant cannot override them, so the card says so
-	// instead of implying the grant covers everything under the directory.
+	// DenyBelow are the operator's persistent DENY entries at or below Directory: a session grant
+	// cannot override them, so the card says so instead of implying the grant covers everything under.
 	DenyBelow []string
-	// AbsTargets are the ABSOLUTE paths this ask's decision covered
-	// (decisionTargets), recorded so an ALLOW_ONCE reply can arm exactly those
-	// paths in the execution guard's shim (the shim cannot ask).
+	// AbsTargets are the ABSOLUTE paths this ask's decision covered (decisionTargets), recorded so an
+	// ALLOW_ONCE reply can arm exactly those paths in the execution guard's shim (the shim cannot ask).
 	AbsTargets []string
 
 	// --- A QUESTION ask (ask_user, blocking) ---
-	//
-	// Question non-empty marks this ask as a clarifying question rather than a
-	// permission decision: there is no grant, no allow/deny and no precedence chain,
-	// so it is not run through decide() at all. It rides the same registry, the same
-	// card and the same reply RPC because those are what make it answerable — adding
-	// a second path would have meant a second place for a reply to go missing.
 	Question   string
 	Options    []string
 	AllowOther bool
-	// Answer is a question ask's reply: the chosen label, or the operator's own
-	// words. It becomes the ask_user TOOL RESULT, so the model continues the turn
-	// holding the answer rather than being told the question was recorded.
+	// Answer is a question ask's reply: the chosen label, or the operator's own words.
 	Answer string
 
 	// reply wakes the drain loop's select when a decision lands.
@@ -1378,21 +1136,15 @@ type pendingAsk struct {
 	mu     sync.Mutex
 	state  askState
 	choice apiv1.PermissionChoice
-	// answer holds a QUESTION ask's reply (see recordClientAnswer). Separate from
-	// choice: a permission's outcome is a grant decision, a question's is content
-	// the model reads, and conflating them would let one masquerade as the other.
+	// answer holds a QUESTION ask's reply (see recordClientAnswer).
 	answer string
-	// autoApproved marks a decision made by FULLSEND rather than by the operator, so the
-	// recorded verdict can say so. The decision is genuinely the same (ALLOW_ONCE), but a
-	// transcript that reports it as `user_PERMISSION_CHOICE_ALLOW_ONCE` claims the operator
-	// clicked something they never saw — and this codebase's rule is that a decision record
-	// must not misattribute who decided.
+	// autoApproved marks a decision made by FULLSEND rather than by the operator, so the recorded
+	// verdict can say so.
 	autoApproved bool
 }
 
-// autoApproveOnce records an ALLOW_ONCE that the OPERATOR did not make: fullsend cleared a
-// card that was already on screen. False when the ask was no longer open (someone answered
-// it first, or it settled), so the caller cannot report an approval that did not happen.
+// autoApproveOnce records an ALLOW_ONCE that the OPERATOR did not make: fullsend cleared a card
+// that was already on screen.
 func (a *pendingAsk) autoApproveOnce() bool {
 	if !a.clientReply(apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE) {
 		return false
@@ -1414,9 +1166,7 @@ func (a *pendingAsk) wasAutoApproved() bool {
 // permission decision.
 func (a *pendingAsk) isQuestion() bool { return strings.TrimSpace(a.Question) != "" }
 
-// recordClientAnswer records a QUESTION's answer. Same open-check as clientReply:
-// false when the ask is no longer open, so a late answer reports expired rather
-// than pretending to have been delivered.
+// recordClientAnswer records a QUESTION's answer.
 func (a *pendingAsk) recordClientAnswer(text string) bool {
 	a.mu.Lock()
 	if a.state != askOpen {
@@ -1443,9 +1193,7 @@ func (a *pendingAsk) clientAnswerValue() (string, bool) {
 	return "", false
 }
 
-// clientReply records a client decision. False when the ask is no longer open
-// (already answered or finalized) — the caller reports it expired, never a
-// silent success.
+// clientReply records a client decision.
 func (a *pendingAsk) clientReply(c apiv1.PermissionChoice) bool {
 	a.mu.Lock()
 	if a.state != askOpen {
@@ -1474,18 +1222,15 @@ func (a *pendingAsk) clientChoice() (apiv1.PermissionChoice, bool) {
 	return apiv1.PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED, false
 }
 
-// isOpen reports whether the ask is still awaiting a human decision. The
-// re-attach recovery path replays only these; a decided or finalized ask stays
-// settled (its outcome is already in the transcript).
+// isOpen reports whether the ask is still awaiting a human decision.
 func (a *pendingAsk) isOpen() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.state == askOpen
 }
 
-// resolveForFinalize is the turn-end read of an ask: it returns the client's
-// choice when one landed (applyClient=true), claims a still-open ask for
-// expiry (wasOpen=true), and reports nothing for an ask already finalized.
+// resolveForFinalize is the turn-end read of an ask: it returns the client's choice when one landed
+// (applyClient=true), claims a still-open ask for expiry (wasOpen=true).
 func (a *pendingAsk) resolveForFinalize() (choice apiv1.PermissionChoice, applyClient, wasOpen bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1500,9 +1245,8 @@ func (a *pendingAsk) resolveForFinalize() (choice apiv1.PermissionChoice, applyC
 	}
 }
 
-// pendingAskRegistry is keyed (conversation, ask id) — the work item's
-// (conversation, session, permission id), with the session pinned on the entry
-// (it can change across an attempt's session recreation).
+// pendingAskRegistry is keyed (conversation, ask id) — the work item's (conversation, session,
+// permission id), with the session pinned on the entry (it can change across an attempt's session.
 type pendingAskRegistry struct {
 	mu     sync.Mutex
 	byConv map[string]map[string]*pendingAsk
@@ -1565,17 +1309,8 @@ func (r *pendingAskRegistry) removeConversation(convID string) []*pendingAsk {
 	return out
 }
 
-// hasOpenAsk reports whether a conversation has an ask still waiting on the operator.
-//
-// IT ANSWERS THE ONE QUESTION THE QUIET-TIME DEADLINES MUST ASK. A turn parked on a card
-// is SILENT by definition — the operator is the one being waited on — and both deadlines
-// that bound a turn (the reply window, and the registry's TTL sweep) measure silence.
-// Without this they read an absent operator as a dead model and kill the turn, which
-// FINALIZES the ask: the operator returns to a card that can no longer be clicked or
-// selected, because the tool call it was holding is gone.
-//
-// It is answered from the SAME state the reply path uses (isOpen), so a turn the deadlines
-// are told to spare is exactly a turn a decision can still land on.
+// hasOpenAsk reports whether a conversation has an ask still waiting on the operator. IT ANSWERS
+// THE ONE QUESTION THE QUIET-TIME DEADLINES MUST ASK.
 func (r *pendingAskRegistry) hasOpenAsk(convID string) bool {
 	for _, a := range r.list(convID) {
 		if a.isOpen() {
@@ -1605,9 +1340,6 @@ func (r *pendingAskRegistry) list(convID string) []*pendingAsk {
 // ---------------------------------------------------------------------------
 
 // consentResponse maps a client choice to the value we POST to the serve.
-// ALWAYS `once` or `reject` — the SESSION decision lives in our grant store
-// (the settled C1 decision; asserted by the tests so a future reader does not
-// "fix" this into a second source of truth).
 func consentResponse(c apiv1.PermissionChoice) (string, bool) {
 	switch c {
 	case apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE, apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION:
@@ -1658,10 +1390,7 @@ func (ct *consentTurn) wake() {
 	}
 }
 
-// scopeFor resolves (once per turn) the conversation's file/shell boundary. A
-// resolution failure degrades to the zero scope — FromConversation=false, so
-// nothing is pre-approved and the turn asks — matching AskFileScope's own
-// "failing closed here means an unapproved directory asks".
+// scopeFor resolves (once per turn) the conversation's file/shell boundary.
 func (ct *consentTurn) scopeFor(ctx context.Context) AskFileScope {
 	ct.scopeOnce.Do(func() {
 		s, err := AskFileScopeFor(ctx, ct.svc.pool)
@@ -1702,9 +1431,8 @@ func (ct *consentTurn) record(a askAction, verdict, detail string) {
 // this value". An empty response with a non-nil ask means "await the human".
 func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.SessionEvent) (response string, ask *pendingAsk, refusal string) {
 	a := extractAskAction(evt)
-	// STAMP THE ASK ID FIRST, so every record this decision writes carries it — including
-	// the `never_allow` and `policy_error` refusals below, which are decided before any card
-	// is raised and are still decisions about THIS ask.
+	// STAMP THE ASK ID FIRST, so every record this decision writes carries it — including the
+	// `never_allow` and `policy_error` refusals below.
 	a.AskID = evt.PermissionID
 	if r := binaryClassRefusal(a); r != "" {
 		ct.record(a, "never_allow", r)
@@ -1713,20 +1441,11 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 	scope := ct.scopeFor(ctx)
 	a.Key = resolveAskKey(a, scope.Dir)
 
-	// FAIL CLOSED. An ask whose detail resolves to no target and no command
-	// (an MCP/host-suite ask shipped with `patterns: ["*"]` and `metadata: {}`
-	// — from a serve whose tool-part correlation is unavailable, or a shape we
-	// do not recognise) must NOT ride the project/accept/grant verdicts on the
-	// scope directory: absAskTarget degrades to the scope dir, which is
-	// pre-approved, so "proceed" would approve a write whose path we never saw
-	// (the QA finding: a sibling-path write through an `orchicon_*` tool raised
-	// no ask). It is raised as a card instead, and the deny list still outranks
-	// it below.
+	// FAIL CLOSED.
 	resolved := askActionResolved(a)
 
-	// EVERY target the action touches is judged — not just the one that names
-	// the KEY (see decisionTargets). The KEY is unchanged (C4), so grants and
-	// the card do not move.
+	// EVERY target the action touches is judged — not just the one that names the KEY (see
+	// decisionTargets).
 	pol := askPermissionPolicy()
 	proceed := resolved
 	allInside := resolved
@@ -1737,21 +1456,7 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 		absTargets = append(absTargets, t.abstarget)
 	}
 	// A TARGET THAT WOULD DESTROY THE SCOPE IS REFUSED, NOT ASKED ABOUT — and this is the layer where
-	// "asked about" would be the worst outcome, because a card offers the operator a button that
-	// cannot be taken back.
-	//
-	// WHERE IT SITS: above the policy loop and above FULLSEND, in the same position as the never-allow
-	// class and for the same reason — it is a decision, not a permission request. A DENY entry is
-	// consulted first: an operator's own exclusion is their decision to state, and it should be the
-	// reason they are given.
-	//
-	// WHAT IT CATCHES: `rm -rf /home` from a project, `rm -rf ~`, `rm -rf /`, and `rm -rf` of any
-	// directory that CONTAINS the project — every one of which would take the work scope with it. It
-	// does NOT refuse acting on the scope root itself (`chmod -R 755 <project>`, `rm -rf <project>/dist`),
-	// which is ordinary work; see protectedpath's two lists.
-	//
-	// IT IS THE CONSENT HALF OF THE SAME RULE the guard shim enforces, from ONE declaration
-	// (internal/protectedpath), so the two cannot disagree about what is protected.
+	// "asked about" would be the worst outcome.
 	protRoots := protectedpath.Roots("")
 	protScope := protectedpath.ScopeRoots(scope.Dir, ct.svc.grants.Roots(ct.convID))
 	//
@@ -1775,9 +1480,8 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 			}
 		}
 	}
-	// blocking is the FIRST target that is not covered — the path whose consent is
-	// actually missing, and therefore the directory a grant has to name to silence this
-	// ask. See the card's key below for why it, and not the cwd, is what the card states.
+	// blocking is the FIRST target that is not covered — the path whose consent is actually missing,
+	// and therefore the directory a grant has to name to silence this ask.
 	var blocking *decisionTarget
 	for i, t := range targets {
 		d, err := pol.Decide(t.abstarget, permpolicy.Inputs{
@@ -1845,43 +1549,15 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 			"conversation", ct.convID, "ask", evt.PermissionID, "tool", a.Tool)
 	}
 
-	// VerdictAsk (or an unresolved action): record, emit the card, await the
-	// human.
-	// The summary states the INTENT (askSummary). An unresolved action — no
-	// path or command could be extracted — is still described by its verb, so
-	// the card never explains itself in developer terms; the diagnostic for that
-	// case belongs in the Warn above, not in copy an operator reads.
+	// VerdictAsk (or an unresolved action): record, emit the card, await the human.
 	summary := askSummary(a)
-	// THE CARD NAMES THE DIRECTORY WHOSE CONSENT IS ACTUALLY MISSING, which is not always
-	// the cwd, and the difference is the difference between an answerable card and a
-	// treadmill.
-	//
-	// A shell command's KEY is its cwd (C4), so the card used to say "never ask again in
-	// <the project>" for a command that the project grant could never silence — because
-	// what forced the ask was a MENTIONED path outside it (a redirect to a log file, a
-	// temp dir). The operator granted the named directory, was asked again by the next
-	// command, and had no way to see why: the card kept naming a directory that was
-	// already granted. Naming the BLOCKING target instead makes the offered grant the one
-	// that works, and it is also the honest description of the ask — this is the path
-	// Orchicon does not have consent for.
-	//
-	// When nothing blocks (the fail-closed unresolved case, where the target IS the scope
-	// dir) this is the scope dir and the card is unchanged.
+	// THE CARD NAMES THE DIRECTORY WHOSE CONSENT IS ACTUALLY MISSING, which is not always the cwd, and
+	// the difference is the difference between an answerable card and a treadmill.
 	grantDir := a.Key
 	if blocking != nil && blocking.key != "" {
 		grantDir = blocking.key
 	}
 	// AN ASK WE COULD NOT RESOLVE HAS NO DIRECTORY TO NAME, so it must not name one.
-	//
-	// The reported card read `· .` — a path that means nothing to an operator, offered as the scope of a
-	// "never ask again" grant. It came from here: a target-less ask keys on the SCOPE directory, an Ask
-	// conversation has no project so that scope is empty, and filepath.Clean("") is ".". So the card
-	// promised a grant covering "." and the operator could not tell what they were allowing.
-	//
-	// Blanking it is the honest answer AND the safe one: grantStore refuses a blank directory, so the
-	// session row becomes "there is no directory to grant" instead of a grant that would cover the
-	// serve's own cwd. It applies only to the unresolved case — an ask that named a target keeps the
-	// directory its target lives in, which is the scope that actually silences the next ask.
 	if !resolved {
 		grantDir = ""
 	}
@@ -1911,11 +1587,8 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 	return "", ask, ""
 }
 
-// denyBelowForGrant lists the operator's DENY entries that key's directory would
-// NOT override (permpolicy.Store.DenyBelow) — the entries a session grant still
-// loses to, which the card names. A malformed policy must never fail the ask
-// (the decision path already fails closed above): the error is logged and the
-// list reported empty, so the card simply omits the precedence note.
+// denyBelowForGrant lists the operator's DENY entries that key's directory would NOT override
+// (permpolicy.Store.DenyBelow) — the entries a session grant still loses to, which the card names.
 func (ct *consentTurn) denyBelowForGrant(pol *permpolicy.Store, key string) []string {
 	if pol == nil || strings.TrimSpace(key) == "" {
 		return nil
@@ -1929,18 +1602,8 @@ func (ct *consentTurn) denyBelowForGrant(pol *permpolicy.Store, key string) []st
 	return entries
 }
 
-// raiseQuestion records a clarifying question the model asked and the turn is
-// PAUSED on, and returns it for the client to render.
-//
-// NO POLICY RUNS. A question is not a permission: there is no target to judge, no
-// grant to record and no never-allow class to consult. Routing it through decide()
-// would have asked the operator for PERMISSION TO ASK A QUESTION — which is why it
-// gets its own path rather than a special case inside the precedence chain.
-//
-// The question's own arguments ride evt.InputJSON when the adapter has not parsed
-// them, so the SAME validator the tool uses decides what is askable: a prompt that
-// is not a question (no text, or a single option with no free-text row) is refused
-// here with the tool's own error rather than parked as an unanswerable card.
+// raiseQuestion records a clarifying question the model asked and the turn is PAUSED on, and
+// returns it for the client to render.
 func (ct *consentTurn) raiseQuestion(sid string, evt scheduler.SessionEvent) (*pendingAsk, string) {
 	if strings.TrimSpace(evt.PermissionID) == "" {
 		// Without an id the answer could never be correlated, so this must fail
@@ -1986,33 +1649,19 @@ func (ct *consentTurn) raiseQuestion(sid string, evt scheduler.SessionEvent) (*p
 	return a, ""
 }
 
-// applyClientReplies answers the serve for every ask whose client decision has
-// landed. Called from the drain loop's reply arm.
-// askResolution is one decision this collector APPLIED, ready to be published on the
-// turn's stream so every watcher settles its copy of the card. See
-// apiv1.PermissionAskResolved.
+// applyClientReplies answers the serve for every ask whose client decision has landed.
 type askResolution struct {
 	AskID   string
 	Outcome string
 	Answer  string
 }
 
-// applyClientReplies answers the serve for every ask whose client decision has
-// landed, and returns what it APPLIED so the caller can publish each resolution on
-// the turn's stream.
-//
-// THE RETURN VALUE IS THE POINT: an ask reaches EVERY watcher of a turn, but only
-// the client that answered it cleared its own copy — so answering in the TUI left the
-// GUI showing a live-looking, inert card (the operator: "the choice box is still there
-// for permissions"), and the clients cannot infer it, because a permission ask has no
-// durable per-ask row to reconcile against. Publishing the outcome is the only way a
-// watching client learns that someone else decided.
+// applyClientReplies answers the serve for every ask whose client decision has landed, and returns
+// what it APPLIED so the caller can publish each resolution on the turn's stream.
 func (ct *consentTurn) applyClientReplies(ctx context.Context, client scheduler.ChatTurnClient) []askResolution {
 	var out []askResolution
 	for _, a := range ct.svc.pending.list(ct.convID) {
-		// A QUESTION's reply is CONTENT, not a choice. It goes to the adapter as the
-		// decision string, which the adapter returns as the ask_user tool result —
-		// so the model resumes the turn holding the answer.
+		// A QUESTION's reply is CONTENT, not a choice.
 		if ans, ok := a.clientAnswerValue(); ok {
 			if err := client.ReplyPermissionDecision(ctx, a.SessionID, a.AskID, ans); err != nil {
 				ct.log().Warn("ask orchicon consent: question reply failed",
@@ -2043,9 +1692,8 @@ func (ct *consentTurn) applyClientReplies(ctx context.Context, client scheduler.
 		}
 		ct.record(a.Action, verdict, "")
 		if choice == apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE {
-			// Arm the approved absolute paths for the execution guard's shim:
-			// the command the operator just approved must run, while a sibling
-			// path a subprocess inside it targets is still refused.
+			// Arm the approved absolute paths for the execution guard's shim: the command the operator just
+			// approved must run, while a sibling path a subprocess inside it targets is still refused.
 			ct.svc.once.Record(ct.convID, a.AbsTargets...)
 		}
 		ct.svc.pending.remove(ct.convID, a.AskID)
@@ -2055,9 +1703,7 @@ func (ct *consentTurn) applyClientReplies(ctx context.Context, client scheduler.
 	return out
 }
 
-// resolutionOutcome names a permission choice for the wire. It mirrors the value
-// outcomeFromChoice derives on the clients, so the two sides describe a decision the
-// same way.
+// resolutionOutcome names a permission choice for the wire.
 func resolutionOutcome(c apiv1.PermissionChoice) string {
 	switch c {
 	case apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION:
@@ -2086,25 +1732,8 @@ func emitAskResolution(emit func(*apiv1.ChatStreamResponse), convID string, r as
 	})
 }
 
-// finalize ends the turn's consent state (C8): a client decision that landed
-// but was not yet applied IS applied; every still-open ask is answered
-// `reject` so the serve's session is not left holding a phantom permission;
-// a late client reply then reports expired (never silence).
 // finalize ends the turn's consent state (C8): a client decision that landed but was not yet
-// applied IS applied; every still-open ask is answered `reject` so the serve's session is not
-// left holding a phantom permission; a late client reply then reports expired (never
-// silence).
-//
-// IT PUBLISHES WHAT IT SETTLES, which is what stops a card outliving its ask. Every client
-// watching the turn holds its own copy of the card, and only the client that ANSWERED one
-// clears it — so a card settled HERE (a decision that arrived as the turn ended, or an ask
-// that ran out of time) used to stay on screen in every other client as a live-looking
-// choice, clickable and inert. That is the operator's "the GUI and TUI are still not in
-// sync": the resolution was published when a decision was APPLIED mid-turn
-// (applyClientReplies) and never when an ask was settled at the end.
-//
-// emit may be nil (the legacy path has no client stream), in which case nothing is
-// published and behaviour is unchanged.
+// applied IS applied; every still-open ask is answered `reject` so the serve's session is not left.
 func (ct *consentTurn) finalize(ctx context.Context, client scheduler.ChatTurnClient, emit func(*apiv1.ChatStreamResponse)) {
 	for _, a := range ct.svc.pending.removeConversation(ct.convID) {
 		choice, applyClient, wasOpen := a.resolveForFinalize()
@@ -2128,29 +1757,14 @@ func (ct *consentTurn) finalize(ctx context.Context, client scheduler.ChatTurnCl
 			ct.record(a.Action, "user_"+choice.String(), "")
 			emitAskResolution(emit, ct.convID, askResolution{AskID: a.AskID, Outcome: resolutionOutcome(choice)})
 		case wasOpen:
-			// THE SERVE IS ANSWERED `reject` FOR A QUESTION TOO: opencode is holding the tool
-			// call, and leaving it open would leave the session holding a phantom permission
-			// (see the doc comment above). What the operator's CLIENTS are told is a separate
-			// question, and for a question it must not be "expired" — see below.
+			// THE SERVE IS ANSWERED `reject` FOR A QUESTION TOO: opencode is holding the tool call, and leaving
+			// it open would leave the session holding a phantom permission (see the doc comment above).
 			if err := client.ReplyPermissionDecision(ctx, a.SessionID, a.AskID, "reject"); err != nil {
 				ct.log().Warn("ask orchicon consent: expiring unanswered ask failed",
 					"conversation", ct.convID, "ask", a.AskID, "error", err)
 			}
 			if a.isQuestion() {
 				// A QUESTION NOBODY ANSWERED WAS NOT REFUSED, AND IT DID NOT EXPIRE.
-				//
-				// The operator: "timeouts are losing context in the conversation" — after
-				// leaving the terminal with a question on screen. The turn's reply window
-				// fired while the turn was parked on THIS ask (a parked ask raises no
-				// activity, so the silence budget sees an absent operator as a dead model —
-				// see turnReplyWindow), and the question was then published as `expired`,
-				// which every client folds into a REFUSAL: the TUI records DecisionDeny and
-				// prints "Deny · <subject>", the GUI prints "Expired unanswered". So a
-				// question the operator was absent for was recorded as a decision against
-				// it, and the answer they gave on returning was refused as late.
-				//
-				// `unanswered` says the only true thing — nobody answered it — and it is
-				// what lets a client keep the question answerable instead of closing it.
 				ct.record(a.Action, "unanswered", "the turn ended while it was waiting on the operator")
 				emitAskResolution(emit, ct.convID, askResolution{AskID: a.AskID, Outcome: "unanswered"})
 				continue
@@ -2183,22 +1797,8 @@ func (ct *consentTurn) settleMonitor() {
 	ct.monitor.setAwaitingConsent(open)
 }
 
-// waitingOnOperator names the ask this turn is parked on, when there is one: the question
-// the operator is being asked, or the permission being waited for.
-//
-// IT EXISTS SO A TURN THAT DIES PARKED CAN SAY WHY. The reply window is a SILENCE budget,
-// and a turn parked on a card is silent BY DEFINITION — the operator may simply be away
-// from the terminal. When that is why the window fires, the turn used to be persisted as
-// "reply timed out after 30m0s on model X — the model may be overloaded or unavailable.
-// Check the Ask Orchicon model in Settings → Default models", which sends the operator to
-// fix a model that is fine and leaves the real cause — a question waiting on THEM — out
-// of the message entirely. That is the operator's "timeouts are losing context in the
-// conversation": the question they were asked is the context, and the failure did not
-// mention it.
-//
-// THE BOUND IS NOT WEAKENED. A parked turn is still bounded and still ends; only the
-// report changes, and the operator can still answer by replying in their own words
-// (which is carried into the conversation as their next message).
+// waitingOnOperator names the ask this turn is parked on, when there is one: the question the
+// operator is being asked, or the permission being waited for.
 func (ct *consentTurn) waitingOnOperator() (string, bool) {
 	for _, a := range ct.svc.pending.list(ct.convID) {
 		a.mu.Lock()
@@ -2220,9 +1820,7 @@ func (ct *consentTurn) waitingOnOperator() (string, bool) {
 	return "", false
 }
 
-// emitPermissionAsk carries the ask to the client on the turn's stream. Because
-// onStreamEvent fans into the hub (chat.go), a re-attached watcher receives it
-// for free.
+// emitPermissionAsk carries the ask to the client on the turn's stream.
 func emitPermissionAsk(emit func(*apiv1.ChatStreamResponse), a *pendingAsk) {
 	if emit == nil || a == nil {
 		return
@@ -2241,15 +1839,8 @@ func permissionAskEvent(a *pendingAsk) *apiv1.ChatStreamResponse {
 	}
 }
 
-// permissionAskProto is the ONE mapping from a server-side pendingAsk to the wire
-// message, shared by the LIVE emit path, the RE-ATTACH replay and the
-// ListPendingAsks query.
-//
-// It is extracted so the three cannot drift: a discovered ask and a streamed ask
-// must be byte-identical, because a client feeds both through one path and dedupes
-// by ask id. If they differed by even one field, a card discovered on attach could
-// render differently from the same card delivered live — which is precisely the
-// class of bug this file has been chasing (the wire arm that nothing read).
+// permissionAskProto is the ONE mapping from a server-side pendingAsk to the wire message, shared
+// by the LIVE emit path, the RE-ATTACH replay and the ListPendingAsks query.
 func permissionAskProto(a *pendingAsk) *apiv1.PermissionAsk {
 	if a == nil {
 		return nil
@@ -2265,9 +1856,7 @@ func permissionAskProto(a *pendingAsk) *apiv1.PermissionAsk {
 		InsideProject:    a.InsideProject,
 		Summary:          a.Summary,
 		DenyEntriesBelow: a.DenyBelow,
-		// The question fields: set for a question ask, empty otherwise. The
-		// clients key on a non-empty Question to render the question card and
-		// to answer with CONTENT rather than a permission choice.
+		// The question fields: set for a question ask, empty otherwise.
 		Question:   a.Question,
 		Options:    a.Options,
 		AllowOther: a.AllowOther,

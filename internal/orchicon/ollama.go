@@ -12,10 +12,8 @@ import (
 	"sync"
 )
 
-// OllamaClient (D5): turns via OpenAI-compat /v1 OR native /api/chat (when
-// num_ctx is set — OpenAI-compat does NOT accept num_ctx), plus native
-// metadata: /api/tags discovery, /api/show TRUE model metadata (context
-// length + capabilities), /api/ps effective context of loaded models.
+// OllamaClient (D5): turns via OpenAI-compat /v1 OR native /api/chat (when num_ctx is set —
+// OpenAI-compat does NOT accept num_ctx), plus native metadata: /api/tags discovery.
 type OllamaClient struct {
 	Host  string // default http://localhost:11434 (env OLLAMA_HOST)
 	HTTP  *http.Client
@@ -23,15 +21,11 @@ type OllamaClient struct {
 	// Logf, when set, reports repair and retry decisions. Nil = silent (tests, and any caller with no logger).
 	Logf func(format string, args ...any)
 
-	// APIKey is the optional Ollama Cloud credential (OLLAMA_API_KEY). The
-	// local server needs none; Ollama Cloud requires Bearer on every
-	// transport (https://docs.ollama.com/cloud). Empty = no Authorization
-	// header (local no-token path unchanged).
+	// APIKey is the optional Ollama Cloud credential (OLLAMA_API_KEY).
 	APIKey string
 
-	// NumCtxDefault is the configured context window (options.num_ctx value
-	// used when req.OllamaNumCtx == 0); 0 = server default (~4096 — the
-	// silent truncation hazard this provider warns about).
+	// NumCtxDefault is the configured context window (options.num_ctx value used when req.OllamaNumCtx
+	// == 0); 0 = server default (~4096 — the silent truncation hazard this provider warns about).
 	NumCtxDefault int64
 
 	// Warnf receives context warnings (nil = drop); consumed by provider
@@ -61,12 +55,8 @@ func (c *OllamaClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 		}
 		out = m
 	}
-	// Native metadata enrichment for SOURCED entries — BEFORE the tags
-	// call so ollama CLOUD endpoints (whose /api/tags may not exist) still
-	// get it: cloud /v1/models carries no context data, and /api/show on
-	// the same host fills the true context length. Best-effort: a
-	// /api/show failure leaves the entry as-is (0 → the picker annotates,
-	// compaction must not guess).
+	// Native metadata enrichment for SOURCED entries — BEFORE the tags call so ollama CLOUD endpoints
+	// (whose /api/tags may not exist) still get it: cloud /v1/models carries no context data.
 	for i := range out {
 		if out[i].Context > 0 {
 			continue
@@ -106,9 +96,8 @@ func (c *OllamaClient) effectiveNumCtx(req TurnRequest) int64 {
 	return c.NumCtxDefault
 }
 
-// checkContextWarn warns when the configured/effective context is below the
-// model's TRUE max (Ollama silently truncates to a small default otherwise,
-// breaking compaction math — D5).
+// checkContextWarn warns when the configured/effective context is below the model's TRUE max
+// (Ollama silently truncates to a small default otherwise, breaking compaction math — D5).
 func (c *OllamaClient) checkContextWarn(ctx context.Context, model string, effective int64) {
 	if c.Warnf == nil {
 		return
@@ -175,11 +164,8 @@ type ollamaNToolCall struct {
 	} `json:"function"`
 }
 
-// buildOllamaNativeRequest shapes the native /api/chat body (system rides
-// the system message; assistant reasoning never replayed). num_predict
-// carries the per-turn output cap (parity with the OpenAI-compat
-// max_tokens path — the previous omission let ollama generate unbounded
-// turns on the native transport).
+// buildOllamaNativeRequest shapes the native /api/chat body (system rides the system message;
+// assistant reasoning never replayed).
 func buildOllamaNativeRequest(req TurnRequest, numCtx int64) ollamaChatRequest {
 	r := ollamaChatRequest{Model: req.Model, Stream: true}
 	r.Options.NumCtx = numCtx
@@ -233,8 +219,7 @@ func (c *OllamaClient) streamNative(ctx context.Context, req TurnRequest, numCtx
 	url := strings.TrimRight(c.host(), "/") + "/api/chat"
 	var resp *http.Response
 	// Shared send loop (requestrepair.go): transient failures are retried, request-shape 400s are
-	// repaired and resent, everything else surfaces. One loop for every client so resilience cannot be
-	// added to one and forgotten in another.
+	// repaired and resent, everything else surfaces.
 	resp, serr := sendWithRepair(ctx, c.Retry, c.Logf,
 		func(ctx context.Context, b []byte) (*http.Response, error) {
 			return postJSON(ctx, httpc, url, c.nativeHeaders(), b)
@@ -250,9 +235,8 @@ func (c *OllamaClient) streamNative(ctx context.Context, req TurnRequest, numCtx
 	return &ollamaNativeStream{sc: sc, body: resp.Body, think: newThinkSplitter()}, nil
 }
 
-// ollamaNativeChunk is one /api/chat NDJSON stream line — the native API
-// emits one JSON object PER LINE (not SSE), so the native stream decodes
-// with a bufio scanner, never the shared sseReader.
+// ollamaNativeChunk is one /api/chat NDJSON stream line — the native API emits one JSON object PER
+// LINE (not SSE), so the native stream decodes with a bufio scanner, never the shared sseReader.
 type ollamaNativeChunk struct {
 	Message struct {
 		Content   string            `json:"content"`
@@ -270,22 +254,16 @@ type ollamaNativeStream struct {
 	sc   *bufio.Scanner
 	body io.Closer
 
-	// think splits GLM-style INLINE reasoning (the "think" tag pair in
-	// message.content — observed with GLM on ollama) into ReasoningDelta
-	// events (thinksplit.go), mirroring the openai-compat wire. Without
-	// it the tags rendered raw in the execution chat while the thinking
-	// never reached the reasoning channel.
+	// think splits GLM-style INLINE reasoning (the "think" tag pair in message.content — observed with
+	// GLM on ollama) into ReasoningDelta events (thinksplit.go), mirroring the openai-compat wire.
 	think *thinkSplitter
 
 	usage   Usage
 	stop    StopReason
 	toolIdx int
 	drained bool
-	// pending queues events produced by one decoded chunk: a final chunk
-	// can carry tail content AND done:true, and a chunk can batch SEVERAL
-	// tool calls alongside its content — everything the chunk carries
-	// must surface to the consumer (the drain loop), never a dropped
-	// tail or a lost batched tool call.
+	// pending queues events produced by one decoded chunk: a final chunk can carry tail content AND
+	// done:true, and a chunk can batch SEVERAL tool calls alongside its content.
 	pending []Event
 }
 
@@ -331,19 +309,15 @@ func (s *ollamaNativeStream) Next(ctx context.Context) (Event, bool, error) {
 		if ch.Error != "" {
 			return s.fail(fmt.Errorf("ollama: provider error: %s", ch.Error))
 		}
-		// Generation order preserved: the chunk's content streams BEFORE
-		// its tool calls (the model wrote the text, then issued the
-		// calls); the Done branch always processes fully, tool calls
-		// present or not — the Finish can never be skipped.
+		// Generation order preserved: the chunk's content streams BEFORE its tool calls (the model wrote
+		// the text, then issued the calls); the Done branch always processes fully.
 		if ch.Message.Content != "" {
-			// Inline-reasoning routing (thinksplit.go): a "think" tag pair
-			// inside content becomes ReasoningDelta, everything else
-			// passes through as TextDelta.
+			// Inline-reasoning routing (thinksplit.go): a "think" tag pair inside content becomes
+			// ReasoningDelta, everything else passes through as TextDelta.
 			s.think.feed(ch.Message.Content, &s.pending)
 		}
-		// ALL tool calls of the chunk surface, in wire order (queued,
-		// never a first-only early return — ollama batches multiple calls
-		// into one chunk).
+		// ALL tool calls of the chunk surface, in wire order (queued, never a first-only early return —
+		// ollama batches multiple calls into one chunk).
 		for _, tc := range ch.Message.ToolCalls {
 			args := string(tc.Function.Arguments)
 			if args == "" || !json.Valid([]byte(args)) {
@@ -354,9 +328,8 @@ func (s *ollamaNativeStream) Next(ctx context.Context) (Event, bool, error) {
 			s.pending = append(s.pending, ToolCall{Index: idx, ToolCallID: fmt.Sprintf("ollama_call_%d", idx), Name: tc.Function.Name, ArgsJSON: args})
 		}
 		if ch.Done {
-			// Drain any think-splitter holdback so a truncated final tag
-			// cannot swallow the response tail; an unterminated think
-			// block drains to reasoning, never text.
+			// Drain any think-splitter holdback so a truncated final tag cannot swallow the response tail; an
+			// unterminated think block drains to reasoning, never text.
 			s.think.drain(&s.pending)
 			s.usage.InputTokens = ch.PromptEvalCount
 			s.usage.OutputTokens = ch.EvalCount
@@ -392,12 +365,8 @@ func mapOllamaDone(reason string) StopReason {
 	case "load":
 		return StopOther
 	default:
-		// The native /api/chat contract: done_reason "" means the stream
-		// ended without a real end-of-response signal (a truncated or
-		// aborted generation, NOT a completed turn). Synthesizing StopStop
-		// here recorded hollow successes — the loop's success gate ran on
-		// a turn the provider never actually ended. StopOther is the
-		// honest terminal: the loop's success gate treats it as a failure.
+		// The native /api/chat contract: done_reason "" means the stream ended without a real
+		// end-of-response signal (a truncated or aborted generation, NOT a completed turn).
 		return StopOther
 	}
 }
@@ -464,10 +433,8 @@ func (c *OllamaClient) httpc() *http.Client {
 	return http.DefaultClient
 }
 
-// nativeHeaders builds the header set for native /api/* transports: the
-// content-type plus the optional Bearer credential (Ollama Cloud requires
-// Bearer on every transport — https://docs.ollama.com/cloud). The local
-// no-token path sends no Authorization header (unchanged).
+// nativeHeaders builds the header set for native /api/* transports: the content-type plus the
+// optional Bearer credential (Ollama Cloud requires Bearer on every transport.
 func (c *OllamaClient) nativeHeaders() map[string]string {
 	h := map[string]string{
 		"content-type": "application/json",
@@ -479,10 +446,8 @@ func (c *OllamaClient) nativeHeaders() map[string]string {
 	return h
 }
 
-// applyAuth stamps the optional Bearer credential + first-party user-agent
-// onto a native /api/* request (Ollama Cloud requires Bearer on every
-// transport — https://docs.ollama.com/cloud). Local no-token path sends
-// neither Authorization nor a custom UA (unchanged behavior).
+// applyAuth stamps the optional Bearer credential + first-party user-agent onto a native /api/*
+// request (Ollama Cloud requires Bearer on every transport — https://docs.ollama.com/cloud).
 func (c *OllamaClient) applyAuth(req *http.Request) {
 	if c.APIKey != "" {
 		req.Header.Set("authorization", "Bearer "+c.APIKey)

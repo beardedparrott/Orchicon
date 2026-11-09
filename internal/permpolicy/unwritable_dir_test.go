@@ -1,22 +1,6 @@
 package permpolicy
 
 // unwritable_dir_test.go — an unwritable DATA DIRECTORY is not an invalid policy.
-//
-// These pin the classification `cmd/orchicon/serve.go` depends on. That caller splits one
-// failure into two messages:
-//
-//   - a MALFORMED file keeps "invalid permission policy" + the path + the parse error;
-//   - an unwritable directory gets its own message naming the DATA DIR and the fix.
-//
-// The split is only real if it can distinguish them, and it discriminates on
-// `errors.Is(err, fs.ErrPermission)`. If the error this package produces does not satisfy
-// that, the second branch is dead code and the operator is back to being told their POLICY is
-// invalid when the problem is a directory they cannot write — which is what happened: a bare
-// `orchicon serve` on the host defaults DataDir to /var/lib/orchicon, which needs root, and
-// the log said "invalid permission policy" about a file that may not even exist yet.
-//
-// So this asserts the MECHANISM (the error is recognisable as a permission failure) rather
-// than the caller's prose, which is the part that cannot be checked from here.
 
 import (
 	"errors"
@@ -75,19 +59,15 @@ func TestTheMkdirFailureIsNotSpelledTwice(t *testing.T) {
 	if !strings.Contains(msg, "cannot create "+dir) {
 		t.Errorf("the message must name the directory and the operation, got: %q", msg)
 	}
-	// ...and must NOT repeat the syscall wrapper. The old text was
-	// `permission policy: mkdir <dir>: mkdir <dir>: permission denied`, which reads as a bug —
-	// *os.PathError already spells out the failing syscall and its path.
+	// ...and must NOT repeat the syscall wrapper.
 	if strings.Contains(msg, "mkdir "+dir+": mkdir "+dir) {
 		t.Errorf("the failing syscall is reported twice, got: %q", msg)
 	}
 }
 
 func TestAMalformedPolicyIsNotAPermissionFailure(t *testing.T) {
-	// The other half of the split, and the reason the first branch cannot simply be "any error
-	// from Boot": a genuinely malformed policy must NOT be classified as a permission problem,
-	// or the loud "invalid permission policy" message — the one that stops a boot rather than
-	// let an operator believe exclusions are in force — would never be reached.
+	// The other half of the split, and the reason the first branch cannot simply be "any error from
+	// Boot": a genuinely malformed policy must NOT be classified as a permission problem.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "permission-policy.yaml")
 	if err := os.WriteFile(path, []byte("deny: [this is not valid: yaml: at all\n"), 0o600); err != nil {

@@ -40,8 +40,6 @@ import (
 )
 
 // stallWindows is the set of tunable stall thresholds (opencode parity).
-// Loaded from the ExecutionManifest (tenant settings) with env fallback
-// and built-in defaults.
 type stallWindows struct {
 	noProgress  time.Duration
 	noFileDiff  time.Duration
@@ -62,9 +60,9 @@ func defaultStallWindows() stallWindows {
 	}
 }
 
-// toolHangDefaultWindow resolves the tool-hang watchdog window
-// (opencode parity): ORCHICON_STALL_TOOL_HANG_WINDOW, then the deprecated
-// ORCHICON_TOOL_HANG_WINDOW fallback, then the 180s default. <=0 disables.
+// toolHangDefaultWindow resolves the tool-hang watchdog window (opencode parity):
+// ORCHICON_STALL_TOOL_HANG_WINDOW, then the deprecated ORCHICON_TOOL_HANG_WINDOW fallback, then the
+// 180s default.
 func toolHangDefaultWindow() time.Duration {
 	if v := os.Getenv("ORCHICON_STALL_TOOL_HANG_WINDOW"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
@@ -77,35 +75,11 @@ func toolHangDefaultWindow() time.Duration {
 		}
 	}
 	// RAISED FROM 180s: A LEGITIMATE COLD BUILD OUTLASTS IT.
-	//
-	// The tool-hang watchdog cancels an in-flight tool call that has emitted no events for this long and
-	// injects a course-correcting redirect. 180s is a sensible ceiling for a call that is genuinely
-	// WEDGED, and a badly wrong one for a call that is legitimately slow: a cold-cache `go build ./...`
-	// on a large repository, a first `bun install`, a full test suite on a fresh worktree — each routinely
-	// runs past three silent minutes, and emits nothing at all while it does.
-	//
-	// MEASURED ON THIS PLATFORM: execution 01M5X66JMHHATS0DG155049E03 ran 11m01s and 4,194,878 tokens and
-	// died with `stalled:no_progress; execution ended before the final model step completed`. That is a
-	// cold build being reported as a worker fault, and it is the single largest stall signature in the
-	// 1,643-line FACTS LEARNED ledger (`stall` appears 268 times).
-	//
-	// The cost of raising it is bounded and the cost of leaving it is not: a truly wedged call now wastes
-	// ten minutes instead of three, while a legitimate build no longer destroys a 45-minute run's context.
-	// A worker can also set an explicit `timeout_seconds` on its own shell calls, but it cannot raise this
-	// watchdog from inside — which is why the default has to be right.
 	return 600 * time.Second
 }
 
-// stallWindowsFromManifest builds stallWindows from ExecutionManifest
-// settings (tenant settings), with env-var fallback and built-in defaults.
-// Zero (unset) manifest values fall through to env, then defaults.
-// stallWindowsFromManifest builds stallWindows from the manifest's tenant
-// settings, with env-var fallback for dev overrides (opencode parity).
-//
-// EVERY field is a POINTER, and the two states are different instructions:
-// nil = the tenant left this dimension BLANK, so the env/code default below
-// stands; non-nil = an explicit value, and a resolved duration <= 0 means
-// DISABLED (every consumer here gates on > 0).
+// stallWindowsFromManifest builds stallWindows from ExecutionManifest settings (tenant settings),
+// with env-var fallback and built-in defaults.
 func stallWindowsFromManifest(noProgressSec, noFileDiffSec, textLoopSec *int64, repCount *int32, repWindowSec *int64, toolHangSec *int64) stallWindows {
 	w := defaultStallWindows()
 	if noProgressSec != nil && os.Getenv("ORCHICON_STALL_NO_PROGRESS_WINDOW") == "" {
@@ -130,8 +104,6 @@ func stallWindowsFromManifest(noProgressSec, noFileDiffSec, textLoopSec *int64, 
 }
 
 // progressMonitor tracks per-session progress signals and detects stalls.
-// Fed by the session loop (turn events, tool calls, file writes) and runs
-// a background ticker started by Run. Thread-safe.
 type progressMonitor struct {
 	mu sync.Mutex
 
@@ -249,10 +221,8 @@ func (m *progressMonitor) observeFileDiff() {
 	m.sigsAll = make(map[string][]time.Time)
 }
 
-// run starts the background stall checker (opencode parity): ticks every
-// poll interval and calls onStall with the first tripped reason. Fatal
-// stalls end monitoring; advisory stalls keep ticking so the session can
-// revive (onRecovered) when the missing progress resumes.
+// run starts the background stall checker (opencode parity): ticks every poll interval and calls
+// onStall with the first tripped reason.
 func (m *progressMonitor) run(onStall func(execID, reason string), onRecovered func(execID, recovered string)) {
 	// Shortest ENABLED window; disabled ones (<= 0) are skipped so a disabled
 	// check can never become "check every tick".
@@ -330,9 +300,7 @@ func (m *progressMonitor) check() string {
 	if m.w.textLoop > 0 && now.Sub(m.lastMeaningfulAction) > m.w.textLoop {
 		return "stalled:text_loop:You were talking in circles without making progress. On the next attempt, start fresh with a clear plan, make a concrete tool call or file edit within the first few turns."
 	}
-	// repetition: same signature repeated past the threshold within the
-	// window. Tier 1 (error-status) >N; tier 2 (any-status) >2N. Both
-	// ADVISORY-first (nudge, then escalate).
+	// repetition: same signature repeated past the threshold within the window.
 	if m.w.repetitionN > 0 {
 		cutoff := now.Add(-m.w.repetitionW)
 		for sig, ts := range m.sigsErr {
@@ -401,13 +369,8 @@ func trimWindow(ts []time.Time, cutoff time.Time) []time.Time {
 	return kept
 }
 
-// toolCallSignature builds the repetition signature for a native tool
-// call: tool name plus a stable canonical marshal of its (normalized)
-// arguments. Identical retries collapse; distinct commands stay distinct.
-// Normalization applies to ALL calls (opencode normalizes erroring calls;
-// native signatures are already exact-args, but content payloads are
-// volatile across retries — write/edit drop/fingerprint the payload so a
-// retry loop with new content still collapses).
+// toolCallSignature builds the repetition signature for a native tool call: tool name plus a stable
+// canonical marshal of its (normalized) arguments.
 func toolCallSignature(tool, argsJSON string, isError bool) string {
 	var args any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
@@ -421,12 +384,8 @@ func toolCallSignature(tool, argsJSON string, isError bool) string {
 	return tool + "|" + string(b)
 }
 
-// normalizeToolArgs strips volatile payloads from tool-call args so
-// identical retries collapse to one signature while distinct calls stay
-// distinct (opencode parity, adapted to the native host tool arg shapes):
-//   - write -> key on filePath (drop the volatile content payload)
-//   - edit  -> filePath + fingerprints of oldString/newString
-//   - bash  -> scrubbed command (volatile tokens replaced)
+// normalizeToolArgs strips volatile payloads from tool-call args so identical retries collapse to
+// one signature while distinct calls stay distinct (opencode parity.
 func normalizeToolArgs(tool string, args any) any {
 	m, ok := args.(map[string]any)
 	if !ok {
@@ -469,18 +428,16 @@ func fingerprint(s string) string {
 	return fmt.Sprintf("%x", h.Sum32())
 }
 
-// scrubCommand removes volatile tokens (long hex/digit runs, temp paths)
-// from a bash command so retries collapse while distinct commands stay
-// distinct (opencode parity).
+// scrubCommand removes volatile tokens (long hex/digit runs, temp paths) from a bash command so
+// retries collapse while distinct commands stay distinct (opencode parity).
 func scrubCommand(cmd string) string {
 	re := regexp.MustCompile(`(?:[0-9a-fA-F]{8,}|[0-9]{4,}|/tmp/[A-Za-z0-9._-]+)`)
 	return re.ReplaceAllString(cmd, "<vol>")
 }
 
-// isFatalStall reports whether a stall reason terminates the session
-// (opencode parity): ONLY no_progress is fatal — a looping worker is
-// responsive and holds full context, so it is nudged first; total silence
-// has no surface to nudge.
+// isFatalStall reports whether a stall reason terminates the session (opencode parity): ONLY
+// no_progress is fatal — a looping worker is responsive and holds full context, so it is nudged
+// first.
 func isFatalStall(reason string) bool {
 	return strings.HasPrefix(reason, "stalled:no_progress")
 }
@@ -510,10 +467,9 @@ func envInt(key string, fallback int) int {
 	return fallback
 }
 
-// stallNudgeMessages are the escalating liveness/stall nudges injected
-// into the live session (opencode parity — the advisory signals reach a
-// responsive worker through the mid-run injection queue before any fatal
-// escalation).
+// stallNudgeMessages are the escalating liveness/stall nudges injected into the live session
+// (opencode parity — the advisory signals reach a responsive worker through the mid-run injection
+// queue.
 var stallNudgeMessages = []string{
 	"Are you still making progress? If you are stuck in a loop, change approach and move the task forward.",
 	"You appear to be repeating the same actions without progress. Step back, pick a different approach, and deliver the work.",
@@ -528,11 +484,7 @@ const (
 	defaultNudgeCooldown    = 60 * time.Second
 )
 
-// nudgeMaxFromManifest resolves the nudge budget. manifestMax is a POINTER:
-// nil = the tenant left it BLANK, so the env var / code default applies;
-// non-nil = an explicit value, and an explicit 0 is returned as 0 — meaning
-// DISABLED, which the caller reads as "the budget is already spent" and
-// escalates on the first advisory stall instead of nudging.
+// nudgeMaxFromManifest resolves the nudge budget.
 func nudgeMaxFromManifest(manifestMax *int32) int {
 	if manifestMax != nil && os.Getenv("ORCHICON_STALL_NUDGE_MAX") == "" {
 		return int(*manifestMax)
@@ -540,9 +492,7 @@ func nudgeMaxFromManifest(manifestMax *int32) int {
 	return envInt("ORCHICON_STALL_NUDGE_MAX", defaultMaxNudges)
 }
 
-// nudgeReplyWindowFromManifest resolves the nudge reply window. nil = blank
-// (env/code default); non-nil = explicit, and 0 means DISABLED (the caller
-// gates on <= 0).
+// nudgeReplyWindowFromManifest resolves the nudge reply window.
 func nudgeReplyWindowFromManifest(manifestSec *int64) time.Duration {
 	if manifestSec != nil && os.Getenv("ORCHICON_STALL_NUDGE_REPLY_WINDOW") == "" {
 		return time.Duration(*manifestSec) * time.Second
@@ -559,18 +509,8 @@ func nudgeCooldownFromManifest(manifestSec *int64) time.Duration {
 	return envDuration("ORCHICON_STALL_NUDGE_COOLDOWN", defaultNudgeCooldown)
 }
 
-// wallClockDeadline parses the merged budget JSON and returns the absolute
-// deadline for the session (opencode parity).
-//
-// UNSET MEANS NO DEADLINE. There is no backstop constant any more: a 3600s
-// fallback killed working sessions mid-deliverable on a number nobody had set.
-// A wedged session is caught by the stall monitor instead — no-progress,
-// tool-hang and repetition windows are all ACTIVITY-based, so they fire on a
-// session that has stopped making progress and never on one that is simply
-// slow. An operator who wants a hard ceiling sets wall_clock_seconds (tenant
-// default or worker override); ORCHICON_STALL_WALL_CLOCK_SECONDS overrides
-// both for dev. The merged JSON (tenant defaults + worker overrides) carries
-// wall_clock_seconds as a top-level number.
+// wallClockDeadline parses the merged budget JSON and returns the absolute deadline for the session
+// (opencode parity).
 func wallClockDeadline(budgets []byte) (time.Time, bool) {
 	if v := os.Getenv("ORCHICON_STALL_WALL_CLOCK_SECONDS"); v != "" {
 		if d, err := time.ParseDuration(v + "s"); err == nil && d > 0 {

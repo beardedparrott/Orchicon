@@ -6,12 +6,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// RowToProto maps a durable ledger row onto its proto message. It is THE
-// shared mapper: the server's event publisher (execution.file_edit bus
-// events), the GetSessionFileEdits fetch, and the StreamFileEdits live path
-// all render rows through it, so a GUI and a TUI consumer of either surface
-// see byte-identical fields. Only proto / db / timestamppb imports — no
-// pipeline dependency, no cycle.
+// RowToProto maps a durable ledger row onto its proto message.
 func RowToProto(r *db.FileEditLedgerRow) *apiv1.FileEdit {
 	p := &apiv1.FileEdit{
 		Id:           r.ID,

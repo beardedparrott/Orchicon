@@ -132,10 +132,8 @@ func busToolWithArgs(sessionID, tool string, input map[string]any) opencode.BusE
 	}
 }
 
-// TestStartConversationTurnStallAborts verifies ADR-ASK-1: a turn fed no
-// activity within the no-progress window aborts the serve session and
-// persists a "stuck" error under the acked id — NOT the 30-minute
-// reply-window timeout. This is the "spins forever" fix.
+// TestStartConversationTurnStallAborts verifies ADR-ASK-1: a turn fed no activity within the
+// no-progress window aborts the serve session and persists a "stuck" error under the acked id.
 func TestStartConversationTurnStallAborts(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW", "100ms")
 	pool := chatDBTestPool(t)
@@ -159,16 +157,8 @@ func TestStartConversationTurnStallAborts(t *testing.T) {
 	if err := json.Unmarshal(msg.Metadata, &meta); err != nil {
 		t.Fatalf("unmarshal metadata: %v", err)
 	}
-	// The stall monitor trips, aborts the serve session, and persists a
-	// clear retryable error naming the model + remediation (the deliberate
-	// diagnostics wording from 7390089e1, reworded by 0dc7f3b4/#707 to lead
-	// with the likeliest cause) — not a 30-minute timeout wait.
-	//
-	// THE ONE THING THIS ASSERTS IS THE STALL, not the prose: `stalled:no_progress`
-	// is the machine-readable reason the monitor emits, and `produced no output`
-	// is what the turn fails with. Pinning those two keeps the property (a stalled
-	// turn fails loudly instead of hanging) while leaving the exact user-facing
-	// sentence free to change.
+	// The stall monitor trips, aborts the serve session, and persists a clear retryable error naming
+	// the model + remediation (the deliberate diagnostics wording from 7390089e1.
 	errText, _ := meta["error"].(string)
 	if !strings.Contains(errText, "stalled:no_progress") || !strings.Contains(errText, "produced no output") {
 		t.Errorf("metadata.error = %q, want a no-progress stall error ('stalled:no_progress' + 'produced no output')", errText)
@@ -180,9 +170,8 @@ func TestStartConversationTurnStallAborts(t *testing.T) {
 	}
 }
 
-// TestStartConversationTurnRepetitionStallAborts verifies the repetition
-// signal: the same tool_use signature repeated beyond the count within the
-// window aborts the turn with a stall error instead of looping forever.
+// TestStartConversationTurnRepetitionStallAborts verifies the repetition signal: the same tool_use
+// signature repeated beyond the count within the window aborts the turn with a stall error.
 func TestStartConversationTurnRepetitionStallAborts(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_STALL_REPETITION_WINDOW", "2s")
 	t.Setenv("ORCHICON_ASK_STALL_REPETITION_COUNT", "3")
@@ -219,12 +208,9 @@ func TestStartConversationTurnRepetitionStallAborts(t *testing.T) {
 	}
 }
 
-// TestInterjectConversationTurnSupersedes verifies ADR-ASK-2 end to end: an
-// interjection on a conversation with an in-flight turn cancels the old
-// collector (whose partial content is persisted as a PLAIN assistant
-// message, not an error bubble), aborts the serve session, dispatches a
-// fresh turn that acks a DIFFERENT assistant id and persists its own reply,
-// and leaves exactly the new turn's registry entry (the stale-token guard).
+// TestInterjectConversationTurnSupersedes verifies ADR-ASK-2 end to end: an interjection on a
+// conversation with an in-flight turn cancels the old collector (whose partial content is
+// persisted.
 func TestInterjectConversationTurnSupersedes(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	pool := chatDBTestPool(t)
@@ -270,10 +256,7 @@ func TestInterjectConversationTurnSupersedes(t *testing.T) {
 		t.Errorf("superseded message metadata carries an error: %v", meta)
 	}
 
-	// 5. The serve session was aborted by the supersede, and the registry
-	// holds exactly the NEW turn — the superseded collector's deferred
-	// remove (token-guarded) could not clobber the replacement entry while
-	// it is still live.
+	// 5.
 	client.mu.Lock()
 	aborted := len(client.aborted)
 	client.mu.Unlock()
@@ -287,9 +270,7 @@ func TestInterjectConversationTurnSupersedes(t *testing.T) {
 		t.Fatal("expected the interjection turn to still be registered (stale-token guard failed)")
 	}
 
-	// 6. The interjection reply is persisted under ack2, then BOTH
-	// collectors finalize and the registry drains to empty (each removes
-	// only its own token).
+	// 6.
 	waitForSend(t, client, 2)
 	time.Sleep(100 * time.Millisecond) // let the new collector flip sent before the reply events
 	client.sub.feed(busText("ses_keep", "focusing on X"))
@@ -314,11 +295,8 @@ func TestInterjectConversationTurnSupersedes(t *testing.T) {
 	}
 }
 
-// waitForErrorMessage polls for a message by id until its metadata carries
-// an error, then returns it. Plain waitForMessage returns the FIRST sighting
-// of the row — which, since the live tool ledger mirrors tool activity into
-// the row mid-turn, may be a partial without the terminal error. Error-path
-// tests must use this helper so they assert the finalize, not the mirror.
+// waitForErrorMessage polls for a message by id until its metadata carries an error, then returns
+// it.
 func waitForErrorMessage(t *testing.T, pool *db.Pool, convID, id string) db.MessageRow {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
@@ -357,18 +335,8 @@ func waitForMessage(t *testing.T, pool *db.Pool, convID, id string) db.MessageRo
 	}
 }
 
-// waitForMessageSessionID waits until the reply row carries a session_id in its
-// metadata — i.e. the TERMINAL finalize (persistConversationReply) has landed.
-//
-// waitForMessage ALONE IS NOT ENOUGH FOR A METADATA ASSERTION. A live turn writes
-// the row TWICE: the throttled in-flight partial mirror (upsertPartialMessage,
-// whose metadata carries only model_ref) and then the terminal finalize, which is
-// what records session_id. waitForMessage returns on whichever write it observes
-// FIRST, so a bare waitForMessage followed by a metadata read races the two and
-// flakes (observed ~1 run in 4 on TestInterjectRecyclesWedgedSession: the read
-// caught the partial, session_id was <nil>). The finalize is guaranteed to be the
-// LAST write to the row (the flusher is cancelled and drained before it), so
-// waiting for the session_id is both correct and terminating.
+// waitForMessageSessionID waits until the reply row carries a session_id in its metadata — i.e. the
+// TERMINAL finalize (persistConversationReply) has landed.
 func waitForMessageSessionID(t *testing.T, pool *db.Pool, convID, id string) db.MessageRow {
 	t.Helper()
 	deadline := time.After(10 * time.Second)
@@ -392,11 +360,8 @@ func waitForMessageSessionID(t *testing.T, pool *db.Pool, convID, id string) db.
 	}
 }
 
-// TestStartConversationTurnReturnsAckAndPersistsReplyAfterReturn verifies the
-// acceptance criteria: the send RPC returns immediately (an ack with the
-// assistant message id) and the reply is collected on a detached context and
-// persisted AFTER the RPC has returned — i.e. a browser disconnect / tab
-// close cannot cancel it.
+// TestStartConversationTurnReturnsAckAndPersistsReplyAfterReturn verifies the acceptance criteria:
+// the send RPC returns immediately (an ack with the assistant message id) and the reply.
 func TestStartConversationTurnReturnsAckAndPersistsReplyAfterReturn(t *testing.T) {
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
@@ -458,9 +423,8 @@ func TestStartConversationTurnReturnsAckAndPersistsReplyAfterReturn(t *testing.T
 	}
 }
 
-// TestStartConversationTurnRejectsSecondSend verifies the one-turn-per-
-// conversation gate: a second send while a turn is pending is rejected with
-// FailedPrecondition BEFORE any user message is persisted.
+// TestStartConversationTurnRejectsSecondSend verifies the one-turn-per- conversation gate: a second
+// send while a turn is pending is rejected with FailedPrecondition BEFORE any user message.
 func TestStartConversationTurnRejectsSecondSend(t *testing.T) {
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
@@ -493,11 +457,9 @@ func TestStartConversationTurnRejectsSecondSend(t *testing.T) {
 	waitForMessage(t, pool, convID, firstAck)
 }
 
-// TestPartialReplyMirroredWhileTurnRuns verifies a refreshed / second-tab
-// client can watch the reply grow: the collector mirrors collected text into
-// the acked assistant message row WHILE the turn is still in flight (the
-// ListMessages poll renders it), and the finalize upserts the complete reply
-// over the partial — exactly one row, terminal content.
+// TestPartialReplyMirroredWhileTurnRuns verifies a refreshed / second-tab client can watch the
+// reply grow: the collector mirrors collected text into the acked assistant message row WHILE the
+// turn.
 func TestPartialReplyMirroredWhileTurnRuns(t *testing.T) {
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
@@ -568,13 +530,8 @@ func countMessageRows(t *testing.T, pool *db.Pool, convID, id string) int {
 	return n
 }
 
-// TestPartialReplyMirrorsTokenDeltas verifies the live mirror streams
-// mid-generation token deltas: a long single part with no completion still
-// grows the partial row, so a re-attached client sees output without waiting
-// for the part to complete (the "nothing until the final message" report).
-// Reasoning deltas/parts grow the thinking tail; deltas never corrupt the
-// durable record (the finalize overwrites the row with the authoritative
-// reply).
+// TestPartialReplyMirrorsTokenDeltas verifies the live mirror streams mid-generation token deltas:
+// a long single part with no completion still grows the partial row.
 func TestPartialReplyMirrorsTokenDeltas(t *testing.T) {
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
@@ -588,9 +545,8 @@ func TestPartialReplyMirrorsTokenDeltas(t *testing.T) {
 	}
 	waitForSend(t, client, 1)
 
-	// A completed reasoning part first (the "last reasoning block" a refresher
-	// sees), then raw deltas for a text part that never completes before the
-	// assertions run.
+	// A completed reasoning part first (the "last reasoning block" a refresher sees), then raw deltas
+	// for a text part that never completes before the assertions run.
 	client.sub.feed(busReasoning("ses_1", "thinking hard"))
 	client.sub.feed(busDelta("ses_1", "The "))
 	client.sub.feed(busDelta("ses_1", "answer"))
@@ -653,13 +609,8 @@ func TestPartialReplyMirrorsTokenDeltas(t *testing.T) {
 	}
 }
 
-// TestPartialReplyTrailingFlush: the mirror freeze class — a final delta
-// burst that ends INSIDE the 200ms throttle window with no further bus
-// events (short final generation, or the stream going quiet). Before the
-// trailing flush the row stayed frozen on the last on-time snapshot until
-// the turn finalized (the exact symptom the mirror exists to fix); the
-// trailing flush must drain the unflushed delta tail ~200ms after the last
-// delta with NO further events.
+// TestPartialReplyTrailingFlush: the mirror freeze class — a final delta burst that ends INSIDE the
+// 200ms throttle window with no further bus events (short final generation.
 func TestPartialReplyTrailingFlush(t *testing.T) {
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
@@ -673,9 +624,7 @@ func TestPartialReplyTrailingFlush(t *testing.T) {
 	}
 	waitForSend(t, client, 1)
 
-	// Completed reasoning part, then a delta burst that lands entirely
-	// inside the throttle window. No part completion, no idle — nothing
-	// further feeds the drain loop until the trailing flush fires.
+	// Completed reasoning part, then a delta burst that lands entirely inside the throttle window.
 	client.sub.feed(busReasoning("ses_1", "thinking hard"))
 	client.sub.feed(busDelta("ses_1", "The "))
 	client.sub.feed(busDelta("ses_1", "answer"))
@@ -727,9 +676,9 @@ func TestPartialReplyTrailingFlush(t *testing.T) {
 	}
 }
 
-// TestAbortConversationTurn verifies the Stop path: it cancels the registered
-// turn and aborts the conversation's opencode session via SessionClient,
-// keeping the session alive for the next message.
+// TestAbortConversationTurn verifies the Stop path: it cancels the registered turn and aborts the
+// conversation's opencode session via SessionClient, keeping the session alive for the next
+// message.
 func TestAbortConversationTurn(t *testing.T) {
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
@@ -770,11 +719,9 @@ func TestAbortConversationTurn(t *testing.T) {
 	}
 }
 
-// TestConversationSurfacesRunningTurn verifies GetConversation and
-// ListConversations report an in-flight turn (turn_in_flight + the pending
-// assistant message id) while the turn registry holds it — the data a
-// refreshed frontend / another tab uses to restore the Stop button — and
-// report idle again once the turn is released.
+// TestConversationSurfacesRunningTurn verifies GetConversation and ListConversations report an
+// in-flight turn (turn_in_flight + the pending assistant message id) while the turn registry holds
+// it.
 func TestConversationSurfacesRunningTurn(t *testing.T) {
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
@@ -842,9 +789,8 @@ func TestConversationSurfacesRunningTurn(t *testing.T) {
 	}
 }
 
-// TestStartConversationTurnTimeoutPersistsError verifies a turn that never
-// completes within the reply window persists an empty-content assistant
-// message with metadata.error set (the frontend's error bubble + Retry).
+// TestStartConversationTurnTimeoutPersistsError verifies a turn that never completes within the
+// reply window persists an empty-content assistant message with metadata.error set (the frontend's.
 func TestStartConversationTurnTimeoutPersistsError(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REPLY_WINDOW", "100ms")
 	pool := chatDBTestPool(t)
@@ -882,11 +828,8 @@ func TestStartConversationTurnTimeoutPersistsError(t *testing.T) {
 	}
 }
 
-// TestStartConversationTurnServeLossFreshSessionFallback verifies the
-// serve-loss path end to end: the bus dies mid-reply (serve restart), the
-// re-attached session 404s (data dir wiped), and a fresh session seeded from
-// the DB transcript takes over — the reply is still persisted in the same
-// conversation.
+// TestStartConversationTurnServeLossFreshSessionFallback verifies the serve-loss path end to end:
+// the bus dies mid-reply (serve restart), the re-attached session 404s (data dir wiped).
 func TestStartConversationTurnServeLossFreshSessionFallback(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	pool := chatDBTestPool(t)
@@ -903,10 +846,8 @@ func TestStartConversationTurnServeLossFreshSessionFallback(t *testing.T) {
 
 	// 1. First dispatch accepted on the original session, then the bus dies.
 	waitForSend(t, client, 1)
-	// The steady-state follow-up system carries NO DB history block; the
-	// original session already holds the conversation (buildSystemPrompt
-	// includeHistory=false). Assert on prompt content, not literals — the
-	// handler passes real buildSystemPrompt output.
+	// The steady-state follow-up system carries NO DB history block; the original session already holds
+	// the conversation (buildSystemPrompt includeHistory=false).
 	if got := client.sendCalls[0]; got.sessionID != "ses_orig" || strings.Contains(got.system, "## Conversation history") {
 		t.Fatalf("first send = session %q, want ses_orig with reuse system (no history block); system len %d", got.sessionID, len(got.system))
 	}
@@ -940,10 +881,8 @@ func TestStartConversationTurnServeLossFreshSessionFallback(t *testing.T) {
 	}
 }
 
-// TestPersistFoldedThinkSegmentsSeparateEntries verifies persistence of a
-// turn containing BOTH a native reasoning part and a folded think body: the
-// assistant message's Reasoning array carries both as SEPARATE entries (no
-// dedupe/merge), and the Content has no think-tag remnant and no leaked body.
+// TestPersistFoldedThinkSegmentsSeparateEntries verifies persistence of a turn containing BOTH a
+// native reasoning part and a folded think body.
 func TestPersistFoldedThinkSegmentsSeparateEntries(t *testing.T) {
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
@@ -988,9 +927,8 @@ func TestPersistFoldedThinkSegmentsSeparateEntries(t *testing.T) {
 	}
 }
 
-// TestPersistMidThinkSupersedeCleanPartial verifies a supersede mid-think
-// persists a partial whose content is clean text (no think remnant) and whose
-// reasoning array carries the partial folded body.
+// TestPersistMidThinkSupersedeCleanPartial verifies a supersede mid-think persists a partial whose
+// content is clean text (no think remnant) and whose reasoning array carries the partial folded.
 func TestPersistMidThinkSupersedeCleanPartial(t *testing.T) {
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
@@ -1004,9 +942,8 @@ func TestPersistMidThinkSupersedeCleanPartial(t *testing.T) {
 	}
 	waitForSend(t, client, 1)
 
-	// A folded think body streamed as deltas, then a SUPERSEDE (interjection
-	// cancels the collector's context mid-think). The partial folded body must
-	// be flushed to the reasoning channel and the content left clean.
+	// A folded think body streamed as deltas, then a SUPERSEDE (interjection cancels the collector's
+	// context mid-think).
 	client.sub.feed(busDelta("ses_1", "|<thinking>partial body"))
 	// Give the translate→drain pipeline a beat to deliver the delta before
 	// superseding, so the mid-think flush has a body to persist.
@@ -1043,9 +980,8 @@ func TestPersistMidThinkSupersedeCleanPartial(t *testing.T) {
 	}
 }
 
-// busReasoningDelta builds a MID-GENERATION reasoning delta — the shape the native adapter
-// streams (`Kind: "delta"`, IsReasoning) and the one that used to have no durable form at
-// all. field "reasoning" is what makes TokenDeltaInfoFromBus classify it as reasoning.
+// busReasoningDelta builds a MID-GENERATION reasoning delta — the shape the native adapter streams
+// (`Kind: "delta"`, IsReasoning) and the one that used to have no durable form at all.
 func busReasoningDelta(sessionID, delta string) opencode.BusEvent {
 	return opencode.BusEvent{Type: "message.part.delta", Properties: map[string]any{
 		"sessionID": sessionID, "messageID": "m1", "partID": "p1", "field": "reasoning", "delta": delta,

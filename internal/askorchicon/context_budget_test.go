@@ -1,16 +1,6 @@
 package askorchicon
 
 // context_budget_test.go — THE OPENING CONTEXT IS BOUNDED, because a local model has to fit in it.
-//
-// Measured before these changes, on this repository: the opening context of an Ask session was ~25,400
-// tokens — 85 tool definitions (~13,200), a markdown copy of those same 85 names+descriptions (~6,100),
-// and the static persona (~6,300) — BEFORE any conversation, project context, or skill manifest. On a
-// 32k local model that leaves almost nothing for the actual work, and the failure is not an error: the
-// session simply degrades as the window fills.
-//
-// The tests here pin the three cuts that do not cost information. They are bounds, not exact figures,
-// because the exact figure depends on the registry and drifting it on every tool addition would make the
-// test noise rather than signal.
 
 import (
 	"fmt"
@@ -21,12 +11,6 @@ import (
 )
 
 // TestToolListDoesNotDuplicateDescriptions pins the biggest single cut.
-//
-// The prompt used to render `- orchicon_<name>: <description> (<mutability>)` for all 85 tools — 24,438
-// bytes ≈ 6,100 tokens — a second, lossier copy of what the transport already sends as
-// `orchicon.ToolDef{Name, Description, ParamsJSON}`. The NAMES must stay (a model does not discover a
-// capability it has never heard of — several tests exist because of that lesson), but the per-tool
-// DESCRIPTION must not, because keeping it pays twice for less.
 func TestToolListDoesNotDuplicateDescriptions(t *testing.T) {
 	reg := NewToolRegistry(nil, nil, nil)
 	p := BuildSystemPrompt(modeIteration, db.AgentConfigRow{}, reg, "")
@@ -63,10 +47,6 @@ func TestOpeningContextIsBounded(t *testing.T) {
 }
 
 // TestHistoryIsBoundedByBytesNotJustCount pins the second cut.
-//
-// History was capped at 10 MESSAGES with no size bound at all. Ten messages is one thing when they are
-// ten sentences and quite another when an assistant turn embeds a large file read: 10 × 20 KB is ~50k
-// tokens of replay before the operator has typed anything on the current turn.
 func TestHistoryIsBoundedByBytesNotJustCount(t *testing.T) {
 	// A history of ten messages, each carrying a big blob — the pathological case.
 	var history []db.MessageRow
@@ -82,9 +62,7 @@ func TestHistoryIsBoundedByBytesNotJustCount(t *testing.T) {
 	out := buildSystemPrompt(modeIteration, db.AgentConfigRow{}, NewToolRegistry(nil, nil, nil),
 		history, true, nil, "", "", "")
 
-	// The replay must be bounded. The SECTION is measured from its heading to the next one — measuring
-	// from the heading to the end of the prompt conflated the history with everything after it, which is
-	// how the first version of this assertion "failed" on a history that was already bounded.
+	// The replay must be bounded.
 	start := strings.Index(out, "## Conversation history")
 	if start < 0 {
 		t.Fatal("no conversation-history section was rendered")

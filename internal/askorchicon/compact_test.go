@@ -8,9 +8,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// dbWorkItemRowFat is a work-item row carrying the fat columns that must
-// never reach a list output (description, acceptance criteria, budgets,
-// context files, worker ref, prompt context).
+// dbWorkItemRowFat is a work-item row carrying the fat columns that must never reach a list output
+// (description, acceptance criteria, budgets, context files, worker ref, prompt context).
 func dbWorkItemRowFat() db.WorkItemRow {
 	return db.WorkItemRow{
 		ID: "wi_1", TenantID: "tnt", ProjectID: "p", Title: "t", Kind: "task",
@@ -89,9 +88,9 @@ func TestCompactListSetNextPage(t *testing.T) {
 }
 
 func TestCompactWorkItemDropsFatColumns(t *testing.T) {
-	// The compact row must carry only the identify-and-branch fields — the
-	// bloat (description, acceptance criteria, budgets, context files,
-	// worker refs, prompt context) never reaches the conversation.
+	// The compact row must carry only the identify-and-branch fields — the bloat (description,
+	// acceptance criteria, budgets, context files, worker refs, prompt context) never reaches the
+	// conversation.
 	r := compactWorkItem(dbWorkItemRowFat())
 	if len(r) != 6 {
 		t.Fatalf("compact work item has %d fields, want 6: %v", len(r), r)

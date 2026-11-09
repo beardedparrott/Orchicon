@@ -53,10 +53,6 @@ func TestAGuardIsEitherEnabledOrSaysWhyNot(t *testing.T) {
 }
 
 // TestADisabledGuardLeavesTheEnvironmentAlone — and returns a COPY.
-//
-// Prepending an empty PATH element would put the process's working directory on the worker's search
-// path, so a bare `guard` or `orchicon` could resolve to whatever happens to sit in the project dir.
-// That is strictly worse than running unguarded.
 func TestADisabledGuardLeavesTheEnvironmentAlone(t *testing.T) {
 	g := &Guard{disabled: true, reason: "test"}
 	env := []string{"PATH=/usr/bin:/bin", "HOME=/home/x"}
@@ -77,11 +73,6 @@ func TestADisabledGuardLeavesTheEnvironmentAlone(t *testing.T) {
 }
 
 // TestMakeGuardReportsNoGuardRatherThanAnError pins the same severity rule for the container path.
-//
-// MakeGuard returns a DIRECTORY that callers prepend to PATH. On an unsupported platform it must say
-// "no guard" as an empty string with a nil error, so the four supervisor call sites can skip cleanly.
-// Returning an error would log a scary line on every single execution for a condition that is
-// permanent and expected.
 func TestMakeGuardReportsNoGuardRatherThanAnError(t *testing.T) {
 	dir, err := MakeGuard(t.TempDir(), "")
 	if err != nil {

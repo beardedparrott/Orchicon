@@ -61,12 +61,8 @@ const (
 	RepairToolMessageOrder RepairKind = "tool_message_order"
 )
 
-// classifyRepairable inspects a provider error and reports whether this layer can repair the request.
-//
-// IT REQUIRES POSITIVE EVIDENCE — a status of 400 AND a phrase the provider itself used. A 400 is not by
-// itself a licence to rewrite a request: it is also what a genuinely bad request returns, and "repairing" one
-// of those would mean silently changing what the caller asked for. The phrase match is what keeps the repair
-// honest, and it is why every case here names the provider's own wording.
+// classifyRepairable inspects a provider error and reports whether this layer can repair the
+// request. IT REQUIRES POSITIVE EVIDENCE — a status of 400 AND a phrase the provider itself used.
 func classifyRepairable(statusCode int, body string) RepairKind {
 	if statusCode != http.StatusBadRequest {
 		return RepairNone
@@ -99,21 +95,11 @@ func stringstrings(s string, needles ...string) bool {
 }
 
 // repairRequest applies a recognised repair to a request, and reports whether it CHANGED anything.
-//
-// The bool is the safety property that matters: a repair that changed nothing must not be resent, or the
-// caller would loop — sending the identical request, getting the identical error, and burning the retry
-// budget on a problem that is not going to resolve. `false` means "this repair does not apply", and the
-// caller surfaces the original error rather than trying again.
 func repairRequest(kind RepairKind, req *TurnRequest) (changed bool) {
 	switch kind {
 	case RepairReasoningContent:
 		// The reasoning is already on the messages when the bridge captured it; this repair covers the case
-		// where the provider demands it and the request would otherwise go out WITHOUT it — so it forces the
-		// replay on for this attempt. The quirk is what the serialiser reads.
-		//
-		// (There is no request-level quirk to flip here: the serialiser's decision comes from the provider
-		// profile, so "changed" is reported when a message actually HAS reasoning to replay. If none does,
-		// nothing can be repaired and the error stands.)
+		// where the provider demands it and the request would otherwise go out WITHOUT it.
 		for i := range req.Messages {
 			for j := range req.Messages[i].Content {
 				if r := req.Messages[i].Content[j].Reasoning; r != nil && *r != "" {
@@ -124,9 +110,8 @@ func repairRequest(kind RepairKind, req *TurnRequest) (changed bool) {
 		return false
 
 	case RepairToolMessageOrder:
-		// Drop assistant tool calls that have no matching tool result, and tool results with no matching call.
-		// An orphan on either side is what providers reject, and dropping it loses nothing a replay needs: the
-		// pairing is what makes the history valid, and an unpaired half is already unusable.
+		// Drop assistant tool calls that have no matching tool result, and tool results with no matching
+		// call.
 		calls := map[string]bool{}
 		results := map[string]bool{}
 		for _, m := range req.Messages {
@@ -180,29 +165,14 @@ func repairRequest(kind RepairKind, req *TurnRequest) (changed bool) {
 		return true
 
 	case RepairUnknownField:
-		// Deliberately NOT repaired here. Dropping "an unknown field" requires knowing WHICH field, and the
-		// provider's message does not always say. Guessing would mean silently removing something the caller
-		// asked for — possibly the tools, possibly the whole reasoning effort — and a wrong guess is worse
-		// than the error. It is recognised so the caller can report it precisely; the fix belongs in the
-		// provider profile, where the field's absence is a decision rather than an accident.
+		// Deliberately NOT repaired here.
 		return false
 	}
 	return false
 }
 
-// learnedReplayReasoning records the providers that have DEMANDED an assistant message's reasoning back, keyed
-// by provider id.
-//
-// THE DEMAND IS A FACT ABOUT THE ENDPOINT, NOT ABOUT ONE REQUEST — and it used to be treated as the latter. The
-// quirk flip lived in StreamTurn's local scope, so the lesson died with the request that taught it: a 33-round
-// worker session paid 33 rejections and 33 resends, and every single round depended on the repair finding
-// reasoning to replay. When one round's repair could not help, the run died with the provider's 400 and nothing
-// else — which is exactly how a DeepSeek execution failed after 4 minutes of healthy work.
-//
-// It cannot be a static built-in quirk either: `reasoning_content` is not part of the OpenAI chat schema, so a
-// tenant custom profile (Settings → Adapters → Providers accepts any compat endpoint, DeepSeek included) has to
-// start with replay OFF or it would send an unknown field to every provider that has never heard of it. So the
-// durable answer is to LEARN the requirement once per provider and keep it.
+// learnedReplayReasoning records the providers that have DEMANDED an assistant message's reasoning
+// back, keyed by provider id.
 var learnedReplayReasoning sync.Map // provider key → struct{}
 
 // ReplayReasoningLearned reports whether this provider has ever demanded reasoning replay.
@@ -222,13 +192,8 @@ func noteReplayReasoningDemanded(providerKey string) (first bool) {
 // under a live process via the settings UI).
 func forgetLearnedReplayReasoning() { learnedReplayReasoning = sync.Map{} }
 
-// reasoningReplayReport describes what the LAST request actually carried, for the error a caller surfaces.
-//
-// IT EXISTS BECAUSE THIS FAILURE WAS UNDIAGNOSABLE. The operator gets one line: the provider's 400. Nothing in
-// it says whether Orchicon replayed reasoning at all, whether the history had any to replay, or whether the
-// repair ran — so "the reasoning_content 400" could mean three different defects and looked identical in all
-// of them. Naming the shape costs a few bytes in a message nobody wants to see and makes the next occurrence
-// answerable from the run page alone, without logs or a live box.
+// reasoningReplayReport describes what the LAST request actually carried, for the error a caller
+// surfaces.
 func reasoningReplayReport(req TurnRequest, replayOn bool, repairs int) string {
 	assistant, withReasoning, callsWithout := 0, 0, 0
 	for _, m := range req.Messages {
@@ -269,22 +234,8 @@ func statusErrRepairable(err error) (RepairKind, bool) {
 	return classifyRepairable(se.StatusCode, se.Body), true
 }
 
-// sendWithRepair is the SHARED send loop: retry transient failures, repair request-shape failures and resend,
-// surface anything else.
-//
-// IT EXISTS AS ONE FUNCTION BECAUSE FIVE CLIENTS HAD THE SAME LOOP. openaicompat, anthropic, responses,
-// commandcode and ollama each carried their own copy of "doWithRetries around postJSON, treat a retryable
-// status as retryable, otherwise return the error" — identical but for the URL, headers and body. Resilience
-// added to one copy and not the others is exactly the asymmetry the operator asked to avoid ("resilience
-// across the board, not just on one provider"), and five copies is five chances to forget.
-//
-// marshal is a func rather than bytes because a repair MUTATES the request: the body must be re-derived per
-// attempt or a repaired request goes out carrying the stale shape.
-//
-// A repairable failure is deliberately NOT handed to doWithRetries: retrying it unchanged fails identically,
-// so it would spend the retry budget and report the same error more slowly. It has its own bounded budget,
-// and a repair that would change nothing returns false — the error then stands, rather than the loop resending
-// identical bytes and collecting the identical rejection.
+// sendWithRepair is the SHARED send loop: retry transient failures, repair request-shape failures
+// and resend, surface anything else.
 func sendWithRepair(
 	ctx context.Context,
 	p RetryPolicy,

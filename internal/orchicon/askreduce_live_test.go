@@ -46,12 +46,8 @@ func TestRealWedgeHistoryIsRescuedByTheReactivePath(t *testing.T) {
 		t.Skipf("history file unavailable: %v", err)
 	}
 
-	// Load through the SAME path a turn uses, so this exercises the real
-	// deserialization (envelope version, message shape) rather than a fixture.
-	//
-	// The bridge is pointed at a TEMP COPY, never the source directory: the
-	// recovery persists its reduced history, so a bridge aimed at the real data
-	// dir would rewrite the operator's live conversation file.
+	// Load through the SAME path a turn uses, so this exercises the real deserialization (envelope
+	// version, message shape) rather than a fixture.
 	src, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read history: %v", err)
@@ -113,18 +109,15 @@ func TestRealWedgeHistoryIsRescuedByTheReactivePath(t *testing.T) {
 	if afterTokens >= wedgeWindowTokens {
 		t.Errorf("the reduced request is still ~%d tokens — it would be rejected again", afterTokens)
 	}
-	// The rescue must be a LARGE reduction, not a marginal trim: the whole point
-	// is that the dominating payloads were removed. The measured figure for a real
-	// wedged conversation is ~96% (the remaining bytes are conversation TEXT,
-	// which this pass deliberately preserves).
+	// The rescue must be a LARGE reduction, not a marginal trim: the whole point is that the dominating
+	// payloads were removed.
 	if afterBytes >= beforeBytes/2 {
 		t.Errorf("reduced only %d%% — expected the dominating payloads to be removed",
 			100-afterBytes*100/beforeBytes)
 	}
 
-	// And the session's persisted history is the reduced one, so the NEXT turn
-	// does not re-send the oversized original (this is what makes the recovery
-	// permanent rather than a one-turn reprieve).
+	// And the session's persisted history is the reduced one, so the NEXT turn does not re-send the
+	// oversized original (this is what makes the recovery permanent rather than a one-turn reprieve).
 	if got := conversationBytes(b.chatHistory[sid]); got != afterBytes {
 		t.Errorf("the bridge's history is %d bytes, want the reduced %d — the next turn would re-send the original", got, afterBytes)
 	}

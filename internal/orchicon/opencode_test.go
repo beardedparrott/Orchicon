@@ -84,9 +84,8 @@ func TestOpenCodeClientChatRouteStreams(t *testing.T) {
 	}
 }
 
-// The responses-route model now streams on the /responses wire (D2): the
-// httptest asserts the path, session header, UA, and the delta→Finish+usage
-// decode. This replaces the old loud-fail assertion.
+// The responses-route model now streams on the /responses wire (D2): the httptest asserts the path,
+// session header, UA, and the delta→Finish+usage decode.
 func TestOpenCodeClientResponsesRouteStreams(t *testing.T) {
 	var gotPath, gotSession, gotUA, gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -143,10 +142,8 @@ func TestOpenCodeClientResponsesRouteStreams(t *testing.T) {
 	}
 }
 
-// Route auto-detect: an unlisted model the static table maps to chat but the
-// server rejects with 404 on /chat/completions is retried once on /responses
-// and succeeds; the second turn for the same model goes straight to
-// /responses (cache hit — request count proves no second probe).
+// Route auto-detect: an unlisted model the static table maps to chat but the server rejects with
+// 404 on /chat/completions is retried once on /responses and succeeds.
 func TestOpenCodeClientRouteAutoDetectFallback(t *testing.T) {
 	var chatHits, respHits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -196,9 +193,8 @@ func TestOpenCodeClientRouteAutoDetectFallback(t *testing.T) {
 	}
 }
 
-// Sticky bit with error-triggered flip: prime the cache to responses, then
-// serve 404 on responses + success on chat — the fallback fires and the cache
-// now points at chat.
+// Sticky bit with error-triggered flip: prime the cache to responses, then serve 404 on responses +
+// success on chat — the fallback fires and the cache now points at chat.
 func TestOpenCodeClientStickyRouteFlip(t *testing.T) {
 	var chatHits, respHits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -273,10 +269,9 @@ func TestOpenCodeClientNoFailoverOnAuthRateTransient(t *testing.T) {
 	}
 }
 
-// A bare 400 (generic bad request — malformed history, context length,
-// invalid params) must NOT trigger a route retry: retrying it on the other
-// wire masks the real error and pollutes the sticky cache. Only a 400 whose
-// body names the wire mismatch fails over.
+// A bare 400 (generic bad request — malformed history, context length, invalid params) must NOT
+// trigger a route retry: retrying it on the other wire masks the real error and pollutes the
+// sticky.
 func TestOpenCodeClientNoFailoverOnBare400(t *testing.T) {
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

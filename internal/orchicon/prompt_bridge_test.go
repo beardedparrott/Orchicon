@@ -1,9 +1,7 @@
 package orchicon
 
-// Cache metrics through the bridge boundary: recordUsage must fold the
-// session's per-turn cache stats into the UsageRecord (ADR-0009 D6) —
-// replacing the old all-zero placeholder. The native-memory note tool is
-// session-scoped and must never reach the MCP registry (loop-answered).
+// Cache metrics through the bridge boundary: recordUsage must fold the session's per-turn cache
+// stats into the UsageRecord (ADR-0009 D6) — replacing the old all-zero placeholder.
 
 import (
 	"context"
@@ -58,9 +56,8 @@ func TestQABridgeRecordUsageCarriesCacheTokens(t *testing.T) {
 	}
 }
 
-// D2: the native adapter emits ONE usage record per provider turn (opencode
-// step_finish parity), and the per-turn records reconcile with the session's
-// terminal CacheStats rollup — no terminal aggregate double-count.
+// D2: the native adapter emits ONE usage record per provider turn (opencode step_finish parity),
+// and the per-turn records reconcile with the session's terminal CacheStats rollup.
 func TestQABridgePerTurnEmissionReconciles(t *testing.T) {
 	dir := t.TempDir()
 	prov := &mockProvider{turns: []scriptedTurn{

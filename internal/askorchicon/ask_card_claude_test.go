@@ -56,11 +56,8 @@ func askResultsFor(l *toolLedger) map[string]string {
 	return out
 }
 
-// TestADirectMCPServedAskIsAnsweredByNothing — defect 2: the acknowledgement must never be the answer.
-//
-// claude calls the tool by its MCP-qualified name, so no promotion is needed and none happens. What must
-// happen instead is that the acknowledgement is replaced, in place, by the awaiting marker — on the SAME
-// id the operator's answer will settle.
+// TestADirectMCPServedAskIsAnsweredByNothing — defect 2: the acknowledgement must never be the
+// answer.
 func TestADirectMCPServedAskIsAnsweredByNothing(t *testing.T) {
 	l := newToolLedger()
 	l.recordStart("mcp__orchicon__ask_user")
@@ -94,10 +91,6 @@ func TestADirectMCPServedAskIsAnsweredByNothing(t *testing.T) {
 }
 
 // TestAnEmptyAskResultIsNotAResolution — defect 1: the phantom call, and the duplicate it creates.
-//
-// claude emits the ask's completion part with an EMPTY output before the real one. Recording that as a
-// resolution both settled the ask with no answer and pushed the real result onto a second, synthesized
-// call. This replays the observed sequence.
 func TestAnEmptyAskResultIsNotAResolution(t *testing.T) {
 	l := newToolLedger()
 	l.recordStart("mcp__orchicon__ask_user")
@@ -106,8 +99,7 @@ func TestAnEmptyAskResultIsNotAResolution(t *testing.T) {
 	l.recordToolResolution("mcp__orchicon__ask_user", claudeAskArgs, claudeRecordedAskResult, false)
 
 	// NO ask call may hold an empty result: that is the phantom the card used to read, and an empty
-	// result reads as "answered with nothing" — which the client prints as
-	// `Question "…" was dismissed — no answer sent`, over a question nobody was ever shown.
+	// result reads as "answered with nothing" — which the client prints as `Question "…" was dismissed.
 	for id, output := range askResultsFor(l) {
 		if output == "" {
 			t.Errorf("ask call %s carries an EMPTY result — that is the phantom that hid the card", id)
@@ -146,10 +138,6 @@ func TestAnEmptyAskResultIsNotAResolution(t *testing.T) {
 }
 
 // TestTheRepairDoesNotKillADirectMCPAsk — the turn-end repair must leave the awaiting marker alone.
-//
-// The repair appends "tool call aborted" to every unresolved call. A promoted ask survives it by
-// carrying the marker; a DIRECT MCP ask had no such protection before this fix, because its result was
-// the acknowledgement and the repair never ran. Pinned so the two shapes stay equally safe.
 func TestTheRepairDoesNotKillADirectMCPAsk(t *testing.T) {
 	l := newToolLedger()
 	l.recordStart("mcp__orchicon__ask_user")

@@ -57,115 +57,62 @@ type NativeBridge struct {
 	cacheSink func(ctx context.Context, exec db.ExecutionRow, stats CacheStats)
 	// sessionStore persists transcript entries to the DB (best-effort).
 	sessionStore scheduler.SessionStoreFunc
-	// fileEditHook is the diff-pipeline ledger hook fanned out to every
-	// session built here (wired by the server with the same constructor as
-	// the opencode adapter). Nil = no ledger. Its rows are attributed
-	// (execution, <execution id>).
+	// fileEditHook is the diff-pipeline ledger hook fanned out to every session built here (wired by
+	// the server with the same constructor as the opencode adapter).
 	fileEditHook opencode.FileEditHookFunc
-	// askFileEditHook is the diff-pipeline ledger hook for the native Ask
-	// path (fired from executeToolCalls, not from a Session). Its rows are
-	// attributed (ask_conversation, <conversation id>) — the exact tuple both
-	// clients' Ask diff panes query — so the live per-edit rows are visible
-	// DURING the turn rather than only via the post-turn git sweep. Nil = no
-	// Ask ledger. Guarded by mu.
+	// askFileEditHook is the diff-pipeline ledger hook for the native Ask path (fired from
+	// executeToolCalls, not from a Session).
 	askFileEditHook opencode.FileEditHookFunc
-	// rtClient routes native bash into the run's container when the run
-	// is container-backed (always-container runtime mode). Nil =
-	// in-process (local mode / standalone / headless).
+	// rtClient routes native bash into the run's container when the run is container-backed
+	// (always-container runtime mode).
 	rtClient scheduler.RuntimeClient
-	// mcpResolver resolves the session's MCP definitions by SCOPE (ADR-0008,
-	// owner-scoped union). Nil/absent → no MCP tools (sessions unaffected).
-	// A session resolves the WORKER scope — the union of the project's owned
-	// definitions and the executing version's inline specs, the latter
-	// carried on scheduler.ExecutionManifest.Permissions.
+	// mcpResolver resolves the session's MCP definitions by SCOPE (ADR-0008, owner-scoped union).
 	mcpResolver mcpclient.ScopeResolver
-	// mcpSecretResolver replaces ${SECRET_NAME} refs in resolved MCP server
-	// env/headers with stored tenant-secret plaintext at session time.
-	// Nil → pass-through (no secret resolution).
+	// mcpSecretResolver replaces ${SECRET_NAME} refs in resolved MCP server env/headers with stored
+	// tenant-secret plaintext at session time.
 	mcpSecretResolver MCPSecretResolver
 
-	// chatHistory holds the in-memory Ask conversation history per session
-	// (sessionID → replayable conversation). The native transports are
-	// sessionless, so Ask turns emulate a persistent session server-side by
-	// re-sending the accumulated history as full context per turn. Guarded
-	// by mu. Lost on a server restart (the DB transcript remains the
-	// durable record).
+	// chatHistory holds the in-memory Ask conversation history per session (sessionID → replayable
+	// conversation).
 	chatHistory map[string][]Message
 	// askInjections holds operator messages that arrived WHILE A TURN WAS LIVE on that session
-	// (sessionID → messages not yet shown to the model). Guarded by mu.
-	//
-	// THIS IS THE PROMPT QUEUE THE NATIVE BRIDGE DID NOT HAVE. The transports are sessionless, so there is
-	// no server-side queue to hand a mid-turn message to; the turn loop drains this into its own `working`
-	// history, which is re-sent as full context on the next provider call (chatturn.go). That makes an
-	// interjection visible to the model at the NEXT MODEL CALL rather than at the end of the whole turn.
-	//
-	// It cannot be earlier, and that is physics rather than a gap: a provider call's input is fixed for the
-	// duration of that call, so "the model sees it right away" can only mean "on the next call".
+	// (sessionID → messages not yet shown to the model).
 	askInjections map[string][]Message
-	// askHistorySeen is a MULTISET of fingerprints for every message a session has ever held, so a message
-	// that DISAPPEARS is reported instead of passing silently. Guarded by mu.
-	//
-	// IT EXISTS BECAUSE THIS BUG RAN FOR WEEKS UNSEEN. commitChatHistory assigned `cur = working` — the
-	// committing turn's own snapshot-plus-output — so an interjection (which SUPERSEDES the running turn)
-	// silently erased the other turn's reply: the operator read it on screen while the model could not, and it
-	// took reading the session files by hand to find it.
-	//
-	// WHY FINGERPRINTS AND NOT A LENGTH. The replacing commit does not TRUNCATE, it SWAPS: with the session
-	// holding H+[userA]+[userB], the old commit wrote H+[userA]+replyA — the SAME LENGTH, with userB replaced
-	// by replyA. The next commit then grew it again. A length check, and a per-role count check, both sail
-	// straight past that, which is how the bug survived so long. Only the IDENTITY of the messages changes,
-	// so identity is what has to be watched. (A fingerprint is a 64-bit hash; a collision could only ever HIDE
-	// a loss, never invent one, so it cannot produce a false alarm.)
+	// askHistorySeen is a MULTISET of fingerprints for every message a session has ever held, so a
+	// message that DISAPPEARS is reported instead of passing silently.
 	askHistorySeen map[string]map[uint64]int
 	// askHistoryReduceReason marks a session whose NEXT persistence is an INTENTIONAL reduction
-	// (context reduction or compaction — both are lossy by design and both are announced to the operator), so
-	// the shrink guard reports it as intended rather than as data loss. Guarded by mu.
+	// (context reduction or compaction — both are lossy by design and both are announced to the
+	// operator).
 	askHistoryReduceReason map[string]string
-	// chatTurns tracks in-flight Ask turns per session (sessionID → cancel),
-	// so AbortConversationSession can context-cancel the running HTTP turn.
-	// Guarded by mu.
+	// chatTurns tracks in-flight Ask turns per session (sessionID → cancel), so
+	// AbortConversationSession can context-cancel the running HTTP turn.
 	chatTurns map[string]context.CancelFunc
-	// chatBuses maps a conversation id to the SessionBus its current turn
-	// drains into (set by Subscribe, fed by SendTurnMessage's drain
-	// goroutine). Guarded by mu.
+	// chatBuses maps a conversation id to the SessionBus its current turn drains into (set by
+	// Subscribe, fed by SendTurnMessage's drain goroutine).
 	chatBuses map[string]*chatBus
-	// permWaits holds the tool calls an Ask turn has PARKED on a consent
-	// decision, keyed by the ask id the collector answers with. Guarded by
-	// permMu. Empty for a worker execution: the consent wait lives in
-	// executeToolCalls, which only the Ask drain path calls.
+	// permWaits holds the tool calls an Ask turn has PARKED on a consent decision, keyed by the ask id
+	// the collector answers with.
 	permMu    sync.Mutex
 	permWaits map[string]*permWait
 	permSeq   int
-	// askTools is the injected Ask-time tool surface (askorchicon product
-	// tools, wired by the server via SetAskTools). Nil → the model answers
-	// from the system prompt's project context with no tool calls (the
-	// pre-tools behavior). Guarded by mu.
+	// askTools is the injected Ask-time tool surface (askorchicon product tools, wired by the server
+	// via SetAskTools).
 	askTools AskToolProvider
-	// askHistoryDir is the directory Ask session histories persist to as
-	// one JSON file per session (SetAskHistoryDir, wired from the server
-	// instance data dir). Empty → memory-only (pre-persistence behavior:
-	// history is lost on a server restart while the DB transcript stays
-	// the durable record). Guarded by mu.
+	// askHistoryDir is the directory Ask session histories persist to as one JSON file per session
+	// (SetAskHistoryDir, wired from the server instance data dir).
 	askHistoryDir string
-	// askPromptTokens is the newest MEASURED prompt size per Ask session
-	// (sessionID → input tokens from the provider's own usage report). It is
-	// the numerator of the proactive context-pressure gate and is never
-	// estimated. Guarded by mu; dropped by PurgeConversationHistory.
+	// askPromptTokens is the newest MEASURED prompt size per Ask session (sessionID → input tokens from
+	// the provider's own usage report).
 	askPromptTokens map[string]int64
-	// askWindowTokens caches the resolved context window per Ask session
-	// (sessionID → tokens, 0 = resolved-but-unknown). Resolved once from the
-	// bound provider's ListModels, mirroring the execution path. Guarded by mu.
+	// askWindowTokens caches the resolved context window per Ask session (sessionID → tokens, 0 =
+	// resolved-but-unknown).
 	askWindowTokens map[string]int64
-	// askPricing caches the resolved PRICING for an Ask session's model
-	// (sessionID → rates; a nil VALUE means "resolved, this model has none"). It
-	// exists because the Ask turn must PRICE each round before recording it — see
-	// askUsageSink — and a ListModels call per round would be wasteful. Resolved
-	// through the same provider lookup the context window uses. Guarded by mu.
+	// askPricing caches the resolved PRICING for an Ask session's model (sessionID → rates; a nil VALUE
+	// means "resolved, this model has none").
 	askPricing map[string]*Pricing
-	// askCompactNotice, when wired, records a completed compaction so the
-	// conversation's transcript can carry a durable marker for it. Nil (tests, or
-	// a plane with no Ask service) leaves the log line as the only record — the
-	// pre-existing behaviour. Guarded by mu.
+	// askCompactNotice, when wired, records a completed compaction so the conversation's transcript can
+	// carry a durable marker for it.
 	askCompactNotice scheduler.AskCompactNoticeFunc
 }
 
@@ -178,9 +125,7 @@ type liveSession struct {
 	manifest scheduler.ExecutionManifest
 }
 
-// NewBridge constructs the native adapter bridge. resolver may be nil
-// (tests inject a pre-resolved provider via sessionConfig); in production
-// it is the *orchicon.Registry.
+// NewBridge constructs the native adapter bridge.
 func NewBridge(resolver ProviderResolver, projectDir string, log *slog.Logger) *NativeBridge {
 	if log == nil {
 		log = slog.Default()
@@ -202,11 +147,8 @@ func NewBridge(resolver ProviderResolver, projectDir string, log *slog.Logger) *
 // Kind is the registered adapter kind ("orchicon").
 func (b *NativeBridge) Kind() string { return "orchicon" }
 
-// SessionOwnerKind implements scheduler.SessionOwnerKind: the native bridge
-// owns its synthetic session ids. Ask Orchicon uses this to force a fresh
-// session when a conversation that was on the native adapter switches to
-// another adapter (the stored synthetic id must never be dispatched to a
-// foreign adapter).
+// SessionOwnerKind implements scheduler.SessionOwnerKind: the native bridge owns its synthetic
+// session ids.
 func (b *NativeBridge) SessionOwnerKind() string { return "orchicon" }
 
 // SetScopeResolver sets the MCP scope resolver for sessions (ADR-0008).
@@ -229,18 +171,11 @@ func (f ProviderResolverFunc) Get(ctx context.Context, tenantID, providerID stri
 	return f(ctx, tenantID, providerID)
 }
 
-// buildSession constructs a native worker Session for an execution: MCP
-// tools (the scope-addressed union), host tools (worktree-scoped
-// bash/file), memory store, and the provider-bound session. It is the
-// shared construction path for a fresh run (Start) and a follow-up
-// (ContinueSession) so a follow-up is a FULL live session with the same
-// tools. The returned cleanup closes the MCP manager + memory store; call
-// it when the session ends.
+// buildSession constructs a native worker Session for an execution: MCP tools (the scope-addressed
+// union), host tools (worktree-scoped bash/file), memory store, and the provider-bound session.
 func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest, forFollowUp bool) (*Session, func(), error) {
-	// The transcript lives under the execution's true project dir:
-	// manifest.ProjectDir is authoritative (set from the project row at
-	// dispatch, ADR-0007); the construction-time projectDir is a fallback
-	// for bridge-level lookups.
+	// The transcript lives under the execution's true project dir: manifest.ProjectDir is authoritative
+	// (set from the project row at dispatch, ADR-0007).
 	pd := b.projectDir
 	if manifest.ProjectDir != "" {
 		pd = manifest.ProjectDir
@@ -248,28 +183,21 @@ func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, m
 	if pd == "" {
 		return nil, nil, fmt.Errorf("orchicon bridge: no project dir (manifest.ProjectDir and bridge projectDir are both empty)")
 	}
-	// MCP tool resolution (ADR-0008): ONE scope-addressed union
-	// (project-owned ∪ the scope's own definitions), no precedence chain.
-	// Connections are established NOW — per session, never at
-	// control-plane boot — and tool discovery runs at construction so the
-	// discovered signatures are present in the model's first request.
+	// MCP tool resolution (ADR-0008): ONE scope-addressed union (project-owned ∪ the scope's own
+	// definitions), no precedence chain.
 	mt, terr := b.mcpResolveAndStart(ctx, exec, manifest)
 	if terr != nil {
 		return nil, nil, terr
 	}
-	// HOST tool suite: the core file/shell tools every native session
-	// needs (read/write/edit/glob/grep/list/bash/batch_*/todoread), scoped
-	// to the execution's working dir (worktree when provisioned, else the
-	// project dir) with the project root READ-only.
+	// HOST tool suite: the core file/shell tools every native session needs
+	// (read/write/edit/glob/grep/list/bash/batch_*/todoread), scoped to the execution's working dir
+	// (worktree when provisioned.
 	workingDir := pd
 	if manifest.WorktreePath != "" {
 		workingDir = manifest.WorktreePath
 	}
-	// A follow-up runs against a TERMINAL execution: its runtime container
-	// lease is gone and its worktree may have been pruned. Route bash
-	// IN-PROCESS on the project dir (or the surviving worktree) instead of
-	// dispatching into a container that no longer exists — otherwise every
-	// bash call returns "no runtime container leased" and silently empties.
+	// A follow-up runs against a TERMINAL execution: its runtime container lease is gone and its
+	// worktree may have been pruned.
 	if forFollowUp {
 		if fi, serr := os.Stat(workingDir); serr != nil || !fi.IsDir() {
 			// Pruned worktree: fall back to the project dir so bash/file
@@ -282,9 +210,6 @@ func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, m
 	b.mu.Lock()
 	rtClient := b.rtClient
 	b.mu.Unlock()
-	// Always-container routing: a run-bound execution with a daemon client
-	// dispatches bash INTO the run's container at the same absolute
-	// worktree path. Standalone tasks and local/headless stay in-process.
 	// A follow-up NEVER routes to the container (the run is terminal).
 	if !forFollowUp && nativeContainerRouteEnabled(rtClient != nil, manifest) {
 		runID := manifest.RuntimeWorkflowID
@@ -307,9 +232,8 @@ func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, m
 		tools = &combinedRegistry{primary: tools, secondary: mt}
 		cleanups = append(cleanups, func() { _ = mt.Close() })
 	}
-	// Durable agent-memory store (D2): opened at the TRUE project dir so
-	// memory survives per-step worktree pruning. Open failure degrades to
-	// no memory tools (never fails the execution).
+	// Durable agent-memory store (D2): opened at the TRUE project dir so memory survives per-step
+	// worktree pruning.
 	var memStore *agentmemory.Store
 	if ms, merr := agentmemory.Open(pd); merr != nil {
 		b.log.Warn("orchicon: memory store unavailable — memory tools disabled", "execution", exec.ID, "error", merr)
@@ -341,11 +265,7 @@ func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, m
 	return sess, cleanup, nil
 }
 
-// Start implements scheduler.AdapterBridge. It blocks until the session
-// loop reaches its terminal OnResult (parity with the opencode bridge:
-// the reconciler's `go r.startExecution` expects Start to be
-// synchronous). A panic inside the loop is contained by Session.Run's
-// boundary recover and surfaced as OnResult(false, panic message).
+// Start implements scheduler.AdapterBridge.
 func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest, callbacks scheduler.ExecutionCallbacks) error {
 	if exec.ID == "" {
 		return fmt.Errorf("orchicon bridge: empty execution id")
@@ -356,12 +276,8 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	}
 	defer cleanup()
 
-	// Sequence continuation (opt-in, DEFAULT OFF): when the manifest
-	// names a prior session to continue from, seed that session's
-	// transcript into this one. Identity (same worker) is verified by the
-	// bridge before seeding; a mismatch or missing prior transcript falls
-	// back to a fresh session (never leaks another worker's transcript,
-	// never fails the execution over an unavailable continuation).
+	// Sequence continuation (opt-in, DEFAULT OFF): when the manifest names a prior session to continue
+	// from, seed that session's transcript into this one.
 	if manifest.SequenceContinue && manifest.ContinueFromSessionID != "" {
 		priorPath := transcriptPath(manifest.ProjectDir, manifest.ContinueFromSessionID)
 		if err := verifyContinuationIdentity(priorPath, exec); err != nil {
@@ -374,11 +290,8 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 		}
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	// Wall-clock budget (opencode parity): the merged budget JSON's
-	// wall_clock_seconds (worker override → tenant default → 3600s
-	// backstop) applies a hard deadline to the SESSION context; explicit
-	// 0 disables. When it hits, the loop's ctx.Done path marks the
-	// execution cancelled → recovery (reason "wall_clock_timeout" shape).
+	// Wall-clock budget (opencode parity): the merged budget JSON's wall_clock_seconds (worker override
+	// → tenant default → 3600s backstop) applies a hard deadline to the SESSION context.
 	if deadline, ok := wallClockDeadline(manifest.Budgets); ok {
 		runCtx, cancel = context.WithDeadline(runCtx, deadline)
 		b.log.Info("orchicon: session wall-clock deadline armed", "execution", exec.ID, "deadline", deadline.Format(time.RFC3339))
@@ -394,40 +307,23 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 		close(ls.done)
 	}()
 
-	// Wrap the callbacks so the terminal OnResult is observed. Every
-	// terminal path in the loop (success, failure, cancellation, guard
-	// trip, recovered panic) fires OnResult exactly once, so a fired
-	// terminal means the execution already reached its verdict — Start
-	// must return nil then (opencode parity: session_run returns nil
-	// after the terminal result). Returning the loop's error would
-	// double-terminate: the reconciler's startExecution would mark the
-	// execution failed_to_start AND requeue the task (PR B2).
+	// Wrap the callbacks so the terminal OnResult is observed.
 	terminal := &terminalOnResult{ExecutionCallbacks: callbacks}
-	// Durable transcript mirroring: the JSONL transcript is the crash-safe
-	// record; the sessionPartsRecorder mirrors it into the DB
-	// (execution_session_parts) in opencode part shapes so the session
-	// pane renders native executions exactly like opencode ones. Attached
-	// BEFORE Run (the loop appends from the first turn) and drained at
-	// session end. Best-effort: with no store configured the recorder
-	// still runs (its flush no-ops) — simpler lifecycle, zero cost.
+	// Durable transcript mirroring: the JSONL transcript is the crash-safe record; the
+	// sessionPartsRecorder mirrors it into the DB (execution_session_parts) in opencode part shapes so
+	// the session.
 	recorder := newSessionPartsRecorder(b.sessionStore, exec.ID, exec.TenantID)
 	sess.SetTranscriptObserver(recorder.observe)
 	recorder.start()
 	defer recorder.Close()
-	// Per-turn usage emission (D2, opencode step_finish parity): wire the
-	// live per-turn usage sink ONLY when a usage recorder is configured, so
-	// each provider turn emits exactly one usage record from REAL provider
-	// usage. The terminal aggregate is dropped to avoid double-counting.
+	// Per-turn usage emission (D2, opencode step_finish parity): wire the live per-turn usage sink ONLY
+	// when a usage recorder is configured.
 	if b.usageRecorder != nil {
 		sess.SetUsageSink(func(ctx context.Context, u Usage) { b.emitTurnUsage(ctx, exec, manifest, u) })
 	}
 	err = sess.Run(runCtx, terminal)
-	// Terminal prefix-cache rollup (D3, ADR-0009 D6): log the session's
-	// per-turn cache stats and, when a cache sink is wired (the server
-	// attaches the OTel prefix-cache metrics recorder), forward the rollup
-	// to it. Live usage only — never synthesized. The per-turn usage records
-	// are emitted from inside the loop; this terminal rollup is metrics-only
-	// (no UsageRecorder call), so a turn is never double-counted.
+	// Terminal prefix-cache rollup (D3, ADR-0009 D6): log the session's per-turn cache stats and, when
+	// a cache sink is wired (the server attaches the OTel prefix-cache metrics recorder).
 	stats := sess.CacheStats()
 	b.log.Info("orchicon: session cache stats",
 		"execution", exec.ID,
@@ -451,10 +347,8 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 			return nil
 		}
 		if terminal.fired() {
-			// The loop contained a panic (or a terminal-firing failure)
-			// and already delivered OnResult(false, ...); the execution
-			// is failed. Swallow the error so the reconciler does not
-			// also markFailedToStart / requeue (double-termination).
+			// The loop contained a panic (or a terminal-firing failure) and already delivered OnResult(false,
+			// ...); the execution is failed.
 			return nil
 		}
 		return err
@@ -462,9 +356,7 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 	return nil
 }
 
-// terminalOnResult wraps ExecutionCallbacks to observe the terminal
-// OnResult. See NativeBridge.Start for why the bridge needs to know
-// whether the loop already delivered its final verdict.
+// terminalOnResult wraps ExecutionCallbacks to observe the terminal OnResult.
 type terminalOnResult struct {
 	scheduler.ExecutionCallbacks
 	mu   sync.Mutex
@@ -499,42 +391,13 @@ func (b *NativeBridge) SendExecutionMessage(ctx context.Context, execID, message
 	return nil
 }
 
-// ContinueSession implements scheduler.SessionContinuer: run a one-shot
-// follow-up question against a worker's session IN PLACE (no new
-// execution/work item). The user's question is recorded into the durable
-// transcript synchronously (so the session chat shows it immediately) and
-// the model runs ONE text-only turn; the reply is then collected
-// ASYNCHRONOUSLY on a request-independent context and appended to the
-// transcript when it lands. The RPC returns immediately — a long model
-// turn can never block the browser connection nor discard the reply on
-// client disconnect. Collection failures are written back as `error`
-// transcript parts (never left hanging on "responding").
-//
-// Session record handling (opencode parity): the prior transcript file is
-// the fast path for identity verification, but it is NOT required. When
-// the file is missing/unreadable (container-backed runs never leave the
-// JSONL on the host project dir) or carries no identity block, the
-// follow-up still proceeds as a context one-shot seeded from
-// opts.Context (the execution service's bounded durable-transcript
-// render — already scoped to this execution's own tenant-isolated parts).
-// Identity isolation is still enforced whenever a prior identity IS
-// available: a conflicting worker/tenant is refused. A missing session id
-// likewise falls back to the context one-shot instead of refusing — old
-// runs without a session_info part stay answerable.
+// ContinueSession implements scheduler.SessionContinuer: run a one-shot follow-up question against
+// a worker's session IN PLACE (no new execution/work item).
 func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error) {
 	b.log.Info("orchicon: follow-up requested",
 		"execution", opts.ExecutionID, "session", opts.SessionID,
 		"model", opts.ModelRef, "project", opts.ProjectDir, "message", opts.Message)
 	// Best-effort identity verification against the prior transcript file.
-	// Missing/unreadable file or missing identity block → context-only
-	// fallback (warn, proceed). Conflicting worker/tenant → refuse. This
-	// stays FIRST so isolation refusals surface even when no provider is
-	// configured.
-	// A follow-up whose prior transcript was written by ANOTHER adapter has
-	// nothing to verify here — its recorded session id belongs to that
-	// adapter, not to the native in-process engine. Skip the identity lookup
-	// and continue from the durable context: a native follow-up never touches
-	// another adapter's session.
 	if opts.AdapterKind != "" && opts.AdapterKind != adapter.KindOrchicon {
 		b.log.Warn("orchicon: prior session belonged to another adapter — continuing from durable context",
 			"execution", opts.ExecutionID, "adapter_kind", opts.AdapterKind)
@@ -562,13 +425,8 @@ func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.Conti
 			"execution", opts.ExecutionID)
 	}
 
-	// Build the FULL worker session for this execution — the same MCP +
-	// host tools, memory store, provider, and context the original run
-	// used — so the follow-up is a true live session, not a bare one-shot.
-	// The session id == execution id, so the loop replays the prior
-	// transcript into history and the follow-up question is appended after
-	// it (with the worker's tools available). Contained within the same
-	// execution: no new execution or work item is created.
+	// Build the FULL worker session for this execution — the same MCP + host tools, memory store,
+	// provider, and context the original run used — so the follow-up is a true live session.
 	exec := db.ExecutionRow{
 		ID:         opts.ExecutionID,
 		TenantID:   opts.TenantID,
@@ -602,31 +460,19 @@ func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.Conti
 	sess.SetFollowUp(opts.Message)
 	b.log.Info("orchicon: follow-up session built", "execution", opts.ExecutionID, "transcript", sess.TranscriptPath())
 
-	// Fire-and-forget the session run. The model turn runs on a context
-	// deliberately DETACHED from the HTTP request (WithoutCancel strips the
-	// request's cancellation/deadline while preserving values), so a browser
-	// disconnect or the RPC returning can neither cancel the turn nor lose
-	// the reply. Bounded by the follow-up reply window. The session's
-	// transcript recorder mirrors the follow-up question, reply, and tool
-	// calls into the DB session parts; a failed/empty run is written back as
-	// an `error` part so the UI never hangs on "responding". The RPC NEVER
-	// fails after the session is built.
+	// Fire-and-forget the session run. The RPC NEVER fails after the session is built.
 	go func() {
 		detached := context.WithoutCancel(ctx)
 		ctxT, cancel := context.WithTimeout(detached, followUpReplyWindow())
 		defer cancel()
-		// Durable transcript mirroring (opencode part-shape parity): the
-		// follow-up question (source follow_up), reply, and tool calls land
-		// in execution_session_parts so the pane renders them exactly like
-		// a live worker turn.
+		// Durable transcript mirroring (opencode part-shape parity): the follow-up question (source
+		// follow_up), reply, and tool calls land in execution_session_parts so the pane renders them
+		// exactly like.
 		recorder := newSessionPartsRecorder(b.sessionStore, opts.ExecutionID, opts.TenantID)
 		recorder.logf = b.log.Info
-		// A follow-up whose prior JSONL transcript is missing/empty starts
-		// fresh at event seq 1, which would collide with the original run's
-		// stored DB parts (unique key ON CONFLICT DO NOTHING drops them).
-		// Offset the recorder so the follow-up parts land after the
-		// original run (baseSeq = the original run's max event seq ≈
-		// opts.StartSeq >> 8).
+		// A follow-up whose prior JSONL transcript is missing/empty starts fresh at event seq 1, which
+		// would collide with the original run's stored DB parts (unique key ON CONFLICT DO NOTHING drops
+		// them).
 		if fi, serr := os.Stat(sess.TranscriptPath()); serr != nil || fi.Size() == 0 {
 			recorder.baseSeq = opts.StartSeq >> 8
 		}
@@ -639,10 +485,8 @@ func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.Conti
 		b.log.Info("orchicon: follow-up session done",
 			"execution", opts.ExecutionID, "succeeded", cb.succeeded(),
 			"text_chars", len(cb.textString()))
-		// A session that SUCCEEDED but produced no text (a provider that
-		// ended without output) is written back as an error so the UI never
-		// hangs. A FAILED session already wrote its TransError part via the
-		// recorder (the loop appends it on pre-stream/stream failure).
+		// A session that SUCCEEDED but produced no text (a provider that ended without output) is written
+		// back as an error so the UI never hangs.
 		if cb.succeeded() && cb.textString() == "" {
 			b.log.Warn("orchicon: follow-up reply was empty", "execution", opts.ExecutionID)
 			recorder.observe(0, TransError, []byte(mustJSON(map[string]any{"error": "Follow-up returned no text — please retry"})))
@@ -652,10 +496,8 @@ func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.Conti
 	return "", nil
 }
 
-// followUpCallbacks is the minimal ExecutionCallbacks for a follow-up
-// session: it captures the live text (OnText) and the terminal verdict
-// (OnResult). The recorder handles DB mirroring, so the remaining
-// callbacks are no-ops.
+// followUpCallbacks is the minimal ExecutionCallbacks for a follow-up session: it captures the live
+// text (OnText) and the terminal verdict (OnResult).
 type followUpCallbacks struct {
 	mu     sync.Mutex
 	text   strings.Builder
@@ -694,10 +536,7 @@ func (c *followUpCallbacks) succeeded() bool {
 	return c.ok
 }
 
-// AbortExecution implements scheduler.Aborter: cancel the session's run
-// context. The loop finishes its in-flight tool, marks the transcript
-// cancelled, and leaves the session resumable. Safe no-op for unknown or
-// finished executions.
+// AbortExecution implements scheduler.Aborter: cancel the session's run context.
 func (b *NativeBridge) AbortExecution(ctx context.Context, execID, reason string) error {
 	b.mu.Lock()
 	ls, ok := b.live[execID]
@@ -725,45 +564,31 @@ func (b *NativeBridge) SetUsageRecorder(fn scheduler.UsageRecorderFunc) {
 	b.usageRecorder = fn
 }
 
-// SetFileEditHook wires the diff-pipeline ledger hook for every session
-// this bridge builds (one shared site in executeTools covers the whole
-// native-loop family). Nil = no ledger (sessions unaffected).
+// SetFileEditHook wires the diff-pipeline ledger hook for every session this bridge builds (one
+// shared site in executeTools covers the whole native-loop family).
 func (b *NativeBridge) SetFileEditHook(fn opencode.FileEditHookFunc) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.fileEditHook = fn
 }
 
-// SetDiffLedger implements scheduler.DiffLedgerSink, so the Dispatcher installs
-// this bridge's ledger hooks when it REGISTERS — one central application point
-// rather than a per-bridge setter somebody has to remember. The native bridge
-// serves both populations, so it takes both halves.
+// SetDiffLedger implements scheduler.DiffLedgerSink, so the Dispatcher installs this bridge's
+// ledger hooks when it REGISTERS.
 func (b *NativeBridge) SetDiffLedger(execution, ask scheduler.DiffLedgerFunc) {
-	// Explicit conversion: the two func types are structurally identical but
-	// DISTINCT named types, and that separation is deliberate — scheduler must
-	// not import an adapter's hook type, and an adapter must not import the
-	// dispatcher's. The conversion at this one boundary is what keeps both
-	// directions of the dependency closed.
+	// Explicit conversion: the two func types are structurally identical but DISTINCT named types, and
+	// that separation is deliberate — scheduler must not import an adapter's hook type.
 	b.SetFileEditHook(opencode.FileEditHookFunc(execution))
 	b.SetAskFileEditHook(opencode.FileEditHookFunc(ask))
 }
 
-// SetAskFileEditHook wires the diff-pipeline ledger hook for the native Ask
-// path. Unlike SetFileEditHook (whose sessions are worker executions), the
-// hook fired here is attributed to the ASK CONVERSATION: executeToolCalls
-// passes the conversation id as the hook's owner id and the server builds the
-// hook with db.FileEditOwnerAskConversation, so the live rows land under the
-// tuple both clients already query. Nil = no Ask ledger (Ask then relies on
-// the post-turn git sweep only, the pre-fix behaviour).
+// SetAskFileEditHook wires the diff-pipeline ledger hook for the native Ask path.
 func (b *NativeBridge) SetAskFileEditHook(fn opencode.FileEditHookFunc) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.askFileEditHook = fn
 }
 
-// SetCacheSink wires the session-terminal prefix-cache rollup drain (D3,
-// ADR-0009 D6). The server attaches the OTel prefix-cache metrics recorder.
-// Nil → no cache metric is emitted (sessions unaffected).
+// SetCacheSink wires the session-terminal prefix-cache rollup drain (D3, ADR-0009 D6).
 func (b *NativeBridge) SetCacheSink(fn func(ctx context.Context, exec db.ExecutionRow, stats CacheStats)) {
 	b.cacheSink = fn
 }
@@ -773,31 +598,23 @@ func (b *NativeBridge) SetSessionStore(fn scheduler.SessionStoreFunc) {
 	b.sessionStore = fn
 }
 
-// SetRuntimeClient implements scheduler.ConfigurableBridge: the runtime
-// daemon client routes native `bash` tool calls INTO the run's container
-// (always-container). Nil = headless/local, sessions stay in-process.
-// Stored per-bridge (shared across executions); the per-execution lease
-// (run container) is resolved at Start from manifest.RuntimeWorkflowID.
+// SetRuntimeClient implements scheduler.ConfigurableBridge: the runtime daemon client routes native
+// `bash` tool calls INTO the run's container (always-container).
 func (b *NativeBridge) SetRuntimeClient(rt scheduler.RuntimeClient) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.rtClient = rt
 }
 
-// nativeContainerRouteEnabled is the always-container routing gate: native
-// `bash` dispatches into the run's container only when a daemon client is
-// wired, the execution belongs to a workflow run (has a lease), AND the run
-// is NOT in local execution mode. A local run has no container to exec into.
+// nativeContainerRouteEnabled is the always-container routing gate: native `bash` dispatches into
+// the run's container only when a daemon client is wired.
 func nativeContainerRouteEnabled(hasClient bool, m scheduler.ExecutionManifest) bool {
 	return hasClient && m.RuntimeWorkflowID != "" && m.ExecutionMode != db.ExecutionModeLocal
 }
 
 // --- internal ------------------------------------------------------------
 
-// combinedRegistry serves the host suite plus a secondary registry
-// (MCP). Defs concatenate (deduped: MCP wins nothing — host names win,
-// an MCP tool shadowing a host name is refused at Execute); Execute
-// routes by which side advertised the name.
+// combinedRegistry serves the host suite plus a secondary registry (MCP).
 type combinedRegistry struct {
 	primary   ToolRegistry
 	secondary ToolRegistry
@@ -827,12 +644,9 @@ func (c *combinedRegistry) Execute(ctx context.Context, name, argsJSON string) (
 	return c.secondary.Execute(ctx, name, argsJSON)
 }
 
-// mcpTools adapts the per-session MCP client manager to the loop's
-// ToolRegistry (ADR-0008): discovered tools surface as
-// mcp__<server>__<tool> with their JSON schemas passed through verbatim,
-// and calls route to the MCP server with per-call timeouts and
-// cancellation. The manager is closed by the bridge at session end via
-// the close func set by mcpResolveAndStart.
+// mcpTools adapts the per-session MCP client manager to the loop's ToolRegistry (ADR-0008):
+// discovered tools surface as mcp__<server>__<tool> with their JSON schemas passed through
+// verbatim.
 type mcpTools struct {
 	mgr   *mcpclient.Manager
 	close func() error
@@ -861,14 +675,8 @@ func (m mcpTools) Execute(ctx context.Context, name, argsJSON string) (string, e
 	return m.mgr.Execute(ctx, name, argsJSON)
 }
 
-// emitTurnUsage emits ONE usage record for a provider turn (D2, opencode
-// step_finish parity — per turn, not per session). Provider/model are
-// split from the manifest model ref (D1) so get_usage/cost attribute
-// native executions to the real provider/model; a ref with no
-// provider/model falls back to "unknown"/"unknown". A genuinely-empty
-// turn (all buckets zero) is dropped, but a cache-only turn (nonzero
-// cache, zero prompt/completion) is kept — it is REAL usage. No estimate
-// is ever synthesized here (operator directive).
+// emitTurnUsage emits ONE usage record for a provider turn (D2, opencode step_finish parity — per
+// turn, not per session).
 func (b *NativeBridge) emitTurnUsage(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest, u Usage) {
 	provider, model, ok := adapter.SplitForServe(manifest.ModelRef)
 	if !ok {
@@ -892,9 +700,8 @@ func (b *NativeBridge) emitTurnUsage(ctx context.Context, exec db.ExecutionRow, 
 		CompletionTokens: u.OutputTokens,
 		ReasoningTokens:  u.ReasoningTokens,
 		CostUSD:          u.CostUSD,
-		// AdapterKind is set here so the record self-describes: the native
-		// in-process engine is the "orchicon" kind. The Ask path sets its own
-		// (parsed from the conversation's model_ref).
+		// AdapterKind is set here so the record self-describes: the native in-process engine is the
+		// "orchicon" kind.
 		AdapterKind:   "orchicon",
 		CorrelationID: exec.ID,
 		WorkflowRunID: exec.WorkflowRunID,
@@ -902,63 +709,31 @@ func (b *NativeBridge) emitTurnUsage(ctx context.Context, exec db.ExecutionRow, 
 }
 
 // persistSession writes the transcript's DB session parts (best-effort).
-// The parts recorder (sessionPartsRecorder) mirrors the JSONL transcript
-// into execution_session_parts — the SAME durable surface the opencode
-// adapter writes — so the session pane renders native executions as
-// separate line items exactly like opencode ones. Before this, the
-// native bridge persisted nil (the deferred session-parts task never
-// landed) and terminal native executions rendered as one output blob.
 func (b *NativeBridge) persistSession(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest) {
 	_ = b.sessionStore(ctx, exec.ID, exec.TenantID, nil)
 }
 
-// sessionPartsRecorder mirrors a native session's JSONL transcript into
-// the DB session-parts store in opencode part shapes (the frontend's
-// transcriptItems parses exactly these): user_message{text,source},
-// text{part:{text}}, reasoning{part:{text}}, tool_use{part:{tool,callID,
-// state:{status,input,output}}}, step_start/step_finish turn boundaries,
-// error{error:{message}}, and session_info at open. Batches under a mutex
-// and flushes every 2s on a ticker (the pane's transcript-flush cadence),
-// plus a final drain at Close. Best-effort end to end: a failed batch is
-// dropped (the JSONL transcript remains the durable record); persistence
-// never breaks a session.
+// sessionPartsRecorder mirrors a native session's JSONL transcript into the DB session-parts store
+// in opencode part shapes (the frontend's transcriptItems parses exactly these).
 type sessionPartsRecorder struct {
 	mu      sync.Mutex
 	store   scheduler.SessionStoreFunc
 	execID  string
 	tenant  string
 	pending []db.SessionPart
-	// baseSeq offsets the DB part seq so a follow-up session (whose
-	// transcript may start fresh at seq 1) does not collide with the
-	// original run's already-stored parts (unique key (tenant,exec,seq)
-	// ON CONFLICT DO NOTHING would drop them). Set to the original run's
-	// max transcript event seq for follow-ups; 0 = no offset (fresh run).
+	// baseSeq offsets the DB part seq so a follow-up session (whose transcript may start fresh at seq
+	// 1) does not collide with the original run's already-stored parts (unique key (tenant,exec,seq).
 	baseSeq int64
 	// logf reports flush batches (diagnostics; nil-safe).
 	logf func(string, ...any)
-	// open holds in-flight tool_use parts by callID: the invocation part
-	// is stashed at TransToolCall and flushed only when the matching
-	// TransToolResult arrives (with state.output merged in). This is the
-	// opencode parity shape — ONE completed tool_use part per call
-	// carrying state.input + state.output; emitting both an input part and
-	// an output part would render duplicate tool bubbles.
+	// open holds in-flight tool_use parts by callID: the invocation part is stashed at TransToolCall
+	// and flushed only when the matching TransToolResult arrives (with state.output merged in).
 	open map[string]db.SessionPart
-	// text/reason hold the in-flight coalesced streaming runs. The engine loop
-	// emits TransText and TransReasoning per token/delta (loop.go), so mapping
-	// each event to its own part wrote tens of thousands of micro-rows per long
-	// turn — measured on the live plane: 30k-65k reasoning rows plus 1k-1.7k
-	// text rows for ONE execution — which pushed the worker's SUMMARY + FACTS
-	// LEARNED tail past the session pane's bounded fetch window. Consecutive
-	// deltas of one kind append to a single growing part, anchored at the run's
-	// first event seq (seq<<8|sub) and sealed on any event of another kind, on
-	// run overflow, and at drain.
+	// text/reason hold the in-flight coalesced streaming runs.
 	text   coalesceRun
 	reason coalesceRun
 	stop   chan struct{}
-	// stopped is closed by run() on shutdown. Close only waits when the
-	// pump was actually started (go recorder.run() in Start); tests that
-	// drive the recorder synchronously (no pump) must not deadlock, so
-	// started is set by the starter and Close skips the wait when absent.
+	// stopped is closed by run() on shutdown.
 	started chan struct{}
 	stopped chan struct{}
 }
@@ -981,24 +756,11 @@ func (r *sessionPartsRecorder) start() {
 	go r.run()
 }
 
-// observe implements the transcript observer contract: convert one JSONL
-// entry into its opencode part shape and queue it. Runs on the loop's
-// hot path — conversion only, no I/O.
-//
-// Seq contract (opencode parity): the DB store's unique key is
-// (tenant_id, execution_id, seq) with ON CONFLICT DO NOTHING, so every
-// part must carry a DISTINCT seq; the pane orders strictly by seq. One
-// transcript event may expand into SEVERAL parts (a tool_call event
-// becomes the step-close + step-open boundary plus one tool_use part per
-// call), so parts derive their seq as seq<<8 | subIndex from the source
-// event's seq — resume-safe (the JSONL seq continues past the last
-// durable line), replay-idempotent (the same event derives the same
-// seqs, so a re-appended transcript entry cannot double-record), and
-// bounded (subIndex < 256 per event by construction).
+// observe implements the transcript observer contract: convert one JSONL entry into its opencode
+// part shape and queue it.
 func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
-	// A streaming run never spans a transcript boundary: seal every open run
-	// except the one this event continues. Sealing BEFORE the event's own parts
-	// are queued keeps the pending batch in transcript order.
+	// A streaming run never spans a transcript boundary: seal every open run except the one this event
+	// continues.
 	r.sealStreams(typ)
 	// sub pushes one derived part for the source event (subIndex < 256).
 	sub := func(subIndex int64, kind string, payload map[string]any) {
@@ -1013,10 +775,8 @@ func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
 		if jsonUnmarshal(data, &d) != nil {
 			return
 		}
-		// adapter_kind records that this execution's transport is the native
-		// in-process engine; there is deliberately NO serve_url key — a native
-		// session runs on the control plane and has nothing to point at
-		// (absent, never an empty string).
+		// adapter_kind records that this execution's transport is the native in-process engine; there is
+		// deliberately NO serve_url key.
 		r.push(r.part(seq<<8, db.SessionPartSessionInfo, map[string]any{
 			"session_id":   d.Identity.ExecutionID,
 			"adapter_kind": adapter.KindOrchicon,
@@ -1050,13 +810,7 @@ func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
 		// coalesce it by the same rule as text.
 		r.appendRun(&r.reason, seq, db.SessionPartReasoning, d.Text)
 	case TransToolCall:
-		// One turn's assistant tool_use. Tool calls mark a generation
-		// boundary (close the previous step, open the next). Each call's
-		// tool_use part (with state.input) is STASHED open, not flushed —
-		// it completes when the matching TransToolResult arrives, so the
-		// DB holds exactly ONE completed part per call (opencode parity:
-		// state.input + state.output in one part; the todos parser walks
-		// part.state.input for the latest todowrite).
+		// One turn's assistant tool_use.
 		var d struct {
 			Text      string     `json:"text"`
 			ToolCalls []ToolCall `json:"tool_calls"`
@@ -1095,10 +849,8 @@ func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
 		}
 		return
 	case TransToolResult:
-		// The call's completion: merge state.output into the held
-		// invocation part and flush it (one completed part per call). An
-		// orphan result (no held call — e.g. a crash between the two
-		// events) flushes standalone so the output is never lost.
+		// The call's completion: merge state.output into the held invocation part and flush it (one
+		// completed part per call).
 		d, okData := toolResultFromTranscript(data)
 		if !okData {
 			return
@@ -1142,8 +894,7 @@ func (r *sessionPartsRecorder) observe(seq int64, typ string, data []byte) {
 		}})
 	case TransCompaction:
 		// The collapse the native engine performed, in the SAME part kind the opencode and claude adapters
-		// write (db.SessionPartCompacted) — so one renderer serves all three, and a native run finally shows
-		// the same platform notice the other adapters do.
+		// write (db.SessionPartCompacted) — so one renderer serves all three.
 		var d struct {
 			Step              int     `json:"step"`
 			Reason            string  `json:"reason"`
@@ -1184,10 +935,8 @@ func (r *sessionPartsRecorder) holdOpen(p db.SessionPart, callID string) {
 	r.mu.Unlock()
 }
 
-// toolResultFromTranscript decodes a TransToolResult entry tolerantly:
-// the loop marshals ToolCall without JSON tags (Go field names —
-// "ToolCallID"), while some tests/tools use snake_case
-// ("tool_call_id"). Try the strict shape first, then the tagged one.
+// toolResultFromTranscript decodes a TransToolResult entry tolerantly: the loop marshals ToolCall
+// without JSON tags (Go field names — "ToolCallID").
 func toolResultFromTranscript(data []byte) (toolResult, bool) {
 	var strict toolResult
 	if err := jsonUnmarshal(data, &strict); err == nil && strict.ToolCall.ToolCallID != "" {
@@ -1212,9 +961,8 @@ func toolResultFromTranscript(data []byte) (toolResult, bool) {
 	return toolResult{}, false
 }
 
-// releaseOpen pops the held part for callID and, when present, applies
-// merge (state.output ride-along) and queues it. Returns whether a held
-// part existed (false = caller records the result standalone).
+// releaseOpen pops the held part for callID and, when present, applies merge (state.output
+// ride-along) and queues it.
 func (r *sessionPartsRecorder) releaseOpen(callID string, merge func(db.SessionPart) db.SessionPart) bool {
 	r.mu.Lock()
 	p, ok := r.open[callID]
@@ -1226,23 +974,18 @@ func (r *sessionPartsRecorder) releaseOpen(callID string, merge func(db.SessionP
 	return ok
 }
 
-// coalesceRun is one in-flight streaming part run: the source event seq that
-// anchors it (0 = none open), the chunk sub-index within that anchor, and the
-// text accumulated so far.
+// coalesceRun is one in-flight streaming part run: the source event seq that anchors it (0 = none
+// open), the chunk sub-index within that anchor, and the text accumulated so far.
 type coalesceRun struct {
 	seq int64
 	sub int64
 	buf strings.Builder
 }
 
-// maxCoalescedBytes bounds one coalesced part. A longer run seals into chunks
-// (still orders of magnitude fewer rows than one per delta), sub-indexed so
-// every part keeps a distinct seq under the same anchor.
+// maxCoalescedBytes bounds one coalesced part.
 const maxCoalescedBytes = 32 * 1024
 
-// appendRun extends a streaming run with one delta. Overflow seals full chunks
-// under the run's anchor seq, so N deltas become about
-// ceil(bytes/maxCoalescedBytes) parts instead of N.
+// appendRun extends a streaming run with one delta.
 func (r *sessionPartsRecorder) appendRun(run *coalesceRun, seq int64, kind, text string) {
 	if text == "" {
 		return
@@ -1269,12 +1012,8 @@ func (r *sessionPartsRecorder) appendRun(run *coalesceRun, seq int64, kind, text
 	}
 }
 
-// sealRunLocked queues the buffered run as ONE part (no-op when empty) and
-// advances the run's sub-index. Caller must hold r.mu. It goes through r.part
-// so the baseSeq offset is preserved — a follow-up session's coalesced parts
-// must not collide with the original run's stored seqs (the store's unique key
-// is (tenant, execution, seq) with ON CONFLICT DO NOTHING, so a collision would
-// silently DROP the part).
+// sealRunLocked queues the buffered run as ONE part (no-op when empty) and advances the run's
+// sub-index.
 func (r *sessionPartsRecorder) sealRunLocked(run *coalesceRun, kind string) {
 	if run.buf.Len() == 0 {
 		return
@@ -1285,10 +1024,8 @@ func (r *sessionPartsRecorder) sealRunLocked(run *coalesceRun, kind string) {
 	run.sub++
 }
 
-// sealStreams seals every open streaming run except the one keepType
-// continues (keepType == "" seals all). observe calls it on entry and drainOpen
-// calls it at session end, so a run is always bounded by the transcript event
-// that ended it.
+// sealStreams seals every open streaming run except the one keepType continues (keepType == ""
+// seals all).
 func (r *sessionPartsRecorder) sealStreams(keepType string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -1302,13 +1039,8 @@ func (r *sessionPartsRecorder) sealStreams(keepType string) {
 	}
 }
 
-// drainOpen seals any streaming run still open, then flushes any still-held
-// invocation parts (a session ending without a result: crash/cancel mid-call).
-// The held input is preserved (status completed, empty output) so the operator
-// sees what the worker was about to do — never a silently missing call; and the
-// sealed streaming tail is the worker's own report (SUMMARY + FACTS LEARNED),
-// so sealing it is the difference between a renderable transcript and a silently
-// truncated one.
+// drainOpen seals any streaming run still open, then flushes any still-held invocation parts (a
+// session ending without a result: crash/cancel mid-call).
 func (r *sessionPartsRecorder) drainOpen() {
 	r.sealStreams("")
 	r.mu.Lock()
@@ -1336,11 +1068,8 @@ func (r *sessionPartsRecorder) part(seq int64, kind string, payload map[string]a
 	return db.SessionPart{
 		ExecutionID: r.execID,
 		TenantID:    r.tenant,
-		// Offset by baseSeq<<8 so a follow-up session whose transcript
-		// starts fresh does not collide with the original run's stored
-		// parts (unique key (tenant,exec,seq) ON CONFLICT DO NOTHING
-		// would drop them). baseSeq = the original run's max event seq;
-		// 0 = no offset (fresh run).
+		// Offset by baseSeq<<8 so a follow-up session whose transcript starts fresh does not collide with
+		// the original run's stored parts (unique key (tenant,exec,seq) ON CONFLICT DO NOTHING would drop.
 		Seq:     seq + r.baseSeq<<8,
 		Kind:    kind,
 		Payload: db.MarshalPartPayload(payload),
@@ -1390,10 +1119,7 @@ func (r *sessionPartsRecorder) flush() {
 	}
 }
 
-// Close drains both pending parts and any still-held open tool calls,
-// then stops the pump. The wait is skipped when start() was never called
-// (tests drive the recorder synchronously) and bounded when the pump is
-// mid-flush against a slow store — best-effort by contract.
+// Close drains both pending parts and any still-held open tool calls, then stops the pump.
 func (r *sessionPartsRecorder) Close() {
 	r.drainOpen()
 	r.flush()
@@ -1405,9 +1131,7 @@ func (r *sessionPartsRecorder) Close() {
 	}
 	select {
 	case <-r.started:
-		// Pump was started: its exit-path flush covers everything queued
-		// up to close(r.stop). Bounded wait — a slow store never blocks
-		// the session end.
+		// Pump was started: its exit-path flush covers everything queued up to close(r.stop).
 		select {
 		case <-r.stopped:
 		case <-time.After(2 * time.Second):
@@ -1439,12 +1163,8 @@ func identityFromReplay(evs []replayEvent) Identity {
 	return Identity{}
 }
 
-// verifyContinuationIdentity loads the prior session's transcript and
-// confirms it belongs to the SAME worker as the continuing execution
-// (identity isolation by construction — no worker ever sees another
-// worker's transcript). A missing or unparseable prior transcript, or a
-// worker mismatch, is an error and the caller falls back to a fresh
-// session.
+// verifyContinuationIdentity loads the prior session's transcript and confirms it belongs to the
+// SAME worker as the continuing execution (identity isolation by construction.
 func verifyContinuationIdentity(priorPath string, exec db.ExecutionRow) error {
 	evs, err := Load(priorPath)
 	if err != nil {
@@ -1465,26 +1185,19 @@ var jsonUnmarshal = func(b []byte, v any) error {
 	return json.Unmarshal(b, v)
 }
 
-// tenantOf is a placeholder seam for tenant verification of a prior
-// session; the transcript identity carries the tenant id directly, so
-// this resolves it from the replay identity.
+// tenantOf is a placeholder seam for tenant verification of a prior session; the transcript
+// identity carries the tenant id directly, so this resolves it from the replay identity.
 func tenantOf(sessionID string, id Identity) string {
 	return id.TenantID
 }
 
-// followUpReplyWindow bounds how long a follow-up waits for the model's
-// reply (opencode parity). The follow-up runs asynchronously (the RPC
-// returns at once), so the window can be generous enough to cover a long
-// answer without ever blocking the UI. Env-overridable via
-// ORCHICON_FOLLOWUP_REPLY_WINDOW.
+// followUpReplyWindow bounds how long a follow-up waits for the model's reply (opencode parity).
 func followUpReplyWindow() time.Duration {
 	return envDuration("ORCHICON_FOLLOWUP_REPLY_WINDOW", 30*time.Minute)
 }
 
-// followerDefaultPrompt is the belt-and-suspenders fallback when a
-// caller does not supply a per-turn system prompt. The execution service
-// ALWAYS composes one (composeFollowUpPrompt), so this is never used in
-// production — it only bounds against a bare bridge-level test caller.
+// followerDefaultPrompt is the belt-and-suspenders fallback when a caller does not supply a
+// per-turn system prompt.
 func followUpDefaultPrompt() string {
 	return "You are answering a follow-up question from the user about the work you just completed. Be concise and directly address the question. If the requested change is substantial, describe the concrete plan before making it."
 }

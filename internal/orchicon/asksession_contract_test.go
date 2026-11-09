@@ -8,25 +8,12 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// nativeAskSessionContract is the session contract the Ask persona carries
-// (askorchicon BuildSystemPrompt, "## Session contract"). Duplicated here as a
-// literal rather than imported because askorchicon imports THIS package, so a
-// test import would be a cycle. The guard below is scoped to the property that
-// matters on the native path: whatever the caller passes is what the provider
-// receives.
+// nativeAskSessionContract is the session contract the Ask persona carries (askorchicon
+// BuildSystemPrompt, "## Session contract").
 const nativeAskSessionContract = "## Session contract\nThis is a LIVE CONVERSATION, not a budgeted worker execution."
 
-// The NATIVE Ask path must deliver the caller's system prompt to the provider
-// verbatim, with nothing worker-shaped appended.
-//
-// Why this guard exists: the opencode adapter baked a worker/economy agent shell
-// into its serve config, which every session on that serve inherited — and Ask
-// conversations reported being "almost at my budget" as a result. The native
-// path has no such shell (it is in-process), but it DOES have its own worker
-// contract (NativeStaticLayer) that would be just as wrong here: it states "You
-// are an Orchicon worker executing one assigned work item" and "spends your
-// tool-call budget". This pins the boundary so that contract can never reach a
-// conversation.
+// The NATIVE Ask path must deliver the caller's system prompt to the provider verbatim, with
+// nothing worker-shaped appended.
 func TestNativeAskTurnCarriesOnlyTheCallersSystemPrompt(t *testing.T) {
 	prov := &chatTestProvider{}
 	b := newChatBridge(t, prov)
@@ -95,9 +82,9 @@ func TestNativeAskToolSurfaceCarriesNoBudgetFraming(t *testing.T) {
 	if !strings.Contains(NativeStaticLayer, "tool-call budget") {
 		t.Skip("worker contract wording changed; see TestNativeAskTurnCarriesOnlyTheCallersSystemPrompt")
 	}
-	// The native Ask definitions are injected by the server (askorchicon), so the
-	// property we can assert here is that the native package owns no additional
-	// conversation-facing budget text of its own.
+	// The native Ask definitions are injected by the server (askorchicon), so the property we can
+	// assert here is that the native package owns no additional conversation-facing budget text of its
+	// own.
 	if strings.Contains(NativeStaticLayer, "LIVE CONVERSATION") {
 		t.Error("the worker contract must not claim to be a live conversation")
 	}

@@ -1,16 +1,6 @@
 package askorchicon
 
 // withhold_stale_resolution_test.go — the LEGACY half of the card-flicker fix.
-//
-// Ask ids are now globally unique (orchicon.NativeBridge.nextPermID), so a new ask cannot inherit an old
-// ask's recorded outcome. But ids written BEFORE that fix are still in the transcript ledger: measured on one
-// conversation, native-ask-1 carries BOTH an ALLOW_ONCE from an earlier day and a live raise from a later
-// one. A card raised against such an id is still settled from the stale record and then re-armed from the
-// open list — the same settle/re-arm flicker, on legacy data only.
-//
-// The server can see the contradiction the client cannot: the ledger says the ask is finished, the pending
-// registry says a turn is parked on it. The registry wins, so the historical record is withheld from the
-// wire. This is the "current truth beats historical truth" rule.
 
 import (
 	"testing"
@@ -68,9 +58,7 @@ func TestStaleResolutionIsWithheldOnlyWhileItsAskIsOpen(t *testing.T) {
 	}
 }
 
-// ONLY RESOLUTIONS ARE WITHHELD. A raise (`permission.ask`, `permission.question`) and a call that proceeded
-// without a card (`session_grant`, `fullsend`) must pass through untouched even for an open ask — none of
-// them says anything about whether a card was answered, and dropping the raise would hide the card.
+// ONLY RESOLUTIONS ARE WITHHELD.
 func TestOnlyResolutionVerdictsAreWithheld(t *testing.T) {
 	passThrough := []string{
 		"permission.ask",

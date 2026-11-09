@@ -1,14 +1,6 @@
 package config
 
 // datadir_location_test.go — the state dir is anchored to an ABSOLUTE path at construction.
-//
-// REPORTED: a worker on a Claude container run found a `secrets/kek` in the worktree root. The KEK lives at
-// filepath.Join(DataDir, "secrets", "kek"), so a relative DataDir makes its location depend on the working
-// directory of whichever process reads it — and a worker's CWD is the bind-mounted worktree.
-//
-// Abs() is used rather than refusing a relative override because a relative state dir is legitimate in dev
-// (BlobStoreDir has always defaulted to "./data/blobs"); what is not legitimate is letting its MEANING depend
-// on the working directory.
 
 import (
 	"path/filepath"

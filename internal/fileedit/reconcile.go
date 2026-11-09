@@ -38,9 +38,8 @@ import (
 //
 // Empty baseRef = working-tree only (today's behaviour, unchanged).
 func ReconcileGit(ctx context.Context, store Store, worktreeDir, tenantID, ownerKind, ownerID, baseRef string, log *slog.Logger) error {
-	// Resolve the base to a MERGE BASE once, not per path: 'develop...HEAD' is
-	// only the branch's own delta when the fork point is used, and one git call
-	// beats one per changed file.
+	// Resolve the base to a MERGE BASE once, not per path: 'develop...HEAD' is only the branch's own
+	// delta when the fork point is used, and one git call beats one per changed file.
 	mergeBase := ""
 	if baseRef != "" {
 		mergeBase = mergeBaseRef(worktreeDir, baseRef)
@@ -118,9 +117,8 @@ func isGitRepo(dir string) bool {
 	return err == nil && strings.TrimSpace(string(out)) == "true"
 }
 
-// gitChangedPaths lists the worktree-changed paths from
-// `git status --porcelain=v1` (tracked + untracked, renames surfaced as
-// delete+add of their old/new paths).
+// gitChangedPaths lists the worktree-changed paths from `git status --porcelain=v1` (tracked +
+// untracked, renames surfaced as delete+add of their old/new paths).
 func gitChangedPaths(dir, mergeBase string) ([]string, error) {
 	cmd := procwin.Command("git", "-C", dir, "status", "--porcelain=v1", "-z")
 	out, err := cmd.Output()
@@ -150,16 +148,6 @@ func gitChangedPaths(dir, mergeBase string) ([]string, error) {
 		}
 	}
 	// COMMITTED WORK, which `git status` CANNOT SEE.
-	//
-	// The worker's contract is to commit and leave the tree clean, so for a RUN
-	// the working-tree list above is empty while the entire contribution sits in
-	// commits on the run branch. Diffing from the FORK POINT (the merge base,
-	// never the base ref itself: the base may have moved on since the branch was
-	// cut, and `base..HEAD` would then report every unrelated merge) yields
-	// exactly the branch's own delta.
-	//
-	// This is additive: an empty mergeBase — every Ask conversation, and any
-	// caller that did not ask for branch semantics — leaves the list as it was.
 	if mergeBase != "" {
 		committed, cerr := committedPaths(dir, mergeBase)
 		if cerr == nil {
@@ -178,10 +166,8 @@ func gitChangedPaths(dir, mergeBase string) ([]string, error) {
 	return paths, nil
 }
 
-// gitEntryFor builds a corrective ledger entry for one git-changed path:
-// "after" is the live file content (nil when deleted), "before" is
-// `git show HEAD:<path>` (nil for untracked/new files). The diff is computed
-// by the same engine as every other entry — final truth == git truth.
+// gitEntryFor builds a corrective ledger entry for one git-changed path: "after" is the live file
+// content (nil when deleted), "before" is `git show HEAD:<path>` (nil for untracked/new files).
 func gitEntryFor(worktreeDir, relPath, mergeBase string) (Entry, bool) {
 	abs := filepath.Join(worktreeDir, filepath.FromSlash(relPath))
 	var after []byte
@@ -191,13 +177,6 @@ func gitEntryFor(worktreeDir, relPath, mergeBase string) (Entry, bool) {
 		return Entry{}, false
 	}
 	// THE BEFORE-SIDE IS THE FORK POINT, not HEAD.
-	//
-	// For a committed run HEAD *is* the commit, so a HEAD-seeded before is the
-	// SAME BYTES as the after: the row would be written and the diff would be
-	// empty, which is how a ledger with the right paths still renders nothing.
-	// The fork point is the last state before this run touched the file, so
-	// mb:path vs the working copy is the run's actual change — and a path absent
-	// at mb yields a nil before, i.e. a correct NEW-FILE diff.
 	before := gitShowHEAD(worktreeDir, relPath)
 	if mergeBase != "" {
 		before = gitShowAt(worktreeDir, mergeBase, relPath)
@@ -206,13 +185,8 @@ func gitEntryFor(worktreeDir, relPath, mergeBase string) (Entry, bool) {
 	return e, true
 }
 
-// committedPaths lists the paths this branch changed relative to the merge base
-// — the changes `git status` cannot report because they are committed.
-//
-// Rename detection is DISABLED (--no-renames) so a rename surfaces as the plain
-// old and new paths rather than as a paired record: the ledger keys on paths,
-// and a rename pair would need both to be tracked anyway. Each is then a normal
-// entry — a delete on one path and a create on the other.
+// committedPaths lists the paths this branch changed relative to the merge base — the changes `git
+// status` cannot report because they are committed.
 func committedPaths(dir, mergeBase string) ([]string, error) {
 	cmd := procwin.Command("git", "-C", dir, "diff", "--name-only", "-z", "--no-renames", mergeBase, "HEAD")
 	out, err := cmd.Output()
@@ -228,9 +202,8 @@ func committedPaths(dir, mergeBase string) ([]string, error) {
 	return paths, nil
 }
 
-// gitShowAt returns a file's content at rev, or nil when it does not exist
-// there (a new file) or the ref cannot be read. A nil before is meaningful:
-// EntryFromSnapshots renders it as a creation.
+// gitShowAt returns a file's content at rev, or nil when it does not exist there (a new file) or
+// the ref cannot be read.
 func gitShowAt(dir, rev, rel string) []byte {
 	cmd := procwin.Command("git", "-C", dir, "show", rev+":"+rel)
 	out, err := cmd.Output()
@@ -240,9 +213,8 @@ func gitShowAt(dir, rev, rel string) []byte {
 	return out
 }
 
-// mergeBaseRef resolves the fork point of HEAD and base, or "" when it cannot
-// be resolved (unknown ref, no history, not a repo) — in which case the caller
-// keeps working-tree-only semantics rather than guessing.
+// mergeBaseRef resolves the fork point of HEAD and base, or "" when it cannot be resolved (unknown
+// ref, no history, not a repo).
 func mergeBaseRef(dir, base string) string {
 	cmd := procwin.Command("git", "-C", dir, "merge-base", "HEAD", base)
 	out, err := cmd.Output()
@@ -253,14 +225,6 @@ func mergeBaseRef(dir, base string) string {
 }
 
 // BaseRefFor resolves the ref a RUN's worktree branch was cut from.
-//
-// IT MIRRORS THE WORKTREE RECONCILER'S OWN RESOLUTION
-// (scheduler.resolveBaseRef: develop → origin/develop → origin/HEAD → current
-// HEAD) ON PURPOSE. The branch was CREATED from whatever that resolves to, so
-// resolving it the same way here means the reconcile anchors on the branch's
-// real fork point by construction rather than by a second, drifting guess.
-//
-// Returns "" when nothing resolves; callers then get working-tree semantics.
 func BaseRefFor(dir string) string {
 	for _, ref := range []string{"develop", "origin/develop"} {
 		if procwin.Command("git", "-C", dir, "rev-parse", "--verify", "--quiet", ref).Run() == nil {

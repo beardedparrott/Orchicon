@@ -22,9 +22,9 @@ import (
 //	export ORCHICON_TEST_DSN='postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable'
 //	go test ./internal/askorchicon/ -run 'TestToolUpdateAutoStart' -v
 
-// toolRunsForItem counts the real workflow runs bound to a work item —
-// the MCP path calls StartWorkflowDirect directly (no injectable starter),
-// so "nothing started" is asserted as zero run rows.
+// toolRunsForItem counts the real workflow runs bound to a work item — the MCP path calls
+// StartWorkflowDirect directly (no injectable starter), so "nothing started" is asserted as zero
+// run rows.
 func toolRunsForItem(t *testing.T, pool *db.Pool, itemID string) int {
 	t.Helper()
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
@@ -82,9 +82,8 @@ type toolResult struct {
 	Warning string `json:"warning"`
 }
 
-// TestToolUpdateAutoStartDeclinedOnCancelledDB — cancelled item + legacy
-// stale flag + workflow_id edit: the binding is saved, no run is created,
-// and no warning is emitted (the user never asked).
+// TestToolUpdateAutoStartDeclinedOnCancelledDB — cancelled item + legacy stale flag + workflow_id
+// edit: the binding is saved, no run is created, and no warning is emitted (the user never asked).
 func TestToolUpdateAutoStartDeclinedOnCancelledDB(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
@@ -114,11 +113,6 @@ func TestToolUpdateAutoStartDeclinedOnCancelledDB(t *testing.T) {
 }
 
 // TestToolUpdateAutoStartExplicitFiresFromFailedDB — tool parity with the service's inverted rule.
-//
-// An EXPLICIT auto_start_workflow=true on a failed item now STARTS the bound run: the operator's "it
-// should take no matter what status it is in". Starting asserts status=running unconditionally, so the
-// pre-status was never a correctness requirement — only the STALE-flag rule guards what the old status
-// gate was protecting (see the stale-flag test below, still green).
 func TestToolUpdateAutoStartExplicitFiresFromFailedDB(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
@@ -192,22 +186,8 @@ func TestToolUpdateAutoStartGoodPathDB(t *testing.T) {
 	}
 }
 
-// TestToolUpdateAutoStartStaleFlagUnboundStartableDB is the UNBOUND LEAF
-// case: a startable row carrying the stored auto_start_workflow flag with NO
-// workflow bound and NO children, edited by a plain (non-auto-start) update.
-//
-// The sequence validation that rejects an unbound leaf runs only when the
-// REQUEST asks to start, so this edit skipped it and reached the post-commit
-// auto-start with a nil binding — `*updated.WorkflowID` dereferenced nil and
-// the panic killed the whole process. The RPC handler has always guarded this
-// (updated.WorkflowID != nil && *updated.WorkflowID != "",
-// internal/workitem/service.go); this pins the tool path to the same
-// behaviour: no panic, the edit saved, nothing started.
-//
-// This is NOT the shape that crashed production — that row was a sequence
-// PARENT (see TestToolUpdateAutoStartSequenceParentFiresChainDB). It is the
-// same nil deref reached from the other side of the branch, and it is the
-// guard's own regression pin.
+// TestToolUpdateAutoStartStaleFlagUnboundStartableDB is the UNBOUND LEAF case: a startable row
+// carrying the stored auto_start_workflow flag with NO workflow bound and NO children.
 func TestToolUpdateAutoStartStaleFlagUnboundStartableDB(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
@@ -237,10 +217,8 @@ func TestToolUpdateAutoStartStaleFlagUnboundStartableDB(t *testing.T) {
 	}
 }
 
-// TestToolUpdateAutoStartExplicitUnboundRejectsDB pins the OTHER entry to the
-// same unbound branch: an explicit auto_start_workflow=true on an unbound
-// leaf is rejected by schedule-time validation (nothing to run) BEFORE the
-// post-commit start. It must be an error, never a panic.
+// TestToolUpdateAutoStartExplicitUnboundRejectsDB pins the OTHER entry to the same unbound branch:
+// an explicit auto_start_workflow=true on an unbound leaf is rejected by schedule-time validation.
 func TestToolUpdateAutoStartExplicitUnboundRejectsDB(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
@@ -257,26 +235,8 @@ func TestToolUpdateAutoStartExplicitUnboundRejectsDB(t *testing.T) {
 	}
 }
 
-// TestToolUpdateAutoStartSequenceParentFiresChainDB pins the FIRE PATH for the
-// shape that actually crashed production on 2026-09-28: an armed SEQUENCE
-// PARENT, not an unbound leaf.
-//
-// The row that killed the host plane was feature 01KYQXRABZC7JAX65FF5GWG7S1 —
-// status pending, auto_start_workflow true, workflow_id NULL, SIX children —
-// edited by a plain (non-auto-start) update during a bulk "update them, then
-// schedule them" request. Its UpdatedAt (08:23:10.717584) is 2.7 ms before the
-// panic at tool_workitems.go:755, and its scheduled_start_at is still NULL
-// because the plane died before it could schedule.
-//
-// A parent's NULL binding is that mode's NORMAL state, not a legacy flag:
-// StartSequence clears the parent's own workflow_id ("a parent with children
-// IS a sequence container, its own workflow_id is ignored") and the children
-// each run their own. The Connect handler routes exactly this shape to the
-// chain (itemHasChildren → maybeStartSequence); the tool path lacked the
-// branch and fell through to the leaf deref, so it panicked the whole plane
-// instead of firing. This pins parity: no panic, the edit saved, the chain
-// actually fires. Declining silently here would be the same divergence in the
-// other direction.
+// TestToolUpdateAutoStartSequenceParentFiresChainDB pins the FIRE PATH for the shape that actually
+// crashed production on 2026-09-28: an armed SEQUENCE PARENT, not an unbound leaf.
 func TestToolUpdateAutoStartSequenceParentFiresChainDB(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)
@@ -289,11 +249,7 @@ func TestToolUpdateAutoStartSequenceParentFiresChainDB(t *testing.T) {
 	// The armed shape: startable, stored flag on, and no binding of its own.
 	forceToolState(t, pool, parent.ID, domain.WorkItemPending, true)
 
-	// THE GESTURE IS EXPLICIT. This used to rely on the STORED flag firing under a title-only edit —
-	// which is exactly the hazard the operator named ("not fire anything off that already has auto
-	// set… it must be done as an action when saving the record only"), and which the service now
-	// refuses. The parity being pinned is the ROUTING (a parent with children is a CHAIN, never the
-	// leaf deref that panicked the plane), so the request asks for a start outright.
+	// THE GESTURE IS EXPLICIT.
 	res, err := toolUpdateWorkItem(ctx, pool,
 		json.RawMessage(fmt.Sprintf(`{"id":%q,"title":"Renamed Armed Chain","auto_start_workflow":true}`, parent.ID)))
 	if err != nil {

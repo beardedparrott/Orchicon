@@ -1,8 +1,7 @@
 package orchicon
 
-// Registry built-in override resolution tests: a built-in provider id must
-// resolve built-in default ⊕ tenant overrides (EffectiveProfile), with the
-// pure built-in table as the no-row fallback.
+// Registry built-in override resolution tests: a built-in provider id must resolve built-in default
+// ⊕ tenant overrides (EffectiveProfile), with the pure built-in table as the no-row fallback.
 
 import (
 	"context"

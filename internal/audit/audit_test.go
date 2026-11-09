@@ -13,9 +13,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/migrate"
 )
 
-// openTestPool opens a DB pool against ORCHICON_TEST_DSN (mirrors the
-// other DB-backed tests) and applies migrations so the audit_events
-// table + auth_method column exist.
+// openTestPool opens a DB pool against ORCHICON_TEST_DSN (mirrors the other DB-backed tests) and
+// applies migrations so the audit_events table + auth_method column exist.
 func openTestPool(t *testing.T) *db.Pool {
 	t.Helper()
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
@@ -34,9 +33,8 @@ func openTestPool(t *testing.T) *db.Pool {
 	return pool
 }
 
-// TestAuditRecordCommitted verifies a row lands in the tx and is visible
-// after commit (transactional outbox: audit row exists iff mutation
-// committed).
+// TestAuditRecordCommitted verifies a row lands in the tx and is visible after commit
+// (transactional outbox: audit row exists iff mutation committed).
 func TestAuditRecordCommitted(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()
@@ -124,9 +122,8 @@ func TestAuditRecordRollback(t *testing.T) {
 	}
 }
 
-// TestAuditSystemRowNullActorScan verifies a system-actor row (no
-// identity -> actor_identity_id stored NULL) lists cleanly: the read
-// path must scan the nullable column, not assume a non-null string.
+// TestAuditSystemRowNullActorScan verifies a system-actor row (no identity -> actor_identity_id
+// stored NULL) lists cleanly: the read path must scan the nullable column.
 func TestAuditSystemRowNullActorScan(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()

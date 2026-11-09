@@ -25,10 +25,7 @@ import (
 	"testing"
 )
 
-// TestInteractiveEnvironEmitsFullsendOnlyWhenOn pins the ENV CONTRACT. Off must emit
-// nothing at all rather than a "0": an unset variable is the absence of the mode, so a
-// shim driven by an environment this code did not build cannot be read as fullsend by
-// misreading a value it does not understand.
+// TestInteractiveEnvironEmitsFullsendOnlyWhenOn pins the ENV CONTRACT.
 func TestInteractiveEnvironEmitsFullsendOnlyWhenOn(t *testing.T) {
 	off := InteractiveEnviron("/tmp/policy.yaml", "/p", nil, nil, false)
 	for _, kv := range off {
@@ -90,15 +87,6 @@ func TestInteractiveFullsendWaivesTheSanctionedSet(t *testing.T) {
 }
 
 // TestInteractiveFullsendStillRefusesADenyEntry is THE safety test for this mode.
-//
-// A deny entry is a policy DECISION, not a permission request: no card is ever raised
-// for it, so there is no prompt for fullsend to waive. If this fails, fullsend silently
-// opens the operator's own exclusions — the presets among them — and the mode's name
-// becomes a lie in the one direction that matters.
-//
-// BOTH SPELLINGS, because the model writes paths any way a shell accepts them: the shim
-// expands home itself (pem_expand_home), and a waiver that only honoured the literal
-// spelling would be bypassable by writing $HOME instead of ~.
 func TestInteractiveFullsendStillRefusesADenyEntry(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -131,9 +119,8 @@ func TestInteractiveFullsendStillRefusesADenyEntry(t *testing.T) {
 	}
 }
 
-// TestInteractiveFullsendCannotReachTheNeverAllowClass — sudo / dd / mkfs* are refused
-// before any permission decision exists, so fullsend has nothing to waive. The class is a
-// separate case arm, which is what makes it unreachable from any environment value.
+// TestInteractiveFullsendCannotReachTheNeverAllowClass — sudo / dd / mkfs* are refused before any
+// permission decision exists, so fullsend has nothing to waive.
 func TestInteractiveFullsendCannotReachTheNeverAllowClass(t *testing.T) {
 	policy := writePolicyLists(t, nil, nil)
 	g, err := NewExecutionGuardWithPolicy("", policy)
@@ -197,14 +184,8 @@ func TestTheWorkerProfileCarriesNoInteractiveEnvironment(t *testing.T) {
 	}
 }
 
-// TestFullsendCannotBeSmuggledIntoAWorkerShim — DEFENCE IN DEPTH, and the reason FULLSEND is safe to
-// have added to the shim at all.
-//
-// The shim's fullsend branch sits INSIDE the interactive check, because FULLSEND waives the
-// SANCTIONED SET and a worker has no sanctioned set to waive — a worker's rule is "stay inside the
-// project", which is the frozen half of the guard. So even if the variable were present in a
-// worker's environment (a mis-set variable, an inherited one, a future caller), the interactive gate
-// comes first and the path is still refused.
+// TestFullsendCannotBeSmuggledIntoAWorkerShim — DEFENCE IN DEPTH, and the reason FULLSEND is safe
+// to have added to the shim at all.
 func TestFullsendCannotBeSmuggledIntoAWorkerShim(t *testing.T) {
 	proj := t.TempDir()
 	outside := t.TempDir()
@@ -232,17 +213,6 @@ func TestFullsendCannotBeSmuggledIntoAWorkerShim(t *testing.T) {
 
 // TestTheDenyListAppliesToWorkersTooAndAlwaysHas — the ONE place the Ask work touches worker
 // behaviour, stated so it is not discovered by surprise.
-//
-// The deny list is consulted FIRST in blocked_path, before the project/scratch/grant/accept
-// allowances, and it is consulted in BOTH profiles: `denied_target` calls policy_lookup without the
-// interactive gate. So the operator's exclusions (the presets: SSH keys, GNUPG, AWS, gh config,
-// git-credentials, netrc, Docker config) already refuse worker commands, and have since the
-// persistent policy landed — this branch does not change it.
-//
-// THAT IS DIFFERENT FROM THE PROMPT. The interactive profile ADDS asking; the deny list is a
-// standing decision that applies everywhere. Worth pinning in both directions: if someone later
-// makes the deny list Ask-only, this fails; and the path used here is INSIDE the project, so the
-// project allowance would otherwise have permitted it.
 func TestTheDenyListAppliesToWorkersTooAndAlwaysHas(t *testing.T) {
 	proj := t.TempDir()
 	policy := writePolicyLists(t, []string{filepath.Join(proj, "secret") + "/**"}, nil)

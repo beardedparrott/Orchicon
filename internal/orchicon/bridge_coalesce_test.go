@@ -9,17 +9,6 @@ import (
 )
 
 // bridge_coalesce_test.go covers sessionPartsRecorder's streaming coalescing.
-//
-// The engine loop appends TransText and TransReasoning per token/delta
-// (loop.go), so mapping each event straight to its own part wrote tens of
-// thousands of micro-rows for one long turn. Measured on the live plane before
-// this fix: 30,146 reasoning rows and 1,073 text rows (avg payload 37 bytes)
-// for a single succeeded execution — 31,365 parts in total. The session pane
-// fetches with a bounded window (default limit 1000, ORDER BY seq ASC), so the
-// worker's ORCHICON WORKER SUMMARY + FACTS LEARNED tail was structurally
-// unreachable: no text part in any of the sampled executions carried it.
-//
-// Reuses the recordingStore/partsOf drivers declared in bridge_parts_test.go.
 
 // paneFetchWindow mirrors db.GetExecutionSession's default part limit: the
 // number of parts the session pane renders for a run.
@@ -56,9 +45,8 @@ func partText(t *testing.T, p db.SessionPart) string {
 	return s
 }
 
-// TestSessionPartsRecorderCoalescesATextRun is the core regression: N
-// consecutive text deltas become ONE part carrying the concatenation, anchored
-// at the run's first event seq.
+// TestSessionPartsRecorderCoalescesATextRun is the core regression: N consecutive text deltas
+// become ONE part carrying the concatenation, anchored at the run's first event seq.
 func TestSessionPartsRecorderCoalescesATextRun(t *testing.T) {
 	store := &recordingStore{}
 	rec := newSessionPartsRecorder(store.record, "exec_text_run", "tnt_test")
@@ -92,9 +80,8 @@ func TestSessionPartsRecorderCoalescesATextRun(t *testing.T) {
 	}
 }
 
-// TestSessionPartsRecorderCoalescesAReasoningRun pins the dominant class: the
-// live plane's 30k-65k reasoning rows per execution were the bulk of the
-// transcript that buried the report.
+// TestSessionPartsRecorderCoalescesAReasoningRun pins the dominant class: the live plane's 30k-65k
+// reasoning rows per execution were the bulk of the transcript that buried the report.
 func TestSessionPartsRecorderCoalescesAReasoningRun(t *testing.T) {
 	store := &recordingStore{}
 	rec := newSessionPartsRecorder(store.record, "exec_reason_run", "tnt_test")
@@ -121,10 +108,8 @@ func TestSessionPartsRecorderCoalescesAReasoningRun(t *testing.T) {
 	}
 }
 
-// TestSessionPartsRecorderSealsRunsInTranscriptOrder covers the boundaries: a
-// run is sealed by any event that is not its own kind (here a tool call and a
-// follow-up message), so runs never span a transcript boundary and the parts
-// stay in transcript order by seq.
+// TestSessionPartsRecorderSealsRunsInTranscriptOrder covers the boundaries: a run is sealed by any
+// event that is not its own kind (here a tool call and a follow-up message).
 func TestSessionPartsRecorderSealsRunsInTranscriptOrder(t *testing.T) {
 	store := &recordingStore{}
 	rec := newSessionPartsRecorder(store.record, "exec_order", "tnt_test")
@@ -219,10 +204,8 @@ func TestSessionPartsRecorderCoalesceChunkBounded(t *testing.T) {
 	}
 }
 
-// TestSessionPartsRecorderCoalesceHonoursBaseSeq guards the follow-up path: a
-// coalesced part must carry the baseSeq offset, or the store's unique key
-// (tenant, execution, seq) collides with the original run and ON CONFLICT DO
-// NOTHING silently drops it.
+// TestSessionPartsRecorderCoalesceHonoursBaseSeq guards the follow-up path: a coalesced part must
+// carry the baseSeq offset, or the store's unique key (tenant, execution.
 func TestSessionPartsRecorderCoalesceHonoursBaseSeq(t *testing.T) {
 	store := &recordingStore{}
 	rec := newSessionPartsRecorder(store.record, "exec_baseseq", "tnt_test")
@@ -243,11 +226,8 @@ func TestSessionPartsRecorderCoalesceHonoursBaseSeq(t *testing.T) {
 	}
 }
 
-// TestSessionPartsRecorderLongTurnStaysWithinPaneWindow is the operator-visible
-// acceptance criterion, on the shape the live plane actually produced: tens of
-// thousands of per-delta reasoning/text events in ONE turn. Before coalescing
-// this run wrote >31,000 parts, so the worker's report sat far past the pane's
-// 1000-part window; after it, the report is inside the window.
+// TestSessionPartsRecorderLongTurnStaysWithinPaneWindow is the operator-visible acceptance
+// criterion, on the shape the live plane actually produced.
 func TestSessionPartsRecorderLongTurnStaysWithinPaneWindow(t *testing.T) {
 	store := &recordingStore{}
 	rec := newSessionPartsRecorder(store.record, "exec_long_turn", "tnt_test")

@@ -49,9 +49,7 @@ func TestGetCurrentConversationResolvesThroughTheSidecarWithTheEnvScope(t *testi
 		t.Fatalf("apply migrations: %v", err)
 	}
 
-	// A conversation carrying a model_ref, so the tool has something real to resolve. It is DELETED on
-	// cleanup: a DB-backed test must not leave rows in the tenant it ran against — that is how the rail's
-	// newest-100 window filled up with test conversations in the first place.
+	// A conversation carrying a model_ref, so the tool has something real to resolve.
 	const wantRef = "orchicon/anthropic/claude-sonnet-4"
 	convID := seedConversation(t, pool, wantRef)
 	t.Cleanup(func() { deleteConversation(t, pool, convID) })
@@ -79,10 +77,8 @@ func TestGetCurrentConversationResolvesThroughTheSidecarWithTheEnvScope(t *testi
 	}
 }
 
-// THE NEGATIVE, at the same level and with no DB: a sidecar that serves NO conversation
-// must still refuse. This is the honest-refusal half of the contract — a tool that reports
-// facts about "this session" must never invent one, and the fix must not have turned the
-// loud error into a confident guess.
+// THE NEGATIVE, at the same level and with no DB: a sidecar that serves NO conversation must still
+// refuse.
 func TestGetCurrentConversationStillRefusesWithoutTheEnvScope(t *testing.T) {
 	t.Setenv("ORCHICON_MCP_CONVERSATION_ID", "")
 	t.Setenv("ORCHICON_MCP_TENANT_ID", "tnt_dev")
@@ -123,9 +119,8 @@ func seedConversation(t *testing.T, pool *db.Pool, modelRef string) string {
 	return row.ID
 }
 
-// deleteConversation removes one probe conversation, IN a tenant transaction and COMMITTED — these tables
-// are RLS-scoped, so a bare pool.Exec sees nothing, and rolling back would discard the DELETE and leave the
-// row behind.
+// deleteConversation removes one probe conversation, IN a tenant transaction and COMMITTED — these
+// tables are RLS-scoped, so a bare pool.Exec sees nothing.
 func deleteConversation(t *testing.T, pool *db.Pool, id string) {
 	t.Helper()
 	ctx := context.Background()

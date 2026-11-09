@@ -11,9 +11,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/agentmemory"
 )
 
-// ctxModelProvider is a mockProvider that ALSO reports a true context
-// window for the session model (live hint) — used to exercise the window
-// trigger. ctxTokens <= 0 means no live hint (window trigger inert).
+// ctxModelProvider is a mockProvider that ALSO reports a true context window for the session model
+// (live hint) — used to exercise the window trigger.
 type ctxModelProvider struct {
 	mockProvider
 	ctxTokens int64
@@ -152,18 +151,15 @@ func TestCompactionBudgetGateFiresOnce(t *testing.T) {
 	}
 }
 
-// AC: true-window pressure (live hint) fires at pressure_frac of the real
-// window for the CURRENT TURN's live occupancy; below it nothing fires —
-// and many sub-threshold turns never accumulate into a fire (F3: the
-// pressure basis is the current request's occupancy, never the cumulative
-// re-sent-prefix rollup, which over-counts by ~turn count).
+// AC: true-window pressure (live hint) fires at pressure_frac of the real window for the CURRENT
+// TURN's live occupancy; below it nothing fires.
 func TestCompactionWindowPressureFires(t *testing.T) {
 	s, _, _, _ := compactTestSession(t, `{"tokens":0,"context_compaction":{"enabled":true,"pressure_frac":0.8,"recent_turns":2}}`, 1000)
 	seedHistory(s)
 	ctx := context.Background()
-	// Sub-threshold turns: 500 tokens on a 1000-token window = 50% — never
-	// fires, no matter how many turns accumulate (the old cumulative basis
-	// fired at step 4; the corrected per-turn basis must not).
+	// Sub-threshold turns: 500 tokens on a 1000-token window = 50% — never fires, no matter how many
+	// turns accumulate (the old cumulative basis fired at step 4; the corrected per-turn basis must
+	// not).
 	for step := 2; step < 12; step++ {
 		s.recordTurnUsage(Usage{InputTokens: 500})
 		if r := s.maybeCompact(ctx, step, Usage{InputTokens: 500}); r != "" {
@@ -191,9 +187,8 @@ func TestCompactionWindowPressureFires(t *testing.T) {
 	}
 }
 
-// AC (prefix stability): two sessions with DIFFERENT memory contents
-// produce byte-identical block-0; the memory digest appears only in block 1
-// (after the cache breakpoint).
+// AC (prefix stability): two sessions with DIFFERENT memory contents produce byte-identical
+// block-0; the memory digest appears only in block 1 (after the cache breakpoint).
 func TestPrefixStabilityAcrossMemoryContents(t *testing.T) {
 	s1, _, ms1, _ := compactTestSession(t, "", 0)
 	s2, _, ms2, _ := compactTestSession(t, "", 0)
@@ -242,17 +237,12 @@ func writeMem(t *testing.T, s *Session, ms *agentmemory.Store, title string) {
 	}
 }
 
-// F2 regression: after a middle-only eviction, every assistant tool_use
-// that REMAINS in history has a matching tool_result (and vice versa) — no
-// orphaned tool_use (invalid Anthropic/OpenAI history). The eviction unit
-// is the assistant tool_use message WITH its paired tool-result message:
-// middle rounds are evicted wholesale, while a pair that lands in the
-// recent tail survives verbatim.
+// F2 regression: after a middle-only eviction, every assistant tool_use that REMAINS in history has
+// a matching tool_result (and vice versa).
 func TestCompactionEvictionPreservesToolUseResultPairing(t *testing.T) {
 	s, _, _, _ := compactTestSession(t, `{"tokens":0,"context_compaction":{"enabled":true,"pressure_frac":0.8,"recent_turns":4}}`, 1000)
-	// History: two old fully-evictable middle rounds, then a user turn and
-	// a RECENT round whose pair lands in the pinned tail (recent_turns=4 →
-	// last 4 messages verbatim).
+	// History: two old fully-evictable middle rounds, then a user turn and a RECENT round whose pair
+	// lands in the pinned tail (recent_turns=4 → last 4 messages verbatim).
 	goal := "Goal."
 	s.history = []Message{
 		{Role: RoleUser, Content: []Content{{Text: &goal}}},
@@ -306,16 +296,13 @@ func TestCompactionEvictionPreservesToolUseResultPairing(t *testing.T) {
 	}
 }
 
-// The recent tail is verbatim: a tool_result that lands in the pinned tail
-// keeps its paired assistant tool_use even when the tool_use sits in the
-// middle (evicting the use would orphan the kept result), and a tool_use in
-// the tail keeps its middle result (evicting the result would orphan the
-// kept use).
+// The recent tail is verbatim: a tool_result that lands in the pinned tail keeps its paired
+// assistant tool_use even when the tool_use sits in the middle (evicting the use would orphan the
+// kept.
 func TestCompactionTailPairingIsPreserved(t *testing.T) {
 	s, _, _, _ := compactTestSession(t, `{"tokens":0,"context_compaction":{"enabled":true,"pressure_frac":0.8,"recent_turns":3}}`, 1000)
-	// History: goal, old pair (fully evictable), then a user + a tool_use
-	// whose RESULT message sits in the pinned tail (recent_turns=3 → the
-	// last 3 messages are verbatim).
+	// History: goal, old pair (fully evictable), then a user + a tool_use whose RESULT message sits in
+	// the pinned tail (recent_turns=3 → the last 3 messages are verbatim).
 	goal := "Goal."
 	s.history = []Message{
 		{Role: RoleUser, Content: []Content{{Text: &goal}}},
@@ -355,9 +342,7 @@ func TestCompactionTailPairingIsPreserved(t *testing.T) {
 }
 
 // Regression for QA bug B: a failed offload must leave history byte-identical
-// (plan-then-offload-then-commit). The probe pre-creates the offload path as
-// a DIRECTORY so offloadToolResults fails; the middle tool rounds must still
-// be present in the live session afterwards — never evicted without offload.
+// (plan-then-offload-then-commit).
 func TestCompactionOffloadFailureLeavesHistoryIntact(t *testing.T) {
 	s, _, _, dir := compactTestSession(t, `{"tokens":200,"compact_tiers":[false,true,true],"context_compaction":{"recent_turns":2}}`, 0)
 	seedHistory(s)
@@ -417,13 +402,8 @@ func mustMarshalMessages(h []Message) string {
 	return string(b)
 }
 
-// Regression for QA bug C: the compaction digest marker must be MERGED into
-// the pinned head user message — never a standalone user message — so the
-// marshaled Anthropic history stays strictly role-alternating (a second
-// consecutive plain-text user message is rejected by the Messages API). The
-// seed mirrors a REAL mid-session history (goal head + alternating assistant
-// tool_use / tool-result rounds — no injected plain user turns), which
-// marshals role-alternating before compaction.
+// Regression for QA bug C: the compaction digest marker must be MERGED into the pinned head user
+// message — never a standalone user message.
 func TestCompactionDigestMarkerMergedIntoHeadUserMessage(t *testing.T) {
 	s, _, _, _ := compactTestSession(t, `{"tokens":0,"context_compaction":{"enabled":true,"pressure_frac":0.8,"recent_turns":2}}`, 1000)
 	goal := "Goal."
@@ -469,9 +449,8 @@ func TestCompactionDigestMarkerMergedIntoHeadUserMessage(t *testing.T) {
 		t.Fatalf("digest marker not merged into the pinned head (goal) user message")
 	}
 
-	// Marshal for Anthropic: roles must alternate strictly (the eviction
-	// removes whole assistant/tool-result rounds; the merged marker adds no
-	// message), and the marker survives inside the head message.
+	// Marshal for Anthropic: roles must alternate strictly (the eviction removes whole
+	// assistant/tool-result rounds; the merged marker adds no message).
 	wire := marshalAnthropicHistory(h)
 	if len(wire) < 2 {
 		t.Fatalf("marshaled history too short: %#v", wire)
@@ -492,14 +471,11 @@ func TestCompactionDigestMarkerMergedIntoHeadUserMessage(t *testing.T) {
 	}
 }
 
-// F4: a budget whose ONLY over-budget dimension is cost_usd fires exactly
-// once when the session prices real usage through the model's live pricing.
-// Mirrors the loop: each turn's usage is priced via priceUsage (the shared
-// ModelInfo.CostFor path) before maybeCompact folds it in.
+// F4: a budget whose ONLY over-budget dimension is cost_usd fires exactly once when the session
+// prices real usage through the model's live pricing.
 func TestCompactionCostBudgetGateFiresWithPricing(t *testing.T) {
-	// recent_turns:2 so the seeded middle tool rounds fall OUTSIDE the
-	// pinned tail and are evictable (the default 6 would pin them and
-	// doCompact would correctly no-op on an empty eviction).
+	// recent_turns:2 so the seeded middle tool rounds fall OUTSIDE the pinned tail and are evictable
+	// (the default 6 would pin them and doCompact would correctly no-op on an empty eviction).
 	s, prov, _, _ := compactTestSession(t, `{"tokens":0,"cost_usd":0.01,"compact_tiers":[false,true,true],"context_compaction":{"recent_turns":2}}`, 0)
 	seedHistory(s)
 	// The mock provider reports NO context window (window trigger inert) but
@@ -528,14 +504,8 @@ func TestCompactionCostBudgetGateFiresWithPricing(t *testing.T) {
 	}
 }
 
-// Regression (QA iteration 2): a REALISTIC mid-session history with
-// plain-text user turns between tool rounds (human injection / continuation)
-// must remain strictly role-alternating after middle-only eviction. Evicting
-// the tool rounds that surrounded a plain user turn leaves that user turn
-// adjacent to the pinned goal head — a standalone second plain user message
-// would marshal as consecutive plain user roles (rejected by the Anthropic
-// Messages API). The eviction COALESCES consecutive same-role survivors so
-// the normalized history stays alternating and no content is lost.
+// Regression (QA iteration 2): a REALISTIC mid-session history with plain-text user turns between
+// tool rounds (human injection / continuation) must remain strictly role-alternating after.
 func TestCompactionRoleAlternationWithPlainTextUserTurns(t *testing.T) {
 	s, _, _, _ := compactTestSession(t, `{"tokens":200,"compact_tiers":[false,true,true],"context_compaction":{"recent_turns":2}}`, 0)
 	seedHistory(s)
@@ -576,11 +546,8 @@ func TestCompactionRoleAlternationWithPlainTextUserTurns(t *testing.T) {
 	}
 }
 
-// Regression (QA iteration 2): an assistant turn that carries BOTH text and
-// a tool_use whose round is evicted is trimmed to bare text — that text must
-// coalesce with the NEXT surviving assistant message instead of producing
-// consecutive assistant wire roles. Seed is role-alternating pre-compaction
-// (u a u a u a u) and must stay alternating after middle eviction.
+// Regression (QA iteration 2): an assistant turn that carries BOTH text and a tool_use whose round
+// is evicted is trimmed to bare text.
 func TestCompactionRoleAlternationAssistantTextAndToolUseRounds(t *testing.T) {
 	s, _, _, _ := compactTestSession(t, `{"tokens":200,"compact_tiers":[false,true,true],"context_compaction":{"recent_turns":3}}`, 0)
 	goal := "Goal."
@@ -638,11 +605,8 @@ func TestCompactionRoleAlternationAssistantTextAndToolUseRounds(t *testing.T) {
 	}
 }
 
-// AC (loop-level): a budget-breach trigger demonstrably fires compaction on a
-// mock provider EXACTLY ONCE mid-Run, and the session continues afterwards to
-// a successful StopStop. Step 1's usage is excluded by the min-turn floor, so
-// the ladder reaches the escalate tier (120/200 = 60%) at step 3 and fires
-// once; the subsequent text turn streams normally.
+// AC (loop-level): a budget-breach trigger demonstrably fires compaction on a mock provider EXACTLY
+// ONCE mid-Run, and the session continues afterwards to a successful StopStop.
 func TestCompactionBudgetGateFiresOnceMidRunAndSessionContinues(t *testing.T) {
 	dir := t.TempDir()
 	ms, err := agentmemory.Open(dir)
@@ -695,9 +659,8 @@ func TestCompactionBudgetGateFiresOnceMidRunAndSessionContinues(t *testing.T) {
 	}
 }
 
-// AC (budget-abort parity): the budget ladder's ABORT tier is terminal on
-// the native engine — the session fails with the budget_abort:<dim>
-// reason (opencode parity: abort is a hard kill, never a compaction).
+// AC (budget-abort parity): the budget ladder's ABORT tier is terminal on the native engine — the
+// session fails with the budget_abort:<dim> reason (opencode parity: abort is a hard kill.
 func TestCompactionBudgetAbortTerminal(t *testing.T) {
 	s, _, _, _ := compactTestSession(t, `{"tokens":100,"compact_tiers":[false,false,false]}`, 0)
 	seedHistory(s)

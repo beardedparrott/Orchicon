@@ -9,30 +9,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// reconcile_runbranch_test.go — THE REGRESSION for a diff viewer that has never
-// once populated for an opencode execution.
-//
-// MEASURED BEFORE THIS FIX: `adp_opencode_dev` had produced ZERO ledger rows
-// across 2,398 executions — every one of them, succeeded and failed alike. The
-// newest execution ledger row in the whole table predated the opencode switch.
-//
-// WHY, AND WHY IT IS INVISIBLE FROM THE CODE ALONE. The reconcile asked
-// `git status --porcelain` what changed, and the worker is ORDERED to leave that
-// empty: "commit ALL changes to the run branch ... verify `git status
-// --porcelain` is clean" (internal/db/seed_workers.go). So the run's entire
-// contribution was in COMMITS, which `git status` cannot report, and the
-// reconcile found nothing — not as an error, just as an empty list. The two
-// subsystems had contradictory requirements and neither was wrong on its own.
-//
-// The second half hid behind the first: even given the paths, the entry's
-// before-side was read from HEAD — which for a committed run IS the commit, so
-// before and after were the same bytes and every diff would have rendered empty.
-// Both are covered here.
+// reconcile_runbranch_test.go — THE REGRESSION for a diff viewer that has never once populated for
+// an opencode execution.
 
-// committedRunRepo builds the SHAPE OF A REAL RUN: a base branch, a run branch
-// forked from it, the run's work COMMITTED, and a CLEAN working tree — which is
-// exactly the state the worker's brief requires and the state in which the old
-// reconcile could see nothing.
+// committedRunRepo builds the SHAPE OF A REAL RUN: a base branch, a run branch forked from it, the
+// run's work COMMITTED, and a CLEAN working tree.
 func committedRunRepo(t *testing.T) string {
 	t.Helper()
 	dir := gitRepo(t) // initial commit of tracked.txt
@@ -54,9 +35,7 @@ func TestReconcileGitSeesACommittedRunBranch(t *testing.T) {
 	dir := committedRunRepo(t)
 	ctx := context.Background()
 
-	// THE PRECONDITION THAT MAKES THIS A REPRODUCTION. If the tree is not clean,
-	// the old code would have found the changes via git status and this test
-	// would prove nothing about the committed case.
+	// THE PRECONDITION THAT MAKES THIS A REPRODUCTION.
 	if out, err := gitCmd(dir, "status", "--porcelain").Output(); err != nil {
 		t.Fatalf("git status: %v", err)
 	} else if len(out) != 0 {
@@ -104,15 +83,8 @@ func TestReconcileGitSeesACommittedRunBranch(t *testing.T) {
 	}
 }
 
-// TestReconcileGitWithoutABaseStaysWorkingTreeOnly is the CONTROL, and it pins
-// the ASK path's semantics as much as the run's.
-//
-// An Ask conversation edits the project dir on whatever branch it is on and never
-// commits, so `git status` is exactly right for it — and passing a base would
-// attribute the WHOLE BRANCH's history to the conversation. The same committed
-// tree must therefore yield NOTHING when no base is given; if this ever starts
-// producing rows, the Ask path has begun claiming the branch's commits as its own
-// edits.
+// TestReconcileGitWithoutABaseStaysWorkingTreeOnly is the CONTROL, and it pins the ASK path's
+// semantics as much as the run's.
 func TestReconcileGitWithoutABaseStaysWorkingTreeOnly(t *testing.T) {
 	dir := committedRunRepo(t)
 	ctx := context.Background()
@@ -130,16 +102,13 @@ func TestReconcileGitWithoutABaseStaysWorkingTreeOnly(t *testing.T) {
 	}
 }
 
-// TestBaseRefForPrefersDevelopThenFallsBack pins the resolution order, because
-// it must MATCH the worktree reconciler's — that ref is what the run branch was
-// actually cut from, so resolving it differently would anchor the diff on a
-// guess.
+// TestBaseRefForPrefersDevelopThenFallsBack pins the resolution order, because it must MATCH the
+// worktree reconciler's — that ref is what the run branch was actually cut.
 func TestBaseRefForPrefersDevelopThenFallsBack(t *testing.T) {
 	dir := gitRepo(t)
 	gitRun(t, dir, "branch", "-m", "trunk")
-	// No develop / origin/develop: the last resort is the current branch, which
-	// is also what makes the run's own branch (and thus an empty diff) the
-	// answer — never a crash, never a wrong ref.
+	// No develop / origin/develop: the last resort is the current branch, which is also what makes the
+	// run's own branch (and thus an empty diff) the answer — never a crash, never a wrong ref.
 	if got := BaseRefFor(dir); got != "trunk" {
 		t.Fatalf("BaseRefFor = %q, want the fallback %q", got, "trunk")
 	}

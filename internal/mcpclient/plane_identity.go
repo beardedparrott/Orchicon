@@ -51,15 +51,8 @@ func planeIdentityEnv() []string {
 	}
 }
 
-// procStartTime returns the process's start time in clock ticks since boot — field 22 of /proc/<pid>/stat.
-//
-// THE FIELD COUNT IS THE TRAP, and it is why this parses from the LAST ')' rather than by splitting the
-// whole line: field 2 (comm) is the executable name in parentheses and MAY CONTAIN SPACES AND PARENS, so a
-// naive Fields() on the line shifts every subsequent index. After the last ')', field 3 (state) is index 0,
-// which puts starttime at index 19.
-//
-// Returns 0 when it cannot be read, which the sweep treats as "no start time recorded" rather than as a
-// match — a false negative leaks one child; a false positive kills a live one.
+// procStartTime returns the process's start time in clock ticks since boot — field 22 of
+// /proc/<pid>/stat.
 func procStartTime(pid int) uint64 {
 	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {

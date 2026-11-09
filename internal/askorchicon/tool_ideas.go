@@ -12,16 +12,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
-// toolListIdeas returns the Idea Cloud list (feature 5.1): idea-state work
-// items with their automation provenance (spawned_by / spawned_by_run_id)
-// plus a read-time SpawnedByTitle badge. It reuses the exact 4.1 idea gate
-// (status='idea', via IdeaScope=only) that ListWorkItems(IdeaScope=only)
-// shares, so list membership can never diverge from the exclusion gate that
-// keeps ideas out of the normal Work Items scope — the two are the same SQL
-// predicate by construction. Supports project_id / search / sort / pagination.
-// state="rejected" reads the REJECTED section instead: dismissed idea spawns
-// (status='cancelled' WITH spawned provenance) — the durable rejection
-// history, and the same population the automation dedupe gate checks.
+// toolListIdeas returns the Idea Cloud list (feature 5.1): idea-state work items with their
+// automation provenance (spawned_by / spawned_by_run_id) plus a read-time SpawnedByTitle badge.
 func toolListIdeas(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectID string `json:"project_id"`
@@ -41,9 +33,8 @@ func toolListIdeas(ctx context.Context, pool *db.Pool, args json.RawMessage) (js
 		return nil, err
 	}
 	defer ttx.Rollback(ctx)
-	// Fetch at most listCap+1 so truncation is detected without ever loading
-	// the whole Idea Cloud's fat columns; a caller's page_size larger than
-	// that is clamped (the envelope note explains how to narrow).
+	// Fetch at most listCap+1 so truncation is detected without ever loading the whole Idea Cloud's fat
+	// columns; a caller's page_size larger than that is clamped (the envelope note explains how.
 	pageSize := params.PageSize
 	if pageSize <= 0 || pageSize > listCap+1 {
 		pageSize = listCap + 1
@@ -101,14 +92,8 @@ func toolListIdeas(ctx context.Context, pool *db.Pool, args json.RawMessage) (js
 	return json.Marshal(env)
 }
 
-// toolPromoteIdea approves an idea (feature 5.1): it transitions an idea-state
-// work item to a normal pending work item via CAS (stale version → error),
-// matching the PromoteIdea RPC the UI uses. The item leaves idea state, so it
-// becomes queryable in the normal Work Items scope with normal status
-// semantics; provenance (spawned_by / spawned_by_run_id) is retained for the
-// badge. Emits the work_item.promoted outbox event and the work_item.promoted
-// audit row in the same transaction. PromoteIdea is the ONLY sanctioned path
-// out of idea state — the generic update/delete/archive tools are gated.
+// PromoteIdea is the ONLY sanctioned path out of idea state — the generic update/delete/archive
+// tools are gated.
 func toolPromoteIdea(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ID string `json:"id"`
@@ -150,12 +135,8 @@ func toolPromoteIdea(ctx context.Context, pool *db.Pool, args json.RawMessage) (
 	return json.Marshal(updated)
 }
 
-// toolDismissIdea discards an idea (feature 5.1): it transitions an idea-state
-// work item to cancelled — the soft-delete/cancel terminal, consistent with
-// DeleteWorkItem — via CAS, matching the DismissIdea RPC the UI uses. The item
-// leaves idea state and drops out of every active view; provenance is retained
-// as a record of where it came from. Emits the work_item.dismissed outbox event
-// and the work_item.dismissed audit row in the same transaction.
+// toolDismissIdea discards an idea (feature 5.1): it transitions an idea-state work item to
+// cancelled — the soft-delete/cancel terminal, consistent with DeleteWorkItem — via CAS.
 func toolDismissIdea(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ID string `json:"id"`
@@ -197,10 +178,8 @@ func toolDismissIdea(ctx context.Context, pool *db.Pool, args json.RawMessage) (
 	return json.Marshal(updated)
 }
 
-// workItemAuditJSON builds a compact before/after snapshot for an idea
-// transition audit row — enough to reconstruct the status flip (idea →
-// pending/cancelled) and the version bump. Kept minimal (status + version)
-// so the audit trail is legible without dragging the whole row in.
+// workItemAuditJSON builds a compact before/after snapshot for an idea transition audit row —
+// enough to reconstruct the status flip (idea → pending/cancelled) and the version bump.
 func workItemAuditJSON(w db.WorkItemRow) json.RawMessage {
 	b, _ := json.Marshal(map[string]any{
 		"status":  w.Status,

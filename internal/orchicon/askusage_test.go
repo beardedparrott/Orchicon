@@ -56,10 +56,8 @@ func TestDrainOneRoundSurfacesFinishUsage(t *testing.T) {
 	}
 }
 
-// The whole point of the change: an Ask turn's usage is attributed to the
-// CONVERSATION (not an execution), with the adapter kind parsed from the
-// conversation's model_ref. That attribution is what the conversation delete
-// path de-links, so it must be exactly the conversation id.
+// The whole point of the change: an Ask turn's usage is attributed to the CONVERSATION (not an
+// execution), with the adapter kind parsed from the conversation's model_ref.
 func TestAskUsageSinkAttributesToConversation(t *testing.T) {
 	var got []scheduler.UsageRecord
 	b := &NativeBridge{
@@ -129,13 +127,6 @@ func TestAskUsageSinkNilRecorderAndEmptyUsage(t *testing.T) {
 }
 
 // THE ASK TURN MUST PRICE ITS OWN ROUND, or every Ask usage record lands at $0.00.
-//
-// This is the operator's report — "once a conversation has been compacted, the price
-// calculation resets and stays at $0.00" — and the compation was a red herring: the
-// rows carried correct TOKENS and CACHE counters (which is why the composer strip kept
-// showing 155.8M tokens) while cost_usd was 0 on every one of them, because the wire
-// clients report tokens and never a price, and nothing on this path priced them. The
-// worker loop does exactly this before its own sink (loop.go, s.priceUsage).
 func TestAskUsageSinkPricesTheRound(t *testing.T) {
 	prov := &ctxModelProvider{models: []ModelInfo{{
 		ID: "deepseek-flash",
@@ -174,9 +165,8 @@ func TestAskUsageSinkPricesTheRound(t *testing.T) {
 	}
 }
 
-// PRICING IS RESOLVED ONCE PER SESSION, not once per round: a turn is many rounds and
-// a ListModels call each would be a per-round provider query for a value that cannot
-// change mid-conversation.
+// PRICING IS RESOLVED ONCE PER SESSION, not once per round: a turn is many rounds and a ListModels
+// call each would be a per-round provider query for a value that cannot change mid-conversation.
 func TestAskUsageSinkResolvesPricingOncePerSession(t *testing.T) {
 	prov := &countingModelProvider{models: []ModelInfo{{
 		ID:      "deepseek-flash",
@@ -195,9 +185,9 @@ func TestAskUsageSinkResolvesPricingOncePerSession(t *testing.T) {
 	}
 }
 
-// A model the provider does not price is recorded UNPRICED, never guessed: prices are
-// not synthesized, so an unknown model keeps the previous behaviour rather than
-// acquiring invented rates. Resolved-and-absent is cached too.
+// A model the provider does not price is recorded UNPRICED, never guessed: prices are not
+// synthesized, so an unknown model keeps the previous behaviour rather than acquiring invented
+// rates.
 func TestAskUsageSinkLeavesAnUnpricedModelAtZero(t *testing.T) {
 	prov := &countingModelProvider{models: []ModelInfo{{ID: "mystery-model"}}}
 	var got []scheduler.UsageRecord

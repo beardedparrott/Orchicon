@@ -13,28 +13,10 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// bridge_parts_test.go: the sessionPartsRecorder — the DB transcript
-// mirroring the session pane consumes. Pins: every JSONL transcript event
-// class converts into the opencode part shape the frontend's
-// transcriptItems parses (user_message / text / reasoning / tool_use with
-// callID+state / step boundaries / error / session_info), batching
-// flushes through the SessionStoreFunc, and the recorder is best-effort
-// (store errors never panic or block).
-//
-// Seq contract: the DB store's unique key is (tenant_id, execution_id,
-// seq) with ON CONFLICT DO NOTHING, so parts derive DISTINCT seqs
-// (seq<<8 | subIndex) — a same-seq collision would silently DROP parts
-// (observed bug: step boundaries and tool inputs vanished).
-//
-// Deadlock contract: Close must never wait on the flush pump when start()
-// was never called (the observed 10-minute test hang: defer rec.Close()
-// blocked on <-r.stopped with no pump running).
+// bridge_parts_test.go: the sessionPartsRecorder — the DB transcript mirroring the session pane
+// consumes.
 
-// recordingStore collects the recorder's flushed batches. record runs on the
-// recorder's PUMP goroutine while the test body polls from its own, so batches
-// is mutex-guarded: without it `go test -race` reports a genuine data race on
-// every test that observes the store before Close (the write in record vs the
-// read in the pump-liveness poll below).
+// recordingStore collects the recorder's flushed batches.
 type recordingStore struct {
 	mu      sync.Mutex
 	batches [][]db.SessionPart
@@ -107,9 +89,8 @@ func TestSessionPartsRecorderShapes(t *testing.T) {
 	if len(byKind[db.SessionPartSessionInfo]) != 1 {
 		t.Fatalf("session_info parts = %d, want 1 (kinds: %v)", len(byKind[db.SessionPartSessionInfo]), kinds)
 	}
-	// …and it carries the NATIVE adapter identity with NO serve_url key: a
-	// native session runs in-process on the control plane, so there is nothing
-	// to point at (absent, never an empty string).
+	// …and it carries the NATIVE adapter identity with NO serve_url key: a native session runs
+	// in-process on the control plane, so there is nothing to point at (absent, never an empty string).
 	si := byKind[db.SessionPartSessionInfo][0]
 	if si["adapter_kind"] != adapter.KindOrchicon {
 		t.Errorf("session_info adapter_kind = %v, want %q", si["adapter_kind"], adapter.KindOrchicon)
@@ -135,9 +116,8 @@ func TestSessionPartsRecorderShapes(t *testing.T) {
 	if len(byKind[db.SessionPartReasoning]) != 1 {
 		t.Fatalf("reasoning parts = %d, want 1", len(byKind[db.SessionPartReasoning]))
 	}
-	// tool_use: exactly ONE completed part for tc1 carrying BOTH
-	// state.input and state.output (opencode parity; duplicate
-	// invocation/output parts would render two bubbles).
+	// tool_use: exactly ONE completed part for tc1 carrying BOTH state.input and state.output (opencode
+	// parity; duplicate invocation/output parts would render two bubbles).
 	tu := byKind[db.SessionPartToolUse]
 	if len(tu) != 1 {
 		t.Fatalf("tool_use parts = %d, want 1 (one completed part per call; kinds: %v)", len(tu), kinds)
@@ -228,9 +208,7 @@ func TestSessionPartsRecorderOrphanResultAndHold(t *testing.T) {
 	if ost == nil || ost["output"] != "found" {
 		t.Errorf("orphan state = %v, want output found", ost)
 	}
-	// Distinct seqs across all flushed parts (no collision). Arrival order
-	// within a batch is not seq-ordered (the DB and pane order by seq), so
-	// sort first.
+	// Distinct seqs across all flushed parts (no collision).
 	seqs := make([]int64, 0, len(parts))
 	for _, p := range parts {
 		seqs = append(seqs, p.Seq)
@@ -308,12 +286,8 @@ func TestSessionSetTranscriptObserverBeforeRun(t *testing.T) {
 			_ = json.Unmarshal(p.Payload, &pl)
 			inner, _ := pl["part"].(map[string]any)
 			text, _ := inner["text"].(string)
-			// Containment, not equality: consecutive deltas now coalesce into
-			// one growing part, and the mock harness emits the worker sign-off
-			// as a further delta in the same turn (observed: the part reads
-			// "hello\nORCHICON WORKER SUMMARY: …"). What this test owns is that
-			// the FIRST text delta reached the DB — i.e. OpenTranscript applied
-			// the observer before the first event appended.
+			// Containment, not equality: consecutive deltas now coalesce into one growing part, and the mock
+			// harness emits the worker sign-off as a further delta in the same turn (observed.
 			if strings.Contains(text, "hello") {
 				foundText = true
 			}

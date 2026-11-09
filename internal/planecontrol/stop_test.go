@@ -53,9 +53,8 @@ func TestStopReportsSuccessOnceTheSocketIsReleased(t *testing.T) {
 	}
 }
 
-// TestStopOfAnAlreadyStoppedPlaneIsANoOp — `serve --stop` exits 1 with "serve is not running" when there is
-// nothing to stop, and that must NOT surface as a failure: `down`, a rebuild and `plane stop` are all run
-// twice, and an error here aborted them on an instance that was already down.
+// TestStopOfAnAlreadyStoppedPlaneIsANoOp — `serve --stop` exits 1 with "serve is not running" when
+// there is nothing to stop, and that must NOT surface as a failure: `down`.
 func TestStopOfAnAlreadyStoppedPlaneIsANoOp(t *testing.T) {
 	f := newFakeSeams(t)
 	f.runErr = errors.New("exit status 1") // what `serve --stop` returns for "serve is not running"

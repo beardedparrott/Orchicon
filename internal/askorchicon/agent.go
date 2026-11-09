@@ -56,15 +56,8 @@ func BuildSystemPrompt(mode string, cfg db.AgentConfigRow, toolRegistry *ToolReg
 	}
 }
 
-// writeSkillsManifest appends the `# Skills` manifest produced by the ONE shared platform renderer
-// (internal/contextfiles.RenderManifest) to the persona. It is the Ask half of the single shared render path —
-// the worker composite prompt renders the same manifest in internal/scheduler/workflow_reconciler.go — and it is
-// deliberately the ONLY place a persona learns about skills, so no adapter and no mode needs skill-handling
-// code of its own.
-//
-// The section is distinct from writeAdditionalInstructions (the tenant's free-text prompt) and from the
-// AgentConfig `skills` field (tenant-wide prompt PROSE): this is a manifest of REAL on-disk skill paths, each
-// read on demand. Emitted only when non-empty, mirroring writeAdditionalInstructions.
+// It is the Ask half of the single shared render path — the worker composite prompt renders the
+// same manifest in internal/scheduler/workflow_reconciler.go.
 func writeSkillsManifest(b *strings.Builder, skillsSection string) {
 	if strings.TrimSpace(skillsSection) == "" {
 		return
@@ -74,13 +67,8 @@ func writeSkillsManifest(b *strings.Builder, skillsSection string) {
 	b.WriteString("\n")
 }
 
-// modeGuide is the roster every persona is given, so any mode can name the
-// others and suggest a switch with a reason rather than a guess.
-//
-// It is ONE table rather than a paragraph per persona because the awareness
-// block is the SAME in all three: a mode that described its siblings in its own
-// words would drift, and the operator's requirement is that every mode knows the
-// same set.
+// modeGuide is the roster every persona is given, so any mode can name the others and suggest a
+// switch with a reason rather than a guess.
 type modeInfo struct {
 	value string
 	label string
@@ -94,11 +82,6 @@ var modeGuide = []modeInfo{
 }
 
 // writeIdentity opens every persona with who it is and which mode it is in.
-//
-// The name is stated in the FIRST line of every mode, not just the default one,
-// because the operator asked for it explicitly and because a persona that only
-// knew its name in one mode would answer "who are you?" differently depending on
-// a dropdown.
 func writeIdentity(b *strings.Builder, mode string) {
 	b.WriteString(`You are Orchicon, a deep systems-thinking partner for the Orchicon platform.
 
@@ -169,17 +152,8 @@ func modeLabel(mode string) string {
 	return mode
 }
 
-// writeCapabilityHonestyBlock is the rule about an APPARENTLY MISSING CAPABILITY, written once for every mode
-// because the mistake it prevents is not mode-specific.
-//
-// THE SESSION THAT PROMPTED IT. A model concluded that its mcp__aseprite__* tools were unavailable — from a LIST
-// of definitions, which is a different question from "what am I offered" — and then spent the entire session
-// driving the MCP server over stdio JSON-RPC through bash. That flattens structured and binary results to text, so
-// every image came back as prose: blind drawing and two rejected drafts, for work the platform could have done
-// directly.
-//
-// The tools were mounted the whole time. What the model lacked was a rule saying "try it before you route around
-// it", and a tool that answers "what do I have" honestly (ask_mcp_tools).
+// writeCapabilityHonestyBlock is the rule about an APPARENTLY MISSING CAPABILITY, written once for
+// every mode because the mistake it prevents is not mode-specific.
 func writeCapabilityHonestyBlock(b *strings.Builder) {
 	b.WriteString(`
 ## Capabilities: check, then act
@@ -191,13 +165,6 @@ func writeCapabilityHonestyBlock(b *strings.Builder) {
 }
 
 // writeSessionContract states the no-budget truth POSITIVELY, in every mode.
-//
-// It exists because Ask conversations used to be told, in effect, that they were
-// budgeted workers: the serve-baked agent shell leaked a worker identity and
-// tool-call-economy rules into EVERY session, and Ask selects no agent so it
-// inherited that default. Models duly reported being "almost at my budget" in a
-// session that has no budget at all. Guarded by
-// TestAskPromptDeclaresNoExecutionBudget.
 func writeSessionContract(b *strings.Builder) {
 	// The capability-honesty rule travels WITH the session contract: both are about how this session reasons
 	// about itself, and both apply to every mode identically. Called from here so a fourth mode cannot miss it.
@@ -263,29 +230,8 @@ func writeSuiteReachBlock(b *strings.Builder, mode string) {
 	b.WriteString("- **The honest limits, so you do not discover them by probing.** Because the suite is a host process running as the operator's user, host services and root-owned paths may be unreachable to it, and there is no root: sudo fails and escalating is impossible. A service that needs rights this user does not have cannot be started by retrying — say plainly that it needs the operator, and exactly what it needs, rather than looping.\n\n")
 }
 
-// writeIntegrationMapBlock is the SHARED integration-completeness contract: the
-// discipline every mode owes the work, whatever its disposition toward action.
-//
-// IT IS ONE SHARED BLOCK PLUS A PER-MODE TAIL, mirroring the pattern the rest of
-// this file already uses (writeSessionContract, writeSuiteReachBlock are shared;
-// writeCapabilityBlock switches by mode). The REASON is that the underlying rule
-// does not differ by mode — only WHERE THE MAP HAS TO BE WRITTEN does: a worker
-// reads a brief and nothing else, so Brainstorm's map must land in the item; the
-// user and the agent are both in the loop, so Iteration's map lands in the reply
-// before the edit; Quick Work's worker never sees the conversation, so its map
-// must land in the dispatch brief AND the worker's own prompt. Writing the rule
-// out three times would pay its tokens three times and drift the moment one copy
-// was edited — the drift this file's other comments already warn about.
-//
-// THE VOCABULARY IS DELIBERATELY PART-AGNOSTIC. The operator: "people will be
-// using Orchicon to build out many projects, not just Orchicon itself, so the
-// wording needs to be a bit more agnostic and grounded in systems design, systems
-// architecture, and UI/UX design rather than calling out specific components." So
-// this block names the SHAPES (a registry, a dispatch table, a config default, a
-// migration, a boundary contract, a loading state) and never Orchicon's own
-// members — an adapter kind is an instance of the pattern, not the pattern, and a
-// prompt that taught the instance would teach nothing about a project that has no
-// adapters at all.
+// writeIntegrationMapBlock is the SHARED integration-completeness contract: the discipline every
+// mode owes the work, whatever its disposition toward action.
 func writeIntegrationMapBlock(b *strings.Builder) {
 	b.WriteString(`
 ## Integration completeness — draw the map, then close it
@@ -346,9 +292,8 @@ Then close it in this session:
 `)
 }
 
-// writeIntegrationMapInDispatchBrief is Quick Work's TAIL: where the map lives when
-// the work is being dispatched — in the brief AND the worker's own prompt, because
-// the worker never sees this conversation.
+// writeIntegrationMapInDispatchBrief is Quick Work's TAIL: where the map lives when the work is
+// being dispatched — in the brief AND the worker's own prompt.
 func writeIntegrationMapInDispatchBrief(b *strings.Builder) {
 	b.WriteString(`
 ## The map travels with the brief
@@ -363,10 +308,8 @@ The worker never sees this conversation, so everything you understood about the 
 `)
 }
 
-// writePlatformPrimer is the platform reference, identical in every mode: the
-// modes differ in disposition, never in what they know about Orchicon. mode is
-// threaded through ONLY so the reach block it emits can state the truth about
-// this mode's write tools (see writeSuiteReachBlock).
+// writePlatformPrimer is the platform reference, identical in every mode: the modes differ in
+// disposition, never in what they know about Orchicon.
 func writePlatformPrimer(b *strings.Builder, mode string) {
 	b.WriteString(`
 ## About Orchicon
@@ -391,28 +334,9 @@ func writeToolList(b *strings.Builder, toolRegistry *ToolRegistry, mode string) 
 	b.WriteString("EVERY tool's name, description and exact parameter schema is delivered to you by the transport as a tool definition — the authoritative list is the one you can CALL, not a copy in this prompt. Do not look for a catalogue here. Mutating tools run only after user confirmation. The native file/shell suite (batch_read, batch_grep, batch_write, read, grep, write, edit, list, glob, bash, ask_file_root) is on your session as native tools — its reach, its pre-approved directory and when it asks are stated in \"## Reach and scope\" above.\n\n")
 
 	// THE PER-TOOL LIST IS GONE, and this is why.
-	//
-	// This block used to render all 85 product tools as `- orchicon_<name>: <description> (<mutability>)`.
-	// Measured on this repository: 24,438 bytes ≈ 6,100 tokens — a SECOND, lossier copy of data the transport
-	// already sends as `orchicon.ToolDef{Name, Description, ParamsJSON}`. The prompt copy carried strictly
-	// less information (no parameter schema) while costing a third of the static prompt, and on a local model
-	// with a small window that duplication is the difference between a session that fits and one that does not.
-	//
-	// What is kept is the part the transport does NOT say: that mutating tools gate on user confirmation (a
-	// policy, not a schema fact), the native suite's existence, and the ask_user discipline below.
 	b.WriteString("Mutating tools — the `orchicon_*` tools that create, update, delete, send or fire — are gated on the user's confirmation, so propose them plainly rather than working around them.\n\n")
 
-	// THE NAMES ARE KEPT; THE DESCRIPTIONS ARE NOT. THAT DISTINCTION IS THE POINT.
-	//
-	// The per-tool list is a SECOND, lossier copy of the definitions the transport sends
-	// (`orchicon.ToolDef{Name, Description, ParamsJSON}` on the native path, MCP tools on the opencode
-	// path) — and it cost 24,438 bytes ≈ 6,100 tokens for 85 tools. But a bare deletion was wrong and the
-	// suite said so: several tests pin that the model is TOLD a capability exists, because a model does
-	// not go looking for a tool it has never heard of. That is a real lesson, not test inertia.
-	//
-	// So the names stay — a few hundred bytes, and the thing that makes a capability discoverable — while
-	// the one-line description per tool goes, because the transport already carries a better version of it
-	// WITH the parameter schema. What the model loses is nothing it did not already have twice.
+	// THE NAMES ARE KEPT; THE DESCRIPTIONS ARE NOT.
 	var names []string
 	for _, td := range toolRegistry.List() {
 		names = append(names, "`orchicon_"+td.Name+"`")
@@ -461,9 +385,8 @@ func writeAdditionalInstructions(b *strings.Builder, cfg db.AgentConfigRow) {
 	writeProseSection(b, "## Agent Memory (AGENTS.md)", cfg.AgentsMD)
 }
 
-// writeProseSection appends ONE heading-delimited prose block, omitted entirely
-// when its body is empty. Split out so every free-text field renders by the SAME
-// rule (heading style, spacing, omission) — the shape cannot drift field to field.
+// writeProseSection appends ONE heading-delimited prose block, omitted entirely when its body is
+// empty.
 func writeProseSection(b *strings.Builder, heading, body string) {
 	if strings.TrimSpace(body) == "" {
 		return
@@ -477,9 +400,8 @@ func writeProseSection(b *strings.Builder, heading, body string) {
 
 // --- Brainstorm -------------------------------------------------------------------
 
-// brainstormModeSystemPrompt is the DEFAULT persona: the open systems-thinking
-// partner whose actionable outcome is a work item (or working directly, if the
-// operator prefers).
+// brainstormModeSystemPrompt is the DEFAULT persona: the open systems-thinking partner whose
+// actionable outcome is a work item (or working directly, if the operator prefers).
 func brainstormModeSystemPrompt(cfg db.AgentConfigRow, toolRegistry *ToolRegistry, skillsSection string) string {
 	var b strings.Builder
 
@@ -531,10 +453,7 @@ Confirm-before-mutate discipline is retained unchanged: you confirm before runni
 	return b.String()
 }
 
-// writeCapabilityBlock is the per-mode statement of what the agent's default
-// route to action is. It is a function rather than one shared paragraph because
-// the ROUTE is the thing the modes disagree about: suggesting the work-item
-// pipeline in Iteration mode would contradict that mode's whole purpose.
+// writeCapabilityBlock is the per-mode statement of what the agent's default route to action is.
 func writeCapabilityBlock(b *strings.Builder, mode string) {
 	switch mode {
 	case modeIteration:
@@ -567,18 +486,7 @@ Confirm-before-mutate discipline is retained unchanged: you confirm before runni
 	}
 }
 
-// writeWorkItemDraftingRules is the work-item authoring contract, and it is
-// BRAINSTORM-ONLY.
-//
-// It used to be shared with Quick Work and says so above no longer: Quick Work
-// calls writeQuickWorkDispatchRules instead, and cannot use this one. Two of its
-// rules CONTRADICT that mode — it asks which workflow to BIND (Quick Work builds
-// an ephemeral one, and binding a published workflow would make the run
-// non-ephemeral and human-visible), and it asks which PARENT to place the item
-// under (create_work_item refuses ephemeral plus parent_id, so an ephemeral item
-// is top-level only). A shared block cannot state both modes' rules without
-// stating one of them wrongly, which is why the split exists. Corrected because a
-// wrong comment is how the next rule gets added to the wrong place.
+// writeWorkItemDraftingRules is the work-item authoring contract, and it is BRAINSTORM-ONLY.
 func writeWorkItemDraftingRules(b *strings.Builder) {
 	b.WriteString("## Workflow & runtime prompt\n")
 	b.WriteString("Whenever the user asks you to create work items (orchicon_create_work_item / orchicon_update_work_item / bulk creation):\n")
@@ -598,12 +506,6 @@ func writeWorkItemDraftingRules(b *strings.Builder) {
 }
 
 // writeQuickWorkDispatchRules is the dispatch-authoring contract for Quick Work.
-//
-// IT REPLACES writeWorkItemDraftingRules, which is Brainstorm's contract and contradicts this mode on two
-// points: it asks which workflow to BIND (Quick Work builds one, and binding an existing one would make the run
-// non-ephemeral), and it asks which PARENT to place the item under (an ephemeral item is top-level only —
-// create_work_item refuses ephemeral plus parent_id). A shared block cannot state both modes' rules without
-// stating one of them wrongly.
 func writeQuickWorkDispatchRules(b *strings.Builder) {
 	b.WriteString("## The dispatch brief\n")
 	b.WriteString("1. The ephemeral work item's description and acceptance criteria ARE the worker's instructions. Write them as if the worker has never seen this conversation: the fault with real file paths and line numbers you read, the fix mechanically, the acceptance criteria in runtime terms, the runtime image, the git strategy in delivery terms, and the confirmed base + merge branch.\n")
@@ -622,16 +524,8 @@ func writeQuickWorkDispatchRules(b *strings.Builder) {
 
 // --- Iteration --------------------------------------------------------------------
 
-// writeWorktreeBlock is ITERATION'S workspace rule, and it is deliberately NOT shared with the other two
-// modes: they write nothing. Brainstorm reads and plans, Quick Work dispatches, and both are refused the
-// write tools — a mode with no working tree has nothing to isolate. Only the mode that edits code can land
-// a change on somebody else's branch, which is the failure this block exists to prevent.
-//
-// WHY THIS IS A BLOCK AND NOT ONE MORE PRINCIPLE. The rule has mechanics — where the worktree goes, what
-// names it, how the tools' root relates to it, and what cleanup may NOT destroy — and each of those was
-// learned the expensive way. A numbered line saying "use a worktree" would leave every one of them to be
-// improvised, and the improvisation that matters (editing the project directory after creating a worktree,
-// or removing a worktree with unpushed work in it) is silent rather than loud.
+// writeWorktreeBlock is ITERATION'S workspace rule, and it is deliberately NOT shared with the
+// other two modes: they write nothing.
 func writeWorktreeBlock(b *strings.Builder) {
 	b.WriteString(`
 ## Your worktree, and nobody else's
@@ -672,18 +566,8 @@ ALWAYS CLEAN UP WHEN YOU ARE DONE — and never at the cost of the work:
 `)
 }
 
-// iterationModeSystemPrompt is the STANDARD AGENT: it works on the project with
-// the operator, in the open, in its own git worktree on a branch it created.
-//
-// The operator's spec, which this encodes: "This is a standard agent. It can cut
-// a local branch and iteratively work with you on your project. It will never
-// suggest work item creation nor will it ever suggest creating or firing off
-// workflows or schedules. This is your traditional chat agent. It should still
-// have all of the same knowledge that Brainstorm mode has and understand your
-// project entirely just like Brainstorm mode. It commits early and often, and
-// ensures it runs a full suite of tests that are available. It should make
-// suggestions based on feedback and be helpful the whole way. It is your
-// architect, developer, designer, researcher, and friend/colleague."
+// iterationModeSystemPrompt is the STANDARD AGENT: it works on the project with the operator, in
+// the open, in its own git worktree on a branch it created.
 func iterationModeSystemPrompt(cfg db.AgentConfigRow, toolRegistry *ToolRegistry, skillsSection string) string {
 	var b strings.Builder
 
@@ -723,19 +607,8 @@ Your architect, developer, designer, researcher, and colleague. You work on the 
 
 // --- Quick Work -------------------------------------------------------------------
 
-// quickWorkModeSystemPrompt is the DISPATCHER: it reaches the same outcome as
-// Iteration by firing a workflow instead of doing the work itself.
-//
-// The operator's spec: "Quick Work mode is just like Iteration mode, however,
-// instead of doing work itself, it should fire off workflows ... I do NOT want
-// the work items it creates to actually show up in the system and clutter the
-// system. I want this to be an ephemeral session. I would also like to discuss
-// having it create workflows as well for the task at hand and workers if needed
-// and none of these should be captured in the normal system. ... Once the user
-// says 'I want this', Quick Work mode ... should just create the work item,
-// workers, and workflows in an ephemeral fashion and kick them off immediately,
-// and monitor the status of those workflows. It should basically work like
-// subagents, but the subagents are separate workers/workflows."
+// quickWorkModeSystemPrompt is the DISPATCHER: it reaches the same outcome as Iteration by firing a
+// workflow instead of doing the work itself.
 func quickWorkModeSystemPrompt(cfg db.AgentConfigRow, toolRegistry *ToolRegistry, skillsSection string) string {
 	var b strings.Builder
 

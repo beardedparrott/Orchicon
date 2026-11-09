@@ -1,9 +1,7 @@
 package fileedit
 
-// Integration test over the REAL ledger path: engine tool output →
-// RecordEngineOutput → PGStore.Append → List + RPCService.GetSessionFileEdits,
-// with seq resume and event-id == row-id (the stream resume/dedup contract).
-// DB-backed; skips without ORCHICON_TEST_DSN (ledger_db_test.go pattern).
+// Integration test over the REAL ledger path: engine tool output → RecordEngineOutput →
+// PGStore.Append → List + RPCService.GetSessionFileEdits.
 
 import (
 	"context"

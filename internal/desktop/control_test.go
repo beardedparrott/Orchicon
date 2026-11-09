@@ -1,21 +1,6 @@
 package desktop
 
 // control_test.go — PLANE CONTROL OVER THE SHELL'S OWN ORIGIN.
-//
-// The failure this whole file guards, in the operator's words: "under the new
-// manage server section, even though it appears the instance is running it says
-// 'Connecting / dev / port unknown / contacting the plane…' and has no controls
-// lit up to click on to start, stop, or restart."
-//
-// Cause: `planeControl()` read `window.go.planebind.Service`, which exists only
-// on Wails' own document. The app is served from the shell's loopback http origin
-// (so the HttpOnly refresh cookie and the Connect server-stream work), so the
-// binding was never there — the page resolved `null`, never probed, and rendered
-// "contacting the plane…" for ever with every button inert.
-//
-// These tests drive the replacement transport end to end through a real HTTP
-// server, because the bug was in the TRANSPORT, not in the decisions (those are
-// already covered by internal/planebind).
 
 import (
 	"encoding/json"
@@ -111,9 +96,8 @@ func doRequest(t *testing.T, method, url, token string) (*http.Response, map[str
 	return res, body
 }
 
-// TestControlStatusAnswersOverHTTP is the outermost assertion: a GET against the
-// shell's own origin returns the instance's real state as JSON, which is what the
-// page needs to leave "connecting".
+// TestControlStatusAnswersOverHTTP is the outermost assertion: a GET against the shell's own origin
+// returns the instance's real state as JSON, which is what the page needs to leave "connecting".
 func TestControlStatusAnswersOverHTTP(t *testing.T) {
 	ctl := &fakeControl{status: planebind.StatusDTO{
 		Instance: "dev", ControlPort: 8080, State: "connected", Detail: "200 OK", Healthy: true,
@@ -132,9 +116,8 @@ func TestControlStatusAnswersOverHTTP(t *testing.T) {
 	}
 }
 
-// TestControlRequiresTheShellToken — a browser cannot read a cross-origin
-// response, so it cannot learn the token; without it, every mutating call is
-// refused.
+// TestControlRequiresTheShellToken — a browser cannot read a cross-origin response, so it cannot
+// learn the token; without it, every mutating call is refused.
 func TestControlRequiresTheShellToken(t *testing.T) {
 	ctl := &fakeControl{status: planebind.StatusDTO{Instance: "dev"}}
 	origin, _ := controlShell(t, ctl, "tok")
@@ -178,9 +161,7 @@ func TestControlNeverStartsWithoutAnInstanceLabel(t *testing.T) {
 	}
 }
 
-// TestControlEndpointsAreNotProxiedToThePlane — the control prefix must be
-// answered by the shell. If a plane path ever claimed it, the app would be asking
-// the plane to control itself.
+// TestControlEndpointsAreNotProxiedToThePlane — the control prefix must be answered by the shell.
 func TestControlEndpointsAreNotProxiedToThePlane(t *testing.T) {
 	if isPlanePath(controlPath) {
 		t.Fatalf("%s is classified as a PLANE path — it would be proxied instead of answered", controlPath)
@@ -193,9 +174,7 @@ func TestControlEndpointsAreNotProxiedToThePlane(t *testing.T) {
 	}
 }
 
-// TestUsePlaneSwitchesTheInstance — choosing an instance must retarget the window
-// and REMEMBER it. Previously the plane was fixed at launch, so a person running
-// dev and prod had no way to switch.
+// TestUsePlaneSwitchesTheInstance — choosing an instance must retarget the window and REMEMBER it.
 func TestUsePlaneSwitchesTheInstance(t *testing.T) {
 	prefs := filepath.Join(t.TempDir(), "prefs.json")
 	shell, err := New(Config{
@@ -260,9 +239,8 @@ func TestPrefsSurviveACorruptFile(t *testing.T) {
 	}
 }
 
-// TestBootstrapDocumentNavigatesInsteadOfRedirecting pins the fix for the white
-// screen: a served document that navigates, never a 3xx the webview renders as
-// text.
+// TestBootstrapDocumentNavigatesInsteadOfRedirecting pins the fix for the white screen: a served
+// document that navigates, never a 3xx the webview renders as text.
 func TestBootstrapDocumentNavigatesInsteadOfRedirecting(t *testing.T) {
 	const origin = "http://127.0.0.1:34567"
 	doc := BootstrapHTML(origin)

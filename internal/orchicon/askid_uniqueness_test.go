@@ -99,9 +99,7 @@ func TestPermissionCardIDsAreUniqueAcrossRestarts(t *testing.T) {
 	}
 
 	first := raise()
-	// A RESTART — a brand-new bridge, its counter back at zero. Under the old per-process counter this
-	// returned "native-ask-1" again, for a DIFFERENT ask, and the ledger was still holding the first
-	// ask's decision under that id.
+	// A RESTART — a brand-new bridge, its counter back at zero.
 	second := raise()
 
 	if first == second {

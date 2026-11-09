@@ -10,9 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
 )
 
-// runGuard runs the guard shim for a given binary with the given args and
-// returns (exitCode, combinedOutput). The shim is a symlink named after the
-// binary pointing at the generated guard script, so argv[0] basename = name.
+// runGuard runs the guard shim for a given binary with the given args and returns (exitCode,
+// combinedOutput).
 func runGuard(t *testing.T, g *Guard, name string, args ...string) (int, string) {
 	t.Helper()
 	cmd := exec.Command(filepath.Join(g.dir, name), args...)
@@ -93,12 +92,8 @@ func TestExecutionGuardBlocksDestructive(t *testing.T) {
 		{"rm", []string{"-rf", ".."}},
 		{"rm", []string{"-rf", "../../escape"}},
 		{"rm", []string{"-rf", filepath.Join(outside, "*")}},
-		// NEVER-ALLOW: refused by the class arm on the BINARY NAME, before any argument is
-		// examined — so the operands here are irrelevant to what is being tested, and they are
-		// temp paths for the same reason as everything else in this file. They used to name `/`
-		// and real devices (`/dev/sda`, `/dev/sdb`), which is safe only because those need root
-		// to touch and because `sudo` cannot prompt on a non-interactive tty — two coincidences,
-		// neither of which is a safety property. The assertion is unchanged: the class refuses.
+		// NEVER-ALLOW: refused by the class arm on the BINARY NAME, before any argument is examined — so
+		// the operands here are irrelevant to what is being tested.
 		{"sudo", []string{"rm", "-rf", filepath.Join(outside, "x")}},
 		{"sudo", []string{"true"}},
 		{"dd", []string{"if=/dev/zero", "of=" + filepath.Join(outside, "disk")}},
@@ -158,9 +153,7 @@ func TestExecutionGuardAllowsInProject(t *testing.T) {
 		t.Errorf("cp in project: dest should exist")
 	}
 
-	// cp from OUTSIDE the project is blocked. The SOURCE is a temp file rather than a real
-	// system path: this executes a real `cp`, and while reading /etc/hostname is harmless, a
-	// path a real binary could act on is not what belongs in a test — the same rule as above.
+	// cp from OUTSIDE the project is blocked.
 	outsideSrc := filepath.Join(t.TempDir(), "outside.txt")
 	if err := os.WriteFile(outsideSrc, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
@@ -172,19 +165,16 @@ func TestExecutionGuardAllowsInProject(t *testing.T) {
 }
 
 func TestExecutionGuardNoProjectMode(t *testing.T) {
-	// Empty PROJECT_DIR is the shared host-serve mode (a single serve
-	// process hosting sessions in many project dirs). EVERY absolute target
-	// is outside scope and blocked — including `rm /`, which an empty-dir
-	// guard would otherwise leak through the "$PROJECT_DIR"/* glob.
+	// Empty PROJECT_DIR is the shared host-serve mode (a single serve process hosting sessions in many
+	// project dirs).
 	g, err := NewExecutionGuard("")
 	if err != nil {
 		t.Fatalf("NewExecutionGuard(''): %v", err)
 	}
 	defer g.Close()
 
-	// TEMP TARGETS, and here it matters even more: with an EMPTY project dir EVERY absolute path is
-	// out of scope, so no real path can stand in for the dangerous one. `/home` was the case that did
-	// the damage — see the note above runGuardIn.
+	// TEMP TARGETS, and here it matters even more: with an EMPTY project dir EVERY absolute path is out
+	// of scope, so no real path can stand in for the dangerous one.
 	outside := t.TempDir()
 	work := t.TempDir()
 
@@ -231,11 +221,8 @@ func TestExecutionGuardAppliesToPATH(t *testing.T) {
 	defer g.Close()
 
 	env := g.Apply(os.Environ())
-	// A TEMP TARGET, NOT `/`: this runs a real rm through the shimmed PATH, and a temp directory
-	// proves the PATH entry is reached just as well while keeping the failure mode to a directory the
-	// test owns. `rm -rf /` happened to be safe only because GNU coreutils refuses `/` on its own
-	// (--no-preserve-root) — a coincidence of one binary's argv handling, not a safety property, and
-	// the same case written as `/home` would have had no protection at all.
+	// A TEMP TARGET, NOT `/`: this runs a real rm through the shimmed PATH, and a temp directory proves
+	// the PATH entry is reached just as well while keeping the failure mode to a directory the test.
 	outside := t.TempDir()
 	cmd := exec.Command("bash", "-c", "rm -rf "+outside)
 	cmd.Env = env
@@ -252,10 +239,9 @@ func TestExecutionGuardAppliesToPATH(t *testing.T) {
 	}
 }
 
-// TestExecutionGuardAllowsWorktreeScopedDelete pins AC3: a delete resolving
-// inside the worker's directory (the run worktree when provisioned — the
-// guard's projectDir IS the worktree) is allowed; a delete escaping the
-// worktree/project root stays blocked.
+// TestExecutionGuardAllowsWorktreeScopedDelete pins AC3: a delete resolving inside the worker's
+// directory (the run worktree when provisioned — the guard's projectDir IS the worktree) is
+// allowed.
 func TestExecutionGuardAllowsWorktreeScopedDelete(t *testing.T) {
 	proj := t.TempDir()
 	g, err := NewExecutionGuard(proj)
@@ -307,10 +293,8 @@ func writePolicyFile(t *testing.T, deny ...string) string {
 	return path
 }
 
-// TestPolicyDenyOutranksNeverAllowAndProjectScope pins the guard half of the
-// precedence chain: the never-allow binary class is absolute and comes FIRST,
-// the deny list outranks the project-scope allow (which is what the shim
-// would otherwise grant for an in-project target).
+// TestPolicyDenyOutranksNeverAllowAndProjectScope pins the guard half of the precedence chain: the
+// never-allow binary class is absolute and comes FIRST.
 func TestPolicyDenyBlocksInProjectTargetAndNeverAllowStaysAbsolutestFirst(t *testing.T) {
 	proj := t.TempDir()
 	policy := writePolicyFile(t, filepath.Join(proj, "secret")+"/**")
@@ -320,9 +304,8 @@ func TestPolicyDenyBlocksInProjectTargetAndNeverAllowStaysAbsolutestFirst(t *tes
 	}
 	defer g.Close()
 
-	// In-project target: blocked_path ALLOWS it (inside PROJECT_DIR — the
-	// shim's normal verdict), the policy deny list refuses it. Without the
-	// policy hook this command would have run.
+	// In-project target: blocked_path ALLOWS it (inside PROJECT_DIR — the shim's normal verdict), the
+	// policy deny list refuses it.
 	if err := os.MkdirAll(filepath.Join(proj, "secret"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -341,10 +324,8 @@ func TestPolicyDenyBlocksInProjectTargetAndNeverAllowStaysAbsolutestFirst(t *tes
 		t.Fatalf("policy-denied target was deleted: %v", err)
 	}
 
-	// The never-allow class is FIRST and cannot be reached past by the deny
-	// list: even with a deny entry that covers the argument, sudo reports the
-	// destructive-command refusal (a command denied by policy is a DIFFERENT
-	// outcome from a command that can never run at all).
+	// The never-allow class is FIRST and cannot be reached past by the deny list: even with a deny
+	// entry that covers the argument.
 	pol2 := writePolicyFile(t, "**")
 	g2, err := NewExecutionGuardWithPolicy(proj, pol2)
 	if err != nil {
@@ -363,9 +344,8 @@ func TestPolicyDenyBlocksInProjectTargetAndNeverAllowStaysAbsolutestFirst(t *tes
 	}
 }
 
-// TestPolicyEditTakesEffectOnTheNextCommand pins the live-read semantics for
-// the bash path: ONE guard, no rebuild, and the deny disappears when the
-// entry is removed from the file (the shim re-reads per invocation).
+// TestPolicyEditTakesEffectOnTheNextCommand pins the live-read semantics for the bash path: ONE
+// guard, no rebuild, and the deny disappears when the entry is removed from the file (the shim.
 func TestPolicyEditTakesEffectOnTheNextCommand(t *testing.T) {
 	proj := t.TempDir()
 	deny := filepath.Join(proj, "sub") + "/**"
@@ -401,9 +381,8 @@ func TestPolicyEditTakesEffectOnTheNextCommand(t *testing.T) {
 	}
 }
 
-// TestPolicyTildeEntryMatchesHome pins the preset's own spelling: `~/.ssh/**`
-// must match an absolute $HOME/.ssh/... target even though blocked_path would
-// already refuse it — the entry must be recognised as the reason.
+// TestPolicyTildeEntryMatchesHome pins the preset's own spelling: `~/.ssh/**` must match an
+// absolute $HOME/.ssh/...
 func TestPolicyTildeEntryExpandsToHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -435,14 +414,8 @@ func TestPolicyTildeEntryExpandsToHome(t *testing.T) {
 	}
 }
 
-// TestShippedPolicyFileFormatIsReadableByTheShim pins the seam between the two
-// halves of the persistent permission policy: the shim's denied_target() parses
-// the file BY HAND, so the exact bytes permpolicy.WriteFile emits (the
-// documented header block plus yaml.v3's rendering of the two lists) must be
-// readable by it. The other guard tests use a hand-written fixture, which
-// cannot catch a writer change the reader cannot follow — a preset that the
-// shim silently parses to nothing is precisely the failure the feature's
-// "malformed input fails loudly" rule exists to prevent.
+// TestShippedPolicyFileFormatIsReadableByTheShim pins the seam between the two halves of the
+// persistent permission policy: the shim's denied_target() parses the file BY HAND.
 func TestShippedPolicyFileFormatIsReadableByTheShim(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -451,9 +424,8 @@ func TestShippedPolicyFileFormatIsReadableByTheShim(t *testing.T) {
 		t.Fatalf("write the shipped preset: %v", err)
 	}
 
-	// home IS the project dir here, so blocked_path ALLOWS the target (it is
-	// in-project) and only a parsed policy entry can refuse it — which is what
-	// makes this a test of the parser, not of containment.
+	// home IS the project dir here, so blocked_path ALLOWS the target (it is in-project) and only a
+	// parsed policy entry can refuse it — which is what makes this a test of the parser.
 	g, err := NewExecutionGuardWithPolicy(home, path)
 	if err != nil {
 		t.Fatalf("NewExecutionGuardWithPolicy: %v", err)

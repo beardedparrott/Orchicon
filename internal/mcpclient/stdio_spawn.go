@@ -35,9 +35,6 @@ import (
 const stderrTailLines = 20
 
 // procStderr is a bounded, concurrent-safe capture of a child's stderr.
-//
-// Bounded on purpose: an MCP server that logs verbosely for hours must not grow the plane's heap, and the
-// lines that matter for a failure are the last ones.
 type procStderr struct {
 	mu    sync.Mutex
 	lines []string
@@ -87,11 +84,6 @@ type stdioSpawn struct {
 }
 
 // stdioProcessState describes what happened to a spawned child, for a failure message.
-//
-// IT DOES NOT PROBE LIVENESS WITH A SIGNAL. cmd.ProcessState is the fact we already have: set iff the
-// child was reaped. That distinguishes the three reported shapes without a syscall and, crucially, without
-// being platform-specific — a signal-0 probe has no portable equivalent on Windows, and this package is
-// built for both.
 func stdioProcessState(cmd *exec.Cmd) string {
 	switch {
 	case cmd.Process == nil:
@@ -105,15 +97,6 @@ func stdioProcessState(cmd *exec.Cmd) string {
 }
 
 // killStopsTheChild terminates a spawned child that will never be used.
-//
-// THIS IS THE LEAK FIX, and it is why it lives here rather than being left to the SDK. The go-sdk's
-// client.Connect does NOT close the transport when the handshake fails: mcp.connect returns the error
-// after building the connection, and nothing calls Close on it. Our connectOne therefore used to drop the
-// only handle to a live child on EVERY failed start, which is how an `aseprite_mcp` process was found
-// still running 18 hours later, reparented, with its process group from a plane that no longer existed.
-//
-// The child was Setpgid'd (transport_stdio_unix.go), so the whole group is signalled — a Python server
-// that forked a worker would otherwise survive the kill of its parent.
 func killStopsTheChild(cmd *exec.Cmd) {
 	if cmd == nil || cmd.Process == nil {
 		return

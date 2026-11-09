@@ -9,12 +9,6 @@ import (
 )
 
 // Window geometry: initial size, minimum size, and remembered size + position.
-//
-// THE MINIMUM IS CHOSEN, NOT DERIVED. The SPA has no responsive breakpoint to
-// read one off — it is a fixed sidebar plus content columns — so below roughly
-// 1024x700 the sidebar and the content cannot both hold. A window minimum is
-// much cheaper than making the SPA responsive (out of scope), and it keeps the
-// content area looking like the browser's.
 const (
 	defaultWidth  = 1440
 	defaultHeight = 900
@@ -34,19 +28,12 @@ type Geometry struct {
 // Size is a width/height pair.
 type Size struct{ W, H int }
 
-// Rect is a monitor's usable area in the same coordinate space the window
-// manager reports.
-//
-// Wails v2's runtime.Screen reports SIZE ONLY (no origin), so the callers in
-// cmd/orchicon-desktop leave X/Y at zero and every monitor is treated as
-// anchored at the origin. The fields exist so a caller that DOES know the layout
-// (a test, or a future Wails that reports origins) can describe it exactly.
+// Wails v2's runtime.Screen reports SIZE ONLY (no origin), so the callers in cmd/orchicon-desktop
+// leave X/Y at zero and every monitor is treated as anchored at the origin.
 type Rect struct{ X, Y, W, H int }
 
-// DefaultGeometry is the initial window: 1440x900, which fits the always-rendered
-// sidebar plus a wide execution table without horizontal scrolling, and is
-// centred on the primary monitor (X/Y left at zero here and centred by
-// ClampToMonitors, which knows the monitor list).
+// DefaultGeometry is the initial window: 1440x900, which fits the always-rendered sidebar plus a
+// wide execution table without horizontal scrolling.
 func DefaultGeometry() Geometry {
 	return Geometry{W: defaultWidth, H: defaultHeight}
 }
@@ -56,11 +43,6 @@ func MinSize() Size { return Size{W: minWidth, H: minHeight} }
 
 // ConfigPath is where the geometry is remembered:
 // <os.UserConfigDir()>/orchicon-desktop/window.json.
-//
-// KEYED BY MACHINE, NOT BY INSTANCE, on purpose: window placement is a property
-// of the workstation (which screen, where), not of the plane the window points
-// at, and internal/planecontrol's HostDataDir is the per-instance location for
-// the plane's own state.
 func ConfigPath() string {
 	dir, err := os.UserConfigDir()
 	if err != nil {
@@ -69,9 +51,7 @@ func ConfigPath() string {
 	return filepath.Join(dir, "orchicon-desktop", "window.json")
 }
 
-// LoadGeometry reads remembered geometry. ok=false means "no usable record":
-// the caller uses DefaultGeometry. A corrupt or empty file is not an error —
-// losing the window position must never stop the app opening.
+// LoadGeometry reads remembered geometry.
 func LoadGeometry(path string) (Geometry, bool) {
 	if path == "" {
 		return Geometry{}, false
@@ -90,9 +70,7 @@ func LoadGeometry(path string) (Geometry, bool) {
 	return g, true
 }
 
-// SaveGeometry persists geometry, creating the directory. Best-effort by
-// contract: the caller logs and continues, because a read-only config dir must
-// not turn a window close into a crash.
+// SaveGeometry persists geometry, creating the directory.
 func SaveGeometry(path string, g Geometry) error {
 	if path == "" {
 		return errors.New("no config path")
@@ -142,9 +120,8 @@ func ClampToMonitors(g Geometry, monitors []Rect) Geometry {
 		// Not placed yet: centre it, sized to the monitor it will land on.
 		return centred(capSize(g, primary), primary)
 	}
-	// Cap the size to the monitors the window ACTUALLY lands on, not to the
-	// primary: a window remembered on a larger second screen must keep its size,
-	// and one straddling two screens is capped to the LARGER of them.
+	// Cap the size to the monitors the window ACTUALLY lands on, not to the primary: a window
+	// remembered on a larger second screen must keep its size.
 	var visible []Rect
 	for _, m := range monitors {
 		if intersects(Geometry{X: g.X, Y: g.Y, W: g.W, H: g.H}, m) {
@@ -174,9 +151,7 @@ func ClampToMonitors(g Geometry, monitors []Rect) Geometry {
 	return g
 }
 
-// capSize shrinks g to fit inside m. The minimum window is applied by
-// ClampToMonitors before this runs, so a tiny monitor is the only way to get a
-// size below it.
+// capSize shrinks g to fit inside m.
 func capSize(g Geometry, m Rect) Geometry {
 	if g.W > m.W {
 		g.W = m.W

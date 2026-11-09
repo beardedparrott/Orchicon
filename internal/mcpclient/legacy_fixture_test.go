@@ -1,15 +1,6 @@
 package mcpclient
 
 // legacy_fixture_test.go — a server that behaves like the reported Python one.
-//
-// THE REAL FAILURE, reproduced faithfully: an older-spec MCP server receives `server/discover`, does not
-// know the method, fails validation and EXITS 1. It is happy to run the `initialize` handshake it has always
-// supported. That is the whole shape, and it is what makes "the client is on a newer protocol" look exactly
-// like "this server is broken".
-//
-// The child is hand-rolled JSON-RPC rather than the SDK's server, deliberately: the point is to be an OLD
-// server, and building it with the current SDK would let the SDK's own compatibility keep it working — the
-// test would then pass for a reason unrelated to the fix.
 
 import (
 	"bufio"
@@ -33,13 +24,7 @@ func legacyFixtureArgs() []string {
 }
 
 // TestLegacyFixtureReexec is the child entry point, reached by re-executing this binary with
-// `-test.run=TestLegacyFixtureReexec` (see legacyFixtureArgs). It never returns to the test runner: stdout IS
-// the JSON-RPC stream, so the process exits rather than letting the runner print a PASS line into it.
-//
-// DISPATCHED FROM HERE, NOT FROM TestMain, and that is deliberate. A TestMain that returned early for this
-// marker would exit BEFORE m.Run() and this function would never be called — the child would exit 0 having
-// answered nothing, which is exactly how the first version of this fixture failed (silently, as "connection
-// closed … EOF").
+// `-test.run=TestLegacyFixtureReexec` (see legacyFixtureArgs).
 func TestLegacyFixtureReexec(t *testing.T) {
 	if os.Getenv(legacyFixtureEnv) != "1" {
 		return
@@ -83,9 +68,8 @@ func runLegacyFixture() {
 
 		switch req.Method {
 		case "server/discover":
-			// THE REPORTED BEHAVIOUR, verbatim in spirit: an unknown method is a VALIDATION failure for an
-			// old server, it says so on stderr, and it dies. It does NOT return a JSON-RPC error, which is
-			// why the SDK's own fallback can never be reached in a useful way.
+			// THE REPORTED BEHAVIOUR, verbatim in spirit: an unknown method is a VALIDATION failure for an old
+			// server, it says so on stderr, and it dies.
 			fmt.Fprintln(os.Stderr, "CallToolRequest.method | Input should be 'tools/call' [input_value='server/discover']")
 			os.Exit(1)
 		case "initialize":
@@ -110,9 +94,8 @@ func runLegacyFixture() {
 				"content": []map[string]any{{"type": "text", "text": "ok"}},
 			})
 		default:
-			// An unknown NOTIFICATION is ignored; an unknown REQUEST gets a method-not-found error, which
-			// is the WELL-BEHAVED case (the SDK handles that one itself). Kept distinct from
-			// server/discover on purpose, so the fixture proves the difference matters.
+			// An unknown NOTIFICATION is ignored; an unknown REQUEST gets a method-not-found error, which is
+			// the WELL-BEHAVED case (the SDK handles that one itself).
 			if len(req.ID) > 0 && string(req.ID) != "null" {
 				writeError(req.ID, -32601, "method not found: "+req.Method)
 			}

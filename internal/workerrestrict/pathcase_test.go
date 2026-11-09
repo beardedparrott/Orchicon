@@ -1,11 +1,6 @@
 package workerrestrict
 
 // pathcase_test.go — the project boundary must use the PLATFORM'S comparison rule.
-//
-// REPORTED shape: a claude worker on Windows had every write refused as a permission denial. One cause is the
-// unquoted hook command (internal/claude/hook_command_test.go); this is the other, and it is silent here:
-// Windows paths are case-insensitive, so a drive-letter case difference between the recorded project_dir and
-// the tool's own path makes a byte-wise prefix test decide the target is OUTSIDE the project.
 
 import (
 	"runtime"

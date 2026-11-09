@@ -1,8 +1,7 @@
 package planebind
 
-// state_test.go — AC6 at its source: the FOUR states are distinguishable, and
-// plane-error is NEVER offline. A reachable-but-unhealthy plane and one running a
-// superseded binary are each their own finding, because each needs its own fix.
+// state_test.go — AC6 at its source: the FOUR states are distinguishable, and plane-error is NEVER
+// offline.
 
 import (
 	"strings"

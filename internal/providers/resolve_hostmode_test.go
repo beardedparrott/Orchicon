@@ -5,13 +5,8 @@ import (
 	"testing"
 )
 
-// AC: "Custom providers must not be rewritten on a host plane." A provider
-// stored as http://localhost:11434 keeps that URL: on the host, localhost IS
-// the host, so the container-only gateway rewrite must not fire.
-//
-// This file is `package providers` (internal) on purpose — resolveForPlane and
-// hostGatewayIP are unexported, and service_test.go is the external
-// providers_test package.
+// AC: "Custom providers must not be rewritten on a host plane." A provider stored as
+// http://localhost:11434 keeps that URL: on the host, localhost IS the host.
 func TestResolveForPlaneHostModeKeepsLoopback(t *testing.T) {
 	t.Setenv("ORCHICON_CONTAINER_MODE", "")
 
@@ -31,9 +26,8 @@ func TestResolveForPlaneHostModeKeepsLoopback(t *testing.T) {
 		}
 	}
 
-	// repairCandidates must not invent a rewritten gateway host either — on the
-	// host there is no gateway to reach, so the stored loopback URL is already
-	// correct and every candidate keeps it.
+	// repairCandidates must not invent a rewritten gateway host either — on the host there is no
+	// gateway to reach, so the stored loopback URL is already correct and every candidate keeps it.
 	for _, cand := range repairCandidates("http://localhost:11434") {
 		if strings.Contains(cand, "172.17.") {
 			t.Errorf("host plane repair invented a gateway candidate: %q", cand)
@@ -44,9 +38,8 @@ func TestResolveForPlaneHostModeKeepsLoopback(t *testing.T) {
 	}
 }
 
-// The other half of the contract, and the reason the host path is safe: in
-// container mode the rewrite DOES happen and preserves the port. Skipped
-// when the environment has no default route (no gateway can be detected).
+// The other half of the contract, and the reason the host path is safe: in container mode the
+// rewrite DOES happen and preserves the port.
 func TestResolveForPlaneContainerModeRewritesToGateway(t *testing.T) {
 	t.Setenv("ORCHICON_CONTAINER_MODE", "1")
 	gw := hostGatewayIP()

@@ -1,9 +1,7 @@
 package telemetry_test
 
-// query_degraded_test.go — AC 5 of the native Telemetry page: a degraded
-// query must NAME the backend that is down. Before this, every store
-// failure produced Degraded=true with no reason, so the UI could only draw
-// an empty chart and claim "no data".
+// query_degraded_test.go — AC 5 of the native Telemetry page: a degraded query must NAME the
+// backend that is down.
 
 import (
 	"context"
@@ -56,9 +54,8 @@ func TestDegradedQueryNamesUnreachableEndpoint(t *testing.T) {
 	}
 }
 
-// TestQueryLogsAppliesIdentityAndSearchFilters pins the LogQL selector: the
-// project filter used to be populated by the service and silently dropped
-// when the selector was built, and free-text search did not exist.
+// TestQueryLogsAppliesIdentityAndSearchFilters pins the LogQL selector: the project filter used to
+// be populated by the service and silently dropped when the selector was built.
 func TestQueryLogsAppliesIdentityAndSearchFilters(t *testing.T) {
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

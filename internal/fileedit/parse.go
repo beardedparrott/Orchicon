@@ -8,11 +8,8 @@ import (
 	"strings"
 )
 
-// EngineFileEdit is one entry of the `file_edits` array the worktree engine
-// (batch_write / write / edit) embeds in its structured JSON output. The
-// engine holds the original on-disk content in memory while it applies each
-// op, so the diff it emits is computed from real file state with zero extra
-// I/O and no race window — the ground truth the ledger stores verbatim.
+// EngineFileEdit is one entry of the `file_edits` array the worktree engine (batch_write / write /
+// edit) embeds in its structured JSON output.
 type EngineFileEdit struct {
 	Path          string `json:"path"`
 	Kind          string `json:"kind"` // create | modify | delete
@@ -27,26 +24,18 @@ type EngineFileEdit struct {
 	Truncated     bool   `json:"truncated,omitempty"`
 }
 
-// engineOutput is the subset of the worktree tools' JSON output the ledger
-// parses. Parsing STRUCTURED OUTPUT the engine produced as data is not
-// tool-output text scraping — the plane consumes it as a typed record.
+// engineOutput is the subset of the worktree tools' JSON output the ledger parses.
 type engineOutput struct {
 	FileEdits []EngineFileEdit `json:"file_edits"`
 }
 
-// ParseEngineOutput extracts the file_edits array from a batch_write/write/
-// edit tool output. Tolerant by design: a missing/empty/malformed field
-// yields zero entries and no error (non-file tools and legacy outputs are
-// the norm here, never a failure).
+// ParseEngineOutput extracts the file_edits array from a batch_write/write/ edit tool output.
 func ParseEngineOutput(toolOutput string) ([]EngineFileEdit, error) {
 	if toolOutput == "" || !strings.Contains(toolOutput, "\"file_edits\"") {
 		return nil, nil
 	}
-	// The engine emits the JSON object AFTER a human summary line
-	// ("batch_write: applied N write(s): …\n{…}"), so the payload is rarely
-	// the whole string. Scan for the first '{' whose decode succeeds; the
-	// decoder reads only the first JSON value, tolerating trailing text.
-	// Any parse problem yields zero entries and no error (tolerant).
+	// The engine emits the JSON object AFTER a human summary line ("batch_write: applied N write(s):
+	// …\n{…}"), so the payload is rarely the whole string.
 	for i := strings.IndexByte(toolOutput, '{'); i >= 0 && i < len(toolOutput); i = i + 1 + strings.IndexByte(toolOutput[i+1:], '{') {
 		var out engineOutput
 		dec := json.NewDecoder(strings.NewReader(toolOutput[i:]))
@@ -57,9 +46,8 @@ func ParseEngineOutput(toolOutput string) ([]EngineFileEdit, error) {
 	return nil, nil
 }
 
-// Entry is a ledger-ready edit: everything AppendFileEditLedger needs to
-// persist one row, already normalized (path slash-separated, sizes/shas
-// computed from the snapshots).
+// Entry is a ledger-ready edit: everything AppendFileEditLedger needs to persist one row, already
+// normalized (path slash-separated, sizes/shas computed from the snapshots).
 type Entry struct {
 	Path        string
 	Kind        string
@@ -89,9 +77,8 @@ func EntryFromEngine(e EngineFileEdit, tool string) Entry {
 	}
 }
 
-// EntryFromSnapshots computes a ledger Entry from a raw before/after snapshot
-// pair via the shared diff engine (the path the opencode built-in write/edit
-// tools and the git reconciler take). before/after nil = absent/deleted.
+// EntryFromSnapshots computes a ledger Entry from a raw before/after snapshot pair via the shared
+// diff engine (the path the opencode built-in write/edit tools and the git reconciler take).
 func EntryFromSnapshots(before, after []byte, rawPath, tool string) Entry {
 	res := ComputeUnifiedDiff(before, after, NormalizePath(rawPath))
 	return Entry{

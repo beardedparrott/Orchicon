@@ -12,16 +12,12 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// CorrelationIDKey is the baggage + span attribute key carrying the
-// correlation_id — the unit of "this came from one user action" that
-// propagates across API → reconciler → adapter → AI Gateway
-// (docs/08 §3, §5.1).
+// CorrelationIDKey is the baggage + span attribute key carrying the correlation_id — the unit of
+// "this came from one user action" that propagates across API → reconciler → adapter → AI Gateway.
 const CorrelationIDKey = "orchicon.correlation_id"
 
-// CorrelationIDFromContext returns the correlation_id from baggage if
-// present, otherwise an empty string. The middleware ensures a
-// correlation_id is set on every inbound request, so downstream spans
-// (reconciler, adapter, gateway) inherit it via the propagated context.
+// CorrelationIDFromContext returns the correlation_id from baggage if present, otherwise an empty
+// string.
 func CorrelationIDFromContext(ctx context.Context) string {
 	m := baggage.FromContext(ctx)
 	if c := m.Member(CorrelationIDKey); c.Value() != "" {
@@ -30,9 +26,8 @@ func CorrelationIDFromContext(ctx context.Context) string {
 	return ""
 }
 
-// EnsureCorrelationID returns the correlation_id from the context, or
-// generates a new one if none is present. The caller should store the
-// returned id in baggage + span attributes so it propagates.
+// EnsureCorrelationID returns the correlation_id from the context, or generates a new one if none
+// is present.
 func EnsureCorrelationID(ctx context.Context) string {
 	if id := CorrelationIDFromContext(ctx); id != "" {
 		return id
@@ -40,9 +35,9 @@ func EnsureCorrelationID(ctx context.Context) string {
 	return newCorrelationID()
 }
 
-// WithCorrelationID returns a context carrying the correlation_id in
-// baggage so it propagates across process boundaries (OTel baggage
-// is extracted/injected by the W3C propagator — docs/08 §6).
+// WithCorrelationID returns a context carrying the correlation_id in baggage so it propagates
+// across process boundaries (OTel baggage is extracted/injected by the W3C propagator — docs/08
+// §6).
 func WithCorrelationID(ctx context.Context, id string) context.Context {
 	if id == "" {
 		return ctx
@@ -54,10 +49,8 @@ func WithCorrelationID(ctx context.Context, id string) context.Context {
 	return baggage.ContextWithBaggage(ctx, m)
 }
 
-// RecordCorrelation records the correlation_id + tenant_id as span
-// attributes on the current span (docs/08 §6: correlation_id is an OTel
-// span attribute). Call at the start of every span-producing scope
-// (reconciler, adapter, gateway) so the trace joins by attribute.
+// RecordCorrelation records the correlation_id + tenant_id as span attributes on the current span
+// (docs/08 §6: correlation_id is an OTel span attribute).
 func RecordCorrelation(ctx context.Context, correlationID string) {
 	span := trace.SpanFromContext(ctx)
 	if span == nil {
@@ -70,10 +63,7 @@ func RecordCorrelation(ctx context.Context, correlationID string) {
 	span.SetAttributes(attrs...)
 }
 
-// Attribution hint headers sent by the SPA on telemetry RPCs. They are
-// attribution only — tenant scope always comes from the request context, so
-// a spoofed hint can never widen what a caller may read (AGENTS.md tenant
-// isolation).
+// Attribution hint headers sent by the SPA on telemetry RPCs.
 const (
 	hintProjectID   = "x-orchicon-project-id"
 	hintWorkItemID  = "x-orchicon-work-item-id"
@@ -84,10 +74,8 @@ const (
 	executionIDKey = "orchicon.execution_id"
 )
 
-// WithAttribution returns a context carrying the project / work-item /
-// execution attribution hints in baggage, so every span started from it
-// (including future reconcile./dispatch./adapter. domain spans created with
-// StartSpan) inherits the attribution a Tempo identity filter looks for.
+// WithAttribution returns a context carrying the project / work-item / execution attribution hints
+// in baggage, so every span started from it (including future reconcile./dispatch./adapter.
 func WithAttribution(ctx context.Context, projectID, workItemID, executionID string) context.Context {
 	var members []baggage.Member
 	for _, kv := range [][2]string{
@@ -138,13 +126,8 @@ func member(k, v string) baggage.Member {
 	return m
 }
 
-// StartSpan is a convenience wrapper that starts a span, records the
-// correlation_id + tenant_id attributes, and returns the span context.
-// Use for the canonical spans (docs/08 §5.1):
-//   - reconcile.<kind>.<id>
-//   - dispatch.<task_id>
-//   - adapter.execute.<execution_id>
-//   - gateway.<provider>.<model>.request
+// StartSpan is a convenience wrapper that starts a span, records the correlation_id + tenant_id
+// attributes, and returns the span context.
 func StartSpan(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
 	ctx, span := otel.Tracer("orchicon").Start(ctx, name, opts...)
 	RecordCorrelation(ctx, CorrelationIDFromContext(ctx))

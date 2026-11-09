@@ -33,9 +33,8 @@ import (
 )
 
 const (
-	// dataDirEnv is the control plane's state dir (internal/config, and the same
-	// variable internal/backup/backup.go's DefaultDir reads). The infra-binaries
-	// record written by cmd/orchicon/binaries.go lives directly under it.
+	// dataDirEnv is the control plane's state dir (internal/config, and the same variable
+	// internal/backup/backup.go's DefaultDir reads).
 	dataDirEnv = "ORCHICON_DATA_DIR"
 
 	// pgToolDump / pgToolRestore are the two tools this package drives.
@@ -50,13 +49,11 @@ type pgClient struct {
 	dsn string
 }
 
-// execPath resolves the executable a command will actually run, so a missing
-// tool is reported here — with guidance — rather than surfacing as a bare
-// `exec: "pg_dump": executable file not found in $PATH` from the deep end.
+// execPath resolves the executable a command will actually run, so a missing tool is reported here
+// — with guidance — rather than surfacing as a bare `exec: "pg_dump".
 func (c pgClient) execPath(tool string) (string, error) {
-	// FIRST the instance's OWN resolved record — the distribution the supervisor
-	// runs is the one whose client version matches its server exactly, and on a
-	// downloaded install it is on no PATH at all. See resolvedInfraBinary.
+	// FIRST the instance's OWN resolved record — the distribution the supervisor runs is the one whose
+	// client version matches its server exactly, and on a downloaded install it is on no PATH at all.
 	if p := infraRecordLookup(tool); p != "" {
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {
 			return p, nil
@@ -80,29 +77,16 @@ func (c pgClient) command(ctx context.Context, tool string, args ...string) (*ex
 	return procwin.CommandContext(ctx, exe, args...), nil
 }
 
-// infraRecordLookup is the seam through which the client prefers the PostgreSQL
-// distribution the resolver already chose, over whatever PATH happens to hold. It is
-// a var so a test can point it at a fixture record without a data dir.
+// infraRecordLookup is the seam through which the client prefers the PostgreSQL distribution the
+// resolver already chose, over whatever PATH happens to hold.
 var infraRecordLookup = resolvedInfraBinary
 
 // infraRecordFile is the record cmd/orchicon/binaries.go writes ONCE per instance
 // ("ONE RESOLVER, ONE RECORD"): <DataDir>/infra-binaries.json, keyed by field name.
 const infraRecordFile = "infra-binaries.json"
 
-// resolvedInfraBinary returns the absolute path of a resolved PostgreSQL tool from
-// the instance's own record, or "" when there is no record or no such field.
-//
-// WHY THE RECORD AND NOT PATH. On a host whose Postgres came from the DOWNLOAD path
-// the distribution is unpacked at <DataDir>/bin/postgres/bin, which is on NOBODY's
-// PATH — so `exec.LookPath("pg_dump")` fails on the very install the resolver just
-// provisioned. Reading the record is not a second resolution path: it is the SAME
-// answer the supervisor that runs the server used, which is the whole reason the
-// record exists. PATH stays as the fallback for a host with its own
-// postgresql-client.
-//
-// A malformed or unreadable record is NOT an error here — it degrades to the PATH
-// lookup and its existing actionable message, because a broken record must not be
-// able to make backup impossible on a host where a working client is on PATH.
+// resolvedInfraBinary returns the absolute path of a resolved PostgreSQL tool from the instance's
+// own record, or "" when there is no record or no such field.
 func resolvedInfraBinary(tool string) string {
 	dataDir := strings.TrimSpace(os.Getenv(dataDirEnv))
 	if dataDir == "" {
@@ -122,10 +106,7 @@ func resolvedInfraBinary(tool string) string {
 	return strings.TrimSpace(v)
 }
 
-// resolvePGClient decides how to reach the database named by dsn. There is exactly
-// one way now — the local client — so this is deliberately trivial; it stays a
-// function because Create and Restore must share the SAME answer (a restore can
-// never reach a different Postgres than the dump came from).
+// resolvePGClient decides how to reach the database named by dsn.
 func resolvePGClient(dsn string) pgClient {
 	return pgClient{dsn: dsn}
 }

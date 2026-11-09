@@ -9,9 +9,7 @@ import (
 
 func homedir() (string, error) { return os.UserHomeDir() }
 
-// The rule at its boundaries. The doc comment's ordering claim — a target that EQUALS or CONTAINS a
-// root is refused — is what this pins, in both directions, because the cheap mistake here is a prefix
-// test that makes /home2 look like it contains /home.
+// The rule at its boundaries.
 func TestMachineRootsRefuseEqualityAndContainment(t *testing.T) {
 	home := "/home/ops"
 	roots := Roots(home)
@@ -55,10 +53,6 @@ func TestDestroyedByIsNotFooledByAPrefix(t *testing.T) {
 }
 
 // THE WORK SCOPE IS DIFFERENT: equality is allowed, containment is not.
-//
-// This is the split that keeps the rule from breaking ordinary work — `chmod -R 755 <project>` and
-// `rm -rf <project>/dist` both name the scope root — while still refusing the directory that CONTAINS
-// the project, which is the catastrophe (it takes the project with it).
 func TestScopeRootsRefuseContainmentButNotEquality(t *testing.T) {
 	proj := "/home/ops/projects/Orchicon"
 	scope := ScopeRoots(proj, []string{"/tmp/work"})

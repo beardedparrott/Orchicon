@@ -1,10 +1,6 @@
 package chatlimits
 
 // chatlimits_test.go — ONE BOUND, and the rest of the product reads it.
-//
-// The number lived in five enforcement sites as a literal, so raising it meant finding all five, and a client
-// warning at a different number than the server rejects at would be worse than no warning. These tests pin
-// the bound, the response an over-long message gets, and the fact that the sites now agree.
 
 import (
 	"os"
@@ -72,9 +68,8 @@ func TestTheBoundIsCountedInRunesNotBytes(t *testing.T) {
 	}
 }
 
-// TestNoEnforcementSiteCarriesItsOwnNumber is the drift guard, and it is the reason this package exists.
-//
-// A literal in any handler would silently disagree with the client's counter the next time the bound moves.
+// TestNoEnforcementSiteCarriesItsOwnNumber is the drift guard, and it is the reason this package
+// exists.
 func TestNoEnforcementSiteCarriesItsOwnNumber(t *testing.T) {
 	root := filepath.Join("..") // the sibling packages under internal/
 	for _, pkg := range []string{"askorchicon", "execution"} {

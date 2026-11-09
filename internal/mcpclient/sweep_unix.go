@@ -11,34 +11,8 @@ import (
 	"syscall"
 )
 
-// SweepStaleChildren reaps MCP stdio server processes whose OWNING PLANE no longer exists.
-//
-// THE RULE IS OWNERSHIP, NOT ppid — and that distinction is the reported bug. The sweep used to reap only
-// children whose PPID was 1, on the theory that a dead plane's children get reparented to init. But the
-// kernel reparents a child to whatever subreaper is above it, which on a modern system is usually a session
-// leader with a perfectly live pid — so an orphan can look owned forever. Measured: an `aseprite_mcp`
-// process alive 18 HOURS after its plane died, PGID from a plane that no longer existed, reparented to pid
-// 3450, skipped by this sweep on every boot.
-//
-// So the owner stamps its own identity into the child at spawn (plane_identity.go), and this sweep asks
-// THAT question: is the process recorded in the child's environment still the process that spawned it?
-// A reused pid fails the check because the start time no longer matches; a reboot fails it because the
-// boot id differs; and a reparented child no longer hides behind a live neighbour.
-//
-// A child with NO owner markers (spawned by a build that predates this) still falls back to the old
-// ppid==1 rule, so an upgrade does not strand the children the previous build leaked.
-//
-// Children whose owning plane is alive are untouched: they belong to a live plane (or an in-progress
-// session).
-//
-// Only works on Linux/BSD where /proc and process groups exist — and the build tag above says
-// so, which it did NOT before. The runtime guard below (`procAvailable`) has always been here,
-// and for a while it was the ONLY guard: the file carried no build tag, so it compiled
-// everywhere and this package failed to build for Windows on `syscall.Kill` / `syscall.ESRCH`,
-// which do not exist there. That is not a runtime-degradation issue — it is a compile error in
-// the release matrix, so a runtime check can never cover it. Callers hook this into the
-// boot/periodic adopt sweep of Server.Run (ADR-0008: stdio children cannot outlive a dead
-// control plane); see sweep_windows.go for the no-op the other platforms get.
+// The runtime guard below (`procAvailable`) has always been here, and for a while it was the ONLY
+// guard: the file carried no build tag.
 func SweepStaleChildren(ctx context.Context, log *slog.Logger) {
 	if !procAvailable() {
 		return
@@ -93,15 +67,7 @@ func SweepStaleChildren(ctx context.Context, log *slog.Logger) {
 			}
 			reason = "legacy child reparented to init"
 		}
-		// Its controlling execution no longer exists. Kill the process GROUP *and* the process.
-		//
-		// BOTH, AND NOT BECAUSE OF REDUNDANCY. Children spawned by newStdioTransport are Setpgid'd, so
-		// `-pid` names their group — but that is not every child this sweep meets. One spawned by an older
-		// build, or by any path that did not set the group, is not a group leader: `kill(-pid)` then fails
-		// with ESRCH, which the old code treated as success. The result was a sweep that logged
-		// "reaped stale MCP child" and killed NOTHING, so the leak it reported fixing survived it.
-		// Sending the signal to the pid as well makes the reap true either way; when the group kill worked
-		// the second call is a harmless ESRCH.
+		// Its controlling execution no longer exists.
 		groupErr := syscall.Kill(-pid, syscall.SIGKILL)
 		pidErr := syscall.Kill(pid, syscall.SIGKILL)
 		if notGone(groupErr) && notGone(pidErr) {
@@ -134,8 +100,6 @@ func envServerID(environ []byte) string {
 }
 
 // parsePPID extracts the parent pid (4th field) from /proc/<pid>/stat.
-// Format: pid (comm) state ppid ... — comm may contain spaces and
-// parens, so find the LAST ')' and parse after it.
 func parsePPID(stat []byte) (int, bool) {
 	idx := lastIndexByte(stat, ')')
 	if idx < 0 {
@@ -176,10 +140,6 @@ var procAvailable = func() bool {
 }
 
 // processAlive reports whether pid names a live process we may signal.
-//
-// Signal 0 performs the permission/existence check without delivering anything — the same probe
-// `kill -0` makes. EPERM means the process EXISTS but belongs to another user, which is still "alive"
-// for the purpose of "do not reap it": the sweep must never kill a child it cannot identify.
 func processAlive(pid int) bool {
 	if pid <= 0 {
 		return false
@@ -188,9 +148,7 @@ func processAlive(pid int) bool {
 	return err == nil || err == syscall.EPERM
 }
 
-// notGone reports whether a kill attempt genuinely failed to reach anything. ESRCH ("no such process")
-// is the SUCCESS case for a kill — it means the target is already gone — so treating it as a failure, or
-// as proof the kill landed, are both wrong; it is simply "nothing left to do".
+// notGone reports whether a kill attempt genuinely failed to reach anything.
 func notGone(err error) bool {
 	return err != nil && err != syscall.ESRCH
 }

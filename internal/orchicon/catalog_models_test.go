@@ -2,10 +2,8 @@ package orchicon
 
 import "testing"
 
-// The offline model source the pickers fall back to: the vendored catalog's
-// authored anthropic entries. This test is the guard that a plane with NO
-// opencode binary and NO network can still list claude models with the context
-// window and cache-aware pricing the picker/compaction math needs.
+// The offline model source the pickers fall back to: the vendored catalog's authored anthropic
+// entries.
 func TestCatalogModelsForProviderServesAnthropicOffline(t *testing.T) {
 	models := CatalogModelsForProvider("anthropic")
 	if len(models) == 0 {

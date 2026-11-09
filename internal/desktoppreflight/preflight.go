@@ -32,15 +32,10 @@ import (
 	"strings"
 )
 
-// WebView2EvergreenURL is Microsoft's stable "Evergreen bootstrapper" link. It is
-// the remedy both the Windows MessageBox and the docs point at, because it is the
-// only URL that survives Microsoft renaming the download page.
+// WebView2EvergreenURL is Microsoft's stable "Evergreen bootstrapper" link.
 const WebView2EvergreenURL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
 
-// Report is the outcome of a preflight check. OK is the only field the caller
-// must branch on; the rest exists so the failure can be explained to a user in
-// terms they can act on (a message with no runnable command or URL is the
-// opaque failure this package exists to remove).
+// Report is the outcome of a preflight check.
 type Report struct {
 	OK       bool
 	Platform string
@@ -49,9 +44,7 @@ type Report struct {
 	Remedy   string
 }
 
-// Probe is every OS-specific capability the decision needs, injected. A nil field
-// means "this capability is unavailable on this host", which the decision
-// functions treat as "could not probe" rather than as "absent".
+// Probe is every OS-specific capability the decision needs, injected.
 type Probe struct {
 	Lookup   func(name string) (string, error)
 	Run      func(name string, args ...string) (string, error)
@@ -64,12 +57,8 @@ type Probe struct {
 // only entry point the desktop shell calls.
 func Check() Report { return Evaluate(runtime.GOOS, osProbe()) }
 
-// Evaluate is the whole decision, as a pure function of the platform name and the
-// injected probe results. Every branch below is covered by preflight_test.go,
-// which is why the tests run on a Linux CI runner with no webview present.
-//
-// An UNKNOWN platform FAILS CLOSED: a build for some other GOOS cannot be known to
-// render a webview, and silently proceeding is how a user gets a blank window.
+// Evaluate is the whole decision, as a pure function of the platform name and the injected probe
+// results.
 func Evaluate(goos string, p Probe) Report {
 	switch goos {
 	case "darwin":
@@ -94,10 +83,8 @@ func Evaluate(goos string, p Probe) Report {
 	}
 }
 
-// evaluateWindows reads the four registry locations the WebView2 runtime registers
-// itself in, then falls back to the install directory. Both are needed: the
-// registry is authoritative, but a machine where the runtime was updated by hand
-// can have the directory without a readable key.
+// evaluateWindows reads the four registry locations the WebView2 runtime registers itself in, then
+// falls back to the install directory.
 func evaluateWindows(p Probe) Report {
 	r := Report{
 		Platform: "Windows",
@@ -138,10 +125,8 @@ const (
 	webView2KeyNative = `SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`
 )
 
-// webkitSonames are the two sonames a working WebKitGTK install leaves behind: the
-// 4.0 series (Ubuntu <= 23.10, Debian 12) and the 4.1 series (Ubuntu 24.04+). Both
-// mean "a webview is present"; which one the binary links against is a build-time
-// decision, not something this probe should second-guess.
+// webkitSonames are the two sonames a working WebKitGTK install leaves behind: the 4.0 series
+// (Ubuntu <= 23.10, Debian 12) and the 4.1 series (Ubuntu 24.04+).
 var webkitSonames = []string{"libwebkit2gtk-4.0.so.37", "libwebkit2gtk-4.1.so.37"}
 
 func evaluateLinux(p Probe) Report {
@@ -177,11 +162,7 @@ func evaluateLinux(p Probe) Report {
 		}
 	}
 	if !probed {
-		// NO PROBER IS NOT PROOF OF ABSENCE. On Linux the shipped binary cannot even
-		// be loaded without WebKitGTK (the launcher wrapper and the AppImage's AppRun
-		// check it first), so a host with no ldconfig and no pkg-config is a build
-		// environment, not a user about to hit a blank window. Blocking here would
-		// refuse to start on a working machine, which is worse than the risk.
+		// NO PROBER IS NOT PROOF OF ABSENCE.
 		r.OK = true
 		r.Detail = "no loader probe available (ldconfig and pkg-config are both missing); " +
 			"the orchicon-desktop launcher enforces WebKitGTK before the app starts"

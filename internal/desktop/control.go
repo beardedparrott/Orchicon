@@ -44,9 +44,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/planebind"
 )
 
-// controlPath is the prefix every plane-control endpoint lives under. It is
-// namespaced so it can never be mistaken for a plane route (see proxyPrefixes):
-// a plane path is forwarded, this one is answered here.
+// controlPath is the prefix every plane-control endpoint lives under.
 const controlPath = "/__orchicon_desktop/"
 
 // controlTokenHeader carries the per-run token the shell injects into the SPA.
@@ -96,9 +94,8 @@ func (s *Shell) handleControl(w http.ResponseWriter, r *http.Request) bool {
 		http.NotFound(w, r)
 		return true
 	}
-	// SECRET COMPARISON IS NOT TIMING-SAFE HERE ON PURPOSE: the token authenticates
-	// a same-machine drive-by, not a network peer, and a timing side channel over
-	// loopback to a process that can already read the file is not the boundary.
+	// SECRET COMPARISON IS NOT TIMING-SAFE HERE ON PURPOSE: the token authenticates a same-machine
+	// drive-by, not a network peer.
 	if !s.controlTokenOK(r) {
 		writeJSON(w, http.StatusForbidden, errorBody{"this endpoint needs the desktop app's own token"})
 		return true
@@ -162,15 +159,6 @@ func (s *Shell) handleControl(w http.ResponseWriter, r *http.Request) bool {
 		writeJSON(w, http.StatusOK, info)
 	case "switch":
 		// SWITCH, THEN RESTART — the whole of a server change, in the order that works.
-		//
-		// UsePlane (above) retargets the PROXY and remembers the choice; on its own it leaves the window
-		// holding process-scoped state that belongs to the plane it started against. The operator's report
-		// was precise: "the top menu disappears and you are left on the manage server screen. If you close
-		// the desktop app and re-open, THEN you are connected to the other instance." So the retarget is
-		// followed by a replacement process, and this one exits.
-		//
-		// THE SWITCH HAPPENS FIRST AND IS PERSISTED, so even if the restart fails the next launch opens the
-		// right server — a failed restart must not leave the choice unrecorded.
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, errorBody{"POST required"})
 			return true
@@ -184,9 +172,7 @@ func (s *Shell) handleControl(w http.ResponseWriter, r *http.Request) bool {
 			writeJSON(w, http.StatusBadRequest, errorBody{err.Error()})
 			return true
 		}
-		// ANSWER BEFORE EXITING. The reply must reach the page, or a failed restart looks like a failed
-		// switch — the page has to be able to say "connected to prod, restarting" rather than hanging on a
-		// socket that died mid-response.
+		// ANSWER BEFORE EXITING.
 		writeJSON(w, http.StatusOK, info)
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
@@ -200,14 +186,6 @@ func (s *Shell) handleControl(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // UsePlane retargets the window at another instance's CONTROL PORT.
-//
-// It exists because "which instance am I talking to" was previously fixed at
-// launch, and a person running dev and prod had no way to say. The proxy reads
-// s.planeURL per request (see newProxy), so swapping it here moves every
-// subsequent API call; the SPA reloads to re-read desktopInfo.
-//
-// The port comes from the shared controlport table — never a literal — so the
-// app cannot invent a fifth port that no instance uses.
 func (s *Shell) UsePlane(instance string) (Info, error) {
 	instance = strings.TrimSpace(instance)
 	port, ok := controlport.Defaults()[instance]
@@ -241,12 +219,7 @@ func (s *Shell) UsePlane(instance string) (Info, error) {
 	return info, nil
 }
 
-// restartFunc replaces this process with a new one. Installed by the desktop entry point, which is the only
-// place that knows both the executable path and that a window is running at all.
-//
-// A SEAM RATHER THAN A DIRECT CALL so the control surface — and therefore every switch — is drivable in a
-// test without spawning a GUI. It is also what lets internal/desktop stay testable in CI, where no webview
-// exists.
+// restartFunc replaces this process with a new one.
 type restartFunc func(instance, route string) error
 
 // SetRestart installs the restart hook. Called once at startup, beside SetControl.
@@ -257,10 +230,6 @@ func (s *Shell) SetRestart(fn restartFunc) {
 }
 
 // RequestRestart asks the shell to replace it with a new process opened on instance.
-//
-// BEST-EFFORT AND LOGGED, deliberately: by the time this runs the switch has already been applied and
-// persisted, so a restart that cannot be started leaves the operator on a working (if stale-looking) window
-// rather than with nothing. The page is told "connected", which is true.
 func (s *Shell) RequestRestart(instance string) {
 	s.mu.Lock()
 	fn := s.restart
@@ -288,9 +257,8 @@ type errorBody struct {
 	Error string `json:"error"`
 }
 
-// result wraps a control call so a caller can tell "the action failed" from "the
-// call never happened" — the same distinction the page draws between a bad state
-// and a failed read.
+// result wraps a control call so a caller can tell "the action failed" from "the call never
+// happened" — the same distinction the page draws between a bad state and a failed read.
 func result[T any](v T, err error) any {
 	if err != nil {
 		return errorBody{Error: err.Error()}
@@ -308,10 +276,6 @@ func writeJSON(w http.ResponseWriter, code int, body any) {
 }
 
 // controlTokenOK reports whether r carries this run's control token.
-//
-// EXTRACTED SO THE SERVERS SURFACE USES THE SAME RULE, not a copy of it. A second implementation of "is
-// this caller allowed" is how one surface ends up weaker than the other — and these endpoints can destroy
-// a database, so the weaker one would be the dangerous one.
 func (s *Shell) controlTokenOK(r *http.Request) bool {
 	s.mu.Lock()
 	want := s.controlToken

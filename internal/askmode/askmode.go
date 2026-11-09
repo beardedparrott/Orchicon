@@ -1,16 +1,4 @@
 // Package askmode holds the Ask Orchicon MODE policy in a place NO adapter owns.
-//
-// WHY IT IS ITS OWN PACKAGE. The boundary started life inside internal/askorchicon, which was tolerable while the
-// native adapter was the only one that could enforce it — but it makes the policy a property of one adapter, and
-// the operator is adding more: "we should definitely build the agnostic approach now for all adapters instead of
-// waiting. New adapter support is coming very soon." A table that lives in the native adapter's package has to be
-// re-homed (and re-tested) the first time a second adapter needs it, so it lives here instead: every adapter
-// reads the same rule, and it imports nothing but `strings` (for name normalisation).
-//
-// WHAT IS HERE vs. WHAT IS NOT. This package decides WHICH tools a mode may run — the table, and the turn's mode
-// as a context value. It says nothing about HOW a mode is refused: the wording is the caller's (the native
-// adapter's refusal is a tool error carrying a message written for the model to relay; a different adapter might
-// deny a tool at its own layer and never need a message at all).
 package askmode
 
 import (
@@ -19,9 +7,6 @@ import (
 )
 
 // The modes, as the DB stores them (askorchicon's conversation mode vocabulary).
-//
-// They are defined HERE so the policy table and the mode constants cannot drift: an adapter that spells a mode
-// differently from this table is a mode the boundary silently does not apply to.
 const (
 	Brainstorm = "brainstorm"
 	Iteration  = "iteration"
@@ -34,17 +19,11 @@ const (
 type ctxKey struct{}
 
 // WithMode stamps a context with the mode a turn is running under.
-//
-// A context value rather than state on a shared tool provider, because the provider is built once and shared by
-// every conversation — per-turn mode on it would be a data race between two conversations in different modes.
-// The turn's context already flows from dispatch to every tool call, so the value rides that path for free.
 func WithMode(ctx context.Context, mode string) context.Context {
 	return context.WithValue(ctx, ctxKey{}, mode)
 }
 
-// ModeFromContext reads a turn's mode. "" when there is none — a caller that never stamped one, or a test driving
-// a tool directly — and "" is treated as ALLOW by Allows: an unstamped context makes no claim about the boundary,
-// and refusing everything because a stamp went missing would turn a plumbing slip into a dead session.
+// ModeFromContext reads a turn's mode.
 func ModeFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""
@@ -66,38 +45,20 @@ type Policy struct {
 	Why string
 	// SwitchTo names the mode that DOES this, so a refusal can be a direction rather than a wall.
 	SwitchTo string
-	// MayAct reports whether this mode may perform an ACTION. It is the policy's own answer to "is this mode
-	// the hands?", DERIVED FROM THIS TABLE rather than declared beside it: a mode may act exactly when the
-	// table does not deny the work tools (theWorkTools).
-	//
-	// WHY IT EXISTS, AND WHY IT IS A FIELD RATHER THAN A SECOND LIST. MCP tool names are OPAQUE to the
-	// platform: `mcp__github__create_issue` reveals nothing to a deny list about whether it acts. The only
-	// honest reading of a name the table cannot classify is "this is an ACTION" — so an opaque MCP tool is
-	// offered only to a mode that MAY ACT, and refused elsewhere. That predicate has to come from the ONE
-	// table (there must be no second list of hidden tools); this field is that table's own answer, tied to
-	// theWorkTools by a drift-guard test so it can never drift from the denial sets.
+	// MayAct reports whether this mode may perform an ACTION.
 	MayAct bool
 }
 
-// The Doers: the tools that CHANGE the work — they write code or run commands. Refused by every mode that is not
-// the hands, which is the operator's boundary in one line: "when it comes to actual work, that is when it is
-// locked INSIDE orchicon tools. When it comes to the ACTION phase."
-//
-// `bash` is denied, and the operator ruled on it explicitly. It can only ever READ (git log, rg, cat), but it can
-// also write, so allowing it would make the boundary porous. The READ-ONLY suite stays — read, batch_read, grep,
-// batch_grep, glob, list, list_project_dir, read_project_file, ask_file_root — because understanding a project
-// is what the other modes are for.
+// The READ-ONLY suite stays — read, batch_read, grep, batch_grep, glob, list, list_project_dir,
+// read_project_file, ask_file_root — because understanding a project is what the other modes are
+// for.
 func theWorkTools() map[string]bool {
 	return map[string]bool{
 		"write": true, "edit": true, "batch_write": true, "bash": true,
 	}
 }
 
-// The Planners: the tools that AUTHOR OR DISPATCH the work. Refused by the hands, because writing the plan and
-// firing the pipeline are the other two modes' jobs.
-//
-// LIFECYCLE IS DELIBERATELY ABSENT. archive/restore/delete_work_item are hygiene rather than authoring or
-// dispatch, and blocking them could strand a mistake an iteration session was fixing.
+// The Planners: the tools that AUTHOR OR DISPATCH the work.
 func thePlanTools() map[string]bool {
 	return map[string]bool{
 		// authoring
@@ -110,10 +71,6 @@ func thePlanTools() map[string]bool {
 }
 
 // policies is the whole boundary, as one table.
-//
-// ONE TABLE because the modes' relationship IS the table: Brainstorm and Quick Work refuse THE SAME set (the
-// work) and differ in what they do INSTEAD, while Iteration refuses the other set (the plan). Writing that out
-// three times is how the three would drift.
 var policies = map[string]Policy{
 	Brainstorm: {
 		Mode:   Brainstorm,
@@ -132,8 +89,7 @@ var policies = map[string]Policy{
 			"and work item, fires the run and reports back — and it never edits code in this conversation.",
 		SwitchTo: Iteration,
 		// MayAct is FALSE: Quick Work dispatches rather than acts, so under the opaque-MCP rule it may not
-		// call a third-party MCP tool directly — it dispatches a worker that has that server. The
-		// platform cannot prove an opaque tool is a read, so it fails closed exactly as the work tools do.
+		// call a third-party MCP tool directly — it dispatches a worker that has that server.
 		MayAct: false,
 	},
 	Iteration: {
@@ -149,22 +105,12 @@ var policies = map[string]Policy{
 	},
 }
 
-// orchiconMCPServer is the platform's OWN MCP sidecar's server name (`mcp__orchicon__<tool>`, mcpconfig.go).
-// It is the ONE MCP server whose tools are CLASSIFIED: its bare `<tool>` name (create_work_item, …) is already
-// in the table, which is why the adapter strips the prefix before consulting the policy. Every OTHER MCP server
-// is opaque to the platform.
+// orchiconMCPServer is the platform's OWN MCP sidecar's server name (`mcp__orchicon__<tool>`,
+// mcpconfig.go).
 const orchiconMCPServer = "orchicon"
 
-// IsOpaqueMCPTool reports whether name is an MCP tool the platform CANNOT classify: `mcp__<server>__<tool>` for
-// a server that is NOT the platform's own `orchicon` sidecar. Case-insensitive.
-//
-// THE DISTINCTION IS THE WHOLE MODE RULE. `mcp__orchicon__create_work_item` is classified by the table's bare
-// name (`create_work_item`, a planner tool) — the adapter strips the prefix and the policy holds. An operator's
-// server (`mcp__github__create_issue`) maps to no entry, so its bare name would be ALLOWED in every mode; the
-// platform cannot tell `list_issues` from `create_issue` and must therefore treat the name as an ACTION.
-//
-// A name that is not an `mcp__` name at all (a native/host tool, a product tool spelled bare or with the
-// `orchicon_` prefix) is NOT opaque — those ARE classified by the table's vocabulary.
+// IsOpaqueMCPTool reports whether name is an MCP tool the platform CANNOT classify:
+// `mcp__<server>__<tool>` for a server that is NOT the platform's own `orchicon` sidecar.
 func IsOpaqueMCPTool(name string) bool {
 	n := strings.ToLower(strings.TrimSpace(name))
 	if !strings.HasPrefix(n, "mcp__") {
@@ -206,9 +152,7 @@ func NormalizeToolName(name string) string {
 	return strings.TrimPrefix(trimmed, "orchicon_")
 }
 
-// MayAct reports whether a mode may perform an ACTION (see Policy.MayAct). An unknown or empty mode reports
-// true, mirroring Allows: a caller that passes no mode is not making a claim about the boundary, and a value
-// written by an older build must not silently disable a whole session.
+// MayAct reports whether a mode may perform an ACTION (see Policy.MayAct).
 func MayAct(mode string) bool {
 	p, ok := policies[mode]
 	if !ok {
@@ -248,9 +192,8 @@ func Allows(mode, tool string) bool {
 	return !p.Denied[NormalizeToolName(tool)]
 }
 
-// DeniedNames returns a mode's denied tool names as a slice, for an adapter that wants to apply the policy through
-// its OWN mechanism (a config block, a flag, a per-invocation allow-list) rather than asking this package about
-// each tool. Sorted, so a policy handed to an adapter is deterministic and testable.
+// DeniedNames returns a mode's denied tool names as a slice, for an adapter that wants to apply the
+// policy through its OWN mechanism (a config block, a flag.
 func DeniedNames(mode string) []string {
 	p, ok := policies[mode]
 	if !ok {

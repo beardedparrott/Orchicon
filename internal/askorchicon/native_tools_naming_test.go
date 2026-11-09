@@ -53,8 +53,6 @@ func TestEveryAdvertisedAskToolNameResolves(t *testing.T) {
 }
 
 // The end-to-end pin: a prefixed call must actually DISPATCH, not merely resolve.
-// list_adapter_kinds ignores both the pool and the args, so this exercises the
-// real lookup path with no database.
 func TestExecuteAskToolAcceptsTheAdvertisedPrefix(t *testing.T) {
 	s := &Service{toolRegistry: NewToolRegistry(nil, slog.Default(), nil)}
 	s.registerSessionTools()

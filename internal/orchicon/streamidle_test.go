@@ -12,11 +12,8 @@ import (
 	"time"
 )
 
-// closableBody emits one byte per Read for the first `chunks` reads, then
-// blocks until Close — mirroring a real http response body, whose Close
-// unblocks an in-flight Read. That is exactly the mechanism the watchdog's
-// fire path relies on; test helpers MUST honor it or the test deadlocks in
-// the deferred cleanup (Close waits for the pump, the pump waits in Read).
+// That is exactly the mechanism the watchdog's fire path relies on; test helpers MUST honor it or
+// the test deadlocks in the deferred cleanup (Close waits for the pump, the pump waits in Read).
 type closableBody struct {
 	chunks int
 	pause  time.Duration
@@ -95,13 +92,8 @@ func TestIdleWatchBodyEOFPassesThrough(t *testing.T) {
 }
 
 func TestIdleWatchBodyTimerResetsPerChunk(t *testing.T) {
-	// Chunks 150ms apart with a 200ms idle budget: every inter-chunk gap is
-	// just UNDER the budget, so if the timer did not re-arm per chunk
-	// delivery, it would fire 200ms after the FIRST chunk — mid-gap before
-	// chunk 2 arrives — and the second read would fail. Delivering both
-	// chunks, then tripping on genuine silence, proves the reset happens.
-	// (Gaps larger than the budget are a tripping condition by contract —
-	// "no bytes within the budget" — not a reset regression.)
+	// Chunks 150ms apart with a 200ms idle budget: every inter-chunk gap is just UNDER the budget, so
+	// if the timer did not re-arm per chunk delivery, it would fire 200ms after the FIRST chunk.
 	rc := newClosableBody(2, 150*time.Millisecond)
 	w := newIdleWatchBody(rc, 200*time.Millisecond)
 	defer w.Close()
@@ -117,9 +109,8 @@ func TestIdleWatchBodyTimerResetsPerChunk(t *testing.T) {
 }
 
 func TestIdleWatchBodyShortReadsKeepTail(t *testing.T) {
-	// Consumer buffer smaller than the pumped chunk: the tail must be
-	// buffered, not dropped (short reads are legal io.Reader semantics —
-	// bufio.Scanner starts small and grows).
+	// Consumer buffer smaller than the pumped chunk: the tail must be buffered, not dropped (short
+	// reads are legal io.Reader semantics — bufio.Scanner starts small and grows).
 	w := newIdleWatchBody(io.NopCloser(strings.NewReader("0123456789")), 5*time.Second)
 	defer w.Close()
 	small := make([]byte, 3)

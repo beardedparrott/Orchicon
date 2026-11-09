@@ -1,9 +1,7 @@
 package planecontrol
 
-// env.go — the HOST plane's environment and the health probe: the two things a lifecycle call needs and that
-// must never be computed twice. MOVED from cmd/orchicon/install_host.go and install_bridge.go, comments
-// intact, because a second copy of "which port does this instance's plane bind" is how one instance's workers
-// end up pointed at another's plane.
+// env.go — the HOST plane's environment and the health probe: the two things a lifecycle call needs
+// and that must never be computed twice.
 
 import (
 	"context"
@@ -25,29 +23,15 @@ import (
 // "decide from the host" (see runtimeContainersInUse), which is what a plain install needs.
 const runtimeContainersEnv = "ORCHICON_RUNTIME_CONTAINERS"
 
-// ContainerEngineAvailable reports whether a container engine is INSTALLED, as a PATH probe.
-//
-// IT IS A PATH/STAT PROBE AND NOT AN ENGINE CALL, on purpose: `docker version` needs a running daemon
-// and can fail for a dozen reasons that have nothing to do with whether the binary exists, and a machine
-// with no engine must be able to answer "no" without an error. The daemon check happens later, in the
-// installer, and ONLY when this returns true — so a host with no engine never runs a doomed `version`.
-//
-// IT DELEGATES TO internal/containerengine, which owns the search order (podman first, then docker, plus
-// the platform's conventional install locations). That package is the ONE truth for "is there an engine,
-// and which binary is it" — the plane's /enginez and the installer call in too — so a second probe here
-// would eventually disagree with them and describe an engine that is not there.
+// The daemon check happens later, in the installer, and ONLY when this returns true — so a host
+// with no engine never runs a doomed `version`.
 func ContainerEngineAvailable() bool {
 	e, err := containerengine.Detect(containerengine.DefaultProbe())
 	return err == nil && e.Name != containerengine.EngineNone
 }
 
-// engineBinary is the engine binary to invoke for the few calls this package makes itself (the bridge
-// lookup).
-//
-// THE DEFAULT IS NOT THE LITERAL "docker". On the podman-only host this product now supports,
-// `docker network inspect bridge` is a command-not-found, so a hardcoded name here would make the bridge
-// unresolvable and the plane refuse to start on a host that HAS an engine. The search order comes from
-// internal/containerengine; "docker" remains the last resort, which is exactly what this path did before.
+// engineBinary is the engine binary to invoke for the few calls this package makes itself (the
+// bridge lookup).
 func engineBinary() string {
 	if e, err := containerengine.Detect(containerengine.DefaultProbe()); err == nil && e.Bin != "" {
 		return e.Bin
@@ -76,57 +60,18 @@ func RuntimeContainersInUse() bool {
 	if strings.TrimSpace(os.Getenv("ORCHICON_DOCKER_BRIDGE_IP")) != "" {
 		return true
 	}
-	// THE LAST RUNG IS THE PROBLEM, AND IT IS WHY A LOCAL INSTALL DEMANDED A DOCKER BRIDGE.
-	//
-	// This used to return ContainerEngineAvailable(), which asks internal/containerengine's
-	// Detect — an EXECUTION-FREE probe that answers "is an engine binary installed?" from PATH
-	// and stat alone. On Windows with Docker Desktop installed but its daemon wedged, that is
-	// TRUE, so the plane concluded runtime containers were in use, computed a bridge bind, and
-	// refused to start: "cannot resolve the docker bridge address". The operator had chosen
-	// local execution and had just told the installer to fetch no images.
-	//
-	// An engine that CANNOT RUN A CONTAINER IS NOT AN ENGINE IN USE. So the fallback now asks
-	// the same question the install asks — can it actually run one? — through the cached
-	// verification in internal/containerengine, which pays a single bounded `docker info` and
-	// remembers the answer. When it cannot, this reports NO and the plane binds loopback with
-	// no bridge, which is the supported local shape.
+	// THE LAST RUNG IS THE PROBLEM, AND IT IS WHY A LOCAL INSTALL DEMANDED A DOCKER BRIDGE. An engine
+	// that CANNOT RUN A CONTAINER IS NOT AN ENGINE IN USE.
 	return engineDaemonAnswers()
 }
 
 // PlaneBindEnv is the ONE place the bridge bind and the advertised plane URL are computed.
-//
-// IT RETURNS ("", "", nil) WHEN RUNTIME CONTAINERS ARE NOT IN USE. That is the whole de-containerization
-// change: a local-mode user has no bridge, needs no bind, and must not have an install fail over it. It is
-// an ERROR only in the case where containers ARE in use — because there the bind is load-bearing: a plane
-// its own workers cannot reach is worse than one that refuses to start, and there is deliberately no
-// 0.0.0.0 fallback (that is the LAN exposure the operator rejected).
-//
-// BOTH VALUES COME FROM THIS ONE CALL — the same IP and the SAME instance's control port — because a bind
-// computed at one call site and a URL at another is how the two drift apart and how one instance's workers
-// end up pointed at another's plane. The port is read from the phase-0-resolved set, never re-derived.
 func PlaneBindEnv(ports map[string]int) (bind, url string, err error) {
 	if !RuntimeContainersInUse() {
 		return "", "", nil
 	}
 	control := ports["ORCHICON_CONTROL_PORT"]
 	// AN UNRESOLVABLE BRIDGE IS NO LONGER FATAL, AND MUST NOT BE.
-	//
-	// This used to fail the whole plane start when BridgeIP() could not answer.
-	// That lookup is a DOCKER lookup (`docker network inspect bridge`, then the
-	// docker0 interface), and a ROOTLESS PODMAN host has neither: no docker0, no
-	// 172.17.0.1, and a container IP in a per-user netns that is not host
-	// routable (ADR-0014). So the plane refused to start on a supported engine —
-	// for a value it no longer even needs.
-	//
-	// It is unnecessary because every runtime container is created with
-	// `--add-host host.docker.internal:host-gateway` (engine.go CreateBaseArgs,
-	// ADR-0013 D2.4): the stable NAME resolves to the host on BOTH engines and on
-	// every platform, and only the PORT distinguishes two instances.
-	// planePublicURL already documents exactly this fallback, so returning it is
-	// consistent rather than inventive.
-	//
-	// `bind` is now INFORMATIONAL (the bridge address, when there is one). Nothing
-	// emits it as a listener any more: the wildcard primary already owns it.
 	ip, iperr := BridgeIP()
 	if iperr != nil {
 		return "", fmt.Sprintf("http://host.docker.internal:%d", control), nil
@@ -134,15 +79,9 @@ func PlaneBindEnv(ports map[string]int) (bind, url string, err error) {
 	return fmt.Sprintf("%s:%d", ip, control), fmt.Sprintf("http://%s:%d", ip, control), nil
 }
 
-// PlaneEnv builds the HOST plane's environment for an instance.
-//
-// EVERY value is derived from the RESOLVED ports, so no value can be global: a
-// shared HTTP port or plane URL would silently point one instance's workers at
-// the other's plane. The bind and the advertised URL are computed from the SAME
-// bridge IP and the SAME port in ONE place (PlaneBindEnv), so what the plane
-// listens on and what it hands its run containers can never disagree — and the
-// pair is present ONLY when runtime containers are in use, because a host with
-// no container engine has no bridge to bind and needs none.
+// The bind and the advertised URL are computed from the SAME bridge IP and the SAME port in ONE
+// place (PlaneBindEnv), so what the plane listens on and what it hands its run containers can
+// never.
 func PlaneEnv(instance string, ports map[string]int, hostDataDir, runtimeSocket string) ([]string, error) {
 	_, url, err := PlaneBindEnv(ports)
 	if err != nil {
@@ -152,23 +91,6 @@ func PlaneEnv(instance string, ports map[string]int, hostDataDir, runtimeSocket 
 	env := []string{
 		"ORCHICON_INSTANCE=" + instance,
 		// THE PRIMARY BIND IS A WILDCARD, AND THAT IS THE POINT.
-		//
-		// A wildcard listener answers on EVERY IPv4 interface at once, so one
-		// listener serves all three client populations: host clients on loopback
-		// (orch, the TUI, the desktop app), runtime containers dialling the host
-		// gateway, and any other machine on the LAN. It is a strict SUPERSET of
-		// the loopback-plus-bridge pair it replaces.
-		//
-		// The pair existed to work around a COLLISION, not a capability gap: a
-		// wildcard primary already owns <bridge ip>:<port> on every interface, so
-		// a second listener on that address could never bind and retried a doomed
-		// net.Listen forever. The fix was to delete the redundant listener, not to
-		// narrow the primary — narrowing it silently took the plane off the LAN,
-		// which is the regression this restores.
-		//
-		// It is also more robust than a set of concrete binds: a wildcard answers
-		// on interfaces that do not exist yet, so a docker0/podman bridge appearing
-		// after boot needs no rebind.
 		fmt.Sprintf("ORCHICON_HTTP_ADDR=:%d", control),
 		fmt.Sprintf("ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:%d/orchicon?sslmode=disable", ports["ORCHICON_POSTGRES_PORT"]),
 		fmt.Sprintf("ORCHICON_NATS_URL=nats://localhost:%d", ports["ORCHICON_NATS_PORT"]),
@@ -186,21 +108,11 @@ func PlaneEnv(instance string, ports map[string]int, hostDataDir, runtimeSocket 
 		ServeStateDirEnv + "=" + filepath.Join(hostDataDir, "serve"),
 	}
 	// THE ADVERTISED URL ONLY — ORCHICON_HTTP_EXTRA_BIND IS GONE.
-	//
-	// The extra listener existed so runtime containers could reach a host-resident
-	// plane across the engine bridge. The wildcard primary above already serves
-	// that address, so the second listener was pure redundancy, and keeping it
-	// would reintroduce the collision that caused the original regression.
-	//
-	// The URL stays because it is a REAL requirement: it is what a runtime
-	// container is told to dial. It carries THIS instance's port, so two instances
-	// can never be pointed at each other's plane.
 	if url != "" {
 		env = append(env, "ORCHICON_PLANE_PUBLIC_URL="+url)
 	}
-	// Identity/keys the operator already set are INHERITED rather than invented —
-	// a deployment that picked its own tenant or signing key must keep them, or
-	// the migrated data would be read under the wrong identity.
+	// Identity/keys the operator already set are INHERITED rather than invented — a deployment that
+	// picked its own tenant or signing key must keep them.
 	for _, k := range []string{"ORCHICON_DEPLOYMENT_TENANT_ID", "ORCHICON_AUTH_SIGNING_KEY", "ORCHICON_SECRETS_KEK"} {
 		if v, ok := os.LookupEnv(k); ok && v != "" {
 			env = append(env, k+"="+v)
@@ -228,13 +140,6 @@ func EnvWithout(env []string, keys ...string) []string {
 }
 
 // Health is the probe's FULL answer: did anything answer, and with what status.
-//
-// Healthy collapses that to one bool, which is all a lifecycle verb needs — it
-// either proceeds or does not. A CONNECTION STATE surface needs more, because
-// "nothing answers at the configured URL" (offline: start the plane) and
-// "something answers and is not well" (plane-error: a different problem with a
-// different remedy) are NOT the same finding, and reporting an unhealthy plane as
-// absent sends the operator to the wrong fix.
 type Health struct {
 	// Reachable is true when a TCP connection was made and an HTTP response came back.
 	Reachable bool
@@ -247,9 +152,7 @@ type Health struct {
 // Healthy reports whether the plane is reachable AND answers 200.
 func (h Health) Healthy() bool { return h.Reachable && h.StatusCode == 200 }
 
-// Probe is the ONE health probe. Healthy delegating to it is what keeps the two
-// answers from ever disagreeing (a second copy of "what counts as healthy" is how
-// a screen says connected while a start says failed).
+// Probe is the ONE health probe.
 func Probe(url string, timeout time.Duration) Health {
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get(url)
@@ -266,22 +169,8 @@ func Healthy(url string, timeout time.Duration) bool {
 	return Probe(url, timeout).Healthy()
 }
 
-// BridgeIP resolves the docker bridge address — the address a runtime container
-// on the default bridge uses to reach the HOST.
-//
-// A HOST-RESIDENT plane must bind it, and a published host port cannot be used
-// in its place: docker's hairpin NAT drops gateway→published-port traffic from
-// bridge containers, which is exactly the plane-channel MCP timeout this bind
-// removes.
-//
-// Resolution order mirrors container.sh: ORCHICON_DOCKER_BRIDGE_IP (tests and
-// hand-pinning) → docker's own IPAM config → the docker0 interface address.
-//
-// An unresolvable bridge is a HARD error, and it is only ever reached when
-// runtime containers ARE in use (PlaneBindEnv checks first). There is
-// deliberately no 0.0.0.0 fallback — that is the LAN exposure the operator
-// rejected — and no guessed address, because a wrong bind surfaces much later as
-// "workers cannot reach the plane" rather than as a failure here.
+// BridgeIP resolves the docker bridge address — the address a runtime container on the default
+// bridge uses to reach the HOST.
 func BridgeIP() (string, error) {
 	if v := strings.TrimSpace(os.Getenv("ORCHICON_DOCKER_BRIDGE_IP")); v != "" {
 		return v, nil
@@ -311,20 +200,6 @@ func BridgeIP() (string, error) {
 
 // engineDaemonAnswers reports whether the container engine's DAEMON is reachable — which is a
 // different question from whether its binary exists, and is the one that matters here.
-//
-// THE BUG THIS FIXES. internal/containerengine's Detect is EXECUTION-FREE on purpose: it answers
-// "is an engine installed?" from PATH and stat. On Windows with Docker Desktop installed and its
-// daemon wedged, that is true — so the plane concluded runtime containers were in use, computed a
-// bridge bind, and refused to start ("cannot resolve the docker bridge address"). The operator had
-// chosen local execution and had just told the installer to fetch no images.
-//
-// A BOUNDED `<engine> info` IS THE RIGHT PROBE, not `Verify`. Verify RUNS A CONTAINER, which
-// pulls an image — unacceptable on a plane-start path that may run on every boot. `info` asks the
-// daemon whether it is there, and "failed to connect to the docker API at npipe:////./pipe/…" is
-// exactly the answer an installed-but-dead Docker Desktop gives.
-//
-// The answer is cached: this is consulted on every plane start, and a daemon proven dead must not
-// be re-probed five times because the plane restarted five times. Clearing it is a process restart.
 func engineDaemonAnswers() bool {
 	engineProbeOnce.Do(func() {
 		probe := containerengine.DefaultProbe()
@@ -341,9 +216,7 @@ func engineDaemonAnswers() bool {
 	return engineProbeOK
 }
 
-// engineProbeTimeout bounds the daemon check. The same 20-second class the install uses: generous
-// for a healthy daemon (tens of milliseconds), short enough that a wedged pipe degrades to "no"
-// rather than hanging a plane start.
+// engineProbeTimeout bounds the daemon check.
 const engineProbeTimeout = 20 * time.Second
 
 var (

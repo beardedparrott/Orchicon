@@ -65,10 +65,6 @@ func TestLeftoverDataIsNotAnInstalledServer(t *testing.T) {
 }
 
 // TestTheSetupRecordDoesNotOutliveTheInstance is defect (2).
-//
-// It is asserted against the uninstall list rather than by running an uninstall, because the list is the
-// contract: everything named here is removed on EVERY uninstall, and this is the one entry whose absence
-// produced a screen that contradicted the filesystem.
 func TestTheSetupRecordDoesNotOutliveTheInstance(t *testing.T) {
 	found := false
 	for _, f := range uninstallInfraFilesOfCmdOrchicon(t) {
@@ -84,10 +80,6 @@ func TestTheSetupRecordDoesNotOutliveTheInstance(t *testing.T) {
 }
 
 // uninstallInfraFilesOfCmdOrchicon reads the list from the CLI's uninstall.go.
-//
-// A SOURCE READ RATHER THAN AN IMPORT, because the list lives in `package main` under cmd/orchicon and
-// cannot be imported. The alternative — duplicating the list here — would be a second copy that agrees
-// today and drifts later, which is the failure these guards exist to prevent.
 func uninstallInfraFilesOfCmdOrchicon(t *testing.T) []string {
 	t.Helper()
 	src, err := os.ReadFile(filepath.Join("..", "..", "cmd", "orchicon", "uninstall.go"))

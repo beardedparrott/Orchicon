@@ -14,10 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 )
 
-// RPCService implements the generated FileEditServiceHandler: the standalone
-// fetch + stream RPCs the GUI sidebar and TUI pane consume. API-key auth is
-// NOT handled here — the shared interceptor chain (api.Mount) resolves the
-// tenant before the handler runs, mirroring every other service.
+// RPCService implements the generated FileEditServiceHandler: the standalone fetch + stream RPCs
+// the GUI sidebar and TUI pane consume.
 type RPCService struct {
 	store Store
 	// list is the ledger read fn (PGStore.List shape). Injected from the
@@ -27,9 +25,7 @@ type RPCService struct {
 	subscriber eventbus.Subscriber
 }
 
-// NewRPCService wires the RPC layer over the durable store. subscriber may
-// be nil: StreamFileEdits then serves replay-only (rows the DB already has)
-// and ends cleanly, the same degraded posture as the execution event stream.
+// NewRPCService wires the RPC layer over the durable store.
 func NewRPCService(store Store, log *slog.Logger, sub eventbus.Subscriber) *RPCService {
 	if log == nil {
 		log = slog.Default()
@@ -85,11 +81,7 @@ func (s *RPCService) GetSessionFileEdits(ctx context.Context, req *connect.Reque
 	return connect.NewResponse(&apiv1.GetSessionFileEditsResponse{Edits: edits, MaxSeq: maxSeq}), nil
 }
 
-// StreamFileEdits fans out new ledger entries for one owner as they are
-// persisted. Replay-then-live: rows > from_sequence are listed first, then
-// the event bus subscription (subject filter execution.file_edit) delivers
-// live rows. event_id = ledger row id (stable → dedup survives reconnect);
-// sequence = ledger seq (monotonic → resume) — the useStream.ts conventions.
+// StreamFileEdits fans out new ledger entries for one owner as they are persisted.
 func (s *RPCService) StreamFileEdits(ctx context.Context, req *connect.Request[apiv1.StreamFileEditsRequest], stream *connect.ServerStream[apiv1.StreamFileEditsResponse]) error {
 	tenantID := req.Msg.GetTenantId()
 	if strings.TrimSpace(tenantID) == "" {

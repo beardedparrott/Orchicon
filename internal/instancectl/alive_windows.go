@@ -3,9 +3,6 @@
 package instancectl
 
 // alive_windows.go — the Windows liveness probe: a process handle plus its exit code.
-//
-// OpenProcess + GetExitCodeProcess is the same pair internal/planecontrol uses; it needs no dependency
-// beyond GOROOT's syscall, which keeps this package a leaf.
 
 import "syscall"
 

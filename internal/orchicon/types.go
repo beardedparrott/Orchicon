@@ -72,20 +72,7 @@ const (
 	StopOther         StopReason = "other"
 )
 
-// Usage carries token accounting. ReasoningTokens is a SUB-BUCKET of
-// OutputTokens — never summed into totals (matches the usage-records cache
-// migration 20260828). InputTokens is the FRESH (uncached) input bucket on
-// EVERY wire: Anthropic input_tokens already excludes cache reads, and the
-// OpenAI-compat client subtracts prompt_tokens_details.cached_tokens from
-// prompt_tokens at the edge (prompt_tokens is cache-INCLUSIVE — see
-// oaNoCache / legacyNoCache) so cache tokens are never double-counted in the
-// window-pressure basis InputTokens+CacheReadTokens or in CostFor pricing.
-// CacheRead/CacheWrite are Anthropic cache_read_/cache_creation_input_tokens
-// and OpenAI prompt_tokens_details.cached_tokens (OpenAI has no cache-write
-// → 0). CostUSD is the LIVE provider-priced cost of this turn (resolved by
-// the wire client from the model's catalog/probe pricing); 0 when the model
-// has no pricing — the budget cost gate then never fires on it, never a
-// synthesized estimate.
+// Usage carries token accounting.
 type Usage struct {
 	InputTokens      int64
 	OutputTokens     int64
@@ -212,22 +199,16 @@ type TurnRequest struct {
 	// OpenAI-compat does not accept num_ctx). 0 = server default.
 	OllamaNumCtx int64
 
-	// OllamaNumPredict rides native /api/chat options.num_predict — the
-	// per-turn output cap (Ollama only; the OpenAI-compat path carries
-	// MaxTokens as max_tokens instead). 0 = server default.
+	// OllamaNumPredict rides native /api/chat options.num_predict — the per-turn output cap (Ollama
+	// only; the OpenAI-compat path carries MaxTokens as max_tokens instead).
 	OllamaNumPredict int64
 
 	// CacheControl is the Anthropic breakpoint policy (default: system+tools
 	// for anthropic-format routes; ignored elsewhere).
 	CacheControl CacheControlTTL
 
-	// SessionID is the stable per-conversation/per-execution identifier
-	// sent as the `x-opencode-session` header on OpenCode Zen/Go requests
-	// (D1 — https://opencode.ai/docs/go/#where-can-i-use-it requires a
-	// stable session id per conversation; without it the provider returns
-	// a deterministic 400 MissingSessionID). Ask turns set the conversation
-	// id; worker executions set the execution id. Empty = no header (local
-	// servers / non-OpenCode providers).
+	// SessionID is the stable per-conversation/per-execution identifier sent as the
+	// `x-opencode-session` header on OpenCode Zen/Go requests (D1.
 	SessionID string
 }
 
@@ -253,9 +234,7 @@ type TurnStream interface {
 // Provider is the provider-agnostic surface every backend implements:
 // stream a turn, list models, report capabilities.
 type Provider interface {
-	// StreamTurn streams one turn. The returned error covers pre-stream
-	// failures (auth, connect, non-2xx after retries); mid-stream failures
-	// surface as a StreamError event followed by Next returning the error.
+	// StreamTurn streams one turn.
 	StreamTurn(ctx context.Context, req TurnRequest) (TurnStream, error)
 	// ListModels resolves through the sourcing service but is directly
 	// callable on the provider.
@@ -331,12 +310,6 @@ func (m ModelInfo) CostFor(u Usage) float64 {
 }
 
 // CostFor prices one usage record at these rates.
-//
-// IT LIVES ON Pricing, not only on ModelInfo, because a caller can hold the RATES
-// without holding the whole model descriptor — the Ask turn does exactly that: it
-// caches the resolved Pricing for its session and prices each round from it. One
-// implementation of the arithmetic, so a future rate field cannot be honoured on
-// one path and silently ignored on the other.
 func (p Pricing) CostFor(u Usage) float64 {
 	return float64(u.InputTokens)/1e6*p.InputPerM +
 		float64(u.OutputTokens)/1e6*p.OutputPerM +

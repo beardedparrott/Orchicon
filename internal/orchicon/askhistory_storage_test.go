@@ -1,16 +1,6 @@
 package orchicon
 
-// askhistory_storage_test.go — the persistence cap must never mean "write
-// nothing".
-//
-// The behaviour under test is a cliff, not a cap. persistAskHistoryLocked used to
-// return early, writing NOTHING, the moment a session's serialized history passed
-// askHistoryMaxBytes. The file on disk then froze at the last snapshot that fit, so
-// every later turn was persisted nowhere and the next restart reloaded a stale
-// transcript — or, if the history never fit at all, reloaded nothing and left the
-// model on the system prompt's short history digest alone. The tests below pin the
-// four shapes a history can now be written in, and the one that matters most:
-// whatever its size, a persisted history is still there after a restart.
+// askhistory_storage_test.go — the persistence cap must never mean "write nothing".
 
 import (
 	"context"
@@ -21,10 +11,7 @@ import (
 	"testing"
 )
 
-// storageTestHistory builds a history of n messages, each carrying size bytes of
-// text. Compressible on purpose: it lets one test drive the history past the byte
-// cap (so the plain-JSON write is refused) while still fitting once compressed,
-// which is the case where NOTHING may be lost.
+// storageTestHistory builds a history of n messages, each carrying size bytes of text.
 func storageTestHistory(n, size int) []Message {
 	body := strings.Repeat("a", size)
 	out := make([]Message, 0, n)
@@ -51,10 +38,7 @@ func persistentBridge(t *testing.T, dir string, history []Message) (*NativeBridg
 	return b, sid, filepath.Join(dir, askHistoryFilename(sid)+".json")
 }
 
-// TestAPersistedHistoryThatFitsStaysPlainJSON pins the format an ordinary
-// conversation still gets. It is what every earlier release wrote and can read, so
-// keeping it means a rollback loses nothing — the compression below is only ever
-// reached by a history that would otherwise not be written at all.
+// TestAPersistedHistoryThatFitsStaysPlainJSON pins the format an ordinary conversation still gets.
 func TestAPersistedHistoryThatFitsStaysPlainJSON(t *testing.T) {
 	dir := t.TempDir()
 	_, _, path := persistentBridge(t, dir, storageTestHistory(4, 256))
@@ -82,9 +66,7 @@ func TestAPersistedHistoryThatFitsStaysPlainJSON(t *testing.T) {
 	}
 }
 
-// TestAnOversizeHistoryIsStillPersistedAndSurvivesARestart is the regression the
-// cap used to cause. The history's JSON is over askHistoryMaxBytes, which is
-// exactly the input that previously wrote no file at all.
+// TestAnOversizeHistoryIsStillPersistedAndSurvivesARestart is the regression the cap used to cause.
 func TestAnOversizeHistoryIsStillPersistedAndSurvivesARestart(t *testing.T) {
 	dir := t.TempDir()
 	// ~20MB of JSON: comfortably over the 16MB cap, and small once compressed.
@@ -118,12 +100,7 @@ func TestAnOversizeHistoryIsStillPersistedAndSurvivesARestart(t *testing.T) {
 	}
 }
 
-// screenshotPayload builds a base64-shaped payload of n characters that gzip CANNOT
-// rescue. Gzip recovers only the 25% that base64's 6-bits-per-byte encoding wastes,
-// so a payload of this shape stays oversized — which is exactly what a real
-// obs-get-source-screenshot result does. A repeated filler string would compress to
-// nothing and make the test below vacuous, which is why the compressible fixture
-// above never caught this.
+// screenshotPayload builds a base64-shaped payload of n characters that gzip CANNOT rescue.
 func screenshotPayload(n int) string {
 	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 	const prefix = "data:image/png;base64,"
@@ -142,29 +119,15 @@ func screenshotPayload(n int) string {
 	return sb.String()
 }
 
-// TestAHistoryWhoseBulkIsABase64ToolResultIsStillPersisted pins the shape the cap's
-// first implementation could not handle — the one that wedged a live conversation.
-//
-// The oversize fixture above is COMPRESSIBLE text, so gzip fits it whole and the
-// last-resort reduction is never reached. A real `obs` MCP conversation is the
-// opposite shape: the bytes are base64 screenshots inside TOOL RESULTS, which are
-// near-incompressible and are NOT the Image content part. Measured on the live
-// session: gz_bytes 25,828,015 against a 16,777,216 cap, images_dropped 0. So the
-// image-only last resort reclaimed NOTHING, marshal returned nil, no file was
-// written, and the log recorded the consequence verbatim: the file on disk is now
-// stale and "a restart will reload it and LOSE every message committed since the
-// last successful persist".
+// TestAHistoryWhoseBulkIsABase64ToolResultIsStillPersisted pins the shape the cap's first
+// implementation could not handle — the one that wedged a live conversation.
 func TestAHistoryWhoseBulkIsABase64ToolResultIsStillPersisted(t *testing.T) {
 	dir := t.TempDir()
 
 	ask := "is the scene showing up?"
 	use := ContentToolUse{ToolCallID: "call_obs", Name: "obs-get-source-screenshot",
 		ArgsJSON: `{"sourceName":"Screen Capture"}`}
-	// ~24MB of base64. THE SIZE IS NOT ARBITRARY: base64 packs 6 bits into an 8-bit
-	// byte, so gzip reclaims only the 25% the ENCODING wastes and essentially nothing
-	// more (measured: 17MB -> 12.8MB, a ratio of 0.753). Real PNG base64 behaves the
-	// same way, which is precisely why the live history could not be rescued by
-	// compression — so the fixture must clear the cap AFTER that 25%, not before.
+	// ~24MB of base64.
 	res := ContentToolResult{ToolCallID: "call_obs", Content: screenshotPayload(24_000_000)}
 	history := []Message{
 		{Role: RoleUser, Content: []Content{{Text: &ask}}},
@@ -258,11 +221,9 @@ func TestGzipRoundTripsThroughTheStoragePath(t *testing.T) {
 	}
 }
 
-// TestTrimAskHistoryImagesReplacesPayloadsWithoutMutatingTheLiveHistory covers the
-// last-resort reduction: the image payloads must be replaced by an explicit marker
-// (so the surviving transcript still says an image was there) and the LIVE history
-// must keep its images, because the reduction is a storage decision, not a
-// conversation one.
+// TestTrimAskHistoryImagesReplacesPayloadsWithoutMutatingTheLiveHistory covers the last-resort
+// reduction: the image payloads must be replaced by an explicit marker (so the surviving
+// transcript.
 func TestTrimAskHistoryImagesReplacesPayloadsWithoutMutatingTheLiveHistory(t *testing.T) {
 	live := []Message{
 		{Role: RoleUser, Content: []Content{{Image: strPtr("data:image/png;base64,AAAA")}}},

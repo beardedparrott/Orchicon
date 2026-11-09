@@ -1,12 +1,6 @@
 package planecontrol
 
 // planebinary_test.go — WHICH BINARY RUNS THE PLANE.
-//
-// This is the regression gate for the thin-client case: `orch` (the TUI) and the desktop app call this
-// package but are NOT the plane's binary, so re-execing SELF launched a second TUI instead of the plane.
-// Every lifecycle verb failed from the TUI — start timed out after 60s waiting for a /healthz nothing was
-// going to serve, and stop re-execed the shell (whose `serve --stop` is not a subcommand) and reported a
-// stop that never reached the plane.
 
 import (
 	"io"
@@ -97,9 +91,6 @@ func TestPlaneBinaryUnresolvableNamesTheRemedy(t *testing.T) {
 }
 
 // THE WHOLE POINT, OBSERVED: the re-exec runs `orchicon`, not the calling client.
-//
-// runSelf is called directly (not the runCommand seam) because the question is which PROCESS it starts,
-// not what arguments it is handed.
 func TestRunSelfReExecsThePlaneBinaryNotTheCaller(t *testing.T) {
 	dir := t.TempDir()
 	planeMarker := filepath.Join(dir, "plane-ran")

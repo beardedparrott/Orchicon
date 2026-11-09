@@ -1,9 +1,5 @@
-// Package blobstore defines the BlobStore abstraction described in
-// docs/01_Architecture_Vision.md §2. Two implementations ship: S3
-// (cloud) and local filesystem (fully-local deployments). The local
-// implementation is production-viable, not just a dev sink: it uses a
-// content-addressed layout (sha256-keyed directories) with atomic writes
-// (temp file + rename) and is safe for concurrent use.
+// Package blobstore defines the BlobStore abstraction described in docs/01_Architecture_Vision.md
+// §2.
 package blobstore
 
 import (

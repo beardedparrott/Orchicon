@@ -1,12 +1,6 @@
 package instancectl
 
 // stub_test.go — a planeOps that answers without touching a plane.
-//
-// The contract depends on a four-method INTERFACE (planeOps), not on planebind's concrete Service, so every
-// outcome a real plane produces only sometimes — a stop that leaves an unidentifiable process alone, a
-// restart that half-succeeded — is drivable here. planebind's own seams are unexported by design (a caller
-// must not be able to fake a result in production), which is right, and which is why the seam belongs on
-// this side of the boundary.
 
 import (
 	"errors"

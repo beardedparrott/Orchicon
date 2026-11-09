@@ -1,13 +1,7 @@
 package askorchicon
 
-// Session-durability tests: every message/action is persisted LIVE, so a
-// session killed mid-turn (timeout/abort/crash — collector gone, finalize
-// never runs) still leaves the user message AND the partial assistant output
-// visible. A fresh session then resumes with full history (the DB transcript
-// is the resume source, not the dead collector's memory).
-//
-// Skipped unless ORCHICON_TEST_DSN points at a disposable database (the
-// pattern used across the repo).
+// Session-durability tests: every message/action is persisted LIVE, so a session killed mid-turn
+// (timeout/abort/crash — collector gone.
 
 import (
 	"context"
@@ -19,9 +13,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
 
-// busToolStart builds a tool-ISSUED (in-flight, status running) bus event:
-// the call has been made but no result arrived. The drain loop records it in
-// the live tool ledger the moment it is observed.
+// busToolStart builds a tool-ISSUED (in-flight, status running) bus event: the call has been made
+// but no result arrived.
 func busToolStart(sessionID, tool string) opencode.BusEvent {
 	return opencode.BusEvent{
 		Type: "message.part.updated",
@@ -36,12 +29,8 @@ func busToolStart(sessionID, tool string) opencode.BusEvent {
 	}
 }
 
-// TestKillMidTurnLeavesHistoryIntact is the acceptance test: start a turn,
-// stream partial text, issue a tool, then kill the turn mid-stream via the
-// registry cancel (the Stop path — the collector finalizes promptly with the
-// stop error, the same write a timeout/abort produces). Reload the
-// conversation: the user message AND the partial assistant output (text +
-// tool call) must both be present — nothing up to the kill is lost.
+// TestKillMidTurnLeavesHistoryIntact is the acceptance test: start a turn, stream partial text,
+// issue a tool, then kill the turn mid-stream via the registry cancel (the Stop path.
 func TestKillMidTurnLeavesHistoryIntact(t *testing.T) {
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
@@ -85,15 +74,12 @@ func TestKillMidTurnLeavesHistoryIntact(t *testing.T) {
 		}
 	}
 
-	// KILL mid-turn: cancel the collector (Stop semantics). The collector
-	// finalizes promptly with the stop error over the partial — the stop
-	// write itself is a durability write carrying text+reasoning+tools.
+	// KILL mid-turn: cancel the collector (Stop semantics).
 	s.turns.cancel(convID, errUserStop)
 	msg := waitForMessage(t, pool, convID, ackID)
 
-	// Reload the conversation after the kill: user message survived
-	// (persisted BEFORE dispatch) and the partial assistant output survived
-	// (text + tool call up to the kill point).
+	// Reload the conversation after the kill: user message survived (persisted BEFORE dispatch) and the
+	// partial assistant output survived (text + tool call up to the kill point).
 	msgs := listMessages(t, pool, convID)
 	foundUser := false
 	for i := range msgs {
@@ -113,10 +99,8 @@ func TestKillMidTurnLeavesHistoryIntact(t *testing.T) {
 	}
 }
 
-// TestLiveToolLedgerPersistsCallsAndResults verifies tool calls AND results
-// land in the message row live (mirrored) and terminally (finalize): a turn
-// that issues a tool and completes persists the full ledger on the acked row,
-// and the read path maps it onto the ChatMessage wire fields.
+// TestLiveToolLedgerPersistsCallsAndResults verifies tool calls AND results land in the message row
+// live (mirrored) and terminally (finalize).
 func TestLiveToolLedgerPersistsCallsAndResults(t *testing.T) {
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
@@ -144,15 +128,7 @@ func TestLiveToolLedgerPersistsCallsAndResults(t *testing.T) {
 	if len(calls) != 1 || calls[0]["function_name"] != "orchicon_list_projects" {
 		t.Errorf("tool_calls = %v, want one orchicon_list_projects call", calls)
 	}
-	// AC12 — THE FINISHED ROW CARRIES ITS ISSUE STAMP. This is the terminal write
-	// (finalize -> ledger.repairedSnapshot() -> db.UpsertMessage), read back off the
-	// persisted row: the state the operator actually sees after a turn ends. A stamp
-	// lost here is indistinguishable from "no work happened" — the summarizer SKIPS
-	// an unstamped entry (issued_at_unix_ms == 0) rather than rendering a wrong
-	// count, so every completed turn would tally nothing. The sanitizer re-marshals
-	// through askToolCallJSON, so a field missing from THAT struct is silently
-	// stripped here while every snapshot-level test still passes; this assertion is
-	// what makes that failure loud on a real DB round-trip.
+	// AC12 — THE FINISHED ROW CARRIES ITS ISSUE STAMP.
 	issueStamp, ok := calls[0]["issued_at_unix_ms"].(float64)
 	if !ok || issueStamp <= 0 {
 		t.Errorf("the finished row's tool_calls lost their issue stamp (got %v of type %T) — "+

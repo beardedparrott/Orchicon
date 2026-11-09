@@ -2,9 +2,8 @@ package controlport
 
 import "testing"
 
-// THE CONTROL PORT IS THE INSTANCE, and these are the three the installer
-// defines (cmd/orchicon/install_ports.go's ORCHICON_CONTROL_PORT row, mirrored
-// on the shell side by scripts/lib/instances.sh).
+// THE CONTROL PORT IS THE INSTANCE, and these are the three the installer defines
+// (cmd/orchicon/install_ports.go's ORCHICON_CONTROL_PORT row.
 func TestDefaults(t *testing.T) {
 	want := map[string]int{"dev": 8080, "prod": 8091, "test": 8092}
 	for instance, port := range want {
@@ -25,9 +24,7 @@ func TestInstanceForPort(t *testing.T) {
 			t.Errorf("InstanceForPort(%d) = (%q, %v), want (%q, true)", port, got, ok, want)
 		}
 	}
-	// AN UNKNOWN PORT IS A REFUSAL. A silent "dev" here would make the window
-	// title and the Manage Server page describe a plane that is not the one the
-	// app is attached to.
+	// AN UNKNOWN PORT IS A REFUSAL.
 	if got, ok := InstanceForPort(9999); ok || got != "" {
 		t.Errorf("InstanceForPort(9999) = (%q, %v), want (\"\", false)", got, ok)
 	}

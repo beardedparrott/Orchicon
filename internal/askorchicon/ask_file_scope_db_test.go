@@ -74,9 +74,7 @@ func tenantAnchorForTest(t *testing.T, ctx context.Context, pool *db.Pool) (dir,
 	return "", ""
 }
 
-// AC #1 — WITH TWO OR MORE ACTIVE PROJECTS, the conversation's own project decides. A conversation on B reports
-// B's directory; one on A reports A's. The tenant-first anchor, computed independently, is shown to be a
-// DIFFERENT answer (so this fails on the old, conversation-blind code).
+// AC #1 — WITH TWO OR MORE ACTIVE PROJECTS, the conversation's own project decides.
 func TestAskFileScopeFollowsTheConversationNotTheTenantFirst(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := conversationScopeCtx("")

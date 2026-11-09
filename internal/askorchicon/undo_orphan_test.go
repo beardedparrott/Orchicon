@@ -1,14 +1,6 @@
 package askorchicon
 
 // undo_orphan_test.go — UNDO LEAVES A REPLY WITH NO QUESTION, AND A REPLAY MAY NOT START WITH ONE.
-//
-// The operator asked for two verbs on a user message: "undo it (remove it from the screen and context)" and
-// "revert to that message removing anything that has come after it". Undo removes ONE row, by their choice —
-// which means the assistant reply it produced is left with no question in front of it.
-//
-// That reply must stay in the transcript (undoing your question should not silently take the answer with it),
-// but a replayed history whose OLDEST turn is an assistant message is a shape providers reject: the first
-// non-system turn has to be the user's.
 
 import (
 	"testing"
@@ -22,9 +14,6 @@ func row(id, role string, at time.Time) db.MessageRow {
 }
 
 // TestUndoLeavesAnOrphanThatTheReplayDrops is the reported shape, in the order the turn path uses.
-//
-// prevMessages comes from ListMessages (ORDER BY created_at DESC), so the OLDEST row is LAST. This is the
-// case an earlier version of the repair got backwards.
 func TestUndoLeavesAnOrphanThatTheReplayDrops(t *testing.T) {
 	t0 := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	// The operator undid u1, so a1 is now the oldest surviving row.
@@ -84,10 +73,6 @@ func TestEveryUserMessageUndoneLeavesNothingToReplay(t *testing.T) {
 }
 
 // TestRowsWithoutATimestampKeepTheCallersOrder — the fixtures and single-transaction case.
-//
-// Two rows written in one transaction share a timestamp, so there is no evidence of order and guessing would be
-// arbitrary. The caller's order stands, which is what keeps an ordinary history untouched and is why an
-// earlier id-comparison version was wrong.
 func TestRowsWithoutATimestampKeepTheCallersOrder(t *testing.T) {
 	var zero time.Time
 	asc := []db.MessageRow{row("u1", "user", zero), row("a1", "assistant", zero)}

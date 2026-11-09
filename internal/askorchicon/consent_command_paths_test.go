@@ -26,10 +26,8 @@ func TestCommandPathsFindsLiteralPaths(t *testing.T) {
 		{"a redirect target", "echo hi > /etc/motd", []string{"/etc/motd"}},
 		{"grouping and separators", "(cd /opt && ls /var/log)", []string{"/opt", "/var/log"}},
 		{"quoted", `cat "/etc/hosts"`, []string{"/etc/hosts"}},
-		// A path inside a substitution is STILL a literal path the command reads —
-		// finding it is the point, not a false positive. (An earlier version of this
-		// test asserted the opposite and was wrong: the inner path is right there in
-		// the text.)
+		// A path inside a substitution is STILL a literal path the command reads — finding it is the point,
+		// not a false positive.
 		{"inside a command substitution", "cat $(cat /tmp/cfg)", []string{"/tmp/cfg"}},
 	}
 	for _, tc := range cases {
@@ -47,9 +45,8 @@ func TestCommandPathsFindsLiteralPaths(t *testing.T) {
 	}
 }
 
-// TestCommandPathsIgnoresNonPaths is the CONTROL, and it matters more than the
-// positive cases: a false POSITIVE would put a card in front of the operator for an
-// ordinary command, and enough of those make the gate something to click through.
+// TestCommandPathsIgnoresNonPaths is the CONTROL, and it matters more than the positive cases: a
+// false POSITIVE would put a card in front of the operator for an ordinary command.
 func TestCommandPathsIgnoresNonPaths(t *testing.T) {
 	for _, cmd := range []string{
 		"",
@@ -71,9 +68,8 @@ func TestCommandPathsIgnoresNonPaths(t *testing.T) {
 	}
 }
 
-// TestDecisionTargetsJudgesAPathTheCommandNames is the operator's decision end to
-// end: a command run in a granted directory that touches a path OUTSIDE it must be
-// judged on that path too, or one cwd grant becomes blanket shell access.
+// TestDecisionTargetsJudgesAPathTheCommandNames is the operator's decision end to end: a command
+// run in a granted directory that touches a path OUTSIDE it must be judged on that path too.
 func TestDecisionTargetsJudgesAPathTheCommandNames(t *testing.T) {
 	targets := decisionTargets(
 		askAction{Tool: "bash", Command: "cp ./x /etc/y"},
@@ -91,9 +87,8 @@ func TestDecisionTargetsJudgesAPathTheCommandNames(t *testing.T) {
 	}
 }
 
-// TestDecisionTargetsDoesNotDuplicateTheCwd: a command naming its own cwd must not
-// produce the same target twice — the loop judges every target, so a duplicate would
-// double-count a verdict (and a card would name it twice).
+// TestDecisionTargetsDoesNotDuplicateTheCwd: a command naming its own cwd must not produce the same
+// target twice — the loop judges every target.
 func TestDecisionTargetsDoesNotDuplicateTheCwd(t *testing.T) {
 	targets := decisionTargets(
 		askAction{Tool: "bash", Command: "ls /p/proj"},
@@ -104,10 +99,8 @@ func TestDecisionTargetsDoesNotDuplicateTheCwd(t *testing.T) {
 	}
 }
 
-// TestDecideAsksForACommandTouchingOutsideEvenWhenTheCwdIsGranted is the security
-// property the operator asked for, asserted through the real decision path: with a
-// session grant on the project directory, an ordinary command proceeds — and the
-// same command naming a path OUTSIDE the project ASKS.
+// TestDecideAsksForACommandTouchingOutsideEvenWhenTheCwdIsGranted is the security property the
+// operator asked for, asserted through the real decision path.
 func TestDecideAsksForACommandTouchingOutsideEvenWhenTheCwdIsGranted(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
@@ -175,12 +168,7 @@ func TestCommandPathsDoesNotInventPaths(t *testing.T) {
 		{
 			name: "the case this extraction exists for",
 			cmd:  `cp ~/a /etc/b`,
-			// DERIVED, NOT WRITTEN DOWN. `~/` expands to the RUNNING USER's home, so a literal
-			// expectation passes on the author's machine and fails everywhere else — which is
-			// exactly what go-ci caught: the expectation named the AUTHOR's home while the runner
-			// had its own ("commandPaths = [/home/runner/a /etc/b], want [/home/<author>/a /etc/b]").
-			// The test above already used filepath.Join(home, …)
-			// for the same reason; this case did not follow it.
+			// DERIVED, NOT WRITTEN DOWN.
 			want: []string{filepath.Join(home, "a"), "/etc/b"},
 		},
 		{
@@ -215,9 +203,6 @@ func TestCommandPathsDoesNotInventPaths(t *testing.T) {
 }
 
 // TestCommandPathsIgnoresHeredocBodies — a heredoc body is a FILE'S CONTENT, not arguments.
-//
-// Judging it meant that writing a test file which mentioned /tmp raised a consent ask about
-// /tmp: the content was read as though the command were touching those paths.
 
 func TestCommandPathsIgnoresHeredocBodies(t *testing.T) {
 	cmd := "cd /p/proj && cat > internal/zz_test.go <<'GOEOF'\n" +
@@ -241,8 +226,7 @@ func TestCommandPathsIgnoresHeredocBodies(t *testing.T) {
 }
 
 // TestShellMetacharAndPathShape pins the two predicates the extraction leans on, at their
-// boundaries, so a loosening edit is a failing test rather than a silent return of the
-// treadmill.
+// boundaries, so a loosening edit is a failing test rather than a silent return of the treadmill.
 
 func TestShellMetacharAndPathShape(t *testing.T) {
 	for _, tok := range []string{"/^func", "/a*b", "/a?b", "/a[b]", "/a{b}", "/a(b)", "/a|b", `/a\b`, "/a$b", "/a+b", "/a!b", "/a,b"} {
@@ -269,10 +253,6 @@ func TestShellMetacharAndPathShape(t *testing.T) {
 }
 
 // TestASessionGrantSilencesTheOperatorsRealCommands is the reported bug as a test.
-//
-// Every command here is one from the session whose ledger showed ask→grant→ask repeated.
-// With the project directory granted, EVERY ONE must be silent, and before the fix every
-// one of them asked.
 
 func TestASessionGrantSilencesTheOperatorsRealCommands(t *testing.T) {
 	isolatedPolicy(t, "")
@@ -296,13 +276,8 @@ func TestASessionGrantSilencesTheOperatorsRealCommands(t *testing.T) {
 	}
 }
 
-// TestTheCardNamesTheDirectoryThatWouldSilenceIt is the OTHER half, and the one that makes
-// "never ask again" true rather than a promise the card cannot keep.
-//
-// When a command's cwd is granted but a path it NAMES is not, the ask must offer the grant
-// for THAT directory — not for the one the operator already gave. Otherwise the operator
-// clears the card by granting the named directory and is asked again by the next identical
-// command, with no way to see why.
+// TestTheCardNamesTheDirectoryThatWouldSilenceIt is the OTHER half, and the one that makes "never
+// ask again" true rather than a promise the card cannot keep.
 
 func TestTheCardNamesTheDirectoryThatWouldSilenceIt(t *testing.T) {
 	isolatedPolicy(t, "")
@@ -401,12 +376,8 @@ func TestCommandPathsSkipsNodesThatAreNotTheOperatorsBusiness(t *testing.T) {
 	}
 }
 
-// TestCommandPathsStillJudgesDANGEROUSNodes is the other side, and the reason the skip lists
-// are EXPLICIT rather than prefixes. A blanket "skip /dev" would wave through the
-// catastrophic writes this gate exists to stop, and a blanket /proc skip would wave through
-// written kernel configuration and a direct write into another process's memory.
-//
-// Every case here must remain a consent target.
+// TestCommandPathsStillJudgesDANGEROUSNodes is the other side, and the reason the skip lists are
+// EXPLICIT rather than prefixes.
 func TestCommandPathsStillJudgesDANGEROUSNodes(t *testing.T) {
 	cases := []struct {
 		cmd  string
@@ -464,14 +435,8 @@ func TestTheSkipPredicatesAtTheirBoundaries(t *testing.T) {
 	}
 }
 
-// The operator's card, from a real session: an ORDINARY command (`cd /tmp && …`) produced
-// "Never ask again in / this session" — offering, one click away, a grant for the entire
-// filesystem, which `grantStore.Roots` then hands the execution guard's shim as an allowed root
-// (ask_guard.go). The cause is one derivation: a named path's grant key was `filepath.Dir(p)`,
-// and /tmp's parent is /.
-//
-// Nothing about it was exotic: /tmp, /etc, /usr, /var, /mnt, /opt and /srv all have the root as
-// their parent, so ANY command touching a top-level directory offered it.
+// The operator's card, from a real session: an ORDINARY command (`cd /tmp && …`) produced "Never
+// ask again in / this session" — offering, one click away, a grant for the entire filesystem.
 func TestAGrantKeyIsNeverTheFilesystemRoot(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

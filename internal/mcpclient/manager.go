@@ -12,25 +12,16 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// ToolDef mirrors the native tool-registry definition shape (the orchicon
-// adapter converts to orchicon.ToolDef). ParamsJSON is the raw JSON
-// schema, passed through verbatim so the model sees the server's real
-// signature.
+// ToolDef mirrors the native tool-registry definition shape (the orchicon adapter converts to
+// orchicon.ToolDef).
 type ToolDef struct {
 	Name        string
 	Description string
 	ParamsJSON  string
 }
 
-// Manager owns the MCP client connections for one session/execution
-// (ADR-0008): connections are established lazily at session start (never
-// at control-plane boot), tool discovery runs once at Start so signatures
-// are present in the model's first request, tool calls are routed per
-// server with per-call timeouts and cancellation, and Close tears down
-// every connection (killing stdio children) at session end.
-//
-// Manager is safe for concurrent use; the orchicon loop may call Execute
-// from a worker pool.
+// Manager owns the MCP client connections for one session/execution (ADR-0008): connections are
+// established lazily at session start (never at control-plane boot).
 type Manager struct {
 	log *slog.Logger
 
@@ -45,9 +36,7 @@ type Manager struct {
 	failures []ServerFailure
 }
 
-// ServerFailure is one server that could not be started, and why. It is the shape a caller reports to
-// the operator — the point of Start's per-spec tolerance is that this is a DIAGNOSTIC, not a
-// catastrophe.
+// ServerFailure is one server that could not be started, and why.
 type ServerFailure struct {
 	// ServerID is the resolved definition id (the same id the provenance log names).
 	ServerID string
@@ -86,22 +75,8 @@ func NewManager(log *slog.Logger) *Manager {
 	return &Manager{log: log, conns: make(map[string]*serverConn)}
 }
 
-// Start lazily connects to every resolved server and discovers its tools. It is called at session
-// start (per-session lazy startup) and blocks until discovery completes.
-//
-// PER-SPEC FAILURE TOLERANCE, and it is the whole point of this function's shape.
-//
-// This used to abort the union on the FIRST server that would not start: it tore down every connection
-// it had built and returned that one error. Reported consequence — a conversation resolving TWO servers
-// (123 aseprite tools + 166 unity tools) received NEITHER, because one of them timed out. The model then
-// correctly observed that it had no MCP tools, correctly concluded the tools were unavailable, and spent
-// the session driving the server over a hand-written stdio bridge. 289 working tools were lost to 1
-// broken one, and nothing said so.
-//
-// So a failing server now costs only ITS OWN tools. Its failure is recorded in Failures() for the caller
-// to log and for the model to be told about, and the error is returned ONLY when the surface is genuinely
-// empty — no specs at all, or every spec failed — because that is the case a caller cannot continue past
-// silently.
+// Its failure is recorded in Failures() for the caller to log and for the model to be told about,
+// and the error is returned ONLY when the surface is genuinely empty — no specs at all.
 func (m *Manager) Start(ctx context.Context, specs []ServerSpec) ([]ToolDef, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -132,18 +107,14 @@ func (m *Manager) Start(ctx context.Context, specs []ServerSpec) ([]ToolDef, err
 		m.log.Info("mcp: server started", "server", spec.ID, "tools", len(conn.defs))
 	}
 	m.defs = defs
-	// THE SURFACE IS EMPTY AND THAT IS NOT A PARTIAL FAILURE. Either nothing was configured (callers
-	// handle that before Start) or every configured server failed — in both cases a caller that keeps
-	// going would be running without any MCP tools it was promised, so say so.
+	// THE SURFACE IS EMPTY AND THAT IS NOT A PARTIAL FAILURE.
 	if len(specs) > 0 && len(m.connOrder) == 0 {
 		return nil, fmt.Errorf("no MCP server could be started (%d failed): %w", len(m.failures), m.failures[0].Err)
 	}
 	return defs, nil
 }
 
-// Failures returns the servers that could not be started, in spec order. It is the report a caller logs
-// and, where it can, tells the model about: "these tools are missing and here is why" is actionable in a
-// way that an empty tool array is not.
+// Failures returns the servers that could not be started, in spec order.
 func (m *Manager) Failures() []ServerFailure {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -157,9 +128,8 @@ func (m *Manager) connectOne(ctx context.Context, spec ServerSpec) (*serverConn,
 	return m.connectWithLegacyRetry(ctx, spec)
 }
 
-// Defs returns the discovered tool definitions (all servers), merged into
-// the native tool registry as mcp__<server>__<tool>. Safe to call before
-// Start (returns nil) and after Close (returns the last-known defs).
+// Defs returns the discovered tool definitions (all servers), merged into the native tool registry
+// as mcp__<server>__<tool>.
 func (m *Manager) Defs() []ToolDef {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -168,9 +138,8 @@ func (m *Manager) Defs() []ToolDef {
 	return out
 }
 
-// Execute routes a tool call to the owning server connection with a
-// per-call timeout and honors context cancellation. Errors are actionable:
-// unknown tool, server down, tool error (IsError), or timeout.
+// Execute routes a tool call to the owning server connection with a per-call timeout and honors
+// context cancellation.
 func (m *Manager) Execute(ctx context.Context, name string, argsJSON string) (string, error) {
 	conn := m.connFor(name)
 	if conn == nil {
@@ -221,11 +190,8 @@ func (m *Manager) connFor(name string) *serverConn {
 	return nil
 }
 
-// Close tears down every connection: remote (HTTP) connections close
-// cleanly, stdio children are terminated (the go-sdk CommandTransport
-// Close: close stdin → SIGTERM → SIGKILL). Idempotent and safe to call
-// multiple times (session end + defer). After Close, Start returns an
-// error.
+// Close tears down every connection: remote (HTTP) connections close cleanly, stdio children are
+// terminated (the go-sdk CommandTransport Close: close stdin → SIGTERM → SIGKILL).
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -257,10 +223,7 @@ func ToolName(server, tool string) string {
 	return "mcp__" + server + "__" + tool
 }
 
-// RenderResult renders a CallToolResult into a plain-text string the
-// model can read. It prefers StructuredContent (the modern structured
-// form); otherwise it concatenates text content items. Used both for
-// successful results and IsError payloads.
+// RenderResult renders a CallToolResult into a plain-text string the model can read.
 func RenderResult(res *mcp.CallToolResult) string {
 	if res == nil {
 		return ""

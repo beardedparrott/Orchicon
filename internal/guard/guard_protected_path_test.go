@@ -69,9 +69,8 @@ func TestProtectedPathsSurviveFULLSEND(t *testing.T) {
 		{"the project's parent   no fullsend", projects, false, "blocked"},
 		{"the home directory     no fullsend", home, false, "blocked"},
 
-		// THE FALSE POSITIVE THAT MUST NOT EXIST: acting ON the scope root is ordinary work, so the
-		// project itself stays allowed. Without this the rule would refuse `chmod -R 755 <project>`
-		// and `rm -rf <project>/dist` would be the only shape left.
+		// THE FALSE POSITIVE THAT MUST NOT EXIST: acting ON the scope root is ordinary work, so the project
+		// itself stays allowed.
 		{"the project ITSELF     FULLSEND", proj, true, "allowed"},
 		// A SIBLING that is neither an ancestor nor a protected root: FULLSEND is supposed to widen
 		// what may be written, so this must stay allowed or the mode is useless.

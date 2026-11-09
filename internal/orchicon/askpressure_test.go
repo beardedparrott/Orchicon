@@ -116,9 +116,7 @@ func TestPressureGateDisarmedWithoutMeasurement(t *testing.T) {
 	}
 }
 
-// DISARMED without a live window hint — the platform's no-guess rule. This is
-// the case that matters most: a model with no window metadata must NOT be
-// compacted on a guessed denominator.
+// DISARMED without a live window hint — the platform's no-guess rule.
 func TestPressureGateDisarmedWithoutLiveWindow(t *testing.T) {
 	b := &NativeBridge{log: testLogger(), chatHistory: map[string][]Message{"s1": wedgeHistory()}}
 	b.recordAskPromptTokens("s1", 1_000_000)
@@ -151,9 +149,8 @@ func TestPressureGateBelowThresholdDoesNothing(t *testing.T) {
 	}
 }
 
-// OVER threshold with no resolver: the compaction cannot summarize, so the FAILURE
-// must be swallowed (best-effort) and the history left intact — a turn must never
-// be blocked or damaged by a failed compaction.
+// OVER threshold with no resolver: the compaction cannot summarize, so the FAILURE must be
+// swallowed (best-effort) and the history left intact.
 func TestPressureGateOverThresholdCompactionFailureIsBestEffort(t *testing.T) {
 	b := &NativeBridge{log: testLogger(), chatHistory: map[string][]Message{"s1": wedgeHistory()}}
 	before := conversationBytes(b.chatHistory["s1"])

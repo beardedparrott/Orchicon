@@ -15,9 +15,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// chatTestProvider is a scripted Provider for the ChatTurnClient tests. It
-// streams a fixed event sequence per StreamTurn call and records the requests
-// so tests can assert the history re-send (sessionless emulation).
+// chatTestProvider is a scripted Provider for the ChatTurnClient tests.
 type chatTestProvider struct {
 	mu       sync.Mutex
 	events   []Event
@@ -92,8 +90,6 @@ func newChatBridge(t *testing.T, prov *chatTestProvider) *NativeBridge {
 }
 
 // drainBus collects SessionEvents from a bus until it closes (or a timeout).
-// It prefers draining Events() so buffered events are never lost when the
-// bus closes (Done() and Events() become ready together).
 func drainBus(t *testing.T, bus scheduler.SessionBus) []scheduler.SessionEvent {
 	t.Helper()
 	var out []scheduler.SessionEvent
@@ -223,9 +219,8 @@ func TestChatTurnClientPreStreamFailure(t *testing.T) {
 	ctx := tenant.WithID(context.Background(), "tnt_test")
 	sid, _ := b.CreateConversationSession(ctx, "conv-3", "ask-orchicon:conv-3")
 
-	// A pre-stream failure must surface as a SendTurnMessage error (the
-	// collector fails the turn as a send-accept failure) — never a dropped
-	// first delta.
+	// A pre-stream failure must surface as a SendTurnMessage error (the collector fails the turn as a
+	// send-accept failure) — never a dropped first delta.
 	err := b.SendTurnMessage(ctx, "conv-3", sid, "system", "orchicon/ollama-cloud/deepseek-v4-flash:0731", "hi")
 	if err == nil {
 		t.Fatal("SendTurnMessage succeeded; want pre-stream failure error")
@@ -273,15 +268,8 @@ func (s *blockingStream) Next(ctx context.Context) (Event, bool, error) {
 }
 func (s *blockingStream) Close() error { return nil }
 
-// TestChatTurnClientReplyPermissionReleasesAParkedCall replaces the assertion that
-// this used to make — that a native Ask turn is "text-only" and permission
-// approval is unsupported. That was true when the native path executed no tools;
-// it runs bash and writes constantly now, so the old test asserted that a
-// FEATURE WAS ABSENT, and it had to change with the feature rather than after it.
-//
-// What matters now is the contract: a decision releases the call that is parked
-// on it, and a decision for an ask nobody is waiting on is inert rather than an
-// error.
+// TestChatTurnClientReplyPermissionReleasesAParkedCall replaces the assertion that this used to
+// make — that a native Ask turn is "text-only" and permission approval is unsupported.
 func TestChatTurnClientReplyPermissionReleasesAParkedCall(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_CONSENT_WAIT", "10m")
 	b, bus, cancel := newConsentTestBridge(t)
@@ -313,9 +301,8 @@ func TestChatTurnClientReplyPermissionReleasesAParkedCall(t *testing.T) {
 }
 
 func TestChatTurnClientAttachmentsParity(t *testing.T) {
-	// The native bridge implements the attachment-aware sender (parity
-	// with the opencode adapter): images ride as data-URL Image parts,
-	// UTF-8 text inlines fenced — never silently dropped.
+	// The native bridge implements the attachment-aware sender (parity with the opencode adapter):
+	// images ride as data-URL Image parts, UTF-8 text inlines fenced — never silently dropped.
 	var _ scheduler.SendTurnMessageWithAttachments = (*NativeBridge)(nil)
 	prov := &chatTestProvider{events: []Event{
 		TextDelta{Text: "seen"},
@@ -497,10 +484,8 @@ func (f *fakeAskTools) ExecuteAskTool(_ context.Context, name, _ string) (string
 	return f.results[name], nil
 }
 
-// TestChatTurnClientToolRoundTrip pins the agentic loop: round 1 streams
-// text + a tool call, the call executes against the injected tools, round
-// 2 streams the final answer. The bus must carry a tool_part plus both
-// text parts, and the committed history must replay the full tool flow.
+// TestChatTurnClientToolRoundTrip pins the agentic loop: round 1 streams text + a tool call, the
+// call executes against the injected tools, round 2 streams the final answer.
 func TestChatTurnClientToolRoundTrip(t *testing.T) {
 	prov := &chatTestProvider{rounds: [][]Event{
 		{
@@ -549,9 +534,8 @@ func TestChatTurnClientToolRoundTrip(t *testing.T) {
 	if !sawIdle {
 		t.Fatal("no idle at turn end")
 	}
-	// The reply is ONE consolidated part (both rounds' text) — never a
-	// separate part per round, which would render as overlapping bubbles
-	// and duplicate a repeated preamble.
+	// The reply is ONE consolidated part (both rounds' text) — never a separate part per round, which
+	// would render as overlapping bubbles and duplicate a repeated preamble.
 	if len(partTexts) != 1 {
 		t.Fatalf("parts = %q, want exactly ONE consolidated text part", partTexts)
 	}
@@ -587,9 +571,9 @@ func TestChatTurnClientToolRoundTrip(t *testing.T) {
 	}
 }
 
-// TestChatTurnClientToolFailureIsAResult pins the recovery contract: a
-// failing tool call is recorded as an error tool result and the turn
-// continues (the model sees it) — never a turn failure.
+// TestChatTurnClientToolFailureIsAResult pins the recovery contract: a failing tool call is
+// recorded as an error tool result and the turn continues (the model sees it) — never a turn
+// failure.
 func TestChatTurnClientToolFailureIsAResult(t *testing.T) {
 	prov := &chatTestProvider{rounds: [][]Event{
 		{
@@ -638,10 +622,8 @@ func TestChatTurnClientToolFailureIsAResult(t *testing.T) {
 	}
 }
 
-// TestChatTurnClientDuplicateCallIDsExecuteOnce pins the wire contract:
-// two ToolCall events sharing one call_id in a round (provider/decoder
-// echo) execute once and record one result — a second
-// function_call_output for the id makes the wire reject the turn.
+// TestChatTurnClientDuplicateCallIDsExecuteOnce pins the wire contract: two ToolCall events sharing
+// one call_id in a round (provider/decoder echo) execute once and record one result.
 func TestChatTurnClientDuplicateCallIDsExecuteOnce(t *testing.T) {
 	prov := &chatTestProvider{rounds: [][]Event{
 		{
@@ -687,11 +669,8 @@ func TestChatTurnClientDuplicateCallIDsExecuteOnce(t *testing.T) {
 	}
 }
 
-// TestChatTurnClientManyToolRoundsUnbounded pins the removal of the
-// 8-round cap: a turn whose fake provider issues >8 tool rounds then
-// finishes must complete normally (no injected budget notice, no tools
-// stripped) and commit the FULL working history — every round's tool use
-// and tool result — so a follow-up re-sends complete context.
+// TestChatTurnClientManyToolRoundsUnbounded pins the removal of the 8-round cap: a turn whose fake
+// provider issues >8 tool rounds then finishes must complete normally (no injected budget notice.
 func TestChatTurnClientManyToolRoundsUnbounded(t *testing.T) {
 	const nRounds = 12 // > the former 8-round cap
 	rounds := make([][]Event, 0, nRounds+1)
@@ -748,9 +727,8 @@ func TestChatTurnClientManyToolRoundsUnbounded(t *testing.T) {
 	if prov.requestCount() != nRounds+1 {
 		t.Fatalf("provider turns = %d, want %d (all tool rounds + final)", prov.requestCount(), nRounds+1)
 	}
-	// The committed history replays the full flow: user, then per round an
-	// assistant (text + tool use) and a tool result, then the final
-	// assistant text.
+	// The committed history replays the full flow: user, then per round an assistant (text + tool use)
+	// and a tool result, then the final assistant text.
 	b.mu.Lock()
 	hist := append([]Message(nil), b.chatHistory[sid]...)
 	b.mu.Unlock()
@@ -780,10 +758,8 @@ func TestChatTurnClientManyToolRoundsUnbounded(t *testing.T) {
 	}
 }
 
-// TestChatTurnClientNoWorkerBudgetImport guards the budgets-are-workers-only
-// invariant by construction: the native Ask turn path must never import the
-// worker-budget facade package (internal/opencode). It parses chatturn.go
-// with go/parser and fails if internal/opencode appears in its imports.
+// TestChatTurnClientNoWorkerBudgetImport guards the budgets-are-workers-only invariant by
+// construction: the native Ask turn path must never import the worker-budget facade package.
 func TestChatTurnClientNoWorkerBudgetImport(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "chatturn.go", nil, parser.ImportsOnly)
@@ -799,18 +775,7 @@ func TestChatTurnClientNoWorkerBudgetImport(t *testing.T) {
 }
 
 // TestChatTurnClientEmitsReasoningAsACompletedPart is the adapter's half of the
-// reasoning-durability fix, and the operator's own diagnosis as a test: "You had found
-// an issue where reasoning was not reporting back like other message types."
-//
-// THE COLLECTOR PERSISTS PARTS, NOT DELTAS. Its durable reasoning slice is appended only by
-// a completed reasoning part, and its live reasoning tail is RESET by every completed text
-// part — so a reasoning channel that is only ever streamed as deltas has NO durable form at
-// all. It existed solely in the live mirror, which is why a turn that died mid-thought left
-// nothing behind: "anything you were currently typing (mostly in thought) goes away".
-//
-// This asserts the symmetry directly: the same accumulated reasoning the turn streamed as
-// deltas is also published as a COMPLETED part, and it arrives BEFORE the text part because
-// thinking precedes the answer and the collector appends both to ordered slices.
+// reasoning-durability fix, and the operator's own diagnosis as a test.
 func TestChatTurnClientEmitsReasoningAsACompletedPart(t *testing.T) {
 	prov := &chatTestProvider{events: []Event{
 		ReasoningDelta{Text: "weighing "},
@@ -859,12 +824,6 @@ func TestChatTurnClientEmitsReasoningAsACompletedPart(t *testing.T) {
 }
 
 // TestChatTurnClientAbortStillPublishesTheWork is the other half of the data-loss bug.
-//
-// The collector's STALL path aborts the serve session while the collector is still live, and
-// this path used to `return` bare on abort — publishing nothing. So a stalled turn finalized
-// with empty text and empty reasoning while the operator had watched both stream, and the
-// work was gone. An aborted turn must still hand over what it produced; it just must not
-// claim to have COMPLETED, which is what the idle event means.
 func TestChatTurnClientAbortStillPublishesTheWork(t *testing.T) {
 	// A stream that yields its events and then blocks until cancelled — the shape of a real
 	// turn interrupted mid-generation.
@@ -940,18 +899,8 @@ func describeEvents(evts []scheduler.SessionEvent) string {
 	return strings.Join(parts, ", ")
 }
 
-// TestChatTurnClientAbortKeepsThePublishedReplyInHistory is the SECOND half of the publish
-// fix above, and it is the bug the operator kept reporting as the model "losing its brain":
-// "It doesn't know it's already done things and then tries to do them again."
-//
-// The publish made an aborted turn's work VISIBLE (durable, on every client's screen). But the
-// abort path returned without committing, so the SESSION never learned about it — and the next
-// turn re-sends b.chatHistory as full context. The model was therefore handed a history in which
-// its own last reply had never happened, while the operator was reading that very reply in the
-// transcript. It repeats itself, re-asks what it just asked, and re-does work it already did.
-//
-// Abort is not an edge case here: the collector aborts on a stall, on Stop, and on EVERY
-// supersede — and interjecting is how the operator steers a running turn.
+// TestChatTurnClientAbortKeepsThePublishedReplyInHistory is the SECOND half of the publish fix
+// above, and it is the bug the operator kept reporting as the model "losing its brain".
 func TestChatTurnClientAbortKeepsThePublishedReplyInHistory(t *testing.T) {
 	const partial = "the partial answer the operator watched land"
 	prov := &chatTestProvider{stream: &blockingAfterStream{events: []Event{
@@ -1024,17 +973,8 @@ func historyText(msgs []Message) string {
 	return b.String()
 }
 
-// TestConcurrentTurnCommitsDoNotEraseEachOther is the reported "Orchicon is not usable if you can't have a
-// session that remembers what it's doing", reduced to its mechanism.
-//
-// commitChatHistory used to REPLACE the session history with the committing turn's own snapshot-plus-output.
-// Two turns overlap whenever the operator interjects (which supersedes the running turn), so the last one to
-// commit erased the other's messages. The signature in the operator's own conversation was five consecutive
-// USER messages with no reply between them: a user message rides the NEXT turn's snapshot so it survives,
-// while a reply exists only in the turn that produced it, so it does not.
-//
-// This drives the two commits in the order the production log shows them (the superseded turn commits first,
-// the superseding turn second) and requires every message from both to survive.
+// TestConcurrentTurnCommitsDoNotEraseEachOther is the reported "Orchicon is not usable if you can't
+// have a session that remembers what it's doing", reduced to its mechanism.
 func TestConcurrentTurnCommitsDoNotEraseEachOther(t *testing.T) {
 	b := newChatBridge(t, &chatTestProvider{})
 	const sid = "orchicon-ask:conv-interleave"
@@ -1073,9 +1013,8 @@ func TestConcurrentTurnCommitsDoNotEraseEachOther(t *testing.T) {
 	}
 }
 
-// The same guarantee when the order is reversed: whichever turn commits LAST must not erase the other. This
-// is the half a "make the abort path commit too" fix cannot give, because both orders are reachable —
-// commit order depends on how fast each provider stream drains, not on which turn started first.
+// The same guarantee when the order is reversed: whichever turn commits LAST must not erase the
+// other.
 func TestConcurrentCommitOrderDoesNotMatter(t *testing.T) {
 	b := newChatBridge(t, &chatTestProvider{})
 	const sid = "orchicon-ask:conv-interleave-2"
@@ -1109,13 +1048,10 @@ func TestCommitAppendsTheTurnsOwnMessagesToTheSession(t *testing.T) {
 	b.chatHistory[sid] = append([]Message(nil), prior...)
 
 	history := append(append([]Message(nil), prior...), textMsg(RoleUser, "second"))
-	// THE DISPATCH WRITES THE USER MESSAGE INTO THE SESSION before the turn runs (SendTurnMessage), so the
-	// map already holds `history` by the time the turn commits — mirrored here, or the commit appends a tail
-	// onto a map that never had this turn's own user message.
+	// THE DISPATCH WRITES THE USER MESSAGE INTO THE SESSION before the turn runs (SendTurnMessage), so
+	// the map already holds `history` by the time the turn commits — mirrored here.
 	b.chatHistory[sid] = append([]Message(nil), history...)
-	// A WELL-FORMED tool round: the call and its result. A result with no matching call is the ORPHANED
-	// shape sanitizeChatHistory deliberately drops (it is the mirror of a dangling call, and providers
-	// reject it), so a fixture that paired them wrongly would fail for the wrong reason.
+	// A WELL-FORMED tool round: the call and its result.
 	working := append(append([]Message(nil), history...),
 		Message{Role: RoleAssistant, Content: []Content{
 			{Text: strptr("second reply")},
@@ -1153,14 +1089,8 @@ func logBridge(t *testing.T) (*NativeBridge, *strings.Builder) {
 	return b, &sb
 }
 
-// TestTheGuardCatchesTheEqualLengthSwap is the regression detector for the bug that ran unseen for weeks.
-//
-// IT IS THE PRODUCTION SHAPE, AND THE LENGTH IS THE POINT. The replacing commit did not truncate the session,
-// it SWAPPED a message: with the session holding H+[userA]+[userB], it wrote H+[userA]+replyA — the SAME
-// message count, with the operator's own question B replaced by a reply. A guard built on length, or on
-// per-role counts, sees nothing at all here; that is how this survived so long, and the first version of this
-// guard was written that way and would NOT have caught the bug. The invariant a session actually needs is that
-// no message DISAPPEARS, so this test asserts on that.
+// TestTheGuardCatchesTheEqualLengthSwap is the regression detector for the bug that ran unseen for
+// weeks.
 func TestTheGuardCatchesTheEqualLengthSwap(t *testing.T) {
 	b, logs := logBridge(t)
 	const sid = "orchicon-ask:conv-guard"
@@ -1219,9 +1149,8 @@ func TestTheGuardIsSilentOnNormalGrowth(t *testing.T) {
 	}
 }
 
-// An INTENTIONAL reduction (compaction / context reduction) is reported as intended, not as data loss — the
-// distinction is the whole point of the mark, and without it the guard would cry wolf on the one lossy path
-// that is by design and already announced to the operator.
+// An INTENTIONAL reduction (compaction / context reduction) is reported as intended, not as data
+// loss — the distinction is the whole point of the mark.
 func TestAnIntentionalReductionIsReportedAsIntendedNotAsLoss(t *testing.T) {
 	b, logs := logBridge(t)
 	const sid = "orchicon-ask:conv-guard-compact"
@@ -1271,10 +1200,7 @@ func TestAStaleReductionMarkDoesNotExcuseLaterLoss(t *testing.T) {
 	}
 }
 
-// A legitimate REPLAY REPAIR must not be reported as data loss. sanitizeChatHistory deliberately drops an
-// orphaned tool result (a result whose call no preceding assistant message declares) because providers reject
-// that shape — so a session that loses one of those has not lost anything the model could have used. Without
-// the distinction a guard cries wolf on its own repair path, and a guard nobody trusts is not a guard.
+// A legitimate REPLAY REPAIR must not be reported as data loss.
 func TestAReplayRepairIsNotReportedAsDataLoss(t *testing.T) {
 	b, logs := logBridge(t)
 	const sid = "orchicon-ask:conv-guard-repair"
@@ -1290,9 +1216,8 @@ func TestAReplayRepairIsNotReportedAsDataLoss(t *testing.T) {
 	}
 	b.persistAskHistoryLocked(sid)
 
-	// The turn PRODUCES an orphaned result — a result whose call nothing declared, the shape a half-finished
-	// tool round leaves. It must therefore ride the commit's TAIL (what the turn contributed past its
-	// snapshot), because that is the only part of `working` the commit folds into the session.
+	// The turn PRODUCES an orphaned result — a result whose call nothing declared, the shape a
+	// half-finished tool round leaves.
 	history := append([]Message(nil), b.chatHistory[sid]...)
 	orphan := Message{Role: RoleTool, Content: []Content{{ToolResult: &ContentToolResult{ToolCallID: "ghost", Content: "orphan"}}}}
 	working := append(append(append([]Message(nil), history...), orphan), textMsg(RoleAssistant, "done"))
@@ -1338,18 +1263,8 @@ func (p *cancelOnSecondRoundProvider) Capabilities() Capabilities {
 	return Capabilities{Streaming: true}
 }
 
-// TestATurnCancelledBetweenToolRoundsKeepsItsWork is the SECOND data-loss mechanism, found live on the
-// operator's own conversation after the first was fixed.
-//
-// An interjection cancels the running turn mid-loop, and that cancellation surfaces at the NEXT round's
-// StreamTurn as context.Canceled — NOT through drainOneRound's aborted flag. That path returned bare, so a
-// turn that had produced text and RUN TOOLS lost the whole round: the session ended up holding two
-// consecutive user messages with no trace of the turn between them, while the work sat in the transcript and
-// on the operator's screen.
-//
-// The loss guard cannot see this class at all — it compares the session against what it last held, so it only
-// catches a message that DISAPPEARS, and this one never arrived. Which is why the fingerprint (two
-// consecutive user messages), not the guard, is what caught it.
+// TestATurnCancelledBetweenToolRoundsKeepsItsWork is the SECOND data-loss mechanism, found live on
+// the operator's own conversation after the first was fixed.
 func TestATurnCancelledBetweenToolRoundsKeepsItsWork(t *testing.T) {
 	const partial = "I will start by reading the code"
 	prov := &cancelOnSecondRoundProvider{first: []Event{

@@ -40,14 +40,6 @@ import (
 
 // Roots returns the MACHINE-LEVEL protected roots for a session or execution: the paths whose
 // destruction or re-permissioning can never be what anyone wants, whatever the work is.
-//
-// These are refused when a target EQUALS one or CONTAINS one. Equality is included because there is
-// no legitimate reason to delete `/` or to re-permission the user's home directory from inside an
-// agent session — unlike the work scope below, where "act on the project root" is ordinary work.
-//
-// home may be empty (a caller that does not know it); the OS is then asked. An EMPTY value is always
-// skipped rather than contributing a root, because filepath.Clean("") is ".", which would make every
-// relative target "inside" it and refuse all relative work.
 func Roots(home string) []string {
 	if strings.TrimSpace(home) == "" {
 		if h, err := os.UserHomeDir(); err == nil {
@@ -89,15 +81,6 @@ func Roots(home string) []string {
 
 // ScopeRoots returns the WORK SCOPE: the project the session operates in and each session-granted
 // directory.
-//
-// These are refused only when a target CONTAINS one — a PROPER ancestor. Acting ON the scope root is
-// ordinary work (`chmod -R 755 <project>`, `rm -rf <project>/dist`), and refusing equality here would
-// break it; destroying the thing that CONTAINS the scope is the catastrophe this rule is for, because
-// it takes the scope with it and no amount of consent makes that the operator's intent.
-//
-// A grant widens what may be WRITTEN. It must not widen what may be DESTROYED to include the
-// directory that holds the project, which is why the granted dirs are scope roots and not merely
-// allow-list entries.
 func ScopeRoots(projectDir string, grants []string) []string {
 	var out []string
 	add := func(p string) {
@@ -140,10 +123,7 @@ func DestroyedBy(target string, machineRoots, scopeRoots []string) string {
 	if t == "" || t == "." || t == ".." {
 		return ""
 	}
-	// The prefix a descendant must carry. THE FILESYSTEM ROOT IS THE EDGE CASE: appending a separator
-	// to "/" gives "//", which no path starts with, so `rm -rf /` would slip through a containment test
-	// that is otherwise right. (The machine-root list catches it by equality as well; this keeps the
-	// helper correct on its own, which is what a reader of it will assume.)
+	// The prefix a descendant must carry.
 	prefix := t + string(filepath.Separator)
 	if t == string(filepath.Separator) {
 		prefix = string(filepath.Separator)
@@ -170,9 +150,7 @@ func DestroyedBy(target string, machineRoots, scopeRoots []string) string {
 	return ""
 }
 
-// Refusal words the refusal for a target that would destroy root, naming both paths. The medium is a
-// tool error the MODEL reads, and a second reader is the operator deciding whether the rule is right,
-// so it states what would have been destroyed and why no approval can override it.
+// Refusal words the refusal for a target that would destroy root, naming both paths.
 func Refusal(target, root string) string {
 	return "refused: " + target + " contains " + root + ", which this session works in or depends on — " +
 		"deleting it would take that with it. This is never allowed: not by a session grant, not by " +

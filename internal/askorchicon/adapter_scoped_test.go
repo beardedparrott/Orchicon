@@ -9,9 +9,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// ownerKindClient is a minimal scheduler.ChatTurnClient stub whose only job
-// is to report a SessionOwnerKind (it is never driven — adapterScopedSessionID
-// only type-asserts it for SessionOwnerKind).
+// ownerKindClient is a minimal scheduler.ChatTurnClient stub whose only job is to report a
+// SessionOwnerKind (it is never driven — adapterScopedSessionID only type-asserts it for
+// SessionOwnerKind).
 type ownerKindClient struct {
 	kind string
 }
@@ -122,9 +122,8 @@ func TestAdapterScopedSessionID(t *testing.T) {
 	}
 }
 
-// Compile-time pins: the production adapters must report their owner kind so
-// the cross-adapter turn path recognizes them (their Kind/SessionOwnerKind
-// must not drift without these breaking).
+// Compile-time pins: the production adapters must report their owner kind so the cross-adapter turn
+// path recognizes them (their Kind/SessionOwnerKind must not drift without these breaking).
 func TestProductionAdaptersReportSessionOwnerKind(t *testing.T) {
 	for _, c := range []interface{ SessionOwnerKindCompile() }{nil} {
 		_ = c

@@ -1,16 +1,7 @@
 package orchicon
 
 // inject_midturn_test.go — an interjection JOINS the running turn and the model sees it at the NEXT
-// provider call. It is not held until the turn ends.
-//
-// THE OPERATOR: "what I would like is the message a user sends gets injected into the current context window
-// without an abort, but the model sees it right away. Instead what is happening, is it doesn't get seen until
-// the turn is completely stopped."
-//
-// WHAT IS AND IS NOT POSSIBLE. A provider call's input is fixed for the duration of that call, so "right away"
-// cannot mean mid-generation — that is inference, not a gap in this code. It DOES mean the next provider call,
-// and a turn is a LOOP of them (one per tool round, plus one forced by an interjection that lands as the model
-// is finishing). These tests pin that the note reaches the very next request.
+// provider call.
 
 import (
 	"context"

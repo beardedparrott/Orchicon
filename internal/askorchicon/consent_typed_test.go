@@ -6,15 +6,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// TestExtractAskActionPrefersTypedFields is the adapter-neutrality guard for the
-// consent event, mirroring the tool-result one: an adapter that can NAME the
-// action must not have to shape it into opencode's property vocabulary.
-//
-// The native bridge knows the tool, the command and the argument JSON at the
-// moment it is about to run a call. Before this, the only way to raise an ask was
-// to hand-build Detail (permission/title, metadata.filepath, patterns,
-// toolInput) — making opencode the reference dialect, exactly as with tool
-// resolution.
+// TestExtractAskActionPrefersTypedFields is the adapter-neutrality guard for the consent event,
+// mirroring the tool-result one.
 func TestExtractAskActionPrefersTypedFields(t *testing.T) {
 	got := extractAskAction(scheduler.SessionEvent{
 		Kind:    "permission",
@@ -42,9 +35,8 @@ func TestExtractAskActionTypedTargetsForAWrite(t *testing.T) {
 	}
 }
 
-// TestExtractAskActionTypedInputSuppliesMissingTarget: a tool whose ask names no
-// path of its own (an MCP-style call) still resolves through its argument JSON,
-// so it cannot be judged "inside the project" and silently approved.
+// TestExtractAskActionTypedInputSuppliesMissingTarget: a tool whose ask names no path of its own
+// (an MCP-style call) still resolves through its argument JSON.
 func TestExtractAskActionTypedInputSuppliesMissingTarget(t *testing.T) {
 	got := extractAskAction(scheduler.SessionEvent{
 		Kind:      "permission",
@@ -59,9 +51,8 @@ func TestExtractAskActionTypedInputSuppliesMissingTarget(t *testing.T) {
 	}
 }
 
-// TestExtractAskActionTypedFieldsWinOverDetail: when an adapter supplies BOTH, the
-// typed fields are the authority — the Detail map is the legacy transport, not a
-// second source of truth.
+// TestExtractAskActionTypedFieldsWinOverDetail: when an adapter supplies BOTH, the typed fields are
+// the authority — the Detail map is the legacy transport, not a second source of truth.
 func TestExtractAskActionTypedFieldsWinOverDetail(t *testing.T) {
 	got := extractAskAction(scheduler.SessionEvent{
 		Kind:    "permission",
@@ -95,9 +86,8 @@ func TestExtractAskActionDetailStillWorks(t *testing.T) {
 	}
 }
 
-// TestExtractAskActionEmptyEventResolvesToNothing pins the fail-closed posture:
-// an event carrying neither typed fields nor detail must resolve to an action
-// with NO key, so the decision path cannot treat it as a pre-approved scope.
+// TestExtractAskActionEmptyEventResolvesToNothing pins the fail-closed posture: an event carrying
+// neither typed fields nor detail must resolve to an action with NO key.
 func TestExtractAskActionEmptyEventResolvesToNothing(t *testing.T) {
 	got := extractAskAction(scheduler.SessionEvent{Kind: "permission"})
 	if got.Key != "" || got.Tool != "" || len(got.Targets) != 0 {

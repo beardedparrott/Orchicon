@@ -10,18 +10,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// resolve_loud_test.go — the LOUD-FAILURE half of the shared transport
-// resolution audit (AC 3 / AC 6).
-//
-// An unknown or unregistered adapter kind must fail AT RESOLUTION TIME with an
-// actionable error — never silently fall back to the host opencode serve. And
-// the nil-dispatcher host-serve fallback must be bounded to tests/pre-wiring:
-// with a dispatcher wired, nothing falls through to the host serve.
+// resolve_loud_test.go — the LOUD-FAILURE half of the shared transport resolution audit (AC 3 / AC
+// 6).
 
 // loudStubBridge is a registered-but-inert adapter bridge that also implements
-// scheduler.ChatTurnClient (the Ask chat capability). It exists so the
-// dispatcher has REAL registrations to enumerate when a resolution fails; none
-// of its methods are ever driven.
+// scheduler.ChatTurnClient (the Ask chat capability).
 type loudStubBridge struct{}
 
 func (loudStubBridge) Start(context.Context, db.ExecutionRow, scheduler.ExecutionManifest, scheduler.ExecutionCallbacks) error {
@@ -48,11 +41,8 @@ func (loudStubBridge) ReplyPermissionDecision(context.Context, string, string, s
 	return nil
 }
 
-// `claude` is a LIVE case, not a hypothetical: it is DECLARED in the builtin
-// provider catalog (internal/adapter/providers.go AddAdapterKind("claude", …)),
-// so a `claude/anthropic/…` ref parses as a known adapter — but no bridge
-// registers that kind. Resolution must then fail loudly with the registered
-// kinds named, and must NOT quietly hand back the host opencode serve.
+// `claude` is a LIVE case, not a hypothetical: it is DECLARED in the builtin provider catalog
+// (internal/adapter/providers.go AddAdapterKind("claude", …)).
 func TestResolveChatClientFailsLoudForADeclaredButUnregisteredKind(t *testing.T) {
 	d := scheduler.NewDispatcher()
 	d.Register("opencode", loudStubBridge{})
@@ -83,9 +73,8 @@ func TestResolveChatClientFailsLoudForADeclaredButUnregisteredKind(t *testing.T)
 	}
 }
 
-// AC 6: with a dispatcher wired, resolution NEVER falls through to the host
-// opencode serve — even when a host serve is sitting right there. This is the
-// bounded-ness proof for the nil-dispatcher branch.
+// AC 6: with a dispatcher wired, resolution NEVER falls through to the host opencode serve — even
+// when a host serve is sitting right there.
 func TestResolveChatClientNeverUsesHostServeWhenADispatcherIsWired(t *testing.T) {
 	d := scheduler.NewDispatcher()
 	d.Register("orchicon", loudStubBridge{})
@@ -104,9 +93,8 @@ func TestResolveChatClientNeverUsesHostServeWhenADispatcherIsWired(t *testing.T)
 	}
 }
 
-// AC 6: the nil-dispatcher branch is only reached when NO dispatcher is wired,
-// and even there an absent host serve fails EXPLICITLY rather than inventing a
-// transport (no nil client handed back as though it were usable).
+// AC 6: the nil-dispatcher branch is only reached when NO dispatcher is wired, and even there an
+// absent host serve fails EXPLICITLY rather than inventing a transport (no nil client handed back.
 func TestResolveChatClientFailsLoudWithNoDispatcherAndNoHostServe(t *testing.T) {
 	s := &Service{}
 
@@ -122,9 +110,8 @@ func TestResolveChatClientFailsLoudWithNoDispatcherAndNoHostServe(t *testing.T) 
 	}
 }
 
-// The nil-dispatcher branch still returns the injected test client (the shape
-// every existing Ask test relies on) — so the bounded fallback is a real
-// pre-wiring path, not dead code that could be deleted without noticing.
+// The nil-dispatcher branch still returns the injected test client (the shape every existing Ask
+// test relies on) — so the bounded fallback is a real pre-wiring path.
 func TestResolveChatClientNilDispatcherUsesTheTestClient(t *testing.T) {
 	s := &Service{}
 	injected := &ownerKindClient{kind: "opencode"}

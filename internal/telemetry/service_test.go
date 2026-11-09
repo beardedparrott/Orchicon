@@ -115,11 +115,8 @@ func TestGetDashboardAllTimeTotalsMatchCostExplorer(t *testing.T) {
 	}
 }
 
-// seedDashboardCostData inserts usage records across three models with
-// occurred_at spanning well beyond 24h (the former GetDashboard default
-// window). All rows carry the dedicated test tenant so the tenant-scoped
-// tx + RLS backstop see them. Idempotent: wipes any rows a previous run
-// left behind.
+// seedDashboardCostData inserts usage records across three models with occurred_at spanning well
+// beyond 24h (the former GetDashboard default window).
 func seedDashboardCostData(t *testing.T, pool *db.Pool, tenantID string) {
 	t.Helper()
 	ctx := context.Background()

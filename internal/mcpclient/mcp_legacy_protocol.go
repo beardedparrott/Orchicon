@@ -36,11 +36,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// protocolVersionLegacy is the last version before the SEP-2575 `server/discover` gate. Pinning it makes
-// the client go straight to `initialize`.
-//
-// THE STRING IS SPELLED OUT because the SDK keeps its constants unexported (mcp/shared.go). A test pins it
-// against the SDK's own gate so a future bump that moves the boundary cannot silently make this a no-op.
+// protocolVersionLegacy is the last version before the SEP-2575 `server/discover` gate.
 const protocolVersionLegacy = "2025-11-25"
 
 // protocolVersionAuto is the per-server override's "let the client decide" value. An operator who wants the
@@ -84,17 +80,11 @@ func shouldRetryWithLegacy(spec ServerSpec, spawn *stdioSpawn, err error) bool {
 	return true
 }
 
-// protocolVersionGate mirrors the SDK's own boundary (mcp/shared.go: protocolVersion20260728). Spelled out
-// here so the comparison above can reason about it without importing an unexported constant; a test
-// asserts it matches the version the SDK actually treats as modern.
+// protocolVersionGate mirrors the SDK's own boundary (mcp/shared.go: protocolVersion20260728).
 const protocolVersionGate = "2026-07-28"
 
-// connectWithLegacyRetry runs one connect attempt with the spec's version, and — when the child RAN and
-// failed — a SECOND attempt on a fresh child with the legacy version pinned.
-//
-// A FRESH CHILD IS THE POINT. The first attempt's process has exited; re-handshaking the same connection is
-// what the SDK's fallback does and why it cannot work. Each attempt gets its own timeout budget too, so a
-// first attempt that burns the full window still leaves the retry room to complete.
+// connectWithLegacyRetry runs one connect attempt with the spec's version, and — when the child RAN
+// and failed — a SECOND attempt on a fresh child with the legacy version pinned.
 func (m *Manager) connectWithLegacyRetry(ctx context.Context, spec ServerSpec) (*serverConn, error) {
 	pinned := pinnedProtocolVersion(spec)
 	conn, spawn, firstErr := m.connectAttemptRaw(ctx, spec, pinned)
@@ -181,8 +171,7 @@ func (m *Manager) connectAttemptRaw(ctx context.Context, spec ServerSpec, protoc
 	session, err := client.Connect(cctx, transport, opts)
 	if err != nil {
 		// KILL THE CHILD WE JUST SPAWNED, because the SDK does not: mcp.connect returns the handshake error
-		// without closing the transport, so the only handle on a live child was being dropped here on every
-		// failed start (see killtree_unix.go).
+		// without closing the transport.
 		if spawn != nil {
 			killStopsTheChild(spawn.cmd)
 		}

@@ -1,13 +1,6 @@
-// Package providers implements the tenant-facing Providers management
-// surface behind Settings → Adapters (ADR-0006): the merged provider view
-// (built-in profiles ⊕ stored overrides ⊕ tenant custom providers), custom
-// provider CRUD, token auto-write into the tenant secrets store, and the
-// deletion guard.
-//
-// It CONSUMES the provider-layer substrate (internal/orchicon) — profile
-// validation, sourcing, credential resolution, registry — and never
-// re-implements it. Plaintext tokens are write-only: they never appear in
-// any response (only has_token_stored + the expected secret name).
+// Package providers implements the tenant-facing Providers management surface behind Settings →
+// Adapters (ADR-0006): the merged provider view (built-in profiles ⊕ stored overrides ⊕ tenant
+// custom.
 package providers
 
 import (
@@ -66,11 +59,9 @@ func invalidf(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", errInvalidArgument, fmt.Sprintf(format, a...))
 }
 
-// builtinSecretNames is the standard-name auto-write map (ADR-0006 D5) —
-// the single source of truth, matching the credential resolver's canonical
-// naming (secret names coincide with the env var names). Ollama carries
-// OLLAMA_API_KEY: the local server needs no token, but Ollama Cloud does
-// (https://docs.ollama.com/cloud — Bearer on every transport).
+// builtinSecretNames is the standard-name auto-write map (ADR-0006 D5) — the single source of
+// truth, matching the credential resolver's canonical naming (secret names coincide with the env
+// var.
 var builtinSecretNames = map[string]string{
 	"anthropic":   "ANTHROPIC_API_KEY",
 	"openai":      "OPENAI_API_KEY",
@@ -81,10 +72,8 @@ var builtinSecretNames = map[string]string{
 	"ollama":      "OLLAMA_API_KEY",
 }
 
-// CustomSecretName derives the standard tenant-secret name for a custom
-// provider ref (ADR-0006 D2): CUSTOM_<REF uppercased, - → _>_API_KEY. The
-// secrets name regex forbids hyphens, so `local-models` maps to
-// CUSTOM_LOCAL_MODELS_API_KEY.
+// CustomSecretName derives the standard tenant-secret name for a custom provider ref (ADR-0006 D2):
+// CUSTOM_<REF uppercased, - → _>_API_KEY.
 func CustomSecretName(ref string) string {
 	return "CUSTOM_" + strings.ToUpper(strings.ReplaceAll(ref, "-", "_")) + "_API_KEY"
 }
@@ -120,12 +109,6 @@ func validateBaseURL(raw string) error {
 }
 
 // ValidateAuthMode reports whether a value is an auth mode this service honours.
-//
-// EXPORTED because the clients need to ask the same question. The TUI's provider form offered
-// `bearer` and `api_key` — neither of which this function accepts, so choosing one produced a
-// provider the server refused — while `token`, the value every existing provider uses, was not
-// offered at all. A client that builds its choices from these constants cannot make that mistake, and
-// a test can assert the options are accepted rather than asserting they look right.
 func ValidateAuthMode(mode string) error {
 	if mode != AuthModeNone && mode != AuthModeToken {
 		return invalidf("auth_mode must be %q or %q", AuthModeNone, AuthModeToken)
@@ -167,10 +150,7 @@ func unmarshalManualModels(raw []byte) []ManualModel {
 	return out
 }
 
-// mergeManualModels merges operator manual-model edits into the stored
-// list. replace=true swaps the whole list; otherwise entries merge by id
-// (the submitted entry wins), preserving stored order first. Bounded by
-// maxManualModels.
+// mergeManualModels merges operator manual-model edits into the stored list.
 func mergeManualModels(current, updates []ManualModel, replace bool) ([]ManualModel, error) {
 	var out []ManualModel
 	if replace {
@@ -214,27 +194,8 @@ func mergeManualModels(current, updates []ManualModel, replace bool) ([]ManualMo
 	return dedup, nil
 }
 
-// ContainerProviders returns the tenant's providers as a RUNTIME CONTAINER must
-// see them: each with its base URL TRANSPOSED off the host's loopback, because a
-// container's 127.0.0.1 is the container itself and a local model published on
-// the operator's machine is unreachable there.
-//
-// WHY THE TRANSPOSITION DOES NOT LIVE IN THE STORED ROW. The same provider row is
-// dialled by the host-plane consumer (the native engine, Ask Orchicon), where
-// 127.0.0.1 is correct and a bridge address would be wrong. One row, two
-// consumers, two correct answers — so the row keeps what the operator typed and
-// the consumer gets a view it can actually dial. That is the operator's own
-// framing: "we now have two different IP addresses to reference the same model…
-// Previously the GUI would automatically transpose the container IP when you put
-// in 127.0.0.1".
-//
-// Only ENABLED providers are returned: an entry the operator turned off must not
-// be handed to a container as a usable endpoint.
-//
-// It returns runtime.ProviderConfig values rather than profiles because the only
-// consumer is opencode's `provider` block, which needs an npm package per id —
-// the wire protocol is opencode's concern, not the provider row's. Mapping it here
-// keeps the adapter from growing its own provider table.
+// ContainerProviders returns the tenant's providers as a RUNTIME CONTAINER must see them: each with
+// its base URL TRANSPOSED off the host's loopback.
 func (s *Service) ContainerProviders(ctx context.Context, tenantID string) []runtime.ProviderConfig {
 	entries, err := s.ListForTenant(ctx, tenantID)
 	if err != nil {
@@ -247,9 +208,8 @@ func (s *Service) ContainerProviders(ctx context.Context, tenantID string) []run
 		}
 		npm := opencodeProviderNPM(e.Kind)
 		if npm == "" {
-			// A provider opencode has no package for is skipped rather than emitted
-			// with a guessed npm: a wrong package makes opencode fail to LOAD the
-			// provider, taking the working ones with it.
+			// A provider opencode has no package for is skipped rather than emitted with a guessed npm: a wrong
+			// package makes opencode fail to LOAD the provider, taking the working ones with it.
 			continue
 		}
 		out = append(out, runtime.ProviderConfig{
@@ -261,15 +221,7 @@ func (s *Service) ContainerProviders(ctx context.Context, tenantID string) []run
 	return out
 }
 
-// opencodeProviderNPM maps a provider KIND to the npm package that speaks its wire
-// protocol.
-//
-// OpenAI-compatible, custom and ollama entries are the local-model case this
-// exists for (llama-server, vLLM, llama.cpp — all OpenAI-compatible; ollama is
-// served through the same compat surface). The Anthropic-native and commandcode
-// kinds are deliberately absent: they are not reached by a base URL a container
-// would dial, and inventing a package for them would break the provider rather
-// than fix it.
+// opencodeProviderNPM maps a provider KIND to the npm package that speaks its wire protocol.
 func opencodeProviderNPM(kind string) string {
 	switch orchicon.ProfileKind(kind) {
 	case orchicon.ProfileKindOpenAICompat, orchicon.ProfileKindCustom, orchicon.ProfileKindOllama:
@@ -323,9 +275,8 @@ func (e *ReferencedError) Error() string {
 
 func (e *ReferencedError) Is(target error) bool { return target == ErrReferencedByWorkers }
 
-// Service is the provider settings core: storage over provider_settings,
-// token auto-write into the tenant secrets store, custom CRUD, and the
-// substrate loader/invalidation wiring.
+// Service is the provider settings core: storage over provider_settings, token auto-write into the
+// tenant secrets store, custom CRUD, and the substrate loader/invalidation wiring.
 type Service struct {
 	pool *db.Pool
 	kek  []byte
@@ -343,9 +294,8 @@ func New(pool *db.Pool, kek []byte, log *slog.Logger) *Service {
 	return &Service{pool: pool, kek: kek, log: log}
 }
 
-// substrate lazily wires the orchicon substrate trio (credential resolver →
-// sourcing service → registry). Built once per process; per-tenant client
-// caches live inside the registry and are dropped via Registry.Invalidate.
+// substrate lazily wires the orchicon substrate trio (credential resolver → sourcing service →
+// registry).
 func (s *Service) substrate() (*orchicon.Registry, *orchicon.SourcingService, *orchicon.CredentialResolver) {
 	s.substrateOnce.Do(func() {
 		resolver := orchicon.NewCredentialResolver(s.pool, s.kek)
@@ -356,12 +306,8 @@ func (s *Service) substrate() (*orchicon.Registry, *orchicon.SourcingService, *o
 			}
 		}
 		s.registry = orchicon.NewRegistry(resolver, src, nil, warn)
-		// BUILT-IN provider overrides (ADR-0006 D6 parity): registry.Get for
-		// a built-in id resolves built-in default ⊕ tenant provider-settings
-		// overrides via EffectiveProfile — the SAME mapping the RPC views
-		// use. Without this hook every built-in chat client used the
-		// built-in defaults (observed: an ollama CLOUD BaseURLOverride in
-		// Settings while chat kept dialing http://localhost:11434).
+		// BUILT-IN provider overrides (ADR-0006 D6 parity): registry.Get for a built-in id resolves
+		// built-in default ⊕ tenant provider-settings overrides via EffectiveProfile.
 		s.registry.SetBuiltinOverridesLoader(s.EffectiveProfile)
 		s.sourcing = src
 		s.resolver = resolver
@@ -381,11 +327,8 @@ func (s *Service) CredentialResolver() *orchicon.CredentialResolver {
 	return r
 }
 
-// RegisterSubstrateLoader installs this service as the orchicon
-// custom-profile loader (the substrate's designated hook, ADR-0006 D6).
-// From then on orchicon.Registry.Get resolves tenant custom provider ids
-// end-to-end; DISABLED providers never load (they must never resolve to
-// clients). Called once at daemon wiring (internal/api.Mount).
+// RegisterSubstrateLoader installs this service as the orchicon custom-profile loader (the
+// substrate's designated hook, ADR-0006 D6).
 func (s *Service) RegisterSubstrateLoader() {
 	orchicon.SetCustomProfileLoader(s.loadEnabledCustomProfiles)
 }
@@ -428,9 +371,9 @@ func profileFromRow(r db.ProviderSettingsRow) (orchicon.Profile, bool) {
 		if r.NumCtxDefault > 0 {
 			base.NumCtxDefault = r.NumCtxDefault
 		}
-		// Bind the standard secret name so the credential resolver finds the
-		// tab-written token (AuthSecretRef-first, env fallback) — without
-		// this the E2E flow fails ErrAuthMissing after a token save.
+		// Bind the standard secret name so the credential resolver finds the tab-written token
+		// (AuthSecretRef-first, env fallback) — without this the E2E flow fails ErrAuthMissing after a
+		// token save.
 		if ref := builtinSecretNames[r.ProviderID]; ref != "" {
 			base.AuthSecretRef = ref
 		}
@@ -445,20 +388,8 @@ func profileFromRow(r db.ProviderSettingsRow) (orchicon.Profile, bool) {
 		Visible:       true,
 		HiddenModels:  r.HiddenModels,
 		NumCtxDefault: r.NumCtxDefault,
-		// Custom providers are OpenAI-compatible by definition (Settings →
-		// Adapters → Providers only accepts compat endpoints), and Orchicon
-		// native sessions are inherently tool-driven (every turn requests
-		// tools). Zero-value Quirks here silently dropped the tools array
-		// from every wire request — a tool-trained model then improvises
-		// its native token-format tool calls as PLAIN TEXT, the loop sees a
-		// text-only finish, and executions "succeed" in 1-2 seconds with
-		// markup garbage ("<｜DSML｜tool_calls>…") as the final message.
-		//
-		// Usage parity (D2): a compat endpoint that accepts streaming
-		// serves usage the standard way — request it (include_usage) and
-		// parse the trailing usage-only chunk. Without these quirks the
-		// native loop saw 0-usage turns: no cost explorer rows, no budget
-		// cost gate, and the old zero-growth stall guard false-tripped.
+		// Custom providers are OpenAI-compatible by definition (Settings → Adapters → Providers only
+		// accepts compat endpoints).
 		Quirks: orchicon.Quirks{
 			SupportsToolCalls:                true,
 			StreamOptionsIncludeUsage:        true,
@@ -477,9 +408,8 @@ func profileFromRow(r db.ProviderSettingsRow) (orchicon.Profile, bool) {
 	return p, true
 }
 
-// EffectiveProfile resolves the effective orchicon.Profile for a provider
-// (built-in ⊕ overrides, or custom) plus its enabled flag. The ONE mapping
-// function behind the substrate loader and the RPC views.
+// EffectiveProfile resolves the effective orchicon.Profile for a provider (built-in ⊕ overrides, or
+// custom) plus its enabled flag.
 func (s *Service) EffectiveProfile(ctx context.Context, tenantID, providerID string) (orchicon.Profile, bool, error) {
 	tx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -488,10 +418,7 @@ func (s *Service) EffectiveProfile(ctx context.Context, tenantID, providerID str
 	defer func() { _ = tx.Rollback(ctx) }()
 	row, err := db.GetProviderSettings(ctx, tx.Tx, tenantID, providerID)
 	if errors.Is(err, db.ErrNotFound) {
-		// No stored row: pure built-in default (never a custom). Still bind
-		// the standard AuthSecretRef — a tab-written token lives in the
-		// secrets store alone (SetProviderToken writes no settings row), so
-		// the resolver must look it up even without an overrides row.
+		// No stored row: pure built-in default (never a custom).
 		if base, ok := orchicon.BuiltinProfile(providerID); ok {
 			if ref := builtinSecretNames[providerID]; ref != "" {
 				base.AuthSecretRef = ref
@@ -653,9 +580,7 @@ type UpdateSettingsInput struct {
 	ManualReplace   bool
 }
 
-// UpdateSettings applies a partial settings update. Built-ins persist an
-// override row on first change; customs merge on top of their row.
-// Registry invalidation fires on EVERY mutation path.
+// UpdateSettings applies a partial settings update.
 func (s *Service) UpdateSettings(ctx context.Context, tenantID string, in UpdateSettingsInput) (Entry, error) {
 	in.ProviderID = strings.TrimSpace(in.ProviderID)
 	if in.ProviderID == "" {
@@ -697,9 +622,8 @@ func (s *Service) UpdateSettings(ctx context.Context, tenantID string, in Update
 		if in.Enabled != nil {
 			merged.Enabled = *in.Enabled
 		}
-		// Custom entries carry their base URL in base_url (their definition),
-		// not base_url_override (built-in-only) — keeps UpdateCustom and
-		// UpdateSettings uniform.
+		// Custom entries carry their base URL in base_url (their definition), not base_url_override
+		// (built-in-only) — keeps UpdateCustom and UpdateSettings uniform.
 		if in.BaseURLOverride != nil {
 			merged.BaseURL = *in.BaseURLOverride
 		}
@@ -779,9 +703,8 @@ func (s *Service) CreateCustom(ctx context.Context, tenantID string, in CreateCu
 	if err := validateBaseURL(in.BaseURL); err != nil {
 		return Entry{}, err
 	}
-	// Plane-aware loopback resolution: inside the control-plane container,
-	// "localhost:port" points at the container, not the user's machine —
-	// rewrite to the docker bridge gateway and say so in plain language.
+	// Plane-aware loopback resolution: inside the control-plane container, "localhost:port" points at
+	// the container, not the user's machine.
 	if resolved, note, changed := resolveForPlane(in.BaseURL); changed {
 		in.BaseURL = resolved
 		if s.log != nil {
@@ -930,10 +853,7 @@ func (s *Service) UpdateCustom(ctx context.Context, tenantID string, in UpdateCu
 	return e, nil
 }
 
-// DeleteCustom deletes a tenant custom provider. The deletion guard blocks
-// the delete while any worker / tenant-default model_ref still references
-// the provider (ADR-0006 D3): a *ReferencedError lists every referencing
-// worker and the row is untouched.
+// DeleteCustom deletes a tenant custom provider.
 func (s *Service) DeleteCustom(ctx context.Context, tenantID, refID string) error {
 	refID = strings.TrimSpace(refID)
 	if refID == "" {
@@ -961,9 +881,8 @@ func (s *Service) DeleteCustom(ctx context.Context, tenantID, refID string) erro
 	if err := db.DeleteProviderSettings(ctx, tx.Tx, tenantID, refID); err != nil {
 		return err
 	}
-	// Purge the auto-written secret: a deleted provider must not orphan its
-	// CUSTOM_<REF>_API_KEY entry in the secrets section (the token auto-write
-	// contract, delete half). Idempotent — nothing stored is fine.
+	// Purge the auto-written secret: a deleted provider must not orphan its CUSTOM_<REF>_API_KEY entry
+	// in the secrets section (the token auto-write contract, delete half).
 	if existing.AuthMode == AuthModeToken {
 		if sec, serr := db.GetSecretByName(ctx, tx.Tx, tenantID, CustomSecretName(refID)); serr == nil {
 			if derr := db.DeleteSecret(ctx, tx.Tx, tenantID, sec.ID); derr != nil {
@@ -983,10 +902,7 @@ func (s *Service) DeleteCustom(ctx context.Context, tenantID, refID string) erro
 	return nil
 }
 
-// refsProvider reports whether a model_ref references the provider as its
-// segment-2 value (pure). The structural parse (nil registry) resolves
-// legacy 2-segment and explicit 3-segment refs; refs the parser rejects
-// structurally fall back to a prefix match on "<provider>/".
+// refsProvider reports whether a model_ref references the provider as its segment-2 value (pure).
 func refsProvider(ref, providerID string) bool {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -998,9 +914,8 @@ func refsProvider(ref, providerID string) bool {
 	return strings.HasPrefix(ref, providerID+"/")
 }
 
-// scanModelRefs collects every live reference to providerID: the tenant's
-// worker/version model_refs plus the tenant default worker and Ask-Orchicon
-// model refs. Deduped by (worker, model_ref).
+// scanModelRefs collects every live reference to providerID: the tenant's worker/version model_refs
+// plus the tenant default worker and Ask-Orchicon model refs.
 func (s *Service) scanModelRefs(ctx context.Context, tx pgx.Tx, tenantID, providerID string) ([]ReferencingWorker, error) {
 	rows, err := db.ListWorkerModelRefs(ctx, tx, tenantID)
 	if err != nil {
@@ -1034,10 +949,8 @@ func (s *Service) scanModelRefs(ctx context.Context, tx pgx.Tx, tenantID, provid
 	return out, nil
 }
 
-// SetProviderToken auto-writes/updates the provider's tenant secret under
-// the standard name (ADR-0006 D5). Idempotent: an unchanged value performs
-// no write (no ciphertext churn, updated_at untouched). Plaintext is never
-// returned. Ollama rejects token saves (it needs no authentication).
+// SetProviderToken auto-writes/updates the provider's tenant secret under the standard name
+// (ADR-0006 D5).
 func (s *Service) SetProviderToken(ctx context.Context, tenantID, providerID, token string) (string, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
@@ -1095,21 +1008,14 @@ func (s *Service) SetProviderToken(ctx context.Context, tenantID, providerID, to
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
-	// EVERY PROVIDER THAT READS THIS SECRET, NOT JUST THE ONE CLICKED.
-	//
-	// opencode and opencode-go share OPENCODE_API_KEY. An operator rotating the key
-	// under "opencode" used to invalidate ONLY opencode's cached client, so a
-	// session running model_ref orchicon/opencode-go/... kept its old, expired
-	// credential. Measured on the dev instance: provider.token_set at 18:35:04Z,
-	// and the same session still returning api_key_expired at 18:36:14Z — the save
-	// had worked and the plane could not see it.
+	// An operator rotating the key under "opencode" used to invalidate ONLY opencode's cached client,
+	// so a session running model_ref orchicon/opencode-go/...
 	s.InvalidateSecret(ctx, tenantID, name)
 	return name, nil
 }
 
-// ClearProviderToken deletes the provider's stored token secret (opt-in
-// "remove credential"); the resolver's env fallback then applies. No-op
-// (nil) when nothing is stored.
+// ClearProviderToken deletes the provider's stored token secret (opt-in "remove credential"); the
+// resolver's env fallback then applies.
 func (s *Service) ClearProviderToken(ctx context.Context, tenantID, providerID string) error {
 	name, err := s.secretNameFor(ctx, tenantID, providerID)
 	if err != nil {
@@ -1183,46 +1089,15 @@ func (s *Service) secretNameFor(ctx context.Context, tenantID, providerID string
 	return CustomSecretName(providerID), nil
 }
 
-// invalidate drops the substrate caches for one (tenant, provider) pair —
-// called on EVERY mutation path (enable/disable, baseURL, tokens,
-// visibility, manual models, delete).
+// invalidate drops the substrate caches for one (tenant, provider) pair — called on EVERY mutation
+// path (enable/disable, baseURL, tokens, visibility, manual models, delete).
 func (s *Service) invalidate(tenantID, providerID string) {
 	reg, _, _ := s.substrate()
 	reg.Invalidate(tenantID, providerID)
 }
 
-// InvalidateSecret drops the substrate caches for every provider whose credential
-// lives in a tenant secret of that NAME.
-//
-// THE GAP IT CLOSES. Registry.Invalidate is called by every PROVIDERS mutation
-// (SetProviderToken, ClearProviderToken, UpdateSettings, custom create/update/
-// delete) — but a provider key can also be rotated straight from Settings →
-// Secrets, which writes the same row through internal/secrets and knew nothing
-// about the caches. The provider clients are cached with the resolved credential
-// baked in and the resolver caches the decrypted plaintext for the process's
-// life, so such a rotation kept authenticating with the OLD value until restart:
-// the operator replaces an expired key, retries, and gets the same 401 while the
-// plane insists nothing is wrong. internal/secrets now calls this through
-// SetOnChanged.
-//
-// A SECRET NAME MATCHES MORE THAN ONE PROVIDER BY DESIGN: opencode and
-// opencode-go both read OPENCODE_API_KEY (ADR D4 — distinct base URLs, one
-// credential), so every id in the map must be invalidated, not the first.
-//
-// An unmatched name still clears the credential cache: the resolver is keyed by
-// (tenant, secret name), so a name nobody maps today may be read by a custom
-// provider or by a future one, and dropping a cache is cheap next to serving a
-// revoked key.
-// builtinProvidersSharingSecret lists every BUILT-IN provider whose credential
-// lives in the tenant secret of that NAME.
-//
-// ONE SECRET, SEVERAL PROVIDERS is a documented property, not an accident:
-// opencode and opencode-go are distinct wire profiles (different base URLs, ADR
-// D4) authenticated by the SAME OPENCODE_API_KEY. So anything keyed by provider
-// id — such as the registry's client cache — has to be cleared for ALL of them
-// when that one secret changes.
-//
-// It is a pure function so the mapping is assertable without a database.
+// InvalidateSecret drops the substrate caches for every provider whose credential lives in a tenant
+// secret of that NAME.
 func builtinProvidersSharingSecret(name string) []string {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -1267,11 +1142,8 @@ func (s *Service) InvalidateSecret(_ context.Context, tenantID, name string) {
 	}
 }
 
-// applyBaseURLRepair persists a self-healed base URL (custom providers
-// only — a built-in's override must go through the operator, since it
-// changes which endpoint the built-in wire profile targets). Audit-logged
-// with before/after; best-effort: a persist failure leaves the runtime
-// result usable for THIS listing, and the next probe retries the repair.
+// applyBaseURLRepair persists a self-healed base URL (custom providers only — a built-in's override
+// must go through the operator.
 func (s *Service) applyBaseURLRepair(ctx context.Context, tenantID, providerID, from, to string) error {
 	tx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -1306,9 +1178,8 @@ func (s *Service) applyBaseURLRepair(ctx context.Context, tenantID, providerID, 
 	return nil
 }
 
-// EnabledCustomProviderIDs lists the tenant's ENABLED custom provider ids
-// (the model-ref validation merge source, ADR-0006 D6; also the substrate
-// loader's filter). Served to internal/worker via the API wiring.
+// EnabledCustomProviderIDs lists the tenant's ENABLED custom provider ids (the model-ref validation
+// merge source, ADR-0006 D6; also the substrate loader's filter).
 func (s *Service) EnabledCustomProviderIDs(ctx context.Context, tenantID string) ([]string, error) {
 	tx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -1329,10 +1200,8 @@ func (s *Service) EnabledCustomProviderIDs(ctx context.Context, tenantID string)
 	return out, nil
 }
 
-// ModelRow is one sourcing-view model (ADR-0006 D4): the merged catalog →
-// probe → manual list (substrate SourcingService), annotated with the
-// visibility toggle state and the WARN flag for selectable models lacking
-// a context hint.
+// ModelRow is one sourcing-view model (ADR-0006 D4): the merged catalog → probe → manual list
+// (substrate SourcingService).
 type ModelRow struct {
 	ID            string
 	Context       int64
@@ -1350,20 +1219,11 @@ type ModelsResult struct {
 	Enabled  bool
 }
 
-// ListProviderModels surfaces the sourcing state for one provider. Hidden
-// models are INCLUDED with Visible=false (the operator must be able to
-// re-check them); probe failure is non-fatal (Degraded=true — the UI
-// renders visibly degraded, never a blank list).
-// claudeManagedCatalogProvider is the provider id whose model list the Claude
-// Code managed catalog is authoritative for.
+// ListProviderModels surfaces the sourcing state for one provider.
 const claudeManagedCatalogProvider = "anthropic"
 
-// claudeManagedCatalogModels returns the signed Claude Code catalog's models for
-// a provider, or nil for any other provider or on ANY failure.
-//
-// A FAILURE IS LOGGED, not swallowed: the operator otherwise sees a stale three-
-// model list with nothing to explain why. The message names the reason (network,
-// or a signature that did not verify) because those call for different responses.
+// claudeManagedCatalogModels returns the signed Claude Code catalog's models for a provider, or nil
+// for any other provider or on ANY failure.
 func (s *Service) claudeManagedCatalogModels(ctx context.Context, providerID string) []orchicon.ModelInfo {
 	if providerID != claudeManagedCatalogProvider {
 		return nil
@@ -1406,29 +1266,18 @@ func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID s
 		return ModelsResult{Models: []ModelRow{}, Enabled: false}, nil
 	}
 	_, sourcing, resolver := s.substrate()
-	// Resolve the credential (tenant secret → env) for the probe: an
-	// auth-requiring endpoint 401s an unauthenticated probe, which today
-	// degrades silently into a "probe failed" state. Resolve mirrors the
-	// real client path; ErrAuthMissing resolves to "" (the probe proceeds
-	// unauthenticated — non-fatal by design, and public/local endpoints
-	// succeed without a credential).
+	// Resolve the credential (tenant secret → env) for the probe: an auth-requiring endpoint 401s an
+	// unauthenticated probe, which today degrades silently into a "probe failed" state.
 	bearer, _ := resolver.Resolve(ctx, tenantID, profile) //nolint:errcheck // probe stays non-fatal without a credential
-	// Ask the substrate for the UNFILTERED merged list (hidden set cleared),
-	// then annotate visibility here — re-hiding is only possible when hidden
-	// entries stay visible to the operator.
+	// Ask the substrate for the UNFILTERED merged list (hidden set cleared), then annotate visibility
+	// here — re-hiding is only possible when hidden entries stay visible to the operator.
 	unfiltered := profile
 	unfiltered.HiddenModels = nil
 	res := sourcing.ListModels(ctx, unfiltered, bearer)
-	// SELF-HEALING probe: a stored URL that was saved before plane-aware
-	// resolution existed (or that was entered in a form the container can't
-	// reach — loopback, missing /v1) fails here forever. Try the most
-	// likely repaired candidates; if one works, PERSIST it (chat uses the
-	// same base URL — the fix must apply to turns, not just the listing)
-	// and log the repair in plain language.
+	// SELF-HEALING probe: a stored URL that was saved before plane-aware resolution existed (or that
+	// was entered in a form the container can't reach — loopback, missing /v1) fails here forever.
 	if res.Degraded && len(res.Models) == 0 {
-		// THE SWEEP GETS ITS OWN BUDGET, because the caller has one too (see
-		// repairBudget). Bounding it guarantees the catalog seed below is reached;
-		// it does not disable the self-heal a broken local endpoint needs.
+		// THE SWEEP GETS ITS OWN BUDGET, because the caller has one too (see repairBudget).
 		repairCtx, cancelRepair := context.WithTimeout(ctx, repairBudget)
 		for _, cand := range repairCandidates(profile.BaseURL) {
 			if repairCtx.Err() != nil {
@@ -1441,9 +1290,8 @@ func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID s
 			cp := profile
 			cp.BaseURL = cand
 			if r2 := sourcing.ListModels(repairCtx, cp, bearer); !r2.Degraded && len(r2.Models) > 0 {
-				// Persist on the CALLER's context: the repair has been found, and the
-				// write that makes it stick for turns must not be cancelled by the
-				// sweep's own budget expiring a moment later.
+				// Persist on the CALLER's context: the repair has been found, and the write that makes it stick for
+				// turns must not be cancelled by the sweep's own budget expiring a moment later.
 				if err := s.applyBaseURLRepair(ctx, tenantID, providerID, profile.BaseURL, cand); err != nil {
 					break
 				}
@@ -1457,14 +1305,7 @@ func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID s
 		}
 		cancelRepair()
 	}
-	// OFFLINE CATALOG SEED (picker view only). When the live probe yielded
-	// nothing — no network, no credential, an unreachable endpoint — a
-	// catalog-COVERED provider (anthropic) still lists its authored models, so
-	// the model picker is never blank on an opencode-free / offline plane.
-	// Additive and non-destructive: probe results always win (the seed only
-	// runs on an empty list), and a provider the catalog does not cover is
-	// untouched. The live CHAT path keeps its own no-fallback contract
-	// (internal/orchicon/sourcing.go) — this seeds the listing, not dispatch.
+	// OFFLINE CATALOG SEED (picker view only).
 	if len(res.Models) == 0 {
 		// SOURCE ORDER, best-authority first:
 		//

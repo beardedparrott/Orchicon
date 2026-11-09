@@ -1,14 +1,7 @@
 package orchicon
 
-// Purge-conversation-history tests (scheduler.ConversationHistoryPurger). The
-// native adapter is sessionless, so its persisted history file is the ONLY
-// on-disk artifact of a conversation — and until this capability existed,
-// nothing reclaimed it: every deleted conversation leaked its file forever
-// (observed live: 19 files / 19MB, several multi-MB).
-//
-// These are pure unit tests (no DB, no provider): they exercise the real
-// persist path and then assert the artifact is gone and the operation is
-// idempotent.
+// The native adapter is sessionless, so its persisted history file is the ONLY on-disk artifact of
+// a conversation — and until this capability existed, nothing reclaimed it.
 
 import (
 	"context"
@@ -21,9 +14,8 @@ import (
 
 func purgeTestStr(s string) *string { return &s }
 
-// seedAskHistory creates a conversation session on a bridge backed by dir,
-// seeds one in-memory message through the REAL persist path, and returns the
-// bridge, its session id, and the path the history file was written to.
+// seedAskHistory creates a conversation session on a bridge backed by dir, seeds one in-memory
+// message through the REAL persist path, and returns the bridge, its session id.
 func seedAskHistory(t *testing.T, dir, convID string) (*NativeBridge, string, string) {
 	t.Helper()
 	b := NewBridge(nil, "", nil)
@@ -79,9 +71,8 @@ func TestPurgeConversationHistoryIsIdempotent(t *testing.T) {
 }
 
 func TestPurgeConversationHistoryResolvesSyntheticSessionID(t *testing.T) {
-	// A conversation row whose session id was never persisted still owns a
-	// history file under the adapter's synthetic id — purging must resolve it
-	// rather than silently no-op (which would re-leak the file).
+	// A conversation row whose session id was never persisted still owns a history file under the
+	// adapter's synthetic id — purging must resolve it rather than silently no-op (which would re-leak.
 	dir := t.TempDir()
 	const convID = "01PURGENOSESSIONID00000000"
 	b, sid, path := seedAskHistory(t, dir, convID)

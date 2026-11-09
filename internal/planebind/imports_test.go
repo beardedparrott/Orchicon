@@ -1,12 +1,7 @@
 package planebind
 
-// imports_test.go — AC8, asserted mechanically: this package may import the standard
-// library plus internal/planecontrol and internal/instance, and NOTHING else.
-//
-// That restriction IS the guarantee that control really goes through the shared
-// mechanism: if this package could import the api/db/clients layers, a second control
-// path could grow here. It also keeps the binding safe to compile inside the desktop
-// shell on a branch where the plane's HTTP server is not being linked.
+// imports_test.go — AC8, asserted mechanically: this package may import the standard library plus
+// internal/planecontrol and internal/instance, and NOTHING else.
 
 import (
 	"go/parser"

@@ -4,17 +4,6 @@ package mcpclient
 
 // manager_test_unix.go — the POSIX-ONLY half of the MCP client suite, split out of the untagged
 // manager_test.go so the package's TESTS compile on Windows.
-//
-// EVERY HELPER HERE IS UNIX-SHAPED BY CONSTRUCTION, which is why a build tag is the fix rather than
-// a runtime check: `waitGone` asks `syscall.Kill(pid, 0)` whether a pid is still alive,
-// `findChildPid` scans `/proc/*/environ` and `/proc/<pid>/stat`, `procState` reads
-// `/proc/<pid>/stat`, and the helper tests re-exec THIS binary as a fixture child. None of it has a
-// Windows counterpart, and `syscall.Kill` is not in the Windows syscall package at all.
-//
-// THE DEGRADATION IS DELIBERATE AND COMPLETE: on Windows these tests do not exist, because the
-// property they assert (a child is reparented to PID 1 and reaped like a POSIX orphan) is not a
-// property Windows has. There is no stub that pretends to check something it cannot — the
-// platform-neutral suite in manager_test.go is what covers Windows.
 
 import (
 	"bufio"
@@ -51,12 +40,8 @@ func TestCloseKillsChild(t *testing.T) {
 	waitGone(t, pid, 3*time.Second)
 }
 
-// TestOrphanPrevention verifies the PDEATHSIG wiring directly: spawn the
-// fixture via newStdioTransport (the same path the manager uses), then
-// kill the parent of the child (this test process) and assert the child
-// dies with it. We achieve "kill the parent" by running the assertion in
-// a child helper process whose only job is to spawn the fixture, print
-// its pid, and sleep until killed.
+// TestOrphanPrevention verifies the PDEATHSIG wiring directly: spawn the fixture via
+// newStdioTransport (the same path the manager uses).
 func TestOrphanPrevention(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
@@ -83,10 +68,8 @@ func TestOrphanPrevention(t *testing.T) {
 	waitGone(t, pid, 5*time.Second)
 }
 
-// TestOrphanHelper spawns the stdio fixture through the same transport the
-// manager uses (newStdioTransport), prints the child pid, then sleeps
-// until the parent test kills it. When it is killed, PDEATHSIG must take
-// the fixture child with it.
+// TestOrphanHelper spawns the stdio fixture through the same transport the manager uses
+// (newStdioTransport), prints the child pid, then sleeps until the parent test kills it.
 func TestOrphanHelper(t *testing.T) {
 	if os.Getenv("ORCHICON_MCP_ORPHAN_HELPER") != "1" {
 		return
@@ -108,9 +91,8 @@ func TestOrphanHelper(t *testing.T) {
 	}
 }
 
-// findChildPid locates the fixture stdio child (env marker
-// ORCHICON_MCP_STDIO=1 + ORCHICON_MCP_SERVER_ID=<id>) under this
-// process's own children.
+// findChildPid locates the fixture stdio child (env marker ORCHICON_MCP_STDIO=1 +
+// ORCHICON_MCP_SERVER_ID=<id>) under this process's own children.
 func findChildPid(t *testing.T, serverID string) int {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -203,11 +185,8 @@ func atoiOrFail(t *testing.T, s string) int {
 // Sweep
 // ---------------------------------------------------------------------------
 
-// TestSweepReapsOrphans verifies SweepStaleChildren kills an MCP child
-// whose parent is dead (PPID 1), while leaving a live parent's child
-// alone. The orphan is simulated by spawning a fixture child WITHOUT
-// PDEATHSIG (as an older control plane might have), then killing its
-// intermediate parent process so it reparents to PID 1.
+// TestSweepReapsOrphans verifies SweepStaleChildren kills an MCP child whose parent is dead (PPID
+// 1), while leaving a live parent's child alone.
 func TestSweepReapsOrphans(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode")
@@ -243,9 +222,8 @@ func readPidLine(t *testing.T, r io.Reader) int {
 	return atoiOrFail(t, strings.TrimSpace(sc.Text()))
 }
 
-// TestSweepHelper spawns a fixture stdio child WITHOUT PDEATHSIG (so the
-// child survives its parent's death and reparents to PID 1), prints the
-// child pid, then dies immediately. The parent test then sweeps.
+// TestSweepHelper spawns a fixture stdio child WITHOUT PDEATHSIG (so the child survives its
+// parent's death and reparents to PID 1), prints the child pid, then dies immediately.
 func TestSweepHelper(t *testing.T) {
 	if os.Getenv("ORCHICON_MCP_SWEEP_HELPER") != "1" {
 		return

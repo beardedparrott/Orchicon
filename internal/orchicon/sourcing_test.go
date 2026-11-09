@@ -86,10 +86,8 @@ func TestSourcingProbeCustomEntries(t *testing.T) {
 }
 
 func TestSourcingProbeLlamaCppMetaContext(t *testing.T) {
-	// llama.cpp server /v1/models reports the trained context under
-	// meta.n_ctx_train (not context_length / max_model_len). Regression:
-	// the probe decoder missed that shape → Context=0 → "model window
-	// unknown" in the execution sidebar and a disarmed compaction trigger.
+	// llama.cpp server /v1/models reports the trained context under meta.n_ctx_train (not
+	// context_length / max_model_len).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"object":"list","data":[
 			{"id":"TielCoder-242k","meta":{"n_ctx_train":242576}},
@@ -134,9 +132,8 @@ func TestSourcingProbeFailureIsDegraded(t *testing.T) {
 	if len(res.Models) != 1 || res.Models[0].ID != "local-model" {
 		t.Fatalf("manual entries must survive probe failure: %#v", res.Models)
 	}
-	// The diagnosable per-attempt log (HTTP status line) fires BEFORE the
-	// degraded directive line — scan all lines for the directive contract
-	// (degraded concept + no-fallback directive), not just the first.
+	// The diagnosable per-attempt log (HTTP status line) fires BEFORE the degraded directive line —
+	// scan all lines for the directive contract (degraded concept + no-fallback directive).
 	found := false
 	for _, l := range logs {
 		if strings.Contains(l, "degraded") && strings.Contains(l, "NO models served") {

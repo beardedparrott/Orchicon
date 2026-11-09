@@ -1,13 +1,5 @@
-// Package assets holds go:embed directives for the single-container
-// runtime configs, Atlas migrations, and the built frontend bundle. The
-// binary embeds everything needed for `orchicon container` (the PID-1
-// supervisor) and `orchicon serve` so a user with just the binary (and
-// Docker) gets the complete experience — no Go, Node, or source checkout
-// required (AGENTS.md §Dev Control Script, §Install Scripts).
-//
-// The embed paths are relative to this file (the module root) so they
-// can reference deploy/, db/, and frontend/ without `..` (which go:embed
-// forbids).
+// Package assets holds go:embed directives for the single-container runtime configs, Atlas
+// migrations, and the built frontend bundle.
 package assets
 
 import "embed"

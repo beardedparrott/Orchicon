@@ -11,9 +11,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// osProbe is the real Windows probe. WebView2 is best detected through the
-// Evergreen registry keys, because that is what the runtime's own installer
-// writes — a filesystem check alone misses a per-user install under HKCU.
+// osProbe is the real Windows probe.
 func osProbe() Probe {
 	return Probe{
 		Lookup: exec.LookPath,

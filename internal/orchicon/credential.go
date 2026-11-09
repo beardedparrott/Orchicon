@@ -28,18 +28,12 @@ type CredentialResolver struct {
 	cache map[string]string // tenantID|name → plaintext (process-lifetime; secrets rotate via instance invalidation)
 }
 
-// NewCredentialResolver wires the resolver to the DB pool and KEK. kek may
-// be nil — env-only resolution still works (fail-closed on secret path,
-// mirroring the secrets service).
+// NewCredentialResolver wires the resolver to the DB pool and KEK.
 func NewCredentialResolver(pool *db.Pool, kek []byte) *CredentialResolver {
 	return &CredentialResolver{pool: pool, kek: kek, cache: map[string]string{}}
 }
 
-// Resolve returns the credential for the profile. A profile with no auth
-// requirement (AuthEnv == "" and AuthSecretRef == "") resolves to "" with
-// no error (e.g. local Ollama). An AuthOptional profile (Ollama) also
-// resolves to "" with no error when nothing is stored — the client still
-// sends Bearer when a token IS resolved (Ollama Cloud).
+// Resolve returns the credential for the profile.
 func (r *CredentialResolver) Resolve(ctx context.Context, tenantID string, p Profile) (string, error) {
 	if p.AuthSecretRef == "" && p.AuthEnv == "" {
 		return "", nil
@@ -93,9 +87,7 @@ func (r *CredentialResolver) getenv(k string) string {
 	return os.Getenv(k)
 }
 
-// resolveSecret looks a tenant secret up BY NAME and decrypts it. The db
-// layer gains GetSecretByName for this; decryption rides secretcrypto with
-// the tenant KEK, fail-closed (mirrors internal/secrets.Service).
+// resolveSecret looks a tenant secret up BY NAME and decrypts it.
 func (r *CredentialResolver) resolveSecret(ctx context.Context, tenantID, name string) (string, error) {
 	key := tenantID + "|" + name
 	r.mu.Lock()

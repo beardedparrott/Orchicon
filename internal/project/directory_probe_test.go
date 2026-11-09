@@ -1,21 +1,6 @@
 package project
 
 // directory_probe_test.go — THE DIRECTORY PROBE MUST NOT CREATE WHAT IT PROBES.
-//
-// ListProjectFiles(dir_path) is how the frontend browses a raw path before a
-// project exists, how the TUI's project-dir form validates a path, and how
-// orch's launch prompt asks whether the CONTROL PLANE can see a directory
-// (internal/tui/launch.go). All three depend on the same property: a path that is
-// absent from the plane's view must come back as an ERROR.
-//
-// The comment in the TUI used to claim the opposite — "the server materializes the
-// directory when the files endpoint resolves it" — which, if it were true, would
-// make the directory probe useless for the third caller: it would answer its own
-// question with a yes, and the warning that an unmounted/unreachable directory is
-// about to make a project unusable would be dead code that never fires.
-//
-// So this pins the property at the function that implements it, rather than
-// trusting a comment in another package.
 
 import (
 	"os"
@@ -48,9 +33,8 @@ func TestListDirectoryDoesNotCreateTheDirectoryItProbes(t *testing.T) {
 	}
 }
 
-// AN EXISTING DIRECTORY LISTS, and reports itself as the directory it listed —
-// the positive half of the same call, so a probe that failed for everything would
-// not pass the test above by accident.
+// AN EXISTING DIRECTORY LISTS, and reports itself as the directory it listed — the positive half of
+// the same call, so a probe that failed for everything would not pass the test above by accident.
 func TestListDirectoryListsAnExistingDirectory(t *testing.T) {
 	base := t.TempDir()
 	if err := os.WriteFile(filepath.Join(base, "a.txt"), []byte("x"), 0o644); err != nil {

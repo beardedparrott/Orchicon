@@ -46,24 +46,18 @@ import (
 var _ scheduler.ChatCompactor = (*NativeBridge)(nil)
 
 const (
-	// askCompactTailMessages is how many of the most recent messages are kept
-	// VERBATIM after the summary, so the immediate conversational thread (and
-	// any in-flight work) survives the collapse. Mirrors the tenant
-	// context_recent_turns default (6) used by the worker compaction policy.
+	// askCompactTailMessages is how many of the most recent messages are kept VERBATIM after the
+	// summary, so the immediate conversational thread (and any in-flight work) survives the collapse.
 	askCompactTailMessages = 6
 	// askCompactMinMessages declines compaction on a short conversation: a
 	// lossy collapse of a handful of messages costs detail and saves nothing.
 	askCompactMinMessages = 12
-	// askCompactBytesPerToken is the coarse chars->tokens divisor used ONLY to
-	// report a rough size in detail. It never populates the measured token
-	// fields and never arms a gate.
+	// askCompactBytesPerToken is the coarse chars->tokens divisor used ONLY to report a rough size in
+	// detail.
 	askCompactBytesPerToken = 4
 )
 
-// askCompactSummaryInstruction is the summarization prompt. It is written to
-// preserve the WORKING STATE (decisions, identifiers, next steps) rather than
-// to produce prose, because the summary replaces real history and is the only
-// surviving record of everything before it.
+// askCompactSummaryInstruction is the summarization prompt.
 const askCompactSummaryInstruction = `You are compacting a long-running conversation so it can continue in a smaller context.
 
 Produce a summary that lets the conversation resume with no loss of working state. Cover, in this order:
@@ -83,9 +77,8 @@ Rules:
 
 Write the summary now.`
 
-// CompactConversationSession implements scheduler.ChatCompactor for the native
-// (sessionless) transport: reduce, summarize, then replace the history this
-// adapter re-sends every turn.
+// CompactConversationSession implements scheduler.ChatCompactor for the native (sessionless)
+// transport: reduce, summarize, then replace the history this adapter re-sends every turn.
 func (b *NativeBridge) CompactConversationSession(ctx context.Context, opts scheduler.CompactConversationOpts) (scheduler.ChatCompaction, error) {
 	sid := opts.SessionID
 	if sid == "" && opts.ConversationID != "" {
@@ -120,9 +113,8 @@ func (b *NativeBridge) CompactConversationSession(ctx context.Context, opts sche
 		return scheduler.ChatCompaction{Detail: "nothing to compact — the history carries no readable text"}, nil
 	}
 
-	// The identifier ledger, extracted from the RAW history BEFORE the reduction
-	// above — because the reduction is what drops the material the identifiers live
-	// in. See askHistoryLedger for why this rides two ways.
+	// The identifier ledger, extracted from the RAW history BEFORE the reduction above — because the
+	// reduction is what drops the material the identifiers live in.
 	ledger := askHistoryLedger(history)
 
 	// Stage 2: SUMMARIZE on the conversation's own model.
@@ -168,18 +160,13 @@ func (b *NativeBridge) CompactConversationSession(ctx context.Context, opts sche
 	next := make([]Message, 0, len(tail)+1)
 	next = append(next, Message{Role: RoleAssistant, Content: []Content{{Text: compactedHistoryMarker(summary, ledger)}}})
 	next = append(next, tail...)
-	// Composition is itself a replay boundary: the summary is a NEW assistant
-	// message and the tail is a slice of the old history. Assert the pairing
-	// invariant on what was BUILT rather than trusting the boundary above (or any
-	// future trim policy) to have preserved it — when the cut was a blind slice,
-	// the orphan did not exist in the source history at all, so the pre-trim
-	// sanitize pass had nothing to catch.
+	// Composition is itself a replay boundary: the summary is a NEW assistant message and the tail is a
+	// slice of the old history.
 	next = sanitizeChatHistory(next)
 
 	b.mu.Lock()
-	// Archive the pre-collapse history beside the live file: the summary is
-	// lossy by design, so this keeps the detail recoverable by hand. It runs BEFORE
-	// the persist below, so what it copies is the PRE-collapse file.
+	// Archive the pre-collapse history beside the live file: the summary is lossy by design, so this
+	// keeps the detail recoverable by hand.
 	archivePath := b.archiveAskHistoryLocked(sid)
 	b.chatHistory[sid] = next
 	b.markHistoryReductionLocked(sid, "conversation compaction")
@@ -196,11 +183,7 @@ func (b *NativeBridge) CompactConversationSession(ctx context.Context, opts sche
 	}, nil
 }
 
-// summarizeTranscript runs ONE model turn over the reduced transcript and
-// returns its text. Deliberately no tools and no history: a summarize turn must
-// not start doing work. The turn is cancellable through ctx, and a pre-stream
-// failure (auth/connect/limits) is returned so the caller reports a real error
-// instead of silently leaving the conversation wedged.
+// summarizeTranscript runs ONE model turn over the reduced transcript and returns its text.
 func (b *NativeBridge) summarizeTranscript(ctx context.Context, opts scheduler.CompactConversationOpts, transcript, ledger string) (string, error) {
 	tenantID := tenant.FromContext(ctx)
 	if tenantID == "" {
@@ -219,10 +202,8 @@ func (b *NativeBridge) summarizeTranscript(ctx context.Context, opts scheduler.C
 	}
 
 	userText := "Here is the conversation transcript to summarize:\n\n" + transcript
-	// The ledger is handed to the summarizer as well as carried verbatim
-	// alongside its answer: given only the reduced transcript it could not know
-	// what an id refers to, and given the ledger it can ATTRIBUTE it — which is
-	// worth more than a list of tokens the model has no use for.
+	// The ledger is handed to the summarizer as well as carried verbatim alongside its answer: given
+	// only the reduced transcript it could not know what an id refers.
 	if strings.TrimSpace(ledger) != "" {
 		userText += "\n\n" + askCompactLedgerInstruction + "\n\n" + ledger
 	}
@@ -258,13 +239,8 @@ func (b *NativeBridge) summarizeTranscript(ctx context.Context, opts scheduler.C
 	return out.String(), nil
 }
 
-// reduceAskHistory flattens a full history into a text-only transcript for
-// summarization, returning it plus the before/after byte sizes. Deterministic
-// and model-free — which is the point: it cannot fail, and it is the only stage
-// that can run when the history already exceeds the window.
-//
-// Text is preserved in full; images and tool payloads are replaced by explicit
-// markers (never silently dropped, so the summarizer can say what is missing).
+// reduceAskHistory flattens a full history into a text-only transcript for summarization, returning
+// it plus the before/after byte sizes.
 func reduceAskHistory(history []Message) (string, int, int) {
 	var before, after int
 	var b strings.Builder
@@ -311,15 +287,8 @@ func reduceAskHistory(history []Message) (string, int, int) {
 	return b.String(), before, after
 }
 
-// compactedHistoryMarker frames a summary as the single assistant message that
-// replaces the collapsed history. The framing matters: the model must read it
-// as context it already established, not as a fresh instruction.
-//
-// The ledger rides INSIDE this message rather than as a message of its own. Two
-// reasons: the history must stay [summary] + [recent tail] so the tail's cut point
-// and the pairing invariant above are unaffected, and — the one that matters — a
-// summary that silently omits an id cannot lose it, because the verbatim list is
-// in the same place the summary is.
+// compactedHistoryMarker frames a summary as the single assistant message that replaces the
+// collapsed history.
 func compactedHistoryMarker(summary, ledger string) *string {
 	s := "[Earlier conversation compacted to save context. Summary of everything before this point:]\n\n" +
 		summary +
@@ -330,22 +299,14 @@ func compactedHistoryMarker(summary, ledger string) *string {
 	return &s
 }
 
-// askCompactLedgerMarkerFrame introduces the verbatim ledger inside the compacted
-// history. It tells the model to TRUST it over the summary's prose, because the
-// summary is a paraphrase and the list is not.
+// askCompactLedgerMarkerFrame introduces the verbatim ledger inside the compacted history.
 const askCompactLedgerMarkerFrame = "[Identifiers carried verbatim out of the collapsed history. These were extracted from the tool calls and tool results the summary above no longer contains, so prefer them over the summary's own wording when the two disagree:]"
 
-// askCompactLedgerInstruction introduces the ledger to the SUMMARIZER. It asks for
-// attribution rather than transcription — the identifiers are already carried
-// verbatim without the summary's help, so the summary's value is saying what each
-// one is FOR.
+// askCompactLedgerInstruction introduces the ledger to the SUMMARIZER.
 const askCompactLedgerInstruction = `A list of identifiers that appeared VERBATIM in the transcript follows. Note that some of the transcript — tool arguments, tool results and images — was dropped before you saw it, so this list contains facts you cannot otherwise recover. Use it to attribute identifiers to their subject wherever the transcript supports it, and make sure the identifiers that matter for continuing the work are named in your summary. Do NOT simply copy the list out: it is carried verbatim alongside your summary already, so your job is to say what each identifier is for.`
 
-// archiveAskHistoryLocked copies the live history file to a timestamped sibling
-// before compaction replaces it, returning the path it wrote (empty when there was
-// nothing to archive or the write failed). Callers must hold b.mu. Best-effort: the
-// summary is lossy by design, so the pre-collapse transcript is kept so an operator
-// can recover detail the summary dropped.
+// archiveAskHistoryLocked copies the live history file to a timestamped sibling before compaction
+// replaces it, returning the path it wrote (empty when there was nothing to archive or the write.
 func (b *NativeBridge) archiveAskHistoryLocked(sessionID string) string {
 	dir := b.askHistoryDir
 	if dir == "" {
@@ -403,24 +364,17 @@ func humanBytes(n int) string {
 // would produce a worse paraphrase than the summary it accompanies.
 
 var (
-	// askLedgerEntityID matches Orchicon's own entity ids: 26 characters of
-	// Crockford base32 (0-9 and A-Z, minus I, L, O and U — the alphabet every id in
-	// this codebase is minted in, e.g. 01M33R5RDSENCVRFVZ588N9NRG).
+	// askLedgerEntityID matches Orchicon's own entity ids: 26 characters of Crockford base32 (0-9 and
+	// A-Z, minus I, L, O and U — the alphabet every id in this codebase is minted.
 	askLedgerEntityID = regexp.MustCompile(`[0-9A-HJKMNP-TV-Z]{26}`)
-	// askLedgerPath matches an absolute path of at least two segments. The leading
-	// boundary class keeps it out of the middle of a word and off a URL's tail (a
-	// scheme's own slash is preceded by ':', which the class excludes). The capture
-	// group is the path alone — the boundary character is context, not part of it.
+	// askLedgerPath matches an absolute path of at least two segments.
 	askLedgerPath = regexp.MustCompile(`(?:^|[\s"'(\[=:,])(/[A-Za-z0-9._@%+-]+(?:/[A-Za-z0-9._@%+-]+)+)`)
 	// askLedgerGitObject finds CANDIDATE git object names; ledgerGitObject filters
 	// them. The filter is what separates a commit from a count.
 	askLedgerGitObject = regexp.MustCompile(`[0-9a-f]{7,40}`)
 )
 
-// askLedgerMaxPerKind caps each list in the ledger. The cap bounds the LEDGER, not
-// the scan: values found after it are still counted, so the "+N more" suffix reports
-// how much there really was. Without a cap a tool-heavy conversation's ledger would
-// inherit exactly the unbounded growth the collapse exists to fix.
+// askLedgerMaxPerKind caps each list in the ledger.
 const askLedgerMaxPerKind = 40
 
 // askHistoryLedger scans the RAW history and returns the identifier ledger. An
@@ -477,11 +431,8 @@ func scanLedgerText(text string, ids, paths, objects *ledgerSet) {
 	}
 }
 
-// ledgerGitObject reports whether a hex token is a git object name rather than a
-// number or an ordinary word. Lower-case hex, 7..40 characters, and containing BOTH
-// a letter and a digit: "c0a80e54" is a commit, "1000000" is a token count, and
-// "deadbeef" is a word that happens to be hex. Without that filter the ledger fills
-// with counts from tool output and the real commits are lost among them.
+// ledgerGitObject reports whether a hex token is a git object name rather than a number or an
+// ordinary word.
 func ledgerGitObject(tok string) bool {
 	if len(tok) < 7 || len(tok) > 40 {
 		return false
@@ -500,9 +451,7 @@ func ledgerGitObject(tok string) bool {
 	return letter && digit
 }
 
-// ledgerSet is an order-preserving, de-duplicating, capped value set that counts
-// repeats. First-seen order is kept rather than sorted so a reader (and the model)
-// sees identifiers in the order the conversation introduced them.
+// ledgerSet is an order-preserving, de-duplicating, capped value set that counts repeats.
 type ledgerSet struct {
 	order []string
 	seen  map[string]int
@@ -539,10 +488,8 @@ func (s *ledgerSet) render(label string, withCounts bool) string {
 	}
 	parts := make([]string, 0, len(s.order))
 	for _, v := range s.order {
-		// A count is shown whenever the caller asked for counts, INCLUDING 1: for the
-		// tools line "bash (1)" is the point (how much a tool was used is working
-		// state), and rendering a lone "bash" would make a single call look like an
-		// uncounted fact.
+		// A count is shown whenever the caller asked for counts, INCLUDING 1: for the tools line "bash (1)"
+		// is the point (how much a tool was used is working state).
 		if withCounts {
 			parts = append(parts, fmt.Sprintf("%s (%d)", v, s.seen[v]))
 			continue

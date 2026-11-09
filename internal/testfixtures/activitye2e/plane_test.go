@@ -1,12 +1,6 @@
 package activitye2e
 
 // plane_test.go — the FIXTURE PLANE's own state machine, pinned WITHOUT the live gate.
-//
-// The end-to-end legs (internal/tui/activity_e2e_*.go, frontend/tests/activity-line-e2e.spec.ts) are
-// opt-in and need a real pty / a real browser. The control-surface behaviours those legs DEPEND on
-// would otherwise be asserted nowhere in the standing suite — a harness bug in them would make a
-// green capstone meaningless, which is precisely the class of defect this capstone already found
-// once (the double-script race). So the cheap, deterministic half lives here and runs everywhere.
 
 import (
 	"net/http"
@@ -16,9 +10,7 @@ import (
 )
 
 // TestEndTurnIsUndoneByReset pins the fix that lets an END-TURN observation be composed with the
-// legs around it. EndTurn closes the turn's done channel once; before Reset replaced the channel and
-// the Once, the FIRST end of the process poisoned every later stream (each returned immediately) and
-// the control surface worked exactly once. The reset a later leg performs must restore a live turn.
+// legs around it.
 func TestEndTurnIsUndoneByReset(t *testing.T) {
 	p := New()
 
@@ -51,9 +43,7 @@ func TestEndTurnIsUndoneByReset(t *testing.T) {
 }
 
 // TestReissueLandsFreshCalls pins the browser half of Plane.Reissue: after a long stall the earlier
-// calls have honestly aged out of the summarizer's 30s rolling window, so a leg that wants counters
-// BACK must earn them with new work rather than rewind a clock. The rows must carry a stamp that is
-// genuinely NOW, or the summarizer would age them out too.
+// calls have honestly aged out of the summarizer's 30s rolling window.
 func TestReissueLandsFreshCalls(t *testing.T) {
 	p := New()
 	before := len(p.Calls())
@@ -79,9 +69,8 @@ func TestReissueLandsFreshCalls(t *testing.T) {
 	}
 }
 
-// TestResetClearsThePlaneState is the "clean slate" contract the two-leg structure rests on: a reset
-// leaves no ledger, no streamed text and no turn, so the zero-tool-call leg cannot inherit the
-// with-tools leg's counter (which is exactly the false claim the honesty check exists to catch).
+// TestResetClearsThePlaneState is the "clean slate" contract the two-leg structure rests on: a
+// reset leaves no ledger, no streamed text and no turn.
 func TestResetClearsThePlaneState(t *testing.T) {
 	p := New()
 	p.issueCall("read")
@@ -100,8 +89,7 @@ func TestResetClearsThePlaneState(t *testing.T) {
 }
 
 // TestControlSurfaceServesEndResetAndReissue drives the three harness routes the two clients call,
-// through the REAL mux, so a route that stops being wired is a test failure rather than a capstone
-// that silently observes nothing.
+// through the REAL mux.
 func TestControlSurfaceServesEndResetAndReissue(t *testing.T) {
 	p := New()
 	srv := httptest.NewServer(Mux(p, &Sessions{}, t.TempDir()))
@@ -148,9 +136,7 @@ func TestControlSurfaceServesEndResetAndReissue(t *testing.T) {
 }
 
 // TestResetReenablesAuthRoutes pins the other half of "a reset is a clean slate for the NEXT leg":
-// a run that stopped the plane (`down`/`rpc-down`) flipped the SPA's auth routes off, and a reset
-// that left them off would serve the browser an unauthenticated page — a green-looking leg that
-// observes nothing.
+// a run that stopped the plane (`down`/`rpc-down`) flipped the SPA's auth routes off.
 func TestResetReenablesAuthRoutes(t *testing.T) {
 	p := New()
 	sessions := &Sessions{}

@@ -39,16 +39,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// cliOutputCap bounds how much of a failing CLI's output is put into an error. The message is
-// surfaced in an RPC error and rendered in the TUI, so it has to stay readable; the HEAD is kept
-// because a CLI's first line is the one that names the problem (opencode's usage text opens with
-// the command's own synopsis).
+// cliOutputCap bounds how much of a failing CLI's output is put into an error.
 const cliOutputCap = 2000
 
-// runOpencodeCLI runs the CLI and returns its stdout, with the CLI's own
-// explanation included in any error. dir is the working directory — empty means
-// inherit the caller's, which callers should avoid (see the note at the call sites: the plane's cwd
-// is whatever directory the operator ran the installer from).
+// runOpencodeCLI runs the CLI and returns its stdout, with the CLI's own explanation included in
+// any error.
 func runOpencodeCLI(ctx context.Context, binary, dir string, args ...string) ([]byte, error) {
 	cmd := procwin.CommandContext(ctx, binary, args...)
 	if dir != "" {
@@ -68,9 +63,8 @@ func runOpencodeCLI(ctx context.Context, binary, dir string, args ...string) ([]
 		if detail := excerpt(ee.Stderr); detail != "" {
 			return nil, &cliError{invocation: invocation, err: err, detail: detail}
 		}
-		// Some CLIs report a failure on STDOUT and write nothing to stderr — a bad flag handled by
-		// a wrapper, for instance. Output() captured it, so it is checked before giving up on
-		// explaining anything.
+		// Some CLIs report a failure on STDOUT and write nothing to stderr — a bad flag handled by a
+		// wrapper, for instance.
 		if detail := excerpt(out); detail != "" {
 			return nil, &cliError{invocation: invocation, err: err, detail: detail, viaStdout: true}
 		}
@@ -80,23 +74,11 @@ func runOpencodeCLI(ctx context.Context, binary, dir string, args ...string) ([]
 	if cerr := ctx.Err(); cerr != nil {
 		return nil, fmt.Errorf("%s: %w (%v)", invocation, err, cerr)
 	}
-	// NO DETAIL ATTACHED — the CLI exited without saying anything. This is the TRANSIENT shape (the managed
-	// service mid-eviction), and it is recorded as a STRUCTURED FACT rather than left to be inferred from the
-	// message text.
-	//
-	// IT WAS INFERRED FROM TEXT, AND THAT WAS WRONG. The retry classifier first asked "does the message look
-	// like it carries a diagnosis?" by matching phrases and string length — and mis-classified exactly the case
-	// that matters: "list opencode MCP servers: opencode debug config: exit status 1" is 63 characters with a
-	// ": " in it, so it read as explained and was NOT retried, while a genuinely silent failure is precisely
-	// what a retry exists for. The wrapper is the only code that knows whether it attached a detail, so it says
-	// so here and the classifier reads the fact instead of guessing at the prose.
+	// NO DETAIL ATTACHED — the CLI exited without saying anything.
 	return nil, &cliError{invocation: invocation, err: err}
 }
 
 // cliError is a CLI invocation failure that RECORDS whether the CLI explained itself.
-//
-// detail == "" means the CLI exited without saying why, which is the retryable shape; a non-empty detail is the
-// CLI's own diagnosis, which is deterministic and must be surfaced at once rather than re-collected.
 type cliError struct {
 	invocation string
 	err        error

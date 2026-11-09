@@ -17,11 +17,7 @@ type Info struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// DefaultDir returns the backups directory. In the single-container
-// deployment ORCHICON_DATA_DIR is exported to the control plane, so
-// backups land on the persistent data volume (/var/lib/orchicon/backups);
-// otherwise they go to the user's home. The root home inside the
-// container is ephemeral, so the container must NOT fall back to it.
+// DefaultDir returns the backups directory.
 func DefaultDir() (string, error) {
 	if dataDir := os.Getenv("ORCHICON_DATA_DIR"); dataDir != "" {
 		dir := filepath.Join(dataDir, "backups")
@@ -41,9 +37,8 @@ func DefaultDir() (string, error) {
 	return dir, nil
 }
 
-// expandDir expands a leading "~/" (or bare "~") to the user's home
-// directory and cleans the result. Returns the input unchanged if it
-// does not start with a tilde.
+// expandDir expands a leading "~/" (or bare "~") to the user's home directory and cleans the
+// result.
 func expandDir(dir string) (string, error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
@@ -67,11 +62,6 @@ func expandDir(dir string) (string, error) {
 }
 
 // Create dumps the database named by dsn to a timestamped .sql file.
-//
-// The pg_dump it runs is resolved by pgclient.go: the instance's own resolved
-// PostgreSQL distribution first, then whatever is on PATH. There is one shape —
-// the plane and its services are host processes — so there is no engine CLI in
-// this path at all.
 func Create(ctx context.Context, dsn, dir string) (*Info, error) {
 	dir, err := expandDir(dir)
 	if err != nil {
@@ -135,11 +125,8 @@ func Restore(ctx context.Context, dsn, path string) error {
 	}
 	defer f.Close()
 
-	// Pipe the backup file into psql against the DSN — through the SAME resolver
-	// Create uses, so a restore can never reach a different Postgres than the dump
-	// came from. -v ON_ERROR_STOP=1 makes psql exit non-zero on the first SQL
-	// error; --single-transaction rolls back the whole restore if anything fails,
-	// so a bad backup cannot leave the database half-restored.
+	// Pipe the backup file into psql against the DSN — through the SAME resolver Create uses, so a
+	// restore can never reach a different Postgres than the dump came from.
 	client := resolvePGClient(dsn)
 	cmd, err := client.command(ctx, pgToolRestore,
 		"-d", client.dsn,

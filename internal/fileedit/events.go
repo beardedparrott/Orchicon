@@ -32,30 +32,19 @@ import (
 
 const fileEditEventSuffix = "file_edit"
 
-// EventSubject is the NATS subject one owner kind's file-edit rows are published on and subscribed to.
-//
-// THE OWNER KIND IS THE SUBJECT'S AGGREGATE, so every kind gets its own subject and no consumer has to
-// receive another kind's traffic to serve its own.
+// EventSubject is the NATS subject one owner kind's file-edit rows are published on and subscribed
+// to.
 func EventSubject(ownerKind string) string {
 	return eventbus.SubjectFor(ownerKind, fileEditEventSuffix)
 }
 
-// EventType names the event in the envelope — what the webhook dispatcher looks subscriptions up BY.
-//
-// IT MUST FOLLOW THE SUBJECT'S AGGREGATE, and that is not cosmetic: the dispatcher resolves subscriptions
-// with db.ListActiveSubscriptions(event_type), so an Ask edit published under the execution event type would
-// have fired every webhook subscribed to EXECUTION file edits. Tying both to the owner kind keeps a
-// conversation's edits out of an execution's hooks (and means a subscription to a kind's edits is possible
-// at all).
+// IT MUST FOLLOW THE SUBJECT'S AGGREGATE, and that is not cosmetic: the dispatcher resolves
+// subscriptions with db.ListActiveSubscriptions(event_type).
 func EventType(ownerKind string) string {
 	return ownerKind + "." + fileEditEventSuffix
 }
 
 // EventPayload builds the subject and envelope for one ledger row.
-//
-// It is the whole publish decision, in one testable place: the wiring in cmd/server is a call to this and a
-// Publish, so the part that was wrong before (which kind gets published, under which subject, named how) is
-// pinned by a unit test instead of by reading a closure.
 func EventPayload(ownerKind, ownerID string, row *db.FileEditLedgerRow) (subject string, payload []byte, err error) {
 	body, err := json.Marshal(map[string]any{
 		"event_type":   EventType(ownerKind),

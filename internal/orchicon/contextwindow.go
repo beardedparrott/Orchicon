@@ -35,10 +35,8 @@ type ContextWindowHint struct {
 // NoContextWindow is the reason recorded when no live hint exists.
 const NoContextWindow = "no_context_window"
 
-// resolveModelInfo returns the session model's LIVE ModelInfo (context +
-// pricing), resolving it once per session through the bound provider's
-// ListModels (never per-turn probed). model may be nil when no live hint
-// exists; hint carries the no-hint reason.
+// resolveModelInfo returns the session model's LIVE ModelInfo (context + pricing), resolving it
+// once per session through the bound provider's ListModels (never per-turn probed).
 func (s *Session) resolveModelInfo(ctx context.Context) (*ModelInfo, ContextWindowHint) {
 	s.windowMu.Lock()
 	defer s.windowMu.Unlock()
@@ -72,10 +70,8 @@ func (s *Session) resolveModelInfo(ctx context.Context) (*ModelInfo, ContextWind
 			if !found {
 				s.windowHint = ContextWindowHint{Reason: NoContextWindow + ":model_not_found"}
 			}
-			// FALLBACK (work-item parity): when the live resolution has no
-			// usable window but the work item declared one, use it — an
-			// operator-set window is better than a permanently disarmed
-			// trigger. The reason string records the provenance.
+			// FALLBACK (work-item parity): when the live resolution has no usable window but the work item
+			// declared one, use it — an operator-set window is better than a permanently disarmed trigger.
 			if !s.windowHint.Ok && s.contextWindowFallback > 0 {
 				s.windowHint = ContextWindowHint{Tokens: s.contextWindowFallback, Ok: true, Reason: "manifest_fallback:" + s.windowHint.Reason}
 				s.log.Info("native session: using work item's declared context window (live hint unavailable)",
@@ -99,10 +95,8 @@ func (s *Session) resolveContextWindow(ctx context.Context) ContextWindowHint {
 	return hint
 }
 
-// priceUsage returns the LIVE provider-priced cost of one turn's usage via
-// the session model's resolved Pricing (catalog/probe-enriched ModelInfo).
-// Returns 0 when no pricing resolved — the budget cost dimension then never
-// fires on this session (never a synthesized estimate).
+// priceUsage returns the LIVE provider-priced cost of one turn's usage via the session model's
+// resolved Pricing (catalog/probe-enriched ModelInfo).
 func (s *Session) priceUsage(ctx context.Context, u Usage) float64 {
 	m, _ := s.resolveModelInfo(ctx)
 	if m == nil || m.Pricing == nil {

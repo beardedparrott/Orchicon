@@ -75,9 +75,8 @@ func TestOpencode2AskResolvesItsToolAndPath(t *testing.T) {
 	}
 }
 
-// TestOpencode2ShellAskBecomesACommand — 2.x spells a shell ask `action:"shell"` with the COMMAND as its
-// single resource. It must become a command, not a target path: a shell ask is decided on the command
-// line, and `isBashAsk` is what routes it there.
+// TestOpencode2ShellAskBecomesACommand — 2.x spells a shell ask `action:"shell"` with the COMMAND
+// as its single resource.
 func TestOpencode2ShellAskBecomesACommand(t *testing.T) {
 	a := extractAskAction(scheduler.SessionEvent{
 		Kind: "permission", PermissionID: "per_x",
@@ -110,9 +109,8 @@ func TestOpencode1AskStillResolves(t *testing.T) {
 	}
 }
 
-// TestAnMCPAskWithNoDetailStillFailsClosed — a host-suite ask carries `resources:["*"]` and nothing else,
-// so it must resolve to NO target and stay a card. Reading `resources` must not turn the wildcard into a
-// path we were never given.
+// TestAnMCPAskWithNoDetailStillFailsClosed — a host-suite ask carries `resources:["*"]` and nothing
+// else, so it must resolve to NO target and stay a card.
 func TestAnMCPAskWithNoDetailStillFailsClosed(t *testing.T) {
 	a := extractAskAction(scheduler.SessionEvent{
 		Kind: "permission", PermissionID: "per_y",
@@ -132,15 +130,6 @@ func TestAnMCPAskWithNoDetailStillFailsClosed(t *testing.T) {
 }
 
 // TestAnUnresolvedAskIsNotOfferedAFakeDirectory — the other half of the reported card.
-//
-// The card read `· .` and offered "never ask again in .". That "." was not opencode's: it was
-// filepath.Clean("") — a target-less ask keys on the SCOPE directory, an Ask conversation has no
-// project, so the scope is empty and Clean turns it into ".". The operator was being asked to grant a
-// directory whose only meaning was "the serve's own cwd".
-//
-// Nothing here can invent the path, so the card must stop claiming one: a blank directory makes the
-// session row say there is no directory to grant, and grantStore already refuses a blank key, so no
-// grant can be recorded against it either.
 func TestAnUnresolvedAskIsNotOfferedAFakeDirectory(t *testing.T) {
 	a := extractAskAction(scheduler.SessionEvent{
 		Kind: "permission", PermissionID: "per_z",

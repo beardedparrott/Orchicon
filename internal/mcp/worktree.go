@@ -9,34 +9,17 @@ import (
 	"github.com/beardedparrott/orchicon/internal/worktree"
 )
 
-// worktreeRegistry exposes the composite, context-efficient file tools
-// (batch_read / batch_grep / batch_write) over MCP so a worker calls them
-// exactly like any other opencode tool, plus the single-op wrappers
-// (read/write/edit/grep), the `list` directory-listing tool, and the
-// `todowrite`/`todoread` todo pair. The registry is selected instead of the
-// askorchicon (DB) registry when the server is spawned with
-// ORCHICON_MCP_WORKTREE_DIR set; it operates purely on the filesystem within
-// that base directory and needs no Postgres connection.
-//
-// Tool names are NOT prefixed with `orchicon_` — they are intended to be the
-// drop-in replacements for opencode's built-in `read`/`grep`/`write`/`edit`
-// tools, so the model reaches for them naturally. The batch tools remain the
-// documented PREFERRED interface for independent operations (one call
-// carrying several operations = one turn instead of N); the single-op
-// variants are thin wrappers over the same batch engine.
+// worktreeRegistry exposes the composite, context-efficient file tools (batch_read / batch_grep /
+// batch_write) over MCP so a worker calls them exactly like any other opencode tool.
 type worktreeRegistry struct {
 	baseDir     string
 	projectRoot string
-	// runStateDir is <projectDir>/.orchicon/<runID> — where the todo snapshot the
-	// PLANE reads is written (see worktree.TodoSnapshotName). Empty when the
-	// sidecar was not told its run, in which case the todo panel has no channel
-	// and `todowrite` says so rather than reporting a hollow success.
+	// runStateDir is <projectDir>/.orchicon/<runID> — where the todo snapshot the PLANE reads is
+	// written (see worktree.TodoSnapshotName).
 	runStateDir string
 }
 
-// NewWorktreeRegistry returns a ToolRegistry bound to a worktree base
-// directory. All path arguments are resolved against it and can never escape.
-// runStateDir may be empty (the run-state todo channel is then unavailable).
+// NewWorktreeRegistry returns a ToolRegistry bound to a worktree base directory.
 func NewWorktreeRegistry(baseDir, projectRoot, runStateDir string) ToolRegistry {
 	return &worktreeRegistry{baseDir: baseDir, projectRoot: projectRoot, runStateDir: runStateDir}
 }
@@ -125,21 +108,8 @@ func (r *worktreeRegistry) List() []ToolDef {
 			},
 		},
 		{
-			// ORCHICON OWNS `todowrite` NOW, and that is a deliberate move onto
-			// ground the AGENT SURFACE controls. opencode 1.x shipped a NATIVE
-			// todowrite and this registry exposed only the `todoread` half of the
-			// pair. 2.x DELETED that tool outright — its own migration notice reads
-			// "The `todowrite` tool is no longer available and must not be called" —
-			// and the public session-event schema (packages/schema/src/
-			// session-event.ts) has no todo event and no todo route to replace it.
-			//
-			// So a worker prompt that orders todowrite (ours does, every turn) was
-			// asking 2.x for a tool that does not exist: the model's calls came back
-			// as errors, and REPEATED ERROR-STATUS CALLS ARE EXACTLY WHAT THE
-			// REPETITION STALL COUNTS — the prompt was not merely inert on 2.x, it
-			// fed the stall detector. Supplying the tool here fixes that at the root
-			// and makes the todo list work on BOTH surfaces, because it no longer
-			// depends on which tools the agent under us happens to ship.
+			// ORCHICON OWNS `todowrite` NOW, and that is a deliberate move onto ground the AGENT SURFACE
+			// controls.
 			Name:        "todowrite",
 			Description: "Replace your live todo list with this FULL array (not a patch). Emit a fresh complete array at every turn boundary so your plan stays visible to the operator in the execution view; `todoread` re-reads it cheaply. status is one of pending|in_progress|completed|cancelled.",
 			Properties: map[string]propertySchema{
@@ -158,10 +128,8 @@ func (r *worktreeRegistry) List() []ToolDef {
 // Executes a batch tool. The db.Pool is intentionally unused: these are
 // filesystem tools scoped to the worktree base, never the platform DB.
 func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, args json.RawMessage) (json.RawMessage, error) {
-	// b is the scoping boundary for every worktree.* call: reads reach the
-	// worktree + the sanctioned scratch + the READ-only project root (the
-	// run-state .orchicon/<run>/ and architecture-notes); writes reach only
-	// the worktree + scratch, so batch_write never lands in the main checkout.
+	// b is the scoping boundary for every worktree.* call: reads reach the worktree + the sanctioned
+	// scratch + the READ-only project root (the run-state .orchicon/<run>/ and architecture-notes).
 	b := worktree.Base{Worktree: r.baseDir, ProjectRoot: r.projectRoot, ScratchDir: worktree.DefaultScratchDir}
 	switch name {
 	case "batch_read":
@@ -277,10 +245,8 @@ func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, a
 		}
 		return json.RawMessage(encoded), nil
 	case "todoread":
-		// Prefer the run-state copy: it is the authoritative one, and on 2.x it is
-		// the only one guaranteed to have been written by the time the model reads
-		// back (the tool is the writer in both cases, so they agree — but the
-		// run-state file is the one the operator can also see).
+		// Prefer the run-state copy: it is the authoritative one, and on 2.x it is the only one guaranteed
+		// to have been written by the time the model reads back (the tool is the writer in both cases.
 		if items, ok := worktree.ReadRunTodoSnapshot(r.runStateDir); ok {
 			encoded, err := json.Marshal(worktree.RenderTodoList(items))
 			if err != nil {

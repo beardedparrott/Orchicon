@@ -1,21 +1,7 @@
 package askorchicon
 
-// chat_reply_window_test.go — the turn's reply window is a SILENCE budget, not
-// a stopwatch on the turn's age.
-//
-// The operator: "Sessions seem to be timing out on me... it may be model related
-// but it seems to be occuring quite frequently. We need to investigate: 'reply
-// timed out after 30m0s on model orchicon/deepseek/deepseek-flash — the model
-// may be overloaded or unavailable.'"
-//
-// It was not the model. The window was created once per turn and never reset, so
-// a turn doing more than thirty minutes of honest work — exactly the work this
-// product exists to run — was killed at the wall, and the message it produced
-// sent the operator to Settings → Default models to fix a model that was fine.
-//
-// The pair below is the whole contract: progress keeps the turn alive, and
-// silence still ends it. The second half is what keeps the fix honest — bounding
-// a turn was never the bug. What the bound MEASURED was.
+// chat_reply_window_test.go — the turn's reply window is a SILENCE budget, not a stopwatch on the
+// turn's age.
 
 import (
 	"strings"
@@ -23,10 +9,8 @@ import (
 	"time"
 )
 
-// TestReplyWindowSurvivesATurnThatKeepsMakingProgress drives deltas into the
-// collector for four times the reply window. Under the old absolute cap this
-// turn died at the window and reported a model fault; with an inactivity window
-// every delta restarts it, so the turn finishes and its reply is kept.
+// TestReplyWindowSurvivesATurnThatKeepsMakingProgress drives deltas into the collector for four
+// times the reply window.
 func TestReplyWindowSurvivesATurnThatKeepsMakingProgress(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REPLY_WINDOW", "100ms")
 	client := &fakeSessionClient{}
@@ -53,10 +37,8 @@ func TestReplyWindowSurvivesATurnThatKeepsMakingProgress(t *testing.T) {
 	}
 }
 
-// TestReplyWindowStillBoundsATurnThatGoesQuiet is the other half: progress must
-// not DISABLE the bound. A turn that streams one delta and then goes silent is
-// still bounded, with the same retryable timeout message — so this narrows what
-// the window measures without widening it.
+// TestReplyWindowStillBoundsATurnThatGoesQuiet is the other half: progress must not DISABLE the
+// bound.
 func TestReplyWindowStillBoundsATurnThatGoesQuiet(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REPLY_WINDOW", "100ms")
 	client := &fakeSessionClient{}

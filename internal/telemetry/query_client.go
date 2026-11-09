@@ -12,13 +12,8 @@ import (
 	"time"
 )
 
-// QueryClient queries tenant-scoped telemetry from the telemetry backends:
-// Tempo (traces), Loki (logs), VictoriaMetrics (metrics). It talks to each
-// backend's native HTTP API directly — there is no UI-fronting hop.
-//
-// If a backend is unreachable, the corresponding query method returns a
-// Degraded=true response rather than an error, so the UI degrades
-// gracefully without breaking the Orchicon shell (docs/08 §8).
+// QueryClient queries tenant-scoped telemetry from the telemetry backends: Tempo (traces), Loki
+// (logs), VictoriaMetrics (metrics).
 type QueryClient struct {
 	tempoURL   string
 	lokiURL    string
@@ -26,9 +21,7 @@ type QueryClient struct {
 	httpClient *http.Client
 }
 
-// NewQueryClient constructs a query client. tempoURL/lokiURL/vmURL are the
-// backend HTTP endpoints (e.g. "http://localhost:3200"). An empty URL
-// disables the corresponding query (returns degraded empty).
+// NewQueryClient constructs a query client.
 func NewQueryClient(tempoURL, lokiURL, vmURL string) *QueryClient {
 	return &QueryClient{
 		tempoURL:   strings.TrimRight(tempoURL, "/"),
@@ -114,9 +107,8 @@ type TraceFilter struct {
 type MetricFilter struct {
 	Names     []string
 	ProjectID string
-	// WorkItemID is accepted for symmetry but ignored: VictoriaMetrics
-	// carries no work-item/execution label (resource_to_telemetry_conversion
-	// only emits resource attributes), so metrics are tenant+project scoped.
+	// WorkItemID is accepted for symmetry but ignored: VictoriaMetrics carries no work-item/execution
+	// label (resource_to_telemetry_conversion only emits resource attributes).
 	WorkItemID string
 	Start, End time.Time
 }
@@ -133,10 +125,7 @@ type LogFilter struct {
 
 // ----- QueryTraces (Tempo /api/search) -----
 
-// QueryTraces searches Tempo for traces matching the filter. Tags map to
-// span/resource attribute filters. The tenant filter is best-effort:
-// control-plane spans are created before the auth middleware resolves the
-// tenant, so orchicon.tenant_id is not present on every trace (docs/10 §8).
+// QueryTraces searches Tempo for traces matching the filter.
 func (c *QueryClient) QueryTraces(ctx context.Context, tenantID string, f TraceFilter) (TraceResult, error) {
 	if c.tempoURL == "" {
 		return TraceResult{Degraded: true, Reason: degradeReason("tempo", c.tempoURL, nil)}, nil
@@ -224,27 +213,14 @@ func (c *QueryClient) QueryTraces(ctx context.Context, tenantID string, f TraceF
 
 // ----- QueryMetrics (VictoriaMetrics /api/v1/query_range) -----
 
-// tokenClassSplitMetrics are the OTel counter families that now carry a
-// token_class label (prompt/cache_read/cache_write/completion) per the
-// cache-aware counters ADR
-// (architecture-notes/otel-metrics-cache-aware-token-cost-counters.md). A
-// bare label select on these names matches up to four series (one per class),
-// so a total/deterministic read must re-aggregate across classes. We wrap the
-// selector in sum(...) to collapse them back into a single total series, which
-// preserves the pre-split total semantics while the per-class breakdown stays
-// available per token_class via sum by (token_class). This is the only safe form
-// for consumers that read a single latest point (the telemetry "Metric values"
-// panel) — otherwise they would report one arbitrary bucket instead of the
-// total.
+// tokenClassSplitMetrics are the OTel counter families that now carry a token_class label
+// (prompt/cache_read/cache_write/completion) per the cache-aware counters ADR.
 var tokenClassSplitMetrics = map[string]bool{
 	"orchicon_tokens_consumed": true,
 	"orchicon_cost_usd":        true,
 }
 
-// QueryMetrics runs one PromQL range query per metric name against
-// VictoriaMetrics. Resource attributes are added as series labels by the
-// collector (resource_to_telemetry_conversion), so the tenant filter is
-// a label matcher on orchicon_tenant_id. Points are returned newest-first.
+// QueryMetrics runs one PromQL range query per metric name against VictoriaMetrics.
 func (c *QueryClient) QueryMetrics(ctx context.Context, tenantID string, f MetricFilter) (MetricResult, error) {
 	if c.vmURL == "" {
 		return MetricResult{Degraded: true, Reason: degradeReason("victoriametrics", c.vmURL, nil)}, nil
@@ -342,12 +318,7 @@ func (c *QueryClient) QueryMetrics(ctx context.Context, tenantID string, f Metri
 
 // ----- QueryLogs (Loki /loki/api/v1/query_range) -----
 
-// QueryLogs runs a LogQL stream-selector query against Loki. The OTLP
-// endpoint maps resource attributes to stream labels (orchicon_tenant_id,
-// service_name) and the OTel severity_number to a label (there is no
-// `level` label unless the record carries severity_text); trace_id/span_id
-// and record attributes arrive as structured metadata on each entry
-// (docs/08 §5.3).
+// QueryLogs runs a LogQL stream-selector query against Loki.
 func (c *QueryClient) QueryLogs(ctx context.Context, tenantID string, f LogFilter) (LogResult, error) {
 	if c.lokiURL == "" {
 		return LogResult{Degraded: true, Reason: degradeReason("loki", c.lokiURL, nil)}, nil
@@ -429,10 +400,8 @@ func (c *QueryClient) QueryLogs(ctx context.Context, tenantID string, f LogFilte
 	return out, nil
 }
 
-// degradeReason renders the operator-facing explanation of a degraded
-// (unreachable or unusable) backend query. It always names the backend so
-// the UI can say WHICH store is down instead of drawing a silently empty
-// chart (native telemetry page AC 5).
+// degradeReason renders the operator-facing explanation of a degraded (unreachable or unusable)
+// backend query.
 func degradeReason(backend, endpoint string, err error) string {
 	if endpoint == "" {
 		return backend + " is not configured (no endpoint)"
@@ -443,9 +412,9 @@ func degradeReason(backend, endpoint string, err error) string {
 	return fmt.Sprintf("%s at %s returned an unusable response", backend, endpoint)
 }
 
-// httpErr normalises the (err, statusCode) pair from QueryClient.get into a
-// single error for degradeReason: a transport error wins, otherwise a >=400
-// status becomes an HTTP error, otherwise nil.
+// httpErr normalises the (err, statusCode) pair from QueryClient.get into a single error for
+// degradeReason: a transport error wins, otherwise a >=400 status becomes an HTTP error, otherwise
+// nil.
 func httpErr(err error, status int) error {
 	if err != nil {
 		return err
@@ -488,10 +457,8 @@ func logSelector(tenantID string, f LogFilter) string {
 	return sel
 }
 
-// severityNumber maps an OTel severity text (as passed by the frontend:
-// "ERROR", "INFO", ...) to the OTel severity_number value that Loki
-// stores as the severity_number label. Empty when the filter is unset or
-// unrecognised.
+// severityNumber maps an OTel severity text (as passed by the frontend: "ERROR", "INFO", ...) to
+// the OTel severity_number value that Loki stores as the severity_number label.
 func severityNumber(severity string) string {
 	switch strings.ToUpper(severity) {
 	case "TRACE":

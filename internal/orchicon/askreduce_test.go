@@ -35,25 +35,18 @@ func wedgeBridge() *NativeBridge {
 	return &NativeBridge{log: testLogger(), chatHistory: map[string][]Message{"s1": wedgeHistory()}}
 }
 
-// The EXACT phrasing from the real stuck session (DeepSeek/OpenAI-compatible
-// surface) must be recognised, or the recovery never triggers for the very case
-// that motivated it.
+// The EXACT phrasing from the real stuck session (DeepSeek/OpenAI-compatible surface) must be
+// recognised, or the recovery never triggers for the very case that motivated it.
 func TestIsOversizePromptErrorMatchesRealProviderPhrasings(t *testing.T) {
 	cases := []string{
-		// THE OPERATOR'S OWN REPORT, VERBATIM — the DeepSeek free model on the Windows
-		// plane. It is the most important case in this list because it is the one that
-		// reached a human: the free tier's window is small, so it is hit routinely rather
-		// than on a freak 1M-token session.
+		// THE OPERATOR'S OWN REPORT, VERBATIM — the DeepSeek free model on the Windows plane.
 		`turn failed: Your request resulted in more tokens than this model's maximum context length allows. Please reduce the length of the messages or run compaction.`,
 		`orchicon bridge: start Ask turn: provider status 400 400 Bad Request: {"error":{"message":"This model's maximum context length is 1048576 tokens. However, you requested 1049352 tokens (1016584 in the messages)"}}`,
 		`provider status 400: context_length_exceeded`,
 		`anthropic: prompt is too long: 210000 tokens > 200000 maximum`,
 		`please reduce the length of the messages`,
 		`too many tokens in request`,
-		// THE LIVE 413, VERBATIM from the dev plane's log. Its body is HTML served by
-		// Cloudflare, so it carries no JSON error object — the phrase list is the only
-		// thing that can catch it. Without these the hatch never opens and the
-		// conversation re-sends the same oversized body forever.
+		// THE LIVE 413, VERBATIM from the dev plane's log.
 		"orchicon bridge: start Ask turn: provider status 413 413 Request Entity Too Large: <html>\r\n<head><title>413 Payload Too Large</title></head>\r\n<body>\r\n<center><h1>413 Payload Too Large</h1></center>\r\n<hr><center>cloudflare</center>\r\n</body>\r\n</html>\r\n",
 		`provider status 413: Request Entity Too Large`,
 		`413 Payload Too Large`,
@@ -66,10 +59,9 @@ func TestIsOversizePromptErrorMatchesRealProviderPhrasings(t *testing.T) {
 	}
 }
 
-// TestIsOversizePromptMessageSharesTheOneList pins the seam the second wire
-// depends on: a caller holding only a MESSAGE (the opencode serve's session.error)
-// classifies against the SAME signature list, so the 413 and context-window
-// phrasings cannot drift into two lists that disagree.
+// TestIsOversizePromptMessageSharesTheOneList pins the seam the second wire depends on: a caller
+// holding only a MESSAGE (the opencode serve's session.error) classifies against the SAME
+// signature.
 func TestIsOversizePromptMessageSharesTheOneList(t *testing.T) {
 	for _, c := range OversizePromptSignatures {
 		if !IsOversizePromptMessage("prefix " + c + " suffix") {
@@ -92,9 +84,8 @@ func TestIsOversizePromptErrorIgnoresUnrelatedErrors(t *testing.T) {
 		"connection refused",
 		"No tool output found for function call call_1",
 		"rate limit exceeded",
-		// A BARE 413 IS NOT ENOUGH: the number appears in token counts and ids, so only
-		// the provider-status form or the phrases may match. A false positive here is not
-		// harmless — it permanently elides real tool results from the history.
+		// A BARE 413 IS NOT ENOUGH: the number appears in token counts and ids, so only the provider-status
+		// form or the phrases may match.
 		"413 tokens remain",
 		"provider status 404 not found",
 		"the entity was not found",
@@ -151,10 +142,8 @@ func TestReduceDropsImagesAndElidesToolResultsButKeepsText(t *testing.T) {
 	}
 }
 
-// Tool-call ARGUMENTS are trimmed, but the pairing and the tool name survive: a
-// file-writing call carries a whole file body in its arguments, which is the same
-// class of bloat as a tool result. The result must stay valid JSON (a malformed
-// tool call could itself be rejected on replay).
+// Tool-call ARGUMENTS are trimmed, but the pairing and the tool name survive: a file-writing call
+// carries a whole file body in its arguments, which is the same class of bloat as a tool result.
 func TestReduceTrimsToolArgsButKeepsIDNameAndValidJSON(t *testing.T) {
 	bigArgs := `{"path":"a.go","content":"` + strings.Repeat("Y", 50_000) + `"}`
 	history := []Message{
@@ -296,11 +285,7 @@ func TestStartTurnRetriesBoundedAndSurfacesOriginalError(t *testing.T) {
 	if !IsOversizePromptError(err) {
 		t.Errorf("the ORIGINAL oversize-prompt error must surface, got: %v", err)
 	}
-	// Bounded: 1 initial + 1 retry = 2 calls, never unbounded. The SECOND
-	// stage contributes no retry here because stage 1 (keepTail=6 on this
-	// 4-message history) already clamps to a FULL reduction, so stage 2 has
-	// nothing left to reclaim — and a stage that cannot reclaim anything is
-	// deliberately not retried.
+	// Bounded: 1 initial + 1 retry = 2 calls, never unbounded.
 	if prov.calls != 2 {
 		t.Errorf("StreamTurn calls = %d, want 2 (initial + one productive retry)", prov.calls)
 	}
@@ -365,15 +350,8 @@ func TestStartTurnSucceedsAfterReduction(t *testing.T) {
 	}
 }
 
-// THE SHAPE THAT ACTUALLY WEDGED THE LIVE CONVERSATION: a screenshot returned as
-// TOOL-RESULT TEXT, not as an Image content part.
-//
-// The existing wedge fixture uses Content.Image, so it never exercised this. A real
-// `obs` MCP turn carries a base64 PNG inside the tool result's Content string, which
-// is why the live persist pass reported images_dropped=0 while the history reached
-// 25.8MB gzipped — trimAskHistoryImages only knows Content.Image. THIS pass is the
-// one that must reclaim it, and it does so by eliding the tool result rather than by
-// understanding what an image is, which is why it is the right net for both.
+// THE SHAPE THAT ACTUALLY WEDGED THE LIVE CONVERSATION: a screenshot returned as TOOL-RESULT TEXT,
+// not as an Image content part.
 func TestOversizeToolResultScreenshotIsReclaimed(t *testing.T) {
 	ask := "is the scene showing up?"
 	var b64 strings.Builder
@@ -415,14 +393,8 @@ func TestOversizeToolResultScreenshotIsReclaimed(t *testing.T) {
 	}
 }
 
-// THE OPERATOR'S ERROR, END TO END: a payload-too-large rejection must open the hatch
-// and RESCUE the turn, not be re-sent forever.
-//
-// Before this, `provider status 413 413 Request Entity Too Large` matched nothing in
-// the signature list, so startTurnWithContextRecovery returned on the FIRST refusal
-// and every retry re-sent the identical oversized body. The dev plane's log shows
-// exactly that shape: three consecutive 413s and ZERO "history reduced, retrying"
-// lines — the hatch was never reached.
+// THE OPERATOR'S ERROR, END TO END: a payload-too-large rejection must open the hatch and RESCUE
+// the turn, not be re-sent forever.
 func TestAPayloadTooLarge413RescuesTheTurn(t *testing.T) {
 	b := wedgeBridge()
 	tooLarge := errors.New("orchicon bridge: start Ask turn: provider status 413 413 Request Entity Too Large: " +

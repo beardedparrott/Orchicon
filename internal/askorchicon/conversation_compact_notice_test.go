@@ -1,13 +1,6 @@
 package askorchicon
 
-// conversation_compact_notice_test.go — the durable marker a collapse leaves in the
-// transcript.
-//
-// Compaction used to be visible only in the server log: prod's own log records a
-// conversation of 2,343 messages collapsed into a summary, and the transcript the
-// operator was reading said nothing about it. These tests pin the two places that
-// matters — the row that IS the marker, and the seed digest that must not mistake it
-// for something a party said.
+// conversation_compact_notice_test.go — the durable marker a collapse leaves in the transcript.
 
 import (
 	"context"
@@ -20,14 +13,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// TestTheSeedDigestSkipsAPlatformNotice pins the seed path's treatment of a `system`
-// row.
-//
-// The digest's label loop only knows "user" and "assistant", so a notice that fell
-// through it would be replayed to the model as the OPERATOR'S OWN WORDS — and it is
-// replayed on every fresh session, which is exactly when the model has nothing else
-// to go on. The notice is skipped instead: it is something the platform said ABOUT
-// the conversation, not something either party said in it.
+// TestTheSeedDigestSkipsAPlatformNotice pins the seed path's treatment of a `system` row.
 func TestTheSeedDigestSkipsAPlatformNotice(t *testing.T) {
 	const notice = "Context compacted to keep this conversation inside the model's window. " +
 		"compacted 2343 messages into 1 summary + 7 recent messages."
@@ -48,13 +34,8 @@ func TestTheSeedDigestSkipsAPlatformNotice(t *testing.T) {
 	}
 }
 
-// TestRecordCompactionNoticeWritesASystemRowDB pins the marker itself: an automatic
-// collapse must land in the transcript as a `system` row that names what was lost and
-// where the original went.
-//
-// DB-gated (ORCHICON_TEST_DSN): the row is written through the real tenant-scoped
-// pool, which is the part worth testing — the content builder alone would not have
-// caught a role the schema rejects or a transaction that never commits.
+// TestRecordCompactionNoticeWritesASystemRowDB pins the marker itself: an automatic collapse must
+// land in the transcript as a `system` row that names what was lost and where the original went.
 func TestRecordCompactionNoticeWritesASystemRowDB(t *testing.T) {
 	pool := chatDBTestPool(t)
 	s := New(pool, slog.Default(), nil, nil, nil)
@@ -105,10 +86,8 @@ func TestRecordCompactionNoticeWritesASystemRowDB(t *testing.T) {
 	}
 }
 
-// TestRecordCompactionNoticeIsAdvisoryWithoutATenantDB pins the contract callers rely
-// on: this is best-effort bookkeeping for an event that has ALREADY happened, so it
-// reports an error rather than panicking when it cannot write — and the caller's
-// choice to log-and-continue stays correct.
+// TestRecordCompactionNoticeIsAdvisoryWithoutATenantDB pins the contract callers rely on: this is
+// best-effort bookkeeping for an event that has ALREADY happened.
 func TestRecordCompactionNoticeReportsAnErrorWithoutATenantDB(t *testing.T) {
 	pool := chatDBTestPool(t)
 	s := New(pool, slog.Default(), nil, nil, nil)

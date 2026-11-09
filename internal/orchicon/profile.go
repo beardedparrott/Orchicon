@@ -19,9 +19,7 @@ const (
 	ProfileKindCustom       ProfileKind = "custom"      // tenant-created OpenAI-compatible entry
 )
 
-// Quirks are per-profile wire quirks (D4) — first-class fields, not string
-// flags. Defaults are conservative; built-in profiles set what their backend
-// actually accepts.
+// Quirks are per-profile wire quirks (D4) — first-class fields, not string flags.
 type Quirks struct {
 	// StreamOptionsIncludeUsage sends stream_options:{include_usage:true}
 	// (OpenAI, OpenRouter, OpenCode Zen; several local servers reject it).
@@ -53,23 +51,18 @@ type Quirks struct {
 	SupportsDeveloperRole bool
 
 	// CacheReadFromPromptTokensDetails reads prompt_tokens_details.
-	// cached_tokens into Usage.CacheReadTokens (OpenAI-compatible). Servers
-	// that don't return it simply contribute 0.
 	CacheReadFromPromptTokensDetails bool
 
 	// MergeSystemIntoUser converts the system prompt into a leading user
 	// message (servers that reject the system role).
 	MergeSystemIntoUser bool
 
-	// UsageInFinalChunk asserts usage arrives on/before the final chunk
-	// (OpenAI-style trailing usage-only chunk). When false the usage from
-	// any chunk is still honored — this only documents the expected shape.
+	// UsageInFinalChunk asserts usage arrives on/before the final chunk (OpenAI-style trailing
+	// usage-only chunk).
 	UsageInFinalChunk bool
 }
 
 // Profile is one provider configuration row (built-in or tenant custom).
-// NOTE: Visible lives here (not just on ModelInfo) as the provider-level
-// default for sourcing filters.
 type Profile struct {
 	// ID is the provider id ("openai", "openrouter", "opencode",
 	// "opencode-go", "commandcode", "ollama", or tenant custom slug).
@@ -91,22 +84,17 @@ type Profile struct {
 	// operator hid from pickers; sourcing filters them).
 	HiddenModels []string
 
-	// ManualModels are operator-added model entries for custom providers
-	// (optional context/output/reasoning hints) — the expected path for
-	// local models whose servers omit metadata (D9).
+	// ManualModels are operator-added model entries for custom providers (optional
+	// context/output/reasoning hints) — the expected path for local models whose servers omit metadata
+	// (D9).
 	ManualModels []ModelInfo
 
-	// NumCtxDefault is the Ollama profile's default context window
-	// (options.num_ctx sent per request); 0 = server default (~4096, which
-	// this provider warns against — silent truncation breaks compaction).
+	// NumCtxDefault is the Ollama profile's default context window (options.num_ctx sent per request);
+	// 0 = server default (~4096, which this provider warns against.
 	NumCtxDefault int64
 
-	// AuthOptional marks a provider whose credential is OPTIONAL: a missing
-	// credential resolves to "" (no error) instead of ErrAuthMissing. Used
-	// by Ollama — the local server needs no token, but Ollama Cloud does
-	// (https://docs.ollama.com/cloud — Bearer on every transport). The
-	// credential resolver treats AuthOptional like no-auth when nothing is
-	// stored, but the client still sends Bearer when a token IS resolved.
+	// AuthOptional marks a provider whose credential is OPTIONAL: a missing credential resolves to ""
+	// (no error) instead of ErrAuthMissing.
 	AuthOptional bool
 }
 
@@ -210,10 +198,8 @@ func BuiltinProfile(id string) (Profile, bool) {
 		}
 	case "ollama":
 		p.Kind = ProfileKindOllama
-		// Local Ollama needs no token, but Ollama Cloud does — the profile
-		// is AuthOptional so a missing token still resolves for local, while
-		// a stored/env OLLAMA_API_KEY is sent as Bearer on every transport
-		// (https://docs.ollama.com/cloud).
+		// Local Ollama needs no token, but Ollama Cloud does — the profile is AuthOptional so a missing
+		// token still resolves for local.
 		p.AuthOptional = true
 		if v := os.Getenv(envOllamaHost); v != "" {
 			p.BaseURL = v
@@ -230,8 +216,6 @@ func BuiltinProfile(id string) (Profile, bool) {
 }
 
 // ValidateProfile checks a profile (built-in or tenant custom) before use.
-// It is the service-half validation the sibling settings-UI task calls
-// before storing rows.
 func ValidateProfile(p Profile) error {
 	if p.ID == "" {
 		return fmt.Errorf("profile id must not be empty")

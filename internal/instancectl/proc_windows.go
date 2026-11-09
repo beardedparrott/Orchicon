@@ -12,9 +12,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// DETACHED_PROCESS (0x8): the child gets NO inherited console, so it outlives the app that launched it.
-// Same constant and same reasoning as cmd/orchicon's procattr_windows.go — a minutes-long download must
-// not die because the GUI that started it was closed.
+// DETACHED_PROCESS (0x8): the child gets NO inherited console, so it outlives the app that launched
+// it.
 const detachedProcess = 0x00000008
 
 func newCommand(bin string, args ...string) *exec.Cmd { return procwin.Command(bin, args...) }

@@ -155,9 +155,8 @@ func TestNativeAskOffersAndExecutesTheConversationsMCPTools(t *testing.T) {
 	}
 }
 
-// AC 5 (native half): in a mode that may not act, the opaque MCP tool is NEITHER
-// offered NOR executed, and the refusal names the mode and says the model cannot
-// switch itself. Same table for offer and call.
+// AC 5 (native half): in a mode that may not act, the opaque MCP tool is NEITHER offered NOR
+// executed, and the refusal names the mode and says the model cannot switch itself.
 func TestNativeAskRefusesOpaqueMCPOutsideAModeThatActs(t *testing.T) {
 	fake := &askMCPFakeClient{defs: mcpDefsFor(), execOut: "should never be reached"}
 	restore := stubAskMCPConnect(func(context.Context, []mcpclient.ServerSpec) (askMCPClient, error) {
@@ -315,10 +314,8 @@ func TestNativeAskRestartsTheClientWhenTheProjectChanges(t *testing.T) {
 	}
 }
 
-// AC 2 (native leg), THE CASE THE PROJECT CHECK ALONE MISSES: a conversation that
-// started with NO project resolves nothing (a cached "none"), then GAINS a project.
-// Without the per-turn reconciliation the cached empty answer would persist for the
-// life of the conversation and the new project's servers would never be offered.
+// AC 2 (native leg), THE CASE THE PROJECT CHECK ALONE MISSES: a conversation that started with NO
+// project resolves nothing (a cached "none"), then GAINS a project.
 func TestNativeAskResolvesWhenAConversationGainsAProject(t *testing.T) {
 	fake := &askMCPFakeClient{defs: mcpDefsFor(), execOut: "ok"}
 	// The resolver answers by the project asked for: none ⇒ nothing.
@@ -356,10 +353,8 @@ func TestNativeAskResolvesWhenAConversationGainsAProject(t *testing.T) {
 	}
 }
 
-// AC 2 (native leg), THE OTHER CASE: the conversation's OWN server is added between
-// two turns while its project is unchanged. The project check cannot see this, so the
-// client would keep serving the set resolved before the write. The fingerprint compare
-// catches it and the new tool becomes offerable.
+// AC 2 (native leg), THE OTHER CASE: the conversation's OWN server is added between two turns while
+// its project is unchanged.
 func TestNativeAskPicksUpAServerAddedMidConversation(t *testing.T) {
 	fake := &askMCPFakeClient{defs: mcpDefsFor(), execOut: "ok"}
 	resolver := &askMCPProjectResolver{byProject: map[string]mcpclient.Resolution{
@@ -400,10 +395,8 @@ func TestNativeAskPicksUpAServerAddedMidConversation(t *testing.T) {
 	}
 }
 
-// askMCPProjectResolver answers per-project, so a test can change what a project
-// resolves BETWEEN turns (a server added, a conversation assigned a project).
-// askMCPFakeResolver cannot: its answer is fixed.
-// The write below is not concurrently raced in these tests (single goroutine).
+// askMCPProjectResolver answers per-project, so a test can change what a project resolves BETWEEN
+// turns (a server added, a conversation assigned a project).
 type askMCPProjectResolver struct {
 	byProject map[string]mcpclient.Resolution
 	got       []mcpclient.ScopeRef

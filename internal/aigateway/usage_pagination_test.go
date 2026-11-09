@@ -17,14 +17,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// TestGetUsageCursorPagination pins the GetUsage cursor contract end to
-// end against a real Postgres (ORCHICON_TEST_DSN-gated, like the db
-// package's cost tests): page_token feeds ListUsageRecordsFilter.AfterID,
-// a full page returns next_page_token (the last row's id), a partial page
-// returns none, and walking cursor → cursor reproduces every seeded row
-// exactly once in (occurred_at, id) descending order. Regression: the RPC
-// ignored page_token entirely, so any consumer summing usage_records (the
-// Telemetry Credits panel) silently counted only the first page.
+// TestGetUsageCursorPagination pins the GetUsage cursor contract end to end against a real Postgres
+// (ORCHICON_TEST_DSN-gated, like the db package's cost tests).
 func TestGetUsageCursorPagination(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {
@@ -113,12 +107,8 @@ func TestGetUsageCursorPagination(t *testing.T) {
 		}
 	}
 
-	// The tenant may legitimately hold rows from OTHER fixtures/live
-	// traffic (the db package's cost tests seed their own and clean at
-	// their next run). The contract under test is about MY rows: walk the
-	// cursor to exhaustion, assert full pages carry the last-row token,
-	// partial pages carry none, an empty page terminates, and the filtered
-	// union reproduces the seed exactly once in (occurred_at, id) DESC.
+	// The tenant may legitimately hold rows from OTHER fixtures/live traffic (the db package's cost
+	// tests seed their own and clean at their next run).
 	var walked []string
 	tok := ""
 	pages := 0

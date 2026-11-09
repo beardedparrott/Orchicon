@@ -1,15 +1,5 @@
-// Command atlas-ci applies the embedded Atlas migrations to a Postgres
-// database from CI — the exact engine the control plane runs on boot
-// (internal/migrate.Run over assets.MigrationsFS), so the rls-check gate
-// in CI enforces against the real production schema, not a vacuous empty
-// database (zero tables = zero violations).
-//
-// Hermetic: no atlas binary on the runner, no network beyond the DB
-// connection. The Postgres service container must be up before this runs
-// (ci.yml starts it with a pg_isready health check).
-//
-// Usage: go run ./tools/atlas-ci   (DB_URL env var; falls back to the
-// Makefile's default local URL when unset)
+// Command atlas-ci applies the embedded Atlas migrations to a Postgres database from CI — the exact
+// engine the control plane runs on boot (internal/migrate.Run over assets.MigrationsFS).
 package main
 
 import (

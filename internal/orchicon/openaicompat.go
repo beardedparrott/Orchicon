@@ -9,10 +9,8 @@ import (
 	"strings"
 )
 
-// OpenAICompatClient is the native Chat Completions wire client (D4): SSE
-// streaming, tool_calls fragment accumulation, usage incl.
-// prompt_tokens_details.cached_tokens, and the trailing usage-only chunk
-// drain invariant (Finish is held until the stream is fully drained).
+// OpenAICompatClient is the native Chat Completions wire client (D4): SSE streaming, tool_calls
+// fragment accumulation, usage incl.
 type OpenAICompatClient struct {
 	BaseURL string // e.g. https://api.openai.com/v1 (chat path appends /chat/completions)
 	APIKey  string
@@ -26,12 +24,7 @@ type OpenAICompatClient struct {
 	// `x-opencode-session` (OpenCode Zen/Go D1). Empty = no header.
 	SessionID string
 
-	// Route selects the wire endpoint. "" = default /chat/completions.
-	// "responses" = POST /responses (OpenAI Responses wire — OpenCode Zen
-	// GPT/muse-spark models, https://opencode.ai/docs/zen/). "messages" =
-	// POST /messages (Anthropic wire — OpenCode Go MiniMax/Qwen models,
-	// https://opencode.ai/docs/go/). The opencode clients set this from the
-	// live /v1/models catalog (model-aware routing, D2).
+	// Route selects the wire endpoint.
 	Route string
 
 	HTTP  *http.Client
@@ -55,9 +48,7 @@ func (c *OpenAICompatClient) Capabilities() Capabilities {
 	}
 }
 
-// ListModels resolves through the sourcing service. NO catalog fallback:
-// per the no-synthesized-models directive, a failed sourcing probe yields
-// no models — never the vendored snapshot.
+// ListModels resolves through the sourcing service.
 func (c *OpenAICompatClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	if c.ModelsFn != nil {
 		return c.ModelsFn(ctx)
@@ -84,9 +75,9 @@ type oaMsg struct {
 	ToolCalls  []oaToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string       `json:"tool_call_id,omitempty"`
 	Name       string       `json:"name,omitempty"`
-	// ReasoningContent is DeepSeek's thinking-mode field. It is emitted ONLY when the provider's quirks ask
-	// for it (ReplayReasoning), because it is not part of the OpenAI chat schema and a provider that does not
-	// expect it may reject the unknown field — trading one broken turn for another.
+	// It is emitted ONLY when the provider's quirks ask for it (ReplayReasoning), because it is not
+	// part of the OpenAI chat schema and a provider that does not expect it may reject the unknown
+	// field.
 	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
@@ -116,18 +107,9 @@ type oaToolDef struct {
 }
 
 // buildOpenAIRequest shapes the compat request per quirks (D4).
-// repairAttempts bounds how many times a request may be repaired and resent. Two is enough for the known
-// shapes (a reasoning replay, then a message-order cleanup) and small enough that a provider returning a
-// different repairable error each time cannot spin.
 const repairAttempts = 2
 
 // buildOpenAIRequestWithReplay is buildOpenAIRequest with the reasoning replay forced on.
-//
-// It exists because the replay is normally a PROVIDER PROFILE decision (Quirks.ReplayReasoning) — a static
-// fact about the endpoint — but the provider can also TELL us it wants it, in a 400, and that is better
-// evidence than the profile's guess for this request. The override is per-request rather than mutating the
-// shared profile: the profile is the registry's, and one provider's rejection must not rewrite it for every
-// later caller.
 func buildOpenAIRequestWithReplay(req TurnRequest, q Quirks, forceReplay bool) oaRequest {
 	if forceReplay {
 		q.ReplayReasoning = true
@@ -167,14 +149,8 @@ func buildOpenAIRequest(req TurnRequest, q Quirks) oaRequest {
 		}
 	}
 
-	// Messages: system handling (developer role / merge-into-user), then history.
-	//
-	// ASSISTANT REASONING IS REPLAYED WHEN THE PROVIDER REQUIRES IT. This used to read "Assistant reasoning is
-	// never replayed (no reasoning storage)", which was true and was the bug: DeepSeek's thinking mode rejects
-	// a follow-up whose assistant messages omit the reasoning that accompanied their tool calls —
-	// "The `reasoning_content` in the thinking mode must be passed back to the API" — so the second round of
-	// any tool-using turn failed. It is sent only under q.ReplayReasoning (see Quirks), so providers that do
-	// not ask for the field never see it.
+	// Messages: system handling (developer role / merge-into-user), then history. ASSISTANT REASONING
+	// IS REPLAYED WHEN THE PROVIDER REQUIRES IT.
 	sysRole := "system"
 	if q.SupportsDeveloperRole {
 		sysRole = "developer"
@@ -288,9 +264,8 @@ func toolNameForID(req TurnRequest, id string) string {
 // StreamTurn streams one turn. Pre-stream failures retry (408/409/429/5xx,
 // connection); the trailing usage-only chunk is drained before Finish.
 func (c *OpenAICompatClient) StreamTurn(ctx context.Context, req TurnRequest) (TurnStream, error) {
-	// The Responses wire has a different request/response shape — delegate
-	// to the dedicated client when Route selects it (OpenCode Zen/Go
-	// responses-route models).
+	// The Responses wire has a different request/response shape — delegate to the dedicated client when
+	// Route selects it (OpenCode Zen/Go responses-route models).
 	if c.Route == "responses" {
 		rc := &ResponsesClient{
 			BaseURL: c.BaseURL, APIKey: c.APIKey, HTTP: c.HTTP, Retry: c.Retry,
@@ -308,12 +283,6 @@ func (c *OpenAICompatClient) StreamTurn(ctx context.Context, req TurnRequest) (T
 	url := strings.TrimRight(c.BaseURL, "/") + "/" + c.wirePath()
 
 	// THE SEND LOOP HANDLES TWO KINDS OF FAILURE, and the distinction is the point:
-	//
-	//   TRANSIENT (429/5xx/a reset connection) → retry the SAME request later.
-	//   REPAIRABLE (a request-shape 400 the provider explained) → REWRITE the request and send it again NOW.
-	//
-	// It is the SHARED loop (requestrepair.go, sendWithRepair) rather than a copy, because this shape appears in
-	// five clients and resilience added to one of them is the asymmetry that leaves the other four dying.
 	quirkReplayReasoning := ReplayReasoningLearned(c.replayKey())
 	repairs := 0
 	resp, serr := sendWithRepair(ctx, c.Retry, c.Logf,
@@ -327,14 +296,10 @@ func (c *OpenAICompatClient) StreamTurn(ctx context.Context, req TurnRequest) (T
 		func(kind RepairKind) bool {
 			switch kind {
 			case RepairReasoningContent:
-				// The provider demands reasoning back. If the request HAS reasoning to replay, turn the replay
-				// on for this and every later attempt: the provider has just told us it wants it, which is
-				// better evidence than the profile's static guess.
+				// The provider demands reasoning back.
 				if repairRequest(RepairReasoningContent, &req) {
 					quirkReplayReasoning = true
-					// …and REMEMBER it. The demand is a fact about the ENDPOINT: re-learning it on every
-					// request made each round of a tool-using session pay a rejection plus a resend, and left
-					// every round one unrepairable history away from a fatal error.
+					// …and REMEMBER it.
 					if noteReplayReasoningDemanded(c.replayKey()) {
 						c.logf("%s requires reasoning replay (reasoning_content) — replaying it from now on: %v", c.label(), kind)
 					}
@@ -386,10 +351,7 @@ func (c *OpenAICompatClient) label() string {
 	return "openai-compat"
 }
 
-// wirePath returns the endpoint path for the selected Route. The default
-// is /chat/completions; "responses" and "messages" select the OpenAI
-// Responses / Anthropic Messages wires (OpenCode Zen/Go model-aware
-// routing, D2).
+// wirePath returns the endpoint path for the selected Route.
 func (c *OpenAICompatClient) wirePath() string {
 	switch c.Route {
 	case "responses":
@@ -463,10 +425,8 @@ type oaUsage struct {
 	} `json:"prompt_tokens_details"`
 }
 
-// oaNoCache derives the fresh (uncached) input-token figure from an
-// OpenAI-compatible usage block: prompt_tokens is cache-INCLUSIVE, so
-// fresh = max(0, prompt − cached). Mirrors legacyNoCache for the legacy
-// envelope's cache-inclusive totalUsage.
+// oaNoCache derives the fresh (uncached) input-token figure from an OpenAI-compatible usage block:
+// prompt_tokens is cache-INCLUSIVE, so fresh = max(0, prompt − cached).
 func oaNoCache(total, cached int64) int64 {
 	if d := total - cached; d > 0 {
 		return d
@@ -487,11 +447,8 @@ type openaiStream struct {
 	toolOrd []int
 	queue   []Event // ordered event backlog (Start → Delta → … → Finish)
 
-	// think splits llama.cpp-style INLINE reasoning (the "think" tag
-	// pair in delta.content) into ReasoningDelta events (thinksplit.go).
-	// Servers that emit a native reasoning field are unaffected (content
-	// never contains the tag pair) — the splitter passes plain text
-	// through byte-identical.
+	// think splits llama.cpp-style INLINE reasoning (the "think" tag pair in delta.content) into
+	// ReasoningDelta events (thinksplit.go).
 	think *thinkSplitter
 }
 
@@ -513,12 +470,7 @@ func (s *openaiStream) Close() error {
 	return nil
 }
 
-// Next yields normalized events. Tool-call event order is
-// ToolCallStart → ToolCallDelta* → (at drain) ToolCall → Finish. The
-// Finish event is HELD until the body is fully drained: OpenAI-style
-// streams send finish_reason on the last content chunk and real usage on a
-// trailing usage-only chunk (choices: []) — finalizing on finish_reason
-// would zero recorded costs.
+// Next yields normalized events.
 func (s *openaiStream) Next(ctx context.Context) (Event, bool, error) {
 	_ = ctx
 	for {
@@ -549,14 +501,8 @@ func (s *openaiStream) Next(ctx context.Context) (Event, bool, error) {
 		// Usage arrives on the trailing usage-only chunk (choices empty) or
 		// the final content chunk — record whenever present (last wins).
 		if ch.Usage != nil {
-			// Normalize InputTokens to the FRESH bucket (QA bug A):
-			// OpenAI-compat prompt_tokens is cache-INCLUSIVE — it already
-			// counts prompt_tokens_details.cached_tokens — while the
-			// normalized Usage contract prices cache sub-buckets separately
-			// (see legacyUsageToUsage). The window-pressure basis
-			// InputTokens+CacheReadTokens must not double-count a cache hit,
-			// and the fresh-token budget gate / CostFor pricing must not bill
-			// cached tokens twice.
+			// Normalize InputTokens to the FRESH bucket (QA bug A): OpenAI-compat prompt_tokens is
+			// cache-INCLUSIVE — it already counts prompt_tokens_details.cached_tokens.
 			cached := int64(0)
 			if ch.Usage.PromptTokensDetails != nil {
 				cached = ch.Usage.PromptTokensDetails.CachedTokens
@@ -568,9 +514,8 @@ func (s *openaiStream) Next(ctx context.Context) (Event, bool, error) {
 		for _, choice := range ch.Choices {
 			d := choice.Delta
 			if d.Content != "" {
-				// Inline-reasoning routing: the "think" tag pair inside
-				// content becomes ReasoningDelta (llama.cpp default),
-				// everything else passes through as content.
+				// Inline-reasoning routing: the "think" tag pair inside content becomes ReasoningDelta (llama.cpp
+				// default), everything else passes through as content.
 				s.think.feed(d.Content, &s.queue)
 			}
 			switch {
@@ -623,9 +568,7 @@ func (s *openaiStream) pop() Event {
 	return ev
 }
 
-// flush emits accumulated complete tool calls (in first-appearance order),
-// then the held Finish. Any think-splitter holdback is drained first so a
-// truncated final tag cannot swallow the response tail.
+// flush emits accumulated complete tool calls (in first-appearance order), then the held Finish.
 func (s *openaiStream) flush() {
 	s.think.drain(&s.queue)
 	for _, idx := range s.toolOrd {
@@ -639,13 +582,8 @@ func (s *openaiStream) flush() {
 	s.toolOrd = nil
 	s.drained = true
 	if !s.haveStop {
-		// NO provider stop reason: the stream ended without delivering an
-		// end-of-response signal (a truncated/aborted generation, not a
-		// completed turn). Synthesizing StopStop here recorded hollow
-		// successes: the loop's success gate ran on a turn the provider
-		// never actually ended (observed: executions "succeeded" with the
-		// model mid-monologue). StopOther is the honest terminal — the
-		// loop fails a turn that ended without the provider's signal.
+		// NO provider stop reason: the stream ended without delivering an end-of-response signal (a
+		// truncated/aborted generation, not a completed turn).
 		s.stop = StopOther
 	}
 	s.queue = append(s.queue, Finish{StopReason: s.stop, Usage: s.usage})

@@ -9,9 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// The two provider payloads are the operator's VERBATIM report for "BUG: Ask
-// Orchicon model switch fails — dangling tool_call replayed to the new
-// provider (400)" (acceptance fixtures).
+// The two provider payloads are the operator's VERBATIM report for "BUG: Ask Orchicon model switch
+// fails — dangling tool_call replayed to the new provider (400)" (acceptance fixtures).
 const (
 	fixtureProviderErrorNoToolOutput = `{"model":"muse-spark-1.3-contributor-free","error":{"param":"input","type":"invalid_request_error",` +
 		`"message":"Error from provider (Console): Upstream request failed: [invalid_request_error] ` +
@@ -22,9 +21,8 @@ const (
 		`"type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`
 )
 
-// assertedLedgerWellFormed fails the test when a persisted (tool_calls,
-// tool_results) pair holds a call with no matching result — the DB-row-level
-// invariant asserted by the acceptance criteria.
+// assertedLedgerWellFormed fails the test when a persisted (tool_calls, tool_results) pair holds a
+// call with no matching result — the DB-row-level invariant asserted by the acceptance criteria.
 func assertLedgerWellFormed(t *testing.T, callsJSON, resultsJSON []byte) {
 	t.Helper()
 	var calls []struct {

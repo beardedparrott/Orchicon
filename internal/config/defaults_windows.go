@@ -2,15 +2,9 @@
 
 package config
 
-// defaults_windows.go — the Windows defaults, and the reason this pair exists rather than one string in
-// config.go: `/var/lib/orchicon` and `/var/run/...` are not paths a Windows user can reach. On Windows they
-// resolve against the root of the current drive, so a default install would either fail to create its state
-// dir or scatter it somewhere nobody looks.
-//
-// THE SOCKET DEFAULT IS REACHABLE, NOT FUNCTIONAL, and that distinction is stated here rather than implied.
-// The workflow runtime needs a Linux container; there is no Unix socket on the Windows host, so a Windows plane
-// degrades to IN-PROCESS execution and this path is only where a socket WOULD live if one were ever created.
-// Setting it to something under /var/run would make the failure look like a permission problem.
+// defaults_windows.go — the Windows defaults, and the reason this pair exists rather than one
+// string in config.go: `/var/lib/orchicon` and `/var/run/...` are not paths a Windows user can
+// reach.
 
 import (
 	"os"

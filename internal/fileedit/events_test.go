@@ -1,12 +1,6 @@
 package fileedit
 
 // events_test.go — A LEDGER ROW REACHES BOTH CLIENTS, FOR EVERY OWNER KIND.
-//
-// The operator: "The diff bar doesn't update in the GUI unless I hit refresh in the browser. My guess is,
-// this issue may exist in the TUI as well" — and it did, because the gap was on the publishing side, which
-// both clients consume. The publisher used to refuse every owner kind but the execution one, so an Ask
-// conversation's edits were written to the ledger (a refresh showed them) and never published (the live
-// stream forwarded nothing).
 
 import (
 	"encoding/json"
@@ -35,10 +29,7 @@ func TestEveryOwnerKindHasItsOwnSubject(t *testing.T) {
 }
 
 func TestTheEventTypeFollowsTheSubjectAggregate(t *testing.T) {
-	// NOT COSMETIC. The webhook dispatcher resolves subscriptions with
-	// db.ListActiveSubscriptions(event_type), so an Ask edit published under the EXECUTION event type would
-	// have fired every webhook subscribed to execution file edits — a conversation's work arriving on an
-	// execution's hook.
+	// NOT COSMETIC.
 	for _, kind := range []string{db.FileEditOwnerExecution, db.FileEditOwnerAskConversation} {
 		subject := EventSubject(kind)
 		eventType := EventType(kind)

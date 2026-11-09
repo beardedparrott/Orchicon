@@ -238,9 +238,8 @@ func TestProvidersTokenAutoWriteAndResolve(t *testing.T) {
 		t.Fatalf("rotate: %v", err)
 	}
 
-	// Ollama now accepts token saves under OLLAMA_API_KEY (Ollama Cloud
-	// needs a Bearer token — https://docs.ollama.com/cloud; the local
-	// server needs none, so the profile is AuthOptional).
+	// Ollama now accepts token saves under OLLAMA_API_KEY (Ollama Cloud needs a Bearer token —
+	// https://docs.ollama.com/cloud; the local server needs none, so the profile is AuthOptional).
 	oname, err := svc.SetProviderToken(ctx, testTenant, "ollama", "ollama-cloud-token")
 	if err != nil {
 		t.Fatalf("ollama token save: %v", err)
@@ -290,10 +289,8 @@ func TestProvidersTokenAutoWriteAndResolve(t *testing.T) {
 			if !en.HasTokenStored || en.TokenSecretName != "COMMANDCODE_API_KEY" {
 				t.Fatalf("commandcode entry: %+v", en)
 			}
-			// Structural leak-guard: the merged view carries only
-			// has_token_stored + the secret NAME — the token value itself
-			// has no field to ride on (built-in BaseURL is the public
-			// catalog URL, not a secret).
+			// Structural leak-guard: the merged view carries only has_token_stored + the secret NAME — the
+			// token value itself has no field to ride on (built-in BaseURL is the public catalog URL.
 		}
 	}
 
@@ -481,10 +478,8 @@ func indexOf(s, sub string) int {
 	return -1
 }
 
-// TestProvidersRegistryEndToEnd proves the substrate hook wires the tenant
-// override through to the registry's built-in resolution: a stored ollama
-// BaseURLOverride MUST be visible on the Provider that Registry.Get builds
-// — not just on the settings view (the reported chat-dials-localhost bug).
+// TestProvidersRegistryEndToEnd proves the substrate hook wires the tenant override through to the
+// registry's built-in resolution.
 func TestProvidersRegistryEndToEnd(t *testing.T) {
 	svc, pool := newProvidersTestService(t)
 	ensureTenant(t, pool, testTenant)
@@ -538,11 +533,8 @@ func TestProvidersRegistryEndToEnd(t *testing.T) {
 	}
 }
 
-// The offline picker path for a catalog-covered provider: with the live probe
-// pointed at a dead endpoint (no network / no token / no anthropic CLI on this
-// plane), anthropic still lists its AUTHORED catalog models, so selecting
-// adapter `claude` in the picker is never blank. Additive: probe results always
-// win, and a provider the catalog does not cover stays untouched.
+// The offline picker path for a catalog-covered provider: with the live probe pointed at a dead
+// endpoint (no network / no token / no anthropic CLI on this plane).
 func TestProvidersListProviderModelsSeedsCatalogOffline(t *testing.T) {
 	svc, pool := newProvidersTestService(t)
 	ensureTenant(t, pool, testTenant)
@@ -565,15 +557,8 @@ func TestProvidersListProviderModelsSeedsCatalogOffline(t *testing.T) {
 		}
 	})
 
-	// HERMETIC: this test's SUBJECT is the OFFLINE seed — the vendored snapshot must
-	// fill the picker when the live sources are unreachable. The Claude Code MANAGED
-	// catalog is one such live source, and on a plane WITH egress it answers — and it
-	// no longer offers `claude-sonnet-4` (superseded upstream by the `-4-6` / `-5`
-	// generations), so it REPLACES the snapshot this test asserts. Pin the "live source
-	// unreachable" condition with a client whose timeout makes the fetch fail anyway,
-	// so the assertion holds on an offline plane and a wired one alike. The
-	// package-level catalog cache is cold here (nothing else in this test binary
-	// resolves the `anthropic` catalog), so the first call fetches and fails.
+	// HERMETIC: this test's SUBJECT is the OFFLINE seed — the vendored snapshot must fill the picker
+	// when the live sources are unreachable.
 	restore := orchicon.SetClaudeCatalogClientForTest(&http.Client{Timeout: time.Nanosecond})
 	t.Cleanup(restore)
 
@@ -599,11 +584,8 @@ func TestProvidersListProviderModelsSeedsCatalogOffline(t *testing.T) {
 		t.Errorf("claude-sonnet-4 source = %q, want catalog", son.Source)
 	}
 
-	// A provider the catalog does NOT cover is never synthesized: this custom
-	// provider is not in the vendored catalog, so with its probe also dead the
-	// list stays EMPTY (Degraded, not invented). The seed is generic over
-	// catalog-covered providers — it must not become a model fabricator for
-	// every provider.
+	// A provider the catalog does NOT cover is never synthesized: this custom provider is not in the
+	// vendored catalog, so with its probe also dead the list stays EMPTY (Degraded, not invented).
 	if _, err := svc.CreateCustom(ctx, testTenant, providers.CreateCustomInput{
 		RefID: "seedtest", BaseURL: "http://127.0.0.1:1/v1", AuthMode: providers.AuthModeNone,
 	}); err != nil {

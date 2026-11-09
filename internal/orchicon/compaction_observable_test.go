@@ -1,17 +1,7 @@
 package orchicon
 
-// compaction_observable_test.go — a mid-run collapse must reach the operator, all the way from the engine that
-// performed it to the part the run page reads.
-//
-// THE FAILURE THIS PINS. A worker execution failed 4 minutes and 30 tool rounds in with
-// `400 The reasoning_content in the thinking mode must be passed back to the API`. Its history had been
-// collapsed under it moments earlier — the offload file on disk was the ONLY trace. The engine logged nothing
-// on success, wrote no transcript event, and therefore stored no session part, so the first request the
-// provider rejected after the collapse could not be correlated with anything an operator can see. The other two
-// adapters (opencode, claude) had always written the part; the native engine — the one in play — did not, and
-// no renderer drew it anyway.
-//
-// The chain is: doCompact → TransCompaction transcript event → sessionPartsRecorder → db.SessionPartCompacted.
+// Its history had been collapsed under it moments earlier — the offload file on disk was the ONLY
+// trace.
 
 import (
 	"encoding/json"

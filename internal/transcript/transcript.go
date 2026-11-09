@@ -1,8 +1,5 @@
-// Package transcript renders durable execution session transcripts
-// (execution_session_parts) into readable text. It is a leaf package so
-// both the execution service (follow-up seed) and the scheduler
-// (recovery seed) can share ONE per-part renderer without an import
-// cycle (scheduler → execution → opencode → scheduler).
+// Package transcript renders durable execution session transcripts (execution_session_parts) into
+// readable text.
 package transcript
 
 import (
@@ -14,10 +11,6 @@ import (
 )
 
 // RenderParts renders session parts into readable chronological text.
-// maxContext bounds the total output; perPartCap bounds each message;
-// truncMarker is appended when the output is cut off. Kinds that don't map
-// to a readable line (reasoning, step_start/step_finish, session_info,
-// system_prompt) are skipped.
 func RenderParts(parts []db.SessionPart, maxContext, perPartCap int, truncMarker string) string {
 	var sb strings.Builder
 	trunc := func(text string) string {
@@ -66,14 +59,8 @@ func RenderParts(parts []db.SessionPart, maxContext, perPartCap int, truncMarker
 	return sb.String()
 }
 
-// RenderTail renders the session parts into a bounded, chronological
-// transcript text suitable for seeding a recovery-resumed worker
-// (.orchicon/worker.recovery). It shares the per-part renderer with
-// RenderParts (the follow-up path) so both produce the same readable
-// shape; the recovery tail trades fidelity for size (a tighter per-part
-// cap and a hard byte cap). The input may be tail-first (the ORDER BY
-// seq DESC tail query) — it is sorted by seq internally so the output is
-// always chronological.
+// RenderTail renders the session parts into a bounded, chronological transcript text suitable for
+// seeding a recovery-resumed worker (.orchicon/worker.recovery).
 func RenderTail(parts []db.SessionPart, maxBytes int) string {
 	if maxBytes <= 0 {
 		maxBytes = 24 * 1024

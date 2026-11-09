@@ -9,13 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
 
-// The tool_call_count ladder dimension, evaluated natively at opencode
-// parity: tier crossings latch without compacting (the dimension is opted
-// out of compact_dims by default — collapsing context on tool pressure
-// would force yet more tool calls), and the abort tier fails the session
-// with budget_abort:tool_call_count. Limits are worker budget_overrides
-// over tenant default_budget_overrides (first-class key end-to-end);
-// unset falls back to the ladder default (100), explicit <= 0 disables.
+// The tool_call_count ladder dimension, evaluated natively at opencode parity: tier crossings latch
+// without compacting (the dimension is opted out of compact_dims by default.
 
 func toolsDimSession(t *testing.T, budgets string, toolUses int) *Session {
 	t.Helper()

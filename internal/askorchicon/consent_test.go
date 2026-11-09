@@ -27,9 +27,7 @@ func tenantCtx() context.Context { return tenant.WithID(context.Background(), "t
 // connectReq is connect.NewRequest with the test's concrete message type.
 func connectReq[T any](m *T) *connect.Request[T] { return connect.NewRequest(m) }
 
-// consentFakeClient records every decision value the consent core sends to the
-// serve. It is the assertion hook for the settled decision: the value is ALWAYS
-// "once" or "reject" — never a session-scoped serve value.
+// consentFakeClient records every decision value the consent core sends to the serve.
 type consentFakeClient struct {
 	mu        sync.Mutex
 	decisions []string
@@ -102,11 +100,8 @@ func fileAskEvent(permID, tool, target string) scheduler.SessionEvent {
 	})
 }
 
-// mcpAskEvent builds the MCP / host-suite ask shape — `permission` = the tool
-// KEY, `patterns` = ["*"], `metadata` = {} — that the Ask turn's `orchicon_*`
-// tools raise (verified against opencode 1.18.32; see
-// internal/opencode/testdata/permission_asked_mcp_golden.json), with the args
-// of the tool call the adapter correlated attached as Detail["toolInput"].
+// mcpAskEvent builds the MCP / host-suite ask shape — `permission` = the tool KEY, `patterns` =
+// ["*"], `metadata` = {}.
 func mcpAskEvent(permID, tool string, input map[string]any) scheduler.SessionEvent {
 	d := map[string]any{
 		"permission": tool,
@@ -144,9 +139,7 @@ func TestExtractAskActionCarriesToolAndTarget(t *testing.T) {
 		t.Fatalf("Tool = %q, want edit", a.Tool)
 	}
 	// opencode 1.18.32 emits the target twice: `patterns` worktree-RELATIVE
-	// ("../sibling-project/notes.md") and `metadata.filepath` ABSOLUTE. The
-	// ABSOLUTE one is used — a relative pattern is only a guess at the base
-	// (the Ask serve has no --directory, so its base is the plane's cwd).
+	// ("../sibling-project/notes.md") and `metadata.filepath` ABSOLUTE.
 	if len(a.Targets) != 1 || a.Targets[0] != "/p/sibling/notes.md" {
 		t.Fatalf("Targets = %#v, want the absolute metadata.filepath", a.Targets)
 	}
@@ -158,13 +151,8 @@ func TestExtractAskActionCarriesToolAndTarget(t *testing.T) {
 	}
 }
 
-// The absolute target in `metadata` wins even when the worktree-RELATIVE
-// `patterns` entry would resolve INSIDE the conversation's project. The two
-// disagree whenever opencode's worktree base is not the conversation's own
-// project dir (the Ask serve starts with no --directory, so its base is the
-// plane's cwd), and a relative join must NEVER approve a path opencode placed
-// outside the project. Before this, the relative pattern was preferred and the
-// sibling write was silently approved.
+// The two disagree whenever opencode's worktree base is not the conversation's own project dir (the
+// Ask serve starts with no --directory, so its base is the plane's cwd).
 func TestDecideUsesTheAbsoluteAskTargetOverADisagreeingRelativePattern(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
@@ -288,10 +276,7 @@ func TestExtractAskActionMCPWriteResolvesTargetFromToolCallArgs(t *testing.T) {
 
 // --- the decision path ---------------------------------------------------
 
-// THE PROJECT IS NO LONGER SPECIAL. It used to be a pre-approved default scope, so
-// an in-project write proceeded silently; the operator removed that ("any directory
-// should ask before allowing on write/execute, project or otherwise"). Both writes
-// now ask — and the sibling one still names ITS target, not the project.
+// THE PROJECT IS NO LONGER SPECIAL.
 func TestDecideProjectAsksTooAndSiblingStillNamesItsTarget(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
@@ -317,10 +302,8 @@ func TestDecideProjectAsksTooAndSiblingStillNamesItsTarget(t *testing.T) {
 	}
 }
 
-// THE regression QA found: a write to a sibling path through an `orchicon_*`
-// (MCP / host-suite) tool raised NO ask — the ask carries patterns ["*"] and
-// metadata {}, so it keyed on the scope directory and rode the project default
-// to a silent approval. The target now comes from the tool call's args.
+// THE regression QA found: a write to a sibling path through an `orchicon_*` (MCP / host-suite)
+// tool raised NO ask — the ask carries patterns ["*"] and metadata {}.
 func TestDecideMCPWriteSiblingAsksInsideProjectAsksToo(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
@@ -349,9 +332,8 @@ func TestDecideMCPWriteSiblingAsksInsideProjectAsksToo(t *testing.T) {
 	}
 }
 
-// FAIL CLOSED: an ask whose detail resolves neither a target nor a command is
-// raised as a card — never silently approved on the scope directory's
-// pre-approval, not even with a session grant for it.
+// FAIL CLOSED: an ask whose detail resolves neither a target nor a command is raised as a card —
+// never silently approved on the scope directory's pre-approval.
 func TestDecideFailsClosedWhenNoDetailResolves(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
@@ -395,11 +377,7 @@ func TestDecideMCPBashUsesToolCallCommandAndKeepsTheNeverAllowClass(t *testing.T
 	if resp != "reject" || ask != nil || refusal == "" {
 		t.Fatalf("never-allow MCP bash: resp=%q ask=%v refusal=%q", resp, ask, refusal)
 	}
-	// An ordinary command in the project's cwd ASKS too. THIS IS THE CASE THAT
-	// MATTERED MOST: a bash ask keys on the cwd (decisionTargets), so the project
-	// rung silently approved EVERY shell command a turn ran — including ones that
-	// write outside the project. A session grant for the directory is now how an
-	// operator says "commands here are fine"; the command is still shown.
+	// An ordinary command in the project's cwd ASKS too.
 	resp, ask, refusal = ct.decide(context.Background(), "ses_1", mcpAskEvent("per_2", "orchicon_bash",
 		map[string]any{"command": "ls -la"}))
 	if resp != "" || ask == nil || refusal != "" {
@@ -410,11 +388,8 @@ func TestDecideMCPBashUsesToolCallCommandAndKeepsTheNeverAllowClass(t *testing.T
 	}
 }
 
-// A multi-target batch_write is judged on EVERY target, not just the one that
-// names the grant KEY: a batch whose FIRST path is inside the conversation's
-// project and whose SECOND is a sibling path must still ask (C4: "a second
-// directory in the batch asks again"). Before this, the sibling path rode the
-// first path's project verdict to a silent approval.
+// A multi-target batch_write is judged on EVERY target, not just the one that names the grant KEY:
+// a batch whose FIRST path is inside the conversation's project and whose SECOND is a sibling path.
 func TestDecideBatchWriteJudgesEveryTarget(t *testing.T) {
 	isolatedPolicy(t, "")
 	batch := func(id string, paths ...string) scheduler.SessionEvent {
@@ -461,9 +436,7 @@ func TestDecideBatchWriteJudgesEveryTarget(t *testing.T) {
 		t.Fatalf("denied second target: resp=%q ask=%v refusal=%q", resp, ask, refusal)
 	}
 
-	// A session grant covers ITS OWN directory's targets (C4). It must now cover
-	// BOTH directories, because the project is no longer a free rung — a grant for
-	// the sibling alone leaves the in-project target asking.
+	// A session grant covers ITS OWN directory's targets (C4).
 	isolatedPolicy(t, "")
 	svc3 := testConsentService()
 	ct3 := newTestConsentTurn(svc3, "/p/proj", true, nil)
@@ -768,14 +741,8 @@ func TestStallMonitorGatesToolWedgeOnAConsentAsk(t *testing.T) {
 	}
 }
 
-// TestBashSessionGrantCoversTheDirectoryAndItsSubtree is the EXECUTION half of the
-// session grant, which only the WRITE half was covered for.
-//
-// It is the operator's complaint as a test: "you were asking for permissions earlier
-// to run commands on the same directory over and over." A bash ask's grant key is the
-// conversation's scope directory (not the command's cwd), so ONE "never ask again in
-// <dir> this session" covers every later command in that directory — and in anything
-// under it, because the grant store matches by subtree.
+// TestBashSessionGrantCoversTheDirectoryAndItsSubtree is the EXECUTION half of the session grant,
+// which only the WRITE half was covered for.
 func TestBashSessionGrantCoversTheDirectoryAndItsSubtree(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()

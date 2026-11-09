@@ -26,9 +26,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// skillConversationForTest creates a project (with a project_dir) and a conversation assigned to it, carrying
-// the given conversation-level skill_files JSON. Returns the service, the loaded conversation row, and the
-// project dir.
+// skillConversationForTest creates a project (with a project_dir) and a conversation assigned to
+// it, carrying the given conversation-level skill_files JSON.
 func skillConversationForTest(t *testing.T, dir string, projSkillFiles, convSkillFiles []byte) (*Service, db.ConversationRow, string) {
 	t.Helper()
 	pool := workItemKindTestPool(t)
@@ -231,11 +230,8 @@ func TestSetConversationSkillFilesRPCValidatesWithin(t *testing.T) {
 	}
 }
 
-// AC2 "in EVERY mode": the conversation's skill files reach the prompt in EVERY mode — the
-// skills half of the scope is mode-INDEPENDENT (a skill is context, not an action), unlike
-// MCP tools, whose OFFER is mode-gated. A real conversation row carrying real skill paths is
-// rendered once and asserted across every mode, so a mode that silently dropped the skills
-// section would fail here rather than on a live turn.
+// AC2 "in EVERY mode": the conversation's skill files reach the prompt in EVERY mode — the skills
+// half of the scope is mode-INDEPENDENT (a skill is context, not an action), unlike MCP tools.
 func TestSkillFilesReachEveryMode(t *testing.T) {
 	dir := t.TempDir()
 	convSkill := filepath.Join(dir, "every-mode-skill.md")

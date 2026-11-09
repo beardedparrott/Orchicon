@@ -48,13 +48,11 @@ const (
 	// RegistryEnvURL overrides the registry endpoint. An empty value uses the
 	// default; RegistryDisabled turns the registry off entirely.
 	RegistryEnvURL = "ORCHICON_MODEL_REGISTRY_URL"
-	// RegistryDisabled is the RegistryURL value (explicit field or env) that
-	// disables the registry — the escape hatch for air-gapped or restricted
-	// installs that must make no outbound request at all.
+	// RegistryDisabled is the RegistryURL value (explicit field or env) that disables the registry —
+	// the escape hatch for air-gapped or restricted installs that must make no outbound request at all.
 	RegistryDisabled = "-"
-	// DefaultRegistryURL is models.dev: keyed provider/model (the SAME shape as
-	// the vendored catalog and catalogRefKey), no auth, open source
-	// (github.com/sst/models.dev).
+	// DefaultRegistryURL is models.dev: keyed provider/model (the SAME shape as the vendored catalog
+	// and catalogRefKey), no auth, open source (github.com/sst/models.dev).
 	DefaultRegistryURL = "https://models.dev/api.json"
 	// defaultDataDir mirrors config.DataDir's default (ORCHICON_DATA_DIR). Named
 	// locally rather than imported so the substrate keeps no config dependency.
@@ -62,17 +60,12 @@ const (
 	// DataDirEnv mirrors config's env name for the same reason.
 	DataDirEnv = "ORCHICON_DATA_DIR"
 
-	// DefaultRegistryTTL is how long a fetched body is served before it is
-	// revalidated. models.dev answers with `cache-control: max-age=0,
-	// must-revalidate` plus a strong ETag, so the server is explicitly asking to
-	// be polled cheaply: a revalidation is a 304 with an empty body.
+	// DefaultRegistryTTL is how long a fetched body is served before it is revalidated.
 	DefaultRegistryTTL = 6 * time.Hour
 	// registryTimeout bounds the fetch so a black-holed endpoint can never stall
 	// a model list.
 	registryTimeout = 10 * time.Second
-	// registryMaxBytes caps the body. The live payload is ~4.6 MB plain / ~380 KB
-	// gzipped; this is headroom against a hostile or broken response, not a
-	// target.
+	// registryMaxBytes caps the body.
 	registryMaxBytes = 32 << 20
 	// registryCacheName / registryETagName are the disk-cache files under
 	// CacheDir, so a restart serves the registry without a network round trip.
@@ -106,9 +99,7 @@ const (
 // mechanism stays so a genuinely unmatched id can be curated here later.
 var registryAliases = map[string]string{}
 
-// registryCache holds the service-scoped fetch state. A struct rather than loose
-// fields so this file owns its own locking discipline (SourcingService's mu
-// guards the PROBE cache; the registry must not contend with it).
+// registryCache holds the service-scoped fetch state.
 type registryCache struct {
 	mu   sync.Mutex
 	body map[string]ModelInfo
@@ -188,13 +179,8 @@ func registryProvenance(endpoint string) string {
 	return "registry:" + u.Hostname()
 }
 
-// registryModels returns the current registry model map (keyed "provider/model"),
-// loading or revalidating as needed. Returns nil when the registry is disabled or
-// nothing is available — callers then fall through to the vendored catalog.
-//
-// The fetch happens OUTSIDE the lock (mirroring probe()): a slow or black-holed
-// endpoint may cause a duplicate concurrent fetch, but it can never block another
-// provider's model list.
+// registryModels returns the current registry model map (keyed "provider/model"), loading or
+// revalidating as needed.
 func (s *SourcingService) registryModels(ctx context.Context) map[string]ModelInfo {
 	endpoint := s.registryURL()
 	if endpoint == "" {
@@ -225,9 +211,7 @@ func (s *SourcingService) registryModels(ctx context.Context) map[string]ModelIn
 	return models
 }
 
-// fetchRegistry performs the GET (+ If-None-Match revalidation) and owns the disk
-// cache. It is deliberately total: every failure path returns a usable answer or
-// ok=false, never an error the caller must handle.
+// fetchRegistry performs the GET (+ If-None-Match revalidation) and owns the disk cache.
 func (s *SourcingService) fetchRegistry(ctx context.Context, endpoint, dir string, prev map[string]ModelInfo) (map[string]ModelInfo, string, bool) {
 	bodyPath := filepath.Join(dir, registryCacheName)
 	etagPath := filepath.Join(dir, registryETagName)
@@ -298,9 +282,8 @@ func (s *SourcingService) fetchRegistry(ctx context.Context, endpoint, dir strin
 	return models, newETag, true
 }
 
-// registryFallback picks the best available answer when the network path fails:
-// the in-memory map, else the cached body, else nothing (ok=false → the vendored
-// catalog stands).
+// registryFallback picks the best available answer when the network path fails: the in-memory map,
+// else the cached body, else nothing (ok=false → the vendored catalog stands).
 func registryFallback(prev map[string]ModelInfo, diskBody []byte, diskETag string, haveDisk bool) (map[string]ModelInfo, string, bool) {
 	if prev != nil {
 		return prev, diskETag, true
@@ -321,9 +304,8 @@ func readCacheFile(path string) []byte {
 	return b
 }
 
-// parseRegistry converts a models.dev body into the catalog's own key format
-// ("provider/model" → ModelInfo), so the lookup and every downstream consumer are
-// identical to the vendored path.
+// parseRegistry converts a models.dev body into the catalog's own key format ("provider/model" →
+// ModelInfo), so the lookup and every downstream consumer are identical to the vendored path.
 func parseRegistry(raw []byte, provenance string) map[string]ModelInfo {
 	blobs := map[string]json.RawMessage{}
 	if err := json.Unmarshal(raw, &blobs); err != nil {
@@ -370,9 +352,8 @@ func parseRegistry(raw []byte, provenance string) map[string]ModelInfo {
 	return out
 }
 
-// effortValues extracts the effort ladder from models.dev's reasoning_options,
-// which is a list of option kinds (toggle | effort | budget_tokens). Only an
-// explicit effort ladder maps onto ModelInfo.ReasoningEfforts.
+// effortValues extracts the effort ladder from models.dev's reasoning_options, which is a list of
+// option kinds (toggle | effort | budget_tokens).
 func effortValues(opts []struct {
 	Type   string   `json:"type"`
 	Values []string `json:"values"`
@@ -385,11 +366,7 @@ func effortValues(opts []struct {
 	return nil
 }
 
-// registryLookup is the pure lookup: alias-aware, exact-match only. It performs no
-// I/O and no heuristics — an id the registry does not list under its own spelling
-// or a curated alias stays unresolved, deliberately. Family matching was rejected:
-// a family holds several versions, so picking one would be a guess wearing a
-// citation.
+// registryLookup is the pure lookup: alias-aware, exact-match only.
 func registryLookup(models map[string]ModelInfo, provider, id string) (ModelInfo, bool) {
 	if len(models) == 0 {
 		return ModelInfo{}, false
@@ -402,14 +379,8 @@ func registryLookup(models map[string]ModelInfo, provider, id string) (ModelInfo
 	return m, ok
 }
 
-// applyRegistryMeta fills a model's EMPTY metadata fields from a registry entry.
-//
-// It never overwrites a value the provider's own probe reported (the probe is the
-// authority on its own models) and never clears one. Provenance is stamped ONLY
-// when a field actually came from here, so a row whose metadata is entirely
-// provider-reported never claims the registry as its source.
-//
-// Returns true when at least one field was taken.
+// Provenance is stamped ONLY when a field actually came from here, so a row whose metadata is
+// entirely provider-reported never claims the registry as its source.
 func applyRegistryMeta(m *ModelInfo, r ModelInfo) bool {
 	used := false
 	if m.Context <= 0 && r.Context > 0 {

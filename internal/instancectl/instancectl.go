@@ -16,9 +16,6 @@ import (
 )
 
 // Instance is one manageable server: what it is called, where its state lives, what it is doing.
-//
-// It is the DTO both GUIs render. Deliberately flat and JSON-friendly — the desktop receives it through
-// Wails and the TUI through a plain call, and neither should have to reshape it.
 type Instance struct {
 	Name    string `json:"name"`
 	DataDir string `json:"dataDir"`
@@ -85,13 +82,6 @@ const (
 )
 
 // planeOps is the SUBSET of planebind this contract needs: the three short verbs and a status read.
-//
-// AN INTERFACE RATHER THAN THE CONCRETE TYPE, for two reasons. It is the whole dependency — a reader can
-// see at a glance that managing an instance needs no more than these four calls. And it makes every
-// outcome drivable in a test, including the ones a real plane will not produce on demand (a stop that
-// leaves an unidentifiable process alone, a restart that only half-succeeded). planebind's own seams are
-// unexported by design, so faking a result through it is not possible — which is right for production and
-// useless for a test.
 type planeOps interface {
 	Status(name string) (planebind.StatusDTO, error)
 	Start(name string) (planebind.ActionDTO, error)
@@ -109,10 +99,6 @@ var newPlaneService = func(out interface{ Write([]byte) (int, error) }) planeOps
 }
 
 // List returns every instance on this machine, sorted by name.
-//
-// THE DIRECTORY IS THE RECORD — the same definition `orchicon` itself uses. An instance exists because
-// its state directory exists, which is the only definition that also covers one created by hand
-// (`orchicon install --instance mine`), not just the three the port table pre-books.
 func List() ([]Instance, error) {
 	dirs, err := instanceDirs()
 	if err != nil {
@@ -122,9 +108,7 @@ func List() ([]Instance, error) {
 	for _, name := range dirs {
 		inst, err := Status(name)
 		if err != nil {
-			// ONE UNREADABLE INSTANCE MUST NOT HIDE THE OTHERS. The list is the management screen's
-			// whole content; failing it wholesale because one directory is odd would leave the operator
-			// with an empty page and no way to act on the ones that ARE fine.
+			// ONE UNREADABLE INSTANCE MUST NOT HIDE THE OTHERS.
 			out = append(out, Instance{
 				Name:    name,
 				DataDir: instanceDir(name),
@@ -223,14 +207,7 @@ func act(name, action string, opts Options, fn func(planeOps) (planebind.ActionD
 	return res, nil
 }
 
-// Install sets an instance up. It SPAWNS the CLI and returns as soon as the process is started, because
-// a real install downloads ~500 MB and initialises a cluster — minutes, not milliseconds.
-//
-// PROGRESS IS THE FILE, not this return value: the caller polls SetupProgress. That is why the result's
-// outcome is OutcomeSpawned and why a spawn failure is the only error that can be reported here.
-//
-// A GUI MUST NOT BLOCK ON THIS. The MSI already learned that lesson from the other side: holding a
-// wizard open for the download is what made setup look like a hang.
+// Install sets an instance up. A GUI MUST NOT BLOCK ON THIS.
 func Install(name string, opts Options) (Result, error) {
 	if err := instance.ValidateName(name); err != nil {
 		return Result{Action: "install", Instance: name, Outcome: OutcomeFailed, Message: err.Error()}, err
@@ -239,13 +216,6 @@ func Install(name string, opts Options) (Result, error) {
 }
 
 // installArgs is the command line Install runs, split out so it can be asserted without spawning.
-//
-// THE ARGS ARE THE CONTRACT with the single implementation. A test that only checked "Install spawns
-// something" would pass while the flags drifted; these are what the CLI actually reads.
-//
-// NO PORTS PINNED MEANS NO --port AT ALL, and that is load-bearing rather than tidy: an unpinned reinstall
-// must leave the instance's own recorded ports alone. Passing the defaults explicitly is how an existing
-// instance's database gets renumbered onto the next free port (the 5433 bug).
 func installArgs(name string, opts Options) []string {
 	args := []string{"install", "--non-interactive", "--instance", name}
 	for _, kv := range sortedPortArgs(opts.Ports) {
@@ -258,11 +228,6 @@ func installArgs(name string, opts Options) []string {
 }
 
 // Uninstall removes an instance, or every instance when name is "".
-//
-// IT REFUSES TO PURGE WITHOUT ConfirmPurge — not because the CLI needs it (the CLI's --purge IS the
-// confirmation), but because the three callers of this function are GUIs whose job is to make an
-// irreversible act deliberate. Encoding that here means neither client can forget it, and the refusal is
-// a typed outcome rather than a thrown error so the UI can render it as a question.
 func Uninstall(name string, opts Options) (Result, error) {
 	if name != "" {
 		if err := instance.ValidateName(name); err != nil {
@@ -296,10 +261,7 @@ func spawn(name, action string, args []string, out interface{ Write([]byte) (int
 		return Result{Action: action, Instance: name, Outcome: OutcomeFailed, Message: err.Error()}, err
 	}
 	cmd := newCommand(bin, args...)
-	// AN EXPLICIT WORKING DIRECTORY, NEVER THE APP'S. See spawndir.go: a GUI launched by an installer can
-	// inherit a directory that has since been removed, and Windows then refuses to create ANY child
-	// (ERROR_DIRECTORY, "The directory name is invalid") — which looked like "the directory the desktop ran
-	// from" and made creating a server fail only when the app was launched from the installer.
+	// AN EXPLICIT WORKING DIRECTORY, NEVER THE APP'S.
 	cmd.Dir = spawnDir()
 	cmd.Stdout = writerOrDiscard(out)
 	cmd.Stderr = writerOrDiscard(out)
@@ -342,34 +304,8 @@ func sortedPortArgs(ports map[string]int) []string {
 	return out
 }
 
-// instanceMarkers are the entries that make a directory an INSTANCE rather than merely a directory that
-// happens to share the naming convention.
-//
-// THE BUG THIS EXISTS FOR. `orchicon-desktop` is real: the desktop app keeps its WebView state there
-// (`hsts-storage.sqlite`, `localstorage`, `storage`, `mediakeys`). Listing every `orchicon-*` directory made
-// that appear in the TUI as a server called "desktop" — which is not a server, cannot be started, and made
-// the list look wrong to the one person who knows what the names should be.
-//
-// ANY ONE MARKER IS ENOUGH, because a partially-created instance must not be invisible: the resolver unpacks
-// into bin/, the install writes config/, the supervisor writes serve/, and postgres/blobs appear with the
-// first boot. The desktop's directory has none of them.
-// INSTALLATION MARKERS ONLY — NOT DATA.
-//
-// THE SECOND BUG THE SERVER LIST HAD. `orchicon uninstall` KEEPS the operator's data by default (postgres/,
-// blobs/, secrets/, backups/) and removes only the infrastructure. With `postgres` and `blobs` in this list,
-// a keep-data uninstall left a directory that still looked like an installation — so the operator removed a
-// server and the server stayed on the screen. They then checked the TUI and a restarted app, and reported
-// precisely that: the deletion works, the SCREEN is wrong.
-//
-// What remains after a keep-data uninstall is leftover DATA with no server attached to it. It is not an
-// installation: there are no binaries to run, no config, no ports, no plane. Listing it as one offered a
-// Start button for something that cannot start, which is worse than not showing it.
-//
-// THIS DOES NOT HIDE A PARTIALLY-CREATED INSTANCE, which is what the old "any marker" rule existed to
-// prevent. Every stage of an install writes infrastructure FIRST: the resolver unpacks bin/, the install
-// records ports.json and writes config/, and the supervisor writes serve/. Postgres and blobs only ever
-// appear AFTER those, on the first boot. So there is no stage at which a real (even half-built) instance has
-// data and nothing else.
+// instanceMarkers are the entries that make a directory an INSTANCE rather than merely a directory
+// that happens to share the naming convention. INSTALLATION MARKERS ONLY — NOT DATA.
 var instanceMarkers = []string{"bin", "config", "serve", "ports.json", "infra-binaries.json"}
 
 // isInstanceDir reports whether dir holds instance state.

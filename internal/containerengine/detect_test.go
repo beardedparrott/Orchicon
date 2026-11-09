@@ -26,11 +26,8 @@ func runFunc(f func(bin string, args []string) (string, error)) func(context.Con
 	return func(_ context.Context, bin string, args ...string) (string, error) { return f(bin, args) }
 }
 
-// testProbe is a Probe that can only see what the test gives it: `bins` is PATH (plus the
-// package managers), every conventional location does not exist, and Run is whatever the
-// test says. That is the same posture cmd/orchicon/install_host_test.go takes with a fake
-// binary in a t.TempDir(), made stricter so a developer machine WITH podman installed still
-// runs the absent cases.
+// testProbe is a Probe that can only see what the test gives it: `bins` is PATH (plus the package
+// managers), every conventional location does not exist, and Run is whatever the test says.
 func testProbe(goos string, env map[string]string, bins map[string]string, run func(bin string, args []string) (string, error)) Probe {
 	return Probe{
 		LookPath: func(name string) (string, error) {

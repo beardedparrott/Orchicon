@@ -11,9 +11,8 @@ import (
 
 const fakePodman = "/fake/bin/podman"
 
-// TestMachineNotApplicableOnLinux is the state that must never be reported as a problem:
-// Linux talks to the kernel, and the WSL installer path is Linux too. NOTHING may run — not
-// even `podman machine list`, which does not exist there.
+// TestMachineNotApplicableOnLinux is the state that must never be reported as a problem: Linux
+// talks to the kernel, and the WSL installer path is Linux too.
 func TestMachineNotApplicableOnLinux(t *testing.T) {
 	p := testProbe("linux", nil, map[string]string{"podman": fakePodman}, func(bin string, args []string) (string, error) {
 		t.Fatalf("linux must not invoke podman at all, ran %s %v", bin, args)
@@ -34,9 +33,8 @@ func TestMachineNotApplicableOnLinux(t *testing.T) {
 	}
 }
 
-// TestMachineStatusStates pins the four machine states from fixtures: the JSON shapes are
-// what `podman machine list --format json` actually prints, and the state decides the
-// message the operator sees (AC3).
+// TestMachineStatusStates pins the four machine states from fixtures: the JSON shapes are what
+// `podman machine list --format json` actually prints.
 func TestMachineStatusStates(t *testing.T) {
 	for _, c := range []struct {
 		name    string

@@ -1,13 +1,7 @@
 package askorchicon
 
-// ask_card_promote_test.go — an ask is recognised from its RESULT, and it survives the turn-end repair.
-//
-// REPORTED across three rounds: "Both say they sent a card, but no actual card appeared" then "the card
-// goes away before I can click on it … tool call aborted" then "that card in the GUI never went away
-// either". Each round is pinned here, because each was a real failure of this pipeline.
-//
-// The payloads are COPIED FROM THIS DEPLOYMENT'S OWN TRANSCRIPT TABLE, which is what makes these a
-// regression test rather than a restatement of the parser.
+// ask_card_promote_test.go — an ask is recognised from its RESULT, and it survives the turn-end
+// repair.
 
 import (
 	"encoding/json"
@@ -75,10 +69,6 @@ func TestOnlyARecordedAskIsPromoted(t *testing.T) {
 }
 
 // TestAPromotedAskSurvivesTheLedgerRepair — round two: the card must not VANISH at turn end.
-//
-// The card existed; sanitizeAssistantToolLedger appended "tool call aborted — the turn ended before this
-// tool returned a result" to it, and the clients settle a card as soon as its call HAS a result. The
-// marker is why the repair has nothing to add.
 func TestAPromotedAskSurvivesTheLedgerRepair(t *testing.T) {
 	l := &toolLedger{}
 	l.recordStart("execute")

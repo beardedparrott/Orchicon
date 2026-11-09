@@ -57,9 +57,8 @@ import (
 
 // The three Windows facts stdlib syscall does not spell out. See the file header.
 const (
-	// processQueryLimitedInformation (PROCESS_QUERY_LIMITED_INFORMATION) is the smallest access right that
-	// can read an exit code and an image path, so it works against a plane this process did not start and
-	// against one running at another integrity level.
+	// processQueryLimitedInformation (PROCESS_QUERY_LIMITED_INFORMATION) is the smallest access right
+	// that can read an exit code and an image path.
 	processQueryLimitedInformation = 0x1000
 	// stillActive is STILL_ACTIVE: GetExitCodeProcess reports it while the process has not terminated.
 	stillActive = 259
@@ -91,9 +90,8 @@ func processAlive(pid int) bool {
 	return code == stillActive
 }
 
-// procStateChar reports nothing: Windows has no POSIX process state, and in particular no zombie state that
-// a live PID could linger in. The exit-code test in processAlive is the whole answer. ok=false means "this
-// platform cannot say", which PidAlive already handles.
+// procStateChar reports nothing: Windows has no POSIX process state, and in particular no zombie
+// state that a live PID could linger in.
 func procStateChar(pid int) (byte, bool) { return 0, false }
 
 // procExe resolves the IMAGE PATH of a running process — the Windows equivalent of reading
@@ -120,15 +118,8 @@ func procExe(pid int) (string, error) {
 	return syscall.UTF16ToString(buf[:n]), nil
 }
 
-// Drift identifies the serving plane from the instance's PID file and compares its image path with this
-// binary's.
-//
 // IT RETURNS `Current` OR `Unknown`, NEVER `Drifted` — see the file header for why the Unix drift
 // fingerprint cannot arise on Windows, which makes that arm unreachable rather than unimplemented.
-//
-// The comparison is CASE-INSENSITIVE (`strings.EqualFold`) because Windows paths are: `filepath.EvalSymlinks`
-// does not normalise case, so a byte comparison would report "not ours" for the same file spelled two ways
-// and leave a stale plane running after an upgrade.
 func Drift(instance string, out io.Writer) DriftState {
 	self, err := executable()
 	if err != nil {
@@ -156,12 +147,6 @@ func Drift(instance string, out io.Writer) DriftState {
 }
 
 // UnrecordedPlanePID is the Unix discovery seam, and on Windows it is deliberately always false.
-//
-// The Unix implementation attributes a listening process to an instance by reading /proc/<pid>/environ for the
-// instance tag. Windows has no equivalent that can prove WHICH instance a listening process belongs to, and
-// the file's own rule is that a wrong attribution must surface as "cannot identify" rather than as a wrong
-// guess — stopping a sibling instance's plane is the failure this whole file is shaped to avoid. So Windows
-// keeps the PID file as its only source, which is exactly today's behaviour.
 func UnrecordedPlanePID(string) (int, bool) { return 0, false }
 
 // ServingPlanePID reads the instance's detached-plane PID file and reports whether that process is alive.
@@ -191,16 +176,7 @@ func ServingPlaneAlive(instance string) bool {
 	return processAlive(pid)
 }
 
-// TerminateProcess force-stops a host process. WINDOWS HAS NO SIGTERM, so this is SIGKILL semantics:
-// TerminateProcess runs no shutdown hook, so the plane never flushes or stops its children, and its own
-// children are NOT reaped (the sweep that would collect them is inert here — see serve_reap_windows.go).
-//
-// IT IS LOAD-BEARING, NOT VESTIGIAL: cmd/orchicon's sendForceStop is this function on Windows, and that is
-// the whole stop path for `serve --stop` and the supervisor's shutdown escalation (signals_windows.go) — so
-// every Windows stop is a force stop with the consequences above. `orchicon install` and reclaim's
-// force-kill arm reach it through cmd/orchicon's terminateProcess; reclaim itself identifies no process on
-// this platform (reclaim_proc_windows.go), so that arm is unreachable HERE and the two paths above are the
-// live ones. It refuses this process's own PID.
+// TerminateProcess force-stops a host process.
 func TerminateProcess(pid int) error {
 	if pid <= 0 {
 		return fmt.Errorf("refusing to terminate pid %d", pid)
@@ -244,9 +220,7 @@ func TerminateProcessTree(pid int) error {
 	if out, err := procwin.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").CombinedOutput(); err == nil {
 		return nil
 	} else {
-		// FALL BACK to terminating the supervisor itself. The children may survive — the lock
-		// sweep exists for exactly that — but the supervisor is the thing that was asked to
-		// stop, so it must go.
+		// FALL BACK to terminating the supervisor itself.
 		_ = out
 	}
 	return TerminateProcess(pid)
@@ -255,18 +229,6 @@ func TerminateProcessTree(pid int) error {
 // ----- instance-scoped process identity -----
 
 // procsUnder is the set of processes whose IMAGE lives inside a directory tree, with their parents.
-//
-// WINDOWS HAS NO /proc, SO IDENTITY IS DERIVED FROM THE IMAGE PATH — which is enough here, and better
-// than a heuristic, because an instance's supervised children are run from the instance's OWN bin and
-// data directories. That is a property of the deployment, not of a naming convention: the resolver
-// unpacks postgres, nats and the telemetry binaries under <dataDir>/bin, and postgres itself execs its
-// per-connection backends from that same bin directory.
-//
-// It is what makes "did my stop actually stop everything?" answerable on this platform at all. Today it
-// is not: see reclaim_proc_windows.go, where leftovers are REPORTED and never cleared, so a stopped
-// instance can leave a process holding the postgres socket for ever.
-// ProcInfo is one process's identity. Created is what separates a LEFTOVER from a process that is starting
-// RIGHT NOW — see the Unix half for the measured failure a check without it produced.
 type ProcInfo struct {
 	PID     int
 	PPID    int
@@ -275,10 +237,7 @@ type ProcInfo struct {
 }
 
 // ProcessesUnder returns every process whose executable path is inside root, using the Toolhelp32
-// snapshot API. os.ErrNotExist means "no such processes"; an error means the snapshot itself failed.
-//
-// PATHS ARE COMPARED AFTER NORMALISATION, case-insensitively, because Windows is: a process started as
-// C:\Users\x\... and a root recorded as c:/users/x/... are the same tree.
+// snapshot API.
 func ProcessesUnder(root string) ([]ProcInfo, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, nil
@@ -334,10 +293,6 @@ const (
 )
 
 // snapshotProcesses enumerates every process's PID, parent PID and image path.
-//
-// IMAGE PATHS COME FROM QueryFullProcessImageNameW, NOT from PROCESSENTRY32W's szExeFile, which holds
-// only the BASE NAME. A base name cannot distinguish this instance's postgres from the operator's own
-// database install, and that distinction is the whole point of asking.
 func snapshotProcesses() ([]ProcInfo, error) {
 	h, _, err := procCreateToolhelp32Snapshot.Call(th32csSnapProcess, 0)
 	if uintptr(h) == invalidHandle {
@@ -439,9 +394,6 @@ func TerminateSubtree(root int, procs []ProcInfo, eligible func(ProcInfo) bool) 
 }
 
 // processCreated reads a process's creation time via GetProcessTimes.
-//
-// A zero time means "could not read", which callers treat as NOT a leftover — the direction whose mistake
-// is a refusal that names the process, rather than a start that fights its own child.
 var procGetProcessTimes = modkernel32.NewProc("GetProcessTimes")
 
 func processCreated(pid int) time.Time {
@@ -464,11 +416,6 @@ func processCreated(pid int) time.Time {
 }
 
 // WaitGone blocks until none of pids is alive, up to timeout, and reports what survived.
-//
-// A TERMINATE IS ASYNCHRONOUS: TerminateProcess returns as soon as the request is accepted, so a caller
-// that immediately re-binds the port races the kernel's teardown. Every one of this tool's stop paths
-// needs the WAIT, not the signal, and the survivors it names are what turn "it did not work" into a
-// diagnosis.
 func WaitGone(pids []int, timeout time.Duration) []int {
 	deadline := time.Now().Add(timeout)
 	for {

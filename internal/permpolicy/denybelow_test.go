@@ -7,9 +7,7 @@ import (
 	"testing"
 )
 
-// AC: the consent card must be able to say which deny entries a session grant
-// cannot override. That is exactly the entries at or below the granted
-// directory.
+// AC: the consent card must be able to say which deny entries a session grant cannot override.
 
 // TestDenyBelow_EqualAndUnderTheDirectory covers the two reachable shapes: the
 // entry IS the directory, and the entry lives under it.
@@ -62,9 +60,7 @@ accept: []
 	}
 }
 
-// TestDenyBelow_UnrelatedEntryAndGlobAboveAreNotReported: only entries inside
-// the directory count. An unrelated path and a directory-independent glob do
-// not.
+// TestDenyBelow_UnrelatedEntryAndGlobAboveAreNotReported: only entries inside the directory count.
 func TestDenyBelow_UnrelatedEntryAndGlobAboveAreNotReported(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -51,8 +51,7 @@ func raiseOpenQuestion(t *testing.T, ct *consentTurn, id, question string) *pend
 }
 
 // TestWaitingOnOperatorNamesWhatTheTurnIsWaitingFor pins the helper that lets a turn which dies
-// parked say WHY — and that a turn waiting on nothing still reports nothing, so the ordinary
-// model-facing message is what a genuinely quiet turn still gets.
+// parked say WHY — and that a turn waiting on nothing still reports nothing.
 func TestWaitingOnOperatorNamesWhatTheTurnIsWaitingFor(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
@@ -70,9 +69,7 @@ func TestWaitingOnOperatorNamesWhatTheTurnIsWaitingFor(t *testing.T) {
 		t.Fatalf("waitingOnOperator = (%q, %v), want the question being waited on", got, ok)
 	}
 
-	// A PERMISSION is named by its target — the same fact its card shows. It gets its own service:
-	// the registry is keyed by conversation and every test turn is "conv-1", so the question above
-	// would otherwise still be the open ask this turn is waiting on.
+	// A PERMISSION is named by its target — the same fact its card shows.
 	permSvc := testConsentService()
 	perm := newTestConsentTurn(permSvc, "/p/proj", true, nil)
 	if _, _, refusal := perm.decide(context.Background(), "ses_1", fileAskEvent("per_1", "write", "/p/sibling/x.md")); refusal != "" {
@@ -104,9 +101,8 @@ func TestAQuestionThatRunsOutOfTimeIsUnansweredNotExpired(t *testing.T) {
 		t.Fatalf("a question nobody answered resolved as %q — clients fold `expired` into a REFUSAL, "+
 			"which records a decision the operator never made", res.GetOutcome())
 	}
-	// AND THE SERVE IS STILL ANSWERED `reject`: opencode holds the tool call, and leaving it open
-	// would leave the session holding a phantom permission. That part is deliberately unchanged —
-	// what the operator's CLIENTS are told is the part that was wrong.
+	// AND THE SERVE IS STILL ANSWERED `reject`: opencode holds the tool call, and leaving it open would
+	// leave the session holding a phantom permission.
 	if got := client.got(); len(got) != 1 || got[0] != "reject" {
 		t.Fatalf("decisions sent to the serve = %v, want [reject]", got)
 	}
@@ -114,21 +110,6 @@ func TestAQuestionThatRunsOutOfTimeIsUnansweredNotExpired(t *testing.T) {
 
 // TestAParkedTurnOutlivesTheReplyWindowAndStillTakesTheAnswer is the case the operator reported,
 // end to end, and it REVERSES a deliberate decision that this file used to pin.
-//
-// WHAT IT USED TO DO: the parked turn was ended by the reply window on purpose, and the failure was
-// worded to blame the WAIT rather than the model — "this turn was waiting on YOUR answer for 30m0s
-// and has ended ... reply in your own words". That wording fixed the misattribution but left the
-// operator with a DEAD CARD: the expiry runs the turn's finalize, which answers the serve `reject`,
-// so the tool call the card was holding is gone.
-//
-// The operator: "if an ask or permission card has been waiting for awhile (i.e. away from keyboard),
-// I can no longer click into it or use the keyboard to select it." Both gestures need the ask to
-// still be OPEN. So the window now RE-ARMS while the turn is parked (see the window.C arm in chat.go)
-// and the TTL sweep spares it too — the wait belongs to the operator, and a decision, not a timer,
-// is what ends it.
-//
-// THE MODEL'S OWN SILENCE IS UNCHANGED, and pinned separately by TestCollectConversationReplyTimeout:
-// a turn with no card on screen still dies at the window with the model-facing message.
 func TestAParkedTurnOutlivesTheReplyWindowAndStillTakesTheAnswer(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REPLY_WINDOW", "100ms")
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
@@ -160,8 +141,7 @@ func TestAParkedTurnOutlivesTheReplyWindowAndStillTakesTheAnswer(t *testing.T) {
 	}
 
 	// THE ASK IS STILL OPEN, which is the whole precondition for either gesture working: a click
-	// resolves through pendingConsentItem and the keyboard through the screen's claim, and both
-	// require Pending().
+	// resolves through pendingConsentItem and the keyboard through the screen's claim.
 	if !svc.pending.hasOpenAsk("conv-1") {
 		t.Fatal("the ask must still be open after the window passed — otherwise the operator's click " +
 			"and keys have nothing to land on")

@@ -175,9 +175,8 @@ type legacyUsage struct {
 	} `json:"inputTokenDetails"`
 }
 
-// legacyNoCache derives no-cache input tokens: total input is
-// cache-INCLUSIVE, so noCache = max(0, total − cacheRead − cacheWrite)
-// (mirrors the reference plugin's ccUsageToAiSdkUsage).
+// legacyNoCache derives no-cache input tokens: total input is cache-INCLUSIVE, so noCache = max(0,
+// total − cacheRead − cacheWrite) (mirrors the reference plugin's ccUsageToAiSdkUsage).
 func legacyNoCache(total, cacheRead, cacheWrite int64) int64 {
 	d := total - cacheRead - cacheWrite
 	if d < 0 {
@@ -191,9 +190,8 @@ func legacyUsageToUsage(u *legacyUsage) Usage {
 	if u == nil {
 		return Usage{}
 	}
-	// InputTokens normalizes to noCache = total − cacheRead − cacheWrite
-	// (ADR-0003 D6): totalUsage input is cache-INCLUSIVE and normalized
-	// Usage prices the cache sub-buckets separately.
+	// InputTokens normalizes to noCache = total − cacheRead − cacheWrite (ADR-0003 D6): totalUsage
+	// input is cache-INCLUSIVE and normalized Usage prices the cache sub-buckets separately.
 	return Usage{
 		InputTokens:      legacyNoCache(u.InputTokens, u.InputTokenDetails.CacheReadTokens, u.InputTokenDetails.CacheWriteTokens),
 		OutputTokens:     u.OutputTokens,
@@ -213,10 +211,8 @@ func mapLegacyStop(reason string) StopReason {
 	case "content-filter":
 		return StopContentFilter
 	default:
-		// An empty/unrecognized finishReason is NOT an end-of-turn signal —
-		// StopOther is the honest terminal (the loop's success gate treats
-		// it as a failure). Synthesizing StopStop from "" recorded hollow
-		// successes on truncated responses.
+		// An empty/unrecognized finishReason is NOT an end-of-turn signal — StopOther is the honest
+		// terminal (the loop's success gate treats it as a failure).
 		return StopOther
 	}
 }
@@ -226,10 +222,8 @@ type legacyStream struct {
 	r    *sseReader
 	body io.Closer
 
-	// think splits GLM-style INLINE reasoning (the "think" tag pair in
-	// text-delta content) into ReasoningDelta events (thinksplit.go) —
-	// the same global routing every provider wire applies, so folded
-	// thinking never renders raw in the execution chat on any transport.
+	// think splits GLM-style INLINE reasoning (the "think" tag pair in text-delta content) into
+	// ReasoningDelta events (thinksplit.go) — the same global routing every provider wire applies.
 	think *thinkSplitter
 	// pending queues splitter output (+ the trailing Finish) so one
 	// decoded frame can surface several events across Next calls.
@@ -288,10 +282,8 @@ func (s *legacyStream) Next(ctx context.Context) (Event, bool, error) {
 			if t == "" {
 				continue
 			}
-			// Inline-reasoning routing (thinksplit.go): a "think" tag pair
-			// inside the delta becomes ReasoningDelta, everything else
-			// passes through as TextDelta. A fully-held split-tag prefix
-			// yields no event yet — keep decoding.
+			// Inline-reasoning routing (thinksplit.go): a "think" tag pair inside the delta becomes
+			// ReasoningDelta, everything else passes through as TextDelta.
 			s.think.feed(t, &s.pending)
 			if len(s.pending) > 0 {
 				ev := s.pending[0]
@@ -335,15 +327,12 @@ func (s *legacyStream) Next(ctx context.Context) (Event, bool, error) {
 func (s *legacyStream) flush() (Event, bool, error) {
 	s.drained = true
 	if s.stop == "" {
-		// NO finish event arrived: the stream ended without an
-		// end-of-response signal — a truncated/aborted generation, not a
-		// completed turn (parity: openaicompat/anthropic report StopOther
-		// here; synthesizing StopStop recorded hollow successes).
+		// NO finish event arrived: the stream ended without an end-of-response signal — a truncated/aborted
+		// generation, not a completed turn (parity: openaicompat/anthropic report StopOther here.
 		s.stop = StopOther
 	}
-	// Drain any think-splitter holdback first so a truncated final tag
-	// cannot swallow the response tail; an unterminated think block
-	// drains to reasoning, never text.
+	// Drain any think-splitter holdback first so a truncated final tag cannot swallow the response
+	// tail; an unterminated think block drains to reasoning, never text.
 	s.think.drain(&s.pending)
 	s.pending = append(s.pending, Finish{StopReason: s.stop, Usage: s.usage})
 	ev := s.pending[0]

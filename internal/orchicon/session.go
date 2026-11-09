@@ -17,17 +17,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// ErrPanic is returned by Session.Run when a panic inside the agent loop
-// (tool execution, provider callback, transcript append) is recovered at
-// the session boundary. The execution fails with the panic captured in
-// its error output; the transcript is marked failed; the control-plane
-// process and sibling executions survive.
+// ErrPanic is returned by Session.Run when a panic inside the agent loop (tool execution, provider
+// callback, transcript append) is recovered at the session boundary.
 var ErrPanic = errors.New("session panic recovered")
 
 // Identity is the session's identity block (isolation by construction).
-// One session per worker execution: session id == execution id. The
-// identity carries the worker's name/purpose + this task's description/
-// acceptance criteria so no worker ever sees another worker's transcript.
 type Identity struct {
 	ExecutionID        string
 	TenantID           string
@@ -44,10 +38,7 @@ type Identity struct {
 	AcceptanceCriteria string // manifest.AcceptanceCriteria
 }
 
-// ToolRegistry is the tool-execution surface the loop consumes. The
-// tool-suite task provides the real implementation; tests inject a mock.
-// The loop is written against this interface so a signature tweak is
-// localized.
+// ToolRegistry is the tool-execution surface the loop consumes.
 type ToolRegistry interface {
 	// Defs returns the tool definitions advertised to the model each turn.
 	Defs() []ToolDef
@@ -56,10 +47,8 @@ type ToolRegistry interface {
 	Execute(ctx context.Context, name, argsJSON string) (resultJSON string, err error)
 }
 
-// Session is ONE worker execution's agent session: identity, provider
-// bound once at session start, the tool registry, and the crash-safe
-// transcript. It runs the agent turn loop (loop.go) and is the unit of
-// resume/continuation (the JSONL transcript is replayable).
+// Session is ONE worker execution's agent session: identity, provider bound once at session start,
+// the tool registry, and the crash-safe transcript.
 type Session struct {
 	id         string // session id == execution id
 	identity   Identity
@@ -72,99 +61,55 @@ type Session struct {
 	history []Message
 	// output accumulates the session's assistant text (OnResult parity).
 	output *strings.Builder
-	// pendingObserver holds a transcript observer set before the
-	// transcript exists (SetTranscriptObserver pre-Run); OpenTranscript
-	// applies it.
+	// pendingObserver holds a transcript observer set before the transcript exists
+	// (SetTranscriptObserver pre-Run); OpenTranscript applies it.
 	pendingObserver func(seq int64, typ string, data []byte)
 	// inj is the mid-run injection queue (nil until first inject).
 	inj *injected
-	// continuationPath is the prior session's transcript path when this
-	// session resumes a sequence chain (sequence-continuation flag,
-	// opt-in default off). Seeded into the transcript at Run time.
+	// continuationPath is the prior session's transcript path when this session resumes a sequence
+	// chain (sequence-continuation flag, opt-in default off).
 	continuationPath string
-	// continued records that the transcript was seeded from a prior
-	// session (goal-append gate: a continued session carries its own new
-	// goal as a user message after the seeded history).
+	// continued records that the transcript was seeded from a prior session (goal-append gate: a
+	// continued session carries its own new goal as a user message after the seeded history).
 	continued bool
-	// followUp marks a session running a follow-up question against a
-	// TERMINAL execution (ContinueSession). It continues the SAME session
-	// in place: the prior transcript is replayed into history, the follow-up
-	// question is appended as the user message, and the loop runs with the
-	// worker's tools. The decision-signal gate (ORCHICON WORKER SUMMARY) is
-	// disabled — a follow-up answers a question, it does not complete a
-	// worker run.
+	// followUp marks a session running a follow-up question against a TERMINAL execution
+	// (ContinueSession).
 	followUp         bool
 	followUpQuestion string
-	// completionProbesSent counts the completion-probe interjections this
-	// session has sent (decision-signal guard, completion.go). Bounded by
-	// completionProbeMaxTurns — a session that cannot deliver its
-	// ORCHICON WORKER SUMMARY sign-off within the budget fails honestly
-	// instead of recording a hollow success. 2026-09-09 probe-loop fix:
-	// this budget NEVER resets on chatter (a bare status-line reply does
-	// not count as answering); it resets ONLY on the WORKING token, the
-	// probe's explicit mid-task continue answer (nudgeObserved).
+	// completionProbesSent counts the completion-probe interjections this session has sent
+	// (decision-signal guard, completion.go).
 	completionProbesSent int
-	// completionProbeAwaiting marks a completion probe whose reply has NOT
-	// arrived yet (2026-09-09 liveness-kill parity fix with the opencode
-	// adapter). Set when a probe is interjected; cleared ONLY when the
-	// reply ANSWERS the probe — the decision marker or the WORKING token
-	// (nudgeObserved + completionProbeReply). A bare status-line reply
-	// (the 15-probe loop in transcript 01M23C2MTF1ZYYHE8ACK17PMKV) is not
-	// an answer: the awaiting flag stays set and the budget counts the
-	// probe, so the loop is bounded by completionProbeMaxTurns.
+	// Set when a probe is interjected; cleared ONLY when the reply ANSWERS the probe — the decision
+	// marker or the WORKING token (nudgeObserved + completionProbeReply).
 	completionProbeAwaiting bool
-	// completionProbeSawReply records that at least one NON-EMPTY turn
-	// streamed since the outstanding probe was sent but did NOT answer it
-	// (a bare status line). The gate uses it to distinguish "the provider
-	// returned an empty turn — the reply has not arrived, defer and
-	// re-queue" from "the model already replied with a non-answer — spend
-	// the budget slot and bound the probe loop".
+	// completionProbeSawReply records that at least one NON-EMPTY turn streamed since the outstanding
+	// probe was sent but did NOT answer it (a bare status line).
 	completionProbeSawReply bool
-	// completionProbeDeferrals bounds the consecutive unanswered-probe
-	// deferrals (runCompletionProbe): an EMPTY provider turn for a probe
-	// (zero deltas → immediate StopStop) clears nothing, so the defer path
-	// would loop forever without this bound. Cleared whenever a probe is
-	// actually answered (nudgeObserved). One deferral retry, then the
-	// honest completion_probe_no_response failure.
+	// completionProbeDeferrals bounds the consecutive unanswered-probe deferrals (runCompletionProbe):
+	// an EMPTY provider turn for a probe (zero deltas → immediate StopStop) clears nothing.
 	completionProbeDeferrals int
-	// probeWorkStarted is the probe-startup guard (2026-09-09, transcript
-	// 01M23C2MTF1ZYYHE8ACK17PMKV): set true the first time the session
-	// executes a tool call. While FALSE, the StopStop decision-signal gate
-	// is DISARMED — the probe fired 6s after dispatch against a model that
-	// had not streamed a token (its first turn ended empty/instantly and
-	// the gate read it as a cut-off summary). A session with no work
-	// evidence cannot be "cut off mid-summary": the gate only arms from
-	// the first tool call. A plain markerless settle before any tool work
-	// simply settles the turn (the wall-clock budget ladder is the
-	// backstop against a never-starting session).
+	// probeWorkStarted is the probe-startup guard (2026-09-09, transcript 01M23C2MTF1ZYYHE8ACK17PMKV):
+	// set true the first time the session executes a tool call.
 	probeWorkStarted bool
-	// lengthContinuationsSent counts the output-cap continuation turns
-	// (StopLength recovery, loop.go). Bounded by
-	// lengthContinuationMaxTurns — a session that keeps hitting the cap
-	// past the budget fails honestly instead of looping forever.
+	// lengthContinuationsSent counts the output-cap continuation turns (StopLength recovery, loop.go).
 	lengthContinuationsSent int
 	// written-tracking (deduped, OnWrittenFiles parity).
 	writtenMu    sync.Mutex
 	writtenSet   map[string]bool
 	writtenPaths []string
-	// envFacts is the per-run environment-facts block, rendered once at
-	// construction from manifest fields (constant within a run, so it
-	// lives INSIDE the cached static prefix — ADR-0009 D2).
+	// envFacts is the per-run environment-facts block, rendered once at construction from manifest
+	// fields (constant within a run, so it lives INSIDE the cached static prefix — ADR-0009 D2).
 	envFacts string
-	// prefixFingerprint is the sha256 (hex, first 16) of the composite
-	// prompt bytes this session's static prefix starts from — logged on
-	// change (a prefix change costs a cache miss, ADR-0009 D5).
+	// prefixFingerprint is the sha256 (hex, first 16) of the composite prompt bytes this session's
+	// static prefix starts from — logged on change (a prefix change costs a cache miss, ADR-0009 D5).
 	prefixFingerprint string
-	// mutable session-zone state (ADR-0009 D2): memory notes (insertion
-	// order) and the latest todowrite payload. Guarded by noteMu; never
-	// read while building the static prefix.
+	// mutable session-zone state (ADR-0009 D2): memory notes (insertion order) and the latest todowrite
+	// payload.
 	noteMu      sync.Mutex
 	notes       []string
 	latestTodos []byte
-	// projectDir is the TRUE project directory (manifest.ProjectDir) — the
-	// durable store location (memory.db / offload) is derived from it, NOT
-	// the per-run worktree path (worktrees are pruned per step; memory must
-	// survive).
+	// projectDir is the TRUE project directory (manifest.ProjectDir) — the durable store location
+	// (memory.db / offload) is derived from it.
 	projectDir string
 	// memStore is the durable agent-memory store (D2); nil = memory tools
 	// answer with a clear unavailable error.
@@ -179,14 +124,10 @@ type Session struct {
 	cs compactState
 	// startedAt anchors the wall-clock dimension of the budget ladder.
 	startedAt time.Time
-	// toolUses counts emitted tool calls (live, for the budget ladder's
-	// tool_call_count dimension — counted once per call at emission in
-	// drain, before the call executes).
+	// toolUses counts emitted tool calls (live, for the budget ladder's tool_call_count dimension —
+	// counted once per call at emission in drain, before the call executes).
 	toolUses int
-	// window cache: resolved once per session (never per-turn probed). The
-	// resolved ModelInfo (live ListModels result) carries the context hint
-	// AND the pricing used to price each turn's usage for the budget cost
-	// dimension — one live resolution serves both.
+	// window cache: resolved once per session (never per-turn probed).
 	windowMu       sync.Mutex
 	windowResolved bool
 	windowHint     ContextWindowHint
@@ -196,46 +137,35 @@ type Session struct {
 	cacheMu    sync.Mutex
 	cacheStats CacheStats
 
-	// usageSink drains one live provider-turn Usage for per-record emission
-	// (D2, opencode step_finish parity). Nil by default — the bridge wires
-	// it only when a usage recorder is configured. It is INDEPENDENT of
-	// recordTurnUsage / cacheStats: emitting a record must never double-feed
-	// the per-session cache rollup.
+	// usageSink drains one live provider-turn Usage for per-record emission (D2, opencode step_finish
+	// parity).
 	usageSink func(ctx context.Context, u Usage)
 
-	// execDir is the execution's working directory (manifest.WorktreePath
-	// when provisioned, else the project dir) — the observer-fallback root
-	// for the file-edit ledger hook (opencode executionDir parity).
+	// execDir is the execution's working directory (manifest.WorktreePath when provisioned, else the
+	// project dir) — the observer-fallback root for the file-edit ledger hook (opencode executionDir.
 	execDir string
-	// fileEdits is the diff-pipeline ledger hook, fired once per completed
-	// registry tool result in executeTools (the single funnel every
-	// native-loop provider shares). Nil = no ledger (DB-less planes, tests).
+	// fileEdits is the diff-pipeline ledger hook, fired once per completed registry tool result in
+	// executeTools (the single funnel every native-loop provider shares).
 	fileEdits opencode.FileEditHookFunc
 
-	// pm is the progress monitor (opencode parity — internal/orchicon/
-	// progress.go): time-based stall detection (no_progress / no_file_diff /
-	// text_loop / repetition / tool_hang) with the advisory-first nudge
-	// escalation. Started by Run, stopped at session end.
+	// pm is the progress monitor (opencode parity — internal/orchicon/ progress.go): time-based stall
+	// detection (no_progress / no_file_diff / text_loop / repetition / tool_hang).
 	pm *progressMonitor
-	// stallCh carries fatal stall reasons from the monitor to the loop's
-	// select (the loop unwinds; the verdict was already delivered by the
-	// monitor handler — fireTerminalOnce — so the loop never re-fires).
+	// stallCh carries fatal stall reasons from the monitor to the loop's select (the loop unwinds; the
+	// verdict was already delivered by the monitor handler — fireTerminalOnce.
 	stallCh chan string
 	// doneCh is closed when Run unwinds; the nudge reply watchdog listens
 	// so it never outlives the session.
 	doneCh chan struct{}
-	// terminalFired guards the ONE terminal OnResult per session (the
-	// monitor goroutine and the turn loop both own terminal paths —
-	// opencode parity: finish() is first-arrival-wins).
+	// terminalFired guards the ONE terminal OnResult per session (the monitor goroutine and the turn
+	// loop both own terminal paths — opencode parity: finish() is first-arrival-wins).
 	terminalMu    sync.Mutex
 	terminalFired bool
 	// nudgePending tracks an unanswered nudge (reply-window watchdog);
 	// nudgeFinished latches session end.
 	nudgePending  bool
 	nudgeFinished bool
-	// nudge knobs (opencode parity): manifest (tenant settings) first,
-	// env fallback. Resolved once at construction so the nudge budget is
-	// stable for the session's lifetime.
+	// nudge knobs (opencode parity): manifest (tenant settings) first, env fallback.
 	nudgeMaxVal         int
 	nudgeReplyWindowVal time.Duration
 	nudgeCooldownVal    time.Duration
@@ -243,20 +173,12 @@ type Session struct {
 	// (advisory-stall path); lastNudgeAt is the last nudge time (cooldown).
 	nudgesSent  int
 	lastNudgeAt time.Time
-	// contextWindowFallback is the work item's configured context window
-	// (ExecutionManifest.ContextWindow). Used as the compaction hint ONLY
-	// when the live provider resolution fails, so an operator-declared
-	// window still arms window-pressure math instead of leaving the
-	// trigger permanently disarmed. 0 = none.
+	// Used as the compaction hint ONLY when the live provider resolution fails, so an operator-declared
+	// window still arms window-pressure math instead of leaving the trigger permanently disarmed.
 	contextWindowFallback int64
 }
 
 // CacheStats is the session's prefix-cache metric rollup (ADR-0009 D6).
-// Turns counts provider turns; Hits counts turns the provider reported a
-// cache read on (hit), MissWrites turns that wrote cache (miss → write),
-// NoneTurns turns with neither. Cache tokens accumulate from per-turn
-// Usage. PrefixFingerprint identifies the static-prefix bytes the stats
-// were measured against.
 type CacheStats struct {
 	Turns             int64
 	Hits              int64
@@ -290,11 +212,7 @@ type ProviderResolver interface {
 	Get(ctx context.Context, tenantID, providerID string) (Provider, error)
 }
 
-// NewSession constructs a session for one execution. The provider is
-// resolved once here (model bound at session start — no per-turn model
-// switch). Sessions are per-execution; the JSONL path embeds the
-// execution id. `projectDir` is the daemon-level serve/guard boundary:
-// the transcript lives at <projectDir>/.orchicon/sessions/<id>.jsonl.
+// NewSession constructs a session for one execution.
 func NewSession(cfg SessionConfig) (*Session, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
@@ -384,9 +302,8 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 	// Work-item-declared context window (parity input): used only as the
 	// compaction hint fallback when the live provider resolution fails.
 	s.contextWindowFallback = int64(cfg.Manifest.ContextWindow)
-	// Static-prefix env facts (ADR-0009 D2): rendered once at
-	// construction from manifest fields — constant within a run, so the
-	// cached prefix is byte-identical across turns.
+	// Static-prefix env facts (ADR-0009 D2): rendered once at construction from manifest fields —
+	// constant within a run, so the cached prefix is byte-identical across turns.
 	s.envFacts = envFactsBlock(envFactsFields{
 		ProjectDir:   cfg.Manifest.ProjectDir,
 		WorktreePath: cfg.Manifest.WorktreePath,
@@ -411,18 +328,14 @@ func (s *Session) TranscriptPath() string {
 	return filepath.Join(s.dir, s.id+".jsonl")
 }
 
-// Transcript returns the session's transcript handle (nil before the
-// first OpenTranscript — Run opens it). The bridge sets its DB-mirroring
-// observer via SetTranscriptObserver BEFORE Run; the observer is applied
-// the moment the transcript opens, so no first-turn events are missed.
+// Transcript returns the session's transcript handle (nil before the first OpenTranscript — Run
+// opens it).
 func (s *Session) Transcript() *JSONLTranscript {
 	return s.transcript
 }
 
-// SetTranscriptObserver installs the transcript observer that the
-// session applies the instant its transcript opens in Run (before any
-// event is appended). Calling it after the transcript is already open
-// applies it immediately.
+// SetTranscriptObserver installs the transcript observer that the session applies the instant its
+// transcript opens in Run (before any event is appended).
 func (s *Session) SetTranscriptObserver(fn func(seq int64, typ string, data []byte)) {
 	if t := s.transcript; t != nil {
 		t.SetObserver(fn)
@@ -452,50 +365,30 @@ func (s *Session) History() []Message { return s.history }
 // SetHistory replaces the history (used by resume/continuation replay).
 func (s *Session) SetHistory(h []Message) { s.history = h }
 
-// SetContinuation marks this session as continuing a prior session's
-// transcript (sequence-continuation flag, opt-in default off). The prior
-// transcript must belong to the SAME worker (identity isolation) — the
-// bridge verifies this before calling; a mismatch is refused and the
-// session starts fresh. path is the prior session's JSONL path.
+// SetContinuation marks this session as continuing a prior session's transcript
+// (sequence-continuation flag, opt-in default off).
 func (s *Session) SetContinuation(path string) {
 	s.continuationPath = path
 }
 
-// SetFollowUp marks this session as a follow-up against a terminal
-// execution (ContinueSession). question is the user's follow-up message:
-// it is appended as the user message after the prior transcript is
-// replayed, and the decision-signal gate is disabled so the session
-// answers the question instead of demanding a worker summary sign-off.
-// The user's message is used verbatim — no injected framing preamble
-// (the 2026-09-09 'CONTINUATION INSTRUCTION' prefix was removed: it did
-// not help and added noise; the real follow-up fix is bounded replay, not
-// prompt rewording). The thread stays open: every reply is a valid turn
-// the user can build on with the next message.
+// SetFollowUp marks this session as a follow-up against a terminal execution (ContinueSession).
 func (s *Session) SetFollowUp(question string) {
 	s.followUp = true
 	s.followUpQuestion = question
 }
 
-// SetUsageSink registers a per-turn usage drain (D2, opencode step_finish
-// parity). The loop calls it once per provider turn with the LIVE
-// provider-reported usage (after pricing). It is a SEPARATE drain from
-// recordTurnUsage — the per-session CacheStats rollup never depends on
-// whether a per-record usage is emitted.
+// SetUsageSink registers a per-turn usage drain (D2, opencode step_finish parity).
 func (s *Session) SetUsageSink(fn func(ctx context.Context, u Usage)) {
 	s.usageSink = fn
 }
 
-// SetFileEditHook injects the diff-pipeline ledger hook. Nil = no ledger.
-// The bridge wires the server-built hook here; executeTools fires it once
-// per completed registry tool result (all native-loop providers share the
-// site, so ollama/commandcode/openaicompat are covered together).
+// SetFileEditHook injects the diff-pipeline ledger hook.
 func (s *Session) SetFileEditHook(fn opencode.FileEditHookFunc) {
 	s.fileEdits = fn
 }
 
-// AddMemoryNote persists one durable note into the session's mutable
-// zone (orchicon_memory_note tool). Bounded: the oldest notes drop past
-// maxMemoryNotes so the after-breakpoint block stays small.
+// AddMemoryNote persists one durable note into the session's mutable zone (orchicon_memory_note
+// tool).
 func (s *Session) AddMemoryNote(text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -525,11 +418,7 @@ func (s *Session) CacheStats() CacheStats {
 	return out
 }
 
-// recordTurnUsage folds one provider turn's usage into the session's
-// cache stats. The static-prefix fingerprint is exposed via
-// CacheStats.PrefixFingerprint so an operator can correlate a miss with
-// a prefix edit (ADR-0009 D5/D6); the per-path prefix-change logging
-// lives at the composite-build layer (scheduler prompt-section cache).
+// recordTurnUsage folds one provider turn's usage into the session's cache stats.
 func (s *Session) recordTurnUsage(u Usage) {
 	s.cacheMu.Lock()
 	s.cacheStats.Turns++

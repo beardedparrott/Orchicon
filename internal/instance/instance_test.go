@@ -1,11 +1,7 @@
 package instance
 
-// instance_test.go — the ANTI-DRIFT gate for the mirrored instance table, plus
-// the two refusals the Manage Server page depends on ("ask, never guess").
-//
-// This package exists only because cmd/orchicon's table is `package main`, so the
-// agreement with the two authoritative sides (the Go installer table and the
-// shell instance table) is ASSERTED here rather than promised in a comment.
+// instance_test.go — the ANTI-DRIFT gate for the mirrored instance table, plus the two refusals the
+// Manage Server page depends on ("ask, never guess").
 
 import (
 	"os"
@@ -16,9 +12,7 @@ import (
 )
 
 // TestControlPortsMatchTheInstallerTable reads the CONTROL-PORT row out of
-// cmd/orchicon/install_ports.go and compares it to controlPorts for every
-// instance in Order. A port drifting here would make Manage Server address one
-// instance while displaying another.
+// cmd/orchicon/install_ports.go and compares it to controlPorts for every instance in Order.
 func TestControlPortsMatchTheInstallerTable(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "..", "cmd", "orchicon", "install_ports.go"))
 	if err != nil {
@@ -60,9 +54,8 @@ func TestControlPortsMatchTheInstallerTable(t *testing.T) {
 	}
 }
 
-// TestInstanceSetMatchesTheShellTable asserts BOTH directions against
-// scripts/lib/instances.sh: ORCHICON_INSTANCES is the set, and each instance has
-// a real case arm whose PLANE_HTTP_PORT equals the control port here.
+// TestInstanceSetMatchesTheShellTable asserts BOTH directions against scripts/lib/instances.sh:
+// ORCHICON_INSTANCES is the set.
 func TestInstanceSetMatchesTheShellTable(t *testing.T) {
 	src, err := os.ReadFile(filepath.Join("..", "..", "scripts", "lib", "instances.sh"))
 	if err != nil {
@@ -111,9 +104,8 @@ func TestInstanceSetMatchesTheShellTable(t *testing.T) {
 	}
 }
 
-// TestValidateNameMatchesTheCLIRule keeps the path-safety rule equal to
-// cmd/orchicon/lifecycle.go's validateInstanceName — a name the CLI refuses must
-// not be usable through the desktop binding.
+// TestValidateNameMatchesTheCLIRule keeps the path-safety rule equal to cmd/orchicon/lifecycle.go's
+// validateInstanceName — a name the CLI refuses must not be usable through the desktop binding.
 func TestValidateNameMatchesTheCLIRule(t *testing.T) {
 	cli, err := os.ReadFile(filepath.Join("..", "..", "cmd", "orchicon", "lifecycle.go"))
 	if err != nil {

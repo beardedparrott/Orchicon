@@ -45,11 +45,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// GitSetupReport is what the setup found and did, so the caller can log it and the service can report it.
-//
-// Done is the ordered list of actions taken, in the operator's language ("initialised an empty git repository",
-// "created the first commit"). Skipped says why nothing was needed when that is the case. Both are deliberately
-// bite-sized: they end up in a log line and, when something was created, in the project's event stream.
+// GitSetupReport is what the setup found and did, so the caller can log it and the service can
+// report it.
 type GitSetupReport struct {
 	// Needed is true when at least one corrective action was taken.
 	Needed bool
@@ -59,15 +56,11 @@ type GitSetupReport struct {
 	Skipped string
 	// Err is the failure that stopped setup, if any. Setup is best-effort: the project still exists.
 	Err error
-	// GitMissing means git itself is not installed on the host running this control plane, so NOTHING could be
-	// checked. It is separate from Err because the operator's action is completely different — install git (or
-	// point the plane at the host that has it) rather than fix a repository. On Windows this is the realistic
-	// case: git lives inside WSL, while `orchicon serve` may be running on the native host.
+	// GitMissing means git itself is not installed on the host running this control plane, so NOTHING
+	// could be checked.
 	GitMissing bool
-	// Warning is a condition that will NOT stop this project being created but WILL stop its runs doing what
-	// the chosen strategy promises — today, a repository with no `origin` under the `local` or `pr` strategy.
-	// It is reported loudly (see the service) rather than logged, because a silent warning here becomes a
-	// push failure at the end of a run, which is where the operator has least context.
+	// Warning is a condition that will NOT stop this project being created but WILL stop its runs doing
+	// what the chosen strategy promises — today.
 	Warning string
 }
 
@@ -94,11 +87,6 @@ func (r GitSetupReport) Summary() string {
 func (r GitSetupReport) Loud() bool { return r.Err != nil || r.GitMissing || r.Warning != "" }
 
 // bootstrapIdentity is the identity used for the FIRST commit of a repository that had none.
-//
-// IT IS EXPLICIT RATHER THAN INHERITED, and that is a correctness point, not a preference: a control plane
-// running as a service account on Linux or as a scheduled task on Windows routinely has NO global git identity,
-// so `git commit` fails with "unable to auto-detect email address" — which is exactly the wall an operator
-// would hit on their first run, long after creating the project.
 const (
 	bootstrapIdentityName  = "Orchicon"
 	bootstrapIdentityEmail = "orchicon@localhost"
@@ -110,9 +98,6 @@ const (
 )
 
 // EnsureGitState brings a project directory's git state up to what a git-backed strategy requires.
-//
-// It is IDEMPOTENT: call it on create, on edit, and on every save; a healthy repository is untouched.
-// strategy is the project's git strategy — "none" (or empty) means git is not involved and this is a no-op.
 func EnsureGitState(ctx context.Context, dir, strategy string) GitSetupReport {
 	if strings.TrimSpace(strategy) == "" || strategy == "none" {
 		return GitSetupReport{Skipped: "git strategy is none — the project keeps no repository"}
@@ -121,11 +106,8 @@ func EnsureGitState(ctx context.Context, dir, strategy string) GitSetupReport {
 	if dir == "" {
 		return GitSetupReport{Skipped: "the project has no directory yet"}
 	}
-	// GIT IS REQUIRED FOR EVERYTHING BELOW, so it is checked ONCE here rather than surfacing as a generic error
-	// from whichever command happened to run first. The distinction matters to the operator: "git is not
-	// installed" is fixed by installing git, while "could not initialise the repository" sends them looking at
-	// the directory. On Windows the realistic shape is git present inside WSL but absent from the native host
-	// that `orchicon serve` is running on.
+	// GIT IS REQUIRED FOR EVERYTHING BELOW, so it is checked ONCE here rather than surfacing as a
+	// generic error from whichever command happened to run first.
 	if _, err := exec.LookPath("git"); err != nil {
 		return GitSetupReport{GitMissing: true, Err: fmt.Errorf(
 			"git is not installed on the host running this control plane, so this project's repository could "+
@@ -143,15 +125,6 @@ func EnsureGitState(ctx context.Context, dir, strategy string) GitSetupReport {
 	// repository's ACTUAL state, so re-running is safe by construction rather than by bookkeeping.
 
 	// THE DIRECTORY MUST BE ITS OWN REPOSITORY ROOT, or nothing here is safe to touch.
-	//
-	// `git rev-parse --is-inside-work-tree` is TRUE FOR A SUBDIRECTORY of any repository, so a project dir that
-	// sits inside a parent repo (a module under a monorepo, a folder under the operator's own checkout) would
-	// look like "already a repo" — and every step below would then act on the PARENT: the bootstrap commit
-	// would land in someone else's history, and `git config user.name` would rewrite their identity. Silently.
-	//
-	// So the question is not "is this inside a work tree" but "is this ITSELF the work tree root", and a
-	// project nested inside another repository is reported rather than modified. Creating a nested repo would
-	// be the other wrong answer: it would split the operator's history in two.
 	if root := repoRoot(ctx, dir); root != "" && !sameDir(root, dir) {
 		return GitSetupReport{Skipped: fmt.Sprintf(
 			"the project directory is inside an existing repository (%s) — Orchicon will not create a nested one "+
@@ -193,20 +166,6 @@ func EnsureGitState(ctx context.Context, dir, strategy string) GitSetupReport {
 	}
 
 	// THE INTEGRATION BRANCH MUST EXIST, and this is the step the first version of this file got wrong.
-	//
-	// `git init` puts the bootstrap commit on git's own DEFAULT branch — `master` on a host with no
-	// `init.defaultBranch`, `main` where it is set — while every git rule this platform injects into a worker's
-	// prompt, and every canned worker, names `develop` as where work lands. The old code only named a branch
-	// when HEAD was DETACHED, which on the normal fresh-repository path never happens: the repo was already on
-	// `master`, so the one case that needed the branch was the one case that did not get it.
-	//
-	// So the sequence below sets the repo's default FIRST (so a future `git init` in this directory agrees),
-	// ensures the integration branch EXISTS, and puts the fresh repository ON it. A repository that already has
-	// the branch is untouched — including one whose current branch is something else entirely, because that is
-	// the operator's choice, not ours to rewrite.
-	//
-	// WHAT IT WILL NOT DO: rewrite an existing branch. If the operator is on `trunk`, they stay on `trunk`; the
-	// integration branch exists for runs to be cut from and land on, which does not require changing their HEAD.
 	if err := ensureIntegrationBranch(ctx, dir, rep.Needed); err != nil {
 		rep.Err = err
 		return rep
@@ -239,16 +198,10 @@ func EnsureGitState(ctx context.Context, dir, strategy string) GitSetupReport {
 	return rep
 }
 
-// integrationBranchName is where git-backed work LANDS. It is the same name every injected git rule and every
-// canned worker already assumes, which is exactly why setup must ensure it exists rather than trusting git's
-// default.
+// integrationBranchName is where git-backed work LANDS.
 const integrationBranchName = "develop"
 
 // ensureIntegrationBranch makes the repository's default and the integration branch correct.
-//
-// createdSomething says whether this setup run has ALREADY changed the repository. That is what distinguishes a
-// FRESH repository (which should end up ON the integration branch) from an existing one (whose current branch is
-// the operator's and must be left alone).
 func ensureIntegrationBranch(ctx context.Context, dir string, createdSomething bool) error {
 	// The repo's own default, so this directory's next `git init` — and any reconciliation by git — agrees.
 	if err := gitRun(ctx, dir, "config", "init.defaultBranch", integrationBranchName); err != nil {
@@ -316,9 +269,6 @@ func isRepo(ctx context.Context, dir string) bool {
 }
 
 // repoRoot returns the enclosing repository's work-tree root, or "" when there is none.
-//
-// This is the guard that makes the rest safe: see the call site for why "inside a work tree" is the wrong
-// question to act on.
 func repoRoot(ctx context.Context, dir string) string {
 	out, err := gitOut(ctx, dir, "rev-parse", "--show-toplevel")
 	if err != nil {
@@ -328,10 +278,6 @@ func repoRoot(ctx context.Context, dir string) string {
 }
 
 // sameDir reports whether two paths name the same directory, resolving symlinks where possible.
-//
-// Windows and macOS both have canonical-form traps here (a drive letter's case, /private/var vs /var,
-// /tmp as a symlink), and a false "not the same" would make the nested-repo guard skip a repository we DO own.
-// A resolution failure on either side falls back to a cleaned absolute comparison rather than failing open.
 func sameDir(a, b string) bool {
 	ra, errA := filepath.EvalSymlinks(a)
 	rb, errB := filepath.EvalSymlinks(b)
@@ -351,9 +297,6 @@ func sameDir(a, b string) bool {
 }
 
 // hasAnyCommit reports whether the repository has at least one commit to its name.
-//
-// It asks for the commit's OWN existence rather than for a branch, because a detached-but-committed repository
-// is usable and a branchless one is not — the two differ, and only the second needs a commit.
 func hasAnyCommit(ctx context.Context, dir string) (bool, error) {
 	out, err := gitOut(ctx, dir, "rev-list", "-n", "1", "--all", "--count")
 	if err != nil {
@@ -383,10 +326,6 @@ func setLocalIdentity(ctx context.Context, dir string) error {
 }
 
 // createBootstrapCommit creates the repository's first commit.
-//
-// `--allow-empty` IS THE POINT: the project directory may hold only files the operator has gitignored (or none
-// at all), and `git commit` with nothing staged fails. An empty first commit is the standard, honest way to
-// give an otherwise-empty repository a HEAD — and the message says so, so it is not mistaken for work.
 func createBootstrapCommit(ctx context.Context, dir string) error {
 	return gitRun(ctx, dir, "commit", "--allow-empty", "-m", bootstrapMessage)
 }
@@ -397,11 +336,8 @@ func gitRun(ctx context.Context, dir string, args ...string) error {
 	return err
 }
 
-// gitOut runs git in dir, returning its combined output and a diagnostic error on failure.
-//
-// THE ERROR MUST CARRY GIT'S OUTPUT. `exit status 128` names nothing — the same lesson the worktree reconciler
-// learned the expensive way (internal/scheduler/worktree_giterror.go). Here it matters just as much: the
-// operator is looking at a project save that silently did not fix their repository.
+// gitOut runs git in dir, returning its combined output and a diagnostic error on failure. THE
+// ERROR MUST CARRY GIT'S OUTPUT.
 func gitOut(ctx context.Context, dir string, args ...string) (string, error) {
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", errors.New("git is not installed on the control plane host")

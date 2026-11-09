@@ -1,16 +1,6 @@
 package askorchicon
 
 // dispatch_drop_test.go — A DROPPED LIVE EVENT SAYS SO.
-//
-// The operator: "Live streaming is STILL not happening in a conversation." A live pane that sits on
-// "thinking…" while the turn runs has two possible causes, and they were INDISTINGUISHABLE from
-// outside: the turn produced nothing, or the turn produced plenty and every event was thrown away.
-//
-// The dispatch channel is what feeds the client's HTTP response stream AND the conversation's
-// broadcast hub, so an event that does not fit is lost for the originating client and for every
-// watcher. Dropping is deliberate — the alternative is parking the collector, and the reply still
-// lands durably for the poll to resolve — but it used to happen with NO log, NO counter and NO way
-// to tell the two causes apart. These tests pin the signal.
 
 import (
 	"bytes"
@@ -51,8 +41,7 @@ func TestADroppedEventIsReported(t *testing.T) {
 }
 
 // THE REASON IS CARRIED, because the two causes need different fixes: a slow reader (the drain is
-// still running) is a back-pressure problem, while an ENDED drain (a dropped socket while the turn
-// runs on) means every remaining event has nowhere to go.
+// still running) is a back-pressure problem.
 func TestTheDropDistinguishesASlowReaderFromADeadDrain(t *testing.T) {
 	for _, drainActive := range []bool{true, false} {
 		log, buf := newDropLogger()
@@ -73,9 +62,7 @@ func TestTheDropDistinguishesASlowReaderFromADeadDrain(t *testing.T) {
 	}
 }
 
-// THE LOG CANNOT BE A FIREHOSE. Every dropped token logging its own line would bury the plane's log
-// and make the report useless — so the first drop is reported and then every maxDropReports, while
-// the COUNTER keeps counting every one.
+// THE LOG CANNOT BE A FIREHOSE.
 func TestDropsAreCountedInFullButLoggedSparingly(t *testing.T) {
 	log, buf := newDropLogger()
 	st := &dispatchStreamState{}

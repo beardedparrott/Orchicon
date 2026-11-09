@@ -9,9 +9,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
 )
 
-// brokenPolicySuite is policySuite with a MALFORMED policy file — the state the
-// operator's live config reached, which locked them out of every action including
-// reading the file that would explain it.
+// brokenPolicySuite is policySuite with a MALFORMED policy file — the state the operator's live
+// config reached, which locked them out of every action including reading the file that would
+// explain.
 func brokenPolicySuite(t *testing.T) (*HostTools, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -31,11 +31,6 @@ func brokenPolicySuite(t *testing.T) (*HostTools, string) {
 }
 
 // TestABrokenPolicyDoesNotBlockARead is the operator's lockout as a test.
-//
-// When the policy cannot be parsed there is NO decision to respect — yet every action
-// was refused, including reads, so the only thing that would explain the problem (the
-// file itself) was the one thing they could not look at from inside Orchicon. They had
-// to fix it from a shell outside and paste it into chat for me to read.
 func TestABrokenPolicyDoesNotBlockARead(t *testing.T) {
 	h, dir := brokenPolicySuite(t)
 	target := filepath.Join(dir, "notes.txt")
@@ -52,9 +47,8 @@ func TestABrokenPolicyDoesNotBlockARead(t *testing.T) {
 	}
 }
 
-// TestABrokenPolicyStillBlocksAWrite is the security half, and it is the reason the
-// exemption is limited to reads: a broken policy means no decision was made, so an
-// action that can CHANGE something must not proceed on silence.
+// TestABrokenPolicyStillBlocksAWrite is the security half, and it is the reason the exemption is
+// limited to reads: a broken policy means no decision was made.
 func TestABrokenPolicyStillBlocksAWrite(t *testing.T) {
 	h, dir := brokenPolicySuite(t)
 	target := filepath.Join(dir, "victim.txt")

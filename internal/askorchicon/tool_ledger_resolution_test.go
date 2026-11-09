@@ -6,23 +6,8 @@ import (
 	"testing"
 )
 
-// TestNativeToolResolutionBackfillsArgumentsAndResult pins the fix for the
-// missing card: an adapter that reports a RESOLVED call through the typed,
-// adapter-neutral fields (SessionEvent Kind "tool_result") must land in the
-// ledger with its real arguments and its real result — the same ledger the
-// opencode-shaped Part map lands in.
-//
-// Before this, the native Ask adapter emitted only the tool START, so the ledger
-// kept the "{}" placeholder forever and the terminal write synthesised "tool
-// call aborted" for every call. An ask_user card had no question and no options
-// to render, and every tool result in the transcript read as aborted.
-//
-// This is deliberately a DIFFERENT test from
-// TestAskUserCallCollectedAndRecordedInLedger, which drives the opencode-shaped
-// assist (busAskCompleted builds a message.part.updated Part map with
-// state.input). That test passed the whole time the native path was broken,
-// because it exercised the other dialect — which is exactly how this defect
-// survived.
+// TestNativeToolResolutionBackfillsArgumentsAndResult pins the fix for the missing card: an adapter
+// that reports a RESOLVED call through the typed.
 func TestNativeToolResolutionBackfillsArgumentsAndResult(t *testing.T) {
 	led := newToolLedger()
 	// The start carries only the tool name — all the native bus emitted.
@@ -77,9 +62,8 @@ func TestNativeToolResolutionBackfillsArgumentsAndResult(t *testing.T) {
 	}
 }
 
-// TestToolResolutionKeepsPlaceholderWhenNoArgumentsArrive: a resolution with no
-// usable arguments must not rewrite a recorded call's arguments into something
-// emptier. An adapter without arguments support leaves the placeholder alone.
+// TestToolResolutionKeepsPlaceholderWhenNoArgumentsArrive: a resolution with no usable arguments
+// must not rewrite a recorded call's arguments into something emptier.
 func TestToolResolutionKeepsPlaceholderWhenNoArgumentsArrive(t *testing.T) {
 	led := newToolLedger()
 	led.recordStart("bash")
@@ -97,9 +81,8 @@ func TestToolResolutionKeepsPlaceholderWhenNoArgumentsArrive(t *testing.T) {
 	}
 }
 
-// TestToolResolutionWithoutStartKeepsTheResult: a resolution whose start event
-// was missed must still be recorded, with the arguments the resolution carries.
-// Same rule recordResolve applies for the opencode dialect.
+// TestToolResolutionWithoutStartKeepsTheResult: a resolution whose start event was missed must
+// still be recorded, with the arguments the resolution carries.
 func TestToolResolutionWithoutStartKeepsTheResult(t *testing.T) {
 	led := newToolLedger()
 	led.recordToolResolution("bash", `{"command":"ls"}`, "file.txt", false)
@@ -146,10 +129,8 @@ func TestToolResolutionMarksErrors(t *testing.T) {
 	}
 }
 
-// TestToolResolutionResolvesOnlyOneCallPerEvent: two identical tool calls in one
-// round (a real pattern — two bash calls) must resolve one each, not both from
-// the first resolution. Otherwise the second call stays unresolved and is
-// written back as "aborted" while its result is attributed to the first.
+// TestToolResolutionResolvesOnlyOneCallPerEvent: two identical tool calls in one round (a real
+// pattern — two bash calls) must resolve one each, not both from the first resolution.
 func TestToolResolutionResolvesOnlyOneCallPerEvent(t *testing.T) {
 	led := newToolLedger()
 	led.recordStart("bash")

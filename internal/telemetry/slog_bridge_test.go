@@ -9,11 +9,8 @@ import (
 	"testing"
 )
 
-// TestMultiHandler_FansOut verifies the multi-handler writes the same
-// record to every wrapped handler, with the same payload. This is
-// the contract the dev subcommand relies on: every control-plane
-// log line must land in BOTH the local JSON log (for `orchicon dev
-// logs` tailing) and the OTel handler (for the Telemetry logs tab).
+// TestMultiHandler_FansOut verifies the multi-handler writes the same record to every wrapped
+// handler, with the same payload.
 func TestMultiHandler_FansOut(t *testing.T) {
 	var buf1, buf2 bytes.Buffer
 	h1 := slog.NewJSONHandler(&buf1, &slog.HandlerOptions{Level: slog.LevelInfo})
@@ -30,10 +27,7 @@ func TestMultiHandler_FansOut(t *testing.T) {
 	}
 }
 
-// TestMultiHandler_LevelFiltering verifies the per-handler Enabled
-// check still works. A handler that has been configured for WARN+
-// should not see INFO records, even when wrapped in a MultiHandler
-// that has a sibling that's INFO+ permissive.
+// TestMultiHandler_LevelFiltering verifies the per-handler Enabled check still works.
 func TestMultiHandler_LevelFiltering(t *testing.T) {
 	var bufHigh, bufLow bytes.Buffer
 	hHigh := slog.NewJSONHandler(&bufHigh, &slog.HandlerOptions{Level: slog.LevelWarn})
@@ -57,11 +51,8 @@ func TestMultiHandler_LevelFiltering(t *testing.T) {
 	}
 }
 
-// TestMultiHandler_WithAttrsPropagates verifies that WithAttrs
-// (used internally by slog for context-scoped loggers like
-// slog.With("tenant_id", ...)) builds child handlers rather than
-// dropping the wrap. The JSON envelope must still include the
-// bound attribute on every record.
+// TestMultiHandler_WithAttrsPropagates verifies that WithAttrs (used internally by slog for
+// context-scoped loggers like slog.With("tenant_id".
 func TestMultiHandler_WithAttrsPropagates(t *testing.T) {
 	var buf bytes.Buffer
 	log := slog.New(MultiHandler(slog.NewJSONHandler(&buf, nil)))
@@ -82,10 +73,9 @@ func TestMultiHandler_WithAttrsPropagates(t *testing.T) {
 	}
 }
 
-// TestOtelHandler_EnabledAtInfo ensures the OTel side respects the
-// slogMinLevel floor — Debug records are dropped at the handler
-// level so we do not flood Loki with verbose control-plane
-// chatter that belongs in the local log file.
+// TestOtelHandler_EnabledAtInfo ensures the OTel side respects the slogMinLevel floor — Debug
+// records are dropped at the handler level so we do not flood Loki with verbose control-plane
+// chatter.
 func TestOtelHandler_EnabledAtInfo(t *testing.T) {
 	h := NewOtelSlogHandler()
 	ctx := context.Background()
@@ -101,8 +91,6 @@ func TestOtelHandler_EnabledAtInfo(t *testing.T) {
 }
 
 // TestSlogLevelToOtel covers the level mapping exhaustively.
-// Slog's "Error" lands at OTel ERROR; WARN lands at WARN; INFO at
-// INFO; anything below (Debug and below) lands at DEBUG.
 func TestSlogLevelToOtel(t *testing.T) {
 	cases := map[slog.Level]string{
 		slog.LevelError: "ERROR",
@@ -117,11 +105,8 @@ func TestSlogLevelToOtel(t *testing.T) {
 	}
 }
 
-// TestSlogAttrToKeyValue covers the type-conversion branches that
-// appear in real control-plane records (string, int64, bool, time,
-// group, fallback). Group values must be converted to a slice
-// (the OTel log SDK's only nested representation); strings must
-// be preserved verbatim.
+// TestSlogAttrToKeyValue covers the type-conversion branches that appear in real control-plane
+// records (string, int64, bool, time, group, fallback).
 func TestSlogAttrToKeyValue(t *testing.T) {
 	t.Run("string", func(t *testing.T) {
 		kv := slogAttrToKeyValue(slog.String("k", "v"))

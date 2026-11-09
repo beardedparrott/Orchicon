@@ -34,9 +34,6 @@ import (
 )
 
 // fullsendStore records which conversations are in FULLSEND.
-//
-// Keyed by conversation id, which is tenant-scoped, so a cross-tenant conversation
-// cannot be addressed — the same argument the grant and pending stores rest on.
 type fullsendStore struct {
 	mu     sync.Mutex
 	byConv map[string]bool
@@ -46,9 +43,7 @@ func newFullsendStore() *fullsendStore {
 	return &fullsendStore{byConv: make(map[string]bool)}
 }
 
-// Set turns FULLSEND on or off for one conversation. Setting OFF DELETES the entry
-// rather than storing false, so the map only ever holds conversations that are ON and
-// Enabled's fast path is a real question.
+// Set turns FULLSEND on or off for one conversation.
 func (f *fullsendStore) Set(convID string, on bool) {
 	if f == nil || convID == "" {
 		return
@@ -62,9 +57,7 @@ func (f *fullsendStore) Set(convID string, on bool) {
 	f.byConv[convID] = true
 }
 
-// Enabled reports whether FULLSEND is on for convID. A nil store, an empty id and an
-// unknown conversation are all OFF — the fail-closed direction, so a store that was
-// never initialised cannot silently approve everything.
+// Enabled reports whether FULLSEND is on for convID.
 func (f *fullsendStore) Enabled(convID string) bool {
 	if f == nil || convID == "" {
 		return false

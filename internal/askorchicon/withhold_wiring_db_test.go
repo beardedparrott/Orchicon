@@ -1,13 +1,7 @@
 package askorchicon
 
-// withhold_wiring_db_test.go — the guard is WIRED, asserted through the real RPC rather than by grepping
-// the source for the call.
-//
-// withhold_stale_resolution_test.go proves the RULE. This proves ListMessages APPLIES it: a rule that is
-// implemented and never called is the exact shape of a half-done fix, and a source-level assertion would not
-// catch someone replacing the call site.
-//
-// Skips without ORCHICON_TEST_DSN, like the rest of this package's DB tests.
+// withhold_wiring_db_test.go — the guard is WIRED, asserted through the real RPC rather than by
+// grepping the source for the call.
 
 import (
 	"context"

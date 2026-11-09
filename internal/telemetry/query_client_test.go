@@ -10,9 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/telemetry"
 )
 
-// vmHandler records the PromQL query string it was asked to run and returns a
-// canned success response with a single series. The body keys off the metric
-// name so a test can customize the returned values per name.
+// vmHandler records the PromQL query string it was asked to run and returns a canned success
+// response with a single series.
 func vmHandler(t *testing.T, gotQuery *string, body string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -24,12 +23,9 @@ func vmHandler(t *testing.T, gotQuery *string, body string) *httptest.Server {
 	return srv
 }
 
-// TestQueryMetricsSumsTokenClassCounters guards the cache-aware counters ADR
-// regression: orchicon_tokens_consumed / orchicon_cost_usd now carry a
-// token_class label (up to four series per name), so a bare label select no
-// longer represents a total. QueryMetrics must wrap those names in sum(...) so
-// a consumer reading a single latest point (the telemetry "Metric values"
-// panel) still sees the whole-token/whole-cost total, not one arbitrary bucket.
+// TestQueryMetricsSumsTokenClassCounters guards the cache-aware counters ADR regression:
+// orchicon_tokens_consumed / orchicon_cost_usd now carry a token_class label (up to four series per
+// name).
 func TestQueryMetricsSumsTokenClassCounters(t *testing.T) {
 	var gotQuery string
 	srv := vmHandler(t, &gotQuery, `{"status":"success","data":{"result":[{"metric":{"__name__":"orchicon_tokens_consumed"},"values":[[1000,"7"],[1010,"9"]]}]}}`)
@@ -80,9 +76,8 @@ func TestQueryMetricsSumsCostPercentSame(t *testing.T) {
 	}
 }
 
-// TestQueryMetricsLeavesUnsplitCountersUnwrapped ensures a metric that does NOT
-// carry a token_class label (e.g. orchicon_outbox_lag) is left as a plain label
-// select, and that a project-scoped filter is preserved.
+// TestQueryMetricsLeavesUnsplitCountersUnwrapped ensures a metric that does NOT carry a token_class
+// label (e.g. orchicon_outbox_lag) is left as a plain label select.
 func TestQueryMetricsLeavesUnsplitCountersUnwrapped(t *testing.T) {
 	var gotQuery string
 	srv := vmHandler(t, &gotQuery, `{"status":"success","data":{"result":[{"metric":{"__name__":"orchicon_outbox_lag"},"values":[[1000,"1"]]}]}}`)

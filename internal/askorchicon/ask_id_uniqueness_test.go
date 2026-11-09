@@ -73,9 +73,8 @@ func TestToolCallIDKeepsTheExpectedShape(t *testing.T) {
 	}
 }
 
-// AND THE PROMOTED ASK — the id the OPERATOR'S card is anchored to — is minted through the same door, so it
-// cannot collide either. This is the one that mattered: it is the id the client settles and the id
-// findPromotedAsk searches for.
+// AND THE PROMOTED ASK — the id the OPERATOR'S card is anchored to — is minted through the same
+// door, so it cannot collide either.
 func TestPromotedAskIDsDoNotCollideAcrossTurns(t *testing.T) {
 	// A wrapped ask (opencode's `execute`) promotes a first-class call; the args are the ask payload.
 	const payload = `{"recorded":true,"question":"Which branch should I use?","options":["develop","main"]}`

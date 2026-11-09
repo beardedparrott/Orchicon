@@ -137,10 +137,6 @@ func TestPathStillWinsOverTheConventionalLocation(t *testing.T) {
 }
 
 // TestProvisionWaitsForTheBinaryItJustInstalled is the second half of the same defect.
-//
-// winget and brew commit to the REGISTRY, not to this process's environment, so the re-detect right after a
-// SUCCESSFUL install can still say "no podman". Concluding failure from that sends the operator to open a new
-// shell for an install that worked. Provision must re-probe, and must then use the engine it found.
 func TestProvisionWaitsForTheBinaryItJustInstalled(t *testing.T) {
 	localAppData := `C:\Users\operator\AppData\Local`
 	winget := filepath.Join(localAppData, `Microsoft\WindowsApps\winget.exe`)
@@ -191,18 +187,8 @@ func TestProvisionWaitsForTheBinaryItJustInstalled(t *testing.T) {
 	}
 }
 
-// TestNoCandidateIsEverRelative pins the rule that cost real debugging: a candidate built from an environment
-// variable that did not resolve must be DROPPED, never joined onto an empty base.
-//
-// Measured before this was fixed: with no %USERPROFILE% the podman table produced
-// "AppData\Local/Programs/Podman/podman.exe" — a RELATIVE path, which os.Stat resolves against the working
-// directory. A resolver that can look in the current directory is a resolver that can match the wrong file, and
-// that is the class of bug that hides on CI and bites on a real machine.
-//
-// ABSOLUTENESS IS CHECKED PER PLATFORM, NOT WITH filepath.IsAbs. These tables describe OTHER operating systems
-// than the one running the test, and filepath.IsAbs applies the RUNNING system's rules — on Linux it says a
-// `C:\...` path is relative. (The test failed exactly that way first, which is this comment's provenance: the
-// assertion was wrong, not the table.) A Windows candidate is absolute when it starts with a drive letter.
+// TestNoCandidateIsEverRelative pins the rule that cost real debugging: a candidate built from an
+// environment variable that did not resolve must be DROPPED, never joined onto an empty base.
 func isAbsFor(goos, path string) bool {
 	if goos == "windows" {
 		if len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/') {

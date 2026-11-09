@@ -9,10 +9,8 @@ import (
 	"testing"
 )
 
-// The shell must stay a LEAF CLIENT: importing the plane's HTTP stack (or its DB,
-// or its scheduler) would make the desktop app depend on the server it talks to
-// and would drag CGO-adjacent weight into a package that is otherwise testable
-// without a webview. Same idiom as internal/planecontrol/imports_test.go.
+// The shell must stay a LEAF CLIENT: importing the plane's HTTP stack (or its DB, or its scheduler)
+// would make the desktop app depend on the server it talks to and would drag CGO-adjacent weight.
 var forbiddenImports = []string{
 	"github.com/beardedparrott/orchicon/internal/api",
 	"github.com/beardedparrott/orchicon/internal/db",

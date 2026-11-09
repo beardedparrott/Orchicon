@@ -1,9 +1,6 @@
 package planecontrol
 
-// seams_test.go — the fake every lifecycle test drives. These seams exist because the properties this task
-// must guarantee (a plane that cannot be identified is left ALONE; a stop is BOUNDED; two instances never
-// share state) are about DECISIONS, and a test that had to race real processes and real sleeps to observe them
-// would be slow, flaky and would prove less.
+// seams_test.go — the fake every lifecycle test drives.
 
 import (
 	"io"

@@ -34,9 +34,7 @@ func TestIntegrationBranchPrefersDevelopOverTheRepositoryDefault(t *testing.T) {
 }
 
 func TestIntegrationBranchSeesDevelopOnTheRemoteOnly(t *testing.T) {
-	// A run may cut from a branch that exists only on origin. A local-only check is how a repository whose
-	// develop has not been fetched yet silently loses its integration branch — and falls back to main, which
-	// is the same wrong suggestion by a different route.
+	// A run may cut from a branch that exists only on origin.
 	got := integrationBranchFor("main",
 		[]string{"main"},
 		[]string{"origin/develop", "origin/main"})
@@ -66,9 +64,8 @@ func TestIntegrationBranchFallsBackToTheDefaultWhenThereIsNoDevelop(t *testing.T
 }
 
 func TestIntegrationBranchIsEmptyWhenNothingIsKnowable(t *testing.T) {
-	// Nothing to derive: defaultBranch is "" (no origin/HEAD, no conventional candidate) and no develop. An
-	// empty answer is the honest one — a caller receiving it must ASK rather than assume, which is what the
-	// note tells it to do.
+	// Nothing to derive: defaultBranch is "" (no origin/HEAD, no conventional candidate) and no
+	// develop.
 	if got := integrationBranchFor("", nil, nil); got != "" {
 		t.Fatalf("integrationBranchFor = %q, want \"\" — a branch must never be invented", got)
 	}

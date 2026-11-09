@@ -37,10 +37,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/testfixtures"
 )
 
-// e2eProbeProvider is the scripted model for the native worker leg: round 1 asks
-// for the project's probe tool, round 2 quotes the tool result it received. It
-// RECORDS both the def names it was offered and the messages it was re-sent, so
-// the assertions are over what the model actually saw.
+// e2eProbeProvider is the scripted model for the native worker leg: round 1 asks for the project's
+// probe tool, round 2 quotes the tool result it received.
 type e2eProbeProvider struct {
 	mu        sync.Mutex
 	tool      string
@@ -78,9 +76,8 @@ func (p *e2eProbeProvider) StreamTurn(_ context.Context, req TurnRequest) (TurnS
 	}
 	return newE2EStream([]Event{
 		TextDelta{Text: "the project's server said: " + out},
-		// The worker loop's decision-signal gate requires a terminal marker; a
-		// conforming worker model emits it, so the scripted model does too. The
-		// probe output above is what the assertion reads.
+		// The worker loop's decision-signal gate requires a terminal marker; a conforming worker model
+		// emits it, so the scripted model does too.
 		TextDelta{Text: "\n\nORCHICON WORKER SUMMARY: success — the project's MCP tool returned " + out},
 		Finish{StopReason: StopStop},
 	}), nil
@@ -128,21 +125,14 @@ func e2eToolResultFrom(msgs []Message) string {
 	return out
 }
 
-// e2eDiscardLogger keeps the bridge's per-session log out of the test output
-// while still being a real logger (the provenance line is asserted via the
-// captured buffer in a sibling leg, not here).
+// e2eDiscardLogger keeps the bridge's per-session log out of the test output while still being a
+// real logger (the provenance line is asserted via the captured buffer in a sibling leg, not here).
 func e2eDiscardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(&strings.Builder{}, nil))
 }
 
-// AC 1 (native): a REAL dispatched native execution uses the PROJECT'S MCP
-// server — the tool is OFFERED to the model, the call SUCCEEDS, its output
-// reaches the model's next round, the terminal result is a success, and the
-// durable transcript carries the result.
-//
-// The server set spans BOTH project-owned rows (HTTP + stdio) so the criterion
-// is observed on both transports, and the version's inline spec so the WORKER
-// scope's union half is real too.
+// AC 1 (native): a REAL dispatched native execution uses the PROJECT'S MCP server — the tool is
+// OFFERED to the model, the call SUCCEEDS, its output reaches the model's next round.
 func TestE2ENativeWorkerUsesProjectServerAndSkill(t *testing.T) {
 	pool := testfixtures.Pool(t)
 	url := mcpclient.E2EHTTPFixtureT(t)
@@ -237,9 +227,7 @@ func TestE2ENativeWorkerUsesProjectServerAndSkill(t *testing.T) {
 	})
 }
 
-// AC 5.3 (native negative): REMOVING the project's definition removes it from
-// the NEXT session. A per-execution resolve that memoised its answer would keep
-// offering the deleted server's tools; this is the pin against that.
+// AC 5.3 (native negative): REMOVING the project's definition removes it from the NEXT session.
 func TestE2ENativeWorkerSecondExecutionHasNoDeletedServer(t *testing.T) {
 	pool := testfixtures.Pool(t)
 	url := mcpclient.E2EHTTPFixtureT(t)

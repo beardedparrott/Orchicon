@@ -1,8 +1,7 @@
 package orchicon
 
-// progress_test.go — native progress monitor + loop parity tests
-// (opencode parity: internal/opencode/progress_test.go shapes adapted to
-// the in-process session loop).
+// progress_test.go — native progress monitor + loop parity tests (opencode parity:
+// internal/opencode/progress_test.go shapes adapted to the in-process session loop).
 
 import (
 	"context"
@@ -17,10 +16,8 @@ import (
 // --- monitor unit tests -----------------------------------------------------
 
 func TestNativeMonitorNoProgressFatal(t *testing.T) {
-	// Sub-second windows clamp the poll interval to 5s (the monitor's
-	// floor), so the fake clock is seeded AHEAD of the real constructor
-	// timestamps (lastStepFinish = real now): the first tick trips
-	// no_progress immediately.
+	// Sub-second windows clamp the poll interval to 5s (the monitor's floor), so the fake clock is
+	// seeded AHEAD of the real constructor timestamps (lastStepFinish = real now).
 	w := defaultStallWindows()
 	w.noProgress = 50 * time.Millisecond
 	w.noFileDiff = time.Hour
@@ -98,9 +95,8 @@ func TestNativeMonitorRepetitionResetOnProgress(t *testing.T) {
 }
 
 func TestNativeMonitorZeroUsageToolLoopTrips(t *testing.T) {
-	// The regression that killed the reported execution: identical reads
-	// with ZERO reported usage must still trip the (windowed) repetition
-	// detector — the monitor no longer requires token growth.
+	// The regression that killed the reported execution: identical reads with ZERO reported usage must
+	// still trip the (windowed) repetition detector — the monitor no longer requires token growth.
 	w := defaultStallWindows()
 	w.noProgress = time.Hour
 	w.noFileDiff = 0
@@ -335,9 +331,7 @@ func TestStallWindowsFromManifest(t *testing.T) {
 	if w.repetitionW != 90*time.Second {
 		t.Errorf("repetitionW = %v, want 90s", w.repetitionW)
 	}
-	// 0 is the new spelling of "disabled" (it replaced negative, which the
-	// Settings API now rejects). The consumer gates on > 0, so a zero window
-	// reads as off.
+	// 0 is the new spelling of "disabled" (it replaced negative, which the Settings API now rejects).
 	if w.toolHang > 0 {
 		t.Errorf("toolHang = %v, want <= 0 (disabled)", w.toolHang)
 	}
@@ -349,9 +343,7 @@ func TestLoopAdvisoryStallNudgesBeforeEscalation(t *testing.T) {
 	s, _ := newQATestSession(t, &mockProvider{turns: []scriptedTurn{
 		{events: []Event{TextDelta{Text: "done"}}, finish: StopStop, usage: Usage{InputTokens: 10, OutputTokens: 5}},
 	}}, nil)
-	// The nudge path appends a transcript part; Run normally opens the
-	// transcript. This test drives handleStallSignal directly, so open it
-	// (same lifecycle as Run) before firing the advisory signal.
+	// The nudge path appends a transcript part; Run normally opens the transcript.
 	if _, err := s.OpenTranscript(); err != nil {
 		t.Fatalf("OpenTranscript: %v", err)
 	}
@@ -393,10 +385,9 @@ func TestLoopAdvisoryStallNudgesBeforeEscalation(t *testing.T) {
 	_ = scheduler.ExecutionManifest{} // keep the import if unused in future edits
 }
 
-// AC (fatal-stall parity): a fatal monitor stall delivers the terminal
-// OnResult(false, reason) — exactly ONE verdict, mirroring the opencode
-// adapter's OnStall(fatal) + finish(false, reason) shape. Recovery owns
-// the re-dispatch only when it receives this verdict.
+// AC (fatal-stall parity): a fatal monitor stall delivers the terminal OnResult(false, reason) —
+// exactly ONE verdict, mirroring the opencode adapter's OnStall(fatal) + finish(false, reason)
+// shape.
 func TestLoopFatalStallFiresTerminalOnResult(t *testing.T) {
 	s, _ := newQATestSession(t, &mockProvider{turns: []scriptedTurn{
 		{events: []Event{TextDelta{Text: "thinking slowly…"}}, finish: StopStop, usage: Usage{InputTokens: 10, OutputTokens: 5}},
@@ -423,9 +414,8 @@ func TestLoopFatalStallFiresTerminalOnResult(t *testing.T) {
 	}
 }
 
-// AC (terminal-once): a second terminal path (e.g. a concurrent monitor
-// escalation racing the loop) never fires a second OnResult — opencode
-// finish() first-arrival-wins parity.
+// AC (terminal-once): a second terminal path (e.g. a concurrent monitor escalation racing the loop)
+// never fires a second OnResult — opencode finish() first-arrival-wins parity.
 func TestLoopTerminalOnResultFiresOnce(t *testing.T) {
 	s, _ := newQATestSession(t, &mockProvider{turns: []scriptedTurn{
 		{events: []Event{TextDelta{Text: "done"}}, finish: StopStop, usage: Usage{InputTokens: 10, OutputTokens: 5}},
@@ -446,9 +436,8 @@ func TestLoopTerminalOnResultFiresOnce(t *testing.T) {
 	}
 }
 
-// AC (nudge reply-window parity): a nudged session that produces NO turn
-// activity within the reply window escalates fatally with the
-// liveness_probe_no_response reason; continued output clears the probe.
+// AC (nudge reply-window parity): a nudged session that produces NO turn activity within the reply
+// window escalates fatally with the liveness_probe_no_response reason.
 func TestLoopNudgeReplyWindowEscalates(t *testing.T) {
 	s, _ := newQATestSession(t, &mockProvider{turns: []scriptedTurn{
 		{events: []Event{TextDelta{Text: "done"}}, finish: StopStop, usage: Usage{InputTokens: 10, OutputTokens: 5}},

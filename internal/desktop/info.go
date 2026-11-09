@@ -1,25 +1,5 @@
-// Package desktop is the Orchicon desktop shell: it serves the EMBEDDED SPA
-// from its own loopback origin and reverse-proxies the plane's API paths to the
-// plane the app is configured with.
-//
-// WHY AN ORIGIN AT ALL (the decision the whole package rests on). The SPA
-// already speaks Connect-ES to `window.location.origin` with
-// `credentials: "include"` (frontend/src/api/clients.ts), because its auth is a
-// bearer token plus an HttpOnly refresh cookie. A webview custom scheme
-// (wails://) is NOT a cookie-bearing origin: the refresh cookie is dropped, the
-// interceptor's 401 retry never recovers, and the user is bounced to /login in
-// a loop. A real `http://127.0.0.1:<port>` origin keeps the cookie jar, keeps
-// `window.location.origin` correct (so the SPA needs no base-URL knob and
-// frontend/vite.config.ts is untouched), and needs NO CORS on the plane and NO
-// new unauthenticated route in internal/api — the webview is same-origin with
-// the shell, and the shell is the only thing that talks to the plane.
-//
-// CONSEQUENCE, deliberately: the shell never proxies `/` to the plane, so a
-// plane of a different version cannot silently supply the UI, and the shell
-// draws no chrome — the SPA's own top bar IS the app chrome.
-//
-// THIS PACKAGE IMPORTS NO PLANE CODE (see imports_test.go): it is testable
-// without a webview, which is what makes the transport verifiable at all.
+// Package desktop is the Orchicon desktop shell: it serves the EMBEDDED SPA from its own loopback
+// origin and reverse-proxies the plane's API paths to the plane the app is configured with.
 package desktop
 
 import (
@@ -33,21 +13,15 @@ import (
 	"github.com/beardedparrott/orchicon/internal/controlport"
 )
 
-// UnknownInstance is the instance reported when the configured plane URL's port
-// is not one of the installer's three control ports. It is deliberately not
-// "dev": the Manage Server page has to be able to tell "not one of ours" from
-// "prod", and guessing would make the app's title bar lie.
+// UnknownInstance is the instance reported when the configured plane URL's port is not one of the
+// installer's three control ports.
 const UnknownInstance = "unknown"
 
 // PlaneUnreachable is the plane tag reported when /versionz could not be read.
-// It is NOT a version mismatch — a plane that is down is a different failure,
-// already visible as a failing RPC from the SPA.
 const PlaneUnreachable = "unreachable"
 
-// Info is the payload the shell hands the SPA (window.__ORCHICON_DESKTOP__) and
-// the source of the window title. Every field is resolved ONCE, at startup, so
-// the title and the Manage Server page cannot disagree about which plane this
-// window is attached to.
+// Info is the payload the shell hands the SPA (window.__ORCHICON_DESKTOP__) and the source of the
+// window title.
 type Info struct {
 	// PlaneURL is the plane this window is configured with, exactly as passed
 	// in (not the shell's loopback origin — see Shell.OriginURL for that).
@@ -59,10 +33,7 @@ type Info struct {
 	AppTag string `json:"appTag"`
 	// PlaneTag is the version the plane reports at /versionz.
 	PlaneTag string `json:"planeTag"`
-	// VersionMismatch is true only when BOTH tags are known and differ. It is
-	// about coherence, not semver ordering: the SPA rendered here was built
-	// with this binary, and the plane it talks to was built from a different
-	// tree, so the UI may be speaking an API the plane does not have.
+	// VersionMismatch is true only when BOTH tags are known and differ.
 	VersionMismatch bool `json:"versionMismatch"`
 }
 

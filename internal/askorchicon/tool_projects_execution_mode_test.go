@@ -68,9 +68,8 @@ func TestToolCreateProjectExecutionModeInvalidRejected(t *testing.T) {
 	}
 }
 
-// The UPDATE path routes through the same parser as create: a spelling create
-// accepts is not rejected on update, a bogus value still is, and a blank value
-// is not silently treated as "unchanged" (it is not a mode).
+// The UPDATE path routes through the same parser as create: a spelling create accepts is not
+// rejected on update, a bogus value still.
 func TestToolUpdateProjectExecutionModeParsing(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)

@@ -82,9 +82,8 @@ func TestClampToMonitors(t *testing.T) {
 		t.Error("fresh geometry stayed at 0,0 instead of being centred on the primary monitor")
 	}
 
-	// THE CAP FOLLOWS THE MONITOR THE WINDOW IS ON, not the primary: a window
-	// remembered on a larger second screen keeps its size, or a maximised window
-	// would shrink on every launch on a mixed-size desk.
+	// THE CAP FOLLOWS THE MONITOR THE WINDOW IS ON, not the primary: a window remembered on a larger
+	// second screen keeps its size.
 	big := Rect{X: 1920, Y: 0, W: 2560, H: 1440}
 	onBig := Geometry{X: 2000, Y: 100, W: 2400, H: 1300}
 	if got := ClampToMonitors(onBig, []Rect{primary, big}); got != onBig {

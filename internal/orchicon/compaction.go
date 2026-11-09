@@ -1,27 +1,7 @@
 package orchicon
 
-// compaction.go is the NATIVE guarded compaction engine (D1). It fires
-// ONLY on (a) approaching the model's TRUE context window (resolved via
-// live hints only — see contextwindow.go), (b) the shared budget-gate
-// ladder (evaluated through the opencode budget facade over the SAME
-// merged budget JSON the adapters parse), or (c) the turn-count
-// context-hygiene gate (compact_max_turns, opencode parity: a chatty
-// session is compacted periodically even when no budget dimension
-// breached and no window pressure exists). It NEVER fires on token count
-// alone when no window hint exists, never guesses a window, and never
-// uses estimated/interpolated usage.
-//
-// The compaction POLICY is middle-only eviction of OLD TOOL ROUNDS (an
-// assistant tool_use with its paired tool_result — originals disk-offloaded),
-// with the pinned goal head (the eviction digest marker is merged INTO the
-// head user message — never a standalone user message, which would break the
-// Anthropic role-alternation rule), assistant text and non-tool user turns
-// untouched, and the recent tail kept verbatim — so no orphaned tool_use (or
-// orphaned tool_result) ever remains in the marshaled history. Eviction is
-// plan-then-offload-then-commit: s.history is replaced only after the
-// originals are safely offloaded, so a failed offload never loses data from
-// the live session. At most once per threshold band (anti-loop latch), with a
-// min-turn floor and a per-execution cap.
+// It fires ONLY on (a) approaching the model's TRUE context window (resolved via live hints only —
+// see contextwindow.go).
 
 import (
 	"bufio"
@@ -58,16 +38,8 @@ type CompactPolicy struct {
 	PressureFrac float64
 	// RecentTurns keeps this many trailing messages verbatim.
 	RecentTurns int
-	// CompactMaxTurns is the turn-count context-hygiene gate
-	// (compact_max_turns, opencode parity): when the turn count reaches this
-	// many turns since the last compaction, doCompact fires at the quiet turn
-	// boundary — even when no budget dimension breached and no window pressure
-	// exists. <= 0 means OFF, which is now the DEFAULT: this trigger collapsed
-	// a healthy 4-minute run's history at turn 30 on a number nobody had set,
-	// and the provider rejected the request that followed. Only an explicit
-	// compact_max_turns arms it. (The window-pressure trigger is separate and
-	// stays on — it is bounded by the model's REAL window, so it cannot fire on
-	// a healthy run.)
+	// CompactMaxTurns is the turn-count context-hygiene gate (compact_max_turns, opencode parity): when
+	// the turn count reaches this many turns since the last compaction.
 	CompactMaxTurns int
 }
 
@@ -107,11 +79,8 @@ func DefaultMemoryPolicy() MemoryPolicy {
 	return MemoryPolicy{Enabled: true, DigestEntries: 5}
 }
 
-// policyFromSettings parses the compaction/memory policy from the merged
-// budget JSON's context_compaction / memory keys (D4: these ride the
-// existing BudgetLadder transport, so tenant defaults + per-worker
-// overrides already layer through mergeBudgets). Unknown/malformed keys
-// fall back to the built-in defaults — never a guessed value.
+// policyFromSettings parses the compaction/memory policy from the merged budget JSON's
+// context_compaction / memory keys (D4: these ride the existing BudgetLadder transport.
 func policyFromSettings(budgetJSON []byte) (CompactPolicy, MemoryPolicy) {
 	cp := DefaultCompactPolicy()
 	mp := DefaultMemoryPolicy()
@@ -154,10 +123,8 @@ func policyFromSettings(budgetJSON []byte) (CompactPolicy, MemoryPolicy) {
 			}
 		}
 	}
-	// compact_max_turns is a TOP-LEVEL merged-budget key (opencode parity:
-	// the same key opencode's parseBudgetSpec reads), not nested under
-	// context_compaction. An ABSENT key leaves the gate off (the default);
-	// an explicit value <= 0 also disables it; a positive value arms it.
+	// compact_max_turns is a TOP-LEVEL merged-budget key (opencode parity: the same key opencode's
+	// parseBudgetSpec reads), not nested under context_compaction.
 	if cmRaw, ok := raw["compact_max_turns"]; ok {
 		var maxTurns *float64
 		if err := json.Unmarshal(cmRaw, &maxTurns); err == nil && maxTurns != nil {
@@ -171,13 +138,8 @@ func policyFromSettings(budgetJSON []byte) (CompactPolicy, MemoryPolicy) {
 	return cp, mp
 }
 
-// maybeCompact evaluates the three guarded triggers at a quiet boundary
-// (after a completed turn) and fires compactPolicy when a trigger is armed.
-// usage is this turn's LIVE provider-reported usage. Returns "" when
-// nothing fired, "compacted:<reason>" when a compaction ran, or the
-// TERMINAL abort reason ("budget_abort:<dim>") when the budget ladder's
-// abort tier has been reached (opencode parity: abort is terminal, NOT a
-// compaction — the caller fails the session).
+// maybeCompact evaluates the three guarded triggers at a quiet boundary (after a completed turn)
+// and fires compactPolicy when a trigger is armed.
 func (s *Session) maybeCompact(ctx context.Context, step int, usage Usage) string {
 	s.cs.mu.Lock()
 	defer s.cs.mu.Unlock()
@@ -192,21 +154,12 @@ func (s *Session) maybeCompact(ctx context.Context, step int, usage Usage) strin
 		return "" // per-execution cap reached
 	}
 
-	// Live usage only: fold this turn's REAL provider-reported usage into
-	// the shared accumulator (never an estimate). The cost figure is the
-	// LIVE provider-priced cost the wire client resolved from the model's
-	// catalog/probe pricing (0 when the model has no pricing — the cost
-	// dimension then never fires, never a synthesized estimate).
+	// Live usage only: fold this turn's REAL provider-reported usage into the shared accumulator (never
+	// an estimate).
 	s.cs.spend.AddFromUsage(usage.InputTokens, usage.OutputTokens, usage.ReasoningTokens, usage.CacheReadTokens, usage.CostUSD)
 
-	// Trigger (a): true context-window pressure (armed only when a live
-	// hint resolved — no hint means the window trigger is inert). The
-	// pressure figure is THIS TURN's LIVE provider-reported occupancy —
-	// the input+cache-read tokens of the request just sent — never the
-	// cumulative rollup (which re-sums the whole re-sent prefix every turn
-	// and would over-count by ~turn count). This keeps the comparison
-	// honest: a session whose individual requests never approach the window
-	// never fires, and one request that genuinely approaches it fires once.
+	// Trigger (a): true context-window pressure (armed only when a live hint resolved — no hint means
+	// the window trigger is inert).
 	hint := s.resolveContextWindow(ctx)
 	if hint.Ok && hint.Tokens > 0 {
 		s.cs.armed = true
@@ -228,42 +181,20 @@ func (s *Session) maybeCompact(ctx context.Context, step int, usage Usage) strin
 	}
 
 	// Trigger (b): the budget gate (shared ladder over the merged JSON).
-	// Escalate/final tiers compact when the tier AND dimension permit it;
-	// abort is terminal and is NOT a compaction — it returns the terminal
-	// reason and the caller fails the session (opencode budget_abort
-	// parity). Fires at most once per reached tier. The tool_call_count
-	// dimension rides the SAME ladder as opencode (evaluated per tool
-	// round-trip via s.toolUses): tier crossings latch without compacting
-	// unless the operator opted the dimension into compact_dims — a
-	// tool-budget warning must never trigger a lossy collapse that would
-	// force yet more tool calls — while the abort tier fails the session
-	// with budget_abort:tool_call_count. Worker budget_overrides and
-	// tenant default_budget_overrides are both first-class keys
-	// end-to-end (typed ladder column, BudgetJSON emit, mergeBudgets
-	// layering); unset tool_call_count falls back to the ladder default
-	// (100), explicit <= 0 disables the gate.
 	for _, dim := range []string{"tokens", "cost_usd", "tool_call_count"} {
 		frac := s.cs.spend.Fraction(s.cs.budget, dim, time.Since(s.startedAt), s.toolUses)
 		if frac < 0 {
 			continue // no effective limit on this dimension
 		}
-		// Abort tier (checked FIRST — terminal and independent of the
-		// compaction policy): once crossed, the session ends; the
-		// accumulator is cumulative so the breach latches itself. (The
-		// old skip condition folded abort into the compaction policy via
-		// CompactsAt("abort"), which is always false — dims outside
-		// compact_dims silently lost their abort. Abort is evaluated
-		// unconditionally now.)
+		// Abort tier (checked FIRST — terminal and independent of the compaction policy): once crossed, the
+		// session ends; the accumulator is cumulative so the breach latches itself.
 		lvl := s.cs.budget.LevelName(dim, frac)
 		if lvl == "abort" {
 			return "budget_abort:" + dim
 		}
 		if !s.cs.budget.CompactsDim(dim) {
-			// Opted out of compaction (tool_call_count by default):
-			// latch warn-tier crossings with a one-shot warn log and
-			// keep going — never collapse context on tool pressure
-			// (opencode parity: a tool-budget warning must not force
-			// yet more tool calls).
+			// Opted out of compaction (tool_call_count by default): latch warn-tier crossings with a one-shot
+			// warn log and keep going — never collapse context on tool pressure (opencode parity.
 			if lvl == "warn" || lvl == "escalate" || lvl == "final" {
 				key := dim + ":" + lvl
 				if s.cs.lastBudgetTier != key {
@@ -294,21 +225,9 @@ func (s *Session) maybeCompact(ctx context.Context, step int, usage Usage) strin
 		}
 	}
 
-	// Trigger (c): the turn-count context-hygiene gate (compact_max_turns,
-	// opencode session_run.maybeCompact parity): a chatty session is
-	// compacted periodically even when no budget dimension breached and no
-	// window pressure exists — on providers without a prefix cache every
-	// turn re-sends the whole history, and when every budget dimension is
-	// disabled (explicit 0) or opted out of compact_dims the ladder can
-	// only warn/abort, never rescue. Orthogonal to the ladder: it compacts
-	// but never warns and never aborts, and it is best-effort (a failed or
-	// empty compaction never fails the session — opencode parity). The
-	// shared latches all apply: the step<2 floor above, doCompact's
-	// same-turn/min-turn re-arm floor, and the per-execution cap; a
-	// turn_count success latches like any doCompact success (lastCompactStep
-	// reset), so the window-pressure band and budget-tier latches behave
-	// identically afterwards and the gate cannot double-fire behind a
-	// compaction another trigger already ran this turn.
+	// Trigger (c): the turn-count context-hygiene gate (compact_max_turns, opencode
+	// session_run.maybeCompact parity): a chatty session is compacted periodically even when no budget
+	// dimension breached.
 	if s.cp.CompactMaxTurns > 0 {
 		turnsSinceLastCompact := step
 		if s.cs.lastCompactStep > 0 {
@@ -330,11 +249,8 @@ func (s *Session) doCompact(step int, reason string) bool {
 	if s.cs.lastCompactStep > 0 && step-s.cs.lastCompactStep < s.cs.budget.CompactionTurnFloor() {
 		return false // min-turn floor between compactions
 	}
-	// Plan-then-offload-then-commit (QA bug B): planning computes the
-	// eviction WITHOUT mutating s.history; the offload (the originals
-	// store) runs BEFORE the replacement history is committed, so a failed
-	// offload leaves the live session byte-identical — the evicted
-	// originals are never lost from history.
+	// Plan-then-offload-then-commit (QA bug B): planning computes the eviction WITHOUT mutating
+	// s.history; the offload (the originals store) runs BEFORE the replacement history is committed.
 	evicted, replacement := s.planMiddleEviction()
 	if len(evicted) == 0 || replacement == nil {
 		return false // nothing to evict — never compact for show
@@ -348,11 +264,7 @@ func (s *Session) doCompact(step int, reason string) bool {
 	s.cs.lastCompactStep = step
 	s.cs.compactions++
 	s.cs.armed = false // re-arm only after forward progress (next step)
-	// A COLLAPSE IS ANNOUNCED. Everything else about a compacted session is visible after the fact, and this
-	// was not: the run page showed a continuous conversation, the log showed nothing on success, and the only
-	// artifact was the offload file — so the one event that rewrites the request the provider has to accept
-	// was the one event an operator could not see. Best-effort like every other transcript write: a failed
-	// append must never fail the session.
+	// A COLLAPSE IS ANNOUNCED.
 	ev := map[string]any{
 		"step": step, "reason": reason,
 		"messages_before": before, "messages_after": len(replacement),
@@ -382,20 +294,8 @@ type evictedToolResult struct {
 	EvictedAt  string `json:"evicted_at"`
 }
 
-// planMiddleEviction computes the middle-only tool-round eviction WITHOUT
-// mutating s.history (QA bug B): it returns the evicted originals for
-// offload and the replacement history to commit AFTER the offload succeeds,
-// so a failed offload leaves the live session byte-identical — the evicted
-// originals are never lost from history. It removes an assistant tool_use
-// and its paired tool-result message TOGETHER as a unit, keeping the pinned
-// goal head, every non-tool message, and the recent tail verbatim. Evicting
-// the pair (never a result alone, never a tool_use alone) preserves the
-// provider contract: every assistant tool_use that REMAINS has a matching
-// tool_result, so the marshaled next request is valid for Anthropic and
-// OpenAI. The digest marker is merged into the pinned head user message
-// (never a standalone user message — QA bug C: consecutive plain-text user
-// messages break the Anthropic role-alternation rule). replacement is nil
-// when nothing is evictable.
+// planMiddleEviction computes the middle-only tool-round eviction WITHOUT mutating s.history (QA
+// bug B): it returns the evicted originals for offload and the replacement history to commit AFTER.
 func (s *Session) planMiddleEviction() ([]evictedToolResult, []Message) {
 	keep := s.cp.RecentTurns
 	if keep < 1 {
@@ -424,13 +324,7 @@ func (s *Session) planMiddleEviction() ([]evictedToolResult, []Message) {
 		return nil, nil
 	}
 
-	// resultMsgIndex maps each tool_call_id to the history index of its
-	// RoleTool result message. An assistant tool_use ALWAYS precedes its
-	// result message, so when the result message sits in the evictable
-	// middle (head < index < tailStart) its paired tool_use is also in the
-	// middle — the whole round is evictable as a unit. A result that landed
-	// in the pinned tail keeps its tool_use (evicting the use would orphan
-	// the kept result).
+	// resultMsgIndex maps each tool_call_id to the history index of its RoleTool result message.
 	resultMsgIndex := map[string]int{}
 	for i, m := range s.history {
 		if m.Role != RoleTool {
@@ -443,9 +337,8 @@ func (s *Session) planMiddleEviction() ([]evictedToolResult, []Message) {
 		}
 	}
 
-	// toolUseInTail marks a tool_call_id whose tool_use message sits in the
-	// pinned tail — its result message (which precedes it) must never be
-	// evicted, or the tail's tool_use would be orphaned.
+	// toolUseInTail marks a tool_call_id whose tool_use message sits in the pinned tail — its result
+	// message (which precedes it) must never be evicted, or the tail's tool_use would be orphaned.
 	toolUseInTail := map[string]bool{}
 	for i := tailStart; i < n; i++ {
 		for _, c := range s.history[i].Content {
@@ -457,9 +350,7 @@ func (s *Session) planMiddleEviction() ([]evictedToolResult, []Message) {
 
 	// dropMsg[i] = true when history[i] is removed entirely.
 	dropMsg := make([]bool, n)
-	// Evictable middle tool results: offload each original and drop the
-	// result message. A result message is skipped (kept verbatim) when its
-	// tool_use lives in the pinned tail.
+	// Evictable middle tool results: offload each original and drop the result message.
 	var evicted []evictedToolResult
 	seq := 0
 	for i := head + 1; i < tailStart; i++ {
@@ -501,12 +392,8 @@ func (s *Session) planMiddleEviction() ([]evictedToolResult, []Message) {
 		return nil, nil
 	}
 
-	// Plan the paired assistant tool_use removal: a middle assistant
-	// message's tool_use whose result message was dropped above is removed
-	// with it. A message that had text or surviving tool_use blocks keeps
-	// them; a pure tool_use message whose every call was evicted is dropped
-	// wholesale (no orphaned tool_use remains either way). Trimming is
-	// staged in `trimmed` copies — s.history is not mutated (QA bug B).
+	// Plan the paired assistant tool_use removal: a middle assistant message's tool_use whose result
+	// message was dropped above is removed with it.
 	trimmed := map[int]Message{}
 	for i := head + 1; i < tailStart; i++ {
 		m := s.history[i]
@@ -526,31 +413,19 @@ func (s *Session) planMiddleEviction() ([]evictedToolResult, []Message) {
 			dropMsg[i] = true // pure tool_use message, fully evicted
 		} else if droppedAny {
 			// The message's reasoning rides ONE content block (the first — see appendAssistantToolUse), so
-			// evicting that block would take the reasoning with it and leave a SURVIVING assistant message
-			// that silently lost the field a thinking-mode provider demands back. Carry it onto the first
-			// block that stays.
+			// evicting that block would take the reasoning with it and leave a SURVIVING assistant message.
 			if carried := contentReasoning(m.Content); carried != nil && contentReasoning(kept) == nil {
 				kept[0].Reasoning = carried
 			}
-			// Text and/or surviving calls stay verbatim — but only as a
-			// COPY staged for the replacement; s.history is not touched
-			// until the offload commits (QA bug B).
+			// Text and/or surviving calls stay verbatim — but only as a COPY staged for the replacement;
+			// s.history is not touched until the offload commits (QA bug B).
 			m.Content = kept
 			trimmed[i] = m
 		}
 	}
 
-	// Build the replacement: surviving messages (head + kept middle, with
-	// the digest marker MERGED INTO the pinned head user message) + recent
-	// tail verbatim. The head merge (never a standalone user message) keeps
-	// the marshaled history role-alternating — QA bug C. Surviving messages
-	// are appended verbatim; consecutive same-role survivors (a plain-text
-	// user turn whose surrounding tool rounds were evicted, or an assistant
-	// text+tool_use turn trimmed to bare text) are handled at the WIRE layer
-	// by marshalAnthropicHistory, which coalesces same-role turns — the
-	// normalized history here stays policy-true (recent tail verbatim, goal
-	// head intact) while the marshaled Anthropic history stays strictly
-	// role-alternating.
+	// Build the replacement: surviving messages (head + kept middle, with the digest marker MERGED INTO
+	// the pinned head user message) + recent tail verbatim.
 	markerText := s.offloadDigestMarker(evicted)
 	out := make([]Message, 0, n)
 	for i := 0; i < tailStart; i++ {
@@ -583,17 +458,11 @@ func contentReasoning(content []Content) *string {
 	return nil
 }
 
-// appendMarkerToHead merges the compaction digest-marker text into the
-// pinned head user message (its first text block) instead of injecting a
-// standalone user message. The marker tells the model what was evicted and
-// how to re-read an original; riding the goal's user message keeps the
-// marshaled history strictly role-alternating (a second consecutive
-// plain-text user message is rejected by the Anthropic Messages API).
+// appendMarkerToHead merges the compaction digest-marker text into the pinned head user message
+// (its first text block) instead of injecting a standalone user message.
 func appendMarkerToHead(m Message, markerText string) Message {
-	// Copy the content slice so the merged text never writes through to
-	// s.history's shared backing array — planning must stay pure until the
-	// offload commits (QA bug B: a failed offload must leave history
-	// byte-identical).
+	// Copy the content slice so the merged text never writes through to s.history's shared backing
+	// array — planning must stay pure until the offload commits (QA bug B.
 	content := make([]Content, len(m.Content))
 	copy(content, m.Content)
 	for i := range content {
@@ -608,9 +477,8 @@ func appendMarkerToHead(m Message, markerText string) Message {
 	return m
 }
 
-// offloadDigestMarker renders the injected marker line for the evicted
-// tool results: one line per tool with its name + the offload path, so
-// the model can re-read a specific original on demand.
+// offloadDigestMarker renders the injected marker line for the evicted tool results: one line per
+// tool with its name + the offload path, so the model can re-read a specific original on demand.
 func (s *Session) offloadDigestMarker(evicted []evictedToolResult) string {
 	var sb strings.Builder
 	sb.WriteString("Compacted old tool results (originals offloaded; re-read the file at the given path + seq if needed):\n")
@@ -637,9 +505,8 @@ func (s *Session) offloadPath() string {
 	return filepath.Join(s.projectDir, ".orchicon", "offload", s.id+".jsonl")
 }
 
-// offloadToolResults appends the evicted originals to the offload file
-// (one JSON object per line) before history mutation. The transcript is
-// NOT rewritten — the offload file is the originals store.
+// offloadToolResults appends the evicted originals to the offload file (one JSON object per line)
+// before history mutation.
 func (s *Session) offloadToolResults(evicted []evictedToolResult) error {
 	dir := filepath.Dir(s.offloadPath())
 	if err := os.MkdirAll(dir, 0o755); err != nil {
