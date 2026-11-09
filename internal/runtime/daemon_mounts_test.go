@@ -330,10 +330,13 @@ func TestStandardHostMountArgsClaudeRWAndPath(t *testing.T) {
 			t.Errorf("claude's config/transcript home has no private writable mount — the CLI would fail to "+
 				"write its session state (args %v)", args)
 		}
-		// NO HOST PREFIX: claude is installed in the shipped image, and this PATH is PREPENDED — a host bin
-		// dir here would shadow it and put the container back on the host's binary.
-		if envValue(args, "PATH", clPATH) {
-			t.Errorf("claude is IMAGE-SUPPLIED, so its host bin dir must not be prepended (args %v)", args)
+		// THE HOST PREFIX IS PRESENT, because the HOST'S claude is what the container execs. It used to be
+		// suppressed — the image was assumed to supply the CLI — and the adapter's argv[0] then went to that
+		// image by name, so an image without one killed every session with `executable file not found in
+		// $PATH`. The two now read one gate (adapter.PreferHostAdapterInContainer).
+		if !envValue(args, "PATH", clPATH) {
+			t.Errorf("the host's claude bin dir must be prepended: it is the install the container execs, and "+
+				"without it a `claude` reached by name resolves to nothing (args %v)", args)
 		}
 	})
 

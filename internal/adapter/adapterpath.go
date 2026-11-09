@@ -400,6 +400,39 @@ func ContainerUsable(hostPath, containerGOOS string) (bool, string) {
 	return true, ""
 }
 
+// PreferHostAdapterInContainer reports whether a CONTAINER child should exec the operator's own install
+// rather than the one baked into the runtime image, and says why when it should not.
+//
+// THE HOST WINS WHENEVER IT CAN ACTUALLY RUN THERE. The host install is the one the operator authenticated
+// and the one whose version they chose, and preferring it means a container never depends on the image
+// carrying the CLI at all — so a stale, hand-built or adapter-less image degrades to the host instead of
+// dying with `exec: "claude": executable file not found in $PATH`.
+//
+// THE GATES HERE ARE THE ONLY PLACE THIS IS DECIDED, and every caller reads THEM rather than re-deriving
+// them: the claude adapter (its argv[0]) and the runtime daemon (the container's PATH prefix). That pairing
+// is the point — when the two answered separately they disagreed, and the container exec'd a name nothing on
+// its PATH provided.
+//
+// EACH GATE IS LOAD-BEARING, IN ORDER:
+//  1. no host binary -> nothing to prefer; the image's is the only route.
+//  2. the binary is not something a Linux kernel can exec -> the image's. ContainerUsable answers this, and
+//     it is a PATH-SHAPE check (a .exe suffix), not a header sniff.
+//  3. THE HOST IS NOT LINUX -> the image's. A Mach-O build has no ".exe" suffix, so gate 2 does NOT catch
+//     it; the host GOOS is the only reliable answer, and without it a macOS host would hand a Darwin binary
+//     to a Linux container.
+func PreferHostAdapterInContainer(hostGOOS, hostBin string) (bool, string) {
+	if strings.TrimSpace(hostBin) == "" {
+		return false, "no host install was resolved, so the image's CLI is the only route"
+	}
+	if ok, why := ContainerUsable(hostBin, "linux"); !ok {
+		return false, why
+	}
+	if goos := strings.TrimSpace(hostGOOS); goos != "" && goos != "linux" {
+		return false, "the host install is a " + goos + " binary and runtime containers are Linux"
+	}
+	return true, ""
+}
+
 // HostGOOS and HostGetenv are here so a caller with an injected platform (a test) and a caller without one
 // (production) read the same defaults through a single pair of names.
 func HostGOOS() string { return runtime.GOOS }
