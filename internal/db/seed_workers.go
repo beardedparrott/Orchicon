@@ -155,7 +155,10 @@ const sdlcWorkhorseMarker = "not to license an unfinished deliverable"
 
 // qaSurfaceImpactMarker is the QA Engineer's per-worker roll-forward fragment
 // (cannedWorker.RollMarker): it pins the mandatory surface-impact check.
-const qaSurfaceImpactMarker = "Surface-impact check — mandatory, before any verdict"
+// THE FRAGMENT MUST EXIST IN THE CURRENT CONTENT. It was left at the pre-reword phrasing ("…mandatory,
+// before any verdict") after #925 reworded the section, so no worker carried it — and the roll-forward
+// check is "re-sync when the content LACKS this fragment", which made the QA worker re-sync on EVERY boot.
+const qaSurfaceImpactMarker = "Surface-impact check — decide this explicitly"
 
 // preExistingRemedyMarker is the roll-forward fragment (cannedWorker.RollMarker) pinning the
 // pre-existing-failure remedy contract on the SSE, PR Reviewer, and QA Engineer.
