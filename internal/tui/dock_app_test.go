@@ -37,10 +37,7 @@ func keyTabFor(chord string) TabID {
 	return ""
 }
 
-// ctrl+g toggles content↔composer focus. The COMPOSER is the launch
-// focus (Phase 2a — typing works immediately, no ctrl+g needed):
-// tab chords are structural and switch tabs while composing, and
-// esc/ctrl+g return focus to the content pane.
+// ctrl+g toggles content↔composer focus.
 func TestFocusChordAndFallthrough(t *testing.T) {
 	m := newDockTestApp()
 	if m.chatFocus != focusComposer {
@@ -68,12 +65,6 @@ func TestFocusChordAndFallthrough(t *testing.T) {
 		}
 	}
 	// esc disengages to the content; the composer blurs.
-	//
-	// THE CHORD NOW DROPS THE SUBMENU, so esc has two jobs in order: close the menu it just opened,
-	// then hand the keyboard to the content. The operator asked for the first half ("it goes to the
-	// menu, but also automatically drops the submenu down and gains focus to that") and the second
-	// half is what this test always pinned, so BOTH are asserted — the earlier one-press form was
-	// only reachable while a chord left no menu, which was the defect.
 	if m2.MenuOpenID() != m2.ActiveTab() {
 		t.Fatalf("the chord must drop the active tab's submenu (menuOpen=%q, active=%q)",
 			m2.MenuOpenID(), m2.ActiveTab())
@@ -102,9 +93,7 @@ func TestFocusChordAndFallthrough(t *testing.T) {
 	}
 }
 
-// Enter sends from the composer on any screen; the context preamble is
-// visible in the dock notice. The composer is focused at launch — typing
-// works with no ctrl+g first (Phase 2a).
+// Enter sends from the composer on any screen; the context preamble is visible in the dock notice.
 func TestComposerSendCarriesContext(t *testing.T) {
 	m := newDockTestApp()
 	if m.chatFocus != focusComposer {
@@ -170,28 +159,13 @@ func TestNavCommandParity(t *testing.T) {
 		// arg jumps
 		"/wi", "/exec", "/run", "/worker",
 		// remaining screen sources
-		//
-		// NOTE: there is deliberately NO "/decisions". The Decisions pane was removed — it had no
-		// GUI counterpart and was cruft from the initial TUI (see the enforcement package docs).
-		// Because the slash registry is GENERATED from the screens' Sources(), removing the
-		// source removed the command: this list is the parity check between the two, so dropping
-		// the entry here is the change, not a workaround. A decision record is still rendered
-		// where it belongs, as policy context on an approval.
-		//
-		// "/mcp" IS ALSO GONE FROM THE TENANT SOURCES. The control screen's tenant-level "mcp"
-		// source was removed (a definition is OWNER-SCOPED now — project / conversation / worker
-		// version — there is no tenant-level MCP pane), so the generated command left with it.
-		// /mcp is a DIFFERENT command now: the conversation scope's slash command (owned
-		// definitions for the OPEN conversation), registered explicitly in slash.go rather than
-		// generated from a source. It is therefore not asserted here.
 		"/projects", "/conversations", "/schedules",
 		// Overview domain (Dashboard / Telemetry / Cost Explorer + /usage)
 		"/dashboard", "/telemetry", "/cost-explorer", "/usage",
 		// system
 		"/help", "/connect", "/context", "/quit",
-		// plane lifecycle (plane_lifecycle.go) — the TUI is one of only two user-facing control
-		// surfaces, so removing a registration must fail HERE as well as in
-		// TestPlaneCommandsRegisteredEverywhere.
+		// plane lifecycle (plane_lifecycle.go) — the TUI is one of only two user-facing control surfaces,
+		// so removing a registration must fail HERE as well as in TestPlaneCommandsRegisteredEverywhere.
 		"/plane", "/plane-start", "/plane-stop", "/plane-restart",
 	}
 	for _, name := range required {
@@ -234,9 +208,8 @@ func TestDockPresentEverywhere80x24(t *testing.T) {
 	}
 }
 
-// 401 (Unauthenticated) chat failures surface the re-auth prompt in the
-// dock error strip without crashing (Phase 2b: the prompt names the
-// in-place /connect fix — never a bare "error: unauthenticated").
+// 401 (Unauthenticated) chat failures surface the re-auth prompt in the dock error strip without
+// crashing (Phase 2b: the prompt names the in-place /connect fix — never a bare "error.
 func TestAuthExpiredSurfacesInDock(t *testing.T) {
 	m := newDockTestApp()
 	m.setChatError("send", &stubAuthErr{})
@@ -297,9 +270,7 @@ func TestContextCommand(t *testing.T) {
 	}
 }
 
-// Chat msgs flow through dispatch: transcript + conversations. Fresh-launch
-// contract: loading conversations must NOT auto-open one (the shell lands
-// on a fresh chat like the GUI); the list populates the rail instead.
+// Chat msgs flow through dispatch: transcript + conversations.
 func TestChatMsgsDispatch(t *testing.T) {
 	m := newDockTestApp()
 	nm, _ := m.Update(chat.ConversationsMsg{Convs: []chat.Conversation{{ID: "c1", Title: "one"}}})
@@ -333,9 +304,8 @@ func TestRailOpenSetsActive(t *testing.T) {
 	}
 }
 
-// Plain keys reach the SCREEN only in content focus; at launch the
-// composer owns the keyboard (Phase 2a), so a plain key is composer input,
-// never a screen shortcut.
+// Plain keys reach the SCREEN only in content focus; at launch the composer owns the keyboard
+// (Phase 2a), so a plain key is composer input, never a screen shortcut.
 func TestPlainKeysStillReachScreen(t *testing.T) {
 	m := newDockTestApp()
 	s := &stubScreen{id: "ask"}

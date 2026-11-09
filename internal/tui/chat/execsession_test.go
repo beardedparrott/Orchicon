@@ -154,9 +154,9 @@ func execEvent(id string, seq int64, typ apiv1.ExecutionEventType, payload strin
 }
 
 func TestLiveItemsTextAndReasoningChunks(t *testing.T) {
-	// Reasoning chunks arrive as a JSON string INSIDE the payload's text
-	// field (the adapter's emitReasoningChunked, double-wrapped) —
-	// detected by parsing that string, exactly like SessionChatPane.tsx.
+	// Reasoning chunks arrive as a JSON string INSIDE the payload's text field (the adapter's
+	// emitReasoningChunked, double-wrapped) — detected by parsing that string, exactly like
+	// SessionChatPane.tsx.
 	events := []*apiv1.StreamExecutionEventsResponse{
 		execEvent("e1", 1, apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_TELEMETRY, `{"text":"answer "}`),
 		execEvent("e2", 2, apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_TELEMETRY, `{"text":"soon"}`),
@@ -236,11 +236,8 @@ func TestLiveItemsMalformedPayloadsSafe(t *testing.T) {
 	}
 }
 
-// TestHistoryItemsSessionInfoCarriesAdapterKind pins AC 7's TUI half: the
-// execution's session_info part renders as a session identity item carrying the
-// ADAPTER kind, and a part carrying ONLY the kind still renders — a native
-// (in-process) execution has no serve/session id to point at, only the adapter
-// it ran on.
+// TestHistoryItemsSessionInfoCarriesAdapterKind pins AC 7's TUI half: the execution's session_info
+// part renders as a session identity item carrying the ADAPTER kind.
 func TestHistoryItemsSessionInfoCarriesAdapterKind(t *testing.T) {
 	parts := []*apiv1.ExecutionSessionPart{
 		part(1, "session_info", `{"session_id":"ses_9","serve_url":"http://127.0.0.1:42","adapter_kind":"opencode"}`),
@@ -267,10 +264,8 @@ func TestHistoryItemsSessionInfoCarriesAdapterKind(t *testing.T) {
 	}
 }
 
-// TestSessionIdentityNamesTheTransport pins the identity string both TUI panes
-// share (and the follow-up surface shows): a native (in-process) run names its
-// transport instead of trailing a blank serve URL, an opencode run shows the
-// adapter and the serve, and a legacy part (no adapter kind) reads as opencode.
+// TestSessionIdentityNamesTheTransport pins the identity string both TUI panes share (and the
+// follow-up surface shows).
 func TestSessionIdentityNamesTheTransport(t *testing.T) {
 	cases := []struct {
 		name string

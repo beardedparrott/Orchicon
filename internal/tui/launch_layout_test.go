@@ -7,10 +7,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// The launch layout (opencode-style): with no session yet, Ask renders the
-// brand + the composer centered in the viewport instead of a docked composer
-// under an empty transcript. Once a session exists it reverts to the docked
-// layout.
+// The launch layout (opencode-style): with no session yet, Ask renders the brand + the composer
+// centered in the viewport instead of a docked composer under an empty transcript.
 func TestLaunchLayoutCentersComposerUntilSessionStarts(t *testing.T) {
 	for _, size := range [][2]int{{80, 24}, {120, 40}} {
 		w, h := size[0], size[1]

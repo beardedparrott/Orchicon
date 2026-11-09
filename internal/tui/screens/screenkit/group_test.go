@@ -1,16 +1,6 @@
 package screenkit
 
 // group_test.go — nesting a flat list under its category folders.
-//
-// The operator: "When an item (conversation, worker, workflow) is in a category, it should create a
-// little arrow dropdown in their respective lists that can be collapsed or expanded" … "Both should
-// honor the same and work in the same way."
-//
-// The arrow and the collapse come from the LIST widget (a row with a Parent hangs off the row whose id
-// matches; a row with HasChildren draws the toggle). What these tests pin is the arrangement this
-// package is responsible for, its ADDITIVE property (which keeps it from disturbing three lists), and
-// the two details taken from the GUI's own rendering: an ordered folder per category — EMPTY ONES
-// INCLUDED — and a trailing "Uncategorized" folder for whatever is left.
 
 import "testing"
 
@@ -36,9 +26,8 @@ func memberOf(m map[string]string) func(string) string {
 	return func(id string) string { return m[id] }
 }
 
-// TestGroupingIsAdditiveWithNoCategories is the property that lets this land on three lists at once:
-// with no categories, the input is returned UNCHANGED — no folders, no depth. Every existing list and
-// every existing test therefore behaves exactly as it did.
+// TestGroupingIsAdditiveWithNoCategories is the property that lets this land on three lists at
+// once: with no categories, the input is returned UNCHANGED — no folders, no depth.
 func TestGroupingIsAdditiveWithNoCategories(t *testing.T) {
 	in := items("a", "b", "c")
 	out := GroupItemsByCategory(in, nil, memberOf(nil))
@@ -130,9 +119,8 @@ func TestUncategorizedIsOmittedWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestEmptyCategoriesStillRenderAsFolders: the GUI builds a group for EVERY category it knows about, so
-// an operator who created "Frontend" sees the folder before anything is in it. Dropping empty folders
-// would tell them the two clients disagree — the confusion this work exists to remove.
+// TestEmptyCategoriesStillRenderAsFolders: the GUI builds a group for EVERY category it knows
+// about, so an operator who created "Frontend" sees the folder before anything is in it.
 func TestEmptyCategoriesStillRenderAsFolders(t *testing.T) {
 	in := items("w1")
 	groups := []GroupSpec{{ID: "catA", Name: "Alpha"}, {ID: "catB", Name: "Beta"}}
@@ -155,12 +143,8 @@ func TestEmptyCategoriesStillRenderAsFolders(t *testing.T) {
 	}
 }
 
-// TestFolderOrderIsTheServersNotTheCallers: the folders are ordered by the SERVER's sort_order (then the
-// name as a tie-break), NOT by the order the caller happened to list them in.
-//
-// The sorting lives inside GroupItemsByCategory on purpose: three surfaces build folder lists from three
-// different responses, and "the GUI and the TUI list groupings the same way" cannot survive three
-// callers each remembering to sort. The caller passes what it knows; the helper decides the order.
+// TestFolderOrderIsTheServersNotTheCallers: the folders are ordered by the SERVER's sort_order
+// (then the name as a tie-break), NOT by the order the caller happened to list them in.
 func TestFolderOrderIsTheServersNotTheCallers(t *testing.T) {
 	in := items("w1", "w2", "w3")
 	// Deliberately out of order, with explicit sort orders that disagree with both the argument order
@@ -191,9 +175,8 @@ func TestFolderOrderIsTheServersNotTheCallers(t *testing.T) {
 	}
 }
 
-// TestFolderOrderTieBreaksByName keeps the order STABLE when several categories share a sort order, which
-// they do when they were created in one transaction. An unstable order would shuffle the folders between
-// reloads — and the rolling refresh reloads every few seconds, so the operator would watch them move.
+// TestFolderOrderTieBreaksByName keeps the order STABLE when several categories share a sort order,
+// which they do when they were created in one transaction.
 func TestFolderOrderTieBreaksByName(t *testing.T) {
 	in := items("w1")
 	groups := []GroupSpec{
@@ -220,8 +203,7 @@ func TestFolderOrderTieBreaksByName(t *testing.T) {
 }
 
 // TestAssignmentToAnUnknownCategoryIsTreatedAsUngrouped: a stale cache or a group deleted between
-// fetches can leave an assignment naming a category the caller did not pass in. The item must land in
-// Uncategorized rather than VANISH — losing a row is worse than misfiling it.
+// fetches can leave an assignment naming a category the caller did not pass in.
 func TestAssignmentToAnUnknownCategoryIsTreatedAsUngrouped(t *testing.T) {
 	in := items("w1")
 	groups := []GroupSpec{{ID: "catA", Name: "Alpha"}}

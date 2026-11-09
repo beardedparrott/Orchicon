@@ -6,10 +6,6 @@ import (
 )
 
 // Phase-3.5 finding 4 support: the fetchedMsg → List population path.
-// The Control screen renders "nothing here" for every pane when this
-// wiring breaks, with NO error state (the operator's screenshot) — so
-// this pins that a successful fetch lands its items in the right
-// source's list and clears Loading.
 func TestBaseFetchedMsgPopulatesList(t *testing.T) {
 	b := &Base{}
 	b.AddSource("workers", "Workers", func(ctx context.Context, pageToken string) ([]Item, string, error) {

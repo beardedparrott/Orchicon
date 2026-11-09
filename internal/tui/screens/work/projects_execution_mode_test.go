@@ -1,8 +1,6 @@
 package work
 
 // The TUI create form's execution-mode default must equal the server's: local.
-// A TUI-created project that sent RUNTIME explicitly would contradict the new
-// server default — the "shown one value, given another" defect (AC4).
 
 import (
 	"testing"

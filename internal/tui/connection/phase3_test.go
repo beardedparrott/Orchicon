@@ -10,9 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/config"
 )
 
-// TestInputsHaveExplicitWidth pins finding 2's field-width fix: a
-// zero-width textinput never bounds its frame (the masked credential echo
-// painted a full-width dotted line).
+// TestInputsHaveExplicitWidth pins finding 2's field-width fix: a zero-width textinput never bounds
+// its frame (the masked credential echo painted a full-width dotted line).
 func TestInputsHaveExplicitWidth(t *testing.T) {
 	m := New(&config.Profile{URL: "https://x.example.com"}, ProbeFuncs{})
 	for i := range m.inputs {
@@ -22,9 +21,8 @@ func TestInputsHaveExplicitWidth(t *testing.T) {
 	}
 }
 
-// TestLoginErrorWrappedOnce pins the dedupe of the doubled error prefix:
-// client.Login already says "login failed:", so the probe must not wrap it
-// a second time ("login failed: login failed: HTTP 401").
+// TestLoginErrorWrappedOnce pins the dedupe of the doubled error prefix: client.Login already says
+// "login failed:", so the probe must not wrap it a second time ("login failed: login failed.
 func TestLoginErrorWrappedOnce(t *testing.T) {
 	m := New(&config.Profile{URL: "https://x.example.com", AuthMethod: config.AuthPassword, Username: "u"}, ProbeFuncs{
 		Versionz: func(ctx context.Context, baseURL string, insecure bool) (*client.VersionzResponse, error) {

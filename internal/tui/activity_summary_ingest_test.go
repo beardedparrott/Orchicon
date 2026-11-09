@@ -1,17 +1,6 @@
 package tui
 
 // activity_summary_ingest_test.go — THE DURABLE TOOL CALLS REACH THE LINE THROUGH onTranscript.
-//
-// The AC tests in activity_summary_test.go seed chatStore directly, which proves the STORE -> LINE half
-// and says nothing about how the data gets INTO the store. This closes the other half: a TranscriptMsg
-// carrying the page's tool calls must land in the store, and the line must then report them on the
-// painted frame. Without it, a regression that stopped onTranscript from handing msg.ToolCalls to the
-// store — or that APPENDED instead of replacing — would leave every other test green while the counter
-// never appeared, or climbed without bound.
-//
-// The returned command is APPLIED, the way the router does (router.go: chat.TranscriptMsg ->
-// tea.Batch(m.onTranscript(msg), m.waitChat())), because the footer is set by onChatWake — which
-// onTranscript RETURNS rather than calls. Asserting on the store alone would miss that.
 
 import (
 	"strings"
@@ -45,10 +34,8 @@ func TestTheTranscriptIngestLandsTheToolCalls(t *testing.T) {
 	}
 }
 
-// TestTheTranscriptIngestReplacesRatherThanAppends pins the WHOLESALE rule the field comment states:
-// the ledger column is cumulative for the turn and each landing page is its authority, so a second page
-// REPLACES the first. Appending would double-count the same call on every 1s poll and the counter would
-// climb forever over a turn that made three calls.
+// TestTheTranscriptIngestReplacesRatherThanAppends pins the WHOLESALE rule the field comment
+// states: the ledger column is cumulative for the turn and each landing page is its authority.
 func TestTheTranscriptIngestReplacesRatherThanAppends(t *testing.T) {
 	now := time.UnixMilli(1_700_000_130_000)
 	freezeNoticeNow(t, now)

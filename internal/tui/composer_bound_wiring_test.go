@@ -1,10 +1,6 @@
 package tui
 
 // composer_bound_wiring_test.go — THE COUNTER HAS TO BE TURNED ON.
-//
-// The dock can count (dock/composer_charcounter_test.go), but only the shell knows it is a CHAT composer, and
-// only the shell can install the bound. A counter no screen enables is exactly the "seam nothing calls" this
-// change exists to avoid — so this asserts the outward view, not the setter.
 
 import (
 	"strings"

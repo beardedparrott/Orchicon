@@ -80,11 +80,6 @@ import (
 )
 
 // stepKindOffer is the authoring vocabulary, in the order the picker shows it.
-//
-// Loop and Success are TWO INDEPENDENT questions — "does the reconciler re-enter a
-// named step when this kind rejects?" and "does it carry a forward target?" — and
-// the honest answer differs by kind. A single `Dual` flag conflated them and, for
-// approval, claimed a success_branch the reconciler has no field for.
 type stepKindOffer struct {
 	Kind    string // the WIRE string the reconciler switches on
 	Label   string
@@ -130,13 +125,7 @@ func stepKindOptions() []kit2.Option {
 	return out
 }
 
-// targetOptions builds the step-target picker choices from THIS workflow's own
-// steps.
-//
-// This is the piece that makes branch editing possible at all: success_branch and
-// loop_branch are step IDs living inside a config JSON blob, and no human can type
-// one. The VALUE is the id the wire needs; the LABEL is the name the operator
-// reads — the same answer the model picker gives for model_ref.
+// targetOptions builds the step-target picker choices from THIS workflow's own steps.
 func targetOptions(steps []flowStep, exclude string) []kit2.Option {
 	out := make([]kit2.Option, 0, len(steps))
 	for _, s := range steps {
@@ -207,9 +196,7 @@ func (m *Model) stepCursor(delta int) tea.Cmd {
 
 // --- serialisation ----------------------------------------------------------
 
-// flowStepToWire converts a step back to the JSON shape the server stores. Every
-// field the parser reads is written back, so a round trip through the editor never
-// silently drops one.
+// flowStepToWire converts a step back to the JSON shape the server stores.
 func flowStepToWire(s flowStep) map[string]any {
 	deps := s.deps
 	if deps == nil {
@@ -228,10 +215,6 @@ func flowStepToWire(s flowStep) map[string]any {
 }
 
 // marshalSteps writes a step list back as the JSON array the server expects.
-//
-// Position fields are NOT emitted: they are presentation-only (nothing in the
-// plane reads them), so writing them would be inventing data the GUI never needs
-// from us and that we cannot compute meaningfully.
 func marshalSteps(steps []flowStep) (string, error) {
 	out := make([]map[string]any, 0, len(steps))
 	for _, s := range steps {
@@ -244,9 +227,8 @@ func marshalSteps(steps []flowStep) (string, error) {
 	return string(b), nil
 }
 
-// replaceStep swaps an edited step back into the raw step list, preserving the
-// list's ORDER (the JSON order is the authored order, and flowOrder keeps it
-// stable among ready steps, so reordering here would churn the display).
+// replaceStep swaps an edited step back into the raw step list, preserving the list's ORDER (the
+// JSON order is the authored order, and flowOrder keeps it stable among ready steps.
 func replaceStep(steps []flowStep, edited flowStep) []flowStep {
 	for i := range steps {
 		if steps[i].ID == edited.ID {
@@ -257,9 +239,8 @@ func replaceStep(steps []flowStep, edited flowStep) []flowStep {
 	return append(steps, edited)
 }
 
-// removeStep drops a step AND every reference to it, so the workflow cannot be
-// saved with a dangling depends_on or a branch pointing at a step that no longer
-// exists.
+// removeStep drops a step AND every reference to it, so the workflow cannot be saved with a
+// dangling depends_on or a branch pointing at a step that no longer exists.
 func removeStep(steps []flowStep, id string) []flowStep {
 	out := make([]flowStep, 0, len(steps))
 	for _, s := range steps {
@@ -287,10 +268,8 @@ func removeStep(steps []flowStep, id string) []flowStep {
 	return out
 }
 
-// marshalBranches rewrites a step's config with the given branch target changes,
-// preserving every OTHER config key (recovery, conflict_value, exhausted_review …)
-// — a step's config is more than its branches, and clobbering it would silently
-// destroy settings the operator never touched.
+// marshalBranches rewrites a step's config with the given branch target changes, preserving every
+// OTHER config key (recovery, conflict_value, exhausted_review …).
 func marshalBranches(s flowStep, b *flowBranches) (string, error) {
 	raw := map[string]any{}
 	if strings.TrimSpace(s.Config) != "" {
@@ -321,9 +300,7 @@ func marshalBranches(s flowStep, b *flowBranches) (string, error) {
 	return string(out), nil
 }
 
-// nextStepID mints an id for a new step. The id is what depends_on and the branch
-// fields reference, so it only has to be unique within the workflow — a short
-// readable prefix plus a counter is enough and keeps the JSON legible.
+// nextStepID mints an id for a new step.
 func nextStepID(steps []flowStep) string {
 	taken := map[string]bool{}
 	for _, s := range steps {
@@ -340,24 +317,6 @@ func nextStepID(steps []flowStep) string {
 // --- forms ------------------------------------------------------------------
 
 // editStepForm edits an existing step.
-//
-// EVERY KIND'S FIELDS ARE ALWAYS PRESENT, each gated by a Visible predicate on the form's
-// `kind` value. That is the whole mechanism behind the operator's report: "when editing a
-// current step and you change it from a worker task to an approval or loop, it should
-// automatically show the reviewer/success/loop fields based on the type that was selected
-// in the edit form. Currently they don't show up if it was a normal worker type
-// beforehand."
-//
-// They did not show up because the specs were appended CONDITIONALLY on the kind the form
-// was OPENED with — so choosing another kind revealed nothing, since the fields for it were
-// never in the form to begin with. Gating on a predicate instead makes the reveal live: the
-// form re-evaluates visibility on every key and every render, so the rows change the moment
-// the kind does.
-//
-// A hidden field is skipped by rendering, by Tab/arrow navigation and by validation, which
-// is what keeps a hidden Required field from blocking a save. Its VALUE is retained, so
-// toggling kinds back and forth does not discard what was typed — and the submit still
-// writes only the selected kind's keys, because configEdits reads by kind.
 func (m *Model) editStepForm(s flowStep) *kit2.Form {
 	steps := m.flowStepsOf()
 	br := flowBranchOf(s)
@@ -381,12 +340,8 @@ func (m *Model) editStepForm(s flowStep) *kit2.Form {
 	specs := []kit2.FieldSpec{
 		{Name: "name", Label: "Name", Kind: kit2.KText, Required: true, Initial: s.Name},
 		{Name: "kind", Label: "Kind", Kind: kit2.KSelect, Initial: s.Kind, Options: stepKindOptions()},
-		// The worker ref is a LOOKUP, not an id to type — the operator's "we need to have
-		// a worker lookup as opposed to typing in an ID just like we do in work items".
-		// The VALUE is the worker id the wire needs; the LABEL is the name a human reads,
-		// exactly like the branch-target picker beside it. It serves a TASK's dispatchee
-		// AND a worker-backed APPROVAL's approver (workflow_reconciler.go:2718), which is
-		// why the label changes with the kind and the field is visible for both.
+		// The worker ref is a LOOKUP, not an id to type — the operator's "we need to have a worker lookup
+		// as opposed to typing in an ID just like we do in work items".
 		{Name: "ref", Label: "Worker", Kind: kit2.KPicker, Initial: s.Ref,
 			Options: m.flowWorkers, Placeholder: "type to search workers",
 			Visible: kindIs("task", "approval")},
@@ -407,9 +362,7 @@ func (m *Model) editStepForm(s flowStep) *kit2.Form {
 				{Value: "worker", Label: "worker — dispatches the Worker above (needs it set)"},
 			},
 			Visible: kindIs("approval")},
-		// FORWARD. Only where the kind's config struct actually HAS the key —
-		// approvalConfig has none, so an approval gets no SUCCESS → field, and the
-		// visibility follows stepKindHasSuccess.
+		// FORWARD.
 		{Name: "success_branch", Label: "SUCCESS → (step it continues to)", Kind: kit2.KPicker,
 			Initial: br.Success, Options: targets, Placeholder: "type to search this workflow's steps",
 			Visible: kindIs("loop_decision")},
@@ -421,18 +374,8 @@ func (m *Model) editStepForm(s flowStep) *kit2.Form {
 		{Name: "max_iterations", Label: "Max iterations/rejections before the run fails", Kind: kit2.KNumber,
 			Initial: fmt.Sprintf("%d", br.MaxIter), Validate: validatePositiveInt,
 			Visible: kindIs("approval", "loop_decision")},
-		// ONLY a loop decision carries on_missing_decision: it is a loopDecisionConfig
-		// key, and an approval has no missing-verdict problem (an approval proceeds
-		// unless it is explicitly REJECTED, so no verdict means forward, not a wedge).
-		//
-		// max_reask sits beside it because the two answer the SAME question from opposite
-		// sides: the policy says what a missing verdict MEANS, and max_reask says how many
-		// times to ask before giving up on getting one. It is a real, honoured bound (the
-		// re-ask loop fails at `reaskCount >= cfg.MaxReask`), which is why it is offered
-		// where a dead knob (the removed retry_delay_seconds) is not.
-		//
-		// decision_field / success_value / failure_value are deliberately NOT offered: the
-		// verdict vocabulary is platform contract, see loopDecisionConfig.
+		// ONLY a loop decision carries on_missing_decision: it is a loopDecisionConfig key, and an approval
+		// has no missing-verdict problem (an approval proceeds unless it is explicitly REJECTED.
 		{Name: "on_missing_decision", Label: "On missing decision (no upstream verdict to route on)",
 			Kind: kit2.KSelect, Initial: missingDecisionOf(s.Config), Options: missingDecisionOptions(),
 			Placeholder: "reask (engine default)", Visible: kindIs("loop_decision")},
@@ -440,9 +383,7 @@ func (m *Model) editStepForm(s flowStep) *kit2.Form {
 			Kind: kit2.KNumber, Initial: maxReaskOf(s.Config), Validate: validatePositiveInt,
 			Placeholder: "engine default 3", Visible: kindIs("loop_decision")},
 	}
-	// There is NO raw JSON config box. Every key these kinds consume has a field above, and
-	// mergeStepConfig PRESERVES whatever the fields do not model — so the box never bought
-	// anything except a way to corrupt a config by hand.
+	// There is NO raw JSON config box.
 
 	f := kit2.NewForm("Edit step: "+orDefaultStr(s.Name, s.ID), specs...)
 	f.Focused = true
@@ -461,9 +402,7 @@ func (m *Model) editStepForm(s flowStep) *kit2.Form {
 		if n, err := parseOptInt(v["worker_version"]); err == nil {
 			edited.WorkerVer = n
 		}
-		// The config is MERGED, never replaced. A key the form does not show — a
-		// legacy success_branch on an approval, a key this editor has not learned —
-		// survives the edit instead of being silently deleted by a submit.
+		// The config is MERGED, never replaced.
 		cfg, err := mergeStepConfig(s.Config, configEdits(edited.Kind, s.Config, v))
 		if err != nil {
 			return nil, err
@@ -477,15 +416,7 @@ func (m *Model) editStepForm(s flowStep) *kit2.Form {
 	return f
 }
 
-// addStepForm creates a new step. `-` on the flow opens it. The fields cover every
-// kind the picker offers, each labelled with the kind it belongs to, because the
-// kind is chosen IN this form — a field cannot appear after the choice is made —
-// and the vocabulary is small enough that the irrelevant ones are obvious. Every
-// kind-specific requirement is checked on submit, at the field, rather than left for
-// a run to fail on.
-//
-// There is no raw JSON config box: it was the operator's "it still just has me
-// editing a JSON for the config".
+// addStepForm creates a new step.
 func (m *Model) addStepForm() *kit2.Form {
 	steps := m.flowStepsOf()
 	// A new step defaults to running AFTER the current cursor, which is almost
@@ -581,25 +512,21 @@ func validateStepConfigForKind(s flowStep) error {
 			return errors.New("a worker step needs a worker id")
 		}
 	case "approval":
-		// A worker-backed approval with no ref FAILS the step at run time
-		// (workflow_reconciler.go:2729 — "worker-backed approval step %s has no
-		// worker ref"), so refuse it at the field.
+		// A worker-backed approval with no ref FAILS the step at run time (workflow_reconciler.go:2729 —
+		// "worker-backed approval step %s has no worker ref"), so refuse it at the field.
 		if approvalReviewer(s.Config) == "worker" && s.Ref == "" {
 			return errors.New("a worker-backed approval needs a worker id (or set Reviewer to human)")
 		}
 	case "loop_decision":
-		// The reconciler FAILS a loop decision whose loop_branch is empty or whose
-		// max_iterations is < 1 (workflow_reconciler.go:2359 — "missing or invalid
-		// config (loop_branch=%q, max_iterations=%d)").
+		// The reconciler FAILS a loop decision whose loop_branch is empty or whose max_iterations is < 1
+		// (workflow_reconciler.go:2359 — "missing or invalid config (loop_branch=%q, max_iterations=%d)").
 		b := flowBranchOf(s)
 		if b == nil || b.Loop == "" || b.MaxIter < 1 {
 			return errors.New("a loop step needs a LOOP → target and max iterations >= 1")
 		}
 	}
-	// A LOOP target with no bound can never re-enter: the reconciler compares the
-	// iteration count against max_iterations, so 0 makes the loop dead on arrival.
-	// (An approval with a BLANK loop_branch is allowed — the reconciler simply skips
-	// the loop-back, which makes the gate one-shot — and the field says so.)
+	// A LOOP target with no bound can never re-enter: the reconciler compares the iteration count
+	// against max_iterations, so 0 makes the loop dead on arrival.
 	if offer.Loop {
 		if b := flowBranchOf(s); b != nil && b.Loop != "" && b.MaxIter < 1 {
 			return errors.New("a step with a LOOP → target needs max iterations >= 1 (otherwise it can never re-enter)")
@@ -608,9 +535,7 @@ func validateStepConfigForKind(s flowStep) error {
 	return nil
 }
 
-// approvalReviewer reads the reviewer out of a step's config. Absent means the human
-// path: the reconciler acts on the value only when it is exactly "worker"
-// (workflow_reconciler.go:2712), and parseApprovalConfig applies no default.
+// approvalReviewer reads the reviewer out of a step's config.
 func approvalReviewer(config string) string {
 	var raw struct {
 		Reviewer string `json:"reviewer"`
@@ -623,17 +548,7 @@ func approvalReviewer(config string) string {
 
 // --- config MERGE -------------------------------------------------------------
 
-// configEdits turns a form's values into config KEY EDITS for a step of the given
-// kind. Only the keys the reconciler READS for that kind appear here; every other key
-// in the stored config is left alone by mergeStepConfig.
-//
-// `existing` is the step's current config, needed because a task's recovery policy is
-// a NESTED object: merging it as a whole would drop the keys inside it that this
-// editor does not model (a stored `retry_delay_seconds`, a key a future version adds).
-//
-// A blank value deletes its key, because an empty branch id or an empty reviewer is
-// not a value — it is the ABSENCE of one, and writing "" would make the JSON claim a
-// setting that is not there.
+// configEdits turns a form's values into config KEY EDITS for a step of the given kind.
 func configEdits(kind, existing string, v map[string]string) map[string]any {
 	edits := map[string]any{}
 	if kind == "task" {
@@ -653,9 +568,8 @@ func configEdits(kind, existing string, v map[string]string) map[string]any {
 		// A blank means "not set", which the engine resolves to reask — the same
 		// behaviour as writing the default, so deleting the key is the honest edit.
 		edits["on_missing_decision"] = strings.TrimSpace(v["on_missing_decision"])
-		// A non-positive bound deletes the key: parseLoopDecisionConfig treats <= 0 as
-		// "use 3", so writing 0 would be a bound the engine silently replaces, and
-		// blanking it is the same statement made honestly.
+		// A non-positive bound deletes the key: parseLoopDecisionConfig treats <= 0 as "use 3", so writing
+		// 0 would be a bound the engine silently replaces.
 		edits["max_reask"] = intOrNil(v["max_reask"])
 	}
 	return edits
@@ -676,9 +590,8 @@ func maxReaskOf(config string) string {
 	return fmt.Sprintf("%d", raw.MaxReask)
 }
 
-// missingDecisionOf reads a loop decision's on_missing_decision, falling back to the
-// engine's own default so the form shows the policy that will actually run rather than
-// an empty row beside a gate that has real behaviour.
+// missingDecisionOf reads a loop decision's on_missing_decision, falling back to the engine's own
+// default so the form shows the policy that will actually run rather than an empty row beside.
 func missingDecisionOf(config string) string {
 	var raw struct {
 		OnMissingDecision string `json:"on_missing_decision"`
@@ -699,9 +612,8 @@ func missingDecisionOptions() []kit2.Option {
 	}
 }
 
-// existingRecovery pulls the stored `recovery` object out as a raw map, so an edit
-// merges INTO it instead of replacing it. Empty when there is none, or when the config
-// is unparseable — in which case mergeStepConfig refuses the write anyway.
+// existingRecovery pulls the stored `recovery` object out as a raw map, so an edit merges INTO it
+// instead of replacing it.
 func existingRecovery(config string) map[string]any {
 	var outer struct {
 		Recovery map[string]any `json:"recovery"`
@@ -715,17 +627,8 @@ func existingRecovery(config string) map[string]any {
 	return outer.Recovery
 }
 
-// recoveryBlock merges the two form values into the STORED recovery object, so keys
-// this editor does not model survive the edit. A stored `retry_delay_seconds` is the
-// concrete case: the key was removed from the engine and from this editor when it
-// turned out nothing consumed it, but existing workflows still carry it, and changing a
-// step's strategy must not quietly delete data the operator can still see in the raw
-// config.
-//
-// The strategy falls back to "retry" — the reconciler's own default
-// (readStepRecoveryConfig) and the one the GUI's step editor seeds — so a step always
-// ends up carrying the policy that will actually run rather than a block the reader
-// has to guess at.
+// recoveryBlock merges the two form values into the STORED recovery object, so keys this editor
+// does not model survive the edit.
 func recoveryBlock(existing map[string]any, strategy, maxAttempts string) map[string]any {
 	out := make(map[string]any, len(existing)+2)
 	for k, v := range existing {
@@ -738,9 +641,8 @@ func recoveryBlock(existing map[string]any, strategy, maxAttempts string) map[st
 	return out
 }
 
-// intOrNil parses a whole number, returning nil for blank or non-positive so the key
-// is DELETED rather than written as 0 — the reconciler treats max_iterations < 1 as
-// invalid, so 0 is a bound that can never be satisfied.
+// intOrNil parses a whole number, returning nil for blank or non-positive so the key is DELETED
+// rather than written as 0 — the reconciler treats max_iterations < 1 as invalid.
 func intOrNil(raw string) any {
 	n, err := parseOptInt(raw)
 	if err != nil || n <= 0 {
@@ -749,25 +651,13 @@ func intOrNil(raw string) any {
 	return n
 }
 
-// mergeStepConfig rewrites a step's config with the given key edits, PRESERVING every
-// key it does not name.
-//
-// A step's config is more than one thing. A task carries its recovery policy; an
-// approval carries a reviewer and a loop; a loop decision carries branches; and live
-// data carries keys no version of this editor models (success_branch on an approval,
-// conflict_value, exhausted_review). REPLACING the config with whatever the form
-// happens to show would silently destroy all of it — which is precisely what a submit
-// that writes an empty `config` does, and why the form no longer has that field.
-//
-// A nil value, or an empty string, DELETES the key: an absent key is how the wire
-// says "not set", and the reconciler's own defaults then apply.
+// mergeStepConfig rewrites a step's config with the given key edits, PRESERVING every key it does
+// not name.
 func mergeStepConfig(config string, edits map[string]any) (string, error) {
 	raw := map[string]any{}
 	if t := strings.TrimSpace(config); t != "" {
 		if err := json.Unmarshal([]byte(t), &raw); err != nil {
-			// Refuse rather than discard. Overwriting an unparseable config would
-			// destroy whatever it holds, and it stays readable in the version's raw
-			// steps for whoever needs to repair it.
+			// Refuse rather than discard.
 			return "", errors.New("this step's config is not valid JSON, so it cannot be safely edited")
 		}
 	}
@@ -798,10 +688,8 @@ type stepRecovery struct {
 	MaxAttempts int
 }
 
-// parseRecoveryConfig reads a task step's recovery block the way the reconciler does
-// — DEFAULTS INCLUDED — so the form shows the policy that will actually run rather
-// than a blank slate. Mirrors readStepRecoveryConfig (workflow_reconciler.go:3897):
-// an absent strategy means "retry", and a max_attempts <= 0 means 3.
+// parseRecoveryConfig reads a task step's recovery block the way the reconciler does — DEFAULTS
+// INCLUDED — so the form shows the policy that will actually run rather than a blank slate.
 func parseRecoveryConfig(config string) stepRecovery {
 	rec := stepRecovery{Strategy: "retry", MaxAttempts: 3}
 	if strings.TrimSpace(config) == "" {
@@ -825,10 +713,8 @@ func parseRecoveryConfig(config string) stepRecovery {
 	return rec
 }
 
-// recoveryStrategyOptions is the strategy vocabulary the reconciler routes on — the
-// four cases of the switch at workflow_reconciler.go:4671-4774 (retry / "",
-// summarize_restart, human_escalation, stop) — with the same four values the GUI's
-// step editor offers.
+// recoveryStrategyOptions is the strategy vocabulary the reconciler routes on — the four cases of
+// the switch at workflow_reconciler.go:4671-4774 (retry / "", summarize_restart, human_escalation.
 func recoveryStrategyOptions() []kit2.Option {
 	return []kit2.Option{
 		{Value: "retry", Label: "retry — blind retry: a fresh work item, re-dispatched (default)"},
@@ -841,10 +727,7 @@ func recoveryStrategyOptions() []kit2.Option {
 // optIntString renders an int for a field initial (blank is reserved for "unset").
 func optIntString(v int) string { return fmt.Sprintf("%d", v) }
 
-// validateNonNegativeInt accepts blank or a run of digits. It exists next to
-// validatePositiveInt because the two fields mean different things: a recovery
-// attempt count of 0 is a real value ("do not retry"), while a loop bound of 0 is
-// invalid.
+// validateNonNegativeInt accepts blank or a run of digits.
 func validateNonNegativeInt(s string) error {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -865,11 +748,6 @@ type flowWorkersMsg struct {
 }
 
 // loadFlowWorkers fetches the worker list for the step editor's ref field.
-//
-// The operator: "we need to have a worker lookup as opposed to typing in an ID just like we
-// do in work items. We are already doing this for loop and success it seems." The ref WAS
-// the last id a human had to type; the branch targets are already pickers, so this closes
-// the gap.
 func (m *Model) loadFlowWorkers() tea.Cmd {
 	if m.rpcListWorkers == nil {
 		return nil
@@ -891,10 +769,8 @@ func (m *Model) loadFlowWorkers() tea.Cmd {
 			if label == "" {
 				label = w.GetId()
 			}
-			// The status distinguishes a worker you can bind (published) from one you
-			// cannot, without hiding the latter: an existing step may reference a
-			// deprecated worker, and the picker must still be able to SHOW what is
-			// stored.
+			// The status distinguishes a worker you can bind (published) from one you cannot, without hiding
+			// the latter: an existing step may reference a deprecated worker.
 			label += "  (" + workerStatusLabel(w.GetStatus()) + ")"
 			opts = append(opts, kit2.Option{Value: w.GetId(), Label: label})
 		}
@@ -914,12 +790,8 @@ func workerStatusLabel(s apiv1.WorkerStatus) string {
 	return t
 }
 
-// workerVersionStatusWord is a version's status as a single lowercase word, the same
-// courtesy workerStatusLabel pays the worker's own status.
-//
-// The VERSIONS trail used to print the raw enum, so a line read
-// "v1  worker_version_status_published  <model_ref>" — 29 characters of wire name
-// standing between the operator and the fact they opened the pane for.
+// workerVersionStatusWord is a version's status as a single lowercase word, the same courtesy
+// workerStatusLabel pays the worker's own status.
 func workerVersionStatusWord(s apiv1.WorkerVersionStatus) string {
 	w := strings.ToLower(strings.TrimPrefix(s.String(), "WORKER_VERSION_STATUS_"))
 	if w == "" || w == "unspecified" {
@@ -928,18 +800,8 @@ func workerVersionStatusWord(s apiv1.WorkerVersionStatus) string {
 	return w
 }
 
-// workerModelRef is the model_ref of the version dispatch would actually USE, which is
-// what an operator means by "the worker's model".
-//
-// THE ACTIVE VERSION IS THE ANSWER, not the newest one. A worker's versions are chosen
-// explicitly (SetActiveWorkerVersion), so the newest published version is not
-// necessarily the one work is routed to — and reporting the newest would be a confident
-// wrong answer to "where does this worker's work go?". `current ver` is the worker's own
-// active version number, so it is the one to look for.
-//
-// Falls back to the newest version when the worker reports no current version (an older
-// plane, or a worker whose active version was never set), and to "" when there is no
-// version at all — an empty value is OMITTED by the pane rather than drawn as a blank.
+// workerModelRef is the model_ref of the version dispatch would actually USE, which is what an
+// operator means by "the worker's model".
 func workerModelRef(w *apiv1.Worker, versions []*apiv1.WorkerVersion) string {
 	if len(versions) == 0 {
 		return ""
@@ -979,13 +841,8 @@ func (m *Model) defaultListWorkers(ctx context.Context) ([]*apiv1.Worker, error)
 // edit must not silently reorder the JSON the server stores.
 func (m *Model) rawFlowSteps() []flowStep { return parseFlowSteps(m.stepSteps) }
 
-// stepEditorTarget resolves the DRAFT this editor writes to, creating one when the
-// workflow has none.
-//
-// Published versions are IMMUTABLE — the server rejects an edit to anything but
-// the latest draft ("latest version (v%d) is not draft; published versions are
-// immutable") — so step editing implies a draft, exactly as the worker version
-// editor already does. Reusing that path avoids a second, divergent mechanism.
+// stepEditorTarget resolves the DRAFT this editor writes to, creating one when the workflow has
+// none.
 func (m *Model) stepEditorTarget() (workflowID, versionID string, steps string, err error) {
 	if m.stepWorkflowID == "" {
 		return "", "", "", errors.New("no workflow open")
@@ -999,10 +856,7 @@ func (m *Model) saveSteps(steps []flowStep, what string) (tea.Cmd, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Refuse to save a workflow with dangling references. The server validates the
-	// shape but NOT the graph, so a depends_on naming a deleted step would be
-	// accepted and then simply never become ready — a workflow that silently does
-	// not run.
+	// Refuse to save a workflow with dangling references.
 	if err := validateStepGraph(steps); err != nil {
 		return nil, err
 	}
@@ -1057,18 +911,6 @@ func validateStepGraph(steps []flowStep) error {
 // enterStepEditor points the editor at the draft the pane is already showing and
 // seeds the cursor on the first step.
 func (m *Model) enterStepEditor(workflowID, name string, v *apiv1.WorkflowVersion) tea.Cmd {
-	// IT REMEMBERS, AND PAINTS ONLY WHEN THE OPERATOR IS EDITING.
-	//
-	// It is called from the DETAIL-LANDING chain (onDetailWorkflow → workflowEditorMsg), which runs
-	// whenever a workflow's detail loads: on every selection, and on every background refresh. Painting
-	// the flow unconditionally meant the pane's content was written TWICE per landing by two renderers,
-	// so the operator saw whichever landed last — their "sometimes it shows the screen with no versions
-	// and sometimes it shows the screens with versions".
-	//
-	// NOT EDITING: this is bookkeeping. The read-only detail (FLOW + VERSIONS) is what the pane shows,
-	// and it stays there — which is what keeps the version list visible underneath the flow.
-	// EDITING: the flow IS the surface, so the repaint is required.
-	//
 	// AND THE CURSOR IS SEEDED ONLY WHEN THE WORKFLOW CHANGES, so walking down the list does not reset
 	// a chosen step — the same class of defect as the per-tick reset, one level down.
 	versionID := ""
@@ -1095,13 +937,7 @@ func (m *Model) enterStepEditor(workflowID, name string, v *apiv1.WorkflowVersio
 	return m.paintFlow()
 }
 
-// paintFlow repaints the detail pane with the flow and its cursor marker, and
-// follows the cursor.
-//
-// CURSOR-FOLLOW is the reason this exists rather than reusing the read-only path:
-// a real workflow's flow is taller than the pane (SDLC (Human) renders 44 lines of
-// flow alone), so selecting a step near the end has to SCROLL it into view or the
-// operator edits something they cannot see.
+// paintFlow repaints the detail pane with the flow and its cursor marker, and follows the cursor.
 func (m *Model) paintFlow() tea.Cmd {
 	if m.stepWorkflowID == "" {
 		return nil
@@ -1114,9 +950,8 @@ func (m *Model) paintFlow() tea.Cmd {
 		{Key: "editing", Value: m.stepEditingLabel()},
 	}
 	if m.flowEditing {
-		// The mode is stated in the PANE and not only in the notice line: the operator has
-		// to be able to tell, from the surface they are looking at and are about to change,
-		// that it is writable.
+		// The mode is stated in the PANE and not only in the notice line: the operator has to be able to
+		// tell, from the surface they are looking at and are about to change, that it is writable.
 		fields = append(fields, screenkit.Field{Key: "mode", Value: "EDIT — enter: step · a: add · x: remove · esc: done"})
 	}
 	if body == "" {
@@ -1155,12 +990,7 @@ func (m *Model) stepDepsOf() []string {
 
 // --- write RPC --------------------------------------------------------------
 
-// rpcUpdateSteps persists an edited step list. When the target version is not a
-// DRAFT it creates one first, because published versions are immutable — the server
-// rejects an edit to anything else with FailedPrecondition ("latest version (v%d)
-// is not draft; published versions are immutable"), and "edit a step" should not
-// fail with a lecture about versioning. This mirrors the worker version editor,
-// which creates a draft when none exists rather than refusing.
+// rpcUpdateSteps persists an edited step list.
 func (m *Model) rpcUpdateSteps(ctx context.Context, workflowID, steps string) error {
 	if u := m.rpcUpdateWorkflowVersion; u != nil {
 		if err := u(ctx, workflowID, steps); err == nil {

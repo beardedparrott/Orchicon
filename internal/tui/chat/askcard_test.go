@@ -9,10 +9,9 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// TestConversationItemsEmitsAskCard proves the TUI renders a recorded ask_user
-// call as a clarifying-question card: conversationItems emits a KindAsk item
-// carrying the question and options parsed out of the message's tool_calls, with
-// a stable per-message key.
+// TestConversationItemsEmitsAskCard proves the TUI renders a recorded ask_user call as a
+// clarifying-question card: conversationItems emits a KindAsk item carrying the question and
+// options parsed.
 func TestConversationItemsEmitsAskCard(t *testing.T) {
 	msgs := []*apiv1.ChatMessage{{
 		Id:   "m1",
@@ -62,15 +61,8 @@ func TestConversationItemsEmitsAskCard(t *testing.T) {
 	}
 }
 
-// TestParseAskUserCallToleratesMalformedArguments: an unreadable payload must never panic, and
-// what it SHOULD produce depends on whether the call has resolved.
-//
-// THIS TEST USED TO ASSERT THE BUG. It required a card for malformed arguments with NO result —
-// which is the PLACEHOLDER state, not a corrupt one: the transcript records a tool call when it is
-// ISSUED with `{}` for its arguments, and `ask_user` does not complete while the question is open
-// (it BLOCKS; that is the pause). So the placeholder was drawn as a "could not be read" card beside
-// the live question — TWO cards for ONE question, for as long as the operator was deciding. The
-// operator hit exactly that in the GUI, in those words.
+// TestParseAskUserCallToleratesMalformedArguments: an unreadable payload must never panic, and what
+// it SHOULD produce depends on whether the call has resolved.
 func TestParseAskUserCallToleratesMalformedArguments(t *testing.T) {
 	call := &apiv1.ToolCall{Id: "tc-1", FunctionName: "ask_user", Arguments: "{not json"}
 
@@ -101,13 +93,8 @@ func TestParseAskUserCallToleratesMalformedArguments(t *testing.T) {
 	}
 }
 
-// TestTheAwaitingMarkerKeepsTheCardOpen — the TUI half of the "card goes away / card never goes away"
-// pair.
-//
-// A promoted (MCP-served) ask carries a result the moment it is recorded, because the ledger repairs any
-// unresolved call at turn end with "tool call aborted". That result is the awaiting marker, and the card
-// must stay OPEN on it — otherwise it settles seconds after appearing. Any OTHER result is an answer and
-// settles it, which is what stops a card sticking once the operator replies.
+// TestTheAwaitingMarkerKeepsTheCardOpen — the TUI half of the "card goes away / card never goes
+// away" pair.
 func TestTheAwaitingMarkerKeepsTheCardOpen(t *testing.T) {
 	args := `{"question":"Pick a colour","options":[{"label":"Blue"}],"allow_other":true}`
 	call := &apiv1.ToolCall{Id: "tc-2", FunctionName: "orchicon_ask_user", Arguments: args}
@@ -131,9 +118,7 @@ func TestTheAwaitingMarkerKeepsTheCardOpen(t *testing.T) {
 	}
 }
 
-// TestTheMCPQualifiedSpellingIsRecognised — the claude half of the report. A tool reached over MCP is
-// recorded as `mcp__orchicon__ask_user`, and a predicate that lists only the bare names makes a direct
-// MCP call invisible here while the native bridge keeps working.
+// TestTheMCPQualifiedSpellingIsRecognised — the claude half of the report.
 func TestTheMCPQualifiedSpellingIsRecognised(t *testing.T) {
 	args := `{"question":"Pick a colour","options":[{"label":"Blue"}]}`
 	for _, name := range []string{"ask_user", "orchicon_ask_user", "mcp__orchicon__ask_user", "mcp__other__ask_user"} {

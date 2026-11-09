@@ -1,14 +1,6 @@
 package work
 
 // bulk_select_test.go — the shared multi-select and its bulk actions.
-//
-// "We need to have a consistent way to handle bulk operations on all forms. My suggestion
-// would be spacebar can do multi-select and Esc clears the multi-select and then the bulk
-// options shows up only after you have more than one item selected."
-//
-// The mechanism lives in kit2 (Table.Marks + Base's keys), so every list screen gets the
-// same gesture, the same clearing rule and the same threshold. These tests drive it through
-// the Work screen, which is where it is wired to real actions.
 
 import (
 	"context"
@@ -174,9 +166,7 @@ func TestBulkConfirmNamesTheCount(t *testing.T) {
 	}
 }
 
-// A bulk write never reports success it did not achieve. With no client it must ERROR rather
-// than panic or claim a clean sweep — a crash inside a destructive multi-row operation would
-// take the whole TUI with it.
+// A bulk write never reports success it did not achieve.
 func TestBulkWriteWithoutAClientErrorsRatherThanPanics(t *testing.T) {
 	m := bulkModel(t)
 	m.cl = nil
@@ -196,11 +186,8 @@ func TestBulkWriteWithoutAClientErrorsRatherThanPanics(t *testing.T) {
 	}
 }
 
-// The write is SEQUENTIAL, one call per selected row, and a REJECTION is counted rather
-// than swallowed — the operator must be told what actually happened.
-//
-// Driven through the real plane fake against the screen's own client, so the calls are the
-// ones the screen really makes.
+// The write is SEQUENTIAL, one call per selected row, and a REJECTION is counted rather than
+// swallowed — the operator must be told what actually happened.
 func TestBulkArchiveWritesEachSelectedRow(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")
@@ -302,9 +289,7 @@ func TestBulkActionsAreOnlyWhatTheServerCanDoPerItem(t *testing.T) {
 	}
 }
 
-// bulkLabels names the actions the screen would offer right now. It is deliberately named
-// apart from selection_sort_test.go's actionLabels, which reads the ROW controls (a
-// different list drawn in the pane header).
+// bulkLabels names the actions the screen would offer right now.
 func bulkLabels(acts []kit2.Action) []string {
 	out := make([]string, 0, len(acts))
 	for _, a := range acts {

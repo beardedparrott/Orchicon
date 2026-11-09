@@ -1,15 +1,6 @@
 package execution
 
 // categories.go — the Categorize chord on the Workers and Workflows panes.
-//
-// The operator: "For categories, we could assign a key to create new category and a key to assign an
-// item to a specific category."
-//
-// The screen owns the SELECTION and the shell owns the category list and the modal, so this file is
-// deliberately thin: it resolves which entity is selected and hands the intent over through the same
-// optional shell-hook pattern the screen already uses for its other shell-side capabilities
-// (`OpenExecutionSession`, `DockError`, …). Duplicating the modal here would mean two implementations
-// of the same write, and the shell's copy is the one that also serves the conversations rail.
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
@@ -23,23 +14,18 @@ type categorizeHost interface {
 	OpenAssignCategory(entityID, entityLabel string, target apiv1.CategoryTargetType)
 }
 
-// categoryManageHost is the optional shell capability for MANAGING a grouping from the pane that shows
-// it — the GUI's per-folder rename and delete, reachable from every grouped list rather than from one
-// special section.
+// categoryManageHost is the optional shell capability for MANAGING a grouping from the pane that
+// shows it — the GUI's per-folder rename and delete.
 type categoryManageHost interface {
 	OpenRenameCategory(categoryID string)
 	OpenDeleteCategory(categoryID string)
 }
 
-// The chords that act on a CATEGORY ROW. They reuse the pane's own item keys because they apply to the
-// row under the cursor: `e` edits what the cursor is on (a worker, or the grouping when the cursor is
-// on a folder) and `x` deletes it. That is how the GUI reads too — the folder row carries the rename
-// and delete affordances itself.
+// The chords that act on a CATEGORY ROW.
 const (
 	keyRenameCategory = "e"
-	// keyDeleteCategory is the SHARED delete chord, not a copy of its value: a grouping is deleted by the
-	// same key that deletes the items inside it, which is what "delete whatever the cursor is on" means —
-	// and two literals here is exactly how the Worker and Workflow delete chords drifted apart.
+	// keyDeleteCategory is the SHARED delete chord, not a copy of its value: a grouping is deleted by
+	// the same key that deletes the items inside it.
 	keyDeleteCategory = keyDelete
 )
 
@@ -78,13 +64,8 @@ func (m *Model) grouped(items []screenkit.Item, cats []*apiv1.Category, assigns 
 	return screenkit.GroupItemsByCategory(items, groups, func(id string) string { return byEntity[id] })
 }
 
-// groupRowKey handles the chords that act on a CATEGORY ROW rather than on an item, reporting whether
-// it owned the key.
-//
-// IT RUNS BEFORE THE ITEM CHORDS, because the keys are the SAME ONES: `e` on a folder must rename the
-// grouping, not open a worker form against a synthetic id. Returning false for everything else is what
-// lets the item ops keep their normal path, and the ones that WOULD be wrong on a folder (publish,
-// set-active, version, categorize, the flow editor) are refused with a reason by the callers.
+// groupRowKey handles the chords that act on a CATEGORY ROW rather than on an item, reporting
+// whether it owned the key.
 func (m *Model) groupRowKey(kstr string) (tea.Cmd, bool) {
 	if !m.isGroupRowSelected() {
 		return nil, false
@@ -112,9 +93,6 @@ func (m *Model) groupRowKey(kstr string) (tea.Cmd, bool) {
 }
 
 // categorizeSelected opens the shell's assign modal for the highlighted row.
-//
-// It refuses LOUDLY rather than quietly doing nothing when there is no selection: a key that silently
-// no-ops reads as a broken key, and this screen already has `refuse` for exactly that reason.
 func (m *Model) categorizeSelected(target apiv1.CategoryTargetType) tea.Cmd {
 	item, ok := m.ActiveItem()
 	if !ok || item.ID == "" {

@@ -1,12 +1,6 @@
 package config
 
 // instance_test.go — `orch --instance dev|prod|test`.
-//
-// THE FEATURE: the TUI should be able to name an instance the way the desktop app
-// does. That means ONE control-port table (internal/controlport, which the installer
-// owns), not a second set of numbers, and a REFUSAL rather than a substitute when the
-// name is not recognised — the same rule internal/controlport already states, and the
-// reason an operator who types `prod` must never end up reading dev.
 
 import (
 	"fmt"
@@ -65,9 +59,7 @@ func TestProfileForInstanceMatchesTheSavedCredential(t *testing.T) {
 }
 
 func TestProfileForInstanceDoesNotMutateTheSavedProfile(t *testing.T) {
-	// The retarget happens on a COPY (cmd/orch). This pins the shape it relies on: the
-	// value handed back is the stored profile, so a caller that forgot to copy would
-	// rewrite the operator's saved credentials in memory.
+	// The retarget happens on a COPY (cmd/orch).
 	saved := &Profile{Name: "localhost:8080", URL: "http://localhost:8080", Token: "dev-token"}
 	cfg := &Config{Profiles: map[string]*Profile{"localhost:8080": saved}}
 

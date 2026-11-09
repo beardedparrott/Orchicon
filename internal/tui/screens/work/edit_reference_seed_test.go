@@ -44,8 +44,7 @@ import (
 )
 
 // openItemEditorFor builds a plane with a project (and, when seedImage, the image the fake plane
-// lists as "go-node:latest"), ONE work item carrying the given workflow id + runtime image, and opens
-// its detail editor with 'e'. It returns the recorded-request plane alongside the editor.
+// lists as "go-node:latest"), ONE work item carrying the given workflow id + runtime image.
 func openItemEditorFor(t *testing.T, workflowID, runtimeImage string, seedImage bool) (*Model, *fakePlane, *kit2.Form) {
 	t.Helper()
 	p := newPlane()
@@ -92,9 +91,7 @@ func hasCurrentOption(f *kit2.Form, name string) bool {
 
 // ------------- branch (a): the value IS among the loaded options (the normal case) -------------
 
-// The primary assertion. The item's workflow is `wf-1` — exactly what the fake plane's ListWorkflows
-// returns — so pickerOptsWithCurrent returns the option list UNCHANGED with "— none —" first. Nothing
-// selects the item's value except the spec's seed, which is why this is the case that fails today.
+// The primary assertion.
 func TestEditFormSeedsReferencesWhenListed(t *testing.T) {
 	m, p, f := openItemEditorFor(t, "wf-1", "go-node:latest", true)
 
@@ -143,9 +140,8 @@ func TestEditFormSeedsReferencesWhenListed(t *testing.T) {
 
 // ------------- branch (b): the value is ABSENT from the loaded options -------------
 
-// A since-deleted workflow: pickerOptsWithCurrent prepends the synthetic "workflow wf-gone (current)"
-// option. That branch worked by accident before the fix only in the sense that the value was LISTED —
-// it was still not SELECTED, so the form opened blank and saved empty here too.
+// A since-deleted workflow: pickerOptsWithCurrent prepends the synthetic "workflow wf-gone
+// (current)" option.
 func TestEditFormSeedsReferencesWhenDelisted(t *testing.T) {
 	m, p, f := openItemEditorFor(t, "wf-gone", "ghost:latest", false)
 

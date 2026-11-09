@@ -11,16 +11,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
 )
 
-// TestSetOwnerFetchClosureConcurrentReads guards against the data race the
-// fetch closure used to introduce: bubbletea runs each Cmd in a background
-// goroutine (`go func(){ msg := cmd() }()`), so SetOwner's returned fetch
-// command must NOT mutate the model. It must only fetch and hand the data
-// back in FetchDoneMsg; Update applies it on the tea loop.
-//
-// The previous implementation mutated m.groups/m.rows/m.Status/m.Err/m.maxSeq
-// inside the closure, racing with View()/Update() reads on the tea loop.
-// This test drives SetOwner off the calling goroutine (as bubbletea does)
-// while a reader goroutine concurrently reads the pane — -race must be clean.
+// TestSetOwnerFetchClosureConcurrentReads guards against the data race the fetch closure used to
+// introduce: bubbletea runs each Cmd in a background goroutine (`go func(){ msg := cmd() }()`).
 func TestSetOwnerFetchClosureConcurrentReads(t *testing.T) {
 	ff := &fakeFileEditService{}
 	fp, fph := apiv1connect.NewFileEditServiceHandler(ff)
@@ -58,9 +50,9 @@ func TestSetOwnerFetchClosureConcurrentReads(t *testing.T) {
 			_ = m.Height
 		}
 	}()
-	// bubbletea runs this via `go func(){ msg := cmd() }()`; here we execute
-	// it on the calling goroutine and consume the msg the way the program's
-	// event loop would (handing it to Update on the tea loop).
+	// bubbletea runs this via `go func(){ msg := cmd() }()`; here we execute it on the calling
+	// goroutine and consume the msg the way the program's event loop would (handing it to Update on the
+	// tea.
 	_ = cmd()
 	wg.Wait()
 }

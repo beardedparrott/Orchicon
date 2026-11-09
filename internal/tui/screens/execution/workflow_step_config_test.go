@@ -1,16 +1,6 @@
 package execution
 
 // workflow_step_config_test.go — the step editor's CONFIG handling.
-//
-// The operator's complaint was "workflow edit is wrong. It still just has me editing
-// a JSON for the config. We were supposed to implement that flow view as the editor."
-//
-// The flow view WAS the editor; the problem was that the step form still exposed a
-// `Config (JSON — extra keys)` box and, on submit, wrote it back wholesale. That is
-// not merely ugly — with the box empty it wrote `""` over a task's recovery policy,
-// so renaming a step could silently destroy the policy that governs its failures.
-// These tests pin the two halves of the fix: no JSON box, and a config that is
-// MERGED key-by-key so nothing the form does not model is lost.
 
 import (
 	"context"
@@ -45,13 +35,8 @@ func fieldsOf(f *kit2.Form) map[string]kit2.Kind {
 	return out
 }
 
-// visibleFieldsOf collects the field NAMES the form would actually DRAW for its current
-// values, asked of the FORM rather than re-derived here.
-//
-// That distinction matters: every kind's fields now exist in every step form, gated by a
-// Visible predicate, so a test that inspected Specs directly would be re-implementing the
-// visibility rule — and would keep passing even if rendering, navigation and validation
-// stopped honouring it. Asking the form is what makes the assertion mean something.
+// visibleFieldsOf collects the field NAMES the form would actually DRAW for its current values,
+// asked of the FORM rather than re-derived here.
 func visibleFieldsOf(f *kit2.Form) map[string]bool {
 	out := map[string]bool{}
 	for _, name := range f.VisibleFieldNames() {
@@ -104,16 +89,7 @@ func TestStepEditorOffersNoRawJSONConfigForAnyKind(t *testing.T) {
 
 // --- the field set follows the KIND's config struct ---------------------------
 
-// approvalConfig has no success_branch; loopDecisionConfig has both. The form must
-// agree with the reconciler rather than with a single "dual" flag.
-//
-// These assertions are about VISIBILITY, not presence, and that distinction is the whole
-// architecture: every kind's fields now exist in every step form, each gated by a Visible
-// predicate, so that changing the kind reveals the new kind's fields live (the operator's
-// "when editing a current step and you change it from a worker task to an approval or loop,
-// it should automatically show the reviewer/success/loop fields"). Asserting PRESENCE would
-// therefore now be asserting nothing — what must hold is that a kind's fields are the ones
-// the operator can actually SEE and reach.
+// approvalConfig has no success_branch; loopDecisionConfig has both.
 func TestStepFieldsFollowTheKindsRealConfigKeys(t *testing.T) {
 	const steps = `[{"id":"a","name":"A","kind":"task","ref":"w_x","depends_on":[]},
 	                {"id":"b","name":"B","kind":"approval","config":"{\"reviewer\":\"human\"}","depends_on":["a"]},
@@ -127,10 +103,7 @@ func TestStepFieldsFollowTheKindsRealConfigKeys(t *testing.T) {
 			t.Errorf("a task must SHOW %q", want)
 		}
 	}
-	// There is NO delay field at all. The knob was REMOVED (it was parsed into
-	// stepRecoveryConfig and then read by nothing — execution dispatch has no deferral
-	// mechanism, so no retry ever waited). A field that changes nothing is worse than no
-	// field, so this asserts the form does not grow one back.
+	// There is NO delay field at all.
 	for _, dead := range []string{"recovery_delay_seconds", "retry_delay_seconds"} {
 		if _, ok := task[dead]; ok {
 			t.Errorf("%s is a dead knob — nothing waits on it, so it must not be offered as configuration", dead)
@@ -149,9 +122,8 @@ func TestStepFieldsFollowTheKindsRealConfigKeys(t *testing.T) {
 	if _, ok := approval["success_branch"]; ok {
 		t.Error("approvalConfig has NO success_branch field — showing one writes a key nothing reads")
 	}
-	// The approver's worker id lives on the step's ref, not in the config
-	// (workflow_reconciler.go:2718) — which is why the ref field is visible for an
-	// approval as well as a task.
+	// The approver's worker id lives on the step's ref, not in the config (workflow_reconciler.go:2718)
+	// — which is why the ref field is visible for an approval as well as a task.
 
 	loop := visibleFieldsOf(m.editStepForm(flowStep{ID: "c", Name: "C", Kind: "loop_decision"}))
 	for _, want := range []string{"loop_branch", "success_branch", "on_missing_decision", "max_reask"} {
@@ -159,15 +131,7 @@ func TestStepFieldsFollowTheKindsRealConfigKeys(t *testing.T) {
 			t.Errorf("a loop must SHOW %q", want)
 		}
 	}
-	// on_missing_decision is a loopDecisionConfig key and the replacement for the engine's
-	// tenant-id hardcode; max_reask is a real, honoured bound (the re-ask loop fails at
-	// reaskCount >= cfg.MaxReask) and the other half of the same question.
-	//
-	// THE PLATFORM CONTRACT MUST STAY OUT OF THE FORM. success_value/failure_value are what
-	// every seeded worker prompt emits (`ORCHICON WORKER SUMMARY: success`), and
-	// decision_field is not even consulted on the primary path. Exposing them would let an
-	// operator point a gate at a word no worker emits, making every verdict miss and every
-	// gate fail — silently, and only at run time.
+	// THE PLATFORM CONTRACT MUST STAY OUT OF THE FORM.
 	for _, contract := range []string{"decision_field", "success_value", "failure_value"} {
 		if _, ok := loop[contract]; ok {
 			t.Errorf("%s is platform contract, not operator configuration — exposing it lets a gate be pointed at a verdict no worker emits", contract)
@@ -208,9 +172,8 @@ func TestStepFieldsFollowTheKindsRealConfigKeys(t *testing.T) {
 
 // --- editing MERGES, it does not replace --------------------------------------
 
-// The bug the JSON box caused: an edit that the form does not model — and, with the
-// box empty, an edit to ANY field — rewrote the config. A task's recovery policy has
-// to survive a rename.
+// The bug the JSON box caused: an edit that the form does not model — and, with the box empty, an
+// edit to ANY field — rewrote the config.
 func TestEditingATaskStepKeepsItsRecoveryAndUnknownKeys(t *testing.T) {
 	const steps = `[{"id":"a","name":"Architect","kind":"task","ref":"w_x","config":` +
 		`"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6,\"retry_delay_seconds\":30},\"future_key\":{\"nested\":true}}","depends_on":[]}]`
@@ -275,9 +238,8 @@ func TestRecoveryStrategyEditsMergeWithTheRest(t *testing.T) {
 	if rec["strategy"] != "human_escalation" || rec["max_attempts"].(float64) != 9 {
 		t.Errorf("recovery not updated: %v", rec)
 	}
-	// A LEGACY key — removed from the engine and from this editor, but still present in
-	// configs written before that — must ride along rather than be silently deleted, so a
-	// strategy change does not destroy data the operator can still see in the raw config.
+	// A LEGACY key — removed from the engine and from this editor, but still present in configs written
+	// before that — must ride along rather than be silently deleted.
 	if rec["retry_delay_seconds"].(float64) != 30 {
 		t.Errorf("the legacy retry_delay_seconds key was dropped: %v", rec)
 	}
@@ -487,10 +449,8 @@ func TestMissingDecisionAbsentReadsAsTheEngineDefault(t *testing.T) {
 	}
 }
 
-// max_reask is the other half of the missing-verdict question: the policy says what an
-// absent verdict MEANS, this says how many times to ask for one first. It round-trips,
-// it survives unrelated edits, and a blank/zero bound DELETES the key rather than
-// writing a value the engine silently replaces with 3.
+// max_reask is the other half of the missing-verdict question: the policy says what an absent
+// verdict MEANS, this says how many times to ask for one first.
 func TestMaxReaskRoundTripsAndDeletesWhenBlanked(t *testing.T) {
 	const steps = `[{"id":"a","name":"A","kind":"loop_decision","config":"{\"loop_branch\":\"b\",\"max_iterations\":6,\"max_reask\":7,\"on_missing_decision\":\"fail\"}","depends_on":["b"]},
 	                {"id":"b","name":"Start","kind":"task","ref":"w_x","depends_on":[]}]`

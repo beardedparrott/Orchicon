@@ -12,11 +12,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// forceColorForTest makes lipgloss emit real escape sequences. Under the test colour profile lipgloss
-// strips ALL styling, so a styled and an unstyled render are byte-identical — which makes every
-// assertion about colour or borders pass vacuously. That blindness is how the Ask rail's hardcoded
-// `p.Focused = false` survived, so tests that assert on styling must force the profile AND assert
-// that sequences came out at all.
+// forceColorForTest makes lipgloss emit real escape sequences.
 func forceColorForTest(t *testing.T) {
 	t.Helper()
 	prev := lipgloss.ColorProfile()
@@ -75,13 +71,8 @@ func mpPress(mp *ModelPicker, k tea.KeyMsg) tea.Cmd {
 
 func mpEnter(mp *ModelPicker) tea.Cmd { return mpPress(mp, tea.KeyMsg{Type: tea.KeyEnter}) }
 
-// The operator: "select orchicon (first in the list) or opencode, then provider,
-// then model with a search box as well pinned to the adapter/provider for model
-// selection ... Then the text it displays after the model is selected is the
-// adapter/provider/model name."
-//
-// So the walk is three deliberate steps and the committed value is the full
-// three-segment ref.
+// The operator: "select orchicon (first in the list) or opencode, then provider, then model with a
+// search box as well pinned to the adapter/provider for model selection ...
 func TestModelPickerWalksTheThreeTiersAndCommitsTheRef(t *testing.T) {
 	mp, loads := mpFixture(t)
 
@@ -432,9 +423,8 @@ func TestFormModelFieldOpensThePicker(t *testing.T) {
 	}
 }
 
-// An UNSET model field still shows the affordance, so a blank row reads as
-// "go choose one" rather than "not applicable" — and it is the SAME affordance a
-// SET model shows, so the row does not change character as it is filled in.
+// An UNSET model field still shows the affordance, so a blank row reads as "go choose one" rather
+// than "not applicable" — and it is the SAME affordance a SET model shows.
 func TestFormModelFieldShowsTheAffordanceWhenUnset(t *testing.T) {
 	f := NewForm("Settings",
 		FieldSpec{Name: "default_ask_model", Label: "Default ask model", Kind: KModel},
@@ -445,25 +435,14 @@ func TestFormModelFieldShowsTheAffordanceWhenUnset(t *testing.T) {
 	if !strings.Contains(v, "— none —") {
 		t.Fatalf("an unset model field must show the affordance:\n%s", v)
 	}
-	// The gesture now lives IN the value rather than in a focused-only hint, so it is
-	// present here for the same reason it is present on an unfocused row: the operator
-	// has to be able to see which rows can be opened without walking onto each one.
+	// The gesture now lives IN the value rather than in a focused-only hint, so it is present here for
+	// the same reason it is present on an unfocused row.
 	if !strings.Contains(v, "enter to choose a model") {
 		t.Fatalf("an unset model field must name the gesture:\n%s", v)
 	}
 }
 
-// The modal reports its OUTCOME to the host instead of closing itself through a
-// callback. Both entry points are pinned here: enter on a model commits, esc
-// cancels, and each one flips Done so the host can close the modal.
-//
-// This is the regression test for the modal that could not be dismissed. The
-// picker used to call a `Commit`/`Cancel` closure that set the host's
-// `modelPicker = nil`. Every host is a bubbletea model with value-receiver
-// Update methods, so the closure captured the copy that was live when the modal
-// opened — and the runtime replaces that copy on the next message. The closure's
-// assignment therefore mutated a discarded model: enter and esc both appeared
-// dead, with the modal stuck on screen forever.
+// The modal reports its OUTCOME to the host instead of closing itself through a callback.
 func TestModelPickerReportsItsOutcomeToTheHost(t *testing.T) {
 	mp, _ := mpFixture(t)
 	mp.Open("orchicon", "anthropic", "")
@@ -489,19 +468,8 @@ func TestModelPickerReportsItsOutcomeToTheHost(t *testing.T) {
 }
 
 // THE CHOSEN CHIP IS AN UNFILLED OUTLINE, NOT A FILLED BLOCK.
-//
-// The operator, on the standard LIGHT theme: "a grey or black background just looks odd and hard to
-// look at as well ... Is it possible to maybe just have a box with a border color based in the theme
 
 // THE CHOSEN CHIP IS PLAIN THEME TEXT WITH AN UNDERLINE.
-//
-// The operator, after two earlier attempts: "I think we should just make those normal theme text with
-// an underline showing selection and avoid any kind of a background color or border at all."
-//
-// Attempt 1 was a FILLED chip (white on the Select fill — a near-black block on the light theme);
-// attempt 2 was an OUTLINE (two border rules in the accent colour). Both read as a box rather than as a
-// word, and both added cells the strip's width maths had to allow for. An underline is a text
-// attribute: it marks the selection, costs no width, and cannot be a fill.
 func TestPickerChipIsUnderlinedTextNotABox(t *testing.T) {
 	forceColorForTest(t)
 
@@ -521,9 +489,7 @@ func TestPickerChipIsUnderlinedTextNotABox(t *testing.T) {
 			"strip's layout maths has to allow for a frame that is not there", w, len(" DeepSeekAPI "))
 	}
 
-	// AND THE PICKER USES IT. A token test alone is not a test of the picker: an earlier version of
-	// this file asserted only the token, and kept passing when chipStrip was mutated back to the filled
-	// style, because chipStrip's use of it was never exercised.
+	// AND THE PICKER USES IT.
 	mp := NewModelPicker("Ask model")
 	mp.SetScreen(90, 30)
 	mp.SetAdapters([]string{"orchicon"}, nil)
@@ -549,10 +515,6 @@ func TestPickerChipIsUnderlinedTextNotABox(t *testing.T) {
 }
 
 // THE CHIP COSTS NO WIDTH, so a label that fits is never shortened by its own styling.
-//
-// The framed version needed two extra cells for its rules, and when the strip ran out of room it lost
-// its CLOSING rule — an unclosed box reading as a rendering fault. With an underline there is no frame
-// to lose.
 func TestPickerChipCostsNoWidth(t *testing.T) {
 	forceColorForTest(t)
 	mp := NewModelPicker("Ask model")

@@ -6,15 +6,6 @@ import (
 )
 
 // search_highlight_test.go — the in-transcript search MATCH BAND.
-//
-// The operator: "it doesn't highlight the findings so it makes it rather difficult in a large stream of text to
-// find where the found item is on the page. We should add a highlight to the conversation text for each item
-// the search finds."
-//
-// The band is drawn by the markdown renderer because that is where the text becomes styled output, and it
-// mirrors the CHIP and the ACCENT exactly: a fail-closed colour set, and a close that RESTORES the surface
-// rather than resetting to the terminal's defaults (a reset would drop the rest of the row to the host's
-// colours — the band hole the chip section documents).
 
 // withHighlight installs a usable match band for the duration of a test.
 func withHighlight(t *testing.T) {

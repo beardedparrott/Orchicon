@@ -6,11 +6,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
-// The ask-bleed regression. The operator: "I noticed a bleed through of an ask card
-// from a separate conversation in the TUI." A turn's ask rides the TURN's own stream,
-// so with conversation A running and B on screen the card was appended to B's slot.
-// These pin that a card lands in the conversation it NAMES, and that a card parked in
-// another conversation cannot take the keyboard away from the one on screen.
+// The ask-bleed regression.
 
 // TestAskCardLandsInItsOwnConversationNotTheOneOnScreen is the reported bug: an ask
 // raised on c2 while c1 is displayed must not appear in c1.
@@ -29,10 +25,8 @@ func TestAskCardLandsInItsOwnConversationNotTheOneOnScreen(t *testing.T) {
 	}
 }
 
-// TestAskCardDoesNotClaimKeysFromAnotherConversation is the second half, and the one
-// that makes the bleed more than cosmetic: the Ask screen adopts any PENDING card from
-// the items the shell hands it, so a card in the wrong slot also took the keyboard.
-// A card raised elsewhere must leave this conversation's composer alone.
+// TestAskCardDoesNotClaimKeysFromAnotherConversation is the second half, and the one that makes the
+// bleed more than cosmetic.
 func TestAskCardDoesNotClaimKeysFromAnotherConversation(t *testing.T) {
 	m, as := consentApp(t)
 	m.ShowConsentAsk(chat.PermissionAsk{
@@ -50,9 +44,8 @@ func TestAskCardDoesNotClaimKeysFromAnotherConversation(t *testing.T) {
 	}
 }
 
-// TestAskCardWithoutAConversationUsesTheOpenOne is the CONTROL: an ask built locally
-// (no ConvID — the shape every pre-existing test and the fullsend path use) keeps the
-// old behaviour, so the fix cannot silently drop a card that names no conversation.
+// TestAskCardWithoutAConversationUsesTheOpenOne is the CONTROL: an ask built locally (no ConvID —
+// the shape every pre-existing test and the fullsend path use) keeps the old behaviour.
 func TestAskCardWithoutAConversationUsesTheOpenOne(t *testing.T) {
 	m, _ := consentApp(t)
 	m.ShowConsentAsk(chat.PermissionAsk{

@@ -7,13 +7,6 @@ import (
 )
 
 // TestCtrlUClearsEveryReferenceField pins the CLASS, not one instance.
-//
-// ctrl+u cleared only `editable` kinds, and `editable` is false for every REFERENCE kind (KModel,
-// KDate, KDateTime) — the fields that hold a CHOSEN value. The operator's report was about the
-// scheduled-start field ("There is no way to clear a schedule on a work item"), but the same silent
-// no-op applied to a model ref and a plain date, and it is the class that must be fixed: a reference
-// value is exactly the kind an operator wants to empty, and the footer advertised the key the whole
-// time.
 func TestCtrlUClearsEveryReferenceField(t *testing.T) {
 	cases := []struct {
 		kind Kind
@@ -41,8 +34,7 @@ func TestCtrlUClearsEveryReferenceField(t *testing.T) {
 }
 
 // TestCtrlUClearFiresOnChange — a programmatic change must notify the host, so a form that couples
-// fields (the work-item form's schedule/auto-start) sees the clear. The other value-setting paths
-// already call OnChange; the clear is a value change like any other.
+// fields (the work-item form's schedule/auto-start) sees the clear.
 func TestCtrlUClearFiresOnChange(t *testing.T) {
 	f := NewForm("Clear notifies", FieldSpec{Name: "d", Label: "D", Kind: KDateTime, Initial: "2026-01-01T00:00:00Z"})
 	var seen []string

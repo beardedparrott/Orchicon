@@ -1,16 +1,6 @@
 package tui
 
 // diff_rail_resize_test.go — the drag-resizable diff rail, end to end.
-//
-// The operator: "The diff pane in the GUI should be resizable by dragging it. Not sure if we can pull that
-// off in the TUI as well, but if we can, that would be great and we should."
-//
-// Three things have to hold together, and each is asserted through the COMPOSED view rather than the
-// field, because the field agreeing with itself proves nothing:
-//
-//  1. the drag RESIZES — and the width, the content area and the drawn pane all move by the same delta;
-//  2. the drag is resolved AHEAD OF THE CLIPBOARD — a divider drag must not start a text selection;
-//  3. the drag is claimed — it must not leak into the pane as a click (tab switch / file select / ✕).
 
 import (
 	"strings"
@@ -23,8 +13,7 @@ import (
 )
 
 // markerScreen renders a fixed marker run so the CONTENT area's first column can be located in the
-// composed frame. That is what makes "the pane is exactly diffPaneWidth() wide" checkable on the drawn
-// output rather than on the number the width method returns.
+// composed frame.
 type markerScreen struct{ stubScreen }
 
 const markerRun = "MARKERMARKER"
@@ -46,12 +35,8 @@ func newDiffRailApp(t *testing.T, w, h int) *App {
 	return m
 }
 
-// contentStartColumn returns the frame COLUMN the content area begins at, read off the composed view: the
-// display column of the first marker in a screen body row. This is the pane's drawn width.
-//
-// The column is counted in CELLS (lipgloss.Width of the prefix), never in BYTES: the pane's frame carries
-// multi-byte runes (│ and ✕), so a byte offset would over-report by 2 cells per such rune — which is
-// exactly the ~4-cell drift that made this look like the drawn pane disagreed with the width method.
+// contentStartColumn returns the frame COLUMN the content area begins at, read off the composed
+// view: the display column of the first marker in a screen body row.
 func contentStartColumn(t *testing.T, m *App) int {
 	t.Helper()
 	row := strings.Split(m.View(), "\n")[tabBarRows+1]
@@ -137,9 +122,7 @@ func TestDiffRailDragHoldsWhenMotionReportsNoButton(t *testing.T) {
 	}
 }
 
-// THE DRAG DOES NOT START A TEXT SELECTION. This is the regression the press-order change could introduce:
-// clipState begins a drag on ANY left press, so a divider press routed through it would select text
-// instead of resizing.
+// THE DRAG DOES NOT START A TEXT SELECTION.
 func TestDiffRailDragDoesNotStartASelection(t *testing.T) {
 	m := newDiffRailApp(t, 120, 40)
 	y := tabBarRows + 2
@@ -222,11 +205,7 @@ func TestDiffRailPaneClickIsNotADividerDrag(t *testing.T) {
 	}
 }
 
-// AN OPEN TAB DROPDOWN OVER THE DIVIDER OWNS THE CLICK. The dropdown is an overlay over the whole
-// frame (composeView), so it can cover the divider column — a wide menu hangs from a tab in the
-// centered bar across many body rows. Resolving the resize claim FIRST (before the menu) would eat a
-// click meant for a dropdown entry and resize the rail instead, so the menu must win inside its own
-// rectangle. This is the regression the press-order change introduced.
+// AN OPEN TAB DROPDOWN OVER THE DIVIDER OWNS THE CLICK.
 func TestDiffRailDividerDoesNotStealAnOpenMenuClick(t *testing.T) {
 	// A width where a tab dropdown actually spans the divider column (see menuGeometry: the menu
 	// hangs from its tab's start column in the centered bar).
@@ -308,14 +287,8 @@ func TestDiffRailAutoWidthIsUnchangedByTheOverrideField(t *testing.T) {
 	}
 }
 
-// THE WIDTH IS CLAMPED IN ONE PLACE, and a terminal shrink RE-CLAMPS a stored width that no longer fits.
-// The clamp is applied on READ (diffPaneWidth), so a resize that never touches the override still re-clamps.
-//
-// NOTE ON THE SHRINK SIZE. The pre-existing clamp is floor-then-cap, so on a terminal so narrow that half of
-// it is BELOW DiffRailMinWidth the CAP is the binding bound (an 80-column terminal gives 40 — what auto mode
-// has always produced, which TestDiffPaneWidthScalesWithTheTerminal pins as `got <= w/2`). The override
-// obeys the SAME one function, so this test shrinks to 120 columns where half the width (60) is still above
-// the floor, making BOTH bounds live and the re-clamp unambiguous.
+// THE WIDTH IS CLAMPED IN ONE PLACE, and a terminal shrink RE-CLAMPS a stored width that no longer
+// fits.
 func TestDiffRailWidthClampsOnAShrink(t *testing.T) {
 	m := newDiffRailApp(t, 240, 40)
 	// The operator drags the rail wide on a big terminal.

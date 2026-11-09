@@ -1,18 +1,6 @@
 package tui
 
 // card_paste_test.go — THE SHELL'S HALF OF PASTING INTO A CARD'S FREE-TEXT ROW.
-//
-// The operator: "In the TUI when an ask card has an 'other' option, I can type in there just fine, but
-// ctrl+v doesn't seem to accept pasting. I can see users doing this quite frequently if they need to copy
-// and paste code, errors, etc. We need to make this work."
-//
-// The shell owns this half because a clipboard read SHELLS OUT: ctrl+v arrives as tea.KeyCtrlV with no
-// runes, so nothing in the card can insert it, and the text has to return as a message. The interception
-// (pasteKey, in dispatch) therefore decides WHERE a paste goes — and that decision is what was wrong. It
-// knew about forms only, so with a card row open it declined the key and ctrl+v became the composer's
-// attachment chord, pasting into the MESSAGE while the row sat there accepting typing.
-//
-// What is pinned here is the DECISION and the DESTINATION, not the clipboard reader (which execs a helper).
 
 import (
 	"strings"
@@ -23,9 +11,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
-// cardRowOpen returns a shell whose card's free-text row is open, driven through the REAL keyboard path
-// (down to Other, Enter) rather than by poking the state — so the fixture cannot disagree with how the row
-// actually opens in the product.
+// cardRowOpen returns a shell whose card's free-text row is open, driven through the REAL keyboard
+// path (down to Other, Enter) rather than by poking the state.
 func cardRowOpen(t *testing.T) (*App, []chat.ChatItem) {
 	t.Helper()
 	m, items := otherCardPlane(t)
@@ -63,10 +50,7 @@ func TestClipboardTextLandsInTheCardRow(t *testing.T) {
 	before := m.dock.Value()
 
 	text := "panic: nil map write\n\tat runner.go:118"
-	// THE RETURNED Cmd IS DELIBERATELY NOT ASSERTED HERE. It is whatever the host's RepaintTranscript
-	// gives, and that is onChatWake — which legitimately returns nil when there is nothing to wake. The
-	// guarantee that matters is that the row ASKED for a repaint, and that is pinned where it is
-	// deterministic: TestPasteLandsInTheConsentOtherRow (ask package) counts the host's repaint calls.
+	// THE RETURNED Cmd IS DELIBERATELY NOT ASSERTED HERE.
 	m.onClipboardText(formClipboardTextMsg{text: text})
 	if got := items[0].Consent.OtherInput; got != text {
 		t.Fatalf("the row holds %q, want the pasted text %q", got, text)
@@ -76,9 +60,8 @@ func TestClipboardTextLandsInTheCardRow(t *testing.T) {
 	}
 }
 
-// THE TERMINAL'S OWN PASTE (bracketed) takes the same route, so the two shapes of paste cannot land in
-// different places — and so a pasted newline is not inserted as a raw rune sequence by the card's ordinary
-// rune path.
+// THE TERMINAL'S OWN PASTE (bracketed) takes the same route, so the two shapes of paste cannot land
+// in different places.
 func TestBracketedPasteLandsInTheCardRow(t *testing.T) {
 	m, items := cardRowOpen(t)
 
@@ -92,9 +75,8 @@ func TestBracketedPasteLandsInTheCardRow(t *testing.T) {
 	}
 }
 
-// THE GUARD IS THE CONTRACT: with no card row open, ctrl+v is still the composer's, exactly as before this
-// change. Without this the interception would steal the composer's paste — an image, or a file path — for
-// the whole app.
+// THE GUARD IS THE CONTRACT: with no card row open, ctrl+v is still the composer's, exactly as
+// before this change.
 func TestCtrlVStaysTheComposersWithNoCardRowOpen(t *testing.T) {
 	m, items := otherCardPlane(t)
 	if items[0].Consent.OtherMode {
@@ -105,9 +87,8 @@ func TestCtrlVStaysTheComposersWithNoCardRowOpen(t *testing.T) {
 	}
 }
 
-// A DEFERRED ROW YIELDS THE PASTE, for the same reason it yields the keyboard: ctrl+g hands focus to the
-// composer, so a paste there belongs to the composer and must not vanish into a row the operator has
-// stepped away from.
+// A DEFERRED ROW YIELDS THE PASTE, for the same reason it yields the keyboard: ctrl+g hands focus
+// to the composer, so a paste there belongs to the composer and must not vanish into a row.
 func TestACtrlGDeferredCardRowDoesNotTakeThePaste(t *testing.T) {
 	m, items := cardRowOpen(t)
 	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlG})

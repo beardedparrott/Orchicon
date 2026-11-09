@@ -12,11 +12,6 @@ import (
 )
 
 // PickerOption is one selectable entry in a model-picker tier.
-//
-// Value is what gets COMMITTED (an adapter kind, a provider id, or a model
-// id); Label is the human text (defaults to Value); Meta is dim right-hand
-// context (a provider hint, a context-window note) and is never part of the
-// committed value.
 type PickerOption struct {
 	Value string
 	Label string
@@ -30,31 +25,13 @@ const (
 	TierModel
 )
 
-// ModelPicker is a dedicated MODAL control for choosing a model_ref in the
-// pinned adapter/provider/model grammar (internal/adapter/modelref.go, ADR-0003).
-//
-// The operator chooses an ADAPTER, then a PROVIDER, then a MODEL by searching —
-// the field then displays the full adapter/provider/model ref (the operator's
-// "the text it displays after the model is selected is the adapter/provider/model
-// name"). It replaces the plain-text model field, which asked an operator to
-// type a ref no human can be expected to know.
-//
-// It is owned by the SCREEN, not by Base: the screen hosts it (so it can be
-// layered over either a modal form or the inline detail editor), routes keys and
-// mouse to it while open, and answers its load requests. kit2 therefore stays
-// free of API dependencies — the picker never issues an RPC itself, it asks the
-// screen to (Load* hooks), and the screen pushes results back in (Set*).
-//
-// The picker is also grammar-free: the screen parses the current ref
-// (adapter.ParseModelRef) and hands Open the three segments; Ref() simply joins
-// the chosen segments, so the pinned grammar has exactly ONE implementation.
+// ModelPicker is a dedicated MODAL control for choosing a model_ref in the pinned
+// adapter/provider/model grammar (internal/adapter/modelref.go, ADR-0003).
 type ModelPicker struct {
 	title string
 
-	// PreferredAdapter, when set and present in the loaded kinds, is listed
-	// FIRST and used as the default for a fresh selection. The screens set it
-	// to the native adapter kind per ADR-0005 D5 ("select orchicon (first in
-	// the list) or opencode"). The picker never hardcodes a kind.
+	// PreferredAdapter, when set and present in the loaded kinds, is listed FIRST and used as the
+	// default for a fresh selection.
 	PreferredAdapter string
 
 	adapters   []string
@@ -67,17 +44,14 @@ type ModelPicker struct {
 	provider string
 	model    string
 
-	// tier is the focused tier; cursor is the highlight within each tier's
-	// list; query filters the MODEL tier (the search box, pinned to the
-	// selected adapter+provider).
+	// tier is the focused tier; cursor is the highlight within each tier's list; query filters the
+	// MODEL tier (the search box, pinned to the selected adapter+provider).
 	tier   int
 	cursor [3]int
 	query  string
 
-	// providersFor / modelsFor record WHICH adapter (and provider) the loaded
-	// lists belong to, so Sync is idempotent: re-entering a scope never
-	// re-fetches what is already loaded, and a stale load landing after the
-	// operator moved on is dropped instead of poisoning the new scope.
+	// providersFor / modelsFor record WHICH adapter (and provider) the loaded lists belong to, so Sync
+	// is idempotent: re-entering a scope never re-fetches what is already loaded.
 	providersFor string
 	modelsFor    string
 	// inFlight is the one load currently outstanding.
@@ -91,29 +65,12 @@ type ModelPicker struct {
 	LoadAdapters  func() tea.Cmd
 	LoadProviders func(adapter string) tea.Cmd
 	LoadModels    func(adapter, provider string) tea.Cmd
-	// done/committed record the modal's OUTCOME. The picker deliberately does
-	// NOT close itself through a host callback.
-	//
-	// Why: every host is a bubbletea model with VALUE-receiver Update methods
-	// (App.Update and the screens' Update all copy the model). A `Commit`/
-	// `Cancel` closure capturing `m` therefore captures the COPY that was live
-	// when the picker opened — and the runtime replaces that copy on the very
-	// next message, so the closure's `m.modelPicker = nil` mutated a model
-	// nobody renders any more. The modal then NEVER closed: enter and esc both
-	// appeared dead while the RPC still fired (the operator's "when hitting
-	// enter on deepseek-flash, the screen doesn't go away and I can't esc out of
-	// it either").
-	//
-	// The host must instead read Done/Committed in the SAME Update that handled
-	// the key, and clear its own field there — where its mutation lands on the
-	// copy the runtime keeps.
+	// The modal then NEVER closed: enter and esc both appeared dead while the RPC still fired (the
+	// operator's "when hitting enter on deepseek-flash.
 	done      bool
 	committed bool
 
-	// screenW/screenH are the SCREEN content dimensions. The picker derives its
-	// centered box from them with the same arithmetic as Center(), so mouse
-	// hit-testing addresses what is actually on screen (the host centers the
-	// box; the picker must agree where it landed).
+	// screenW/screenH are the SCREEN content dimensions.
 	screenW, screenH int
 }
 
@@ -223,9 +180,7 @@ func (mp *ModelPicker) origin() (left, top int) {
 
 // --- seeding + cascade ------------------------------------------------------
 
-// Open seeds the picker from the current ref's three segments and issues the
-// first load. The tier focus starts where the choice is INCOMPLETE (or on the
-// model tier when the ref is complete — most edits are "change the model").
+// Open seeds the picker from the current ref's three segments and issues the first load.
 func (mp *ModelPicker) Open(adapter, provider, model string) tea.Cmd {
 	mp.adapter, mp.provider, mp.model = adapter, provider, model
 	switch {
@@ -261,10 +216,7 @@ func (mp *ModelPicker) Tier() int { return mp.tier }
 
 func modelKeyOf(adapter, provider string) string { return adapter + "\x00" + provider }
 
-// Sync issues the load the current state is missing, if any, and reports the
-// command. It is idempotent: a scope already loaded (or in flight) is never
-// re-fetched, which is what keeps the cascade from firing duplicate RPCs on
-// every keypress.
+// Sync issues the load the current state is missing, if any, and reports the command.
 func (mp *ModelPicker) Sync() tea.Cmd {
 	switch {
 	case len(mp.adapters) == 0:
@@ -307,9 +259,7 @@ func (mp *ModelPicker) callModels(adapter, provider string) tea.Cmd {
 	return mp.LoadModels(adapter, provider)
 }
 
-// SetAdapters installs the registered adapter kinds (with the Ask-capable
-// subset). The PreferredAdapter is listed first; a fresh selection defaults to
-// it, so the tier is never blank.
+// SetAdapters installs the registered adapter kinds (with the Ask-capable subset).
 func (mp *ModelPicker) SetAdapters(kinds, askCapable []string) {
 	mp.adapters = orderAdapters(dedupeStrings(kinds), mp.PreferredAdapter)
 	mp.askCapable = map[string]bool{}
@@ -460,17 +410,6 @@ func (mp *ModelPicker) prevTier() { mp.tier = (mp.tier + 2) % 3 }
 // key the picker does not use can never be swallowed by a modal it owns).
 func (mp *ModelPicker) HandleKey(k keyMsg) (bool, tea.Cmd) {
 	// 'r' RETRIES ONLY WHEN THERE IS NOTHING TO TYPE INTO, and this check is OUTSIDE the switch.
-	//
-	// The model tier is a TYPE-TO-SEARCH box, so a bare letter is TEXT FIRST. The switch below used to
-	// carry a `case "r"` that either retried (when mp.err was set) or returned false — and returning
-	// early from the function means the typing branch at the bottom is never reached either way. So
-	// `r` could not be typed AT ALL: it retried, or it vanished. Reported as "the 'r' key is being
-	// swallowed ... most likely by that 'r' refresh key".
-	//
-	// The two conditions that make retry unambiguous: the load FAILED (so there is a reason to retry)
-	// and the query is EMPTY (so the operator has not started typing). That second condition is not
-	// defensive padding — it is what keeps the key working as text the moment they have, and it is
-	// also exactly when the on-screen hint offers it.
 	if k.String() == "r" && mp.err != "" && mp.query == "" {
 		return true, mp.Retry()
 	}
@@ -515,18 +454,15 @@ func (mp *ModelPicker) HandleKey(k keyMsg) (bool, tea.Cmd) {
 	return false, nil
 }
 
-// choose commits the highlighted entry of the focused tier. Choosing an adapter
-// or a provider ADVANCES to the next tier (the deliberate three-step walk);
-// choosing a model finishes the selection.
+// choose commits the highlighted entry of the focused tier.
 func (mp *ModelPicker) choose() tea.Cmd {
 	switch mp.tier {
 	case TierAdapter:
 		if i := mp.cursor[TierAdapter]; i >= 0 && i < len(mp.adapters) {
 			a := mp.adapters[i]
 			if a != mp.adapter {
-				// An adapter change RESCOPES the lower tiers: the previous
-				// provider/model is never carried into the new scope
-				// (ADR-0004 stale-selection guard).
+				// An adapter change RESCOPES the lower tiers: the previous provider/model is never carried into the
+				// new scope (ADR-0004 stale-selection guard).
 				mp.adapter = a
 				mp.resetLower()
 			}
@@ -572,10 +508,8 @@ func (mp *ModelPicker) resetLower() {
 
 // --- mouse ------------------------------------------------------------------
 
-// HandleMouse routes a mouse event, returning handled=true when it belonged to
-// the picker (so the host does not also act on it). Wheel walks the focused
-// tier; a click selects a chip or a model ROW (and commits a model, since
-// clicking a model is the mouse form of "enter").
+// HandleMouse routes a mouse event, returning handled=true when it belonged to the picker (so the
+// host does not also act on it).
 func (mp *ModelPicker) HandleMouse(m tea.MouseMsg) (bool, tea.Cmd) {
 	if m.Action == tea.MouseActionMotion || m.Action == tea.MouseActionRelease {
 		return false, nil
@@ -633,9 +567,7 @@ func hitChip(ranges [][2]int, col int) (int, bool) {
 
 // --- rendering --------------------------------------------------------------
 
-// View renders the picker as a self-contained box. The host splices it with
-// Center(); the picker computed its origin with the same arithmetic, so mouse
-// and render agree.
+// View renders the picker as a self-contained box.
 func (mp *ModelPicker) View() string {
 	w, h := mp.boxSize()
 	innerW, innerH := w-2, h-2
@@ -667,9 +599,8 @@ func (mp *ModelPicker) View() string {
 	return b.String()
 }
 
-// layout builds the box interior (one string per row, unpadded) AND the hit map
-// for the same geometry — one source of truth for what is drawn and what a
-// click addresses.
+// layout builds the box interior (one string per row, unpadded) AND the hit map for the same
+// geometry — one source of truth for what is drawn and what a click addresses.
 func (mp *ModelPicker) layout(innerW, innerH int) ([]string, pickerHits) {
 	hits := pickerHits{adapterRow: 0, providerRow: 1}
 	rows := make([]string, 0, innerH)
@@ -688,13 +619,6 @@ func (mp *ModelPicker) layout(innerW, innerH int) ([]string, pickerHits) {
 	rows = append(rows, mp.searchLine(innerW))
 
 	// Reserved bottom rows: the status area plus the hint line.
-	//
-	// THE STATUS AREA IS NOT A FIXED TWO ROWS ANY MORE, and that is the fix for a real report: the
-	// error line was rendered as ONE padded row, so a message longer than the box was silently CUT at
-	// the edge. The operator saw "internal: list opencode models: opencode listed no models — the
-	// command" and could not read the remedy — while the remedy was the entire point of the message.
-	// A single-row status area cannot hold an actionable error, so the area now takes as many rows as
-	// the error needs (capped) and the model list yields the space.
 	statusRows := mp.statusLines(innerW)
 	listRows := innerH - len(rows) - len(statusRows) - 1 // -1: the hint line
 	if listRows < 1 {
@@ -799,19 +723,9 @@ func (mp *ModelPicker) modelRow(o PickerOption, cursored, focused bool, innerW i
 
 // maxErrorRows caps how much of the box an error may take, so a pathological message cannot consume
 // the list and leave the picker unusable.
-//
-// SIX, BECAUSE FOUR WAS MEASURABLY TOO TIGHT. A realistic error — the "listed no models, check
-// `opencode auth list`" one that prompted this — needs four rows at the picker's maximum width and
-// FIVE at 64 columns, where the box narrows to 60. At four, the last two words were dropped at that
-// width, which is the truncation this change exists to remove; the test caught it by asserting on
-// every word rather than on the length.
 const maxErrorRows = 6
 
 // statusLines reports the load state or the current selection summary, as one or more rows.
-//
-// IT WRAPS AN ERROR AND PADS A SUMMARY. The distinction is deliberate: a summary is a fixed short
-// phrase that fits or can be cut harmlessly, whereas an error is the operator's only clue and must be
-// readable. Returns the styled rows so the caller sizes the list around them.
 func (mp *ModelPicker) statusLines(innerW int) []string {
 	if mp.err != "" {
 		wrapped := wrapCells(mp.err, innerW, "  ⚠ ", "    ")
@@ -852,9 +766,7 @@ func (mp *ModelPicker) summaryLine(innerW int) string {
 }
 
 func hintLine(innerW int) string {
-	// The hint stays a SINGLE line so the fixed bottom-row math holds. It picks
-	// the LONGEST variant that FITS rather than letting Pad cut one mid-word — a
-	// truncated "esc: canc" reads as a broken key contract, not a narrow box.
+	// The hint stays a SINGLE line so the fixed bottom-row math holds.
 	variants := []string{
 		"tab: tier · ↑/↓/←/→: move · type: search · enter/space: select · esc: cancel",
 		"tab: tier · ↑/↓: move · type: search · enter/space: select · esc: cancel",
@@ -870,10 +782,7 @@ func hintLine(innerW int) string {
 	return theme.HintText.Render(Pad("  "+variants[len(variants)-1], innerW))
 }
 
-// chipStrip renders one horizontal chip row and reports each chip's column
-// range. The strip WINDOWS around the highlight so a long provider list can
-// never push the focused chip off the row (which would make the arrows look
-// broken).
+// chipStrip renders one horizontal chip row and reports each chip's column range.
 func chipStrip(label string, items []PickerOption, cursor int, focused bool, innerW int) (string, [][2]int) {
 	// The head and the space available to chips are computed FIRST, because a chip's label may have to
 	// be shortened to fit — see the fit check below.
@@ -894,9 +803,8 @@ func chipStrip(label string, items []PickerOption, cursor int, focused bool, inn
 		if lbl == "" {
 			lbl = it.Value
 		}
-		// AN UNDERLINE IS A TEXT ATTRIBUTE, NOT A FRAME: the chosen chip is exactly as wide as its
-		// label, so no width allowance is needed and nothing can be truncated away. (The framed
-		// version needed two cells, and cutting them off left an unclosed box.)
+		// AN UNDERLINE IS A TEXT ATTRIBUTE, NOT A FRAME: the chosen chip is exactly as wide as its label,
+		// so no width allowance is needed and nothing can be truncated away.
 		texts[i] = " " + lbl + " "
 		widths[i] = lipgloss.Width(texts[i]) + 1 // +1 gap
 	}
@@ -974,9 +882,7 @@ func adapterOptions(kinds []string) []PickerOption {
 	return out
 }
 
-// orderAdapters puts preferred first (when present) and preserves the rest of
-// the reported order. A nil preferred adapter is a no-op — the picker never
-// invents an ordering it was not given.
+// orderAdapters puts preferred first (when present) and preserves the rest of the reported order.
 func orderAdapters(kinds []string, preferred string) []string {
 	if preferred == "" || len(kinds) == 0 {
 		return kinds

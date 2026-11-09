@@ -1,12 +1,6 @@
 package tui
 
 // consent_focus_test.go — the two halves of "ctrl+g must let me type, and must not decide".
-//
-// The operator: "I hit ctrl+g to gain focus to the composer in the TUI so I could do a fullsend
-// test and it registered it as a deny." Two things were wrong and they compound: the chord
-// DECIDED (a false refusal, fixed in the ask screen's DropKeyClaim), and the claim then
-// swallowed the typing the chord was asking for — because the shell's key gate handed every
-// key to a claiming screen regardless of where focus was.
 
 import (
 	"strings"
@@ -49,11 +43,7 @@ func TestCtrlGWhileACardIsPendingDoesNotDeny(t *testing.T) {
 }
 
 // TestAFocusedComposerReceivesKeysWhileACardClaimsThem is the other half, and the one that makes
-// the chord USEFUL: after ctrl+g the operator can actually type — to answer, or to reach
-// /fullsend while the card is up.
-//
-// The claim is deliberately absolute for the CONTENT pane (a typed character must not hit a
-// shell route), so this pins the exception rather than weakening the rule.
+// the chord USEFUL: after ctrl+g the operator can actually type — to answer.
 func TestAFocusedComposerReceivesKeysWhileACardClaimsThem(t *testing.T) {
 	m, _ := consentApp(t)
 	m.ShowConsentAsk(chat.PermissionAsk{
@@ -78,9 +68,8 @@ func TestAFocusedComposerReceivesKeysWhileACardClaimsThem(t *testing.T) {
 	}
 }
 
-// TestWithFocusOnContentTheCardStillOwnsTheKeys guards the rule this exception exists inside:
-// the claim is absolute where it matters, so a bare letter with focus on the CONTENT pane is
-// the card's business and never a shell route.
+// TestWithFocusOnContentTheCardStillOwnsTheKeys guards the rule this exception exists inside: the
+// claim is absolute where it matters.
 func TestWithFocusOnContentTheCardStillOwnsTheKeys(t *testing.T) {
 	m, _ := consentApp(t)
 	m.ShowConsentAsk(chat.PermissionAsk{

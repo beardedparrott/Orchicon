@@ -1,17 +1,6 @@
 package diffs
 
 // render_cache_test.go — THE RENDER IS MEMOIZED, AND NEVER STALE.
-//
-// The operator: "the scroll and drag are slow. If I move my mouse it has to catch up to the mouse position
-// instead of smoothly scrolling and dragging."
-//
-// Rendering the diff is the pane's most expensive operation, and both hot paths did it from scratch:
-// visibleLines() (under every clamp, so under every scroll step) and diffBody() (every frame). Dragging the
-// scrollbar emits one motion event per cell of pointer travel, so each event re-rendered the whole diff
-// several times and the pane could not keep up with the mouse.
-//
-// Measured on a 400-hunk diff: ~12ms per scroll step before, ~100µs after. These tests pin the cache's
-// CORRECTNESS — its speed is worthless if it can serve a stale render, and a stale render is a wrong body.
 
 import (
 	"strings"
@@ -85,11 +74,8 @@ func TestNewRowsRerender(t *testing.T) {
 	if &before[0] == &after[0] {
 		t.Fatal("the rows changed but the previous render was served")
 	}
-	// And the CONTENT really changed, not merely the slice identity — a cache keyed on the wrong thing could
-	// pass the identity check above while still showing the OLD file, which is the failure that matters to
-	// the operator. (The comparison is content-to-content rather than a guess at the diff syntax: this
-	// renderer switches between unified and side-by-side on width, so asserting on a "+" would pin the
-	// profile rather than the cache.)
+	// And the CONTENT really changed, not merely the slice identity — a cache keyed on the wrong thing
+	// could pass the identity check above while still showing the OLD file.
 	if strings.Join(before, "\n") == strings.Join(after, "\n") {
 		t.Errorf("the rows changed but the rendered body is identical — the cache served the old file:\n%s",
 			strings.Join(after, "\n"))

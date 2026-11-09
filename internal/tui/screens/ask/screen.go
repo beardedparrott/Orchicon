@@ -1,6 +1,5 @@
-// Package ask implements the Ask Orchicon screen: conversations +
-// messages (read-only v1 — ChatStream is a mutation surface and is
-// excluded per plan §6).
+// Package ask implements the Ask Orchicon screen: conversations + messages (read-only v1 —
+// ChatStream is a mutation surface and is excluded per plan §6).
 package ask
 
 import (
@@ -31,28 +30,20 @@ type Model struct {
 	// transcript item holds (see consent.go). consentID is its ask id.
 	consent   *chat.ConsentState
 	consentID string
-	// consentDeferred is the ask id whose claim the operator released with ctrl+g, so the
-	// keyboard can go to the composer WITHOUT recording a decision on the card. It is an ID
-	// rather than a bool so a NEW ask claims the keys again by construction — a bool would have
-	// to be cleared somewhere, and forgetting to clear it would leave a card with no keys.
+	// consentDeferred is the ask id whose claim the operator released with ctrl+g, so the keyboard can
+	// go to the composer WITHOUT recording a decision on the card.
 	consentDeferred string
 
 	// draft is the adopted FREE-TEXT ROW of a RECORDED ask card — the SAME *chat.ParsedAsk the
-	// transcript item holds, so this screen mutates exactly what the renderer draws (see
-	// askdraft.go). draftKey is that item's key: the claim is keyed on it, and so is the
-	// deferral, so releasing the keyboard for one card cannot leak onto another.
+	// transcript item holds, so this screen mutates exactly what the renderer draws (see askdraft.go).
 	draft    *chat.ParsedAsk
 	draftKey string
-	// draftDeferred is the item key whose claim ctrl+g released, so the operator can reach the
-	// composer WITHOUT losing what they had typed into the row. An ID rather than a bool, for the
-	// same reason consentDeferred is one.
+	// draftDeferred is the item key whose claim ctrl+g released, so the operator can reach the composer
+	// WITHOUT losing what they had typed into the row.
 	draftDeferred string
 
 	// askCard is the adopted CURSOR CARD — the same *chat.ParsedAsk the transcript item holds, so the
-	// keys here move exactly the highlight renderAskCardSpans draws (see askcard.go). It is a DIFFERENT
-	// card from draft above: draft is that card's free-text row while it is open, this is the card's
-	// ordinary pending state with a cursor. askCardKey is the item's key (the claim and the deferral are
-	// keyed on it), and askCardDeferred is the key whose claim the operator released.
+	// keys here move exactly the highlight renderAskCardSpans draws (see askcard.go).
 	askCard         *chat.ParsedAsk
 	askCardKey      string
 	askCardDeferred string
@@ -61,21 +52,12 @@ type Model struct {
 	// owns its keys while it is up (ClaimsKeys).
 	ov *askOverlay
 
-	// metaTitle/metaFields are the conversation header this screen fetched
-	// (GetConversation). The SHELL owns the transcript body — it is the one
-	// renderer that sees live chunks and preserves the operator's scroll — so the
-	// screen caches the RICH header here for RenderTranscript to serve back,
-	// instead of a second renderer painting its own copy of the transcript.
-	//
-	// metaMu: detail() runs off the update loop (a RequestDetail command) while
-	// RenderTranscript runs on it.
+	// metaTitle/metaFields are the conversation header this screen fetched (GetConversation).
 	metaMu     sync.Mutex
 	metaTitle  string
 	metaFields []screenkit.Field
 
-	// w/h are the region the shell sized this screen to. Base.View() ALREADY
-	// FILLS IT, so an overlay must be SPLICED over the pane rather than appended
-	// under it (see View).
+	// w/h are the region the shell sized this screen to.
 	w, h int
 }
 
@@ -91,18 +73,13 @@ func New(cl *client.Clients, reg *subs.Registry) *Model {
 	m := &Model{cl: cl, reg: reg}
 	m.NameStr = "ask"
 	m.Base.HideSources = true
-	// THE TRANSCRIPT IS THE SHELL'S TO PAINT. A conversation's detail payload carries title + fields and
-	// NO BODY — by design, because the body is a merge of the durable conversation and the live chunk cache
-	// that only the shell can see (see detail()). Without this declaration a detail landing ASSIGNS that
-	// empty body and erases the transcript: "the conversation pane is completely blank on every chat". It
-	// was reachable on every list reload, because Base's fetchedMsg handler ends by loading the detail.
+	// THE TRANSCRIPT IS THE SHELL'S TO PAINT.
 	m.Base.SetDetailBodyHostOwned(true)
 	m.AddSource("conversations", "Conversations", m.fetchConversations)
 	m.SetDetail(m.detail)
 	m.SetOnDetail(m.onDetail)
-	// The GUI never auto-opens a conversation at launch: the transcript
-	// pane shows the hero until the operator picks one or sends the first
-	// message (which creates a new conversation).
+	// The GUI never auto-opens a conversation at launch: the transcript pane shows the hero until the
+	// operator picks one or sends the first message (which creates a new conversation).
 	m.Base.SetNoAutoDetail(true)
 	m.Base.SetHero(HeroTitle, HeroBody)
 	m.Base.SetStatuses(nil) // no live stream in read-only v1
@@ -159,17 +136,7 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 		{Key: "created", Value: screenkit.FmtTime(c.GetCreatedAt())},
 		{Key: "updated", Value: screenkit.FmtTime(c.GetUpdatedAt())},
 	}
-	// The transcript BODY is deliberately NOT built here. The shell renders it
-	// (onChatWake -> chat.RenderItems through the kit2 Stream), because that is the
-	// only renderer that sees live chunks and preserves the operator's scroll
-	// offset. This function used to build a second, competing copy from
-	// ListMessages — and, because the server returns that page NEWEST-FIRST (see
-	// db.ListMessages' ORDER BY created_at DESC), that copy was INVERTED: the
-	// model's reply printed ABOVE the operator's message, and a long reply pushed
-	// the message out of the visible area entirely (the operator's "my initial user
-	// message is still not showing up"). Sibling conversationItems had been fixed
-	// for exactly this ordering; this path had not. Rather than fix the duplicate,
-	// delete it: one transcript, one renderer.
+	// The transcript BODY is deliberately NOT built here.
 	m.metaMu.Lock()
 	m.metaTitle, m.metaFields = "Conversation: "+c.GetTitle(), fields
 	m.metaMu.Unlock()
@@ -182,9 +149,8 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		m.SetSize(msg.Width, msg.Height)
 		return m, nil
 	case tea.KeyMsg:
-		// THE CARD OWNS THE KEYS WHILE IT IS PENDING — routed AHEAD of Base so a
-		// decision key can never be read as a screen action. The shell's
-		// input-modal gate (router.go) already handed the key here verbatim.
+		// THE CARD OWNS THE KEYS WHILE IT IS PENDING — routed AHEAD of Base so a decision key can never be
+		// read as a screen action.
 		if cmd, handled := m.handleConsentKey(msg); handled {
 			return m, cmd
 		}
@@ -210,55 +176,28 @@ func (m *Model) View() string {
 	var b strings.Builder
 	b.WriteString(m.Base.View())
 	b.WriteString("\n")
-	// The hint NAMES the pane gesture and what the vertical keys do here, because a chord
-	// nobody can see is a chord nobody has — the operator's "what am I supposed to hit to
-	// scroll a conversation" was exactly that gap. Two lines so it stays readable at the
-	// widths this pane gets.
+	// The hint NAMES the pane gesture and what the vertical keys do here, because a chord nobody can
+	// see is a chord nobody has.
 	b.WriteString(theme.HintText.Render("←/→: select the rail or the conversation · ↑/↓, PgUp/PgDn: move the rail's selection, or scroll the conversation — whichever is selected"))
 	b.WriteString("\n")
 	b.WriteString(theme.HintText.Render("r: refresh · ctrl+g: chat composer — send from any screen; replies stream into the open conversation · ctrl+o: fold the newest reasoning block"))
 	b.WriteString("\n")
-	// THE SURFACES ARE SLASH COMMANDS, NOT BARE LETTERS. The conversations rail's keys are
-	// composer-driven (UPDATES rows 296/300/303): a bare letter there is TYPED, so anything new had to
-	// be a modifier chord or a slash command. These name both, and name where a session grant is
-	// visible — silent escalation is exactly what a permission system must not do.
+	// THE SURFACES ARE SLASH COMMANDS, NOT BARE LETTERS.
 	b.WriteString(theme.HintText.Render("/grants: the directories allowed for this session (revocable) · /permissions: the persistent allow/deny list"))
 	body := b.String()
 	if m.w > 0 && m.h > 0 {
 		// THE OVERLAY IS SPLICED OVER THE PANE, NOT APPENDED UNDER IT.
-		//
-		// Base.View() ALREADY FILLS the whole region the shell sized this screen to,
-		// and the shell normalizes the screen render to exactly that many rows
-		// (app.go baseView -> normalizeBlock(...)). Anything APPENDED after the pane
-		// therefore lands PAST THE LAST ROW and is dropped: /permissions and /grants
-		// opened a list that never reached the screen at all — a list surface the
-		// operator cannot see is not a list.
-		//
-		// This is the same shape the execution screen uses for its modals (fit the
-		// pane, then kit2.Center the box over it), and the block is made OPAQUE first so
-		// the pane cannot show through the gaps between the overlay ragged rows (the
-		// reason the shell wraps the /connect form in a solid panel).
 		body = kit2.FitLines(body, m.w, m.h)
 		if ov := m.overlayView(); ov != "" {
 			// A STANDARD MODAL: a bordered panel, centered, over a DARKENED backdrop.
-			//
-			// It used to be spliced centered but over a LIVE frame, so the transcript behind it stayed at full
-			// brightness on both sides and the operator read two layers at once — "it puts it in the middle of
-			// screen and it's hard to see because it writes it overtop text". The box is now the only thing at
-			// full contrast, and it carries the same title-in-a-border the shell's own modals do (/connect,
-			// help, the launch prompt), so a list surface looks like every other modal in Orchicon.
 			body = kit2.CenterOnDimmed(body, modalBox(ov, m.w), m.w, m.h)
 		}
 	}
 	return m.Base.Frame(body)
 }
 
-// modalRows normalizes an overlay into ONE OPAQUE BLOCK whose rows share a
-// width, so splicing it over the pane can neither leave a hole nor break the
-// splice with a ragged row.
-//
-// It is the panel's INTERIOR: modalBox wraps the result in the standard border, which is what makes a list
-// surface read as a modal rather than as text laid over the view.
+// modalRows normalizes an overlay into ONE OPAQUE BLOCK whose rows share a width, so splicing it
+// over the pane can neither leave a hole nor break the splice with a ragged row.
 func modalRows(content string, maxW int) string {
 	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
 	w := 0
@@ -279,9 +218,8 @@ func modalRows(content string, maxW int) string {
 // SelectSource focuses the named source (slash nav command support).
 func (m *Model) SelectSource(name string) bool { return m.Base.SelectSource(name) }
 
-// OpenAskOverlay opens one of the Ask screen's list surfaces for a slash
-// command: "grants" (the session roll-up) or "permissions" (the persistent
-// allow/deny list).
+// OpenAskOverlay opens one of the Ask screen's list surfaces for a slash command: "grants" (the
+// session roll-up) or "permissions" (the persistent allow/deny list).
 func (m *Model) OpenAskOverlay(kind string) tea.Cmd {
 	switch kind {
 	case "grants":
@@ -299,18 +237,8 @@ func (m *Model) SelectItem(src, id string) bool { return m.Base.SelectItem(src, 
 // RequestDetail loads the detail view for (src, id) directly.
 func (m *Model) RequestDetail(src, id string) tea.Cmd { return m.Base.RequestDetail(src, id) }
 
-// DetailFieldCount reports how many field rows the pane will actually draw, so the shell can size the
-// transcript Stream to the pane's REAL body height.
-//
-// WHY THE SHELL CANNOT GUESS THIS. It sizes the stream from the header RenderTranscript returns — the
-// shell's own overlay of the rail's live row — which is SHORTER than the fetched field set the pane holds
-// (id, title, model, messages, mode, created, updated). BodyHeightFor subtracts a row per field, so sizing
-// from the shell's count makes the stream one row too tall, and the pane's viewport clips the row it loses:
-// the NOTICE, which is emitted last. That is how the thinking indicator could be set on the widget and
-// never reach the frame.
-//
-// It reports the PANE's count, and the shell takes the larger of the two, so the stream can never be sized
-// taller than the pane draws.
+// DetailFieldCount reports how many field rows the pane will actually draw, so the shell can size
+// the transcript Stream to the pane's REAL body height. WHY THE SHELL CANNOT GUESS THIS.
 func (m *Model) DetailFieldCount() int { return m.Base.DetailFieldCount() }
 
 // RefreshView re-reads the rail's LIST and deliberately does NOT re-request the open detail.
@@ -354,9 +282,8 @@ func (m *Model) ScrollDetail(delta int) { m.Base.ScrollDetail(delta) }
 // DetailWidth exposes the detail pane width (transcript bubble wrap).
 func (m *Model) DetailWidth() int { return m.Base.DetailWidth() }
 
-// onDetail fires when the detail pane shows a conversation: the shell
-// opens that conversation in the chat controller (transcript + live
-// stream follow it).
+// onDetail fires when the detail pane shows a conversation: the shell opens that conversation in
+// the chat controller (transcript + live stream follow it).
 func (m *Model) onDetail(src, id string) tea.Cmd {
 	if src != "conversations" {
 		return nil
@@ -389,17 +316,8 @@ func (m *Model) onDetail(src, id string) tea.Cmd {
 }
 
 // RenderTranscript returns the detail title + fields for the shell's repaint.
-//
-// Only the BODY belongs to the shell (see detail()). The header comes from the
-// meta this screen already fetched, so the shell does not downgrade the pane to a
-// two-field summary the moment it repaints — with the live conversations-list row
-// overlaid on top of it, because that cached fetch can predate the conversation's
-// title and its first message (see the staleness comment in the body).
 func (m *Model) RenderTranscript(items []chat.ChatItem, live chat.Conversation, liveOK bool) (string, []screenkit.Field) {
-	// RECONCILE FIRST, ALWAYS. This is the one hook the shell calls on every wake, so a card whose
-	// ask has left the transcript (turn done, superseded, aborted) releases its key claim here and
-	// nowhere else — see consent.go — and the same holds for a recorded card's open free-text row
-	// (see askdraft.go).
+	// RECONCILE FIRST, ALWAYS.
 	m.SyncTranscriptConsent(items)
 	m.SyncAskDraft(items)
 	// AND THE RECORDED CARD'S CURSOR, from the same items and on the same wake — so a card that has been
@@ -418,27 +336,12 @@ func (m *Model) RenderTranscript(items []chat.ChatItem, live chat.Conversation, 
 		return title, fields
 	}
 	// The cached header must not go STALE.
-	//
-	// detail() caches what GetConversation returned at the instant the pane opened,
-	// and for a BRAND-NEW conversation that fetch races its own first turn: it reads
-	// title='' and count=0 BEFORE the title is assigned and before any message is
-	// written, and nothing ever re-reads it — so the pane kept reporting "title —"
-	// and "messages 0" for a conversation that plainly had both, while the rail (a
-	// fresh ListConversations) showed the real title beside it.
-	//
-	// The shell reloads the conversations list after every send, and since
-	// db.ListConversations now carries message_count that row is authoritative for
-	// both values. Overlaying it costs no RPC and cannot lag: the same list the rail
-	// renders is the one the header reports.
 	if live.Title != "" {
 		title = "Conversation: " + live.Title
 		fields = setFieldValue(fields, "title", live.Title)
 	}
 	fields = setFieldValue(fields, "messages", screenkit.FmtInt(int(live.MessageN)))
-	// THE SESSION-GRANT ROLL-UP. "Ask once per directory per session" means the card stops
-	// appearing once a grant is given, so the grants must be visible SOMEWHERE or the operator has
-	// no way to see what they have allowed. The field is the always-visible half; /grants is the
-	// revocable list. Where the plane cannot answer, say so rather than printing a fabricated 0.
+	// THE SESSION-GRANT ROLL-UP.
 	fields = setFieldValue(fields, "grants", m.grantsFieldValue())
 	return title, fields
 }
@@ -464,9 +367,9 @@ func (m *Model) grantsFieldValue() string {
 	return screenkit.FmtInt(len(grants)) + " dir(s) — /grants"
 }
 
-// setFieldValue replaces an existing field's value, appending when the key is
-// absent — a header built without meta (the pre-meta fallback) still reports the
-// live values instead of carrying only an id.
+// setFieldValue replaces an existing field's value, appending when the key is absent — a header
+// built without meta (the pre-meta fallback) still reports the live values instead of carrying
+// only.
 func setFieldValue(fields []screenkit.Field, key, value string) []screenkit.Field {
 	for i := range fields {
 		if fields[i].Key == key {
@@ -477,13 +380,8 @@ func setFieldValue(fields []screenkit.Field, key, value string) []screenkit.Fiel
 	return append(fields, screenkit.Field{Key: key, Value: value})
 }
 
-// modalBox wraps an overlay's content in the STANDARD modal panel: the bordered, titled box the shell's own
-// modals use (/connect, help, the launch prompt), so a list surface reads as a modal wherever it appears.
-//
-// IT IS THE ONE PLACE THE BOX'S SHAPE IS DECIDED, so the border, the inner width and the interior's opacity
-// cannot drift apart: modalRows normalizes the interior to a single width, and the panel adds exactly the two
-// border cells around it. The panel renders exactly its own Width×Height cells, which is what makes the splice
-// safe — a ragged box would trip OverlayRow and shift every row after it.
+// modalBox wraps an overlay's content in the STANDARD modal panel: the bordered, titled box the
+// shell's own modals use (/connect, help, the launch prompt).
 func modalBox(content string, maxW int) string {
 	inner := modalRows(content, maxW)
 	lines := strings.Split(inner, "\n")

@@ -33,9 +33,6 @@ import (
 )
 
 // railRow is one LINE of the conversations rail.
-//
-// Every folder row is a CATEGORY folder. There is no project row any more: a project is the scope the whole rail
-// is filtered by, shown in the rail's title, not a row inside it.
 type railRow struct {
 	// folder marks a grouping row (a collapsible header). Its conv is -1.
 	folder bool
@@ -51,9 +48,7 @@ type railRow struct {
 	conv int
 }
 
-// hasCat reports whether a folder row is a CATEGORY folder. It is always true now, and it is kept because
-// railbulk decides the folder chords' applicability through it — with projects no longer rows, the answer is
-// unconditionally yes, and that is exactly what the bulk actions need.
+// hasCat reports whether a folder row is a CATEGORY folder.
 func (r railRow) hasCat() bool { return r.catID != "" }
 
 // railConvID is the conversation id a row addresses ("" for a folder row).
@@ -69,24 +64,15 @@ func (m *App) scopedConversations() []chat.Conversation {
 	return filterConversationsByScope(m.conversations, m.projectScope)
 }
 
-// railRows builds the rail's VISIBLE lines: a folder per category (in the server's order), its members, and a
-// trailing Uncategorized folder — with the members of a COLLAPSED folder omitted — over the active SCOPE.
-//
-// The arrangement comes from screenkit.GroupItemsByCategory, the same helper the kit2 panes use, so the lists
-// cannot disagree about folder order, about empty folders, or about where an ungrouped item goes.
+// railRows builds the rail's VISIBLE lines: a folder per category (in the server's order), its
+// members, and a trailing Uncategorized folder — with the members of a COLLAPSED folder omitted.
 func (m *App) railRows() []railRow {
 	scoped := m.scopedConversations()
 	if len(scoped) == 0 {
 		return nil
 	}
-	// The index map points into the FULL conversation list, because railConvID resolves a row to a conversation
-	// by that index — so the rows must carry positions in m.conversations, not in the scoped slice.
-	//
-	// inScope is derived FROM the filtered slice rather than re-testing ProjectID here. The rule for "is this
-	// conversation in the scope" therefore lives in exactly ONE place (filterConversationsByScope), which is what
-	// makes it testable as a unit and what makes breaking it break the rail. An earlier draft re-applied the rule
-	// here as a "defensive" check; that looked safer and was worse, because it meant the rail's behaviour was
-	// decided in two places and neither one was the whole answer.
+	// The index map points into the FULL conversation list, because railConvID resolves a row to a
+	// conversation by that index — so the rows must carry positions in m.conversations.
 	index := make(map[string]int, len(m.conversations))
 	for i, c := range m.conversations {
 		index[c.ID] = i
@@ -100,21 +86,8 @@ func (m *App) railRows() []railRow {
 		items = append(items, screenkit.Item{ID: c.ID, Title: c.Title})
 	}
 	groups := m.categoryGroupsFor(apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION)
-	// AND THE FOLDERS ARE SCOPED TO THE WORKSPACE, not just the rows inside them.
-	//
-	// The operator, on the GUI: "In the GUI, folders are visible no matter what project you are on. This is wrong.
-	// You should only see the categories/folders of the currently selected project." The rail had the same fault —
-	// categoryGroupsFor deliberately includes EMPTY categories (the GUI's documented behaviour, so a folder you
-	// just created is visible to drag into), and that is right in All projects and wrong inside a workspace: the
-	// operator scoped to a project and got a screen of folders whose conversations all live somewhere else.
-	//
-	// ALL PROJECTS IS EXEMPT for exactly that reason — it filters nothing, so it is where a newly created folder
-	// lives and where the drag-into-it gesture has to be possible. Same rule, same exemption, as the GUI's
-	// categoriesForScope; two clients cannot disagree about which folders a workspace has.
-	//
-	// FILTERING BY MEMBERSHIP CANNOT MISFILE ANYTHING. A group dropped here has no member IN THE SCOPE by
-	// construction, so no scoped conversation can be left "stray" and land in Uncategorized — which is what
-	// GroupItemsByCategory does with an assignment naming a group it was not handed.
+	// AND THE FOLDERS ARE SCOPED TO THE WORKSPACE, not just the rows inside them. FILTERING BY
+	// MEMBERSHIP CANNOT MISFILE ANYTHING.
 	if m.projectScope != projectScopeAll {
 		used := make(map[string]bool, len(scoped))
 		for _, c := range scoped {
@@ -147,9 +120,7 @@ func (m *App) railRows() []railRow {
 			continue
 		}
 		if !inScope[it.ID] {
-			// Defensive: GroupItemsByCategory returns what it was given, so this cannot fire today. It is here
-			// because the one failure this file must never have is a conversation from ANOTHER project leaking
-			// into a scoped rail — that is the whole promise of a workspace.
+			// Defensive: GroupItemsByCategory returns what it was given, so this cannot fire today.
 			continue
 		}
 		all = append(all, railRow{
@@ -226,18 +197,12 @@ func (m *App) toggleConvFolder(catID string) {
 		m.convSel = max(0, len(rows)-1)
 	}
 	m.railFollowSelection()
-	// PERSIST IT. The operator: "Conversation categories don't stay collapsed when you leave orch and come
-	// back in." The collapse was session state with a comment claiming it was deliberately local like the
-	// GUI's — but the GUI's per-page collapse lives in the BROWSER's localStorage, which survives a
-	// relaunch, so "local" there still means "remembered". Session state here meant a restart lost it.
+	// PERSIST IT.
 	m.persistCollapsedGroups()
 }
 
 // railRowsInFolder lists the conversations inside a folder, in list order — what "mark this folder"
 // means.
-//
-// A COLLAPSED folder's members are listed too: marking a folder means marking the folder, and hiding the
-// contents from the operation would make the gesture useless exactly when the folder is large.
 func (m *App) railRowsInFolder(catID string) []string {
 	rows := m.railRows()
 	var ids []string

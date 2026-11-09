@@ -1,22 +1,6 @@
 package tui
 
 // findbox_test.go — THE FIND BOX (ctrl+f), and the transcript's navigation keys from the composer.
-//
-// ONE REPORT, TWO HALVES, ONE CAUSE. The operator: "In the TUI the new home/end keys are not jumping to
-// the top or bottom of a conversation. Also, no note in the composer about search or jumping to beginning
-// to end is there so no one would know they exist. Also ctrl+f works odd. You have to first type what you
-// want then hit ctrl+f. That's not very intuitive. I would prefer a modal pop up that you can type in your
-// search."
-//
-// The cause is shared, which is why these are tested together: the Ask pane's keyboard navigation was
-// reachable only from CONTENT focus, and the operator sits in the COMPOSER — NewApp makes it the launch
-// focus, because that is where you type. There, Home/End/arrows are pure no-ops in the textarea YET the
-// textarea consumes every key it is handed, so the shell's routes never saw them; and ctrl+f had no box to
-// open, so it took the composer's text as the query — useless from an empty composer, which is the state
-// you are in while READING a transcript and the only state a find is for.
-//
-// SO EVERY TEST BELOW STARTS FROM THE COMPOSER, the seat the bug lived in. A test that started from the
-// content would have passed all along and proved nothing.
 
 import (
 	"fmt"
@@ -42,9 +26,8 @@ func findFixture(t *testing.T) *App {
 	return m
 }
 
-// longTranscript parks a LONG transcript mid-scroll, so a jump has somewhere to go in BOTH directions and
-// neither assertion below can pass by accident. It returns the stream the assertions read (the app's own
-// map holds the same pointer).
+// longTranscript parks a LONG transcript mid-scroll, so a jump has somewhere to go in BOTH
+// directions and neither assertion below can pass by accident.
 func longTranscript(t *testing.T, m *App) *kit2.Stream {
 	t.Helper()
 	str := kit2.NewStream("transcript", 120, 10)
@@ -70,11 +53,8 @@ var pgdownKey = tea.KeyMsg{Type: tea.KeyPgDown}
 
 // ---------------------------------------------------------------- the find box
 
-// CTRL+F OPENS A BOX YOU TYPE INTO — from either focus, with an empty box, and without touching the draft.
-//
-// The operator's complaint is about the ORDER ("you have to first type what you want then hit ctrl+f"), so
-// "the box opens EMPTY" is the assertion that the order is gone. It is also the assertion that a
-// half-written message can no longer become a search term.
+// CTRL+F OPENS A BOX YOU TYPE INTO — from either focus, with an empty box, and without touching the
+// draft.
 func TestCtrlFOpensAnEmptyFindBoxAndLeavesTheDraftAlone(t *testing.T) {
 	for _, focus := range []focusMode{focusContent, focusComposer} {
 		focus := focus
@@ -224,9 +204,7 @@ func TestFindBoxTakesLettersThatAreChordsElsewhere(t *testing.T) {
 	}
 }
 
-// A MODAL MUST HIDE A SURFACE, NOT SUSPEND THE SHELL. A turn can be streaming behind the box, and the box
-// filters LIVE, so the transcript must keep updating under it — if the box ate the waiter's messages the
-// transcript (and the box's own count) would freeze for the rest of the session.
+// A MODAL MUST HIDE A SURFACE, NOT SUSPEND THE SHELL.
 func TestFindBoxDoesNotSuspendTheSession(t *testing.T) {
 	m := findFixture(t)
 	m = press(m, ctrlFKey)
@@ -287,9 +265,6 @@ func TestCtrlFWithoutAConversationSaysSoInsteadOfOpeningABox(t *testing.T) {
 // ---------------------------------------------------------------- the navigation keys
 
 // HOME/END JUMP FROM THE COMPOSER — the operator's report, and the whole point of the change.
-//
-// It starts where they were: the composer, empty, with the conversation selected. Before the fix every one
-// of these keys left the offset at 35 (measured), because an empty textarea still consumes Home/End/arrows.
 func TestHomeEndJumpTheTranscriptFromTheComposer(t *testing.T) {
 	m := findFixture(t)
 	str := longTranscript(t, m)
@@ -310,9 +285,8 @@ func TestHomeEndJumpTheTranscriptFromTheComposer(t *testing.T) {
 	}
 }
 
-// THE DRAFT KEEPS HOME/END, and this is the contrast that stops the fix from being "make them global".
-// With text in the box they are the textarea's line-start/line-end — and home is the only line-start chord
-// a draft has left, because the shell took ctrl+a for select-all.
+// THE DRAFT KEEPS HOME/END, and this is the contrast that stops the fix from being "make them
+// global".
 func TestHomeEndStayWithTheDraftOnceThereIsOne(t *testing.T) {
 	m := findFixture(t)
 	str := longTranscript(t, m)
@@ -329,11 +303,8 @@ func TestHomeEndStayWithTheDraftOnceThereIsOne(t *testing.T) {
 	}
 }
 
-// THE ARROWS COME WITH IT, because the rule is one rule: an empty composer has nothing to edit, so the
-// pane the operator selected owns the navigation keys. The branch already applied it to the RAIL ("empty
-// composer: the vertical keys drive the conversation list ... otherwise they scroll the active pane's
-// detail"); it had simply never been finished for the conversation, so an empty composer with the
-// conversation selected was a dead keyboard for every navigation key.
+// THE ARROWS COME WITH IT, because the rule is one rule: an empty composer has nothing to edit, so
+// the pane the operator selected owns the navigation keys.
 func TestTranscriptScrollKeysReachTheConversationFromTheComposer(t *testing.T) {
 	m := findFixture(t)
 	str := longTranscript(t, m)

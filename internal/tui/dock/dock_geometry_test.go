@@ -1,15 +1,6 @@
 package dock
 
 // dock_geometry_test.go — the dock's two published measurements, pinned against its own render.
-//
-// The shell allocates the composer's frame rows from Lines(), then renders View() into them with a
-// keep-the-TAIL normaliser. So a View taller than Lines() loses its TOP rows — the border and the
-// first text row — and every click the shell then converts is displaced. And TextOrigin() is what the
-// click path uses to find the text inside the box, so it has to name the row the text is really on.
-//
-// The rendered-rows invariant was measured while investigating a reported click offset and was
-// correct; it is kept because it is what makes such a report checkable in one command. TextOrigin
-// itself already has its own test (dock_test.go: TestTheComposerTextOriginMatchesThePaint).
 
 import (
 	"strings"

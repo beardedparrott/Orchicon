@@ -1,13 +1,6 @@
 package tui
 
 // composer_click_test.go — A CLICK IN THE COMPOSER MOVES THE CARET, end to end.
-//
-// The operator: "I also just realized you can't use your mouse in the composer to change the position of your
-// cursor."
-//
-// The dock places the caret (dock.ClickAt); the SHELL supplies the coordinates, because it is the only layer
-// that knows where the dock sits in the frame. That conversion is the part that can drift silently, so both
-// tests here find the composer by what the frame actually PAINTS rather than by recomputing the layout.
 
 import (
 	"strings"
@@ -20,11 +13,6 @@ import (
 )
 
 // composerRow finds the frame row carrying needle and the CELL it starts at.
-//
-// THE COLUMN IS IN CELLS, NOT BYTES. `strings.Index` answers a byte offset, and the composer's chrome is full
-// of multi-byte runes — the box's `│` and the prompt's `❯` are three bytes each — so a byte offset overstated
-// the column by four and made a correct caret look wrong. Every coordinate in this file is a terminal cell,
-// because that is the space the mouse arrives in; ansi.StringWidth is what converts.
 func composerRow(t *testing.T, m *App, needle string) (row, col int) {
 	t.Helper()
 	for i, r := range strings.Split(m.viewFrame(), "\n") {
@@ -85,13 +73,6 @@ func TestAClickOnTheTranscriptLeavesTheCaretAlone(t *testing.T) {
 }
 
 // A CLICK ON THE LAUNCH PAGE'S CENTERED COMPOSER PLACES THE CARET TOO.
-//
-// This is the operator's "This WAS working but is no longer working again", and the mechanism is the one
-// thing about the launch page that differs from every other screen: the composer is CENTERED in the body
-// region and narrower than the content column, so composerTopRow() — which is where a DOCKED composer
-// starts — names a row the box is not on. The conversion therefore handed ClickAt a negative row, ClickAt
-// refused it, and the caret never moved. The conversation view was working the whole time, which is why
-// the report reads as a regression of something that used to be fine.
 func TestAClickInTheLaunchComposerMovesTheCaret(t *testing.T) {
 	m := phase3App(120, 40)
 	m.refreshLayout()

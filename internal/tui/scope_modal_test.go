@@ -54,9 +54,8 @@ type stubMCP struct {
 	// updated records the credential path's write: a credential is now a ${NAME} REFERENCE into the row's
 	// own env/headers, through UpdateMCPServer — not a value stored against the row id.
 	updated []*apiv1.MCPServerUpdateRequest
-	// onUpdate runs INSIDE the update, so a test can observe what else had happened by then — the only way
-	// to pin an ORDER between two writes (the store write and the row write) rather than just their
-	// presence.
+	// onUpdate runs INSIDE the update, so a test can observe what else had happened by then — the only
+	// way to pin an ORDER between two writes (the store write and the row write) rather than just.
 	onUpdate func()
 }
 
@@ -138,12 +137,8 @@ func (s *stubMCP) PrefillMCPCatalogEntry(_ context.Context, req *connect.Request
 	}), nil
 }
 
-// stubSecrets is the TENANT SECRETS STORE the worker-version scope's credential picker reads.
-//
 // It answers names and metadata only and NEVER a value — like the real service, whose ListSecrets
-// returns names while GetSecret is not part of this flow at all. The two writes are recorded because
-// the credential form's contract is about the ORDER of its two writes: the store first, the version
-// second (a version written first would reference a secret nothing resolves).
+// returns names while GetSecret is not part of this flow at all.
 type stubSecrets struct {
 	apiv1connect.UnimplementedSecretsServiceHandler
 
@@ -360,9 +355,7 @@ func TestScopeNamesOpenOneModal(t *testing.T) {
 	}
 }
 
-// THE PALETTE ROW FITS. This is the "the shortcuts go off screen" half of the report, pinned: the old
-// /mcp usage string was 76 cells against a 70-cell cap, so the palette had to clip its last verbs.
-// EVERY registered command is checked, not just this one — the next long usage string is the same bug.
+// THE PALETTE ROW FITS.
 func TestEverySlashUsageFitsThePalette(t *testing.T) {
 	m, _, _ := newScopeApp(t)
 	cap := m.paletteContentWidth()
@@ -384,9 +377,8 @@ func TestEverySlashUsageFitsThePalette(t *testing.T) {
 
 // --- 2. the list is visible -------------------------------------------------
 
-// THE MODAL SHOWS BOTH HALVES OF THE SCOPE: the conversation's OWN definitions (with the facts the GUI's
-// card shows) and the PROJECT's, labelled read-only — because the server renders the UNION of the two
-// into the turn, and a scope pane that showed only half of it would answer "what runs here?" wrongly.
+// THE MODAL SHOWS BOTH HALVES OF THE SCOPE: the conversation's OWN definitions (with the facts the
+// GUI's card shows) and the PROJECT's, labelled read-only.
 func TestScopeShowsTheConversationsAndTheProjectsContributions(t *testing.T) {
 	m, _, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
@@ -410,8 +402,7 @@ func TestScopeShowsTheConversationsAndTheProjectsContributions(t *testing.T) {
 }
 
 // THE LIST IS OWNER-SCOPED, and both reads carry their owner: the conversation's definitions by
-// ConversationId, the project's by ProjectId. An unscoped list would be the tenant-wide read the
-// owner-scoped model removed.
+// ConversationId, the project's by ProjectId.
 func TestScopeListRequestsAreOwnerScoped(t *testing.T) {
 	m, stub, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
@@ -450,9 +441,7 @@ func TestScopeSkipsTheProjectReadWhenUnassigned(t *testing.T) {
 
 // --- 3. the writes ----------------------------------------------------------
 
-// `a` OPENS THE OWNED DEFINITION FORM, and saving it creates a CONVERSATION-owned row. This is the
-// owner-stamping rule (a definition belongs to exactly one scope) asserted end to end, through the
-// request the plane actually receives.
+// `a` OPENS THE OWNED DEFINITION FORM, and saving it creates a CONVERSATION-owned row.
 func TestScopeAddDefinesAConversationOwnedServer(t *testing.T) {
 	m, stub, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
@@ -908,15 +897,6 @@ func TestScopeDoesNotSwallowNonKeyMessages(t *testing.T) {
 // --- what the operator can SEE (the layer the report is true at) -------------
 
 // PRESSING A VERB PUTS ITS RESULT IN THE PAINTED FRAME, not merely in a field.
-//
-// The operator: "none of the buttons within the modal does anything excepet for ESC".
-//
-// The keys were reaching the shell — the form WAS created — but the shell painted it UNDERNEATH the
-// scope modal: viewFrame composited the scope view AFTER convScopeForm, so the form the verb had just
-// opened was covered by the list it was opened from. Every assertion in this file checked a FIELD
-// (m.convScopeForm != nil), which is exactly the layer that was fine; the operator judges m.View().
-// This is the same lesson as the transcript's tail-clipping test, and the reason both now assert on the
-// frame.
 func TestScopeVerbShowsItsFormInThePaintedFrame(t *testing.T) {
 	m, _, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
@@ -959,14 +939,8 @@ func TestScopeModalIsVisibleAgainAfterTheFormCloses(t *testing.T) {
 	}
 }
 
-// THE KEY HINT SURVIVES IN FULL — the operator: "the shortcut advice is also a bit cut off".
-//
-// The hint is the ONLY place the verbs are named, so a cut-off hint hides exactly the capabilities the
-// modal exists to advertise. It was rendered through truncateRight (ONE line, hard cut), which always
-// kills the END — and the end is "esc: close".
-//
-// Asserted two ways, because there are two things to be wrong: the WRAP must lose nothing at any width,
-// and the VIEW must actually use the wrapped form.
+// The hint is the ONLY place the verbs are named, so a cut-off hint hides exactly the capabilities
+// the modal exists to advertise.
 func TestScopeKeyHintIsNotCutOff(t *testing.T) {
 	m, _, _ := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
@@ -1009,10 +983,7 @@ func TestScopeKeyHintIsNotCutOff(t *testing.T) {
 	}
 }
 
-// THE EMPTY SCOPE STILL NAMES WHAT CAN BE DONE. The operator's screenshot is this state — no
-// definitions, no skill files — and every row is a heading or a note, so nothing is selectable and the
-// cursor has nowhere to go. The keys that CREATE something must still be advertised, or there is no way
-// out of the state at all.
+// THE EMPTY SCOPE STILL NAMES WHAT CAN BE DONE.
 func TestEmptyScopeStillAdvertisesTheCreateKeys(t *testing.T) {
 	m, stub, _ := newScopeApp(t)
 	stub.servers = nil

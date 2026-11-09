@@ -1,15 +1,6 @@
 package theme
 
 // transparent_adapt_test.go — a transparent theme is legible on WHATEVER the terminal is.
-//
-// The operator: "the light transparent themes are almost impossible to see/read", and then, once the fill-based
-// fix made them readable but opaque: "now the transparents are not transparent at all ... the terminal should
-// bleed through everywhere."
-//
-// Both complaints at once is the requirement, and it can only be met in the FOREGROUNDS: the surfaces are
-// unpainted, so the palette's colours are drawn on the terminal's own background and have to be chosen for it.
-// These tests hold that on BOTH grounds, and hold the promise that a palette already suited to the ground is
-// left completely alone.
 
 import (
 	"testing"
@@ -26,10 +17,6 @@ func withGround(t *testing.T, ground string) {
 }
 
 // ON EITHER GROUND, EVERY TRANSPARENT PALETTE'S FOREGROUNDS CLEAR THEIR FLOORS.
-//
-// This is the readability half, and it is checked against the ACTIVE palette because that is what renders —
-// the adaptation happens in Use, so a test that read the registry instead would be checking a palette nobody
-// sees.
 func TestTransparentThemesAreLegibleOnEitherGround(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
@@ -66,10 +53,6 @@ func TestTransparentThemesAreLegibleOnEitherGround(t *testing.T) {
 }
 
 // AND A PALETTE ALREADY SUITED TO THE GROUND IS LEFT BYTE-IDENTICAL.
-//
-// This is the promise that keeps the adaptation from being a repaint: a dark transparent theme on a dark
-// terminal must render exactly as it did before the adaptation existed, or every one of these themes would
-// change under the operator the moment they switched to it. Asserted token by token rather than by eye.
 func TestAPaletteSuitedToTheGroundIsUnchanged(t *testing.T) {
 	withGround(t, "dark")
 	for _, name := range []string{"forest-transparent", "tokyo-night-transparent", "obsidian-transparent"} {
@@ -102,9 +85,8 @@ func TestAPaletteSuitedToTheGroundIsUnchanged(t *testing.T) {
 					"ground must render exactly as it did", name, c.token, c.want, c.actual)
 			}
 		}
-		// The GROUND is recorded as the palette's background, which is what the contrast gates measure against.
-		// It is not painted — see buildStyles — but reporting it here is what lets every existing gate measure
-		// the pairing the operator actually sees, with no special case in any of them.
+		// The GROUND is recorded as the palette's background, which is what the contrast gates measure
+		// against.
 		if string(got.Bg) != "#000000" {
 			t.Errorf("%s: the recorded ground is %s, want the dark terminal's #000000", name, got.Bg)
 		}
@@ -112,10 +94,6 @@ func TestAPaletteSuitedToTheGroundIsUnchanged(t *testing.T) {
 }
 
 // THE GROUND IS WHAT THE TERMINAL SAYS, AND THE OVERRIDE WINS.
-//
-// The override matters as much as the detection: a transparent terminal has, by definition, been configured so
-// that its "background colour" is not what is behind the app — so the OSC reply is absent or a lie, and the
-// operator is the only reliable source.
 func TestTheTerminalGroundFollowsTheOverride(t *testing.T) {
 	withGround(t, "light")
 	if got := terminalGroundHex(); got != "#ffffff" {
@@ -133,10 +111,6 @@ func TestTheTerminalGroundFollowsTheOverride(t *testing.T) {
 }
 
 // SWITCHING TO AND FROM A TRANSPARENT THEME CANNOT COMPOUND.
-//
-// The adaptation is applied in Use, and it must always start from the PRISTINE palette — otherwise each switch
-// would nudge the colours a little further toward the readable end until the theme bore no resemblance to
-// itself. Asserted by switching twice and comparing.
 func TestAdaptationDoesNotCompound(t *testing.T) {
 	withGround(t, "light")
 	if !Use("lumen-transparent") {

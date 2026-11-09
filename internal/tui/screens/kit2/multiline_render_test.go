@@ -1,19 +1,6 @@
 package kit2
 
 // multiline_render_test.go — how a multi-line field reads on a form.
-//
-// The operator: "in general across ALL edit screens (work items, workers, settings), etc.
-// we need a better view on multiline boxes. Editing it in a single line going back and
-// forth off the screen is NOT very intuitive. We need to expand it out within the
-// details/edit pane just like it would look in the GUI to see the whole text and
-// formatted properly."
-//
-// Two defects behind that. First, a FOCUSED multi-line field was edited on ONE
-// horizontally-windowed line, so prose scrolled off screen and you only ever saw a slice;
-// you had to know ctrl+e to read your own text. Second, and worse, an UNFOCUSED one was
-// rendered raw — display() returns the value verbatim, newlines included, into a string
-// the host then pads to the pane width, so one field occupied several visual rows and
-// shifted every row below it.
 
 import (
 	"strings"
@@ -119,12 +106,8 @@ func TestWrappedBodyHardSplitsAnUnbreakableToken(t *testing.T) {
 	}
 }
 
-// Rows are BOUNDED and the withheld count is stated, so one long value cannot push the
-// rest of the form out of reach.
-// TestWrappedBodyBoundsRowsAndSaysSo: a value taller than the window is BOUNDED,
-// and the rows withheld are reported rather than dropped silently. The window is
-// now centered on the CARET, so the number withheld is split between the rows above
-// and below it.
+// Rows are BOUNDED and the withheld count is stated, so one long value cannot push the rest of the
+// form out of reach.
 func TestWrappedBodyBoundsRowsAndSaysSo(t *testing.T) {
 	f := NewForm("Edit", FieldSpec{Name: "d", Label: "D", Kind: KTextArea})
 	f.Set("d", strings.Repeat("line\n", 40))
@@ -221,16 +204,6 @@ func TestSingleLineFieldsStillWindowWithACaret(t *testing.T) {
 }
 
 // A FOCUSED MULTI-LINE FIELD GROWS TO FIT THE PANE.
-//
-// The row budget used to be a flat 6 regardless of how much pane there was, so
-// the operator's Dockerfile override — 39 lines in a 40-row terminal — showed 6
-// of them and read as a box that had "scrunch[ed] down into a smaller text box".
-// A fixed bound is most wrong exactly where the value is long, which is when the
-// operator most needs to see it.
-//
-// The height comes from the HOST (kit2.Base sets Form.Height from the pane); a
-// host that supplies none keeps the conservative bound, which is what modal
-// forms rely on.
 func TestFocusedMultiLineFieldGrowsToTheFormHeight(t *testing.T) {
 	var dockerfile strings.Builder
 	dockerfile.WriteString("FROM golang:1.24\n")
@@ -238,9 +211,7 @@ func TestFocusedMultiLineFieldGrowsToTheFormHeight(t *testing.T) {
 		dockerfile.WriteString("RUN echo step\n")
 	}
 
-	// The field's VALUE BLOCK is the rows strictly between its label row and its
-	// hint row. Counting rows that carry text would undercount by one now that the
-	// window follows the caret: the caret's own row holds only the caret.
+	// The field's VALUE BLOCK is the rows strictly between its label row and its hint row.
 	valueBlockRows := func(f *Form) int {
 		f.Focused = true
 		f.FocusName("dockerfile_override")
@@ -287,15 +258,6 @@ func TestFocusedMultiLineFieldGrowsToTheFormHeight(t *testing.T) {
 }
 
 // THE VALUE GETS THE PANE'S WIDTH, NOT THE LABEL'S.
-//
-// The value used to start on the label's row and indent every continuation to the
-// label's width — 23 cells for "dockerfile_override" — so a code block lost a
-// fifth of the pane to a label it already had above it. The label now has its own
-// row and the value is indented a fixed two cells.
-//
-// The value here is 85 cells: it fits in 100 with a 2-cell indent (1 row) and
-// does NOT fit with the old 23-cell indent (2 rows), so the row count is the
-// assertion that tells the two apart.
 func TestFocusedMultiLineValueUsesThePaneWidth(t *testing.T) {
 	long := strings.Repeat("x", 85)
 	f := NewForm("Edit",
@@ -328,12 +290,6 @@ func TestFocusedMultiLineValueUsesThePaneWidth(t *testing.T) {
 }
 
 // THE HOST MUST TELL THE FORM HOW MUCH PANE IT HAS.
-//
-// This is the WIRING test, and it is the one that matters: the two above set
-// Form.Height directly, so they stay green even if the host stops supplying it —
-// which is exactly what happened when I removed the assignment in
-// Base.detailPaneView to check the tests bit. Nothing failed. The rendered pane
-// is what the operator actually sees, so the assertion is made on it.
 func TestDetailEditHostScrollsATallFocusedFieldIntoView(t *testing.T) {
 	var dockerfile strings.Builder
 	dockerfile.WriteString("FROM golang:1.24\n")

@@ -1,11 +1,5 @@
-// Package stream is the Go mirror of the GUI's useStream.ts
-// (frontend/src/api/useStream.ts): a server-stream subscription with
-// automatic reconnect + exponential backoff, resume from the last
-// sequence number, dedup by event id, and a drop-oldest ring buffer —
-// the semantics parity the acceptance criteria pin.
-//
-// Status strings are identical to the hook's StreamStatus union:
-// idle | connecting | open | reconnecting | closed | error.
+// Package stream is the Go mirror of the GUI's useStream.ts (frontend/src/api/useStream.ts): a
+// server-stream subscription with automatic reconnect + exponential backoff.
 package stream
 
 import (
@@ -37,16 +31,10 @@ const (
 	// Backoff base: delay = base * 2^(attempt-1) + jitter(0..500ms).
 	BackoffBase   = 1 * time.Second
 	BackoffJitter = 500 * time.Millisecond
-	// DialWindow is the default for Config.DialWindow — long enough that an
-	// immediate RPC rejection (unimplemented, unauthenticated, refused) wins the
-	// race, short enough that a healthy quiet stream reads as connected.
+	// DialWindow is the default for Config.DialWindow — long enough that an immediate RPC rejection
+	// (unimplemented, unauthenticated, refused) wins the race.
 	DefaultDialWindow = 2 * time.Second
 	// closeGrace bounds how long Close waits for the loop goroutine to exit.
-	//
-	// Cancelling unblocks a real transport promptly, so a healthy Close returns
-	// immediately and never reaches this; the grace only matters when the loop is
-	// stuck in a call that ignores cancellation, where waiting longer cannot help
-	// and would freeze the caller (Close runs on every tab switch).
 	closeGrace = 500 * time.Millisecond
 )
 
@@ -55,9 +43,7 @@ const (
 type Config[Resp any] struct {
 	// Name identifies the subscription (logging / debugging).
 	Name string
-	// Open dials the stream. fromSequence is the last sequence seen (0 on
-	// first connect — the hook only adds fromSequence once a sequence was
-	// observed). Open must be safe to call with a canceled ctx.
+	// Open dials the stream.
 	Open func(ctx context.Context, fromSequence int64) (func() (Resp, error), error)
 	// GetEventID extracts the dedup key ("" = no id, never deduped).
 	GetEventID func(Resp) string
@@ -67,28 +53,12 @@ type Config[Resp any] struct {
 	Filter func(Resp) bool
 	// OnEvent is called for each kept event (cache invalidation hook).
 	OnEvent func(Resp)
-	// DialWindow is how long a dial may stay IN FLIGHT before the subscription
-	// reports itself open anyway.
-	//
-	// It exists because of a real property of the streaming client: a
-	// SERVER-streaming call is dispatched through duplexHTTPCall.sendUnary, which
-	// makes the request SYNCHRONOUSLY and therefore does not return until the
-	// response HEADERS arrive — and a Connect server only flushes those on its
-	// first message. A subscription whose server stays quiet (project events fire
-	// only when something changes) therefore blocked inside Open indefinitely, so
-	// the footer showed "connecting…" forever with no error and no retry, even
-	// though the connection was perfectly healthy. Once a dial has been in flight
-	// this long without failing, the transport has accepted it, so the honest
-	// status is "open"; a later failure still flips to error as usual.
-	// Default DefaultDialWindow.
+	// DialWindow is how long a dial may stay IN FLIGHT before the subscription reports itself open
+	// anyway.
 	DialWindow time.Duration
 	// OnStatus is called on every status transition (footer subscription).
 	OnStatus func(Status)
-	// OnError is called with the underlying dial/stream error whenever one is
-	// recorded. Without it a failing subscription reports only a status, so the
-	// operator sees "connecting…" forever with no reason — which is exactly how
-	// a DEAD ENDPOINT (nothing listening on the configured URL) read as a
-	// mysterious eternal connect.
+	// OnError is called with the underlying dial/stream error whenever one is recorded.
 	OnError func(error)
 	// MaxEvents ring size (drop-oldest), default DefaultMaxEvents.
 	MaxEvents int
@@ -101,9 +71,7 @@ type Config[Resp any] struct {
 	Log *slog.Logger
 }
 
-// Sub is one running subscription. Generic over the stream response type;
-// the Open func wraps a Connect server-stream (client.ConnectRecv) so each
-// reconnect issues a fresh RPC with from_sequence = last sequence.
+// Sub is one running subscription.
 type Sub[Resp any] struct {
 	Config[Resp]
 
@@ -212,21 +180,7 @@ func (s *Sub[Resp]) Close() {
 	if cancel != nil {
 		cancel()
 	}
-	// A BOUNDED wait. An unbounded wg.Wait() here is a UI freeze waiting to
-	// happen: Close runs on EVERY tab switch (the shell's CloseAll), while the loop
-	// goroutine can be blocked inside a recv() that does not observe cancellation —
-	// a wedged transport, or a stub whose recv never returns. When that happens the
-	// Wait never completes and the caller hangs forever.
-	//
-	// This is not hypothetical: the stream suite HUNG for the full 10m test timeout
-	// (rather than failing) because TestOpenWhileTheDialIsStillInFlight races
-	// connect()'s `<-dialed` against `<-ctx.Done()`, and whenever the dial won the
-	// loop sat in an uninterruptible recv() while Close waited on it — which blocked
-	// `make rebuild-dev` outright.
-	//
-	// The goroutine exits as soon as its blocking call returns (cancelling the
-	// request does unblock a real transport), and if it never does, leaking one
-	// goroutine is strictly better than freezing the UI.
+	// A BOUNDED wait.
 	done := make(chan struct{})
 	go func() {
 		s.wg.Wait()
@@ -310,11 +264,8 @@ func (s *Sub[Resp]) connect(ctx context.Context) {
 	s.mu.Unlock()
 	s.setStatus(st)
 
-	// The dial runs in a goroutine because Open can legitimately block: for a
-	// server-streaming call the client makes the request SYNCHRONOUSLY and waits
-	// for response headers, which a Connect server flushes only on its FIRST
-	// message. A quiet stream would otherwise pin the status at "connecting"
-	// forever — no error, no retry, no explanation.
+	// The dial runs in a goroutine because Open can legitimately block: for a server-streaming call the
+	// client makes the request SYNCHRONOUSLY and waits for response headers.
 	type dialResult struct {
 		recv func() (Resp, error)
 		err  error
@@ -393,10 +344,8 @@ func (s *Sub[Resp]) setErr(err error) {
 	}
 }
 
-// pushEvent ports the hook's pushEvent: dedup by id → filter → update
-// lastSeq → ring buffer append (drop-oldest) → onEvent. Callbacks run
-// after the lock is released, in event order; they must be quick and
-// non-blocking (TUI callbacks hand off to buffered tea channels).
+// pushEvent ports the hook's pushEvent: dedup by id → filter → update lastSeq → ring buffer append
+// (drop-oldest) → onEvent.
 func (s *Sub[Resp]) pushEvent(resp Resp) {
 	var onEvent func(Resp)
 	func() {

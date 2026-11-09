@@ -1,20 +1,6 @@
 package work
 
 // project_mcp_test.go — THE MCP FIELD SEAM, AND THE PROJECT DELETE.
-//
-// Two operator reports:
-//   "I guess let's create the MCP stuff." — the project forms were missing the MCP
-//   server selection the GUI offers, because it is the one field whose data is not on
-//   the Project message.
-//   "There is no ctrl+x delete for single or bulk on projects." — the RPC existed and
-//   the TUI never offered it; worse, the BULK path silently aimed at the wrong resource.
-//
-// CORRECTION (child 7): the "selection" above is GONE. A definition is OWNER-SCOPED
-// (mcp_servers.project_id), so there is no tenant list to select from and the old
-// ProjectMCPField (a KMultiSelect over the tenant's entries) was REMOVED. The create
-// form now carries an OWNED-DEFINITION SEED (ProjectMCPDefinitionsField, a JSON array)
-// and the project action bar defines rows one at a time. The tests below pin the NEW
-// shape; the select-from-tenant shape is gone with the RPC that fed it.
 
 import (
 	"context"
@@ -29,9 +15,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/mcpforms"
 )
 
-// THE CREATE FORM CARRIES AN OWNED-DEFINITION SEED, not a selection. It is a KJSON
-// field, present ALWAYS (a create has no existing rows, so the array cannot delete
-// anything, and an empty array is simply "no definitions yet").
+// THE CREATE FORM CARRIES AN OWNED-DEFINITION SEED, not a selection.
 func TestProjectMCPDefinitionsFieldShape(t *testing.T) {
 	f := ProjectMCPDefinitionsField()
 	if f.Kind != kit2.KJSON {
@@ -61,10 +45,8 @@ func TestProjectMCPDefinitionsFieldShape(t *testing.T) {
 	}
 }
 
-// THE OWNERSHIP RULE THIS FILE USED TO PIN THROUGH THE DEFINE WRAPPER NOW LIVES WITH THE MODAL, which
-// is what actually builds that request: see TestProjectModalCreateIsStampedWithTheProjectAndCarriesItsArgs
-// in internal/tui/scope_modal_owners_test.go. The wrapper is gone (the modal calls mcpforms directly), so
-// keeping the assertion here would have pinned a helper nothing calls.
+// THE OWNERSHIP RULE THIS FILE USED TO PIN THROUGH THE DEFINE WRAPPER NOW LIVES WITH THE MODAL,
+// which is what actually builds that request.
 
 // AN EMPTY DEFINITION ARRAY CREATES NOTHING — the create form's other fields still
 // apply, and no stray owned row is written.
@@ -158,20 +140,14 @@ func TestAProjectOffersDelete(t *testing.T) {
 }
 
 // DELETE IS OFFERED, BULK — and it calls the PROJECT RPC with PROJECT ids.
-//
-// This is the defect the report exposed: the bulk path was source-blind, so a projects
-// selection was offered a "delete" that called DeleteWorkItem with project ids. The ids
-// are distinct ULIDs, so nothing was destroyed — every call failed with not-found, and
-// the operator saw "deleted 0 of 2 — 2 failed" for an operation aimed at the wrong thing.
 func TestBulkDeleteOnProjectsCallsTheProjectRPC(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "One")
 	p.seedProject("proj-2", "Two")
 	m := newModel(t, p)
 	m.Base.SelectSource(srcProjects)
-	// LoadItems + marks, the way the bulk tests drive a real selection: BulkIDs() is what
-	// makes actionsForSelection take the BULK branch at all, and a fixture that skipped the
-	// marking would silently exercise the single-row path instead.
+	// LoadItems + marks, the way the bulk tests drive a real selection: BulkIDs() is what makes
+	// actionsForSelection take the BULK branch at all.
 	m.Base.LoadItems(srcProjects, []kit2.Item{{ID: "proj-1", Title: "One"}, {ID: "proj-2", Title: "Two"}}, "")
 	mark(t, m, 2)
 	if got := m.Base.BulkIDs(); len(got) != 2 {

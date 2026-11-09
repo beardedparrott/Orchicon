@@ -26,10 +26,6 @@ type fakePlane struct {
 	apiv1connect.UnimplementedWorkItemServiceHandler
 
 	// --- worker list (the Workers pane's grouping) ---
-	//
-	// The list response carries the WORKER groupings alongside the page, exactly as the real service
-	// enriches it. The pane groups from THESE, not from the shell's cache (which is loaded once at
-	// startup and could be minutes stale) — so a test needs to be able to put groupings in the response.
 	workerItems       []*apiv1.WorkerListItem
 	workerCategories  []*apiv1.Category
 	workerAssignments []*apiv1.CategoryAssignment
@@ -39,16 +35,10 @@ type fakePlane struct {
 	messages []*apiv1.SendExecutionMessageRequest
 	retries  []string
 	forced   []string
-	// aborted records AbortWorkflow run ids. It is SEPARATE from `cancel` on purpose: the
-	// whole point of the abort action is that it ends the RUN, while cancel stops one
-	// EXECUTION — a test that conflated them could not tell which gesture ran.
+	// aborted records AbortWorkflow run ids.
 	aborted []string
 
 	// --- name resolution (names.go) ---
-	//
-	// A WorkflowRun carries ids and no names, so the runs views resolve them from these two
-	// lists. They are fake state rather than real fixtures because the point is the RESOLUTION,
-	// not the data.
 	workflows         []*apiv1.Workflow
 	runs              []*apiv1.WorkflowRun
 	run               *apiv1.WorkflowRun
@@ -58,17 +48,11 @@ type fakePlane struct {
 	workflowListCalls int
 	itemListCalls     int
 
-	// runListReqs records every ListWorkflowRuns request, so a test can assert the SORT the
-	// Schedules finished lens asked for. The fake serves whatever `runs` it was given, so the
-	// ORDERING itself is the server's (internal/db/workflow.go, keyset on (started_at, id)); what
-	// THIS client controls — and therefore what is worth asserting here — is that it asks for the
-	// same sort the GUI asks for, so the two clients cannot render history in different orders.
+	// runListReqs records every ListWorkflowRuns request, so a test can assert the SORT the Schedules
+	// finished lens asked for.
 	runListReqs []*apiv1.ListWorkflowRunsRequest
 
 	// --- work-item writes (the Schedules pane's cancel / remove-schedule) ---
-	//
-	// Recorded rather than faked at the HTTP level so a test can assert WHICH write went out —
-	// the two views issue different ones, and the whole point of the delete is that difference.
 	deleted       []string
 	updated       []*apiv1.UpdateWorkItemRequest
 	deleteItemErr error
@@ -134,10 +118,8 @@ func (p *fakePlane) UpdateWorkItem(_ context.Context, req *connect.Request[apiv1
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.updated = append(p.updated, req.Msg)
-	// APPLY the clear flags to the stored rows, so a test can re-query the pane and see the
-	// schedule actually gone rather than only observing the request that was sent. This mirrors
-	// the plane's clear semantics (internal/db/work_item.go) for the two fields a schedule
-	// removal touches: recurring_schedule/next_run_at and scheduled_start_at.
+	// APPLY the clear flags to the stored rows, so a test can re-query the pane and see the schedule
+	// actually gone rather than only observing the request that was sent.
 	for _, it := range p.items {
 		if it.GetId() != req.Msg.GetId() {
 			continue
@@ -216,9 +198,7 @@ func (p *fakePlane) ListWorkItems(_ context.Context, req *connect.Request[apiv1.
 	if p.failWorkItemList != nil {
 		return nil, p.failWorkItemList
 	}
-	// HONOUR THE STATUS FILTER, as the plane does. A fake that ignores it would let a broken
-	// fetch pass: the upcoming view's whole behaviour is that it asks for SCHEDULED, so the
-	// fixture must be able to tell the difference.
+	// HONOUR THE STATUS FILTER, as the plane does.
 	if req.Msg.Status == nil {
 		return connect.NewResponse(&apiv1.ListWorkItemsResponse{WorkItems: p.items}), nil
 	}
@@ -308,9 +288,8 @@ func run(t *testing.T, m *Model, cmd tea.Cmd) {
 	m.Update(msg)
 }
 
-// TestCancelExecutionConfirmsAndWrites pins the cancel path: the chord opens
-// a CONFIRM dialog (not an immediate write), and only confirming issues
-// CancelExecution with the recorded reason — reconciling the list.
+// TestCancelExecutionConfirmsAndWrites pins the cancel path: the chord opens a CONFIRM dialog (not
+// an immediate write), and only confirming issues CancelExecution with the recorded reason.
 func TestCancelExecutionConfirmsAndWrites(t *testing.T) {
 	p := &fakePlane{}
 	m := newModel(t, p)
@@ -400,14 +379,6 @@ func TestForceProgressWedgedRunConfirmsAndWrites(t *testing.T) {
 
 // TestInterjectGoesThroughTheInlineComposer pins the interjection: the message box at the bottom of
 // the execution posts to SendExecutionMessage.
-//
-// This REPLACES the `i` modal test. The operator retired that interface: "You said in executions 'f'
-// was a follow up yet the interface says 'f' is more pages ... typed in a question and hit ctrl+s to
-// save it and nothing happened. This doesn't seem to be working and frankly is very weird interface
-// wise. Not very intuitive. I would rather a chat box be at the bottom of the execution ... and then
-// type in your response and hit enter to send it. (Interjects should work the same way on live
-// executions)". So the nudge is now the SAME box as the follow-up, decided by the execution's state
-// rather than by which key was pressed — and sending is `enter`, not ctrl+s.
 func TestInterjectGoesThroughTheInlineComposer(t *testing.T) {
 	p := &fakePlane{}
 	m := newModel(t, p)
@@ -438,10 +409,6 @@ func TestInterjectGoesThroughTheInlineComposer(t *testing.T) {
 }
 
 // The operator: "Workflows should be under Execution not Automation."
-//
-// The Execution tab owns the Execution domain — executions, workflow runs,
-// workflows and workers — so the Workflows source (and its detail) lives here,
-// and it must NOT remain an Automation source.
 func TestWorkflowsSourceIsOnTheExecutionTab(t *testing.T) {
 	m := newModel(t, &fakePlane{})
 	var found bool

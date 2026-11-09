@@ -105,10 +105,8 @@ func TestAutoStartBoxOpensUncheckedEvenWhenTheStoredFlagIsSet(t *testing.T) {
 	}
 }
 
-// TestCtrlUClearsTheScheduledStartField is the kit2 half of item 1, driven through the real form: the
-// clear KEY must actually work on a reference field. ctrl+u required `editable`, which is false for
-// KDateTime, so it was a silent no-op on the very field the operator could not clear — while the
-// footer advertised "ctrl+u: clear" the whole time.
+// TestCtrlUClearsTheScheduledStartField is the kit2 half of item 1, driven through the real form:
+// the clear KEY must actually work on a reference field.
 func TestCtrlUClearsTheScheduledStartField(t *testing.T) {
 	start := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
 	_, f, _ := openItemEditorP(t, &start)

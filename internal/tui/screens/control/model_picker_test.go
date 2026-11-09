@@ -12,9 +12,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
-// newPickerModel builds a Control screen whose model-picker loads are faked, so
-// the whole adapter → provider → model cascade can be driven deterministically
-// without a plane.
+// newPickerModel builds a Control screen whose model-picker loads are faked, so the whole adapter →
+// provider → model cascade can be driven deterministically without a plane.
 func newPickerModel(t *testing.T) (*Model, *[]string) {
 	t.Helper()
 	m, _ := newWriteModel(t)
@@ -112,9 +111,8 @@ func TestModelFieldOpensTheModalPicker(t *testing.T) {
 	}
 }
 
-// The full three-step walk lands the committed adapter/provider/model ref in the
-// FORM FIELD — the operator's "the text it displays after the model is selected
-// is the adapter/provider/model name".
+// The full three-step walk lands the committed adapter/provider/model ref in the FORM FIELD — the
+// operator's "the text it displays after the model is selected is the adapter/provider/model name".
 func TestModelPickerCascadeCommitsIntoTheFormField(t *testing.T) {
 	m, loads := newPickerModel(t)
 	m.settings = &apiv1.TenantSettings{}

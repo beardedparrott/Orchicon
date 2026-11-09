@@ -1,11 +1,5 @@
-// shell.go — full-screen chrome (Phase 2a): the shell paints EVERY cell
-// of the terminal viewport on every screen (opaque theme background, zero
-// bleed-through), a horizontally CENTERED tab bar, and per-tab dropdown
-// submenus (the mockup pattern: a tab opens a menu of its sub-screens).
-//
-// Rendering contract: View() produces exactly m.height lines, every line
-// padded/truncated to m.width cells, every cell carrying the theme's
-// solid background.
+// shell.go — full-screen chrome (Phase 2a): the shell paints EVERY cell of the terminal viewport on
+// every screen (opaque theme background, zero bleed-through), a horizontally CENTERED tab bar.
 package tui
 
 import (
@@ -20,9 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// TabMenuEntry is one dropdown row: a sub-screen of the parent tab,
-// sourced from the screen inventory (nav config) — no hand-maintained
-// menu list to drift.
+// TabMenuEntry is one dropdown row: a sub-screen of the parent tab, sourced from the screen
+// inventory (nav config) — no hand-maintained menu list to drift.
 type TabMenuEntry struct {
 	Cmd    string // nav command word ("work-items")
 	Label  string // human title ("Work Items")
@@ -54,12 +47,6 @@ func (m *App) TabMenu() *TabMenu {
 }
 
 // openTabMenu populates + opens tab's dropdown (entries from nav config).
-//
-// This is the DATA half (what the menu contains), deliberately separate from where the keyboard
-// goes: the composer's Enter/Space opens a dropdown with an empty buffer, and THAT path must not
-// move the keyboard — the operator is mid-compose, and moving focus would send their next letter to
-// the screen instead of the box. Taking focus is the job of openTabWithMenu, the tab-SELECTION
-// gesture.
 func (m *App) openTabMenu(id TabID) {
 	tm := &TabMenu{}
 	for _, e := range m.navEntries(id) {
@@ -72,24 +59,9 @@ func (m *App) openTabMenu(id TabID) {
 
 // openTabWithMenu is the ONE meaning of selecting a tab by chord or by click: GO TO IT, DROP ITS
 // SUBMENU DOWN, and PUT THE KEYBOARD IN IT.
-//
-// This existed as THREE copies and they had already drifted: the tab CLICK did SwitchTo + openTabMenu,
-// menuHandleKey did SwitchTo + openTabMenu, and the global CHORD route did SwitchTo ALONE. So the same
-// key meant different things depending on whether a dropdown happened to be open — the chord switched
-// tabs and left the menu shut, which is what the operator hit.
-//
-// WITH THE MENU SHUT, ENTER WENT WHEREVER LAY UNDERNEATH, and that is why the report was screen
-// dependent: "when hitting the F#, it automatically gains focus on the first submenu in the list and
-// hitting enter doesn't bring down the submenu". On Ask the conversations rail claims Enter while a
-// rail is up, a screen claiming keys (an open form, a latched search) claims it everywhere, and a
-// non-empty composer takes it as send — none of which is the submenu. With the keyboard on the bar
-// the menu owns the arrows and Enter outright, because menuHandleKey runs ahead of every screen
-// claim, so the key after a chord means one thing on every screen.
 func (m *App) openTabWithMenu(id TabID) {
 	// Re-selecting the tab whose menu is already down CLOSES it — the toggle the click route,
-	// SwitchTo's same-tab path and menuHandleKey all already honour. A re-press still re-arms the
-	// streams (SwitchTo's same-tab path deliberately does not, since it cannot tell a re-press from
-	// a re-selection).
+	// SwitchTo's same-tab path and menuHandleKey all already honour.
 	if m.active == id && m.menuOpen == id {
 		m.closeTabMenu()
 		m.EnsureSubscriptions(id)
@@ -138,12 +110,6 @@ func (m *App) MenuSelect() {
 	entry := tm.Entries[tm.Sel]
 	m.closeTabMenu()
 	// Selecting an entry HANDS THE ARROWS TO THE SCREEN.
-	//
-	// This is step 4 of the operator's model — "then down/arrow keys move through
-	// the pane items" — and without it the keys stayed wherever they were (the
-	// composer), because selecting a source is a screen-side change that never
-	// moved shell focus. Content focus is what makes the next arrow key reach the
-	// list the operator just chose.
 	m.setFocus(focusContent)
 	// A verb row runs its action (Ask's New / Conversations).
 	if entry.Action != nil {
@@ -156,10 +122,8 @@ func (m *App) MenuSelect() {
 	m.selectScreenSource(open, entry.Source)
 }
 
-// menuEntryRow maps an absolute terminal row to the dropdown entry index:
-// the panel is a rounded border (1 row) + the header row (tab title) + the
-// entries, so entry i sits at top+2+i. Returns -1 when the row is not an
-// entry (border, header, or outside the panel).
+// menuEntryRow maps an absolute terminal row to the dropdown entry index: the panel is a rounded
+// border (1 row) + the header row (tab title) + the entries, so entry i sits at top+2+i.
 func (m *App) menuEntryRow(tm *TabMenu, y int) int {
 	top, _ := m.menuGeometry()
 	row := y - top - 2
@@ -169,9 +133,8 @@ func (m *App) menuEntryRow(tm *TabMenu, y int) int {
 	return row
 }
 
-// MenuClick activates the dropdown row under absolute terminal (x, y) —
-// the mouse path for submenu entries (the geometry is derived from the
-// rendered panel, so key and mouse can never disagree).
+// MenuClick activates the dropdown row under absolute terminal (x, y) — the mouse path for submenu
+// entries (the geometry is derived from the rendered panel, so key and mouse can never disagree).
 func (m *App) MenuClick(x, y int) bool {
 	tm := m.TabMenu()
 	if tm == nil {
@@ -186,25 +149,8 @@ func (m *App) MenuClick(x, y int) bool {
 	return true
 }
 
-// menuActivationKey reports whether k opens the active tab's dropdown.
-//
-// The TAB BAR opens it, on Enter — and that is the ONLY way a submenu appears
-// ("submenus should only pop up if you enter on them"). Tab used to pop it open
-// as it advanced, which ALSO left the menu up eating the arrows.
-//
-// From the COMPOSER, Enter/Space still open it with an empty buffer, so a real
-// message keeps Enter as send (the original Phase-3.5 gesture).
-//
-// Nothing else opens it, and no VERTICAL key does from anywhere: "no menus should
-// grab up/down until you actually select it".
-//
-// SPACE DOES NOT OPEN IT ON A SCREEN WHERE SPACE MARKS. On the Ask tab with the conversations rail
-// up, space is the rail's MARK gesture (railbulk.go), and letting the shell open a dropdown instead
-// is exactly "spacebar is selecting a conversation" — the menu is drawn over the list the operator
-// was marking. Asking screenOwnsSpace (the hook the shell already consults for the FOCUS RING) keeps
-// one answer about who owns space, rather than the shell and the rail each deciding. Everywhere else
-// — including the Ask LAUNCH page, where there is no rail to mark — the original affordance stands,
-// so a space-opens-the-menu expectation on a fresh screen is not broken.
+// The TAB BAR opens it, on Enter — and that is the ONLY way a submenu appears ("submenus should
+// only pop up if you enter on them").
 func (m *App) menuActivationKey(k tea.KeyMsg) bool {
 	if m.chatFocus == focusTabs {
 		return k.String() == "enter"
@@ -216,9 +162,8 @@ func (m *App) menuActivationKey(k tea.KeyMsg) bool {
 	case "enter":
 		return strings.TrimSpace(m.dock.Value()) == ""
 	case " ", "space":
-		// TrimSpace, matching the Enter arm above and the rule the rail's chords use: a buffer of
-		// only whitespace is empty for this purpose. The untrimmed test meant leading spaces left
-		// the menu reachable by space while every other space gesture saw an empty box.
+		// TrimSpace, matching the Enter arm above and the rule the rail's chords use: a buffer of only
+		// whitespace is empty for this purpose.
 		return m.dock.Value() == "" && !m.screenOwnsSpace()
 	}
 	return false
@@ -226,18 +171,6 @@ func (m *App) menuActivationKey(k tea.KeyMsg) bool {
 
 // screenOwnsSpace reports whether a list on the active screen claims the SPACE key for its own
 // gesture (multi-select marking), so the shell must not spend it opening a dropdown.
-//
-// IT ASKS ABOUT THE RAIL, not about a generic screen hook. The question is concrete — "is there a
-// list on screen right now whose space means mark?" — and on this client there is exactly one such
-// list: the Ask conversations rail. That is the SAME predicate the rail's own keys use
-// (railbulk.go railOwnsVerticalKey: `m.railVisible() && m.active == TabAsk`), so the shell and the
-// rail cannot disagree about whether the rail is claiming the keyboard.
-//
-// It deliberately does NOT reuse screenOwnsTab. That hook reads a screen's OwnsTab method, which the
-// Ask screen answers with ClaimsKeys — true only while a permission card or overlay is pending. At
-// rest that is false, so routing space through it would look like a fix and change nothing: the menu
-// would still open over the rail. Measured, not assumed — the first draft of this fix was exactly
-// that no-op.
 func (m *App) screenOwnsSpace() bool {
 	return m.railVisible()
 }
@@ -346,9 +279,8 @@ func (m *App) menuView() string {
 	return theme.MenuPanel.Render(strings.Join(lines, "\n"))
 }
 
-// overlayBoxAt splices a multi-line box over base starting at absolute
-// (top, left) — row-by-row, ANSI-aware. Used by the tab dropdown, the
-// slash palette, and the centered overlays.
+// overlayBoxAt splices a multi-line box over base starting at absolute (top, left) — row-by-row,
+// ANSI-aware.
 func (m *App) overlayBoxAt(base, box string, top, left int) string {
 	rows := strings.Split(base, "\n")
 	for i, br := range strings.Split(box, "\n") {
@@ -380,9 +312,7 @@ func (m *App) overlayCentered(base, box string) string {
 }
 
 // modalInnerWidth is the width a modal's CONTENT has to lay itself out in — the panel's interior,
-// i.e. the modal width minus its two border cells. It exists so a form can be told the width it
-// actually has instead of the outer width it does not: laying a field out to `modalWidth` overflows the
-// panel by exactly the two border cells, and Panel.Pad then truncates the field's last two columns.
+// i.e. the modal width minus its two border cells.
 func (m *App) modalInnerWidth() int {
 	w := m.modalWidth() - 2
 	if w < 8 {
@@ -392,23 +322,6 @@ func (m *App) modalInnerWidth() int {
 }
 
 // modalPanel wraps a modal's body in a SOLID, uniformly-sized bordered panel.
-//
-// THE OPERATOR'S ASK, VERBATIM: "Weird visual bug when renaming a conversation. Probably should just
-// be its own modal with a solid background. This also happens when applying to a category."
-//
-// The modals used to splice the form's raw View() straight over the frame, and a kit2 form's View is
-// NOT a rectangle — its title and hint rows are written at their natural width while its field rows
-// are padded to the form width. Two consequences, both measured: the base showed through the gaps
-// inside the modal, and the ragged rows tripped the splice defect in overlayRow and shifted everything
-// after the modal sideways.
-//
-// A kit2.Panel is a rectangle BY CONSTRUCTION: every interior row is padded (and truncated) to the
-// inner width and painted with the opaque screen background, and the whole thing is normalized to
-// exactly w×h. The conversations rail has used one since it was built; the modals now do too, so a
-// modal cannot be anything but solid.
-//
-// The panel is sized to its CONTENT, not to the viewport: a viewport-tall panel would paint a wall of
-// background over the screen behind it, which is a worse artefact than the one being fixed.
 func (m *App) modalPanel(body string, w int) string {
 	if w < 10 {
 		w = 10
@@ -448,20 +361,7 @@ func (m *App) composeView(base string) string {
 	return strings.Join(rows, "\n")
 }
 
-// overlayRow splices overlay into row starting at column left (both ANSI-aware). Cells right of the
-// overlay keep the row's background.
-//
-// THE OVERLAY'S WIDTH IS MEASURED HERE, NOT PASSED IN, and that is the fix for a real visual defect.
-// The caller used to pass the BOX's MAXIMUM line width and it was then used as the width of EVERY row.
-// A box whose lines are not all the same width — which the kit2 forms are BY DESIGN, since their title
-// and hint rows are written at their natural width while their field rows are padded — therefore
-// spliced a SHORT row as if it were a wide one, and `keep` landed far to the right of where the glyphs
-// actually ended. That DELETED the base cells in between and returned a row shorter than the frame,
-// which the final fillView then padded at the FAR RIGHT: everything after the modal shifted sideways,
-// and base content stayed visible inside the modal's own rectangle.
-//
-// Measured before the fix: a 5-cell row inside a 25-cell box turned a 40-cell row into a 25-cell one,
-// and 18 base cells survived within the box's rectangle — the operator's "weird visual bug".
+// overlayRow splices overlay into row starting at column left (both ANSI-aware).
 func overlayRow(row, overlay string, left int) string {
 	cols := lipgloss.Width(row)
 	ow := lipgloss.Width(overlay)
@@ -485,24 +385,15 @@ func overlayRow(row, overlay string, left int) string {
 // tabSeparator joins a tab's KEY to its title in the key-labelled chrome — "F1·Ask Orchicon".
 const tabSeparator = "·"
 
-// tabFullLabel is the key-labelled form of a tab's label — "F1·Ask Orchicon". Shared by the layout
-// and the renderer so the underline can never be applied to a label that is not actually the
-// key-labelled form.
-//
-// The printed key double-serves as the mockup's numbered chrome (the ordinal prefix), which is why
-// the prefix is the key rather than a decorative number.
+// tabFullLabel is the key-labelled form of a tab's label — "F1·Ask Orchicon".
 func tabFullLabel(t Tab) string { return t.Ordinal + tabSeparator + t.Title }
 
 // underlineTabKey wraps a run in the underline attribute (SGR 4 / 24), leaving the surrounding
-// styling alone. The tab's key label is underlined because it IS a key, not decoration — the
-// operator asked for exactly that: "We should probably underline the numbers", and then, when the
-// chords became function keys, "underline the F1-F7 individually". Each tab's own label is a separate
-// run, so each is underlined on its own.
+// styling alone.
 func underlineTabKey(s string) string { return "\x1b[4m" + s + "\x1b[24m" }
 
 // tabBarLeftPad and tabBarPillPad measure the STYLES' own padding instead of assuming a cell count,
-// so a theme change cannot silently shift every click target. tabLabelStarts computes columns from
-// these, so they must agree with what the styles actually draw.
+// so a theme change cannot silently shift every click target.
 func tabBarLeftPad() int { return lipgloss.Width(theme.TabBar.Render("x")) - 1 }
 func tabBarPillPad() int { return (lipgloss.Width(theme.TabInactive.Render("x")) - 1) / 2 }
 
@@ -518,15 +409,8 @@ func (m App) tabBarDisplay(i int, label string) string {
 	return underlineTabKey(Tabs[i].Ordinal) + label[len(Tabs[i].Ordinal):]
 }
 
-// tabBarLayout picks the label form and inter-tab gap for the current
-// viewport: the widest tier that fits wins. Narrow widths drop the
-// inter-tab gaps first, then the key prefixes, so all SEVEN tabs stay
-// inside the viewport (the pills still separate visually via their own
-// padding). m.width <= 0 (unsized — e.g. registry introspection) always
-// uses the full key-labelled form, so the labelled chrome is the default.
-//
-// NOTE the key prefixes are only LABELS: the chords are global routes and work at every width, so a
-// narrow terminal loses the reminder, not the binding.
+// tabBarLayout picks the label form and inter-tab gap for the current viewport: the widest tier
+// that fits wins.
 func (m App) tabBarLayout() (labels []string, gap string) {
 	full := make([]string, len(Tabs))
 	plain := make([]string, len(Tabs))
@@ -548,17 +432,8 @@ func (m App) tabBarLayout() (labels []string, gap string) {
 	return plain, ""
 }
 
-// tabBarBuilt renders the tab bar AND reports the visible column where each label's text begins.
-//
 // The bar is now ONLY the tabs: the modifier label that used to sit at its left ("alt+ 1·Ask
-// Orchicon") is gone, because the label printed at each tab IS the whole key ("F1") and a modifier
-// prefix would explain a modifier that no longer exists.
-//
-// Both come from ONE pass, which is the point: the columns used to be recovered afterwards by
-// searching the STYLED render for the plain label (strings.Index), which works only while the label
-// appears in the bar byte-for-byte. Underlining the number breaks that (the render now interleaves
-// escape codes inside the label), and a search that fails returns -1, i.e. a silently dead click
-// target. Computing the columns as the bar is BUILT cannot drift from what was drawn.
+// Orchicon") is gone, because the label printed at each tab IS the whole key ("F1") and a modifier.
 func (m App) tabBarBuilt(labels []string, gap string) (string, []int) {
 	leftPad := tabBarLeftPad()
 	pillPad := tabBarPillPad()
@@ -618,15 +493,8 @@ func (m App) tabTitle(id TabID) string {
 	return string(id)
 }
 
-// tabLabelStarts returns the visible terminal column where each tab's
-// label TEXT begins in the centered tab bar (Tabs order), using the SAME layout tier the bar was
-// rendered with — so key navigation, the dropdown geometry, and the mouse hit-test can never disagree
-// with what is on screen. It includes the bar's centering offset.
-//
-// The columns come from tabBarBuilt, which records them AS IT DRAWS. They used to be recovered by
-// searching the styled render for each label (strings.Index), which silently returned -1 — a dead
-// click target — the moment the label stopped appearing in the bar byte-for-byte, which is exactly
-// what underlining the number does.
+// tabLabelStarts returns the visible terminal column where each tab's label TEXT begins in the
+// centered tab bar (Tabs order), using the SAME layout tier the bar was rendered.
 func (m App) tabLabelStarts() []int {
 	labels, gap := m.tabBarLayout()
 	bar, starts := m.tabBarBuilt(labels, gap)
@@ -640,9 +508,8 @@ func (m App) tabLabelStarts() []int {
 	return starts
 }
 
-// tabStartCol returns the visible terminal column where tab's label begins
-// in the centered tab bar (ANSI-aware) — used by the tab mouse hit-test,
-// the dropdown geometry, and their tests.
+// tabStartCol returns the visible terminal column where tab's label begins in the centered tab bar
+// (ANSI-aware) — used by the tab mouse hit-test, the dropdown geometry, and their tests.
 func (m App) tabStartCol(t Tab) int {
 	starts := m.tabLabelStarts()
 	for i, tt := range Tabs {
@@ -656,13 +523,8 @@ func (m App) tabStartCol(t Tab) int {
 	return 0
 }
 
-// TabClick maps a mouse click on the tab bar (row 0) to the tab whose
-// rendered span contains column x. Spans TILE the bar (a tab owns the cells
-// from its label's start up to the next label's start, so the pills' own
-// padding and the inter-tab gaps stay clickable) and the last tab keeps
-// the historical +3-cell trailing tolerance — so the hit-test can never
-// overlap two tabs on a narrow (gap-dropping) layout. Returns (tabID, true)
-// when a tab was hit.
+// TabClick maps a mouse click on the tab bar (row 0) to the tab whose rendered span contains column
+// x.
 func (m App) TabClick(x int) (TabID, bool) {
 	starts := m.tabLabelStarts()
 	labels, _ := m.tabBarLayout()
@@ -682,10 +544,7 @@ func (m App) TabClick(x int) (TabID, bool) {
 	return "", false
 }
 
-// menuHandleKey processes a key while a dropdown is open. Returns
-// (handled, cmd). Left/esc close; up/down navigate; enter selects; a
-// different tab's chord switches the menu (or closes it when already on
-// that tab).
+// menuHandleKey processes a key while a dropdown is open.
 func (m *App) menuHandleKey(k tea.KeyMsg) (bool, tea.Cmd) {
 	switch k.String() {
 	case "esc", "left", "shift+tab":
@@ -702,17 +561,6 @@ func (m *App) menuHandleKey(k tea.KeyMsg) (bool, tea.Cmd) {
 		return true, nil
 	case " ", "space":
 		// ENTER ACTIVATES A DROPDOWN ROW; SPACE DOES NOT.
-		//
-		// The operator: "In conversations in the TUI, spacebar is selecting a conversation when it
-		// should be marking it for bulk operations instead." On the Ask tab the dropdown's rows are
-		// conversation VERBS ("New" clears the open conversation, "Conversations" re-scopes the
-		// rail), so a space that activated the highlighted row literally SELECTED something — the
-		// opposite of the mark gesture space means on every list in this client.
-		//
-		// Space is still a legitimate way to OPEN a dropdown (see menuActivationKey: the launch-page
-		// affordance), and once it is open ENTER is the select gesture — so nothing became
-		// unreachable. Closing here rather than falling through is deliberate: the key was spent on
-		// the menu the operator is looking at, so it must not also land in the composer behind it.
 		m.closeTabMenu()
 		return true, nil
 	case "ctrl+c":
@@ -720,9 +568,7 @@ func (m *App) menuHandleKey(k tea.KeyMsg) (bool, tea.Cmd) {
 	}
 	for _, t := range Tabs {
 		if t.Chord == k.String() {
-			// ONE meaning, shared with the click and the global chord route. This copy already got
-			// the switch-and-drop-the-menu half right, which is exactly how the routing came to be
-			// inconsistent: whether the chord opened a menu depended on whether one was already up.
+			// ONE meaning, shared with the click and the global chord route.
 			m.openTabWithMenu(t.ID)
 			return true, nil
 		}

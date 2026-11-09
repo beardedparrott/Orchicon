@@ -5,11 +5,8 @@ import (
 	"testing"
 )
 
-// The operator: "The tool tip word wrap is wrapping the tool title and shortcut
-// on separate lines, it should keep those together."
-//
-// wrapHint breaks at the hint's " · " separators, so a key and its meaning stay
-// on one line; only a segment that cannot fit at all is wrapped further.
+// The operator: "The tool tip word wrap is wrapping the tool title and shortcut on separate lines,
+// it should keep those together."
 func TestWrapHintKeepsShortcutWithItsMeaning(t *testing.T) {
 	hint := "↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: next · ctrl+s: save · esc: cancel"
 	for _, width := range []int{80, 60, 40, 30} {

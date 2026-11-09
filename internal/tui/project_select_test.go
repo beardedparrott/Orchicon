@@ -22,9 +22,6 @@ package tui
 import "testing"
 
 // A CREATED PROJECT BECOMES THE WORKSPACE — the operator's first gap.
-//
-// THIS TEST FAILS WITHOUT THE FIX: launchCreatedMsg was handled by dismissing the prompt and nothing else, so
-// projectScope stayed projectScopeAll and activeProjectID() returned "" — the first chat unassigned.
 func TestACreatedProjectBecomesTheWorkspace(t *testing.T) {
 	m := scopePlane2(t)
 	// The rail's snapshot predates the create, exactly as it does in a real session.
@@ -45,9 +42,7 @@ func TestACreatedProjectBecomesTheWorkspace(t *testing.T) {
 	}
 }
 
-// A PARKED SELECTION IS CONSUMED ONCE, MATCHED OR NOT. The park exists because a create returns before the
-// rail has listed the new project; leaving it set after a miss would re-select on every later project reload —
-// so a project renamed out of existence would keep re-firing a selection the operator never asked for again.
+// A PARKED SELECTION IS CONSUMED ONCE, MATCHED OR NOT.
 func TestAParkedSelectionIsConsumedEvenWhenItMisses(t *testing.T) {
 	m := scopePlane2(t)
 	m.pendingProjectName = "no-such-project"

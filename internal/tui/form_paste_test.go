@@ -1,17 +1,6 @@
 package tui
 
 // form_paste_test.go — THE SHELL'S HALF OF PASTING INTO A FORM FIELD.
-//
-// The operator: "The modal does not allow me to paste anything in any of the fields from my clipboard. ctrl+v
-// should allow me to paste a secret name, token, etc."
-//
-// The bug was structural, not a missing binding: ctrl+v arrives as tea.KeyCtrlV (no runes), so no form
-// inserted it, and the clipboard read has to be a COMMAND because it shells out. So the shell has to
-// intercept it above the forms, and route the text to whichever form has the focus.
-//
-// The clipboard reader is not driven from here (it execs a helper); what is pinned is the DECISION — pasteKey
-// — and the destination, which is the part that can be wrong: the same message type the composer uses would
-// have pasted a token into a chat message instead of the field.
 
 import (
 	"strings"
@@ -55,9 +44,7 @@ func TestCtrlVPastesIntoTheOpenFormField(t *testing.T) {
 }
 
 func TestCtrlVIsTheComposersWhenNoFormIsOpen(t *testing.T) {
-	// THE GUARD IS THE CONTRACT. ctrl+v in the shell is the composer's attachment chord (paste an image, or a
-	// file path); a form only changes that while a form is up. Without this, the interception would have
-	// stolen the composer's paste for every keystroke in the app.
+	// THE GUARD IS THE CONTRACT.
 	m, _, _ := newScopeApp(t)
 	if _, handled := m.pasteKey(tea.KeyMsg{Type: tea.KeyCtrlV}); handled {
 		t.Fatal("ctrl+v was claimed with no form open — the composer's own paste would never run")
@@ -65,9 +52,8 @@ func TestCtrlVIsTheComposersWhenNoFormIsOpen(t *testing.T) {
 }
 
 func TestBracketedPasteIntoAFormFieldIsSanitised(t *testing.T) {
-	// The TERMINAL's own paste (middle-click, or a terminal that sends bracketed paste) arrives as runes, so
-	// a form would insert it by its ordinary rune path — which happily accepts the trailing newline a copied
-	// token carries. It has to go through PasteText instead.
+	// The TERMINAL's own paste (middle-click, or a terminal that sends bracketed paste) arrives as
+	// runes, so a form would insert it by its ordinary rune path.
 	m := openCredentialFormOnARow(t)
 
 	cmd, handled := m.pasteKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("MCP_TOKEN\n"), Paste: true})
@@ -87,9 +73,7 @@ func TestBracketedPasteIntoAFormFieldIsSanitised(t *testing.T) {
 }
 
 func TestAClipboardReadForAFormPastesIntoTheFormNotTheComposer(t *testing.T) {
-	// THE DESTINATION IS THE POINT. The shell already has a clipboardTextMsg, and its handler inserts into the
-	// COMPOSER — so a paste meant for a field must not be that message, or a token would be typed into a chat
-	// message instead.
+	// THE DESTINATION IS THE POINT.
 	m := openCredentialFormOnARow(t)
 	m.dock.SetValue("")
 
@@ -127,10 +111,6 @@ func (s *pasteScreenStub) Name() string                               { return "
 func (s *pasteScreenStub) Close()                                     {}
 
 // A SCREEN-HOSTED FORM IS PASTED INTO TOO — the half that was MISSING.
-//
-// The first version of this support enumerated the forms the SHELL owns, so a screen's forms were invisible
-// to it and the operator could not paste into the Control screen's secret form. The capability now lives on
-// kit2.Base, which every screen embeds, so the shell reaches any screen's form by one assertion.
 func TestCtrlVPastesIntoScreenHostedForm(t *testing.T) {
 	m, _, _ := newScopeApp(t)
 	st := &pasteScreenStub{}
@@ -158,9 +138,8 @@ func TestCtrlVPastesIntoScreenHostedForm(t *testing.T) {
 	}
 }
 
-// THE GUARD IS PER-SCREEN, and it has to be: every screen can paste by virtue of embedding Base, so asking
-// "can you paste?" would claim ctrl+v on EVERY tab and the composer's own paste would never run again. The
-// question is "is a form actually up?" — EditingDetail.
+// THE GUARD IS PER-SCREEN, and it has to be: every screen can paste by virtue of embedding Base, so
+// asking "can you paste?" would claim ctrl+v on EVERY tab and the composer's own paste would.
 func TestAScreenWithNoFormDoesNotClaimCtrlV(t *testing.T) {
 	m, _, _ := newScopeApp(t)
 	m.screens[m.active] = &pasteScreenStub{} // embeds Base, but no form is open

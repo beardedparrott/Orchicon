@@ -8,11 +8,8 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
-// The Permissions pane (Control → Permissions) manages the operator's DURABLE
-// permission policy through the same three plane RPCs the GUI's Permissions tab
-// uses. These tests pin the parts this client owns: the row identity that
-// carries (list, pattern), the list-name validation a create form depends on,
-// and the detail's statement that a session grant cannot override a deny entry.
+// The Permissions pane (Control → Permissions) manages the operator's DURABLE permission policy
+// through the same three plane RPCs the GUI's Permissions tab uses.
 
 func TestPermissionItemIDRoundTripsBothLists(t *testing.T) {
 	cases := []struct{ list, pattern string }{
@@ -77,9 +74,8 @@ func TestPermissionDetailStatesTheGrantRelationship(t *testing.T) {
 	}
 }
 
-// The create form is on the permissions pane and its list field refuses a
-// name that is neither deny nor accept (what the form's Validate hook is
-// wired to).
+// The create form is on the permissions pane and its list field refuses a name that is neither deny
+// nor accept (what the form's Validate hook is wired to).
 func TestNewPermissionFormExistsOnThePermissionsPane(t *testing.T) {
 	m, _ := newWriteModel(t)
 	m.SelectSource("permissions")

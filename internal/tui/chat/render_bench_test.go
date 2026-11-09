@@ -31,9 +31,9 @@ import (
 	"testing"
 )
 
-// benchmarkConversation builds a conversation of n items shaped like a real one:
-// the operator's messages interleaved with model replies that carry the things
-// that actually cost money to lay out — prose, fenced code, and lists.
+// benchmarkConversation builds a conversation of n items shaped like a real one: the operator's
+// messages interleaved with model replies that carry the things that actually cost money to lay
+// out.
 func benchmarkConversation(n int) []ChatItem {
 	items := make([]ChatItem, 0, n)
 	prose := strings.Repeat("Here is what I found in the reconciler: the row is written, and then the binding is dereferenced without a nil check. ", 4)
@@ -78,14 +78,8 @@ func BenchmarkRenderItems50(b *testing.B) {
 	}
 }
 
-// benchmarkFrame is ONE REPAINT of a surface that draws a conversation: group,
-// render, split into rows. RenderItems alone is not the unit the operator feels
-// — the strip repaints on every frame of every tab while it is open, and the
-// Ask transcript repaints on every wake — so the frame is what has to get cheap,
-// and grouping is part of it whether the rendered lines changed or not.
-//
-// The cache is the caller's, as it is in the app (one per shell), and the scope is
-// the conversation: a frame is rendered through exactly the path the strip uses.
+// benchmarkFrame is ONE REPAINT of a surface that draws a conversation: group, render, split into
+// rows.
 func benchmarkFrame(cache *RenderCache, items []ChatItem) {
 	grouped := GroupByPhase(items)
 	body, _ := cache.Render("bench", grouped, 100, "", nil, "")
@@ -95,9 +89,8 @@ func benchmarkFrame(cache *RenderCache, items []ChatItem) {
 	}
 }
 
-// BenchmarkStripFrameIdle250 is a frame of the strip when NOTHING has changed: the
-// conversation is 250 messages and the operator is reading another tab. Nothing a
-// frame draws can differ from the previous frame, and it should be priced as such.
+// BenchmarkStripFrameIdle250 is a frame of the strip when NOTHING has changed: the conversation is
+// 250 messages and the operator is reading another tab.
 func BenchmarkStripFrameIdle250(b *testing.B) {
 	items := benchmarkConversation(250)
 	cache := NewRenderCache()
@@ -109,10 +102,8 @@ func BenchmarkStripFrameIdle250(b *testing.B) {
 	}
 }
 
-// BenchmarkStripFrameStreaming250 is a frame of the strip WHILE THE LAST MESSAGE
-// GROWS — the case the operator was in when the TUI stopped responding. One delta
-// arrives per frame and changes exactly one item; every other item's rendered form
-// is identical to the previous frame's.
+// BenchmarkStripFrameStreaming250 is a frame of the strip WHILE THE LAST MESSAGE GROWS — the case
+// the operator was in when the TUI stopped responding.
 func BenchmarkStripFrameStreaming250(b *testing.B) {
 	items := benchmarkConversation(250)
 	delta := "and here is one more sentence of the model's reply, arriving as one more streaming delta. "
@@ -128,10 +119,6 @@ func BenchmarkStripFrameStreaming250(b *testing.B) {
 }
 
 // BenchmarkGroupByPhase250 prices the half of a frame the cache does NOT cover.
-//
-// It is here to keep the remaining bound honest: grouping walks every item and
-// concatenates each phase's text, so it is still O(all items) per frame. Whether
-// that is worth fixing is a question for its number, not for an opinion.
 func BenchmarkGroupByPhase250(b *testing.B) {
 	items := benchmarkConversation(250)
 	b.ReportAllocs()

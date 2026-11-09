@@ -1,16 +1,6 @@
 package theme
 
 // transparent_test.go — A TRANSPARENT THEME LEAVES THE BACKGROUND UNPAINTED, AND KEEPS THE TINTS.
-//
-// The operator: "I would like a couple of semi-transparent background themes for dark and light" ... "Yes
-// the tints should definitely be there" ... "Composer should also be transparent as well on transparent
-// themes."
-//
-// "Transparent" in a terminal cannot mean alpha — a cell has a foreground and a background and nothing in
-// between, so there is no opacity to set. What it CAN mean is "this cell is not painted at all", which is
-// what these tests assert: NO background sequence is emitted for the app background, while every tinted
-// surface still emits its own. That distinction is the whole feature, so it is asserted in both directions
-// (absent where it must be, present where it must be) rather than only the absence.
 
 import (
 	"strings"
@@ -73,9 +63,7 @@ func TestTheComposerIsTransparentOnATransparentTheme(t *testing.T) {
 	}
 }
 
-// SWITCHING BACK RESTORES THE BACKGROUND. The unpainted value must not leak into the next theme — a
-// statefulness bug here would leave the client transparent until restart, which is exactly the class of
-// "it kept the old theme" complaint this area has produced before.
+// SWITCHING BACK RESTORES THE BACKGROUND.
 func TestLeavingATransparentThemeRestoresTheBackground(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() {
@@ -171,19 +159,6 @@ func TestEveryTransparentThemeNamesItself(t *testing.T) {
 }
 
 // A TRANSPARENT THEME LETS THE TERMINAL THROUGH EVERYWHERE — THAT IS THE WHOLE FEATURE.
-//
-// The operator, after a version that kept the panels painted so a light palette stayed readable: "now the
-// transparents are not transparent at all ... only transparent in the top left corner. The terminal should bleed
-// through everywhere but with the light tint of the color scheme coming through."
-//
-// So this test asserts the SURFACES the app would otherwise own are all unpainted: the frame background, the
-// panel fill, the composer, the tab strip and both chat bands. The palette's character then comes through in
-// its FOREGROUNDS — text, borders, accents — which is the "light tint of the colour scheme" that IS expressible.
-//
-// THE TWO FILLS THAT REMAIN ARE CONTENT, NOT SURFACES, and they are asserted as such here so the exception is
-// pinned rather than accidental: the selection fill (a selection the operator cannot see is a selection they
-// cannot trust) and the raised fill behind a code span / code block / diff line (a code span with no chip is not
-// a code span). Both carry their own text and are gated as self-contained pairs.
 func TestATransparentThemePaintsNoSurfacesAtAll(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() {
@@ -221,9 +196,7 @@ func TestATransparentThemePaintsNoSurfacesAtAll(t *testing.T) {
 		if out := ListItemSelected.Render("x"); !bgSeq(out) {
 			t.Errorf("%s: the selection fill painted nothing — a selected row would be invisible", name)
 		}
-		// The RAISED fill is SurfaceAlt (the code chip / code block / diff line goes through it). It is NOT
-		// SurfaceBg, which is the panel fill and is unpainted with the rest of the surfaces — keeping those two
-		// straight is the whole distinction this test exists to hold.
+		// The RAISED fill is SurfaceAlt (the code chip / code block / diff line goes through it).
 		raised := lipgloss.NewStyle().Background(SurfaceAlt).Render("x")
 		if !bgSeq(raised) {
 			t.Errorf("%s: the raised fill %s painted nothing — a code span would stop reading as a code span",

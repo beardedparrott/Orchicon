@@ -1,16 +1,6 @@
 package theme
 
 // contrast.go — the WCAG contrast primitives the theme gates measure with.
-//
-// They live in the package (not only in the tests) so every palette gate —
-// TestBubbleContrast, TestSelectionFillCarriesWhiteText, the pane-structure and
-// border gates — measures relative luminance and contrast ratio with ONE
-// implementation rather than each re-deriving it.
-//
-// (The chat transcript no longer needs an `ensureContrast` shift: the two
-// speakers are separated by full-width background BANDS whose fills are
-// contrast-gated by TestBubbleContrast, so there is no per-glyph colour to
-// nudge into range.)
 
 // relLuminance is the WCAG relative luminance of a #rrggbb colour.
 func relLuminance(hex string) float64 {

@@ -33,11 +33,8 @@ func (s *stubAsk) ListConversations(context.Context, *connect.Request[apiv1.List
 	}), nil
 }
 
-// ListMessages mirrors the REAL server contract: db.ListMessages orders by
-// created_at DESC, so a page arrives NEWEST-FIRST (m2 before m1). An earlier
-// version of this stub returned them oldest-first, which hid the TUI's missing
-// reversal — the transcript rendered inverted in the real client while the stub
-// test passed.
+// ListMessages mirrors the REAL server contract: db.ListMessages orders by created_at DESC, so a
+// page arrives NEWEST-FIRST (m2 before m1).
 func (s *stubAsk) ListMessages(context.Context, *connect.Request[apiv1.ListMessagesRequest]) (*connect.Response[apiv1.ListMessagesResponse], error) {
 	base := time.Unix(1_700_000_000, 0)
 	return connect.NewResponse(&apiv1.ListMessagesResponse{

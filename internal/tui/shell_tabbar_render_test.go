@@ -8,11 +8,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// TestShellFirstLineRendersTabBar pins the app-shell layout contract: the
-// first visible line of the shell view is the seven-area nav tab bar (Ask
-// Orchicon, Overview, Work, Execution, Automation, Enforcement, Control),
-// mirroring the GUI nav order. Regression for the QA pass on the TUI
-// foundation (caught against a real PTY render of the shell).
+// TestShellFirstLineRendersTabBar pins the app-shell layout contract: the first visible line of the
+// shell view is the seven-area nav tab bar (Ask Orchicon, Overview, Work, Execution, Automation.
 type tabBarScreenStub struct{ body string }
 
 func (f *tabBarScreenStub) Init() tea.Cmd                    { return nil }
@@ -44,13 +41,8 @@ func TestShellFirstLineRendersTabBar(t *testing.T) {
 	}
 }
 
-// TestQuitRouteIssuesQuitCmd pins the quit contract: the global quit route (ctrl+c) must return a tea.Quit
-// command from dispatch, not merely blank the view. QA on the TUI foundation found q/ctrl+c hanging the TUI
-// because the route only set the quitting flag.
-//
-// `q` IS NO LONGER PART OF IT — the operator: "if you hit it outside of the composer then it still quits.
-// We should remove that completely." The route is ctrl+c alone; TestQDoesNotQuitFromAnyFocus asserts the
-// other half of that, from every focus level.
+// TestQuitRouteIssuesQuitCmd pins the quit contract: the global quit route (ctrl+c) must return a
+// tea.Quit command from dispatch, not merely blank the view.
 func TestQuitRouteIssuesQuitCmd(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "b"})

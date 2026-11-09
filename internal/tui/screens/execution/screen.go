@@ -1,10 +1,5 @@
-// Package execution implements the Execution screen: executions, workflow runs,
-// WORKFLOWS and workers, with the live StreamExecutionEvents subscription — the
-// first consumer of the useStream-mirroring engine.
-//
-// Workflows live here, not under Automation: they are part of the Execution
-// domain (the operator's "Workflows should be under Execution not Automation").
-// Automation keeps the recurring items that BIND a workflow.
+// Package execution implements the Execution screen: executions, workflow runs, WORKFLOWS and
+// workers, with the live StreamExecutionEvents subscription.
 package execution
 
 import (
@@ -37,9 +32,8 @@ type Model struct {
 	reconnected bool
 
 	w, h int
-	// form is the open interjection form (nil when closed); pending is the
-	// action the open confirmation dialog will run; bar is the footer strip
-	// of the selected row's actions; notice is the screen's status line.
+	// form is the open interjection form (nil when closed); pending is the action the open confirmation
+	// dialog will run; bar is the footer strip of the selected row's actions.
 	form    *kit2.Form
 	pending *kit2.Action
 	bar     *kit2.ActionBar
@@ -49,23 +43,17 @@ type Model struct {
 	// with search). A model_ref is CHOSEN, never typed, so it gets its own modal.
 	modelPicker *kit2.ModelPicker
 	// modelPickerWorkers is the SET of workers the open picker writes to — the marked selection it was
-	// opened for. A list rather than one id because the picker IS the bulk act (M): a per-worker model
-	// edit is a form field, so there is no single-worker row-action path to keep separate.
+	// opened for.
 	modelPickerWorkers []string
-	// modelPickerField is the FORM FIELD the open picker writes back into, when it
-	// was opened from a KModel field inside a form (the worker create form and the
-	// version editor). Empty when the picker was opened from the row action (that
-	// one writes straight through the rpcSetWorkerModel thunk).
+	// modelPickerField is the FORM FIELD the open picker writes back into, when it was opened from a
+	// KModel field inside a form (the worker create form and the version editor).
 	modelPickerField string
-	// workerOp / workerOpID remember which worker CRUD operation is waiting on a
-	// load, so its form opens when the data lands (and a late result for a worker
-	// the operator has left is dropped). See worker_forms.go.
+	// workerOp / workerOpID remember which worker CRUD operation is waiting on a load, so its form
+	// opens when the data lands (and a late result for a worker the operator has left is dropped).
 	workerOp   workerOp
 	workerOpID string
-	// workerModel caches each worker's ACTIVE model_ref — the workers list
-	// already carries it (WorkerListItem.active_model_ref), so the picker seeds
-	// without another round trip. Written by the fetch goroutine and read from
-	// Update, hence the mutex.
+	// workerModel caches each worker's ACTIVE model_ref — the workers list already carries it
+	// (WorkerListItem.active_model_ref), so the picker seeds without another round trip.
 	workerMu    sync.Mutex
 	workerModel map[string]string
 
@@ -74,15 +62,11 @@ type Model struct {
 	rpcModelProviders func(ctx context.Context, adapter string) ([]kit2.PickerOption, error)
 	rpcModelModels    func(ctx context.Context, adapter, provider string) ([]kit2.PickerOption, bool, error)
 	rpcSetWorkerModel func(ctx context.Context, workerIDs []string, ref string) error
-	// Worker CRUD loads: thunks for the same reason (worker_forms.go) — the
-	// interactive operations need the worker's CURRENT state before they can
-	// seed a form or decide whether they apply.
+	// Worker CRUD loads: thunks for the same reason (worker_forms.go) — the interactive operations need
+	// the worker's CURRENT state before they can seed a form or decide whether they apply.
 	rpcGetWorker          func(ctx context.Context, id string) (*apiv1.Worker, error)
 	rpcListWorkerVersions func(ctx context.Context, id string) ([]*apiv1.WorkerVersion, error)
-	// rpcListRoles backs the Plane-role picker on every worker form (create, edit,
-	// new version). Roles are tenant data the screen does not otherwise read, so a
-	// failure is tolerated: the field then offers only "none" rather than blocking
-	// an edit that has nothing to do with the role binding.
+	// rpcListRoles backs the Plane-role picker on every worker form (create, edit, new version).
 	rpcListRoles func(ctx context.Context) ([]*apiv1.Role, error)
 	// Workflow lifecycle loads (workflow_forms.go), same shape.
 	rpcGetWorkflow          func(ctx context.Context, id string) (*apiv1.Workflow, error)
@@ -91,33 +75,21 @@ type Model struct {
 	rpcUpdateWorkflowVersion func(ctx context.Context, workflowID, steps string) error
 
 	// --- the workflow STEP editor (workflow_steps.go) ---
-	//
-	// stepWorkflowID/stepVersionID identify the DRAFT being edited and
-	// stepSteps is its CURRENT steps JSON (the editor's working copy: an edit
-	// rewrites it locally, then saves). stepSel is the step the cursor is on,
-	// which is what makes the FLOW view the editing surface.
 	stepWorkflowID string
 	stepVersionID  string
 	stepSteps      string
 	stepSel        string
-	// flowEditing is the WORKFLOW EDIT MODE. Off, the flow view is a READ-ONLY view of
-	// the workflow; on, the step cursor and the step chords (enter/a/x/E/esc) are live.
-	// The mode is explicit so the step commands stop looking like top-level actions
-	// living outside an edit view — the operator's "when someone hits 'e' to edit a
-	// workflow, they are going to think they are editing the entire workflow and all its
-	// steps at once, not in pieces."
+	// flowEditing is the WORKFLOW EDIT MODE. Off, the flow view is a READ-ONLY view of the workflow;
+	// on, the step cursor and the step chords (enter/a/x/E/esc) are live.
 	flowEditing bool
-	// flowEditPending is set by CREATE (n) and consumed when the new workflow's flow
-	// loads, so a new workflow opens straight into the mode — ready for its first step —
-	// instead of landing in a read-only view with nothing in it.
+	// flowEditPending is set by CREATE (n) and consumed when the new workflow's flow loads, so a new
+	// workflow opens straight into the mode — ready for its first step.
 	flowEditPending bool
-	// flowWorkers backs the step editor's worker LOOKUP: the operator picks a worker by
-	// name instead of typing an id, the way work items do. Loaded when the flow view
-	// opens, because a picker with no options is worse than a text box.
+	// flowWorkers backs the step editor's worker LOOKUP: the operator picks a worker by name instead of
+	// typing an id, the way work items do.
 	flowWorkers []kit2.Option
-	// runNames resolves the ids a workflow run carries (workflow_id / work_item_id) into the
-	// names an operator reads — the proto has no name fields, so the client resolves them.
-	// Shared by the runs LIST and the run DETAIL (names.go).
+	// runNames resolves the ids a workflow run carries (workflow_id / work_item_id) into the names an
+	// operator reads — the proto has no name fields, so the client resolves them.
 	runNames runNames
 	// sched is the Schedules pane's state: which lens it is showing, and the row → run
 	// bindings the `g` jump needs (schedules.go).
@@ -135,9 +107,8 @@ type Model struct {
 	// message box at the bottom of the pane (execution_blocks.go).
 	blocks   blockState
 	composer composer
-	// execDetail holds the REST of an execution's detail — the run's record (facts, error, output)
-	// and the merged session transcript. The pane's body is these and the todo list COMPOSED, so
-	// neither a session repaint nor a todo landing can blank the others (execution_detail.go).
+	// execDetail holds the REST of an execution's detail — the run's record (facts, error, output) and
+	// the merged session transcript.
 	execDetail execDetailState
 	// rpcCreateWorkflowVersion creates the draft the step editor writes to when the
 	// version it is showing is published (immutable) — step editing implies a draft.
@@ -147,16 +118,7 @@ type Model struct {
 	// Workflow lifecycle WRITES, thunks for the same reason: a test asserts which
 	// write fired without a plane.
 	rpcCreateWorkflow func(ctx context.Context, req *apiv1.CreateWorkflowRequest) (*apiv1.Workflow, error)
-	// rpcDeleteExecution is the Executions pane's DELETE. A thunk like every other write here, so a
-	// test asserts WHICH execution was deleted without a plane.
-	//
-	// It is the SINGLE-row write; the bulk branch calls it once per id (see entityBulkActions), which
-	// is the same shape the Workers and Workflows panes use. The server ALSO offers
-	// BatchDeleteExecutions, and it was deliberately NOT taken: the bulk path here reports a partial
-	// success as "deleted 3 of 5 — 2 failed" by counting refusals, and a single batch call returns
-	// only a count, so a partial failure would be reported as a bare number with no idea which rows
-	// survived. One code path, one failure story, and it is the one the operator already knows from
-	// the other two panes.
+	// rpcDeleteExecution is the Executions pane's DELETE.
 	rpcDeleteExecution func(ctx context.Context, id string) error
 	// rpcDeleteRun is the Runs pane's DELETE, same shape and same reason (one call per id, so a partial
 	// failure can be counted).
@@ -272,9 +234,8 @@ func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 
 func (m *Model) Name() string { return "execution" }
 
-// EnsureSubscriptions starts the live streams once (idempotent; the shell calls
-// it on every switch to this tab). Workflow events moved here with the Workflows
-// source, so the two share one screen.
+// EnsureSubscriptions starts the live streams once (idempotent; the shell calls it on every switch
+// to this tab).
 func (m *Model) EnsureSubscriptions() {
 	if m.sub == nil {
 		m.sub = m.reg.ExecutionEvents(m.cl, m.tenantID)
@@ -285,10 +246,6 @@ func (m *Model) EnsureSubscriptions() {
 }
 
 // Close unsubscribes (tab switch = unsubscribe).
-// Close unsubscribes (tab switch = unsubscribe). The handles are dropped too:
-// CloseAll tears down the SHARED registry, and EnsureSubscriptions guards on
-// these being nil — a stale handle meant the streams were never recreated after
-// the first visit (no events, and a footer frozen on the last status).
 func (m *Model) Close() {
 	m.reg.CloseAll()
 	m.sub, m.wfSub = nil, nil
@@ -318,21 +275,14 @@ func (m *Model) fetchExecutions(ctx context.Context, pageToken string) ([]screen
 		return nil, "", err
 	}
 	// The work item TITLES come from the shared name index (names.go), the same cache the runs pane
-	// uses. The proto carries no task-title field and the execution row's own is never populated, so
-	// resolving here is what lets the row say WHAT ran rather than which id it was — the operator:
-	// "The titles of the executions really don't tell me anything besides ID and status. I would like
-	// the workflow name and work item associated with it."
-	//
-	// Best effort by construction: a name that is not in the index simply does not contribute, so a
-	// cold or failed index degrades to the previous title (the id) rather than to an empty row.
+	// uses.
 	m.runNames.ensure(ctx, m)
 	items := make([]screenkit.Item, 0, len(resp.Msg.Executions))
 	for _, e := range resp.Msg.Executions {
 		items = append(items, screenkit.Item{
 			ID: e.GetId(),
-			// `<workflow> · <work item>` — the two names the operator asked for, with the ID kept as
-			// a fallback so a row is never blank. The worker name rides in Meta beside the status,
-			// because "which worker" is the other thing a row of executions needs to be readable.
+			// `<workflow> · <work item>` — the two names the operator asked for, with the ID kept as a fallback
+			// so a row is never blank.
 			Title: executionListTitle(e, &m.runNames),
 			Meta:  executionListMeta(e),
 		})
@@ -342,40 +292,9 @@ func (m *Model) fetchExecutions(ctx context.Context, pageToken string) ([]screen
 
 // executionListTitle composes the row's primary line: the workflow name and the bound work item's
 // title.
-//
-// The operator, looking at this list: "Executions and workflow runs are still way too crowded. It's too
-// noisy and makes it hard on the eyes. We should clean them up more. How about this instead: Worker
-// Name - Work Item (15 character only) - Status."
-//
-// THE WORK ITEM TITLE IS HELD TO 15 CHARACTERS, and that bound is the whole point rather than an
-// arbitrary cut. A work-item title is a SENTENCE ("Stop outboxing per-token execution.text + add outbox
-// retention & observability"), and a pane full of sentences is what the operator is describing as noisy:
-// the eye cannot find the same column twice because every row ends somewhere different. Fifteen
-// characters is enough to tell rows apart — which is all a scan list needs — while keeping every row
-// the same shape.
-//
-// The bound is applied HERE, to the title alone, rather than left to the row's own end-truncation: the
-// row trims whatever does not fit, so an unbounded title would silently eat the status — the defect
-// listRow was fixed for. Bounding at the source keeps the workflow name and the status in the width
-// budget no matter how long the title is.
-//
-// The ID is still the fallback, so a row that can resolve nothing identifies itself rather than going
-// blank.
 func executionListTitle(e *apiv1.WorkerExecution, names *runNames) string {
 	// THE ORDER IS THE OPERATOR'S: "Workflow Name - Worker Name - Work Item title (current truncated is
-	// perfect) - Status", with the status in the row's right-hand Meta so it stays unconditionally visible
-	// (see listRow).
-	//
-	// THE WORKER IS BACK ON THE ROW, deliberately. It was REMOVED to de-crowd this list ("too noisy and makes
-	// it hard on the eyes"), and the operator has now asked for it in the title BY NAME and position — between
-	// the workflow and the item. That is a different place from where it was before: it used to be appended to
-	// the STATUS in Meta, where it competed for the one field the operator scans for. In the title it is part
-	// of the row's identity, and the status keeps Meta to itself.
-	//
-	// THE ITEM STAYS BOUNDED at 15 runes, which the operator called "perfect". The worker is NOT bounded: it is
-	// a name the operator picks and reads, and a truncated name is a name you cannot look up. The consequence
-	// is stated rather than engineered away — on a narrow pane the row's own end-truncation takes the item's
-	// tail first, and the status is still safe.
+	// perfect) - Status".
 	parts := make([]string, 0, 3)
 	if wf := strings.TrimSpace(e.GetWorkflowName()); wf != "" {
 		parts = append(parts, wf)
@@ -397,14 +316,7 @@ func executionListTitle(e *apiv1.WorkerExecution, names *runNames) string {
 // executionItemTitleMax is how much of a work item's title an execution row keeps. See executionListTitle.
 const executionItemTitleMax = 15
 
-// executionListMeta is the row's right-hand field. It carries the STATUS AND NOTHING ELSE.
-//
-// It used to append the worker's name ("succeeded · Quick Software Engineer"), on the reasoning that
-// "which worker" is worth having on the row. The operator's report says otherwise: "too crowded... too
-// noisy and makes it hard on the eyes". The worker name is the least scannable thing a row can carry —
-// it is long, it is nearly identical across rows on this pane, and it pushed the row into the very
-// overflow that the status then lost to. The status is the only field here that CHANGES, so it is the
-// one the row spends its width on; the worker is one keystroke away in the detail pane.
+// executionListMeta is the row's right-hand field.
 func executionListMeta(e *apiv1.WorkerExecution) string {
 	meta := strings.ToLower(strings.TrimPrefix(e.GetStatus().String(), "EXECUTION_STATUS_"))
 	if meta == "" {
@@ -421,9 +333,8 @@ func (m *Model) fetchWorkers(ctx context.Context, pageToken string) ([]screenkit
 	if err != nil {
 		return nil, "", err
 	}
-	// WorkerListItem carries the ACTIVE version's model_ref, so the model picker
-	// can seed without a second round trip. `workers` is the deprecated
-	// projection kept for wire-compat; `items` is the real payload.
+	// WorkerListItem carries the ACTIVE version's model_ref, so the model picker can seed without a
+	// second round trip.
 	items := make([]screenkit.Item, 0, len(resp.Msg.GetItems()))
 	models := make(map[string]string, len(resp.Msg.GetItems()))
 	add := func(id, name, status string, version int32, modelRef string) {
@@ -472,27 +383,14 @@ func (m *Model) fetchRuns(ctx context.Context, pageToken string) ([]screenkit.It
 			ID:    r.GetId(),
 			Title: m.runsTitle(r),
 			// The BARE status word, which is what the pane's chords compare against.
-			//
-			// It used to be the raw lowered enum ("workflow_run_status_failed"), and that silently
-			// disabled BOTH run actions: the retry action is gated on `meta == "failed"` and
-			// force-progress on `meta == "running"`, so on real data neither could ever match and NEITHER
-			// ACTION WAS EVER OFFERED — a bound-but-dead feature of the kind this pane keeps producing.
-			// Measured before the fix: the FAILED enum lowers to "workflow_run_status_failed", so
-			// `== "failed"` is false.
-			//
-			// It is also what the ROW PRINTS, so the operator sees "failed", not
-			// "workflow_run_status_failed" — the same courtesy executionListMeta does for executions.
 			Meta: workflowRunStatusWord(r.GetStatus()),
 		})
 	}
 	return items, resp.Msg.NextPageToken, nil
 }
 
-// workflowRunStatusWord is a run's status as a single lowercase word: the enum's own suffix with the
-// WORKFLOW_RUN_STATUS_ prefix removed.
-//
-// ONE definition, used by BOTH the row's meta and anything that compares against it, so the value the
-// chords test and the value the row shows cannot drift apart again.
+// workflowRunStatusWord is a run's status as a single lowercase word: the enum's own suffix with
+// the WORKFLOW_RUN_STATUS_ prefix removed.
 func workflowRunStatusWord(s apiv1.WorkflowRunStatus) string {
 	w := strings.ToLower(s.String())
 	w = strings.TrimPrefix(w, "workflow_run_status_")
@@ -524,9 +422,8 @@ func (m *Model) fetchWorkflows(ctx context.Context, pageToken string) ([]screenk
 func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit.Field, string, error) {
 	switch src {
 	case "workflows":
-		// Workflows are an Execution-domain surface (the operator's "Workflows
-		// should be under Execution not Automation"). Detail mirrors the one
-		// Automation used to render, including the version trail.
+		// Workflows are an Execution-domain surface (the operator's "Workflows should be under Execution
+		// not Automation").
 		resp, err := m.cl.Workflows.GetWorkflow(ctx, connect.NewRequest(&apiv1.GetWorkflowRequest{Id: id}))
 		if err != nil {
 			return "", nil, "", err
@@ -542,10 +439,8 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			{Key: "created", Value: screenkit.FmtTime(w.GetCreatedAt())},
 			{Key: "updated", Value: screenkit.FmtTime(w.GetUpdatedAt())},
 		}
-		// The FLOW first — what a run would actually execute, computed from
-		// depends_on — then the version trail. Before this the pane showed only
-		// header fields and the trail, so the steps were invisible in the TUI
-		// entirely: you could not see what a workflow DOES without opening the GUI.
+		// The FLOW first — what a run would actually execute, computed from depends_on — then the version
+		// trail.
 		var body strings.Builder
 		if vr, err := m.cl.Workflows.ListWorkflowVersions(ctx, connect.NewRequest(&apiv1.ListWorkflowVersionsRequest{WorkflowId: id})); err == nil {
 			versions := vr.Msg.GetVersions()
@@ -580,16 +475,9 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			return "", nil, "", err
 		}
 		w := resp.Msg.GetWorker()
-		// The VERSION TRAIL is read HERE, before the fields are built, because the
-		// worker's MODEL is a property of its newest version (ADR-0003: the ref is
-		// versioned state) and it belongs in the FIELDS, not only in the body.
-		//
-		// THE MODEL WAS EFFECTIVELY INVISIBLE. It existed only inside the VERSIONS
-		// block, printed after the RAW ENUM status — so the line read
-		// "v1  worker_version_status_published  <ref>", and at the operator's own pane
-		// width the ref was pushed past the edge and truncated to about six characters
-		// (measured: "claude/a" at a 100-column terminal). The one fact that decides
-		// where a worker's work is routed was, in practice, not on the screen.
+		// The VERSION TRAIL is read HERE, before the fields are built, because the worker's MODEL is a
+		// property of its newest version (ADR-0003: the ref is versioned state) and it belongs in the
+		// FIELDS.
 		var versions []*apiv1.WorkerVersion
 		if vr, err := m.cl.Workers.ListWorkerVersions(ctx, connect.NewRequest(&apiv1.ListWorkerVersionsRequest{WorkerId: id})); err == nil {
 			versions = vr.Msg.GetVersions()
@@ -600,9 +488,7 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			{Key: "slug", Value: w.GetSlug()},
 			{Key: "status", Value: workerStatusLabel(w.GetStatus())},
 			{Key: "current ver", Value: screenkit.FmtInt(int(w.GetCurrentVersion()))},
-			// The model of the version dispatch would USE. Omitted when the worker has
-			// no version at all, rather than rendered as a blank the operator has to
-			// interpret — the same rule the execution detail's context strip follows.
+			// The model of the version dispatch would USE.
 			{Key: "model", Value: workerModelRef(w, versions)},
 			{Key: "description", Value: w.GetDescription()},
 			{Key: "purpose", Value: w.GetPurpose()},
@@ -650,9 +536,9 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			return "", nil, "", err
 		}
 		e := resp.Msg.GetExecution()
-		// The GUI's context strip as fields: worker NAME, workflow, work item, iteration, tokens,
-		// cost, branch, PR — each omitted when empty rather than rendered as a zero the operator
-		// has to interpret (execution_detail.go).
+		// The GUI's context strip as fields: worker NAME, workflow, work item, iteration, tokens, cost,
+		// branch, PR — each omitted when empty rather than rendered as a zero the operator has to
+		// interpret.
 		meta := ""
 		if it, ok := m.Base.SourceItem("executions", id); ok {
 			meta = it.Meta
@@ -689,24 +575,8 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []screenkit
 			{Key: "ended", Value: screenkit.FmtTime(r.GetEndedAt())},
 		}
 		fields = append(fields, runSpanFields(r)...)
-		// Step runs are rendered as a FLOW, not a list (run_flow.go): the operator's "mimic a
-		// similar look to our new workflow view where we have the steps, and it should show next
-		// to the steps if it succeeded, failed, how many retries". The cursor lives here so
-		// `enter` can jump to the highlighted step's execution.
-		//
-		// The ORDER comes from the workflow DEFINITION, not from the server's step-run rows and
-		// not from the step ids: the rows arrive ordered by created_at, which for a run is one
-		// shared instant and therefore collapses to id order, and a random id says nothing about
-		// when a step runs. Reading the version's steps and putting them in FLOW order (the same
-		// `flowOrder` the workflow view draws) is what makes this list read top-to-bottom.
-		// WHY IT FAILED, above the step flow — the TUI half of the same gap the GUI had.
-		//
-		// The blockage card is silent for a finished run (nothing can block once it is terminal), so a FAILED
-		// run showed its steps and nothing else. Reported: a preflight refusal — no execution at all — left
-		// every surface saying nothing, and the reason reachable only by decoding run_context by hand.
-		//
-		// A FIELD rather than a body prefix: the field list is what an operator scans, and it survives the
-		// body being composed from the flow.
+		// Step runs are rendered as a FLOW, not a list (run_flow.go): the operator's "mimic a similar look
+		// to our new workflow view where we have the steps.
 		if msg := tuiFailureText(r); msg != "" {
 			fields = append(fields, screenkit.Field{Key: "error", Value: msg})
 			if kind := tuiFailureKind(r); kind != "" {
@@ -766,9 +636,8 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, m.openWorkflowOpForm(msg)
 
 	case workflowEditorMsg:
-		// A workflow's detail landed: point the STEP editor at the version shown, and if
-		// this is the load a CREATE was waiting for, drop straight into the edit mode so
-		// the operator can add the first step.
+		// A workflow's detail landed: point the STEP editor at the version shown, and if this is the load a
+		// CREATE was waiting for, drop straight into the edit mode so the operator can add the first step.
 		cmd := m.enterStepEditor(msg.id, msg.name, msg.version)
 		// The worker list feeds the step editor's worker picker, so it loads with the
 		// editor rather than waiting for the operator to open a step form.
@@ -782,10 +651,7 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, cmd
 
 	case flowWorkersMsg:
-		// The picker's option list landed. A failed load leaves the previous list in place
-		// and says nothing to the operator: a worker lookup that cannot be populated must
-		// not turn opening a step into an error, and the ref field still accepts a typed id
-		// (KPicker commits its query as a custom value).
+		// The picker's option list landed.
 		if msg.err == nil {
 			m.flowWorkers = msg.options
 			if m.flowEditing {
@@ -806,20 +672,12 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, nil
 
 	case execTodosMsg:
-		// The worker's todo list landed. A failure is survivable by design: the list is context,
-		// so a failed fetch leaves whatever was there and never turns "open an execution" into an
-		// error.
+		// The worker's todo list landed.
 		if msg.err == nil {
 			m.todos.put(msg.execID, msg.todos)
 		}
-		// Repaint in place when this is the execution on screen, so the list appears without the
-		// operator reselecting the row.
-		//
-		// It repaints from CACHE. It used to ask the BASE for the detail again (RequestDetail),
-		// which looks equivalent and is not: a detail landing calls onDetail, and onDetail issued
-		// the next todo fetch — so todo → detail → todo → detail closed a loop with no base case,
-		// one round trip per lap, every lap repainting the pane. That is the flicker. Here the
-		// landing is the END of the cycle: it updates the body it already has.
+		// Repaint in place when this is the execution on screen, so the list appears without the operator
+		// reselecting the row.
 		if m.Base.DetailID() == msg.execID && m.Base.ActiveSourceName() == srcExecutions {
 			return m, m.repaintExecutionDetail()
 		}
@@ -834,9 +692,8 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 			}
 		}
 		// A LIVE run's step flow must not go stale: the whole point of rendering a run as a flow is
-		// watching its steps turn, so an execution event on the RUNS pane re-reads the run rather
-		// than waiting for the operator to reselect it. The cursor survives (runFlowState keeps it
-		// by step), so the pane does not jump around while it is being watched.
+		// watching its steps turn, so an execution event on the RUNS pane re-reads the run rather than
+		// waiting.
 		if msg.Name == "execution-events" && m.Base.ActiveSourceName() == srcRuns && m.Base.DetailID() != "" {
 			return m, m.Base.RequestDetail(srcRuns, m.Base.DetailID())
 		}
@@ -844,9 +701,8 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 
 	case subs.StatusMsg:
 		m.Base.SetStatus(msg.Name, string(msg.Status))
-		// Re-arm the channel that actually reported: two streams feed this
-		// screen now (execution events and workflow events), and re-arming only
-		// the first would strand the other's status.
+		// Re-arm the channel that actually reported: two streams feed this screen now (execution events and
+		// workflow events), and re-arming only the first would strand the other's status.
 		cmd := m.reg.WaitStatus(msg.Name)
 		if msg.Name != "execution-events" {
 			return m, cmd
@@ -865,16 +721,7 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, cmd
 
 	case tea.KeyMsg:
-		// The inline DETAILS-PANE editor owns every key while it is up — it is the
-		// focused surface. This must come FIRST, ahead of the write chords:
-		// handleActionKey answers esc / up / down (unavailableReason explains why a
-		// chord has nothing to run on) and therefore SWALLOWED them, so an inline
-		// worker form could not move between fields with the arrows and could not
-		// be cancelled with esc — "when editing a worker, I can't use the arrow
-		// keys to move between the different fields and it will not let me hit ESC
-		// to cancel out of editing the item", and the same for the new-worker
-		// form. kit2.Base owns the editor's keys (field navigation, validation,
-		// ctrl+s submit, esc cancel), so it must see them.
+		// The inline DETAILS-PANE editor owns every key while it is up — it is the focused surface.
 		if m.Base.EditingDetail() {
 			if handled, cmd := m.Base.Update(msg); handled {
 				return m, cmd
@@ -962,10 +809,8 @@ func minInt(a, b int) int {
 	return b
 }
 
-// RunningExecutionID returns the selected execution's ID when its
-// status is RUNNING — the interjection context for the chat dock
-// (plan §3: composer send on a running execution routes into the live
-// session via SendExecutionMessage).
+// RunningExecutionID returns the selected execution's ID when its status is RUNNING — the
+// interjection context for the chat dock (plan §3.
 func (m *Model) RunningExecutionID() (string, bool) {
 	it, ok := m.Base.ActiveItem()
 	if !ok || m.Base.ActiveSourceName() != "executions" {
@@ -1026,24 +871,9 @@ func (m *Model) onDetail(src, id string) tea.Cmd {
 	}
 	// INSTALL THE MESSAGE BOX, which is the moment the pane knows WHICH execution it is showing (the
 	// base calls this hook right after SetContent on a detail landing).
-	//
-	// Doing it here rather than in the screen's detail() return is the whole reason the operator did
-	// not see a prompt: detail() only RETURNS text, and the base is what writes the pane — so a
-	// composer appended to the body landed at the end of a 65-line transcript, below the fold, and a
-	// composer installed from a paint helper never ran on the ordinary fetch path at all. A FOOTER is
-	// not part of the body, so the base's own write cannot displace it (screenkit.Detail.SetFooter).
 	m.installComposerFooter(id)
 	// An EXECUTION detail loads its SESSION TRANSCRIPT (via the shell, which owns the durable+live
-	// merge) and, when its cache is stale, its worker TODO LIST. Both are best-effort — neither can
-	// fail the detail.
-	//
-	// The todos fetch lives HERE rather than in a landing handler, which matters: the reason the
-	// pane used to flicker is that a todo landing asked for the DETAIL again, and this hook is what
-	// a detail landing calls — so the two closed a loop with no base case (one round trip per lap,
-	// every lap repainting the pane). The loop is broken at the other end now: a todo landing
-	// repaints from cache and requests nothing (the execTodosMsg case), so a fetch issued here can
-	// only ever produce one repaint. The staleness gate keeps even that to once per todosTTL when
-	// the pane is re-fetched by live event pokes.
+	// merge) and, when its cache is stale, its worker TODO LIST.
 	cmds := []tea.Cmd{m.todosRefreshCmd(id), m.usageRefreshCmd(id)}
 	if sh, ok := m.Shell().(interface{ OpenExecutionSession(string) tea.Cmd }); ok {
 		cmds = append(cmds, sh.OpenExecutionSession(id))
@@ -1083,17 +913,8 @@ func (m *Model) SessionEvents(execID string) []*apiv1.StreamExecutionEventsRespo
 // detail pane (durable parts + live events, phase-grouped).
 func (m *Model) RenderSession(items []chat.ChatItem) {
 	id := m.Base.DetailID()
-	// The transcript is ONE of the three parts of this pane, so it is RECORDED and then composed
-	// with the run's facts and the todo list. It used to install the whole body from four fields
-	// of its own (id / session events / status), which is why the pane flickered: every live
-	// repaint replaced the full record with that stub, and the next detail fetch replaced the stub
-	// with the record — forever.
-	//
-	// It is recorded as ITEMS rather than as a rendered string because the pane draws it as
-	// COLLAPSIBLE BLOCKS with a cursor (execution_blocks.go): the operator expands and collapses
-	// individual blocks, so the block boundaries have to survive the repaint that a live event
-	// triggers. A string would have to be re-split to be toggled, which is how a "collapse" state
-	// ends up keyed on an index that the next event renumbers.
+	// The transcript is ONE of the three parts of this pane, so it is RECORDED and then composed with
+	// the run's facts and the todo list.
 	m.execDetail.putTranscript(id, items)
 	body, fields := m.composeExecutionBody(id)
 	if len(fields) == 0 {
@@ -1111,10 +932,8 @@ func (m *Model) SelectItem(src, id string) bool { return m.Base.SelectItem(src, 
 // RequestDetail loads the detail view for (src, id) directly.
 func (m *Model) RequestDetail(src, id string) tea.Cmd { return m.Base.RequestDetail(src, id) }
 
-// tuiFailureText returns the run's recorded failure, wrapped so the field list can render it in a narrow pane.
-//
-// MULTI-LINE IS WRAPPED, not truncated: the platform writes a remedy sentence followed by the raw git detail,
-// and cutting that at the pane edge would hide the half that names the branch and directory.
+// tuiFailureText returns the run's recorded failure, wrapped so the field list can render it in a
+// narrow pane.
 func tuiFailureText(r *apiv1.WorkflowRun) string {
 	msg := strings.TrimSpace(r.GetErrorMessage())
 	if msg == "" {

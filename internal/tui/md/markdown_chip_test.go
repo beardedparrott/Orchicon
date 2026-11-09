@@ -2,12 +2,6 @@ package md
 
 // markdown_chip_test.go — the inline-code chip: real theme colours instead of reverse video, drawn
 // so it can be closed inside a host background band without leaving a hole.
-//
-// Reverse video (SGR 7) was the previous rendering, described as "the theme-agnostic stand-in for an
-// inline chip". It is RELATIVE, so it inverts whatever it lands in and cannot be made legible by
-// choosing colours — the operator reported the highlighted text as "kind of hard to read as well" on
-// both the Ask transcript and the Work detail pane. A chip with real colours fixed by the theme is the
-// only way to make it legible on a light background and a dark one.
 
 import (
 	"strings"
@@ -17,10 +11,7 @@ import (
 	"github.com/muesli/termenv"
 )
 
-// forceColor makes lipgloss emit real escape sequences. WITHOUT IT every assertion below passes
-// vacuously: under the test colour profile lipgloss strips ALL styling, so styled and unstyled output
-// are byte-identical. That blindness is exactly how a hardcoded `p.Focused = false` survived in the
-// Ask rail, so the tests here also assert that sequences were emitted at all.
+// forceColor makes lipgloss emit real escape sequences.
 func forceColor(t *testing.T) {
 	t.Helper()
 	prev := lipgloss.ColorProfile()
@@ -79,9 +70,7 @@ func TestCodeChipUsesThemeColoursAndRestoresTheSurface(t *testing.T) {
 	}
 }
 
-// WITHOUT A DECLARED SURFACE THE CHIP IS OFF, and a code span keeps rendering as reverse video. That
-// is the safe default for a caller that does not know what it is drawing on: a colour span that cannot
-// be closed correctly is worse than the old relative one.
+// WITHOUT A DECLARED SURFACE THE CHIP IS OFF, and a code span keeps rendering as reverse video.
 func TestCodeChipIsOffWithoutASurface(t *testing.T) {
 	forceColor(t)
 	SetCodeChip("#010203", "#040506")
@@ -122,11 +111,6 @@ func TestCodeChipComposesWithOtherAttributes(t *testing.T) {
 }
 
 // A MALFORMED CHIP COLOUR FALLS BACK TO REVERSE VIDEO rather than drawing half a chip.
-//
-// This caught a real bug in the first cut: chipActive only checked that the colours were NON-EMPTY, so
-// a malformed foreground left the code painted with the chip BACKGROUND and no contrasting foreground —
-// text on a fill that was never contrast-checked against it, which is the exact illegibility this
-// change exists to remove.
 func TestCodeChipFallsBackOnAMalformedColour(t *testing.T) {
 	forceColor(t)
 	SetCodeChip("not-a-colour", "#040506")

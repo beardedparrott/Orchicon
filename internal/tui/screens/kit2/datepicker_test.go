@@ -1,11 +1,6 @@
 package kit2
 
 // datepicker_test.go — the calendar maths.
-//
-// Calendar arithmetic is where this kind of widget goes quietly wrong: an off-by-one
-// in the weekday offset puts every date in the wrong column, and a month shift that
-// does not clamp invents a date ("31 September") the operator never saw highlighted.
-// Both are pinned here against known-correct dates.
 
 import (
 	"strings"
@@ -101,9 +96,8 @@ func TestDatePickerShiftCrossesBoundaries(t *testing.T) {
 	}
 }
 
-// A month shift CLAMPS the cursor rather than rolling into the next month: the 31st
-// of September does not exist, and time.Date would silently give 1 October — a date
-// the operator never saw highlighted.
+// A month shift CLAMPS the cursor rather than rolling into the next month: the 31st of September
+// does not exist, and time.Date would silently give 1 October.
 func TestDatePickerMonthShiftClampsTheCursor(t *testing.T) {
 	dp := dpAt(2026, time.August, 31)
 	dp.shiftMonth(1) // August 31 → September (30 days)
@@ -130,9 +124,8 @@ func TestDatePickerMonthShiftClampsTheCursor(t *testing.T) {
 	}
 }
 
-// The outcome contract: enter chooses, esc cancels, and each flips Done so the
-// HOST can close the modal. This is the pattern that was once broken on the model
-// picker (a callback capturing a discarded model copy), so it is pinned.
+// The outcome contract: enter chooses, esc cancels, and each flips Done so the HOST can close the
+// modal.
 func TestDatePickerReportsItsOutcome(t *testing.T) {
 	dp := dpAt(2026, time.September, 1)
 	if dp.Done() {

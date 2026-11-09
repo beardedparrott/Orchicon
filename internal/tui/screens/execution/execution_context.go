@@ -53,11 +53,8 @@ type execUsageMsg struct {
 type execUsage struct {
 	provider string
 	model    string
-	// workingSet is the PEAK single-step FRESH token count across the execution's turns:
-	// prompt + completion + reasoning, cache EXCLUDED. It is the numerator of the context
-	// percentage (the GUI's own definition) because it is the largest amount of context the
-	// model was actually holding at once, rather than the sum across turns (which grows without
-	// bound and would read as "5000% of context" on a long run).
+	// workingSet is the PEAK single-step FRESH token count across the execution's turns: prompt +
+	// completion + reasoning, cache EXCLUDED.
 	workingSet int64
 	// window is the model's real context window; 0 when it could not be resolved, in which case
 	// the percentage is omitted rather than guessed at.
@@ -87,9 +84,6 @@ func (u *execUsage) percent() int {
 }
 
 // loadExecutionUsage reads an execution's usage records and resolves the model's context window.
-//
-// Best effort end to end: a failed read leaves whatever is cached and never turns "open an
-// execution" into an error, because the context panel is context, not the subject.
 func (m *Model) loadExecutionUsage(execID string) tea.Cmd {
 	if m.cl == nil || m.cl.AIGateway == nil || execID == "" {
 		return nil
@@ -107,9 +101,8 @@ func (m *Model) loadExecutionUsage(execID string) tea.Cmd {
 		}
 		u := summarizeUsage(resp.Msg.GetRecords())
 		if u != nil && u.provider != "" && u.model != "" {
-			// The window is resolved through the model picker's own resolver, keyed by "provider/model"
-			// — the shape a usage record carries and a shape ParseModelRef accepts. A miss leaves
-			// window at 0 and the percentage is simply not drawn.
+			// The window is resolved through the model picker's own resolver, keyed by "provider/model" — the
+			// shape a usage record carries and a shape ParseModelRef accepts.
 			if w, err := modelpick.ContextWindow(ctx, cl, u.provider+"/"+u.model); err == nil && w > 0 {
 				u.window = w
 			}
@@ -118,10 +111,7 @@ func (m *Model) loadExecutionUsage(execID string) tea.Cmd {
 	}
 }
 
-// usageCache holds each execution's context picture, and when it was fetched. The stamp is what
-// lets the panel be drawn on every paint while the fetch happens on a CLOCK rather than on its own
-// arrival — the same rule the todo cache follows, and for the same reason (a fetch gated on its own
-// landing is a loop; see execution_detail.go's todosRefreshCmd).
+// usageCache holds each execution's context picture, and when it was fetched.
 type usageCache struct {
 	mu sync.Mutex
 	m  map[string]*execUsage
@@ -147,11 +137,6 @@ func (c *usageCache) get(id string) *execUsage {
 
 // usageRefreshCmd returns the usage fetch for an execution WHEN its cache is stale, and nil
 // otherwise.
-//
-// A LONGER TTL than the todo list on purpose: a todo list is rewritten between a worker's turns
-// while a run is live, whereas usage records accumulate per model turn and the panel's numbers are
-// aggregates. Re-reading them twice a second would cost an RPC per repaint to redraw almost the
-// same text.
 func (m *Model) usageRefreshCmd(execID string) tea.Cmd {
 	if m.cl == nil || m.cl.AIGateway == nil || execID == "" {
 		return nil
@@ -199,11 +184,6 @@ func summarizeUsage(records []*apiv1.UsageRecord) *execUsage {
 }
 
 // renderUsage draws the context / token / cost block.
-//
-// Every line is omitted when its numbers are zero, so an execution the gateway recorded no usage
-// for gets NO panel rather than a row of zeroes that reads as "it used nothing" — which for a
-// failed-to-start execution would be true and for an old one would just be missing data. The
-// caller draws the section only when this returns something.
 func renderUsage(u *execUsage, width int) string {
 	if u == nil || (u.total == 0 && u.costUSD == 0) {
 		return ""
@@ -257,9 +237,7 @@ func renderUsage(u *execUsage, width int) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// contextBar draws a fixed-width occupancy bar. It is CLAMPED at the width so a working set over
-// the nominal window cannot overflow the pane (a bar one cell too long wraps, and a wrapped bar
-// pushed the rest of the panel down).
+// contextBar draws a fixed-width occupancy bar.
 func contextBar(percent, width int) string {
 	const cells = 24
 	filled := percent * cells / 100
@@ -270,15 +248,13 @@ func contextBar(percent, width int) string {
 		filled = 0
 	}
 	bar := strings.Repeat("█", filled) + strings.Repeat("░", cells-filled)
-	// Truncate BY RUNE, and drop the partial cell's rune entirely: `bar[:width]` slices BYTES, and
-	// both bar glyphs are three bytes wide, so a byte slice silently returns a quarter of the cells
-	// it claims (the defect this line fixes — a 10-cell pane got 4 cells of bar).
+	// Truncate BY RUNE, and drop the partial cell's rune entirely: `bar[:width]` slices BYTES, and both
+	// bar glyphs are three bytes wide.
 	if width > 0 && cells > width {
 		bar = string([]rune(bar)[:width])
 	}
-	// Warn colouring at the point a context window starts costing quality, so the bar is
-	// readable at a glance rather than needing the percentage. Purely presentational: the number
-	// beside it is the authority.
+	// Warn colouring at the point a context window starts costing quality, so the bar is readable at a
+	// glance rather than needing the percentage.
 	style := theme.HintText
 	if percent >= 80 {
 		style = theme.ErrorText

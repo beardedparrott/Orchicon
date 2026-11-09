@@ -1,10 +1,7 @@
 package tui
 
-// nav.go — the nav slash-command model: generated from the screens' own
-// Sources() (the no-drift source of truth) plus hand-listed GUI-mirror
-// entries for panes that only exist in the web GUI (nav-config.ts).
-// Every TUI screen and submenu gets a command; the acceptance test
-// asserts parity between this set and the slash registry.
+// nav.go — the nav slash-command model: generated from the screens' own Sources() (the no-drift
+// source of truth) plus hand-listed GUI-mirror entries for panes that only exist in the web GUI.
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
@@ -19,19 +16,16 @@ type NavEntry struct {
 	Tab      TabID
 	Source   string // screenkit source name ("" = tab-level only)
 	ArgsHint string // " <id>" when the command takes an arg jump
-	// Action is set for entries that are a VERB rather than a source focus
-	// (the Ask tab's "New"/"Conversations": Ask's list lives in the right
-	// rail, not a source pane). Nil for ordinary source entries.
+	// Action is set for entries that are a VERB rather than a source focus (the Ask tab's
+	// "New"/"Conversations": Ask's list lives in the right rail, not a source pane).
 	Action func(m *App) tea.Cmd
 }
 
-// buildNavEntries constructs each area screen (constructors are pure
-// wiring — no RPC in New()) and reads its Sources(), producing one
-// command per list pane.
+// buildNavEntries constructs each area screen (constructors are pure wiring — no RPC in New()) and
+// reads its Sources(), producing one command per list pane.
 func buildNavEntries(m *App) []NavEntry {
-	// Deterministic per-tab hand-ordering: the shell builds factories by
-	// tab; Sources() order per screen is constructor order, which we
-	// keep.
+	// Deterministic per-tab hand-ordering: the shell builds factories by tab; Sources() order per
+	// screen is constructor order, which we keep.
 	var out []NavEntry
 	seen := map[string]bool{}
 	add := func(tab TabID, s Screen) {
@@ -56,10 +50,8 @@ func buildNavEntries(m *App) []NavEntry {
 	}
 	for _, tab := range Tabs {
 		if tab.ID == TabAsk {
-			// Ask is the one tab whose dropdown is verbs rather than sources:
-			// its list (conversations) is the right rail, not a source pane.
-			//   New           — the launch page, exactly what orch shows on start
-			//   Conversations — the transcript view + the conversations rail
+			// Ask is the one tab whose dropdown is verbs rather than sources: its list (conversations) is the
+			// right rail, not a source pane.
 			out = append(out,
 				NavEntry{Cmd: "new", Label: "New", Tab: TabAsk,
 					Action: func(m *App) tea.Cmd { m.newChat(); return nil }},
@@ -76,9 +68,7 @@ func buildNavEntries(m *App) []NavEntry {
 	return out
 }
 
-// screenForNav returns (constructing if needed) the tab's screen for
-// introspection. Screens built here are disposed of by SwitchTo when the
-// user actually navigates.
+// screenForNav returns (constructing if needed) the tab's screen for introspection.
 func (m *App) screenForNav(tab TabID) Screen {
 	if s, ok := m.screens[tab]; ok && s != nil {
 		return s
@@ -108,11 +98,5 @@ func slug(name string) string {
 	return name
 }
 
-// guiMirrorEntries was removed: notice-only "use the web GUI" commands are
-// fake doors (QA finding 4). Every GUI-mirror pane is now either a real
-// TUI source (providers, webhooks, settings, telemetry…) or documented in
-// docs/tui-parity.md as a child work item.
-//
-// The slash registry builds commands ONLY from the screens' real Sources()
-// (buildNavEntries) plus explicit system commands — there is no hand-listed
-// GUI-mirror list anymore.
+// The slash registry builds commands ONLY from the screens' real Sources() (buildNavEntries) plus
+// explicit system commands — there is no hand-listed GUI-mirror list anymore.

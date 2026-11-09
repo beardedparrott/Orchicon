@@ -1,29 +1,6 @@
 package tui
 
 // ask_refresh_test.go — THE ROLLING WINDOW REPAINTS THE ASK TRANSCRIPT.
-//
-// The operator: "The conversations in the TUI are NOT truly live. I have to click away and back again to
-// see updates. No 'Orchicon is thinking...' block. No reasoning block. No live thinking text block or live
-// update when responses happen."
-//
-// THE MECHANISM THIS COVERS. Ask liveness rested entirely on one chain: a stream chunk →
-// AppendLiveItem → a NON-BLOCKING poke into a CAP-1 channel → the waiter → appMsg → onChatWake. Every
-// link is load-bearing and every one of them fails SILENTLY:
-//
-//   - a poke into a full channel is dropped (the non-blocking send),
-//   - a waiter that was never re-armed on some path is simply not there to drain it.
-//
-// So a single miss does not degrade the pane — it stops it, for good. The only thing left that repaints is
-// a full reload, which is precisely "click away and back again".
-//
-// The rolling refresh window exists for exactly this class of failure (its own header: "the safety net
-// that makes 'the data is there but the screen does not know' the operator's problem no longer") — but it
-// dispatches through the screen's Refresher hook, and Ask had no such hook, because its transcript is a
-// CACHE MERGE rather than a server read. So the one surface the operator named was the one surface the
-// net did not cover.
-//
-// The tick now repaints it. What is asserted here is the RECOVERY PROPERTY, not the tick: a lost poke must
-// no longer be permanent — and each of the operator's four symptoms must arrive without one.
 
 import (
 	"strings"
@@ -48,11 +25,7 @@ func askRelaunched(t *testing.T, convID string) *App {
 	return m
 }
 
-// THE LOST POKE IS NO LONGER PERMANENT. A chunk lands with NO wake delivered — the dropped-poke case —
-// and one turn of the rolling window still puts it on screen.
-//
-// This is the operator's report in one test: before the fix, the pane stayed stale until they clicked away
-// and back; the assertion is that a tick is enough.
+// THE LOST POKE IS NO LONGER PERMANENT.
 func TestRollingTickRepaintsTheAskTranscriptWithoutAPoke(t *testing.T) {
 	m := askRelaunched(t, "c1")
 
@@ -65,9 +38,7 @@ func TestRollingTickRepaintsTheAskTranscriptWithoutAPoke(t *testing.T) {
 		t.Fatal("fixture: the pane already shows the chunk, so this test would measure nothing")
 	}
 
-	// ONE TURN OF THE WINDOW. onChatWake paints SYNCHRONOUSLY (it merges the cache into the pane and
-	// returns nil — there is nothing to await), so the call itself is the repaint; any command it does
-	// produce is run for completeness.
+	// ONE TURN OF THE WINDOW.
 	cmd := m.refreshActiveView()
 	if cmd != nil {
 		if msg := cmd(); msg != nil {
@@ -85,22 +56,8 @@ func TestRollingTickRepaintsTheAskTranscriptWithoutAPoke(t *testing.T) {
 	}
 }
 
-// AND THE THINKING NOTICE ARRIVES ON THE TICK, with no poke at all — symptom 2 on its own.
-//
-// THE PLANE MUST BE HEALTHY, and that is a real precondition rather than test plumbing: the notice slot has
-// a PRECEDENCE, and "disconnected" outranks "thinking" — you cannot be waiting on a reply from a plane that
-// is gone. The harness's registry reports dead by default (nothing has ever connected), so without this the
-// pane correctly shows the connection banner and this test would be asserting the wrong thing. The
-// precedence itself is pinned in TestThinkingYieldsToTheConnectionBanner below.
-//
-// IT ASSERTS THE NOTICE ON THE STREAM, not on the painted frame, and that is deliberate rather than weaker.
-// The frame is one step downstream and depends on render timing: the pane is re-laid-out by the same fetch
-// the tick triggers, so for exactly ONE frame the pane's body can be a row taller than its viewport and the
-// notice — the last row — is clipped. Measured: after a fetch the pane's body was 22 rows while the stream
-// had re-sized to 21, so the notice was in the stream, in the pane's body, and absent from that one frame.
-// It is back on the next paint. Asserting the stream is asserting the FEATURE; asserting a particular frame
-// would be asserting the renderer's timing, which is why the earlier version of this test passed and then
-// failed the moment an unrelated change shifted the height arithmetic.
+// THE PLANE MUST BE HEALTHY, and that is a real precondition rather than test plumbing: the notice
+// slot has a PRECEDENCE, and "disconnected" outranks "thinking".
 func TestRollingTickPaintsTheThinkingNotice(t *testing.T) {
 	m := askRelaunched(t, "c1")
 	healthyPlane(m)
@@ -122,21 +79,14 @@ func TestRollingTickPaintsTheThinkingNotice(t *testing.T) {
 		t.Errorf("the tick did not set the activity line, or set a word outside the reviewed rotation — the "+
 			"operator's \"No 'Orchicon is thinking...' block\". footer=%q", line)
 	}
-	// AND IT IS IN WHAT THE OPERATOR ACTUALLY SEES. The line is the pane's FIXED FOOTER now, so the
-	// assertion is on the painted FRAME — the layer the report is true at — rather than on the stream's
-	// body, which is where it used to live and where it could be pushed out by a full transcript.
+	// AND IT IS IN WHAT THE OPERATOR ACTUALLY SEES.
 	if frame := stripANSI(m.View()); !strings.Contains(frame, "Orchicon is ") {
 		t.Errorf("the status line is set but missing from the painted frame:\n%s", tailOf(frame, 1200))
 	}
 }
 
-// THE TWO NOTICES DO NOT FIGHT: a dead plane takes the slot, and the indicator comes back on recovery.
-//
-// This is the interaction between two features built in different rounds — the thinking indicator and the
-// connection banner — and it is worth pinning because the naive implementations of each break the other:
-// a banner with no precedence is overwritten by the indicator a moment later (so it flickers away), and an
-// indicator with no banner check claims the model is thinking while the plane is unreachable (which is the
-// "silent hang" the banner exists to explain).
+// THE TWO NOTICES DO NOT FIGHT: a dead plane takes the slot, and the indicator comes back on
+// recovery.
 func TestThinkingYieldsToTheConnectionBanner(t *testing.T) {
 	m := askRelaunched(t, "c1")
 
@@ -144,14 +94,6 @@ func TestThinkingYieldsToTheConnectionBanner(t *testing.T) {
 	_ = m.chat.Send("c1", "hello", "") // a turn is in flight throughout
 
 	// Healthy first: the indicator is what the operator sees while waiting.
-	//
-	// THE ASSERTION IS THE SHARED PROPERTY, NOT THE OLD LITERAL. It used to read
-	// strings.Contains(got, "thinking"), and that stayed green after the verb began to ROTATE only by
-	// coincidence: this fixture plants no heartbeat, so the stamp is 0 and VerbAt(0) happens to be the
-	// rotation's first entry, "thinking". The moment the reviewed list is reordered the literal would
-	// fail while the feature was entirely correct; and a row that had dropped the verb could still pass
-	// on the word alone. The invariant this has always meant is "an activity line is up, and its word is
-	// one the reviewed rotation names" — never the disconnected banner.
 	healthyPlane(m)
 	m.onChatWake()
 	m.onChatWake()
@@ -201,9 +143,7 @@ func TestRollingTickPaintsLiveReasoning(t *testing.T) {
 	}
 }
 
-// THE TICK DOES NOT LITTER ON A SCREEN THAT IS NOT ASK. The Ask branch is chosen by tab, so a tick while
-// another tab is active must not repaint a hidden conversation — it must reach that screen's own refresher
-// (or nothing), exactly as before.
+// THE TICK DOES NOT LITTER ON A SCREEN THAT IS NOT ASK.
 func TestRollingTickOnAnotherTabDoesNotRepaintTheTranscript(t *testing.T) {
 	m := askRelaunched(t, "c1")
 	m.chatStore.append("c1", chat.ChatItem{Kind: chat.KindText, Text: "HIDDEN", Key: "t1", Live: true, At: 1})

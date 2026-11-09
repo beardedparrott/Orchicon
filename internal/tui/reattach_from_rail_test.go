@@ -1,15 +1,7 @@
 package tui
 
-// reattach_from_rail_test.go — the TUI attaches to a turn it did not start.
-//
-// The operator, twice: "the permission ask card pops up in the GUI but it doesn't pop up in
-// the TUI. It just sits at 'orchicon is thinking'. ... It's not consistent in the TUI."
-//
-// A turn's asks ride that turn's stream and asks are STREAM-ONLY (the transcript records an
-// ask's OUTCOME, never the open ask), so a client with no stream for the turn can neither
-// receive a card nor poll one back. This client opened a stream only when the TUI ITSELF sent,
-// or when a conversation was OPENED that the rail said was mid-turn — so a turn started in the
-// other client, while the TUI sat on that very conversation, was invisible here.
+// It's not consistent in the TUI." A turn's asks ride that turn's stream and asks are STREAM-ONLY
+// (the transcript records an ask's OUTCOME, never the open ask).
 
 import (
 	"testing"
@@ -28,10 +20,7 @@ func railFor(t *testing.T) *App {
 	return m
 }
 
-// TestRailReloadAttachesToATurnStartedInTheOtherClient is the reported bug. The rail reports a
-// turn running on the conversation already on screen, with a pending assistant id this client
-// never acked — the shape of a message sent from the GUI. The TUI must ATTACH, because that is
-// the only way a card raised on that turn can reach it.
+// TestRailReloadAttachesToATurnStartedInTheOtherClient is the reported bug.
 func TestRailReloadAttachesToATurnStartedInTheOtherClient(t *testing.T) {
 	m := railFor(t)
 	if m.chat.IsStreaming("c1") {
@@ -49,9 +38,7 @@ func TestRailReloadAttachesToATurnStartedInTheOtherClient(t *testing.T) {
 	}
 }
 
-// The control: a rail row with NOTHING to re-attach to must not invent a slot. `turn_in_flight`
-// alone is not enough — the Watch RPC needs the assistant message id, and attaching without one
-// would address a turn that cannot be named.
+// The control: a rail row with NOTHING to re-attach to must not invent a slot.
 func TestRailReloadWithoutAPendingReplyDoesNotAttach(t *testing.T) {
 	m := railFor(t)
 
@@ -78,8 +65,7 @@ func TestRailReloadOnAnIdleConversationDoesNotAttach(t *testing.T) {
 }
 
 // The reload must not disturb a turn THIS client is running: Reattach refuses when a live local
-// stream owns the slot, so a turn started here keeps its own stream and the reload only ever
-// fills a gap.
+// stream owns the slot, so a turn started here keeps its own stream and the reload only ever fills.
 func TestRailReloadLeavesALocallyStartedTurnAlone(t *testing.T) {
 	m := railFor(t)
 	// A stream already owns the slot (the shape a send from THIS client leaves behind). The

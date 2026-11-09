@@ -29,9 +29,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// projectScopeAll is the scope that filters nothing. It is the DEFAULT, deliberately: the project column is
-// additive and defaults to empty, so a default that filtered would make every conversation that predates this
-// feature look deleted on launch.
+// projectScopeAll is the scope that filters nothing.
 const projectScopeAll = "__all__"
 
 // unassignedScope is the scope holding conversations with no project. It is a real scope and not the absence of
@@ -45,16 +43,11 @@ type projectScopeOption struct {
 	Label string
 	// Count is how many conversations the scope actually holds — a count of ITEMS, not of a project's rows.
 	Count int
-	// Archived marks a project that is not active, so the option can say so. The association rule is the
-	// operator's "active or otherwise", so an archived project is a valid workspace and the one fact worth
-	// knowing before working in it is that it is not active.
+	// Archived marks a project that is not active, so the option can say so.
 	Archived bool
 }
 
 // filterConversationsByScope returns the conversations visible in a scope.
-//
-// The GUI's equivalent decides the same thing for the same reason, from the same column — see
-// frontend/src/lib/conversationProjects.ts. Two clients, one rule.
 func filterConversationsByScope(convs []chat.Conversation, scope string) []chat.Conversation {
 	if scope == projectScopeAll {
 		return convs
@@ -68,13 +61,8 @@ func filterConversationsByScope(convs []chat.Conversation, scope string) []chat.
 	return out
 }
 
-// projectScopeOptions builds the picker's contents: All projects, every project, any project id still referenced
-// by a conversation, and No project.
-//
-// EVERY PROJECT IS LISTED even with no conversations, and the count then reads 0 — that is information rather
-// than an omission: it is how the operator knows a workspace is empty before switching to it. A project that is
-// merely REFERENCED still gets an option too, because the column carries no foreign key: a conversation can
-// outlive its project, and without an option for that id the chat would be unreachable from the rail entirely.
+// projectScopeOptions builds the picker's contents: All projects, every project, any project id
+// still referenced by a conversation, and No project.
 func projectScopeOptions(projects []railProject, convs []chat.Conversation) []projectScopeOption {
 	counts := map[string]int{}
 	for _, c := range convs {
@@ -137,9 +125,8 @@ func sortStrings(s []string) {
 type projectPicker struct {
 	options []projectScopeOption
 	sel     int
-	// moveConvID is the conversation being MOVED when the picker was opened to reassign one, "" when it is
-	// choosing the RAIL'S SCOPE. The two are the same question ("which project?") with different consequences,
-	// so they share the control and the title says which one you are answering.
+	// moveConvID is the conversation being MOVED when the picker was opened to reassign one, "" when it
+	// is choosing the RAIL'S SCOPE.
 	moveConvID string
 	// filter is the text the picker was opened with (""), kept so a project list arriving AFTER the overlay
 	// opened can be narrowed the same way instead of silently widening (see onRailProjectsApplied).
@@ -239,9 +226,7 @@ func (m *App) projectPickerView() string {
 		}
 		b.WriteString(theme.ListItem.Render(row) + "\n")
 	}
-	// THE FOOTER NAMES BOTH ACTS. `m` moves the OPEN conversation into the highlighted workspace instead of
-	// switching the rail to it — the same list answering the same question, with the write spelled out rather
-	// than hidden behind a chord nobody could guess. It is offered only when there is a conversation to move.
+	// THE FOOTER NAMES BOTH ACTS.
 	hint := "↑/↓ choose · enter switch workspace · esc cancel"
 	if p.moveConvID != "" {
 		hint = "↑/↓ choose · enter move here · esc cancel"
@@ -298,54 +283,35 @@ func (m *App) projectPickerKey(k tea.KeyMsg) (handled bool, cmd tea.Cmd) {
 }
 
 // projectPickerKeyCmd adapts projectPickerKey to the router's (model, cmd) shape.
-//
-// The picker CONSUMES every key while it is open, including ones it does not recognise — that is the modal
-// discipline the shell's other overlays follow, and it is what stops a stray chord from acting on the rail
-// behind the list that is about to re-scope it.
 func (m *App) projectPickerKeyCmd(k tea.KeyMsg) tea.Cmd {
 	_, cmd := m.projectPickerKey(k)
 	return cmd
 }
 
 // setProjectScope switches the rail's workspace and says so.
-//
-// The label is looked up fresh so the notice names the project rather than echoing an id. The cursor is clamped
-// because the visible row list just changed underneath it, and a selection past the end would leave the rail
-// pointing at nothing.
 func (m *App) setProjectScope(scope string) {
 	m.projectScope = scope
 	// A DELIBERATE CHOICE, recorded so the launch-directory default can never overrule it — including in the
 	// window before the project list has landed.
 	m.projectScopeChosen = true
-	// THE PALETTE FOLLOWS the workspace too — see projecttheme.go. This also writes the "project: <label>"
-	// notice (announceScope=true), replacing the plain SetNotice this used to do directly, so the theme
-	// half of the story (bound / default / pin released) rides in the same notice rather than racing it.
+	// THE PALETTE FOLLOWS the workspace too — see projecttheme.go.
 	m.applyScopeTheme(true)
 	if m.convSel >= len(m.railRows()) {
 		m.convSel = max(0, len(m.railRows())-1)
 	}
 	m.convScroll = 0
-	// THE SCREENS FOLLOW THE WORKSPACE — staged, because this method is called from key and mouse handlers
-	// that cannot return a command. Picking a project must re-filter the Work screen NOW, not on whatever
-	// message happens to arrive next.
+	// THE SCREENS FOLLOW THE WORKSPACE — staged, because this method is called from key and mouse
+	// handlers that cannot return a command.
 	m.pendingScreenCmd = tea.Batch(m.pendingScreenCmd, m.pushProjectScope())
 }
 
-// openProjectPicker opens the picker for a purpose. It loads the project list first when the rail has none —
-// /project is how a TUI-only operator discovers projects, so it must not require having looked at the rail
-// first. (/projects is a different command — it opens the Work area's Projects PANE; see slash.go.)
+// openProjectPicker opens the picker for a purpose.
 func (m *App) openProjectPicker(moveConvID string) tea.Cmd {
 	return m.openProjectPickerFiltered(moveConvID, "")
 }
 
-// openProjectPickerFiltered opens the picker for a PURPOSE, with the option list narrowed to a filter string.
-//
-// The operator: "If I type '/project Orch', it would show me the project Orchicon." The filter matches the
-// project NAME or its id, case-insensitively, as a SUBSTRING — so a partial word still finds it, and the
-// operator is never left staring at an empty list wondering whether the project exists.
-//
-// THE OPTION LIST DEPENDS ON THE PURPOSE (see pickerOptions): a move target list has no "All projects" row.
-// The filter rules themselves live in filterScopeOptions.
+// openProjectPickerFiltered opens the picker for a PURPOSE, with the option list narrowed to a
+// filter string.
 func (m *App) openProjectPickerFiltered(moveConvID, filter string) tea.Cmd {
 	p := &projectPicker{options: m.pickerOptions(moveConvID, filter), moveConvID: moveConvID, filter: filter}
 	if filter == "" {
@@ -374,13 +340,6 @@ func (m *App) projectOptionsFiltered(filter string) []projectScopeOption {
 }
 
 // projectMoveOptions is the target list for MOVING a conversation.
-//
-// "All projects" is NOT a place to put a conversation. It is a way to LOOK at the list, and __all__ is not a
-// project id — the server rejects it, so a move onto it fails with a 404 that reads like the app is broken. The
-// GUI's own move control filters it out for exactly this reason; the TUI offered it, ONE ROW UP from the first
-// project, in a picker whose cursor opens on the conversation's current project.
-//
-// "No project" STAYS. A conversation has to be able to leave a project, and that is the only target that says so.
 func (m *App) projectMoveOptions() []projectScopeOption {
 	opts := projectScopeOptions(m.railProjects, m.conversations)
 	out := make([]projectScopeOption, 0, len(opts))
@@ -394,11 +353,6 @@ func (m *App) projectMoveOptions() []projectScopeOption {
 }
 
 // filterScopeOptions narrows a scope/move option list to a filter string.
-//
-// The filter matches the project NAME or its id, case-insensitively, as a SUBSTRING — so a partial word still
-// finds it, and the operator is never left staring at an empty list wondering whether the project exists. The
-// two non-project scopes are dropped while a filter is active: neither is a project, and matching them on the
-// literal text would be a false hit ("No" finding "No project").
 func filterScopeOptions(opts []projectScopeOption, filter string) []projectScopeOption {
 	if filter == "" {
 		return opts
@@ -467,9 +421,9 @@ func (m *App) onRailProjectsApplied() {
 		return
 	}
 	keep := m.projectPick.sel
-	// REBUILD THROUGH THE SAME PURPOSE AND FILTER the picker was opened with, so a list that lands after the
-	// overlay opened can neither silently widen it past what the operator asked for NOR re-offer "All projects"
-	// as a move target (which is why this goes through pickerOptions rather than rebuilds the list itself).
+	// REBUILD THROUGH THE SAME PURPOSE AND FILTER the picker was opened with, so a list that lands
+	// after the overlay opened can neither silently widen it past what the operator asked for NOR
+	// re-offer.
 	m.projectPick.options = m.pickerOptions(m.projectPick.moveConvID, m.projectPick.filter)
 	if keep < len(m.projectPick.options) {
 		m.projectPick.sel = keep

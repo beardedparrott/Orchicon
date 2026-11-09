@@ -86,18 +86,7 @@ func TestBackslashEnterNewline(t *testing.T) {
 	}
 }
 
-// A plain Enter on an EMPTY buffer must not send. This is the other half of
-// TestEveryOtherEnterVariantSends: that test pins that every non-newline Enter
-// variant SENDS when there is text, and this one pins that it does not send when
-// the box is empty (an empty send is a no-op the operator cannot see, which reads
-// as a dead key).
-//
-// IT WAS CALLED TestShiftEnterCSIU AND ITS COMMENT CLAIMED bubbletea renders CSI-u
-// shift+enter as "shift+enter". Neither was true: the assertion below is on a PLAIN
-// enter, and bubbletea v1.3.10 defines no KeyShiftEnter to render it into — see the
-// package comment for why shift+enter cannot be expressed at all. A test whose name
-// and comment describe a case it does not exercise is worse than no test, because it
-// reads as coverage of the very thing that is impossible.
+// A plain Enter on an EMPTY buffer must not send.
 func TestPlainEnterOnEmptyBufferDoesNotSend(t *testing.T) {
 	m := New()
 	m.Focus()
@@ -113,11 +102,7 @@ func TestPlainEnterOnEmptyBufferDoesNotSend(t *testing.T) {
 
 func TestLinesGrowsAndCaps(t *testing.T) {
 	m := New()
-	// THE ASSERTION IS THE GROWTH, not an absolute row count. It used to spell out
-	// `2 + MinInputRows + 1` — the 1 being the affordance row — which made the test fail
-	// the moment that row wrapped to two lines, even though the input-row behaviour it
-	// exists to check was unchanged. A hint gains and loses segments over time; the box
-	// growing with the INPUT is what must not break.
+	// THE ASSERTION IS THE GROWTH, not an absolute row count.
 	base := m.Lines()
 	if want := 2 + MinInputRows + m.HintRows(); base != want {
 		t.Fatalf("lines = %d, want %d (border + min input rows + the affordance row(s))", base, want)
@@ -310,18 +295,12 @@ func TestMultiLineSendPreservesNewlines(t *testing.T) {
 	}
 }
 
-// The operator: "the main tooltip in the composer is going off the screen as
-// well. We need a similar wrap there."
-//
-// The affordance row WRAPS instead of truncating, and the box's row count grows
-// with it — but only up to maxHintRows, because the composer's height comes out
-// of the screen's budget. The reserved rows and the drawn rows must agree.
+// The operator: "the main tooltip in the composer is going off the screen as well.
 func TestComposerHintWrapsAndStaysWithinItsCap(t *testing.T) {
 	m := New()
 	m.Width = 60
-	// Enough rows that the real per-screen hint fits at a normal width without
-	// an ellipsis (three is what the composer can afford out of the screen's
-	// budget), but a hard cap so a runaway hint can never eat the content region.
+	// Enough rows that the real per-screen hint fits at a normal width without an ellipsis (three is
+	// what the composer can afford out of the screen's budget).
 	m.SetContext("x: one · y: two · z: three · a: four · b: five · c: six · d: seven · e: eight · f: nine · g: ten · h: eleven · i: twelve · j: thirteen · k: fourteen · l: fifteen")
 
 	rows := m.Lines()
@@ -352,25 +331,17 @@ func TestComposerHintShortStaysSingleRow(t *testing.T) {
 	}
 }
 
-// The caret must ANIMATE while the composer holds focus, so the operator can see
-// where their keystrokes will land: "the cursor should blink when in the composer
-// and focus is active so people know they truly have focus there."
-//
-// THE LOOP IS STARTED ON FOCUS, BY A COMMAND Focus HANDS OUT — and that is now asserted
-// where it belongs. This test used to assert the opposite arrangement: it checked that a
-// KEYSTROKE returned a command, because bubbles only ever started the caret blinking when
-// the cursor moved, so a keystroke was the only observable proxy for "the loop exists". That
-// proxy was the performance bug — see TestTypingDoesNotMintACaretTimer below — and pinning it
-// here is what kept it in place.
+// The caret must ANIMATE while the composer holds focus, so the operator can see where their
+// keystrokes will land: "the cursor should blink when in the composer and focus is active so people
+// know.
 func TestComposerStartsWithTheCaretBlink(t *testing.T) {
 	m := New()
 	m.Focus()
 	if m.TakeBlinkStart() == nil {
 		t.Fatal("focus produced no command — the caret can never animate")
 	}
-	// AND THE LOOP RE-ARMS: delivering a tick must both toggle the caret and hand back the
-	// next one, or it dies after a single toggle. The command is checked for EXISTENCE rather
-	// than executed, because executing it waits out the blink interval.
+	// AND THE LOOP RE-ARMS: delivering a tick must both toggle the caret and hand back the next one, or
+	// it dies after a single toggle.
 	before := m.ta.Cursor.Blink
 	_, cmd := m.Update(dockBlinkMsg{})
 	if m.ta.Cursor.Blink == before {
@@ -388,16 +359,6 @@ func TestComposerStartsWithTheCaretBlink(t *testing.T) {
 }
 
 // THE REGRESSION GUARD for the reported lag, and the reason the dock owns the blink.
-//
-// bubbles re-arms its own blink on every CURSOR MOVE, cancelling the previous timer —
-// whose command then unblocks immediately and is delivered as a message anyway. So every
-// keystroke, backspace and arrow key used to cost a second message and a second full-screen
-// repaint (~0.6ms at 120x40, ~1.5ms at 320x100, since the frame paints every cell). Typing
-// paid roughly double the frames it needed.
-//
-// With the cursor in CursorStatic the library cannot re-arm, so an EDITING key must return
-// no caret timer at all. The blink loop is unaffected: it is started on focus and re-armed
-// by its own tick.
 func TestTypingDoesNotMintACaretTimer(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -424,9 +385,7 @@ func TestTypingDoesNotMintACaretTimer(t *testing.T) {
 	}
 }
 
-// countCaretTimers counts caret ticks in a command tree. A dockBlinkMsg is the dock's own
-// single loop (which an edit must never restart); a cursor.BlinkMsg is the library's, which
-// an edit must never mint.
+// countCaretTimers counts caret ticks in a command tree.
 func countCaretTimers(cmd tea.Cmd, depth int) int {
 	if cmd == nil || depth > 8 {
 		return 0
@@ -444,11 +403,7 @@ func countCaretTimers(cmd tea.Cmd, depth int) int {
 	return 0
 }
 
-// The composer's own hint documents the key contract as
-// "enter send · alt+enter newline". These pin it, because a SILENT newline is
-// indistinguishable from a dead Enter key — which is how a terminal reporting its
-// Enter as a modified key made "I type a message and hit enter and nothing happens"
-// (with the text still sitting in the box) survive several rounds.
+// The composer's own hint documents the key contract as "enter send · alt+enter newline".
 func TestPlainEnterSends(t *testing.T) {
 	m := New()
 	m.Focus()
@@ -460,13 +415,6 @@ func TestPlainEnterSends(t *testing.T) {
 }
 
 // ANY Enter variant that is not an explicitly configured newline chord must SEND.
-//
-// A terminal can report a plain Enter as shift+enter (CSI-u / kitty /
-// modifyOtherKeys), and the old code honoured that as "insert a newline" — which
-// is not part of the documented contract and made Enter unable to send at all on
-// such a terminal. The only newline paths left are the two the operator configures
-// (alt+enter, and a trailing backslash + enter), so every other Enter sends by
-// construction.
 func TestEveryOtherEnterVariantSends(t *testing.T) {
 	cases := []struct {
 		name string
@@ -510,13 +458,6 @@ func TestAltEnterInsertsANewlineAndReportsIt(t *testing.T) {
 }
 
 // Enter must send whichever byte the terminal sends for it.
-//
-// bubbletea has TWO spellings for this key: CR (0x0D) → KeyEnter, and LF (0x0A)
-// → KeyCtrlJ (keyLF), a DIFFERENT KeyType. Most terminals send CR, but some
-// terminals and PTY configurations send LF — and with only the KeyEnter branch
-// such a terminal pressed Enter and got NOTHING at all: no send, no newline, no
-// reaction, because ctrl+j matched no branch here and no textarea keymap. That is
-// the operator's "enter is not doing anything at all".
 func TestLFEnterSends(t *testing.T) {
 	if tea.KeyEnter == tea.KeyCtrlJ {
 		t.Fatal("fixture: KeyEnter and KeyCtrlJ are the same KeyType — this test would be vacuous")
@@ -546,15 +487,6 @@ func TestLFAltEnterInsertsANewline(t *testing.T) {
 }
 
 // THE COMPOSER HINT NAMES ctrl+d.
-//
-// The operator: "the shortcut advice in the composer is missing for ctrl+d to open/close the diff box".
-// ctrl+d is the ONLY keyboard route to the diff sidebar, so an operator who cannot see it has no way to
-// discover the pane exists.
-//
-// The second half of this test is the constraint that makes the addition non-trivial: the affordance row
-// is ONE LINE by contract, so the hint must still fit an 80-column terminal, where boxInner is 74. The
-// full wording with ctrl+d added measured 79 and wrapped — pushing the affordance row out of the box at
-// 80x24 — so "text box" was shortened to "text".
 func TestComposerHintNamesTheDiffChord(t *testing.T) {
 	m := New()
 	if !strings.Contains(m.Hint(), "ctrl+d") {

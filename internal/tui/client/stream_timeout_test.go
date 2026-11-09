@@ -44,13 +44,8 @@ func (hangingUnary) ListExecutions(ctx context.Context, req *connect.Request[v1.
 	return nil, ctx.Err()
 }
 
-// TestStreamsNotCappedByUnaryTimeout is the regression test for the 30s
-// live-stream kill: Options.Timeout bounds UNARY RPCs only, never
-// server-streams. The client is configured with a 200ms unary deadline;
-// a stream that outlives it and delivers an event after t=250ms proves
-// the deadline does not cap streaming reads. Under the pre-fix placement
-// (whole-request http.Client.Timeout) the body read aborts at 200ms and
-// no event can ever arrive past it.
+// TestStreamsNotCappedByUnaryTimeout is the regression test for the 30s live-stream kill:
+// Options.Timeout bounds UNARY RPCs only, never server-streams.
 func TestStreamsNotCappedByUnaryTimeout(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(streamDripper{}))
@@ -80,9 +75,8 @@ func TestStreamsNotCappedByUnaryTimeout(t *testing.T) {
 	}
 }
 
-// TestUnaryDeadlineApplies checks the positive half: a unary RPC with no
-// caller deadline is bounded by Options.Timeout (30ms here) instead of
-// hanging forever.
+// TestUnaryDeadlineApplies checks the positive half: a unary RPC with no caller deadline is bounded
+// by Options.Timeout (30ms here) instead of hanging forever.
 func TestUnaryDeadlineApplies(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(hangingUnary{}))

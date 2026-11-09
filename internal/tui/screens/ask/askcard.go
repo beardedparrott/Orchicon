@@ -38,24 +38,14 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
-// askReplyHost is the shell surface a RECORDED card needs to answer: the reply RPC, addressed by the
-// ask's id. Separate from consentHost because it is a different operation — a consent card replies to a
-// PAUSED turn, a recorded card settles a transcript marker and delivers the answer as the next turn.
+// askReplyHost is the shell surface a RECORDED card needs to answer: the reply RPC, addressed by
+// the ask's id.
 type askReplyHost interface {
 	AskReply(askID, answer string) tea.Cmd
 }
 
-// SyncAskCard adopts the RECORDED ask card that currently holds the cursor, from the items the shell
-// hands the screen on every wake (app.go onChatWake -> RenderTranscript).
-//
-// IT IS ALSO THE RELEASE PATH THAT CANNOT BE FORGOTTEN — the same contract SyncTranscriptConsent and
-// SyncAskDraft have. A card whose ask left the transcript (answered, the conversation changed, the
-// transcript reloaded) must not keep the keyboard, and comparing against the items it actually carries is
-// the one check that survives every way a card can disappear.
-//
-// THE NEWEST PENDING CARD WINS. One transcript can hold several unanswered questions, and the one the
-// operator is looking at is the last. Adopting it by KEY (not by "the newest") is what keeps the claim
-// from leaking onto a different card when a new one arrives.
+// IT IS ALSO THE RELEASE PATH THAT CANNOT BE FORGOTTEN — the same contract SyncTranscriptConsent
+// and SyncAskDraft have.
 func (m *Model) SyncAskCard(items []chat.ChatItem) {
 	var (
 		want   *chat.ParsedAsk
@@ -73,9 +63,7 @@ func (m *Model) SyncAskCard(items []chat.ChatItem) {
 		want, wantID = it.Ask, it.Key
 	}
 	if want != m.askCard {
-		// A DIFFERENT card, so clamp the adopted cursor to what it actually offers. The cursor lives on
-		// the item, and an item reused for a new question could otherwise start out of range — Enter
-		// would then read a row that is not there and do nothing.
+		// A DIFFERENT card, so clamp the adopted cursor to what it actually offers.
 		m.clampAskSel(want)
 		m.askCardKey = wantID
 	}
@@ -111,9 +99,6 @@ func (m *Model) clampAskSel(a *chat.ParsedAsk) {
 }
 
 // askCardClaims reports whether the recorded card currently owns the keyboard.
-//
-// IT YIELDS TO THE FREE-TEXT ROW. While the operator is typing an answer into Other, handleAskDraftKey
-// owns every key — a cursor claim on top of it would move the highlight under their typing.
 func (m *Model) askCardClaims() bool {
 	if m.askCard == nil || m.askCard.Answered || m.askCard.Refused || m.askCard.Drafting {
 		return false
@@ -121,9 +106,8 @@ func (m *Model) askCardClaims() bool {
 	return m.askCardKey != m.askCardDeferred
 }
 
-// ReArmAskCardClaim takes the keyboard back for a card that is still pending, after a CLICK on one of its
-// rows — the mirror of ReArmConsentClaim, and it exists for the same reason: a click is the operator
-// acting ON the card, so the card owns the keys again, including after ctrl+g released them.
+// ReArmAskCardClaim takes the keyboard back for a card that is still pending, after a CLICK on one
+// of its rows — the mirror of ReArmConsentClaim, and it exists for the same reason.
 func (m *Model) ReArmAskCardClaim() { m.askCardDeferred = "" }
 
 // MoveAskSel moves the cursor by delta, wrapping — the consent card's MoveSel, without its disabled-row
@@ -143,22 +127,14 @@ func (m *Model) MoveAskSel(delta int) {
 	a.Sel = ((a.Sel+delta)%rows + rows) % rows
 }
 
-// handleAskCardKey routes one key to the pending recorded card. handled=false when no card holds the
-// keys, so the caller runs the normal path.
-//
-// THE KEYS ARE THE CONSENT CARD'S, so the operator learns one card rather than two: ↑/↓ (and k/j, tab)
-// move, Enter confirms, esc puts the keys down. The one addition is the typing release described above.
+// handleAskCardKey routes one key to the pending recorded card.
 func (m *Model) handleAskCardKey(k tea.KeyMsg) (tea.Cmd, bool) {
 	if !m.askCardClaims() {
 		return nil, false
 	}
 	switch k.String() {
 	case "esc":
-		// NOT A DISMISSAL. Esc on a permission card denies, and on a consent QUESTION it records
-		// "dismissed — no answer sent". Neither belongs here: this card is inside an idle conversation,
-		// nothing is blocked on it, and a question must never be closed by a keystroke the operator used
-		// to get their keyboard back. Esc RELEASES the claim and leaves the card answerable (by key
-		// again after a click, or by click at once).
+		// NOT A DISMISSAL.
 		m.askCardDeferred = m.askCardKey
 		return m.repaint(), true
 	case "up", "k", "shift+tab":
@@ -171,12 +147,6 @@ func (m *Model) handleAskCardKey(k tea.KeyMsg) (tea.Cmd, bool) {
 		return m.confirmAskCard(), true
 	}
 	// TYPING HANDS THE KEYS BACK AND IS DELIVERED, not swallowed.
-	//
-	// The consent card swallows everything it does not use, which is right for a card blocking a live
-	// turn and wrong for one sitting in an idle conversation: an absolute claim would read as a composer
-	// that stopped working. Clearing the deferral FIRST means the re-dispatched keystroke reaches the
-	// composer on the ordinary path — the operator loses no character, which a plain "ignore and release"
-	// would have cost them (their first letter of the next message).
 	if len(k.Runes) > 0 {
 		m.askCardDeferred = m.askCardKey
 		return tea.Batch(m.repaint(), redispatchKey(k)), true
@@ -198,8 +168,7 @@ func (m *Model) confirmAskCard() tea.Cmd {
 		return nil
 	}
 	// THE OTHER ROW OPENS THE INPUT RATHER THAN SENDING ITS OWN LABEL — the same rule the click path
-	// applies (router.go), and the reason it exists: sending "Other" would put the name of the button in
-	// the transcript where the operator's words belong.
+	// applies (router.go), and the reason it exists.
 	if a.AllowOther && a.Sel == len(a.Options) {
 		a.Drafting = true
 		a.Draft = ""
@@ -219,15 +188,6 @@ func (m *Model) confirmAskCard() tea.Cmd {
 		return nil
 	}
 	// THE ANSWER IS A REPLY, THROUGH THE ASK'S OWN ID.
-	//
-	// It used to go out as ConsentSend — an ordinary next message — which LOOKS equivalent from the
-	// terminal and is not: the transcript keeps the awaiting marker, so the card is still open to every
-	// other client and to a reload, and nothing durable records what was answered. That is the whole of
-	// "I answer it and it comes back". AskReply goes through ReplyPermissionAsk, which replaces the
-	// marker AND delivers the answer as the conversation's next turn.
-	//
-	// A card with NO id (a row recorded before the field existed) falls back to the send, so a degraded
-	// answer beats a dead card.
 	if strings.TrimSpace(a.ID) == "" {
 		return tea.Batch(h.ConsentSend(label), m.repaint())
 	}

@@ -1,7 +1,5 @@
-// Package subs wires the tui/stream engine to bubbletea: every screen
-// stream subscription forwards status transitions (and optional cache
-// invalidation pings) into buffered tea channels, mirroring the footer's
-// "disconnected, retrying" subscription in useStream.ts semantics.
+// Package subs wires the tui/stream engine to bubbletea: every screen stream subscription forwards
+// status transitions (and optional cache invalidation pings) into buffered tea channels.
 package subs
 
 import (
@@ -39,9 +37,8 @@ type EventPokeMsg struct {
 	Name string
 }
 
-// WaitEventPoke arms a re-armable tea.Cmd parked on the named sub's
-// event channel (cap-1 overflow-dropping; the repaint only needs the
-// latest). The screen re-arms after each handled poke.
+// WaitEventPoke arms a re-armable tea.Cmd parked on the named sub's event channel (cap-1
+// overflow-dropping; the repaint only needs the latest).
 func (r *Registry) WaitEventPoke(name string) tea.Cmd {
 	ch := r.EventPokeChan(name)
 	return func() tea.Msg {
@@ -50,19 +47,13 @@ func (r *Registry) WaitEventPoke(name string) tea.Cmd {
 	}
 }
 
-// Registry owns the live subscriptions of the ACTIVE screen. Switching
-// tabs closes everything (useStream semantics: navigating away
-// unsubscribes) — the shell calls CloseAll from Screen.Close.
+// Registry owns the live subscriptions of the ACTIVE screen.
 type Registry struct {
 	mu     sync.Mutex
 	subs   []subHandle
 	chans  map[string]chan string
 	events map[string]chan struct{}
-	// latest is the MOST RECENT status per subscription name. It exists so a
-	// status can never be lost: the channels below are wake-ups and drop on
-	// overflow, and a delivery can be routed to a different screen than the one
-	// that armed it — either way the previous status could freeze forever (the
-	// footer stuck on "connecting"). Readers take the VALUE from here.
+	// latest is the MOST RECENT status per subscription name.
 	latest map[string]string
 	// latestErr is the most recent dial/stream ERROR per subscription name, so
 	// the shell can say WHY a stream is not up (see LatestError).
@@ -152,19 +143,15 @@ func (r *Registry) notify(name string) func(stream.Status) {
 	}
 }
 
-// LatestError is the most recent error reported for a subscription name (""
-// when it has none). The shell surfaces it so a failing stream explains itself
-// instead of showing a bare "connecting…".
+// LatestError is the most recent error reported for a subscription name ("" when it has none).
 func (r *Registry) LatestError(name string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.latestErr[name]
 }
 
-// ReportStatusForTest records a status for a name as if its subscription had reported it, so a test can
-// put the registry into a state only a live plane could otherwise produce (a dead connection, a
-// reconnecting stream). It goes through the same store `notify` writes, so the reading under test is the
-// real one.
+// ReportStatusForTest records a status for a name as if its subscription had reported it, so a test
+// can put the registry into a state only a live plane could otherwise produce (a dead connection.
 func (r *Registry) ReportStatusForTest(name, status string) {
 	r.mu.Lock()
 	r.latest[name] = status
@@ -183,29 +170,16 @@ func (r *Registry) notifyErr(name string) func(error) {
 	}
 }
 
-// LatestStatus is the most recent status reported for a subscription name
-// ("" when the name has never reported). This is the authoritative value — the
-// footer reads it rather than trusting the last message a screen happened to
-// receive, which could be stale if a delivery was routed elsewhere.
+// LatestStatus is the most recent status reported for a subscription name ("" when the name has
+// never reported).
 func (r *Registry) LatestStatus(name string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.latest[name]
 }
 
-// WorstStatus returns the most SEVERE status any live subscription has reported, and the name of the one
-// that reported it. ("", "") when nothing has reported yet.
-//
-// WHY THE FOOTER NEEDS THIS RATHER THAN THE ACTIVE SCREEN'S OWN STREAMS. The shell used to aggregate only
-// over the statuses the ACTIVE screen declares, and a screen that declares none — the Ask tab, whose
-// conversation list is the shell's rail and which subscribes to no stream of its own — therefore reported
-// "open", i.e. CONNECTED, for the whole session. So an operator sitting on Ask while the plane died saw a
-// green footer: the operator's "if a connection dies, the GUI tells you, but the TUI conversation does
-// not."
-//
-// The connection is not a property of the tab the operator happens to be looking at. Every subscription in
-// the registry is talking to the SAME plane over the SAME credentials, so the worst status among them is
-// the honest answer to "am I connected?" — and it is answerable from any tab.
+// WorstStatus returns the most SEVERE status any live subscription has reported, and the name of
+// the one that reported it.
 func (r *Registry) WorstStatus() (stream.Status, string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -220,11 +194,7 @@ func (r *Registry) WorstStatus() (stream.Status, string) {
 	return worst, worstName
 }
 
-// statusSeverity ranks stream statuses by how much they should worry the operator. It mirrors the shell's
-// own ranking (statusRank in the tui package) and lives here because the registry is what now decides the
-// worst; keeping ONE ordering stops the two from disagreeing about "worse".
-//
-// An empty status ranks lowest, so a subscription that has never reported cannot masquerade as healthy.
+// statusSeverity ranks stream statuses by how much they should worry the operator.
 func statusSeverity(s stream.Status) int {
 	switch s {
 	case stream.StatusIdle:
@@ -273,10 +243,7 @@ func (r *Registry) EventPokeChan(name string) <-chan struct{} {
 	return ch
 }
 
-// guard reports a missing API client for a stream. A nil service client would
-// otherwise PANIC inside the subscription goroutine (dialing dereferences it),
-// which takes the whole TUI down — a misconfigured or partially-built client set
-// must degrade to a reported stream error and a reconnect, never a crash.
+// guard reports a missing API client for a stream.
 func guard(ok bool, what string) error {
 	if !ok {
 		return fmt.Errorf("tui: no API client for %s", what)
@@ -405,8 +372,6 @@ func (r *Registry) RecoveryEvents(cl *client.Clients, tenantID string) *stream.S
 }
 
 // Telemetry subscribes to StreamTelemetry (control screen worker status).
-// The response carries a oneof update (no event id) — dedup keys off the
-// sequence number.
 func (r *Registry) Telemetry(cl *client.Clients, tenantID string) *stream.Sub[*apiv1.StreamTelemetryResponse] {
 	name := "telemetry"
 	cfg := stream.Config[*apiv1.StreamTelemetryResponse]{
@@ -437,14 +402,7 @@ func (r *Registry) Telemetry(cl *client.Clients, tenantID string) *stream.Sub[*a
 	return sub
 }
 
-// FileEdits subscribes to StreamFileEdits for one owner (an execution or
-// an Ask conversation). Unlike the project/execution streams, the
-// FileEditService RPCs REQUIRE a non-empty tenant_id (internal/fileedit/
-// rpc.go → "tenant_id must not be empty"), so the caller must pass the
-// resolved tenant (the shell resolves it once via Auth.ListIdentities).
-// event_id == the ledger row id, so dedup survives reconnect exactly like
-// the GUI's useStream. OnEvent pokes the named channel so the pane repaints
-// as live entries land.
+// FileEdits subscribes to StreamFileEdits for one owner (an execution or an Ask conversation).
 func (r *Registry) FileEdits(cl *client.Clients, tenantID, ownerKind, ownerID string) *stream.Sub[*apiv1.StreamFileEditsResponse] {
 	name := "file-edits"
 	cfg := stream.Config[*apiv1.StreamFileEditsResponse]{
@@ -473,9 +431,8 @@ func (r *Registry) FileEdits(cl *client.Clients, tenantID, ownerKind, ownerID st
 	return sub
 }
 
-// WaitStatus is the re-armable tea.Cmd that consumes the next status from
-// the named channel and converts it to StatusMsg. Screens call it in Init
-// and re-arm after each delivered StatusMsg (the tea.Msg loop pattern).
+// WaitStatus is the re-armable tea.Cmd that consumes the next status from the named channel and
+// converts it to StatusMsg.
 func (r *Registry) WaitStatus(name string) tea.Cmd {
 	ch := r.StatusChan(name)
 	return func() tea.Msg {
@@ -483,9 +440,8 @@ func (r *Registry) WaitStatus(name string) tea.Cmd {
 		if !ok {
 			return nil
 		}
-		// Read the CURRENT value rather than the woken-up one: the wake-up queue
-		// drops on overflow, so an older status could arrive after a newer one was
-		// reported. The registry's latest is the truth.
+		// Read the CURRENT value rather than the woken-up one: the wake-up queue drops on overflow, so an
+		// older status could arrive after a newer one was reported.
 		st := stream.Status(r.LatestStatus(name))
 		if st == "" {
 			st = stream.Status(v)

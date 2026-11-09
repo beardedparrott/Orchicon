@@ -6,11 +6,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// The operator's report: while the New Work Item modal was open "the arrow
-// keys still control the work item list versus moving through the New Work
-// Item fields". A form must therefore own the two VERTICAL keys: Up/Down walk
-// the fields exactly like Shift+Tab/Tab, so no keystroke an operator aims at
-// the modal can reach a widget behind it.
+// The operator's report: while the New Work Item modal was open "the arrow keys still control the
+// work item list versus moving through the New Work Item fields".
 func TestFormUpDownWalkFields(t *testing.T) {
 	f := NewForm("New work item",
 		FieldSpec{Name: "title", Label: "Title", Kind: KText, Required: true},
@@ -44,9 +41,6 @@ func TestFormUpDownWalkFields(t *testing.T) {
 	}
 
 	// Down wraps forward, exactly like Tab (a modal is never a dead end).
-	// From the middle field (project, index 1 of 3) wrapping forward reaches
-	// the first field in TWO steps: project -> parent -> title. (Three steps
-	// would land back on project, since Next() wraps modulo the field count.)
 	for i := 0; i < 2; i++ {
 		f.HandleKey(tea.KeyMsg{Type: tea.KeyDown})
 	}

@@ -8,33 +8,21 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
-// consent.go is the Ask screen's half of the consent card: WHO OWNS THE KEYS
-// while a card is pending, and what a decision does.
-//
-// THE ITEM HOLDS THE STATE AND THE SCREEN HOLDS THE KEYS. The card's live state
-// lives on the transcript item's *chat.ConsentState (chat.ConsentItem), so the
-// renderer draws exactly what the key handler moved — one object, no second
-// latch to keep in step. This screen ADOPTS that pointer when it reconciles,
-// mutates it on the tea loop, and asks the shell to repaint.
+// consent.go is the Ask screen's half of the consent card: WHO OWNS THE KEYS while a card is
+// pending, and what a decision does.
 
 // consentHost is the shell surface the card needs. It is a narrow interface so
 // the screen depends on exactly two things: settle an ask, and send a message.
 type consentHost interface {
-	// ConsentResolve settles the ask, records a session grant when one was
-	// granted, sends a clarifying answer through the composer funnel, and
-	// repaints the transcript.
+	// ConsentResolve settles the ask, records a session grant when one was granted, sends a clarifying
+	// answer through the composer funnel, and repaints the transcript.
 	ConsentResolve(askID string, dec chat.ConsentDecision, choice string) tea.Cmd
 	// ConsentSend sends text as the next user message.
 	ConsentSend(text string) tea.Cmd
 	// ConsentGrants lists the session grants for the open conversation, AS THE SERVER HOLDS THEM.
-	// The bool is false when the plane could not answer — a surface must say so rather than show an
-	// empty list, which would tell the operator they have allowed nothing.
 	ConsentGrants(convID string) ([]chat.SessionGrant, bool)
-	// ConsentGrantsLoaded reports whether the grants have been FETCHED for this conversation yet.
-	//
-	// IT EXISTS SO A SURFACE NEVER GUESSES. Before the first fetch "no grants" and "not asked yet" look
-	// identical, and the grants roll-up used to report the first for both — telling the operator that this
-	// conversation has been allowed nothing, at the moment it might be allowed a great deal.
+	// ConsentGrantsLoaded reports whether the grants have been FETCHED for this conversation yet. IT
+	// EXISTS SO A SURFACE NEVER GUESSES.
 	ConsentGrantsLoaded(convID string) bool
 	// ConsentStore exposes the persistent allow/deny list, when the plane has one.
 	ConsentStore() (chat.PermissionStore, bool)
@@ -47,14 +35,7 @@ func (m *Model) consentHost() (consentHost, bool) {
 	return h, ok
 }
 
-// SyncTranscriptConsent reconciles the card from the item list the shell hands
-// the screen on EVERY wake (app.go onChatWake -> RenderTranscript).
-//
-// IT IS THE ONLY RELEASE PATH THAT CANNOT BE FORGOTTEN. A claim is a latch, and
-// a card whose ask is gone from the transcript — the turn ended, the ask was
-// superseded, the conversation was aborted — must not keep holding the
-// keyboard. Comparing ids against what the transcript actually carries is the
-// one check that survives every way an ask can disappear.
+// IT IS THE ONLY RELEASE PATH THAT CANNOT BE FORGOTTEN.
 func (m *Model) SyncTranscriptConsent(items []chat.ChatItem) {
 	for i := range items {
 		it := items[i]
@@ -72,60 +53,33 @@ func (m *Model) SyncTranscriptConsent(items []chat.ChatItem) {
 	m.consentID = ""
 }
 
-// ClaimsKeys reports that the screen owns every key right now: a pending card
-// (a decision being made) or an open list overlay. The shell's input-modal gate
-// (internal/tui/router.go) hands every key to the screen verbatim while this is
-// true, so a printable key cannot reach the composer and a bare letter cannot
-// fire a shell route.
+// ClaimsKeys reports that the screen owns every key right now: a pending card (a decision being
+// made) or an open list overlay.
 func (m *Model) ClaimsKeys() bool {
 	if m.ov != nil {
 		return true
 	}
-	// A RECORDED CARD'S FREE-TEXT ROW CLAIMS TOO: the shell hands a claiming screen every key
-	// verbatim (router.go), and an input row with nothing typing into it is not an input. Released
-	// for THIS item only by ctrl+g, exactly as a consent card is — see draftDeferred.
+	// A RECORDED CARD'S FREE-TEXT ROW CLAIMS TOO: the shell hands a claiming screen every key verbatim
+	// (router.go), and an input row with nothing typing into it is not an input.
 	if m.draft != nil && m.draft.Drafting && m.draftKey != m.draftDeferred {
 		return true
 	}
-	// A PENDING RECORDED CARD CLAIMS ITS CURSOR KEYS TOO, so ↑/↓ and Enter answer it — the same claim the
-	// permission card makes, for the card drawn by the other renderer (see askcard.go). Without it the
-	// card's rows were inert text beside an identical-looking card that answered from the keyboard.
-	//
-	// IT YIELDS TO EVERYTHING ABOVE: an overlay, an open free-text row and a live consent card all
-	// outrank it, because each of them is a surface the operator is already typing into or deciding.
+	// A PENDING RECORDED CARD CLAIMS ITS CURSOR KEYS TOO, so ↑/↓ and Enter answer it — the same claim
+	// the permission card makes, for the card drawn by the other renderer (see askcard.go).
 	if m.askCardClaims() {
 		return true
 	}
 	if m.consent == nil {
 		return false
 	}
-	// A DEFERRED CARD DOES NOT CLAIM. See DropKeyClaim: ctrl+g has to be able to hand the
-	// keyboard to the composer WITHOUT deciding anything, and the claim is otherwise absolute
-	// (the composer is the DEFAULT focus, so the claim is the only thing that makes the card
-	// own the keys at all). Deferring by ASK ID rather than a bool is what re-arms the card
-	// automatically when a NEW ask arrives — no hook, no bookkeeping, no way to leave it
-	// disarmed by forgetting to clear a flag.
+	// A DEFERRED CARD DOES NOT CLAIM.
 	return m.consent.Ask.ID != m.consentDeferred
 }
 
-// FormOpen is deliberately FALSE while a card is up. A card is not a form: the
-// shell advertises a form's keys (ctrl+s / esc) when this is true, and Tab must
-// not be captured as a field move — the card uses Tab as row movement. Only the
-// add-rule form is a form.
+// FormOpen is deliberately FALSE while a card is up.
 func (m *Model) FormOpen() bool { return m.ov != nil && m.ov.kind == ovPolicyAdd }
 
 // OwnsTab reports that TAB belongs to THIS screen while it claims the keyboard.
-//
-// IT IS A SEPARATE HOOK FROM FormOpen, AND IT IS LOAD-BEARING. The shell's tab
-// chord is handled ABOVE the ClaimsKeys gate (router.go, the focus-chord switch),
-// so a claim alone does NOT take Tab: without this the chord ran tabRingNext —
-// the first press moved the keyboard onto the tab bar and the second rotated the
-// active screen OUT FROM UNDER a still-pending card. The operator had pressed the
-// card's OWN movement key (handleConsentKey and kit2.Card.HandleKey both bind
-// tab/shift+tab to row movement) and got a screen change instead, and because the
-// ClaimsKeys gate reads m.screens[m.active] the card then lost the keyboard
-// entirely. This hook is exactly the one the shell already offers for "a screen
-// needs Tab inside its own pane" (see execution.Model.OwnsTab).
 func (m *Model) OwnsTab() bool { return m.ClaimsKeys() }
 
 // DropKeyClaim is the focus chord's release (ctrl+g).
@@ -166,16 +120,13 @@ func (m *Model) DropKeyClaim() {
 	if m.consent != nil && m.consent.Pending() {
 		m.consentDeferred = m.consent.Ask.ID
 	}
-	// AN OPEN FREE-TEXT ROW ON A RECORDED CARD YIELDS THE SAME WAY, and for the same reason: the
-	// chord is the advertised way to reach the composer and must never be blocked by a card — and
-	// it must not discard what the operator has typed either. The row stays open and keeps its
-	// text; a click on its Other row claims the keys back (ReArmAskDraftClaim).
+	// AN OPEN FREE-TEXT ROW ON A RECORDED CARD YIELDS THE SAME WAY, and for the same reason: the chord
+	// is the advertised way to reach the composer and must never be blocked by a card.
 	if m.draft != nil && m.draft.Drafting {
 		m.draftDeferred = m.draftKey
 	}
 	// THE RECORDED CARD'S CURSOR YIELDS THE SAME WAY, and for the same reason: ctrl+g is the advertised
-	// route to the composer and must never be blocked by a card. Nothing is decided or discarded — the
-	// card keeps its cursor and stays answerable (a click re-arms it through ReArmAskCardClaim).
+	// route to the composer and must never be blocked by a card.
 	if m.askCard != nil && !m.askCard.Answered && !m.askCard.Refused {
 		m.askCardDeferred = m.askCardKey
 	}
@@ -186,16 +137,6 @@ func (m *Model) DropKeyClaim() {
 }
 
 // ReArmConsentClaim takes the keyboard back for a card that is still pending.
-//
-// IT IS THE MIRROR OF DropKeyClaim, and it exists for the one gesture that reaches the card without
-// a keypress: a CLICK on its Other row (App.consentDecideFromRow) opens the free-text row, and that
-// row is typed into only while the card owns the keys. A card deferred by ctrl+g would otherwise
-// show an input row that collects nothing while the operator's typing went into the composer behind
-// it — which is the GUI's own behaviour (its input is auto-focused on open) and the only reading
-// that makes the click mean anything.
-//
-// It re-arms by the ask's ID, exactly as the claim is held: clearing consentDeferred restores the
-// claim for the card that is up, and a NEW ask claims the keys by construction.
 func (m *Model) ReArmConsentClaim() {
 	if m.consent != nil && m.consent.Pending() {
 		m.consentDeferred = ""
@@ -284,16 +225,11 @@ func (m *Model) confirmConsent() tea.Cmd {
 		st.Choice = choice
 		return m.resolveConsent(chat.DecisionAnswer)
 	}
-	// THE ROW INDEX IS THE DECISION, and it comes from the shared mapping so the
-	// KEYBOARD and the CLICK cannot disagree about what row 1 means. This used to
-	// hard-code the same three indices locally, which is exactly how two paths drift
-	// apart the moment a label changes — and the session row's label now depends on
-	// the ask (it names the directory the grant covers).
+	// THE ROW INDEX IS THE DECISION, and it comes from the shared mapping so the KEYBOARD and the CLICK
+	// cannot disagree about what row 1 means.
 	dec, ok := st.Ask.DecisionForRow(st.Sel)
 	if !ok {
-		// A row that is not a permission choice — the session row when the deny list
-		// disables it. Enter is a no-op, matching the arrows' refusal to land on it and
-		// the click path's refusal to act on it.
+		// A row that is not a permission choice — the session row when the deny list disables it.
 		return nil
 	}
 	return m.resolveConsent(dec)

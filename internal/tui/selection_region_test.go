@@ -46,9 +46,7 @@ func dragPlane(t *testing.T) *App {
 	}
 	m.convRailOpen = true
 	m.refreshLayout()
-	// PAINT ONCE, THROUGH View(). Only View() hands the painted frame to clipState (setFrame), and a drag
-	// expressed in an empty frame copies nothing — which every assertion here would have read as "the
-	// confinement lost the text" rather than "the fixture never painted".
+	// PAINT ONCE, THROUGH View().
 	_ = m.View()
 	return m
 }
@@ -67,12 +65,8 @@ func rowWith(t *testing.T, frame, needle string) int {
 	return -1
 }
 
-// selection drives a press and a motion through the real mouse path and returns the text a release would
-// copy.
-//
-// It reads clipState.text() rather than the clipboard CMD, because the cmd writes OSC 52 to stdout — and
-// the selection itself is what this is about. App is a value model but m.clip is a POINTER, so the object
-// the handlers mutated is the one read back here.
+// selection drives a press and a motion through the real mouse path and returns the text a release
+// would copy.
 func selection(t *testing.T, m *App, fromX, fromY, toX, toY int) string {
 	t.Helper()
 	feed(t, m, tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: fromX, Y: fromY})
@@ -90,10 +84,6 @@ func feed(t *testing.T, m *App, msg tea.Msg) {
 
 // THE RAIL IS NOT PART OF A TRANSCRIPT SELECTION — the gesture in the report, exactly: start in the
 // transcript, drag out to the far right, end inside the conversations rail.
-//
-// The row is the one carrying a rail TITLE, because that is the row where this can be wrong: it has
-// content in both panes, so a drag that is not confined copies both. On the transcript's BODY row the rail
-// is blank and this test would pass with the confinement removed.
 func TestATranscriptSelectionDoesNotTakeTheRail(t *testing.T) {
 	m := dragPlane(t)
 	if !m.railVisible() {
@@ -106,9 +96,8 @@ func TestATranscriptSelectionDoesNotTakeTheRail(t *testing.T) {
 		t.Fatal("fixture: the message is not on screen")
 	}
 
-	// BOTH ENDS SIT ON REAL CONTENT: column 1 is the pane's first CONTENT column (0 is its border), and the
-	// far end is inside the rail. Starting further in would clip the leading `C` off "Conversation: c1" and
-	// the presence assertion below would fail for a reason that has nothing to do with confinement.
+	// BOTH ENDS SIT ON REAL CONTENT: column 1 is the pane's first CONTENT column (0 is its border), and
+	// the far end is inside the rail.
 	got := selection(t, m, 1, railRow, m.width-4, railRow)
 	if got == "" {
 		t.Fatal("the drag copied nothing at all")
@@ -125,12 +114,6 @@ func TestATranscriptSelectionDoesNotTakeTheRail(t *testing.T) {
 }
 
 // AND THE PANE'S BORDER IS NOT CONTENT — no `│` anywhere in a copied line.
-//
-// THE DRAG RUNS EDGE TO EDGE, which is what puts the border cells inside the selection at all: inset by two
-// columns it would never touch them and this would assert nothing. And it spans the pane because the
-// operator's own message is RIGHT-ALIGNED (the label "You" sits at the left edge, the text at the right), so
-// a drag that stopped mid-pane would copy the label and miss the message. (Measured: columns 2..40 copy
-// exactly "You".)
 func TestATranscriptSelectionHasNoBorderCharacters(t *testing.T) {
 	m := dragPlane(t)
 	row := m.transcriptBodyTopRow()
@@ -147,19 +130,16 @@ func TestATranscriptSelectionHasNoBorderCharacters(t *testing.T) {
 	}
 }
 
-// A DRAG INSIDE THE RAIL STAYS IN THE RAIL, so the confinement is symmetric rather than a special case.
-//
-// Started from the rail TITLE row for the same reason as above — and it asserts the title IS copied, so
-// "the transcript is absent" cannot be satisfied by an empty selection.
+// A DRAG INSIDE THE RAIL STAYS IN THE RAIL, so the confinement is symmetric rather than a special
+// case.
 func TestARailSelectionStaysInTheRail(t *testing.T) {
 	m := dragPlane(t)
 	if !m.railVisible() {
 		t.Fatal("fixture: no rail at this size")
 	}
 	railRow := rowWith(t, m.viewFrame(), "RAIL-TITLE-ONE")
-	// THE DRAG ENDS ON THE TRANSCRIPT'S FIRST CONTENT COLUMN (1, not 0), so a leak would bring the whole of
-	// "Conversation: c1" with it. Ending at 2 clips the leading `C`, and the absence assertion below would
-	// then hold for the wrong reason — measured, with the confinement switched off: that version passed.
+	// THE DRAG ENDS ON THE TRANSCRIPT'S FIRST CONTENT COLUMN (1, not 0), so a leak would bring the
+	// whole of "Conversation: c1" with it.
 	got := selection(t, m, m.width-2, railRow, 1, railRow)
 	if got == "" {
 		t.Fatal("fixture: the rail drag copied nothing at this size")
@@ -196,17 +176,6 @@ func TestAPressWithNoMotionCopiesNothing(t *testing.T) {
 }
 
 // A SELECTED CODE BLOCK COPIES CODE, NOT THE FILL'S PADDING.
-//
-// The operator's worry was that the block "is printing tab/spaces all the way to the end of the width" — and
-// the copy is where that would actually hurt, since a paste carrying a run of blanks is a paste nobody can
-// use. Two defences, and this is the second: the band no longer runs to the pane, and the padding a row DOES
-// carry is stripped from the copy. It is asserted on clipState directly because that is the layer that decides
-// what the clipboard receives, and the behaviour is easy to lose without noticing — the selection would still
-// look right on screen.
-//
-// (The FIRST defence, that there is no leading space to trim, is md's and is asserted there:
-// TestCodeBlockBandIsTheCodesWidthNotThePanes. A leading space cannot be trimmed here — it is
-// indistinguishable from real indentation — which is exactly why the renderer must not emit one.)
 func TestACopiedRowDropsTheTrailingPadding(t *testing.T) {
 	c := &clipState{}
 	// A row as the code block paints it: the code, then the fill's padding out to the band's width.
@@ -255,10 +224,6 @@ func TestTheSelectionHighlightStopsAtTheContent(t *testing.T) {
 }
 
 // AND A BLANK LINE INSIDE A SELECTION STILL BELONGS TO IT.
-//
-// This is the guard on the rule above. A row narrowed to nothing would invert its range, span() reports ok=false
-// for that, and the row would be DROPPED — so a blank line between two paragraphs of copied prose would vanish
-// and run them together. The narrowing therefore applies only to rows that HAVE content past the margin.
 func TestABlankLineInsideASelectionIsKept(t *testing.T) {
 	const pane = 40
 	c := &clipState{}

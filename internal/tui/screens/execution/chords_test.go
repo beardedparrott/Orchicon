@@ -86,9 +86,7 @@ func TestDeleteChordIsCtrlXOnBothPanesAndBothScopes(t *testing.T) {
 	}
 }
 
-// TestOldDeleteChordsNoLongerDelete: the change is a MOVE, not an addition. `x` and `shift+x` must no
-// longer raise a delete — otherwise the operator keeps two ways to delete and the inconsistency survives
-// in their muscle memory.
+// TestOldDeleteChordsNoLongerDelete: the change is a MOVE, not an addition.
 func TestOldDeleteChordsNoLongerDelete(t *testing.T) {
 	for _, tc := range []struct{ name, source, old string }{
 		{"workers on x", srcWorkers, "x"},
@@ -111,13 +109,8 @@ func TestOldDeleteChordsNoLongerDelete(t *testing.T) {
 	}
 }
 
-// TestStepEditorKeepsX: the flow editor's `x` (remove step) is a WORKFLOW EDIT MODE chord, and the old
-// delete chord had to be arranged AROUND it (`shift+x`, because lowercase `x` was taken). Moving delete
-// to ctrl+x removes that collision entirely — but only if `x` still reaches the step editor.
-//
-// It uses the mode's own fixture (`modeModel`), which establishes the state the guard actually requires —
-// a selected workflow AND a loaded detail — rather than reproducing half of it by hand and asserting about
-// an empty pane.
+// TestStepEditorKeepsX: the flow editor's `x` (remove step) is a WORKFLOW EDIT MODE chord, and the
+// old delete chord had to be arranged AROUND it (`shift+x`, because lowercase `x` was taken).
 func TestStepEditorKeepsX(t *testing.T) {
 	m, _ := modeModel(t)
 	// ENTER the mode through its real key, so this covers the whole path an operator takes: `e` for the
@@ -134,9 +127,8 @@ func TestStepEditorKeepsX(t *testing.T) {
 	}
 }
 
-// TestBulkSetModelOpensForTheMarkedSelection: shift+m is the operator's bulk act, and it opens the model
-// picker for EVERY marked worker (a per-worker model edit is a form field, so the modal is the only place
-// a batch can go).
+// TestBulkSetModelOpensForTheMarkedSelection: shift+m is the operator's bulk act, and it opens the
+// model picker for EVERY marked worker (a per-worker model edit is a form field.
 func TestBulkSetModelOpensForTheMarkedSelection(t *testing.T) {
 	m, _, _ := crudExec(t, nil, nil)
 	if !m.Base.SelectSource(srcWorkers) {
@@ -174,9 +166,8 @@ func TestBulkSetModelOpensForTheMarkedSelection(t *testing.T) {
 func TestBulkSetModelWritesOnceForEveryMarkedWorker(t *testing.T) {
 	m, _, writes := newPickerExec(t)
 	m.SelectSource(srcWorkers)
-	// A SHARED current ref, so the picker opens seeded (a mixed selection has nothing to seed from) — and
-	// the model is then CHANGED, so the assertion is about the ref that was chosen rather than the one
-	// that was already there.
+	// A SHARED current ref, so the picker opens seeded (a mixed selection has nothing to seed from) —
+	// and the model is then CHANGED.
 	m.workerMu.Lock()
 	m.workerModel["w1"] = "orchicon/anthropic/claude-sonnet-4"
 	m.workerModel["w2"] = "orchicon/anthropic/claude-sonnet-4"
@@ -286,10 +277,8 @@ func TestBulkSetModelSkipsACategoryFolder(t *testing.T) {
 	}
 }
 
-// TestBulkSetModelIsWorkersOnly: the RPC is BulkUpdateWorkerModel, and a workflow's model is not a worker
-// model at all — a workflow carries a ref per VERSION, edited through its own form. So the chord is scoped
-// to the Workers pane exactly like every other worker chord here, and the key FALLS THROUGH elsewhere
-// rather than opening a worker picker over a workflow.
+// TestBulkSetModelIsWorkersOnly: the RPC is BulkUpdateWorkerModel, and a workflow's model is not a
+// worker model at all — a workflow carries a ref per VERSION, edited through its own form.
 func TestBulkSetModelIsWorkersOnly(t *testing.T) {
 	for _, src := range []string{srcWorkflows, srcExecutions, srcRuns} {
 		m, _, _ := crudExec(t, nil, nil)
@@ -312,9 +301,7 @@ func TestBulkSetModelIsWorkersOnly(t *testing.T) {
 
 // --- the composer's shortcut text ---------------------------------------------------------------
 
-// TestHintLineNamesTheDeleteChordOnBothPanes: "ensure the shortcut text in the composer is there". The
-// Workers hint used to advertise `x: delete` (a chord that no longer existed anywhere) and the Workflows
-// hint advertised NO delete at all, which is how `shift+x` stayed undiscoverable.
+// TestHintLineNamesTheDeleteChordOnBothPanes: "ensure the shortcut text in the composer is there".
 func TestHintLineNamesTheDeleteChordOnBothPanes(t *testing.T) {
 	m, _, _ := crudExec(t, nil, nil)
 	for _, src := range []string{srcWorkers, srcWorkflows} {

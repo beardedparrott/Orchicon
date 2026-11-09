@@ -17,12 +17,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// TestClickTabCoordinates verifies mouse tab-click resolution against the
-// terminal layout the shell produces (the pane is a left rail rendered below
-// the shell tab bar, so its content starts at (col+1, row+1)). The tab bar is
-// terminal row 1; a click on a tab label anywhere in its hit region (the
-// label text plus its 1-cell padding) must switch to that tab, and a click on
-// the shell tab bar (y=0) must not.
+// TestClickTabCoordinates verifies mouse tab-click resolution against the terminal layout the shell
+// produces (the pane is a left rail rendered below the shell tab bar.
 func TestClickTabCoordinates(t *testing.T) {
 	vecs := vecByName(t)
 	m := NewModel(nil, nil)
@@ -65,9 +61,8 @@ func TestClickTabCoordinates(t *testing.T) {
 	}
 }
 
-// TestClickFileRowCoordinates verifies mouse click-through from the tree tab
-// to a file's diff: terminal row 2 is body row 0 (first file), row 3 is the
-// second file, etc.
+// TestClickFileRowCoordinates verifies mouse click-through from the tree tab to a file's diff:
+// terminal row 2 is body row 0 (first file), row 3 is the second file, etc.
 func TestClickFileRowCoordinates(t *testing.T) {
 	vecs := vecByName(t)
 	m := NewModel(nil, nil)
@@ -79,10 +74,7 @@ func TestClickFileRowCoordinates(t *testing.T) {
 	})
 	m.SelectedPath = vecs["create-new-file"].Path
 
-	// terminal row 3 = body row 0 → group[0] ("create"). The tab is reset
-	// before EVERY click because a body-row click now also switches to the
-	// Diff tab (the select-and-focus parity fix); without the reset the next
-	// click would hit the Diff-tab no-op guard.
+	// terminal row 3 = body row 0 → group[0] ("create").
 	m.Tab = TabTree
 	m.click(5, paneBodyRow)
 	if m.SelectedPath != vecs["create-new-file"].Path {
@@ -106,11 +98,8 @@ func TestClickFileRowCoordinates(t *testing.T) {
 	}
 }
 
-// TestClickFileRowFocusesDiff is the anti-drift parity test: a file-row click
-// in EITHER the Tree or the Timeline tab must select the file AND move the
-// pane to the Diff tab with that file's parsed diff loaded — all in one event,
-// both tabs through the same loop (the gap that produced the operator report:
-// Timeline clicks selected invisibly and never focused the diff).
+// TestClickFileRowFocusesDiff is the anti-drift parity test: a file-row click in EITHER the Tree or
+// the Timeline tab must select the file AND move the pane to the Diff tab with that file's parsed.
 func TestClickFileRowFocusesDiff(t *testing.T) {
 	vecs := vecByName(t)
 	create := vecs["create-new-file"]
@@ -144,10 +133,8 @@ func TestClickFileRowFocusesDiff(t *testing.T) {
 	}
 }
 
-// TestClickSelectedRowStillFocusesDiff pins the unconditional SetTab: clicking
-// the ALREADY-selected row must still bounce the pane to the Diff tab —
-// SelectPath early-returns on the same path, so a conditional switch would
-// leave a re-click inert (the GUI calls onTabChange unconditionally).
+// TestClickSelectedRowStillFocusesDiff pins the unconditional SetTab: clicking the ALREADY-selected
+// row must still bounce the pane to the Diff tab — SelectPath early-returns on the same path.
 func TestClickSelectedRowStillFocusesDiff(t *testing.T) {
 	vecs := vecByName(t)
 	create := vecs["create-new-file"]
@@ -187,9 +174,8 @@ func TestClickDiffTabBodyStaysNoOp(t *testing.T) {
 	}
 }
 
-// TestClickEmptyListInert pins the no-changed-files state: with no groups the
-// body renders the hint text and a click must select nothing AND must not
-// switch tabs (there is nothing to focus).
+// TestClickEmptyListInert pins the no-changed-files state: with no groups the body renders the hint
+// text and a click must select nothing AND must not switch tabs (there is nothing to focus).
 func TestClickEmptyListInert(t *testing.T) {
 	m := NewModel(nil, nil)
 	m.Width = 48
@@ -205,10 +191,8 @@ func TestClickEmptyListInert(t *testing.T) {
 	}
 }
 
-// TestClickNoDiffFileStillSelectsAndFocuses covers a file whose latest edit
-// carries no unified diff (e.g. a binary): the selection must still highlight
-// in BOTH Tree and Timeline (with DiffFileSel) and a click must still switch
-// to the Diff tab, even though the Diff body itself shows the hint.
+// TestClickNoDiffFileStillSelectsAndFocuses covers a file whose latest edit carries no unified diff
+// (e.g. a binary): the selection must still highlight in BOTH Tree and Timeline (with.
 func TestClickNoDiffFileStillSelectsAndFocuses(t *testing.T) {
 	prev := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -246,13 +230,8 @@ func TestClickNoDiffFileStillSelectsAndFocuses(t *testing.T) {
 	}
 }
 
-// TestTimelineBodySelection pins that the Timeline tab renders a VISIBLE
-// selection identical to treeBody's treatment (theme.DiffFileSel on the
-// selected row, theme.ListItem otherwise). It needs the TrueColor profile:
-// Ascii strips styles, which would make the assertion vacuous (the
-// click_close_test.go Ascii precedent is for width checks only). The profile
-// is process-global state that leaks across tests in the package, so it is
-// restored via t.Cleanup.
+// TestTimelineBodySelection pins that the Timeline tab renders a VISIBLE selection identical to
+// treeBody's treatment (theme.DiffFileSel on the selected row, theme.ListItem otherwise).
 func TestTimelineBodySelection(t *testing.T) {
 	prev := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -272,10 +251,8 @@ func TestTimelineBodySelection(t *testing.T) {
 	}
 	wantSel := theme.DiffFileSel.Render(fmt.Sprintf(" %s %s (%s)", m.groups[1].Path, m.groups[1].Kind, m.groups[1].LastTool))
 	wantUn := theme.ListItem.Render(fmt.Sprintf(" %s %s (%s)", m.groups[0].Path, m.groups[0].Kind, m.groups[0].LastTool))
-	// The list body now pads each row to the body width and appends the
-	// scrollbar cell (so every rendered line is exactly the pane's inner width).
-	// trimPad removes that trailing padding + bar cell so the styling
-	// assertions still compare the ROW CONTENT.
+	// The list body now pads each row to the body width and appends the scrollbar cell (so every
+	// rendered line is exactly the pane's inner width).
 	if trimPad(tl[1]) != wantSel {
 		t.Errorf("selected timeline row is not styled with DiffFileSel:\n got %q\nwant %q", trimPad(tl[1]), wantSel)
 	}
@@ -298,22 +275,15 @@ func TestTimelineBodySelection(t *testing.T) {
 	}
 }
 
-// trimPad strips the trailing CHROME a body row carries — the two reserved cells (the scrollbar and the
-// shell's resize handle) plus the fit-to-width padding — so a styling assertion can compare the row's
-// CONTENT.
-//
-// IT CUTS CELLS RATHER THAN TRIMMING SPACES, because the last cell is no longer blank: the handle is a
-// rendered glyph in its own style, so a space-trim cannot reach it and every styled-row comparison would
-// carry it. Cutting by WIDTH is also what makes this immune to the cell count changing again.
+// trimPad strips the trailing CHROME a body row carries — the two reserved cells (the scrollbar and
+// the shell's resize handle) plus the fit-to-width padding.
 func trimPad(s string) string {
 	w := ansi.StringWidth(s)
 	if w > 2 {
 		s = ansi.Truncate(s, w-2, "")
 	}
-	// CUTTING CELLS CAN LEAVE THEIR STYLE BEHIND: truncating inside the handle's styled glyph leaves the
-	// sequence that opened it as an empty trailing span (`\x1b[38;…m\x1b[0m`), which renders as nothing but
-	// compares as a difference. It carries no content, so it is dropped — repeatedly, because the chrome is
-	// more than one styled cell.
+	// CUTTING CELLS CAN LEAVE THEIR STYLE BEHIND: truncating inside the handle's styled glyph leaves
+	// the sequence that opened it as an empty trailing span (`\x1b[38;…m\x1b[0m`).
 	for {
 		if trimmed := emptyTrailingStyle.ReplaceAllString(s, ""); trimmed != s {
 			s = trimmed
@@ -355,9 +325,8 @@ func TestHandleKeyTabSwitchAsymmetric(t *testing.T) {
 	_ = order
 }
 
-// TestRenderSideBySideColumnsAlign verifies the side-by-side renderer keeps
-// the old|new separator in a fixed cell column across every row (the
-// acceptance criteria: paired line numbers / no tearing or column drift).
+// TestRenderSideBySideColumnsAlign verifies the side-by-side renderer keeps the old|new separator
+// in a fixed cell column across every row (the acceptance criteria.
 func TestRenderSideBySideColumnsAlign(t *testing.T) {
 	vecs := vecByName(t)
 	rows := ParseUnifiedDiff(deref(vecs["modify-two-lines"].ExpectedUnifiedDiff))

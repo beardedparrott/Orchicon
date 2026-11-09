@@ -1,15 +1,7 @@
 package work
 
-// images.go — Runtime Images: create the spec (CreateRuntimeImage), edit it
-// (UpdateRuntimeImage, optimistic concurrency via the version column),
-// BUILD it (BuildRuntimeImage — a server-stream whose log chunks render
-// live through the kit2 Stream widget) and delete it (DeleteRuntimeImage,
-// Confirm-gated).
-//
-// A ready image must be rebuilt through BuildRuntimeImage, not edited — the
-// form is offered for draft/failed specs (the server rejects the rest), and
-// the build-status transitions (draft → building → ready|failed) are
-// reflected in the row's state pill, the detail pane and the log stream.
+// images.go — Runtime Images: create the spec (CreateRuntimeImage), edit it (UpdateRuntimeImage,
+// optimistic concurrency via the version column), BUILD it (BuildRuntimeImage.
 
 import (
 	"context"

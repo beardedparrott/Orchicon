@@ -1,15 +1,6 @@
 package chat
 
 // poll_auth_stop_test.go — a dead credential must END the poll, not feed it.
-//
-// THE INCIDENT. A TUI whose access token had expired kept re-reading the transcript for about an hour. Each
-// attempt opened a connection to a server that could only reject it; by the end the process held 28,226
-// ESTABLISHED sockets, the host's ephemeral port range was full, and every later `bind()` on the machine
-// failed — which is how it surfaced, as a `make rebuild-dev` that could not open one listener.
-//
-// The re-auth banner was shown the whole time. The operator simply was not watching that terminal, and a
-// passive banner does not stop an RPC loop. A 401 is PERMANENT until a human re-authenticates, so retrying it
-// at full rate buys nothing but sockets.
 
 import (
 	"errors"

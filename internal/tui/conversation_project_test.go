@@ -351,12 +351,7 @@ func TestThePickerOwnsItsKeys(t *testing.T) {
 	}
 }
 
-// /project TAKES A FILTER, NOT A SELECTION. The operator: "If I type '/project Orch', it would show me the
-// project Orchicon." So the argument narrows the list and the operator still picks from it — and a prefix that
-// matches several projects shows all of them rather than guessing at one.
-//
-// THE NAME IS THE SINGULAR, which is the operator's later correction (they first reported this as /projects; that
-// name has since been given back to the navigation command — see TestTheTwoProjectCommandsDoDifferentThings).
+// /project TAKES A FILTER, NOT A SELECTION.
 func TestTheProjectCommandTakesAFilterNotASelection(t *testing.T) {
 	m := scopePlane(t)
 	runSlashTUI(t, m, "/project beta")
@@ -395,13 +390,6 @@ func TestTheProjectCommandTakesAFilterNotASelection(t *testing.T) {
 }
 
 // THE TWO COMMANDS DO DIFFERENT THINGS, and BOTH have to keep working.
-//
-// The operator: "make /project be the command to switch projects and /projects is the slash command to go to the
-// projects screen." The split is a fix as well as a preference: this command used to be NAMED /projects with
-// /project as an alias, and `add` overwrites by name while buildSlashRegistry registers its explicit commands
-// AFTER the generated ones — so the picker took the name /projects permanently and SHADOWED the navigation
-// command the registry generates from the Work screen's "projects" source (screens/work/screen.go). The Projects
-// pane became unreachable by command, which is what the operator noticed.
 func TestTheTwoProjectCommandsDoDifferentThings(t *testing.T) {
 	m := appWithProjectService(t, &stubProjectList{names: []string{"Orchicon", "ai-tools"}})
 
@@ -471,15 +459,6 @@ func TestChoosingTheWorkspaceNeedsNoOpenConversation(t *testing.T) {
 }
 
 // THE WIRING IS THE BUG, SO THE WIRING IS TESTED.
-//
-// Every other test in this file covers a PURE function — the filter, the launch-directory match, the active
-// project. None of them would have caught the fault the operator actually hit, which was that the project list
-// was never FETCHED in a normal session: Init() loaded the conversations directly, so loadRailProjects never
-// ran, and the picker offered nothing but "All projects". A test of the matching rule cannot see a missing
-// request.
-//
-// So this drives the real message path: a conversations load on a plane whose project list has never landed
-// must ALSO fetch the projects, and the fetch must actually reach the ProjectService.
 func TestAConversationsLoadAlsoFetchesProjects(t *testing.T) {
 	projects := &stubProjectList{names: []string{"Orchicon", "ai-tools"}}
 	m := appWithProjectService(t, projects)
@@ -497,13 +476,6 @@ func TestAConversationsLoadAlsoFetchesProjects(t *testing.T) {
 			"precisely the state that left the workspace picker empty")
 	}
 	// DRAIN IT THROUGH runCtx, NEVER BY CALLING EACH MEMBER INLINE.
-	//
-	// THIS IS WHERE THE SUITE HUNG, so the reason stays written down beside the code that caused it: the batch
-	// is tea.Batch(onChatWake, loadRailProjects, waitChat), and waitChat is
-	// `select { case <-wake: …; case c := <-cmds: … }` with no timeout and nobody sending. Calling it directly
-	// blocks that goroutine FOREVER — there is no budget and no bail-out — so `make rebuild-dev` sat inside
-	// internal/tui and never reached internal/version or the frontend build. runCtx runs each command under a
-	// BOUNDED wait and skips one that does not answer, which is exactly what a long-lived waiter is.
 	runCtx(t, app, cmd, runCtxCmdBudget)
 	if app.railProjectsLoaded != true {
 		t.Error("the project list was never marked loaded, so the fetch did not complete")
@@ -568,10 +540,6 @@ func TestTheProjectLabelAppearsOnlyWhereItIsNotObvious(t *testing.T) {
 }
 
 // THE RAIL TITLE NAMES THE ACTIVE WORKSPACE, so a scope you are in is one you can see.
-//
-// The assertion is on the TITLE LINE, not on the whole rail: in the All-projects scope the row labels name each
-// chat's project (which is the point of them), so "Alpha" appearing somewhere in the panel is correct there and
-// says nothing about the title.
 func TestTheRailTitleNamesTheActiveWorkspace(t *testing.T) {
 	titleOf := func(m *App) string {
 		lines := strings.Split(m.rightRailView(), "\n")
@@ -595,9 +563,8 @@ func TestTheRailTitleNamesTheActiveWorkspace(t *testing.T) {
 	}
 }
 
-// runSlashTUI runs a slash command through the REAL registry and returns its error notice ("" when it did not
-// set one). Going through the registry means an unregistered command — or a wrong MinArgs — fails here rather
-// than silently doing nothing in the app.
+// runSlashTUI runs a slash command through the REAL registry and returns its error notice ("" when
+// it did not set one).
 func runSlashTUI(t *testing.T, m *App, text string) string {
 	t.Helper()
 	name, args, _, ok := ParseSlash(text)

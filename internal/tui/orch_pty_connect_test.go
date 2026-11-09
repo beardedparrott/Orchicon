@@ -41,9 +41,9 @@ import (
 	"github.com/creack/pty"
 )
 
-// connectPlaneFixture is a disposable Orchicon-shaped plane: versionz,
-// ListProjects (the authenticated probe), local-login (minting an access
-// token in the body + the orchicon_refresh HttpOnly cookie) and /auth/refresh.
+// connectPlaneFixture is a disposable Orchicon-shaped plane: versionz, ListProjects (the
+// authenticated probe), local-login (minting an access token in the body + the orchicon_refresh
+// HttpOnly.
 func connectPlaneFixture(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -52,13 +52,6 @@ func connectPlaneFixture(t *testing.T) *httptest.Server {
 		_ = json.NewEncoder(w).Encode(map[string]string{"version": "v9.9.9-pty"})
 	})
 	// The cheap authenticated probe: an in-process fake service.
-	//
-	// THE PROJECT CARRIES A DIRECTORY, and it is the directory orch is launched from
-	// (the package dir — that is what startOrchPtyAt's child inherits). Without it the
-	// plane reports an UNATTACHED launch directory, the launch-time project prompt
-	// fires, and its full-frame question REPLACES the shell — so a pty test waiting for
-	// the composer (❯) never sees one and reads as a dead shell. The fixture says where
-	// the project lives; that is all the prompt needs to stay quiet.
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("resolve cwd: %v", err)
@@ -151,12 +144,8 @@ func startOrchPtyAt(t *testing.T, bin, planeURL, home string) *ptySession {
 	return s
 }
 
-// TestPTYConnectOverlayInPlaceReconnect is the Phase-2b pty-verified flow:
-// open /connect → the full connection form renders in place → toggle the
-// auth method → type credentials → submit → the plane is probed, the
-// profile saved, and the shell reconnects IN PLACE (the overlay closes,
-// the composer returns, the process never exited). Then esc-cancel is
-// verified on a second run.
+// TestPTYConnectOverlayInPlaceReconnect is the Phase-2b pty-verified flow: open /connect → the full
+// connection form renders in place → toggle the auth method → type credentials → submit →.
 func TestPTYConnectOverlayInPlaceReconnect(t *testing.T) {
 	skipInteractivePTY(t)
 	if testing.Short() {
@@ -177,9 +166,8 @@ func TestPTYConnectOverlayInPlaceReconnect(t *testing.T) {
 	}
 	pidBefore := s.cmd.Process.Pid
 
-	// The shell opens COMPOSER-FOCUSED (Phase 2a, operator finding 3):
-	// typing lands in the composer directly — no ctrl+g needed.
-	// "/connect<enter>" opens the in-place overlay.
+	// The shell opens COMPOSER-FOCUSED (Phase 2a, operator finding 3): typing lands in the composer
+	// directly — no ctrl+g needed.
 	_, _ = s.tty.WriteString("/connect\r")
 	overlay := s.readFor(3 * time.Second)
 	for _, marker := range []string{"Connect to an Orchicon instance", "Server URL", "API key"} {
@@ -205,9 +193,8 @@ func TestPTYConnectOverlayInPlaceReconnect(t *testing.T) {
 		t.Fatalf("password-mode credential field never painted: %s", tailOf(toggled, 2000))
 	}
 
-	// The URL field is pre-filled from the profile; tab into the username
-	// field, type it, then password. The form's field order after toggling:
-	// URL focused → tab → username → tab → password.
+	// The URL field is pre-filled from the profile; tab into the username field, type it, then
+	// password.
 	_, _ = s.tty.WriteString("\tme\t")
 	_, _ = s.tty.WriteString("pty-hunter2")
 	// Submit (enter): the probe runs against the fixture, the profile is
@@ -223,16 +210,7 @@ func TestPTYConnectOverlayInPlaceReconnect(t *testing.T) {
 			t.Fatalf("in-place reconnect incomplete: %q never painted after submit (%d bytes)\n---\n%s\n---", marker, len(reconnected), tailOf(reconnected, 4000))
 		}
 	}
-	// The overlay is gone: submit's repaint must not include a NEW overlay
-	// frame. The harness accumulates every painted byte (the overlay's
-	// pre-submit frames stay in the log), so assert on the SUBMIT'S OWN
-	// repaint instead: the reconnect notice painted, and the notice is dock
-	// text — the overlay closing lets the notice through the centered float.
-	//
-	// Use the submit delta, not a fixed tail window: the notice is dock text
-	// BELOW a full frame repaint, so it lands several KB before the end of the
-	// capture and a 1200-byte tail misses it even though it painted (which is
-	// how a WORKING reconnect read as "the overlay may still be up").
+	// The overlay is gone: submit's repaint must not include a NEW overlay frame.
 	if !strings.Contains(reconnected[preSubmit:], "reconnected in place") {
 		t.Fatalf("the submit repaint lacks the reconnect notice — the overlay may still be up: %s", tailOfPlain(stripCSI(reconnected[preSubmit:]), 1500))
 	}
@@ -246,9 +224,8 @@ func TestPTYConnectOverlayInPlaceReconnect(t *testing.T) {
 	writeOrchConfig(t, home2, plane.URL)
 	s2 := startOrchPtyAt(t, bin, plane.URL, home2)
 	defer s2.close()
-	// Wait for the first paint before sending keys (same budget as run 1):
-	// the TUI must finish termenv's capability handshake, or the typed
-	// "/connect" lands before the composer is armed.
+	// Wait for the first paint before sending keys (same budget as run 1): the TUI must finish
+	// termenv's capability handshake, or the typed "/connect" lands before the composer is armed.
 	first2 := s2.readFor(3 * time.Second)
 	if !strings.Contains(first2, "❯") {
 		t.Fatalf("second run: shell never painted the composer (%d bytes)", len(first2))

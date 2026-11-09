@@ -6,10 +6,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// Regression for the operator's "when in a sub menu it keeps focus on the tab
-// bar so hitting enter or spacebar just opens the tab menu and nothing gets
-// selected". Enter/Space belong to the CONTENT when the content has focus —
-// menu activation is a composer-only affordance.
+// Regression for the operator's "when in a sub menu it keeps focus on the tab bar so hitting enter
+// or spacebar just opens the tab menu and nothing gets selected".
 func TestEnterReachesContentNotMenuActivation(t *testing.T) {
 	for _, key := range []tea.KeyMsg{
 		{Type: tea.KeyEnter},

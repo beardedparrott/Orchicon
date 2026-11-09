@@ -32,9 +32,7 @@ import (
 // newline, so this is a plain split).
 func splitLines(s string) []string { return strings.Split(s, "\n") }
 
-// panelWidth is a panel's ON-SCREEN width. It uses lipgloss.Width, which reports the WIDEST LINE of a
-// multi-line string, and NOT ansi.StringWidth, which SUMS every line of one: using the summing form
-// here reported 432 for a 72-cell panel and sent the rectangle arithmetic off the map.
+// panelWidth is a panel's ON-SCREEN width.
 func panelWidth(panel string) int { return lipgloss.Width(panel) }
 
 // changedColumns returns the indices at which two equally-wide strings differ.
@@ -94,8 +92,7 @@ func TestOverlayRowAtTheEdges(t *testing.T) {
 }
 
 // TestModalPanelIsASolidUniformRectangle: the operator's "just be its own modal with a solid
-// background". Every line of a panel is the same width and the interior is painted opaquely, so
-// nothing behind it can show through.
+// background".
 func TestModalPanelIsASolidUniformRectangle(t *testing.T) {
 	m := railApp(t, 2)
 
@@ -135,11 +132,6 @@ func TestModalPanelIsASolidUniformRectangle(t *testing.T) {
 }
 
 // TestRenameModalCoversExactlyItsRectangle is the decisive assertion for the reported bug.
-//
-// It renders the frame with the modal open and again with it closed, and requires that the only cells
-// that changed are the ones inside the modal's own rectangle. That catches BOTH defects at once: base
-// content surviving inside (an unchanged cell where the modal should be) and cells shifting outside it
-// (a change where the modal is not).
 func TestRenameModalCoversExactlyItsRectangle(t *testing.T) {
 	m := railApp(t, 3)
 	m.width, m.height = 120, 36
@@ -149,10 +141,7 @@ func TestRenameModalCoversExactlyItsRectangle(t *testing.T) {
 	without := splitLines(m.viewFrame())
 	m.openRenameConversation(m.conversations[0].ID, m.conversations[0].Title)
 	// OPENING THE MODAL LEGITIMATELY CHANGES ONE ROW OUTSIDE ITS RECTANGLE: the composer's affordance
-	// row is refreshed to describe the FORM's keys (ctrl+s / esc) while a form holds the keyboard. That
-	// is deliberate and tested elsewhere, so this test isolates the OVERLAY's contribution by holding
-	// the hint fixed: the form is detached for the 'before' frame and re-attached for the 'after' one.
-	// What remains must be the modal, and nothing but the modal.
+	// row is refreshed to describe the FORM's keys (ctrl+s / esc) while a form holds the keyboard.
 	form := m.renameConv
 	m.renameConv = nil
 	without = splitLines(m.viewFrame())
@@ -192,8 +181,7 @@ func TestRenameModalCoversExactlyItsRectangle(t *testing.T) {
 }
 
 // TestAssignModalIsAlsoASolidRectangle: "This also happens when applying to a category." The assign
-// modal is a hosted form like the rename box, and it must be composited the same way — the report
-// named both, so both are pinned.
+// modal is a hosted form like the rename box, and it must be composited the same way.
 func TestAssignModalIsAlsoASolidRectangle(t *testing.T) {
 	m, _ := categoryApp(t, convCat("cat-1", "Research"))
 	m = loadCats(t, m)
@@ -203,8 +191,7 @@ func TestAssignModalIsAlsoASolidRectangle(t *testing.T) {
 	without := splitLines(m.viewFrame())
 	m.OpenAssignCategory("conv-01", "conversation 01", convCat("cat-1", "Research").GetTargetType())
 	// Same isolation as the rename test: opening a form refreshes the composer's affordance row to
-	// describe the FORM's keys, which is deliberate and changes a row outside the modal. The form is
-	// detached for the 'before' frame so what remains is the overlay's own contribution.
+	// describe the FORM's keys, which is deliberate and changes a row outside the modal.
 	form := m.assignForm
 	m.assignForm = nil
 	without = splitLines(m.viewFrame())
@@ -244,20 +231,8 @@ func TestAssignModalIsAlsoASolidRectangle(t *testing.T) {
 	}
 }
 
-// TestModalLeavesNoBaseContentVisible is the operator's ACTUAL complaint, and it is a SEPARATE property
-// from "nothing outside the rectangle moved": "Probably should just be its own modal with a solid
-// background."
-//
-// A raw ragged form satisfies the rectangle test above trivially: its short rows leave the base showing
-// INSIDE its own bounding box, which changes nothing outside the rectangle and so trips no assertion.
-// This test fills the base with a marker glyph the modal never renders, so anything surviving inside
-// the modal's rectangle is base content bleeding through — the exact shape of the operator's
-// screenshot, where the screen's ASCII banner and the composer box appeared inside the rename box.
-//
-// It exercises the PAIR the modals use (modalPanel over overlayCentered against a marker base) rather
-// than the whole shell frame, because the base is what has to be controlled for the assertion to mean
-// anything: an earlier version of this test registered a marker-filled stub screen and silently
-// measured an empty wall, since the Ask LAUNCH PAGE is drawn by the shell and not by that screen.
+// TestModalLeavesNoBaseContentVisible is the operator's ACTUAL complaint, and it is a SEPARATE
+// property from "nothing outside the rectangle moved".
 func TestModalLeavesNoBaseContentVisible(t *testing.T) {
 	const marker = "≈"
 	m := newTestApp()
@@ -298,12 +273,7 @@ func TestModalLeavesNoBaseContentVisible(t *testing.T) {
 }
 
 // TestRenameModalActuallyDrawsThePanel pins the WIRING, which the two tests above cannot: they test
-// modalPanel and overlayCentered in isolation, so a modal that went back to splicing its raw form
-// would still pass both. Here the REAL frame is compared against the panel row by row — if the modal
-// stops going through the panel, the frame's rows stop matching it.
-//
-// Proven by disabling: reverting renameConvView to splice m.renameConv.View() directly fails this with
-// the frame's row and the panel's row printed side by side.
+// modalPanel and overlayCentered in isolation.
 func TestRenameModalActuallyDrawsThePanel(t *testing.T) {
 	m := railApp(t, 2)
 	m.width, m.height = 120, 36
@@ -311,16 +281,6 @@ func TestRenameModalActuallyDrawsThePanel(t *testing.T) {
 	m.openRenameConversation(m.conversations[0].ID, m.conversations[0].Title)
 
 	// SET THE FORM'S WIDTH EXACTLY AS THE HOST DOES, before rendering the expectation.
-	//
-	// This is not incidental setup. renameConvView assigns the form the modal's INNER
-	// width during the frame render, and the FOCUSED row is rendered PADDED TO THAT
-	// WIDTH (theme.ListItemSelected.Render(Pad(l, width))) while an unfocused row is not
-	// padded at all. So a panel computed at the form's pre-render width is a different
-	// panel from the one the frame paints, and the comparison fails on the padded row.
-	//
-	// That went unnoticed while forms defaulted to UNFOCUSED and no row was padded. It
-	// surfaced when NewForm began defaulting Focused to true — which is the change that
-	// made this modal render a cursor marker at all, having never done so before.
 	m.renameConv.Width = m.modalInnerWidth()
 	panel := m.modalPanel(m.renameConv.View(), m.modalWidth())
 	panelRows := splitLines(panel)

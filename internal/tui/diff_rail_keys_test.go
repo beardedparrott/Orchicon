@@ -1,12 +1,6 @@
 package tui
 
 // diff_rail_keys_test.go — the KEYBOARD FLOOR for the diff rail's width.
-//
-// The drag is the primary gesture, but a terminal that does not report motion (or an operator without a
-// mouse) must still be able to size the rail. These chords are the floor: ctrl+right widens, ctrl+left
-// narrows, ctrl+down resets to auto. They must be non-text (this repo's composerBypassKeys rule), bound by
-// no bubbles textarea key, registered in the route list so the help overlay cannot drift, and gated on the
-// pane being OPEN.
 
 import (
 	"testing"
@@ -86,9 +80,7 @@ func TestDiffRailChordsAreInertWithThePaneClosed(t *testing.T) {
 	}
 }
 
-// THE CHORD'S KEYS ARE NON-TEXT AND REGISTERED. The route list is the source the help overlay renders from
-// (TestHelpOverlayMatchesKeymap asserts the parity); what is asserted HERE is that each chord has a route
-// whose Match fires, so the behaviour and the registry cannot drift.
+// THE CHORD'S KEYS ARE NON-TEXT AND REGISTERED.
 func TestDiffRailResizeChordsAreRegisteredNonText(t *testing.T) {
 	routes := GlobalKeyRoutes(Tabs)
 	want := map[string]bool{"ctrl+right": false, "ctrl+left": false, "ctrl+down": false}

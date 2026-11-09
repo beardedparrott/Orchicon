@@ -1,26 +1,6 @@
 package automation
 
 // schedule_start.go — the recurring form's combined DATE + TIME control.
-//
-// The operator, looking at the edit form: "On recurring schedules it specifically says UTC. Did we change
-// this? I see it has the calendar picker which is awesome by the way. I wonder if we should combine start
-// date and time in the same type of calendar picker you made for work item schedules. That would be
-// nice."
-//
-// THE UTC LABEL WAS WORKING AS INTENDED, and commit ef097df0 explains why it is there. A recurring
-// schedule stores a WALL CLOCK plus the zone it is expressed in, and this item is a LEGACY one: it was
-// written before the timezone field existed, carries none, and the server reads an absent zone as UTC so
-// that its fire time is UNCHANGED. The operator asked for exactly that ("Leave them. I don't want things
-// firing again"). So the label says so rather than implying the times are local — a silent "UTC or
-// local?" is the bug the whole field exists to remove. A NEW schedule stamps the system zone and the
-// label reads e.g. "America/Chicago".
-//
-// THE COMBINED CONTROL IS THE CHANGE HERE. The schedule's start is one MOMENT but two STORED STRINGS
-// (start_date "YYYY-MM-DD" and start_time "HH:MM"), because that is the shape the recurring_schedule
-// JSONB and the server's validator take. Previously the form made the operator visit a calendar for the
-// date and a bare text box for the time, which is two controls describing one thing — and the text box
-// was the one that demanded HH:MM exactly. The modal now edits the moment and the host writes it back
-// as the pair.
 
 import (
 	"strings"
@@ -58,16 +38,8 @@ func (m *Model) openScheduleStart(_ string, _ string) tea.Cmd {
 	return nil
 }
 
-// finishDateTimePicker closes the modal when it reports Done and SPLITS the chosen instant back into the
-// two fields the schedule stores.
-//
-// IT SPLITS IN THE SCHEDULE'S ZONE, which is the whole reason the zone is carried. The modal edits a wall
-// clock ("09:00") and commits an instant; the schedule wants that wall clock back as a string, so the
-// components are read out again in the SAME zone they were seeded in. Reading them out in the machine's
-// zone would shift a legacy UTC schedule by the operator's offset every time they opened and closed the
-// modal without meaning to change anything.
-//
-// A CANCELLED modal writes nothing: esc must leave both fields exactly as they were.
+// finishDateTimePicker closes the modal when it reports Done and SPLITS the chosen instant back
+// into the two fields the schedule stores.
 func (m *Model) finishDateTimePicker() tea.Cmd {
 	if m.dtPicker == nil || !m.dtPicker.Done() {
 		return nil
@@ -88,9 +60,7 @@ func (m *Model) finishDateTimePicker() tea.Cmd {
 	return nil
 }
 
-// scheduleZoneLocation resolves the form's zone name to a location for the seed and the split. Empty (the
-// legacy schedule) is UTC — the same reading the server applies, so the modal and the wire cannot
-// disagree about what the wall clock means.
+// scheduleZoneLocation resolves the form's zone name to a location for the seed and the split.
 func scheduleZoneLocation(zone string) *time.Location {
 	if strings.TrimSpace(zone) == "" {
 		return time.UTC

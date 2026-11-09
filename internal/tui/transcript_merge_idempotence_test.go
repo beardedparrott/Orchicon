@@ -83,9 +83,7 @@ func TestMergeHistoryStillDropsTheEchoOnFirstMerge(t *testing.T) {
 }
 
 // AN ECHO THE TRANSCRIPT DOES NOT YET CONTAIN IS KEPT, which is the case the original dedupe
-// existed for: at conversation creation the transcript load races the turn that writes the
-// message, and a lost echo would leave the operator's own words missing from the top of a
-// brand-new conversation. Idempotence must not have broken that.
+// existed for: at conversation creation the transcript load races the turn that writes the message.
 func TestMergeHistoryKeepsAnEchoTheTranscriptLacks(t *testing.T) {
 	s := &chatStore{items: map[string][]chat.ChatItem{}}
 	const conv = "c1"

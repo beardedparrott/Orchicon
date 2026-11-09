@@ -7,10 +7,8 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
-// The Work Items Tree is a REAL tree now: treeRows carries depth / parent /
-// has-children so the pane can indent a row, draw a +/- toggle on parents, and
-// collapse a subtree. Before this the indent was baked into the title string
-// and the table's tree machinery was unreachable.
+// The Work Items Tree is a REAL tree now: treeRows carries depth / parent / has-children so the
+// pane can indent a row, draw a +/- toggle on parents, and collapse a subtree.
 func TestTreeRowsCarryTreeMetadata(t *testing.T) {
 	epic := &apiv1.WorkItem{Id: "e", Title: "Epic", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC}
 	feat := &apiv1.WorkItem{Id: "f", Title: "Feature", Kind: apiv1.WorkItemKind_WORK_ITEM_KIND_FEATURE, ParentId: "e"}
@@ -109,11 +107,8 @@ func TestCollapseExpandAllOnWorkItems(t *testing.T) {
 	}
 }
 
-// expandAll is the operator's gesture (the collapse/expand-all control) applied
-// directly, so a test that is about something ELSE — reorder, sort, search — does not
-// have to re-derive how to make the rows visible. The work-items tree opens COLLAPSED
-// by default (see kit2.Table.CollapsedByDefault), so a test asserting on children must
-// expand first.
+// expandAll is the operator's gesture (the collapse/expand-all control) applied directly, so a test
+// that is about something ELSE — reorder, sort, search.
 func expandAll(t *testing.T, m *Model) {
 	t.Helper()
 	m.toggleAllTreeNodes()

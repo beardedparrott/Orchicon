@@ -1,12 +1,6 @@
 package chat
 
 // execsession_compacted_test.go — a mid-run collapse must be a ROW, on both surfaces.
-//
-// REPORTED (a worker execution that failed ~4 minutes and 30 tool rounds in with a provider 400 on
-// `reasoning_content`): the run's history had been collapsed under it mid-run and NOTHING said so. The
-// opencode and claude adapters had always written a `compacted` session part, the native engine wrote none,
-// and — this is the half that made the failure undiagnosable — neither renderer drew the part anyway, so it
-// existed for all three adapters and was visible for none.
 
 import (
 	"strings"

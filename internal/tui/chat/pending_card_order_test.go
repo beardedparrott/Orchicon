@@ -3,12 +3,6 @@ package chat
 import "testing"
 
 // pending_card_order_test.go — A PROMPT IS NOT A HISTORY ROW.
-//
-// The ordering rule is asserted here rather than only through the store because it is the whole fix for
-// the operator's report: "The cards need to be placed at the bottom of the screen so it is apparent what
-// is asked of the user." A pending card pushed off the top of the pane (behind a 29,528-character
-// reasoning block) cannot be answered, and the transcript follows the bottom — so being LAST is what keeps
-// it on screen.
 
 func settledCard(id string) ChatItem {
 	it := ConsentItem(PermissionAsk{ID: id}, 3000)

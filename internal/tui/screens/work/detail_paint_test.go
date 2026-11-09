@@ -1,24 +1,6 @@
 package work
 
 // detail_paint_test.go — THE DETAIL PANE IS FULLY PAINTED, on every row, in every channel.
-//
-// The operator: "It's not just slate. Every theme has a weird color in the whitespace in work items. I
-// posted a screenshot of ember for another example. It just doesn't look great. We shouldn't be filling in
-// spaces with colors like that. It should keep the normal background color on work items unless of course
-// it's something special like a highlight."
-//
-// WHAT WAS ACTUALLY WRONG, and it was not a fill anyone chose. A detail pane renders its body through a
-// bubbles VIEWPORT, which pads every SHORT line by writing an `\x1b[m` reset and THEN the spaces. The
-// pane's tint is painted by the OUTER style, so that inner reset cleared it and every padding cell after
-// it carried NO background at all — the row's trailing whitespace rendered in the TERMINAL's colour
-// instead of the pane's. Every markdown line that did not reach the pane's right edge showed it (a
-// heading, a bullet's last wrap, a paragraph's tail), which is why it looked like coloured bands and why
-// it appeared on EVERY theme: the hole is punched in whatever the active palette is. The fix is in
-// theme.RepairAfterResets, which now recognises both spellings of a reset.
-//
-// SO THE PROPERTY THIS FILE PINS IS NOT "the pane is a particular colour" — it is "the pane leaves no
-// cell unpainted". That is the invariant the bug violated, and it is testable without knowing which
-// palette is active.
 
 import (
 	"strconv"
@@ -32,9 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// detailPaintBody is a description carrying every construct that put a reset mid-row: a SHORT heading (the
-// case that produced the hole — a line that FILLS the pane puts the reset at its end and has nothing after
-// it), a paragraph, a bullet wrapping over several lines, inline code chips, and a fenced block.
+// detailPaintBody is a description carrying every construct that put a reset mid-row: a SHORT
+// heading (the case that produced the hole.
 const detailPaintBody = `# Short heading
 
 A paragraph that is comfortably longer than the pane so that it wraps, and then a final short line.
@@ -60,10 +41,7 @@ func workItemWith(body string) *apiv1.WorkItem {
 	}
 }
 
-// openedDetail renders the Work screen with the detail pane OPEN on the item the plane holds. The Enter
-// command is RUN rather than merely produced: the detail loads through a tea.Cmd, so pressing the key
-// without feeding its message back renders an empty pane and would make every assertion below vacuously
-// pass.
+// openedDetail renders the Work screen with the detail pane OPEN on the item the plane holds.
 func openedDetail(t *testing.T, p *fakePlane) *Model {
 	t.Helper()
 	m := newModel(t, p)
@@ -78,9 +56,8 @@ func openedDetail(t *testing.T, p *fakePlane) *Model {
 	return m
 }
 
-// TestDetailPaneLeavesNoUnpaintedCell is the regression: on a SOLID theme every cell of the detail pane
-// carries a background. A single unpainted cell in the pane's body region is the bug — that cell is showing
-// the terminal's own colour where the pane's belongs.
+// TestDetailPaneLeavesNoUnpaintedCell is the regression: on a SOLID theme every cell of the detail
+// pane carries a background.
 func TestDetailPaneLeavesNoUnpaintedCell(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
@@ -118,10 +95,7 @@ func TestDetailPaneLeavesNoUnpaintedCell(t *testing.T) {
 					cells = cells[100:]
 				}
 				for ci, c := range cells {
-					// A CELL MUST CARRY A CONCRETE COLOUR. Both remaining states are the bug: "" is a cell
-					// with no background set at all, and "CLEAR" is a cell an `\x1b[m` reset explicitly
-					// handed back to the terminal — and they RENDER THE SAME, which is why the first cut
-					// of this test (which accepted "CLEAR") passed while the defect was still there.
+					// A CELL MUST CARRY A CONCRETE COLOUR.
 					if !strings.HasPrefix(c, "#") {
 						t.Errorf("detail row %d cell %d has no pane background (%s) — it renders in the "+
 							"terminal's own colour instead of the pane's, which is the operator's \"weird "+
@@ -135,8 +109,7 @@ func TestDetailPaneLeavesNoUnpaintedCell(t *testing.T) {
 }
 
 // TestDetailPaneKeepsGenuineHighlights is the other half of the requirement: "unless of course it's
-// something special like a highlight." The empty-cells assertion above must NOT be satisfied by flattening
-// the pane to a single colour — an inline code chip and a code block are content, and they keep their fill.
+// something special like a highlight." The empty-cells assertion above must NOT be satisfied.
 func TestDetailPaneKeepsGenuineHighlights(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
@@ -154,12 +127,7 @@ func TestDetailPaneKeepsGenuineHighlights(t *testing.T) {
 
 	pane := detailPaneRaw(m.View())
 
-	// The raised surface is what a chip and a code block are drawn ON. If it appears nowhere in the pane,
-	// the highlights were flattened away rather than repaired.
-	//
-	// MATCHED AS AN SGR BACKGROUND PARAMETER, not as a hex string: what the renderer writes is
-	// `\x1b[48;2;R;G;Bm`, so searching for "#38241e" would never match and the assertion would have passed
-	// on every palette while checking nothing.
+	// The raised surface is what a chip and a code block are drawn ON.
 	raised := sgrBackground(theme.Active().SurfaceAlt)
 	if raised == "" {
 		t.Fatalf("could not derive an SGR background from the raised surface %q", theme.Active().SurfaceAlt)
@@ -171,9 +139,8 @@ func TestDetailPaneKeepsGenuineHighlights(t *testing.T) {
 	}
 }
 
-// sgrBackground renders a #rrggbb colour as the SGR background PARAMETER LIST a truecolor renderer emits
-// for it ("48;2;R;G;B"), so a test can look for a fill in the escape stream. Empty for anything that is
-// not a plain hex colour.
+// sgrBackground renders a #rrggbb colour as the SGR background PARAMETER LIST a truecolor renderer
+// emits for it ("48;2;R;G;B"), so a test can look for a fill in the escape stream.
 func sgrBackground(c lipgloss.TerminalColor) string {
 	hex, ok := c.(lipgloss.Color)
 	if !ok || len(hex) != 7 || hex[0] != '#' {
@@ -189,8 +156,7 @@ func sgrBackground(c lipgloss.TerminalColor) string {
 // --- helpers -----------------------------------------------------------------------------------
 
 // cellBackgrounds walks a rendered row and returns, per printed cell, the background in effect: a
-// "#rrggbb" string, "CLEAR" for an explicit reset to the terminal default, or "" for UNPAINTED (no
-// background set at all — the state the bug left behind).
+// "#rrggbb" string, "CLEAR" for an explicit reset to the terminal default.
 func cellBackgrounds(s string) []string {
 	var out []string
 	var bg string
@@ -270,9 +236,8 @@ func stripSGR(s string) string {
 	return b.String()
 }
 
-// detailPaneRaw returns the RAW (escape-carrying) text of the detail pane — everything from the second
-// pane's left border on — so an assertion about the pane cannot be satisfied by the list pane beside it,
-// and so a test can look for the FILL sequences themselves rather than only for the words.
+// detailPaneRaw returns the RAW (escape-carrying) text of the detail pane — everything from the
+// second pane's left border.
 func detailPaneRaw(view string) string {
 	var b strings.Builder
 	for _, line := range strings.Split(view, "\n") {
@@ -285,9 +250,8 @@ func detailPaneRaw(view string) string {
 	return b.String()
 }
 
-// afterCells returns s with its first n PRINTED cells removed, leaving the escapes around them intact.
-// It is the only safe way to slice a rendered row: an escape sequence occupies no cell, so cutting the
-// string by rune index would land in the middle of a colour and corrupt the remainder.
+// afterCells returns s with its first n PRINTED cells removed, leaving the escapes around them
+// intact.
 func afterCells(s string, n int) string {
 	cells := 0
 	i := 0

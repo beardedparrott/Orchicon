@@ -1,16 +1,4 @@
 // datepicker.go — a calendar DATE picker modal.
-//
-// The GUI gets this free from the browser (`<input type="date">`), so its
-// RecurringScheduleForm is a `type="date"` control. A terminal has no such thing,
-// and typing `2026-09-01` into a text box is the worst of both worlds: the format
-// must be remembered, a typo is only caught at validation, and there is no way to
-// see that the 14th is a Saturday.
-//
-// So this is a real calendar, navigated the way a calendar is: arrows move by a
-// day or a week, PgUp/PgDn by a month, and the grid shows the month you are
-// choosing from. That is the TUI-native form of the GUI's control, and it is the
-// same widget the model picker established (a modal with Done/Committed outcome
-// that the HOST closes — see ModelPicker for why the host owns that).
 package kit2
 
 import (
@@ -43,9 +31,8 @@ type DatePicker struct {
 
 	screenW, screenH int
 
-	// done/committed record the OUTCOME; the HOST closes the modal (a callback
-	// capturing the host model would mutate a copy bubbletea has already replaced
-	// — see ModelPicker.Done for the full reasoning).
+	// done/committed record the OUTCOME; the HOST closes the modal (a callback capturing the host model
+	// would mutate a copy bubbletea has already replaced.
 	done      bool
 	committed bool
 }
@@ -93,17 +80,15 @@ func (dp *DatePicker) boxSize() (int, int) {
 	return w, h
 }
 
-// shift moves the cursor by whole days, normalising across month and year
-// boundaries through time.Date (which handles the overflow rather than needing it
-// spelled out).
+// shift moves the cursor by whole days, normalising across month and year boundaries through
+// time.Date (which handles the overflow rather than needing it spelled out).
 func (dp *DatePicker) shift(days int) {
 	t := time.Date(dp.year, dp.month, dp.cursor, 0, 0, 0, 0, time.UTC).AddDate(0, 0, days)
 	dp.year, dp.month, dp.cursor = t.Year(), t.Month(), t.Day()
 }
 
-// shiftMonth moves a whole month, CLAMPING the cursor: the 31st of a 30-day month
-// does not exist, and silently landing on "the 31st of September" (which time.Date
-// would roll into October) would commit a date the operator never saw highlighted.
+// shiftMonth moves a whole month, CLAMPING the cursor: the 31st of a 30-day month does not exist,
+// and silently landing on "the 31st of September" (which time.Date would roll into October) would.
 func (dp *DatePicker) shiftMonth(n int) {
 	t := time.Date(dp.year, dp.month, 1, 0, 0, 0, 0, time.UTC).AddDate(0, n, 0)
 	last := daysIn(t.Year(), t.Month())
@@ -229,9 +214,8 @@ func (dp *DatePicker) View() string {
 	for i := range rows {
 		rows[i] = pad + rows[i]
 	}
-	// The hints take a SMALL indent of their own rather than the grid's: they are
-	// full-width text, so centring them like the grid would push the tail past the
-	// border and silently truncate the last chord ("esc: ca").
+	// The hints take a SMALL indent of their own rather than the grid's: they are full-width text, so
+	// centring them like the grid would push the tail past the border and silently truncate the last.
 	hpad := "  "
 	hint := theme.HintText.Render(hpad + "←→ ↑↓ day/week · PgUp/PgDn month")
 	hint2 := theme.HintText.Render(hpad + "t today · enter choose · esc cancel")

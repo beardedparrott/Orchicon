@@ -8,11 +8,8 @@ import (
 	"github.com/muesli/termenv"
 )
 
-// Regression for the operator's "the light theme was abysmal — I couldn't see
-// anything". The GUI's border tokens are tasteful hairlines in a browser, but in
-// a TUI the border is the ONLY thing separating panes AND carries each panel's
-// title, so a ~1.1:1 border against the background makes the whole layout read
-// as blank. Structural colours must stay legible in BOTH themes.
+// The GUI's border tokens are tasteful hairlines in a browser, but in a TUI the border is the ONLY
+// thing separating panes AND carries each panel's title.
 func TestStructuralContrast(t *testing.T) {
 	for _, name := range Names() {
 		Use(name)
@@ -31,34 +28,13 @@ func TestStructuralContrast(t *testing.T) {
 		if r := contrastRatio(string(th.Border), bg); r < 1.8 {
 			t.Errorf("%s: Border contrast %.2f vs background — pane borders and their titles will be invisible", name, r)
 		}
-		// The inline-code chip draws the theme's body text on the raised fill (SurfaceAlt). It must be
-		// legible as WORDS, since a code span is text — and this is the pair that replaced reverse
-		// video, which could not be made legible at all because it is relative to whatever it lands
-		// in. Gated at the same floor as body text.
+		// The inline-code chip draws the theme's body text on the raised fill (SurfaceAlt).
 		if r := contrastRatio(string(th.Text), string(th.SurfaceAlt)); r < 4.5 {
 			t.Errorf("%s: the inline-code chip (Text on SurfaceAlt) is %.2f:1, want >= 4.5 — code spans "+
 				"would be as hard to read as the reverse-video rendering they replaced", name, r)
 		}
-		// Status colours carry MEANING in text (a state on a row, a verdict, a
-		// "failed"), so they have to be readable as words, not merely
-		// distinguishable from the background.
-		//
-		// This gate used to demand 2.5:1, which is below even the WCAG floor for
-		// NON-text UI components (3:1) — and the light palettes sat in the gap it
-		// left: Warn measured 2.66:1 and OK 3.08:1 on a near-white background,
-		// which the operator reported as "green text ... in light themes it is
-		// VERY hard to read". A gate that passes unreadable text is worse than no
-		// gate, because it certifies the problem.
-		//
-		// The floor is therefore the 4.5:1 body-text requirement on a LIGHT
-		// background. Dark backgrounds keep the 3:1 UI floor: the dark set already
-		// measures 6.4-13.9:1 (the one exception is gruvbox-dark's 3.80:1 red,
-		// which is that palette's deliberate, readable-on-black signature colour —
-		// raising it would mean shipping a different palette under Gruvbox's name).
-		//
-		// "Light" is DERIVED from the background's luminance rather than read from
-		// a declared flag, so the requirement cannot disagree with the palette it
-		// is measuring.
+		// Status colours carry MEANING in text (a state on a row, a verdict, a "failed"), so they have to
+		// be readable as words, not merely distinguishable from the background.
 		minStatus := 3.0
 		if relLuminance(bg) > 0.5 {
 			minStatus = 4.5
@@ -84,9 +60,8 @@ func TestThemesDiffer(t *testing.T) {
 	}
 }
 
-// Every registered theme must be selectable, uniquely named, non-empty, and
-// must actually re-derive the styles (a theme that renders identically to the
-// previous one is a silent failure).
+// Every registered theme must be selectable, uniquely named, non-empty, and must actually re-derive
+// the styles (a theme that renders identically to the previous one is a silent failure).
 func TestRegistryIsUsable(t *testing.T) {
 	names := Names()
 	if len(names) < 2 {
@@ -127,10 +102,8 @@ func TestRegistryIsUsable(t *testing.T) {
 	Use(DefaultName)
 }
 
-// The SELECTION FILL carries WHITE text (selected rows, the active tab pill,
-// the file-selection chip). A fill that is too light renders the selection as a
-// blank block — and this is exactly what the extended palette set risked, since
-// each family's fill lightness comes from its accent.
+// The SELECTION FILL carries WHITE text (selected rows, the active tab pill, the file-selection
+// chip).
 func TestSelectionFillCarriesWhiteText(t *testing.T) {
 	const white = "#f8fafc"
 	for _, name := range Names() {
@@ -172,10 +145,8 @@ func TestPaletteFamiliesPresent(t *testing.T) {
 	}
 }
 
-// The operator's ask: the user's bubble must be OBVIOUSLY lighter than the
-// model's (the GUI's relationship), on every palette — not merely a different
-// token. Both fills must also keep the text readable and stay distinguishable
-// from the screen background.
+// The operator's ask: the user's bubble must be OBVIOUSLY lighter than the model's (the GUI's
+// relationship), on every palette — not merely a different token.
 func TestBubbleContrast(t *testing.T) {
 	for _, name := range Names() {
 		Use(name)
@@ -184,11 +155,8 @@ func TestBubbleContrast(t *testing.T) {
 		user := BubbleUser.GetBackground()
 		model := BubbleModel.GetBackground()
 
-		// A TRANSPARENT THEME'S BANDS ARE UNPAINTED — deliberately, so the chat surface is see-through like the
-		// rest of the theme. There is no fill to measure, so the requirement inverts: both bands must paint
-		// NOTHING (a band that quietly kept a fill would be the operator's "message blocks ... are not
-		// transparent"), and the speakers must still be tellable apart by something other than a fill — which
-		// the transcript provides as the operator's "You" label (see chat.view's userBandLabel).
+		// A TRANSPARENT THEME'S BANDS ARE UNPAINTED — deliberately, so the chat surface is see-through like
+		// the rest of the theme.
 		if th.Transparent {
 			for label, c := range map[string]lipgloss.TerminalColor{"user": user, "model": model} {
 				if c != nil && string(colorHex(c)) != "" {
@@ -225,11 +193,7 @@ func TestBubbleContrast(t *testing.T) {
 			}
 		}
 		// Text must stay readable on BOTH fills — measured against the colour the bubble ACTUALLY DRAWS,
-		// via bubbleText. That is not a loosening: bubbleText is what picks the bubble's foreground, and it
-		// is allowed to move the palette's text out of the way on a fill the text cannot be read on (see its
-		// own note — a mid-tone foreground such as One Dark's has no room on a lifted bubble). Measuring
-		// th.Text here instead would demand readability from a colour this code never draws, which would
-		// either fail a readable pair or force every palette's bubbles to be flattened for the worst case.
+		// via bubbleText.
 		for label, c := range map[string]string{"user": us, "model": ms} {
 			drawn := string(bubbleText(c, *th))
 			if r := contrastRatio(drawn, c); r < 4.0 {
@@ -256,25 +220,10 @@ func colorHex(c lipgloss.TerminalColor) string {
 	return ""
 }
 
-// The two speakers are separated by a full-width background BAND (user lighter,
-// model darker) rather than by text colour, so the pairing is the bubble fills'
-// problem and is gated by TestBubbleContrast. There is deliberately no
-// text-colour gate here: tinting only the glyphs was rejected by the operator.
+// The two speakers are separated by a full-width background BAND (user lighter, model darker)
+// rather than by text colour.
 
 // NOTHING THAT MARKS TEXT MAY USE REVERSE VIDEO.
-//
-// Reverse video (SGR 7) cannot respect a theme: it inverts whatever the terminal is ALREADY showing,
-// so the same style renders as a black block on a light terminal and a white one on a dark terminal.
-// It also ignores the app's palette entirely, which is worse when the terminal's own colours disagree
-// with the chosen theme — the common case, since the theme is an app setting.
-//
-// The operator, on a diff in light mode: "The black and green are both hard to read in light mode ...
-// some weird black text background you can't see anything." Those blocks were DiffEmphasis, which was
-// Reverse(true). This gate keeps the class of bug from coming back.
-//
-// The two deliberate exceptions, which are NOT text marking: a one-cell caret bar (a cursor is
-// conventionally a reversed cell) and md's inline-code FALLBACK, used only when a caller declares no
-// surface — every real call site passes one, so the chip is what renders.
 func TestNoTextMarkingUsesReverseVideo(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	Use(DefaultName)

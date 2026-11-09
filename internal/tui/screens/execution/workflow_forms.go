@@ -1,14 +1,4 @@
 // workflow_forms.go — the Execution screen's WORKFLOW lifecycle forms.
-//
-// Mirrors worker_forms.go deliberately: the same load-then-open-a-form-in-the-
-// DETAILS-PANE shape, the same thunks so the whole chain is testable without a
-// plane, and the same rule that an operation which cannot apply is REFUSED with
-// the reason rather than silently skipped.
-//
-// Scope: the workflow's own lifecycle (create / edit header / publish / deprecate
-// / delete). Editing a version's STEPS is a separate, larger surface — the steps
-// are a JSON array of nodes with their own dependencies — and is deliberately not
-// half-built here.
 package execution
 
 import (
@@ -44,18 +34,7 @@ func workflowStatusOf(meta string) string {
 
 // --- forms -----------------------------------------------------------------
 
-// createWorkflowForm creates a workflow AND its first version in one call. The
-// version is created EMPTY, deliberately: a workflow's steps are a DAG, and a DAG
-// cannot be authored in a form — the flow view is the editor for exactly that reason
-// (workflow_steps.go), so the form stops pretending otherwise.
-//
-// The first cut offered a `Steps (JSON array)` box here. It was the operator's "same
-// goes for new workflows": a JSON blob is not an editor, and the steps it produced
-// had no coordinates, no names worth reading, and no validation beyond the shape.
-//
-// CreateWorkflowTx creates version 1 as a DRAFT (internal/workflow/create.go:145), so
-// the new workflow is immediately step-editable: select it — which opens the flow
-// view — and press `-` to add the first step.
+// createWorkflowForm creates a workflow AND its first version in one call.
 func (m *Model) createWorkflowForm() *kit2.Form {
 	f := kit2.NewForm("New workflow",
 		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Required: true,
@@ -85,13 +64,6 @@ func (m *Model) createWorkflowForm() *kit2.Form {
 					return err
 				}
 				// Land IN the edit mode on the new workflow.
-				//
-				// The operator: "I think 'e' should be edit workflow mode (and 'n' new workflow
-				// should work like this as well)". A new workflow's first version is created as a
-				// DRAFT with no steps (CreateWorkflowTx), so there is nothing to look at until a
-				// step exists — opening the mode is the only useful place to land. The id is
-				// selected PENDING the list reload, because the row does not exist client-side
-				// yet, and flowEditPending is consumed when that workflow's flow loads.
 				if id := wf.GetId(); id != "" {
 					m.flowEditPending = true
 					m.Base.SelectWhenLoaded(srcWorkflows, id)
@@ -103,9 +75,7 @@ func (m *Model) createWorkflowForm() *kit2.Form {
 	return f
 }
 
-// editWorkflowForm edits the header. Only the NAME is header-editable (the proto
-// says so): the steps belong to a version, and git strategy is not something to
-// type into a terminal.
+// editWorkflowForm edits the header.
 func (m *Model) editWorkflowForm(w *apiv1.Workflow) *kit2.Form {
 	f := kit2.NewForm("Edit workflow: "+w.GetName(),
 		kit2.FieldSpec{Name: "name", Label: "Name", Kind: kit2.KText, Initial: w.GetName()},
@@ -306,6 +276,4 @@ func (m *Model) defaultListWorkflowVersions(ctx context.Context, id string) ([]*
 	return resp.Msg.GetVersions(), nil
 }
 
-// openFormWorkflowPicker is the model-picker host for a workflow form. Workflows
-// name no model directly today, so this exists only to satisfy a future step
-// editor without inventing a second picker host.
+// openFormWorkflowPicker is the model-picker host for a workflow form.

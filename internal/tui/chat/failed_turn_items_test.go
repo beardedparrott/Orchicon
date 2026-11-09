@@ -1,19 +1,6 @@
 package chat
 
 // failed_turn_items_test.go — THE MESSAGE-TO-ITEM DECISION FOR A FAILED TURN.
-//
-// This file lives in package chat because `conversationItems` is the decision under test (the frame-level
-// assertions live one package up, in internal/tui, where the operator's report is true or false).
-//
-// The operator: "The GUI has an actual error message in the conversation that tells you why you couldn't
-// connect or if there was a problem. The TUI just drops with no indication as to why."
-//
-// THE MECHANISM. The server persists a failed turn as an assistant row with EMPTY content and metadata.error
-// set (proto/orchicon/api/v1/ask_orchicon.proto: "The message content is empty in that case; the frontend
-// renders an error bubble with a retry affordance"). The GUI decides through `bubbleKindFor`
-// (frontend/src/lib/ask-bubble.ts: role first, then error metadata, then the assistant default). The TUI
-// dispatched on ROLE ALONE, so `assistant` matched no case and fell through to KindText — and with empty
-// content it drew NOTHING.
 
 import (
 	"strings"
@@ -62,13 +49,8 @@ func TestAFailedTurnRoutesToErrorAndNamesTheModel(t *testing.T) {
 	}
 }
 
-// AC 4 (revised): THE ROW'S REASON MAKES NO COMPOSER CLAIM; THE SHELL APPENDS IT WHERE IT RESTORED THE DRAFT.
-//
-// The claim "your message is back in the composer" is about the SHELL's composer and is true only when the
-// shell actually put the text back — which it does for a turn THIS client sent, and does NOT do for a durable
-// failure carried over from another session / the other client. Composing it into the row's reason
-// unconditionally made a HISTORICAL failure assert a composer state that did not exist (measured), so the
-// reason is claim-free and every retry surface appends the affordance through WithRetryAffordance.
+// AC 4 (revised): THE ROW'S REASON MAKES NO COMPOSER CLAIM; THE SHELL APPENDS IT WHERE IT RESTORED
+// THE DRAFT.
 func TestTheReasonMakesNoComposerClaimAndTheShellAddsIt(t *testing.T) {
 	reason := FailedTurnText("provider status 401", "m")
 	if strings.Contains(reason, "back in the composer") {
@@ -84,9 +66,8 @@ func TestTheReasonMakesNoComposerClaimAndTheShellAddsIt(t *testing.T) {
 	}
 }
 
-// AC ORDER (AC 2): the metadata error is consulted AFTER the two named roles and BEFORE the assistant default
-// — bubbleKindFor's ordering. A `system` row is a NOTICE even if it carried error metadata; an `assistant`
-// row with no error is STILL the model's reply.
+// AC ORDER (AC 2): the metadata error is consulted AFTER the two named roles and BEFORE the
+// assistant default — bubbleKindFor's ordering.
 func TestTheErrorIsConsultedInBubbleKindForOrder(t *testing.T) {
 	at := timestamppb.New(time.Unix(1_700_000_000, 0))
 
@@ -158,14 +139,8 @@ func TestFailedTurnTextKeepsTheRawError(t *testing.T) {
 	}
 }
 
-// A FAILED TURN IS TWO ROWS: THE MODEL'S PROSE, THEN THE FAILURE — never one row wearing the error's label
-// and colour over prose.
-//
-// THE OPERATOR'S REPORT, on the shipped shape: "It is showing thinking text after that is also red and on
-// the same line as the error." The partial reply had been folded into the KindError item, so renderBubble
-// put the `error` label in front of the first line of the PROSE and painted the model's own words in the
-// error's red. This measures the shape directly: the prose is a KindText row of its own, and it comes
-// BEFORE the error row (it was written before the failure).
+// A FAILED TURN IS TWO ROWS: THE MODEL'S PROSE, THEN THE FAILURE — never one row wearing the
+// error's label and colour over prose.
 func TestAMidReplyFailureDrawsTheProseOnTheModelBandThenTheError(t *testing.T) {
 	page := []*apiv1.ChatMessage{
 		{Id: "m2", Role: "assistant",

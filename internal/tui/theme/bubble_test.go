@@ -55,10 +55,7 @@ func TestBubbleTextIsThePaletteTextWhenItFits(t *testing.T) {
 	}
 }
 
-// AND WHERE IT DOES NOT, IT MOVES — enough to be read, and no further than that. A version of this that
-// jumped straight to pure white/black would pass the readability floor while throwing away the palette's
-// colour, so the moved value is asserted to still be a BLEND of the palette's own text rather than a
-// substitute.
+// AND WHERE IT DOES NOT, IT MOVES — enough to be read, and no further than that.
 func TestBubbleTextMovesOutOfTheWayOnlyWhenNeeded(t *testing.T) {
 	midTone := []string{"one-dark", "everforest-dark", "catppuccin-latte", "solarized-light", "rose-pine-dawn"}
 	for _, name := range midTone {

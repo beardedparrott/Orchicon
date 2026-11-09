@@ -1,25 +1,8 @@
 package tui
 
 // conversation_scope.go — the CONVERSATION scope's WRITES: the RPCs behind the scope modal
-// (scope_modal.go), reachable exactly where the conversation's other per-conversation controls live:
-// the slash surface.
-//
-// IT IS THE SAME PLACEMENT RULE AS THE GUI. There, the chat header carries mode / model / fullsend
-// and hosts a disclosure beside SessionGrants; here, /mode, /models, /fullsend and /project already
-// set the conversation's per-conversation state, so /scope (and the /mcp and /skills names that open
-// the same modal) joins them rather than inventing a second navigation. The capability is identical
-// and only the control differs (the documented asymmetry: the GUI browses skill files in a file tree,
-// the TUI types a path list — the same treatment context_files already gets).
-//
-// THE MCP HALF USES screens/mcpforms, THE ONE TUI MCP SURFACE, with Owner{ConversationID}. A
-// conversation owns its definitions exactly as a project does (mcp_servers.conversation_id); the
-// OWNER COLUMN IS THE SELECTION, which is what replaced the removed tenant-level select-from-list
-// field. Nothing here writes a tenant-level entry, and there is no tenant list to write one into.
-//
-// EVERY WRITE HERE RESOLVES ITS TARGET BY ID. The old subcommand grammar addressed a definition BY
-// NAME, so each verb re-listed the conversation's definitions to turn a name into a row — a round trip
-// per keystroke, and a second place for "which definition did they mean?" to be answered. The modal
-// holds the rows, so it knows the id, and these take it.
+// (scope_modal.go), reachable exactly where the conversation's other per-conversation controls
+// live.
 
 import (
 	"context"
@@ -35,18 +18,15 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/mcpforms"
 )
 
-// convScopeMsg reports the outcome of a conversation-scope write so the shell can surface it. It is
-// a message rather than a direct dock call because the RPC runs in a tea.Cmd, where mutating the App
-// touches a copy the runtime has already discarded (see the model-picker note in models.go).
+// convScopeMsg reports the outcome of a conversation-scope write so the shell can surface it.
 type convScopeMsg struct {
 	op     string
 	detail string
 	err    string
 }
 
-// newConversationMCPCatalogForm lists the curated registry and, on a pick, creates the entry owned by
-// THIS conversation — the TUI's one-click add, mirroring the GUI's Registry catalog grid. It is the
-// conversation-scoped twin of the Work screen's project form, over the same mcpforms.CatalogForm.
+// newConversationMCPCatalogForm lists the curated registry and, on a pick, creates the entry owned
+// by THIS conversation — the TUI's one-click add, mirroring the GUI's Registry catalog grid.
 func (m *App) newConversationMCPCatalogForm() *kit2.Form {
 	convID := m.chatConvID
 	cl := m.clients
@@ -88,11 +68,7 @@ func (m *App) newConversationMCPCatalogForm() *kit2.Form {
 		save)
 }
 
-// openConversationMCPDefine opens the typed DEFINITION form for the conversation. With prefill set
-// it EDITS that definition (owner echo on the update); with nil it defines a new one.
-//
-// This is AC 9's "the TUI can define an entry": the form builds command/args/env or url/headers with
-// ${SECRET_NAME} support, owner-stamped by mcpforms — never a selection from a tenant list.
+// openConversationMCPDefine opens the typed DEFINITION form for the conversation.
 func (m *App) openConversationMCPDefine(prefill *apiv1.MCPServer) {
 	convID := m.chatConvID
 	cl := m.clients
@@ -156,20 +132,6 @@ func (m *App) deleteConversationMCP(id, name string) tea.Cmd {
 }
 
 // ownedCredentialAttacher stores a NEW credential when one is asked for, then points the row at it.
-//
-// IT REPLACES A TYPED KEY/VALUE WRITE (SetMCPServerSecret), which stored the value against the row under a
-// plane-derived name — the shape the operator rejected. The credential is now SELECTED and the row carries a
-// reference, exactly as the GUI's owned branch (MCPServersPanel) and the TUI's inline path do.
-//
-// THE STORE WRITE IS THE FIRST LINK. A reference is resolved when a session USES the server
-// (mcpsettings.ResolveSecretRefs), so a row written first would point at a secret that is not there and the
-// operator would find out only when the server failed to start. A name the store ALREADY holds is a
-// ROTATION: the value is replaced under the same name, so every row referencing it picks the new value up at
-// once — which the typed-value form could not express at all.
-//
-// THE ROW IS ECHOED WHOLE, because the update REPLACES env/headers: a request carrying only the new
-// reference would erase the entry's own configuration. The owner echo rides along too (exactly one of the
-// two is non-empty): the scope is immutable, and a differing echo is rejected by the plane.
 func (m *App) ownedCredentialAttacher(srv *apiv1.MCPServer, choices []mcpforms.SecretChoice) func(key, secret, value string) tea.Cmd {
 	cl := m.clients
 	isHTTP := srv.GetTransport() == apiv1.MCPServerTransport_MCP_SERVER_TRANSPORT_STREAMABLE_HTTP
@@ -244,14 +206,8 @@ func (m *App) conversationInstaller(id, name string) func() tea.Cmd {
 	}
 }
 
-// applyConversationSkills is the DIRECT-WRITE half of /skills: the operator typed the path list, so it
-// is written without a modal. The control and the SAME server-side validation: the CLIENTSIDE
-// deliberately validates nothing (contextfiles is the one validator, at the render boundary), so a
-// rejection surfaces from the server as a plain error rather than a second, drifting copy of the rule.
-//
-// "clear" is the empty list, and an empty ARGUMENT list is refused rather than treated as a clear —
-// clearing is destructive enough to deserve the word, and bare `/skills` opens the modal (where the
-// paths and a `d` per path are visible).
+// applyConversationSkills is the DIRECT-WRITE half of /skills: the operator typed the path list, so
+// it is written without a modal.
 func (m *App) applyConversationSkills(args []string) tea.Cmd {
 	convID := m.chatConvID
 	if len(args) == 1 && strings.EqualFold(args[0], "clear") {
@@ -295,10 +251,7 @@ func (m *App) convScopeKey(k tea.KeyMsg) (*App, tea.Cmd) {
 	cmd, _ := m.convScopeForm.HandleKey(k)
 	if m.convScopeForm != nil && m.convScopeForm.Submitted {
 		m.convScopeForm = nil
-		// AN IN-MEMORY EDIT COMMITS WHEN ITS FORM CLOSES. A worker version's specs live in its own
-		// permissions, and mcpforms.InlineForm's save callback cannot return a command — so this is the
-		// first point at which the modal can write the version back. Gated on `dirty`, so a form
-		// dismissed without a change is not a write.
+		// AN IN-MEMORY EDIT COMMITS WHEN ITS FORM CLOSES.
 		if m.scope != nil && m.scope.kind == ownerWorkerVersion && m.scope.dirty {
 			m.scope.dirty = false
 			cmd = tea.Batch(cmd, m.commitWorkerVersion())

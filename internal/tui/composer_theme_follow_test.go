@@ -1,21 +1,6 @@
 package tui
 
 // composer_theme_follow_test.go — THE COMPOSER IS ALWAYS PAINTED FOR THE ACTIVE PALETTE.
-//
-// The operator: "I don't like that the composer in the TUI always seems to be black. It should match the
-// color of the theme's background ... I believe is more of a bug than a feature because when I exited orch
-// and went back into it, it was fine. I think when switching from a dark to light theme it may be keeping
-// the composer black."
-//
-// THE COMPOSER IS THE ONE COMPONENT THAT CAPTURES ITS STYLES. Every other render path reads the theme
-// package's styles at paint time, so a palette switch is automatic for them; the dock hands its styles to a
-// bubbles textarea, which HOLDS them, so someone has to re-pin it. That is why this class of bug has
-// appeared here repeatedly (it is what 13a2cd23 fixed for the STARTUP path, where the dock was built before
-// the operator's theme was applied) — and it is why the switch deserves an end-to-end pin rather than an
-// inspection.
-//
-// These assert the PAINTED COLOURS out of a real frame after a real switch, so a composer left holding the
-// previous palette's fill fails here rather than in the operator's screenshot.
 
 import (
 	"strings"
@@ -162,17 +147,6 @@ func fgSeq(c lipgloss.TerminalColor) string {
 }
 
 // THE COMPOSER IS PAINTED ONLY IN THE ACTIVE PALETTE'S COLOURS.
-//
-// This is the assertion the two switch tests above are too weak to make, and finding that out is why it
-// exists. They checked for the PREVIOUS palette's surface — but the stale cells a missing re-pin actually
-// leaves behind belong to the palette that was active when the DOCK WAS BUILT (the package-init dark
-// default, or the theme NewApp applied at construction), not to the one being switched away from. Measured
-// with the re-pin removed, the composer's own text cells carried `48;2;18;24;38` — the base dark palette's
-// surface — after switching to a light one. That IS the operator's "it may be keeping the composer black",
-// and the weaker check walked straight past it.
-//
-// The invariant stated generally is the one worth holding: whatever the composer paints, it paints in the
-// palette that is active NOW.
 func TestTheComposerIsPaintedOnlyInTheActivePalettesColours(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() {
@@ -190,11 +164,6 @@ func TestTheComposerIsPaintedOnlyInTheActivePalettesColours(t *testing.T) {
 }
 
 // bgSeqsIn returns every BACKGROUND sequence in a rendered row, in order.
-//
-// THE PARAMETER BOUNDARY CHECK IS LOAD-BEARING, and its absence is what a first version of this got wrong:
-// searching for the bare text "48;" anywhere matches INSIDE a foreground value — `38;2;248;242` contains
-// "48;242" — so the scanner reported foreground numbers as backgrounds, and the "which fill is this"
-// comparison became nonsense. An SGR parameter only starts at a `[` or after a `;`.
 func bgSeqsIn(s string) []string {
 	var out []string
 	for i := 0; i+3 <= len(s); i++ {
@@ -216,16 +185,8 @@ func bgSeqsIn(s string) []string {
 	return out
 }
 
-// assertComposerPaintsOnlyTheActivePalette is the shared form of the invariant above, for tests that reach a
-// palette switch by a DIFFERENT route (the Themes pane, the /theme command) and then need the same verdict on
-// the composer.
-//
-// It exists because the weaker "is the right fill present / is the old one gone" check cannot see the actual
-// failure: a stale composer keeps the fill of the palette the DOCK WAS BUILT WITH, which is neither the one
-// being switched to nor always the one being switched from. Measured on the pane path with the rebind
-// disabled, the box CHROME followed the new palette (its style is package state) while the TEXT CELLS kept the
-// base dark palette's fill — so "does it contain the new fill" was true and "has the old fill gone" was true,
-// and the composer was still visibly wrong.
+// assertComposerPaintsOnlyTheActivePalette is the shared form of the invariant above, for tests
+// that reach a palette switch by a DIFFERENT route (the Themes pane.
 func assertComposerPaintsOnlyTheActivePalette(t *testing.T, m *App, where string) {
 	t.Helper()
 	th := theme.Active()

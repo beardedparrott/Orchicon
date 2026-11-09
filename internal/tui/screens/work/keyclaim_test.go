@@ -1,22 +1,6 @@
 package work
 
 // keyclaim_test.go — the screen must not claim the keyboard by accident.
-//
-// THE BUG. projectActions() set m.formLoading = true as a side effect of BUILDING the
-// action list. actionsForSelection() calls it to produce the footer hints and the key
-// bindings, so the flag latched TRUE the moment a project was selected, and nothing ever
-// cleared it — the only legitimate setters are the prep* helpers, whose returned cmd
-// delivers the *_formMsg that clears it, and projectActions returns no cmd.
-//
-// ClaimsKeys() includes formLoading, so the shell handed EVERY key to this screen before
-// any of its own routes ran, which is precisely what the operator reported:
-//
-//   - the Work submenu's up/down never reached the shell's menu handler (dead menu);
-//   - Enter selected nothing, because it fell to the pane's own "load detail";
-//   - shift+tab was swallowed outright (a global route, later still in the chain).
-//
-// And it is why the defect was specific to the Projects source: itemActions() and
-// imageActions() never set the flag.
 
 import (
 	"testing"
@@ -64,9 +48,8 @@ func TestProjectActionsDoNotLatchAKeyClaim(t *testing.T) {
 	}
 }
 
-// The claim must still be exactly what it says: while a form/modal is up the screen
-// claims, a resting pane does not. This keeps the test above honest rather than
-// tautological.
+// The claim must still be exactly what it says: while a form/modal is up the screen claims, a
+// resting pane does not.
 func TestClaimsKeysTracksRealModalState(t *testing.T) {
 	m := newModel(t, &fakePlane{})
 	selectAProject(t, m)

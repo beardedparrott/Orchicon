@@ -1,14 +1,4 @@
-// Package tui — orch_pty_phase3_test.go — the Phase-3 REAL-PTY acceptance
-// gate. Rendered-string tests (phase3_test.go) prove the layout MATH; this
-// harness proves what an operator's terminal actually does: it drives the
-// REAL bin/orch binary inside a real pty and asserts, from the live byte
-// stream, the five behaviors the Phase-3 ACs demand — full coverage with no
-// alt-screen teardown, palette typing visible in the bottom bar, the tab
-// submenu opening by KEY and by MOUSE, and the /connect overlay acting as a
-// real modal whose fields can be focused and typed into (masked echo).
-//
-// The gate is OPT-IN for humans (skipInteractivePTY): a real pty spawn of
-// the live binary hijacks an interactive terminal. CI runs it.
+// Package tui — orch_pty_phase3_test.go — the Phase-3 REAL-PTY acceptance gate.
 package tui
 
 import (
@@ -67,11 +57,7 @@ func TestPTYPhase3PaletteSubmenuConnectGate(t *testing.T) {
 	// esc (menu already closed) is harmless.
 	_, _ = s.tty.WriteString("\x1b")
 	_ = s.readFor(500 * time.Millisecond)
-	// RE-FOCUS THE COMPOSER. The submenu step above navigated by key, and the panel/menu owns
-	// the keyboard afterwards — so the composer did not receive the keys typed below and "/connect"
-	// went nowhere (the palette step before it still echoed, which is what made this look like a
-	// /connect bug rather than a focus one). ctrl+g is the gate's own documented focus chord, used
-	// for exactly this in the other pty gates, and it restores the launch state this step assumes.
+	// RE-FOCUS THE COMPOSER.
 	_, _ = s.tty.WriteString("\x07")
 	_ = s.readFor(700 * time.Millisecond)
 
@@ -119,9 +105,8 @@ func TestPTYPhase3PaletteSubmenuConnectGate(t *testing.T) {
 	}
 }
 
-// TestPTYPhase3SubmenuMouseGate proves the submenu's MOUSE path against the
-// live binary: a real SGR click on the tab bar opens that tab's dropdown
-// (the panel header "▾" is painted).
+// TestPTYPhase3SubmenuMouseGate proves the submenu's MOUSE path against the live binary: a real SGR
+// click on the tab bar opens that tab's dropdown (the panel header "▾" is painted).
 func TestPTYPhase3SubmenuMouseGate(t *testing.T) {
 	skipInteractivePTY(t)
 	if testing.Short() {
@@ -146,10 +131,8 @@ func TestPTYPhase3SubmenuMouseGate(t *testing.T) {
 	}
 }
 
-// typeHuman writes s one byte at a time with a short pause between keystrokes:
-// bubbletea coalesces bytes that arrive in ONE read into a single multi-rune
-// KeyMsg (k.String() == "pro"), which never matches the shell's single-key
-// routes ("/"). A real operator types one key at a time — the harness must too.
+// typeHuman writes s one byte at a time with a short pause between keystrokes: bubbletea coalesces
+// bytes that arrive in ONE read into a single multi-rune KeyMsg (k.String() == "pro").
 func typeHuman(s *ptySession, text string) {
 	for _, r := range text {
 		_, _ = s.tty.WriteString(string(r))

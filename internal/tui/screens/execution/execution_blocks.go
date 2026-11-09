@@ -73,39 +73,25 @@ func (k blockKind) collapsible() bool {
 }
 
 // textBlock is one rendered block: its summary (always shown) plus, when expanded, its body.
-//
-// The SUMMARY is what makes collapsing useful rather than merely shorter: a collapsed tool call
-// still says which tool ran and what it produced, so the line is scannable — which is the point of
-// collapsing a 200-line JSON dump in the first place.
 type textBlock struct {
 	kind blockKind
-	// key is the block's identity within the transcript, used to REMEMBER what the operator
-	// expanded. It is the chat item's Key when it has one (the tool id / message id the session
-	// parser assigns) and a positional fallback otherwise, so a live transcript that grows does not
-	// rename the blocks above it.
+	// key is the block's identity within the transcript, used to REMEMBER what the operator expanded.
 	key string
 	// summary is the row shown when collapsed (and the header when expanded).
 	summary string
 	// body is the full content, shown only when expanded.
 	body string
-	// live marks a block that is still streaming: it is drawn expanded, because watching it arrive
-	// is the reason to look at a running execution at all. Its own collapse state is not consulted
-	// until it settles.
+	// live marks a block that is still streaming: it is drawn expanded, because watching it arrive is
+	// the reason to look at a running execution at all.
 	live bool
 	// user marks the operator's own message, which is labelled on its first line.
 	user bool
-	// markdown marks a body the GUI renders through react-markdown, so the TUI renders it the same
-	// way instead of printing the SOURCE. This mirrors the GUI exactly rather than generously: prose
-	// and reasoning are markdown, a TOOL's output is not (ToolCard draws a <pre>), and an artifact is
-	// markdown only when its type says so or its name ends in .md (ArtifactCard's own isMarkdown).
+	// markdown marks a body the GUI renders through react-markdown, so the TUI renders it the same way
+	// instead of printing the SOURCE.
 	markdown bool
 }
 
 // defaultExpanded reports whether a block is shown expanded with NO operator decision recorded.
-//
-// A settled block follows its kind (tools and thinking closed, prose open — the GUI's behaviour).
-// A LIVE block is always open: an operator watching a run sees the answer being written, which is
-// the entire value of the live view, and a collapsed live bubble would look like a stall.
 func (b textBlock) defaultExpanded() bool {
 	if b.live {
 		return true
@@ -131,9 +117,6 @@ func (b textBlock) label() string {
 }
 
 // blocksFromItems converts a transcript into blocks.
-//
-// The rendering is done ONCE, here, into summary + body — so the painter only ever joins strings,
-// and the collapse decision cannot accidentally change what a block CONTAINS.
 func blocksFromItems(items []chat.ChatItem, width int) []textBlock {
 	out := make([]textBlock, 0, len(items))
 	for i, it := range items {
@@ -158,23 +141,14 @@ func blocksFromItems(items []chat.ChatItem, width int) []textBlock {
 			b.markdown = true
 		case chat.KindReasoning:
 			b.kind = blockReasoning
-			// The summary is the first RENDERED line, not the first source line: a collapsed block
-			// whose preview read "## Findings" or an opening fence would be the raw source again,
-			// which is the whole defect. Reasoning is markdown in the GUI (ReasoningBubble defaults
-			// to the rendered view, with a Raw toggle beside it).
+			// The summary is the first RENDERED line, not the first source line: a collapsed block whose
+			// preview read "## Findings" or an opening fence would be the raw source again.
 			b.summary = mdFirstLine(it.Text, width)
 			b.body = it.Text
 			b.markdown = true
 		case chat.KindError:
-			// ERRORS STAY RAW. An error is diagnostic text the operator reads verbatim, and
-			// emphasis markers inside a stack trace are evidence, not formatting.
-			//
-			// THE BODY IS THE TEXT AFTER THE FIRST LINE, and that is not a truncation: an error block is
-			// NEVER collapsible, so its summary is not a preview — it IS its first line, drawn on the header
-			// row. Keeping the whole text in the body printed that first line twice (measured: "error boom:
-			// index out of range" then "boom: index out of range"), which is exactly the noise the operator
-			// reads past to find the actual failure. Splitting means the header carries the first line and
-			// the body carries the rest, uniformly with every other kind.
+			// THE BODY IS THE TEXT AFTER THE FIRST LINE, and that is not a truncation: an error block is NEVER
+			// collapsible, so its summary is not a preview — it IS its first line, drawn on the header row.
 			b.kind = blockError
 			b.summary, b.body = splitFirstLine(it.Text)
 		case chat.KindTool:
@@ -201,9 +175,6 @@ func blocksFromItems(items []chat.ChatItem, width int) []textBlock {
 
 // toolSummaryBody splits a tool call into the one-line summary shown collapsed and the full
 // input/output shown expanded.
-//
-// The collapsed line keeps BOTH the tool name and the first line of its output, because "which tool
-// ran" and "what came back" are the two things an operator scans a collapsed transcript for.
 func toolSummaryBody(t *chat.ParsedTool) (string, string) {
 	if t == nil {
 		return "(tool)", ""
@@ -237,12 +208,6 @@ func firstLine(s string) string {
 
 // splitFirstLine splits text into its first non-empty line (as a summary) and EVERYTHING AFTER it
 // (as a body).
-//
-// It is the shape a NON-COLLAPSIBLE block needs: such a block always draws its body, so its summary
-// is not a preview but the header row itself — and a summary that also stayed in the body printed the
-// same sentence on two consecutive rows (see the KindError case). The body keeps the blank lines and
-// the indentation of what remains, so a multi-line error or stack trace is unchanged below its first
-// line; only the duplication goes.
 func splitFirstLine(s string) (string, string) {
 	lines := strings.Split(s, "\n")
 	for i, line := range lines {
@@ -256,13 +221,6 @@ func splitFirstLine(s string) (string, string) {
 }
 
 // drawnBody is the body actually PAINTED: bodyLines, bounded when the block is live.
-//
-// A live block is drawn expanded without the operator having asked (defaultExpanded), so a long one —
-// streamed reasoning is routinely tens of thousands of characters — buries the rest of the transcript in
-// text nobody chose to open. THE ELISION IS EXPLICIT, like the chat pane's: a silent cut would read as the
-// end of the model's thinking rather than as a display limit, and the operator would have no way to know
-// there was more. The line says what to do about it, because the rest is reachable — a settled block can be
-// expanded with enter.
 func (b textBlock) drawnBody(width int) []string {
 	lines := b.bodyLines(width)
 	if !b.live || len(lines) <= liveBodyMaxRows {
@@ -277,10 +235,6 @@ func (b textBlock) drawnBody(width int) []string {
 // --- the cursor over the transcript -------------------------------------------------------------
 
 // transcriptCursor is where the keyboard is in the execution detail: a block, or the composer.
-//
-// `atComposer` is a POSITION rather than a mode, which is what makes the operator's "move down the
-// line" work: walking down past the last block lands in the composer, and walking up from the
-// composer returns to the blocks. There is no separate key to learn.
 type transcriptCursor struct {
 	idx        int
 	atComposer bool
@@ -288,11 +242,6 @@ type transcriptCursor struct {
 
 // blockState remembers which blocks the operator has expanded or collapsed, and WHERE the cursor is
 // in the transcript.
-//
-// Keyed by block key, NOT by index: a live transcript appends blocks and a re-fetch can change the
-// count, and an index-keyed map would apply the operator's expansion to whatever block later
-// occupied that slot. Cleared when the execution changes, because the keys are only unique within
-// one transcript.
 type blockState struct {
 	execID string
 	// overrides maps a block key to the operator's explicit decision (true = expanded).
@@ -349,10 +298,6 @@ func (s *blockState) toggle(b textBlock) {
 const blockGap = 1
 
 // renderBlocks draws the transcript with the cursor, collapsing what has not been expanded.
-//
-// It returns the body and a block-index → line-offset map, so the pane can scroll to FOLLOW the
-// cursor: a real transcript is far taller than the pane, and a cursor you cannot see is one you
-// cannot use (the same reason the run's step flow follows its cursor).
 func renderBlocks(blocks []textBlock, state *blockState, width int, cur transcriptCursor) (string, []int) {
 	var b strings.Builder
 	offsets := make([]int, len(blocks))
@@ -364,10 +309,7 @@ func renderBlocks(blocks []textBlock, state *blockState, width int, cur transcri
 		b.WriteString(s + "\n")
 		line += strings.Count(s, "\n") + 1
 	}
-	// blank emits a GAP row. It exists because `write` SKIPS an empty string — that is how a collapsed
-	// block contributes no body rows at all — so writing the separator through `write("")` silently
-	// dropped it. The separator needs its own writer, or the very guard that makes collapsing work
-	// eats it again.
+	// blank emits a GAP row.
 	blank := func() {
 		for i := 0; i < blockGap; i++ {
 			b.WriteString("\n")
@@ -376,10 +318,8 @@ func renderBlocks(blocks []textBlock, state *blockState, width int, cur transcri
 	}
 
 	for i, blk := range blocks {
-		// The gap goes BETWEEN blocks — before every block but the first — so the emitted body never
-		// ends on a separator (a trailing run of blank rows would be dead space at the bottom of the
-		// pane, and TrimRight would remove it anyway, making the last block's offset the only honest
-		// one).
+		// The gap goes BETWEEN blocks — before every block but the first — so the emitted body never ends
+		// on a separator (a trailing run of blank rows would be dead space at the bottom of the pane.
 		if i > 0 {
 			blank()
 		}
@@ -391,12 +331,8 @@ func renderBlocks(blocks []textBlock, state *blockState, width int, cur transcri
 		}
 		expanded := state.expanded(blk)
 
-		// The header row: marker, a disclosure glyph for anything collapsible, the kind label when
-		// it has one, then the summary.
-		//
-		// A PROSE block has no header of its own to draw: its summary IS its first line, so printing
-		// both printed the opening sentence twice (the content, then the body that contains it).
-		// Prose is shown whole, preceded only by the cursor marker.
+		// The header row: marker, a disclosure glyph for anything collapsible, the kind label when it has
+		// one, then the summary.
 		glyph := ""
 		if blk.kind.collapsible() {
 			if expanded {
@@ -448,32 +384,15 @@ func renderBlocks(blocks []textBlock, state *blockState, width int, cur transcri
 // bodyIndent is the columns a block's body is indented by, under its header row.
 const bodyIndent = "   "
 
-// liveBodyMaxRows bounds how much of a LIVE block's body is drawn.
-//
-// IT MIRRORS THE CHAT PANE'S reasoningBodyMaxRows, and for the same measured reason (internal/tui/chat/
-// view.go: reasoning was the one long body drawn in full, and giving it a visible body made it visible at
-// FULL LENGTH). This is that regression repeating one surface over, which is why the number is the same
-// rather than chosen again: an operator reading a live run must not be reading a different amount of the
-// model's thinking depending on which pane they are in.
-//
-// WHY ONLY LIVE BLOCKS ARE BOUNDED, and this is the whole design: a live block is drawn expanded WITHOUT
-// an operator decision (see defaultExpanded), so nothing has been opted into — whereas an operator who
-// expanded a settled 200-line tool dump asked for all of it, and truncating that would be the same defect
-// in reverse. The bound therefore applies exactly where the decision was made for them.
+// WHY ONLY LIVE BLOCKS ARE BOUNDED, and this is the whole design: a live block is drawn expanded
+// WITHOUT an operator decision (see defaultExpanded), so nothing has been opted.
 const liveBodyMaxRows = 12
 
 // bodyLines renders a block's body to display lines at the available width.
-//
-// A markdown body goes through the renderer at the width LEFT AFTER the indent, which is what keeps
-// every emitted line inside the pane — there is no horizontal scroll here, and the pane truncates, so
-// an over-wide line is content lost with no error. Tool output and errors stay raw (see textBlock).
 func (b textBlock) bodyLines(width int) []string {
 	if b.markdown {
-		// RenderOn with the surface this body is drawn on, so inline code uses the themed CHIP rather
-		// than reverse video. Reverse video is theme-blind: on a light terminal it inverts to a dark
-		// block with white text, which is the operator's "black text background you can't see
-		// anything" across the execution transcript. The surface is the detail pane's, since that is
-		// what hosts these blocks.
+		// RenderOn with the surface this body is drawn on, so inline code uses the themed CHIP rather than
+		// reverse video.
 		if lines := md.RenderOn(b.body, width, md.SurfaceTokens(theme.Text, theme.Bg)); len(lines) > 0 {
 			return lines
 		}
@@ -494,11 +413,6 @@ func mdFirstLine(text string, width int) string {
 // --- the inline composer ------------------------------------------------------------------------
 
 // composer holds the execution detail's inline message box.
-//
-// It is the TUI's answer to the GUI's composer: ONE control that nudges a live session or asks a
-// follow-up on a finished one, with the placeholder saying which. That is the operator's model —
-// "Interjects should work the same way on live executions" — and it removes the two-chord split
-// (`i` / `f`) that was neither intuitive nor discoverable.
 type composer struct {
 	value string
 	// cursor is the caret's position in RUNES (not bytes — the draft is arbitrary text).
@@ -531,9 +445,7 @@ func (c *composer) insertText(s string) {
 	c.cursor = i + len([]rune(s))
 }
 
-// key handles a key while the composer has the keyboard. handled is false for keys the composer
-// does not own, so the caller can route them onwards (esc leaves the box, up goes back to the
-// blocks).
+// key handles a key while the composer has the keyboard.
 func (c *composer) key(kstr string, runes []rune) (handled bool) {
 	switch kstr {
 	case "left":
@@ -586,10 +498,6 @@ func (c *composer) key(kstr string, runes []rune) (handled bool) {
 }
 
 // composerLine renders the box as ONE line (the input is a single line; a long draft scrolls).
-//
-// A one-line box is the right shape here: the operator is asking a question, not composing a
-// document, and a growing multi-line box inside a fixed-height detail pane would push the
-// transcript out of view — the surface they need in order to ask a sensible question.
 func (c *composer) render(width int, meta string, focused bool) string {
 	label := "message"
 	if !isLiveExecution(meta) {
@@ -691,11 +599,7 @@ func (m *Model) sendComposer() tea.Cmd {
 // top to the bottom of a long transcript is disorienting, and the composer is at the bottom where a
 // wrap would land.
 func (m *Model) handleTranscriptKeys(kstr string) (tea.Cmd, bool) {
-	// NOT gated on DetailID. The first version was, and it made the box unreachable in the one
-	// state an operator hits constantly: DetailID is set by the DETAIL LANDING, so between
-	// selecting a row and the detail resolving there is no id — and the composer was dead for that
-	// whole window, which reads as "the chat box does not work". The composer's own send path
-	// resolves the execution from the SELECTED ROW, so it needs no id to be usable.
+	// NOT gated on DetailID.
 	if m.blocks.cursor.atComposer {
 		return m.composerKeys(kstr)
 	}
@@ -713,15 +617,8 @@ func (m *Model) composerKeys(kstr string) (tea.Cmd, bool) {
 		m.blocks.cursor.atComposer = false
 		return m.repaintTranscript(), true
 	case "tab", "shift+tab":
-		// TAB LEAVES THE CHAT — the operator's "we should allow tab to tab between the Execution
-		// details and the chat prompt. Currently once you go into a chat in an execution you are
-		// locked in it and can't get out."
-		//
-		// It used to be claimed and then DROPPED ("nothing below the composer"), so the key vanished;
-		// and where the shell won the race instead it moved the top menu while the caret stayed here,
-		// which reads as stuck. This is the same toggle as blockKeys' — the pane has two positions,
-		// so forward and reverse both land on the other one — and OwnsTab is what stops the shell
-		// acting on it first.
+		// TAB LEAVES THE CHAT — the operator's "we should allow tab to tab between the Execution details
+		// and the chat prompt.
 		m.blocks.cursor.atComposer = false
 		return m.repaintTranscript(), true
 	case "enter":
@@ -762,10 +659,7 @@ func (m *Model) blockKeys(kstr string) (tea.Cmd, bool) {
 		m.blocks.cursor.idx++
 		return m.repaintTranscript(), true
 	case "tab", "shift+tab":
-		// TAB MOVES TO THE MESSAGE BOX — the other half of the pane's two-region toggle (see
-		// composerKeys). Tab used to WALK THE BLOCKS here, which made it a second Down; the operator
-		// asked for it to move between the two regions instead, and up/down still walk the transcript
-		// (down past the last block lands in the box, exactly as before).
+		// TAB MOVES TO THE MESSAGE BOX — the other half of the pane's two-region toggle (see composerKeys).
 		m.blocks.cursor.atComposer = true
 		return m.repaintTranscript(), true
 	case "up", "k":
@@ -807,10 +701,6 @@ func (m *Model) repaintTranscript() tea.Cmd {
 }
 
 // scrollToBlockCursor pins the pane so the cursor is VISIBLE.
-//
-// A real transcript is far taller than the detail pane, so without this the cursor would walk off
-// the bottom of the screen and the operator would be toggling blocks they cannot see — the same
-// defect the run's step flow had to solve.
 func (m *Model) scrollToBlockCursor() tea.Cmd {
 	if m.blocks.cursor.atComposer {
 		// The composer is the LAST row of the body, so pinning to the bottom is exact.
@@ -826,10 +716,8 @@ func (m *Model) scrollToBlockCursor() tea.Cmd {
 	if m.blocks.cursor.idx >= len(offsets) {
 		return nil
 	}
-	// The body has sections ABOVE the transcript (context, todos, the record), so the block's
-	// offset within the transcript is not its offset in the pane. The prefix is measured by
-	// composing the body WITHOUT the transcript and counting its rows — exact, and cheap (it is
-	// strings, not I/O).
+	// The body has sections ABOVE the transcript (context, todos, the record), so the block's offset
+	// within the transcript is not its offset in the pane.
 	prefix := m.transcriptPrefixRows()
 	line := prefix + offsets[m.blocks.cursor.idx]
 	scroll := line - 2
@@ -860,28 +748,13 @@ func (m *Model) transcriptPrefixRows() int {
 }
 
 // paintExecution is the ONE place an execution detail is written to the pane, so the fixed message
-// box cannot be forgotten by any of the three callers (the detail landing, a cache repaint, and a
-// cursor move).
-//
-// THE COMPOSER IS A PANE FOOTER, NOT A BODY SECTION. It used to be appended to the body — which
-// reads correctly and is unusable: the transcript is taller than the pane, the viewport opens at the
-// TOP, and the input therefore sat ~65 lines below the fold. The operator reported exactly that
-// ("I STILL don't see a chat prompt inside an execution in the TUI") and the prompt had been there
-// the whole time, just never on screen. A footer is the shape an input needs: always visible,
-// never scrolled away (screenkit.Detail.SetFooter).
-//
-// It is installed even when there is NO transcript, because an execution that produced nothing is
-// precisely when the operator wants to ask why.
+// box cannot be forgotten by any of the three callers (the detail landing, a cache repaint.
 func (m *Model) paintExecution(id string, fields []screenkit.Field, body string) {
 	m.installComposerFooter(id)
 	m.Base.SetDetailContentLaidOut("Execution "+id, fields, body)
 }
 
 // installComposerFooter puts the message box in the pane's FIXED footer band.
-//
-// It is idempotent and state-driven (the band's placeholder depends on whether the execution is live
-// and whether the box has the keyboard), so every caller can call it unconditionally: the detail
-// landing, a cache repaint, and a cursor move all end with the band in the right state.
 func (m *Model) installComposerFooter(id string) {
 	if m.Base.ActiveSourceName() != srcExecutions {
 		// Another source's detail is showing: the band must not linger over it.

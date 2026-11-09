@@ -8,14 +8,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
-// The operator: "When I created a new work item (twice) and chose a parent, it
-// is not showing up under the parent. It is nowhere to be found."
-//
-// Root cause (source truth, internal/workitem/validate.go): only an EPIC may be
-// top-level, and a child must be strictly DEEPER than its parent. The form
-// defaulted kind to "task" with no parent, and offered every kind against every
-// parent — so the server rejected the write. These tests pin the fix: the form
-// cannot offer a pairing the server rejects, and a rejection is LOUD.
+// The operator: "When I created a new work item (twice) and chose a parent, it is not showing up
+// under the parent.
 func TestCreateFormKindFollowsParent(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")
@@ -73,10 +67,7 @@ func TestCreateFormKindFollowsParent(t *testing.T) {
 	}
 }
 
-// The work screen must install a mutation executor with a Sink. Without one,
-// Base.Mutate fell back to a zero executor whose Fail/Notice were no-ops — so a
-// REJECTED write rolled back in silence and the operator only saw an item that
-// never appeared. This is the visibility half of the same bug.
+// The work screen must install a mutation executor with a Sink.
 func TestRejectedWriteIsLoud(t *testing.T) {
 	m := editPlane(t)
 	if m.Base.Exec == nil {
@@ -116,9 +107,8 @@ func TestCtrlSSavesAndEnterDoesNot(t *testing.T) {
 	}
 }
 
-// Scheduling lives in the DETAILS pane: the Scheduled-start field IS a picker
-// over ready-made times, and auto-start is OFF by default (the operator called
-// the previous default "dangerous").
+// Scheduling lives in the DETAILS pane: the Scheduled-start field IS a picker over ready-made
+// times, and auto-start is OFF by default (the operator called the previous default "dangerous").
 func TestSchedulePickerLivesInTheDetailsEditor(t *testing.T) {
 	m := editPlane(t)
 	run(t, m, press(t, m, "e"))
@@ -131,12 +121,6 @@ func TestSchedulePickerLivesInTheDetailsEditor(t *testing.T) {
 		t.Fatal("auto-start must not default to enabled")
 	}
 	// The scheduled-start field is a DATE-AND-TIME control, set from the modal calendar + clock.
-	//
-	// It used to be a KPicker over "ready-made times", and this test used to assert that list existed —
-	// which is the assertion the operator's report invalidated: "What I would really like is a calendar
-	// and time picker as opposed to the canned times." So the canned list is now asserted ABSENT and the
-	// field kind is asserted PRESENT. (The modal's own behaviour is pinned in kit2/datetimepicker_test.go;
-	// what THIS test guards is that scheduling is still reachable from the details editor at all.)
 	var spec *kit2.FieldSpec
 	for i := range f.Specs {
 		if f.Specs[i].Name == "scheduled_start" {

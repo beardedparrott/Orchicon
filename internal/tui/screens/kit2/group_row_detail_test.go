@@ -86,22 +86,6 @@ func TestAnItemRowBelowAFolderStillLoads(t *testing.T) {
 
 // TestABackgroundRefreshDoesNotChangeThePanesHeight — the operator's "you can see the screen blink
 // if you watch it", measured at the only layer that can answer it: the RENDER.
-//
-// The rolling window runs every five seconds (refresh.go) and re-reads the source plus the open
-// detail. Nothing about the DATA is wrong when it does, so a test that checked the fetched items
-// would pass while the pane flickered. This one compares the rendered frame across a background
-// refresh instead.
-//
-// WHY IT IS HERE, AND WHAT IT IS NOT. It was written while chasing that report, alongside a
-// production change that suppressed the table's loading flag on background refreshes — because the
-// theory was that a `loading…` line was being added and removed every tick. MEASURING FALSIFIED THE
-// THEORY: in kit2 the table's `Loading` flag is never rendered at all (nothing calls Base.Loading(),
-// and no capture of the Workflows pane contains the word "loading"), so that change was a no-op built
-// on a wrong premise and it was reverted rather than committed.
-//
-// What the test DOES establish is the invariant that has to hold either way: a background refresh is
-// invisible. It is kept because it is cheap, it is true today, and a future change that makes the
-// refresh visible — in the list OR the detail — fails here rather than in the operator's eyes.
 func TestABackgroundRefreshDoesNotChangeThePanesHeight(t *testing.T) {
 	// SOURCES VISIBLE: this measures the LIST pane's render, and HideSources would draw only the
 	// detail pane.
@@ -143,18 +127,8 @@ func TestABackgroundRefreshDoesNotChangeThePanesHeight(t *testing.T) {
 	}
 }
 
-// TestAScreenPaintingItsOwnDetailIsNotRefreshedOver — the operator's "it seems to be going back and
-// forth between two screens very quickly", as a test.
-//
-// The rolling window runs every five seconds (refresh.go) and kit2's default RefreshView re-requests
-// the READ-ONLY detail for the selected row. A screen with its OWN detail renderer — the workflow
-// FLOW editor — was therefore overwritten by that fetch and then repainted itself over the top: two
-// bodies alternating, once per tick, for ever. The operator captured both forms.
-//
-// THE GUARD COULD NOT SEE IT. It refuses while `editForm` is open, which covers the INLINE form
-// editor; the workflow edit mode is the SCREEN's own flag, and kit2 has no way to know it exists. So
-// the screen answers the question instead, and this pins both halves: the default still refreshes,
-// and an owning screen is left alone.
+// The rolling window runs every five seconds (refresh.go) and kit2's default RefreshView
+// re-requests the READ-ONLY detail for the selected row.
 func TestAScreenPaintingItsOwnDetailIsNotRefreshedOver(t *testing.T) {
 	b := &Base{}
 	b.SetSize(120, 40)

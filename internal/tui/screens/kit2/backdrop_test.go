@@ -1,11 +1,7 @@
 package kit2
 
-// backdrop_test.go — the modal BACKDROP, which is what makes a spliced box readable over a live frame.
-//
-// The operator, on /grants: "it puts it in the middle of screen and it's hard to see because it writes it
-// overtop text." The box was already centered and opaque; what was missing is that everything BEHIND it stayed
-// at full brightness, so the operator read two layers at once. These pin the two properties that fix it and the
-// one that must not break while doing so (the frame contract).
+// backdrop_test.go — the modal BACKDROP, which is what makes a spliced box readable over a live
+// frame.
 
 import (
 	"strings"
@@ -16,11 +12,8 @@ import (
 	"github.com/muesli/termenv"
 )
 
-// trueColor forces a colour-capable profile for one test.
-//
-// IT IS REQUIRED, NOT DECORATION: lipgloss degrades to plain text on a non-TTY, so without it theme.HintText
-// renders no styling at all and the recessing these tests are about is literally unobservable — the same reason
-// internal/tui/theme's own opaque and contrast suites do this.
+// IT IS REQUIRED, NOT DECORATION: lipgloss degrades to plain text on a non-TTY, so without it
+// theme.HintText renders no styling at all and the recessing these tests are about is literally.
 func trueColor(t *testing.T) {
 	t.Helper()
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -39,10 +32,8 @@ func fullWidthRows(lines []string, width int) string {
 	return strings.Join(out, "\n")
 }
 
-// TestDimBackdropRecessesWithoutChangingTheFrame pins the two halves that must hold together: the CONTENT
-// survives (so the operator can still see what is behind the modal) while its STYLING is replaced (so it
-// recedes), and the frame keeps exactly its row count and width — the shell normalizes its render to w×h, and a
-// backdrop that changed either would reflow the layout behind the modal.
+// TestDimBackdropRecessesWithoutChangingTheFrame pins the two halves that must hold together: the
+// CONTENT survives (so the operator can still see what is behind the modal) while its STYLING.
 func TestDimBackdropRecessesWithoutChangingTheFrame(t *testing.T) {
 	trueColor(t)
 	const w = 48

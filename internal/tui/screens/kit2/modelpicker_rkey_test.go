@@ -1,18 +1,6 @@
 package kit2
 
 // modelpicker_rkey_test.go — 'r' IS TEXT FIRST, AND A RETRY KEY ONLY WHEN THERE IS NOTHING TO TYPE.
-//
-// Reported: "when searching models in the TUI model modal, the 'r' key is being swallowed. Most likely
-// by that 'r' refresh key."
-//
-// It was. The model tier is a TYPE-TO-SEARCH box, and the old `case "r"` either retried (when the load
-// had failed) or returned false — and returning early from HandleKey means the typing branch at the
-// bottom is never reached EITHER WAY. So `r` could never be typed: it retried, or it disappeared.
-//
-// The fix moves the check outside the switch and requires BOTH conditions: the load failed AND the
-// query is empty. The second is what keeps the key working as text, and it is also exactly when the
-// on-screen hint offers it ("models unavailable — press r to retry" only renders when there are no
-// options and an error is set).
 
 import (
 	"testing"
@@ -70,9 +58,8 @@ func TestRRetriesOnlyWhenTheLoadFailedAndNothingIsTyped(t *testing.T) {
 	mp.tier = TierModel
 	mp.err = "models unavailable"
 	mp.query = ""
-	// A LOADER MUST BE WIRED, or begin() legitimately returns nil and the test would be asserting
-	// about the fixture rather than about the key. (Measured: the first version of this test failed
-	// for exactly that reason.)
+	// A LOADER MUST BE WIRED, or begin() legitimately returns nil and the test would be asserting about
+	// the fixture rather than about the key.
 	mp.LoadAdapters = func() tea.Cmd { return func() tea.Msg { return nil } }
 
 	handled, cmd := mp.HandleKey(rKey())

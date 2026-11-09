@@ -1,10 +1,6 @@
 package mcpforms
 
 // mcpforms_test.go — the ONE TUI MCP surface's contract (child 7, AC 9 + AC 3 + AC 10).
-//
-// What is pinned here is the DEFINE path (not the removed select-from-tenant field),
-// the TWO persistence targets (owned rows vs inline specs), and the parsers that let a
-// legacy worker version round-trip through the same control.
 
 import (
 	"encoding/json"
@@ -122,8 +118,7 @@ func TestDefineFormBuildsAStreamableHTTPRequest(t *testing.T) {
 }
 
 // A CATALOG PICK PREFILLS AN OWNED CREATE — the TUI's one-click add, mirroring the GUI's
-// handleCatalogAdd. The owner is stamped on the prefilled request, so a catalog pick can
-// never land as a tenant-level entry.
+// handleCatalogAdd.
 func TestCatalogPickPrefillsAnOwnedCreate(t *testing.T) {
 	catalog := []*apiv1.MCPCatalogEntry{{Slug: "github", DisplayName: "GitHub", RequiredEnv: []string{"GITHUB_TOKEN"}}}
 	var got *apiv1.MCPServerCreateRequest
@@ -229,9 +224,8 @@ func TestMergeIntoPermissionsPreservesOtherKeys(t *testing.T) {
 	}
 }
 
-// ParseSkillPaths is the TUI's established path-list idiom (the same rule context_files
-// uses): newlines, commas, and blanks — the DELIBERATE asymmetry with the GUI's file
-// browser, documented on the field.
+// ParseSkillPaths is the TUI's established path-list idiom (the same rule context_files uses):
+// newlines, commas, and blanks — the DELIBERATE asymmetry with the GUI's file browser.
 func TestParseSkillPathsAcceptsTheContextFilesRule(t *testing.T) {
 	got := ParseSkillPaths("/a/SKILL.md, /b\n\n  \n/c\n")
 	want := []string{"/a/SKILL.md", "/b", "/c"}
@@ -243,11 +237,7 @@ func TestParseSkillPathsAcceptsTheContextFilesRule(t *testing.T) {
 	}
 }
 
-// ParseInline ACCEPTS THE BARE ARRAY as well as the wrapped object. The bare array is
-// what the TUI's own mcp_servers KJSON field SHOWS and teaches (ProjectMCPDefinitionsField's
-// Placeholder, and inlineJSONFromPermissions' output), so a definition typed exactly as the
-// placeholder demonstrates must round-trip; accepting only the wrapped form made a
-// correctly-typed definition vanish silently on save.
+// ParseInline ACCEPTS THE BARE ARRAY as well as the wrapped object.
 func TestParseInlineAcceptsTheBareArrayTheFormShows(t *testing.T) {
 	bare := `[{"id":"github","type":"stdio","command":["npx","-y","x"]}]`
 	got := ParseInline(bare)
@@ -278,15 +268,6 @@ func submitForm(t *testing.T, f *kit2Form) {
 }
 
 // THE SPEC FORM IS NOT WHERE A CREDENTIAL IS TYPED.
-//
-// The operator, on a worker version's spec form: "it still shows the field to manually type in a
-// credential. We should not be doing that. Everything should be driven from the credential store."
-//
-// The env/headers fields carry NON-secret configuration plus the ${NAME} references the credential path
-// itself writes (CredentialForm/AttachSecret) — so their labels no longer advertise the reference as
-// something to type, and point at the credential verb instead. The reference stays legal INSIDE the field,
-// because the picker's own write lands there; what must not be invited is the hand-typed form of it, and
-// the LABEL is therefore the thing pinned here rather than a rejection of the value.
 func TestSpecFormsDoNotInviteTypedCredentials(t *testing.T) {
 	forms := map[string]*kit2.Form{
 		"InlineForm": InlineForm("Edit spec", &InlineSpec{ID: "github", Type: "stdio"}, func(InlineSpec) {}),
@@ -314,11 +295,6 @@ func TestSpecFormsDoNotInviteTypedCredentials(t *testing.T) {
 }
 
 // THE CREDENTIAL FORM OPENS ON WHAT THE SERVER ALREADY USES.
-//
-// The GUI report — "when you save an MCP server and go back into it, it doesn't list the credential that was
-// already created/added. It is blank again." — described a defect the TUI shared: the entry's own env (or
-// headers) carries the ${NAME} reference a previous attach wrote, and that reference IS the record of the
-// attachment, so a form that opens blank is hiding it.
 func TestCredentialFormsOpenOnTheServersExistingAttachment(t *testing.T) {
 	const stored = "MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN"
 	choices := []SecretChoice{{ID: "sec-1", Name: stored}}

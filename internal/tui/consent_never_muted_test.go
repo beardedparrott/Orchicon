@@ -1,15 +1,7 @@
 package tui
 
-// consent_never_muted_test.go — a card the SERVER raised is always drawn, and a session
-// grant is only recorded once the server APPLIED it.
-//
-// The operator, watching both clients at once: "the permission ask card pops up in the
-// GUI but it doesn't pop up in the TUI. It just sits at 'orchicon is thinking'."
-//
-// The shell had a second, unreliable authority beside the server's grant store: a local
-// directory map it consulted before drawing a card. Because the server only raises an ask
-// it has no consent for, muting that card never removed a question — it removed the ANSWER,
-// and the turn parked on the server with nothing on screen to act on.
+// consent_never_muted_test.go — a card the SERVER raised is always drawn, and a session grant is
+// only recorded once the server APPLIED it.
 
 import (
 	"context"
@@ -25,11 +17,6 @@ import (
 )
 
 // TestACardIsDrawnEvenWhenThisClientHasSeenTheDirectoryGranted is the reported symptom.
-// This client's cache of the SERVER's grants says /home/ops/project is allowed for the
-// session; the server is asking about it anyway (grants live in its memory and are dropped
-// by every plane restart — the prod plane restarted 14 times in the two days this was
-// measured). The card must be DRAWN: the ask is the server's, and only it knows whether
-// consent is missing.
 func TestACardIsDrawnEvenWhenThisClientHasSeenTheDirectoryGranted(t *testing.T) {
 	m, _ := consentApp(t)
 	// A grant this client has SEEN, straight from the server's list.
@@ -52,9 +39,7 @@ func TestACardIsDrawnEvenWhenThisClientHasSeenTheDirectoryGranted(t *testing.T) 
 	}
 }
 
-// The same ask must not be drawn twice. This is not hypothetical: a dropped socket re-dials
-// through WatchTurnStream, whose replay re-emits every still-open ask, so the card the
-// operator already has would otherwise appear a second time.
+// The same ask must not be drawn twice.
 func TestTheSameAskIsDrawnOnce(t *testing.T) {
 	m, _ := consentApp(t)
 	ask := chat.PermissionAsk{
@@ -70,10 +55,7 @@ func TestTheSameAskIsDrawnOnce(t *testing.T) {
 	}
 }
 
-// A REFUSED allow-session must not be recorded as a grant. The server answers an ask that
-// expired (or was answered elsewhere) with applied=false / expired=true and stores nothing —
-// so a client that recorded the grant anyway believed in consent the server never gave, and
-// the mirror then muted every later card for that directory while the GUI kept asking.
+// A REFUSED allow-session must not be recorded as a grant.
 func TestARefusedAllowSessionIsNotRecordedAsAGrant(t *testing.T) {
 	m, _ := consentApp(t)
 	m.ShowConsentAsk(chat.PermissionAsk{
@@ -146,9 +128,8 @@ func TestVerdictForAnUnknownAskIsInert(t *testing.T) {
 	}
 }
 
-// stubAsk answers the one RPC under test and leaves every other method of the
-// generated client to the embedded nil interface (which panics if it is ever called —
-// so an unexpected call is a loud failure, not a silent pass).
+// stubAsk answers the one RPC under test and leaves every other method of the generated client to
+// the embedded nil interface (which panics if it is ever called.
 type stubAsk struct {
 	apiv1connect.AskOrchiconServiceClient
 	reply func(context.Context, *connect.Request[apiv1.ReplyPermissionAskRequest]) (*connect.Response[apiv1.ReplyPermissionAskResponse], error)
@@ -170,9 +151,8 @@ func (s stubAsk) ReplyPermissionAsk(ctx context.Context, req *connect.Request[ap
 	return s.reply(ctx, req)
 }
 
-// The reply RPC must name its ask — in the REQUEST, so the server answers the right one,
-// and in the VERDICT, so the shell can settle the right card and record a grant only for a
-// decision the server actually applied.
+// The reply RPC must name its ask — in the REQUEST, so the server answers the right one, and in the
+// VERDICT, so the shell can settle the right card and record a grant only for a decision.
 func TestReplyPermissionAskCarriesItsAskID(t *testing.T) {
 	m, _ := consentApp(t)
 	var sent string
@@ -236,11 +216,6 @@ var errStub = errors.New("stub: the plane did not answer")
 // --- the session grants are the SERVER's list ------------------------------------------------
 
 // TestGrantsAreFetchedFromTheServer — the list the operator sees is the plane's, not a local tally.
-//
-// It used to be a second record accrued from the cards this client answered, with a "tool" and a "count" per
-// directory that only this client could have known. Grants live in the PLANE's memory, they change without this
-// client doing anything (a plane restart drops them all; the GUI granting one adds one), and the plane is what
-// enforces them — so the only honest list is the server's.
 func TestGrantsAreFetchedFromTheServer(t *testing.T) {
 	m, _ := consentApp(t)
 	var asked string
@@ -294,9 +269,6 @@ func TestAFailedGrantFetchIsNotAnEmptyList(t *testing.T) {
 }
 
 // TestRevokeReachesTheServerAndAdoptsTheRefreshedList — the revoke that used to revoke nothing.
-//
-// The TUI dropped the grant from its OWN map, so the row vanished from the operator's list while the plane went
-// on honouring the grant: the very next tool call for that directory proceeded without asking.
 func TestRevokeReachesTheServerAndAdoptsTheRefreshedList(t *testing.T) {
 	m, _ := consentApp(t)
 	var revoked string

@@ -1,18 +1,6 @@
 package client
 
 // keepalive_test.go — a password-mode session must never meet an expiry during an idle stretch.
-//
-// THE OPERATOR: "The TUI still has some weird authentication timeouts after some time and /connect does
-// not always connect back gracefully causing me to close orch altogether and restart it."
-//
-// The reactive 401 interceptor cannot prevent that on its own, and the reason is structural: it only
-// notices an expiry when a request HAPPENS to go out. A TUI is mostly idle between actions, so the
-// access token (default TTL 900s) ages out silently while the operator reads a transcript — and the
-// first action afterwards is what discovers it. When that action is a chat turn's own long-lived
-// session, the turn is lost rather than retried.
-//
-// These tests pin the two halves of the fix: it refreshes BEFORE the deadline, and it does not invent a
-// schedule it was not given.
 
 import (
 	"context"
@@ -33,9 +21,6 @@ func newKeepaliveClient(refreshes *int32) *Clients {
 }
 
 // THE TOKEN IS REFRESHED WITHOUT ANY REQUEST FAILING FIRST.
-//
-// This is the whole point: no 401 is ever involved. A keeper on a short lifetime must mint a new token
-// on its own, so the credential is young when the operator finally acts.
 func TestKeepaliveRefreshesBeforeExpiryWithoutAny401(t *testing.T) {
 	var refreshes int32
 	c := newKeepaliveClient(&refreshes)
@@ -70,10 +55,6 @@ func TestKeepaliveRefreshesBeforeExpiryWithoutAny401(t *testing.T) {
 }
 
 // A SHORT TTL MUST NOT BECOME A HOT LOOP.
-//
-// The TTL is a tenant setting, validated 30s..86400s. "Refresh at half the lifetime" is right for all of
-// them, but a pathological small value must still be floored — a busy-loop against /auth/refresh is a
-// worse failure than the expiry it prevents.
 func TestKeepalivePeriodIsFloored(t *testing.T) {
 	var refreshes int32
 	c := newKeepaliveClient(&refreshes)
@@ -92,10 +73,6 @@ func TestKeepalivePeriodIsFloored(t *testing.T) {
 }
 
 // NO LIFETIME MEANS NO GUESSING.
-//
-// An api-key profile has no expiry, and a plane that did not publish expires_in gives no schedule.
-// Inventing a period from an unknown lifetime is how a client ends up refreshing on every request or
-// never; both are worse than leaving the reactive interceptor to do its job.
 func TestKeepaliveIsInertWithoutALifetime(t *testing.T) {
 	var refreshes int32
 	c := newKeepaliveClient(&refreshes)
@@ -121,9 +98,6 @@ func TestKeepaliveOnAnAPIKeyClientIsSafe(t *testing.T) {
 }
 
 // STOP ACTUALLY STOPS, so /connect's replacement does not leave a keeper refreshing a dead session.
-//
-// /connect builds a WHOLE NEW client set; a keeper left running would keep minting tokens nobody reads
-// and keep firing OnRefreshed into a shell that has moved on.
 func TestKeepaliveStopEndsTheGoroutine(t *testing.T) {
 	var refreshes int32
 	c := newKeepaliveClient(&refreshes)

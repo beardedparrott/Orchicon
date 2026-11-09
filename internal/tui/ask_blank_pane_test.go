@@ -56,9 +56,6 @@ func paneBody(scr *ask.Model) string {
 }
 
 // THE WIPE ITSELF: a conversation's detail payload carries no body, and it must not empty the pane.
-//
-// The payload here is EXACTLY what the real screen produces — title and fields, body "" — so if the base
-// ever goes back to assigning an empty body onto a pane this screen owns, this fails.
 func TestConversationDetailLandingDoesNotEmptyThePane(t *testing.T) {
 	_, scr := blankPaneApp(t)
 
@@ -85,12 +82,6 @@ func TestConversationDetailLandingDoesNotEmptyThePane(t *testing.T) {
 }
 
 // AND THE PANE SURVIVES THE CHAIN THAT ACTUALLY BLANKED IT.
-//
-// THE LANDING IS DRIVEN EXPLICITLY, and that is deliberate rather than redundant. The blank was caused by
-// the detail landing — and in a test harness the Ask screen's own detail() cannot produce one (it calls
-// GetConversation, which has no fake endpoint here), so a test that merely runs the tick's command PASSES
-// whether or not the bug is present. That vacuous pass is exactly how a regression like this survives
-// review, so this drives the landing the refresh provokes, with the empty body ask.detail really returns.
 func TestRefreshDoesNotBlankTheConversationPane(t *testing.T) {
 	m, scr := blankPaneApp(t)
 	if paneBody(scr) == "" {
@@ -110,11 +101,6 @@ func TestRefreshDoesNotBlankTheConversationPane(t *testing.T) {
 
 	after := paneBody(scr)
 	// THE INVARIANT IS THAT THE TRANSCRIPT IS STILL THERE, not that the byte count is identical.
-	//
-	// A refresh legitimately RE-MEASURES the transcript (the stream is re-sized against the pane's real
-	// body height, and a row or two of wrapping follows), so asserting equality would fail a CORRECT
-	// program — which is exactly what an earlier version of this test did. What must never happen is the
-	// operator's report: the body becoming EMPTY, or the conversation's content disappearing.
 	if after == "" {
 		t.Fatalf("the refresh chain LEFT THE PANE BLANK — the operator's report. The detail landing that " +
 			"the list reload provokes carries body=\"\" and was assigned over the transcript")
@@ -129,11 +115,6 @@ func TestRefreshDoesNotBlankTheConversationPane(t *testing.T) {
 }
 
 // THE ASK SCREEN'S REFRESHER DOES NOT DISPLACE THE TRANSCRIPT.
-//
-// This is the property that keeps the transcript and the refresh from fighting, and it is the one that
-// fails if the body-ownership declaration is dropped. Asserted by RUNNING the hook's command with its
-// messages dispatched: the list reload ends in a detail load, and that detail landing is what used to
-// assign an empty body over the transcript.
 func TestAskRefresherDoesNotDisplaceTheTranscript(t *testing.T) {
 	m, scr := blankPaneApp(t)
 
@@ -157,9 +138,8 @@ func TestAskRefresherDoesNotDisplaceTheTranscript(t *testing.T) {
 	}
 }
 
-// runCmdTreeForTest executes a command tree the way the program loop does: run each command, dispatch each
-// message, and recurse into batches. Depth-bounded, and it stops at a re-arming tick so a self-arming
-// command cannot spin forever.
+// runCmdTreeForTest executes a command tree the way the program loop does: run each command,
+// dispatch each message, and recurse into batches.
 func runCmdTreeForTest(t *testing.T, m *App, cmd tea.Cmd, depth int) {
 	t.Helper()
 	if cmd == nil || depth > 6 {

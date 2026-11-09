@@ -7,27 +7,11 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// codeTabStop is the column a tab advances to (the same multiple-of-4 stop the
-// markdown code renderer uses). Tabs are EXPANDED before wrapping so the wrapper
-// only ever measures printable runes: ansi.StringWidth("\t") is 0, so a tab left
-// literal would let a line silently run past its column budget.
+// codeTabStop is the column a tab advances to (the same multiple-of-4 stop the markdown code
+// renderer uses).
 const codeTabStop = 4
 
 // wrapByColumns hard-wraps `s` into lines of at most `width` display columns.
-//
-// IT PRESERVES THE EXACT BYTES of `s`: concatenating the returned lines
-// reproduces `s` (no glyph added or removed), which is what the acceptance
-// criterion "concatenating a row's wrapped cells reproduces that row's full
-// text" pins. Runes are measured with ansi.StringWidth(string(r)) so a wide
-// CJK/emoji rune is never split mid-character and never overflows its line.
-//
-// Leading indentation is preserved for free: the wrap is a pure character flow,
-// so a continuation line starts with the next character of the source (spaces
-// and tabs that are already in the text appear literally).
-//
-// A single rune wider than `width` (only possible at width 1 with a wide rune)
-// is emitted alone on its own line rather than dropped — a line is never
-// destroyed by truncation here.
 func wrapByColumns(s string, width int) []string {
 	if width < 1 {
 		width = 1
@@ -52,10 +36,8 @@ func wrapByColumns(s string, width int) []string {
 	return lines
 }
 
-// subSpans returns the spans of `spans` clipped to the byte range [start,end)
-// and re-based so their offsets are relative to that range. It is what maps an
-// emphasis span back onto the wrapped SEGMENT it falls in, so a span that
-// straddles a wrap boundary is marked on both the lines it crosses.
+// subSpans returns the spans of `spans` clipped to the byte range [start,end) and re-based so their
+// offsets are relative to that range.
 func subSpans(spans []EmphasisSpan, start, end int) []EmphasisSpan {
 	if len(spans) == 0 || end <= start {
 		return nil
@@ -80,10 +62,8 @@ func subSpans(spans []EmphasisSpan, start, end int) []EmphasisSpan {
 	return out
 }
 
-// expandTabsWithSpans expands every tab in `s` to the next tab stop (spaces)
-// and remaps `spans` (byte offsets into the RAW text) onto the expanded text, so
-// emphasis stays aligned after tab expansion. When `s` has no tab the input is
-// returned unchanged (the common case — most diff text is tab-free).
+// expandTabsWithSpans expands every tab in `s` to the next tab stop (spaces) and remaps `spans`
+// (byte offsets into the RAW text) onto the expanded text.
 func expandTabsWithSpans(s string, spans []EmphasisSpan) (string, []EmphasisSpan) {
 	if !strings.ContainsRune(s, '\t') {
 		return s, spans

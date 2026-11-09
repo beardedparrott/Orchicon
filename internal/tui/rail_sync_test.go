@@ -1,17 +1,6 @@
 package tui
 
 // rail_sync_test.go — THE RAIL'S HIGHLIGHT MUST AGREE WITH THE CONVERSATION ON SCREEN.
-//
-// REPORTED: "the highlighted bar on the conversation is not always in sync with the current
-// conversation on the screen and it's very confusing."
-//
-// The cause was structural, not a stray assignment: convSel is an INDEX into railRows() and
-// the highlight renders purely as `i == convSel`. Nothing anywhere derived it from chatConvID
-// — the conversation the transcript actually shows. So every route that opened a
-// conversation WITHOUT going through the rail left the two disagreeing.
-//
-// These tests pin the sync at both entry points, and pin the two cases it must NOT "fix"
-// (an explicit cursor move, and an open conversation the rail cannot show).
 
 import (
 	"testing"
@@ -56,9 +45,8 @@ func TestHighlightFollowsAConversationOpenedNotFromTheRail(t *testing.T) {
 	}
 }
 
-// TestHighlightFollowsANewlyCreatedConversation: a send that lazily creates a conversation
-// opens it via chatConvCreatedMsg, which sets chatConvID directly. That is the most visible
-// form of the bug — the FIRST message in a brand-new conversation left the bar behind.
+// TestHighlightFollowsANewlyCreatedConversation: a send that lazily creates a conversation opens it
+// via chatConvCreatedMsg, which sets chatConvID directly.
 func TestHighlightFollowsANewlyCreatedConversation(t *testing.T) {
 	m := railApp(t, 3)
 	if m.convSel != 0 {
@@ -97,9 +85,8 @@ func TestSyncDoesNotUndoAnExplicitCursorMove(t *testing.T) {
 	}
 }
 
-// TestSyncLeavesTheCursorWhenTheConversationIsHidden: an open conversation the rail cannot
-// show (filtered out, or inside a collapsed folder) must leave the cursor alone. Relocating
-// it somewhere arbitrary would be a second confusion rather than a fix.
+// TestSyncLeavesTheCursorWhenTheConversationIsHidden: an open conversation the rail cannot show
+// (filtered out, or inside a collapsed folder) must leave the cursor alone.
 func TestSyncLeavesTheCursorWhenTheConversationIsHidden(t *testing.T) {
 	m := railApp(t, 3)
 	m.convSel = 1

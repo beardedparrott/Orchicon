@@ -29,9 +29,9 @@ func searchPlane(t *testing.T) *Model {
 	return m
 }
 
-// The operator: "There is still no search box to filter through the list of work
-// items." '/' focuses the search row at the top of the list, typing narrows the
-// visible rows live, and esc clears it.
+// The operator: "There is still no search box to filter through the list of work items." '/'
+// focuses the search row at the top of the list, typing narrows the visible rows live, and esc
+// clears it.
 func TestWorkItemsSearchFiltersTheList(t *testing.T) {
 	m := searchPlane(t)
 	if got := len(itemsOf(m, srcWorkItems)); got != 3 {
@@ -102,9 +102,8 @@ func TestWorkItemsSearchFiltersTheList(t *testing.T) {
 	}
 }
 
-// collapsedTreePlane is the fixture that exposed the report: an EPIC whose child
-// matches, an epic that does not, and an unrelated root. The Tree view opens
-// COLLAPSED, so this is exactly what the operator was looking at.
+// collapsedTreePlane is the fixture that exposed the report: an EPIC whose child matches, an epic
+// that does not, and an unrelated root.
 func collapsedTreePlane(t *testing.T) *Model {
 	t.Helper()
 	p := newPlane()
@@ -128,13 +127,7 @@ func idsOf(tbl *kit2.Table) []string {
 	return out
 }
 
-// THE REPORT: "Searching work items in the TUI does NOT search items that are
-// collapsed. That is a broken design. The search should most definitely search
-// through collapsed items as well."
-//
-// The Tree view opens collapsed, so a collapsed epic's children were unreachable
-// by search: no query could reveal them, and there was no key that could select
-// what the list refused to draw.
+// THE REPORT: "Searching work items in the TUI does NOT search items that are collapsed.
 func TestFilterReachesMatchesInsideCollapsedNodes(t *testing.T) {
 	m := collapsedTreePlane(t)
 	tbl := m.Base.ActiveTable()
@@ -147,9 +140,8 @@ func TestFilterReachesMatchesInsideCollapsedNodes(t *testing.T) {
 	// Query a title that exists ONLY inside the collapsed epics.
 	tbl.SetFilter("gamma")
 
-	// The match two levels down is on screen despite BOTH its ancestors being
-	// collapsed, and so is the chain that places it (the ancestor rule: a filtered
-	// result keeps its hierarchy rather than surfacing as an indented orphan).
+	// The match two levels down is on screen despite BOTH its ancestors being collapsed, and so is the
+	// chain that places it (the ancestor rule.
 	got := idsOf(tbl)
 	if strings.Join(got, ",") != "b,g" {
 		t.Fatalf("filtered collapsed tree shows %v, want [b g] (the match and its collapsed ancestor)", got)
@@ -196,10 +188,7 @@ func TestFilterMakesCollapsedMatchesReachableByKeyboard(t *testing.T) {
 	}
 }
 
-// The count the search box prints must agree with what the list draws. Before
-// this fix MatchCount counted matches the renderer refused to show ("3/40" with
-// two rows on screen), which is how the defect was visible without being
-// explicable.
+// The count the search box prints must agree with what the list draws.
 func TestFilterCountAgreesWithTheList(t *testing.T) {
 	m := collapsedTreePlane(t)
 	tbl := m.Base.ActiveTable()
@@ -252,9 +241,8 @@ func TestWhitespaceQueryDoesNotSuspendCollapse(t *testing.T) {
 	}
 }
 
-// The sort control orders SIBLINGS for display without touching the stored
-// sequence (the operator's "maybe we should have some actual sort controls at
-// the top near the search box?").
+// The sort control orders SIBLINGS for display without touching the stored sequence (the operator's
+// "maybe we should have some actual sort controls at the top near the search box?").
 func TestSortModesOrderSiblings(t *testing.T) {
 	mk := func(id, title, status string, prio int32) *apiv1.WorkItem {
 		return &apiv1.WorkItem{

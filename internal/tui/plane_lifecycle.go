@@ -60,13 +60,7 @@ const (
 	planeStateNotLocal                   // the connected profile is not a plane on this host
 )
 
-// label is the SHORT footer form.
-//
-// IT CARRIES THE STATE ONLY, NEVER THE REMEDY. The footer is ONE row and its documented truncation
-// priority puts the focus hint last — a chip that spelled out "/plane-start to start it, or read
-// <log path>" pushed that hint off an 80-column terminal entirely (the standing pty smoke gate caught
-// it at 80×24). The remedy belongs on the error strip, which is where planeRemedy puts it and where
-// the operator is already looking when data is not loading.
+// label is the SHORT footer form. IT CARRIES THE STATE ONLY, NEVER THE REMEDY.
 func (s planeState) label() string {
 	switch s {
 	case planeStateUp:
@@ -118,8 +112,7 @@ func localInstances() []string {
 }
 
 // readPortRecord reads one instance's recorded ports FROM planeHomeDir, so the seam above holds for
-// discovery too. planecontrol.ReadPorts resolves the record from the real user home and is used by the
-// verbs themselves; this is the DISCOVERY read, and it must be overridable in tests.
+// discovery too.
 func readPortRecord(instance string) (map[string]int, error) {
 	b, err := os.ReadFile(filepath.Join(planeHomeDir(), "orchicon-"+instance, "ports.json"))
 	if err != nil {
@@ -158,13 +151,6 @@ func profilePort(p *config.Profile) int {
 }
 
 // instanceForProfile decides WHICH instance a lifecycle verb acts on.
-//
-// PRECEDENCE: ORCHICON_INSTANCE (explicit operator intent) → the local instance whose recorded
-// ORCHICON_CONTROL_PORT is the port this shell is CONNECTED TO → nothing.
-//
-// THE FAIL-SAFE IS THE POINT. `orch` holds no instance name — only the profile URL — so a plane it
-// cannot positively identify is reported NOT LOCAL and left alone. Falling back to "dev" here is how a
-// shell pointed at a remote plane would stop a local one the operator was not looking at.
 func instanceForProfile(p *config.Profile) (string, bool) {
 	if env := strings.TrimSpace(os.Getenv("ORCHICON_INSTANCE")); env != "" {
 		return env, true
@@ -232,10 +218,7 @@ func stateFromStatus(st planecontrol.Status) planeState {
 	return planeStateDown
 }
 
-// probePlane reads the plane's state. SYNCHRONOUS — callers must wrap it in a tea.Cmd.
-//
-// Down is a STATE, never an error: StatusOf does not fail for a missing PID file or port record, and
-// those are precisely the cases the operator needs told about.
+// probePlane reads the plane's state.
 func probePlane(p *config.Profile) planeInfo {
 	inst, ok := instanceForProfile(p)
 	if !ok {
@@ -302,20 +285,12 @@ func planeRemedy(info planeInfo) string {
 }
 
 // planeChip renders the footer chip for the current state.
-//
-// COLOUR COMES FROM theme.* STYLES AND NOTHING ELSE. Raw SGR in the footer is the documented
-// "terminal colors" regression (footer.go's EVERY PART IS STYLED note, and cmd/orch/colorprofile.go's
-// WSL true-colour handling): an inline escape sequence resets the footer's own foreground and leaves
-// the chip rendering in whatever the terminal's default happens to be.
 func planeChip(f footerModel) string {
 	if !f.PlaneWired {
 		return ""
 	}
 	label, glyph, style := f.PlaneState.chipParts()
-	// NARROW TERMINALS GET THE BARE STATE. The footer is ONE row and the standing 80×24 pty smoke gate
-	// asserts the focus hint is still painted there; "plane down" is 10 cells this footer does not have
-	// to spare. Beside the connection state, "down" is unambiguous — and the error strip still carries
-	// the full remedy.
+	// NARROW TERMINALS GET THE BARE STATE.
 	if f.Width > 0 && f.Width < 100 {
 		label = strings.TrimPrefix(label, "plane ")
 	}
@@ -326,8 +301,7 @@ func planeChip(f footerModel) string {
 }
 
 // chipParts maps a state onto its glyph, its word and its THEME STYLE — the only colour source a
-// footer part may use (footer.go's EVERY PART IS STYLED note; raw SGR here is the WSL/true-colour
-// regression cmd/orch/colorprofile.go exists to prevent).
+// footer part may use (footer.go's EVERY PART IS STYLED note.
 func (s planeState) chipParts() (label, glyph string, style lipgloss.Style) {
 	switch s {
 	case planeStateUp:
@@ -362,20 +336,10 @@ func (s planeState) word() string {
 // planeStateMsg carries a completed probe back to the tea loop.
 type planeStateMsg struct{ info planeInfo }
 
-// planeReprobeCooldown bounds how often a DISCONNECTED shell re-probes the plane. A CONNECTED shell
-// never re-probes on this path: StatusOf dials /healthz, and a state indicator must not poll a plane
-// that is answering.
+// planeReprobeCooldown bounds how often a DISCONNECTED shell re-probes the plane.
 const planeReprobeCooldown = 15 * time.Second
 
 // planeReprobeCmd re-probes the plane AFTER the connection to it has failed.
-//
-// THE FIRST-LAYOUT PROBE IS NOT ENOUGH ON ITS OWN. It answers "was there a plane when the shell
-// started", so a plane stopped from another surface (the CLI, the desktop app) left the footer chip
-// saying "plane up" and the stream error strip with no remedy — the stale-and-silent state this
-// surface exists to remove (acceptance criteria 2 and 3). The rolling refresh tick calls this: a
-// failed stream is the shell's own evidence that the plane may be gone, and the probe turns that
-// evidence into a state, a chip and a remedy. Down stays quiet (applyPlaneState reports it once per
-// transition) and a plane that comes back clears the strip.
 func (m *App) planeReprobeCmd() tea.Cmd {
 	if !m.planeProbed {
 		return nil // no shell layout yet: the first-layout probe is still the one to arm
@@ -423,13 +387,6 @@ func (m *App) planeProbeCmd() tea.Cmd {
 }
 
 // planeOpCmd runs a lifecycle verb OFF the tea loop and re-probes afterwards.
-//
-// START WAITS UP TO 60s FOR /healthz (planecontrol.startHealthTimeout). Called from a key handler it
-// would freeze the shell for a minute, so it is a tea.Cmd like every other long operation here.
-//
-// A NOT-LOCAL INSTANCE REFUSES WITHOUT CALLING ANYTHING: no fallback to "dev", no guessed instance.
-// That refusal is the fail-safe — acting on a plane we cannot identify is how a control command stops
-// something the operator was not looking at.
 func (m *App) planeOpCmd(op string) tea.Cmd {
 	profile := m.profile
 	return func() tea.Msg {
@@ -446,21 +403,6 @@ func (m *App) planeOpCmd(op string) tea.Cmd {
 			}
 		}
 		// THE VERBS GO THROUGH internal/planebind, NOT planecontrol.
-		//
-		// This was the last place a second implementation of the same three actions could drift: the
-		// desktop drives planebind (internal/planebind is its Wails binding), while the TUI called
-		// planecontrol directly. Two things that can STOP a plane must not decide independently what
-		// "stopped" means — that divergence is exactly what cost us the CLI-vs-MSI week, where
-		// `orchicon stop` verified its own pid files while a live postgres kept port 5432.
-		//
-		// planebind is a LEAF by construction (stdlib + planecontrol + instance, enforced by its own
-		// imports_test), so adopting it cannot drag the plane's HTTP server into the TUI.
-		//
-		// A READ is deliberately NOT routed through it: the TUI's footer chip and remedy messages are
-		// built from planecontrol.Status, which planebind flattens into a DTO for JSON. Actions mutate
-		// host state and must be single-sourced; reads are idempotent and a second projection of them
-		// cannot corrupt anything. (planebind.Status IS the source for the desktop, and both agree
-		// because they share the same StatusOf underneath.)
 		buf := &bytes.Buffer{}
 		svc := &planebind.Service{Out: buf}
 		var err error
@@ -510,8 +452,7 @@ func (m *App) refreshPlaneLabel() {
 	m.footer.PlaneState = m.plane.State
 	m.footer.PlaneInstance = m.plane.Instance
 	// The TUI is one of the surfaces that CAN start a plane (it does not depend on the plane serving
-	// it), so the chip is always wired — including "remote", which is itself the answer the operator
-	// needs (the lifecycle verbs will refuse).
+	// it), so the chip is always wired — including "remote".
 	m.footer.PlaneWired = true
 }
 
@@ -524,10 +465,7 @@ func (m *App) applyPlaneState(info planeInfo) tea.Cmd {
 	m.refreshPlaneLabel()
 	if info.State == planeStateDown {
 		// THE STRIP CARRIES THE REMEDY FOR AS LONG AS THE PLANE IS DOWN — it is STATE, not a one-shot
-		// notice. A once-only gate was wrong twice over: every slash command clears the strip
-		// (dispatchSlash), so `/plane` reported "plane down" in the footer and NOTHING on the strip; and
-		// the same happened after any unrelated message took the strip over. Re-asserting is idempotent,
-		// and it never fights another writer — text this function did not write is left alone.
+		// notice.
 		remedy := planeRemedy(info)
 		// THREE CASES ASSERT IT, one does not:
 		//   - the strip is EMPTY (a slash command just cleared it)          → assert
@@ -541,10 +479,8 @@ func (m *App) applyPlaneState(info planeInfo) tea.Cmd {
 		m.planeDownErrText = remedy
 		return nil
 	}
-	// LEAVING "down" CLEARS THE STRIP THIS FUNCTION WROTE. A plane that came back — started from the
-	// desktop app, the CLI, or another TUI — must not leave "the plane … is down" sitting under a footer
-	// that says up: the operator would be told to fix something already fixed. It clears ONLY the exact
-	// text it wrote; any other error on the strip belongs to someone else and is left alone.
+	// LEAVING "down" CLEARS THE STRIP THIS FUNCTION WROTE. It clears ONLY the exact text it wrote; any
+	// other error on the strip belongs to someone else and is left alone.
 	if m.planeDownErrText != "" && m.dock.Err == m.planeDownErrText {
 		m.dock.SetError("")
 	}
@@ -553,16 +489,6 @@ func (m *App) applyPlaneState(info planeInfo) tea.Cmd {
 }
 
 // assertPlaneRemedy RE-ASSERTS the down remedy on the strip WITHOUT probing.
-//
-// THE PROBE IS NOT ENOUGH ON ITS OWN, because the strip is SHARED WRITABLE STATE: a connected shell never
-// re-probes (planeReprobeCmd arms nothing while the stream is up), and half a dozen other writers clear the
-// strip for reasons that have nothing to do with the plane — connecting, reconnecting ("✓ connected to …"),
-// pasting, `/find`, choosing an ask model, sending a chat line. A probe that lands before one of those whose
-// clears the remedy, so the footer said "plane down" over a strip with no remedy at all — acceptance
-// criterion 3 failing, intermittently, by ordering.
-//
-// So the remedy is re-asserted from the RENDER LOOP'S TICK, not only from a probe: it costs one string
-// comparison, dials nothing, and heals any clear. It still never overwrites another writer's error.
 func (m *App) assertPlaneRemedy() {
 	if m.plane.State != planeStateDown {
 		return

@@ -1,19 +1,6 @@
 package control
 
 // stall_fields_test.go — every stall knob must be reachable from the TUI.
-//
-// The operator sets these for real ("I set mine to 600 seconds"), and two of them had no field at all:
-// `stall_nudge_reply_window_seconds` and `stall_nudge_cooldown_seconds` appeared NOWHERE in the settings
-// form, so they could be neither seen nor set from the TUI.
-//
-// THEY ARE NOT COSMETIC. They are the liveness probe's timers: how long a probe is awaited before the
-// session counts as unresponsive, and how long between probes. Those decide whether a stalled turn is
-// nudged back to life or declared dead — the same class of decision as the no-progress window beside them,
-// which the operator was asked to set.
-//
-// AND BEFORE THE SETTINGS MERGE THEY WERE BEING BLANKED. The columns are written verbatim from the
-// submitted row, so a field the form never sent arrived as NULL ("use the built-in default"), and every TUI
-// save silently reset both. The merge fixed the blanking; this fixes the unreachability.
 
 import (
 	"context"
@@ -51,12 +38,7 @@ func TestSettingsFormCarriesEveryStallKnob(t *testing.T) {
 	}
 }
 
-// AND THE SUBMIT MUST CARRY THEM, which is the half a rendered field does not prove. A field the submit does
-// not read is worse than a missing one: the operator edits a value, saves, sees no error, and the stored
-// setting never moved.
-//
-// It asserts through the proto the RPC receives, so it covers the whole path — field, submit, OnSubmit's
-// parse — rather than the form's own values map, which would pass even if nothing downstream read it.
+// AND THE SUBMIT MUST CARRY THEM, which is the half a rendered field does not prove.
 func TestSettingsSubmitCarriesTheNudgeTimers(t *testing.T) {
 	m, _ := newWriteModel(t)
 
@@ -97,9 +79,7 @@ func TestSettingsSubmitCarriesTheNudgeTimers(t *testing.T) {
 		t.Errorf("stall_nudge_cooldown_seconds saved as %d, want 30 — the field renders but the submit drops it", v)
 	}
 
-	// AND A BLANK FIELD STILL TRAVELS AS ABSENT, not as 0. These columns distinguish the two: NULL is "use
-	// the built-in default", 0 is DISABLED. A blank nudge timer is a legitimate state, and collapsing it to
-	// 0 would silently disable the liveness probe.
+	// AND A BLANK FIELD STILL TRAVELS AS ABSENT, not as 0.
 	m.activeForm().Set("stall_nudge_reply_window_seconds", "")
 	cmd, err = m.activeForm().Submit()
 	if err != nil {

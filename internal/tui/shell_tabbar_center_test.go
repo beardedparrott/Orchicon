@@ -17,11 +17,8 @@ func newCenterTestApp(w, h int) *App {
 	return app
 }
 
-// TestTabBarCenteredPins operator finding 2 (Phase 2a): the tab bar is
-// horizontally CENTERED across the viewport at 80 and 120 columns — the
-// pre-Phase-2a render left-aligned it. The centered row is exactly w cells
-// (theme-painted), and the blank gutter BEFORE the first tab equals the
-// gutter AFTER the last tab (odd remainders go right).
+// TestTabBarCenteredPins operator finding 2 (Phase 2a): the tab bar is horizontally CENTERED across
+// the viewport at 80 and 120 columns — the pre-Phase-2a render left-aligned it.
 func TestTabBarCentered(t *testing.T) {
 	for _, size := range [][2]int{{80, 24}, {120, 40}} {
 		w, h := size[0], size[1]
@@ -29,10 +26,8 @@ func TestTabBarCentered(t *testing.T) {
 		app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "SRC"})
 		app.SwitchTo(TabAsk)
 		bar := app.tabBarView()
-		// TabBar style carries Padding(0,1): the bar's own leading space is
-		// part of the painted chrome, so the viewport gutter is measured
-		// from the stripped bar's own head. barW stays the rendered width
-		// (ANSI-aware); gutterTarget = (w - barW)/2 + padding.
+		// TabBar style carries Padding(0,1): the bar's own leading space is part of the painted chrome, so
+		// the viewport gutter is measured from the stripped bar's own head.
 		barW := lipgloss.Width(bar)
 		if barW >= w {
 			t.Fatalf("%d: tab bar (%d) overflows the viewport", w, barW)
@@ -45,12 +40,7 @@ func TestTabBarCentered(t *testing.T) {
 		if !strings.Contains(row, "Ask Orchicon") || !strings.Contains(row, "Control") {
 			t.Fatalf("%d: centered row lost tab labels: %q", w, row)
 		}
-		// CENTERING, ASSERTED EXACTLY: the row is the pad, then the bar, then the remainder. The old
-		// form hardcoded two pad columns before the first glyph ("the TabBar container pad + the first
-		// tab's own pad"), which stopped describing anything the moment the bar's HEAD changed: it
-		// carried a modifier label ("alt+") for a while, and now starts at the first tab again with its
-		// "F1" key label. Comparing the row against the bar itself cannot drift that way, and it pins
-		// the centering more tightly than a gutter count did.
+		// CENTERING, ASSERTED EXACTLY: the row is the pad, then the bar, then the remainder.
 		pad := (w - barW) / 2
 		wantRow := strings.Repeat(" ", pad) + ansi.Strip(bar) + strings.Repeat(" ", w-barW-pad)
 		if row != wantRow {
@@ -59,9 +49,8 @@ func TestTabBarCentered(t *testing.T) {
 	}
 }
 
-// TestTabBarCenteredRegression is the regression pin: the tab bar must NOT
-// hug the left edge (the pre-Phase-2a bug). At 120 the bar (84 cols) must
-// start at column 18, not column 0.
+// TestTabBarCenteredRegression is the regression pin: the tab bar must NOT hug the left edge (the
+// pre-Phase-2a bug).
 func TestTabBarCenteredNotLeftAligned(t *testing.T) {
 	app := newCenterTestApp(120, 40)
 	row := ansi.Strip(app.centeredTabBarView())

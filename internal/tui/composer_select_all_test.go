@@ -1,19 +1,6 @@
 package tui
 
 // composer_select_all_test.go — ctrl+a SELECTS THE WHOLE COMPOSER.
-//
-// The operator: "It would be nice to allow a ctrl+a to select all text in the composer so a user can easily
-// copy or delete it all if possible."
-//
-// "IF POSSIBLE" IS THE HONEST PART. bubbles' textarea has NO selection model — v1.0.0 has no Select, no
-// SelectAll, no selection state of any kind — so there is nothing to highlight and nothing for a later ctrl+c
-// to read. What the operator wants is the two OUTCOMES, so the implementation delivers those: the SHELL copies
-// the buffer on the way in (that half is in the route) and the composer enters a state where the next
-// replacing key throws it away. These pin the composer's half.
-//
-// The state must also be IMPOSSIBLE TO GET STUCK IN: any key that is not a replacing one drops the selection
-// and then behaves exactly as it did before, because a mode that swallows arrows and ctrl chords would be far
-// worse than the missing feature it was added for.
 
 import (
 	"strings"
@@ -113,9 +100,7 @@ func TestEscapeCancelsTheSelectionAndKeepsTheText(t *testing.T) {
 	}
 }
 
-// A NON-REPLACING KEY DROPS THE SELECTION AND STILL WORKS. This is the property that keeps the state from
-// trapping the operator: the arrows, tab and every ctrl chord must behave exactly as they did before ctrl+a
-// was pressed.
+// A NON-REPLACING KEY DROPS THE SELECTION AND STILL WORKS.
 func TestANonReplacingKeyDropsTheSelectionAndStillActs(t *testing.T) {
 	m := dockWith(t, "the old draft")
 	m.SelectAll()
@@ -155,9 +140,7 @@ func TestInsertTextAppendsToTheComposer(t *testing.T) {
 	}
 }
 
-// THE CHORD IS REACHABLE. ctrl+a is bound by the textarea to "line start", so the shell has to keep it out of
-// the textarea's hands — otherwise the route never sees the key and the feature is bound but dead, which is
-// the failure mode this codebase keeps producing.
+// THE CHORD IS REACHABLE.
 func TestCtrlAIsRegisteredAndBypassesTheComposer(t *testing.T) {
 	m := askRelaunched(t, "c1")
 
@@ -193,9 +176,8 @@ func TestCtrlAThroughTheShellSelectsTheComposer(t *testing.T) {
 	if !strings.Contains(m.dock.Notice, "selected") {
 		t.Errorf("the shell did not report the selection: %q", m.dock.Notice)
 	}
-	// THE COPY LEAVES THROUGH dispatch's RETURN VALUE, not the staging field: the route stages it (a route
-	// returns only a bool) and drainStaged re-emits it on the way out, clearing the field. Asserting the
-	// FIELD here was wrong — it is always nil by the time the caller sees the App.
+	// THE COPY LEAVES THROUGH dispatch's RETURN VALUE, not the staging field: the route stages it (a
+	// route returns only a bool) and drainStaged re-emits it on the way out, clearing the field.
 	if cmd == nil {
 		t.Error("ctrl+a selected the text but produced no command, so the clipboard write never happens — " +
 			"the operator's \"easily copy ... it all\" half would be missing")

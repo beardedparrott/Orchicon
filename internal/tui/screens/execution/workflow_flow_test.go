@@ -1,11 +1,6 @@
 package execution
 
 // workflow_flow_test.go — the vertical flow renderer.
-//
-// The fixture is a REAL workflow: SDLC (Human)'s published `steps` JSON, lifted
-// verbatim from the live tenant. It is not hand-written, because the shapes that
-// matter here are the ones the product actually stores — 11 steps, a 2-way fan-in,
-// three retry loops whose targets sit EARLIER in the flow, and an approval gate.
 
 import (
 	"os"
@@ -41,10 +36,7 @@ func stripANSI(s string) string {
 	return b.String()
 }
 
-// The parser must survive the shapes the column actually contains. depends_on is
-// NOT type-consistent in the live tenant (207 arrays, 12 nulls, 10 of something
-// else), and a plain []string field would fail the WHOLE unmarshal on one bad row
-// — losing every step in the workflow rather than one edge.
+// The parser must survive the shapes the column actually contains.
 func TestFlowParsingToleratesEveryDependsOnShape(t *testing.T) {
 	for _, c := range []struct {
 		raw  string
@@ -77,9 +69,7 @@ func TestFlowParsingToleratesEveryDependsOnShape(t *testing.T) {
 	}
 }
 
-// Topological order, with the AUTHORED order preserved among steps that are ready
-// at the same time. This is the execution order a reader is being shown, so it has
-// to be real: a step must never be listed before something it depends on.
+// Topological order, with the AUTHORED order preserved among steps that are ready at the same time.
 func TestFlowOrderIsTopological(t *testing.T) {
 	steps := parseFlowSteps(realFlow(t))
 	if len(steps) != 11 {
@@ -120,13 +110,8 @@ func TestFlowOrderSurvivesACycle(t *testing.T) {
 	}
 }
 
-// The real workflow renders what it IS: the fan-in is named, the retry loops name
-// their (earlier) targets, and the approval shows its reviewer.
-//
-// Loops are the point. They live in a decision's config, NOT in depends_on, so a
-// renderer that only walked dependencies would show a straight line and hide the
-// fact that this workflow can send control BACKWARDS — the single most surprising
-// thing about it.
+// The real workflow renders what it IS: the fan-in is named, the retry loops name their (earlier)
+// targets, and the approval shows its reviewer.
 func TestRealWorkflowRendersItsBranchesAndLoops(t *testing.T) {
 	out := stripANSI(renderWorkflowFlow(realFlow(t), 100))
 	for _, want := range []string{

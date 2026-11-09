@@ -1,13 +1,5 @@
-// overlay.go — the enforcement screen's modal surfaces: Confirm, Form
-// (multi-line fields for Rego bodies / reject reasons), Picker (policy
-// versions) and Viewer (a version's Rego body).
-//
-// Every overlay CLAIMS the keyboard (Model.ClaimsKeys) while it is open:
-// the shell hands it every key verbatim, so a Rego body containing q/d/y
-// — or a reason string with a "?" — is never eaten by a global chord
-// (quit, diff toggle, copy, help). esc always cancels; a form's Enter
-// advances fields (a multi-line field inserts a newline) and ctrl+s
-// submits.
+// overlay.go — the enforcement screen's modal surfaces: Confirm, Form (multi-line fields for Rego
+// bodies / reject reasons), Picker (policy versions) and Viewer (a version's Rego body).
 package enforcement
 
 import (
@@ -102,9 +94,7 @@ func newViewer(title, hint, body string) *overlay {
 	return &overlay{kind: ovViewer, title: title, hint: hint, body: body}
 }
 
-// view renders the overlay block. The screen frames the result, so this
-// only needs to be readable and ANSI-safe (no silent truncation: long
-// Rego lines are shown whole; the frame clips the pane, not the value).
+// view renders the overlay block.
 func (o *overlay) view() string {
 	var b strings.Builder
 	b.WriteString(theme.ListTitle.Render(o.title) + "\n")

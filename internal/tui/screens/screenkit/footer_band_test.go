@@ -38,8 +38,7 @@ func TestAnyFooterTextCostsTheBodyTwoRows(t *testing.T) {
 }
 
 // And the consequence, stated as the invariant a caller depends on: the body shrinks by exactly the
-// band when one appears. This is the assertion that fails if anyone ever "optimises" footerRows to
-// return 0 for a short string.
+// band when one appears.
 func TestAFutureFooterStealsItsRowsFromTheBody(t *testing.T) {
 	d := &Detail{Height: 40}
 	withNothing := d.BodyHeightFor(0, true)

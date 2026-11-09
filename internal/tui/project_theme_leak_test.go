@@ -42,12 +42,8 @@ func themeLeakPlane() *App {
 	return m
 }
 
-// launchInto models a FRESH PROCESS opened in dir: the palette package is reset to the build default (a new
-// process has no in-memory palette), the profile's palette is taken from the persisted config exactly as
-// cmd/orch/main.go does at launch, and the launch-directory default is applied once the project list lands.
-//
-// It is a helper rather than three inlined copies because the three sessions below must differ ONLY in
-// which directory they start in.
+// It is a helper rather than three inlined copies because the three sessions below must differ ONLY
+// in which directory they start in.
 func launchInto(t *testing.T, path, dir string) *App {
 	t.Helper()
 	theme.Use(theme.DefaultName)
@@ -80,9 +76,7 @@ func TestAThemeChangeInOneProjectDoesNotFollowIntoAnother(t *testing.T) {
 		t.Fatal("SetTheme refused a real palette")
 	}
 
-	// THE WRITE LANDED ON THE PROJECT, NOT ON THE SHARED DEFAULT. Asserted on the FILE rather than inferred
-	// from the session below, because writing BOTH is the plausible wrong fix: the shared default is the one
-	// value every unbound project inherits, so touching it is the leak itself.
+	// THE WRITE LANDED ON THE PROJECT, NOT ON THE SHARED DEFAULT.
 	cfg1, err := config.Load(path)
 	if err != nil {
 		t.Fatalf("read the config the commit wrote: %v", err)
@@ -118,12 +112,8 @@ func TestAThemeChangeInOneProjectDoesNotFollowIntoAnother(t *testing.T) {
 	}
 }
 
-// AND THE OTHER DIRECTION: a project that HAS been given its own palette keeps it, whatever a later session
-// does elsewhere. This is the half that already worked through the explicit bind key, asserted here through
-// the same launch path so the two gestures cannot diverge.
-//
-// A project rebound to a different palette must also win over the config's default — otherwise "this
-// project's palette" is only ever the first one ever chosen.
+// AND THE OTHER DIRECTION: a project that HAS been given its own palette keeps it, whatever a later
+// session does elsewhere.
 func TestAProjectKeepsItsOwnPaletteAcrossSessions(t *testing.T) {
 	path := useTempConfigDir(t)
 	t.Cleanup(func() { theme.Use(theme.DefaultName) })

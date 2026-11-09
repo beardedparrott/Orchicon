@@ -48,9 +48,7 @@ import (
 )
 
 // The caps, mirrored from the server (internal/askorchicon/chat.go: "too many attachments (max 5)",
-// "attachments too large (max 20MB total)") and from the GUI's lib/ask-attachment.ts. The SERVER IS
-// AUTHORITATIVE — these exist to refuse locally with a reason instead of bouncing the send, and they must
-// not be LOOSER than the server's or the operator gets a failed turn after a long encode.
+// "attachments too large (max 20MB total)") and from the GUI's lib/ask-attachment.ts.
 const (
 	maxAttachments     = 5
 	maxAttachmentByte  = 10 * 1024 * 1024
@@ -83,10 +81,6 @@ func (a attachment) isImage() bool { return strings.HasPrefix(a.MimeType, "image
 
 // marker renders the attachment as it appears IN THE TRANSCRIPT — "[image]" for a picture and
 // "[file: name]" for anything else.
-//
-// The operator said it "shows up as [image] in the chat prompt", so that is the vocabulary. Marking it in
-// the transcript is not decoration: the composer line is cleared on send, and without a marker the
-// operator would have no record on screen that the turn carried a screenshot.
 func (a attachment) marker() string {
 	if a.isImage() {
 		return "[image]"
@@ -103,9 +97,7 @@ func (a attachment) toWire() *apiv1.AttachmentInput {
 	}
 }
 
-// validateAttachment answers whether one more file may be added, given what is already attached. It mirrors
-// the server's caps and returns the REASON so the operator is told (a refusal with no explanation is
-// indistinguishable from a broken gesture).
+// validateAttachment answers whether one more file may be added, given what is already attached.
 func validateAttachment(name string, size int, current []attachment) error {
 	if len(current) >= maxAttachments {
 		return fmt.Errorf("too many attachments (max %d) — send this turn first", maxAttachments)
@@ -128,9 +120,8 @@ func totalBytes(as []attachment) int {
 	return n
 }
 
-// mimeFor infers a MIME type the way the GUI's inferMime does, and falls back to sniffing the CONTENT when
-// there is no extension to go on — which is the common case for a pasted screenshot, whose clipboard bytes
-// arrive with no name at all.
+// mimeFor infers a MIME type the way the GUI's inferMime does, and falls back to sniffing the
+// CONTENT when there is no extension to go on — which is the common case for a pasted screenshot.
 func mimeFor(name string, data []byte) string {
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
 	switch ext {
@@ -159,9 +150,7 @@ func mimeFor(name string, data []byte) string {
 	case "yaml", "yml":
 		return "text/yaml"
 	}
-	// SNIFF, because a pasted screenshot has no name. The magic numbers are the ones that matter for a
-	// terminal paste and they are checked before defaulting, so an image is never sent as
-	// application/octet-stream — which the server would not forward as a vision part.
+	// SNIFF, because a pasted screenshot has no name.
 	if m := sniffMime(data); m != "" {
 		return m
 	}
@@ -186,9 +175,7 @@ func sniffMime(data []byte) string {
 	return ""
 }
 
-// acceptedName reports whether a file passes the ALLOWED-TYPE gate. MIME wins when it is known and
-// specific; the extension is the fallback, exactly as the GUI does it — because a path typed by hand often
-// carries no MIME at all.
+// acceptedName reports whether a file passes the ALLOWED-TYPE gate.
 func acceptedName(name, mime string) bool {
 	m := strings.ToLower(mime)
 	switch {
@@ -234,18 +221,8 @@ func readFileAttachment(path string, current []attachment) (attachment, error) {
 	return attachment{Name: name, MimeType: mime, Data: data}, nil
 }
 
-// clipboardImageCommand returns the argv that reads an image off the system clipboard, or nil when this
-// machine has no reader.
-//
-// WHY NOT OSC 52. The TUI writes the clipboard with the terminal's OSC 52 escape (see clipState.copyCmd) —
-// and that is WRITE-ONLY. The protocol has a read request, but replies arrive on the input stream
-// interleaved with the operator's keystrokes, many terminals disable it, and tmux drops it; it is not a
-// foundation a feature can stand on. A screenshot is bytes in the SYSTEM clipboard, so getting it out is a
-// platform question, answered the same way every terminal editor answers it: a helper binary.
-//
-// The helpers are the conventionally-installed ones, and the order prefers the tool for the session type
-// that is actually present (a Wayland session has wl-paste, an X session has xclip/xsel, macOS has
-// pngpaste). A machine with none returns nil and the TUI says so rather than failing silently.
+// The TUI writes the clipboard with the terminal's OSC 52 escape (see clipState.copyCmd) — and that
+// is WRITE-ONLY.
 func clipboardImageCommand() []string {
 	switch runtime.GOOS {
 	case "darwin":
@@ -276,18 +253,10 @@ func hasBinary(name string) bool {
 }
 
 // errNoClipboardImage is the "the clipboard holds no IMAGE" case, as a sentinel.
-//
-// It is a sentinel rather than a plain message because the caller has to TELL IT APART from a real failure:
-// ctrl+v tries the image first and falls back to TEXT, and that fallback is only correct when there was
-// genuinely no image. A size or format refusal must NOT be reported as "the clipboard holds no text".
 var errNoClipboardImage = errors.New("the clipboard holds no image")
 
-// readClipboardImage pulls an image from the system clipboard, or returns an error whose text is worth
-// showing the operator.
-//
-// Every failure here is EXPLAINED rather than silent, because the gesture is a keystroke: a chord that
-// appears to do nothing is indistinguishable from one that is not bound, which is the failure mode this
-// whole codebase keeps running into.
+// readClipboardImage pulls an image from the system clipboard, or returns an error whose text is
+// worth showing the operator.
 func readClipboardImage(current []attachment) (attachment, error) {
 	argv := clipboardImageCommand()
 	if argv == nil {
@@ -338,25 +307,14 @@ func readClipboardImage(current []attachment) (attachment, error) {
 	return attachment{Name: pastedImageName(mime), MimeType: mime, Data: data}, nil
 }
 
-// clipboardTextCommand returns the argv that reads TEXT off the system clipboard, or nil when this machine
-// has no reader.
-//
-// IT IS THE SAME HELPERS AS THE IMAGE READER with the type argument dropped, because text is the default
-// representation for every one of them — and it is a SEPARATE command rather than a flag because the failure
-// semantics differ: an image read must produce NOTHING when the clipboard holds text (so the caller can fall
-// back), whereas a text read must produce the text.
+// clipboardTextCommand returns the argv that reads TEXT off the system clipboard, or nil when this
+// machine has no reader.
 func clipboardTextCommand() []string {
 	return clipboardTextCommandFor(runtime.GOOS, os.Getenv("WAYLAND_DISPLAY"), hasBinary)
 }
 
-// clipboardTextCommandFor is clipboardTextCommand's decision, with the platform, the Wayland hint and the
-// PATH probe injected.
-//
-// IT EXISTS SO THE WINDOWS CASE CAN BE TESTED FROM LINUX. The bug this closes was a MISSING BRANCH rather
-// than wrong logic — clipboardTextCommand had no "windows" arm at all, so every text paste on a Windows
-// box answered "no clipboard reader on this machine" — and a missing branch is exactly the kind of defect
-// that survives a hand-test on the platform that already worked. Splitting the decision out lets the whole
-// table be asserted on any host.
+// clipboardTextCommandFor is clipboardTextCommand's decision, with the platform, the Wayland hint
+// and the PATH probe injected.
 func clipboardTextCommandFor(goos, wayland string, has func(string) bool) []string {
 	switch goos {
 	case "darwin":
@@ -435,8 +393,7 @@ func clipboardHelperHint() string {
 		return "xclip or xsel"
 	case "windows":
 		// The text reader is PowerShell and needs no install, so the only thing that can be missing here is
-		// the IMAGE path — which has no Windows reader yet. Say that plainly rather than sending the
-		// operator off to install a Unix tool that does not exist for their platform.
+		// the IMAGE path — which has no Windows reader yet.
 		return "nothing for text (PowerShell is used) — images have no Windows clipboard reader yet, so use the file picker"
 	}
 	return "a platform clipboard tool"

@@ -89,9 +89,8 @@ func TestListRowWithoutMetaIsJustTheTitle(t *testing.T) {
 	}
 }
 
-// THE INVARIANT, swept across every width a real terminal uses: a row with a status shows that status
-// and never overflows the pane. This must hold for EVERY list in the TUI, which is why it lives in the
-// shared widget rather than in the two screens that reported it.
+// THE INVARIANT, swept across every width a real terminal uses: a row with a status shows that
+// status and never overflows the pane.
 func TestListRowAlwaysShowsTheStatusAndFitsTheWidth(t *testing.T) {
 	for w := 8; w <= 220; w++ {
 		row := listRow(Item{Title: execTitle, Meta: execMeta}, w)

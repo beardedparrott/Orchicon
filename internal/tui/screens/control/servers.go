@@ -1,20 +1,7 @@
 package control
 
-// servers.go — Control → Servers: the same server management the desktop app offers (design of record,
-// phase 2 / D6).
-//
-// THE OPERATOR ASKED FOR PARITY, NOT A CHORD: "I would like to add a manage server section under control for
-// the TUI as well as opposed to just the /plane command and have it mimic what the desktop offers option
-// wise." The /plane chord can start/stop/restart the ONE plane the shell is connected to; this lists EVERY
-// server on the machine and offers the verbs a person needs — start, stop, restart, re-apply, remove.
-//
-// IT IS LOCAL-ONLY, AND SAYS SO. `orch` is a REMOTE client by design: it can be pointed at a plane on
-// another machine. Installing or removing a server is inherently a HOST operation, so the source is only
-// present when the shell is talking to a local instance — and when it is not, the absence is explained
-// rather than the buttons failing one by one.
-//
-// IT GOES THROUGH internal/instancectl, the same contract the desktop page and the CLI use, so the two
-// clients cannot disagree about what a server is or what "stopped" means.
+// servers.go — Control → Servers: the same server management the desktop app offers (design of
+// record, phase 2 / D6). IT IS LOCAL-ONLY, AND SAYS SO.
 
 import (
 	"context"
@@ -30,9 +17,6 @@ import (
 const serversSourceName = "servers"
 
 // fetchServers lists every server on this machine.
-//
-// A FAILURE IS RETURNED, not swallowed: the table renders it, and "no servers" over an unreadable
-// filesystem is the one answer that would send someone to reinstall a machine that is fine.
 func (m *Model) fetchServers(_ context.Context, _ string) ([]kit2.Item, string, error) {
 	if !m.serversEnabled {
 		return nil, "", nil
@@ -54,9 +38,6 @@ func (m *Model) fetchServers(_ context.Context, _ string) ([]kit2.Item, string, 
 }
 
 // serverMeta is one short phrase per server, for the list's right-hand column.
-//
-// IT PREFERS THE SETUP STATE WHEN THERE IS ONE, because during a setup the plane is not the interesting
-// fact — "setting up" explains an otherwise alarming "stopped".
 func serverMeta(s instancectl.Instance) string {
 	switch s.Setup.EffectiveState() {
 	case instancectl.SetupRunning:
@@ -71,17 +52,6 @@ func serverMeta(s instancectl.Instance) string {
 		return "setup stopped responding"
 	}
 	// HEALTH IS THE AUTHORITATIVE SIGNAL, AND A PID IS NOT REQUIRED TO REPORT IT.
-	//
-	// REPORTED: "It also claims that prod isn't running but I am talking to you on prod right now." Prod's
-	// plane answers /healthz (200) and its detail line in THIS SAME SCREEN said "plane serving
-	// http://localhost:8091/healthz" — while the state word said "stopped", because this required
-	// `PID > 0` and prod's serve/pids/ is empty (its plane was started outside the lifecycle, so nothing
-	// wrote a PID file).
-	//
-	// plane_lifecycle.go already records the rule and states why: "A plane that answers /healthz IS up,
-	// whoever launched it." A missing PID file means the lifecycle verbs cannot STOP it; it does not mean
-	// nothing is serving. Reporting "stopped" over a plane the operator is actively using is the worst
-	// kind of wrong — it invites them to "fix" a working instance.
 	if s.Plane.Healthy {
 		// The port is on the Instance AND on the plane DTO, and Status() sets them equal. Read either, so a
 		// caller that filled only one (a test, or a future DTO) still gets the port rather than ":0".
@@ -145,10 +115,6 @@ func setupLine(p *instancectl.SetupProgress) string {
 }
 
 // serversActions are the verbs for the selected server.
-//
-// REMOVE IS CONFIRMED AND ASKS ABOUT THE DATA, in the same two-answer shape the desktop page uses: keeping a
-// database and destroying it are not degrees of the same thing, so "remove" alone must never be the whole
-// question.
 func (m *Model) serversActions(item kit2.Item) []kit2.Action {
 	name := item.ID
 	status, err := instancectl.Status(name)

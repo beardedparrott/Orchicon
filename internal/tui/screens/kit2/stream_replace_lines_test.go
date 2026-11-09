@@ -1,15 +1,6 @@
 package kit2
 
 // stream_replace_lines_test.go — CONTENT THAT GROWS IN PLACE MUST NOT MOVE THE VIEW.
-//
-// A streaming reply changes its last line on every update instead of appending a new one, so the
-// transcript renderer cannot treat it as a prefix extension and reaches for a replace. SetLines
-// re-pins to the bottom unconditionally — correct for a reload, wrong here: with the durable poll
-// updating once a second, an operator who scrolled up to re-read something would be dragged back down
-// before finishing the sentence.
-//
-// The two behaviours are asserted together because the fix must not cost the one that matters most: an
-// operator FOLLOWING a reply still has to be carried along with it.
 
 import (
 	"strings"
@@ -79,9 +70,6 @@ func TestReplaceLinesKeepsThePlaceOfAScrolledView(t *testing.T) {
 }
 
 // AND A SHRINKING REPLACE CLAMPS INSTEAD OF BLANKING.
-//
-// Content can get SHORTER between updates (a collapsed reasoning block, a re-grouped phase). An offset
-// left past the end renders an empty window, so the clamp is not decoration.
 func TestReplaceLinesClampsWhenTheContentShrinks(t *testing.T) {
 	lines := make([]string, 30)
 	for i := range lines {
@@ -105,15 +93,6 @@ func TestReplaceLinesClampsWhenTheContentShrinks(t *testing.T) {
 }
 
 // A RESIZE MUST NOT STOP THE FOLLOW — THE OPERATOR'S "I had to scroll down once".
-//
-// AtBottom() is POSITIONAL, so it answers false for reasons that have nothing to do with intent: this
-// stream is re-sized on every wake from the pane's body height, which moves with the dock's own row count.
-// A pane that gains a row leaves a FOLLOWING view one row short of the bottom, and every auto-follow rule
-// that re-derived its answer from that position then stopped following — permanently, because SetNotice
-// only re-pinned when already at the bottom. The operator scrolled once to recover, which is the tell:
-// scrolling was the only thing that could restore the pin.
-//
-// Following is now an INTENT, remembered across content and window changes.
 func TestAResizeDoesNotStopTheFollow(t *testing.T) {
 	lines := make([]string, 40)
 	for i := range lines {

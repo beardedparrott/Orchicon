@@ -1,19 +1,6 @@
 package tui
 
 // attachments_test.go — PASTING A FILE OR A SCREENSHOT INTO A CHAT MESSAGE.
-//
-// The operator: "People should be able copy and paste file and screenshots/images in the TUI. OpenCode does
-// this and it works. It shows up as [image] in the chat prompt but it works."
-//
-// THE SERVER HALF ALREADY EXISTED, which is why this is client-only: ask_orchicon.proto carries
-// AttachmentInput{name, mime_type, data}, the service enforces the caps, and internal/opencode/session.go
-// turns each attachment into an OpenCode FilePartInput with a data: URL — exactly how OpenCode's own client
-// sends an image. What was missing is the ACQUISITION, the VALIDATION and the WIRE SHAPE, and those are what
-// this file pins.
-//
-// The tests are mostly at the PURE level because that is where the decisions are: the caps, the type gate,
-// the MIME inference, and the marker vocabulary. The one that touches the disk does so in a temp dir, so it
-// cannot depend on the operator's files.
 
 import (
 	"bytes"
@@ -26,11 +13,6 @@ import (
 // --- the caps ------------------------------------------------------------------------------------
 
 // THE CAPS REFUSE WITH A REASON, and each cap is separate.
-//
-// A refusal with no explanation is indistinguishable from a broken gesture — the failure mode this codebase
-// keeps producing — so every case asserts the reason names what was wrong. The caps mirror the SERVER's
-// (internal/askorchicon/chat.go) and the GUI's (lib/ask-attachment.ts); being LOOSER than the server would
-// mean a long base64 encode followed by a failed turn.
 func TestAttachmentCapsRefuseWithAReason(t *testing.T) {
 	full := make([]attachment, maxAttachments)
 	for i := range full {
@@ -48,9 +30,7 @@ func TestAttachmentCapsRefuseWithAReason(t *testing.T) {
 		t.Errorf("the size refusal does not say why: %v", err)
 	}
 
-	// The TOTAL cap, reached by SEVERAL individually-legal files. Three 7MB files total 21MB, which is over
-	// the 20MB total while each one is under the 10MB single-file cap — so this exercises the total rule
-	// rather than tripping the per-file one first (which is what a 10MB+1 fixture would do).
+	// The TOTAL cap, reached by SEVERAL individually-legal files.
 	twoSevenths := []attachment{
 		{Name: "a.bin", Data: make([]byte, 7*1024*1024)},
 		{Name: "b.bin", Data: make([]byte, 7*1024*1024)},
@@ -69,9 +49,8 @@ func TestAttachmentCapsRefuseWithAReason(t *testing.T) {
 
 // --- MIME inference ------------------------------------------------------------------------------
 
-// THE MIME IS INFERRED THE WAY THE TWO OTHER CLIENTS DO IT: from the extension when there is one, and by
-// SNIFFING THE CONTENT when there is not — which is the case that matters, because a pasted screenshot
-// arrives with no name at all.
+// THE MIME IS INFERRED THE WAY THE TWO OTHER CLIENTS DO IT: from the extension when there is one,
+// and by SNIFFING THE CONTENT when there is not — which is the case that matters.
 func TestAttachmentMimeInference(t *testing.T) {
 	png := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
 	jpeg := []byte{0xff, 0xd8, 0xff, 0xe0, 0, 0}
@@ -127,9 +106,8 @@ func TestAttachmentTypeGate(t *testing.T) {
 
 // --- the transcript marker -----------------------------------------------------------------------
 
-// THE MARKER IS THE OPERATOR'S OWN VOCABULARY: "[image]" for a picture, because that is what they said they
-// see in OpenCode's prompt. It is not decoration — the composer line is cleared on send, so without it the
-// operator has no record on screen that the turn carried a screenshot.
+// THE MARKER IS THE OPERATOR'S OWN VOCABULARY: "[image]" for a picture, because that is what they
+// said they see in OpenCode's prompt.
 func TestAttachmentMarkerVocabulary(t *testing.T) {
 	img := attachment{Name: "shot.png", MimeType: "image/png"}
 	if got := img.marker(); got != "[image]" {
@@ -159,9 +137,8 @@ func TestAttachmentWireShape(t *testing.T) {
 
 // --- the paste-as-path heuristic -----------------------------------------------------------------
 
-// isProbablyPath IS DELIBERATELY CONSERVATIVE, and this pins the asymmetry it is built on: attaching
-// something the operator meant to TYPE is a silent change to their message, while inserting a path they
-// meant to attach is merely unhelpful. So it demands positive evidence.
+// isProbablyPath IS DELIBERATELY CONSERVATIVE, and this pins the asymmetry it is built on:
+// attaching something the operator meant to TYPE is a silent change to their message.
 func TestPastedPathHeuristic(t *testing.T) {
 	// A real file in a temp dir, for the relative-path case.
 	dir := t.TempDir()
@@ -188,9 +165,7 @@ func TestPastedPathHeuristic(t *testing.T) {
 		{"an explicit relative path", "./shot.png", true},
 		{"a QUOTED path", `"/tmp/shot.png"`, true},
 		// A QUOTED PATH CONTAINING A SPACE IS REFUSED, and that is the documented conservative rule rather
-		// than an oversight: the heuristic demands no interior spaces so that prose cannot be mistaken for a
-		// path. The cost is that such a path must be attached by chord instead of pasted — the safe side of
-		// the asymmetry this function is built on.
+		// than an oversight: the heuristic demands no interior spaces so that prose cannot be mistaken.
 		{"a quoted path with a space (refused by design)", `"/tmp/a shot.png"`, false},
 		{"prose", "let me explain what I meant by that", false},
 		{"an empty paste", "   ", false},
@@ -343,12 +318,7 @@ func TestSentMessageCarriesItsAttachmentMarkers(t *testing.T) {
 
 // --- the chords ----------------------------------------------------------------------------------
 
-// THE CHORDS ARE BOUND AND REACHABLE. A chord nobody can see is a chord nobody has, so the routes must
-// exist in the registry the help overlay renders FROM, and they must be in the composer's bypass list —
-// otherwise the textarea eats the keystroke before any route sees it.
-//
-// ctrl+f is NO LONGER ATTACH: it is FIND IN TRANSCRIPT (the universal chord finds). Attaching a file moved
-// to the /attach slash command — see TestSlashAttachAttachesTheFile, which pins that it really attaches.
+// THE CHORDS ARE BOUND AND REACHABLE.
 func TestAttachmentChordsAreRegisteredAndBypassTheComposer(t *testing.T) {
 	m := askRelaunched(t, "c1")
 
@@ -387,9 +357,7 @@ func TestAttachmentChordsAreRegisteredAndBypassTheComposer(t *testing.T) {
 	}
 }
 
-// /attach ACTUALLY ATTACHES. It delegates to the same reader ctrl+f used to use (attachFileFromPrompt), so
-// the pending-attachment strip fills and the file rides the NEXT message. The old "attachments are not
-// supported in the TUI" refusal is GONE, and the palette description no longer claims it is unsupported.
+// /attach ACTUALLY ATTACHES.
 func TestSlashAttachAttachesTheFile(t *testing.T) {
 	m := askRelaunched(t, "c1")
 
@@ -429,9 +397,4 @@ func TestSlashAttachAttachesTheFile(t *testing.T) {
 	}
 }
 
-// NOTE ON THE NIL HOOK. The dock offers every bracketed paste to a hook that the SHELL installs, and that
-// hook is a nil func field — so a dock built without a shell (several tests, and any embedder) must treat a
-// paste as text rather than panicking on the nil call. That case is pinned at the widget, in
-// internal/tui/dock's TestPasteRendersWithoutSending; it is deliberately NOT re-asserted here, because the
-// shell has no accessor for "was the hook installed" and inventing one to satisfy a test would be adding
-// production code for the test's benefit.
+// NOTE ON THE NIL HOOK.

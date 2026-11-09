@@ -1,16 +1,7 @@
 package control
 
-// provider_note_test.go — both provider forms tell the operator what a LOCAL model URL
-// means for a runtime container, and what it needs to work.
-//
-// The operator: "I also think we need to modify the add and edit provider sections in the
-// GUI and TUI to give a hint that a firewall rule will need to be added for the docker
-// container IP to make their local models work with both claude and opencode. Otherwise
-// users would be lost."
-//
-// Without it the failure is genuinely undiagnosable: Ask Orchicon works (the plane is on
-// the host and dials 127.0.0.1 directly) while container workers fail silently on a
-// blocked bridge port — one address, two consumers, only one of them broken.
+// provider_note_test.go — both provider forms tell the operator what a LOCAL model URL means for a
+// runtime container, and what it needs to work.
 
 import (
 	"strings"

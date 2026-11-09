@@ -1,18 +1,6 @@
 package kit2
 
 // pages_retired_test.go — the pane fetches the WHOLE set, and there is no page concept left.
-//
-// The operator: "I don't understand concept of 'pages'. It's mentioned in the TUI, yet I never page to
-// see more work items. I just hold the down arrow and I should be able to see all of them. Same goes
-// for any other item in the TUI. Pages are unnecessary imo."
-//
-// They are right, from the operator's side: the pane IS a scrolling list, and holding DOWN must reach
-// the end of it. So the base walks the RPC's cursors INTERNALLY (loadSource) and never surfaces a
-// next-page token — which is what removes the "more pages: press f" affordance: not a hidden key, but
-// the absence of anything left unfetched.
-//
-// These tests pin the two halves of that contract: every page is collected, and no token reaches the
-// table (so no marker can render).
 
 import (
 	"context"
@@ -81,9 +69,6 @@ func TestSourceFetchCollectsEveryPage(t *testing.T) {
 }
 
 // NO page token reaches the table, so nothing can advertise a next page.
-//
-// This is what makes "more pages: press f" impossible rather than merely unwritten: the marker
-// rendered on a non-empty NextPageToken, and after a whole-set load there is nothing unfetched.
 func TestSourceFetchNeverReportsANextPage(t *testing.T) {
 	b := &Base{}
 	b.AddSource("things", "Things", pagingSource(10, 30))
@@ -151,10 +136,6 @@ func TestSourceFetchKeepsPartialResultsOnALaterPageFailure(t *testing.T) {
 }
 
 // `f` is NOT a pager any more: nothing is left unfetched, and the base does not claim the key.
-//
-// It falls through rather than refusing, because a refusal for a concept that no longer exists would
-// be noise — and because a screen may legitimately want `f` for its own chord (the execution screen's
-// message-box stub does).
 func TestFIsNoLongerThePager(t *testing.T) {
 	b := &Base{}
 	calls := 0

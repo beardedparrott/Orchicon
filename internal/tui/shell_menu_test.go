@@ -11,10 +11,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// TestTabDropdownOpensAndSelects is the Phase-2a dropdown acceptance gate:
-// every tab opens a dropdown of its sub-screens (entries from the nav
-// registry = the screen inventory), arrows + enter select, esc closes,
-// and a different tab's chord re-points the menu.
+// TestTabDropdownOpensAndSelects is the Phase-2a dropdown acceptance gate: every tab opens a
+// dropdown of its sub-screens (entries from the nav registry = the screen inventory).
 func TestTabDropdownOpensAndSelects(t *testing.T) {
 	m := newTestApp()
 	// Open Work's dropdown (the same open path the mouse route + chord
@@ -70,10 +68,8 @@ func TestTabDropdownOpensAndSelects(t *testing.T) {
 	}
 }
 
-// TestWorkMenuSubScreens pins the mockup's example: Projects / Work Items
-// come from the Work tab's Sources() (the dropdown's no-drift source), and
-// the mockup's Runtime Images row exists as /runtime-images (Control
-// source, docs/tui-parity.md inventory — the registry cannot drift).
+// TestWorkMenuSubScreens pins the mockup's example: Projects / Work Items come from the Work tab's
+// Sources() (the dropdown's no-drift source).
 func TestWorkMenuSubScreens(t *testing.T) {
 	m := newTestApp()
 	var labels []string
@@ -92,9 +88,8 @@ func TestWorkMenuSubScreens(t *testing.T) {
 	}
 }
 
-// TestThemeCommandPins the /theme command: no arg lists the themes with an
-// active marker, /theme light switches the palette (styles re-derive),
-// /theme bogus errors, and the choice persists to the profile.
+// TestThemeCommandPins the /theme command: no arg lists the themes with an active marker, /theme
+// light switches the palette (styles re-derive), /theme bogus errors.
 func TestThemeCommand(t *testing.T) {
 	m := newDockTestApp()
 	// list
@@ -128,15 +123,8 @@ func TestThemeCommand(t *testing.T) {
 	}
 }
 
-// TestThemeRegistryAndConfig pins the theme registry: the TUI-owned palette set
-// (the launch default + light + the gruvbox pair), selectable via config
-// profile.Theme. Themes are TUI palettes validated for terminal contrast, not a
-// copy of the GUI's CSS tokens.
-//
-// THE DEFAULT IS ASSERTED BY NAME, not by position: the palette registry is in REGISTRY order (the
-// original family list), and the launch default is a separate choice — currently Ember, at the
-// operator's request. Expecting the default to be names[0] would be asserting the registry's
-// ordering, which is a different fact.
+// TestThemeRegistryAndConfig pins the theme registry: the TUI-owned palette set (the launch default
+// + light + the gruvbox pair), selectable via config profile.Theme.
 func TestThemeRegistryAndConfig(t *testing.T) {
 	names := theme.Names()
 	if len(names) < 2 {
@@ -156,9 +144,8 @@ func TestThemeRegistryAndConfig(t *testing.T) {
 			t.Errorf("theme %q must be registered", want)
 		}
 	}
-	// THE DEFAULT IS ASSERTED HERE AS WELL AS IN THE THEME PACKAGE, which is not redundant: this test reads it
-	// through the SHELL (the /theme listing and the config the shell writes), so a default that changed in one
-	// place and not the other would show up as a disagreement between what launches and what is offered.
+	// THE DEFAULT IS ASSERTED HERE AS WELL AS IN THE THEME PACKAGE, which is not redundant: this test
+	// reads it through the SHELL (the /theme listing and the config the shell writes).
 	if theme.DefaultName != "forest" {
 		t.Fatalf("default theme = %q, want forest (the operator's request: \"The default TUI theme "+
 			"should be forest.\"). The value is asserted THROUGH THE SHELL here, so changing "+

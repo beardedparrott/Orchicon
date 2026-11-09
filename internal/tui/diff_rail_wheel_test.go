@@ -1,17 +1,6 @@
 package tui
 
 // diff_rail_wheel_test.go — THE RAIL OWNS THE WHEEL IN ITS COLUMNS.
-//
-// The operator: "In the TUI diff bar, the scroll doesn't seem to be working."
-//
-// The rail's handlers were fine — it scrolls on a wheel (diffs.Model.handleMouse) and on the keyboard
-// (j/k/pgup/pgdown/g/G via diffMsg). What was wrong is that it never RECEIVED a wheel event: the Ask
-// transcript claimed every wheel on the Ask tab and returned, before the message could be routed to the
-// pane. Since the rail is painted OVER the transcript, scrolling it moved the transcript underneath while
-// the rail itself never budged.
-//
-// So the test is two-sided, and the second half is what keeps the fix honest: the wheel must reach the rail
-// in the rail's columns, and must STILL scroll the transcript everywhere else.
 
 import (
 	"fmt"

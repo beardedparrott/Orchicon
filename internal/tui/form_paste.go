@@ -26,23 +26,13 @@ import (
 )
 
 // formClipboardTextMsg carries the system clipboard's TEXT back into the shell for a FORM FIELD.
-//
-// IT IS ITS OWN TYPE, and not the composer's clipboardTextMsg, because the two have different
-// destinations: that one is answered by inserting into the COMPOSER (see the router's handler), while this
-// one belongs to whichever form field has the focus. One shared message would have to guess, and guessing
-// wrong would paste a token into a chat message.
-//
-// err is carried because a clipboard read can fail in ways the operator needs named (no reader installed, or
-// the clipboard holds no text) — and because a paste that silently does nothing is exactly what was reported.
 type formClipboardTextMsg struct {
 	text string
 	err  string
 }
 
-// pasteFromClipboardCmd reads the clipboard's TEXT.
-//
-// TEXT ONLY, never an image: a form field can only hold text, and the gesture that has to choose between
-// the two (a screenshot pasted into a prompt) belongs to the composer, where the attachment lands.
+// TEXT ONLY, never an image: a form field can only hold text, and the gesture that has to choose
+// between the two (a screenshot pasted into a prompt) belongs to the composer.
 func pasteFromClipboardCmd() tea.Cmd {
 	return func() tea.Msg {
 		t, err := readClipboardText()
@@ -53,11 +43,8 @@ func pasteFromClipboardCmd() tea.Cmd {
 	}
 }
 
-// formPasteTargets lists the text forms the shell hosts, TOPMOST FIRST — the same layering the router's key
-// chain uses, so a paste lands in the field the operator is looking at rather than in a form behind it.
-//
-// Only kit2.Forms. The palette and the /models picker edit their own query and carry their own handling, and
-// the composer is not a form at all.
+// formPasteTargets lists the text forms the shell hosts, TOPMOST FIRST — the same layering the
+// router's key chain uses.
 func (m *App) formPasteTargets() []*kit2.Form {
 	out := make([]*kit2.Form, 0, 5)
 	if m.convScopeForm != nil {
@@ -78,11 +65,8 @@ func (m *App) formPasteTargets() []*kit2.Form {
 	return out
 }
 
-// pasteIntoForms inserts text into the topmost form that can take it, reporting whether it landed anywhere.
-//
-// TWO HOSTS, in layering order. The SHELL's modals first (they are drawn above every screen), then the ACTIVE
-// SCREEN's own form — which is where most forms live, in the details pane, and where the report's secret
-// form was.
+// pasteIntoForms inserts text into the topmost form that can take it, reporting whether it landed
+// anywhere.
 func (m *App) pasteIntoForms(text string) bool {
 	for _, f := range m.formPasteTargets() {
 		if f.PasteText(text) {
@@ -95,17 +79,8 @@ func (m *App) pasteIntoForms(text string) bool {
 	return false
 }
 
-// cardPaster is a screen whose CARD hosts a free-text input row (the ask cards' "Other" row, and the
-// recorded card's draft row).
-//
-// IT EXISTS FOR THE SAME REASON pasteIntoForm DOES, and that reason is the whole shape of this file: the
-// interception is one place ABOVE the surfaces, so every surface that can take a paste must be reachable
-// from it. Cards were not, because a card's row is a plain string on the card's state rather than a
-// kit2.Form — so ctrl+v fell through to the composer and pasted into the message while the row sat there
-// visibly able to accept typing but not a paste.
-//
-// The Ask screen implements it. It is asked for by CAPABILITY rather than by name so a second screen with
-// card inputs needs no change here.
+// cardPaster is a screen whose CARD hosts a free-text input row (the ask cards' "Other" row, and
+// the recorded card's draft row).
 type cardPaster interface {
 	// CardInputOpen reports a free-text row that is up AND owns the keyboard (a row the operator deferred
 	// with ctrl+g does not, or the paste would land where their typing is not going).
@@ -130,11 +105,8 @@ func (m *App) cardInputOpen() bool {
 	return ok && p.CardInputOpen()
 }
 
-// pasteIntoCardInput routes text to that row, reporting whether it landed and returning its repaint.
-//
-// IT RETURNS (landed, cmd) IN THE SAME ORDER AS THE CAPABILITY IT DELEGATES TO, so the two signatures
-// cannot be transposed — which is exactly the bug this helper had in its first draft (the compile error
-// was the least bad outcome; the same shape with two bools would have swapped silently).
+// pasteIntoCardInput routes text to that row, reporting whether it landed and returning its
+// repaint.
 func (m *App) pasteIntoCardInput(text string) (bool, tea.Cmd) {
 	p, ok := m.cardPasteScreen()
 	if !ok || !p.CardInputOpen() {
@@ -144,9 +116,6 @@ func (m *App) pasteIntoCardInput(text string) (bool, tea.Cmd) {
 }
 
 // pasteScreen is the ACTIVE screen, when it can take a paste at all.
-//
-// The capability is ASKED FOR rather than listed: screens embed kit2.Base, which hosts their forms, so one
-// assertion reaches every screen's form and no screen has to be remembered here.
 func (m *App) pasteScreen() (interface{ PasteIntoForm(string) bool }, bool) {
 	s, ok := m.screens[m.active]
 	if !ok || s == nil {
@@ -156,19 +125,13 @@ func (m *App) pasteScreen() (interface{ PasteIntoForm(string) bool }, bool) {
 	return p, ok
 }
 
-// hasPasteTarget reports whether ANY form is open to paste into — the shell's, or the active screen's.
-//
-// IT ASKS FOR AN OPEN FORM, NOT FOR THE CAPABILITY, and the difference is the whole guard: every screen can
-// paste by virtue of embedding Base, so "can paste" would be true on every tab and ctrl+v would never
-// reach the composer again. EditingDetail is the accurate question —
-// "is a form actually up?".
+// hasPasteTarget reports whether ANY form is open to paste into — the shell's, or the active
+// screen's.
 func (m *App) hasPasteTarget() bool {
 	if len(m.formPasteTargets()) > 0 {
 		return true
 	}
-	// A CARD'S FREE-TEXT ROW IS A TARGET TOO. Without this the guard reports "no field to paste into"
-	// while a row is plainly on screen accepting keystrokes, and ctrl+v goes to the composer instead —
-	// the operator's report exactly.
+	// A CARD'S FREE-TEXT ROW IS A TARGET TOO.
 	if m.cardInputOpen() {
 		return true
 	}

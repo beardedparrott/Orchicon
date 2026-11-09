@@ -13,15 +13,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 )
 
-// contextwindow_fidelity_test.go — the CLIENT-side half of the audit (AC 8).
-//
-// The adapter segment picks the source of a context-window read and is NEVER
-// crossed. The real occurrence this pins: the Ask composer's context-window
-// lookup fell back from the native providers view to
-// AIGatewayService.ListOpenCodeModels — which SHELLS OUT TO THE OPENCODE BINARY.
-// On a box with no opencode that lookup cannot answer at all, so a cross-source
-// fallback silently reintroduces the exact dependency the native adapter exists
-// to remove.
+// contextwindow_fidelity_test.go — the CLIENT-side half of the audit (AC 8). The adapter segment
+// picks the source of a context-window read and is NEVER crossed.
 
 // fidelityProvider records every PROVIDERS sourcing view read (the native,
 // no-binary substrate).
@@ -81,9 +74,8 @@ func TestContextWindowNativeRefNeverTouchesCLIDiscovery(t *testing.T) {
 	}
 }
 
-// The recorded EXCEPTION: a legacy `opencode/...` ref MAY read the CLI, because
-// for THAT adapter the CLI is the authority on its own models (ADR-0004; the
-// picker has always worked this way).
+// The recorded EXCEPTION: a legacy `opencode/...` ref MAY read the CLI, because for THAT adapter
+// the CLI is the authority on its own models (ADR-0004; the picker has always worked this way).
 func TestContextWindowOpencodeRefReadsCLIDiscovery(t *testing.T) {
 	prov, gw := &fidelityProvider{}, &fidelityGateway{}
 	cl := fidelityClients(t, prov, gw)

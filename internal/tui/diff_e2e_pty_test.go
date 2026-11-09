@@ -75,10 +75,7 @@ func dumpFrame(t *testing.T, name string, scr *screen) {
 	}
 }
 
-// replay rebuilds the SCREEN GRID from every byte the session has painted so
-// far. Replaying the whole capture is correct for an alt-screen program: each
-// bubbletea flush starts with a cursor-home, so the concatenation's final state
-// is the current screen.
+// replay rebuilds the SCREEN GRID from every byte the session has painted so far.
 func replay(t *testing.T, s *ptySession, cols, rows int) *screen {
 	t.Helper()
 	scr := newScreen(cols, rows)
@@ -97,9 +94,8 @@ func screenText(scr *screen) string {
 	return b.String()
 }
 
-// waitForFrame polls until `want` appears in the replayed grid or the budget
-// expires, returning the final screen. It is how each phase waits for the live
-// process to finish painting rather than sleeping a fixed guess.
+// waitForFrame polls until `want` appears in the replayed grid or the budget expires, returning the
+// final screen.
 func waitForFrame(t *testing.T, s *ptySession, cols, rows int, budget time.Duration, want ...string) *screen {
 	t.Helper()
 	deadline := time.Now().Add(budget)
@@ -124,12 +120,8 @@ func waitForFrame(t *testing.T, s *ptySession, cols, rows int, budget time.Durat
 	}
 }
 
-// diffOwnerWidth reads the drawn width of the left diff rail off the grid: the
-// display column where the content pane's first non-blank cell begins, found by
-// locating the vertical panel border run. Returns 0 when the pane is not open.
-//
-// The pane's left border is a column of '│' (the DiffPanel rounded left
-// border). The rail's drawn width is that column index + 1.
+// diffOwnerWidth reads the drawn width of the left diff rail off the grid: the display column where
+// the content pane's first non-blank cell begins, found by locating the vertical panel border run.
 func diffOwnerWidth(scr *screen, rows int) int {
 	// The pane's border column is the first column with many consecutive '│'.
 	for c := 0; c < scr.cols/2; c++ {
@@ -156,49 +148,44 @@ func diffE2ELaunch(t *testing.T, planeURL string, cols, rows int) *ptySession {
 	return startOrchPtySized(t, bin, planeURL, home, cols, rows)
 }
 
-// openAskDiffPane drives the Ask mount to an open diff pane: /conversations
-// opens the rail, a click on the first conversation row opens it (setting the
-// (ask_conversation, <id>) owner), then ctrl+d opens the pane.
+// openAskDiffPane drives the Ask mount to an open diff pane: /conversations opens the rail, a click
+// on the first conversation row opens it (setting the (ask_conversation, <id>) owner).
 func openAskDiffPane(t *testing.T, s *ptySession, cols, rows int) *screen {
 	t.Helper()
 	waitForFrame(t, s, cols, rows, 6*time.Second, "❯")
-	// Let the shell finish its capability handshake + first live loads before
-	// typing (the proven mouse gate waits a flat 5s for the same reason: keys
-	// sent in that window are dropped).
+	// Let the shell finish its capability handshake + first live loads before typing (the proven mouse
+	// gate waits a flat 5s for the same reason: keys sent in that window are dropped).
 	time.Sleep(5 * time.Second)
 	_, _ = s.tty.WriteString("/conversations\r")
 	scr := waitForFrame(t, s, cols, rows, 6*time.Second, "diff-e2e-conv")
 	if !strings.Contains(screenText(scr), "diff-e2e-conv") {
 		t.Fatalf("conversations rail never listed the fixture conversation\n%s", screenText(scr))
 	}
-	// Click the first conversation row (SGR rows are 1-based; the rail's first
-	// row is 0-based railTopRow+1, i.e. SGR railTopRow+2). Mirrors the proven
-	// mouse gate's coordinates.
+	// Click the first conversation row (SGR rows are 1-based; the rail's first row is 0-based
+	// railTopRow+1, i.e. SGR railTopRow+2).
 	s.sendMouse(0, cols-ConversationsRailWidth+8, railTopRow+2, false)
 	s.sendMouse(0, cols-ConversationsRailWidth+8, railTopRow+2, true)
 	// ctrl+d opens the left diff rail (the global chord; composerBypassKeys
 	// carries ctrl+d so it works from either focus).
 	_, _ = s.tty.WriteString("\x04")
 	waitForFrame(t, s, cols, rows, 6*time.Second, "Timeline")
-	// Drop keyboard focus to the CONTENT so the pane owns j/k/G/h/l (the shell
-	// launched composer-focused; esc from an empty composer moves focus down,
-	// it does NOT close the still-empty pane).
+	// Drop keyboard focus to the CONTENT so the pane owns j/k/G/h/l (the shell launched
+	// composer-focused; esc from an empty composer moves focus down, it does NOT close the still-empty
+	// pane).
 	_, _ = s.tty.WriteString("\x1b")
 	time.Sleep(500 * time.Millisecond)
 	return replay(t, s, cols, rows)
 }
 
-// TestDiffE2EAskMountPTY exercises the Ask mount: the pane opens, the ledger's
-// files paint, click-through from Tree and Timeline focuses the diff, the long
-// diff is readable at both sizes, and the scrollbar is visible on overflow.
+// TestDiffE2EAskMountPTY exercises the Ask mount: the pane opens, the ledger's files paint,
+// click-through from Tree and Timeline focuses the diff, the long diff is readable at both sizes.
 func TestDiffE2EAskMountPTY(t *testing.T) {
 	skipDiffE2E(t)
 	fe := &diffE2EFileEditService{files: diffE2EFixtureFiles()}
 	url := diffE2EPlane(t, fe)
 	files := diffE2EFixtureFiles()
-	// The long line's final 7 chars — a contiguous token that survives wrapping
-	// across rows, so its presence proves the whole line is reachable (a
-	// truncating pane would have ellipsized it away).
+	// The long line's final 7 chars — a contiguous token that survives wrapping across rows, so its
+	// presence proves the whole line is reachable (a truncating pane would have ellipsized it away).
 	tailWitness := "TAILEND"
 
 	for _, size := range [][2]int{{80, 24}, {200, 50}} {
@@ -209,9 +196,8 @@ func TestDiffE2EAskMountPTY(t *testing.T) {
 			scr := openAskDiffPane(t, s, cols, rows)
 			dumpFrame(t, fmt.Sprintf("ask-%dx%d-open", cols, rows), scr)
 			text := screenText(scr)
-			// The default Diff tab shows the first file's diff, witnessed by its
-			// short marker (never wrapped) — proving the pane fetched and rendered
-			// the real ledger.
+			// The default Diff tab shows the first file's diff, witnessed by its short marker (never wrapped) —
+			// proving the pane fetched and rendered the real ledger.
 			if !strings.Contains(text, files[0].Marker) {
 				t.Fatalf("the diff pane never rendered the ledger's first file (marker %q) at %dx%d\n%s",
 					files[0].Marker, cols, rows, text)
@@ -223,10 +209,7 @@ func TestDiffE2EAskMountPTY(t *testing.T) {
 				t.Fatalf("no diff pane border at %dx%d — the pane did not open\n%s", cols, rows, text)
 			}
 
-			// 3. FIT: the long line lives in hunk 0, so it is already on the
-			// initial frame — assert its tail token is reachable without
-			// scrolling (a truncating pane would have dropped it). A "…" next to
-			// it would be the truncation signature.
+			// 3.
 			if !strings.Contains(text, tailWitness) {
 				t.Fatalf("the long diff line's tail %q is UNREACHABLE at %dx%d — content is cut off\n%s",
 					tailWitness, cols, rows, text)
@@ -259,18 +242,15 @@ func TestDiffE2EAskMountPTY(t *testing.T) {
 func assertAskClickThrough(t *testing.T, s *ptySession, cols, rows int, target diffE2EFile) {
 	t.Helper()
 
-	// Tree tab: click the tab label (the operator's gesture). The pane's tab bar
-	// is terminal row 3 (diffPaneTopRow); the "tree" label sits around content
-	// columns 9-12.
+	// Tree tab: click the tab label (the operator's gesture).
 	clickPaneTab(s, cols, 10) // "tree"
 	// Settle + wait for the tree list (the tab click repaints asynchronously; a
 	// no-want waitForFrame returns before the repaint).
 	time.Sleep(1500 * time.Millisecond)
 	scr := replay(t, s, cols, rows)
 	dumpFrame(t, fmt.Sprintf("ask-%dx%d-tree-tab", cols, rows), scr)
-	// The list rows ellipsize by design (an index entry, not diff content — see
-	// treeBody's truncate), so at 80x24 the path is "internal/second.g…". Assert
-	// the stable stem, which survives the ellipsis at every width.
+	// The list rows ellipsize by design (an index entry, not diff content — see treeBody's truncate),
+	// so at 80x24 the path is "internal/second.g…".
 	if !strings.Contains(screenText(scr), "second") {
 		t.Fatalf("Tree tab did not list the second file %s\n%s", target.Path, screenText(scr))
 	}
@@ -298,10 +278,8 @@ func assertAskClickThrough(t *testing.T, s *ptySession, cols, rows int, target d
 	dumpFrame(t, fmt.Sprintf("ask-%dx%d-timeline-click", cols, rows), scr)
 }
 
-// clickPaneTab sends a real mouse click on the pane's tab label at the given
-// content-relative column, on the pane's tab-bar row (paneTopRow). The pane
-// starts at terminal column 0 with a 1-cell left border; SGR coordinates are
-// 1-based, so terminal (x, y) → SGR (x+1, y+1).
+// clickPaneTab sends a real mouse click on the pane's tab label at the given content-relative
+// column, on the pane's tab-bar row (paneTopRow).
 func clickPaneTab(s *ptySession, cols, contentX int) {
 	x := contentX + 1 // + the pane's left border column
 	s.sendMouse(0, x+1, diffPaneTopRow+1, false)
@@ -315,9 +293,7 @@ func clickPaneRow(s *ptySession, contentX, termRow int) {
 	s.sendMouse(0, contentX+2, termRow+1, true)
 }
 
-// diffPaneBarColumn returns the pane's reserved scrollbar column as a per-row
-// string. The pane's content width is the drawn pane width minus the 1-cell
-// left border minus the 1-cell bar column; the bar is the last content cell.
+// diffPaneBarColumn returns the pane's reserved scrollbar column as a per-row string.
 func diffPaneBarColumn(scr *screen) string {
 	// The pane's drawn width is where the content border run ends; the bar
 	// column is just inside it. Find the pane border column (leftmost '│' run).
@@ -337,10 +313,7 @@ func diffPaneBarColumn(scr *screen) string {
 	if left < 0 {
 		return ""
 	}
-	// The pane's right edge: the next column left of the content region. The
-	// reserved bar column is the last cell of the pane's inner content, which
-	// the pane pads to (paneInnerWidth). Read a slice of candidate columns and
-	// return the one carrying bar glyphs, if any.
+	// The pane's right edge: the next column left of the content region.
 	var colsWithBar []int
 	for c := left + 1; c < scr.cols; c++ {
 		col := scr.col(c)
@@ -354,10 +327,8 @@ func diffPaneBarColumn(scr *screen) string {
 	return scr.col(colsWithBar[0])
 }
 
-// diffPaneDrawnWidth reads the pane's RENDERED width off the grid: the column
-// where the next box (the Detail panel, or the chat) begins on the pane's tab-bar
-// row. The pane is the left rail, so its right edge is where the neighboring box
-// starts — a drawn measurement, never a struct field.
+// diffPaneDrawnWidth reads the pane's RENDERED width off the grid: the column where the next box
+// (the Detail panel, or the chat) begins on the pane's tab-bar row.
 func diffPaneDrawnWidth(scr *screen) int {
 	row := scr.grid[diffPaneTopRow] // 0-based index of the pane's tab-bar row (row 3)
 	for c := 1; c < scr.cols; c++ {
@@ -376,10 +347,8 @@ func diffPaneDrawnWidth(scr *screen) int {
 // and the width survives a RESTART as a RENDERED width.
 func TestDiffE2EResizeAndRestartPTY(t *testing.T) {
 	skipDiffE2E(t)
-	// 200 columns, NOT 120: the clamp is floor-then-cap, and at 120 the
-	// available half (41) is below the 48-cell floor, so the CAP binds and the
-	// rail cannot move at all (see TestDiffRailWidthClampsOnAShrink). At 200 the
-	// half (81) is above the floor, so the drag/chord genuinely resizes.
+	// 200 columns, NOT 120: the clamp is floor-then-cap, and at 120 the available half (41) is below
+	// the 48-cell floor, so the CAP binds and the rail cannot move at all (see.
 	const cols, rows = 200, 50
 	fe := &diffE2EFileEditService{files: diffE2EFixtureFiles()}
 	url := diffE2EPlane(t, fe)
@@ -467,9 +436,8 @@ func TestDiffE2EExecutionMountPTY(t *testing.T) {
 	}
 }
 
-// TestDiffE2EHonestStatesPTY re-verifies the honest states with a live session:
-// an empty ledger renders the empty text; a failed ledger fetch renders the
-// explicit error banner rather than the empty text.
+// TestDiffE2EHonestStatesPTY re-verifies the honest states with a live session: an empty ledger
+// renders the empty text.
 func TestDiffE2EHonestStatesPTY(t *testing.T) {
 	skipDiffE2E(t)
 	const cols, rows = 120, 40

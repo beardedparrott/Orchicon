@@ -11,16 +11,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// Regression for the operator's "blue box riding off the pane": the composer's
-// composed rows ended with an OPEN surface-background SGR (the repair
-// re-asserted the box background before a line break, and at the block's end).
-// The shell pads every row out to the terminal width, so that open background
-// leaked onto the padding — a band of the box's colour extending right, past
-// its border.
-//
-// The contract: a composed row must never END with an unterminated SGR, so
-// whatever the caller appends inherits the caller's own background, not the
-// block's.
+// Regression for the operator's "blue box riding off the pane": the composer's composed rows ended
+// with an OPEN surface-background SGR (the repair re-asserted the box background before a line.
 func TestComposedRowsDoNotLeakTheirBackground(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii) })
@@ -47,15 +39,8 @@ func TestComposedRowsDoNotLeakTheirBackground(t *testing.T) {
 	}
 }
 
-// Regression for the operator's "when you start typing in a text box, it
-// becomes black and screws up the theme color".
-//
-// bubbles renders the CURSOR LINE's trailing padding with computedEndOfBuffer()
-// and nothing else, and its default EndOfBuffer carries a FOREGROUND only. With
-// no background on those cells they fall through to the terminal's own
-// background — a black band appearing the instant text exists. And because
-// bubbles takes a separate placeholderView() path for an empty buffer, the
-// empty box looked right while the typed one did not.
+// Regression for the operator's "when you start typing in a text box, it becomes black and screws
+// up the theme color".
 func TestComposerKeepsThemeBackgroundWhileTyping(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(termenv.Ascii); theme.Use(theme.DefaultName) })
@@ -108,9 +93,8 @@ func TestComposerKeepsThemeBackgroundWhileTyping(t *testing.T) {
 	}
 }
 
-// The composer shows a plain cursor, not placeholder text (the operator: the
-// "ask orchicon…" hint was redundant now that the affordance row carries the
-// hints, and bubbles renders the placeholder through a different path).
+// The composer shows a plain cursor, not placeholder text (the operator: the "ask orchicon…" hint
+// was redundant now that the affordance row carries the hints.
 func TestComposerHasNoPlaceholder(t *testing.T) {
 	m := newTestApp()
 	if got := m.dock.Placeholder(); got != "" {

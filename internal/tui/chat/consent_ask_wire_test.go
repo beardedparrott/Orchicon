@@ -11,9 +11,8 @@ import (
 
 // --- the converter (pure) --------------------------------------------------
 
-// TestPermissionAskFromProtoNamesTheCommandForAnExecution: the card must name
-// WHAT is being approved. For an execution that is the command, which the wire
-// carries in its own field rather than in targets.
+// TestPermissionAskFromProtoNamesTheCommandForAnExecution: the card must name WHAT is being
+// approved.
 func TestPermissionAskFromProtoNamesTheCommandForAnExecution(t *testing.T) {
 	got := PermissionAskFromProto(&apiv1.PermissionAsk{
 		AskId:     "ask-1",
@@ -47,9 +46,9 @@ func TestPermissionAskFromProtoNamesThePathForAWrite(t *testing.T) {
 	}
 }
 
-// TestPermissionAskFromProtoCarriesTheDenyEntry: the card must be able to STATE
-// the rule that denies the target, so it can disable the session-grant row
-// instead of offering a choice the policy will refuse.
+// TestPermissionAskFromProtoCarriesTheDenyEntry: the card must be able to STATE the rule that
+// denies the target, so it can disable the session-grant row instead of offering a choice the
+// policy.
 func TestPermissionAskFromProtoCarriesTheDenyEntry(t *testing.T) {
 	got := PermissionAskFromProto(&apiv1.PermissionAsk{
 		AskId:            "ask-3",
@@ -87,10 +86,8 @@ func TestPermissionAskFromProtoDoesNotLeakAWhitespaceCommand(t *testing.T) {
 	}
 }
 
-// TestPermissionAskFromProtoMapsAQuestionAsk: a NON-EMPTY QUESTION makes the wire
-// ask a QUESTION, not a permission. It carries no allow/deny and no directory — a
-// question grants nothing — so mapping it as a permission would put an allow/deny card
-// in front of the operator for a question, and route the answer down the grant path.
+// TestPermissionAskFromProtoMapsAQuestionAsk: a NON-EMPTY QUESTION makes the wire ask a QUESTION,
+// not a permission.
 func TestPermissionAskFromProtoMapsAQuestionAsk(t *testing.T) {
 	got := PermissionAskFromProto(&apiv1.PermissionAsk{
 		AskId:      "q-1",
@@ -118,9 +115,8 @@ func TestPermissionAskFromProtoMapsAQuestionAsk(t *testing.T) {
 	}
 }
 
-// TestPermissionAskFromProtoWithoutAQuestionIsAPermission is the CONTROL: the same
-// mapping must still produce a permission card when no question is present, or the
-// question branch has swallowed the whole feature.
+// TestPermissionAskFromProtoWithoutAQuestionIsAPermission is the CONTROL: the same mapping must
+// still produce a permission card when no question is present.
 func TestPermissionAskFromProtoWithoutAQuestionIsAPermission(t *testing.T) {
 	got := PermissionAskFromProto(&apiv1.PermissionAsk{
 		AskId: "p-1", Tool: "bash", Command: "ls", Directory: "/tmp",
@@ -135,10 +131,7 @@ func TestPermissionAskFromProtoWithoutAQuestionIsAPermission(t *testing.T) {
 
 // --- the wire arm (through the real stream handler) ------------------------
 
-// TestHandleEventEmitsConsentAsk is the regression guard for the missing wire
-// arm. The server has always built the ask, the proto has always carried it, and
-// the shell has always had a hook for it — but nothing read the field, so no
-// permission card could ever render in the TUI, for this adapter or any other.
+// TestHandleEventEmitsConsentAsk is the regression guard for the missing wire arm.
 func TestHandleEventEmitsConsentAsk(t *testing.T) {
 	stub := &stubAsk{}
 	cl, _ := newTestServer(t, stub)
@@ -172,18 +165,14 @@ func TestHandleEventEmitsConsentAsk(t *testing.T) {
 	if asks[0].Kind != AskTool {
 		t.Errorf("Kind = %q, want %q", asks[0].Kind, AskTool)
 	}
-	// AND NOTHING WAS QUEUED FOR THE COMMAND CHANNEL. That channel's send is non-blocking (16 slots, shared
-	// with the 1s turn poll), so a card routed through it could be dropped with no error and no retry — the
-	// pane sat at "orchicon is thinking" while the turn parked on the server. An ask is the only event in
-	// this test, so the queue must be empty: the card reached the store, not a droppable mail slot.
+	// AND NOTHING WAS QUEUED FOR THE COMMAND CHANNEL.
 	if queued := drainQueued(cmds); len(queued) != 0 {
 		t.Fatalf("the ask event queued %d command(s) on the droppable channel, want none", len(queued))
 	}
 }
 
-// TestHandleEventOtherSignalsEmitNoConsentAsk is the CONTROL: ordinary stream
-// traffic must not fabricate a card. Without it, the assertion above could pass
-// for a handler that emits asks unconditionally.
+// TestHandleEventOtherSignalsEmitNoConsentAsk is the CONTROL: ordinary stream traffic must not
+// fabricate a card.
 func TestHandleEventOtherSignalsEmitNoConsentAsk(t *testing.T) {
 	stub := &stubAsk{}
 	cl, _ := newTestServer(t, stub)
@@ -207,15 +196,6 @@ func TestHandleEventOtherSignalsEmitNoConsentAsk(t *testing.T) {
 }
 
 // TestAConsentAskSurvivesAFullCommandChannel is the SILENT DROP, reproduced.
-//
-// The card used to be queued with a non-blocking send onto the shell's shared command channel (16 slots, and
-// the 1s turn poll writes to it too). When the buffer was full the card was DISCARDED — no error, no retry,
-// nothing on the wire to notice — and on a healthy stream nothing re-dials, so the loss was permanent for
-// that turn: the pane sat at "orchicon is thinking" while the turn parked on the server waiting for an answer
-// that had no card to collect it. The operator, watching both clients: "the permission ask card pops up in the
-// GUI but it doesn't pop up in the TUI. It just sits at 'orchicon is thinking'. It's not consistent."
-//
-// The channel here is full BEFORE the ask arrives, so any delivery that depends on it fails this test.
 func TestAConsentAskSurvivesAFullCommandChannel(t *testing.T) {
 	stub := &stubAsk{}
 	cl, _ := newTestServer(t, stub)
@@ -242,9 +222,7 @@ func TestAConsentAskSurvivesAFullCommandChannel(t *testing.T) {
 	}
 }
 
-// TestAConsentResolutionSurvivesAFullCommandChannel — the same hazard for the OTHER decision event. A dropped
-// resolution leaves a live-looking, INERT card on screen in whichever client did not answer (the collector
-// publishes every applied decision precisely so the other client can settle its copy).
+// TestAConsentResolutionSurvivesAFullCommandChannel — the same hazard for the OTHER decision event.
 func TestAConsentResolutionSurvivesAFullCommandChannel(t *testing.T) {
 	stub := &stubAsk{}
 	cl, _ := newTestServer(t, stub)

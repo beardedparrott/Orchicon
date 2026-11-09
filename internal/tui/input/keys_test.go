@@ -28,19 +28,16 @@ func translateAll(in string) string {
 	return string(p[:n])
 }
 
-// TestShiftEnterBecomesTheNewlineChord is the whole point: the three bytes a
-// terminal sends for Shift+Enter must come out as the alt+enter chord, because
-// that is what the composer maps to insertNewline. Before this, bubbletea split
-// the same three bytes into alt+O and M and the composer typed "OM".
+// TestShiftEnterBecomesTheNewlineChord is the whole point: the three bytes a terminal sends for
+// Shift+Enter must come out as the alt+enter chord.
 func TestShiftEnterBecomesTheNewlineChord(t *testing.T) {
 	if got, want := translate("\x1bOM"), "\x1b\r"; got != want {
 		t.Fatalf("Shift+Enter = %q, want the newline chord %q", got, want)
 	}
 }
 
-// TestOrdinaryInputIsUntouched guards the rewrite against being a blunt
-// instrument: text, plain Enter, alt+enter, and a lone Escape must all pass
-// through verbatim.
+// TestOrdinaryInputIsUntouched guards the rewrite against being a blunt instrument: text, plain
+// Enter, alt+enter, and a lone Escape must all pass through verbatim.
 func TestOrdinaryInputIsUntouched(t *testing.T) {
 	for _, in := range []string{
 		"hello world",
@@ -67,10 +64,8 @@ func TestRepeatedAndEmbeddedSequences(t *testing.T) {
 	}
 }
 
-// TestLengthShrinksByTheNumberOfMatches pins the buffer arithmetic: the
-// replacement is shorter than the match, so the returned length must be the
-// SHRUNKEN one. Reporting the original length would hand the caller stale
-// trailing bytes — io.Reader's one hard contract.
+// TestLengthShrinksByTheNumberOfMatches pins the buffer arithmetic: the replacement is shorter than
+// the match, so the returned length must be the SHRUNKEN one.
 func TestLengthShrinksByTheNumberOfMatches(t *testing.T) {
 	p := []byte("\x1bOM\x1bOM\x1bOM")
 	if n := translateShiftEnter(p); n != 6 {
@@ -81,10 +76,8 @@ func TestLengthShrinksByTheNumberOfMatches(t *testing.T) {
 	}
 }
 
-// TestReadTranslatesThroughARealFile drives the decorator the way the program
-// does: a real file, read in chunks, with the sequence straddling nothing. It
-// also proves the decorated value is still a *os.File underneath, which is the
-// raw-mode contract.
+// TestReadTranslatesThroughARealFile drives the decorator the way the program does: a real file,
+// read in chunks, with the sequence straddling nothing.
 func TestReadTranslatesThroughARealFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "stdin")
 	if err := os.WriteFile(path, []byte("hi\x1bOMthere"), 0o600); err != nil {
@@ -116,10 +109,8 @@ func TestReadTranslatesThroughARealFile(t *testing.T) {
 	}
 }
 
-// TestSequenceSplitAcrossReadsIsNotTranslated documents the stated limit rather
-// than pretending it does not exist. A trailing ESC is NOT held back (that would
-// delay or strand a real Escape keypress, which is worse), so a split sequence
-// passes through as the two keys bubbletea would have made of it anyway.
+// TestSequenceSplitAcrossReadsIsNotTranslated documents the stated limit rather than pretending it
+// does not exist.
 func TestSequenceSplitAcrossReadsIsNotTranslated(t *testing.T) {
 	// Two independent calls stand in for two Reads: the translator is
 	// stateless by design.
@@ -133,22 +124,14 @@ func TestSequenceSplitAcrossReadsIsNotTranslated(t *testing.T) {
 
 // ---------------------------------------------------------------- the library cross-check
 
-// bubbleteaDecodes reports what the PINNED bubbletea makes of a raw byte sequence,
-// driving a real tea.Program over an in-memory reader.
-//
-// WHY THIS IS NOT A TABLE OF OUR OWN BELIEFS. The whole fix rests on a claim about the
-// library — that its SS3 support is half-implemented, decoding the arrow keys and F1-F4
-// but not Home and End. A test that asserted that claim by consulting ss3KeyRewrites
-// would be circular. This asks the library itself, so if bubbletea ever completes its
-// table the rewrite stops being necessary and these tests say so out loud instead of
-// silently rotting.
+// bubbleteaDecodes reports what the PINNED bubbletea makes of a raw byte sequence, driving a real
+// tea.Program over an in-memory reader.
 func bubbleteaDecodes(seq string) bool {
 	return firstKeyOf(seq) != ""
 }
 
-// firstKeyOf returns the String() of the FIRST key the library decodes from seq, or ""
-// if it decodes none. It returns as soon as one key arrives, so it never has to reason
-// about how the library splits a sequence it does not recognise.
+// firstKeyOf returns the String() of the FIRST key the library decodes from seq, or "" if it
+// decodes none.
 func firstKeyOf(seq string) string {
 	kc := &keyCapture{got: make(chan string, 1)}
 	prog := tea.NewProgram(
@@ -212,10 +195,8 @@ func TestBubbleteaDecodesTheSS3SpellingsItAlreadyHandles(t *testing.T) {
 	}
 }
 
-// TestBubbleteaSplitsTheSS3HomeEndSpellingIntoTwoKeys IS THE BUG, demonstrated against
-// the real library rather than described: the SS3 Home/End spelling does not arrive as
-// one unknown key, it arrives as alt+O and then an ordinary letter — which is why the
-// symptom is the literal text "OH" / "OF" typed into the composer.
+// TestBubbleteaSplitsTheSS3HomeEndSpellingIntoTwoKeys IS THE BUG, demonstrated against the real
+// library rather than described: the SS3 Home/End spelling does not arrive as one unknown key.
 func TestBubbleteaSplitsTheSS3HomeEndSpellingIntoTwoKeys(t *testing.T) {
 	// The library's own casing: "alt+O", with a capital O.
 	for seq, want := range map[string]string{"\x1bOH": "alt+O", "\x1bOF": "alt+O"} {

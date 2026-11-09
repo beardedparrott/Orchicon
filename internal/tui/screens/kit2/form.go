@@ -28,39 +28,15 @@ const (
 	KYAML        Kind = "yaml"
 	KCheckbox    Kind = "checkbox"
 	KNumber      Kind = "number"
-	// KPicker is a reference-to-another-entity field: instead of typing an ID
-	// (which no human knows) the operator types and the matching options are
-	// listed as they go, so the choice is MADE from the list. The operator:
-	// "The Parent work item requires an ID. There is no way a human is going to
-	// know this ... if you type a letter another box comes up similar to the
-	// slash command that has all work items that can be selected. Same should
-	// go for workflows and runtime images as well."
+	// KPicker is a reference-to-another-entity field: instead of typing an ID (which no human knows)
+	// the operator types and the matching options are listed as they go.
 	KPicker Kind = "picker"
-	// KModel is a model_ref field. The concrete choice is made in the dedicated
-	// modal ModelPicker (adapter → provider → model, with search) rather than
-	// typed, because no human knows a model ref by heart — the operator's "when
-	// you enter the field, this one deserves its own modal popup". The field
-	// itself is read-only and DISPLAYS the committed adapter/provider/model ref
-	// (the operator's "the text it displays after the model is selected is the
-	// adapter/provider/model name").
+	// KModel is a model_ref field.
 	KModel Kind = "model"
-	// KDate is a DATE field. Like KModel it is a REFERENCE chosen from a control
-	// rather than typed: the concrete date comes from the host's modal calendar
-	// (kit2.DatePicker), because a terminal text box demanding "YYYY-MM-DD" makes
-	// the format something to remember and hides which weekday a day is. The field
-	// is read-only and DISPLAYS the chosen date.
+	// KDate is a DATE field.
 	KDate Kind = "date"
 	// KDateTime is a DATE-AND-TIME field: an INSTANT chosen from the host's modal calendar + clock
 	// (kit2.DateTimePicker) rather than typed.
-	//
-	// It exists because a scheduled start is not a date. The form used to pair the calendar with a
-	// list of ten canned time presets, which is the control the operator rejected: "Having to type the
-	// time in the EXACT format or pick very specific time jumps like 15 minutes is very limiting."
-	// One control now chooses the day AND the clock, which is also the shape the GUI uses (a single
-	// `<input type="datetime-local">`).
-	//
-	// Like KDate and KModel it is a REFERENCE, so the field is read-only and DISPLAYS the chosen
-	// instant (see FieldSpec.Display for why the shown text differs from the stored value).
 	KDateTime Kind = "date-time"
 )
 
@@ -81,50 +57,19 @@ type FieldSpec struct {
 	Initial     string
 	// Validate returns a field error ("" = valid). It runs on submit.
 	Validate func(string) error
-	// Visible, when set, decides whether the field exists RIGHT NOW, given the form's
-	// current values. Nil means always visible.
-	//
-	// It exists for the case an operator hits constantly and no amount of rebuilding can
-	// cover: a field whose relevance depends on ANOTHER field. The step editor is the
-	// motivating one — "when editing a current step and you change it from a worker task to
-	// an approval or loop, it should automatically show the reviewer/success/loop fields
-	// based on the type that was selected". A form whose specs are fixed at build time can
-	// only ever show the fields of the kind it was OPENED with, so the fields for the newly
-	// chosen kind are simply absent.
-	//
-	// A hidden field is skipped by rendering, by field navigation (Tab/arrows) and by
-	// validation, so a hidden `Required` field cannot block a save. Its VALUE is kept, so
-	// toggling a kind back and forth does not discard what was typed.
+	// Visible, when set, decides whether the field exists RIGHT NOW, given the form's current values.
 	Visible func(values map[string]string) bool
 
-	// NoPreview declares that this field holds CODE, not prose, so the rendered-markdown
-	// view (ctrl+p) is never offered on it.
-	//
-	// It exists because the markdown test is a HEURISTIC. md.LooksLikeMarkdown treats a
-	// leading "#" as a heading, so a Dockerfile beginning `# syntax=docker/dockerfile:1`
-	// or a shell script opening with a `#` comment reads as markdown — and a preview
-	// would then show the code with its first line styled as a heading. The VALUE is
-	// never touched (the preview is read-only), but showing code as prose is a lie in
-	// the UI, and the honest signal is the field's own declaration rather than a guess
-	// about its contents.
+	// NoPreview declares that this field holds CODE, not prose, so the rendered-markdown view (ctrl+p)
+	// is never offered on it.
 	NoPreview bool
 
 	// Display, when set, renders the value for the operator WITHOUT changing what is stored.
-	//
-	// It is the seam a value that is a WIRE FORMAT needs. A scheduled start must be stored as an
-	// RFC3339 instant, because that is exactly what the request carries — but "2026-09-18T14:30:00-04:00"
-	// is the wrong thing to show a person, who wants "2026-09-18 14:30 EDT (UTC-04:00)". Reformatting
-	// the stored value instead (the obvious alternative) would mean the field no longer holds what it
-	// sends, and it is the stored value the submit handler reads.
 	Display func(string) string
 }
 
-// Form is a typed, validated input collection that submits through the
-// mutation layer. Values are keyed by FieldSpec.Name.
-//
-// Security: a `secret` field's raw value is held only in Values (for the
-// RPC) and is NEVER rendered — View() draws a fixed mask instead. That is
-// asserted by a test.
+// Security: a `secret` field's raw value is held only in Values (for the RPC) and is NEVER rendered
+// — View() draws a fixed mask instead.
 type Form struct {
 	Specs     []FieldSpec
 	Values    map[string]string
@@ -132,30 +77,18 @@ type Form struct {
 	Cursor    int
 	Errors    map[string]string
 	Submitted bool
-	// SubmitErr is why the last save did NOT go through ("" = none). The host
-	// keeps the form open on a rejected submit, so this is the only signal the
-	// operator gets.
+	// SubmitErr is why the last save did NOT go through ("" = none).
 	SubmitErr string
 	Width     int
 	Height    int
 	Focused   bool
 	Title     string
 
-	// Note is a paragraph drawn under the title: context the operator needs in order to
-	// fill the form in correctly that no single field owns.
-	//
-	// IT IS NOT A PLACEHOLDER, and that is why it exists. A placeholder is drawn INSIDE
-	// a field's value column and truncated to fit, so a sentence of explanation lost its
-	// tail exactly where the operator needed it — and a multi-line one could not be
-	// expressed at all. The provider base-URL hint is the case that forced this (a local
-	// model needs two different addresses and a firewall rule; none of that fits in a
-	// field).
+	// Note is a paragraph drawn under the title: context the operator needs in order to fill the form
+	// in correctly that no single field owns.
 	Note string
 
-	// pos is the CARET position (a rune index) per editable field. Without it
-	// the only edit available was appending to the end of the prefilled value,
-	// which is why editing an existing item read as "I can't actually edit
-	// anything": no way to correct mid-string and no way to clear a field.
+	// pos is the CARET position (a rune index) per editable field.
 	pos map[string]int
 
 	// multiCur is the per-option cursor of a multi-select field (which weekday
@@ -168,70 +101,29 @@ type Form struct {
 	pickerQuery string
 	pickerSel   int
 
-	// OnChange is called after a field's value changes programmatically (a
-	// picker commit, Set). A screen uses it to keep DERIVED fields consistent
-	// — e.g. the work-item Kind follows the chosen Parent, so the form can
-	// never offer a combination the server rejects.
+	// OnChange is called after a field's value changes programmatically (a picker commit, Set).
 	OnChange func(name, value string)
 
-	// OnOpenModelPicker is invoked when the operator ACTIVATES a KModel field
-	// (enter or space). The host opens its ModelPicker seeded with the field's
-	// current ref and writes the committed ref back with Set. The picker is the
-	// SCREEN's, so it can be layered over either a modal form or the inline
-	// detail editor.
+	// OnOpenModelPicker is invoked when the operator ACTIVATES a KModel field (enter or space).
 	OnOpenModelPicker func(name, current string) tea.Cmd
 
-	// OnOpenDatePicker is invoked when the operator ACTIVATES a KDate field. The
-	// host opens its calendar seeded with the field's current value and writes the
-	// chosen date back with Set. Same contract as OnOpenModelPicker.
+	// OnOpenDatePicker is invoked when the operator ACTIVATES a KDate field.
 	OnOpenDatePicker func(name, current string) tea.Cmd
 
-	// OnOpenDateTimePicker is invoked when the operator ACTIVATES a KDateTime field. The host opens
-	// its combined calendar + clock seeded with the field's current value and writes the committed
-	// instant back with Set. Same contract as OnOpenDatePicker, and a separate hook rather than a
-	// widened one because the two need different MODALS, not different seeds.
+	// OnOpenDateTimePicker is invoked when the operator ACTIVATES a KDateTime field.
 	OnOpenDateTimePicker func(name, current string) tea.Cmd
 
-	// editing is the field LOCKED for text editing, entered with Enter on a
-	// multi-line field and left with Esc. The operator's proposal: "we should not
-	// make 'enter' drop the next line since we already have the down/up doing that,
-	// but instead, we should make enter edit that field and then allow the scroll
-	// mechanism since the field would be locked until you hit Esc to break out of it."
-	//
-	// It exists because the two arrow axes mean different things at the two levels:
-	// OUTSIDE the lock, up/down move between FIELDS (form navigation, unchanged).
-	// INSIDE it, up/down move the CARET within the value — which is what makes a
-	// long prompt or Dockerfile navigable, since the arrow keys are the only
-	// vertical control the form has. The caret is also the scroll position (see
-	// wrappedBody), so moving the caret is what scrolls the view.
-	//
-	// "" means no field is locked.
+	// editing is the field LOCKED for text editing, entered with Enter on a multi-line field and left
+	// with Esc.
 	editing string
 
-	// preview is the field currently shown as RENDERED MARKDOWN, toggled with
-	// ctrl+p. It is a VIEW and nothing more: f.Values still holds the raw text, the
-	// caret and every edit operate on the raw text, and the raw text is the only
-	// thing ever submitted. The operator: "in edit mode you could see the markdown.
-	// Like maybe a markdown switcher to view what it looks like but raw would be the
-	// only thing ever used."
-	//
-	// Mutually exclusive with expanded (ctrl+e), because both replace how one field
-	// is drawn and showing two renderings of the same field at once is meaningless.
+	// preview is the field currently shown as RENDERED MARKDOWN, toggled with ctrl+p.
 	preview string
 
 	// expanded is the field currently rendered WIDE, toggled with ctrl+e.
-	//
-	// A long free-text field (description, behavior, a prompt) is otherwise
-	// edited one horizontally-windowed line at a time, so the operator can see
-	// only a slice of what they are writing — "we need a way to expand out fields
-	// like description, Behavior, etc. so we can see more of it when we are typing
-	// in our changes". Expanded, the field's value wraps and grows in place, under
-	// the same field, so everything else stays where it was.
 	expanded string
 
-	// OnSubmit is invoked by Submit with a copy of the collected values. It
-	// is where the screen wires the mutation executor; the returned cmd (the
-	// mutation's async RPC) is handed back to the bubbletea update loop.
+	// OnSubmit is invoked by Submit with a copy of the collected values.
 	OnSubmit func(values map[string]string, multi map[string][]string) (tea.Cmd, error)
 }
 
@@ -243,22 +135,8 @@ func NewForm(title string, specs ...FieldSpec) *Form {
 		Values: map[string]string{},
 		Multi:  map[string]map[string]bool{},
 		Errors: map[string]string{},
-		// FOCUSED BY DEFAULT, because a form is only ever constructed to be handed to
-		// the operator — there is no such thing as a form being built for nobody.
-		//
-		// AND IT IS LOAD-BEARING: `Focused` is render-only, but without it Form.View
-		// draws no ▸ cursor marker and no placeholder, so a perfectly functional,
-		// fully keyboard-driven form renders as an inert "Label: value" list. Every
-		// field still accepts typing; nothing says so. That is not a subtle failure —
-		// the operator read it as read-only and reported that the form "didn't
-		// actually give me the option to edit any of the fields".
-		//
-		// It used to default to false and be set by hand at each call site, which
-		// worked only because three of them remembered. This is the same shape of
-		// trap as the ephemeral gate's default and the transcript's wrap opt-in: a
-		// safety-relevant flag whose zero value means "do not work". A host that
-		// genuinely wants an unfocused form sets it (or calls a Blur), and the test
-		// beside this package pins the default so it cannot quietly revert.
+		// FOCUSED BY DEFAULT, because a form is only ever constructed to be handed to the operator — there
+		// is no such thing as a form being built for nobody.
 		Focused: true,
 		pos:     map[string]int{},
 	}
@@ -268,9 +146,7 @@ func NewForm(title string, specs ...FieldSpec) *Form {
 		}
 		if s.Kind == KMultiSelect {
 			f.Multi[s.Name] = map[string]bool{}
-			// Seed from Initial: a COMMA-SEPARATED list of option values. Without
-			// this an EXISTING selection could never be shown — an edit form would
-			// open with every option unchecked, and saving would silently clear it.
+			// Seed from Initial: a COMMA-SEPARATED list of option values.
 			for _, v := range strings.Split(s.Initial, ",") {
 				if v = strings.TrimSpace(v); v != "" {
 					f.Multi[s.Name][v] = true
@@ -357,9 +233,7 @@ func (f *Form) pickerChoose(s *FieldSpec) {
 	f.pickerClose()
 }
 
-// pickerKey handles a key aimed at a focused KPicker. handled=false falls
-// through to the ordinary field handling (so up/down still walk FIELDS while
-// the list is closed, and tab still leaves the field).
+// pickerKey handles a key aimed at a focused KPicker.
 func (f *Form) pickerKey(s *FieldSpec, k keyMsg) (tea.Cmd, bool) {
 	open := f.pickerField == s.Name
 	switch k.String() {
@@ -367,9 +241,7 @@ func (f *Form) pickerKey(s *FieldSpec, k keyMsg) (tea.Cmd, bool) {
 		if open {
 			opts := f.pickerOptions(s)
 			if len(opts) == 0 && strings.TrimSpace(f.pickerQuery) != "" {
-				// FREE-FORM: the operator typed an exact value that matches no
-				// preset. Commit it, so a value can be CUSTOMIZED — with the
-				// field's own validator reporting a malformed one.
+				// FREE-FORM: the operator typed an exact value that matches no preset.
 				v := strings.TrimSpace(f.pickerQuery)
 				f.Values[s.Name] = v
 				f.setCaret(s.Name, len([]rune(v)))
@@ -442,13 +314,8 @@ func (f *Form) pickerKey(s *FieldSpec, k keyMsg) (tea.Cmd, bool) {
 	return nil, false
 }
 
-// moveCaretLine moves the caret to the same COLUMN on the previous/next logical
-// line, which is how every text editor's up/down behaves. It is a no-op at the
-// first/last line, so holding the key does not walk out of the field.
-//
-// Logical lines, not wrapped rows: a long line that soft-wraps into three rows is
-// still ONE line to the operator, and stepping by wrapped row would make the
-// caret jump to an arbitrary column mid-sentence.
+// moveCaretLine moves the caret to the same COLUMN on the previous/next logical line, which is how
+// every text editor's up/down behaves.
 func (f *Form) moveCaretLine(name string, delta int) {
 	val := []rune(f.Values[name])
 	pos := f.caret(name)
@@ -496,10 +363,8 @@ func (f *Form) moveCaretLine(name string, delta int) {
 // EditingField returns the name of the field currently locked for editing, or "".
 func (f *Form) EditingField() string { return f.editing }
 
-// Wheel scrolls the locked field's view by delta lines, by moving the CARET — the
-// caret IS the scroll position (see wrappedBody), so there is no separate offset
-// that could leave the cursor off-screen. It reports whether it consumed the event,
-// so the host can fall back to its own scrolling when no field is locked.
+// Wheel scrolls the locked field's view by delta lines, by moving the CARET — the caret IS the
+// scroll position (see wrappedBody).
 func (f *Form) Wheel(delta int) bool {
 	if f.editing == "" {
 		return false
@@ -537,10 +402,8 @@ func (f *Form) Set(name, value string) {
 	}
 }
 
-// caret returns the rune index of the caret within the named field's value,
-// clamped to the value's length (an unvisited field starts at the end, which is
-// where appending used to happen, so nothing about typing at a fresh field
-// changes).
+// caret returns the rune index of the caret within the named field's value, clamped to the value's
+// length (an unvisited field starts at the end, which is where appending used to happen.
 func (f *Form) caret(name string) int {
 	n := len([]rune(f.Values[name]))
 	p, ok := f.pos[name]
@@ -569,16 +432,6 @@ func (f *Form) setCaret(name string, p int) {
 
 // PasteText inserts PASTED text into the focused field, and is the one path a paste takes — so the
 // sanitising below is stated once rather than at every call site.
-//
-// A paste is not typing, and the difference matters in exactly one place: a SINGLE-LINE field must not be
-// able to receive a newline. A token copied out of a config file or a browser frequently carries a trailing
-// newline, and inserting it into a KText field would put a line break inside a value the operator can see
-// only one line of — the value would then fail validation or, worse, be stored with a newline in it. So
-// newlines and tabs collapse to spaces for every single-line kind, and are PRESERVED for the multi-line
-// ones (KTextArea/KJSON/KYAML), where they are the point.
-//
-// It reports whether it inserted anything, so a caller can tell "pasted into a field" from "there was no
-// field to paste into" — which is how the shell decides between pasting and its own ctrl+v behaviour.
 func (f *Form) PasteText(text string) bool {
 	f.normalizeCursor()
 	s := f.current()
@@ -593,15 +446,7 @@ func (f *Form) PasteText(text string) bool {
 	if strings.TrimSpace(text) == "" {
 		return false
 	}
-	// A PICKER IS A CHOSEN VALUE, NOT A TEXT BUFFER. It has no caret for the operator to aim at, so
-	// "insert at the caret" would be meaningless here — and APPENDING to a picker that already holds a
-	// selection would produce a value matching no option at all. The paste IS the choice: it replaces what
-	// was there, which is exactly what the picker's own free-form entry commits when a typed value matches
-	// no option.
-	//
-	// This is the case that matters most in practice: the credential form's first two fields are BOTH
-	// pickers (the env var/header key, and the stored secret), and pasting a token name into them is the
-	// whole point of the report.
+	// A PICKER IS A CHOSEN VALUE, NOT A TEXT BUFFER.
 	if s.Kind == KPicker {
 		text = sanitizeInput(text)
 		f.Values[s.Name] = text
@@ -701,12 +546,6 @@ func (f *Form) SetMulti(name, value string, on bool) {
 }
 
 // FocusName focuses a field by name.
-// Spec returns a field's spec by name, or nil when the form has no such field.
-//
-// Exported because the field KIND is part of a form's contract with its host: a test asserting that the
-// scheduled start is the combined date+time control (rather than the date control plus a text box it used
-// to be) has to read the spec, and reaching into Specs by hand at every call site is how a screen ends up
-// with its own copy of the lookup.
 func (f *Form) Spec(name string) *FieldSpec {
 	for i := range f.Specs {
 		if f.Specs[i].Name == name {
@@ -733,10 +572,6 @@ func (f *Form) FocusName(name string) bool {
 }
 
 // Next / Prev move field focus (Tab / Shift+Tab).
-//
-// They step over INVISIBLE fields. A form that reveals fields per kind (see FieldSpec.
-// Visible) would otherwise park the cursor on a row that is not drawn — the operator types
-// into a field they cannot see.
 func (f *Form) Next() { f.step(1) }
 
 func (f *Form) Prev() { f.step(-1) }
@@ -752,11 +587,7 @@ func (f *Form) step(delta int) {
 		idx := ((f.Cursor+delta*i)%n + n) % n
 		if f.visibleAt(idx) {
 			f.Cursor = idx
-			// MOVING FIELDS ALWAYS RELEASES THE EDIT LOCK. The lock is a claim on the
-			// arrow keys, so leaving it set while the cursor is elsewhere would keep
-			// hijacking them — and it did, for exactly one keystroke: the release was
-			// only re-checked at the TOP of HandleKey, so Tab moved the cursor and the
-			// lock was still on the field behind it.
+			// MOVING FIELDS ALWAYS RELEASES THE EDIT LOCK.
 			f.editing = ""
 			return
 		}
@@ -779,10 +610,8 @@ func (f *Form) fieldVisible(s FieldSpec) bool {
 	return s.Visible(f.Values)
 }
 
-// normalizeCursor moves the cursor off a field that has just become invisible — the state
-// a value change leaves behind (choosing "approval" in the kind select hides the worker
-// fields the cursor may be sitting on). It is idempotent and cheap, so it runs on every key
-// and before every render.
+// normalizeCursor moves the cursor off a field that has just become invisible — the state a value
+// change leaves behind (choosing "approval" in the kind select hides the worker fields the cursor.
 func (f *Form) normalizeCursor() {
 	if f.visibleAt(f.Cursor) {
 		return
@@ -808,24 +637,13 @@ func inOptions(spec FieldSpec, v string) bool {
 	return false
 }
 
-// HandleKey drives form editing. Returns true when the message was consumed.
-// Tab/Shift+Tab and Up/Down move field focus (shared focus model); Enter on
-// the last field submits; Esc cancels (the caller closes the form).
-//
-// Up/Down walk the fields and are CONSUMED (handled=true) rather than falling
-// through: a modal must own the vertical keys, so the list behind it can never
-// scroll while it is up (the operator's "the arrow keys control the work item
-// list instead of moving through the field values").
+// HandleKey drives form editing.
 func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
-	// A value change may have hidden the field the cursor is on (choosing a new kind in
-	// the step editor hides the previous kind's fields), so normalise BEFORE reading the
-	// focused spec — otherwise every key below acts on an invisible row.
+	// A value change may have hidden the field the cursor is on (choosing a new kind in the step editor
+	// hides the previous kind's fields), so normalise BEFORE reading the focused spec.
 	f.normalizeCursor()
 	s := f.current()
-	// THE FIELD EDIT LOCK. While a field is locked, up/down move the caret inside it
-	// instead of walking to another field, and Esc releases the lock without leaving
-	// the form. Every OTHER key falls through to the normal handling below, so
-	// typing, left/right, home/end, ctrl+e and ctrl+p all keep working while editing.
+	// THE FIELD EDIT LOCK.
 	if f.editing != "" {
 		if s == nil || s.Name != f.editing {
 			f.editing = "" // the cursor moved off the field (tab/next) — release
@@ -843,36 +661,28 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 				f.moveCaretLine(f.editing, 1)
 				return nil, true
 			case "enter", "alt+enter":
-				// A newline. This is the ONLY way to type one: Enter was the sole key
-				// that could and it is what locks the field, so without this a text area
-				// could only ever hold a single line unless the text arrived by paste.
+				// This is the ONLY way to type one: Enter was the sole key that could and it is what locks the
+				// field, so without this a text area could only ever hold a single line unless the text arrived.
 				f.insertRunes(f.editing, "\n")
 				return nil, true
 			}
 		}
 	}
-	// PREVIEW MODE (kPreview). Any key OTHER than the toggle LEAVES preview and is
-	// then handled normally below, so the keystroke that returns the operator to
-	// editing does its own job too — typing into a previewed field resumes editing
-	// on the first character rather than swallowing it.
+	// PREVIEW MODE (kPreview).
 	if f.preview != "" {
 		if k.String() == kPreview {
 			f.preview = ""
 			return nil, true
 		}
-		// Esc CLOSES THE PREVIEW rather than cancelling the whole edit. Without this
-		// it fell through to the form's esc, so leaving the preview with Esc also threw
-		// away every unrelated edit in the form — a surprising amount of damage for a
-		// key whose meaning in a preview is "go back one step".
+		// Esc CLOSES THE PREVIEW rather than cancelling the whole edit.
 		if k.String() == "esc" {
 			f.preview = ""
 			return nil, true
 		}
 		f.preview = ""
 	}
-	// A model field is a REFERENCE, not text: enter/space opens the host's model
-	// picker instead of advancing or editing (there is nothing a human could
-	// usefully type into it).
+	// A model field is a REFERENCE, not text: enter/space opens the host's model picker instead of
+	// advancing or editing (there is nothing a human could usefully type into it).
 	if s != nil && s.Kind == KModel {
 		switch k.String() {
 		case "enter", " ", "space":
@@ -925,17 +735,7 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 		}
 		return nil, true
 	case kPreview:
-		// Show the focused field's value as RENDERED markdown. Same shape as ctrl+e
-		// above, including the silent no-op on a field that cannot preview: the
-		// inline editor owns every key, so an inert chord is the established
-		// behaviour rather than a leak to the shell.
-		//
-		// TOGGLE-OFF IS HANDLED EARLIER, in the preview block at the top of
-		// HandleKey: pressing kPreview while previewing clears the field there and
-		// returns, so this case only ever runs to turn preview ON. An earlier
-		// revision carried a redundant `if f.preview == s.Name` branch here for the
-		// off case — it was unreachable, which I only noticed because mutating it
-		// changed no behaviour in any test.
+		// Show the focused field's value as RENDERED markdown.
 		if s == nil || !f.canPreviewName(*s) {
 			return nil, true
 		}
@@ -946,31 +746,19 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 		f.Prev()
 		return nil, true
 	case "down":
-		// Vertical keys walk the FIELDS. The operator's report was that the
-		// arrows "still control the work item list versus moving through the
-		// New Work Item fields": a form must own the two vertical keys so
-		// nothing can move behind an open modal. Left/Right keep the
-		// select/checkbox cycling below (a horizontal gesture on a value).
+		// Vertical keys walk the FIELDS.
 		f.Next()
 		return nil, true
 	case "up":
 		f.Prev()
 		return nil, true
 	case "ctrl+s":
-		// Save. The operator: "On new work items, I think submit should be
-		// ctrl+s not enter. Enter is already used on individual items to
-		// select things so this is not working well."
+		// Save.
 		cmd, _ := f.Submit()
 		return cmd, true
 	case "enter":
-		// Enter NEVER submits: on a form full of pickers and selectors it is
-		// the CHOOSE gesture, and overloading it made selecting a value
-		// commit the whole form.
-		//
-		// On a MULTI-LINE field it LOCKS the field for editing instead of advancing:
-		// the operator has a caret to place and text taller than the window to move
-		// through, and there is no other key that can mean "go into this". On every
-		// other kind it advances, as before.
+		// Enter NEVER submits: on a form full of pickers and selectors it is the CHOOSE gesture, and
+		// overloading it made selecting a value commit the whole form.
 		if s != nil && f.expandable(s.Kind) {
 			f.editing = s.Name
 			return nil, true
@@ -1004,20 +792,7 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 		}
 		return nil, true
 	case "ctrl+u":
-		// Clear the field. Without a clear gesture an operator could only ever
-		// APPEND to a prefilled value, which is the difference between editing
-		// an item and being unable to.
-		//
-		// REFERENCE FIELDS CLEAR TOO, and this is the operator's report: "There is no way to clear a
-		// schedule on a work item in the TUI currently in edit mode. There should be a clear key to
-		// easily empty out a field."
-		//
-		// A KDateTime/KDate/KModel field is CHOSEN from a control, so `editable` (text kinds only) was
-		// false and this key was a SILENT NO-OP on exactly the fields where clearing matters most —
-		// while the footer advertised "ctrl+u: clear" the whole time. The value here is a plain string
-		// in f.Values (the picker writes it, the host reads it), so clearing it is the same act as
-		// clearing text: empty the value and put the caret back. An empty reference field renders as
-		// its "unset" affordance ("enter to pick a date & time"), which is the visible confirmation.
+		// Clear the field.
 		if s != nil && (f.editable(s.Kind) || f.reference(s.Kind)) {
 			f.Values[s.Name] = ""
 			f.setCaret(s.Name, 0)
@@ -1052,38 +827,18 @@ func (f *Form) HandleKey(k keyMsg) (tea.Cmd, bool) {
 				return nil, true
 			case KPicker:
 				// A PICKER MUST CONSUME LEFT/RIGHT, and cycling its options is the useful way to do it.
-				//
-				// Not consuming them was a real escape: the case fell through to `return nil, false`,
-				// which means "the caller closes the form" — and the launch prompt reads exactly that as
-				// "declined", so the operator pressed right on the runtime-image field and was thrown out
-				// of project creation onto the New page. The form's own contract turned an unhandled arrow
-				// into a cancellation.
-				//
-				// Cycling matches KSelect, the control the operator already knows for "move through the
-				// options of a reference field" — which is why this is cycleSelect rather than a bare
-				// consume: a key that exists to escape a form should also do something when it stays.
 				f.cycleSelect(s, d)
 				return nil, true
 			case KMultiSelect:
-				// LEFT/RIGHT walk the options INSIDE the field (up/down keep walking
-				// fields, matching KSelect). Without a per-option cursor the only
-				// toggleable option was the first one, so a weekday picker could
-				// select nothing but Monday.
+				// LEFT/RIGHT walk the options INSIDE the field (up/down keep walking fields, matching KSelect).
 				f.moveMultiCursor(s, d)
 				return nil, true
 			case KCheckbox:
 				f.Values[s.Name] = toggleBool(f.Values[s.Name])
 				return nil, true
 			case KModel, KDate, KDateTime:
-				// A REFERENCE field is CHOSEN, not moved through: enter opens the control that sets it
-				// (the model picker, the calendar), so there is nothing for an arrow to do here. It
-				// must still CONSUME the key.
-				//
-				// This is the same escape KPicker had, and the test that found that one found all four:
-				// `handled=false` means "the caller closes the form", which the launch prompt reads as
-				// DECLINED — so pressing right on a model field (worker forms) or a date field (the
-				// Automation schedule form) threw the operator out of the form mid-edit, exactly as it
-				// did on the runtime-image picker.
+				// A REFERENCE field is CHOSEN, not moved through: enter opens the control that sets it (the model
+				// picker, the calendar), so there is nothing for an arrow to do here.
 				return nil, true
 			}
 			// An editable TEXT field uses left/right to move the CARET — the
@@ -1109,14 +864,8 @@ func (f *Form) editable(k Kind) bool {
 	return false
 }
 
-// reference reports whether a field is CHOSEN from a control rather than typed into —
-// the family whose `enter` OPENS something instead of advancing.
-//
-// It is ONE predicate rather than a repeated kind test because these kinds must agree
-// in three separate places (the value's affordance, the form's footer, the key
-// handling), and they had already drifted: an unset model deliberately showed its
-// affordance always, while a SET model, the dates and the datetimes named their
-// gesture only while the cursor was on them.
+// reference reports whether a field is CHOSEN from a control rather than typed into — the family
+// whose `enter` OPENS something instead of advancing.
 func (f *Form) reference(k Kind) bool {
 	switch k {
 	case KModel, KDate, KDateTime, KPicker:
@@ -1140,18 +889,8 @@ func (f *Form) referenceControlName(s FieldSpec) string {
 	return "control"
 }
 
-// referenceGesture is the affordance a reference field's ROW carries, with the current
-// value folded in, so every kind advertises itself the same way.
-//
-// IT IS DELIBERATELY SHORT ON A SET FIELD. The row already carries the label ("Model:")
-// and the value, and it is the row's TOTAL width that decides whether it fits: a model
-// ref is ~32 cells on its own, so "enter: change" is what keeps the row on ONE line at
-// the operator's pane width (measured: 56 of 58 cells) where "enter: change model"
-// wrapped and pushed every field below it down a row. The noun is not lost — the label
-// directly to its left is the noun.
-//
-// The UNSET wording is longer because there is nothing else on the row to say what the
-// field wants, and it appears in the value position rather than beside one.
+// referenceGesture is the affordance a reference field's ROW carries, with the current value folded
+// in, so every kind advertises itself the same way.
 func (f *Form) referenceGesture(s FieldSpec) string {
 	unset := f.Values[s.Name] == ""
 	switch s.Kind {
@@ -1219,9 +958,8 @@ func (f *Form) moveMultiCursor(s *FieldSpec, d int) {
 	f.multiCur[s.Name] = i
 }
 
-// toggleMultiAt flips ONE option — the one under the cursor, which is what makes
-// the control usable: toggling a fixed option (the old behaviour) meant only the
-// first could ever be selected.
+// toggleMultiAt flips ONE option — the one under the cursor, which is what makes the control
+// usable: toggling a fixed option (the old behaviour) meant only the first could ever be selected.
 func (f *Form) toggleMultiAt(s *FieldSpec, i int) {
 	if len(s.Options) == 0 {
 		return
@@ -1247,9 +985,8 @@ func toggleBool(s string) string {
 func (f *Form) Validate() bool {
 	f.Errors = map[string]string{}
 	for _, s := range f.Specs {
-		// A HIDDEN field cannot be required: the operator cannot see or reach it, so
-		// failing the save on it would be unfixable from the form. This is what lets a
-		// shared field carry Required while its kind is not selected.
+		// A HIDDEN field cannot be required: the operator cannot see or reach it, so failing the save on it
+		// would be unfixable from the form.
 		if !f.fieldVisible(s) {
 			continue
 		}
@@ -1296,10 +1033,8 @@ func (f *Form) Validate() bool {
 func (f *Form) MultiValues(name string) []string {
 	m := f.Multi[name]
 	out := make([]string, 0, len(m))
-	// Iterate the SPEC's option order, never the map: a map has no order, so the
-	// returned slice reshuffled on every call. For a weekday multi-select that
-	// means the stored schedule's day list changed between saves for no reason the
-	// operator could see.
+	// Iterate the SPEC's option order, never the map: a map has no order, so the returned slice
+	// reshuffled on every call.
 	for _, s := range f.Specs {
 		if s.Name != name {
 			continue
@@ -1333,9 +1068,7 @@ func (f *Form) MultiValues(name string) []string {
 	return out
 }
 
-// Submit validates and invokes OnSubmit with a copy of the collected
-// values. It returns the mutation cmd produced by OnSubmit (nil when the
-// form is invalid or has no handler).
+// Submit validates and invokes OnSubmit with a copy of the collected values.
 func (f *Form) Submit() (tea.Cmd, error) {
 	if !f.Validate() {
 		return nil, fmt.Errorf("form has errors")
@@ -1356,10 +1089,7 @@ func (f *Form) Submit() (tea.Cmd, error) {
 	}
 	cmd, err := f.OnSubmit(vals, multi)
 	if err != nil {
-		// A rejected submit must SAY why. The host keeps the form open (Submitted
-		// stays false), so without this the operator pressed save and saw
-		// nothing happen — the same silent-rejection class as a swallowed RPC
-		// error.
+		// A rejected submit must SAY why.
 		f.SubmitErr = err.Error()
 		return cmd, err
 	}
@@ -1368,14 +1098,7 @@ func (f *Form) Submit() (tea.Cmd, error) {
 	return cmd, nil
 }
 
-// VisibleFieldNames lists the fields the form would actually DRAW for its current values,
-// in order.
-//
-// It is exported because it is the only honest way to assert "this kind exposes that field":
-// every kind's fields now exist in every step form, gated by a Visible predicate, so a test
-// that inspects Specs directly is re-implementing the visibility rule and would keep passing
-// even if rendering, navigation and validation stopped honouring it. Asking the FORM is what
-// makes the assertion mean something.
+// VisibleFieldNames lists the fields the form would actually DRAW for its current values, in order.
 func (f *Form) VisibleFieldNames() []string {
 	out := make([]string, 0, len(f.Specs))
 	for _, s := range f.Specs {
@@ -1386,9 +1109,7 @@ func (f *Form) VisibleFieldNames() []string {
 	return out
 }
 
-// NormalizeCursorForTest re-runs the cursor normalisation a value change triggers. The
-// real path calls it from HandleKey and View; a test that sets a value directly has to ask
-// for it explicitly, because it is bypassing the key handling that would have done it.
+// NormalizeCursorForTest re-runs the cursor normalisation a value change triggers.
 func (f *Form) NormalizeCursorForTest() { f.normalizeCursor() }
 
 // FormCursorMark is the glyph View() prints at the start of the FOCUSED field's
@@ -1399,41 +1120,17 @@ const FormCursorMark = "▸"
 // markdown. ctrl+p is otherwise unbound in the TUI (the form uses ctrl+e/s/u).
 const kPreview = "ctrl+p"
 
-// canPreviewName reports whether a field has a rendered view worth showing: a
-// PROSE field whose value actually reads as markdown.
-//
-// It deliberately does NOT reuse expandable(), which also accepts KJSON and KYAML
-// because seeing all of a structured value is useful for ctrl+e. Rendering is a
-// different offer: it CONSUMES markers, so a JSON blob whose string values contain
-// a backtick or an asterisk would preview as mangled data. The kind gate is
-// positive (KTextArea only) so a future structured kind is excluded by default
-// rather than inheriting the preview.
-//
-// LooksLikeMarkdown is the same gate the detail pane uses, and it matters for the
-// same reason there: a log dump, a trace or a Dockerfile must not be run through
-// the markdown renderer. A value with no markdown in it has nothing to preview, so
-// the chord is inert on it rather than showing a rendering identical to the raw
-// text — and a field declared NoPreview (code held in a text area) is inert
-// whatever its contents look like.
+// canPreviewName reports whether a field has a rendered view worth showing: a PROSE field whose
+// value actually reads as markdown.
 func (f *Form) canPreviewName(s FieldSpec) bool {
 	return !s.NoPreview && s.Kind == KTextArea && md.LooksLikeMarkdown(f.Values[s.Name])
 }
 
-// FocusedRow returns the 0-based row of the focused field's FIRST line within a
-// render produced by View() — the offset a host needs to scroll the form so the
-// field being edited is on screen.
-//
-// It reads the rendered string rather than re-deriving the layout, so the row it
-// reports is measured from EXACTLY the text the host is about to draw. Hand
-// counting the rows above the cursor would be wrong the moment any of them
-// changed height: a multi-line value wraps, ctrl+e expands a field, a Visible
-// predicate hides one, and the focused field itself grows from 1 row to many.
-// Deriving it from the render cannot drift from the render.
+// FocusedRow returns the 0-based row of the focused field's FIRST line within a render produced by
+// View() — the offset a host needs to scroll the form so the field being edited is on screen.
 func (f *Form) FocusedRow(rendered string) int {
 	for i, line := range strings.Split(rendered, "\n") {
-		// The marker is the FIRST content on the row: the cursor prefix is written
-		// before the label. Trimmed and stripped of styling so a themed row (the
-		// focused row is rendered with ListItemSelected) still matches.
+		// The marker is the FIRST content on the row: the cursor prefix is written before the label.
 		if strings.HasPrefix(strings.TrimLeft(ansi.Strip(line), " "), FormCursorMark) {
 			return i
 		}
@@ -1452,11 +1149,8 @@ func (f *Form) DisplayForTest(name string) string {
 	return ""
 }
 
-// display renders a field's value for the view. A secret field NEVER
-// returns its raw value — it returns a fixed mask.
-// multiLine renders a focused multi-select as its options, each marked and the
-// cursor highlighted. Two-character option labels keep a seven-day week on one row
-// inside a form line that also carries the field's own label.
+// display renders a field's value for the view. A secret field NEVER returns its raw value — it
+// returns a fixed mask.
 func (f *Form) multiLine(s FieldSpec) string {
 	cur := f.MultiCursor(&s)
 	var b strings.Builder
@@ -1539,22 +1233,6 @@ func (f *Form) display(s FieldSpec) string {
 		return v
 	case KModel, KDate, KDateTime:
 		// A REFERENCE FIELD ALWAYS NAMES ITS GESTURE, whatever the cursor is doing.
-		//
-		// This was the operator's "no model is showing to edit it": the affordance was
-		// drawn only on the FOCUSED row, so with the cursor on Name the Model row read
-		// as inert text — indistinguishable from a field that cannot be edited, which is
-		// why they went hunting for a separate way in. Value and gesture now render
-		// together, so a row advertises itself from anywhere in the form.
-		//
-		// It also removes a contradiction the old code carried: an UNSET model showed its
-		// affordance unconditionally ("so a blank model row reads as 'unset — go choose
-		// one' rather than 'not applicable'"), while a SET model hid it behind the cursor.
-		//
-		// KPicker is deliberately NOT in this branch: it already resolves and shows a
-		// CHOSEN LABEL (the worker's name, not `w_x`), so its row is self-evidently a
-		// picked thing — and it is the most space-constrained reference kind, used on
-		// forms where an extra 14 cells of hint would crowd the value. It still gets the
-		// footer's gesture (see reference()).
 		shown := v
 		// Only while the form is FOCUSED at all: an unfocused form is background (the
 		// list beside it owns the keyboard) and the value alone is the right amount.
@@ -1583,13 +1261,6 @@ func (f *Form) display(s FieldSpec) string {
 		return shown
 	default:
 		// AN EMPTY FIELD SHOWS ITS PLACEHOLDER, whoever is on it.
-		//
-		// This used to require the field to be the CURSOR (`f.current().Name == s.Name`), and
-		// the cursor's editable fields never reach this branch — they render through
-		// valueWithCaret above. The two conditions were therefore MUTUALLY EXCLUSIVE, so no
-		// placeholder could ever appear on an editable field: every hint written for every
-		// form in this client was dead text. Measured on the project form, all eight fields
-		// printed blank or bare.
 		if v == "" {
 			return placeholderText(s.Placeholder)
 		}
@@ -1599,11 +1270,6 @@ func (f *Form) display(s FieldSpec) string {
 
 // hintForPlaceholder renders a field's placeholder as ghost text followed by the caret, fitted to
 // the cells available.
-//
-// THE FIT IS WHAT KEEPS IT HONEST: a placeholder longer than the value column would wrap the row
-// and shift every field below it, so the box would change height as the cursor moved. It is
-// truncated with an ellipsis instead — the operator loses the tail of a hint at a narrow width,
-// which is the same trade the hint row makes and far better than a form that jumps.
 func hintForPlaceholder(placeholder string, avail int) string {
 	const caretRune = "\u258f" // ▏
 	cells := avail - 1         // one reserved for the caret
@@ -1620,15 +1286,7 @@ func hintForPlaceholder(placeholder string, avail int) string {
 }
 
 // placeholderText renders a placeholder in the PARENTHESES IDIOM this form already uses for
-// "nothing is set, and here is what that means": KMultiSelect renders "(none)" and KModel renders
-// "— none —".
-//
-// IT IS NOT COSMETIC. A placeholder shown bare is indistinguishable from a VALUE — an operator
-// opening a form that reads "Slug: orchicon" cannot tell whether the slug is set or is merely the
-// suggested shape — and dimming it is not available here: a styled span covering part of a field
-// row cuts the row's own background from that point on (the full-row spans in this file pad to the
-// width first for exactly that reason). Parentheses mark the text as guidance with no styling at
-// all.
+// "nothing is set, and here is what that means".
 func placeholderText(placeholder string) string {
 	p := strings.TrimSpace(placeholder)
 	if p == "" {
@@ -1641,10 +1299,8 @@ func placeholderText(placeholder string) string {
 	return "(" + p + ")"
 }
 
-// valueWithCaret renders an editable field's value with a caret at the edit
-// position, windowed to at most `avail` cells so the caret is ALWAYS visible.
-// A clipped edge is marked with an ellipsis (the same cell the character would
-// have used, so the width stays exact).
+// valueWithCaret renders an editable field's value with a caret at the edit position, windowed to
+// at most `avail` cells so the caret is ALWAYS visible.
 func (f *Form) valueWithCaret(name string, avail int) string {
 	const caretRune = "\u258f" // ▏
 	if avail < 2 {
@@ -1727,9 +1383,8 @@ func (f *Form) View() string {
 	// Keep the cursor on a visible field even if a value changed outside HandleKey (a
 	// programmatic Set, a test): rendering must never highlight a row it does not draw.
 	f.normalizeCursor()
-	// A form rendered without an explicit width still needs a sane one: Pad
-	// truncates to it, so width 0 erased every line (the Work screen's forms
-	// never set it) and windowing needs it to keep the caret visible.
+	// A form rendered without an explicit width still needs a sane one: Pad truncates to it, so width 0
+	// erased every line (the Work screen's forms never set it) and windowing needs it to keep.
 	width := f.Width
 	if width <= 0 {
 		width = 64
@@ -1749,9 +1404,8 @@ func (f *Form) View() string {
 	}
 	for i, s := range f.Specs {
 		if !f.fieldVisible(s) {
-			// A field that does not apply to the current selection is not drawn at all: the
-			// step editor reveals a kind's own fields, and a grayed-out or empty row would
-			// suggest the operator has something to fill in.
+			// A field that does not apply to the current selection is not drawn at all: the step editor reveals
+			// a kind's own fields.
 			continue
 		}
 		label := s.Label
@@ -1770,15 +1424,7 @@ func (f *Form) View() string {
 		var line string
 		switch {
 		case focused && f.preview == s.Name:
-			// THE FIELD AS RENDERED MARKDOWN — a READ-ONLY view of the value being
-			// edited. The operator: "in edit mode you could see the markdown. Like maybe
-			// a markdown switcher to view what it looks like but raw would be the only
-			// thing ever used." So: the rendered rows are drawn plainly (the markdown's
-			// own styling shows through), f.Values is untouched, and the caret and every
-			// edit still act on the raw text — which is all that is ever submitted.
-			//
-			// The label row carries the cursor marker, because Form.FocusedRow scans for
-			// it to keep this field on screen.
+			// THE FIELD AS RENDERED MARKDOWN — a READ-ONLY view of the value being edited.
 			budget := f.focusedWrapRows() - 2 // the label row and the hint row are ours too
 			if budget < 3 {
 				budget = 3
@@ -1803,9 +1449,8 @@ func (f *Form) View() string {
 				"  "+label+": PREVIEW (rendered) — ctrl+p returns to the raw text"+note, width)) + "\n")
 			continue
 		case focused && f.expanded == s.Name && f.expandable(s.Kind):
-			// EXPANDED (ctrl+e): the value wraps across as many rows as it needs, so the
-			// operator reads the whole thing instead of one windowed slice. Unbounded on
-			// purpose — this is the escape hatch for a value too large for the default.
+			// EXPANDED (ctrl+e): the value wraps across as many rows as it needs, so the operator reads the
+			// whole thing instead of one windowed slice.
 			for _, l := range f.expandedBody(s.Name, width-lipgloss.Width(prefix)) {
 				line = prefix + l
 				b.WriteString(theme.ListItemSelected.Render(Pad(line, width)) + "\n")
@@ -1814,37 +1459,12 @@ func (f *Form) View() string {
 			b.WriteString(theme.HintText.Render(Pad(strings.Repeat(" ", 2)+label+": (expanded — ctrl+e to collapse)", width)) + "\n")
 			continue
 		case focused && f.expandable(s.Kind):
-			// A FOCUSED multi-line field is WRAPPED by DEFAULT: the operator edits prose,
-			// a prompt or a JSON blob and must be able to read it as they write, without
-			// knowing a chord. The operator: "we need a better view on multiline boxes.
-			// Editing it in a single line going back and forth off the screen is NOT very
-			// intuitive. We need to expand it out within the details/edit pane just like
-			// it would look in the GUI to see the whole text and formatted properly."
-			//
-			// The value's OWN line breaks are preserved and long lines soft-wrap, so
-			// indentation and paragraph structure survive on screen.
-			//
-			// THE LABEL GETS ITS OWN ROW and the value is indented by a fixed two cells.
-			// It used to start on the label's row and indent every continuation to the
-			// label's width, which cost ~21 columns on a field named
-			// "dockerfile_override" — for a Dockerfile or a code block that is the
-			// difference between reading it and not. A fixed indent also stops the
-			// block's width depending on how long its label happens to be.
-			//
-			// THE ROW BUDGET COMES FROM THE HOST. This used to be a flat 6 rows
-			// regardless of the pane, so a 39-line Dockerfile override showed 6 of them
-			// on a 40-row terminal — measured, and reported by the operator as the box
-			// "scrunch[ing] down … and [not] display[ing] the full text box for editing".
-			// f.focusedWrapRows uses the pane height the host supplies; a host that
-			// supplies none keeps the old conservative bound.
+			// A FOCUSED multi-line field is WRAPPED by DEFAULT: the operator edits prose, a prompt or a JSON
+			// blob and must be able to read it as they write, without knowing a chord.
 			valueIndent := strings.Repeat(" ", 2)
 			rows, hiddenAbove, hiddenBelow := f.wrappedBody(s.Name, max(8, width-lipgloss.Width(valueIndent)), f.focusedWrapRows())
-			// The label row, so the field is still named while it is being edited —
-			// carrying the CURSOR MARKER (FormCursorMark), which FocusedRow scans for
-			// to scroll this pane to the field being edited. Dropping the marker here
-			// would silently stop the pane following the cursor for exactly the tall
-			// fields that need it most. It also states when the field is LOCKED for
-			// editing, so the operator can see why the arrows now move the caret.
+			// The label row, so the field is still named while it is being edited — carrying the CURSOR MARKER
+			// (FormCursorMark), which FocusedRow scans for to scroll this pane to the field being edited.
 			labelRow := cursor + label + ":"
 			if f.editing == s.Name {
 				labelRow = cursor + label + ": EDITING"
@@ -1853,16 +1473,8 @@ func (f *Form) View() string {
 			for _, l := range rows {
 				b.WriteString(theme.ListItemSelected.Render(Pad(valueIndent+l, width)) + "\n")
 			}
-			// The hint NAMES THE CHORDS AVAILABLE ON THIS FIELD, and it is kept
-			// short on purpose: the host PADS (truncates) it to the pane width, so a
-			// long hint silently hides the affordance it exists to advertise. The
-			// previous wording ended with "arrows move between fields", which the
-			// form's own footer already says — and it pushed "ctrl+p: preview" off
-			// the end at 70 columns, so the preview chord was invisible exactly where
-			// the operator needed to discover it.
-			//
-			// It reports what is out of view ABOVE and BELOW separately, because the
-			// window follows the caret and can be scrolled past in either direction.
+			// The hint NAMES THE CHORDS AVAILABLE ON THIS FIELD, and it is kept short on purpose: the host PADS
+			// (truncates) it to the pane width.
 			var hint string
 			switch {
 			case hiddenAbove > 0 && hiddenBelow > 0:
@@ -1899,36 +1511,15 @@ func (f *Form) View() string {
 				line = prefix + f.display(s)
 			}
 		case focused && f.editable(s.Kind) && width > 0:
-			// An editable field shows a CARET and horizontally windows its
-			// value, so the character being edited is always on screen. The
-			// append-only editor it replaced silently pushed every keystroke
-			// past the pane width, which read as "I can't edit anything".
+			// An editable field shows a CARET and horizontally windows its value, so the character being edited
+			// is always on screen.
 			avail := width - lipgloss.Width(prefix)
 			if avail < 8 {
 				avail = 8
 			}
-			// AN EMPTY FIELD SHOWS ITS PLACEHOLDER, then the caret. The caret alone says
-			// "type here" but never WHAT to type, and this is the only field the operator is
-			// looking at — the others can reach their placeholders through display(), which
-			// this branch deliberately bypasses. Without this, guidance existed on every
-			// field except the one being filled in.
-			//
-			// The placeholder is rendered in the PARENTHESES idiom the form already uses for
-			// "nothing set, and here is what that means" (KMultiSelect renders "(none)",
-			// KModel renders "— none —"), so it reads as guidance rather than as a value.
-			// No inner styling: the row is wrapped in one style afterwards, and an inner hint
-			// span would cut the row's background short from that point on.
+			// AN EMPTY FIELD SHOWS ITS PLACEHOLDER, then the caret.
 			if f.Values[s.Name] == "" && s.Placeholder != "" {
 				// THE HINT FITS THE ACTUAL SPACE, without the 8-cell floor above.
-				//
-				// That floor exists so a VALUE has room to be windowed while it is edited — a
-				// caret needs somewhere to live. A HINT needs no such room, and applying the
-				// floor to it measured a row WIDER than the form: with a long label ("Context
-				// files (abs paths inside the project dir): ") the floor forced eight cells of
-				// hint where there was no space, so the row wrapped. Measured on the project
-				// edit form: 13 rows with the hint showing, 12 once the field was filled — the
-				// form JUMPS by a row the moment the operator types, which is the failure the
-				// hint was supposed to prevent rather than cause.
 				hintAvail := width - lipgloss.Width(prefix)
 				if hintAvail < 1 {
 					hintAvail = 1
@@ -1940,17 +1531,6 @@ func (f *Form) View() string {
 		default:
 			val := f.display(s)
 			// A PLACEHOLDER ON AN UNFOCUSED ROW IS FITTED TOO, exactly as it is on the cursor's row.
-			//
-			// display() renders the hint in full — it has no width to fit against — and an unfitted
-			// hint WRAPS, which is how a field that is merely NOT THE CURSOR added a row to the
-			// form. Measured on the project edit form's context-files field, whose label is long:
-			// 13 rows with the hint showing and 12 once the operator typed one character into it,
-			// so the form jumped by a row as they filled it in — the failure the hint was meant to
-			// prevent rather than cause.
-			//
-			// Only for editable single-line kinds: a multi-line or reference field has its own value
-			// rendering below (the flattened "(N lines)" form, the picker's chosen label), and a
-			// placeholder is always one line of prose.
 			if s.Placeholder != "" && f.editable(s.Kind) && f.Values[s.Name] == "" {
 				if avail := width - lipgloss.Width(prefix); avail > 0 {
 					// NO CARET: this row does not hold the cursor. The hint still ends where the
@@ -1958,10 +1538,9 @@ func (f *Form) View() string {
 					val = ansi.Truncate(val, avail, "…")
 				}
 			}
-			// A multi-line value on an UNFOCUSED row must not emit its newlines: the host
-			// pads this string to the pane width, so raw breaks split one field into
-			// several visual rows and shift everything below. Flattened, with the break
-			// count stated, so the operator can see there is more there.
+			// A multi-line value on an UNFOCUSED row must not emit its newlines: the host pads this string to
+			// the pane width, so raw breaks split one field into several visual rows and shift everything
+			// below.
 			if f.expandable(s.Kind) {
 				if n := lineCount(f.Values[s.Name]); n > 1 {
 					val = oneLine(val)
@@ -2016,25 +1595,15 @@ func (f *Form) View() string {
 				b.WriteString("\n")
 			}
 		}
-		// An open picker lists its matches directly under the field, so the
-		// operator SEES the choices while typing (the operator's "another box
-		// comes up similar to the slash command").
+		// An open picker lists its matches directly under the field, so the operator SEES the choices while
+		// typing (the operator's "another box comes up similar to the slash command").
 		if s.Kind == KPicker && f.pickerField == s.Name {
 			f.writePickerList(&b, &f.Specs[i], width)
 		}
 	}
-	// The hint row wraps at its " · " boundaries so a KEY and its meaning stay
-	// together — the operator's "it is wrapping the tool title and shortcut on
-	// separate lines, it should keep those together". A plain word wrap broke
-	// "↑/↓ or tab: field" mid-phrase.
-	//
-	// THE FOOTER IS THE ALWAYS-VISIBLE PLACE FOR A CHORD, so ctrl+p is named here
-	// and not only under the field: the operator reported "there is no hint in the
-	// detail pane saying ctrl+p shows markdown preview". A field's own hint sits
-	// BELOW its value, so on a tall multi-line field it is pushed off the pane
-	// exactly when the value is long enough to want a preview. It is only named when
-	// the FOCUSED field can actually preview, so the footer never advertises a chord
-	// that would do nothing.
+	// The hint row wraps at its " · " boundaries so a KEY and its meaning stay together — the
+	// operator's "it is wrapping the tool title and shortcut on separate lines, it should keep those
+	// together".
 	footer := "↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: next · ctrl+s: save · esc: cancel"
 	if s := f.current(); f.editing != "" {
 		footer = "editing text · ↑/↓: move · enter: newline · esc: leave field · ctrl+s: save"
@@ -2047,14 +1616,8 @@ func (f *Form) View() string {
 		case s != nil && f.expandable(s.Kind):
 			footer = "↑/↓ or tab: field · ←/→: move · enter: edit · ctrl+e: expand · ctrl+s: save · esc: cancel"
 		case s != nil && f.reference(s.Kind):
-			// A REFERENCE FIELD IS OPENED, NOT ADVANCED — so "enter: next" is simply WRONG
-			// here, and it was the line the operator was reading while hunting for the
-			// model. The field's own row names its gesture; the footer names the GESTURE,
-			// because the control differs per kind (a model picker, a calendar, a list).
-			// CTRL+U IS NAMED HERE because a reference field can now be CLEARED (see the ctrl+u
-			// case) — the operator's "there should be a clear key to easily empty out a field".
-			// Naming the clear beside the open gesture is what makes it discoverable on the one
-			// field family whose whole complaint was that clearing was impossible.
+			// A REFERENCE FIELD IS OPENED, NOT ADVANCED — so "enter: next" is simply WRONG here, and it was the
+			// line the operator was reading while hunting for the model.
 			footer = "↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: open the " + f.referenceControlName(*s) + " · ctrl+s: save · esc: cancel"
 		}
 	}
@@ -2122,14 +1685,12 @@ func wrapHint(line string, width int) []string {
 	return out
 }
 
-// WrapHint is the exported form of the segment-aware hint wrap, so the composer
-// (a different package) wraps its affordance row the same way instead of
-// truncating it.
+// WrapHint is the exported form of the segment-aware hint wrap, so the composer (a different
+// package) wraps its affordance row the same way instead of truncating it.
 func WrapHint(line string, width int) []string { return wrapHint(line, width) }
 
-// expandable reports whether a field kind benefits from the expanded editor:
-// free-text multi-line values, which are otherwise edited one horizontally
-// windowed line at a time.
+// expandable reports whether a field kind benefits from the expanded editor: free-text multi-line
+// values, which are otherwise edited one horizontally windowed line at a time.
 func (f *Form) expandable(k Kind) bool {
 	switch k {
 	case KTextArea, KJSON, KYAML:
@@ -2142,30 +1703,9 @@ func (f *Form) expandable(k Kind) bool {
 func (f *Form) Expanded() string { return f.expanded }
 
 // maxWrappedRows bounds the DEFAULT wrapped view of a multi-line field.
-//
-// The point of the default is to let the operator READ what they are editing, but an
-// unbounded render would let one long value push every other field off the pane — you
-// could no longer reach the rest of the form. Six rows shows paragraphs, prompts and
-// small JSON in full; beyond that the field says how much is hidden and ctrl+e shows
-// all of it.
 const maxWrappedRows = 6
 
 // focusedWrapRows is the row budget for the FOCUSED multi-line field.
-//
-// It is the form's available height minus a reserve, rather than a constant,
-// because a constant cannot know how much pane there is. The flat
-// maxWrappedRows bound meant a 39-line Dockerfile override showed 6 rows on a
-// 40-row terminal — the operator reported the field "scrunch[ing] down into a
-// smaller text box" and not showing the full text. Growth matters most exactly
-// where the value is long, which is when a fixed bound is most wrong.
-//
-// The reserve is the form TITLE row, the field's own hint row, and enough
-// neighbouring rows that the cursor can still move to another field and be seen.
-// The pane scrolls to follow the cursor (kit2.Base.detailPaneView), so a tall
-// focused field pushes the rest of the form down rather than out of reach.
-//
-// A host that supplies no height keeps the old conservative bound, so modal
-// hosts that never set Height are unchanged.
 func (f *Form) focusedWrapRows() int {
 	if f.Height <= 0 {
 		return maxWrappedRows
@@ -2177,14 +1717,8 @@ func (f *Form) focusedWrapRows() int {
 	return avail
 }
 
-// oneLine flattens a value for SINGLE-ROW display, marking the line breaks instead of
-// emitting them.
-//
-// Nothing did this before, and the omission was a real layout bug rather than a cosmetic
-// one: display() returns the raw value, so a multi-line KTextArea put literal newlines
-// into a string the host then PADS to the pane width — one field became several visual
-// rows, the width accounting went wrong, and the rows below it shifted. An unfocused
-// prompt or description corrupted the form it appeared in.
+// oneLine flattens a value for SINGLE-ROW display, marking the line breaks instead of emitting
+// them.
 func oneLine(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")
@@ -2212,29 +1746,8 @@ func lineCount(s string) int {
 	return strings.Count(strings.ReplaceAll(s, "\r\n", "\n"), "\n") + 1
 }
 
-// wrappedBody renders a multi-line value the way it should be READ: the value's OWN line
-// breaks preserved, long lines soft-wrapped to `width`, and a caret at the edit position.
-//
-// It returns the rows to draw and how many rows were withheld by maxRows, so the caller
-// can say so rather than silently cropping the operator's text.
-//
-// This exists alongside expandedBody (the ctrl+e view) because the two answer different
-// questions: this one is what a focused multi-line field shows BY DEFAULT, so the operator
-// never has to know a chord to see their own text; expandedBody is the unbounded view for
-// a value too large to fit the pane.
-// wrappedBody renders a value as wrapped rows with the caret spliced in, and
-// returns the WINDOW of rows to draw around the caret.
-//
-// THE WINDOW FOLLOWS THE CARET, and that is the whole point. It used to take the
-// first maxRows rows, so the visible slice was anchored at the START of the value
-// and the caret fell off the end: measured, with the caret at the end of a 39-line
-// value and a 27-row budget the caret was not rendered AT ALL ("caret rune found
-// at rendered row -1"). That is the operator's "even though the text box is
-// larger, it is still cut off and you can't see your cursor to edit".
-//
-// The caret IS the scroll position: there is no separate offset to fall out of
-// step with it, so the cursor can never leave the window. hiddenAbove/hiddenBelow
-// say how much is out of view on each side, so the hint can report it honestly.
+// wrappedBody renders a multi-line value the way it should be READ: the value's OWN line breaks
+// preserved, long lines soft-wrapped to `width`, and a caret at the edit position.
 func (f *Form) wrappedBody(name string, width, maxRows int) (rows []string, hiddenAbove, hiddenBelow int) {
 	val := f.Values[name]
 	pos := f.caret(name)
@@ -2276,12 +1789,8 @@ func (f *Form) wrappedBody(name string, width, maxRows int) (rows []string, hidd
 	return rows[start : start+maxRows], start, len(rows) - (start + maxRows)
 }
 
-// wrapPreservingSpaces soft-wraps ONE logical line to `width` cells, leaving the line
-// untouched when it already fits.
-//
-// wrapFormLine (used by the ctrl+e view) wraps with strings.Fields, which collapses runs
-// of spaces and so DESTROYS the indentation of pretty-printed JSON and the deliberate
-// alignment of a prompt. This keeps the text verbatim and only inserts breaks.
+// wrapPreservingSpaces soft-wraps ONE logical line to `width` cells, leaving the line untouched
+// when it already fits.
 func wrapPreservingSpaces(line string, width int) []string {
 	if width < 8 || lipgloss.Width(line) <= width {
 		return []string{line}
@@ -2324,12 +1833,8 @@ func wrapPreservingSpaces(line string, width int) []string {
 	return out
 }
 
-// expandedBody renders the focused field's value WRAPPED across as many rows as
-// it needs, with a caret at the edit position.
-//
-// This is the whole point of the expand toggle: the normal row is one
-// horizontally-windowed line, so a description or a prompt is only ever visible
-// a slice at a time. Wrapped, the operator reads what they are writing.
+// expandedBody renders the focused field's value WRAPPED across as many rows as it needs, with a
+// caret at the edit position.
 func (f *Form) expandedBody(name string, width int) []string {
 	val := f.Values[name]
 	pos := f.caret(name)
@@ -2342,29 +1847,16 @@ func (f *Form) expandedBody(name string, width int) []string {
 	return wrapFormLine(withCaret, width)
 }
 
-// wrapFormLine breaks a rendered line so it fits `width` cells, wrapping at
-// word boundaries and indenting continuations to match the leading prefix. The
-// form's host pads (and truncates) each body line to the pane width, so a line
-// longer than the form was silently CUT — long labels, long values and the hint
-// row all lost their tails.
+// wrapFormLine breaks a rendered line so it fits `width` cells, wrapping at word boundaries and
+// indenting continuations to match the leading prefix.
 func wrapFormLine(line string, width int) []string {
 	if width < 8 || lipgloss.Width(line) <= width {
 		return []string{line}
 	}
 	// THE ROW'S OWN LEADING WHITESPACE IS PART OF THE ROW.
-	//
-	// It used to be dropped, and that alone was enough to make a form render at TWO
-	// indents. The early return above hands back a FITTING row verbatim (prefix intact),
-	// while this loop rebuilt a WRAPPING one out of `strings.Fields`, which discards
-	// leading whitespace — so a field whose value happened to fit kept its two-space
-	// prefix and its neighbour dropped to column 0. Measured on the worker edit form:
-	// `Purpose:` at column 0 and `Plane role:` at column 2, in the same list. That is
-	// how the operator spotted the very field they were hunting for ("it's not inline
-	// with the other fields").
 	lead := line[:len(line)-len(strings.TrimLeft(line, " "))]
-	// The continuation indent mirrors the field's leading marker + label so a
-	// wrapped value reads as part of the same field. Measured on the row as it was
-	// GIVEN (label first), not as a bare word.
+	// The continuation indent mirrors the field's leading marker + label so a wrapped value reads as
+	// part of the same field.
 	body := strings.TrimLeft(line, " ")
 	indent := lead + "    "
 	if i := strings.Index(body, ": "); i >= 0 && i < width/2 {

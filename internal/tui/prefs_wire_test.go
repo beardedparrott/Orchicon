@@ -1,12 +1,6 @@
 package tui
 
 // prefs_wire_test.go — the fold state REACHES THE FILE and comes BACK.
-//
-// The operator: "Conversation categories don't stay collapsed when you leave orch and come back in."
-//
-// The file format is pinned in the config package; what is pinned HERE is the wiring, which is the layer
-// that fails silently: a toggle that updates the in-memory map and never writes, or a write that is never
-// read back, both look exactly like a working collapse until the next launch.
 
 import (
 	"os"
@@ -15,13 +9,8 @@ import (
 	"testing"
 )
 
-// useTempConfigDir points the config at a temp dir for the duration of the test, so a test never reads or
-// writes the developer's real ~/.orchicon/config. It returns the path.
-//
-// IT ALSO ENABLES PREFS PERSISTENCE, which the test-binary default disables (see collapsedPrefsPath): the
-// package-wide sandbox that contains OTHER config writers must not double as an opt-in to writing fold
-// state, or every test in the package would share one file. A test that genuinely wants to exercise
-// persistence says so here — and says it back afterwards.
+// useTempConfigDir points the config at a temp dir for the duration of the test, so a test never
+// reads or writes the developer's real ~/.orchicon/config.
 func useTempConfigDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -129,13 +118,7 @@ func TestCollapsingOnePageDoesNotClobberAnother(t *testing.T) {
 	}
 }
 
-// THE RAIL'S WIDTH SURVIVES A RESTART. This is the operator's report end to end: drag (or chord) the width,
-// then "leave orch and come back in" — a NEW App over the SAME sandboxed config dir — and the RESTARTED
-// model must render the pane at the chosen width.
-//
-// The assertion is on the RESTARTED model's COMPOSED view, not on the struct: a field that round-trips
-// through the file but is never consulted by diffPaneWidth would look correct in a struct assertion and
-// draw the wrong pane.
+// THE RAIL'S WIDTH SURVIVES A RESTART.
 func TestDiffRailWidthSurvivesARelaunch(t *testing.T) {
 	path := useTempConfigDir(t)
 

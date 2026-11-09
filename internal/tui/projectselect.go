@@ -22,17 +22,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// selectProjectByName switches the workspace to the project whose NAME or id matches want, and reports whether
-// it found one.
-//
-// EXACT-ON-CASE-INSENSITIVE FIRST, SUBSTRING ONLY AS A FALLBACK. A launch directory called "Orchicon" must not
-// silently land in a project called "Orchicon-notes" because it happened to be first in the list — an ambiguous
-// fallback returns false and changes nothing, which is the same answer as "no match" and is the honest one: a
-// launch whose directory matches two projects has not decided, and inventing a choice would put the operator in
-// a workspace they did not pick.
-//
-// A MISS CHANGES NOTHING. Every caller is a convenience, never a requirement: an unmatched name leaves the scope
-// exactly as it was, so the worst case is the behaviour that existed before this file.
+// selectProjectByName switches the workspace to the project whose NAME or id matches want, and
+// reports whether it found one. EXACT-ON-CASE-INSENSITIVE FIRST, SUBSTRING ONLY AS A FALLBACK.
 func (m *App) selectProjectByName(want string) bool {
 	name := strings.TrimSpace(want)
 	if name == "" {
@@ -63,13 +54,8 @@ func (m *App) selectProjectByName(want string) bool {
 	return true
 }
 
-// applyCreatedProjectScope makes a just-created project the workspace, and refreshes the rail's project list.
-//
-// THE RELOAD IS NOT OPTIONAL. The rail's list is a snapshot from before the create, so it does not contain the
-// new project — which means selectProjectByName would miss and the operator would be left in All projects
-// having just created and activated a project for the directory they are standing in. The name is parked FIRST
-// so the selection is applied by onRailProjects when the refreshed list lands, rather than depending on the
-// order two commands happen to resolve in.
+// applyCreatedProjectScope makes a just-created project the workspace, and refreshes the rail's
+// project list.
 func (m *App) applyCreatedProjectScope(msg launchCreatedMsg) tea.Cmd {
 	name := strings.TrimSpace(msg.name)
 	if name == "" {

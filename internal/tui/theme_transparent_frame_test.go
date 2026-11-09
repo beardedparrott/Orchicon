@@ -1,13 +1,6 @@
 package tui
 
 // theme_transparent_frame_test.go — THE WHOLE FRAME RESPECTS A TRANSPARENT THEME.
-//
-// The theme package's own tests prove the STYLES are right. This proves the FRAME agrees, which is a
-// different question: the shell wraps every row in a base style and then runs two repairs (padScreenLine's
-// bgOpaque and the composer's RepairAfterResets) whose entire job is to RE-PAINT the background after any
-// inner reset. A transparency that the styles honoured and the repairs undid would look correct in the
-// theme tests and paint solid cells on the real screen — so the assertion has to be made against a
-// rendered frame, not against a style.
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,12 +14,6 @@ import (
 )
 
 // paintSeq returns the exact SGR a colour renders as, ASKED OF THE RENDERER rather than computed.
-//
-// Hand-deriving it from the hex was wrong and worth recording: termenv converts a #rrggbb through a
-// float round-trip and truncates (`int(v*255)`), so #1f7a5c renders as `48;2;31;121;92` — green 121, not
-// the 122 the hex says. A helper that computed the sequence itself therefore searched for a string that is
-// never emitted, and reported a present tint as missing. Deriving it from the same renderer the frame uses
-// removes the whole class of disagreement.
 func paintSeq(c lipgloss.TerminalColor) string {
 	out := lipgloss.NewStyle().Background(c).Render("x")
 	i := strings.IndexByte(out, 'x')
@@ -37,21 +24,6 @@ func paintSeq(c lipgloss.TerminalColor) string {
 }
 
 // A TRANSPARENT SESSION PAINTS NO SURFACES — THE TERMINAL BLEEDS THROUGH EVERYWHERE.
-//
-// This is the operator's report, verbatim: "now the transparents are not transparent at all ... only transparent
-// in the top left corner. The terminal should bleed through everywhere but with the light tint of the color
-// scheme coming through."
-//
-// ASSERTED PER-CELL RATHER THAN PER-THEME, because the frame is where a transparency can be undone: the shell
-// wraps every row in a base style and then runs two repairs (padScreenLine's bgOpaque and the composer's
-// RepairAfterResets) whose whole job is to RE-PAINT the background after any inner reset. A transparency the
-// styles honoured and the repairs undid would pass every test in the theme package and still paint solid cells
-// here.
-//
-// THE ALLOWED FILLS ARE THE CONTENT ONES. A screen may still paint the raised fill (a code chip, a code block, a
-// diff line) and the selection fill: those are content that stops working without a fill, not surfaces — see
-// theme.buildStyles. Everything else must be UNPAINTED, and "everything else" includes the panel fill, which is
-// the one that was covering the screen.
 func TestATransparentSessionPaintsNoSurfaces(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() {
@@ -87,12 +59,8 @@ func TestATransparentSessionPaintsNoSurfaces(t *testing.T) {
 	if len(rows) < 4 {
 		t.Fatalf("fixture: frame has only %d rows", len(rows))
 	}
-	// THE REGION SCANNED IS ABOVE THE COMPOSER, and it is scoped deliberately rather than for convenience. The
-	// composer's CARET is a solid block by design (a see-through cursor is not a thing), and its style paints the
-	// GROUND as its background — so on a dark terminal its sequence is byte-identical to a painted panel's and
-	// cannot be told apart by inspection. The composer's own transparency is asserted where it belongs, in the
-	// dock and theme packages; what this test covers is the region the operator was complaining about, where the
-	// panes, the rails and the tab strip were covering the screen.
+	// THE REGION SCANNED IS ABOVE THE COMPOSER, and it is scoped deliberately rather than for
+	// convenience.
 	composerTop := m.composerTopRow()
 	if composerTop > len(rows) {
 		composerTop = len(rows)

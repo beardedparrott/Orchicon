@@ -36,10 +36,6 @@ import (
 )
 
 // appWithBothServices builds a shell whose Ask AND Project services are stubs on ONE server.
-//
-// IT HAS TO BE ONE SERVER: a move is a write followed by a conversations reload, so the fixture needs both
-// services reachable from the same client. The other fixtures have one or the other, which is exactly why the
-// move path had no end-to-end test.
 func appWithBothServices(t *testing.T, ask apiv1connect.AskOrchiconServiceHandler) *App {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -132,9 +128,7 @@ func TestMovingAConversationOutOfTheScopeRemovesItFromTheRail(t *testing.T) {
 	}
 }
 
-// THE MOVE PICKER OFFERS NO "ALL PROJECTS". Its value is the sentinel __all__, not a project id, so choosing it
-// is a write the server rejects — and the failure reads as a broken app rather than as a bad target. The GUI's
-// own move control filters it out for exactly this reason; this pins the TUI to the same rule.
+// THE MOVE PICKER OFFERS NO "ALL PROJECTS".
 func TestTheMovePickerOffersNoAllProjectsTarget(t *testing.T) {
 	m, _ := movePlane(t)
 
@@ -169,10 +163,6 @@ func TestTheMovePickerOffersNoAllProjectsTarget(t *testing.T) {
 }
 
 // PICKING THE PROJECT IT IS ALREADY IN SAYS SO, and writes nothing.
-//
-// The cursor OPENS ON the conversation's current project, so Enter alone selects it — and it used to write,
-// report "moved to <that same project>", and reload to a list where the chat had not moved. That is the most
-// likely thing the operator actually did, and it was indistinguishable from success.
 func TestMovingToTheCurrentProjectSaysSoInsteadOfWriting(t *testing.T) {
 	m, stub := movePlane(t)
 

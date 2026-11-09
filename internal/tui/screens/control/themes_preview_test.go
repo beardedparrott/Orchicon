@@ -1,13 +1,6 @@
 package control
 
 // themes_preview_test.go — MOVING THROUGH THE THEMES APPLIES THEM.
-//
-// The operator: "when selecting themes, we should auto switch to the theme as the user is moving through
-// them with the arrow keys or clicking on them as opposed to having to hit enter to select."
-//
-// Driven through the SCREEN'S REAL Update with real key messages, because the whole risk of this feature is
-// whether the gesture actually reaches the hook: asserting previewTheme() directly would prove the helper
-// works and prove nothing about the arrow key (the gap this codebase has been bitten by repeatedly).
 
 import (
 	"context"
@@ -86,9 +79,6 @@ func TestArrowMovingThroughThemesAppliesThem(t *testing.T) {
 
 	// Step down one row at a time until the cursor is on the target palette — which is the operator's
 	// gesture, and must have applied it without Enter.
-	//
-	// The cursor's row is read from ActiveItem(), NOT from DetailID: the detail is filled by a command this
-	// test does not run, so DetailID would stay empty and the loop would never find its row.
 	for i := 0; i < len(ids)+2; i++ {
 		m.Update(tea.KeyMsg{Type: tea.KeyDown})
 		if it, ok := m.Base.ActiveItem(); ok && it.ID == target {

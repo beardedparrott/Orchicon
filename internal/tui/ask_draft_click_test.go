@@ -1,10 +1,6 @@
 package tui
 
 // ask_draft_click_test.go — a CLICK on the recorded card's Other row opens the input ON THE CARD.
-//
-// The shell-level half of the fix: ask/askdraft.go owns the keys once the row is open, and this is
-// the gesture that opens it — through the same click resolver the option rows use, so the row is not
-// reachable by one path and dead by another.
 
 import (
 	"strings"
@@ -37,8 +33,7 @@ func recordedAskPlane(t *testing.T) *App {
 }
 
 // TestAClickOnTheRecordedCardsOtherRowOpensTheInput is the reported gap through the shell's own
-// click path: the row opens the card's input, the card takes the keys so the typing lands in it, and
-// the row's own label is NOT sent as the answer.
+// click path: the row opens the card's input, the card takes the keys so the typing lands in it.
 func TestAClickOnTheRecordedCardsOtherRowOpensTheInput(t *testing.T) {
 	m := recordedAskPlane(t)
 	m = clickRow(m, rowCarryingFrame(t, m, chat.ConsentOther))
@@ -68,8 +63,7 @@ func TestAClickOnTheRecordedCardsOtherRowOpensTheInput(t *testing.T) {
 }
 
 // AND A CLICK ON A REAL OPTION IS UNCHANGED — it still starts the send of that option's label, so
-// opening the free-text row did not make the rest of the card inert. The command is the assertion:
-// the send path (Controller.AnswerQuestion → Send) returns one, and the free-text path does not.
+// opening the free-text row did not make the rest of the card inert.
 func TestAClickOnARecordedCardsOptionStillStartsTheSend(t *testing.T) {
 	m := recordedAskPlane(t)
 	next, cmd := m.Update(tea.MouseMsg{

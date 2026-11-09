@@ -41,10 +41,8 @@ func TestMouseRailToggle(t *testing.T) {
 	}
 }
 
-// TestMouseTabClickPins the tab bar mouse switch (Phase 2a: a click also
-// OPENS the tab's dropdown submenu — a second click closes it again, so
-// switch + close-menu is the two-step contract; tested via tabStartCol,
-// the visible-column hit-test that survives centering).
+// TestMouseTabClickPins the tab bar mouse switch (Phase 2a: a click also OPENS the tab's dropdown
+// submenu — a second click closes it again, so switch + close-menu is the two-step contract.
 func TestMouseTabClick(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "a"})
@@ -72,6 +70,5 @@ func TestMouseTabClick(t *testing.T) {
 	}
 }
 
-// TestCtrlRTogglesRail is retired: the conversations rail is disabled, so
-// ctrl+r is deliberately inert. See TestRailToggleIsInertWhileRailsAreDisabled
-// in rails_layout_test.go for the pinned contract.
+// TestCtrlRTogglesRail is retired: the conversations rail is disabled, so ctrl+r is deliberately
+// inert.

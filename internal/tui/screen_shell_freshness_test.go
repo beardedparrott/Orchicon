@@ -1,18 +1,6 @@
 package tui
 
 // screen_shell_freshness_test.go — A SCREEN'S SHELL REFERENCE MUST POINT AT THE LIVE APP.
-//
-// `App.Update` has a VALUE receiver, so bubbletea copies the App for every message and the model it keeps is a
-// NEW address each time. A screen constructed during one of those Updates is handed a pointer to THAT copy —
-// so from the next message onward it talks to an App that no longer exists.
-//
-// The consequence the operator hit: switching a theme from the Control→Themes PANE called `App.SetTheme` on the
-// stale copy. `theme.Use` is global, so the PALETTE changed correctly — which is why the switch looked
-// half-working — while `m.dock.ApplyTheme()` re-pinned the DEAD copy's composer, leaving the live one on the
-// palette it was built with. Their words: "I switched from a light theme to a dark theme and now the composer
-// is a white box. When switching between light and dark themes, the composer never switches over properly."
-//
-// `/theme` never showed this because it runs on the live App.
 
 import (
 	"strings"
@@ -26,9 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// themesPaneApp lands on the Control tab with the Themes pane focused and loaded, and returns the App that
-// SURVIVED those messages — including one extra message after the screen was built, so the reference it was
-// handed at construction is already a dead copy. That is the state the operator is always in.
+// themesPaneApp lands on the Control tab with the Themes pane focused and loaded, and returns the
+// App that SURVIVED those messages — including one extra message after the screen was built.
 func themesPaneApp(t *testing.T) *App {
 	t.Helper()
 	m := phase3App(120, 40)
@@ -123,17 +110,13 @@ func TestSwitchingAThemeFromTheThemesPaneReachesTheComposer(t *testing.T) {
 		t.Errorf("the composer still carries the LIGHT palette's fill %q after switching to a dark one",
 			lightFill)
 	}
-	// AND THE GENERAL FORM, which is the assertion that actually catches this: the check above can pass while
-	// the composer's own TEXT CELLS hold a third palette's fill, because the box's chrome follows the new
-	// palette through package state while a stale textarea keeps whatever it was built with.
+	// AND THE GENERAL FORM, which is the assertion that actually catches this: the check above can pass
+	// while the composer's own TEXT CELLS hold a third palette's fill.
 	assertComposerPaintsOnlyTheActivePalette(t, m, "after switching from the Themes pane")
 }
 
-// THE INVARIANT, asserted directly: every screen's shell reference IS the App that survived the last message.
-//
-// The behavioural test above can only cover what a screen happens to push through the reference. This one
-// covers the REFERENCE ITSELF, so it fails for any screen that goes stale — including a future screen that
-// needs its shell for something other than theming (a notice, a mutation sink, a refresh).
+// THE INVARIANT, asserted directly: every screen's shell reference IS the App that survived the
+// last message.
 func TestEveryScreensShellReferenceIsTheLiveApp(t *testing.T) {
 	m := phase3App(120, 40)
 	for _, tab := range []TabID{TabAsk, TabWork, TabExecution, TabControl} {

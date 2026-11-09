@@ -9,18 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// card.go is the shared VERTICAL card: a bordered box the transcript draws for
-// a consent card or a clarifying question.
-//
-// IT IS A KIT2 WIDGET, NOT A BESPOKE STRING, for the same reason every other
-// surface is: the border, the padding, the selection rule and the disabled-row
-// treatment are the ones Dialog/Panel/Table already use, so a card inherits the
-// app's look and the operator's learned gestures instead of inventing a fourth.
-//
-// Dialog (dialog.go) is NOT reused because it lays its actions out as a single
-// HORIZONTAL button row (left/right + enter). The three permission actions do
-// not fit a narrow pane, and the card is specified as arrow-key + Enter, so the
-// options are a vertical list here.
+// card.go is the shared VERTICAL card: a bordered box the transcript draws for a consent card or a
+// clarifying question.
 
 // CardLine is one selectable row.
 type CardLine struct {
@@ -62,15 +52,8 @@ func CardWidth(avail, want int) int {
 	return want
 }
 
-// CardRowSpan is where one CardSpec.Lines entry landed in the rendered card: the
-// 0-based index of its FIRST line and how many lines it occupies (a long option
-// wraps, and every row of it belongs to that option).
-//
-// It is measured by the code that DRAWS the card, never counted by the caller. A
-// caller-side count drifts the moment the card gains a row — and for a clickable
-// option list the failure mode of that drift is a click that answers with the
-// option the operator did not choose. The transcript's clarifying-question card
-// resolves clicks through these spans, which is why the measurement lives here.
+// CardRowSpan is where one CardSpec.Lines entry landed in the rendered card: the 0-based index of
+// its FIRST line and how many lines it occupies (a long option wraps.
 type CardRowSpan struct {
 	Line  int
 	Lines int
@@ -83,9 +66,8 @@ func CardLines(spec CardSpec, width int) []string {
 	return lines
 }
 
-// CardLinesSpans is CardLines plus where each spec.Lines entry landed, so a
-// caller that makes rows INTERACTIVE can resolve a click (or a keypress) to the
-// row it actually drew.
+// CardLinesSpans is CardLines plus where each spec.Lines entry landed, so a caller that makes rows
+// INTERACTIVE can resolve a click (or a keypress) to the row it actually drew.
 func CardLinesSpans(spec CardSpec, width int) ([]string, []CardRowSpan) {
 	w := CardWidth(width, 0)
 	border := lipgloss.NewStyle().Foreground(theme.AccentIndigo)
@@ -105,9 +87,8 @@ func CardLinesSpans(spec CardSpec, width int) ([]string, []CardRowSpan) {
 		border.Render("┌─ ") + theme.MenuTitle.Render(title) + border.Render(" "+strings.Repeat("─", dash)+"┐"),
 	}
 	emit := func(content string) {
-		// OpaquePanel truncates to innerW, pads to innerW and REPAIRS the panel
-		// background after any style reset the content carried — which is what
-		// keeps a selected row's own style from punching a hole in the fill.
+		// OpaquePanel truncates to innerW, pads to innerW and REPAIRS the panel background after any style
+		// reset the content carried.
 		out = append(out, border.Render("│")+theme.OpaquePanel(content, innerW)+border.Render("│"))
 	}
 
@@ -119,14 +100,8 @@ func CardLinesSpans(spec CardSpec, width int) ([]string, []CardRowSpan) {
 		}
 	}
 	if spec.Notice != "" {
-		// The notice is the DENY-BY-FILE line: it must read as a warning, and it
-		// lives inside the card so it cannot be scrolled away from the decision.
-		//
-		// IT WRAPS, IT IS NOT CUT. `ansi.Truncate(…, "")` cut the sentence
-		// mid-word at the widths this transcript actually gets ("…a session grant
-		// cannot ove") — and a warning the operator cannot finish reading is the
-		// same as no warning, on the one line that explains why the session row is
-		// disabled. So it takes as many rows as it needs.
+		// The notice is the DENY-BY-FILE line: it must read as a warning, and it lives inside the card so
+		// it cannot be scrolled away from the decision.
 		for _, wl := range wrapCells("⚠ "+spec.Notice, innerW, " ", " ") {
 			emit(theme.ErrorText.Render(wl))
 		}
@@ -143,9 +118,8 @@ func CardLinesSpans(spec CardSpec, width int) ([]string, []CardRowSpan) {
 				emit(theme.HintText.Render(wl))
 			}
 		case l.Selected:
-			// The highlight spans the WHOLE row — and EVERY row a wrapped label
-			// runs onto — which is what makes the cursor unmistakable in a box that
-			// also holds prose.
+			// The highlight spans the WHOLE row — and EVERY row a wrapped label runs onto — which is what makes
+			// the cursor unmistakable in a box that also holds prose.
 			for _, wl := range wrapCells(l.Text, innerW, " ▸ ", "   ") {
 				emit(theme.ListItemSelected.Render(Pad(wl, innerW)))
 			}
@@ -170,18 +144,7 @@ func CardLinesSpans(spec CardSpec, width int) ([]string, []CardRowSpan) {
 	return out, spans
 }
 
-// wrapCells breaks text into rows of at most `width` DISPLAY CELLS: greedy on
-// spaces, and a single token wider than a whole row is HARD-SPLIT rather than
-// dropped. The first row carries `first`, every continuation `cont`, so a
-// wrapped row keeps its cursor arrow, its indent and its disabled marker
-// aligned.
-//
-// IT EXISTS SO A CARD ROW IS NEVER SILENTLY TRUNCATED. The card IS the decision:
-// the operator cannot consent to a target they were not shown, and cannot weigh
-// a warning that was cut in half. A path longer than the pane, the deny-by-file
-// sentence and a long option label all used to be clipped with no ellipsis and
-// no second row (every emit below is clamped by OpaquePanel), so the loss was
-// invisible.
+// IT EXISTS SO A CARD ROW IS NEVER SILENTLY TRUNCATED.
 func wrapCells(text string, width int, first, cont string) []string {
 	words := strings.Fields(text)
 	if len(words) == 0 {
@@ -240,11 +203,7 @@ func dropCells(s string, n int) string {
 	return ""
 }
 
-// CardFooter is the card's own key hint. It NAMES Esc's outcome, because the
-// recorded rule is that a mode the operator cannot tell they are in is worse
-// than no mode — and "esc" on a consent card is a DECISION (deny), not a
-// dismissal, so saying so is the difference between a deliberate refusal and a
-// card that looks like it silently vanished.
+// CardFooter is the card's own key hint.
 func CardFooter(question bool) string {
 	if question {
 		return "↑/↓ select · enter confirm · esc dismisses"
@@ -258,9 +217,7 @@ type Card struct {
 	Sel   int
 }
 
-// HandleKey drives the card. choice is the selected index on enter (-1 when
-// closed without choosing). Disabled rows are skipped by the arrows and cannot
-// be confirmed.
+// HandleKey drives the card.
 func (c *Card) HandleKey(k keyMsg) (choice int, closed bool) {
 	switch k.String() {
 	case "esc":

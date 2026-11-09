@@ -1,36 +1,7 @@
 // NOTE — the Tab-in-a-form conflict is now RESOLVED, deliberately.
-//
-// This file used to carry a note explaining that the Work screen did not implement
-// FormOpen(), so Tab walked OUT of an inline editor instead of advancing its fields, and
-// that fixing it meant choosing between two conflicting operator asks recorded in the tree
-// (router.go's Tab chord + worker_crud_test.go versus rails_layout_test.go's
-// TestTabYieldsOnlyToAWindowedModalForm).
-//
-// The operator settled it: "ONCE IN EDIT/NEW MODE using down/up OR tab/shift+tab should
-// move through the edit items as opposed to the top menu bar on every screen. Once you
-// ctrl+s to save or hit Esc to get out of the editing mode, tab/shift+tab now affects the
-// top tab menu again." Work now implements FormOpen(), and the stale rails_layout
-// assertion was rewritten to the resolved rule (both halves: Tab goes to the form while it
-// is open, and to the bar once it closes).
 package tui
 
-// work_menu_probe_test.go — the Work tab's MENU and the shell's keys must own the
-// keyboard. (The screen-side regression lives in
-// internal/tui/screens/work/keyclaim_test.go, where the action builder is reachable.)
-//
-// Operator report: "I still can't go into reverse tab (shift+tab) once I hit the
-// Work/Projects screen. I also can't hit enter on any submenu under Work nor can I hit
-// the up/down arrow keys on the Work menu."
-//
-// Root cause, one line: projectActions() — called to build the footer hints and key
-// bindings — set m.formLoading = true as a side effect and nothing ever cleared it.
-// ClaimsKeys() includes formLoading, and dispatch ran the claims gate BEFORE its menu
-// handling, so on the Projects source the shell handed EVERY key to the screen: the
-// submenu's arrows and Enter never reached menuHandleKey, and shift+tab (a global route,
-// later still) was swallowed outright.
-//
-// These tests pin the ORDERING, against a screen that claims unconditionally, so the
-// arrangement that turned one stray assignment into a dead tab bar cannot come back.
+// work_menu_probe_test.go — the Work tab's MENU and the shell's keys must own the keyboard.
 
 import (
 	"testing"
@@ -174,10 +145,8 @@ func TestWorkTabDoesNotSwallowShiftTab(t *testing.T) {
 	}
 }
 
-// The Work screen must report an open form, so the shell's Tab chord routes Tab to the
-// FORM's fields rather than walking the bar. This is the resolved Tab-in-a-form rule; the
-// complementary assertion (that Tab returns to the bar once the form closes) lives in
-// rails_layout_test.go, which drives it through the real dispatch.
+// The Work screen must report an open form, so the shell's Tab chord routes Tab to the FORM's
+// fields rather than walking the bar.
 func TestWorkScreenReportsOpenForms(t *testing.T) {
 	m := realWorkApp(t)
 	ws, ok := m.screens[TabWork].(interface{ FormOpen() bool })

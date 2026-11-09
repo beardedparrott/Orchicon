@@ -1,15 +1,6 @@
 package work
 
 // bulk_set_test.go — the BULK workflow/runtime-image set.
-//
-// The bulk counterpart of the single-item form, and the remedy for "an item with no workflow
-// binding cannot run": it strands a whole backlog that is bound to nothing, and fixing that one
-// modal at a time is the tedium this removes.
-//
-// The load-bearing property, proved rather than assumed, is INDEPENDENCE (AC2): an untouched field
-// is left as a NIL POINTER, so it is omitted from the request entirely. `WorkflowId` and
-// `RuntimeImage` are both `optional` on UpdateWorkItemRequest — unset means unchanged, empty means
-// clear. A zero value for an untouched field would silently unbind it.
 
 import (
 	"context"
@@ -282,10 +273,7 @@ func TestBulkSetConfirmNamesCountValuesAndInertParent(t *testing.T) {
 	}
 }
 
-// 8. THE PICKER MUST NOT OFFER A TARGET THAT CANNOT RUN (AC6). UpdateWorkItem performs NO bind-time
-// validation of workflow_id (the enforcement point is schedule-time only), so a bulk bind of a
-// non-runnable template would land silently and fail later. The picker therefore applies the
-// schedule-time predicate itself: PUBLISHED|DEPRECATED AND at least one step.
+// 8. THE PICKER MUST NOT OFFER A TARGET THAT CANNOT RUN (AC6).
 func TestBulkSetPickerHidesNonRunnableWorkflows(t *testing.T) {
 	p := newPlane()
 	p.workflows = []*apiv1.Workflow{
@@ -359,10 +347,7 @@ func TestBulkSetDoesNotDisturbArchiveAndDelete(t *testing.T) {
 	}
 }
 
-// 10. A CLIENT WITHOUT THE IMAGE SERVICE MUST NOT BE DEREFERENCED. prepBulkSet's own guard promises
-// this path "never PANICs on a missing client", and the image fetch was the one dereference it did
-// not cover — so a screen wired without `Images` would take the whole TUI down the moment the
-// operator pressed W. The picker must still open, offering the workflow it CAN set.
+// 10. A CLIENT WITHOUT THE IMAGE SERVICE MUST NOT BE DEREFERENCED.
 func TestBulkSetPickerSurvivesAMissingImageClient(t *testing.T) {
 	p := newPlane()
 	p.workflows = []*apiv1.Workflow{{

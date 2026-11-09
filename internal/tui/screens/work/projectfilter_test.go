@@ -1,12 +1,6 @@
 package work
 
 // projectfilter_test.go — THE QUERY CARRIES THE WORKSPACE, not just the field.
-//
-// The operator: "When I am viewing work items in the TUI, it should be filtered by current project selected."
-//
-// ListWorkItemsRequest has carried project_id the whole time; this screen simply never set it. So a test that
-// only asserts the model's field would pass over exactly the bug that was there. These tests read the REQUEST
-// the fetch builds, which is the thing that decides what the operator sees.
 
 import (
 	"context"
@@ -103,11 +97,7 @@ func TestTheArchiveViewsActivePageIsAlsoFiltered(t *testing.T) {
 	}
 }
 
-// AN UNCHANGED FILTER IS NOT RE-FETCHED. The shell pushes the workspace in on every rebind pass, which happens
-// on every dispatch; reloading the work-items page on that cadence would be constant load for no change.
-//
-// The assertion is the CALL COUNT, not the returned cmd: "returns nil" is satisfied by an implementation that
-// reloads nothing at all, which would be the opposite bug.
+// AN UNCHANGED FILTER IS NOT RE-FETCHED.
 func TestAnUnchangedProjectFilterDoesNotRefetch(t *testing.T) {
 	m, plane := filterPlane(t)
 	m.SetActiveProject("p-orch")

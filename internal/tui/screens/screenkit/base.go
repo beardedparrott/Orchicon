@@ -12,9 +12,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// Screen is the contract every area screen implements. It lives here
-// (not in package tui) because screens are tui subpackages — package tui
-// imports screenkit, never the reverse.
+// Screen is the contract every area screen implements.
 type Screen interface {
 	Init() tea.Cmd
 	Update(tea.Msg) (Screen, tea.Cmd)
@@ -24,9 +22,8 @@ type Screen interface {
 	Close()
 }
 
-// StatusReporter is the optional hook the shell uses for the footer's
-// stream-status strip: the active screen reports its subscriptions'
-// current statuses (worst wins in the footer).
+// StatusReporter is the optional hook the shell uses for the footer's stream-status strip: the
+// active screen reports its subscriptions' current statuses (worst wins in the footer).
 type StatusReporter interface {
 	ReportStatus() []StatusMsg
 }
@@ -46,9 +43,8 @@ type source struct {
 	list  List
 }
 
-// Base is the generic list+detail scaffolding every screen embeds:
-// multiple sources (left panes), one detail (right pane), mouse + keys,
-// pagination via next_page_token, and a stream-status reporter.
+// Base is the generic list+detail scaffolding every screen embeds: multiple sources (left panes),
+// one detail (right pane), mouse + keys, pagination via next_page_token.
 type Base struct {
 	NameStr  string
 	sources  []*source
@@ -63,9 +59,8 @@ type Base struct {
 	onDetail func(src, id string) tea.Cmd
 	detailID string // id of the item the detail pane currently shows
 	stripH   int    // 1 when the source strip renders (>1 source), else 0
-	// noAutoDetail suppresses the automatic detail load after a fetch:
-	// the Ask screen keeps its hero until the operator deliberately opens
-	// a conversation (the GUI never auto-opens one at launch).
+	// noAutoDetail suppresses the automatic detail load after a fetch: the Ask screen keeps its hero
+	// until the operator deliberately opens a conversation (the GUI never auto-opens one at launch).
 	noAutoDetail bool
 	heroTitle    string
 	heroBody     string
@@ -81,9 +76,7 @@ func (b *Base) AddSource(name, title string, fetch func(ctx context.Context, pag
 // SetStatuses seeds the status reporter (screen wires its stream names).
 func (b *Base) SetStatuses(sts []StatusMsg) { b.statuses = sts }
 
-// SetSourceEmpty sets the named source's empty-state message. Every pane
-// names WHY it is empty ("no traces in the window — …"); a bare
-// "nothing here" is never shown.
+// SetSourceEmpty sets the named source's empty-state message.
 func (b *Base) SetSourceEmpty(name, msg string) {
 	for _, s := range b.sources {
 		if s.name == name {
@@ -107,13 +100,8 @@ func (b *Base) SetStatus(name, st string) {
 // ReportStatus returns the current per-subscription statuses.
 func (b *Base) ReportStatus() []StatusMsg { return b.statuses }
 
-// SetSize lays out: the ACTIVE source pane (left) + detail (right), with
-// a one-row source strip on top when the screen has >1 source. The old
-// all-panes-side-by-side math needed w/(n+1) per pane — at 7 sources
-// (Control) that wanted ~186+ columns and pushed the detail off-screen,
-// so selecting "settings" focused a pane you could not see (operator
-// Phase-3.5 finding 4). One list pane has a fixed, bounded width; the
-// detail always gets the remainder.
+// SetSize lays out: the ACTIVE source pane (left) + detail (right), with a one-row source strip on
+// top when the screen has >1 source.
 func (b *Base) SetSize(w, h int) {
 	b.width, b.height = w, h
 	n := len(b.sources)
@@ -156,10 +144,8 @@ func (b *Base) SetSize(w, h int) {
 // PaneSize returns the per-source pane dimensions.
 func (b *Base) PaneSize() (int, int) { return b.paneW, b.paneH }
 
-// Frame normalizes a screen's composed block into the exact content
-// region this screen was sized to (SetSize from the shell's
-// WindowSizeMsg). Screens call m.Base.Frame(composed) from View so their
-// panes fill the region; an unsized screen passes content through.
+// Frame normalizes a screen's composed block into the exact content region this screen was sized to
+// (SetSize from the shell's WindowSizeMsg).
 func (b *Base) Frame(content string) string {
 	if b.width < 1 || b.height < 1 {
 		return content
@@ -167,10 +153,8 @@ func (b *Base) Frame(content string) string {
 	return Frame(content, b.width, b.height)
 }
 
-// HasAuthRetry reports whether any list pane is showing the inline
-// re-auth retry state (an auth-expired fetch). The shell renders the
-// re-auth banner exactly once, so it consults this to avoid duplicating
-// the pane's own inline state.
+// HasAuthRetry reports whether any list pane is showing the inline re-auth retry state (an
+// auth-expired fetch).
 func (b *Base) HasAuthRetry() bool {
 	for _, s := range b.sources {
 		if isAuthText(s.list.Err) {
@@ -187,9 +171,8 @@ func isAuthText(errtxt string) bool {
 		strings.Contains(l, "re-authentication") || strings.Contains(l, "re-auth")
 }
 
-// ReloadSource refetches page 1 of the named source (a write path
-// reconciles its list after a mutation lands). Returns nil when the screen
-// has no such source.
+// ReloadSource refetches page 1 of the named source (a write path reconciles its list after a
+// mutation lands).
 func (b *Base) ReloadSource(name string) tea.Cmd {
 	for i, s := range b.sources {
 		if s.name == name {
@@ -208,10 +191,8 @@ func (b *Base) Load() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// friendlyFetchErr maps a raw RPC error to a human-readable, retryable
-// state string (operator finding #9's auth-cascade half: a bare
-// "error: unauthenticated" is never shown — auth expiry names the fix,
-// transient failures name the retry).
+// friendlyFetchErr maps a raw RPC error to a human-readable, retryable state string (operator
+// finding #9's auth-cascade half: a bare "error: unauthenticated" is never shown.
 func friendlyFetchErr(errText string) string {
 	low := strings.ToLower(errText)
 	switch {
@@ -275,9 +256,8 @@ type detailErrMsg struct{ err error }
 // SetDetail installs the detail renderer for the given source name.
 func (b *Base) SetDetail(fn DetailFn) { b.detailFn = fn }
 
-// SetNoAutoDetail suppresses the post-fetch auto-detail: the pane keeps
-// the empty state the screen installed until the operator picks an item
-// (the Ask screen's hero).
+// SetNoAutoDetail suppresses the post-fetch auto-detail: the pane keeps the empty state the screen
+// installed until the operator picks an item (the Ask screen's hero).
 func (b *Base) SetNoAutoDetail(v bool) { b.noAutoDetail = v }
 
 // SetHero installs the detail pane's centered empty state, shown until
@@ -309,10 +289,9 @@ func (b *Base) SetShell(sh any) { b.shell = sh }
 // Shell returns the installed shell reference (nil when unset).
 func (b *Base) Shell() any { return b.shell }
 
-// SetOnDetail installs a hook fired whenever a detail lands (detailMsg
-// handling): the ask transcript / execution live-session views use it
-// to (re)attach the live item stream for the entity the pane now shows.
-// The returned cmd (if any) is batched by Base.Update's caller.
+// SetOnDetail installs a hook fired whenever a detail lands (detailMsg handling): the ask
+// transcript / execution live-session views use it to (re)attach the live item stream for the
+// entity.
 func (b *Base) SetOnDetail(fn func(src, id string) tea.Cmd) { b.onDetail = fn }
 
 // DetailID returns the id of the item the detail pane currently shows
@@ -327,9 +306,9 @@ func (b *Base) DetailWidth() int {
 	return 60
 }
 
-// SetDetailContent pushes live-updated content into the open detail
-// pane without touching scroll state fields it owns (title/fields kept
-// when body is unchanged by callers passing the same title).
+// SetDetailContent pushes live-updated content into the open detail pane without touching scroll
+// state fields it owns (title/fields kept when body is unchanged by callers passing the same
+// title).
 func (b *Base) SetDetailContent(title string, fields []Field, body string) {
 	b.detail.SetContent(title, fields, body)
 }
@@ -371,17 +350,9 @@ func (b *Base) Update(msg tea.Msg) (bool, tea.Cmd) {
 
 	case detailMsg:
 		b.detail.SetContent(msg.title, msg.fields, msg.body)
-		// Record WHICH item the detail pane now shows. The shell's
-		// onChatWake repaints the open conversation's transcript keyed on
-		// DetailID() — a detailID that is never written makes that guard
-		// always fail and live chat chunks silently never render
-		// (operator Phase-3.5 finding 5: clicking a rail conversation
-		// appeared to do nothing).
+		// Record WHICH item the detail pane now shows.
 		b.detailID = msg.id
-		// Fire the on-detail hook (ask transcript / execution session
-		// follow). The hook's cmd is returned so Base.Update's caller
-		// (the screen) batches it — without this the hook is stored but
-		// never runs and chat targets never follow navigation.
+		// Fire the on-detail hook (ask transcript / execution session follow).
 		if b.onDetail != nil {
 			return true, b.onDetail(msg.src, msg.id)
 		}
@@ -446,10 +417,8 @@ func (b *Base) mouse(msg tea.MouseMsg) tea.Cmd {
 	}
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
-		// Route by WHERE the wheel is, not by keyboard focus: a wheel
-		// over the detail pane scrolls the transcript even when the
-		// list holds focus (operator finding: mouse scroll in chat
-		// appeared dead — the wheel scrolled the list instead).
+		// Route by WHERE the wheel is, not by keyboard focus: a wheel over the detail pane scrolls the
+		// transcript even when the list holds focus (operator finding: mouse scroll in chat appeared dead.
 		if b.ClickDetail(msg.X) {
 			b.detail.Wheel(-3)
 		} else {
@@ -509,10 +478,7 @@ func (b *Base) loadDetail() tea.Cmd {
 	}
 }
 
-// View renders the source strip (when >1 source) over the active source
-// pane + detail side by side. Only the ACTIVE source's list renders as a
-// pane — every source stays reachable via the strip (keyboard h/l,
-// slash jumps, mouse) without needing 186+ columns.
+// View renders the source strip (when >1 source) over the active source pane + detail side by side.
 func (b *Base) View() string {
 	if len(b.sources) == 0 {
 		return b.detail.View()
@@ -526,9 +492,8 @@ func (b *Base) View() string {
 	return b.sourceStripView() + "\n" + body
 }
 
-// sourceStripView renders the one-row source switcher: every source title
-// in order, the active one highlighted. Titles truncate to fit; the strip
-// never wraps (a wrapping strip would steal a budget row).
+// sourceStripView renders the one-row source switcher: every source title in order, the active one
+// highlighted.
 func (b *Base) sourceStripView() string {
 	parts := make([]string, 0, len(b.sources))
 	for i, s := range b.sources {
@@ -576,9 +541,8 @@ func (b *Base) SourceItem(name, id string) (Item, bool) {
 	return Item{}, false
 }
 
-// SourceMeta is one list pane's identity, exposed for the shell's
-// nav/slash generation (the no-drift source of truth: commands are
-// generated from what screens actually have).
+// SourceMeta is one list pane's identity, exposed for the shell's nav/slash generation (the
+// no-drift source of truth: commands are generated from what screens actually have).
 type SourceMeta struct {
 	Name  string
 	Title string
@@ -626,10 +590,8 @@ func (b *Base) SelectSource(name string) bool {
 	return false
 }
 
-// SelectItem selects the item with the given ID in the named source and
-// triggers its detail load (slash arg jumps). Works without the item
-// being visible (cursor move is by ID, not position). Returns false
-// when the source has no such item (not fetched yet).
+// SelectItem selects the item with the given ID in the named source and triggers its detail load
+// (slash arg jumps).
 func (b *Base) SelectItem(src, id string) bool {
 	for i, s := range b.sources {
 		if s.name != src {
@@ -651,9 +613,8 @@ func (b *Base) SelectItem(src, id string) bool {
 	return false
 }
 
-// RequestDetail loads the detail for (src, id) directly via the
-// screen's DetailFn — detail works without the item being on the
-// loaded page (plan §2). The result flows through the same detailMsg.
+// RequestDetail loads the detail for (src, id) directly via the screen's DetailFn — detail works
+// without the item being on the loaded page (plan §2).
 func (b *Base) RequestDetail(src, id string) tea.Cmd {
 	if b.detailFn == nil {
 		return nil
@@ -670,6 +631,5 @@ func (b *Base) RequestDetail(src, id string) tea.Cmd {
 	}
 }
 
-// SelectSourceDelegator / SelectItemDelegator / RequestDetailDelegator
-// are optional screen interfaces the shell's slash navigation uses;
-// Base implements them so every list+detail screen gets nav jumps.
+// SelectSourceDelegator / SelectItemDelegator / RequestDetailDelegator are optional screen
+// interfaces the shell's slash navigation uses.

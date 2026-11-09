@@ -1,10 +1,6 @@
 package execution
 
 // workflow_steps_test.go — the workflow STEP editor.
-//
-// The fixture is the REAL SDLC (Human) published workflow, because the shapes that
-// matter are the ones the product stores: an 11-step flow with a two-way fan-in and
-// three loops whose targets sit EARLIER in the flow.
 
 import (
 	"context"
@@ -36,9 +32,7 @@ func stepEditorModel(t *testing.T) (*Model, *[]string) {
 	return m, writes
 }
 
-// The kind list is the AUTHORING vocabulary, and it must match what the reconciler
-// can run. `policy` is absent because it is not a step kind at all; `decision` is
-// absent because its reconciler case is a stub that always takes one path.
+// The kind list is the AUTHORING vocabulary, and it must match what the reconciler can run.
 func TestStepKindsMatchWhatTheBackendCanRun(t *testing.T) {
 	got := map[string]bool{}
 	for _, o := range stepKindOptions() {
@@ -54,10 +48,8 @@ func TestStepKindsMatchWhatTheBackendCanRun(t *testing.T) {
 			t.Errorf("kind %q must NOT be offered: policy is not a backend kind, decision is a stub", banned)
 		}
 	}
-	// Dual is NOT one flag: approvalConfig (workflow_reconciler.go:4892) has
-	// loop_branch and max_iterations and NO success_branch field at all, so an
-	// approval has no forward target to offer; loopDecisionConfig
-	// (workflow_reconciler.go:4849) has both.
+	// Dual is NOT one flag: approvalConfig (workflow_reconciler.go:4892) has loop_branch and
+	// max_iterations and NO success_branch field at all, so an approval has no forward target to offer.
 	if stepKindHasSuccess("approval") {
 		t.Error("approval has no success_branch in its config struct — offering a SUCCESS target would write a key nothing reads")
 	}
@@ -143,9 +135,8 @@ func TestStepRoundTripPreservesEveryField(t *testing.T) {
 	}
 }
 
-// Editing a branch target rewrites ONLY the branch keys: a step's config carries
-// recovery, conflict_value and more, and clobbering it would destroy settings the
-// operator never touched.
+// Editing a branch target rewrites ONLY the branch keys: a step's config carries recovery,
+// conflict_value and more, and clobbering it would destroy settings the operator never touched.
 func TestBranchEditPreservesTheRestOfTheConfig(t *testing.T) {
 	s := flowStep{ID: "a", Kind: "loop_decision",
 		Config: `{"max_iterations":6,"conflict_value":"conflict","success_branch":"x","loop_branch":"y"}`}

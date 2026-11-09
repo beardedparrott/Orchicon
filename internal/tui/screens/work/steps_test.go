@@ -26,9 +26,8 @@ func seqPlane(t *testing.T) (*Model, *fakePlane) {
 	return m, p
 }
 
-// The operator: "ACTUALLY show the number next to the work item under the
-// parent to show the exact order it is in." Step numbers come from the STORED
-// sequence, so the list states the execution order.
+// The operator: "ACTUALLY show the number next to the work item under the parent to show the exact
+// order it is in." Step numbers come from the STORED sequence.
 func TestTreeRowsShowStepNumbers(t *testing.T) {
 	m, _ := seqPlane(t)
 	rows := itemsOf(m, srcWorkItems)
@@ -46,9 +45,7 @@ func TestTreeRowsShowStepNumbers(t *testing.T) {
 	if got := byID["wi-c"]; !strings.HasPrefix(got, "3. ") {
 		t.Fatalf("the third step must be numbered 3: %q", got)
 	}
-	// Only a CHILD is a step. Top-level items are not steps of anything, so they
-	// carry no number — the operator's "why do epics have numbers on them? We
-	// can't sequentially kick off epics can we? I think that is dangerous".
+	// Only a CHILD is a step.
 	for _, root := range []string{"wi-epic", "wi-lone"} {
 		if got := byID[root]; strings.Contains(got, ". ") {
 			t.Fatalf("a top-level item must NOT be numbered: %q", got)
@@ -81,9 +78,8 @@ func TestTreeRowsShowStepNumbers(t *testing.T) {
 	}
 }
 
-// The number is the EXECUTION order, not the display order: under a different
-// sort the rows move but the numbers do not, which is the distinction the
-// operator could not see before.
+// The number is the EXECUTION order, not the display order: under a different sort the rows move
+// but the numbers do not, which is the distinction the operator could not see before.
 func TestStepNumbersAreIndependentOfTheDisplaySort(t *testing.T) {
 	m, _ := seqPlane(t)
 	m.cycleSort() // sequence -> title

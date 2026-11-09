@@ -1,14 +1,6 @@
 package tui
 
 // reasoning_fold.go — THE COLLAPSIBLE REASONING BLOCK.
-//
-// The operator: "Yes I would like to get the collapsible reasoning block but I don't want it to look fully
-// like the execution page. It should still have the same 'bubbles' it has now with the user and orchicon
-// chat and reasoning should look similar but have a arrow on the left to expand and collapse."
-//
-// So the transcript keeps its bubble shapes and the reasoning block gains an ARROW — not the execution
-// pane's card-and-cursor model. See chat.renderReasoningBlock for the drawing; this file owns the state and
-// the gesture.
 
 import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
@@ -24,14 +16,6 @@ func (m *App) foldedReasoning(key string) bool {
 }
 
 // toggleLastReasoningBlock folds or unfolds the NEWEST reasoning block in the open conversation.
-//
-// WHY THE NEWEST, AND WHY THERE IS NO CURSOR. The execution pane gives its transcript a per-block cursor,
-// because there the operator navigates blocks deliberately. The Ask transcript has no cursor — the arrows
-// SCROLL it — and introducing one would make every arrow ambiguous between scrolling and selecting, which
-// is a worse trade than the limitation. The newest block is the one a reader wants to fold: it is the
-// block a live turn is growing, and the one that has just pushed the conversation off the screen.
-//
-// It reports whether anything changed, so the caller only repaints on a real toggle.
 func (m *App) toggleLastReasoningBlock() bool {
 	if m.chatConvID == "" {
 		return false

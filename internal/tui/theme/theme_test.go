@@ -9,9 +9,8 @@ import (
 	"github.com/muesli/termenv"
 )
 
-// The theme must construct every named style without panicking and render
-// sensibly under each termenv color profile (truecolor / 256 / 16), the
-// degradation path acceptance criteria call out.
+// The theme must construct every named style without panicking and render sensibly under each
+// termenv color profile (truecolor / 256 / 16), the degradation path acceptance criteria call out.
 
 func TestStylesConstruct(t *testing.T) {
 	// Touch every exported style/color so any bad declaration panics here,
@@ -38,18 +37,6 @@ func TestStylesConstruct(t *testing.T) {
 }
 
 // THE DIFF PANE'S SCROLLBAR CARRIES PALETTE COLOURS — on every palette.
-//
-// TestStylesConstruct above only proves the two styles RENDER (a bare
-// lipgloss.NewStyle() renders its text unchanged and would pass), so it cannot
-// catch the failure this gate exists for: a style that is declared and used by
-// the renderer but never assigned in buildStyles. Such a style carries
-// lipgloss.NoColor and draws in the TERMINAL's default foreground — exactly the
-// defect the Tree/Timeline list rows were fixed for, and invisible in a test
-// like TestStylesConstruct. It also renders nothing at all under the Ascii
-// profile, so the operator on a monochrome terminal would see no bar.
-//
-// The track and thumb must also be DISTINGUISHABLE (by colour, on top of the
-// distinct glyphs), so position is readable even when the glyphs look similar.
 func TestDiffScrollbarStylesCarryPaletteColours(t *testing.T) {
 	prev := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)

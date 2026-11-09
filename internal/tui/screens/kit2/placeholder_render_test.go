@@ -1,14 +1,6 @@
 package kit2
 
 // placeholder_render_test.go — AN EMPTY FIELD SHOWS ITS HINT, ON THE FIELD THE OPERATOR IS ON.
-//
-// The operator, on the project form: "There isn't really any guidance here." The field labels and
-// placeholders had been written — and every one of them was DEAD TEXT, on every form in the client.
-//
-// display() is the branch that renders a placeholder, and it required the field to be the CURSOR
-// (`f.current().Name == s.Name`). But the cursor's editable field never reaches display() — it
-// renders through valueWithCaret. The two conditions were mutually exclusive, so no placeholder
-// could ever appear on a field being typed into, which is the only field whose hint matters.
 
 import (
 	"strings"
@@ -53,15 +45,6 @@ func TestThePlaceholderYieldsToTheValue(t *testing.T) {
 }
 
 // THE FORM DOES NOT CHANGE HEIGHT when a field is filled in.
-//
-// This is the property that broke, in the counter-intuitive direction: the hint was added to HELP,
-// and it made the form one row taller only while the field was EMPTY — so typing the first character
-// SHRANK the form and everything below it jumped up. Measured on the project edit form's
-// context-files field (long label, long hint): 13 rows empty, 12 filled.
-//
-// Two separate causes had to go, so this covers both: the 8-cell floor that forced the hint wider
-// than the space (the cursor's row), and display() returning the hint UNFITTED (every other row,
-// which is where this field actually rendered once the cursor had moved on).
 func TestFillingAFieldDoesNotChangeTheFormsHeight(t *testing.T) {
 	specs := []FieldSpec{
 		{Name: "name", Label: "Name", Kind: KText, Initial: "Orchicon"},
@@ -70,10 +53,7 @@ func TestFillingAFieldDoesNotChangeTheFormsHeight(t *testing.T) {
 		{Name: "tail", Label: "Project dir", Kind: KText, Placeholder: "/home/me/projects/thing"},
 	}
 	for _, width := range []int{60, 78, 100} {
-		// PER CURSOR POSITION, not across positions. A focused multi-line field legitimately draws
-		// more rows than an unfocused one — its label, its value and its enter/expand affordances —
-		// so comparing heights BETWEEN cursor positions would assert a different thing. What must
-		// hold is that FILLING a field changes nothing.
+		// PER CURSOR POSITION, not across positions.
 		for _, cursor := range []string{"ctx", "name"} {
 			rows := func(value string) int {
 				f := NewForm("t", specs...)
@@ -93,10 +73,6 @@ func TestFillingAFieldDoesNotChangeTheFormsHeight(t *testing.T) {
 }
 
 // A HINT LONGER THAN THE COLUMN IS TRUNCATED, NOT WRAPPED — and every row still fits the form.
-//
-// Wrapping is the failure mode that matters: a hint that wraps adds a row, which is exactly the jump
-// above. The stable height must not have been bought by letting the row overflow, either: the host
-// would clip the tail with nothing to say so.
 func TestALongPlaceholderFitsWithoutWrapping(t *testing.T) {
 	specs := []FieldSpec{
 		{Name: "ctx", Label: "Context files (abs paths inside the project dir)", Kind: KText,

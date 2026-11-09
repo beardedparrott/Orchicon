@@ -1,13 +1,6 @@
 package work
 
 // project_form_parity_test.go — THE PROJECT FORMS CARRY WHAT THE GUI CARRIES.
-//
-// The operator: "the project edit form is VERY light. It does not include the same
-// options the GUI asks you to create... I would say all of that should be on there.
-// The TUI should be almost identical in features."
-//
-// So the fields are asserted, and so is the WIRE: a field that renders but is never
-// sent is worse than a missing one, because it looks like it worked.
 
 import (
 	"context"
@@ -18,12 +11,6 @@ import (
 )
 
 // THE GOALS FIELD ROUND-TRIPS INSTEAD OF DESTROYING THEM.
-//
-// This is the bug the parity work uncovered, and it was silent: goalsText returned the
-// RAW JSON, so an edit form prefilled `{"k":"v"}`. ParseGoals then splits on "," and
-// "=", finds neither in a JSON object, and turns the whole document into goals whose
-// KEY is the JSON text — so saving an UNTOUCHED edit replaced the project's goals with
-// garbage. The form looked like it was showing the goals.
 func TestGoalsTextRoundTripsThroughParseGoals(t *testing.T) {
 	const doc = `{"ship it":"by friday","owner":"ops"}`
 	text := goalsText(doc)
@@ -69,11 +56,7 @@ func TestGoalsTextToleratesJunk(t *testing.T) {
 	}
 }
 
-// THE GIT STRATEGY FALLS BACK TO THE LEGACY GOAL. Projects created before the typed
-// field existed carry their strategy in the goals document, and the GUI reads it that
-// way too. WITHOUT THE FALLBACK, opening an older project would show the DEFAULT and
-// saving would silently change a `pr` project to `local` — a setting the operator never
-// touched, changed behind their back.
+// THE GIT STRATEGY FALLS BACK TO THE LEGACY GOAL.
 func TestGitStrategyFallsBackToTheLegacyGoal(t *testing.T) {
 	// Typed field wins when set.
 	typed := &apiv1.Project{GitStrategy: apiv1.GitStrategy_GIT_STRATEGY_NONE, Goals: `{"__git_strategy":"pr"}`}
@@ -116,11 +99,8 @@ func TestContextFilesRoundTrip(t *testing.T) {
 	}
 }
 
-// SKILL FILES USE THE SAME RULE AS CONTEXT FILES — this equality IS AC 10's "same
-// treatment" in executable form. The GUI selects skill files with a file-tree
-// browser; the TUI has no file browser, so it uses the SAME typed path-list idiom
-// context_files already uses. The capability is identical; only the control differs,
-// and it differs because there is nothing else to differ with.
+// SKILL FILES USE THE SAME RULE AS CONTEXT FILES — this equality IS AC 10's "same treatment" in
+// executable form.
 func TestSkillFilesUsesTheSameRule(t *testing.T) {
 	for _, in := range []string{
 		"/a\n/b",
@@ -166,9 +146,8 @@ func TestParseMaxConcurrentRuns(t *testing.T) {
 // does not depend on a second call succeeding.
 func TestApplyProjectPostCreateSkipsAnEmptyUpdate(t *testing.T) {
 	p := newPlane()
-	// The project must EXIST: the fake's UpdateProject returns NotFound for an unknown id
-	// (it mirrors the server), so an unseeded fixture would pass the empty case for the
-	// wrong reason — the call was skipped rather than the project being absent.
+	// The project must EXIST: the fake's UpdateProject returns NotFound for an unknown id (it mirrors
+	// the server), so an unseeded fixture would pass the empty case for the wrong reason.
 	p.seedProject("proj-1", "Thing")
 	if err := applyProjectPostCreate(context.Background(), p, nil, "proj-1", 0, nil, nil, nil); err != nil {
 		t.Fatalf("applyProjectPostCreate with nothing to send: %v", err)

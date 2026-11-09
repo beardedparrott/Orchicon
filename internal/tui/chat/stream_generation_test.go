@@ -90,9 +90,8 @@ func TestTheCurrentStreamEndStillClearsTheSlot(t *testing.T) {
 	}
 }
 
-// A WATCH ARMED FOR ONE TURN STOPS WHEN THE SLOT MOVES ON, rather than judging the replacement turn's slot.
-// Without this the superseded turn's watchdog would eventually see a quiet NEW turn and tear it down — the
-// watchdog causing the very failure it exists to prevent.
+// A WATCH ARMED FOR ONE TURN STOPS WHEN THE SLOT MOVES ON, rather than judging the replacement
+// turn's slot.
 func TestAWatchStopsWhenItsGenerationIsSuperseded(t *testing.T) {
 	c := NewController(nil)
 	c.state["c1"] = &convState{
@@ -125,9 +124,7 @@ func TestAWatchStopsWhenItsGenerationIsSuperseded(t *testing.T) {
 
 // --- re-attach (the leave-and-return bug) ---------------------------------------------------------------
 
-// RE-ATTACH RESTORES THE SLOT for a turn the server reports as running. This is the operator's "leave a chat
-// and go back into it" — the pane's thinking notice and watchdog are derived from the slot, and nothing
-// restored it.
+// RE-ATTACH RESTORES THE SLOT for a turn the server reports as running.
 func TestReattachRestoresTheSlotForAServerRunningTurn(t *testing.T) {
 	c := NewController(nil)
 

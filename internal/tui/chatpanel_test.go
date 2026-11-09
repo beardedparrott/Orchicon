@@ -125,9 +125,8 @@ func TestSlideOutPanelTakesScreenRowsAndKeepsFrameExact(t *testing.T) {
 	}
 }
 
-// ctrl+z escalates: Ask → Conversations, with the strip's conversation selected
-// so the operator lands mid-stream in the real view. The escalation must also
-// minimise the strip.
+// ctrl+z escalates: Ask → Conversations, with the strip's conversation selected so the operator
+// lands mid-stream in the real view.
 func TestSlideOutPanelCtrlZEscalates(t *testing.T) {
 	m := panelApp(t)
 	m.chatConvID = "conv-panel"
@@ -195,11 +194,7 @@ func TestSlideOutPanelBodyClickDoesNotReachThePane(t *testing.T) {
 	}
 }
 
-// Regression: the header's buttons must SURVIVE layout. The first cut built the
-// header left-to-right and then truncated from the right, which cut the
-// escalate button off entirely (the operator's "the continue button was there
-// and now it's not even there"). Both affordances must be present and their
-// returned hit columns must line up with where they are actually drawn.
+// Regression: the header's buttons must SURVIVE layout.
 func TestSlideOutPanelHeaderKeepsBothButtons(t *testing.T) {
 	m := panelApp(t)
 	nm, _ := m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
@@ -260,19 +255,8 @@ func TestSlideOutPanelMinimiseButtonCollapses(t *testing.T) {
 	}
 }
 
-// On the Ask tab a click in the composer is only a request to place the CURSOR:
-// it must not slide a conversation on screen — on the launch page OR with a
-// conversation already open.
-//
-// The operator: "Clicking into the text box on first load opens up a full
-// conversation. I don't want that. Clicking into the composer on that first load
-// should just focus the cursor into the chat so I can send a new message." —
-// reported again while a conversation was open, which is why the suppression is
-// scoped to the whole Ask tab rather than only the launch page.
-//
-// The strip's behaviour on OTHER tabs is a separate, deliberate intent and stays
-// pinned by TestSlideOutPanelOpensOnComposerClick — this pins the Ask-tab
-// exception, not a removal of that feature.
+// On the Ask tab a click in the composer is only a request to place the CURSOR: it must not slide a
+// conversation on screen — on the launch page OR with a conversation already open.
 func TestComposerClickDoesNotOpenAConversationOnLaunchPage(t *testing.T) {
 	m := newTestApp()
 	m.dispatch(tea.WindowSizeMsg{Width: 120, Height: 40})
@@ -299,19 +283,11 @@ func TestComposerClickDoesNotOpenAConversationOnLaunchPage(t *testing.T) {
 }
 
 // The composer must be RENDERED at the width it is laid out to.
-//
-// baseView lays the dock into contentWidth() (which shrinks when the right rail
-// appears) but dock.Width is assigned in refreshLayout, which does not re-run on
-// that change. The stale, wider value made the composer build its rows for more
-// columns than it was given, and normalizeBlock trimmed the TAIL of every row —
-// so the stat row's numbers and the mode pill were cut off (the operator's "the
-// context is off the screen").
 func TestComposerRendersAtItsLaidOutWidth(t *testing.T) {
 	m := panelApp(t)
 	m.active = TabAsk
-	// Open a conversation through the REAL path: that is what reveals the right
-	// rail and therefore shrinks contentWidth(). Setting chatConvID directly
-	// would skip the re-layout and hide the bug.
+	// Open a conversation through the REAL path: that is what reveals the right rail and therefore
+	// shrinks contentWidth().
 	m.chatConvID = ""
 	m.OpenAskConversation("conv-1")
 	if !m.railVisible() {
@@ -335,11 +311,6 @@ func TestComposerRendersAtItsLaidOutWidth(t *testing.T) {
 }
 
 // ctrl+g must START the caret blink, not just move focus.
-//
-// The route returns nil, so the blink starter captured by dock.Focus() had to be
-// drained centrally (App.Update). Without that the loop never ran and the caret
-// sat solid — the operator's "it only blinks if I type something then backspace
-// it to nothing".
 func TestCtrlGStartsTheCaretBlink(t *testing.T) {
 	m := panelApp(t)
 	m.setFocus(focusContent)
@@ -358,10 +329,8 @@ func TestCtrlGStartsTheCaretBlink(t *testing.T) {
 	}
 }
 
-// On the launch page the composer is CENTERED, so it is not in the dock rows and
-// a click used to fall through to "focus the content" — the composer looked
-// focused but typing did nothing (the operator's "it is almost like there is a
-// blocker there"). There is nothing else to click on that page.
+// On the launch page the composer is CENTERED, so it is not in the dock rows and a click used to
+// fall through to "focus the content".
 func TestLaunchPageClickFocusesTheComposer(t *testing.T) {
 	m := newTestApp()
 	m.RegisterScreen(TabAsk, &stubScreen{id: "ask"})

@@ -1,19 +1,6 @@
 package tui
 
 // orch_pty_plane_test.go — the PTY verification gate for the PLANE LIFECYCLE command surface.
-//
-// WHY THIS TEST EXISTS: a lifecycle verb that blocks the message loop, or a command that exists in the
-// registry but is unreachable from real keystrokes, is invisible to a unit test — the unit tests above
-// call planeCommand() directly, which is precisely the path an operator never takes. This one types the
-// command into a REAL pty on a REAL orch process and asserts what the terminal actually painted.
-//
-// WHAT IT DELIBERATELY DOES NOT DO: it never types /plane-stop or /plane-restart. This gate runs on an
-// operator's machine (and in CI), and a test suite that signals a real process is unacceptable — the
-// verbs' effect is covered by the unit tests plus internal/planecontrol's own stop/status tests. As a
-// second lock, ORCHICON_INSTANCE is pinned to an instance that does not exist, so even an accidental
-// lifecycle call resolves to an instance with no PID file and nothing to stop.
-//
-// Opt-in like every other pty gate here: see skipInteractivePTY.
 
 import (
 	"os"
@@ -26,19 +13,11 @@ import (
 	"github.com/creack/pty"
 )
 
-// planeGateInstance is an instance name that CANNOT exist: no <home>/.local/share/orchicon-<name> is
-// ever created by an operator or by these tests, so the probe reports "down" deterministically and a
-// lifecycle call would find no PID file to signal.
-//
-// It is kept SHORT on purpose: the down remedy names the whole log path, and a pty assertion can only
-// read what fits on the strip.
+// planeGateInstance is an instance name that CANNOT exist: no <home>/.local/share/orchicon-<name>
+// is ever created by an operator or by these tests.
 const planeGateInstance = "ptygate"
 
 // startOrchPtyPlaneGate launches orch against a disposable fixture plane with the instance pinned.
-//
-// THE PINNED VARIABLES COME FIRST IN THE ENVIRONMENT ON PURPOSE. getenv returns the FIRST match, so
-// appending them after os.Environ() would let an operator's shell (or the CI harness) win — this test
-// must be deterministic about which instance it looks at, or it would probe the REAL one.
 func startOrchPtyPlaneGate(t *testing.T, bin, planeURL, home string) *ptySession {
 	t.Helper()
 	env := append([]string{
@@ -59,9 +38,9 @@ func startOrchPtyPlaneGate(t *testing.T, bin, planeURL, home string) *ptySession
 	return s
 }
 
-// TestPTYPlaneStateCommand is the gate: the shell launches, the plane state is on screen with a remedy
-// naming the fix, and `/plane` typed into the composer actually runs (the "probing the plane" notice is
-// emitted by the slash command and by nothing else).
+// TestPTYPlaneStateCommand is the gate: the shell launches, the plane state is on screen with a
+// remedy naming the fix, and `/plane` typed into the composer actually runs (the "probing the
+// plane".
 func TestPTYPlaneStateCommand(t *testing.T) {
 	skipInteractivePTY(t)
 	if testing.Short() {
@@ -80,8 +59,7 @@ func TestPTYPlaneStateCommand(t *testing.T) {
 	}
 
 	// PHASE 1 — the state indicator is on screen without any command: the first-layout probe runs once
-	// the shell lays out. The pinned instance does not exist, so the answer is "down" and the strip must
-	// name the remedy (the start command and the log path), not just fail.
+	// the shell lays out.
 	state := s.readFor(2 * time.Second)
 	combined := out + state
 	if !strings.Contains(combined, "plane") {
@@ -90,20 +68,12 @@ func TestPTYPlaneStateCommand(t *testing.T) {
 	if !strings.Contains(combined, "plane-start") {
 		t.Errorf("the down state must name /plane-start as the remedy:\n%s", tailOf(combined, 3000))
 	}
-	// The log path is part of the remedy. The pty assertion checks the DIRECTORY segment, because the
-	// dock strip wraps a long absolute path and the file name can land past the visible row; the full
-	// text (file name included) is asserted in TestPlaneDownMessageNamesTheRemedy.
+	// The log path is part of the remedy.
 	if !strings.Contains(combined, "serve/logs") {
 		t.Errorf("the down state must name the plane log path:\n%s", tailOf(combined, 3000))
 	}
 
-	// PHASE 2 — THE COMMAND IS REACHABLE FROM REAL KEYSTROKES. The shell opens composer-focused (Phase
-	// 2a), so the text lands in the composer and enter dispatches it. "probing the plane" is set ONLY by
-	// planeCommand() — the first-layout probe never sets it — so this proves the typed command reached
-	// the registry and ran, not merely that a chip is painted somewhere.
-	//
-	// Only /plane is typed: /plane-stop and /plane-restart are deliberately never driven from this gate
-	// (see the file header) — a test suite must not signal a real process on an operator's machine.
+	// PHASE 2 — THE COMMAND IS REACHABLE FROM REAL KEYSTROKES.
 	_, _ = s.tty.WriteString("/plane\r")
 	typed := s.readFor(3 * time.Second)
 	if !strings.Contains(typed, "probing the plane") {
@@ -154,16 +124,8 @@ func startOrchPtyPlaneGatePath(t *testing.T, bin, planeURL, home, shimDir string
 	return s
 }
 
-// TestPTYPlaneStopReachesTheMechanism is acceptance criterion 1's SUCCESS half, driven from real keystrokes.
-//
-// The gate above deliberately never types a lifecycle verb, so "the verb runs and reports" had no pty-level
-// evidence at all. This one types `/plane-stop` against a FAKE `orchicon` shim on PATH: it records its argv
-// and exits 0, so nothing on this machine can be signalled — the only process the verb can reach is the shim
-// — and `serve --stop` for an instance with no PID file is a successful no-op anyway.
-//
-// It asserts the two things a unit test cannot: the command is reachable from the composer, and the verb
-// actually reaches the SHARED MECHANISM, which re-execs `orchicon` (not `orch` — the bug that made every
-// verb fail: `orch serve --stop` is not a subcommand, so the shell launched a second TUI instead).
+// TestPTYPlaneStopReachesTheMechanism is acceptance criterion 1's SUCCESS half, driven from real
+// keystrokes.
 func TestPTYPlaneStopReachesTheMechanism(t *testing.T) {
 	skipInteractivePTY(t)
 	if testing.Short() {

@@ -95,9 +95,8 @@ func TestADurableDeliveryAfterTheTurnReplaces(t *testing.T) {
 	if m.chat.IsStreaming("c1") {
 		t.Fatal("fixture: no turn should be running")
 	}
-	// The message the operator sent, as the echo has it, and as the durable row now carries it (the wire
-	// text is the context preamble prepended, which is why the dedupe matches on a SUFFIX — see
-	// mergeHistory).
+	// The message the operator sent, as the echo has it, and as the durable row now carries it (the
+	// wire text is the context preamble prepended, which is why the dedupe matches on a SUFFIX.
 	m.chatStore.append("c1", chat.ChatItem{
 		Kind: chat.KindUser, Text: "MY JUST-SENT MESSAGE", Key: "draft-123", Live: true, At: 1,
 	})

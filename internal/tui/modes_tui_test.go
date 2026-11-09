@@ -1,13 +1,6 @@
 package tui
 
 // modes_tui_test.go — THE THREE MODES IN THE TUI.
-//
-// The operator: "I would like to expand on the different modes that Ask Orchicon has and build in support for
-// switching that in the TUI (The GUI already has a drop down for this)."
-//
-// The wire, the storage and the slash command already existed for one mode; what these pin is that the TUI
-// now OFFERS all three, that the names an operator would actually type resolve, and that the two surfaces
-// which display a mode (the composer's pill and the `/mode` confirmation) agree on what it is called.
 
 import (
 	"strings"
@@ -19,9 +12,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
-// EVERY MODE AN OPERATOR WOULD TYPE RESOLVES, including the spellings the UI itself
-// shows. "quick work" is the label, "quick_work" is the enum — rejecting either would
-// be a spelling test, which is exactly what a mode command exists to avoid.
+// EVERY MODE AN OPERATOR WOULD TYPE RESOLVES, including the spellings the UI itself shows.
 func TestParseModeAcceptsEverySpelling(t *testing.T) {
 	for _, c := range []struct {
 		typed string
@@ -82,9 +73,7 @@ func TestModeNamesAllParse(t *testing.T) {
 	}
 }
 
-// THE PILL NAMES EVERY MODE. `ConversationMode.String()` lowercased yields
-// "conversation_mode_quick_work", which is a wire value — showing it in the composer
-// would be showing the operator an implementation detail.
+// THE PILL NAMES EVERY MODE.
 func TestCurrentModeLabelNamesEveryMode(t *testing.T) {
 	for _, c := range []struct {
 		mode apiv1.ConversationMode
@@ -181,9 +170,7 @@ func TestSwitchingToEveryModeWritesIt(t *testing.T) {
 	}
 }
 
-// A NEW CONVERSATION IS CREATED WITH THE MODE THE OPERATOR PICKED, not with the
-// default. Without this the switch would apply only to conversations that already exist,
-// which is the opposite of what a mode chosen before the first message should do.
+// A NEW CONVERSATION IS CREATED WITH THE MODE THE OPERATOR PICKED, not with the default.
 func TestPendingModeReachesANewConversation(t *testing.T) {
 	m, stub := newAskApp(t)
 	// No conversation open: the mode applies to the next one.
@@ -239,10 +226,6 @@ func TestThePillReadsTheOpenConversationsMode(t *testing.T) {
 }
 
 // AND CHANGING AN OPEN CONVERSATION'S MODE DOES NOT LEAK INTO THE NEXT NEW ONE.
-//
-// The operator: "When someone creates a new conversation, it should always default back to brainstorm unless
-// they do /mode again." The pending mode used to be set unconditionally by /mode, so switching the conversation
-// you were in also changed what the NEXT one would be created with.
 func TestSwitchingAnOpenConversationDoesNotChangeTheDefaultForTheNext(t *testing.T) {
 	m := scopePlane(t)
 	m.chatConvID = "c-1"
@@ -258,9 +241,6 @@ func TestSwitchingAnOpenConversationDoesNotChangeTheDefaultForTheNext(t *testing
 }
 
 // AND A NEW CHAT RESETS THE PENDING MODE, so a mode picked for a conversation cannot survive it.
-//
-// The controller's pending mode is the pre-conversation choice (the launch page's selector), and it is
-// legitimate — but it belongs to the conversation it created, not to every conversation afterwards.
 func TestANewChatStartsFromTheDefaultMode(t *testing.T) {
 	m := scopePlane(t)
 	m.chat.SetPendingMode(apiv1.ConversationMode_CONVERSATION_MODE_ITERATION)

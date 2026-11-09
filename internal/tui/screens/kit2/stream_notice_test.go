@@ -7,17 +7,6 @@ import (
 )
 
 // A NOTICE FITS INSIDE THE ROW BUDGET.
-//
-// The operator: "I still don't see the 'Orchicon is thinking...' being printed when the model is
-// responding." The notice was appended AFTER innerH rows of transcript, so the host's height budget
-// clipped it away whenever the transcript filled the pane — it showed only while the transcript was
-// SHORTER than the pane, which is exactly when it does not matter. The same bug hid "reconnecting…".
-//
-// The notice is installed through SetNotice, which is the API EVERY caller uses (app.go's chat repaint:
-// the dock's own notice writes are a different widget). A direct field assignment is deliberately NOT
-// exercised here: the widget has no memory of whether the operator was following the tail, so it cannot
-// re-pin on its own — that is the whole reason the setter exists, and its View() only guarantees a direct
-// assignment cannot draw past the last page.
 func TestStreamNoticeFitsInsideTheRowBudget(t *testing.T) {
 	s := NewStream("transcript", 40, 5)
 	for i := 0; i < 20; i++ {

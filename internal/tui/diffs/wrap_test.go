@@ -16,9 +16,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// TestWrapByColumnsPreservesBytes pins the wrap primitive's contract:
-// concatenating the wrapped lines reproduces the source EXACTLY (no byte added
-// or removed) and every line is within the column budget.
+// TestWrapByColumnsPreservesBytes pins the wrap primitive's contract: concatenating the wrapped
+// lines reproduces the source EXACTLY (no byte added or removed) and every line is within the
+// column.
 func TestWrapByColumnsPreservesBytes(t *testing.T) {
 	cases := []string{
 		"",
@@ -54,11 +54,8 @@ func TestWrapByColumnsPreservesBytes(t *testing.T) {
 	}
 }
 
-// TestRenderLinesPreserveContent is the headline acceptance criterion: for
-// every shared fixture diff, at the pane's MINIMUM body width and at a wide one,
-// concatenating a row's wrapped cells reproduces that row's full text — no `…`,
-// because nothing is truncated any more. It also asserts every rendered line is
-// valid UTF-8 and within the width.
+// TestRenderLinesPreserveContent is the headline acceptance criterion: for every shared fixture
+// diff, at the pane's MINIMUM body width and at a wide one.
 func TestRenderLinesPreserveContent(t *testing.T) {
 	prev := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.Ascii)
@@ -103,10 +100,8 @@ func TestRenderLinesPreserveContent(t *testing.T) {
 	}
 }
 
-// assertSideBySideContains walks the physical lines and reconstructs each row's
-// old/new cell text (from the renderer's OWN cell segments, so multibyte content
-// is sliced by rune, never by byte), asserting the row's source text appears and
-// nothing was ellipsized.
+// assertSideBySideContains walks the physical lines and reconstructs each row's old/new cell text
+// (from the renderer's OWN cell segments, so multibyte content is sliced by rune, never by byte).
 func assertSideBySideContains(t *testing.T, name string, width int, rows []Row, lines []string) {
 	t.Helper()
 	colW := (width - sideSepWidth) / 2
@@ -210,9 +205,8 @@ func assertUnifiedContains(t *testing.T, name string, width int, rows []Row, lin
 func isAdd(r Row) bool { return r.Kind == KindAdd }
 func isDel(r Row) bool { return r.Kind == KindDel }
 
-// TestRenderPaneTruncatesUtf8CleanlyStaysGreen re-asserts the pre-existing
-// guarantee (already covered by render_test.go) against RenderLines, so the wrap
-// path cannot regress it: narrow widths produce valid UTF-8 within the width.
+// TestRenderPaneTruncatesUtf8CleanlyStaysGreen re-asserts the pre-existing guarantee (already
+// covered by render_test.go) against RenderLines, so the wrap path cannot regress it.
 func TestRenderLinesUtf8AndWidth(t *testing.T) {
 	vecs, err := testfixtures.LoadFileEditVectors()
 	if err != nil {
@@ -253,10 +247,8 @@ func TestRenderLinesUtf8AndWidth(t *testing.T) {
 	}
 }
 
-// TestScrollClampsToWrappedHeight is the scroll-truth acceptance criterion: a
-// single 500-char row wraps to many physical lines, `G` lands on the last page
-// (maxScroll, not the last ROW), pgdn from there is a no-op, and a huge Scroll
-// cannot overshoot.
+// TestScrollClampsToWrappedHeight is the scroll-truth acceptance criterion: a single 500-char row
+// wraps to many physical lines, `G` lands on the last page (maxScroll, not the last ROW).
 func TestScrollClampsToWrappedHeight(t *testing.T) {
 	m := NewModel(nil, nil)
 	m.Width, m.Height = 48, 10
@@ -308,9 +300,8 @@ func TestScrollClampsToWrappedHeight(t *testing.T) {
 	}
 }
 
-// TestScrollbarRendersAndTracks asserts the scrollbar column: a thumb at the top
-// when scroll==0, at the bottom when scroll==maxScroll, no bar glyphs when the
-// content fits, and that it appears on ALL THREE tabs.
+// TestScrollbarRendersAndTracks asserts the scrollbar column: a thumb at the top when scroll==0, at
+// the bottom when scroll==maxScroll, no bar glyphs when the content fits.
 func TestScrollbarRendersAndTracks(t *testing.T) {
 	prev := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.Ascii)
@@ -389,9 +380,8 @@ func TestScrollbarRendersAndTracks(t *testing.T) {
 	}
 }
 
-// TestClickScrolledListSelectsUnderCursor pins the viewport-aware click row
-// mapping: after scrolling a Tree list, a click on a body row selects the file at
-// scroll+(y-paneBodyRow), NOT the file at (y-paneBodyRow).
+// TestClickScrolledListSelectsUnderCursor pins the viewport-aware click row mapping: after
+// scrolling a Tree list, a click on a body row selects the file at scroll+(y-paneBodyRow).
 func TestClickScrolledListSelectsUnderCursor(t *testing.T) {
 	vecs := vecByName(t)
 	names := []string{"create-new-file", "modify-two-lines", "delete-file", "append-lines", "no-trailing-newline", "multi-hunk-three-context"}
@@ -406,9 +396,6 @@ func TestClickScrolledListSelectsUnderCursor(t *testing.T) {
 	m.Tab = TabTree
 
 	// A click on the FIRST body row must select group[scroll+0] = group[1].
-	// (SelectPath resets scroll to 0, so establish BOTH the tab and the scroll
-	// before every click — a click that selects and re-focuses the diff is the
-	// documented behaviour.)
 	m.Tab = TabTree
 	m.Scroll(1)
 	if m.scroll != 1 {
@@ -476,10 +463,8 @@ func TestVisibleLinesSingleTruth(t *testing.T) {
 	}
 }
 
-// TestMeasuredCollapse pins the collapse is keyed off the per-column budget, not
-// the pane width: the pane's 48-cell floor body width is BELOW the threshold (so
-// unified — ONE readable column), a 120-col terminal's body is ABOVE it
-// (side-by-side), and the constant is at least as wide as its own derivation.
+// TestMeasuredCollapse pins the collapse is keyed off the per-column budget, not the pane width:
+// the pane's 48-cell floor body width is BELOW the threshold (so unified — ONE readable column).
 func TestMeasuredCollapse(t *testing.T) {
 	if MinSideBySideWidth != 2*(lineNumWidth+1+MinReadableCodeWidth)+sideSepWidth {
 		t.Fatalf("MinSideBySideWidth (%d) is not derived from the per-column budget", MinSideBySideWidth)
@@ -538,22 +523,16 @@ func TestEmphasisSurvivesWrap(t *testing.T) {
 	if !strings.Contains(joined, "\x1b[") {
 		t.Fatal("emphasis produced no SGR at all")
 	}
-	// Every physical line must be balanced: rendering it alone must not shift
-	// the column of any following text (checked via the width assertion in the
-	// other tests); here assert the emphasized substrings are present at all.
+	// Every physical line must be balanced: rendering it alone must not shift the column of any
+	// following text (checked via the width assertion in the other tests).
 	stripped := ansi.Strip(joined)
 	if !strings.Contains(stripped, "OLDVALUE") || !strings.Contains(stripped, "NEWVALUE") {
 		t.Errorf("emphasis fixture content lost across the wrap:\n%s", stripped)
 	}
 }
 
-// barColumn returns the reserved scrollbar column of the active body as a
-// per-row string, for bar assertions.
-//
-// THE BAR IS NOT THE ROW'S LAST CELL. A body row renders [content][bar][divider], where the final cell is the
-// one the shell's rail-RESIZE handle owns — so reading the last cell reads the divider and reports no bar at
-// all. The bar sits at the body's content width, which is also where the pane's own hit-test looks for it
-// (diffs.Model.ScrollbarHit), so the reading and the grabbing agree.
+// barColumn returns the reserved scrollbar column of the active body as a per-row string, for bar
+// assertions.
 func barColumn(m *Model) string {
 	var body string
 	switch m.Tab {

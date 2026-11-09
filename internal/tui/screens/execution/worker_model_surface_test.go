@@ -91,9 +91,8 @@ func TestWorkerDetailShowsTheModel(t *testing.T) {
 func TestWorkerDetailModelSurvivesThePaintedPane(t *testing.T) {
 	m := modelWorkerPlane(t)
 	m.SetSize(100, 40)
-	// THROUGH THE REAL PAINTED PATH: RequestDetail returns the command the base runs,
-	// and running it lands the detailMsg the pane draws from. Calling detail() alone
-	// would assert on a value nothing had painted.
+	// THROUGH THE REAL PAINTED PATH: RequestDetail returns the command the base runs, and running it
+	// lands the detailMsg the pane draws from.
 	run(t, m, m.Base.RequestDetail("workers", "w1"))
 	view := m.Base.View()
 	if !strings.Contains(view, testModelRef) {
@@ -102,14 +101,8 @@ func TestWorkerDetailModelSurvivesThePaintedPane(t *testing.T) {
 	}
 }
 
-// TestWorkerEditAndVersionFormsOpenTheModelPicker: the model is a form FIELD wired
-// to the SHARED three-tier picker in every worker form mode that edits a version —
-// the operator's "It should have the same model picker as everything else in the
-// TUI."
-//
-// Each mode gets its OWN screen: the inline editor is host state, and closing one
-// form to open another is a second, unrelated code path (the base's own esc
-// handling) that would only add a way for this test to fail for the wrong reason.
+// TestWorkerEditAndVersionFormsOpenTheModelPicker: the model is a form FIELD wired to the SHARED
+// three-tier picker in every worker form mode that edits a version.
 func TestWorkerEditAndVersionFormsOpenTheModelPicker(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -148,9 +141,8 @@ func TestWorkerEditAndVersionFormsOpenTheModelPicker(t *testing.T) {
 			if f.OnOpenModelPicker == nil {
 				t.Fatalf("%s's model field is not wired to the picker", tc.name)
 			}
-			// Activating the field must open the shared picker; committing must write
-			// the chosen ref BACK INTO THE FIELD (the form's own submit persists it — a
-			// write through the RPC here would be a second, competing one).
+			// Activating the field must open the shared picker; committing must write the chosen ref BACK INTO
+			// THE FIELD (the form's own submit persists it — a write through the RPC here would be a second.
 			for i := range f.Specs {
 				if f.Specs[i].Name == "model_ref" {
 					f.Cursor = i
@@ -162,10 +154,8 @@ func TestWorkerEditAndVersionFormsOpenTheModelPicker(t *testing.T) {
 			if m.modelPicker == nil {
 				t.Fatalf("%s: enter on the model field must open the model picker", tc.name)
 			}
-			// The picker opened ON the model tier (the seeded ref puts it there), so the
-			// cascade's lists must agree with that ref's own adapter/provider — or the
-			// focus would be dragged back up a tier and `enter` would select a tier
-			// rather than commit.
+			// The picker opened ON the model tier (the seeded ref puts it there), so the cascade's lists must
+			// agree with that ref's own adapter/provider.
 			m.modelPicker.SetAdapters([]string{"claude"}, nil)
 			m.modelPicker.SetProviders("claude", []kit2.PickerOption{{Value: "anthropic"}})
 			m.modelPicker.SetModels("claude", "anthropic", []kit2.PickerOption{
@@ -183,9 +173,8 @@ func TestWorkerEditAndVersionFormsOpenTheModelPicker(t *testing.T) {
 	}
 }
 
-// TestWorkerModelRefPrefersTheACTIVEVersion: a worker's versions are chosen
-// explicitly, so the NEWEST published version is not necessarily the one dispatch
-// uses. Reporting the newest would be a confident wrong answer.
+// TestWorkerModelRefPrefersTheACTIVEVersion: a worker's versions are chosen explicitly, so the
+// NEWEST published version is not necessarily the one dispatch uses.
 func TestWorkerModelRefPrefersTheACTIVEVersion(t *testing.T) {
 	vs := []*apiv1.WorkerVersion{
 		pubV("v2", 2, "orchicon/commandcode/brand-new"),

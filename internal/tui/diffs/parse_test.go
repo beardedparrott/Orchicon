@@ -21,10 +21,8 @@ func vecByName(t *testing.T) map[string]testfixtures.FileEditVector {
 	return m
 }
 
-// ParseUnifiedDiff must faithfully reconstruct what the shared engine
-// produced for every vector with a non-empty expected_unified_diff — the
-// cross-language "byte-for-byte" contract (same rows, same classifications
-// as the TS sideBySide.test.ts).
+// ParseUnifiedDiff must faithfully reconstruct what the shared engine produced for every vector
+// with a non-empty expected_unified_diff — the cross-language "byte-for-byte" contract (same rows.
 func TestParseUnifiedDiffRoundTripsFixtures(t *testing.T) {
 	vecs, err := testfixtures.LoadFileEditVectors()
 	if err != nil {

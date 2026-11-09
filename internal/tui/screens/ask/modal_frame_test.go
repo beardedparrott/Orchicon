@@ -1,13 +1,7 @@
 package ask
 
-// modal_frame_test.go — the /grants and /permissions surfaces are STANDARD MODALS: a bordered box, centered,
-// over a darkened backdrop, inside a frame of exactly w×h.
-//
-// The operator, looking at /grants: "it puts it in the middle of screen and it's hard to see because it writes
-// it overtop text. Maybe a standard darkened modal in the center would be better like other screens in
-// Orchicon?" The box was already centered and its rows already opaque; what was missing was (a) the border that
-// makes it read as a modal at all, and (b) any recessing of the frame behind it, so the transcript stayed at
-// full brightness on either side and competed with the list.
+// modal_frame_test.go — the /grants and /permissions surfaces are STANDARD MODALS: a bordered box,
+// centered, over a darkened backdrop, inside a frame of exactly w×h.
 
 import (
 	"strings"
@@ -107,9 +101,8 @@ func TestGrantsOverlayIsABorderedCenteredModal(t *testing.T) {
 	}
 }
 
-// TestOverlayDimsTheBackdropWithoutChangingTheFrame pins the recessing: closing the overlay restores the frame's
-// own styling, and the difference is styling ONLY — the content behind the modal is still there (dimmed), and
-// the frame stays exactly w×h either way.
+// TestOverlayDimsTheBackdropWithoutChangingTheFrame pins the recessing: closing the overlay
+// restores the frame's own styling, and the difference is styling ONLY.
 func TestOverlayDimsTheBackdropWithoutChangingTheFrame(t *testing.T) {
 	modalTrueColor(t)
 	m, _ := fixtureGrants(t)
