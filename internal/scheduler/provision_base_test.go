@@ -1,14 +1,6 @@
 package scheduler
 
 // provision_base_test.go — a run must never be provisioned an EMPTY worktree.
-//
-// REPORTED: "A run was provisioned an empty worktree. Location's branch was created at the empty root commit
-// 558d52e while develop was already at f421a7c. The worker had to run `git reset --hard develop` before it could
-// start, and flagged it as a fact."
-//
-// The mechanism: resolveBaseRef returns "" for BOTH a legitimate detached HEAD and a resolution failure, and
-// addWorktree treats "" as "start at HEAD" — so an unborn HEAD, or an empty root commit, yields a worktree with no
-// files. A worker that must repair its own provisioned state has been handed an unfinished hand-off.
 
 import (
 	"context"

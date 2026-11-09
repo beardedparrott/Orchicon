@@ -46,9 +46,8 @@ func TestStaleRegistrationIsPrunedAndTheAddRetried(t *testing.T) {
 
 	r := &WorktreeReconciler{log: quietSchedulerLogger()}
 
-	// THE REAL ENTRY POINT: provisionWorktree, which is what the reconciler calls and which ATTACHES to an
-	// existing branch — the arm a retry takes, and the arm that bypassed the repair before this change.
-	// Before the fix this returns the reported error and never recovers.
+	// THE REAL ENTRY POINT: provisionWorktree, which is what the reconciler calls and which ATTACHES to
+	// an existing branch — the arm a retry takes.
 	if err := r.provisionWorktree(context.Background(), repo, worktreePath, branch, "develop"); err != nil {
 		t.Fatalf("provisionWorktree did not free a stale registration: %v", err)
 	}
@@ -61,9 +60,7 @@ func TestStaleRegistrationIsPrunedAndTheAddRetried(t *testing.T) {
 	}
 }
 
-// A GENUINE IN-USE BRANCH MUST NOT BE STOLEN. The prune is targeted at the "already used by worktree" refusal,
-// and it must not turn into "delete whatever is in the way" — a branch checked out in a live worktree is a real
-// state, and destroying it would lose that worktree's uncommitted work.
+// A GENUINE IN-USE BRANCH MUST NOT BE STOLEN.
 func TestAddStillRefusesALiveWorktreeOnTheSameBranch(t *testing.T) {
 	repo := newTestRepo(t)
 	branch := "live-branch"
@@ -83,14 +80,6 @@ func TestAddStillRefusesALiveWorktreeOnTheSameBranch(t *testing.T) {
 }
 
 // A FAILED WORKTREE IS REAPED; A READY ONE IS RETAINED.
-//
-// That distinction is the whole point of the retention feature and the whole of this bug. A 'ready' worktree
-// of a failed run is deliberate resumability — a retry re-attaches to the branch and its uncommitted work. A
-// 'failed' worktree is debris: provisioning never completed, there is nothing to resume, and retaining it is
-// what left a directory behind that blocked four consecutive runs.
-//
-// The pruner could not reap it because of TWO guards: the scan selected only worktree_status='ready', and
-// pruneOne/pruneStepRunOne returned early on anything else. Both are pinned here.
 func TestFailedWorktreeIsSelectedAndReadyIsRetained(t *testing.T) {
 	src, err := os.ReadFile("../db/workflow.go")
 	if err != nil {

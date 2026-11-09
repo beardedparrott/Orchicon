@@ -1,21 +1,14 @@
 package verify
 
-// results_test.go — EVERY FORMAT IS PINNED BY A REAL RUNNER'S OUTPUT, AND THE TAP CASE IS THE REGRESSION.
-//
-// The fixtures are verbatim shapes from the runners named in each test, not invented ones: the point of a
-// declared format is that a project can point at its own runner's output, so a fixture that no runner emits
-// would prove nothing about whether a real project works.
+// results_test.go — EVERY FORMAT IS PINNED BY A REAL RUNNER'S OUTPUT, AND THE TAP CASE IS THE
+// REGRESSION.
 
 import (
 	"strings"
 	"testing"
 )
 
-// THE REGRESSION. Raw `node --test` TAP keyed the failure on the test NUMBER and then dropped it.
-//
-// MEASURED BEFORE THE FIX: this exact input parsed to {"1":true, "3":true} — three tests, one failing, and the
-// failure was invisible. A differential built on that map reports "no new failures" for work that broke a test,
-// which is the single worst outcome a verification system can produce.
+// THE REGRESSION.
 func TestTAPKeepsTheFailingTest(t *testing.T) {
 	results, err := ParseResults(FormatTAP, `TAP version 13
 # Subtest: arithmetic
@@ -202,9 +195,7 @@ func TestJSONStatusWords(t *testing.T) {
 	}
 }
 
-// A FORMAT MISMATCH IS AN ERROR, NEVER AN EMPTY MAP. This is the load-bearing distinction in ParseResults: an
-// empty map reads as "everything passed", so a project that declared junit and printed TAP must not be silently
-// treated as clean.
+// A FORMAT MISMATCH IS AN ERROR, NEVER AN EMPTY MAP.
 func TestAWrongFormatIsAnErrorNotAnEmptyMap(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

@@ -227,14 +227,8 @@ func TestCompletedRunGetsAnObligationAndTheDrainLandsIt(t *testing.T) {
 	}
 }
 
-// B. A RUN DOES NOT CUT ITS BRANCH WHILE AN EARLIER OBLIGATION CANNOT LAND — AND IT PROCEEDS ONCE IT CAN.
-//
-// THE GATE IS NOT "WAIT FOR THE SWEEP". reconcileOne drains the queue first, so when a predecessor CAN be
-// landed it is landed immediately and there is nothing to wait for — that is the better outcome and the common
-// one. The gate earns its keep in the case the report actually hit and could not survive: a predecessor whose
-// integration does NOT succeed (here: a real conflict). Branching there is what turned one missed merge into
-// every following run needing a conflict resolution, so the run must WAIT — visibly, and without being marked
-// failed, because it has done nothing wrong.
+// B. A RUN DOES NOT CUT ITS BRANCH WHILE AN EARLIER OBLIGATION CANNOT LAND — AND IT PROCEEDS ONCE
+// IT CAN.
 func TestNewRunWaitsWhileAPredecessorCannotLandThenProceeds(t *testing.T) {
 	env := newQueueTestEnv(t)
 	predecessorRunID, predecessorBranch := env.seedCompletedRun(t, "beta")
@@ -306,12 +300,8 @@ func TestNewRunWaitsWhileAPredecessorCannotLandThenProceeds(t *testing.T) {
 	}
 }
 
-// A MERGE THAT CANNOT BE VERIFIED IS `failed`, AND IT HOLDS THE QUEUE — the operator's requirement: "a failing
-// check must not be recorded as success and must not let the next run start".
-//
-// The failure used here is the reported one: the project declares a check that fails. (The other failure — a
-// tree that was not materialised — is covered directly by TestVerificationFailsWhenTheTreeIsNotMaterialised,
-// because provoking it through the drain requires an unwritable checkout.)
+// A MERGE THAT CANNOT BE VERIFIED IS `failed`, AND IT HOLDS THE QUEUE — the operator's requirement:
+// "a failing check must not be recorded as success and must not let the next run start".
 func TestAFailedVerificationIsRecordedAndBlocksTheQueue(t *testing.T) {
 	env := newQueueTestEnv(t)
 	runID, branch := env.seedCompletedRun(t, "verifail")
@@ -390,10 +380,6 @@ func TestSuccessfulIntegrationRecordsVerified(t *testing.T) {
 }
 
 // A CONFLICT IS RECORDED, KEEPS BLOCKING, AND SAYS WHY.
-//
-// It must keep blocking: branching past a conflict diverges the project further, which is how one missed
-// integration made every following run un-mergeable. Silence was the original sin; a visible, blocking,
-// self-describing record is the fix.
 func TestAConflictingObligationIsRecordedAndKeepsBlocking(t *testing.T) {
 	env := newQueueTestEnv(t)
 	runID, branch := env.seedCompletedRun(t, "conflict")

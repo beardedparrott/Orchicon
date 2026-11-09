@@ -9,12 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 )
 
-// ScheduledRunReconciler scans for work items with status 'scheduled' and
-// a past-due scheduled_start_at, then dispatches the bound workflow
-// (docs/11 §5.2). Idempotent: status transitions to 'running' on fire.
-// Sequence parents (work items with children and NO bound workflow) are
-// fired through the sequence engine instead (architecture-notes/
-// sequential-multi-workflow-runs.md §2.2).
+// ScheduledRunReconciler scans for work items with status 'scheduled' and a past-due
+// scheduled_start_at, then dispatches the bound workflow (docs/11 §5.2).
 type ScheduledRunReconciler struct {
 	pool     *db.Pool
 	log      *slog.Logger
@@ -30,9 +26,8 @@ func NewScheduledRunReconciler(pool *db.Pool, log *slog.Logger, start StartWorkf
 	return &ScheduledRunReconciler{pool: pool, log: log, start: start}
 }
 
-// SetSequenceStarter injects the sequence fire path used when a scheduled
-// work item has children and no bound workflow. Optional — without it a
-// sequence parent is skipped with a warning.
+// SetSequenceStarter injects the sequence fire path used when a scheduled work item has children
+// and no bound workflow.
 func (r *ScheduledRunReconciler) SetSequenceStarter(fn StartSequenceFn) { r.sequence = fn }
 
 func (r *ScheduledRunReconciler) Kind() string { return "scheduled_run" }
@@ -64,13 +59,8 @@ func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Res
 	}
 	defer ttx.Rollback(ctx)
 
-	// A NO-workflow predicate is deliberately absent: a `workflow_id IS NOT
-	// NULL` filter would silently drop the very rows the retired standalone
-	// dispatch used to run, leaving a zombie 'scheduled' row (due, never run,
-	// never failed). Every due row is admitted and the fire loop decides: a
-	// parent with children is a SEQUENCE (even one that still carries a stale
-	// workflow binding — children win, so the branch can't use workflow_id
-	// alone), a workflow-less leaf is failed LOUDLY, anything else fires.
+	// A NO-workflow predicate is deliberately absent: a `workflow_id IS NOT NULL` filter would silently
+	// drop the very rows the retired standalone dispatch used to run.
 	q := `SELECT w.id, w.tenant_id, w.workflow_id, w.project_id,
 	        EXISTS (SELECT 1 FROM work_items c
 	                WHERE c.tenant_id = w.tenant_id AND c.parent_id = w.id) AS has_children
@@ -87,14 +77,8 @@ func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Res
 	}
 	defer rows.Close()
 
-	// workflowID is *string, not string: a sequence parent's workflow_id
-	// is SQL NULL (the parent contributes ordering only — its children
-	// carry their own bound workflows), and pgx's strict scan rejects
-	// NULL into a plain string. A scan error also poisons rows.Err()
-	// (rows.fatal), which would abort the whole pass BEFORE any ref
-	// fires — a co-due bound-workflow item would never start. A nil
-	// pointer means "sequence parent"; a non-nil pointer means a bound
-	// run (the WHERE clause guarantees it is non-empty).
+	// workflowID is *string, not string: a sequence parent's workflow_id is SQL NULL (the parent
+	// contributes ordering only — its children carry their own bound workflows).
 	type wiRef struct {
 		id, tenantID, projectID string
 		workflowID              *string
@@ -123,10 +107,8 @@ func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Res
 
 	for _, ref := range refs {
 		if ref.hasChildren {
-			// A parent with children is a sequence — its children each run
-			// their own bound workflows in chain order. Route through the
-			// sequence engine even if the parent still carries a workflow
-			// binding (children win over the parent's stale binding).
+			// A parent with children is a sequence — its children each run their own bound workflows in chain
+			// order.
 			if r.sequence == nil {
 				r.log.Warn("scheduled_run: sequence parent fired but no sequence starter wired",
 					"work_item", ref.id)
@@ -142,10 +124,7 @@ func (r *ScheduledRunReconciler) scanAndFire(ctx context.Context) reconciler.Res
 			continue
 		}
 		if ref.workflowID == nil || *ref.workflowID == "" {
-			// Standalone dispatch is retired: a scheduled workflow-less leaf
-			// can never run. Fail it LOUDLY — the item status plus an
-			// actionable reason surfaced on the item — instead of logging a
-			// warning and leaving a zombie "scheduled" row behind.
+			// Standalone dispatch is retired: a scheduled workflow-less leaf can never run.
 			reason := fmt.Sprintf("Cannot start scheduled item %q: no workflow is set, so there is nothing to run. Bind a workflow to run this item.", ref.id)
 			r.log.Error("scheduled_run: scheduled leaf with no workflow — failing loudly",
 				"work_item", ref.id)

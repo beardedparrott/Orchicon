@@ -1,12 +1,7 @@
 package scheduler
 
-// Work-item execution_mode override: persistence, the resolution order
-// (item -> project -> tenant default), the ephemeral/Quick Work default, and
-// the arm gate that preserves the "local mode never calls EnsureForRun"
-// lifecycle invariant.
-//
-// DB-backed; skipped without ORCHICON_TEST_DSN (a disposable sandbox DSN —
-// never the live plane).
+// Work-item execution_mode override: persistence, the resolution order (item -> project -> tenant
+// default), the ephemeral/Quick Work default.
 
 import (
 	"context"
@@ -137,9 +132,8 @@ func TestExecutionModeResolutionOrder(t *testing.T) {
 	}
 }
 
-// TestEphemeralResolvesLocal pins AC7: a Quick Work (ephemeral) item gets a
-// CONCRETE local mode at create — never the undefined "inherit" state — and an
-// explicit caller value still wins.
+// TestEphemeralResolvesLocal pins AC7: a Quick Work (ephemeral) item gets a CONCRETE local mode at
+// create — never the undefined "inherit" state — and an explicit caller value still wins.
 func TestEphemeralResolvesLocal(t *testing.T) {
 	pool := scratchPool(t)
 	ctx := context.Background()
@@ -179,9 +173,8 @@ func TestEphemeralResolvesLocal(t *testing.T) {
 	}
 }
 
-// TestLocalItemInRuntimeProjectSkipsEnsureForRun pins AC5: an item that
-// resolves to local NEVER provisions a container, even inside a runtime
-// project ("local mode is the explicit opt-out and never reaches here").
+// TestLocalItemInRuntimeProjectSkipsEnsureForRun pins AC5: an item that resolves to local NEVER
+// provisions a container.
 func TestLocalItemInRuntimeProjectSkipsEnsureForRun(t *testing.T) {
 	pool := scratchPool(t)
 	ctx := context.Background()
@@ -228,10 +221,8 @@ func TestLocalItemInRuntimeProjectSkipsEnsureForRun(t *testing.T) {
 	}
 }
 
-// TestRuntimeItemInLocalProjectEnsuresContainer pins AC6: an item-level opt-IN
-// inside a local project really provisions a container, and the provisioning
-// opt-in is honoured — with no daemon wired the failure is LOUD, never a silent
-// in-process degrade.
+// TestRuntimeItemInLocalProjectEnsuresContainer pins AC6: an item-level opt-IN inside a local
+// project really provisions a container, and the provisioning opt-in is honoured.
 func TestRuntimeItemInLocalProjectEnsuresContainer(t *testing.T) {
 	pool := scratchPool(t)
 	ctx := context.Background()
@@ -270,9 +261,8 @@ func TestRuntimeItemInLocalProjectEnsuresContainer(t *testing.T) {
 		t.Fatalf("runExecutionMode = %q, want runtime", got)
 	}
 
-	// The daemon/Podman opt-in is HONOURED, not bypassed: headless serve has no
-	// daemon to provision from, so runtime.Lifecycle fails LOUD instead of
-	// silently running in-process.
+	// The daemon/Podman opt-in is HONOURED, not bypassed: headless serve has no daemon to provision
+	// from, so runtime.Lifecycle fails LOUD instead of silently running in-process.
 	headless := runtime.NewLifecycle(nil, nil, slog.Default(), nil, nil)
 	err = headless.EnsureForRun(ctx, db.WorkflowRunRow{ID: "run_rt_item", WorkItemID: wi.ID, ProjectID: prj.ID})
 	if err == nil {

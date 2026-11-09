@@ -8,9 +8,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// toolPart builds a persisted tool_use part payload in the exact shape the
-// session runner records: `{"part": <opencode part>, "error": ...}` with the
-// opencode part carrying the tool name and its state.
+// toolPart builds a persisted tool_use part payload in the exact shape the session runner records:
+// `{"part": <opencode part>, "error".
 func toolPart(tool string, status string, state map[string]any) []byte {
 	part := map[string]any{
 		"tool":   tool,
@@ -47,9 +46,8 @@ func sessionParts(kind string, seq int64, payload []byte) db.SessionPart {
 	return db.SessionPart{Kind: kind, Seq: seq, Payload: payload}
 }
 
-// TestLatestTodosParsesCorrectPayload verifies the happy path: a single
-// todowrite part yields its full todos array with statuses/priorities mapped
-// to the proto enums.
+// TestLatestTodosParsesCorrectPayload verifies the happy path: a single todowrite part yields its
+// full todos array with statuses/priorities mapped to the proto enums.
 func TestLatestTodosParsesCorrectPayload(t *testing.T) {
 	payload := todowritePart([]any{
 		item("Read the acceptance criteria", "completed", "high"),
@@ -72,10 +70,8 @@ func TestLatestTodosParsesCorrectPayload(t *testing.T) {
 	}
 }
 
-// TestLatestTodosOrderingBySeq verifies "latest wins": when multiple
-// todowrite calls exist, the one with the highest sequence number is
-// returned (replacement semantics — the newest call supersedes older ones).
-// Parts are passed in DESC-by-seq order (the LatestToolUseParts contract).
+// TestLatestTodosOrderingBySeq verifies "latest wins": when multiple todowrite calls exist, the one
+// with the highest sequence number is returned (replacement semantics.
 func TestLatestTodosOrderingBySeq(t *testing.T) {
 	parts := []db.SessionPart{
 		sessionParts(db.SessionPartToolUse, 8, todowritePart([]any{
@@ -99,9 +95,8 @@ func TestLatestTodosOrderingBySeq(t *testing.T) {
 	}
 }
 
-// TestLatestTodosMixedTranscript verifies a transcript with other tools
-// interspersed: the parser skips non-todowrite tool calls and returns the
-// first todowrite payload it finds walking from the highest seq.
+// TestLatestTodosMixedTranscript verifies a transcript with other tools interspersed: the parser
+// skips non-todowrite tool calls and returns the first todowrite payload it finds walking.
 func TestLatestTodosMixedTranscript(t *testing.T) {
 	parts := []db.SessionPart{
 		sessionParts(db.SessionPartToolUse, 4, toolPart("edit", "completed", map[string]any{"status": "completed", "input": map[string]any{"filePath": "x.go"}})),
@@ -132,11 +127,8 @@ func TestLatestTodosEmptyTranscript(t *testing.T) {
 	}
 }
 
-// TestLatestTodosMalformedParts verifies the parser never fails on malformed
-// payloads: junk JSON, missing part, missing state, missing input, missing
-// todos, and a non-array todos are all skipped. A later valid part must
-// still be found. (An EMPTY todos array is a valid todowrite call — the
-// worker explicitly cleared the list — so it is not treated as malformed.)
+// TestLatestTodosMalformedParts verifies the parser never fails on malformed payloads: junk JSON,
+// missing part, missing state, missing input, missing todos, and a non-array todos are all skipped.
 func TestLatestTodosMalformedParts(t *testing.T) {
 	parts := []db.SessionPart{
 		sessionParts(db.SessionPartToolUse, 8, todowritePart([]any{
@@ -156,10 +148,8 @@ func TestLatestTodosMalformedParts(t *testing.T) {
 	}
 }
 
-// TestLatestTodosEmptyArrayIsValid verifies an EMPTY todos array is a valid
-// todowrite call: the worker cleared the list, so the latest list is empty
-// (not nil). The frontend hides the card for an empty list, so the UX is
-// "no todos shown" either way.
+// TestLatestTodosEmptyArrayIsValid verifies an EMPTY todos array is a valid todowrite call: the
+// worker cleared the list, so the latest list is empty (not nil).
 func TestLatestTodosEmptyArrayIsValid(t *testing.T) {
 	parts := []db.SessionPart{
 		sessionParts(db.SessionPartToolUse, 2, todowritePart([]any{})),
@@ -176,10 +166,8 @@ func TestLatestTodosEmptyArrayIsValid(t *testing.T) {
 	}
 }
 
-// TestLatestTodosUnknownStatusPriority verifies forward compatibility:
-// unknown status/priority strings map to UNSPECIFIED (never an error), and a
-// todowrite part with an error status is still parsed (the todos payload is
-// authoritative).
+// TestLatestTodosUnknownStatusPriority verifies forward compatibility: unknown status/priority
+// strings map to UNSPECIFIED (never an error).
 func TestLatestTodosUnknownStatusPriority(t *testing.T) {
 	payload := toolPart("todowrite", "error", map[string]any{
 		"status": "error",

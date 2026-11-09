@@ -31,9 +31,8 @@ func scratchSweepReconciler() *WorktreeReconciler {
 	return NewWorktreeReconciler(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
-// THE LEAKED CASE IS THE WHOLE POINT: the checkout is registered, so every existing rule in the sweep
-// treats it as legitimate. Reclaiming it must also clear the registration, or the leak is only half
-// fixed — the path stays referenced long after the directory is gone.
+// THE LEAKED CASE IS THE WHOLE POINT: the checkout is registered, so every existing rule in the
+// sweep treats it as legitimate.
 func TestTheSweepReclaimsALeakedBaselineScratchCheckout(t *testing.T) {
 	repo, scratch := scratchSweepRepo(t)
 	stale := time.Now().Add(-scratchBaselineMaxAge - time.Minute)
@@ -67,10 +66,8 @@ func TestTheSweepLeavesAFreshScratchCheckoutForALiveCapture(t *testing.T) {
 	}
 }
 
-// The second shape of the leak: a scratch dir whose registration was already pruned, or that a failed
-// reclaim left behind. It is not a worktree any more, so `git worktree remove` refuses it and the tree
-// itself is what has to go — the previous code logged it as "stale dir (not artifact, not empty)" and
-// left it there permanently.
+// The second shape of the leak: a scratch dir whose registration was already pruned, or that a
+// failed reclaim left behind.
 func TestTheSweepReclaimsAStaleScratchDirWithNoRegistration(t *testing.T) {
 	repo := newTestRepo(t)
 	root := filepath.Join(repo, worktreeDirName)
@@ -93,9 +90,7 @@ func TestTheSweepReclaimsAStaleScratchDirWithNoRegistration(t *testing.T) {
 	}
 }
 
-// THIS ASSERTS WIRING, NOT BEHAVIOUR. Driving sweepOrphanDirs needs a database (it lists projects) and
-// CI sets no ORCHICON_TEST_DSN, so a DB-backed version would SKIP and show green while proving nothing.
-// The tests above cover behaviour; this covers the ordering that lets them matter.
+// THIS ASSERTS WIRING, NOT BEHAVIOUR.
 func TestTheSweepConsultsTheScratchNamespaceBeforeTheWorktreeSkip(t *testing.T) {
 	src, err := os.ReadFile("worktree_reconciler.go")
 	if err != nil {

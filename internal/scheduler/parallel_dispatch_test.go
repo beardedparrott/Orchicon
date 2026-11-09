@@ -20,14 +20,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// purgeScanTenant deletes residue rows the scan pass is sensitive to
-// before a parallel-scan test runs: every worker execution (frees adapter
-// capacity the scan's selectAdapter relies on — executions created by
-// earlier tests stay "dispatching" forever) and every seq-env project's
-// ready/blocked work items. The test DB is disposable (migrate re-applies
-// + seeds dev workers on every run) and each test seeds its own rows, so
-// deleting prior residue is safe and makes the scan assertions
-// deterministic.
+// purgeScanTenant deletes residue rows the scan pass is sensitive to before a parallel-scan test
+// runs: every worker execution (frees adapter capacity the scan's selectAdapter relies.
 func purgeScanTenant(t *testing.T, pool *db.Pool) {
 	t.Helper()
 	ctx := context.Background()
@@ -40,10 +34,8 @@ func purgeScanTenant(t *testing.T, pool *db.Pool) {
 	purgeScanResidue(t, pool)
 }
 
-// newParallelScanEnv seeds a project with n ready standalone tasks (each
-// with the seeded dev worker assigned) plus a ready opencode adapter with
-// generous capacity so a whole scan batch can dispatch. Project teardown
-// is handled by newSequenceTestEnv's cleanup.
+// newParallelScanEnv seeds a project with n ready standalone tasks (each with the seeded dev worker
+// assigned) plus a ready opencode adapter with generous capacity so a whole scan batch can.
 func newParallelScanEnv(t *testing.T, n int) (*sequenceTestEnv, []db.WorkItemRow) {
 	t.Helper()
 	env := newSequenceTestEnv(t)
@@ -76,9 +68,8 @@ func newParallelScanEnv(t *testing.T, n int) (*sequenceTestEnv, []db.WorkItemRow
 	return env, tasks
 }
 
-// newInFlightProbe attaches the test-only dispatchOverlap hook and returns
-// a function to read the peak number of reconcileOne calls observed
-// in-flight during the scan fan-out.
+// newInFlightProbe attaches the test-only dispatchOverlap hook and returns a function to read the
+// peak number of reconcileOne calls observed in-flight during the scan fan-out.
 func newInFlightProbe(rec *TaskReconciler) func() int {
 	var mu sync.Mutex
 	peak := 0
@@ -96,10 +87,8 @@ func newInFlightProbe(rec *TaskReconciler) func() int {
 	}
 }
 
-// TestParallelScanDispatchesAllReadyInOnePass: 6 ready, dependency-free
-// tasks dispatch in a SINGLE scan pass — all reach assigned with exactly
-// one execution each, and the pass actually ran concurrently (peak
-// in-flight dispatches ≥ 2).
+// TestParallelScanDispatchesAllReadyInOnePass: 6 ready, dependency-free tasks dispatch in a SINGLE
+// scan pass — all reach assigned with exactly one execution each.
 func TestParallelScanDispatchesAllReadyInOnePass(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env, tasks := newParallelScanEnv(t, 6)
@@ -123,9 +112,8 @@ func TestParallelScanDispatchesAllReadyInOnePass(t *testing.T) {
 	}
 }
 
-// TestParallelScanDispatchLimitBoundsConcurrency: with dispatchLimit=2, a
-// single scan pass still dispatches all 6 ready tasks (the batch stays at
-// scanBatchSize) but never runs more than 2 reconcileOne calls in flight.
+// TestParallelScanDispatchLimitBoundsConcurrency: with dispatchLimit=2, a single scan pass still
+// dispatches all 6 ready tasks (the batch stays at scanBatchSize) but never runs more than 2.
 func TestParallelScanDispatchLimitBoundsConcurrency(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env, tasks := newParallelScanEnv(t, 6)
@@ -152,10 +140,8 @@ func TestParallelScanDispatchLimitBoundsConcurrency(t *testing.T) {
 	}
 }
 
-// TestParallelScanDependencyBlockedNotDispatched: a ready item with an
-// unsatisfied blocker parks as blocked and creates NO execution, even while
-// a dependency-free sibling dispatches in the same parallel pass. This
-// guards the "never dispatched early" invariant under concurrency.
+// TestParallelScanDependencyBlockedNotDispatched: a ready item with an unsatisfied blocker parks as
+// blocked and creates NO execution.
 func TestParallelScanDependencyBlockedNotDispatched(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env, tasks := newParallelScanEnv(t, 2)
@@ -183,10 +169,8 @@ func TestParallelScanDependencyBlockedNotDispatched(t *testing.T) {
 	}
 }
 
-// TestParallelScanBlockedClearsAndDispatchesSamePass: a blocked item whose
-// blocker already turned terminal clears to ready and dispatches in the
-// same parallel pass as an unrelated ready item — dependency re-evaluation
-// semantics are preserved under the fan-out.
+// TestParallelScanBlockedClearsAndDispatchesSamePass: a blocked item whose blocker already turned
+// terminal clears to ready and dispatches in the same parallel pass as an unrelated ready item.
 func TestParallelScanBlockedClearsAndDispatchesSamePass(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env, tasks := newParallelScanEnv(t, 1)
@@ -243,10 +227,8 @@ func (s *stubLimiter) Limit(_ context.Context, projectID string) int {
 	return s.vals[projectID]
 }
 
-// TestEffectiveDispatchLimitPerProjectMin (no DB): the ConcurrencyLimiter
-// seam — the effective per-pass limit is the minimum of the global bound
-// and the positive per-project limits of the candidate items; zero project
-// limits impose no restriction; the global bound clamps to [1, scanBatchSize].
+// TestEffectiveDispatchLimitPerProjectMin (no DB): the ConcurrencyLimiter seam — the effective
+// per-pass limit is the minimum of the global bound and the positive per-project limits.
 func TestEffectiveDispatchLimitPerProjectMin(t *testing.T) {
 	rec := &TaskReconciler{}
 	ctx := context.Background()

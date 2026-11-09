@@ -1,14 +1,6 @@
 package scheduler
 
 // local_integrate_test.go — LOCAL INTEGRATION against a real git repository.
-//
-// REPORTED: "A commit sitting only on a run branch is unfinished." A `git_strategy=local` project has no
-// remote, so nothing ever merged the run branch into `develop`, and every run's work was stranded on a
-// branch nobody reads.
-//
-// These tests drive the git half directly (no database): the strategy lookup and the run listing are the
-// reconciler's plumbing, but the behaviour that matters — fast-forward, divergence, conflict, the stale
-// main checkout, and idempotency — is all git.
 
 import (
 	"context"
@@ -126,9 +118,7 @@ func TestLocalIntegrationMergesADivergedRunBranch(t *testing.T) {
 	if got := h.head(t, defaultIntegrationBranch); got != merged {
 		t.Fatalf("develop = %s, want the merge commit %s", got, merged)
 	}
-	// BOTH sides' work must be present in the MERGED COMMIT. Checked against git, not the working tree:
-	// setBranchRef moves the ref without touching any checkout (deliberately), so the files are in the
-	// tree the commit names, not on disk in the main checkout.
+	// BOTH sides' work must be present in the MERGED COMMIT.
 	for _, f := range []string{"a.txt", "b.txt"} {
 		if _, err := runGit(context.Background(), h.repo, "cat-file", "-e", "develop:"+f); err != nil {
 			t.Fatalf("%s is missing from the merge commit — one side's work was lost", f)
@@ -242,9 +232,7 @@ func TestRefreshMainCheckoutHandlesCleanAndDirtyTrees(t *testing.T) {
 	}
 }
 
-// RESOLVE, DO NOT INVENT. A trunk-based repository (no `develop`) must integrate onto its OWN default, and
-// a repository with no resolvable default must be REFUSED — the old code created `develop` at HEAD, which
-// silently forked the history into a branch the operator never asked for.
+// RESOLVE, DO NOT INVENT.
 func TestIntegrationTargetResolvesOrRefuses(t *testing.T) {
 	// A repo whose default is `main`, with no `develop`.
 	repo := t.TempDir()

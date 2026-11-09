@@ -115,11 +115,8 @@ func TestWorkItemContextFilesDB(t *testing.T) {
 	}
 }
 
-// TestWorkItemContextFilesWithinProjectDirDB verifies the confinement rule:
-// when the project has a project_dir configured, context_files must live
-// inside it (the only path guaranteed mounted where workers run). Paths
-// outside are rejected at the API boundary with InvalidArgument, for both
-// Create and Update.
+// TestWorkItemContextFilesWithinProjectDirDB verifies the confinement rule: when the project has a
+// project_dir configured.
 func TestWorkItemContextFilesWithinProjectDirDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -177,9 +174,8 @@ func TestWorkItemContextFilesWithinProjectDirDB(t *testing.T) {
 	}
 }
 
-// TestContextFilesColumnExistsDB verifies the migration added the
-// context_files column and the RLS gate's tenant scoping still works
-// (the row is readable only under its tenant).
+// TestContextFilesColumnExistsDB verifies the migration added the context_files column and the RLS
+// gate's tenant scoping still works (the row is readable only under its tenant).
 func TestContextFilesColumnExistsDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -189,13 +185,6 @@ func TestContextFilesColumnExistsDB(t *testing.T) {
 	}
 	defer func() { _ = ttx.Rollback(context.Background()) }()
 	// The column exists (a pre-migration query would fail here).
-	//
-	// A nullable scan, because the assertion is "the column exists and is
-	// readable", not "the first row Postgres happens to return has a value".
-	// Scanning into a plain string made this test depend on which row the
-	// planner picked: it passed on an empty-ish database and failed on any
-	// populated one, because context_files is nullable (and is jsonb, so
-	// COALESCE-ing it to a string literal is not valid JSON either).
 	var one *string
 	if err := ttx.Tx.QueryRow(ctx,
 		`SELECT context_files FROM work_items LIMIT 1`).Scan(&one); err != nil && !strings.Contains(err.Error(), "no rows") {

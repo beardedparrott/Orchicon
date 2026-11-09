@@ -10,9 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// absentLifecycle is a RuntimeLifecycle whose image presence probe answers
-// from a fixed (present, err) pair. It exists so the missing-image fail-fast is
-// testable without a daemon, a DB, or a container runtime.
+// absentLifecycle is a RuntimeLifecycle whose image presence probe answers from a fixed (present,
+// err) pair.
 type absentLifecycle struct {
 	stubLifecycle
 	present bool
@@ -25,11 +24,8 @@ func (l *absentLifecycle) ImagePresent(_ context.Context, ref string) (bool, err
 	return l.present, l.err
 }
 
-// TestRuntimeImageAbsentIsAPermanentDispatchFailure pins AC 14's
-// classification: a missing runtime image is a CONFIGURATION failure, so the
-// dispatch is blocked with the reason instead of being requeued into a
-// ready→failed→ready loop. The predicate is the SHARED one (the test must not
-// re-implement it), and the reason must name the exact ref and the fix.
+// TestRuntimeImageAbsentIsAPermanentDispatchFailure pins AC 14's classification: a missing runtime
+// image is a CONFIGURATION failure.
 func TestRuntimeImageAbsentIsAPermanentDispatchFailure(t *testing.T) {
 	const ref = "ghcr.io/beardedparrott/orchicon-runtime:gui"
 	err := runtimeImageAbsentError(ref)
@@ -58,9 +54,6 @@ func TestRuntimeImageAbsentIsAPermanentDispatchFailure(t *testing.T) {
 }
 
 // TestRuntimeImageAbsentReason covers the run-start seam in all three states.
-// ABSENT must report a reason (so ensureRunContainerFailover fails the run at
-// start instead of falling back to the base image); PRESENT and a probe ERROR
-// must not — a daemon fault is not the operator's missing image.
 func TestRuntimeImageAbsentReason(t *testing.T) {
 	const ref = "orchicon-runtime:gui"
 

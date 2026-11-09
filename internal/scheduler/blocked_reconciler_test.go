@@ -17,10 +17,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// newBlockedStandaloneEnv seeds the fixture a dispatch needs: a project (for
-// project_dir resolution), a published workflow binding, a task with an
-// assigned worker, and a ready opencode adapter with free capacity. Project
-// teardown is handled by newSequenceTestEnv's cleanup.
+// newBlockedStandaloneEnv seeds the fixture a dispatch needs: a project (for project_dir
+// resolution), a published workflow binding, a task with an assigned worker.
 func newBlockedStandaloneEnv(t *testing.T) (*sequenceTestEnv, db.WorkItemRow) {
 	t.Helper()
 	env := newSequenceTestEnv(t)
@@ -64,10 +62,8 @@ func countExecutionsForTask(t *testing.T, pool *db.Pool, taskID string) int {
 	return len(exs)
 }
 
-// deleteTestProject removes a project and everything under it (work items,
-// dependencies, workflows, runs, step runs). Blocked-scan tests run against
-// the shared tnt_dev DB, so each test must clean up its own project to keep
-// the count of blocked/ready tasks in the tenant stable across runs.
+// deleteTestProject removes a project and everything under it (work items, dependencies, workflows,
+// runs, step runs).
 func deleteTestProject(t *testing.T, pool *db.Pool, projectID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -80,13 +76,8 @@ func deleteTestProject(t *testing.T, pool *db.Pool, projectID string) {
 	_ = ttx.Commit(ctx)
 }
 
-// purgeScanResidue deletes every leftover seq-env fixture project (the name
-// newSequenceTestEnv assigns) from the shared test tenant. The blocked-scan
-// tests assert that the reconciler's bounded scan window reaches a specific
-// blocked task, so any blocked/ready residue accumulated by earlier runs or
-// aborted tests would shift the window and make the assertion non-deterministic.
-// Purging first gives the scan tests a clean, deterministic surface regardless
-// of prior DB state.
+// purgeScanResidue deletes every leftover seq-env fixture project (the name newSequenceTestEnv
+// assigns) from the shared test tenant.
 func purgeScanResidue(t *testing.T, pool *db.Pool) {
 	t.Helper()
 	ctx := context.Background()
@@ -107,9 +98,8 @@ func purgeScanResidue(t *testing.T, pool *db.Pool) {
 	_ = ttx.Commit(ctx)
 }
 
-// TestStandaloneBlockedReadyFlipsToBlocked: a ready task whose upstream
-// dependency is not terminal-success parks as BLOCKED (persisted) and is
-// never dispatched — the stall is surfaced, not silently requeued.
+// TestStandaloneBlockedReadyFlipsToBlocked: a ready task whose upstream dependency is not
+// terminal-success parks as BLOCKED (persisted) and is never dispatched — the stall is surfaced.
 func TestStandaloneBlockedReadyFlipsToBlocked(t *testing.T) {
 	env, task := newBlockedStandaloneEnv(t)
 	ctx := context.Background()
@@ -130,9 +120,8 @@ func TestStandaloneBlockedReadyFlipsToBlocked(t *testing.T) {
 	}
 }
 
-// TestStandaloneBlockedStaysBlocked: a blocked task whose blocker is still
-// non-terminal (failed — the server gate accepts only succeeded) stays
-// blocked across passes; still no dispatch.
+// TestStandaloneBlockedStaysBlocked: a blocked task whose blocker is still non-terminal (failed —
+// the server gate accepts only succeeded) stays blocked across passes; still no dispatch.
 func TestStandaloneBlockedStaysBlocked(t *testing.T) {
 	env, task := newBlockedStandaloneEnv(t)
 	ctx := context.Background()
@@ -159,9 +148,8 @@ func TestStandaloneBlockedStaysBlocked(t *testing.T) {
 	}
 }
 
-// TestStandaloneBlockedClearsAndDispatches: once the blocker succeeds, the
-// next pass flips blocked → ready → assigned and dispatches in the SAME
-// pass (execution row created).
+// TestStandaloneBlockedClearsAndDispatches: once the blocker succeeds, the next pass flips blocked
+// → ready → assigned and dispatches in the SAME pass (execution row created).
 func TestStandaloneBlockedClearsAndDispatches(t *testing.T) {
 	env, task := newBlockedStandaloneEnv(t)
 	ctx := context.Background()
@@ -190,14 +178,11 @@ func TestStandaloneBlockedClearsAndDispatches(t *testing.T) {
 	}
 }
 
-// TestStandaloneBlockedScanClearsBlocked: the empty-key scan pass picks up
-// blocked tasks (ListBlockedTasks) and clears them once the gate
-// satisfies, without any notifier.
+// TestStandaloneBlockedScanClearsBlocked: the empty-key scan pass picks up blocked tasks
+// (ListBlockedTasks) and clears them once the gate satisfies, without any notifier.
 func TestStandaloneBlockedScanClearsBlocked(t *testing.T) {
 	ctx := context.Background()
-	// The scan pass re-evaluates a bounded window of blocked tasks in the
-	// shared tnt_dev tenant. Purge any residue from earlier runs FIRST so
-	// this test's own blocked task is guaranteed to be within the window.
+	// The scan pass re-evaluates a bounded window of blocked tasks in the shared tnt_dev tenant.
 	purgeScanResidue(t, approvalTestPool(t))
 	env, task := newBlockedStandaloneEnv(t)
 	blocker := createWorkItem(t, env.pool, env.proj.ID, domain.WorkItemKindTask, "Blocker", nil, nil)
@@ -223,9 +208,8 @@ func TestStandaloneBlockedScanClearsBlocked(t *testing.T) {
 	}
 }
 
-// TestStandaloneBlockedScanListsBlocked verifies ListBlockedTasks returns
-// blocked standalone tasks (and not ready ones) — the scan complement to
-// ListReadyTasks.
+// TestStandaloneBlockedScanListsBlocked verifies ListBlockedTasks returns blocked standalone tasks
+// (and not ready ones) — the scan complement to ListReadyTasks.
 func TestStandaloneBlockedScanListsBlocked(t *testing.T) {
 	ctx := context.Background()
 	purgeScanResidue(t, approvalTestPool(t))
@@ -257,9 +241,8 @@ func TestStandaloneBlockedScanListsBlocked(t *testing.T) {
 	}
 }
 
-// TestStandaloneBlockedNotDispatchedWorkflowBound: a blocked item bound to
-// a workflow run is not touched by the standalone scan at all (workflow
-// dispatch is the WorkflowReconciler's job).
+// TestStandaloneBlockedNotDispatchedWorkflowBound: a blocked item bound to a workflow run is not
+// touched by the standalone scan at all (workflow dispatch is the WorkflowReconciler's job).
 func TestStandaloneBlockedNotDispatchedWorkflowBound(t *testing.T) {
 	env, task := newBlockedStandaloneEnv(t)
 	ctx := context.Background()
@@ -283,9 +266,8 @@ func TestStandaloneBlockedNotDispatchedWorkflowBound(t *testing.T) {
 	}
 }
 
-// newBlockedStandalonePair creates one ready task with an assigned worker
-// plus a distinct blocking work item, and a blocking edge blocker→task.
-// Both rows live in env.proj so the project cleanup removes them.
+// newBlockedStandalonePair creates one ready task with an assigned worker plus a distinct blocking
+// work item, and a blocking edge blocker→task.
 func newBlockedStandalonePair(t *testing.T, env *sequenceTestEnv, idx int) (task, blocker db.WorkItemRow) {
 	t.Helper()
 	ctx := context.Background()
@@ -324,22 +306,16 @@ func newBlockedStandalonePair(t *testing.T, env *sequenceTestEnv, idx int) (task
 	return task, blocker
 }
 
-// TestStandaloneBlockedScanRotationClearsBacklog guards the scan-batch
-// starvation regression: with more blocked tasks than the per-tick scan
-// batch, the re-evaluation window ROTATES so every blocked item is
-// eventually re-checked. After every blocker turns terminal, repeated scan
-// passes clear the WHOLE backlog to assigned (each pass processes a fresh
-// window), instead of permanently re-scanning the same oldest rows.
+// TestStandaloneBlockedScanRotationClearsBacklog guards the scan-batch starvation regression: with
+// more blocked tasks than the per-tick scan batch.
 func TestStandaloneBlockedScanRotationClearsBacklog(t *testing.T) {
 	ctx := context.Background()
 	// A fresh reconciler instance starts its blocked cursor at zero; purge
 	// any residue so the window is fully deterministic.
 	purgeScanResidue(t, approvalTestPool(t))
 	env := newSequenceTestEnv(t)
-	// Seed this test's own high-capacity adapter: without it the dispatch
-	// batch is bounded by whatever ambient adapter the shared tenant happens
-	// to carry (capacity 5 on the sandbox plane), and the backlog can never
-	// clear — a capacity artefact, not a rotation regression.
+	// Seed this test's own high-capacity adapter: without it the dispatch batch is bounded by whatever
+	// ambient adapter the shared tenant happens to carry (capacity 5 on the sandbox plane).
 	seedReadyAdapter(t, env.pool)
 	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 
@@ -358,12 +334,7 @@ func TestStandaloneBlockedScanRotationClearsBacklog(t *testing.T) {
 		setStatus(t, env.pool, b.ID, domain.WorkItemSucceeded)
 	}
 
-	// Run scans until the whole backlog clears. With rotation, this must
-	// converge: each pass dispatches the ready tasks it reaches (a blocked
-	// task whose gate satisfied flips ready→dispatch in the same pass) and
-	// rotates the blocked re-evaluation window, so the full backlog clears
-	// in bounded passes. Before the rotation fix, a backlog larger than the
-	// batch permanently re-scanned the same oldest rows and never cleared.
+	// Run scans until the whole backlog clears.
 	deadline := 40 // scans
 	cleared := 0
 	for pass := 0; pass < deadline && cleared < n; pass++ {
@@ -382,9 +353,8 @@ func TestStandaloneBlockedScanRotationClearsBacklog(t *testing.T) {
 	}
 }
 
-// TestStandaloneBlockedRotationWindowAdvance pins the rotation cursor
-// math directly (no DB): a window of budget over n blocked items advances
-// so a second call covers the next chunk.
+// TestStandaloneBlockedRotationWindowAdvance pins the rotation cursor math directly (no DB): a
+// window of budget over n blocked items advances so a second call covers the next chunk.
 func TestStandaloneBlockedRotationWindowAdvance(t *testing.T) {
 	rec := &TaskReconciler{}
 	n := 20

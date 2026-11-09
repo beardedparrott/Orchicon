@@ -30,23 +30,12 @@ import (
 	"strings"
 )
 
-// baseRefCandidates is the CONFIGURED DEFAULT step of the chain: the branch names this platform treats as a
-// repository's integration base, in order, checked on the local refs and then on origin.
-//
-// It is the same convention the git rules injected into every git-backed worker's prompt assume ("work on a
-// branch created off `develop`"), so keeping it in the chain preserves the behaviour every existing project
-// already relies on. It is named here rather than buried so the "configured default" step of the resolution
-// order has one home.
+// baseRefCandidates is the CONFIGURED DEFAULT step of the chain: the branch names this platform
+// treats as a repository's integration base, in order, checked on the local refs and then on
+// origin.
 var baseRefCandidates = []string{"develop", "main", "master"}
 
 // resolveBaseRefWithProvenance resolves the ref a new run branch is cut from, and reports HOW.
-//
-// It returns "", nil for exactly one legitimate case: the repository is on a DETACHED HEAD and HEAD itself
-// resolves to a commit. Empty then means "start at HEAD", which is what every caller already does with an
-// empty base — and it is a real state (a detached checkout), not a failure to resolve.
-//
-// A non-nil error means NO candidate could be confirmed, and it names every attempt so the operator (and the
-// run record) says what was tried rather than just `exit status 128`.
 func (r *WorktreeReconciler) resolveBaseRefWithProvenance(ctx context.Context, projectDir string) (string, string, error) {
 	var attempts []string
 	fail := func(why string) string {
@@ -55,9 +44,6 @@ func (r *WorktreeReconciler) resolveBaseRefWithProvenance(ctx context.Context, p
 	}
 
 	// STEP 1 — the remote's own default, read as a SYMREF.
-	//
-	// symbolic-ref, never rev-parse: rev-parse echoes `origin/HEAD` back when the symref is absent, which is
-	// the trap that produced "invalid reference: origin/HEAD" on a hand-built repository.
 	if out, err := runGit(ctx, projectDir, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"); err == nil {
 		ref := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(out), "refs/remotes/"))
 		if ref != "" {
@@ -115,9 +101,8 @@ func (r *WorktreeReconciler) resolveBaseRefWithProvenance(ctx context.Context, p
 		projectDir, strings.Join(attempts, "; "))
 }
 
-// resolveBaseRef keeps the original single-value shape for callers that treat an unresolvable base as "start
-// at HEAD". It is now a thin wrapper so there is ONE resolution implementation, and it logs the failure
-// rather than silently collapsing it — the diagnosis that was missing before.
+// resolveBaseRef keeps the original single-value shape for callers that treat an unresolvable base
+// as "start at HEAD".
 func (r *WorktreeReconciler) resolveBaseRef(ctx context.Context, projectDir string) string {
 	ref, _, err := r.resolveBaseRefWithProvenance(ctx, projectDir)
 	if err != nil {
@@ -129,9 +114,8 @@ func (r *WorktreeReconciler) resolveBaseRef(ctx context.Context, projectDir stri
 	return ref
 }
 
-// refIsCommit is the GUARD the resolver puts in front of every candidate: a ref is only usable as a base if
-// it resolves to a commit. `--verify` is what makes a name that merely LOOKS like a ref (the echoed
-// `origin/HEAD`, a symref to a deleted branch) fail here instead of inside `git worktree add`.
+// refIsCommit is the GUARD the resolver puts in front of every candidate: a ref is only usable as a
+// base if it resolves to a commit.
 func (r *WorktreeReconciler) refIsCommit(ctx context.Context, projectDir, ref string) (bool, error) {
 	if strings.TrimSpace(ref) == "" {
 		return false, errors.New("empty ref")
@@ -143,15 +127,8 @@ func (r *WorktreeReconciler) refIsCommit(ctx context.Context, projectDir, ref st
 }
 
 // remoteHeadBranch parses `git remote show origin` for the branch the remote would check out.
-//
-// The output is human-readable and localised by git's own settings, so this reads the ONE stable shape —
-// a `HEAD branch: <name>` line — and treats anything else (including git's "(unknown)") as no answer. A
-// failure to reach the remote (offline, no credentials) is not an error here: it is simply the next step of
-// the chain's turn, and the attempts list records it.
 func (r *WorktreeReconciler) remoteHeadBranch(ctx context.Context, projectDir string) string {
-	// ASKING A REMOTE THAT DOES NOT EXIST IS A WASTED ROUND TRIP. `remote show` reaches the remote when
-	// origin is configured, and this resolver runs on EVERY provision — so on a local-only repository it was
-	// a doomed attempt per run. A cheap local pre-check first.
+	// ASKING A REMOTE THAT DOES NOT EXIST IS A WASTED ROUND TRIP.
 	if !r.hasOriginRemote(ctx, projectDir) {
 		return ""
 	}
@@ -176,20 +153,8 @@ func (r *WorktreeReconciler) remoteHeadBranch(ctx context.Context, projectDir st
 	return ""
 }
 
-// resolveBaseRefForProvisioning resolves the base a run branch is cut from, and REFUSES to hand back a base that
-// would give the worker an EMPTY worktree.
-//
-// WHY THIS EXISTS. resolveBaseRef returns "" for two very different situations — a legitimate DETACHED HEAD, and
-// a genuine resolution failure — and addWorktree treats "" as "start at HEAD". When HEAD is an unborn branch or
-// an empty root commit, that produces an EMPTY worktree. Reported exactly so: "a run was provisioned an empty
-// worktree — its branch was created at the empty root commit 558d52e while develop was already at f421a7c", and
-// the worker had to run `git reset --hard develop` before it could start.
-//
-// A worker that must repair its own provisioned state has been handed an unfinished hand-off, and a silent empty
-// worktree is the most expensive way to fail: the run consumes its budget discovering there is nothing there.
-//
-// It returns ok=false with a reason the caller can put on the run, rather than a base that cannot work. The
-// DETACHED-HEAD case stays legitimate — it is only refused when the tree it would check out is actually empty.
+// resolveBaseRefForProvisioning resolves the base a run branch is cut from, and REFUSES to hand
+// back a base that would give the worker an EMPTY worktree.
 func (r *WorktreeReconciler) resolveBaseRefForProvisioning(ctx context.Context, projectDir string) (string, bool, string) {
 	ref, how, err := r.resolveBaseRefWithProvenance(ctx, projectDir)
 	if err != nil {
@@ -210,9 +175,6 @@ func (r *WorktreeReconciler) resolveBaseRefForProvisioning(ctx context.Context, 
 }
 
 // baseTreeIsEmpty reports whether the commit a base ref names has no entries.
-//
-// An EMPTY STRING MEANS HEAD, matching addWorktree's own convention — so the detached case is checked against the
-// commit it would actually check out.
 func (r *WorktreeReconciler) baseTreeIsEmpty(ctx context.Context, projectDir, ref string) (bool, error) {
 	target := ref
 	if strings.TrimSpace(target) == "" {

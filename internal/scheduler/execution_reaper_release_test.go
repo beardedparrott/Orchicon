@@ -12,16 +12,6 @@ import (
 )
 
 // The safety rule of the operator-invoked release.
-//
-// ReleaseStuckExecutions exists so a project pinned at its dispatch cap can be
-// freed without waiting for the reaper's next tick. That is only safe if it
-// cannot release an execution that is ALIVE — otherwise the button becomes a
-// way to kill healthy work with one click, which is strictly worse than the
-// wedge it fixes.
-//
-// These cases pin that directly, using the reaper's own rule with the pool
-// absent: reapOne is the single decision point both the tick and the release
-// call, so pinning it pins both.
 func TestReapOneOnlyReleasesExecutionsTheProbeSaysAreDead(t *testing.T) {
 	nopLog := slog.New(slog.NewTextHandler(io.Discard, nil))
 	started := time.Now().Add(-3 * time.Hour) // well past any grace window
@@ -100,9 +90,8 @@ func TestReapOneOnlyReleasesExecutionsTheProbeSaysAreDead(t *testing.T) {
 	}
 }
 
-// The unattended tick must NEVER take the recorded-verdict waiver: it acts with
-// nobody watching, so it must always see a sustained not-alive streak. This is
-// what keeps the waiver a property of the attended path alone.
+// The unattended tick must NEVER take the recorded-verdict waiver: it acts with nobody watching, so
+// it must always see a sustained not-alive streak.
 func TestPeriodicTickNeverTakesTheRecordedVerdictWaiver(t *testing.T) {
 	nopLog := slog.New(slog.NewTextHandler(io.Discard, nil))
 	started := time.Now().Add(-3 * time.Hour)

@@ -36,10 +36,8 @@ func autoStartTestEnv(t *testing.T) (*db.Pool, *Service, context.Context, string
 	return pool, s, ctx, proj
 }
 
-// forceAutoStartState pins a row's status + auto_start_workflow directly,
-// simulating both terminal statuses and the legacy stale rows (stored
-// auto_start_workflow=true created before migration 20260807120000 set
-// the create default to false) that the API cannot produce directly.
+// forceAutoStartState pins a row's status + auto_start_workflow directly, simulating both terminal
+// statuses and the legacy stale rows (stored auto_start_workflow=true created before migration.
 func forceAutoStartState(t *testing.T, pool *db.Pool, itemID, status string, autoStart bool) {
 	t.Helper()
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -99,10 +97,8 @@ func TestIsStartableForAutoStart(t *testing.T) {
 	}
 }
 
-// TestUpdateAutoStartDeclinedOnCancelledLeafDB — the reported bug: a
-// legacy row with stored auto_start_workflow=true whose edit binds a
-// workflow_id must NOT be re-armed from cancelled. The binding is saved;
-// nothing starts; no warning (the user never asked).
+// TestUpdateAutoStartDeclinedOnCancelledLeafDB — the reported bug: a legacy row with stored
+// auto_start_workflow=true whose edit binds a workflow_id must NOT be re-armed from cancelled.
 func TestUpdateAutoStartDeclinedOnCancelledLeafDB(t *testing.T) {
 	pool, s, ctx, proj := autoStartTestEnv(t)
 	wf := seedPublishedWorkflowForTest(t, pool, proj, true)
@@ -132,15 +128,6 @@ func TestUpdateAutoStartDeclinedOnCancelledLeafDB(t *testing.T) {
 }
 
 // TestUpdateAutoStartExplicitFiresFromFailedDB — the operator's item 2, inverted.
-//
-// "if a work item is in cancelled or failed, I can't kick it off or schedule it unless I first edit
-// the work item, set it to pending, save it, then edit it again, then set my auto start. I think
-// setting an auto start on a work item should take no matter what status it is in."
-//
-// An EXPLICIT auto_start_workflow=true on a failed item now starts the bound run. Starting writes
-// status=running unconditionally, so the pre-status was never a correctness requirement — the
-// pre-status gate only ever guarded against STALE state, and the stale-flag rule (requestNamedStart)
-// guards that on its own. No warning: the request was honoured.
 func TestUpdateAutoStartExplicitFiresFromFailedDB(t *testing.T) {
 	pool, s, ctx, proj := autoStartTestEnv(t)
 	wf := seedPublishedWorkflowForTest(t, pool, proj, true)
@@ -167,9 +154,8 @@ func TestUpdateAutoStartExplicitFiresFromFailedDB(t *testing.T) {
 	}
 }
 
-// TestUpdateAutoStartStaleFlagSilentNoFireDB — a stale stored flag on a
-// succeeded row with a bound workflow stays inert under an unrelated edit:
-// silent no-fire, empty warning.
+// TestUpdateAutoStartStaleFlagSilentNoFireDB — a stale stored flag on a succeeded row with a bound
+// workflow stays inert under an unrelated edit: silent no-fire, empty warning.
 func TestUpdateAutoStartStaleFlagSilentNoFireDB(t *testing.T) {
 	pool, s, ctx, proj := autoStartTestEnv(t)
 	wf := seedPublishedWorkflowForTest(t, pool, proj, true)
@@ -197,10 +183,6 @@ func TestUpdateAutoStartStaleFlagSilentNoFireDB(t *testing.T) {
 }
 
 // TestUpdateAutoStartExplicitOverridesSameRequestStatusDB — the same-request edge.
-//
-// An explicit auto_start=true together with a non-startable target status (status=cancelled in this
-// very request, e.g. the edit form saving the item it just cancelled) fires: the explicit gesture
-// outranks the status. The RESULTING status is running, because the start itself asserts that.
 func TestUpdateAutoStartExplicitOverridesSameRequestStatusDB(t *testing.T) {
 	pool, s, ctx, proj := autoStartTestEnv(t)
 	wf := seedPublishedWorkflowForTest(t, pool, proj, true)
@@ -224,14 +206,6 @@ func TestUpdateAutoStartExplicitOverridesSameRequestStatusDB(t *testing.T) {
 }
 
 // TestUpdateAutoStartStaleFlagOnPendingNeverFiresDB — THE LANDMINE, and the operator's own warning.
-//
-// "We have to be careful though to not fire anything off that already has auto or schedule set. It
-// must be done as an action when saving the record only."
-//
-// A pending item carrying a STALE stored auto_start_workflow=true (a legacy row, or a row armed by a
-// previous save) must NOT fire when an unrelated field is edited. Before this rule the stored flag
-// alone drove the fire, so renaming a pending item launched its workflow — the exact hazard the
-// operator named.
 func TestUpdateAutoStartStaleFlagOnPendingNeverFiresDB(t *testing.T) {
 	pool, s, ctx, proj := autoStartTestEnv(t)
 	wf := seedPublishedWorkflowForTest(t, pool, proj, true)
@@ -260,9 +234,8 @@ func TestUpdateAutoStartStaleFlagOnPendingNeverFiresDB(t *testing.T) {
 	}
 }
 
-// TestUpdateAutoStartSequenceParentStillStartsDB — preserved behavior: a
-// startable parent-with-children explicitly armed still fires its SEQUENCE
-// (not a bound-run leaf start).
+// TestUpdateAutoStartSequenceParentStillStartsDB — preserved behavior: a startable
+// parent-with-children explicitly armed still fires its SEQUENCE (not a bound-run leaf start).
 func TestUpdateAutoStartSequenceParentStillStartsDB(t *testing.T) {
 	pool, s, ctx, proj := autoStartTestEnv(t)
 	wf := seedPublishedWorkflowForTest(t, pool, proj, true)

@@ -10,11 +10,8 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-// branchRefRE is the shape every produced branch must satisfy: kebab-case
-// alphanumeric slug + "-" + alnum suffix. Git refs may not contain "..",
-// "@{", "\\", "~", "^", ":", "?", "*", "[", or whitespace, and may not
-// begin/end with "/" or "." or end with "." — the constructor's inputs
-// already rule all of those out, so this is the guard for regressions.
+// branchRefRE is the shape every produced branch must satisfy: kebab-case alphanumeric slug + "-" +
+// alnum suffix.
 var branchRefRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]-[a-z0-9]{16}$`)
 
 func TestRunSuffixUsesEntropyTail(t *testing.T) {
@@ -31,11 +28,8 @@ func TestRunSuffixDefensiveShortID(t *testing.T) {
 	}
 }
 
-// TestBranchNamesDistinctForSameMillisecondRuns is the collision-safety
-// acceptance test: two run IDs armed in the SAME millisecond share the
-// first 10 (timestamp) chars but differ in entropy. The branch constructor
-// must produce distinct branches for them — the whole reason the suffix is
-// runID[10:] (80-bit entropy) and not the timestamp prefix.
+// TestBranchNamesDistinctForSameMillisecondRuns is the collision-safety acceptance test: two run
+// IDs armed in the SAME millisecond share the first 10 (timestamp) chars but differ in entropy.
 func TestBranchNamesDistinctForSameMillisecondRuns(t *testing.T) {
 	ent := ulid.Monotonic(rand.New(rand.NewSource(42)), 0)
 	ts := uint64(0x0168E59FCA) // fixed "now" so both ULIDs share a timestamp
@@ -112,11 +106,8 @@ func TestParseRepoSlug(t *testing.T) {
 	}
 }
 
-// TestSlowPassGateSkipsWithinInterval is the dispatch-stall regression
-// guard: after a slow pass has run, the gate must hold (scan takes the
-// slow_skipped path) so a newly armed pending run never waits behind
-// cleanup; once the interval elapses the gate must release. No DB needed —
-// it exercises the real slowPassDue gate scan() calls.
+// TestSlowPassGateSkipsWithinInterval is the dispatch-stall regression guard: after a slow pass has
+// run, the gate must hold (scan takes the slow_skipped path) so a newly armed pending run never.
 func TestSlowPassGateSkipsWithinInterval(t *testing.T) {
 	r := &WorktreeReconciler{}
 	r.lastSlowPass = time.Now()
@@ -135,10 +126,8 @@ func TestSlowPassGateSkipsWithinInterval(t *testing.T) {
 	}
 }
 
-// TestSlowPassBudgetExpiry is the per-tick cost-cap guard: an already-past
-// deadline must read as expired (sweep loops return early on the first
-// item check and resume next tick) while a fresh slowPassBudget deadline
-// must not. Exercises the real sweepBudgetExpired helper the sweeps call.
+// TestSlowPassBudgetExpiry is the per-tick cost-cap guard: an already-past deadline must read as
+// expired (sweep loops return early on the first item check and resume next tick) while a fresh.
 func TestSlowPassBudgetExpiry(t *testing.T) {
 	if !sweepBudgetExpired(time.Now().Add(-time.Second)) {
 		t.Fatalf("expired budget deadline did not read as expired")

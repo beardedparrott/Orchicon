@@ -2,9 +2,8 @@ package scheduler
 
 import "testing"
 
-// TestResolveImageFromValues covers the one-shot image-agreement rule:
-// empty → base (""), one distinct image wins, duplicates are fine, and
-// two different images conflict (a single container can't serve both).
+// TestResolveImageFromValues covers the one-shot image-agreement rule: empty → base (""), one
+// distinct image wins, duplicates are fine.
 func TestResolveImageFromValues(t *testing.T) {
 	cases := []struct {
 		name    string

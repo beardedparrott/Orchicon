@@ -52,9 +52,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// seedWedgeRunAndStep seeds a running, worktree-skipped workflow run plus one
-// task step run carrying an arbitrary status/result — the minimum pollTaskStep
-// and recoveryDispatchReady need to be driven directly.
+// seedWedgeRunAndStep seeds a running, worktree-skipped workflow run plus one task step run
+// carrying an arbitrary status/result.
 func seedWedgeRunAndStep(t *testing.T, pool *db.Pool, projectID, status string, result map[string]any) (db.WorkflowRunRow, db.WorkflowStepRunRow, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -132,10 +131,8 @@ func seedWedgeRunAndStep(t *testing.T, pool *db.Pool, projectID, status string, 
 	return run, step, ticket.ID
 }
 
-// TestProjectCapDeferralStampsWaitNote: the PROJECT max-concurrent-runs gate
-// must leave the same evidence the per-WORKER gate leaves. Without it the
-// deferral is indistinguishable from a lost dispatch downstream — the first of
-// the three wrong assumptions, and the one that made the other two reachable.
+// TestProjectCapDeferralStampsWaitNote: the PROJECT max-concurrent-runs gate must leave the same
+// evidence the per-WORKER gate leaves.
 func TestProjectCapDeferralStampsWaitNote(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env := newSequenceTestEnv(t)
@@ -172,11 +169,8 @@ func TestProjectCapDeferralStampsWaitNote(t *testing.T) {
 	}
 }
 
-// TestDeferredStepReturnsToReadyInsteadOfRecovering: a task step with no
-// execution link is a DEFERRED dispatch, not a failure. It must go back to
-// `ready` (the state the dispatch section re-attempts) and must NOT be routed to
-// the execution-keyed recovery engine — which is what turned a healthy waiting
-// run into a permanent wedge.
+// TestDeferredStepReturnsToReadyInsteadOfRecovering: a task step with no execution link is a
+// DEFERRED dispatch, not a failure.
 func TestDeferredStepReturnsToReadyInsteadOfRecovering(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env := newSequenceTestEnv(t)
@@ -219,19 +213,14 @@ func TestDeferredStepReturnsToReadyInsteadOfRecovering(t *testing.T) {
 }
 
 // TestUnresumableRecoveringStepFailsLoudPastTheStallWindow: the safety valve.
-// A summarize_restart step with no dead-execution identity can never be
-// resumed, so recoveryDispatchReady's hold must be BOUNDED. It used to hold
-// silently and forever, which is precisely how the run sat "running" with the
-// UI reading "waiting for dispatch" and nothing in the log.
 func TestUnresumableRecoveringStepFailsLoudPastTheStallWindow(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
 
 	run, step, _ := seedWedgeRunAndStep(t, env.pool, env.proj.ID, domain.StepRunRecovering, map[string]any{
-		// summarize_restart + NO _failed_execution_id: the state a capacity
-		// deferral misrouted into recovery leaves behind. There is no dead
-		// execution to find, so no recovery can ever materialize.
+		// summarize_restart + NO _failed_execution_id: the state a capacity deferral misrouted into
+		// recovery leaves behind.
 		"_recovery_strategy": "summarize_restart",
 		"_recovering_since":  time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano),
 	})
@@ -243,10 +232,7 @@ func TestUnresumableRecoveringStepFailsLoudPastTheStallWindow(t *testing.T) {
 	}
 	defer ttx.Rollback(ctx)
 
-	// Inside the stall window: hold, quietly. A recovery trigger deferred to
-	// post-commit can still land, so holding here is correct. (The window must
-	// comfortably exceed the age of `_recovering_since` below — the valve keys
-	// off the step's OWN recovering age, not the run's.)
+	// Inside the stall window: hold, quietly.
 	t.Setenv("ORCHICON_RECOVERING_STALL_TIMEOUT", "24h")
 	ready, err := rc.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, run, step)
 	if ready {
@@ -272,21 +258,8 @@ func TestUnresumableRecoveringStepFailsLoudPastTheStallWindow(t *testing.T) {
 	}
 }
 
-// TestReaperListingCoversEverySlotHoldingStatus pins the invariant that made
-// the wedge PERMANENT rather than merely slow.
-//
-// The dispatch guard counts every execution in activeExecutionStatuses —
-// dispatching/running/healthy/stalled/unhealthy/terminating — so each of them
-// HOLDS A DISPATCH SLOT. The reaper, the thing that releases slots, listed only
-// ('running','healthy','dispatching'). An execution that a liveness probe moved
-// to `unhealthy` or `stalled` therefore held a slot while being INVISIBLE to
-// the reaper: nothing could ever release it. Field evidence: ten such
-// executions, the oldest 2026-09-06, pinning a project at 10/10 — and once the
-// cap is pinned, every dispatch is deferred, which is how the run in this file's
-// header ended up "waiting for dispatch" forever.
-//
-// The assertion is the two definitions agreeing, because that is the property
-// that was violated — not the enumeration of any particular status.
+// TestReaperListingCoversEverySlotHoldingStatus pins the invariant that made the wedge PERMANENT
+// rather than merely slow.
 func TestReaperListingCoversEverySlotHoldingStatus(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env := newSequenceTestEnv(t)

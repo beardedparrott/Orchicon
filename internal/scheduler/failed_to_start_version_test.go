@@ -72,9 +72,6 @@ func TestTheMarkReReadsTheVersionBeforeUpdating(t *testing.T) {
 }
 
 // TestTheMarkLeavesATerminalRowAlone — the guard that keeps this from overwriting history.
-//
-// An execution that already reached a terminal state was decided by something else. Writing failed_to_start over
-// it would replace a real outcome (failed, terminated) with a shallower one.
 func TestTheMarkLeavesATerminalRowAlone(t *testing.T) {
 	for _, status := range []string{"succeeded", "failed", "failed_to_start", "terminated"} {
 		if !terminalExecutionStatus(status) {

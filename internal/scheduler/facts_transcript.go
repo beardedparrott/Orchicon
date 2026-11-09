@@ -9,18 +9,12 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// factsTranscriptMaxParts bounds how many transcript tail parts (newest)
-// are scanned for terminal-time facts extraction. Cheap + bounded (far
-// smaller than the recovery tail) because facts extraction only needs the
-// worker's FINAL assistant block.
+// factsTranscriptMaxParts bounds how many transcript tail parts (newest) are scanned for
+// terminal-time facts extraction.
 const factsTranscriptMaxParts = 200
 
-// extractFactsFromTranscript scans the persisted session-parts tail (which
-// both the opencode and native adapters write to execution_session_parts)
-// for the worker's assistant `text` part(s) and runs extractFactsLearned
-// over them. Mechanical and cheap — no model call. Returns an empty slice
-// when there is nothing to extract (empty transcript, no text parts, no
-// FACTS-prefixed lines) so callers degrade gracefully.
+// extractFactsFromTranscript scans the persisted session-parts tail (which both the opencode and
+// native adapters write to execution_session_parts) for the worker's assistant `text` part(s).
 func extractFactsFromTranscript(parts []db.SessionPart) []string {
 	var textParts []string
 	for _, p := range parts {
@@ -58,9 +52,8 @@ func extractFactsFromTranscript(parts []db.SessionPart) []string {
 	return facts
 }
 
-// stepAttributedFact renders one facts line carrying (when present) the
-// originating step name: `FACTS LEARNED (from <step>): <fact>`, falling back
-// to the plain `FACTS LEARNED: <fact>` marker.
+// stepAttributedFact renders one facts line carrying (when present) the originating step name:
+// `FACTS LEARNED (from <step>): <fact>`, falling back to the plain `FACTS LEARNED: <fact>` marker.
 func stepAttributedFact(stepName, fact string) string {
 	if stepName != "" {
 		return "FACTS LEARNED (from " + stepName + "): " + fact
@@ -68,12 +61,8 @@ func stepAttributedFact(stepName, fact string) string {
 	return "FACTS LEARNED: " + fact
 }
 
-// appendFactsToOrchiconFile appends step-attributed facts to
-// .orchicon/<run>/facts_learned, deduplicating against both the existing
-// file content and anything already appended in this call (exact-string
-// equality after whitespace trim). Best-effort: a filesystem error is
-// returned for the caller to log. Re-calling on the same file is idempotent
-// per fact string (terminal idempotency).
+// appendFactsToOrchiconFile appends step-attributed facts to .orchicon/<run>/facts_learned,
+// deduplicating against both the existing file content and anything already appended in this call.
 func appendFactsToOrchiconFile(orchDir, stepName string, facts []string) error {
 	if len(facts) == 0 {
 		return nil

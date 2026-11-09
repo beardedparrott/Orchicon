@@ -80,12 +80,9 @@ func TestOnlyExactStringsSelectANonDefaultPolicy(t *testing.T) {
 }
 
 // The whole point of the change: no tenant identifier may steer engine behaviour.
-// This guards the SPECIFIC regression class the hardcode represented — a future edit
-// quietly reintroducing it — not just the one call site.
 func TestEngineHoldsNoTenantStepIDs(t *testing.T) {
-	// 305-309 legitimately carries `requiresPRStep`, which still recognises the
-	// canonical devops step by name; that is a SEPARATE decision (PR requirement) and
-	// its own follow-up. So this asserts the loop-decision routing path specifically.
+	// 305-309 legitimately carries `requiresPRStep`, which still recognises the canonical devops step
+	// by name; that is a SEPARATE decision (PR requirement) and its own follow-up.
 	src, err := os.ReadFile("workflow_reconciler.go")
 	if err != nil {
 		t.Skipf("source not readable: %v", err)
@@ -101,10 +98,7 @@ func TestEngineHoldsNoTenantStepIDs(t *testing.T) {
 	if end := strings.Index(body, "case domain.StepKindEnd:"); end > 0 {
 		body = body[:end]
 	}
-	// COMMENTS ARE STRIPPED FIRST. The comment above the policy deliberately names the
-	// ids it replaced, to explain the regression, and a guard that flags its own
-	// documentation is worse than no guard: it trains the reader to ignore it. What
-	// matters is the CODE — a comparison against a tenant id.
+	// COMMENTS ARE STRIPPED FIRST.
 	var code strings.Builder
 	for _, line := range strings.Split(body, "\n") {
 		if i := strings.Index(line, "//"); i >= 0 {

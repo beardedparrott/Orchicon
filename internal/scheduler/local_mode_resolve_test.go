@@ -67,10 +67,8 @@ func TestManifestNeverCarriesTheEmptyExecutionMode(t *testing.T) {
 // pstr avoids redeclaring the package's strPtr.
 func pstr(s string) *string { return &s }
 
-// resolvedModeForTest mirrors db.effectiveExecutionModeValue's contract for the
-// four cases that matter here. It exists so the table above is readable without
-// exporting db internals; the SOURCE-SHAPE test below is the one that guards the
-// real defect, and db's own execution_mode_test.go guards the precedence itself.
+// resolvedModeForTest mirrors db.effectiveExecutionModeValue's contract for the four cases that
+// matter here.
 func resolvedModeForTest(item *string, project string) string {
 	if item != nil {
 		switch strings.TrimSpace(*item) {
@@ -89,16 +87,8 @@ func resolvedModeForTest(item *string, project string) string {
 	return db.DefaultExecutionMode
 }
 
-// TestStartExecutionComputesTheModeUnconditionally is the SOURCE-SHAPE test: the
-// defect was that the resolve sat inside `if task.WorkflowRunID != ""`. A unit
-// test cannot reach startExecution without a pool and a database, so this pins
-// the shape directly — and it is the assertion that actually failed before the
-// fix.
-//
-// It reads the statement that follows the declaration and requires the
-// unconditional assignment. If someone moves the resolve back inside a
-// conditional, the manifest starts carrying "runtime" for every run-bound-less
-// execution again, and this test says so by name.
+// TestStartExecutionComputesTheModeUnconditionally is the SOURCE-SHAPE test: the defect was that
+// the resolve sat inside `if task.WorkflowRunID != ""`.
 func TestStartExecutionComputesTheModeUnconditionally(t *testing.T) {
 	src, err := os.ReadFile("reconciler.go")
 	if err != nil {

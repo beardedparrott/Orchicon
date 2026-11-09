@@ -20,10 +20,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// TestFoldRecoverySummaryToFacts verifies foldRecoverySummaryToFacts writes
-// the recovery summary into the bound run's facts_learned as a Recovery-
-// attributed line, is idempotent on re-call, and leaves the worker-emitted
-// lines untouched.
+// TestFoldRecoverySummaryToFacts verifies foldRecoverySummaryToFacts writes the recovery summary
+// into the bound run's facts_learned as a Recovery- attributed line, is idempotent on re-call.
 func TestFoldRecoverySummaryToFacts(t *testing.T) {
 	if os.Getenv("ORCHICON_TEST_DSN") == "" {
 		t.Skip("ORCHICON_TEST_DSN not set; skipping DB-backed recovery fold test")
@@ -52,9 +50,7 @@ func TestFoldRecoverySummaryToFacts(t *testing.T) {
 	engine := newQuietEngine(f.pool)
 	rc := NewReconciler(engine)
 
-	// A resumed recovery carrying a summary (the state progressRecovery's
-	// resume branch reaches). foldRecoverySummaryToFacts resolves project_dir
-	// and the run id from rec.ProjectID / rec.FailedExecutionID.
+	// A resumed recovery carrying a summary (the state progressRecovery's resume branch reaches).
 	const summary = "recovery rebuilt context; root cause was a stall-killed SSE"
 	recRow := db.RecoveryExecutionRow{
 		ID:                db.NewID(),

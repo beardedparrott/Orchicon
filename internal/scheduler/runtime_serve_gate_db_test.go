@@ -1,15 +1,8 @@
 package scheduler
 
-// DB-backed regression test for the adapter-aware runtime-serve gate
-// (the observed bug: an orchicon-only run failed at start with "runtime
-// opencode serve failed to become usable" and sat "waiting for dispatch"
-// until the serve deadline expired). The intended full-run shape lives
-// here, parked behind an explicit skip until a full-run seeding helper
-// exists; the load-bearing logic it would exercise is pinned by
-// TestImageForRun + TestRunNeedsServeAdapterKinds (runtime_serve_gate_test.go)
-// and the standing parity suite (internal/orchicon/parity_matrix_test.go).
-//
-// Skipped without ORCHICON_TEST_DSN (approvalTestPool).
+// DB-backed regression test for the adapter-aware runtime-serve gate (the observed bug: an
+// orchicon-only run failed at start with "runtime opencode serve failed to become usable" and sat
+// "waiting.
 
 import (
 	"context"
@@ -38,13 +31,8 @@ type fmtServeError struct{ msg string }
 
 func (e fmtServeError) Error() string { return e.msg }
 
-// TestNativeOnlyRunSkipsServeGate arms + reconciles a native-only run
-// under a runtime daemon that ALWAYS fails the serve: the run must arm
-// with RuntimeReady=true, carry the resolved image (never the legacy
-// no-serve sentinel — always-container), and progress past the gate
-// WITHOUT the serve probe ever running (failingLifecycle would have
-// failed it at start). This is the end-to-end shape of the adapter-aware
-// gate that keeps local/native mode cheap.
+// TestNativeOnlyRunSkipsServeGate arms + reconciles a native-only run under a runtime daemon that
+// ALWAYS fails the serve: the run must arm with RuntimeReady=true.
 func TestNativeOnlyRunSkipsServeGate(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {
@@ -59,10 +47,8 @@ func TestNativeOnlyRunSkipsServeGate(t *testing.T) {
 		log: slog.New(slog.DiscardHandler), warming: map[string]bool{},
 	}
 
-	// The step ref must resolve to a PUBLISHED worker version whose model ref
-	// is a native (serve-less) one: runNeedsServe is deliberately
-	// CONSERVATIVE about an unresolvable ref (assume a serve), which is the
-	// production rule this test is not about.
+	// The step ref must resolve to a PUBLISHED worker version whose model ref is a native (serve-less)
+	// one: runNeedsServe is deliberately CONSERVATIVE about an unresolvable ref (assume a serve).
 	ttxW, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatal(err)

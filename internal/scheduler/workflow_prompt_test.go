@@ -10,11 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
-// TestWriteCappedText_Under exercises the small-input path: the body
-// fits under the cap and is emitted verbatim, with a single trailing
-// newline. Worker prompts rely on this guarantee for short
-// descriptions — if the trailing newline disappears, downstream
-// sections can smush together.
+// TestWriteCappedText_Under exercises the small-input path: the body fits under the cap and is
+// emitted verbatim, with a single trailing newline.
 func TestWriteCappedText_Under(t *testing.T) {
 	var sb strings.Builder
 	r := &WorkflowReconciler{}
@@ -28,10 +25,7 @@ func TestWriteCappedText_Under(t *testing.T) {
 	}
 }
 
-// TestWriteCappedText_Over exercises the truncation path. The body
-// exceeds the cap and must be cut at a sensible boundary (last
-// newline before cap, never mid-word for the chosen cut strategy)
-// with a clear marker pointing the worker to the canonical summary.
+// TestWriteCappedText_Over exercises the truncation path.
 func TestWriteCappedText_Over(t *testing.T) {
 	body := strings.Repeat("lorem ipsum dolor sit amet\n", 500) // ~13K
 	var sb strings.Builder
@@ -44,28 +38,20 @@ func TestWriteCappedText_Over(t *testing.T) {
 	if !strings.Contains(got, "ORCHICON WORKER SUMMARY") {
 		t.Errorf("truncation marker should reference the summary, got: %q", got)
 	}
-	// The body must end on a complete line, never mid-line, even
-	// after the cut. The last data line in the output is the one
-	// immediately before the marker (\n…[truncated — ...]).
+	// The body must end on a complete line, never mid-line, even after the cut.
 	cut := strings.Index(got, "…[truncated")
 	if cut < 0 {
 		t.Fatal("missing truncation marker")
 	}
-	// Everything before the marker is body + the trailing newline
-	// of the cut line. The character just before the marker is
-	// therefore a newline (the cut landed on a line boundary).
+	// Everything before the marker is body + the trailing newline of the cut line.
 	pre := got[:cut]
 	if !strings.HasSuffix(pre, "\n") {
 		t.Errorf("expected cut to land on a newline, got tail: %q", pre[len(pre)-40:])
 	}
 }
 
-// TestWriteCappedText_NewlineBoundary verifies the cut strategy
-// prefers the last newline over a hard byte-cut so we never slice
-// a word in half. The input is a single line of 5000 chars (no
-// newlines) and the cap is 1024: the cap must trigger, the body
-// emits up to 1024 chars (no newline available), and the marker
-// follows.
+// TestWriteCappedText_NewlineBoundary verifies the cut strategy prefers the last newline over a
+// hard byte-cut so we never slice a word in half.
 func TestWriteCappedText_NoNewlines(t *testing.T) {
 	body := strings.Repeat("a", 5000)
 	var sb strings.Builder
@@ -75,18 +61,14 @@ func TestWriteCappedText_NoNewlines(t *testing.T) {
 	if !strings.Contains(got, "truncated") {
 		t.Errorf("expected truncation marker for huge single-line body, got: %q", got[:200])
 	}
-	// No-newline fallback: the cap is the hard cut. The body chunk
-	// should be at most cap bytes (plus a trailing newline before
-	// the marker).
+	// No-newline fallback: the cap is the hard cut.
 	pre := strings.SplitN(got, "\n…", 2)[0]
 	if len(pre) > 2000 {
 		t.Errorf("body chunk unexpectedly long: %d", len(pre))
 	}
 }
 
-// TestStepKindLabel covers the human-readable mapping for every kind
-// the workflow editor exposes. A regression here would change every
-// timeline header in every worker prompt.
+// TestStepKindLabel covers the human-readable mapping for every kind the workflow editor exposes.
 func TestStepKindLabel(t *testing.T) {
 	cases := map[string]string{
 		"task":      "task",
@@ -105,10 +87,8 @@ func TestStepKindLabel(t *testing.T) {
 	}
 }
 
-// TestRuntimeEnvironmentBlock verifies the machine-generated "## Runtime
-// environment" section: it names the resolved image, states the rootless
-// no-apt ground truth, and documents the rootless system-library escape
-// hatch so workers stop empirically probing the container.
+// TestRuntimeEnvironmentBlock verifies the machine-generated "## Runtime environment" section: it
+// names the resolved image, states the rootless no-apt ground truth.
 func TestRuntimeEnvironmentBlock(t *testing.T) {
 	got := runtimeEnvironmentBlock("pyside6-gui:latest")
 	for _, want := range []string{
@@ -138,10 +118,8 @@ func TestRuntimeEnvironmentBlockEmptyImage(t *testing.T) {
 	}
 }
 
-// TestStablePromptPrefixSameImageIdentical verifies the stable prompt prefix
-// is built ONLY from shared constants (identity + safety + efficiency +
-// runtime env): two prefixes for the same runtime image must be byte-identical,
-// and a different image only changes the image label.
+// TestStablePromptPrefixSameImageIdentical verifies the stable prompt prefix is built ONLY from
+// shared constants (identity + safety + efficiency + runtime env).
 func TestStablePromptPrefixSameImageIdentical(t *testing.T) {
 	a := db.StablePromptPrefix("orchicon-dev:latest", "")
 	b := db.StablePromptPrefix("orchicon-dev:latest", "")
@@ -153,11 +131,9 @@ func TestStablePromptPrefixSameImageIdentical(t *testing.T) {
 	}
 }
 
-// TestCompositeStablePrefixSharedAcrossWorkers verifies the acceptance
-// criterion for prompt caching: two different workers' composite prompts share
-// a common prefix of at least ~1k tokens (~4 chars/token), built from the
-// shared identity/safety/efficiency/runtime-env blocks, with the role-specific
-// content strictly AFTER the prefix.
+// TestCompositeStablePrefixSharedAcrossWorkers verifies the acceptance criterion for prompt
+// caching: two different workers' composite prompts share a common prefix of at least ~1k tokens
+// (~4.
 func TestCompositeStablePrefixSharedAcrossWorkers(t *testing.T) {
 	ctx := context.Background()
 	// No ProjectID/ContextFiles → buildCompositePrompt never touches the tx
@@ -216,13 +192,8 @@ func TestCompositeStablePrefixSharedAcrossWorkers(t *testing.T) {
 	}
 }
 
-// TestCompositePromptTodoListDirectives verifies every worker's composite
-// prompt carries the Todo list guidance block in the stable prefix — the
-// todowrite tool is available in the opencode runtime toolset, and the
-// prompt must tell the worker to use it proactively AND incrementally
-// (acceptance: proactive use for 3+ steps, one in_progress at a time,
-// immediate completion, full-list replacement semantics, per-turn
-// incremental maintenance so the live UI panel reflects progress).
+// TestCompositePromptTodoListDirectives verifies every worker's composite prompt carries the Todo
+// list guidance block in the stable prefix.
 func TestCompositePromptTodoListDirectives(t *testing.T) {
 	ctx := context.Background()
 	item := db.WorkItemRow{Title: "Todo directives", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
@@ -250,10 +221,8 @@ func TestCompositePromptTodoListDirectives(t *testing.T) {
 	}
 }
 
-// TestCompositePromptEfficiencyAndBatchingDirectives verifies every worker's
-// composite prompt carries the tool-output-discipline and tool-call-batching
-// directives (acceptance: explicit minimize-tool-output + batch-tool-calls
-// instructions, and the "Verify, don't assume" guardrail survives).
+// TestCompositePromptEfficiencyAndBatchingDirectives verifies every worker's composite prompt
+// carries the tool-output-discipline and tool-call-batching directives (acceptance.
 func TestCompositePromptEfficiencyAndBatchingDirectives(t *testing.T) {
 	ctx := context.Background()
 	item := db.WorkItemRow{Title: "Efficiency directives", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
@@ -278,12 +247,8 @@ func TestCompositePromptEfficiencyAndBatchingDirectives(t *testing.T) {
 	}
 }
 
-// TestCompositePromptStepOutputDiscipline verifies every worker's composite
-// prompt carries the step-output contract in the stable prefix: gather
-// context in one batched pass, deliver the decision + delta (not the
-// verification narrative), and verify once then stop. This is the
-// turns-to-success lever — each tool call re-sends the whole conversation, so
-// the number of turns dominates cost more than output size.
+// TestCompositePromptStepOutputDiscipline verifies every worker's composite prompt carries the
+// step-output contract in the stable prefix: gather context in one batched pass.
 func TestCompositePromptStepOutputDiscipline(t *testing.T) {
 	ctx := context.Background()
 	item := db.WorkItemRow{Title: "Step output discipline", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
@@ -305,10 +270,9 @@ func TestCompositePromptStepOutputDiscipline(t *testing.T) {
 	}
 }
 
-// TestCompositePromptNoEmbeddedFactsBlock verifies the embedded
-// "## Facts learned (this run)" prompt block is gone — the
-// .orchicon/<run>/facts_learned file is now the single source of established
-// facts, and the "read facts_learned" instruction is retained.
+// TestCompositePromptNoEmbeddedFactsBlock verifies the embedded "## Facts learned (this run)"
+// prompt block is gone — the .orchicon/<run>/facts_learned file is now the single source of
+// established.
 func TestCompositePromptNoEmbeddedFactsBlock(t *testing.T) {
 	ctx := context.Background()
 	item := db.WorkItemRow{Title: "Facts dedup", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
@@ -336,13 +300,8 @@ func TestCompositePromptNoEmbeddedFactsBlock(t *testing.T) {
 	}
 }
 
-// TestCompositePromptGitGuidanceForBareWorker verifies the per-run git/branch
-// guidance gating (the non-repo in-place fallback): a run with no worktree
-// (worktree_status absent/empty) gets the in-place block and is NEVER told a
-// branch exists; a git-backed run (ready + branch) gets the develop-first
-// branch block naming its recorded branch. A bare custom worker (empty
-// Role/Skills/Behavior/AgentsMD) must not be told to work on a branch when
-// there is none — in BOTH the workflow composite and the standalone composite.
+// TestCompositePromptGitGuidanceForBareWorker verifies the per-run git/branch guidance gating (the
+// non-repo in-place fallback).
 func TestCompositePromptGitGuidanceForBareWorker(t *testing.T) {
 	ctx := context.Background()
 	item := db.WorkItemRow{Title: "Branch discipline", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
@@ -374,36 +333,28 @@ func TestCompositePromptGitGuidanceForBareWorker(t *testing.T) {
 	}
 }
 
-// TestCompositePromptGitGuidanceGitBacked verifies the git-backed branch:
-// a run with worktree_status=ready and a recorded branch gets the
-// develop-first discipline block naming that branch — never an in-place note.
+// TestCompositePromptGitGuidanceGitBacked verifies the git-backed branch: a run with
+// worktree_status=ready and a recorded branch gets the develop-first discipline block naming that
+// branch.
 func TestCompositePromptGitGuidanceGitBacked(t *testing.T) {
-	// Simulate a git-backed run: worktree_status=ready, a recorded branch,
-	// and a project dir. The block is keyed purely on these params, so a
-	// direct call with the params set exercises the git path.
-	// THE PR ARM OF THE STRATEGY, named explicitly. This test used db.DefaultGitStrategy, which is "local" —
-	// and the ownership contract belongs to the arm that actually has a PR. A local-strategy project has no
-	// remote, so telling its worker who owns the PR was the reported failure: it tried `gh pr create`, could
-	// not succeed, and reported failure on green work. The block now branches, so this asserts the PR arm and
-	// TestLocalStrategyNeverInstructsAnImpossiblePush asserts the other.
+	// Simulate a git-backed run: worktree_status=ready, a recorded branch, and a project dir.
 	out := db.GitGuidanceBlock(domain.WorktreeReady, "feat/my-branch", "/tmp/proj", "pr")
 	for _, want := range []string{
 		"## Git discipline",
 		"`feat/my-branch`",
 		"branch created off `develop`",
 		"NEVER** commit to, push to, or open a PR into `main` or `develop`",
-		// PR/merge ownership is workflow-agnostic: the block defers to the
-		// step contract instead of hardcoding a DevOps handoff (the Quick
-		// Work all-in-one worker opens + merges its own PR).
+		// PR/merge ownership is workflow-agnostic: the block defers to the step contract instead of
+		// hardcoding a DevOps handoff (the Quick Work all-in-one worker opens + merges its own PR).
 		"defined by YOUR workflow's step contract",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("git guidance missing %q for a git-backed run; got:\n%s", want, out)
 		}
 	}
-	// The hardcoded SDLC-only handoff is gone from the shared block: a
-	// DevOps-less workflow (Quick Work) must never be told that "the DevOps
-	// Engineer step creates the PR" as a standing instruction.
+	// The hardcoded SDLC-only handoff is gone from the shared block: a DevOps-less workflow (Quick
+	// Work) must never be told that "the DevOps Engineer step creates the PR" as a standing
+	// instruction.
 	if strings.Contains(out, "DevOps Engineer step creates the PR") {
 		t.Errorf("git guidance must not hardcode the DevOps PR handoff (workflow-agnostic); got:\n%s", out)
 	}
@@ -412,14 +363,8 @@ func TestCompositePromptGitGuidanceGitBacked(t *testing.T) {
 	}
 }
 
-// TestOrchiconLocationNote verifies the helper that tells workers where
-// the .orchicon/ directory lives: with a projectDir it interpolates the
-// absolute path; without it falls back to a generic note.
-// TestGitGuidanceNoneEphemeral is acceptance criterion #6's composite side:
-// a `none` (ephemeral) run must get the detached-HEAD block that explicitly
-// forbids create/commit/push — even when the run row is ready with a project
-// dir — so the per-dispatch guide supersedes any canned "commit + push to the
-// run branch" text a seeded AGENTS.md may still carry.
+// TestOrchiconLocationNote verifies the helper that tells workers where the .orchicon/ directory
+// lives: with a projectDir it interpolates the absolute path.
 func TestGitGuidanceNoneEphemeral(t *testing.T) {
 	out := db.GitGuidanceBlock(domain.WorktreeReady, "feat/my-branch", "/tmp/proj", "none")
 	for _, want := range []string{
@@ -460,10 +405,8 @@ func TestOrchiconLocationNote(t *testing.T) {
 	}
 }
 
-// TestCompositePromptOrchiconLocationNote asserts that the composite
-// prompt's Instructions section contains the clarifying note that
-// .orchicon/ lives at the project root, not the worktree, and that the
-// old "from the working directory" phrase is gone.
+// TestCompositePromptOrchiconLocationNote asserts that the composite prompt's Instructions section
+// contains the clarifying note that .orchicon/ lives at the project root, not the worktree.
 func TestCompositePromptOrchiconLocationNote(t *testing.T) {
 	ctx := context.Background()
 	item := db.WorkItemRow{Title: "Location note", Status: "pending", RuntimeImage: "orchicon-dev:latest"}

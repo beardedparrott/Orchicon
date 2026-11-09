@@ -8,9 +8,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// TestIsLiveDSN pins the local-mode DSN fence matcher (acceptance E): the
-// three loopback/bridge plane addresses are refused; disposable DSNs and
-// container-local names pass.
+// TestIsLiveDSN pins the local-mode DSN fence matcher (acceptance E): the three loopback/bridge
+// plane addresses are refused; disposable DSNs and container-local names pass.
 func TestIsLiveDSN(t *testing.T) {
 	live := []string{
 		"postgres://orchicon:orchicon@127.0.0.1:5432/orchicon?sslmode=disable",
@@ -59,11 +58,8 @@ func TestIsLiveDSN(t *testing.T) {
 	}
 }
 
-// TestProjectExecutionModeDefaults pins the mode helper's fail-open
-// contract: empty project or read failure degrades to the TENANT DEFAULT
-// (db.DefaultExecutionMode), and an ITEM override is honoured — including a
-// local item inside a runtime project (the fence must follow the item, not the
-// project).
+// TestProjectExecutionModeDefaults pins the mode helper's fail-open contract: empty project or read
+// failure degrades to the TENANT DEFAULT (db.DefaultExecutionMode).
 func TestProjectExecutionModeDefaults(t *testing.T) {
 	// scratchPool applies the migrations, so this test is self-sufficient on a
 	// fresh disposable database (it writes real projects/items below).
@@ -101,9 +97,8 @@ func TestProjectExecutionModeDefaults(t *testing.T) {
 		t.Errorf("local item in runtime project mode = %q, want local", got)
 	}
 
-	// NOT FOUND probes LAST: a failed read inside the tenant tx leaves the
-	// transaction unusable for further writes, and these only assert the
-	// fail-open contract anyway.
+	// NOT FOUND probes LAST: a failed read inside the tenant tx leaves the transaction unusable for
+	// further writes, and these only assert the fail-open contract anyway.
 	if got := executionModeFor(ctx, ttx.Tx, approvalTestTenant, "", ""); got != db.DefaultExecutionMode {
 		t.Errorf("empty project mode = %q, want the tenant default %q", got, db.DefaultExecutionMode)
 	}

@@ -19,9 +19,8 @@ import (
 const (
 	// blockageNone — the run is not waiting on anything.
 	blockageNone = ""
-	// blockageProjectAtCapacity — the project's dispatch cap is fully
-	// occupied, so no step of ANY run in it can dispatch. The ROOT cause; the
-	// per-step wait below is its symptom, so this wins when both hold.
+	// blockageProjectAtCapacity — the project's dispatch cap is fully occupied, so no step of ANY run
+	// in it can dispatch.
 	blockageProjectAtCapacity = "project_at_capacity"
 	// blockageDispatchDeferred — a step is waiting for a dispatch slot
 	// (worker or project capacity) and says so in its `_dispatch_wait` note.
@@ -31,23 +30,17 @@ const (
 	blockageRecoveringUnresumable = "recovering_unresumable"
 	// blockageAwaitingApproval — a human approval step is pending.
 	blockageAwaitingApproval = "awaiting_approval"
-	// blockageStalledUnexplained — running, nothing active, and none of the
-	// causes above identified. Reported rather than hidden: "I don't know" is
-	// a finding, and it is the case that most needs a human.
+	// blockageStalledUnexplained — running, nothing active, and none of the causes above identified.
 	blockageStalledUnexplained = "stalled_unexplained"
 )
 
-// diagnosisInput is the fully-assembled recorded state a diagnosis is drawn
-// from. Keeping it a plain struct (rather than doing the queries inside the
-// classifier) is what makes the classification unit-testable without a
-// database: every rule below is a function of these fields alone.
+// diagnosisInput is the fully-assembled recorded state a diagnosis is drawn from.
 type diagnosisInput struct {
 	runStatus    string
 	runtimeReady bool
 	projectID    string
-	// active and limit are the count the dispatch gate compares and the
-	// EFFECTIVE limit it enforces (project floored by tenant) — the same two
-	// numbers the gate uses, so the card can never disagree with it.
+	// active and limit are the count the dispatch gate compares and the EFFECTIVE limit it enforces
+	// (project floored by tenant) — the same two numbers the gate uses.
 	active int
 	limit  int
 	// stepRuns are the run's step runs; stuck are the project's slot-holding
@@ -55,9 +48,7 @@ type diagnosisInput struct {
 	stepRuns []db.WorkflowStepRunRow
 	stuck    []db.ExecutionRow
 	now      time.Time
-	// errorMessage / errorKind are the run's recorded failure. A terminal-failed run has no blockage to
-	// report — it is finished — but it still has a REASON, and leaving it out made this RPC answer an empty
-	// diagnosis for a run that plainly failed.
+	// errorMessage / errorKind are the run's recorded failure.
 	errorMessage string
 	errorKind    string
 }
@@ -82,10 +73,8 @@ func isWaitingStepRun(sr db.WorkflowStepRunRow) bool {
 	return false
 }
 
-// dispatchWaitNote returns the TaskReconciler's deferral note from a step
-// run's result, if it recorded one. Its presence means the dispatch was
-// DEFERRED for capacity — a healthy dispatch with no slot — which is a very
-// different situation from a dispatch that was attempted and lost.
+// dispatchWaitNote returns the TaskReconciler's deferral note from a step run's result, if it
+// recorded one.
 func dispatchWaitNote(sr db.WorkflowStepRunRow) string {
 	if len(sr.Result) == 0 {
 		return ""
@@ -99,13 +88,6 @@ func dispatchWaitNote(sr db.WorkflowStepRunRow) string {
 }
 
 // buildRunDiagnosis classifies why a run is or is not progressing.
-//
-// This is a REPORT. It reads recorded state and names the cause; it never
-// decides that anything is dead and never clears anything. The strongest claim
-// it makes is "these executions are holding slots while carrying a status the
-// liveness layer already marked not-well", which is exactly what the operator
-// needs to see — and the only thing entitled to act on it is the reaper, via
-// ReleaseStuckExecutions, where its own liveness probe makes the call.
 func buildRunDiagnosis(in diagnosisInput) *apiv1.RunDiagnosis {
 	d := &apiv1.RunDiagnosis{
 		ProjectId:        in.projectID,
@@ -142,9 +124,8 @@ func buildRunDiagnosis(in diagnosisInput) *apiv1.RunDiagnosis {
 		}
 	}
 
-	// The project cap is the ROOT cause when it is full: it stops every run in
-	// the project, and it explains a step's deferral rather than competing with
-	// it. Reported first for that reason.
+	// The project cap is the ROOT cause when it is full: it stops every run in the project, and it
+	// explains a step's deferral rather than competing with it.
 	atCapacity := in.limit > 0 && in.active >= in.limit
 	d.AtCapacity = atCapacity
 	d.StuckExecutions = stuckExecutions(in.stuck, in.now)
@@ -152,9 +133,8 @@ func buildRunDiagnosis(in diagnosisInput) *apiv1.RunDiagnosis {
 
 	switch {
 	case !in.runtimeReady:
-		// Above the cap check: with no usable runtime serve, nothing can
-		// dispatch at all, so freeing a slot would not help — and saying
-		// otherwise would send the operator to the wrong remedy.
+		// Above the cap check: with no usable runtime serve, nothing can dispatch at all, so freeing a slot
+		// would not help — and saying otherwise would send the operator to the wrong remedy.
 		d.Blocked = true
 		d.BlockageKind = blockageDispatchDeferred
 		d.Detail = "The run's runtime is not ready, so no step can dispatch yet. " +
@@ -193,9 +173,8 @@ func buildRunDiagnosis(in diagnosisInput) *apiv1.RunDiagnosis {
 	return d
 }
 
-// clearableSentence phrases the stuck-execution count so an empty list is not
-// read as a failure — zero stuck executions alongside a full cap means the
-// slots are held by LIVE work, which is not something to clear.
+// clearableSentence phrases the stuck-execution count so an empty list is not read as a failure —
+// zero stuck executions alongside a full cap means the slots are held by LIVE work.
 func clearableSentence(n int) string {
 	if n == 0 {
 		return "No executions are marked unhealthy or stalled, so the slots are held by live work " +
@@ -230,12 +209,6 @@ func stuckExecutions(rows []db.ExecutionRow, now time.Time) []*apiv1.StuckExecut
 }
 
 // GetWorkflowRunDiagnosis answers "why is this run not moving?".
-//
-// Read-only, and cheap enough to poll alongside the run: two counts, one small
-// per-project list, and the run's own step runs. Every number it reports comes
-// from the same helpers the dispatch gate and the reaper use — the effective
-// dispatch limit and the active-execution count are literally the gate's own
-// queries — so the card cannot drift from the behaviour it describes.
 func (s *Service) GetWorkflowRunDiagnosis(ctx context.Context, req *connect.Request[apiv1.GetWorkflowRunDiagnosisRequest]) (*connect.Response[apiv1.GetWorkflowRunDiagnosisResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -268,10 +241,7 @@ func (s *Service) GetWorkflowRunDiagnosis(ctx context.Context, req *connect.Requ
 		errorMessage: run.ErrorMessage,
 		errorKind:    run.ErrorKind,
 	}
-	// The project-level facts. A run whose project row is gone is a real state
-	// (the project was deleted under a live run): report the run's own blockage
-	// and simply make no capacity claim, rather than failing the whole
-	// diagnosis — an absent cap is not a full one.
+	// The project-level facts.
 	if run.ProjectID != "" {
 		active, aerr := db.CountActiveExecutionsForProject(ctx, ttx.Tx, tenantID, run.ProjectID)
 		if aerr != nil {

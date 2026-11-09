@@ -23,16 +23,12 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// nonRepoProject builds a DB-backed project whose directory is NOT a git repository — the reported state.
-//
-// It uses the queue harness because the fix is reached through reconcileOne, which needs the pool, the project
-// row and a pending run; the pure-git harness has none of those.
+// nonRepoProject builds a DB-backed project whose directory is NOT a git repository — the reported
+// state.
 func nonRepoProject(t *testing.T, strategy string) (*queueTestEnv, string, string) {
 	t.Helper()
 	env := newQueueTestEnv(t)
-	// OUTSIDE ANY REPOSITORY, deliberately. t.TempDir() lives under the test binary's temp root, which on this
-	// project IS inside the Orchicon checkout — so `git rev-parse` there finds the ENCLOSING repository and the
-	// directory looks git-backed. A fixture that claims "not a repo" has to actually not be in one.
+	// OUTSIDE ANY REPOSITORY, deliberately.
 	dir, err := os.MkdirTemp("", "orchicon-nonrepo-")
 	if err != nil {
 		t.Fatalf("mktemp: %v", err)
@@ -102,9 +98,6 @@ func TestARunInitialisesAMissingRepository(t *testing.T) {
 }
 
 // REQUIREMENT 4: THE MESSAGE IS A NOTICE, NOT A FAILURE.
-//
-// A `none` project is the case that has nothing to repair (no repository is required by design) and therefore
-// takes the notice path directly — and it is also the case that produced the red card.
 func TestANonRepoRunIsANoticeNotAFailure(t *testing.T) {
 	env, runID, _ := nonRepoProject(t, "none")
 	ctx := env.ctx

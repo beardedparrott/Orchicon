@@ -14,14 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
-// RecurringFireReconciler scans for work items with status 'recurring' and
-// a past-due next_run_at, fires the bound workflow (or sequence for parents),
-// and advances next_run_at to the next occurrence. Idempotent: each item is
-// only fired once per due window via optimistic version locking.
-//
-// The scan mirrors scheduled_run_reconciler.go:41-76 but targets the
-// recurring status + next_run_at cursor instead of scheduled status +
-// scheduled_start_at.
+// RecurringFireReconciler scans for work items with status 'recurring' and a past-due next_run_at,
+// fires the bound workflow (or sequence for parents).
 type RecurringFireReconciler struct {
 	pool     *db.Pool
 	log      *slog.Logger
@@ -30,9 +24,9 @@ type RecurringFireReconciler struct {
 	sequence StartSequenceFn           // optional: fires sequence parents with children
 }
 
-// StartWorkflowRunContextFn starts a workflow run for a bound work item and
-// carries an extra run_context map the recurring fire uses to stamp
-// automation provenance into the run (feature 4.1, D3).
+// StartWorkflowRunContextFn starts a workflow run for a bound work item and carries an extra
+// run_context map the recurring fire uses to stamp automation provenance into the run (feature 4.1,
+// D3).
 type StartWorkflowRunContextFn func(ctx context.Context, tenantID, workflowID, projectID, workItemID string, runContext map[string]any) error
 
 // NewRecurringFireReconciler creates a new RecurringFireReconciler.
@@ -40,14 +34,11 @@ func NewRecurringFireReconciler(pool *db.Pool, log *slog.Logger, start StartWork
 	return &RecurringFireReconciler{pool: pool, log: log, start: start}
 }
 
-// SetSequenceStarter injects the sequence fire path used when a recurring
-// work item has children and no bound workflow. Optional — without it a
-// sequence parent is skipped with a warning.
+// SetSequenceStarter injects the sequence fire path used when a recurring work item has children
+// and no bound workflow.
 func (r *RecurringFireReconciler) SetSequenceStarter(fn StartSequenceFn) { r.sequence = fn }
 
-// SetRunContextStarter injects the provenance-aware fire path. Optional —
-// without it the reconciler falls back to the plain start (no provenance
-// block written into the run context).
+// SetRunContextStarter injects the provenance-aware fire path.
 func (r *RecurringFireReconciler) SetRunContextStarter(fn StartWorkflowRunContextFn) { r.startCtx = fn }
 
 func (r *RecurringFireReconciler) Kind() string { return "recurring_fire" }
@@ -66,10 +57,6 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 	defer ttx.Rollback(ctx)
 
 	// Scan for recurring items whose next_run_at is within the due window.
-	// The 5-minute lookback matches scheduled_run_reconciler and covers
-	// reconcile loop jitter. Status = 'recurring' is the idempotency
-	// guard: once fired, the item is either running (workflow in flight)
-	// or has a next_run_at in the future (advanced after fire).
 	q := `SELECT w.id, w.tenant_id, w.workflow_id, w.project_id,
 	        w.recurring_schedule, w.version,
 	        EXISTS (SELECT 1 FROM work_items c
@@ -117,9 +104,6 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 
 	for _, ref := range refs {
 		// Defensive guard: skip items currently in an active run state.
-		// Redundant with the status='recurring' scan predicate (recurring
-		// items are never running/checkpointing/recovering while due), but
-		// protects against races where the status flips between scan and fire.
 		if ref.hasChildren {
 			if r.sequence == nil {
 				r.log.Warn("recurring_fire: sequence parent fired but no sequence starter wired",
@@ -147,10 +131,7 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 			continue
 		}
 		if ref.workflowID == nil || *ref.workflowID == "" {
-			// Standalone dispatch is retired: a recurring leaf with no
-			// workflow can never fire. Fail it LOUDLY — the item status plus
-			// an actionable reason surfaced on the item, and a "failed" row
-			// in the recurring ledger — instead of skipping it silently.
+			// Standalone dispatch is retired: a recurring leaf with no workflow can never fire.
 			reason := fmt.Sprintf("Cannot fire recurring item %q: no workflow is set, so there is nothing to run. Bind a workflow to resume firing.", ref.id)
 			r.log.Error("recurring_fire: recurring leaf with no workflow — failing loudly",
 				"work_item", ref.id)
@@ -166,11 +147,8 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 				"work_item", ref.id, "error", err)
 			continue
 		}
-		// Stamp automation provenance into the run_context so any work item
-		// created during this run is tagged spawned_by (this recurring item)
-		// + the run id and, when outputs_mode=idea, lands in IDEA state
-		// (feature 4.1, D3). Falls back to a plain start when the
-		// provenance-aware starter is not wired.
+		// Stamp automation provenance into the run_context so any work item created during this run is
+		// tagged spawned_by (this recurring item) + the run id and, when outputs_mode=idea.
 		var fireErr error
 		if r.startCtx != nil {
 			fireErr = r.startCtx(ctx, ref.tenantID, *ref.workflowID, ref.projectID, ref.id, map[string]any{
@@ -195,10 +173,8 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 	return reconciler.Result{RequeueAfter: 0}
 }
 
-// advanceNextRunAt computes the next occurrence from the recurring_schedule
-// JSONB and persists it to next_run_at. Uses optimistic version locking
-// (WHERE version = expectedVersion) so concurrent scans for the same item
-// see a version mismatch and skip it — this is the idempotency guard.
+// advanceNextRunAt computes the next occurrence from the recurring_schedule JSONB and persists it
+// to next_run_at.
 func (r *RecurringFireReconciler) advanceNextRunAt(ctx context.Context,
 	tenantID, itemID string, expectedVersion int, scheduleJSON []byte) error {
 
@@ -220,10 +196,8 @@ func (r *RecurringFireReconciler) advanceNextRunAt(ctx context.Context,
 	return ttx.Commit(ctx)
 }
 
-// recordFire writes one recurring_run_history ledger row for a fired item in
-// its own short transaction (independent of the dispatch tx). Best-effort: on
-// a ledger write failure the fire outcome is still consistent (next_run_at was
-// already advanced) and the error is logged — it must never wedge the pass.
+// recordFire writes one recurring_run_history ledger row for a fired item in its own short
+// transaction (independent of the dispatch tx).
 func (r *RecurringFireReconciler) recordFire(ctx context.Context,
 	tenantID, itemID, status, workflowRunID, errMsg string) {
 
@@ -258,11 +232,8 @@ func (r *RecurringFireReconciler) recordFire(ctx context.Context,
 	}
 }
 
-// fireWorkflowRunID reads back the workflow_run_id the just-started run bound
-// to the item (StartWorkflowDirect sets it on the item at dispatch). For a
-// sequence parent StartSequence clears the parent's workflow binding (children
-// each run their own workflows) so this returns "" — the ledger still records
-// the fire fact; the run graph join is per-child.
+// fireWorkflowRunID reads back the workflow_run_id the just-started run bound to the item
+// (StartWorkflowDirect sets it on the item at dispatch).
 func (r *RecurringFireReconciler) fireWorkflowRunID(ctx context.Context, tenantID, itemID string) string {
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -276,9 +247,8 @@ func (r *RecurringFireReconciler) fireWorkflowRunID(ctx context.Context, tenantI
 	return w.WorkflowRunID
 }
 
-// computeRecurringNextRunAt parses a raw recurring_schedule JSONB value and
-// returns the next occurrence at-or-after now. Returns nil when the schedule
-// is empty or unparseable (the caller keeps whatever next_run_at it has).
+// computeRecurringNextRunAt parses a raw recurring_schedule JSONB value and returns the next
+// occurrence at-or-after now.
 func computeRecurringNextRunAt(scheduleJSON []byte, now time.Time) *time.Time {
 	if len(scheduleJSON) == 0 {
 		return nil
@@ -290,11 +260,8 @@ func computeRecurringNextRunAt(scheduleJSON []byte, now time.Time) *time.Time {
 	return workitem.ComputeNextRunAt(&rs, now)
 }
 
-// ensureRecurringNextRun returns a recomputed next_run_at for a recurring
-// item whose cursor was cleared mid-run/cycle (nil next_run_at), so the
-// RecurringFireReconciler always has a due date to pick the item up again.
-// Returns nil when the item is not recurring or the schedule can't be
-// re-computed (the caller keeps whatever it has — field-mask semantics).
+// ensureRecurringNextRun returns a recomputed next_run_at for a recurring item whose cursor was
+// cleared mid-run/cycle (nil next_run_at).
 func ensureRecurringNextRun(scheduleJSON []byte, nextRunAt *time.Time, now time.Time) *time.Time {
 	if len(scheduleJSON) == 0 || nextRunAt != nil {
 		return nil

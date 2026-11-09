@@ -23,9 +23,7 @@ import (
 
 // TestLocalRunRecordsNoImageAndNoReadiness is the reported case, exactly.
 func TestLocalRunRecordsNoImageAndNoReadiness(t *testing.T) {
-	// A local run in a project whose default image RESOLVES perfectly well. Resolution succeeding is precisely
-	// what used to leak onto the row: the value was correct as an INHERITED default and wrong as this run's
-	// image.
+	// A local run in a project whose default image RESOLVES perfectly well.
 	image, ready := armRuntimeColumns(true, "ghcr.io/beardedparrott/orchicon-runtime:latest", true, true)
 
 	if image != "" {

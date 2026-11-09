@@ -1,11 +1,6 @@
 package scheduler
 
 // worktree_provision_stages_test.go — A SLOW PROVISION MUST NAME ITS OWN STAGE.
-//
-// Reported: "worktree provision took 65,677 ms this run vs ~350-500ms previously" — a 130x regression with
-// nothing to attribute it to, because the log gave ONE number for six phases that shell out to git. Guessing
-// at the cause from outside (a missing origin, a network probe, a large repo) was unproductive precisely
-// because the artifact did not say.
 
 import (
 	"os"

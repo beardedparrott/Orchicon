@@ -8,18 +8,10 @@ import (
 
 // The tests below are grouped by the question they answer, because the thing most likely to regress
 // here is not a computation but a POLICY: which verdict a given combination of evidence produces.
-// A future edit that quietly makes "unverified" count as success would pass a test suite that only
-// checked set arithmetic, so the precedence itself is pinned.
 
 func boolPtr(b bool) *bool { return &b }
 
 // TestNoCommitsIsUnsubstantiated pins the check that closes the reported defect.
-//
-// The real case: work item 01M5X62Z1X8N08KD7KAY0G6FSV, run 01M5XSQZG3VV0X0WGVTMHNE8VS. The worker
-// reported success having changed nothing ("confirmed the fix is already merged... no duplicate PR
-// was created") and the platform recorded the work item as succeeded with a green acceptance review.
-// Here the repository contradicts the claim, so the verdict must be a FAILURE — not unverified,
-// because "nothing happened" is a positive fact, not an absence of evidence.
 func TestNoCommitsIsUnsubstantiated(t *testing.T) {
 	got := Collect(context.Background(), Evidence{
 		GitReadable:             true,
@@ -40,11 +32,9 @@ func TestNoCommitsIsUnsubstantiated(t *testing.T) {
 	}
 }
 
-// TestNoDeclaredGateIsUnverified pins the central design rule: a project that declares no gate cannot
-// have a step CERTIFIED, so it lands in the third state rather than being rounded up to success.
-//
-// This is the state this platform's own repository is in today (`.orchicon/verify` does not exist at
-// the Orchicon project root), which is exactly why a run can look green and still be wrong.
+// TestNoDeclaredGateIsUnverified pins the central design rule: a project that declares no gate
+// cannot have a step CERTIFIED, so it lands in the third state rather than being rounded up to
+// success.
 func TestNoDeclaredGateIsUnverified(t *testing.T) {
 	got := Collect(context.Background(), Evidence{
 		GitReadable:             true,
@@ -99,12 +89,8 @@ func TestEverythingPassingIsVerified(t *testing.T) {
 	}
 }
 
-// TestNewFailureFailsEvenWhenDeclaredGatePasses pins that the differential is not redundant with the
-// declared command.
-//
-// A project whose gate passes overall can still have regressed a specific check if the gate is
-// partial (a targeted test run, a subset). The differential is the backstop: it compares the SET, so
-// a regression the project's own command did not cover still fails the step.
+// TestNewFailureFailsEvenWhenDeclaredGatePasses pins that the differential is not redundant with
+// the declared command.
 func TestNewFailureFailsEvenWhenDeclaredGatePasses(t *testing.T) {
 	got := Collect(context.Background(), Evidence{
 		GitReadable:     true,
@@ -139,9 +125,8 @@ func TestNewFailureFailsEvenWhenDeclaredGatePasses(t *testing.T) {
 	}
 }
 
-// TestPreExistingFailureIsNotBlamed is the "pre-existing" case that generates most of the argument in
-// this platform's FACTS LEARNED ledger. A check failing at BOTH ends is not this step's failure, and
-// the platform must not require a worker to guess about it.
+// TestPreExistingFailureIsNotBlamed is the "pre-existing" case that generates most of the argument
+// in this platform's FACTS LEARNED ledger.
 func TestPreExistingFailureIsNotBlamed(t *testing.T) {
 	got := Collect(context.Background(), Evidence{
 		GitReadable:     true,
@@ -230,15 +215,6 @@ func TestDirtyTreeFails(t *testing.T) {
 }
 
 // TestPlanOnlyStepSkipsDeliverableChecks pins that a legitimately non-code step is not punished.
-//
-// A plan-only step (the Principal Software Architect writes a gitignored note) has no commit to make.
-// Under a naive "no commits = failure" rule it would fail every run, which is the fastest possible
-// way to get a verification system switched off. Inapplicable checks SKIP; they do not abstain,
-// because they carry no information about the claim.
-//
-// NOTE the absence of a declared gate here. WHEN there is one, the step's own collector does not run it
-// at all (it cannot change the outcome), so the gate check is skipped by the producer rather than by this
-// function — see TestPlanOnlyStepSkipsTheGateEntirely.
 func TestPlanOnlyStepSkipsDeliverableChecks(t *testing.T) {
 	got := Collect(context.Background(), Evidence{
 		GitReadable:             true,
@@ -358,13 +334,6 @@ func TestVerdictIsSuccess(t *testing.T) {
 
 // TestResultKeyNormalisation pins the bug that made the differential report "no new failures" for a
 // genuine regression.
-//
-// `go test` prints the OUTCOME in the line itself — `ok pkg/b` on success, `FAIL pkg/b` on failure —
-// so a map keyed on the raw line sees a pass "disappear" and an unrelated fail "appear", never the
-// same subject changing state. The differential then finds nothing and passes a step that broke the
-// build. This is the single most dangerous failure mode in the whole package (a false NEGATIVE: the
-// mechanism reports green on broken work), so it is pinned directly at the key level as well as
-// through Collect.
 func TestResultKeyNormalisation(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"ok  \tgithub.com/x/pkg", "github.com/x/pkg"},
@@ -412,20 +381,8 @@ func TestGoTestShapeRegressionIsDetected(t *testing.T) {
 	}
 }
 
-// TestPreExistingRedGateDoesNotFailTheStep is the regression test for the defect that failed a live run six
-// times, and it is written to the exact shape of that run.
-//
-// THE OBSERVED FAILURE. A Principal Software Architect step — a PLAN-ONLY step, contractually barred from
-// writing code — reported `success` having produced a 438-line plan. The evidence gate overrode it with
-// `not substantiated: project_gate: the project's declared gate FAILED`, and every one of the six recovery
-// attempts failed identically. Nothing the step could have done would have changed the outcome.
-//
-// THE CAUSE. `project_gate` was a BINARY check on the declared command's exit code. On a repository with any
-// pre-existing breakage that is not uninformative, it is actively wrong: it blames every step for a failure
-// that step did not cause. The differential exists precisely to attribute a red gate — and it would have
-// cleared this step, because nothing regressed.
-//
-// The exit code must therefore be ATTRIBUTED, not trusted.
+// A Principal Software Architect step — a PLAN-ONLY step, contractually barred from writing code —
+// reported `success` having produced a 438-line plan.
 func TestPreExistingRedGateDoesNotFailTheStep(t *testing.T) {
 	got := Collect(context.Background(), Evidence{
 		GitReadable:             true,
@@ -504,11 +461,6 @@ func TestRedGateWithoutBaselineAbstains(t *testing.T) {
 }
 
 // TestFailureReasonNamesAFailureNotAPassingLine pins the second defect from the live run.
-//
-// The recorded reason was: `project_gate: the project's declared gate FAILED: … internal/version [no test
-// files]` — and `[no test files]` is a PASSING line. A tail-truncated excerpt starts at the oldest surviving
-// line, so taking the FIRST line reliably names something that is not the failure. The operator's one
-// question — which check broke — went unanswered, and the message pointed at a green line.
 func TestFailureReasonNamesAFailureNotAPassingLine(t *testing.T) {
 	excerpt := "ok  \tgithub.com/x/version\t[no test files]\nFAIL\tgithub.com/x/runtime\t0.512s\n" +
 		"--- FAIL: TestProviderAPIKeyEnvMatchesOpenCodeRegistry (0.00s)\n"
@@ -530,13 +482,6 @@ func TestFailureReasonNamesAFailureNotAPassingLine(t *testing.T) {
 }
 
 // TestPlanOnlyStepSkipsTheGateEntirely pins the third defect from the live run.
-//
-// The architect step was made to run the full declared gate — `go build ./... && go vet ./... && go test
-// ./internal/... ./cmd/...` — even though a plan-only step cannot change the gate's outcome. On a repository
-// that is red at baseline, that turned a correctly-executed step into an unclearable failure.
-//
-// The check must SKIP (carry no information about the claim), not abstain (carry an absence), or every
-// architect step would sit at `unverified` forever for a question never asked of it.
 func TestPlanOnlyStepSkipsTheGateEntirely(t *testing.T) {
 	got := Collect(context.Background(), Evidence{
 		GitReadable:             true,
@@ -547,9 +492,7 @@ func TestPlanOnlyStepSkipsTheGateEntirely(t *testing.T) {
 		SkipReason:              "architect steps deliver a plan note, which this project gitignores",
 		// Deliberately NO declared command and NO baseline: the plan-only step was never measured.
 	})
-	// NOT `verified`, and not a failure either: with every check skipped, nothing was confirmed. Claiming
-	// `verified` here would be the silent-success defect this package exists to remove, wearing a
-	// different hat — a confirmation asserted where none happened.
+	// NOT `verified`, and not a failure either: with every check skipped, nothing was confirmed.
 	if got.Verdict != VerdictNotApplicable {
 		t.Fatalf("a step with every check skipped must be %q, got %q (reason: %s)",
 			VerdictNotApplicable, got.Verdict, got.Reason)
@@ -578,13 +521,8 @@ func TestPlanOnlyStepSkipsTheGateEntirely(t *testing.T) {
 	}
 }
 
-// TestAllChecksSkippedIsNotVerified pins the verdict vocabulary: a step with NOTHING checked has not been
-// confirmed, and saying so is the whole point of this package.
-//
-// The temptation — and the first version of this code did it — is to let `verified` be the default when
-// nothing failed and nothing abstained, which means every plan-only and approval step reports a
-// confirmation that never happened. That is the silent success this package exists to remove, wearing a
-// different hat.
+// TestAllChecksSkippedIsNotVerified pins the verdict vocabulary: a step with NOTHING checked has
+// not been confirmed, and saying so is the whole point of this package.
 func TestAllChecksSkippedIsNotVerified(t *testing.T) {
 	got := Collect(context.Background(), Evidence{
 		StepDeclaresDeliverable: false,

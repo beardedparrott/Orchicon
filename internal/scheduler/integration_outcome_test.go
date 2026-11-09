@@ -1,17 +1,7 @@
 package scheduler
 
-// integration_outcome_test.go — A RUN THAT DID NOT LAND MUST NOT LOOK FINISHED.
-//
-// REPORTED: "both missed-integration runs and correctly-integrated runs present identically: status=succeeded,
-// WorkflowRun=completed, acceptance review written. There is no field anywhere recording whether integration
-// happened."
-//
-// That is the gap this covers, and it is derivable rather than storable: a run branch is deleted ONLY when
-// branchProvablyMerged proves it an ancestor, and that delete clears worktree_branch. So the branch column IS
-// the integration ledger — the platform already recorded the fact and simply never surfaced it.
-//
-// Verified against the operator's own data: two runs reported as "NOT integrated" showed branch=None once the
-// (late) integration caught up. The ledger was accurate the whole time.
+// There is no field anywhere recording whether integration happened." That is the gap this covers,
+// and it is derivable rather than storable.
 
 import (
 	"context"
@@ -50,11 +40,6 @@ func TestIntegrationStatusIsDerivedFromTheBranchLedger(t *testing.T) {
 }
 
 // THE REAPER MUST NOT DESTROY UNCOMMITTED WORK.
-//
-// REPORTED twice: a worktree vanished mid-session while the operator was resolving conflicts, losing the
-// resolutions; and "a reaper must not reclaim a worktree with uncommitted changes or an unmerged branch".
-// `git worktree remove --force` discards uncommitted work silently, and this runs from a periodic sweep that
-// cannot see what is in flight.
 func TestRemoveWorktreeRefusesUncommittedWork(t *testing.T) {
 	repo := newTestRepo(t)
 	wt := repo + "/" + worktreeDirName + "/run-dirty"

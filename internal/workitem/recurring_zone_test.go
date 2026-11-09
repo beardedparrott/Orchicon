@@ -1,19 +1,6 @@
 package workitem
 
 // recurring_zone_test.go — A RECURRENCE IS A WALL CLOCK IN A ZONE, NOT AN INSTANT.
-//
-// The operator: "We could easily build in a convertor that turns the user's system time into UTC so it all
-// works nicely."
-//
-// That is exactly right for a TIMESTAMP and exactly wrong for a RECURRENCE, and these tests are the
-// difference written down. A one-shot scheduled_start_at IS an instant and converts to UTC by
-// construction. "09:00 every day" is NOT an instant: it is 09:00 CDT in July and 09:00 CST in January, an
-// hour apart, so flattening it into one UTC instant loses an hour for half the year whichever instant you
-// pick. The zone therefore travels with the rule.
-//
-// The legacy case is pinned too, because it is a promise: a schedule written before the timezone field
-// existed carries no zone, and it must keep firing at exactly the instant it fires at today. The operator:
-// "Leave them. I don't want things firing again."
 
 import (
 	"strings"
@@ -66,11 +53,6 @@ func TestRecurringZoneAcceptsIANANames(t *testing.T) {
 }
 
 // THE PSEUDO-ZONE IS REFUSED BY NAME, and this is the subtle half of the whole feature.
-//
-// time.LoadLocation("Local") RETURNS NO ERROR — it resolves to whatever machine is reading it — so any
-// check of the form "is it loadable?" passes it. Stored, it would then mean the SERVER's zone: a
-// Central-time operator's 09:00 would fire at 09:00 UTC, i.e. 03:00 their time, with every validation
-// step reporting success.
 func TestRecurringZoneRejectsThePseudoZoneLocal(t *testing.T) {
 	// The premise, measured: it really does load.
 	if _, err := time.LoadLocation("Local"); err != nil {
@@ -152,12 +134,6 @@ func TestDailyCadenceKeepsTheWallClockAcrossDST(t *testing.T) {
 }
 
 // THE WEEKLY DAY INDEX IS COUNTED, NOT DERIVED FROM ELAPSED HOURS.
-//
-// This is the latent bug the zone change exposes. The old code computed the day index as
-// int(candidate.Sub(anchor).Hours() / 24); across a DST transition a local day is 23 hours, so the
-// total lands an hour short and the integer division picks the WRONG day — 13 instead of 14 — which
-// shifts the weekly pattern onto a different weekday. It could not fire on UTC anchors because every
-// UTC day is exactly 24 hours.
 func TestWeeklyCadenceLandsOnTheRightWeekdayAcrossDST(t *testing.T) {
 	loc := chicago(t)
 
@@ -181,9 +157,6 @@ func TestWeeklyCadenceLandsOnTheRightWeekdayAcrossDST(t *testing.T) {
 }
 
 // THE LEGACY CASE IS UNCHANGED, which is the operator's explicit instruction.
-//
-// A schedule with no zone must behave EXACTLY as it did before the field existed: anchor parsed as UTC,
-// same instant, same cadence. This is the regression guard on "leave them alone".
 func TestLegacyScheduleWithoutAZoneBehavesExactlyAsBefore(t *testing.T) {
 	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	got := ComputeNextRunAt(&apiv1.RecurringSchedule{
@@ -204,10 +177,6 @@ func TestLegacyScheduleWithoutAZoneBehavesExactlyAsBefore(t *testing.T) {
 }
 
 // AN UNRESOLVABLE ZONE FALLS BACK TO UTC RATHER THAN STOPPING THE SCHEDULE.
-//
-// This function cannot report an error, and a schedule the API already accepted must not silently stop
-// firing because a zone name is missing from this build's database. Firing in the legacy zone is the
-// safer failure; RecurringZone on the write path is what keeps bad names out in the first place.
 func TestComputeNextRunAtFallsBackToUTCForAnUnknownZone(t *testing.T) {
 	got := ComputeNextRunAt(&apiv1.RecurringSchedule{
 		Frequency: "daily", Interval: 1,
@@ -244,16 +213,14 @@ func TestWindowGatingUsesTheScheduleZone(t *testing.T) {
 			"evaluated in the wrong zone", h)
 	}
 	// And it is genuinely local-windowed, not UTC-windowed: 09:00 local is 15:00 UTC, well outside a
-	// 09:00-17:00 reading taken in UTC terms would still pass, so this asserts the zone is honoured by
-	// checking the wall clock the operator sees.
+	// 09:00-17:00 reading taken in UTC terms would still pass.
 	if name, _ := local.Zone(); name == "" {
 		t.Error("the computed instant carries no zone")
 	}
 }
 
 // AND THE ZONE SURVIVES THE JSONB ROUND TRIP, which is the only reason there is no migration: the
-// schedule is stored as a JSON object inside the existing recurring_schedule column, so the proto field
-// name and the JSON key have to agree or the zone is silently dropped on write and read back empty.
+// schedule is stored as a JSON object inside the existing recurring_schedule column.
 func TestTimezoneRoundTripsThroughTheStoredJSON(t *testing.T) {
 	blob, err := ValidateRecurringSchedule(&apiv1.RecurringSchedule{
 		Frequency: "daily", Interval: 1,

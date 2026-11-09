@@ -142,9 +142,8 @@ func TestSkillFilesCompositePromptByteStable(t *testing.T) {
 	}
 }
 
-// AC5-adjacent (worker half): a skill OUTSIDE the project dir is dropped at the render boundary rather than
-// rendering a dead "could not read" note — a worker version is project-agnostic, so containment can only be
-// enforced here.
+// AC5-adjacent (worker half): a skill OUTSIDE the project dir is dropped at the render boundary
+// rather than rendering a dead "could not read" note — a worker version is project-agnostic.
 func TestSkillFilesOutsideProjectDirNotRendered(t *testing.T) {
 	r, ctx, _, ttx, _, item, _ := skillFileTestSetup(t, "skills-outside")
 	defer ttx.Rollback(ctx)

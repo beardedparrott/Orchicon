@@ -1,15 +1,6 @@
 package scheduler
 
 // integration_rewind_guard_test.go — INTEGRATION MUST NEVER MOVE A BRANCH BACKWARD.
-//
-// REPORTED: "the branch was force-set back to 558d52e at the start", where 558d52e is an EMPTY ROOT commit and
-// the integration branch had already reached f421a7c. Separately: "A run was provisioned an empty worktree.
-// Location's branch was created at the empty root commit 558d52e while develop was already at f421a7c."
-//
-// Whether or not integration is what moved it, that is the exact shape that would lose every commit on the
-// branch while leaving the work intact on run branches — and `git update-ref` would do it without complaint,
-// because ref movement has no notion of direction. The guard lives in setBranchRef so the invariant does not
-// depend on every future caller remembering to check ancestry.
 
 import (
 	"context"

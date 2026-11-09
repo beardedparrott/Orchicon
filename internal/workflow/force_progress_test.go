@@ -52,12 +52,8 @@ func forceTestPool(t *testing.T) *db.Pool {
 	return pool
 }
 
-// forceSeedRun builds a running workflow run with a published version whose
-// steps form: review → loop (loop_decision) → qa → approve → merge. The
-// review step is succeeded; the loop_decision is PENDING with its dep
-// satisfied (it is stuck); qa/approve/merge are PENDING with unsatisfied
-// deps (they must NOT be forced). Also seeds one in-flight RUNNING step to
-// assert in-flight steps are always forced.
+// forceSeedRun builds a running workflow run with a published version whose steps form: review →
+// loop (loop_decision) → qa → approve → merge.
 func forceSeedRun(t *testing.T, ctx context.Context, pool *db.Pool) (string, map[string]string) {
 	t.Helper()
 	ttx, err := pool.BeginTenantTx(ctx, forceTestTenant)
@@ -148,11 +144,8 @@ func forceSeedRun(t *testing.T, ctx context.Context, pool *db.Pool) (string, map
 	return run.ID, ids
 }
 
-// TestForceProgressWorkflowRunStuckOnly verifies force-progress marks ONLY
-// the stuck steps succeeded: the in-flight RUNNING step and the PENDING
-// loop_decision whose dep is satisfied. Steps still waiting on an
-// unsatisfied dep (qa/approve/merge) stay PENDING so the reconciler
-// dispatches them — real work is never skipped.
+// TestForceProgressWorkflowRunStuckOnly verifies force-progress marks ONLY the stuck steps
+// succeeded: the in-flight RUNNING step and the PENDING loop_decision whose dep is satisfied.
 func TestForceProgressWorkflowRunStuckOnly(t *testing.T) {
 	pool := forceTestPool(t)
 	ctx := tenant.WithID(context.Background(), forceTestTenant)

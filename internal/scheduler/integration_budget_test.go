@@ -101,15 +101,8 @@ func TestConflictIsNotStampedSoARetryCanStillIntegrate(t *testing.T) {
 	}
 }
 
-// A run whose project is not local-strategy, or whose branch is gone, must be stamped so it is not rescanned
-// forever; the branch-gone case is also LOGGED, because it is a finding.
-// TERMINAL NON-INTEGRATION OUTCOMES ARE RECORDED, NOT INFERRED.
-//
-// This used to assert a run_context stamp (`local_integrated_at`) was written. That mechanism is gone: an
-// outcome stuffed into run_context is invisible in the API (it arrives base64-encoded), semantically wrong
-// (run_context holds the run's INPUTS), and it is not a record anybody can query a queue from. The obligation
-// and its outcome now live in a row (local_integrations), so what this test pins is that every terminal
-// non-integration outcome REACHES that row rather than being dropped.
+// A run whose project is not local-strategy, or whose branch is gone, must be stamped so it is not
+// rescanned forever; the branch-gone case is also LOGGED, because it is a finding.
 func TestTerminalNonIntegrationOutcomesAreRecorded(t *testing.T) {
 	src, err := os.ReadFile("local_integrate.go")
 	if err != nil {

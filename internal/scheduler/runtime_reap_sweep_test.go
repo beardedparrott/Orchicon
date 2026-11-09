@@ -1,20 +1,6 @@
 package scheduler
 
 // runtime_reap_sweep_test.go — A TERMINAL RUN MUST NOT LEAK ITS CONTAINER.
-//
-// Observed on a live host: an ABORTED run's container was still `running` while a
-// COMPLETED run beside it had been returned to the pool ("pool release: resetting
-// run container" appeared for one and not the other).
-//
-// Cause: the reconcile-path reaper only sees runs the scan returns, and the scan
-// returns NON-TERMINAL runs only (ListPendingWorkflowRuns: pending/running/paused).
-// A run that reached `aborted` therefore never arrives at the branch that reaps
-// it, and AbortWorkflow does not reap either. The sweep this file tests closes
-// that by looking at terminal runs directly.
-//
-// THESE TESTS BUILD THEIR OWN ROWS. An earlier version skipped when the scratch
-// DB happened to hold no terminal runs, which proves nothing at all — a test that
-// can silently skip is the failure mode this repository keeps paying for.
 
 import (
 	"context"
@@ -92,9 +78,8 @@ func TestTheSweepReapsEveryTerminalRunItFinds(t *testing.T) {
 	}
 }
 
-// TestSweepSkipsRunsWithNoRuntimeEvidence: a run that never had a container must
-// not be handed to the reaper at all. The predicate is the guard that keeps the
-// sweep from poking the daemon for every run the tenant ever finished.
+// TestSweepSkipsRunsWithNoRuntimeEvidence: a run that never had a container must not be handed to
+// the reaper at all.
 func TestSweepSkipsRunsWithNoRuntimeEvidence(t *testing.T) {
 	pool := scratchPool(t)
 	ctx := context.Background()
@@ -133,9 +118,8 @@ func TestSweepSkipsRunsWithNoRuntimeEvidence(t *testing.T) {
 	}
 }
 
-// TestSweepIsANoOpWithoutARuntime pins the defensive guard: a headless plane (no
-// runtime wired) must not attempt to reap anything, and must not panic on a nil
-// pool.
+// TestSweepIsANoOpWithoutARuntime pins the defensive guard: a headless plane (no runtime wired)
+// must not attempt to reap anything, and must not panic on a nil pool.
 func TestSweepIsANoOpWithoutARuntime(t *testing.T) {
 	r := &WorkflowReconciler{pool: nil, log: slog.Default()}
 	r.sweepTerminalRunContainers(context.Background(), "tnt_dev")

@@ -38,14 +38,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// verifyOutputLimit bounds what a failure's message carries: enough to name the cause, small enough that a person
-// will read it.
-//
-// THERE IS NO COMMAND TIMEOUT ANY MORE. `verifyCommandTimeout` (10 minutes) was a ceiling nobody configured, and
-// the platform's rule everywhere else is that an OMITTED limit means NO limit. Stall detection, tool-hang
-// cancellation and the execution reaper are the mechanism for a runaway — a hardcoded number in a shell runner is
-// not a second opinion, it is a hidden policy that fails good work on a slow machine. The command is still bound
-// by the CONTEXT the caller passes, so an operator's cancel or a configured budget still reaches it.
+// verifyOutputLimit bounds what a failure's message carries: enough to name the cause, small enough
+// that a person will read it.
 const verifyOutputLimit = 1200
 
 // shellBinary/shellFlag give the declared command the same shell a person would use on this host.
@@ -63,13 +57,8 @@ func shellFlag() string {
 	return "-c"
 }
 
-// defaultIntegrationBranch is the HISTORICAL convention: where every run used to land unconditionally.
-//
-// It is now only the PREFERRED candidate, never an assumption. A trunk-based repo (`main` only), a release
-// scheme (`release/x`) or an environment split (`dev`/`staging`) has an integration branch this name does not
-// match — and the old code did not merely get those wrong, it CREATED `develop` at HEAD and merged there,
-// silently forking a repository's history into a branch the operator never asked for. Inventing a branch is
-// worse than refusing.
+// defaultIntegrationBranch is the HISTORICAL convention: where every run used to land
+// unconditionally.
 const defaultIntegrationBranch = "develop"
 
 // integrationTarget resolves the branch runs land on.
@@ -105,24 +94,15 @@ func (r *WorktreeReconciler) integrationTarget(ctx context.Context, projectDir s
 	return name, nil
 }
 
-// localIntegrationLimit bounds how many candidate runs one slow pass examines. The work is a couple of git
-// subprocesses per pending record, and the set is self-cleaning (a settled record leaves the queue), so a
-// small page is enough to converge.
+// localIntegrationLimit bounds how many candidate runs one slow pass examines.
 const localIntegrationLimit = 16
 
-// localIntegrationPerRunBudget bounds the integration pass run immediately before a new branch is cut.
-//
-// Tighter than the sweep's budget on purpose: this sits on the PROVISIONING path, and a run must not wait
-// behind a backlog of other projects' integrations to get its worktree. Anything it does not reach, the
-// periodic sweep still will.
+// localIntegrationPerRunBudget bounds the integration pass run immediately before a new branch is
+// cut.
 const localIntegrationPerRunBudget = 5 * time.Second
 
-// integrateLocalRuns is the PERIODIC backstop: drain the queue for every project that has pending records.
-//
-// It used to select CANDIDATE RUNS tenant-wide by ended_at, which is where the loss started: a busy tenant fills
-// that page with other projects' runs, the budget expires, and the project that was about to branch never got
-// integrated. Selecting PROJECTS WITH PENDING RECORDS instead is the same work with a queue as its index — and
-// a project that has nothing pending costs one indexed query, not a page slot.
+// integrateLocalRuns is the PERIODIC backstop: drain the queue for every project that has pending
+// records.
 func (r *WorktreeReconciler) integrateLocalRuns(ctx context.Context, tenantID string, deadline time.Time) {
 	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -145,12 +125,8 @@ func (r *WorktreeReconciler) integrateLocalRuns(ctx context.Context, tenantID st
 	}
 }
 
-// IntegrateProjectNow is the post-commit entry point: advance THIS project's local integration queue
-// immediately, called when one of its runs reaches COMPLETED.
-//
-// One implementation, three triggers — terminal success (here), before a branch is cut (the gate), and the
-// periodic pass (the backstop). Anything else would be the N-implementations problem this file exists to
-// avoid, one layer over.
+// IntegrateProjectNow is the post-commit entry point: advance THIS project's local integration
+// queue immediately, called when one of its runs reaches COMPLETED.
 func (r *WorktreeReconciler) IntegrateProjectNow(ctx context.Context, tenantID, projectID string) {
 	r.drainLocalIntegrationQueue(ctx, tenantID, projectID, time.Now().Add(localIntegrationPerRunBudget))
 }
@@ -178,15 +154,10 @@ func (r *WorktreeReconciler) drainLocalIntegrationQueue(ctx context.Context, ten
 	if projectID == "" {
 		return
 	}
-	// ADOPT ANY RUN THAT HAS NO RECORD YET, before working the queue. Without this, a run that completed
-	// while the plane was down — or before this table existed — would never enter the queue at all, which is
-	// the same silence in a new place.
+	// ADOPT ANY RUN THAT HAS NO RECORD YET, before working the queue.
 	r.enqueueRunsMissingRecords(ctx, tenantID, projectID)
 
-	// EACH RECORD IS ATTEMPTED AT MOST ONCE PER PASS. Without this a record that settles into a state we retry —
-	// `failed` (a declared check that no longer passes) or `conflicted` — is re-read the moment it is written,
-	// re-attempted, re-failed, and the pass spins until its budget expires. Measured: a 10-second stall on the
-	// first run of the failing-check test, which is a wedge in the integration path, not a slow check.
+	// EACH RECORD IS ATTEMPTED AT MOST ONCE PER PASS.
 	attempted := map[string]bool{}
 	for {
 		ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
@@ -235,13 +206,7 @@ func (r *WorktreeReconciler) drainLocalIntegrationQueue(ctx context.Context, ten
 		}
 		settled := r.settleIntegrationRecord(ctx, tenantID, projectID, records[0])
 		if !settled {
-			// A conflict, a missing branch, or a git error. The record now says so (or stays pending), and
-			// the queue STOPS here: order is what keeps the next branch fast-forwardable, and working past an
-			// unsettled record would diverge the project exactly as reported.
-			//
-			// STOPPING IS NOT ABANDONING. The record is re-examined on the next pass — which is how a conflict
-			// a human resolved by hand releases the queue — and the run that is waiting is told, on every pass,
-			// which record is holding it (see the QUEUED log line in reconcileOne).
+			// A conflict, a missing branch, or a git error.
 			return
 		}
 	}
@@ -271,9 +236,7 @@ func (r *WorktreeReconciler) enqueueRunsMissingRecords(ctx context.Context, tena
 		adopted, eerr := db.EnqueueLocalIntegration(ctx, ttx.Tx, tenantID, projectID, run.ID, execID,
 			run.WorktreeBranch, base)
 		if eerr == nil && adopted.Status == db.LocalIntegrationPending {
-			// ADOPTED, NOT PENDING. The obligation is real and the drain will work it, but it must not hold the
-			// queue: this is history the platform recognised after the fact, and stalling new runs behind an
-			// unbounded archaeology set is how a project stops accepting work entirely.
+			// ADOPTED, NOT PENDING.
 			if serr := db.SetLocalIntegrationStatus(ctx, ttx.Tx, tenantID, adopted.ID, db.LocalIntegrationAdopted,
 				"", "adopted: a completed run with no integration record", ""); serr != nil {
 				r.log.Warn("worktree: could not mark an adopted obligation", "run", run.ID, "error", serr)
@@ -289,12 +252,7 @@ func (r *WorktreeReconciler) enqueueRunsMissingRecords(ctx context.Context, tena
 	}
 }
 
-// EnqueueRunForIntegration records the obligation for ONE run at terminal success. This is the live path; the
-// backfill above catches everything that arrives another way.
-//
-// The RECORD IS WRITTEN BEFORE THE WORK IS ATTEMPTED, and that ordering is the whole design: an obligation
-// that exists and has not been met is a pending row an operator can see, while an obligation that was never
-// written is indistinguishable from one that was never owed.
+// EnqueueRunForIntegration records the obligation for ONE run at terminal success.
 func (r *WorktreeReconciler) EnqueueRunForIntegration(ctx context.Context, tenantID, projectID, runID string) {
 	if projectID == "" || runID == "" {
 		return
@@ -342,9 +300,8 @@ func (r *WorktreeReconciler) settleIntegrationRecord(ctx context.Context, tenant
 		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationSkipped, "", "project dir is not a git work tree", "")
 		return true
 	}
-	// THE BRANCH IS THE EVIDENCE, and this is where the old code's silence lived: a record whose branch no
-	// longer exists has nothing to land. It is `skipped`, not `pending` — leaving it pending would block the
-	// project's queue forever on a ref that will never come back.
+	// THE BRANCH IS THE EVIDENCE, and this is where the old code's silence lived: a record whose branch
+	// no longer exists has nothing to land.
 	if !r.branchExists(ctx, projectDir, rec.Branch) {
 		r.log.Warn("worktree: integration record has NO branch — nothing to land",
 			"run", rec.WorkflowRunID, "branch", rec.Branch, "repo", projectDir,
@@ -355,14 +312,8 @@ func (r *WorktreeReconciler) settleIntegrationRecord(ctx context.Context, tenant
 	}
 	target, terr := r.integrationTarget(ctx, projectDir)
 	if terr != nil {
-		// A REPOSITORY WITH NO USABLE INTEGRATION BRANCH IS A CONFIGURATION FACT, NOT PENDING WORK, and it must
-		// not hold the queue. There is nothing to compare the branch against, so waiting cannot help and would
-		// stall the project forever — which is worse than the silence this table replaces, because a stalled
-		// project looks like a hang rather than a lost merge.
-		//
-		// So it is recorded as SKIPPED with the reason on the record: visible, countable, and non-blocking. The
-		// work stays on its branch and the run page's integration notice reports it as not merged, so nothing is
-		// hidden — the operator is told the repository needs an integration branch, which is the actionable fact.
+		// A REPOSITORY WITH NO USABLE INTEGRATION BRANCH IS A CONFIGURATION FACT, NOT PENDING WORK, and it
+		// must not hold the queue.
 		r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationSkipped, "", terr.Error(), "")
 		r.log.Warn("worktree: integration cannot run — the repository has no usable integration branch; the "+
 			"branch is kept and the run reports NOT MERGED",
@@ -371,15 +322,7 @@ func (r *WorktreeReconciler) settleIntegrationRecord(ctx context.Context, tenant
 	}
 
 	if r.isAncestorOf(ctx, projectDir, rec.Branch, target) {
-		// ALREADY LANDED — AND STILL NOT TRUSTED. This branch used to record `merged` and return, which made it a
-		// shortcut AROUND verification: a record that had FAILED its check came back as a clean pass on the next
-		// attempt simply because the branch was an ancestor, and a project whose checkout was empty stayed empty
-		// because nothing repaired it. The ancestry test answers "is it in the history"; it says nothing about the
-		// tree, which is the whole reason verification exists.
-		//
-		// So the already-landed path does exactly what a fresh merge does: repair the checkout if it is
-		// repairable, then VERIFY. That also makes it the repair path for a project left broken by an earlier
-		// build — the next pass materialises the tree and proves it.
+		// ALREADY LANDED — AND STILL NOT TRUSTED.
 		sha, _ := r.revParse(ctx, projectDir, target)
 		ready := r.mainCheckoutRefreshReadiness(ctx, projectDir, target)
 		if err := r.refreshMainCheckout(ctx, projectDir, target, ready); err != nil {
@@ -390,9 +333,7 @@ func (r *WorktreeReconciler) settleIntegrationRecord(ctx context.Context, tenant
 		return true
 	}
 
-	// MARK THE ATTEMPT BEFORE MAKING IT. If the plane dies mid-merge, the record says `integrating` rather
-	// than `pending` — so a restart knows an attempt was interrupted rather than never started, and the row is
-	// retried. That is the survivability the operator asked for: state in the table, not inferred from timing.
+	// MARK THE ATTEMPT BEFORE MAKING IT.
 	r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationIntegrating, "", rec.LastError, target)
 
 	r.integrateMu.Lock()
@@ -434,9 +375,7 @@ func (r *WorktreeReconciler) settleIntegrationRecord(ctx context.Context, tenant
 			return false
 		}
 		if merged == "" {
-			// A CONFLICT. Recorded as such — visible, and it KEEPS BLOCKING, because branching past a conflict
-			// is what makes the NEXT merge un-mergeable too. The old code logged a warning and retried forever,
-			// which looked like a stall and told nobody why.
+			// A CONFLICT.
 			r.log.Warn("worktree: local integration hit a CONFLICT — nothing was merged, both branches are "+
 				"untouched, and the project's queue is HELD until it is resolved by hand",
 				"run", rec.WorkflowRunID, "branch", rec.Branch, "into", target, "repo", projectDir)
@@ -457,17 +396,7 @@ func (r *WorktreeReconciler) settleIntegrationRecord(ctx context.Context, tenant
 	return true
 }
 
-// completeIntegration VERIFIES the integration and records the outcome. A merge that cannot be proven is not a
-// success, and it must not let the next run start.
-//
-// THE REQUIREMENT, in the operator's words: "a failing check must NOT be recorded as success and must NOT let
-// the next run start. It should mark that integration row failed and surface it — ideally blocking the chain."
-// So verification is not advisory: `failed` blocks the queue exactly as `pending` and `conflicted` do.
-//
-// WHY IT EXISTS AT ALL: six runs integrated correctly — the ref moved six times, the reflog proved it, the file
-// counts grew — and the operator's checkout was left at the initial empty commit, so `ls` showed nothing and
-// the whole cycle looked like a total failure. The record said `merged`, and it was right about the ref and
-// silent about the tree. Verification closes that gap.
+// completeIntegration VERIFIES the integration and records the outcome.
 func (r *WorktreeReconciler) completeIntegration(ctx context.Context, tenantID string, rec db.LocalIntegrationRow,
 	projectDir, target, landed, notRefreshedBecause string) {
 	verified, detail := r.verifyIntegration(ctx, projectDir, target, rec.Branch, notRefreshedBecause)
@@ -564,10 +493,6 @@ func (r *WorktreeReconciler) finishIntegrationRecord(ctx context.Context, tenant
 }
 
 // BlockingIntegrationCount reports how many of this project's records are still holding the queue.
-//
-// THIS IS THE GATE'S QUESTION, and it is a COUNT rather than a judgement: a run about to cut a branch must not
-// do so while an earlier run's work is unlanded or conflicted. That converts a silent loss into an ordered
-// queue, which is what these runs already are.
 func (r *WorktreeReconciler) BlockingIntegrationCount(ctx context.Context, tenantID, projectID string) int {
 	if projectID == "" {
 		return 0
@@ -620,12 +545,8 @@ func (r *WorktreeReconciler) runGitStrategy(ctx context.Context, tenantID string
 	return db.EffectiveGitStrategy(ctx, ttx.Tx, tenantID, run.WorkflowID, run.ProjectID), nil
 }
 
-// mergeRunBranchInScratch merges branch into the integration branch inside a throwaway worktree, returning
-// the resulting commit — or "" when the merge conflicted (aborted, nothing changed).
-//
-// A SCRATCH WORKTREE, not the main checkout, and not the run's worktree: the main checkout is the
-// operator's (a conflict there is a mess they did not ask for) and the run worktree belongs to the run
-// (merging into it would rewrite the very branch we are integrating).
+// mergeRunBranchInScratch merges branch into the integration branch inside a throwaway worktree,
+// returning the resulting commit — or "" when the merge conflicted (aborted, nothing changed).
 func (r *WorktreeReconciler) mergeRunBranchInScratch(ctx context.Context, projectDir, branch, runID, target string) (string, error) {
 	base, err := r.revParse(ctx, projectDir, target)
 	if err != nil {
@@ -669,10 +590,8 @@ func (r *WorktreeReconciler) mergeRunBranchInScratch(ctx context.Context, projec
 	return tip, nil
 }
 
-// mainCheckoutRefreshReadiness reports the state of the operator's checkout BEFORE the ref moves.
-//
-// MUST BE CALLED BEFORE THE REF MOVES: once the ref advances, the index is stale by construction and every file
-// the integration brought in looks like a local modification.
+// MUST BE CALLED BEFORE THE REF MOVES: once the ref advances, the index is stale by construction
+// and every file the integration brought in looks like a local modification.
 func (r *WorktreeReconciler) mainCheckoutRefreshReadiness(ctx context.Context, projectDir, target string) checkoutReadiness {
 	if cur := r.currentBranch(ctx, projectDir); cur != target {
 		// The operator is not on the branch that moved, so its working tree is unaffected: nothing to do, and
@@ -684,20 +603,13 @@ func (r *WorktreeReconciler) mainCheckoutRefreshReadiness(ctx context.Context, p
 		return checkoutReadiness{onTarget: true, reason: "git status could not be read"}
 	}
 	if stale, why := staleCheckoutOnly(status); stale {
-		// THE TREE LAGS ITS OWN HEAD, WHICH IS NOT UNCOMMITTED WORK. Reported: "develop's ref is 066279b, but
-		// C:\projects\weatherapp contains only .git, .orchicon, .orchicon-worktrees — no src/, no index.html".
-		// Refreshing is safe here precisely because there is nothing to lose: every dirty entry is a file git
-		// already has at HEAD, absent from the tree only because the tree is out of date.
+		// THE TREE LAGS ITS OWN HEAD, WHICH IS NOT UNCOMMITTED WORK.
 		r.log.Info("worktree: the main checkout is behind its own HEAD — refreshing is safe, nothing is uncommitted",
 			"repo", projectDir, "shape", why)
 		return checkoutReadiness{onTarget: true, repairable: true}
 	}
 	if strings.TrimSpace(status) != "" {
-		// THREE OUTCOMES, NOT TWO. staleCheckoutOnly answers "repairable?" and "complaint?" separately, and
-		// `(false, "")` means the only entries were OUR OWN artifact directories — which is CLEAN, not dirty.
-		// Reading "status non-empty" as "dirty" is what made a project containing nothing but
-		// `?? .orchicon/` refuse every refresh, and the log then blamed the operator's uncommitted work.
-		// Measured in this very test: status was exactly `?? .orchicon/`.
+		// THREE OUTCOMES, NOT TWO.
 		if _, why := staleCheckoutOnly(status); why != "" {
 			return checkoutReadiness{onTarget: true, reason: why, status: status}
 		}
@@ -705,16 +617,8 @@ func (r *WorktreeReconciler) mainCheckoutRefreshReadiness(ctx context.Context, p
 	return checkoutReadiness{onTarget: true, repairable: true}
 }
 
-// refreshMainCheckout makes the operator's working tree match the integration branch after its ref moved.
-//
-// THIS IS THE HAZARD THE PROMPT APPROACH COULD NOT ADDRESS. `develop` is checked out in the main worktree,
-// so advancing the ref leaves that tree's FILES at the old commit while its HEAD says otherwise — the
-// operator's next `git status` reports every file as reverted. Only the controller knows about this
-// checkout; a worker inside a run worktree cannot see the problem, let alone fix it.
-//
-// Uncommitted work is NEVER touched. Destroying it to tidy up a ref is not a trade worth making, so a tree
-// that was dirty before the integration is left exactly as it was and the operator is told, with the
-// command that resolves it.
+// refreshMainCheckout makes the operator's working tree match the integration branch after its ref
+// moved. Uncommitted work is NEVER touched.
 func (r *WorktreeReconciler) refreshMainCheckout(ctx context.Context, projectDir, target string, rd checkoutReadiness) error {
 	if !rd.onTarget {
 		return nil // the operator is on another branch; its tree is not this branch's business
@@ -729,9 +633,8 @@ func (r *WorktreeReconciler) refreshMainCheckout(ctx context.Context, projectDir
 			"remedy", "commit or stash, then run: git reset --hard "+target)
 		return nil
 	}
-	// `reset --hard` is the repair for BOTH repairable shapes: a tree behind the index, and an index behind
-	// HEAD. It is safe here by construction — mainCheckoutRefreshReadiness only reports repairable when every
-	// dirty entry is a tracked file git already has, so there is nothing of the operator's to lose.
+	// `reset --hard` is the repair for BOTH repairable shapes: a tree behind the index, and an index
+	// behind HEAD.
 	if _, err := runGit(ctx, projectDir, "reset", "--hard", target); err != nil {
 		return fmt.Errorf("git reset --hard %s: %w", target, err)
 	}
@@ -741,19 +644,6 @@ func (r *WorktreeReconciler) refreshMainCheckout(ctx context.Context, projectDir
 
 // isMalformedWorktreePath reports whether a worktree path carries a HOST path inside it — the shape
 // `.../.orchicon-worktrees/<runID>/C:/projects/weatherapp/.orchicon-worktrees/<runID>`.
-//
-// THE INVARIANT, stated as the thing that is actually wrong: on a POSIX filesystem `C:` is an ordinary DIRECTORY
-// NAME, so a Windows path handed to `git worktree add` inside a container becomes a RELATIVE path whose first
-// component is a drive designator. A drive-letter segment can therefore only be legitimate at position 0 of a
-// Windows path — anywhere else it is the signature of a host path used in the wrong namespace.
-//
-// Three shapes, all reported:
-//   - a drive-letter segment at any position other than the first;
-//   - `.orchicon-worktrees` appearing twice (the platform directory joined under itself);
-//   - a nested absolute path (`home/`, `tmp/`, or a leading `/`) after the platform directory.
-//
-// A parallel-branch CHILD worktree (`<id>/<stepRunID>`) is legitimate and stays that way: an id is an opaque
-// token, so a second segment alone is not malformed.
 func isMalformedWorktreePath(p string) bool {
 	folded := strings.ReplaceAll(p, "\\", "/")
 	segments := strings.Split(folded, "/")
@@ -838,9 +728,8 @@ func (r *WorktreeReconciler) malformedWorktreeRegistrations(ctx context.Context,
 			"container, where C: is a relative directory name",
 			"repo", projectDir, "path", p)
 	}
-	// THE FILESYSTEM HALF GOES FIRST, and the order is load-bearing twice over: `git worktree prune` drops an
-	// entry only when the directory it names is MISSING, so a stray tree that still exists pins its own
-	// registration; and the existence test below is precisely "is this entry still pinned".
+	// THE FILESYSTEM HALF GOES FIRST, and the order is load-bearing twice over: `git worktree prune`
+	// drops an entry only when the directory it names is MISSING.
 	r.removeStrayContainerTrees(ctx, projectDir)
 
 	// Now decide per entry: pinned by a directory that still exists, or genuinely reclaimable.
@@ -879,13 +768,8 @@ func (r *WorktreeReconciler) malformedWorktreeRegistrations(ctx context.Context,
 	}
 }
 
-// removeStrayContainerTrees deletes a drive-letter directory at the project root that holds nothing but OUR
-// worktree pointers — the on-disk half of a host path used inside a container.
-//
-// `C:` under the project root is never legitimate content of a git project, and its presence breaks two things:
-// it is an untracked entry that blocks the operator's checkout refresh, and it is the tree the malformed
-// registration named. Every file inside it is verified to be a worktree pointer into THIS repository before
-// anything is deleted, so a directory some other tool created — or one holding real files — is left alone.
+// removeStrayContainerTrees deletes a drive-letter directory at the project root that holds nothing
+// but OUR worktree pointers — the on-disk half of a host path used inside a container.
 func (r *WorktreeReconciler) removeStrayContainerTrees(ctx context.Context, projectDir string) {
 	entries, err := os.ReadDir(projectDir)
 	if err != nil {
@@ -915,9 +799,6 @@ func (r *WorktreeReconciler) removeStrayContainerTrees(ctx context.Context, proj
 }
 
 // isDriveLetterName reports whether a directory name is a bare drive designator ("C:", "d:").
-//
-// That is what a Windows path's first component looks like when a POSIX filesystem treats it as a name, and it is
-// never valid content of a git project at the root.
 func isDriveLetterName(name string) bool {
 	if len(name) != 2 || name[1] != ':' {
 		return false
@@ -1012,28 +893,19 @@ func projectVerifyCommand(projectDir string) string {
 	return d.Command
 }
 
-// runVerifyCommand runs the project's declared check with a bounded budget and returns its combined output.
-//
-// BOUNDED, because this runs on the integration path and a hung check would wedge the queue exactly as a
-// missing merge did. A timeout is a FAILURE of the check, not a pass.
+// runVerifyCommand runs the project's declared check with a bounded budget and returns its combined
+// output.
 func runVerifyCommand(ctx context.Context, projectDir, command string) (string, error) {
-	// procwin.CommandContext, NOT exec.CommandContext: a bare exec here spawns a VISIBLE console window on
-	// Windows for a check the operator never asked to watch. (Caught by the platform's own guard test — the
-	// first version of this function failed it.)
-	//
-	// THE CONTEXT IS THE CALLER'S, UNBOUNDED BY THIS FILE. See verifyOutputLimit for why the local deadline was
-	// removed; the short version is that a limit the operator did not set is not a limit, it is a policy.
+	// procwin.CommandContext, NOT exec.CommandContext: a bare exec here spawns a VISIBLE console window
+	// on Windows for a check the operator never asked to watch.
 	cmd := procwin.CommandContext(ctx, shellBinary(), shellFlag(), command)
 	cmd.Dir = projectDir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 
-// trimForMessage keeps a failing check's output to something a record can carry: the tail, where the failure
-// is, rather than the head, where the banner is.
-//
-// err MAY BE NIL — this is also used to cap a diagnostic string that has no error attached. It dereferenced the
-// error unconditionally at first and panicked inside the integration path, which is the worst place to learn that.
+// trimForMessage keeps a failing check's output to something a record can carry: the tail, where
+// the failure is, rather than the head, where the banner is.
 func trimForMessage(out string, err error) string {
 	tail := truncateTail(strings.TrimSpace(out), verifyOutputLimit)
 	if err == nil {
@@ -1059,18 +931,10 @@ func (r *WorktreeReconciler) isAncestorOf(ctx context.Context, projectDir, ances
 	return err == nil
 }
 
-// setBranchRef moves a local branch ref WITHOUT touching any working tree, which is what makes it safe to
-// do while the main checkout has that branch checked out. Callers have already established the ancestry
-// relationship, so this cannot rewind a branch.
+// setBranchRef moves a local branch ref WITHOUT touching any working tree, which is what makes it
+// safe to do while the main checkout has that branch checked out.
 func (r *WorktreeReconciler) setBranchRef(ctx context.Context, projectDir, branch, sha, why string) error {
-	// A BRANCH MAY ONLY MOVE FORWARD. Callers already check ancestry, but the invariant belongs HERE: this is
-	// the only function in the platform that moves a branch ref without a working tree, and "never lose
-	// commits" should not depend on every future caller remembering to guard it.
-	//
-	// The shape this prevents is specific and was reported: a run provisioned at an EMPTY ROOT commit while
-	// the integration branch was already ahead of it. Moving the branch to that tip would rewind it — the
-	// integration branch would lose every commit and its tree would come back empty, while every run's
-	// branch still held the work. `git update-ref` does that happily; it has no notion of direction.
+	// A BRANCH MAY ONLY MOVE FORWARD.
 	if current, err := r.revParse(ctx, projectDir, "refs/heads/"+branch); err == nil && current != "" {
 		if current != sha && !r.isAncestorOf(ctx, projectDir, current, sha) {
 			return fmt.Errorf("worktree: refusing to move %s from %s to %s — the target %s is not a descendant "+
@@ -1115,17 +979,7 @@ func short(sha string) string {
 	return sha
 }
 
-// platformArtifactPaths are directories the PLATFORM creates inside a project directory. The operator never
-// authored them, so their presence must never read as "the operator has uncommitted work".
-//
-// THIS WAS THE CAUSE OF A SIX-RUN FAILURE, and it is worth stating plainly because the message it produced
-// blamed the operator. `.orchicon-worktrees/` holds the per-run worktrees; `.orchicon/` holds the transcript,
-// offload and memory files. A worker prompt has claimed for a long time that `.orchicon-worktrees/` "is already
-// gitignored" — nothing ever writes that entry into a project, so on a project without it `git status` reports
-// `?? .orchicon-worktrees/`, the readiness check read that as the operator's untracked files, REFUSED to
-// refresh, and logged "the operator's main checkout has UNCOMMITTED changes" about our own artifact. Six
-// integrations then moved develop six times while the checkout stayed at the initial empty commit, and the
-// operator saw an empty directory and concluded the whole run had failed.
+// platformArtifactPaths are directories the PLATFORM creates inside a project directory.
 var platformArtifactPaths = []string{worktreeDirName, ".orchicon"}
 
 // isPlatformArtifactPath reports whether a status path is one of ours.
@@ -1201,9 +1055,8 @@ type checkoutReadiness struct {
 	repairable bool
 	// reason explains a refusal in the log line ("" when repairable).
 	reason string
-	// status is the raw `git status --porcelain` the verdict was made from, carried so a refusal can say WHAT it
-	// saw. Without it the log said "has uncommitted work" and nothing else, which is indistinguishable between
-	// the operator's edits, a stale index, and one of our own directories.
+	// status is the raw `git status --porcelain` the verdict was made from, carried so a refusal can
+	// say WHAT it saw.
 	status string
 }
 

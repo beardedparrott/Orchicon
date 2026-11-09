@@ -1,14 +1,6 @@
 package recovery
 
 // repeat_signature_test.go — THE SECOND IDENTICAL FAILURE IS NOT WORTH RETRYING.
-//
-// Reported: six executions of one claude run, 0 tokens each, ~280ms apart, every one with the same sentence —
-// "claude session exited without a terminal result message (exit code 1)". Recovery resumed five times against
-// a failure that a resume could not change, and the operator's budget and attention paid for it.
-//
-// The pattern list could not catch it: that sentence names a SYMPTOM and no cause, so it belonged to no class
-// anyone had anticipated. What the repetition proves is not the cause but the futility — the same message twice
-// means the second attempt did not change anything.
 
 import (
 	"strings"

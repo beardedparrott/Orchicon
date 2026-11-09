@@ -37,17 +37,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// runtimeReapSweepLimit bounds one pass. The sweep is idempotent and cheap
-// (ReapForRun on a run with no lease is a no-op), so a small page that is
-// revisited on the next 200ms scan drains any backlog without a long pass.
+// runtimeReapSweepLimit bounds one pass.
 const runtimeReapSweepLimit = 32
 
-// sweepTerminalRunContainers reaps the container of every TERMINAL run that
-// still shows evidence of having had one.
-//
-// IT IS BEST-EFFORT PER RUN: one failure is logged and the pass continues, so a
-// single wedged container cannot starve the rest of the sweep. A failure is
-// retried naturally on the next pass because the run still matches the query.
+// sweepTerminalRunContainers reaps the container of every TERMINAL run that still shows evidence of
+// having had one.
 func (r *WorkflowReconciler) sweepTerminalRunContainers(ctx context.Context, tenantID string) {
 	if !r.runtimeEnabled() {
 		return

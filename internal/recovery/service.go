@@ -1,6 +1,5 @@
-// Package recovery implements the RecoveryService Connect handler
-// (docs/07_API_Specification.md §3.6) and the Recovery Workflow Engine
-// (docs/06).
+// Package recovery implements the RecoveryService Connect handler (docs/07_API_Specification.md
+// §3.6) and the Recovery Workflow Engine (docs/06).
 package recovery
 
 import (
@@ -420,9 +419,8 @@ func (s *Service) MarkTaskSucceeded(ctx context.Context, req *connect.Request[ap
 
 // --- helpers + mappers -----------------------------------------------------
 
-// recordAudit writes an actor-based audit row in the caller's tx,
-// resolving the actor from the request context. Must be called in the
-// same transaction as the mutation so the row commits atomically.
+// recordAudit writes an actor-based audit row in the caller's tx, resolving the actor from the
+// request context.
 func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
 	if e.TenantID == "" {
@@ -436,11 +434,8 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 	return audit.Record(ctx, tx, e)
 }
 
-// actorEntry builds the audit entry for an engine-passed audit row:
-// actor resolved from the request context (user identity + auth method),
-// tenant defaulted to the handler's tenant, action/target/before/after
-// filled in. The engine records it inside its own transaction, so the
-// row commits atomically with the mutation (AC1).
+// actorEntry builds the audit entry for an engine-passed audit row: actor resolved from the request
+// context (user identity + auth method), tenant defaulted to the handler's tenant.
 func actorEntry(ctx context.Context, tenantID, action, targetType, targetID string, before, after json.RawMessage) audit.Entry {
 	e := auth.ActorFromContext(ctx)
 	if e.TenantID == "" {

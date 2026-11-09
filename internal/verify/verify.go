@@ -37,21 +37,12 @@ import (
 )
 
 // NoticePrefix marks an advisory notice rather than a failure on an execution's error_message slot.
-//
-// THE SLOT IS SHARED — one column carries both a real failure and this notice — so the presentation layer has to be
-// able to tell them apart, and this marker is the only thing that can. It lives HERE, in the package that owns the
-// vocabulary, rather than in the scheduler: the UI must be able to recognise a notice without importing the
-// scheduler, and a second copy of the string is how the two would come to disagree.
 const NoticePrefix = "verification notice: "
 
 // IsNotice reports whether a message is an advisory notice rather than a failure.
 func IsNotice(msg string) bool { return strings.HasPrefix(strings.TrimSpace(msg), NoticePrefix) }
 
 // Verdict is the evidence-based outcome of a completed step.
-//
-// THREE states, and the third is the one that matters. Before this package there were two (the
-// worker's word, and the process exit code), and both of them resolve to a boolean — so "nothing was
-// demonstrated" had no way to be expressed and was silently rounded to success.
 type Verdict string
 
 const (
@@ -59,45 +50,25 @@ const (
 	// claimed, and nothing that used to pass now fails.
 	VerdictVerified Verdict = "verified"
 
-	// VerdictUnsubstantiated — the claim is contradicted by evidence. The worker said work happened
-	// and the repository shows it did not (or shows it broke something). This is a real failure and
-	// must fail the step.
+	// VerdictUnsubstantiated — the claim is contradicted by evidence.
 	VerdictUnsubstantiated Verdict = "unsubstantiated"
 
-	// VerdictUnverified — no determination could be made. Distinct from both of the above: it is NOT
-	// a failure (the work may be perfect) and it must NOT be reported as success (nothing confirmed
-	// it either). The operator's whole complaint — "sometimes it works, sometimes it doesn't, and I
-	// find out later" — is this state being silently reported as success.
+	// VerdictUnverified — no determination could be made.
 	VerdictUnverified Verdict = "unverified"
 
-	// VerdictNotApplicable — no check APPLIED to this step at all, so the step was neither confirmed nor
-	// left ambiguous. It is the honest verdict for a plan-only or approval step: nothing about it is
-	// mechanically checkable, and saying "verified" would claim a confirmation that did not happen.
-	//
-	// WHY THIS IS SEPARATE FROM UNVERIFIED. `unverified` means "a check that should have run could not" —
-	// it is a gap in the evidence and an operator should treat it as one. `not_applicable` means "this step
-	// is not the kind of thing that is checked" — a plan, an approval, graph plumbing. Collapsing the two
-	// would flood the acceptance review with "unverified" on every architect/approver step until the word
-	// stopped meaning anything, which is exactly how a signal gets ignored.
+	// VerdictNotApplicable — no check APPLIED to this step at all, so the step was neither confirmed
+	// nor left ambiguous.
 	VerdictNotApplicable Verdict = "not_applicable"
 )
 
-// IsSuccess reports whether the verdict permits the claim to be described as CONFIRMED.
-//
-// ONLY VerdictVerified does. This is where "unverified" refuses to be rounded up to "confirmed", and where
-// `not_applicable` correctly declines to claim a confirmation that did not happen. It is a statement about the
-// RECORD (what the operator is being told) — never about whether the step runs.
+// IsSuccess reports whether the verdict permits the claim to be described as CONFIRMED. ONLY
+// VerdictVerified does.
 func (v Verdict) IsSuccess() bool { return v == VerdictVerified }
 
 // String renders the verdict for logs, records and the UI.
 func (v Verdict) String() string { return string(v) }
 
 // Check is one named, self-describing piece of evidence.
-//
-// Every check reports its own outcome rather than a bare bool, because the point of the exercise is
-// a record a human can read when a step is questioned — "why was this unverified?" must have a
-// concrete answer, not a shrug. Detail carries the observed value (a count, a list, a failing test
-// name) so the answer is in the record rather than requiring a re-run to reconstruct.
 type Check struct {
 	// Name is a stable machine identifier (snake_case) — what the check is, not what it found.
 	Name string
@@ -117,13 +88,11 @@ const (
 	// CheckFail — the check ran and CONTRADICTS the claim. Any CheckFail makes the verdict
 	// unsubstantiated: contradiction outranks absence.
 	CheckFail CheckStatus = "fail"
-	// CheckAbstain — the check could not run or could not conclude (no baseline available, the
-	// project declares no gate, git could not be read). Absence of evidence, not evidence of
-	// absence: it drives the verdict toward Unverified, never toward Unsubstantiated.
+	// CheckAbstain — the check could not run or could not conclude (no baseline available, the project
+	// declares no gate, git could not be read).
 	CheckAbstain CheckStatus = "abstain"
 	// CheckSkip — the check does not apply to this step at all (a plan-only step has no code
-	// deliverable, so the commit check is not a failure, it is inapplicable). A skip is not an
-	// abstention: it carries no information about the claim and never lowers confidence.
+	// deliverable, so the commit check is not a failure, it is inapplicable).
 	CheckSkip CheckStatus = "skip"
 )
 
@@ -190,9 +159,7 @@ func (r *Result) Conclude() Result {
 		r.Reason = describe(abstained, "unverified: ")
 		return *r
 	}
-	// NO CHECK APPLIED AT ALL is not the same as every check passing. A verdict of `verified` asserts that
-	// something was confirmed; with every check skipped, nothing was — and claiming otherwise is the silent
-	// success this package exists to remove, just wearing a different hat.
+	// NO CHECK APPLIED AT ALL is not the same as every check passing.
 	if !r.anyCheckApplied() {
 		r.Verdict = VerdictNotApplicable
 		r.Reason = "no mechanical check applies to this step (it produces no repository evidence to examine)"
@@ -210,9 +177,7 @@ func (r *Result) anyCheckApplied() bool {
 	return false
 }
 
-// describe renders up to two checks as a one-line reason. Two, not all: the reason is a summary for
-// a record and a UI banner, and a wall of every abstention buries the first one, which is the one
-// that explains the verdict.
+// describe renders up to two checks as a one-line reason.
 func describe(checks []Check, prefix string) string {
 	parts := make([]string, 0, 2)
 	for i, c := range checks {
@@ -231,10 +196,6 @@ func describe(checks []Check, prefix string) string {
 
 // FormatRecords renders the evidence as a human-readable block for the acceptance review and for
 // the failure reason on an execution row.
-//
-// It is Markdown because that is what the operator reads — the acceptance review is the document
-// they open when deciding whether to trust a run, and evidence that is not in it may as well not
-// exist. Ordered so the verdict leads: a reader who stops after one line still knows the answer.
 func (r Result) FormatRecords() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "**Verification: %s**", r.Verdict)

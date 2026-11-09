@@ -46,14 +46,6 @@ func newTestRepo(t *testing.T) string {
 	gitRun(t, dir, "config", "user.email", "worktree-test@orchicon.dev")
 	gitRun(t, dir, "config", "user.name", "Worktree Test")
 	// Disable git's BACKGROUND auto-maintenance for the fixture repo.
-	//
-	// WHY: `git commit`/`git worktree` may detach a `gc --auto`/`maintenance`
-	// child that keeps writing into `.git` after the command returns. The test
-	// body then finishes and t.TempDir()'s RemoveAll races that child, failing
-	// the test with `TempDir RemoveAll cleanup: unlinkat …/.git: directory not
-	// empty` (a cleanup error, not an assertion failure — seen intermittently
-	// under load). Turning auto-gc off at the source removes the concurrent
-	// writer; the fixture needs no gc, so nothing of value is lost.
 	gitRun(t, dir, "config", "gc.auto", "0")
 	gitRun(t, dir, "config", "maintenance.auto", "false")
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test repo\n"), 0o644); err != nil {
@@ -64,10 +56,7 @@ func newTestRepo(t *testing.T) string {
 	return dir
 }
 
-// nonRepoDir creates a temp directory that is NOT inside any git work
-// tree. t.TempDir() inherits GOTMPDIR, which for the test process lives
-// inside the Orchicon checkout — git rev-parse would walk up and find the
-// parent repo. /tmp/orchicon is the scratch mount, safely outside.
+// nonRepoDir creates a temp directory that is NOT inside any git work tree.
 func nonRepoDir(t *testing.T) string {
 	t.Helper()
 	if err := os.MkdirAll("/tmp/orchicon", 0o755); err != nil {
@@ -92,25 +81,8 @@ type worktreeTestEnv struct {
 	itemID string
 }
 
-// purgeWorktreeSweepResidue clears the orphan-sweep's shared-tenant surface
-// before each worktree fixture, mirroring blocked_reconciler_test.go's
-// purgeScanResidue.
-//
-// WHY: the orphan sweep reads a BOUNDED, tenant-wide page
-// (ListTerminalRunsWithPrunedBranchesInclusive: pruned + a recorded branch,
-// ORDER BY created_at ASC LIMIT 32) — it ignores the test's own run id. Each
-// worktree test leaves a terminal+pruned row recording a branch whose
-// project_dir is a t.TempDir() that is DELETED when the test ends, so those
-// rows can never be reclaimed by the sweep (`isInsideWorkTree` fails on the
-// vanished dir) and accumulate across the package run. After ~32 of them they
-// pin the entire bounded window, the fixture's own freshly-created (newest)
-// row never enters it, and the sweep silently reaches nothing — so
-// TestWorktreeScanRunsSlowPassAfterInterval and
-// TestWorktreeSlowPassBudgetExpiryResumesNextTick fail non-deterministically
-// depending on how many sibling tests ran first. Clearing the recorded branch
-// on the shared tenant's terminal+pruned rows (exactly what the sweep does to
-// a row it can reach) gives the scan a deterministic, clean page — the same
-// remedy the blocked-scan and parallel-dispatch suites already apply.
+// purgeWorktreeSweepResidue clears the orphan-sweep's shared-tenant surface before each worktree
+// fixture, mirroring blocked_reconciler_test.go's purgeScanResidue.
 func purgeWorktreeSweepResidue(t *testing.T, pool *db.Pool) {
 	t.Helper()
 	ctx := context.Background()
@@ -222,9 +194,8 @@ func countWorktrees(t *testing.T, repo string) int {
 	return strings.Count(out, "\n")
 }
 
-// TestWorktreeCreatedAtArmTime is the core acceptance test: reconcile a
-// pending run against a git-backed project and verify the worktree + branch
-// are created and recorded on the run row.
+// TestWorktreeCreatedAtArmTime is the core acceptance test: reconcile a pending run against a
+// git-backed project and verify the worktree + branch are created and recorded on the run row.
 func TestWorktreeCreatedAtArmTime(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -263,9 +234,8 @@ func TestWorktreeCreatedAtArmTime(t *testing.T) {
 	}
 }
 
-// TestWorktreeReconcileIdempotent verifies the converge-don't-recreate
-// contract: a second pass for a 'ready' run is a no-op and does not add a
-// worktree.
+// TestWorktreeReconcileIdempotent verifies the converge-don't-recreate contract: a second pass for
+// a 'ready' run is a no-op and does not add a worktree.
 func TestWorktreeReconcileIdempotent(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -294,9 +264,8 @@ func TestWorktreeReconcileIdempotent(t *testing.T) {
 	}
 }
 
-// TestWorktreeConcurrentRunsDistinctBranches verifies the collision-safety
-// acceptance criterion: two runs of the same work item get distinct
-// branches and distinct worktrees.
+// TestWorktreeConcurrentRunsDistinctBranches verifies the collision-safety acceptance criterion:
+// two runs of the same work item get distinct branches and distinct worktrees.
 func TestWorktreeConcurrentRunsDistinctBranches(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -340,9 +309,8 @@ func TestWorktreeConcurrentRunsDistinctBranches(t *testing.T) {
 	}
 }
 
-// TestWorktreeNonRepoProjectSkipped verifies non-repo detection: a project
-// whose directory is not a git work tree is marked 'skipped' and the run
-// proceeds in place.
+// TestWorktreeNonRepoProjectSkipped verifies non-repo detection: a project whose directory is not a
+// git work tree is marked 'skipped' and the run proceeds in place.
 func TestWorktreeNonRepoProjectSkipped(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -358,10 +326,8 @@ func TestWorktreeNonRepoProjectSkipped(t *testing.T) {
 		Status: "active", Goals: []byte("[]"),
 		ProjectDir:    plain,
 		ExecutionMode: db.ExecutionModeRuntime,
-		// git_strategy=none, DELIBERATELY: a non-repo directory is a legitimate configuration only
-		// for the ephemeral strategy. Under local/pr the platform now INITIALISES a repository instead of
-		// skipping (see the run-time git init in reconcileOne), so pinning the default here would test the
-		// wrong contract — and did, until this fixture said what it meant.
+		// git_strategy=none, DELIBERATELY: a non-repo directory is a legitimate configuration only for the
+		// ephemeral strategy.
 		GitStrategy: "none",
 	})
 	if err != nil {
@@ -456,10 +422,8 @@ func getProjectGitDetection(t *testing.T, env *worktreeTestEnv, projectID string
 	return proj
 }
 
-// TestWorktreeGitDetectionCached verifies the D1 cache write: after a
-// reconcile pass over a git-backed project, the project row carries
-// git_work_tree=true with a fresh git_detected_at, so later passes trust the
-// cache instead of shelling out to git.
+// TestWorktreeGitDetectionCached verifies the D1 cache write: after a reconcile pass over a
+// git-backed project, the project row carries git_work_tree=true with a fresh git_detected_at.
 func TestWorktreeGitDetectionCached(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -476,9 +440,9 @@ func TestWorktreeGitDetectionCached(t *testing.T) {
 	}
 }
 
-// TestWorktreeNonRepoProjectCachesFalse verifies a non-repo project's run
-// proceeds in place (skipped) AND the cache records git_work_tree=false so
-// the loop does not re-shell-out to git on every pass.
+// TestWorktreeNonRepoProjectCachesFalse verifies a non-repo project's run proceeds in place
+// (skipped) AND the cache records git_work_tree=false so the loop does not re-shell-out to git on
+// every.
 func TestWorktreeNonRepoProjectCachesFalse(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -494,10 +458,8 @@ func TestWorktreeNonRepoProjectCachesFalse(t *testing.T) {
 		Status: "active", Goals: []byte("[]"),
 		ProjectDir:    plain,
 		ExecutionMode: db.ExecutionModeRuntime,
-		// git_strategy=none, DELIBERATELY: a non-repo directory is a legitimate configuration only
-		// for the ephemeral strategy. Under local/pr the platform now INITIALISES a repository instead of
-		// skipping (see the run-time git init in reconcileOne), so pinning the default here would test the
-		// wrong contract — and did, until this fixture said what it meant.
+		// git_strategy=none, DELIBERATELY: a non-repo directory is a legitimate configuration only for the
+		// ephemeral strategy.
 		GitStrategy: "none",
 	})
 	if err != nil {
@@ -528,10 +490,8 @@ func TestWorktreeNonRepoProjectCachesFalse(t *testing.T) {
 	}
 }
 
-// TestWorktreeGitDetectionInvalidatedOnDirChange verifies the D1 invalidation
-// choke point: changing a project's project_dir via UpdateProject resets the
-// git-detection cache (git_detected_at -> NULL) so the reconciler re-detects
-// for the new directory.
+// TestWorktreeGitDetectionInvalidatedOnDirChange verifies the D1 invalidation choke point: changing
+// a project's project_dir via UpdateProject resets the git-detection cache (git_detected_at ->.
 func TestWorktreeGitDetectionInvalidatedOnDirChange(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -573,11 +533,8 @@ func TestWorktreeGitDetectionInvalidatedOnDirChange(t *testing.T) {
 	}
 }
 
-// TestWorktreeNonRepoSecondPassNoGitShellOut proves the cache avoids repeated
-// shell-outs: after a non-repo project's detection is cached (false, fresh),
-// a second reconcile pass must NOT invoke git. We remove git from PATH; if the
-// reconciler still trusts the cache, the pass converges on 'skipped' without
-// error. If it shelled out to git it would fail to find the binary.
+// TestWorktreeNonRepoSecondPassNoGitShellOut proves the cache avoids repeated shell-outs: after a
+// non-repo project's detection is cached (false, fresh).
 func TestWorktreeNonRepoSecondPassNoGitShellOut(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -593,10 +550,8 @@ func TestWorktreeNonRepoSecondPassNoGitShellOut(t *testing.T) {
 		Status: "active", Goals: []byte("[]"),
 		ProjectDir:    plain,
 		ExecutionMode: db.ExecutionModeRuntime,
-		// git_strategy=none, DELIBERATELY: a non-repo directory is a legitimate configuration only
-		// for the ephemeral strategy. Under local/pr the platform now INITIALISES a repository instead of
-		// skipping (see the run-time git init in reconcileOne), so pinning the default here would test the
-		// wrong contract — and did, until this fixture said what it meant.
+		// git_strategy=none, DELIBERATELY: a non-repo directory is a legitimate configuration only for the
+		// ephemeral strategy.
 		GitStrategy: "none",
 	})
 	if err != nil {
@@ -646,9 +601,8 @@ func TestWorktreeNonRepoSecondPassNoGitShellOut(t *testing.T) {
 	}
 }
 
-// TestWorktreeSkippedNotReprovisioned verifies a recorded 'skipped' decision
-// is respected: pointing the project at a real git repo later does not make
-// the loop revisit the run.
+// TestWorktreeSkippedNotReprovisioned verifies a recorded 'skipped' decision is respected: pointing
+// the project at a real git repo later does not make the loop revisit the run.
 func TestWorktreeSkippedNotReprovisioned(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -664,10 +618,8 @@ func TestWorktreeSkippedNotReprovisioned(t *testing.T) {
 		Status: "active", Goals: []byte("[]"),
 		ProjectDir:    plain,
 		ExecutionMode: db.ExecutionModeRuntime,
-		// git_strategy=none, DELIBERATELY: a non-repo directory is a legitimate configuration only
-		// for the ephemeral strategy. Under local/pr the platform now INITIALISES a repository instead of
-		// skipping (see the run-time git init in reconcileOne), so pinning the default here would test the
-		// wrong contract — and did, until this fixture said what it meant.
+		// git_strategy=none, DELIBERATELY: a non-repo directory is a legitimate configuration only for the
+		// ephemeral strategy.
 		GitStrategy: "none",
 	})
 	if err != nil {
@@ -749,9 +701,9 @@ func setRunStatus(t *testing.T, env *worktreeTestEnv, status string) {
 	}
 }
 
-// setRunPrState writes the authoritative pr_state into the run's
-// run_context JSONB, the way the per-branch DevOps worker does after a
-// successful merge (`gh pr merge --squash` + pr_state="merged").
+// setRunPrState writes the authoritative pr_state into the run's run_context JSONB, the way the
+// per-branch DevOps worker does after a successful merge (`gh pr merge --squash` +
+// pr_state="merged").
 func setRunPrState(t *testing.T, env *worktreeTestEnv, state string) {
 	t.Helper()
 	ctx := context.Background()
@@ -807,10 +759,8 @@ func assertPruned(t *testing.T, env *worktreeTestEnv) db.WorkflowRunRow {
 	return run
 }
 
-// TestWorktreePrunedAtTerminal is the core pruning acceptance test: when a
-// run reaches a terminal state, reconcile removes the worktree dir, runs
-// `git worktree prune`, records 'pruned', and — on SUCCESS — deletes the
-// branch (the reconciler now owns branch deletion).
+// TestWorktreePrunedAtTerminal is the core pruning acceptance test: when a run reaches a terminal
+// state, reconcile removes the worktree dir, runs `git worktree prune`, records 'pruned'.
 func TestWorktreePrunedAtTerminal(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -847,9 +797,8 @@ func TestWorktreePrunedAtTerminal(t *testing.T) {
 	}
 }
 
-// TestWorktreePruneKeepsBranchOnFailure locks in the success-only deletion
-// contract: a FAILED run's branch survives pruning so a retry can re-attach
-// to it (carry-over of partial work).
+// TestWorktreePruneKeepsBranchOnFailure locks in the success-only deletion contract: a FAILED run's
+// branch survives pruning so a retry can re-attach to it (carry-over of partial work).
 func TestWorktreePruneKeepsBranchOnFailure(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -891,11 +840,8 @@ func TestWorktreePruneKeepsBranchOnAborted(t *testing.T) {
 	}
 }
 
-// TestWorktreeReattachToExistingBranch is the retry-after-prune acceptance
-// test: a failed run's worktree is pruned but its branch survives; a retry
-// re-provisions a NEW worktree that ATTACHES to the EXISTING branch (carry-
-// over of partial work — no duplicated effort). The branch pre-exists with a
-// commit, and the re-provisioned worktree must pick up that commit.
+// TestWorktreeReattachToExistingBranch is the retry-after-prune acceptance test: a failed run's
+// worktree is pruned but its branch survives.
 func TestWorktreeReattachToExistingBranch(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -961,9 +907,8 @@ func TestWorktreeReattachToExistingBranch(t *testing.T) {
 	}
 }
 
-// TestWorktreePruneKeepsUnmergedBranchOnSuccess locks in the safety gate: a
-// SUCCESSFUL run whose branch is NOT merged into the base (develop) is never
-// deleted — the reconciler never deletes unmerged work.
+// TestWorktreePruneKeepsUnmergedBranchOnSuccess locks in the safety gate: a SUCCESSFUL run whose
+// branch is NOT merged into the base (develop) is never deleted.
 func TestWorktreePruneKeepsUnmergedBranchOnSuccess(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -992,12 +937,8 @@ func TestWorktreePruneKeepsUnmergedBranchOnSuccess(t *testing.T) {
 	}
 }
 
-// TestWorktreePruneDeletesBranchMergedOnRemote locks in the stale-ref fix:
-// the DevOps worker merges via `gh pr merge` on the REMOTE, which advances
-// origin/develop but not the local refs. The merge gate must fetch the remote
-// before the ancestor check — otherwise it reads the stale pre-merge state,
-// always returns false, and a successfully-merged branch is never deleted
-// (the branch leak this feature exists to fix).
+// TestWorktreePruneDeletesBranchMergedOnRemote locks in the stale-ref fix: the DevOps worker merges
+// via `gh pr merge` on the REMOTE, which advances origin/develop but not the local refs.
 func TestWorktreePruneDeletesBranchMergedOnRemote(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1014,9 +955,8 @@ func TestWorktreePruneDeletesBranchMergedOnRemote(t *testing.T) {
 	gitRun(t, env.expectedPath(), "add", ".")
 	gitRun(t, env.expectedPath(), "commit", "-m", "merged work")
 
-	// Create a bare remote, push develop + the feature branch, then merge
-	// the feature branch into develop ON THE REMOTE — exactly what the
-	// DevOps worker's `gh pr merge` does. The local repo's refs stay stale.
+	// Create a bare remote, push develop + the feature branch, then merge the feature branch into
+	// develop ON THE REMOTE — exactly what the DevOps worker's `gh pr merge` does.
 	bare := filepath.Join(t.TempDir(), "origin.git")
 	gitRun(t, env.repo, "clone", "--bare", env.repo, bare)
 	gitRun(t, env.repo, "remote", "add", "origin", bare)
@@ -1049,14 +989,8 @@ func TestWorktreePruneDeletesBranchMergedOnRemote(t *testing.T) {
 	}
 }
 
-// TestWorktreePruneDeletesBranchSquashMergedOnRemote is the regression test
-// for the squash-merge leak: the DevOps worker merges via
-// `gh pr merge --squash`, which lands a NEW commit on develop whose parent is
-// the base tip — the PR branch tip is NEVER an ancestor of the base, so an
-// ancestry-only delete gate would refuse deletion forever. With the run's
-// authoritative pr_state == "merged" recorded, the reconciler must prove the
-// branch merged and prune it (and its worktree container) on terminal
-// success.
+// TestWorktreePruneDeletesBranchSquashMergedOnRemote is the regression test for the squash-merge
+// leak: the DevOps worker merges via `gh pr merge --squash`.
 func TestWorktreePruneDeletesBranchSquashMergedOnRemote(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1073,9 +1007,8 @@ func TestWorktreePruneDeletesBranchSquashMergedOnRemote(t *testing.T) {
 	gitRun(t, env.expectedPath(), "add", ".")
 	gitRun(t, env.expectedPath(), "commit", "-m", "squashed work")
 
-	// Create a bare remote, push develop + the feature branch, then SQUASH
-	// merge the feature branch into develop ON THE REMOTE — exactly what the
-	// DevOps worker's `gh pr merge --squash` does.
+	// Create a bare remote, push develop + the feature branch, then SQUASH merge the feature branch
+	// into develop ON THE REMOTE — exactly what the DevOps worker's `gh pr merge --squash` does.
 	bare := filepath.Join(t.TempDir(), "origin.git")
 	gitRun(t, env.repo, "clone", "--bare", env.repo, bare)
 	gitRun(t, env.repo, "remote", "add", "origin", bare)
@@ -1121,11 +1054,8 @@ func TestWorktreePruneDeletesBranchSquashMergedOnRemote(t *testing.T) {
 	}
 }
 
-// TestWorktreePruneKeepsSquashWithoutPrState locks in the no-delete-on-
-// uncertainty invariant for the squash-aware gate: a completed run whose
-// branch was squash-merged BUT whose run row records no pr_state must KEEP
-// the branch — no authoritative proof applies, and the remote-ref-gone
-// fallback is inconclusive because the branch still exists on the remote.
+// TestWorktreePruneKeepsSquashWithoutPrState locks in the no-delete-on- uncertainty invariant for
+// the squash-aware gate.
 func TestWorktreePruneKeepsSquashWithoutPrState(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1168,12 +1098,8 @@ func TestWorktreePruneKeepsSquashWithoutPrState(t *testing.T) {
 	}
 }
 
-// TestWorktreePruneStepBranchSquashMergedOnRemote extends the squash-aware
-// proof to parallel-branch step runs: a step sub-branch whose run's PR was
-// squash-merged (pr_state=merged) is reclaimed on terminal success. It also
-// covers the orphan sweep — after the sole step worktree inside the empty
-// <runID>/ container is pruned, the vacated run-namespaced container is
-// reaped.
+// TestWorktreePruneStepBranchSquashMergedOnRemote extends the squash-aware proof to parallel-branch
+// step runs: a step sub-branch whose run's PR was squash-merged (pr_state=merged) is reclaimed.
 func TestWorktreePruneStepBranchSquashMergedOnRemote(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1195,10 +1121,8 @@ func TestWorktreePruneStepBranchSquashMergedOnRemote(t *testing.T) {
 		t.Fatalf("commit fixture: %v", err)
 	}
 
-	// Provision the branch worktree FIRST — this creates <runID>/ as a plain
-	// container holding only the nested <runID>/<stepRunID> worktree (the run
-	// worktree is never provisioned, so the container is a pure step-run
-	// container, the shape the orphan sweep reaps).
+	// Provision the branch worktree FIRST — this creates <runID>/ as a plain container holding only the
+	// nested <runID>/<stepRunID> worktree (the run worktree is never provisioned.
 	key := env.run.ID + ":" + sr.ID
 	if res := env.rec.Reconcile(ctx, key); res.Error != nil {
 		t.Fatalf("provision branch worktree: %v", res.Error)
@@ -1265,10 +1189,8 @@ func TestWorktreePruneStepBranchSquashMergedOnRemote(t *testing.T) {
 	}
 }
 
-// TestWorktreePruneOrphanContainerSweepKeepsForeign locks in the guard on
-// the orphan sweep: an empty run-namespaced container is reaped, while a
-// foreign (non-native) directory under .orchicon-worktrees/ is never
-// touched.
+// TestWorktreePruneOrphanContainerSweepKeepsForeign locks in the guard on the orphan sweep: an
+// empty run-namespaced container is reaped.
 func TestWorktreePruneOrphanContainerSweepKeepsForeign(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1305,9 +1227,8 @@ func TestWorktreePruneOrphanContainerSweepKeepsForeign(t *testing.T) {
 	}
 }
 
-// TestWorktreePruneNeverDeletesProtectedBranches locks in the safety gate:
-// the reconciler never deletes main/develop/current branch. A completed run
-// whose recorded branch is a protected name is left intact.
+// TestWorktreePruneNeverDeletesProtectedBranches locks in the safety gate: the reconciler never
+// deletes main/develop/current branch.
 func TestWorktreePruneNeverDeletesProtectedBranches(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1379,9 +1300,8 @@ func TestWorktreePruneIdempotent(t *testing.T) {
 	}
 }
 
-// TestWorktreePruneSkipsNonTerminal locks in AC3: a run that is still
-// running with a ready worktree is never pruned — neither by the enqueue
-// (Reconcile(key)) path nor by the scan discovery.
+// TestWorktreePruneSkipsNonTerminal locks in AC3: a run that is still running with a ready worktree
+// is never pruned — neither by the enqueue (Reconcile(key)) path nor by the scan discovery.
 func TestWorktreePruneSkipsNonTerminal(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1428,10 +1348,8 @@ func TestWorktreePruneSkipsNonTerminal(t *testing.T) {
 	}
 }
 
-// TestWorktreePruneAlreadyGone covers the idempotent "missing worktree =
-// already pruned = success" path: the worktree is removed out-of-band (e.g.
-// by a crashed earlier pass) before the row is marked, and reconcile still
-// converges to 'pruned' without error.
+// TestWorktreePruneAlreadyGone covers the idempotent "missing worktree = already pruned = success"
+// path: the worktree is removed out-of-band (e.g. by a crashed earlier pass) before the row.
 func TestWorktreePruneAlreadyGone(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1472,11 +1390,8 @@ func TestWorktreePruneScanDiscovery(t *testing.T) {
 	if _, err := os.Stat(env.expectedPath()); !os.IsNotExist(err) {
 		t.Fatalf("worktree dir still exists after scan-discovered prune: %v", err)
 	}
-	// The full scan also runs the orphan sweep, which reclaims the
-	// provably-merged branch and clears the swept row's recorded branch
-	// (the page-advance invariant) — unlike the direct-prune path, the
-	// scan-converged row carries pruned + cleared path with the branch
-	// already reclaimed.
+	// The full scan also runs the orphan sweep, which reclaims the provably-merged branch and clears
+	// the swept row's recorded branch (the page-advance invariant) — unlike the direct-prune path.
 	run := env.getRun(t)
 	if run.WorktreeStatus != domain.WorktreePruned {
 		t.Fatalf("worktree_status = %q, want pruned", run.WorktreeStatus)
@@ -1492,9 +1407,8 @@ func TestWorktreePruneScanDiscovery(t *testing.T) {
 	}
 }
 
-// TestWorktreePruneAbortedRun verifies the aborted terminal path is pruned
-// exactly like completed/failed (a cancelled work item maps to an aborted
-// run).
+// TestWorktreePruneAbortedRun verifies the aborted terminal path is pruned exactly like
+// completed/failed (a cancelled work item maps to an aborted run).
 func TestWorktreePruneAbortedRun(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1513,9 +1427,8 @@ func TestWorktreePruneAbortedRun(t *testing.T) {
 	assertPruned(t, env)
 }
 
-// TestWorktreePruneNonReadyTerminalUntouched verifies the idempotent guard:
-// a terminal run in any worktree state other than 'ready' has nothing to
-// prune and is never touched.
+// TestWorktreePruneNonReadyTerminalUntouched verifies the idempotent guard: a terminal run in any
+// worktree state other than 'ready' has nothing to prune and is never touched.
 func TestWorktreePruneNonReadyTerminalUntouched(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1534,14 +1447,8 @@ func TestWorktreePruneNonReadyTerminalUntouched(t *testing.T) {
 	}
 }
 
-// TestWorktreePrunedNotReprovisioned locks in the recovery-adjacent guard:
-// a run whose worktree was pruned is a recorded terminal decision — the
-// loop never re-provisions it on its own. Re-provisioning after a prune
-// happens ONLY through an explicit retry, which resets worktree_status to
-// pending (see TestRetryAfterPruneProvisionsWorktree): flipping the run
-// status back to running while the row still says pruned must not recreate
-// a worktree (the deterministic branch already exists, so re-provisioning
-// could never succeed).
+// Re-provisioning after a prune happens ONLY through an explicit retry, which resets
+// worktree_status to pending (see TestRetryAfterPruneProvisionsWorktree).
 func TestWorktreePrunedNotReprovisioned(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1585,14 +1492,8 @@ func TestWorktreePrunedNotReprovisioned(t *testing.T) {
 	}
 }
 
-// TestWorktreeRunProvisionedAfterBranchWorktree is the regression test for
-// the parallel-branch provisioning race: a parallel-branch step run can be
-// provisioned FIRST, creating <runID>/ as a plain container holding only
-// nested <runID>/<stepRunID> worktrees. A later reconcileOne for the run
-// must recognize that container as provably ours (never fail closed on the
-// never-delete-user-data guard) and create the run worktree INTO it
-// alongside the intact step-run worktree — the run reaches WorktreeReady,
-// not WorktreeFailed.
+// TestWorktreeRunProvisionedAfterBranchWorktree is the regression test for the parallel-branch
+// provisioning race: a parallel-branch step run can be provisioned FIRST.
 func TestWorktreeRunProvisionedAfterBranchWorktree(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1615,9 +1516,7 @@ func TestWorktreeRunProvisionedAfterBranchWorktree(t *testing.T) {
 		t.Fatalf("commit fixture: %v", err)
 	}
 
-	// Race order: provision the branch worktree FIRST. This creates the
-	// <runID>/ container as a plain directory holding only the nested
-	// <runID>/<stepRunID> worktree.
+	// Race order: provision the branch worktree FIRST.
 	key := env.run.ID + ":" + sr.ID
 	if res := env.rec.Reconcile(ctx, key); res.Error != nil {
 		t.Fatalf("provision branch worktree (first): %v", res.Error)
@@ -1638,9 +1537,7 @@ func TestWorktreeRunProvisionedAfterBranchWorktree(t *testing.T) {
 		t.Fatalf("run path should not yet be a registered worktree")
 	}
 
-	// Now reconcile the RUN. It must recognize the provably-ours container
-	// and create the run worktree alongside the branch worktree — not fail
-	// closed.
+	// Now reconcile the RUN.
 	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
 		t.Fatalf("reconcile run after branch provision: %v", res.Error)
 	}
@@ -1700,10 +1597,8 @@ func TestWorktreeRunProvisionedAfterBranchWorktree(t *testing.T) {
 	}
 }
 
-// TestWorktreeForeignDirStillFailsClosed locks in AC3: a genuinely foreign
-// directory occupying <runID>/ (content not provably ours) still fails
-// closed via markFailed — the never-delete-user-data invariant is preserved,
-// even for a pending run.
+// TestWorktreeForeignDirStillFailsClosed locks in AC3: a genuinely foreign directory occupying
+// <runID>/ (content not provably ours) still fails closed via markFailed.
 func TestWorktreeForeignDirStillFailsClosed(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1729,14 +1624,8 @@ func TestWorktreeForeignDirStillFailsClosed(t *testing.T) {
 	}
 }
 
-// TestWorktreeOrphanBranchSweptOnCompletedRun is the regression test for the
-// orphaned-branch ref leak. A COMPLETED run whose worktree was already pruned
-// (worktree_status='pruned') still records worktree_branch; the prune pass only
-// sweeps 'ready' worktrees, so a branch that survived pruning — e.g. the run
-// completed after its worktree was taken down by an earlier pass, while a
-// later dispatching run merged the same branch — was never revisited and
-// leaked as a dead local ref. The orphan sweep must reclaim it (provably
-// merged into the base), but must NOT reap a failed/aborted run's branch.
+// TestWorktreeOrphanBranchSweptOnCompletedRun is the regression test for the orphaned-branch ref
+// leak.
 func TestWorktreeSweepOrphanBranchOnCompletedRun(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1751,9 +1640,8 @@ func TestWorktreeSweepOrphanBranchOnCompletedRun(t *testing.T) {
 		t.Fatal("run recorded no worktree_branch")
 	}
 
-	// Simulate the orphan class: the run's worktree was already pruned
-	// (status pruned, path cleared, branch retained) AND the branch has NO
-	// live worktree anymore. Mark the run completed so it is reclaimable.
+	// Simulate the orphan class: the run's worktree was already pruned (status pruned, path cleared,
+	// branch retained) AND the branch has NO live worktree anymore.
 	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
@@ -1790,11 +1678,8 @@ func TestWorktreeSweepOrphanBranchOnCompletedRun(t *testing.T) {
 		t.Fatalf("orphaned branch %q was NOT swept after completed run", branch)
 	}
 
-	// Regression for the stuck-backlog: the swept run's worktree_branch must
-	// be cleared in the DB, or the orphan query (`pruned` + branch <> '')
-	// selects it forever and the per-scan page never advances to newer
-	// orphans (the 132-orphan / 16-strand stuck state). After the sweep the
-	// row should no longer match the orphan predicate.
+	// Regression for the stuck-backlog: the swept run's worktree_branch must be cleared in the DB, or
+	// the orphan query (`pruned` + branch <> '') selects it forever and the per-scan page never.
 	final := env.getRun(t)
 	if final.WorktreeStatus != domain.WorktreePruned {
 		t.Fatalf("run worktree_status = %q, want %q", final.WorktreeStatus, domain.WorktreePruned)
@@ -1819,9 +1704,9 @@ func TestWorktreeSweepOrphanBranchOnCompletedRun(t *testing.T) {
 	}
 }
 
-// TestWorktreeSweepSkipsFailedRunBranch pins the success-only sweep guard:
-// a FAILED run's pruned-but-recorded branch must NOT be swept (a retry
-// re-attaches to it — carry-over of partial work).
+// TestWorktreeSweepSkipsFailedRunBranch pins the success-only sweep guard: a FAILED run's
+// pruned-but-recorded branch must NOT be swept (a retry re-attaches to it — carry-over of partial
+// work).
 func TestWorktreeSweepSkipsFailedRunBranch(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1858,12 +1743,8 @@ func TestWorktreeSweepSkipsFailedRunBranch(t *testing.T) {
 	}
 }
 
-// TestWorktreeSweepReclaimsAbortedRunBranch verifies Gate B: an ABORTED
-// run whose bound work item is terminal (succeeded) has its orphaned
-// branch reclaimed even though the branch is NOT provably merged. Aborted
-// runs have no retry path (RetryFailedWorkflowRun rejects non-failed), so
-// the branch is dead and work-item-terminal is proof enough (still gated
-// on not-protected/not-current/not-attached/exists).
+// TestWorktreeSweepReclaimsAbortedRunBranch verifies Gate B: an ABORTED run whose bound work item
+// is terminal (succeeded) has its orphaned branch reclaimed even though the branch is NOT provably.
 func TestWorktreeSweepReclaimsAbortedRunBranch(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -1942,10 +1823,8 @@ func TestWorktreeSweepReclaimsAbortedRunBranch(t *testing.T) {
 	}
 }
 
-// TestWorktreeSweepReclaimsFailedRunBranchWhenItemSucceeded verifies Gate B
-// for failed runs: a FAILED run whose work item is terminal succeeded has
-// its orphaned branch reclaimed even when not merged. The inclusive query
-// must return it and the sweep must clear worktree_branch so the page advances.
+// TestWorktreeSweepReclaimsFailedRunBranchWhenItemSucceeded verifies Gate B for failed runs: a
+// FAILED run whose work item is terminal succeeded has its orphaned branch reclaimed even when not.
 func TestWorktreeSweepReclaimsFailedRunBranchWhenItemSucceeded(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -2014,10 +1893,8 @@ func TestWorktreeSweepReclaimsFailedRunBranchWhenItemSucceeded(t *testing.T) {
 	}
 }
 
-// TestWorktreeSweepRetainsFailedRunBranchWhenItemActive verifies that a
-// FAILED run with an active work item (running) is NOT swept — it is a
-// retry target. The inclusive query LEFT JOIN must exclude it so the sweep
-// page does not pin.
+// TestWorktreeSweepRetainsFailedRunBranchWhenItemActive verifies that a FAILED run with an active
+// work item (running) is NOT swept — it is a retry target.
 func TestWorktreeSweepRetainsFailedRunBranchWhenItemActive(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -2071,10 +1948,8 @@ func TestWorktreeSweepRetainsFailedRunBranchWhenItemActive(t *testing.T) {
 	}
 }
 
-// TestWorktreeSweepReclaimsRunWithNoWorkItem verifies a run with no bound
-// work item (work_item_id IS NULL/empty) is reclaimable even when failed.
-// Its branch is dead — no retry re-attachment target — and Gate B must
-// reclaim it even when unmerged.
+// TestWorktreeSweepReclaimsRunWithNoWorkItem verifies a run with no bound work item (work_item_id
+// IS NULL/empty) is reclaimable even when failed.
 func TestWorktreeSweepReclaimsRunWithNoWorkItem(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -2166,11 +2041,9 @@ func TestWorktreeSweepReclaimsRunWithNoWorkItem(t *testing.T) {
 	}
 }
 
-// TestWorktreeNoneStrategyDetachedProvisionAndPrune is acceptance criterion
-// #3: a `none` (ephemeral) run's worktree is provisioned DETACHED — no named
-// branch is created (worktree_branch=""), so "no branch retained" is a
-// structural property of the worktree shape rather than a cleanup promise.
-// Provision and prune must both reconcile a detached worktree.
+// TestWorktreeNoneStrategyDetachedProvisionAndPrune is acceptance criterion #3: a `none`
+// (ephemeral) run's worktree is provisioned DETACHED — no named branch is created
+// (worktree_branch="").
 func TestWorktreeNoneStrategyDetachedProvisionAndPrune(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -2214,10 +2087,8 @@ func TestWorktreeNoneStrategyDetachedProvisionAndPrune(t *testing.T) {
 		t.Fatalf("none run worktree is not detached; got:\n%s", out)
 	}
 
-	// Prune must reconcile the detached worktree: dir reaped, row pruned,
-	// worktree_path cleared, and no branch ever recorded. assertPruned cannot
-	// be used here — it asserts the branch SURVIVES pruning, which is the
-	// opposite contract for a detached `none` run.
+	// Prune must reconcile the detached worktree: dir reaped, row pruned, worktree_path cleared, and no
+	// branch ever recorded.
 	setRunStatus(t, env, domain.WorkflowRunCompleted)
 	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
 		t.Fatalf("reconcile (prune): %v", res.Error)
@@ -2240,12 +2111,8 @@ func TestWorktreeNoneStrategyDetachedProvisionAndPrune(t *testing.T) {
 	}
 }
 
-// TestWorktreeDeleteBranchRemovesRemoteOnMerge is acceptance criterion #4:
-// when a provably-merged branch clears the local proof gates (P1 ancestry
-// here; P2/P3 + Gate B unchanged), the REMOTE ref is also deleted via
-// `git push origin --delete` — the general leaked-branch-class prune. The
-// fail-closed ordering means a remote-delete failure never clears local
-// provenance; nothing unmerged is ever deleted (the proof gate runs first).
+// TestWorktreeDeleteBranchRemovesRemoteOnMerge is acceptance criterion #4: when a provably-merged
+// branch clears the local proof gates (P1 ancestry here; P2/P3 + Gate B unchanged).
 func TestWorktreeDeleteBranchRemovesRemoteOnMerge(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -2292,11 +2159,8 @@ func TestWorktreeDeleteBranchRemovesRemoteOnMerge(t *testing.T) {
 	}
 }
 
-// TestWorktreeFastPassProvisionsWhileSlowGated is the 3-minute dispatch
-// stall regression test: with the slow pass freshly run (gated), a full
-// scan must still provision a pending run to ready — provisioning never
-// waits behind prune/sweep. Requires ORCHICON_TEST_DSN (same contract as
-// the other integration tests in this file).
+// TestWorktreeFastPassProvisionsWhileSlowGated is the 3-minute dispatch stall regression test: with
+// the slow pass freshly run (gated), a full scan must still provision a pending run to ready.
 func TestWorktreeFastPassProvisionsWhileSlowGated(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -2322,11 +2186,8 @@ func TestWorktreeFastPassProvisionsWhileSlowGated(t *testing.T) {
 	}
 }
 
-// TestWorktreeScanRunsSlowPassAfterInterval verifies the sweep slow pass
-// is not disabled, only deprioritized: once the interval has elapsed, a
-// scan runs the orphan sweep (here: a merged orphan branch reclaimed +
-// row cleared) and restamps lastSlowPass. Terminal prunes live in the fast
-// pass and run on every tick regardless of the gate.
+// TestWorktreeScanRunsSlowPassAfterInterval verifies the sweep slow pass is not disabled, only
+// deprioritized: once the interval has elapsed, a scan runs the orphan sweep (here.
 func TestWorktreeScanRunsSlowPassAfterInterval(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -2375,10 +2236,8 @@ func TestWorktreeScanRunsSlowPassAfterInterval(t *testing.T) {
 	}
 }
 
-// TestWorktreeSlowPassBudgetExpiryResumesNextTick verifies the page-advance
-// invariant under budget expiry: sweep funcs with an already-expired
-// deadline return early without clearing anything, and the rows still match
-// the sweep queries so the next slow tick resumes them.
+// TestWorktreeSlowPassBudgetExpiryResumesNextTick verifies the page-advance invariant under budget
+// expiry: sweep funcs with an already-expired deadline return early without clearing anything.
 func TestWorktreeSlowPassBudgetExpiryResumesNextTick(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()

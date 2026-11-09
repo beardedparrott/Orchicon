@@ -5,13 +5,8 @@ import (
 	"time"
 )
 
-// TestDequeueSingleNotReadyKeyDoesNotSpin is a regression test for the
-// field incident where a single not-ready key made dequeue busy-loop
-// forever: the old code captured `now` once and re-appended the not-ready
-// key to the end, so `len(q.ordered) > 0` was always true and the loop
-// never returned — pinning a core and starving the reconciler (observed at
-// 150% CPU with the advisory lock never renewed). The fixed dequeue must
-// return ok=false after one bounded rotation pass.
+// TestDequeueSingleNotReadyKeyDoesNotSpin is a regression test for the field incident where a
+// single not-ready key made dequeue busy-loop forever.
 func TestDequeueSingleNotReadyKeyDoesNotSpin(t *testing.T) {
 	q := newWorkQueue("workflow")
 	q.enqueue("run-1")
@@ -28,9 +23,8 @@ func TestDequeueSingleNotReadyKeyDoesNotSpin(t *testing.T) {
 	}
 }
 
-// TestDequeueReadyKeyIsReturnedAfterBackoff verifies that a key in backoff
-// becomes retrievable once its readyAt passes — the rotation keeps it in the
-// queue instead of dropping it.
+// TestDequeueReadyKeyIsReturnedAfterBackoff verifies that a key in backoff becomes retrievable once
+// its readyAt passes — the rotation keeps it in the queue instead of dropping it.
 func TestDequeueReadyKeyIsReturnedAfterBackoff(t *testing.T) {
 	q := newWorkQueue("workflow")
 	q.enqueue("run-1")

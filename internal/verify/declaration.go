@@ -28,11 +28,7 @@ type Declaration struct {
 	Command string
 	// Format is how the command reports per-check results.
 	Format ResultFormat
-	// Path is an optional FILE the command writes its report to, relative to the project dir. Some runners
-	// cannot write to stdout (surefire writes target/surefire-reports, pytest wants a path); others can.
-	//
-	// WHEN SET, THE REPORT IS READ FROM THE FILE rather than from the command's output — which also means the
-	// gate's own noise cannot confuse the parse, because there is no parse of the noise at all.
+	// Path is an optional FILE the command writes its report to, relative to the project dir.
 	Path string
 }
 
@@ -47,10 +43,6 @@ func (d Declaration) PerCheck() bool { return d.Declared() && d.Format.ParsesRes
 var keyValuePrefixes = []string{"command", "format", "path"}
 
 // ParseDeclaration reads a `.orchicon/verify` file body.
-//
-// THE BARE-COMMAND FORM IS DECIDED BY THE FIRST SIGNIFICANT LINE. If it is not `key = value` with a known key,
-// the whole file's significant lines are joined as the command — which is what the old single-line reader did,
-// so an existing file is unaffected. A `#` comment is ignored either way.
 func ParseDeclaration(body string) (Declaration, error) {
 	var d Declaration
 	var significant []string
@@ -103,11 +95,8 @@ func isKeyValue(line string) bool {
 	return ok
 }
 
-// splitKeyValue parses `key = value`, accepting only the known keys.
-//
-// THE KEY MUST BE KNOWN, deliberately: `GOFLAGS=-count=1 go test ./...` is a legal bare command whose first
-// token looks like a key, and treating it as one would try to parse `-count=1 go test ./...` as a format. Only a
-// recognised key makes the file a key/value declaration.
+// THE KEY MUST BE KNOWN, deliberately: `GOFLAGS=-count=1 go test ./...` is a legal bare command
+// whose first token looks like a key.
 func splitKeyValue(line string) (key, value string, ok bool) {
 	i := strings.Index(line, "=")
 	if i <= 0 {

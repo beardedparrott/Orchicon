@@ -10,47 +10,29 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Kind-switch resolution (ADR-WIT-1/2): switching a work item's kind can
-// break three invariants — the parent invariant (a child must be strictly
-// deeper than its parent), the child invariant (children must be strictly
-// deeper than the item), and schedulability (only tasks/subtasks may be
-// dispatched). ResolveKindSwitch computes the full set of mutations that
-// keep the tree well-formed, and is shared by the Connect UpdateWorkItem
-// handler and the Ask Orchicon update_work_item tool so the two paths
-// cannot drift (AGENTS.md).
-//
-// The resolution runs inside the caller's tenant transaction, before the
-// item UPDATE, so every mutation (the switch itself, child reparents) is
-// enqueued through the transactional outbox in the same atomic unit
-// (AGENTS.md invariant #3).
+// Kind-switch resolution (ADR-WIT-1/2): switching a work item's kind can break three invariants —
+// the parent invariant (a child must be strictly deeper than its parent).
 
 var (
-	// ErrKindSwitchRunning is returned when the item is currently
-	// executing (running/checkpointing/recovering) — it must not be
-	// re-typed mid-flight.
+	// ErrKindSwitchRunning is returned when the item is currently executing
+	// (running/checkpointing/recovering) — it must not be re-typed mid-flight.
 	ErrKindSwitchRunning = errors.New("cannot switch the kind of a work item that is currently running, checkpointing, or recovering")
 	// ErrKindSwitchActiveRun is returned when an active (non-terminal)
 	// workflow run is attached to the item.
 	ErrKindSwitchActiveRun = errors.New("cannot switch the kind of a work item with an active workflow run")
 )
 
-// ChildReparent is a single child move decided by kind-switch resolution:
-// ChildID (with its version for optimistic concurrency) moves under
-// NewParentID (nil = top-level, which cannot actually trigger here — see
-// ResolveKindSwitch).
+// ChildReparent is a single child move decided by kind-switch resolution: ChildID (with its version
+// for optimistic concurrency) moves under NewParentID (nil = top-level.
 type ChildReparent struct {
 	ChildID      string
 	ChildVersion int
 	NewParentID  *string
 }
 
-// KindSwitchPlan is the set of mutations ResolveKindSwitch decided. The
-// caller applies them to the switched item and each reparented child in
-// the same transaction, emitting the corresponding outbox events.
+// KindSwitchPlan is the set of mutations ResolveKindSwitch decided.
 type KindSwitchPlan struct {
-	// NewParentID is the resolved parent for the switched item:
-	// nil = top-level (epic). When the item keeps its current parent it is
-	// still set to that parent id so the caller can compare and decide.
+	// NewParentID is the resolved parent for the switched item: nil = top-level (epic).
 	NewParentID *string
 	// NewStatus, when non-nil, is the adjusted status (ready/assigned/
 	// scheduled → pending when the new kind is not schedulable).
@@ -129,10 +111,7 @@ func ResolveKindSwitch(ctx context.Context, tx pgx.Tx, tenantID string, current 
 	default:
 		explicit := explicitParentID
 		if explicit != nil && current.ParentID != nil && *explicit == *current.ParentID {
-			// The requested parent is the item's current parent. For the
-			// new kind that parent may no longer be shallower (e.g. a
-			// Task under a Feature switched to Feature) — auto-resolution
-			// is the point of a kind switch, so treat this as "keep".
+			// The requested parent is the item's current parent.
 			explicit = nil
 		}
 		switch {
@@ -151,28 +130,14 @@ func ResolveKindSwitch(ctx context.Context, tx pgx.Tx, tenantID string, current 
 			}
 		}
 		if resolvedParent == nil {
-			// DELIBERATELY NOT exempted for an ephemeral item (unlike the
-			// create/update paths' top-level exemption in ValidateParent). A
-			// kind switch IS reachable for an ephemeral item — update_work_item
-			// takes `kind` and nothing gates ephemeral rows on the update path —
-			// so a top-level ephemeral task switched to a non-epic kind is
-			// refused here. That is left as-is because a kind switch is not part
-			// of the ephemeral lifecycle: an ephemeral item is created for
-			// exactly one job with one workflow binding and hard-deleted when
-			// the job ends — it is never re-typed. Exempting it here would also
-			// make a nil resolution legitimate, which the child-reparenting step
-			// below is explicitly documented NOT to produce (see
-			// KindSwitchPlan.NewParentID) — a real restructure of the planner
-			// for no lifecycle gain.
+			// DELIBERATELY NOT exempted for an ephemeral item (unlike the create/update paths' top-level
+			// exemption in ValidateParent).
 			return nil, fmt.Errorf("a %s must have a parent; choose one explicitly", kind)
 		}
 	}
 	plan.NewParentID = resolvedParent
 
-	// 2. Child side: direct children that would no longer be strictly
-	// deeper than the item move under the item's resolved parent. This is
-	// defensive for well-formed trees but reachable (e.g. a Task with a
-	// Subtask child switched to Subtask).
+	// 2.
 	children, err := db.ListDirectChildren(ctx, tx, tenantID, current.ID)
 	if err != nil {
 		return nil, err
@@ -209,18 +174,8 @@ func isSchedulableKind(kind string) bool {
 	return kind == domain.WorkItemKindTask || kind == domain.WorkItemKindSubtask
 }
 
-// nearestShallowerAncestor walks up the ancestor chain starting from
-// parentID and returns the nearest ancestor whose depth is strictly less
-// than newDepth. The chain is strictly shallower, so an ancestor always
-// exists while the item has any parent (the topmost epic is depth 1 and
-// newDepth >= 2 here — newDepth == 1 is handled by the epic branch).
-//
-// Every visited ancestor must live in `projectID` — when a kind switch is
-// combined with a project move, a keep-parent resolution must never walk
-// back into the item's OLD project (which would silently write a
-// cross-project parent). The caller's early guard already rejects the
-// keep-parent path unless the current parent lives in the target project;
-// this check is the backstop for a chain that crosses back anyway.
+// nearestShallowerAncestor walks up the ancestor chain starting from parentID and returns the
+// nearest ancestor whose depth is strictly less than newDepth.
 func nearestShallowerAncestor(ctx context.Context, tx pgx.Tx, tenantID, parentID string, newDepth int, projectID string) (*string, error) {
 	cur := parentID
 	for {
@@ -241,9 +196,8 @@ func nearestShallowerAncestor(ctx context.Context, tx pgx.Tx, tenantID, parentID
 	}
 }
 
-// workflowRunActive reports whether the workflow run exists and is not in
-// a terminal state (completed/failed/aborted — same check pattern as the
-// auto-start guard in service.go). A missing run is treated as inactive.
+// workflowRunActive reports whether the workflow run exists and is not in a terminal state
+// (completed/failed/aborted — same check pattern as the auto-start guard in service.go).
 func workflowRunActive(ctx context.Context, tx pgx.Tx, tenantID, runID string) (bool, error) {
 	if runID == "" {
 		return false, nil

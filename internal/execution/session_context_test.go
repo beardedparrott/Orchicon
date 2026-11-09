@@ -6,11 +6,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// TestRenderSessionContextExtractsAdapterKind pins the follow-up seed's
-// structural read of the execution transcript's session_info part: the adapter
-// identity is extracted ALONGSIDE the opencode-shaped session_id/serve_url, and
-// a legacy row (no adapter_kind) still resolves — with an EMPTY kind, which is
-// what keeps the adapters' historical best-effort continuity path alive.
+// TestRenderSessionContextExtractsAdapterKind pins the follow-up seed's structural read of the
+// execution transcript's session_info part.
 func TestRenderSessionContextExtractsAdapterKind(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -62,10 +59,8 @@ func TestRenderSessionContextExtractsAdapterKind(t *testing.T) {
 	}
 }
 
-// TestRenderSessionContextLastNonEmptyAdapterKindWins pins the loop's
-// last-write-wins semantics for the identity fields: a follow-up that recorded a
-// FRESH session (adapter-tagged) after the original run's part must win, so the
-// next continuation resolves the most recent transport identity.
+// TestRenderSessionContextLastNonEmptyAdapterKindWins pins the loop's last-write-wins semantics for
+// the identity fields.
 func TestRenderSessionContextLastNonEmptyAdapterKindWins(t *testing.T) {
 	parts := []db.SessionPart{
 		{Kind: db.SessionPartSessionInfo, Seq: 1, Payload: []byte(`{"session_id":"ses_old","serve_url":"http://127.0.0.1:1"}`)},

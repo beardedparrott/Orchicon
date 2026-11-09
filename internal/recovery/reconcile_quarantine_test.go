@@ -28,9 +28,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// TestIsPoisonedRecoveryTx is the pure predicate truth table for RC3: only a
-// tx-abort / failed-commit error is treated as poisoned; everything else is
-// left to the normal retry path.
+// TestIsPoisonedRecoveryTx is the pure predicate truth table for RC3: only a tx-abort /
+// failed-commit error is treated as poisoned; everything else is left to the normal retry path.
 func TestIsPoisonedRecoveryTx(t *testing.T) {
 	poisoned := []string{
 		"current transaction is aborted",
@@ -61,11 +60,7 @@ func TestIsPoisonedRecoveryTx(t *testing.T) {
 	}
 }
 
-// TestQuarantineRecoveryIsolatesPoisonedRow — RC3. A pending recovery that
-// would deterministically re-fail on a poisoned tx is marked terminal-failed
-// by quarantineRecovery so it drops out of the pending scan; a subsequent
-// ListPendingRecoveries no longer returns it, so one bad row cannot wedge the
-// (sequential) recovery reconciler.
+// TestQuarantineRecoveryIsolatesPoisonedRow — RC3.
 func TestQuarantineRecoveryIsolatesPoisonedRow(t *testing.T) {
 	if os.Getenv("ORCHICON_TEST_DSN") == "" {
 		t.Skip("ORCHICON_TEST_DSN not set; skipping DB-backed quarantine test")
@@ -126,10 +121,7 @@ func TestQuarantineRecoveryIsolatesPoisonedRow(t *testing.T) {
 	}
 }
 
-// TestTriggerIdempotentForTerminalRecovery — R6. Triggering recovery for the
-// SAME (task, failed_execution) whose prior recovery already reached a
-// TERMINAL status (resumed / failed) must be a no-op — it must NOT create a
-// fresh duplicate L1 recovery on the same dead execution.
+// TestTriggerIdempotentForTerminalRecovery — R6.
 func TestTriggerIdempotentForTerminalRecovery(t *testing.T) {
 	if os.Getenv("ORCHICON_TEST_DSN") == "" {
 		t.Skip("ORCHICON_TEST_DSN not set; skipping DB-backed idempotency test")

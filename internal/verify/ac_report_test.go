@@ -5,9 +5,8 @@ import (
 	"testing"
 )
 
-// The AC report is the one place this system touches semantic judgement, so its LIMITS are tested as
-// carefully as its behaviour: it must catch an unevidenced claim without ever pretending to know whether
-// the claim is true.
+// The AC report is the one place this system touches semantic judgement, so its LIMITS are tested
+// as carefully as its behaviour.
 
 func TestParseACReportWellFormed(t *testing.T) {
 	out := `Did the work.
@@ -89,9 +88,8 @@ func TestNoReportBlockIsNotPresent(t *testing.T) {
 	}
 }
 
-// TestACReportToleratesFormatting pins the parser against the shapes workers actually emit, because a
-// parser that only accepts the exact template reports "no criteria" for a correct report — which teaches
-// everyone the contract is pointless.
+// TestACReportToleratesFormatting pins the parser against the shapes workers actually emit, because
+// a parser that only accepts the exact template reports "no criteria" for a correct report.
 func TestACReportToleratesFormatting(t *testing.T) {
 	variants := []string{
 		"AC1: PASS — go test ./a → ok",

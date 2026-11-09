@@ -8,18 +8,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 )
 
-// Context-section prefix cache (ADR-0009 D5): the rendered context-file
-// sections are the bulk of the static prompt prefix, and re-rendering
-// them from disk per execution both costs I/O and — when a file changed
-// mid-chain — silently shifts the prefix bytes (a cache miss).
-//
-// renderContextSectionCached computes the context-file fingerprint and,
-// when the fingerprint is unchanged from a recent render, reuses the
-// previous section VERBATIM. A changed fingerprint logs a per-path diff
-// (which file moved) so an operator can attribute a prefix-cache miss
-// to a concrete edit. The cache is bounded (LRU) and process-local —
-// it is an optimization, never a source of truth: a restart simply
-// re-renders.
+// Context-section prefix cache (ADR-0009 D5): the rendered context-file sections are the bulk of
+// the static prompt prefix, and re-rendering them from disk per execution both costs I/O.
 type promptCacheEntry struct {
 	key    string // tenant\x00project\x00fingerprint
 	bytes  string // the rendered section, verbatim-reusable
@@ -92,24 +82,16 @@ func (c *promptSectionCache) rememberStamps(scope string, stamps []contextfiles.
 	return prev
 }
 
-// renderContextSectionCached is the fingerprint-aware wrapper around
-// contextfiles.RenderManifest used by BOTH composite builders. On a
-// fingerprint hit the previously rendered bytes are reused verbatim
-// (byte-stability across executions — the cost lever); on a miss the
-// section is rendered from disk, cached, and (when prior stamps exist)
-// the per-path diff is logged so the miss is attributable. Returns the
-// rendered section and the fingerprint.
+// renderContextSectionCached is the fingerprint-aware wrapper around contextfiles.RenderManifest
+// used by BOTH composite builders.
 func (r *WorkflowReconciler) renderContextSectionCached(tenantID, projectID, rootNote string, paths []string, projectDir string) (string, string) {
 	return r.renderSectionCachedWithPolicy(tenantID, projectID, rootNote, paths, projectDir, contextfiles.ManifestPolicyContext)
 }
 
-// renderSectionCachedWithPolicy is the policy-aware form. The SKILLS section passes ManifestPolicySkill so a
-// worker reads its instructions rather than a table of contents; every other section keeps the context
-// policy, which is what its budget was designed for.
+// renderSectionCachedWithPolicy is the policy-aware form.
 func (r *WorkflowReconciler) renderSectionCachedWithPolicy(tenantID, projectID, rootNote string, paths []string, projectDir string, policy contextfiles.ManifestPolicy) (string, string) {
-	// Normalize a typed-nil logger (*slog.Logger(nil) boxed in the
-	// Info-capable interface is != nil) — struct-literal reconcilers
-	// (tests) carry a nil log, and calling Info on it would panic.
+	// Normalize a typed-nil logger (*slog.Logger(nil) boxed in the Info-capable interface is != nil) —
+	// struct-literal reconcilers (tests) carry a nil log, and calling Info on it would panic.
 	var lg interface{ Info(string, ...any) }
 	if r.log != nil {
 		lg = r.log
@@ -130,11 +112,7 @@ func renderSectionCachedWithPolicy(cache *promptSectionCache, log interface{ Inf
 		// plain render (uncached).
 		return contextfiles.RenderManifestWithPolicy(rootNote, paths, projectDir, policy), fp
 	}
-	// rootNote IS PART OF THE KEY. The cache is keyed on (tenant, project, fingerprint), and two DIFFERENT
-	// sections can legitimately share a fingerprint: the skills union and the context union are both derived
-	// from the same project selection and can hash to the same stamps. Without the rootNote in the key the
-	// second render would be served the first section's bytes — the wrong heading, wrong body — and, worse,
-	// silently. The rootNote is the section's identity, so it belongs in the key.
+	// rootNote IS PART OF THE KEY.
 	key := tenantID + "\x00" + projectID + "\x00" + rootNote + "\x00" + fp + "\x00" + strconv.Itoa(int(policy))
 	if cached, ok := cache.get(key); ok {
 		return cached, fp

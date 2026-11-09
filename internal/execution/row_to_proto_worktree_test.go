@@ -6,12 +6,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// TestRowToProtoWorktreeMapping verifies that rowToProto carries the
-// worktree provisioning state onto the WorkerExecution wire type: nil
-// columns map to empty strings (worktree absent, e.g. a non-repo run or
-// a legacy execution), and populated columns map through verbatim. The
-// execution detail view renders path/branch/status from these fields, so
-// a dropped mapping would silently hide the worktree.
+// TestRowToProtoWorktreeMapping verifies that rowToProto carries the worktree provisioning state
+// onto the WorkerExecution wire type: nil columns map to empty strings (worktree absent.
 func TestRowToProtoWorktreeMapping(t *testing.T) {
 	t.Run("nil worktree columns map to empty", func(t *testing.T) {
 		row := db.ExecutionRow{ID: "e1", Status: "succeeded", HealthState: "healthy"}

@@ -114,10 +114,6 @@ func TestLocalModeRunClearsTheGateWithoutErroring(t *testing.T) {
 	}
 
 	// The gate is open and the run is progressing, not stuck pending.
-	// COMMIT, THEN READ. Holding a read transaction open across the reconcile pins a snapshot and cannot
-	// observe what the reconciler committed, which reports the pre-reconcile row and reads as "the fix did
-	// nothing". The sibling tests get away with it because they read INSIDE the same tx they seeded; here the
-	// writes under test happen in transactions of their own.
 	ttx3, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatal(err)

@@ -209,10 +209,8 @@ func auditEventCount(t *testing.T, pool *db.Pool, tenantID, action, targetType, 
 	return len(rows)
 }
 
-// TestAuditServiceTriggerRecovery asserts the manual-trigger RPC writes
-// exactly one recovery.triggered row in the engine's transaction (with
-// the actor + auth method), zero rows for read-only Get/List, and no row
-// for an idempotent re-trigger when a recovery is already active.
+// TestAuditServiceTriggerRecovery asserts the manual-trigger RPC writes exactly one
+// recovery.triggered row in the engine's transaction (with the actor + auth method).
 func TestAuditServiceTriggerRecovery(t *testing.T) {
 	tenantID := "tnt_audit_rec_trig_" + strings.ToLower(db.NewID())
 	pool, s, ctx, _, actorID := auditEnv(t, tenantID)

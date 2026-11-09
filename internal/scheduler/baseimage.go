@@ -34,23 +34,15 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// EnvRuntimeBaseImage is the environment variable the runtime daemon reads for its
-// base image (`orchicon runtime-daemon`, cmd/orchicon/runtime.go). This package
-// reads the SAME variable so the plane and the daemon cannot disagree about which
-// tag the fallback names.
+// EnvRuntimeBaseImage is the environment variable the runtime daemon reads for its base image
+// (`orchicon runtime-daemon`, cmd/orchicon/runtime.go).
 const EnvRuntimeBaseImage = "ORCHICON_RUNTIME_IMAGE"
 
-// DefaultRuntimeBaseImage is the daemon's own default base tag. It must stay equal
-// to the default in cmd/orchicon/runtime.go; the test beside this file pins the
-// agreement so a change on one side cannot silently strand the other.
+// DefaultRuntimeBaseImage is the daemon's own default base tag.
 const DefaultRuntimeBaseImage = "ghcr.io/beardedparrott/orchicon-runtime:latest"
 
-// UseDaemonBaseImage points the resolve chain's fallback at the base image the
-// runtime daemon on this host uses.
-//
-// CALL IT BEFORE RESOLVING ANY IMAGE. Every leg of the chain funnels through
-// imageForRun, which reads db.RuntimeBaseImage(), so this single assignment is
-// enough for the whole chain.
+// UseDaemonBaseImage points the resolve chain's fallback at the base image the runtime daemon on
+// this host uses.
 func UseDaemonBaseImage() string {
 	ref := strings.TrimSpace(os.Getenv(EnvRuntimeBaseImage))
 	if ref == "" {

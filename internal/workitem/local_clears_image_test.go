@@ -62,9 +62,8 @@ func storedImage(t *testing.T, s *Service, ctx context.Context, id string) strin
 	return got.Msg.GetWorkItem().GetRuntimeImage()
 }
 
-// TestSwitchingToLocalClearsTheImageTheWayTheGuiSendsIt is the direct regression: the
-// request carries execution_mode=local AND the prefilled image, exactly as the GUI's
-// edit form sends it.
+// TestSwitchingToLocalClearsTheImageTheWayTheGuiSendsIt is the direct regression: the request
+// carries execution_mode=local AND the prefilled image, exactly as the GUI's edit form sends it.
 func TestSwitchingToLocalClearsTheImageTheWayTheGuiSendsIt(t *testing.T) {
 	s, ctx, _, id := localItemWithImage(t, "runtime", "orchicon-runtime:orchicon-dev")
 
@@ -99,9 +98,8 @@ func TestLocalModeAfterARoundTripStaysClear(t *testing.T) {
 		t.Fatalf("first save: %v", err)
 	}
 
-	// A later save that does NOT touch execution_mode must leave everything alone —
-	// absent execution_mode means UNCHANGED (field-mask), so no clear is applied and no
-	// image is invented.
+	// A later save that does NOT touch execution_mode must leave everything alone — absent
+	// execution_mode means UNCHANGED (field-mask), so no clear is applied and no image is invented.
 	if _, err := s.UpdateWorkItem(ctx, connect.NewRequest(&apiv1.UpdateWorkItemRequest{
 		Id: id, RuntimeImage: &img,
 	})); err != nil {
@@ -115,9 +113,7 @@ func TestLocalModeAfterARoundTripStaysClear(t *testing.T) {
 	}
 }
 
-// TestRuntimeModeKeepsItsImage: switching to runtime with an image must store it. The
-// clear is specific to LOCAL, and a fix that cleared unconditionally would make it
-// impossible to choose an image at all.
+// TestRuntimeModeKeepsItsImage: switching to runtime with an image must store it.
 func TestRuntimeModeKeepsItsImage(t *testing.T) {
 	s, ctx, _, id := localItemWithImage(t, "local", "")
 

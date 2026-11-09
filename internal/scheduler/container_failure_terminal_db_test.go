@@ -112,9 +112,8 @@ func testContainerCreateFailure(t *testing.T, failureReason string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// BOUND TO A WORK ITEM, because that is where the operator-facing reason lands: failRunAtStart writes
-	// the narrative and an acceptance review naming the cause, and marks the item failed. Asserting the run
-	// row alone would miss the half a person actually reads.
+	// BOUND TO A WORK ITEM, because that is where the operator-facing reason lands: failRunAtStart
+	// writes the narrative and an acceptance review naming the cause, and marks the item failed.
 	item, err := db.CreateWorkItem(ctx, ttx2.Tx, db.WorkItemRow{
 		ID: db.NewID(), TenantID: approvalTestTenant, ProjectID: proj.ID,
 		Kind: domain.WorkItemKindTask, Title: "Container step",
@@ -200,10 +199,6 @@ func testContainerCreateFailure(t *testing.T, failureReason string) {
 }
 
 // reasonFragment picks the part of a failure reason that must reach the work item.
-//
-// The point of the assertion is that the CAUSE travels, not that the whole sentence does — the reason is
-// wrapped as it moves through ensure→create→failover, and demanding an exact match would fail on
-// formatting rather than on the thing being tested.
 func reasonFragment(reason string) string {
 	switch {
 	case strings.Contains(reason, "supervisor socket not ready"):

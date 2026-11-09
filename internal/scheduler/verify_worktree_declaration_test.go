@@ -188,12 +188,7 @@ func TestNoGateIsReportedOnceNotTwice(t *testing.T) {
 	}
 }
 
-// THE WIRING, NOT THE HELPER. This calls gatherEvidence — the function that actually decides what to read — with a
-// real git worktree that declares a gate and a project directory that declares none. That is the exact shape of
-// execution 01M6W2KC1CQCH6FFZ99G132F6S.
-//
-// The earlier helper test above passes even with the wiring reverted, because it tests gateDeclarationDir in
-// isolation. THIS one is the one that fails when gatherEvidence reads the checkout.
+// THE WIRING, NOT THE HELPER.
 func TestGatherEvidenceFindsAGateThatExistsOnlyInTheWorktree(t *testing.T) {
 	worktree := initGitRepoWithGate(t, "command = true\nformat = exit_code\n")
 	project := t.TempDir() // the operator's checkout: NO .orchicon/verify
@@ -246,11 +241,6 @@ func initGitRepoWithGate(t *testing.T, gateBody string) string {
 }
 
 // THE NOTICE MUST NOT CLAIM NOTHING WAS CONFIRMED WHEN SOMETHING WAS.
-//
-// This is the operator's first observation about the replayed execution: "It says AC pass yet we still reported it as
-// 'the worker reported success and nothing confirmed it'". The old opener summarised the VERDICT rather than what the
-// checks established, so a step whose acceptance-criteria check had PASSED with evidence was told that nothing had
-// confirmed it. That sentence was simply false.
 func TestTheNoticeCannotSayNothingWasConfirmedWhenACheckPassed(t *testing.T) {
 	res := verify.Result{Verdict: verify.VerdictUnverified}
 	res.Add("acceptance_criteria", verify.CheckPass, "8 criterion/criteria reported: 8 pass (8 with evidence), 0 need attention")

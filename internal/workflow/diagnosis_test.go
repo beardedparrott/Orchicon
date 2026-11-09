@@ -10,16 +10,6 @@ import (
 )
 
 // The run-blockage classifier, pinned to the field incident it was written for.
-//
-// Run 01M53DXZSF5G2T2Z592F7G5ETE sat "running" with an empty current step and
-// no execution anywhere while the UI said "waiting for dispatch". Nothing in
-// the run view could name the cause: the project's dispatch cap was full, and
-// the ten executions holding it were invisible (they carried `unhealthy`, which
-// the reaper's old status list did not include). These cases make the
-// classification a fact rather than an inference.
-//
-// No database: buildRunDiagnosis is a function of the state handed to it, which
-// is exactly why it is structured that way.
 func TestBuildRunDiagnosisClassifiesBlockage(t *testing.T) {
 	stale := time.Now().Add(-3 * time.Hour)
 	unhealthy := []db.ExecutionRow{{
@@ -60,9 +50,8 @@ func TestBuildRunDiagnosisClassifiesBlockage(t *testing.T) {
 				stepRuns: stepWaiting(domain.StepRunReady, nil),
 				stuck:    nil, now: time.Now(),
 			},
-			// The distinction matters: clearable=false tells the operator the
-			// slots are held by real work, so waiting is the correct action
-			// rather than a fruitless button press.
+			// The distinction matters: clearable=false tells the operator the slots are held by real work, so
+			// waiting is the correct action rather than a fruitless button press.
 			wantBlocked: true, wantKind: blockageProjectAtCapacity,
 			wantClear: false, wantStuckLen: 0,
 		},
@@ -113,9 +102,7 @@ func TestBuildRunDiagnosisClassifiesBlockage(t *testing.T) {
 			in: diagnosisInput{
 				runStatus: domain.WorkflowRunRunning, runtimeReady: true,
 				projectID: "proj-1", active: 1, limit: 10,
-				// pending is "not armed yet", not "waiting"; running WITH an
-				// execution is work in progress. Neither is a blockage, and
-				// calling them one would make every healthy run cry wolf.
+				// pending is "not armed yet", not "waiting"; running WITH an execution is work in progress.
 				stepRuns: []db.WorkflowStepRunRow{
 					{ID: "sr-a", StepID: "step-a", Status: domain.StepRunPending},
 					{ID: "sr-b", StepID: "step-b", Status: domain.StepRunRunning, WorkerExecutionID: "exec-1"},
@@ -174,9 +161,8 @@ func TestBuildRunDiagnosisClassifiesBlockage(t *testing.T) {
 	}
 }
 
-// The stuck-execution list is an AGING view: the operator needs to see how long
-// a slot has been held, because a three-week-old unhealthy execution and a
-// two-minute-old one are different situations.
+// The stuck-execution list is an AGING view: the operator needs to see how long a slot has been
+// held, because a three-week-old unhealthy execution and a two-minute-old one are different.
 func TestStuckExecutionsReportAge(t *testing.T) {
 	started := time.Now().Add(-72 * time.Hour)
 	d := buildRunDiagnosis(diagnosisInput{

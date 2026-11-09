@@ -1,24 +1,6 @@
 package scheduler
 
 // barrier_release_test.go — A BARRIER THAT CANNOT BE SATISFIED MUST RELEASE, NOT DEADLOCK.
-//
-// The barrier waits until `expected` dispatches are in flight, so tests can assert
-// bounded concurrency without timing flakes. Its original form waited on
-// `<-d.done` with NO escape: `done` closes only when the count REACHES `expected`,
-// so if fewer dispatches arrived the barrier blocked FOR EVER, dispatchInline's
-// WaitGroup.Wait never returned, and the test binary hung until the 10-minute
-// panic timeout.
-//
-// That is not hypothetical — it is how the package wedged during the diff work:
-// scheduler.test sat for 8+ minutes with a goroutine parked in DispatchTask, and
-// the symptom an operator sees is "the tests hang", not "a test failed". A hang
-// is strictly worse than a failure: it costs the whole package's run, it reports
-// nothing about which assertion was involved, and on a shared DB it holds
-// connections while it waits.
-//
-// These tests pin the two escapes that make the mismatch a FAILURE rather than a
-// deadlock: a shortfall releases at the deadline and RECORDS it, and a cancelled
-// context releases immediately rather than waiting the deadline out.
 
 import (
 	"context"

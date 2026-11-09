@@ -7,9 +7,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// TestExecutionModeFromProto pins the wire -> row mapping: EXECUTION_MODE_
-// UNSPECIFIED means INHERIT and must stay nil (NULL in the row, never ""), while
-// the concrete values become the strings the DB CHECK constraint accepts.
+// TestExecutionModeFromProto pins the wire -> row mapping: EXECUTION_MODE_ UNSPECIFIED means
+// INHERIT and must stay nil (NULL in the row, never "").
 func TestExecutionModeFromProto(t *testing.T) {
 	cases := []struct {
 		name string
@@ -35,9 +34,8 @@ func TestExecutionModeFromProto(t *testing.T) {
 	}
 }
 
-// TestExecutionModeToProto pins the row -> wire mapping, including the rule that
-// nil (inherit) reports ok=false so the optional field is left UNSET rather than
-// sent as a sentinel — "unset" and "runtime" are different statements.
+// TestExecutionModeToProto pins the row -> wire mapping, including the rule that nil (inherit)
+// reports ok=false so the optional field is left UNSET rather than sent as a sentinel.
 func TestExecutionModeToProto(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -62,8 +60,7 @@ func TestExecutionModeToProto(t *testing.T) {
 }
 
 // TestExecutionModeEnumFor pins the resolved-mode mapping behind the read-only
-// effective_execution_mode field: anything that is not explicitly local reads as
-// runtime, matching db.EffectiveExecutionMode's fail-open contract.
+// effective_execution_mode field: anything that is not explicitly local reads as runtime.
 func TestExecutionModeEnumFor(t *testing.T) {
 	if got := executionModeEnumFor(db.ExecutionModeLocal); got != apiv1.ExecutionMode_EXECUTION_MODE_LOCAL {
 		t.Errorf("local = %v, want EXECUTION_MODE_LOCAL", got)
@@ -79,10 +76,8 @@ func TestExecutionModeEnumFor(t *testing.T) {
 	}
 }
 
-// TestValidateExecutionMode pins the ONE validation rule shared by the Connect
-// API and the askorchicon MCP tools: "" = inherit, runtime|local = the concrete
-// modes, anything else is rejected (so a typo can never become a silent third
-// state).
+// TestValidateExecutionMode pins the ONE validation rule shared by the Connect API and the
+// askorchicon MCP tools: "" = inherit, runtime|local = the concrete modes.
 func TestValidateExecutionMode(t *testing.T) {
 	valid := []struct{ in, want string }{
 		{"", ""},
