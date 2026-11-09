@@ -1397,20 +1397,21 @@ func (r *TaskReconciler) writtenFilesFor(execID string) []string {
 func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded bool, output string, errorMessage string) {
 	// THE WORKER'S OWN VERDICT DECIDES THE OUTCOME, not the process's exit code. The asymmetry is
 	// deliberate and is the whole rule: - DOWNGRADE ONLY.
-	if succeeded {
-		if d := extractSummaryDecision(output); d == "failure" {
-			r.log.Warn("worker reported FAILURE in its own summary while the process exited cleanly — "+
-				"recording the execution as failed, because the worker's verdict is the outcome",
-				"execution", execID, "decision", d,
-				"summary", truncateForLog(extractWorkerSummary(output), 300))
-			succeeded = false
-			if strings.TrimSpace(errorMessage) == "" {
-				// Give the row a reason, so this is legible wherever failures are listed rather than
-				// appearing as a failure with no cause.
-				errorMessage = "worker reported failure in its own ORCHICON WORKER SUMMARY: " +
-					truncateForLog(extractWorkerSummary(output), 300)
-			}
+	// verdictDowngrade returns the worker's decision WHEN IT CAUSES THE FAILURE, so the routing layer can
+	// treat it as a decision rather than an infrastructure fault.
+	verdict := verdictDowngrade(succeeded, output)
+	if verdict != "" {
+		r.log.Warn("worker reported FAILURE in its own summary while the process exited cleanly — "+
+			"recording the execution as failed, because the worker's verdict is the outcome",
+			"execution", execID, "decision", verdict,
+			"summary", truncateForLog(extractWorkerSummary(output), 300))
+		if strings.TrimSpace(errorMessage) == "" {
+			// Give the row a reason, so this is legible wherever failures are listed rather than appearing
+			// as a failure with no cause.
+			errorMessage = "worker reported failure in its own ORCHICON WORKER SUMMARY: " +
+				truncateForLog(extractWorkerSummary(output), 300)
 		}
+		succeeded = false
 	}
 	// EVIDENCE GATE — ASK THE REPOSITORY, NOT THE REPORT.
 	if succeeded {
@@ -1455,19 +1456,19 @@ func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded 
 	if r.fileEditReconciler != nil {
 		r.fileEditReconciler.ReconcileExecutionGit(ctx, "tnt_dev", execID)
 	}
-	r.transitionWorkItemOnResult(ctx, execID, succeeded, output)
+	r.transitionWorkItemOnResult(ctx, execID, succeeded, output, verdict)
 }
 
 // FailLostExecution marks an execution failed with a clear reason and transitions its work item to
 // failed, so the WorkflowReconciler's task-step poll observes the terminal state.
 func (r *TaskReconciler) FailLostExecution(ctx context.Context, execID, errorMessage string) {
 	r.updateExecStatus(ctx, execID, domain.ExecutionFailed, domain.HealthUnhealthy, "", errorMessage)
-	r.transitionWorkItemOnResult(ctx, execID, false, "")
+	r.transitionWorkItemOnResult(ctx, execID, false, "", "")
 }
 
 // transitionWorkItemOnResult moves the WorkItem linked to the execution to succeeded/failed when
 // the execution terminates.
-func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID string, succeeded bool, output string) {
+func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID string, succeeded bool, output, verdict string) {
 	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
 		r.log.Error("transition work item: begin tx", "execution", execID, "error", err)
@@ -1532,6 +1533,11 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	// SUMMARY: marker.
 	if d := extractSummaryDecision(output); d != "" {
 		results["_decision"] = d
+	}
+	// A WORKER VERDICT THAT CAUSED THE FAILURE IS A ROUTING DECISION. Recorded STRUCTURALLY, not as error
+	// text, so the workflow reconciler routes it to a loop's fix branch instead of recovering it.
+	if verdict != "" {
+		results["_verdict"] = verdict
 	}
 	extractIssuesLine(output, results)
 	// Extract list of modified files from diff markers in the output.
@@ -1994,7 +2000,7 @@ func (r *TaskReconciler) OnStall(ctx context.Context, execID, reason string, fat
 	// Terminate the execution and fail the work item so the downstream
 	// recover step (if any) activates on the next reconcile pass.
 	r.updateExecStatus(ctx, execID, domain.ExecutionUnhealthy, domain.HealthUnhealthy, "", reason)
-	r.transitionWorkItemOnResult(ctx, execID, false, reason)
+	r.transitionWorkItemOnResult(ctx, execID, false, reason, "")
 }
 
 // OnRecovered is called by the adapter bridge's progress monitor when an advisory stall clears.
@@ -2559,6 +2565,19 @@ func extractWorkerSummary(output string) string {
 	}
 	rest := strings.TrimSpace(output[idx+len(summaryMarker):])
 	return trimSummaryDecision(rest)
+}
+
+// verdictDowngrade returns the worker's verdict when it must DOWNGRADE a successful process, and "" when it
+// must not. DOWNGRADE ONLY: a crashed adapter outranks anything the model said, so text can only lower the
+// outcome. The returned value is also what marks the failure as a ROUTING decision rather than a fault.
+func verdictDowngrade(adapterSucceeded bool, output string) string {
+	if !adapterSucceeded {
+		return ""
+	}
+	if d := extractSummaryDecision(output); d == "failure" {
+		return d
+	}
+	return ""
 }
 
 // extractSummaryDecision reads the first word of the summary block (the text after ORCHICON WORKER

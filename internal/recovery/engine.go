@@ -63,6 +63,10 @@ var deterministicStopErrorPatterns = []string{
 	// which is why run 01M6TB0MQ2EXDRW6EX8GAR0DT3 burned six attempts on one objection.
 	"the worker reported success but the evidence contradicts it",
 	"not substantiated:",
+	// THE WORKER'S OWN VERDICT IS THE SAME CLASS, through the other door: the worker ran to completion and
+	// rejected the work, so a resume loop re-runs the same review against unchanged work. Run
+	// 01M70EPBN9ZK0FM1N6HJBGH6H5 burned six attempts and never reached the loop's fix branch.
+	"worker reported failure in its own orchicon worker summary",
 }
 
 // isDeterministicStopError reports whether a failed execution's error is a deterministic

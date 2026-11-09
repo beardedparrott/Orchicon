@@ -38,3 +38,21 @@ func TestEvidenceRejectionIsOneRetryThenStop(t *testing.T) {
 		t.Fatal("the gate's own per-check prefix must also be stop-class")
 	}
 }
+
+// A WORKER'S OWN VERDICT IS STOP-CLASS, for the same reason an evidence rejection is: the worker ran to
+// completion and judged the work unacceptable, so a resume loop re-runs the same review against unchanged
+// work. Run 01M70EPBN9ZK0FM1N6HJBGH6H5 burned six attempts on exactly that and never reached the loop's
+// fix branch.
+func TestAWorkerVerdictIsStopClass(t *testing.T) {
+	reported := "worker reported failure in its own ORCHICON WORKER SUMMARY: The gate is green, but the " +
+		"layout is broken and I reproduced it independently."
+	if !isDeterministicStopError(reported) {
+		t.Fatal("the worker-verdict failure is not in the deterministic stop-class list, so it falls through " +
+			"to summarize_restart and recovers — the six-attempt burn")
+	}
+	// THE CONTROL: a genuine fault stays recoverable.
+	if isDeterministicStopError("container exited 137") ||
+		isDeterministicStopError("claude session exited without a terminal result message (exit code 1)") == false {
+		t.Fatal("the stop-class list must keep ordinary faults recoverable")
+	}
+}
