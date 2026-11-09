@@ -70,7 +70,28 @@ func TestNativeOnlyRunSkipsServeGate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wfID := seedPublishedWorkflowSteps(t, pool, "prj_dev", `[
+	// A REAL PROJECT, because the run's image is resolved FROM it: the fixture used a literal "prj_dev"
+	// that exists in no table, so the resolve had nothing to read and the run stamped an empty image —
+	// which is a fixture that cannot express the thing it is asserting.
+	ttxP, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := db.CreateProject(ctx, ttxP.Tx, db.ProjectRow{
+		ID: db.NewID(), TenantID: approvalTestTenant, Name: "serve-gate-" + suffix,
+		Slug: "serve-gate-" + suffix, Status: domain.ProjectActive,
+		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ttxP.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
+
+	wfID := seedPublishedWorkflowSteps(t, pool, proj.ID, `[
 		{"id":"w1","name":"Native","kind":"task","ref":"`+nativeWorker.ID+`","depends_on":[]}
 	]`)
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
@@ -79,7 +100,7 @@ func TestNativeOnlyRunSkipsServeGate(t *testing.T) {
 	}
 	defer ttx.Rollback(ctx)
 	run, err := db.CreateWorkflowRun(ctx, ttx.Tx, db.WorkflowRunRow{
-		ID: db.NewID(), TenantID: approvalTestTenant, ProjectID: "prj_dev",
+		ID: db.NewID(), TenantID: approvalTestTenant, ProjectID: proj.ID,
 		RunContext: []byte("{}"),
 		WorkflowID: wfID, WorkflowVersion: 1, Status: domain.WorkflowRunPending,
 	})
