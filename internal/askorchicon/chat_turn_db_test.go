@@ -45,8 +45,44 @@ func chatDBTestPool(t *testing.T) *db.Pool {
 	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
+	ensureAskModelConfigured(t, pool)
 	return pool
 }
+
+// ensureAskModelConfigured gives the tenant a default Ask model, because startConversationTurn REFUSES to
+// send without one — there is deliberately no invented default.
+//
+// THE FIXTURE MUST OWN THIS STATE. These tests passed on a developer's machine because their dev database
+// already carried the setting, and skipped in CI because they never ran; against a fresh database every one
+// of them failed with "no model is configured for Ask Orchicon". A test that depends on ambient tenant
+// configuration is a test that only passes where it was written.
+func ensureAskModelConfigured(t *testing.T, pool *db.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	cur, err := db.GetTenantSettings(ctx, ttx.Tx, "tnt_dev")
+	if err != nil {
+		t.Fatalf("get tenant settings: %v", err)
+	}
+	if strings.TrimSpace(cur.DefaultAskOrchiconModel) != "" {
+		return // already configured — never overwrite an operator's choice
+	}
+	cur.DefaultAskOrchiconModel = askTestModelRef
+	if _, err := db.UpdateTenantSettings(ctx, ttx.Tx, "tnt_dev", cur); err != nil {
+		t.Fatalf("set default ask model: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+// askTestModelRef is the native adapter, which needs no external binary: a test must not depend on the
+// host having a CLI installed.
+const askTestModelRef = "orchicon/deepseek/deepseek-v4-flash"
 
 // newChatService builds a Service with a real pool, a fresh turn registry, and
 // the injected fake session client (bypassing the real host serve).
@@ -600,7 +636,11 @@ func TestPartialReplyMirrorsTokenDeltas(t *testing.T) {
 			t.Fatal("turn never released after finalize")
 		}
 	}
-	final := waitForMessage(t, pool, convID, ackID)
+	// WAIT FOR THE TERMINAL FINALIZE, not merely for the row to exist: the ack row is created by the partial
+	// mirror, so waitForMessage returns the DELTA TEXT and the assertion below then fails against a reply
+	// that had not been written yet. waitForMessageSessionID is the helper that waits for the finalize
+	// marker, which is what "the durable record" means here.
+	final := waitForMessageSessionID(t, pool, convID, ackID)
 	if strings.TrimSpace(final.Content) != "The answer is 42" {
 		t.Errorf("final reply = %q, want %q (deltas must not leak into the durable record)", final.Content, "The answer is 42")
 	}

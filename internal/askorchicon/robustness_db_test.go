@@ -100,7 +100,10 @@ func TestStartConversationTurnAdmissionCapBusyError(t *testing.T) {
 // TestInterjectRecyclesWedgedSession verifies ADR-0002 D4 (AC3): a mid-run interjection onto a
 // conversation whose in-flight turn wedged on an unresolved tool (MCP wedge) recycles the wedged.
 func TestInterjectRecyclesWedgedSession(t *testing.T) {
-	t.Setenv("ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW", "200ms")
+	// THE WEDGE WINDOW NEEDS SLACK OVER THE 150ms SETTLE SLEEP BELOW. At 200ms the margin was 50ms, so
+	// ordinary scheduling jitter under a full-package run tripped the window before the tool event was
+	// observed and the test failed intermittently — the fixture was betting on the scheduler.
+	t.Setenv("ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW", "1500ms")
 	t.Setenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW", "3s")
 	t.Setenv("ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS", "1")
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")

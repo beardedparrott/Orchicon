@@ -96,12 +96,16 @@ func TestAskListMCPServersIsScopeAddressed(t *testing.T) {
 		t.Errorf("project-scoped list = %v, leaked the conversation-owned %q — the tool is not scope-addressed", projList, convName)
 	}
 
-	// conversation scope: the conversation's own definition, NOT another's project one.
+	// CONVERSATION SCOPE IS THE UNION, not the conversation's rows alone: a conversation INHERITS its
+	// project's definitions, which is the contract the tool documents ("project ∪ conversation") and which
+	// ask_mcp_tools_test.go asserts independently. This case used to demand exclusivity — a stricter rule the
+	// product moved away from — and would have failed the moment the suite actually ran.
 	convList := listedServerNames(t, ctx, pool, `{"conversation_id":"`+convID+`"}`)
 	if !convList[convName] {
 		t.Errorf("conversation-scoped list = %v, missing the conversation-owned %q", convList, convName)
 	}
-	if convList[projName] {
-		t.Errorf("conversation-scoped list = %v, leaked the project-owned %q — the tool is not scope-addressed", convList, projName)
+	if !convList[projName] {
+		t.Errorf("conversation-scoped list = %v, missing the project-owned %q — a conversation inherits "+
+			"its project's definitions", convList, projName)
 	}
 }
