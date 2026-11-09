@@ -1,25 +1,6 @@
 package askorchicon
 
-// ask_mcp_live_test.go — the REAL-TURN end-to-end proof for child 6, the one the
-// acceptance criteria actually demand ("observed on a real turn, not asserted only
-// in a unit test"; "a call to one succeeds"; "verified per mode with a real turn").
-//
-// WHAT MAKES IT REAL, and why the other file is not enough. ask_mcp_test.go drives
-// AskToolDefs/ExecuteAskTool with a FAKE resolver and a FAKE client. This file
-// replaces every seam with the production one:
-//
-//   - a REAL `mcp_servers` row (project-owned AND conversation-owned) written to
-//     Postgres, read back by the REAL mcpsettings.Resolver (mcpsettings.NewResolver);
-//   - a REAL MCP server process (an in-process streamable-HTTP server built with the
-//     same go-sdk the manager speaks to), so discovery and an actual tool call cross
-//     a real JSON-RPC transport;
-//   - the REAL native Ask turn: `NativeBridge.SendTurnMessage` with the injected
-//     askorchicon AskToolProvider, over a scripted provider whose FIRST round asks
-//     the model to call `mcp__<server>__<tool>` and whose SECOND round consumes the
-//     tool result — so the call is executed by the bridge's own tool loop
-//     (chatturn.go executeToolCalls), exactly as a live conversation would.
-//
-// Gate: ORCHICON_TEST_DSN (a disposable database), the repo-wide convention.
+// ask_mcp_live_test.go — the REAL-TURN end-to-end proof for child 6.
 
 import (
 	"context"

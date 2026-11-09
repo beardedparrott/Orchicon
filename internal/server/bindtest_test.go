@@ -46,9 +46,7 @@ import (
 // allocation burst and short enough that a genuinely broken host still fails quickly.
 const bindRetryAttempts = 20
 
-// bindRetryDelay is a VAR, not a const, so a test can shrink it — the same seam pattern this
-// package already uses for extraBindRetryInterval (a test of a retry loop should not spend half a
-// second.
+// bindRetryDelay is a VAR, not a const, so a test can shrink it.
 var bindRetryDelay = 25 * time.Millisecond
 
 // isEphemeralExhaustion reports whether err is the kernel declining to allocate a port.

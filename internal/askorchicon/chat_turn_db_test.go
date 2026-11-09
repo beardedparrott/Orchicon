@@ -208,9 +208,7 @@ func TestStartConversationTurnRepetitionStallAborts(t *testing.T) {
 	}
 }
 
-// TestInterjectConversationTurnSupersedes verifies ADR-ASK-2 end to end: an interjection on a
-// conversation with an in-flight turn cancels the old collector (whose partial content is
-// persisted.
+// TestInterjectConversationTurnSupersedes verifies ADR-ASK-2 end to end.
 func TestInterjectConversationTurnSupersedes(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	pool := chatDBTestPool(t)
@@ -458,8 +456,7 @@ func TestStartConversationTurnRejectsSecondSend(t *testing.T) {
 }
 
 // TestPartialReplyMirroredWhileTurnRuns verifies a refreshed / second-tab client can watch the
-// reply grow: the collector mirrors collected text into the acked assistant message row WHILE the
-// turn.
+// reply grow.
 func TestPartialReplyMirroredWhileTurnRuns(t *testing.T) {
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
@@ -677,8 +674,7 @@ func TestPartialReplyTrailingFlush(t *testing.T) {
 }
 
 // TestAbortConversationTurn verifies the Stop path: it cancels the registered turn and aborts the
-// conversation's opencode session via SessionClient, keeping the session alive for the next
-// message.
+// conversation's opencode session via SessionClient.
 func TestAbortConversationTurn(t *testing.T) {
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
@@ -720,8 +716,7 @@ func TestAbortConversationTurn(t *testing.T) {
 }
 
 // TestConversationSurfacesRunningTurn verifies GetConversation and ListConversations report an
-// in-flight turn (turn_in_flight + the pending assistant message id) while the turn registry holds
-// it.
+// in-flight turn (turn_in_flight + the pending assistant message id) while the turn registry holds.
 func TestConversationSurfacesRunningTurn(t *testing.T) {
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}
@@ -988,21 +983,7 @@ func busReasoningDelta(sessionID, delta string) opencode.BusEvent {
 	}}
 }
 
-// TestStalledTurnKeepsWhatStreamed is THE regression for the reported data loss: "a session
-// will die in the middle of actual work being done, and anything you were currently typing
-// (mostly in thought) goes away and my previous message is considered last message."
-//
-// The chain, all of it pinned here end to end through the real collector and the real DB:
-//
-//  1. the model streams reasoning and text as DELTAS (how the native adapter streams);
-//  2. it then goes silent and the no-progress monitor trips, aborting the session;
-//  3. the attempt settles — folding the live delta tails into the durable values, because
-//     an abnormal exit never receives a completed part to build them from;
-//  4. the finalize persists those values.
-//
-// Before the fix, step 3 handed the caller empty text and empty reasoning AND step 4
-// overwrote the partial row the live mirror had written with "" — so the operator's work was
-// destroyed twice over. This asserts it survives BOTH, in the row they would look at.
+// TestStalledTurnKeepsWhatStreamed is THE regression for the reported data loss.
 func TestStalledTurnKeepsWhatStreamed(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW", "300ms")
 	pool := chatDBTestPool(t)

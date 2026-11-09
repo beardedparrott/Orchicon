@@ -250,9 +250,7 @@ func TestFailureThenLoopDecisionRecoveryTriggerRace(t *testing.T) {
 	}
 }
 
-// TestMaxDAGPassesCommitsRecoveryNotRollback is AC#9 (b): at maxDAGPasses the reconciler must
-// COMMIT the pass's accumulated progress (the `recovering` transition + staged recovery trigger)
-// rather.
+// TestMaxDAGPassesCommitsRecoveryNotRollback is AC#9 (b).
 func TestMaxDAGPassesCommitsRecoveryNotRollback(t *testing.T) {
 	t.Setenv("ORCHICON_MAX_DAG_PASSES", "1")
 	trigger := &recordingRecoveryTrigger{}

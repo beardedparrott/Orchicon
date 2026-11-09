@@ -11,23 +11,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/ask"
 )
 
-// TestSpaceMarksConversationsThroughTheRealAskScreen is the regression pin for the operator's report:
-// "In conversations in the TUI, spacebar is selecting a conversation when it should be marking it for
-// bulk operations instead."
-//
-// WHY THIS TEST EXISTS WHEN railbulk_test.go ALREADY COVERS SPACE. The existing coverage drives a
-// STUB screen (railApp registers &stubScreen). The real Ask screen is a DIFFERENT key participant: it
-// carries a hidden "conversations" source (HideSources) with its own Enter/Space activation path, and
-// `passToScreen` can hand it a key the shell would otherwise have marked with. Asserting the mark
-// through the REAL screen closes that gap — the stub could not have caught a screen-side space claim.
-//
-// The observable contract, all three halves of "marking, not selecting":
-//  1. STATE — space marks the highlighted conversation (and steps one row, the kit2 gesture).
-//  2. THE OPEN CONVERSATION IS UNTOUCHED — a select would change chatConvID (open a different chat,
-//     or clear it); a mark must not.
-//  3. THE MARK IS VISIBLE — the rail renders its mark glyph and the hint reports the count. A mark
-//     that painted nothing would be indistinguishable from a bare cursor move, which is exactly what
-//     "space is selecting" looks like.
+// TestSpaceMarksConversationsThroughTheRealAskScreen is the regression pin for the operator's
+// report.
 func TestSpaceMarksConversationsThroughTheRealAskScreen(t *testing.T) {
 	m := newTestApp()
 	m.RegisterScreen(TabAsk, ask.New(nil, m.reg))

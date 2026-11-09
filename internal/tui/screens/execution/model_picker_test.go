@@ -32,9 +32,7 @@ func newPickerExec(t *testing.T) (*Model, *[]string, *[]string) {
 		*loads = append(*loads, "models:"+kind+"/"+provider)
 		return []kit2.PickerOption{{Value: "claude-sonnet-4", Label: "claude-sonnet-4"}}, false, nil
 	}
-	// The write records the WHOLE batch in one entry, because that is what the screen sends: one
-	// BulkUpdateWorkerModel call for the selection (a loop of single writes would make a ten-worker
-	// change.
+	// The write records the WHOLE batch in one entry, because that is what the screen sends.
 	m.rpcSetWorkerModel = func(_ context.Context, workerIDs []string, ref string) error {
 		*writes = append(*writes, strings.Join(workerIDs, ",")+"="+ref)
 		return nil

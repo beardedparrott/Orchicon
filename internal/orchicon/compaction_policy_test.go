@@ -157,9 +157,7 @@ func TestCompactionWindowPressureFires(t *testing.T) {
 	s, _, _, _ := compactTestSession(t, `{"tokens":0,"context_compaction":{"enabled":true,"pressure_frac":0.8,"recent_turns":2}}`, 1000)
 	seedHistory(s)
 	ctx := context.Background()
-	// Sub-threshold turns: 500 tokens on a 1000-token window = 50% — never fires, no matter how many
-	// turns accumulate (the old cumulative basis fired at step 4; the corrected per-turn basis must
-	// not).
+	// Sub-threshold turns: 500 tokens on a 1000-token window = 50%.
 	for step := 2; step < 12; step++ {
 		s.recordTurnUsage(Usage{InputTokens: 500})
 		if r := s.maybeCompact(ctx, step, Usage{InputTokens: 500}); r != "" {
@@ -297,8 +295,7 @@ func TestCompactionEvictionPreservesToolUseResultPairing(t *testing.T) {
 }
 
 // The recent tail is verbatim: a tool_result that lands in the pinned tail keeps its paired
-// assistant tool_use even when the tool_use sits in the middle (evicting the use would orphan the
-// kept.
+// assistant tool_use even when the tool_use sits in the middle (evicting the use would orphan.
 func TestCompactionTailPairingIsPreserved(t *testing.T) {
 	s, _, _, _ := compactTestSession(t, `{"tokens":0,"context_compaction":{"enabled":true,"pressure_frac":0.8,"recent_turns":3}}`, 1000)
 	// History: goal, old pair (fully evictable), then a user + a tool_use whose RESULT message sits in

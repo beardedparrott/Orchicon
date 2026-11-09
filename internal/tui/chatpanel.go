@@ -1,22 +1,6 @@
 package tui
 
 // chatpanel.go — the slide-out conversation strip.
-//
-// WHY THIS EXISTS: the composer is context-aware and lives on every screen, so
-// a message sent from Work / Execution / Control reaches Ask Orchicon without
-// the operator being able to see it. That "invisible send" is the worst kind of
-// failure — the message and its reply are real but off-screen. This panel makes
-// the destination VISIBLE: engaging the composer on any screen other than Ask
-// slides out a small conversation window just above the input, pinned to that
-// screen's context, and the reply streams into it in place.
-//
-// It is deliberately NOT shown when:
-//   - the active screen is Ask (the real transcript is already on screen), or
-//   - a running execution is selected (the interjection's reply streams into
-//     the execution session view the operator is already watching).
-//
-// Esc minimises it back into the prompt; [continue in conversations] (or ctrl+z)
-// escalates to Ask → Conversations with THIS conversation selected.
 
 import (
 	"strings"

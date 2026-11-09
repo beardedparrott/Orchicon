@@ -240,9 +240,7 @@ func TestUpdateWorkItemAcceptsSkippedStatus(t *testing.T) {
 	}
 }
 
-// TestAuditServiceWorkItemAtomicRollback pins atomicity the other way: a mutation that fails
-// validation must NOT leave an audit row (nothing to record — the row exists iff the mutation
-// committed).
+// TestAuditServiceWorkItemAtomicRollback pins atomicity the other way.
 func TestAuditServiceWorkItemAtomicRollback(t *testing.T) {
 	pool, s, ctx, tenantID, _ := auditServiceEnv(t, "tnt_audit_wi_rb_"+strings.ToLower(db.NewID()))
 	proj := seedAuditProject(t, pool, tenantID)

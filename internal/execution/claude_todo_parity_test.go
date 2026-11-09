@@ -10,9 +10,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/worktree"
 )
 
-// This test is the claude leg of the todo-panel parity criterion: the payload the claude Mapper
-// persists for a `TodoWrite` must parse through the SAME unexported todoItemsFromPayload the RPC
-// path.
+// This test is the claude leg of the todo-panel parity criterion.
 
 // claudeTodoEnvelope reproduces the exact durable part claude's mapper
 // writes for a TodoWrite tool_use block.

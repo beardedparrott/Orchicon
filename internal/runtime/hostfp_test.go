@@ -176,9 +176,7 @@ func TestHostInputsFingerprintEmptyAndExclusions(t *testing.T) {
 	}
 }
 
-// TestGhTokenFingerprint verifies the non-sensitive token digest: only the length + first-12-char
-// prefix feed it, so rotation (prefix/length change) is detected while the full token never
-// appears.
+// TestGhTokenFingerprint verifies the non-sensitive token digest.
 func TestGhTokenFingerprint(t *testing.T) {
 	tok := "ghp_abcdefghij123456789"
 	fp := ghTokenFingerprint(tok)

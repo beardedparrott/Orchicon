@@ -50,9 +50,7 @@ func TestSetOwnerFetchClosureConcurrentReads(t *testing.T) {
 			_ = m.Height
 		}
 	}()
-	// bubbletea runs this via `go func(){ msg := cmd() }()`; here we execute it on the calling
-	// goroutine and consume the msg the way the program's event loop would (handing it to Update on the
-	// tea.
+	// bubbletea runs this via `go func(){ msg := cmd() }()`.
 	_ = cmd()
 	wg.Wait()
 }

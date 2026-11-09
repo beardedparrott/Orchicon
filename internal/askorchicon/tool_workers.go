@@ -14,8 +14,7 @@ import (
 )
 
 // Header field bounds for tool-driven worker edits — mirror internal/worker's
-// validateName/validateTextField limits so the tool path enforces the same input contract as the
-// Connect RPC.
+// validateName/validateTextField limits so the tool path enforces the same input contract.
 const (
 	toolWorkerMaxNameLen    = 500
 	toolWorkerMaxDescLen    = 1 << 14

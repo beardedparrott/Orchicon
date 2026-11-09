@@ -145,8 +145,7 @@ var ss3KeyRewrites = [][2]string{
 }
 
 // translateSS3HomeEnd rewrites the SS3 Home/End spellings to their CSI equivalents IN PLACE and
-// returns the new length, which is always unchanged — every pair in ss3KeyRewrites is the same
-// length.
+// returns the new length.
 func translateSS3HomeEnd(p []byte) int {
 	n := len(p)
 	for _, rw := range ss3KeyRewrites {

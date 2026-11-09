@@ -1,18 +1,5 @@
-// Package worker implements the WorkerService Connect handler
-// (docs/07_API_Specification.md §3.3, docs/05_Worker_Specification.md).
-//
-// It is the API-layer boundary between the generated Connect handlers
-// and the data-access layer. Responsibilities:
-//   - validate and sanitize all inputs (the security boundary),
-//   - resolve the tenant from the request context,
-//   - perform the mutation + outbox enqueue in one transaction,
-//   - enforce the Worker lifecycle (draft → published → deprecated →
-//     retired) and versioning model (docs/05 §4, §5),
-//   - manage edit locks for the visual Worker editor (docs/07 §3.3).
-//
-// No business logic lives here beyond input validation and lifecycle
-// transitions; reconcilers and policy engines govern deeper behavior
-// (AGENTS.md invariant #1).
+// Package worker implements the WorkerService Connect handler (docs/07_API_Specification.md §3.3,
+// docs/05_Worker_Specification.md).
 package worker
 
 import (
@@ -380,29 +367,7 @@ func validateAdapterRefAgreement(adapterSel, modelRef string) error {
 	return nil
 }
 
-// validateAdapterChange enforces the adapter-change contract (ADR-0005 D4):
-// when a version's model_ref changes to one whose parsed adapter kind
-// differs from its CURRENT ref's parsed adapter kind, the full new pair
-// must be valid FOR THE NEW adapter — the provider segment must be a known
-// provider of that kind (built-in profile ∪ tenant custom via the same
-// registry seam validateModelRef uses). Unchanged-adapter re-saves keep
-// the ADR-0004 D5 semantics verbatim (catalog-known-but-deleted providers
-// re-save flagged) and pass through here untouched.
-//
-// Two legacy-data contracts (2026-09 QA: pre-namespace refs bricked saves):
-//
-//   - PHANTOM KINDS ARE LEGACY DATA, NOT SELECTIONS. A current ref whose
-//     parsed head is NOT a registered adapter kind (e.g. the pre-namespace
-//     "commandcode/deepseek/x" parsing to kind "commandcode") never
-//     expressed an adapter selection — the old grammar was free-form. The
-//     gate is skipped: whatever the operator saves is validated as a fresh
-//     selection, never diffed against a phantom. This survives data
-//     migrations cannot foresee (backups restored, imported tenants, refs
-//     written between release windows).
-//   - IDENTICAL-REF RE-SAVES ARE NO-OPS. Re-storing the exact current ref
-//     creates no new state; nothing beyond the parse is validated. This
-//     pins D5's "re-save flagged values keep working" semantics across the
-//     full legacy surface, including phantom-kind heads.
+// validateAdapterChange enforces the adapter-change contract (ADR-0005 D4).
 func validateAdapterChange(ctx context.Context, tenantID, currentRef, newRef string) error {
 	// Identical re-save: a pure no-op (the new ref already parsed upstream).
 	if strings.TrimSpace(currentRef) == strings.TrimSpace(newRef) {

@@ -372,8 +372,7 @@ func TestRecordPrefixCacheNoOpOnZeroTurns(t *testing.T) {
 }
 
 // TestAnthropicShapeSplitsDownToOtel feeds the canonical Anthropic sample through
-// UsageRecorder.Record and asserts the emitted OTel split reflects the cache-aware buckets (ADR
-// acceptance #7).
+// UsageRecorder.Record and asserts the emitted OTel split reflects the cache-aware buckets (ADR.
 func TestAnthropicShapeSplitsDownToOtel(t *testing.T) {
 	tm := newTestMeter(t)
 	defer tm.restore()

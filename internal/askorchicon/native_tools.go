@@ -115,29 +115,8 @@ const (
 	askScopeTenantAnchor = "tenant_fallback"
 )
 
-// PreApprovedPath reports whether target is inside this scope's PRE-APPROVED
-// directory — the operator's "inside it, writes and executions proceed without
-// asking".
-//
-// It is the ONE read the consent core makes when it decides ask vs proceed, which
-// is why it lives beside the scope value rather than in the consent layer: the
-// prompt's project statement, the ask_file_root envelope and the consent
-// decision must all read the SAME predicate or they drift.
-//
-// TRUE requires BOTH halves, and each is load-bearing:
-//   - FromConversation — the directory is the CONVERSATION's own project. A
-//     tenant-wide fallback anchor is not this conversation's tree, so NOTHING is
-//     approved in it: an unassigned conversation asks for every write, even
-//     though a directory exists to anchor relative paths. That is the whole
-//     difference between "a directory" and "a project of my own".
-//   - target resolving to Dir itself or a descendant of it. The comparison is on
-//     cleaned paths and requires Dir + separator, so a sibling whose name merely
-//     shares the prefix (…/Orchicon-v2 beside …/Orchicon) is NOT inside and asks.
-//
-// A relative target is resolved against Dir, matching where a relative path lands
-// for the suite (the anchor is Dir). An unusable scope (no FromConversation, no
-// Dir, no target) is false, never a panic and never an accidental allow: failing
-// closed here means an unapproved directory asks.
+// PreApprovedPath reports whether target is inside this scope's PRE-APPROVED directory — the
+// operator's "inside it, writes and executions proceed without asking".
 func (s AskFileScope) PreApprovedPath(target string) bool {
 	if !s.FromConversation || strings.TrimSpace(s.Dir) == "" || strings.TrimSpace(target) == "" {
 		return false

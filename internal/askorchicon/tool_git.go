@@ -99,24 +99,8 @@ func toolListProjectBranches(ctx context.Context, pool *db.Pool, args json.RawMe
 		remotes = append(remotes, r)
 	}
 
-	// THE DEFAULT BRANCH AND THE INTEGRATION BRANCH ARE TWO DIFFERENT THINGS, and reporting one as both is
-	// what offered `main` as the branch to cut from and merge into.
-	//
-	//   - defaultBranch is the REPOSITORY'S OWN DEFAULT: what origin/HEAD points at, i.e. what you get on
-	//     clone. On this repo that is `main`, and reporting it is simply factual.
-	//   - integrationBranch is WHERE WORK LANDS. On this repo that is `develop`; `main` receives merges FROM
-	//     develop at release time and nothing else. The operator's rule, verbatim: "Everything should be
-	//     worked off of branches from develop. Main branch is only for actual releases from develop."
-	//
-	// THE OLD CODE REPORTED ONE VALUE AS BOTH, so a run was offered `main` as its base AND its merge target —
-	// contradicting the git rules this platform INJECTS into every git-backed worker's prompt, which hardcode
-	// develop: "Work on a branch created off `develop` (the integration branch where all work lands). NEVER
-	// commit to, push to, or open a PR into `main` or `develop` directly" (internal/db/prompt.go). The agent
-	// brief already notes those injected rules win, so the tool was handing the agent an instruction its own
-	// worker would refuse.
-	//
-	// Note the old fallback ALREADY preferred develop (`develop`, `main`, `master`): the intent was right, and
-	// only the origin/HEAD path — which is the path that actually fires on a real clone — bypassed it.
+	// NEVER commit to, push to, or open a PR into `main` or `develop` directly"
+	// (internal/db/prompt.go).
 	defaultBranch := ""
 	if s := run("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); s != "" {
 		defaultBranch = strings.TrimPrefix(s, "origin/")

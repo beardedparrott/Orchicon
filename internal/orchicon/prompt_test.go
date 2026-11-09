@@ -125,9 +125,7 @@ func TestNativeLayerCapAndTopics(t *testing.T) {
 	}
 }
 
-// AC (Anthropic fixture): with ANY explicit flag, ONLY flagged blocks get cache_control — the
-// mutable zone after the breakpoint must never be cached; no-flag callers keep the last-block
-// fallback.
+// AC (Anthropic fixture): with ANY explicit flag, ONLY flagged blocks get cache_control.
 func TestAnthropicBreakpointsTwoZone(t *testing.T) {
 	twoZone := TurnRequest{Model: "m", MaxTokens: 10, System: []SystemBlock{
 		{Text: "static", Cache: true},

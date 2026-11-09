@@ -1,28 +1,6 @@
 package askorchicon
 
 // consent_unanswered_test.go — A QUESTION NOBODY ANSWERED IS NOT A REFUSAL.
-//
-// The operator: "Sessions seem to be timing out on me..." and, separately, "This is another issue we
-// should investigate as well - timeouts are losing context in the conversation" — pointing at
-// "reply timed out after 30m0s on model ... — the model may be overloaded or unavailable. Check the
-// Ask Orchicon model in Settings → Default models, then retry."
-//
-// They reported it from the wrong side of the terminal: "Sorry, could you please ask the question
-// again, I was away from my terminal." A turn parked on a card raises no activity, so the reply
-// window's SILENCE budget (see turnReplyWindow) reads an absent operator as a dead model and ends
-// the turn. The bound is deliberate and stays — what was broken is what the operator was left with:
-//
-//   - the failure named a model that was fine, and never the question it was waiting on;
-//   - the question was published as `expired`, which every client folds into a REFUSAL. The TUI
-//     recorded DecisionDeny and printed "Deny · <subject>" over the tool-and-target of a permission
-//     nobody asked about, and the answer the operator gave on returning was refused as late.
-//
-// `unanswered` says the only true thing — nobody answered it — and it names the question, which is
-// the context that has to survive for a retry to resume.
-//
-// THE PERMISSION CASE IS UNCHANGED, and pinned elsewhere: an unanswered permission still resolves as
-// `expired` (TestFinalizePublishesTheResolutionForEveryAskItSettles), because for a permission the
-// serve really was answered `reject` — the call was refused, and the record says so.
 
 import (
 	"context"

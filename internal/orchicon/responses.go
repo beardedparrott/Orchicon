@@ -93,9 +93,7 @@ type respRequest struct {
 	Stream          bool            `json:"stream"`
 }
 
-// buildResponsesRequest shapes the Responses wire request from a normalized TurnRequest: system
-// blocks + history → input[] items, max_output_tokens, temperature, tools when present,
-// stream:true.
+// buildResponsesRequest shapes the Responses wire request from a normalized TurnRequest.
 func buildResponsesRequest(req TurnRequest) respRequest {
 	rr := respRequest{
 		Model: req.Model, Stream: true,
@@ -107,9 +105,7 @@ func buildResponsesRequest(req TurnRequest) respRequest {
 	for _, m := range req.Messages {
 		switch m.Role {
 		case RoleTool:
-			// The `output` field is REQUIRED by the Responses provider; an empty tool result (a call that
-			// returned no text, or a cross-provider replayed history where a prior wire produced an empty
-			// result).
+			// The `output` field is REQUIRED by the Responses provider.
 			for _, c := range m.Content {
 				if c.ToolResult != nil {
 					out := c.ToolResult.Content
@@ -296,8 +292,7 @@ type respEvent struct {
 }
 
 // respDelta tolerates both delta wire shapes: the compact string form
-// ({"type":"response.output_text.delta","delta":"Hi"}) and the object form some gateways emit
-// ({"delta":{"text":"Hi"}}.
+// ({"type":"response.output_text.delta","delta":"Hi"}) and the object form some gateways emit.
 type respDelta string
 
 func (d *respDelta) UnmarshalJSON(b []byte) error {
@@ -517,9 +512,7 @@ func (s *responsesStream) recordUsage(ev respEvent) {
 	if u.InputTokensDetails != nil {
 		cached = u.InputTokensDetails.CachedTokens
 	}
-	// input_tokens is cache-INCLUSIVE (like OpenAI prompt_tokens) — normalize to the FRESH bucket per
-	// oaNoCache parity so cache tokens are never double-counted in the window-pressure basis or
-	// CostFor.
+	// input_tokens is cache-INCLUSIVE (like OpenAI prompt_tokens).
 	s.usage.InputTokens = oaNoCache(u.InputTokens, cached)
 	s.usage.OutputTokens = u.OutputTokens
 	s.usage.CacheReadTokens = cached

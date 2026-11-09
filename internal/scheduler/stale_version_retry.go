@@ -47,8 +47,7 @@ const (
 )
 
 // staleVersionDelay is the inter-attempt wait, overridable for operators
-// (ORCHICON_STALE_VERSION_RETRY_DELAY, a Go duration) because the right value is a property of the
-// deployment's reconciler.
+// (ORCHICON_STALE_VERSION_RETRY_DELAY.
 func staleVersionDelay() time.Duration {
 	if v := os.Getenv("ORCHICON_STALE_VERSION_RETRY_DELAY"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d >= 0 {

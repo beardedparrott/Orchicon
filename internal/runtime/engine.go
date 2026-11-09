@@ -33,9 +33,7 @@ const (
 // (or a docker-only host) can override the default without a rebuild.
 const EnvEngine = "ORCHICON_RUNTIME_ENGINE"
 
-// EnvEngineAlias is the engine variable the rest of the project already honours:
-// scripts/lib/engine.sh, scripts/runtime.sh (image build/pull) and the Makefile all read
-// ORCHICON_ENGINE.
+// EnvEngineAlias is the engine variable the rest of the project already honours.
 const EnvEngineAlias = "ORCHICON_ENGINE"
 
 // DefaultEngineName returns the engine the daemon uses when nothing overrides it.
@@ -313,15 +311,8 @@ func (e Engine) ImageLabelFormat(label string) string {
 	return `{{index .Config.Labels "` + label + `"}}`
 }
 
-// NameInUseTokens are the substrings that mean "the container name is still
-// settling" — remove-and-retry, do not fail the create.
-//
-// The wordings differ by engine and the predicate must cover each engine's
-// real text, or a retry that used to work silently starts failing the create:
-//   - docker: "Conflict. The container name ... is already in use",
-//     "removal of container ... is already in progress".
-//   - podman: `Error: creating container storage: the container name "x" is
-//     already in use by y` and, right after `rm -f`, "container is in use".
+// NameInUseTokens are the substrings that mean "the container name is still settling" —
+// remove-and-retry, do not fail the create.
 func (e Engine) NameInUseTokens() []string {
 	if e.isPodman() {
 		return []string{"already in use", "is in use", "in progress"}

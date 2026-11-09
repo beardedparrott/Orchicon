@@ -37,8 +37,7 @@ func TestPricingResolverAnswersWithoutADiscoverer(t *testing.T) {
 }
 
 // The end of the chain: a claude/anthropic usage record on a plane with no opencode binary is
-// priced from the catalog, cache-read at the cache-read rate — not from the adapter-reported
-// number.
+// priced from the catalog.
 func TestUsageRecordPricedFromCatalogWithoutADiscoverer(t *testing.T) {
 	rec := aigateway.NewUsageRecorder(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	rec.SetPricingResolver(pricingResolver(nil)) // no opencode binary on this plane

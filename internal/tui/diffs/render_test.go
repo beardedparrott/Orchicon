@@ -92,9 +92,7 @@ func TestRenderPaneSideBySideVsUnified(t *testing.T) {
 	}
 }
 
-// TestRenderPaneTruncatesUtf8Cleanly guards the truncation fix: a narrow pane must clip a wide
-// multi-byte line (CJK / emoji from the unicode fixture) to the column budget WITHOUT splitting a
-// rune.
+// TestRenderPaneTruncatesUtf8Cleanly guards the truncation fix.
 func TestRenderPaneTruncatesUtf8Cleanly(t *testing.T) {
 	vecs, err := testfixtures.LoadFileEditVectors()
 	if err != nil {

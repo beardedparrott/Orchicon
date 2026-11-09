@@ -30,8 +30,7 @@ var AskVerbs = []string{
 const VerbCellCap = 14
 
 // VerbPeriodMS is how long one word stays up: 15s, the server's heartbeat cadence
-// (askHeartbeatInterval, internal/askorchicon/chat.go), so the word advances about once per
-// heartbeat.
+// (askHeartbeatInterval.
 const VerbPeriodMS int64 = 15000
 
 // VerbAt is the pure selector: the same timestamp always yields the same word, on any client, in any

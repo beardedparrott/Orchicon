@@ -185,9 +185,7 @@ func TestAskUsageSinkResolvesPricingOncePerSession(t *testing.T) {
 	}
 }
 
-// A model the provider does not price is recorded UNPRICED, never guessed: prices are not
-// synthesized, so an unknown model keeps the previous behaviour rather than acquiring invented
-// rates.
+// A model the provider does not price is recorded UNPRICED.
 func TestAskUsageSinkLeavesAnUnpricedModelAtZero(t *testing.T) {
 	prov := &countingModelProvider{models: []ModelInfo{{ID: "mystery-model"}}}
 	var got []scheduler.UsageRecord

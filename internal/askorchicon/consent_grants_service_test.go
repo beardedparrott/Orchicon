@@ -151,9 +151,7 @@ func TestRevokePermissionGrantRPCTakesEffectOnTheNextToolCall(t *testing.T) {
 	}
 }
 
-// TestDecideCarriesTheDenyEntriesBelowTheGrantKey is the precedence the card must state: a deny
-// entry under the directory a session grant would cover is still carried on the ask (Decide
-// refuses.
+// TestDecideCarriesTheDenyEntriesBelowTheGrantKey is the precedence the card must state.
 func TestDecideCarriesTheDenyEntriesBelowTheGrantKey(t *testing.T) {
 	isolatedPolicy(t, "deny:\n  - \"/p/sibling/private/**\"\n")
 	svc := testConsentService()

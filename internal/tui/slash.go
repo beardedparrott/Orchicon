@@ -703,33 +703,7 @@ func runThemeCmd(m *App, args []string) tea.Cmd {
 	return nil
 }
 
-// SetTheme applies a TUI palette and PERSISTS the choice — the COMMIT. Reports false for an unknown name
-// (nothing changes).
-//
-// IT WRITES TO ONE OF TWO PLACES, AND WHICH ONE IS THE WHOLE POINT:
-//
-//   - A PROJECT IS ACTIVE → the palette is BOUND to that project (project_themes), which is what "different
-//     colours to distinguish different sessions" asked for. The config's DEFAULT is deliberately left alone:
-//     it is the value every project with no palette of its own INHERITS, so writing it here would make one
-//     project's choice follow the operator into every other project. That is the report this fixes — "I
-//     opened orch in the ai-tools directory, changed the theme, then opened orch in the Orchicon directory
-//     and the theme changed. It didn't stay the same."
-//   - NO PROJECT IS ACTIVE (All projects / No project) → the persisted DEFAULT is written, which is the only
-//     palette a scope with no workspace of its own can honestly set. It is also the way to change what every
-//     UNBOUND project starts from.
-//
-// THE LIVE PREVIEW IS PreviewTheme, NOT THIS (see below). Arrowing through the Themes pane must show a
-// palette without committing it: routing the preview through here is what rewrote a project's binding — or
-// the shared default — on every keystroke.
-//
-// This and PreviewTheme are the only two ways a palette changes, shared by /theme and the Control screen's
-// Themes pane, so the two gestures cannot disagree about what committing means.
-//
-// PRECEDENCE AGAINST A PROJECT BINDING (criterion 5, see projecttheme.go): this call PINS the palette for
-// the rest of the current scope — themePinned marks it so. The pin is released the next time the workspace
-// changes (applyScopeTheme), at which point the SCOPE's own palette takes back over, with a notice saying
-// so. An explicit choice never gets silently overwritten mid-scope, and it never silently survives past a
-// workspace switch either.
+// SetTheme applies a TUI palette and PERSISTS the choice — the COMMIT.
 func (m *App) SetTheme(name string) bool {
 	if !m.applyThemeAndRefresh(name) {
 		return false
@@ -750,8 +724,7 @@ func (m *App) SetTheme(name string) bool {
 		m.profile.Theme = name
 	}
 	// Report WHERE the choice is persisted so a non-persisting environment is visible instead of
-	// mysterious: the operator's "themes are not saving" is unsolvable without knowing the config path
-	// (a.
+	// mysterious.
 	path, pathErr := config.DefaultPath()
 	if pathErr != nil {
 		m.dock.SetNotice("theme: " + name + " (this run only — no config path: " + pathErr.Error() + ")")

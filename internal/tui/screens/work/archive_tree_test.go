@@ -146,8 +146,7 @@ func TestArchiveViewAnchorsAnActiveAncestor(t *testing.T) {
 }
 
 // TestArchiveAnchorIsNotRestorable: offering "restore" on an ACTIVE row would send the plane a
-// request it refuses, and the operator would read the failure as an archived item that would not
-// come.
+// request it refuses.
 func TestArchiveAnchorIsNotRestorable(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")
@@ -336,25 +335,8 @@ func TestFolderGroupingStillOpensExpanded(t *testing.T) {
 	}
 }
 
-// TestArchiveRestoreIsReachableAndNamed — the operator: "It doesn't look like there is a
-// way to restore a work item from the archive in the TUI but you can in the GUI."
-//
-// The chord (`R`) existed and worked; it was UNDISCOVERABLE, and reaching it was blocked,
-// for three separate reasons that together made the feature invisible:
-//
-//  1. The archive view opened COLLAPSED, and its root is usually a GHOST ANCHOR — an
-//     active parent rendered only to keep the hierarchy connected. So the first screen of
-//     the archive showed a single row reading "active ancestor — not archived", with the
-//     archived items folded underneath and nothing to say they were there.
-//  2. The ghost anchor is not restorable (correctly — the plane would refuse), so the
-//     focused row offered NO actions at all. The operator's first impression was a view
-//     where nothing could be restored.
-//  3. The composer's hint line advertised `a: archive`, which is a NO-OP in this view
-//     (itemActions offers restore INSTEAD of archive), and never mentioned `R`. The one
-//     chord that works was the one chord not written down.
-//
-// This asserts the whole path: the archived rows are on screen on arrival, the row offers
-// the action, the hint names it, and confirming it calls RestoreWorkItem.
+// TestArchiveRestoreIsReachableAndNamed — the operator: "It doesn't look like there is a way to
+// restore a work item from the archive in the TUI but you can in the GUI."
 func TestArchiveRestoreIsReachableAndNamed(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")

@@ -647,8 +647,7 @@ func TestRecoveryActionsConfirmGated(t *testing.T) {
 }
 
 // TestRecoveryUnavailableActionIsNeverSilent pins the "no silent no-op" rule for the *plane's*
-// action surface: an action the plane does not allow (no pending plan / terminal status) is
-// refused.
+// action surface.
 func TestRecoveryUnavailableActionIsNeverSilent(t *testing.T) {
 	f := &fakePlane{recoveries: []*apiv1.RecoveryExecution{{
 		Id: "rec-1", TaskId: "wi-1", Status: apiv1.RecoveryStatus_RECOVERY_STATUS_RESUMED, CurrentStep: "resume",

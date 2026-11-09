@@ -621,8 +621,7 @@ func (s *Service) ApproveToolCall(ctx context.Context, req *connect.Request[apiv
 }
 
 // recordApprovalAudit writes the tool-call approval/rejection row in a short tenant tx
-// (ApproveToolCall resolves an in-memory registry entry and has no state mutation to share a tx
-// with).
+// (ApproveToolCall resolves an in-memory registry entry and has no state mutation to share a tx.
 func (s *Service) recordApprovalAudit(ctx context.Context, tenantID string, approved bool, executionID string) {
 	action := "execution.tool_call_rejected"
 	if approved {
@@ -1315,24 +1314,7 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 	return connect.NewResponse(&apiv1.ContinueExecutionSessionResponse{Reply: reply}), nil
 }
 
-// GetExecutionTodos returns the worker's most recent todo list for an
-// execution.
-//
-// TWO SOURCES, IN PRIORITY ORDER, because neither alone is sufficient:
-//
-//  1. THE RUN-STATE SNAPSHOT (<projectDir>/.orchicon/<runID>/todos.json) is
-//     AUTHORITATIVE. It is written by the `todowrite` TOOL itself, so it is the
-//     only record that survives opencode 2.x routing every MCP call through
-//     `execute` — on that surface the transcript names the tool `execute` and a
-//     parser matching the tool NAME finds nothing at all, even though the tool
-//     ran and reported success. It also outlives the worktree, so a finished
-//     run's plan stays readable.
-//  2. THE TRANSCRIPT PARSE is the fallback, for a run whose tool never wrote the
-//     snapshot: pre-existing runs, a sidecar not told its run id, or the
-//     DB-backed path where opencode's OWN native todowrite (v1) was used.
-//
-// Falls through to an empty list when neither has anything — a run that never
-// wrote todos is not an error.
+// GetExecutionTodos returns the worker's most recent todo list for an execution.
 func (s *Service) GetExecutionTodos(ctx context.Context, req *connect.Request[apiv1.GetExecutionTodosRequest]) (*connect.Response[apiv1.GetExecutionTodosResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {

@@ -92,9 +92,7 @@ func (r *TaskReconciler) verdictForOutcome(ctx context.Context, exec db.Executio
 	return res, true
 }
 
-// skipReasonForNoDeliverable converts the deliverable exemption into an AC-report skip reason, or
-// "" when the step DOES owe a deliverable (so a missing report is a real omission and must
-// abstain).
+// skipReasonForNoDeliverable converts the deliverable exemption into an AC-report skip reason.
 func skipReasonForNoDeliverable(declares bool, skipReason string) string {
 	if declares {
 		return ""
@@ -106,18 +104,6 @@ func skipReasonForNoDeliverable(declares bool, skipReason string) string {
 }
 
 // appendACReportCheck folds the worker's own AC REPORT into the verdict.
-//
-// PRECEDENCE, and why:
-//   - no report block at all → ABSTAIN. Many work items have no acceptance criteria, and a step is not
-//     suspect merely for skipping a section it was told to skip. The abstention lands the step in
-//     "unverified", which is accurate.
-//   - the worker reported a FAIL or NOT VERIFIED on any criterion while claiming `success` overall →
-//     FAIL. That is the worker contradicting itself, which is a positive fact, not an absence. (NOT
-//     VERIFIED counts: a worker that says "I could not establish criterion 3" and then reports success
-//     has told the operator the step is not done.)
-//   - every criterion PASS but some without evidence → ABSTAIN. Surfaced, not punished: the heuristic
-//     is deliberately generous but not omniscient.
-//   - every criterion PASS with evidence → PASS.
 func appendACReportCheck(res verify.Result, output, skipReason string) verify.Result {
 	rep := verify.ParseACReport(output)
 	switch {

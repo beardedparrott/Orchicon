@@ -47,15 +47,7 @@ type ExecutionManifest struct {
 	RuntimeImage string
 	// ExecutionMode is the run's project execution_mode ("runtime" | "local").
 	ExecutionMode string
-	// Stall detection thresholds from tenant settings. Each is a POINTER, and
-	// the two states are different instructions to the adapter:
-	//
-	//   - nil — the tenant left this dimension BLANK in Settings. The tenant has
-	//     no opinion, so the adapter's env-var / built-in default stands.
-	//   - non-nil — an explicit value; 0 means DISABLED.
-	//
-	// Resolving either state into a concrete int before dispatch would destroy
-	// the distinction, so the pointers travel intact.
+	// Stall detection thresholds from tenant settings.
 	StallNoProgressWindowSeconds *int64
 	StallNoFileDiffWindowSeconds *int64
 	StallTextLoopWindowSeconds   *int64
@@ -71,9 +63,7 @@ type ExecutionManifest struct {
 	// for longer than this is cancelled natively (synthesized `cancelled:` tool result +.
 	StallToolHangSeconds *int64
 
-	// SequenceContinue (opt-in, DEFAULT OFF) marks this execution as part of a sequence chain:
-	// consecutive same-worker tasks may resume the prior task's session transcript instead of starting
-	// a fresh.
+	// SequenceContinue (opt-in, DEFAULT OFF) marks this execution as part of a sequence chain.
 	SequenceContinue      bool
 	ContinueFromSessionID string
 }
@@ -142,8 +132,7 @@ type LivenessReporter interface {
 }
 
 // DiffLedgerSink is the OPTIONAL capability for a bridge that can report the file edits its
-// sessions make, so the diff pane shows ground truth for EVERY adapter rather than for whichever
-// ones.
+// sessions make.
 type DiffLedgerSink interface {
 	// SetDiffLedger installs the ledger callback for worker executions (owner kind execution) and for
 	// Ask conversations (owner kind ask_conversation).
@@ -178,34 +167,8 @@ type ChatTurnClient interface {
 	ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error
 }
 
-// SessionQueuesPrompts is implemented by chat adapters that can HOLD a message sent while a turn is running
-// and fold it into that SAME turn — rather than starting a competing one.
-//
-// IT DECIDES HOW AN INTERJECTION IS DELIVERED, and getting it wrong is a real defect rather than a detail: an
-// adapter that answers FALSE has its message persisted and held for the NEXT turn (askorchicon.deliverInjection),
-// which is correct but slower, and one that answered TRUE while expecting SendTurnMessage to start its own turn
-// ran a SECOND concurrent stream on the same session — rejected outright while the turn was parked on an
-// ask_user, which is the reported "error banner, draft restored, message never delivered".
-//
-// THE BOUNDARY IS ADAPTER-DEFINED, AND THAT GRANULARITY IS WHAT AN OPERATOR ACTUALLY FEELS. All three current
-// adapters answer TRUE, and they are NOT equivalent:
-//
-//   - the native bridge owns its generate loop, so it drains its own queue (askInjections) before each
-//     provider call: the model reads a mid-turn note at the NEXT MODEL CALL — one tool round away.
-//   - opencode's serve accepts `delivery: "steer"`, which runs the input at the running turn's NEXT STEP
-//     BOUNDARY. Same practical granularity as the native bridge, but the serve decides when.
-//   - claude's CLI owns its loop and we cannot drain it: the queue is drained on the stream's `result` event,
-//     so the note is answered as a NEW turn AFTER the current one ends. TRUE is still right (the message joins
-//     the session and is answered without re-sending), but it is the one adapter that does not steer a
-//     running turn. See claude.Bridge.QueuesPrompts for why that is structural rather than unfinished.
-//
-// So TRUE means "does not start a competing turn", and the comment at each implementation states its own
-// boundary. Do not read TRUE as "the model sees it immediately" — nothing can put text into a generation
-// already in flight, on any adapter.
-//
-// An adapter that does not implement this is treated as NOT queueing (see askorchicon.deliverInjection): the
-// message is persisted and answered by the next turn that occurs, which is the behaviour the operator asked
-// for — "fit it into the context when it is possible (a turn occurs)".
+// SessionQueuesPrompts is implemented by chat adapters that can HOLD a message sent while a turn is
+// running and fold it into that SAME turn — rather than starting a competing one.
 type SessionQueuesPrompts interface {
 	// QueuesPrompts reports whether SendTurnMessage on a live session folds the message into the
 	// CURRENT turn (true) rather than starting its own (false).
@@ -263,9 +226,7 @@ type ChatCompaction struct {
 	ArchivePath string
 }
 
-// AskCompactNotice describes a compaction that replaced a conversation's accumulated context,
-// reported by the adapter that performed it so the service owning the transcript can record it
-// durably.
+// AskCompactNotice describes a compaction that replaced a conversation's accumulated context.
 type AskCompactNotice struct {
 	ConversationID string
 	SessionID      string
@@ -319,40 +280,15 @@ type ToolPolicy struct {
 	Denied []string
 }
 
-// ChatToolRestrictor is the OPTIONAL capability for an adapter that can ENFORCE a per-turn tool policy.
-//
-// ITS PURPOSE IS TWO THINGS, and the second is the one that matters most as adapters multiply:
-//
-//  1. The hook. An adapter that can restrict tools implements this and applies the policy its own way.
-//  2. THE HONEST ANSWER TO "IS THIS TURN ACTUALLY ENFORCED?". Not every adapter can restrict per turn — it
-//     depends on whether its mechanism is per-invocation or per-process, and that is not something the platform
-//     can assume. An adapter that does NOT implement this is dispatching a turn where the mode boundary is
-//     PROSE ONLY, and the caller can say so (askorchicon logs it) rather than believing the boundary holds
-//     everywhere and discovering otherwise only when a mode does something it should not have.
-//
-// It is OPTIONAL by design, mirroring ChatCompactor and SendTurnMessageWithAttachments: an adapter without the
-// capability is a known, reportable state rather than an error.
+// An adapter that does NOT implement this is dispatching a turn where the mode boundary is PROSE
+// ONLY.
 type ChatToolRestrictor interface {
 	RestrictChatTools(ctx context.Context, policy ToolPolicy) error
 }
 
 // SessionEvent is one turn-visible signal an Ask drain loop consumes, adapter-neutral.
 type SessionEvent struct {
-	// Kind classifies the signal:
-	//   "idle"       — turn complete; drain ends the turn as collected
-	//   "error"      — turn failed (model/API level); Text is the message
-	//   "permission" — permission.asked; PermissionID drives auto-approve
-	//   "tool_part"  — a tool call issued but not yet resolved (Text = tool
-	//                  name); feeds the stall monitor's wedge signal
-	//   "delta"      — mid-generation token delta (Text); liveness + live mirror
-	//   "part"       — a completed text/reasoning/tool_use/step_finish part
-	//   "tool_result"— a tool call RESOLVED: its arguments and output. Typed
-	//                  fields (ToolName/ToolCallID/ArgsJSON/Output/IsError),
-	//                  not a transport-shaped Part map — see ToolName.
-	//   "question"   — the model asked a clarifying question and is WAITING for the
-	//                  answer (ask_user, blocking). Typed fields (Question/
-	//                  Options/AllowOther/InputJSON); the reply is an answer string,
-	//                  not a permission decision.
+	// Kind classifies the signal: "idle" — turn complete.
 	Kind string
 	// Type refines Kind for "delta" ("text"|"reasoning") and "part"
 	// ("text"|"reasoning"|"tool_use"|"step_finish") — the stall-monitor and session-event vocabulary.

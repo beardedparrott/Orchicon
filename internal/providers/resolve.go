@@ -129,17 +129,8 @@ func mustTryLocalPorts(host string) bool {
 	return false
 }
 
-// repairCandidates lists the most-likely-working base URLs for a custom
-// provider whose stored URL cannot be probed. Dimensions explored:
-//   - host: loopback → plane-reachable host gateway (container mode only;
-//     the portless-URL legacy bug may also have stored a bare gateway),
-//   - port: preserved as entered; portless URLs (legacy bug) try common
-//     llama-server/vLLM-class ports,
-//   - path: the version root (/v1) appended when absent.
-//
-// Candidates are ordered most-likely first and deduped; the ORIGINAL URL
-// is NOT included (the caller already tried it). Empty/nil when nothing
-// can be sensibly tried.
+// repairCandidates lists the most-likely-working base URLs for a custom provider whose stored URL
+// cannot be probed.
 func repairCandidates(raw string) []string {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Host == "" {

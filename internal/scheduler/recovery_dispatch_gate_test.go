@@ -113,9 +113,7 @@ func newRecoveryGateTestEnv(t *testing.T, strategy string) *recoveryGateTestEnv 
 	if err != nil {
 		t.Fatalf("create workflow run: %v", err)
 	}
-	// CreateWorkflowRun does not insert runtime_ready (column default false); flip it true explicitly
-	// so reconcileRun's headless runtime gate does not bump the run version mid-pass (which would
-	// stale.
+	// CreateWorkflowRun does not insert runtime_ready (column default false).
 	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, run.ID, run.Version, db.UpdateWorkflowRunFields{
 		RuntimeReady:   boolPtr(true),
 		WorktreeStatus: strPtr(domain.WorktreeReady),
@@ -180,8 +178,7 @@ func newRecoveryGateTestEnv(t *testing.T, strategy string) *recoveryGateTestEnv 
 	}
 
 	// Recovering step run carrying the dead-execution identity + strategy (what pollTaskStep's
-	// summarize_restart branch writes today) plus the worker pin preserved from the first dispatch
-	// (what.
+	// summarize_restart branch writes today) plus the worker pin preserved from the first dispatch.
 	stepResult := recoveringStepResult(ctx, ttx.Tx, approvalTestTenant, ticket.ID, exec.ID, strategy, nil)
 	var srRes map[string]any
 	_ = json.Unmarshal(stepResult, &srRes)
@@ -225,9 +222,7 @@ func (env *recoveryGateTestEnv) getStepRun(ctx context.Context, id string) db.Wo
 	return sr
 }
 
-// TestRecoveryDispatchGateRace is THE regression test for the observed race: a recovering
-// summarize_restart step must NOT be re-dispatched before its recovery is terminal `resumed` AND a
-// seed.
+// TestRecoveryDispatchGateRace is THE regression test for the observed race.
 func TestRecoveryDispatchGateRace(t *testing.T) {
 	env := newRecoveryGateTestEnv(t, "summarize_restart")
 	ctx := context.Background()
@@ -620,8 +615,7 @@ func TestRecoveryGateWorkerVersionChangeFailsFast(t *testing.T) {
 }
 
 // ageStepRecoveringSince rewrites the recovering step run's `_recovering_since` to the given time
-// (committed), for RC2 fixtures that must age the STEP's own recovering entry rather than the
-// run's.
+// (committed).
 func (env *recoveryGateTestEnv) ageStepRecoveringSince(ctx context.Context, old time.Time) db.WorkflowStepRunRow {
 	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
@@ -677,8 +671,7 @@ func TestRecoveringStallGuardFailsStuckStep(t *testing.T) {
 }
 
 // TestRecoveringStallDisabledHoldsLegacy verifies the cap can be disabled
-// (ORCHICON_RECOVERING_STALL_TIMEOUT < 1s): the gate returns to legacy hold-only behavior even for
-// a genuinely aged.
+// (ORCHICON_RECOVERING_STALL_TIMEOUT < 1s).
 func TestRecoveringStallDisabledHoldsLegacy(t *testing.T) {
 	env := newRecoveryGateTestEnv(t, "summarize_restart")
 	t.Setenv("ORCHICON_RECOVERING_STALL_TIMEOUT", "0ms")

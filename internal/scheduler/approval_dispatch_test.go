@@ -169,9 +169,7 @@ func TestApprovalDecisionFromSources(t *testing.T) {
 	}
 }
 
-// typedNilLifecycle returns a RuntimeLifecycle interface wrapping a nil *runtime.Lifecycle — the
-// shape produced by the old server.go wiring (`var runtimeLifecycle *runtime.Lifecycle` left
-// unset).
+// typedNilLifecycle returns a RuntimeLifecycle interface wrapping a nil *runtime.Lifecycle.
 func typedNilLifecycle() RuntimeLifecycle {
 	var lc *runtime.Lifecycle
 	return lc

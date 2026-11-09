@@ -37,8 +37,7 @@ func FromControlPort(port int) (string, bool) {
 }
 
 // ValidateName applies the CLI's instance-name rule
-// (cmd/orchicon/lifecycle.go:validateInstanceName): the name forms a DIRECTORY name, so a path
-// separator or ".." is refused.
+// (cmd/orchicon/lifecycle.go:validateInstanceName).
 func ValidateName(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return fmt.Errorf("no instance named: every action must say which instance it acts on")

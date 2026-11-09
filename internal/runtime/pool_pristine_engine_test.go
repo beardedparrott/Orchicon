@@ -29,9 +29,7 @@ mkdir -p /tmp/ac1-pkgdir && echo pkg > /tmp/ac1-installed-package
 mkdir -p "$HOME/.local/share/opencode/storage" && echo session > "$HOME/.local/share/opencode/storage/ac1-session"
 `
 
-// TestPristineResetRealEngine writes state in run A, releases (the pool's removal primitive),
-// receives the recreated container as run B, and asserts every piece of run A's state is gone (AC
-// 1).
+// TestPristineResetRealEngine writes state in run A, releases (the pool's removal primitive).
 func TestPristineResetRealEngine(t *testing.T) {
 	requested := strings.TrimSpace(os.Getenv("ORCHICON_RUNTIME_TEST_ENGINE"))
 	if requested == "" {

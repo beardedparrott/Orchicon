@@ -70,8 +70,7 @@ func TestAskUserRecordedCallSurvivesHistoryRepair(t *testing.T) {
 	}
 
 	// The question and every option are still there, and still parse with the SAME validation the
-	// handler applies — i.e. the persisted row alone is enough to rebuild the card the operator
-	// answers.
+	// handler applies.
 	question, options, allowOther, perr := parseAskUserArgs([]byte(ask.Arguments))
 	if perr != nil {
 		t.Fatalf("the persisted arguments no longer parse (%v): %q", perr, ask.Arguments)
@@ -98,8 +97,7 @@ type persistedToolCallStamped struct {
 }
 
 // TestPersistedToolCallStampedRowStillRepairs is the sibling of
-// TestAskUserRecordedCallSurvivesHistoryRepair for the STAMPED row shape: the ledger now stamps
-// every entry.
+// TestAskUserRecordedCallSurvivesHistoryRepair for the STAMPED row shape.
 func TestPersistedToolCallStampedRowStillRepairs(t *testing.T) {
 	args := `{"question":"Which branch should the run clone off?",` +
 		`"options":[{"label":"develop","description":"the integration branch"},{"label":"main"}],` +

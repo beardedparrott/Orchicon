@@ -1,37 +1,6 @@
 package opencode
 
 // binary.go — resolving the opencode CLI to spawn, in ONE place.
-//
-// WHY THIS EXISTS. The same probe was written THREE times — the adapter's spawn
-// path (adapter.go), the in-process host serve (servehost.go) and the plane's
-// discovery wiring (internal/server/server.go) — and the three did NOT agree.
-// Only the discovery copy honoured ORCHICON_OPENCODE_BIN, which is the variable
-// the plane's OWN error message tells the operator to set:
-//
-//\tmodel discovery is not configured (set ORCHICON_OPENCODE_BIN or install opencode on PATH)
-//
-// So an operator who followed that instruction fixed DISCOVERY and left
-// EXECUTION on a different binary — or on none at all. The failure is the
-// expensive kind: nothing errors, the model picker starts offering models, and
-// the first dispatch fails somewhere else for a reason that looks unrelated.
-// One resolver, one candidate list, all three call sites.
-//
-// THE CANDIDATES ARE CONTAINER-VISIBLE ON PURPOSE, and that is a design
-// constraint rather than a coincidence. opencode is spawned in two places, and
-// only one of them can see the host's PATH:
-//
-//   - the HOST plane (the default residency) spawns it with the host PATH, and
-//   - a RUNTIME CONTAINER sees ONLY what internal/runtime's adapter declaration
-//     bind-mounts for the kind — for opencode that is ~/.opencode, plus
-//     ~/.config/opencode and ~/.local/share/opencode as read-only data.
-//
-// A system-wide install (`sudo npm i -g opencode` lands in /usr/local/bin) is on
-// the operator's PATH and so is resolvable by the host plane, but NO container
-// mounts it — the container has its own /usr/local/bin. Resolving it there would
-// hand the plane a binary its own workers cannot execute, so a PATH hit that is
-// invisible from inside a container is accepted (it is a legitimate host
-// install) and REPORTED rather than silently trusted; see ContainerVisible, and
-// the misplacement hint the not-found error carries.
 
 import (
 	"fmt"
@@ -366,8 +335,7 @@ func OpenCodeBinDirs(home string) []string {
 func ResolveBinaryPath() (string, error) { return resolveOpenCodeBinary() }
 
 // ContainerVisible reports whether a resolved opencode path can be reached from inside a runtime
-// container — i.e. whether it sits under one of the host roots internal/runtime declares as
-// adapter.
+// container.
 func ContainerVisible(path string) bool {
 	home := hostHome()
 	if home == "" {

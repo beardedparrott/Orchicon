@@ -413,8 +413,7 @@ func degradeReason(backend, endpoint string, err error) string {
 }
 
 // httpErr normalises the (err, statusCode) pair from QueryClient.get into a single error for
-// degradeReason: a transport error wins, otherwise a >=400 status becomes an HTTP error, otherwise
-// nil.
+// degradeReason.
 func httpErr(err error, status int) error {
 	if err != nil {
 		return err

@@ -31,8 +31,7 @@ func turnGateSession(t *testing.T, budgets string) *Session {
 }
 
 // AC: with every budget dimension disabled (explicit 0 → the gate never evaluates) and no window
-// hint, a session that runs past compact_max_turns turns still gets periodic compaction at the
-// quiet.
+// hint.
 func TestTurnCountGateFiresWithoutAnyBudgetTier(t *testing.T) {
 	s := turnGateSession(t, `{"tokens":0,"cost_usd":0,"tool_call_count":0,"compact_max_turns":3,"context_compaction":{"recent_turns":2}}`)
 	ctx := context.Background()

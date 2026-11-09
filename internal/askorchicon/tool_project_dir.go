@@ -155,9 +155,7 @@ func toolReadProjectFile(ctx context.Context, pool *db.Pool, args json.RawMessag
 	if info.IsDir() {
 		return nil, fmt.Errorf("%q is a directory — use list_project_dir to explore it", file)
 	}
-	// Note: a symlink target is intentionally not rejected here — ResolveWithin already proved any
-	// followable symlink stays inside the root, and os.ReadFile follows it (or errors for a broken
-	// link).
+	// Note: a symlink target is intentionally not rejected here.
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return nil, fmt.Errorf("read %q: %w", file, err)

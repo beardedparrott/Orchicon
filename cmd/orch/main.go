@@ -56,22 +56,8 @@ type flags struct {
 
 func main() {
 	fl := parseArgs(os.Args[1:])
-	// Fullscreen takeover like opencode / Claude Code: the app owns the
-	// viewport and paints every cell itself. Two terminal-level settings
-	// complete that ownership:
-	//
-	//   1. The colour profile the TERMINAL advertises, resolved by termenv and pinned before anything is
-	//      drawn — so the theme's hex values render exactly instead of being rounded to the 256-color cube.
-	//      This used to be a hand-rolled COLORTERM equality check, which was a wrong subset of termenv's
-	//      detection; see colorprofile.go for the three cases it got wrong and the contract that replaced it.
-	//   2. Auto-wrap OFF for the app's lifetime (restored on exit): writing
-	//      the last cell of the last row otherwise leaves the terminal in
-	//      wrap-pending state, and the renderer's next line feed scrolls
-	//      the whole frame up by one row — leaving an unpainted hairline
-	//      along the bottom (the operator's persistent "sliver").
-	// 1a. Supply the true-colour advertisement under WSL, where the terminal has
-	// it and does not relay it into the distro. Before the profile is resolved,
-	// because termenv reads the environment when it resolves.
+	// Fullscreen takeover like opencode / Claude Code: the app owns the viewport and paints every cell
+	// itself.
 	applyWSLTrueColorDefault()
 	applyTerminalColorProfile()
 	restoreWrap := disableAutoWrap()
@@ -328,28 +314,8 @@ func applyStoredTheme(p *config.Profile, cfg *config.Config) {
 	}
 }
 
-// shellLaunchOptions is ONE shell's TUI options, and it is where the session's two
-// separate decisions are expressed:
-//
-//   - THE LAUNCH DIRECTORY is passed on EVERY shell. It is a fact about the process
-//     (os.Getwd), and the rail derives its workspace default from it
-//     (internal/tui/railprojects.go, applyLaunchDirScope).
-//   - THE LAUNCH PROMPT is armed ONLY on the FIRST shell. A /connect round trip
-//     re-enters the shell as a CONTINUATION of the session, and re-asking the project
-//     question there is the nagging the feature exists to avoid: the operator has
-//     already given an answer this session.
-//
-// Collapsing these two into one decision — the old code passed "" as the directory on a
-// continuation, which WithLaunchDir reads as "do nothing" — silently disabled the
-// workspace default after every reconnect. The directory is not a question and has no
-// answer to remember, so it must survive; only the QUESTION is suppressed.
-//
-// A continuation therefore does NOT remember the previous shell's workspace: the new App
-// starts unchosen and re-derives the scope from the launch directory, so a workspace the
-// operator picked BY HAND before reconnecting is replaced by the launch-directory default.
-// Deliberate: carrying scope across shells would be wrong the moment a shell sits in a
-// different directory, and the derived default is strictly better than falling back to All
-// projects. See tui.WithLaunchPrompt.
+// shellLaunchOptions is ONE shell's TUI options, and it is where the session's two separate
+// decisions are expressed:
 func shellLaunchOptions(firstShell bool, launchDir string) []tui.AppOption {
 	opts := []tui.AppOption{tui.WithLaunchDir(launchDir)}
 	if firstShell {

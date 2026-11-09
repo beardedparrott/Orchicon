@@ -81,22 +81,8 @@ type ModelRef struct {
 	Model    string // verbatim remainder (internal slashes preserved)
 }
 
-// ParseModelRef parses a model ref under the pinned grammar (left-greedy,
-// exactly three semantic fields).
-//
-//   - "adapter/provider/model" and deeper ("adapter/provider/a/b/c") parse
-//     left-greedy with the model = verbatim remainder.
-//   - A legacy 2-segment "provider/model" ref infers the adapter from the
-//     default adapter kind when seg1 is a KNOWN provider of that adapter
-//     (built-in profile OR tenant-created custom provider via reg). A
-//     2-segment ref whose seg1 is a known adapter kind is rejected as
-//     malformed (it should be written adapter/provider/model); an unknown
-//     seg1 is rejected with a Settings → Adapters pointer.
-//   - A 1-segment ref is a legacy bare model id; adapter defaults.
-//
-// reg may be nil (e.g. deep in the adapter layer where no tenant registry
-// is available): validation of known providers/adapters is skipped and the
-// ref is parsed structurally. All errors are actionable (ADR-0003 D4).
+// ParseModelRef parses a model ref under the pinned grammar (left-greedy, exactly three semantic
+// fields).
 func ParseModelRef(ref string, reg ProviderRegistry) (ModelRef, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {

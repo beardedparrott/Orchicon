@@ -39,8 +39,7 @@ func TestHostToolsDefsShape(t *testing.T) {
 		}
 	}
 	// The native engine must advertise todowrite: the composite prompt orders a todowrite call every
-	// turn, so a missing def fails every turn with `unknown tool "todowrite"` (native-adapter runs
-	// only).
+	// turn.
 	if !seen["todowrite"] {
 		t.Error("todowrite must be advertised (composite prompt orders it every turn)")
 	}

@@ -1,27 +1,7 @@
 package scheduler
 
 // local_integrate.go — LOCAL INTEGRATION: finishing the job a `git_strategy=local` worker cannot.
-//
-// THE PROBLEM. A local-strategy project has no remote, so there is no push and no PR. The worker commits to
-// its run branch and reports success — and the work then sits on a branch nobody reads. "A commit sitting
-// only on a run branch is unfinished." Repeated runs make it worse: each one branches from wherever it
-// started, and the integration branch never advances.
-//
-// WHY THE PLATFORM DOES THIS AND NOT THE PROMPTS, which is the design decision this file embodies. Teaching
-// every canned worker to merge was the alternative, and it loses on three counts that are not stylistic:
-//
-//  1. IT CANNOT REFRESH THE MAIN CHECKOUT. `develop` is checked out in the operator's own working tree, and
-//     moving the ref under it leaves that tree's FILES stale relative to its own HEAD — the operator's next
-//     `git status` reports the whole tree as reverted. A worker inside a run worktree cannot see that
-//     problem, let alone fix it. Only the controller knows about the main checkout.
-//  2. IT RACES. Two workers merging into one ref is a lost update. Serializing it needs a lock, and a lock
-//     shared across processes is exactly what a single controller already is.
-//  3. IT IS N GIT IMPLEMENTATIONS. Divergence, fast-forward, conflict, and the stale-checkout case would be
-//     re-derived in every canned prompt, and they would drift.
-//
-// It is also cheaper than it looks: integration makes the run branch PROVABLY MERGED, so the existing
-// prune path (branchProvablyMerged → ancestry) then deletes the branch and marks the worktree pruned
-// without any new bookkeeping. This file adds the missing half; it does not duplicate the other one.
+// IT CANNOT REFRESH THE MAIN CHECKOUT.
 
 import (
 	"context"
@@ -62,15 +42,6 @@ func shellFlag() string {
 const defaultIntegrationBranch = "develop"
 
 // integrationTarget resolves the branch runs land on.
-//
-// ORDER:
-//  1. `develop` IF IT EXISTS — byte-identical to the previous behaviour for every repository that relies on
-//     the convention, and the name the worker prompts and branchMergedIntoBase use.
-//  2. OTHERWISE THE REPOSITORY'S OWN DEFAULT, via resolveBaseRefWithProvenance (origin/HEAD symref, then
-//     `remote show origin`, then the configured candidates, then HEAD). Using that chain is what makes
-//     INTEGRATION agree with PROVISIONING instead of contradicting it: the base a run branch was cut from is
-//     the branch it should land on.
-//  3. OTHERWISE REFUSE. A missing integration branch is reported, never created.
 func (r *WorktreeReconciler) integrationTarget(ctx context.Context, projectDir string) (string, error) {
 	if r.branchExists(ctx, projectDir, defaultIntegrationBranch) {
 		return defaultIntegrationBranch, nil
@@ -414,20 +385,8 @@ func (r *WorktreeReconciler) completeIntegration(ctx context.Context, tenantID s
 	r.finishIntegrationRecord(ctx, tenantID, rec.ID, db.LocalIntegrationFailed, landed, detail, target)
 }
 
-// verifyIntegration proves the integration actually produced a usable tree, and reports what it found.
-//
-// THREE CHECKS, in the order that fails fastest and cheapest:
-//
-//  1. THE WORK IS REACHABLE — the run branch is an ancestor of the integration branch. This is the merge
-//     itself, re-asserted after the fact rather than trusted from the code path that performed it.
-//  2. THE TREE IS MATERIALISED — when the main checkout is ON the integration branch, its index must match HEAD
-//     and no tracked file may be missing from disk. This is the check that was absent and would have caught the
-//     reported failure on its FIRST occurrence instead of after six.
-//  3. THE PROJECT'S OWN COMMAND PASSES — opt-in, only when the project declares one (see projectVerifyCommand).
-//
-// A checkout left alone BECAUSE THE OPERATOR HAS UNCOMMITTED WORK is not a verification failure: the platform
-// deliberately does not touch their tree, so demanding it match the branch would fail an integration for the
-// operator's own edits. It is reported, not failed.
+// verifyIntegration proves the integration actually produced a usable tree, and reports what it
+// found.
 func (r *WorktreeReconciler) verifyIntegration(ctx context.Context, projectDir, target, branch, notRefreshedBecause string) (bool, string) {
 	// 0. Leave a trace if git's registry is malformed. Not a verdict — a registration that looks wrong must be
 	// REPORTED, never silently repaired, and never treated as the cause of anything on its own.

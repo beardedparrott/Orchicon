@@ -673,9 +673,7 @@ func TestServicesReadyIsNotNegativeForACarrierItCannotProbe(t *testing.T) {
 	}
 }
 
-// TestWaitServicesReadyWarnsRatherThanFailing is acceptance criterion 2's posture: the wait
-// ANNOUNCES before it waits (a silent minute reads as a hang), WARNS rather than failing on
-// timeout.
+// TestWaitServicesReadyWarnsRatherThanFailing is acceptance criterion 2's posture.
 func TestWaitServicesReadyWarnsRatherThanFailing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PATH", t.TempDir()) // no pg_isready at all

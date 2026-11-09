@@ -115,24 +115,8 @@ func claudeToolToPolicyName(tool string) string {
 	}
 }
 
-// askModeDenial reports whether the turn's mode refuses this tool call, and the
-// refusal to hand back.
-//
-// TWO KINDS OF DENIAL, from the ONE table (internal/askmode), and the OPAQUE-MCP
-// rule comes first because it is the one a bare-name lookup cannot express:
-//
-//  1. an OPAQUE MCP tool (`mcp__<server>__<tool>`, server != the platform's own
-//     orchicon sidecar) is an ACTION to a table that cannot classify it, so it is
-//     refused by any mode that MAY NOT ACT — read from the flag the turn's writer
-//     recorded (askmode.MayAct), never re-derived here. This is what makes a
-//     Brainstorm conversation unable to call an operator's MCP server.
-//  2. the mode's classic denials, via the translated bare name.
-//
-// BOTH ARE READ FROM THE SAME FILE, written from the same table, and the WORDING
-// is shared — mirroring askorchicon's native refusal so a model sees the same
-// boundary whichever adapter it runs on. It states that the PLATFORM refused it,
-// that the model cannot switch its own mode, and the one action that resolves it —
-// the user switching the mode.
+// askModeDenial reports whether the turn's mode refuses this tool call, and the refusal to hand
+// back.
 func askModeDenial(path, tool string) (bool, string) {
 	st, ok := readAskModeFile(path)
 	if !ok {

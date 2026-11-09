@@ -1302,8 +1302,7 @@ func ListWorktreeCandidates(ctx context.Context, tx pgx.Tx, tenantID string, lim
 }
 
 // ListTerminalRunsWithWorktrees returns workflow runs in a terminal state
-// (completed/failed/aborted) that still have a recorded worktree to reap (worktree_status 'ready'
-// with a recorded path).
+// (completed/failed/aborted) that still have a recorded worktree to reap (worktree_status 'ready'.
 func ListTerminalRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
 	if limit <= 0 {
 		limit = 16
@@ -1435,8 +1434,7 @@ func ListTerminalStepRunsWithPrunedBranches(ctx context.Context, tx pgx.Tx, tena
 }
 
 // ListTerminalRunsWithPrunedBranchesInclusive returns terminal workflow runs
-// (completed/failed/aborted) whose worktree was already pruned but that still record a worktree
-// branch.
+// (completed/failed/aborted) whose worktree was already pruned but that still record a worktree.
 func ListTerminalRunsWithPrunedBranchesInclusive(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
 	if limit <= 0 {
 		limit = 16
@@ -1710,18 +1708,8 @@ func ListTerminalRunsWithRuntimeEvidence(ctx context.Context, tx pgx.Tx, tenantI
 	return out, rows.Err()
 }
 
-// ListUnintegratedLocalRuns returns COMPLETED runs of ONE PROJECT whose branch has not yet been integrated,
-// oldest first, excluding excludeRunID.
-//
-// IT EXISTS FOR THE TWO HALVES OF ORDERED INTEGRATION:
-//   - integrating this project's backlog BEFORE a new branch is cut (the tenant-wide list is sorted by
-//     ended_at and capped, so a busy tenant can fill the page with other projects' runs and leave the
-//     project that is about to branch untouched), and
-//   - deciding whether this project may cut a branch at all yet (nothing here = clear to proceed).
-//
-// The strategy is NOT filtered here: git_strategy is a workflow-then-project precedence resolved in Go, and a
-// SQL predicate would have to restate that precedence and could disagree with db.EffectiveGitStrategy. Callers
-// resolve it per workflow and skip the non-local rows (integrateLocalRun stamps those, so they leave this set).
+// ListUnintegratedLocalRuns returns COMPLETED runs of ONE PROJECT whose branch has not yet been
+// integrated, oldest first, excluding excludeRunID.
 func ListUnintegratedLocalRuns(ctx context.Context, tx pgx.Tx, tenantID, projectID string, limit int, excludeRunID string) ([]WorkflowRunRow, error) {
 	if projectID == "" {
 		return nil, nil

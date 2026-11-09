@@ -47,16 +47,6 @@ func TestTrimCarriedAgentPrompt(t *testing.T) {
 }
 
 // TestAgentSelectionSupportedIsTheCompositeGate pins the gate the trim depends on.
-//
-// It is BOTH conditions, and combining them is the safety property rather than tidiness:
-//
-//   - the surface must have the agent route (v1 has no agent at all), and
-//   - the serve must actually carry THIS execution's agent, which is only true of a
-//     serve built per RUN — the container path. A HOST serve is shared and bakes none.
-//
-// If either were checked separately at the call site, a session on a host serve would
-// select an agent that cannot exist and then TRIM the run-level prompt off the message
-// — deleting it, since no agent holds it.
 func TestAgentSelectionSupportedIsTheCompositeGate(t *testing.T) {
 	mk := func(s apiShape, agents bool) *SessionClient {
 		c := NewSessionClient("http://127.0.0.1:1", "pw", "")

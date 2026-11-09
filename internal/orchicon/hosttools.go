@@ -18,26 +18,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// hosttools.go: the native session engine's HOST tool suite — the real
-// implementation of the ToolRegistry contract (ADR-0007) that the loop's
-// `s.tools == nil` branch surfaced as "tool registry not configured".
-// Until this file, sessions only ever carried MCP tools (bridge) and the
-// loop's built-in memory/todo tools; every core capability (read, write,
-// edit, bash, …) returned the registry-absent error, so native executions
-// could survey nothing and write nothing ("the plan is delivered inline").
-//
-// Design:
-//   - REUSE the opencode sidecar's battle-tested composite-tool engine
-//     (internal/worktree: BatchRead/BatchGrep/BatchWrite) rather than a
-//     parallel reimplementation — one containment boundary (Base), one
-//     cap/truncation semantics, one skip-list for .git/node_modules/…
-//   - Tool names + arg shapes match the sidecar's composite tools AND the
-//     loop's existing native-name gates (isFileWritingTool, the todowrite
-//     stash) so parity is by construction.
-//   - Containment: every path resolves inside the execution's working dir
-//     (manifest.WorktreePath when provisioned, else ProjectDir) + the
-//     sanctioned scratch dir; ProjectRoot stays READ-only (writes can
-//     never land in the main checkout — worktree hygiene).
+// hosttools.go: the native session engine's HOST tool suite.
 
 // HostTools is the ToolRegistry handed to every native session: the core file/shell suite scoped to
 // the execution's working directory.

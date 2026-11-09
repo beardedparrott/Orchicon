@@ -14,17 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
-// Tests for runs that would otherwise wedge permanently in "running" and
-// leak their per-workflow runtime container (the 30s adopt sweep treats
-// any running run as active and keeps the container alive):
-//
-//   - a run on a workflow whose published version has an EMPTY step DAG
-//     (observed: 18 prod runs from empty `seq-wf-*` workflows),
-//   - a task step whose work item or execution row was hard-deleted
-//     (observed: dev runs stuck on step-pr-reviewer with a deleted item).
-//
-// All three paths must terminalize the run so the container is reaped
-// instead of sitting "running" forever.
+// Tests for runs that would otherwise wedge permanently in "running" and leak their per-workflow
+// runtime container (the 30s adopt sweep treats any running run as active and keeps the container.
 
 // seedPublishedWorkflowSteps creates a published workflow template whose
 // current version carries the given steps JSON. Returns the workflow id.

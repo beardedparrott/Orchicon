@@ -25,8 +25,7 @@ type RecurringFireReconciler struct {
 }
 
 // StartWorkflowRunContextFn starts a workflow run for a bound work item and carries an extra
-// run_context map the recurring fire uses to stamp automation provenance into the run (feature 4.1,
-// D3).
+// run_context map the recurring fire uses to stamp automation provenance into the run (feature 4.1.
 type StartWorkflowRunContextFn func(ctx context.Context, tenantID, workflowID, projectID, workItemID string, runContext map[string]any) error
 
 // NewRecurringFireReconciler creates a new RecurringFireReconciler.

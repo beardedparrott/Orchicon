@@ -135,9 +135,7 @@ func bumpWorkItemVersion(t *testing.T, pool *db.Pool, tenantID, id string, expec
 	return w
 }
 
-// TestArchiveWorkItemRetriesOnceOnVersionConflict exercises the one-shot retry (docs/09 §5): a
-// concurrent writer (simulating the sequence engine) bumps the row's version between
-// ArchiveWorkItem's.
+// TestArchiveWorkItemRetriesOnceOnVersionConflict exercises the one-shot retry (docs/09 §5).
 func TestArchiveWorkItemRetriesOnceOnVersionConflict(t *testing.T) {
 	pool, s, ctx, tenantID, projectID := archiveEnv(t)
 	item := archiveItem(t, pool, tenantID, projectID, domain.WorkItemSucceeded)

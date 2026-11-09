@@ -1,26 +1,5 @@
-// Package tui — orch_pty_mouse_test.go — the Phase-2c REAL-PTY MOUSE
-// verification (operator finding #7: PR #515 shipped unit-level mouse
-// handlers while the footer promised "Mouse Enabled" and real clicks did
-// nothing).
-//
-// This test injects REAL SGR mouse sequences into the RUNNING program
-// (a live `bin/orch` on a real pty, pointed at a disposable plane
-// fixture) and asserts what the live process PAINTS afterwards:
-//
-//  1. the conversations rail is up and POPULATED from the live API;
-//  2. clicking the rail header collapses it (the header text leaves the
-//     screen);
-//  3. ctrl+r re-opens it;
-//  4. wheel-down over the rail scrolls the list (the visible range moves);
-//  5. clicking a tab opens its dropdown submenu;
-//  6. clicking a rail ROW opens that conversation (its transcript paints);
-//  7. clicking the composer focuses it (typed characters then echo);
-//  8. /theme switches the theme in place.
-//
-// Rendered-string (unit) assertions are INSUFFICIENT — the predecessor run
-// verified via strings and missed every operator finding. This file is the
-// mouse half of the standing real-pty verification gate (see
-// docs/tui-pty-verification-gate.md).
+// Package tui — orch_pty_mouse_test.go — the Phase-2c REAL-PTY MOUSE verification (operator finding
+// #7.
 package tui
 
 import (
@@ -42,9 +21,7 @@ import (
 	"github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 )
 
-// mouseAsk is the fixture Ask service: 60 conversations (more than the rail can show, so wheel
-// scrolling is observable) and a durable transcript with a known marker string (so a rail-row
-// click.
+// mouseAsk is the fixture Ask service: 60 conversations (more than the rail can show.
 const mouseConvCount = 60
 const mouseTranscriptMarker = "rail-transcript-alpha"
 

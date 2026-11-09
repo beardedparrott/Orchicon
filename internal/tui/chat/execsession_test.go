@@ -155,8 +155,7 @@ func execEvent(id string, seq int64, typ apiv1.ExecutionEventType, payload strin
 
 func TestLiveItemsTextAndReasoningChunks(t *testing.T) {
 	// Reasoning chunks arrive as a JSON string INSIDE the payload's text field (the adapter's
-	// emitReasoningChunked, double-wrapped) — detected by parsing that string, exactly like
-	// SessionChatPane.tsx.
+	// emitReasoningChunked.
 	events := []*apiv1.StreamExecutionEventsResponse{
 		execEvent("e1", 1, apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_TELEMETRY, `{"text":"answer "}`),
 		execEvent("e2", 2, apiv1.ExecutionEventType_EXECUTION_EVENT_TYPE_TELEMETRY, `{"text":"soon"}`),

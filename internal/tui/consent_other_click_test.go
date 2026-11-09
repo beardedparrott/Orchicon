@@ -1,25 +1,7 @@
 package tui
 
-// consent_other_click_test.go — CLICKING "Other" ON A QUESTION CARD OPENS THE FREE-TEXT ROW.
-//
-// The operator: "In the GUI, it lets you type in your own response. In the TUI clicking on it does
-// nothing. You should be able to click on other and type in a response there."
-//
-// THERE ARE TWO PATHS ONTO ONE CARD AND ONLY ONE OF THEM KNEW WHAT THE OTHER ROW IS.
-//
-//   - The KEYBOARD path (ask/consent.go confirmConsent) knows exactly: Enter on the Other row sets
-//     OtherMode, the card grows an input row, and Enter submits what was TYPED. It is pinned by
-//     TestQuestionCardOtherSendsTheTypedText.
-//   - The CLICK path (App.consentDecideFromRow) treated the row as an ordinary choice and settled
-//     the ask with the LITERAL label "Other" — so the operator's own words would have been replaced
-//     by the name of the button they pressed, and the input row they expected never appeared.
-//
-// The GUI's card does the right thing on both (AskCard.tsx: "Other…" opens an inline input, and
-// Enter sends what was typed through the same onSelect), which is precisely why the two clients
-// disagreed about one gesture.
-//
-// These tests find their rows by SCANNING the real frame, so they cannot pass by agreeing with the
-// card's own arithmetic — the same discipline the option-click tests use (ask_card_click_test.go).
+// You should be able to click on other and type in a response there." THERE ARE TWO PATHS ONTO ONE
+// CARD AND ONLY ONE OF THEM KNEW WHAT THE OTHER ROW IS.
 
 import (
 	"strings"

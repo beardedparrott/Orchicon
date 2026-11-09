@@ -15,9 +15,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
-// stubLifecycle is the minimal RuntimeLifecycle stub for runNeedsServe tests: ServeDependent
-// mirrors runtime.Lifecycle's real rule (opencode-only) so the unit behaves identically without a
-// daemon.
+// stubLifecycle is the minimal RuntimeLifecycle stub for runNeedsServe tests.
 type stubLifecycle struct{}
 
 func (stubLifecycle) ServeDependent(kind string) bool {
@@ -128,9 +126,7 @@ func TestRunNeedsServeAdapterKinds(t *testing.T) {
 		return w.ID
 	}
 
-	// runNeedsServe resolves each step's worker version through the DB exactly as dispatch does, and
-	// production always hands it the tenant tx (see the runNeedsServe callers in
-	// workflow_reconciler.go).
+	// runNeedsServe resolves each step's worker version through the DB exactly as dispatch does.
 	readTx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatal(err)

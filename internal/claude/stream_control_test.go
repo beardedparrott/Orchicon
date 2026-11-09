@@ -85,9 +85,7 @@ func TestParseLineDecodesControlCancel(t *testing.T) {
 	}
 }
 
-// No regression: an ordinary assistant line is not a control message, and a malformed
-// control_request degrades rather than failing the session loop (a CLI version that reshapes the
-// request must.
+// No regression: an ordinary assistant line is not a control message.
 func TestParseLineControlDoesNotDisturbOrdinaryEvents(t *testing.T) {
 	ev, err := ParseLine([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}`))
 	if err != nil {

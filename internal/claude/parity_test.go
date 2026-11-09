@@ -1,25 +1,6 @@
 package claude
 
 // parity_test.go — T3: THE ACCEPTANCE TEST.
-//
-// "A destructive command is refused IDENTICALLY for a claude worker and an
-// opencode worker." This file runs ONE fixture set of commands and ONE set of
-// path targets through BOTH adapters' restriction logic and asserts the same
-// verdicts:
-//
-//   - the opencode WORKER PROFILE's own `bash` deny map
-//     (opencode.PermissionRulesForProfile(ProfileWorker)) and its
-//     `external_directory` carve-out map, and
-//   - claude's PreToolUse decision core (DecideTool),
-//   - with the real OS-level guard shim as the third leg for the destructive
-//     class.
-//
-// The verdicts agree BY CONSTRUCTION — both sides read the one rule list in
-// internal/workerrestrict — which is exactly the property this test pins: edit
-// the list and both sides move; make one adapter keep its own copy and the
-// verdicts diverge here.
-//
-// No live claude session, no Anthropic spend: fixtures and the real shim only.
 
 import (
 	"os"

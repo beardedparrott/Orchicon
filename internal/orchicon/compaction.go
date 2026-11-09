@@ -225,9 +225,7 @@ func (s *Session) maybeCompact(ctx context.Context, step int, usage Usage) strin
 		}
 	}
 
-	// Trigger (c): the turn-count context-hygiene gate (compact_max_turns, opencode
-	// session_run.maybeCompact parity): a chatty session is compacted periodically even when no budget
-	// dimension breached.
+	// Trigger (c): the turn-count context-hygiene gate (compact_max_turns.
 	if s.cp.CompactMaxTurns > 0 {
 		turnsSinceLastCompact := step
 		if s.cs.lastCompactStep > 0 {

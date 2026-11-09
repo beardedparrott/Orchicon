@@ -1,21 +1,6 @@
 package instancectl
 
 // removal_test.go — "I removed the server and it is still on the screen."
-//
-// THE OPERATOR'S DIAGNOSIS WAS EXACT: "When you delete a server in the TUI it does actually remove the
-// server and if you restart the desktop app it is gone from there as well. So something in how the desktop
-// is sending the delete and how it refreshs its screen is causing the issue."
-//
-// The deletion was never broken. TWO things made the LIST keep showing it:
-//
-//  1. `isInstanceDir` counted `postgres` and `blobs` as proof of an installation. `orchicon uninstall`
-//     keeps the data by default and removes only infrastructure, so a keep-data uninstall left a directory
-//     that still passed the test — a server with no binaries, no config, no ports and no plane, listed with
-//     a Start button that could not work.
-//  2. the setup record (setup-progress.json) was never removed, so the row went on saying
-//     "Setup complete" for an instance that no longer existed.
-//
-// These assert the LIST, because that is what the operator was looking at.
 
 import (
 	"os"

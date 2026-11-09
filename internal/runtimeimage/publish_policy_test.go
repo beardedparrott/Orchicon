@@ -1,21 +1,6 @@
 package runtimeimage
 
 // publish_policy_test.go — WHAT WE PUBLISH AND WHAT WE BUILD MUST AGREE, IN BOTH DIRECTIONS.
-//
-// The variants carry third-party adapter CLIs (opencode, Claude Code). An image Orchicon builds and
-// serves is Orchicon DISTRIBUTING them; built on the operator's machine from the embedded template, the
-// operator installs for themselves. So the variants must NOT be published, and the base must be.
-//
-// Two independent mechanisms enforce that, and this test is the seam between them:
-//
-//   - release.yml decides what is PUSHED;
-//   - PublishedTag/LocalTag decide what a catalogue row points at, and FetchRuntimeImage routes on
-//     isRegistryRef (registry ref -> PULL, anything else -> BUILD).
-//
-// They could drift silently. Publishing a variant while its tag stays local would leave the image
-// unreachable; giving a variant a registry ref while unpublishing it would make every fetch a guaranteed
-// "manifest unknown" — the exact failure an operator already reported once. This reads the workflow and
-// the catalogue and asserts they describe the same world.
 
 import (
 	"os"

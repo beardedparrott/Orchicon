@@ -10,21 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
-// policy.go is the Ask screen's two list surfaces, both driven by the ONE
-// storage owner (the policy file, whose storage the sibling task owns):
-//
-//   - /grants      the SESSION roll-up  — what has been allowed for this
-//                  conversation's directories, revocable.
-//   - /permissions the PERSISTENT list  — allow/deny entries, listable,
-//                  addable and removable.
-//
-// The persistent list is deliberately NOT called /policy: the GUI's /policies
-// route is the Rego policy ENGINE, a different concept, and reusing the word
-// would be a parity lie.
-//
-// IT IS A MODAL THE SCREEN OWNS (the enforcement screen's overlay shape): the
-// screen claims keys while one is open, so a Rego body or a path containing "q"
-// can never reach a shell chord.
+// policy.go is the Ask screen's two list surfaces, both driven by the ONE storage owner (the policy
+// file, whose storage the sibling task owns):
 
 type ovKind int
 

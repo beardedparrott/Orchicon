@@ -61,9 +61,7 @@ func TestAskCardRendersBelowTheReplyText(t *testing.T) {
 	}
 }
 
-// TestAskCardLooksLikeACard is the operator's report as a test: the clarifying question "didn't
-// really do a good job at making it seem like it was a clickable card … it just looked like a
-// regular.
+// TestAskCardLooksLikeACard is the operator's report as a test.
 func TestAskCardLooksLikeACard(t *testing.T) {
 	out, _ := askCardFor(t, 70, `{"question":"Which branch?","options":[{"label":"develop"},{"label":"main"}]}`)
 

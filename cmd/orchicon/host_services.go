@@ -1,30 +1,5 @@
-// Command orchicon host-services supervises ONE instance's infrastructure
-// processes AS HOST PROCESSES: Postgres, NATS and the telemetry plane
-// (Tempo, Loki, VictoriaMetrics, OTel collector — optional via
-// ORCHICON_TELEMETRY).
-//
-// IT IS NOT A CONTAINER, and there is no container path left in it. The plane
-// and its services are host processes, always: `orchicon install` /
-// `orchicon start` re-exec this binary (install_host.go startHostServices) and
-// record its PID in the instance's host-services PID file, which
-// stopHostServices signals. A container exists for exactly one purpose — a
-// workflow's runtime container, opt-in per project.
-//
-// It is a minimal process supervisor, not an init system:
-//   - spawns children in dependency order, gating on readiness probes
-//     (postgres -> nats -> telemetry)
-//   - prefixes each child's stdout/stderr with its component name
-//   - restarts crashed children with exponential backoff
-//   - forwards SIGTERM/SIGINT to all children and waits for graceful exit
-//   - reaps children (Go's os/exec does this on Wait)
-//
-// THERE IS NO CONTROL-PLANE CHILD: the plane is its own host process
-// (`orchicon serve`), started by the same installer.
-//
-// Data lives under ORCHICON_DATA_DIR (default ~/.local/share/orchicon). Config
-// files are written there from the embedded ServiceConfigsFS, with @DATA_DIR@
-// and the resolved @..._PORT@ placeholders substituted, so
-// Tempo/Loki/collector find their config without any repo mounts.
+// Command orchicon host-services supervises ONE instance's infrastructure processes AS HOST
+// PROCESSES.
 package main
 
 import (

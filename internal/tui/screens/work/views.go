@@ -240,9 +240,7 @@ func isArchivedRowTitle(title string) bool {
 	return strings.Contains(title, "(active ")
 }
 
-// archiveRows renders the ARCHIVE view as a real tree, exactly as the GUI does
-// (frontend/src/components/work-items/work-items-archive-view.tsx over dependency-utils.ts
-// buildArchiveTreeData).
+// archiveRows renders the ARCHIVE view as a real tree.
 func archiveRows(items []*apiv1.WorkItem, active []*apiv1.WorkItem, mode sortMode) []kit2.Item {
 	archivedByID := map[string]*apiv1.WorkItem{}
 	for _, w := range items {

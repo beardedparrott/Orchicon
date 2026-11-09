@@ -119,28 +119,8 @@ func TestWailsJSONTagsMatchTheEntryPointTag(t *testing.T) {
 	}
 }
 
-// TestWailsJSONCarriesTheProjectTags — wails.json supplies the PROJECT's identity
-// and release flavour, and must NOT supply the WebKitGTK ABI.
-//
-// THIS TEST WAS WRONG WHEN FIRST WRITTEN, and the correction is the point. It used
-// to require `webkit2_41` here, on the reasoning that the shell's asset handler
-// answered with a 307 and WebKitGTK 4.0's backend refuses any status but 200
-// (`webkit2_legacy.go:40`). BOTH halves of that reasoning have since moved:
-//
-//  1. the handler no longer redirects at all — it serves a 200 bootstrap document
-//     that navigates itself (internal/desktop BootstrapHTML), so the 4.0 backend is
-//     perfectly able to answer it; and
-//  2. the ABI is a property of the BUILD HOST, not of the project. Wails APPENDS
-//     the tags from this file to any CLI tags (`compiledTags := append(projectTags,
-//     userTags...)`), so it can add but never SUBTRACT — meaning a tag here applies
-//     to EVERY `wails build`, including the .deb job on ubuntu-22.04, which has
-//     libwebkit2gtk-4.0-dev and NOT 4.1. Requiring it here made that job
-//     impossible to build while deploy/desktop/nfpm.yaml went on declaring a 4.0
-//     dependency (see cmd/orchicon/webkit_abi_consistency_test.go).
-//
-// So: `orchicon_desktop` (the project's own tag — without it the build excludes
-// every file) and `production` (the release flavour). The ABI is detected by
-// `make desktop-build` and named explicitly by the packaging job.
+// TestWailsJSONCarriesTheProjectTags — wails.json supplies the PROJECT's identity and release
+// flavour, and must NOT supply the WebKitGTK ABI.
 func TestWailsJSONCarriesTheProjectTags(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "orchicon-desktop", "wails.json"))
 	if err != nil {

@@ -2,44 +2,8 @@
 
 package planecontrol
 
-// hostproc_windows.go — the Windows half of the host plane's PROCESS IDENTITY probe. It is IMPLEMENTED, not
-// stubbed, and the reasons are worth stating because the previous version of this file argued the opposite.
-//
-// WHY THE STUBS WERE WRONG. `Drift` returning `Unknown` is a genuine fail-safe: the caller prints "could not
-// identify the process; leaving it" and does not restart. But `ServingPlaneAlive` returning `false` is NOT a
-// fail-safe — it makes `plane status` report "no plane PID file" for a plane that IS running, and it makes
-// `plane stop` a silent no-op (`planecontrol.go`'s Stop treats `!Alive` as "nothing to stop" and returns
-// nil). An operator tool that cannot see its own plane is not erring on the safe side; it is lying. So the
-// three probes below are real: a process handle plus its exit code, and a process image path.
-//
-// WHY NOT /proc: Windows has none, and `syscall.Kill` is absent from its syscall package — which is why the
-// untagged POSIX versions broke the BUILD here rather than merely misbehaving at runtime.
-//
-// WHY STDLIB `syscall` AND NOT golang.org/x/sys/windows: imports_test.go forbids every module path but
-// internal/containerengine, so this package must stay a leaf. `OpenProcess`, `GetExitCodeProcess`,
-// `TerminateProcess` and `UTF16ToString` are all in GOROOT's Windows syscall package;
-// `QueryFullProcessImageNameW` is not, and is reached through `syscall.NewLazyDLL("kernel32.dll")` — still
-// stdlib, so the imports test stays honest.
-//
-// THE CONSTANTS STDLIB DOES NOT DECLARE are declared here, with their values, rather than pulling in a
-// dependency for three integers: processQueryLimitedInformation (0x1000), stillActive (259) and, in
-// cmd/orchicon's Windows files, DETACHED_PROCESS (0x8).
-//
-// WHAT WINDOWS LOSES, STATED SO NOBODY HAS TO DISCOVER IT LATER:
-//
-//   - `Drift` NEVER reports `Drifted` here. The Unix fingerprint of drift is a `/proc/<pid>/exe` link whose
-//     path ends in " (deleted)" — the exact signature of an installer replacing a binary under a live plane.
-//     A RUNNING WINDOWS IMAGE CANNOT BE UNLINKED (the file is locked), so that state cannot arise: replacing
-//     a live plane's binary fails loudly at the copy, which is a better failure than a silent drift. The
-//     remaining answer is `Current` when the image path matches ours and `Unknown` (leave it alone) when it
-//     does not — the same direction the Unix `exe != self` arm fails in.
-//   - There is no POSIX zombie state, so `procStateChar` reports nothing and the exit-code test is the whole
-//     liveness answer. `PidAlive` copes: an unreadable state leaves the probe's verdict standing.
-//   - THE ORPHAN SWEEP IS INERT HERE, and that is a consequence of this platform, not a bug to fix later:
-//     see cmd/orchicon/serve_reap_windows.go, which now says so at boot instead of being silently empty.
-//   - Process identity for RECLAIM cannot be established (no `/proc/<pid>/exe` and no `/proc/<pid>/environ`),
-//     so a stopped instance's leftovers are REPORTED and never terminated: see
-//     cmd/orchicon/reclaim_proc_windows.go.
+// hostproc_windows.go — the Windows half of the host plane's PROCESS IDENTITY probe. WHAT WINDOWS
+// LOSES, STATED SO NOBODY HAS TO DISCOVER IT LATER: - `Drift` NEVER reports `Drifted` here.
 
 import (
 	"fmt"
@@ -323,26 +287,8 @@ func snapshotProcesses() ([]ProcInfo, error) {
 	return out, nil
 }
 
-// TerminateSubtree terminates every process in procs that is part of the tree rooted at root.
-//
-// TWO SHAPES MUST GO, AND THE SECOND ONE IS WHY THIS EXISTS:
-//
-//  1. the tree taskkill can see — children of the root, still parent-linked;
-//
-//  2. an ORPHAN. postgres's per-connection backends are re-parented when the postmaster they belong to
-//     exits, so after a force-stop they are still running, still hold the data directory open and still
-//     share the listening socket — while their PPID names a process that no longer exists:
-//
-//     pid 30488 postgres.exe (postmaster)   -> terminated
-//     pid 26236 postgres.exe "postgres.exe --forkaux 3892 0"  parent=30488 (DEAD), still serving
-//     Get-NetTCPConnection -LocalPort 5432  -> OwningProcess 30488   (a pid that is gone)
-//
-// A re-parented backend keeps its ORIGINAL executable, which is inside the instance's own bin tree, so
-// it is identified by ProcessesUnder rather than by walking parents.
-//
-// IT KILLS NOTHING IT CANNOT VOUCH FOR: `eligible` decides ownership, and this only terminates what it
-// returns true for. A process outside the caller's ownership test is reported, never killed — the same
-// boundary reclaim.go draws, and for the same reason (a wrong kill is unrecoverable).
+// TerminateSubtree terminates every process in procs that is part of the tree rooted at root. TWO
+// SHAPES MUST GO, AND THE SECOND ONE IS WHY THIS EXISTS: 1.
 func TerminateSubtree(root int, procs []ProcInfo, eligible func(ProcInfo) bool) []int {
 	if root <= 0 {
 		return nil

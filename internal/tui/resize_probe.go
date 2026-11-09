@@ -39,15 +39,8 @@ func (m *App) handleSizeProbeTick() (*App, tea.Cmd) {
 	return m, tea.Batch(probe, tea.Tick(terminalSizeProbeInterval, func(time.Time) tea.Msg { return sizeProbeTickMsg{} }))
 }
 
-// windowSizeFromProbe turns a probe result into a tea.WindowSizeMsg, or nil when the shell should IGNORE it.
-//
-// TWO REASONS TO IGNORE, and both are load-bearing:
-//
-//   - the size could not be read (0,0): acting on it would resize the shell to nothing;
-//   - the size has NOT CHANGED: see the header — the renderer repaints on every WindowSizeMsg, so forwarding
-//     an identical size on every tick would repaint an idle chat several times a second.
-//
-// Pure, so both rules are pinned without a terminal.
+// windowSizeFromProbe turns a probe result into a tea.WindowSizeMsg, or nil when the shell should
+// IGNORE it.
 func windowSizeFromProbe(msg terminalSizeProbeMsg, currentWidth, currentHeight int) tea.Msg {
 	if msg.width <= 0 || msg.height <= 0 {
 		return nil

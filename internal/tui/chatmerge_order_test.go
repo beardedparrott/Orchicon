@@ -133,8 +133,7 @@ func TestAPendingCardSurvivesAHugeGrowingReply(t *testing.T) {
 }
 
 // A message's rows are one UNIT: its text, each reasoning part and its recorded ask card were
-// written together, so they move together and keep the order they were emitted in (which is what
-// keeps.
+// written together.
 func TestAnchoredMessageKeepsItsInternalOrder(t *testing.T) {
 	s := &chatStore{items: map[string][]chat.ChatItem{}}
 	s.items["c1"] = []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{ID: "a1"}, 9000)}

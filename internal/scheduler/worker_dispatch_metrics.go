@@ -10,8 +10,7 @@ import (
 )
 
 // workerDispatchMetricsT mirrors recoverySeedMetrics' lazy-init pattern
-// (internal/scheduler/recovery_seed.go) for the per-worker concurrency gate: a single counter,
-// labelled by worker.
+// (internal/scheduler/recovery_seed.go) for the per-worker concurrency gate.
 type workerDispatchMetricsT struct {
 	initOnce sync.Once
 	deferred otelmetric.Int64Counter

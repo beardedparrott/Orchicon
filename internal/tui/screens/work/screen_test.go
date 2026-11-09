@@ -224,9 +224,7 @@ func (p *fakePlane) GetWorkItem(_ context.Context, req *connect.Request[apiv1.Ge
 	if !ok {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
 	}
-	// A SINGLE-ITEM read carries the RESOLVED mode (work_item.pb.go: effective_execution_mode is
-	// populated on Get/Create/Update), and the detail pane renders it — so the fake resolves it on
-	// read.
+	// A SINGLE-ITEM read carries the RESOLVED mode (work_item.pb.go.
 	p.resolveEffectiveMode(w)
 	return connect.NewResponse(&apiv1.GetWorkItemResponse{WorkItem: w}), nil
 }

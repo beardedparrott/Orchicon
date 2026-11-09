@@ -1,19 +1,5 @@
-// Package workflow implements the WorkflowService Connect handler
-// (docs/07_API_Specification.md §3.4, docs/02_Domain_Model.md §2.4).
-//
-// It is the API-layer boundary between the generated Connect handlers
-// and the data-access layer. Responsibilities:
-//   - validate and sanitize all inputs (the security boundary),
-//   - resolve the tenant from the request context,
-//   - perform the mutation + outbox enqueue in one transaction,
-//   - enforce the Workflow lifecycle (draft → published → deprecated)
-//     and versioning model (docs/02 §2.4),
-//   - manage edit locks for the visual Workflow editor (docs/07 §3.3),
-//   - start/abort workflow runs (handed to the WorkflowReconciler).
-//
-// No business logic lives here beyond input validation and lifecycle
-// transitions; the WorkflowReconciler governs step DAG progression and
-// gate evaluation (AGENTS.md invariant #1).
+// Package workflow implements the WorkflowService Connect handler (docs/07_API_Specification.md
+// §3.4, docs/02_Domain_Model.md §2.4).
 package workflow
 
 import (

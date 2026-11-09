@@ -1,16 +1,4 @@
-// Package work implements the Work screen: Projects, Work Items (full CRUD
-// with Tree / Board / Archive views) and Runtime Images (CRUD + live build
-// logs), backed by ProjectService, WorkItemService and RuntimeImageService.
-// Every write goes through the kit2 mutation executor (optimistic apply,
-// rollback on failure, source reconciliation).
-//
-// Collection semantics honoured here (the platform contract):
-//   - the hierarchy is max 4 levels (epic → feature → task → subtask); a
-//     kind switch re-resolves it and epic/feature are non-schedulable —
-//     both enforced server-side and surfaced as-is,
-//   - archiving is blocked while an item has children (server-enforced),
-//   - ONLY ReorderWorkItems mutates sequence order: the Tree and Board are
-//     display groupings and never renumber anything.
+// Collection semantics honoured here (the platform contract).
 package work
 
 import (
@@ -448,8 +436,7 @@ func (m *Model) fetchWorkItems(ctx context.Context, pageToken string) ([]kit2.It
 	// can resolve `workflow` on a cold screen — with no form ever opened.
 	m.loadWorkflowNames(ctx)
 	// THE ACTIVE PAGE, in the Archive view only: it is what the archive tree's ghost anchors are
-	// resolved from (an archived item whose parent is still active has no parent row in the archived
-	// set.
+	// resolved from (an archived item whose parent is still active has no parent row in the archived.
 	var active []*apiv1.WorkItem
 	if view == viewArchive {
 		if ar, aerr := m.cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{

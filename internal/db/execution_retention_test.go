@@ -1,25 +1,6 @@
 package db
 
 // execution_retention_test.go — the keep-newest-N execution prune.
-//
-// The operator: "I want to keep the 150 most recent executions and delete any other execution record."
-//
-// THE PROPERTIES THAT MATTER, and every one of them is a way this could be wrong while still "working":
-//
-//  1. THE KEEP BOUNDARY IS THE NEWEST N, BY created_at — not by insertion order, not by id, and not "the
-//     first N the list happened to return". The operator picks a count and expects the RECENT end to
-//     survive.
-//  2. THE CHILDREN GO WITH THEIR PARENT. Only execution_session_parts has a foreign key; checkpoints,
-//     recovery rows and step-run references are bare text columns, so a prune that deletes only the
-//     execution leaves orphan rows that nothing will ever find again.
-//  3. THE SPEND LEDGER SURVIVES. usage_records is de-linked, never deleted — migration 20260731000015
-//     exists precisely so cost attribution outlives the execution. A prune that removed usage rows would
-//     silently rewrite the operator's spending history.
-//  4. A LIVE EXECUTION IS NOT HISTORY. A prune must refuse rather than kill running work.
-//  5. IT IS TENANT-SCOPED. Another tenant's executions are never candidates.
-//
-// The test tenant is unique per run and cleaned up by the platform's tenant cascade, so it cannot touch a
-// real tenant's data.
 
 import (
 	"context"
@@ -350,21 +331,8 @@ func TestPruneExecutionHistoryIsIdempotent(t *testing.T) {
 
 var _ = fmt.Sprintf
 
-// THE BUG THIS TEST EXISTS FOR: the child steps and the delete must agree about WHICH ROWS GO.
-//
-// The first version computed every child step from a STATUS-FILTERED candidate set (anything holding a
-// dispatch slot excluded) while the delete ran over the executions table. The two classes do not coincide,
-// so an execution outside the filter could be deleted with its children left behind. Measured on the live
-// tenant afterwards: 2,898 usage rows still pointing at deleted executions.
-//
-// TWO WAYS THE FIRST ATTEMPT AT THIS TEST WAS WORTHLESS, both worth stating because both are easy to repeat:
-//
-//  1. IT SEEDED ONLY `succeeded` AND `running` — exactly the two classes where the sets coincide, so no
-//     assertion could fail. Every status is seeded now.
-//  2. IT INVITED THE PRUNE'S OWN REFUSAL. With a `running` row present the prune refuses and deletes
-//     NOTHING, so the test passed vacuously — a green tick over an operation that never ran. The fixture
-//     now separates the two contracts: DELETABLE classes go through a prune that must succeed, and the
-//     slot-holding classes are asserted to REFUSE (in their own test below).
+// IT SEEDED ONLY `succeeded` AND `running` — exactly the two classes where the sets coincide, so no
+// assertion could fail.
 func TestPruneLeavesNoChildOfADeletedExecution(t *testing.T) {
 	pool := retentionTestPool(t)
 	tenant := uniqID("tnt_retention_classes")

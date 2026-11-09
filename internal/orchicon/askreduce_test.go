@@ -59,9 +59,7 @@ func TestIsOversizePromptErrorMatchesRealProviderPhrasings(t *testing.T) {
 	}
 }
 
-// TestIsOversizePromptMessageSharesTheOneList pins the seam the second wire depends on: a caller
-// holding only a MESSAGE (the opencode serve's session.error) classifies against the SAME
-// signature.
+// TestIsOversizePromptMessageSharesTheOneList pins the seam the second wire depends on.
 func TestIsOversizePromptMessageSharesTheOneList(t *testing.T) {
 	for _, c := range OversizePromptSignatures {
 		if !IsOversizePromptMessage("prefix " + c + " suffix") {

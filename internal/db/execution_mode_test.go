@@ -40,9 +40,7 @@ func TestDefaultExecutionModeIsTheLastLeg(t *testing.T) {
 	}
 }
 
-// TestEphemeralExecutionModeIsLocal pins the Quick Work decision (local, and therefore
-// engine-less-safe) so an accidental change to it is a test failure rather than a LOUD runtime
-// failure.
+// TestEphemeralExecutionModeIsLocal pins the Quick Work decision (local.
 func TestEphemeralExecutionModeIsLocal(t *testing.T) {
 	if got := EphemeralExecutionMode(); got != ExecutionModeLocal {
 		t.Fatalf("EphemeralExecutionMode() = %q, want local", got)

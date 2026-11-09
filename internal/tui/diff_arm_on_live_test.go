@@ -57,9 +57,7 @@ func TestAWakeEngagesThePane(t *testing.T) {
 	}
 }
 
-// TestTheOldRepointPathCouldNotDoThis is the CONTRAST: it pins the reason the wake-path helper
-// exists, so a future reader does not "simplify" it back into refreshDiffOwner and reintroduce the
-// bug.
+// TestTheOldRepointPathCouldNotDoThis is the CONTRAST.
 func TestTheOldRepointPathCouldNotDoThis(t *testing.T) {
 	m, _ := askWithTranscript(t, "c1")
 	m.setFocus(focusComposer)

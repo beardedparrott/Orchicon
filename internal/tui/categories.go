@@ -1,34 +1,7 @@
 package tui
 
-// categories.go — the TUI's category surfaces (feature: worker / workflow / conversation groupings).
-//
-// The operator: "conversation/workflows/worker category groupings don't exist (create, rename, and
-// delete groupings)" … "For categories, we could assign a key to create new category and a key to
-// assign an item to a specific category."
-//
-// THE SERVER HAD ALL OF IT. `category_service.proto` exposes the full set — List, Create, Update,
-// Delete, Assign, Unassign, Reorder — keyed by a `target_type` of worker / workflow / conversation,
-// and the GUI consumes them (CategoryFolder, CreateCategoryDialog, CategoryDndContext, wired into
-// workers.tsx, workflows.tsx and ask-orchicon.tsx). The TUI had ZERO surface and had not even wired
-// the client, so this is a parity gap of the same kind as the rename one: nothing was missing on the
-// platform, an entire surface was missing from one client.
-//
-// WHERE THINGS LIVE, AND WHY THEY ARE SPLIT. There are two acts, and they belong in different places:
-//
-//  1. MANAGING the groupings (create / rename / delete) is a SETTINGS act — it applies to the target
-//     type as a whole, not to any one item — so it lives on the Control tab, which is where this
-//     client files its settings surfaces (providers, secrets, webhooks, adapters, themes). One pane
-//     lists all three target types together, because "the groupings" is one idea to the operator and
-//     three kinds to the API.
-//
-//  2. ASSIGNING one item is an act ON THAT ITEM, so it is a key on the pane the item lives in — `C`
-//     on the Workers and Workflows panes, and a chord on the Ask conversations rail, which is the one
-//     list in this app whose keys are driven from the composer and therefore cannot use a bare letter.
-//
-// ONE MODAL DOES BOTH KINDS OF ASSIGNMENT, and it folds "make a new one" into the same gesture: the
-// picker offers the existing categories, "— uncategorized —", and "＋ new category…", and choosing the
-// last one reveals a name field. That is what makes "a key to create new category and a key to assign
-// an item" a single keystroke rather than a trip to another tab and back.
+// categories.go — the TUI's category surfaces (feature: worker / workflow / conversation
+// groupings).
 
 import (
 	"context"
@@ -171,9 +144,7 @@ func (m *App) catByID(id string) *apiv1.Category {
 	return nil
 }
 
-// categoryGroupsFor returns the categories to render as folders for one target type, IN THE
-// SERVER'S ORDER (sort_order, then name — the same rule categoriesFor applies to the assign
-// picker).
+// categoryGroupsFor returns the categories to render as folders for one target type.
 func (m *App) categoryGroupsFor(target apiv1.CategoryTargetType) []screenkit.GroupSpec {
 	cats := m.categoriesFor(target)
 	out := make([]screenkit.GroupSpec, 0, len(cats))

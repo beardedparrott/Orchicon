@@ -1,24 +1,6 @@
 package execution
 
 // abort_run_test.go — THE TUI MUST BE ABLE TO ABORT A LIVE WORKFLOW RUN.
-//
-// REPORTED: "I didn't see the abort workflow run command in the TUI." It was not
-// hidden behind a condition — it did not exist. The TUI had no AbortWorkflow
-// caller at all:
-//
-//   - `c` on the Executions pane calls CancelExecution: that stops ONE WORKER, the
-//     run stays `running`, and a run whose steps are not dispatching has no
-//     execution to cancel, so it cannot be stopped that way either;
-//   - `delete` on the Runs pane removes the row.
-//
-// Neither ends a live run, which is the gesture the GUI has always offered as
-// "Stop <run>" on the workflow page (frontend/src/routes/workflows_.$id.tsx,
-// gated on latestRunActive). The consequence was concrete: a run wedged
-// `running` could only be terminalised from the GUI — and until it was terminal,
-// the runtime-container sweep could not reap its container either.
-//
-// These tests assert the action EXISTS on a live run, that it reaches ABORT (not
-// cancel), and that it is offered only where it can work.
 
 import (
 	"context"

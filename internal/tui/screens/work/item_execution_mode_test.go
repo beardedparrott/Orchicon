@@ -1,23 +1,6 @@
 package work
 
 // item_execution_mode_test.go — the work-item forms carry the EXECUTION-MODE OVERRIDE.
-//
-// The proto has three different spellings of the same idea and the differences are the whole trap
-// (proto/orchicon/api/v1/work_item_service.proto):
-//
-//   - CreateWorkItemRequest.execution_mode is NON-optional: EXECUTION_MODE_UNSPECIFIED (the default)
-//     IS inherit, so an item created from the TUI sends UNSPECIFIED for "inherit" and the enum for a
-//     concrete choice.
-//   - UpdateWorkItemRequest.execution_mode is `optional`: UNSET means UNCHANGED, and there is a
-//     SEPARATE bool clear_execution_mode which the proto names as the ONLY way to remove an override.
-//     Sending only the enum makes an override permanent; sending only the clear wipes a legitimate
-//     new value on every save. CLEAR WINS when both are present, so the form sends exactly one.
-//   - WorkItem.execution_mode is the OVERRIDE (unset = inherit) while effective_execution_mode is the
-//     RESOLVED answer. The edit form is seeded from the first; the detail pane renders the second.
-//
-// These tests drive the real create/edit paths (the screen's own keys, forms and submit handler) and
-// assert on the RECORDED requests AND on the fake plane's stored state, because a request can be right
-// while the fake — and therefore the round-trip the operator sees — is wrong.
 
 import (
 	"strings"

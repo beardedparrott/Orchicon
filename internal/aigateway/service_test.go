@@ -56,9 +56,7 @@ func TestListAdapterKindsEmptyKindsFunc(t *testing.T) {
 	}
 }
 
-// The published model-tier classification, at the wire level: `claude` is dispatchable
-// (adapter_kinds) and CATALOG-SOURCED (sourcing_kinds), yet it is NOT Ask-capable
-// (ask_capable_kinds).
+// The published model-tier classification, at the wire level.
 func TestListAdapterKindsPublishesClaudeAsCatalogSourcedButNotAskCapable(t *testing.T) {
 	svc := testSvc(t, func() []string { return []string{"claude", "opencode", "orchicon"} })
 	svc.SetChatKinds(func() []string { return []string{"opencode", "orchicon"} })

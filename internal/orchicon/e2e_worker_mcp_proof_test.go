@@ -1,23 +1,6 @@
 package orchicon
 
-// e2e_worker_mcp_proof_test.go — AC 1 (NATIVE worker leg) and AC 5.3 (the
-// native negative proof).
-//
-// WHAT MAKES IT END-TO-END AND NOT A UNIT TEST. Every input is a REAL row read
-// back by the REAL storage-backed resolver over a REAL MCP transport:
-//
-//   - a project-OWNED mcp_servers row + a version-OWNED inline spec, written to
-//     Postgres and resolved by mcpsettings.NewResolver(pool) — the SAME resolver
-//     internal/server/server.go wires into the bridge at :644;
-//   - a REAL streamable-HTTP MCP server (the in-repo fixture's probe tool), so
-//     discovery and the call cross a real JSON-RPC transport;
-//   - the REAL NativeBridge.Start path (buildSession → mcpResolveAndStart →
-//     the session loop), so the observation is what the PRODUCTION path produced
-//     rather than what a hand-built registry would have produced.
-//
-// The model is SCRIPTED (no permitted model exists in this container — see the
-// run's facts): the provider stands in for the model, and the record says so.
-// Everything the provider is OFFERED and everything it RECEIVES is real.
+// e2e_worker_mcp_proof_test.go — AC 1 (NATIVE worker leg) and AC 5.3 (the native negative proof).
 
 import (
 	"context"

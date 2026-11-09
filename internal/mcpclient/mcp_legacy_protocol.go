@@ -1,29 +1,6 @@
 package mcpclient
 
 // mcp_legacy_protocol.go — a LEGACY MCP SERVER IS NOT A BROKEN ONE.
-//
-// THE REPORTED FAILURE, and it was never aseprite-specific. go-sdk >= the SEP-2575 line defaults the
-// protocol version to 2026-07-28, and for that version it sends a `server/discover` request BEFORE
-// `initialize`. A server built against the older spec does not know that method. A Python one (mcp 1.6.0 +
-// pydantic 2.11.2) does not merely refuse it: it fails validation — "CallToolRequest.method | Input should
-// be 'tools/call' [input_value='server/discover']" — and EXITS 1.
-//
-// WHAT THAT DOES TO THE CONNECT:
-//
-//  1. `discover` never gets an answer, so the attempt burns its whole timeout (observed: "connect timed out
-//     after 30s … the child EXITED with exit status 1").
-//  2. The SDK's legacy fallback DOES then run — contrary to the natural reading of the code, the `break`
-//     out of the discover loop is unconditional — but it re-handshakes on the SAME connection, whose child
-//     has already exited. It cannot succeed. The fallback is unreachable in the only sense that matters:
-//     the process it would talk to is gone.
-//
-// So the repair is not "fall back harder". It is to open a SECOND CHILD with the protocol version pinned
-// below the discover line, which skips `server/discover` entirely and goes straight to the `initialize`
-// handshake every MCP server has always supported.
-//
-// WHY THIS IS THE SAME BUG FOR EVERY LEGACY SERVER: the trigger is the version gate, not the server's
-// language or vendor. Any server that predates the stateless protocol fails identically, which is the
-// "registered but absent" shape — the definition resolves, the child starts, and no tools arrive.
 
 import (
 	"context"
@@ -52,19 +29,8 @@ func pinnedProtocolVersion(spec ServerSpec) string {
 	return v
 }
 
-// shouldRetryWithLegacy reports whether a failed connect is worth one more attempt with the legacy version
-// pinned.
-//
-// THE GATE IS "DID THE CHILD RUN", which is what makes this cheap rather than a blanket double-timeout on
-// every broken server:
-//
-//   - the child NEVER STARTED → the command is wrong (a bad path, a missing interpreter). A different
-//     protocol version cannot help, so retrying would only double the wait before the same answer.
-//   - anything else — it exited, it is still running but silent, the deadline expired — is consistent with
-//     "it did not understand what we said", which is exactly what the legacy handshake fixes.
-//
-// An HTTP server is NOT retried: the protocol probe reaches it as a normal request, it answers with a
-// JSON-RPC error, and the SDK's own negotiation handles it. There is no dead child to rebuild.
+// THE GATE IS "DID THE CHILD RUN", which is what makes this cheap rather than a blanket
+// double-timeout on every broken server.
 func shouldRetryWithLegacy(spec ServerSpec, spawn *stdioSpawn, err error) bool {
 	if err == nil || spawn == nil {
 		return false

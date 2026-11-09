@@ -99,8 +99,7 @@ type Base struct {
 	// in-place project dir. File writes and deletes resolve only inside it.
 	Worktree string
 	// ProjectRoot is the READ-only extra root: the project root that holds the run-state
-	// `.orchicon/<run>/` files and `architecture-notes/`, which sit OUTSIDE the run worktree (a sibling
-	// of it).
+	// `.orchicon/<run>/` files and `architecture-notes/`.
 	ProjectRoot string
 	// ScratchDir is the read+write root for the sanctioned ephemeral scratch area (guard.ScratchDir /
 	// opencode.ScratchDir, /tmp/orchicon).
@@ -119,20 +118,7 @@ func BaseFor(worktreeDir string) Base {
 	return Base{Worktree: worktreeDir, ScratchDir: DefaultScratchDir}
 }
 
-// safeResolve resolves a worker-supplied path against the scoping Base and
-// rejects anything that escapes it. It is the single enforcement point for
-// every composite tool.
-//
-// writable selects the read vs write roots:
-//   - reads (writable==false): roots = {Worktree, ScratchDir, ProjectRoot}.
-//     A `..` traversal is permitted ONLY when the cleaned, joined path still
-//     lands under one of those roots — which lets a worktree worker read
-//     <root>/.orchicon/<run>/facts_learned (via ../../.orchicon/<run>/... or
-//     an absolute project-root path) without allowing arbitrary escape.
-//   - writes (writable==true): roots = {Worktree, ScratchDir}. A `..` that
-//     escapes to the project root is still rejected (batch_write must never
-//     land in the main checkout); an absolute /tmp/orchicon/... path is
-//     allowed via ScratchDir.
+// A `..` traversal is permitted ONLY when the cleaned.
 func safeResolve(b Base, rel string, writable bool) (string, error) {
 	if strings.TrimSpace(rel) == "" {
 		return "", fmt.Errorf("empty path")
@@ -324,8 +310,7 @@ func BatchRead(b Base, args ReadArgs) (string, error) {
 	}
 
 	// Parallel read phase (D3): independent file reads run CONCURRENTLY with bounded parallelism
-	// (default 8, overridable via ORCHICON_TOOL_PARALLELISM) and the results are emitted in
-	// DETERMINISTIC.
+	// (default 8.
 	var (
 		readWg sync.WaitGroup
 		readMu sync.Mutex

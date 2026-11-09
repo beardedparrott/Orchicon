@@ -82,9 +82,7 @@ func TestNativeAskToolSurfaceCarriesNoBudgetFraming(t *testing.T) {
 	if !strings.Contains(NativeStaticLayer, "tool-call budget") {
 		t.Skip("worker contract wording changed; see TestNativeAskTurnCarriesOnlyTheCallersSystemPrompt")
 	}
-	// The native Ask definitions are injected by the server (askorchicon), so the property we can
-	// assert here is that the native package owns no additional conversation-facing budget text of its
-	// own.
+	// The native Ask definitions are injected by the server (askorchicon).
 	if strings.Contains(NativeStaticLayer, "LIVE CONVERSATION") {
 		t.Error("the worker contract must not claim to be a live conversation")
 	}

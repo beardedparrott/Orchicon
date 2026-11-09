@@ -90,9 +90,7 @@ func TestGetDashboardAllTimeTotalsMatchCostExplorer(t *testing.T) {
 			summary.GetTotalCostUsd(), total.CostUSD)
 	}
 
-	// 2. Overview summary == per-model panel sum (the Cost Explorer's
-	//    per-model breakdown), which the frontend renders as its own
-	//    independent total.
+	// 2.
 	if summary.GetTotalTokens() != modelTokens {
 		t.Errorf("dashboard summary tokens %d != sum of per-model rollup %d",
 			summary.GetTotalTokens(), modelTokens)

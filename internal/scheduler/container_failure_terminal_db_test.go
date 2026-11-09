@@ -44,13 +44,6 @@ func (u *unavailableLifecycle) EnsureServing(context.Context, db.WorkflowRunRow,
 
 // TestContainerCreateFailureFailsTheRunOnceAndVisibly covers BOTH container-create failure classes
 // reported from Windows, because they arrive by different routes:
-//
-//   - the allowlist refusal (checked in validateCreate, before any container exists);
-//   - a SUPERVISOR-READINESS TIMEOUT — the container starts, its entrypoint cannot exec, the socket never
-//     appears, and create returns "started but supervisor socket not ready".
-//
-// The second is the one an operator saw leave a run wedged at pending with zero executions, so it is
-// asserted here rather than assumed to follow the first.
 func TestContainerCreateFailureFailsTheRunOnceAndVisibly(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

@@ -1,15 +1,4 @@
-// actions.go — the enforcement screen's WRITE paths. Every mutation the
-// GUI exposes lands here: ApproveStep (approve / reject a pending step
-// approval), CreatePolicy / UpdatePolicyVersion / PublishPolicy, and the
-// recovery action surface (ApproveContinuationPlan / RejectContinuationPlan
-// / CancelRecovery / MarkTaskSucceeded).
-//
-// Discipline the acceptance criteria pin:
-//   - a write is issued ONCE per confirm (inFlight disables the action
-//     until the RPC returns — a double-press can never double-write);
-//   - the plane's refusal is surfaced VERBATIM in the dock, never a
-//     silent no-op;
-//   - the mutated source reconciles (re-fetched) after the write lands.
+// actions.go — the enforcement screen's WRITE paths.
 package enforcement
 
 import (

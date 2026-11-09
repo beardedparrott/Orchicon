@@ -54,29 +54,7 @@ func runCmdBounded(cmd tea.Cmd, budget time.Duration) tea.Msg {
 	}
 }
 
-// runCtx drains a command the way bubbletea's runtime does — flattening batches, feeding each result back into
-// Update so follow-on commands are produced — but BOUNDED, so a command graph that never terminates cannot hang
-// the suite.
-//
-// IT IS BOUNDED THREE WAYS, and the first two each exist because of a way this kind of helper has ALREADY hung a
-// full `make rebuild-dev`:
-//
-//   - THE RE-ARMED REFRESH TICK ENDS THE DRAIN. Init batches refreshCmd(), which is a tea.Tick, and
-//     handleRefreshTick re-arms itself UNCONDITIONALLY — "Re-arm unconditionally, even when the refresh did
-//     nothing". At the default 5s period the per-command budget expires first and the chain is never followed,
-//     but that margin is an accident rather than a guarantee: liverefresh_probe_test.go and refresh_test.go each
-//     set refreshPeriod to 1ms for their own tests, and a tick that cheap would loop here forever. So the tick is
-//     TERMINAL by construction. This helper drains the STARTUP LOADS; the rolling window is not a load.
-//   - A COMMAND THAT DOES NOT ANSWER IS SKIPPED, because that is what a long-lived waiter is: waitChat blocks on
-//     `select { case <-wake: …; case c := <-cmds: … }` until the next poke. Calling one INLINE, with no budget,
-//     is the other way this hung — see TestAConversationsLoadAlsoFetchesProjects.
-//   - maxSteps and the total deadline are the general backstop, so a graph that fans out without a timer cannot
-//     spin the loop either.
-//
-// The per-command budget is runCtxCmdBudget, and its doc comment says why the exact value does not matter: the
-// commands drained here are pure functions, in-process loopback RPCs (microseconds), or infinite waiters. Being
-// wrong in the generous direction costs wall clock — which is exactly what a 3s budget cost, sixty seconds of
-// it; being wrong in the mean direction skips a real load and the test's own assertion then fails VISIBLY.
+// runCtx drains a command the way bubbletea's runtime does.
 func runCtx(t *testing.T, m *App, cmd tea.Cmd, budget time.Duration) {
 	t.Helper()
 	if cmd == nil {

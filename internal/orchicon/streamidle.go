@@ -9,29 +9,7 @@ import (
 	"time"
 )
 
-// streamidle.go — the transport-side idle-read watchdog for provider
-// streams. History: defaultHTTPClient set http.Client.Timeout = 10m, a
-// TOTAL deadline covering the entire request INCLUDING the streamed body
-// — and a long prefill (observed: 48k prompt tokens on a local
-// llama-server) produces zero body bytes for longer than that, killing a
-// healthy generation mid-stream with "stream read: context deadline
-// exceeded". The fix splits time-bounding into the phases the transport
-// can express honestly:
-//
-//   - connect/headers: Transport-level timeouts (dial, TLS, response
-//     header) — a dead server is detected in seconds-to-minutes;
-//   - stream body: NO total cap (a 200k-token generation may legitimately
-//     run for hours), but an IDLE watchdog — once the first body byte has
-//     arrived, a silent gap longer than the idle budget aborts the read
-//     with a typed error. Pre-first-byte silence (the prefill, where the
-//     server computes before streaming anything) is EXEMPT by design: it
-//     is bounded by the per-execution wall-clock budget instead.
-//
-// The idle budget is env-tunable: ORCHICON_STREAM_IDLE_TIMEOUT accepts a
-// Go duration ("5m", "90s"); "0" disables the watchdog entirely. Default
-// 5m — generous against slow chunky local servers, tight enough that a
-// wedged connection fails a turn instead of hanging the session until
-// the wall-clock reaper.
+// streamidle.go — the transport-side idle-read watchdog for provider streams.
 
 const defaultStreamIdleTimeout = 5 * time.Minute
 

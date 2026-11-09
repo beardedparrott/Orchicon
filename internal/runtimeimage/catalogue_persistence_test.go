@@ -77,11 +77,7 @@ func TestACatalogRowIsNotDownloadedAndIsNotUserDiverged(t *testing.T) {
 // disagree about what the catalogue IS.
 func TestTheCatalogIsTheSameSetWhicheverPathSeedsIt(t *testing.T) {
 	base := firstPublishedTag()
-	//
-	// THE QUESTION IS "WHAT CAN THIS HOST END UP WITH", NOT "WHAT IS PUBLISHED". Those were the same
-	// question while every variant was released; now only the base is published and the variants are
-	// BUILT here, so enumerating the published set would report the catalogue as missing gui and dev —
-	// which is what this assertion caught when the split landed.
+	// THE QUESTION IS "WHAT CAN THIS HOST END UP WITH", NOT "WHAT IS PUBLISHED".
 	catalogued := map[string]bool{}
 	for _, tag := range catalogStockTags() {
 		v, ok := resolveVariant(tag, base)

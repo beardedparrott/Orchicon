@@ -161,8 +161,7 @@ func (v stockVariant) TagSuffix() string {
 		return ""
 	}
 	// THE DAEMON'S OWN SPELLING, verified against a live /v1/images rather than inferred from the
-	// variant NAME: cmd/orchicon's runtimeImagesAllowlist emits "<repo>:gui-<tag>" and
-	// "<repo>:dev-<tag>".
+	// variant NAME.
 	return v.Variant + "-"
 }
 
@@ -177,27 +176,8 @@ var stockVariants = []stockVariant{
 		Desc: "Base image plus a headless browser research toolchain (Playwright + Chromium, extraction helpers) for work that has to read the web."},
 }
 
-// SeedCannedImages ensures one canned "stock" runtime image row exists per
-// shipped runtime-image variant the daemon reports (base first). Idempotent,
-// called at boot; mirrors the canned-worker seeder contract:
-//
-//   - Missing rows are created (source='stock', template + seed marker as the
-//     dockerfile_override). If the local docker image is already current
-//     (container.sh / the installer built it before the plane booted), the
-//     row is marked ready with built_version = version; otherwise it is
-//     auto-built asynchronously.
-//   - Pristine rows are rolled forward when the shipped template changes
-//     (the marker SHA changes): the override is replaced, `version` bumps,
-//     built_version stays stale, and the row is rebuilt — which prunes the
-//     previous version of the tag (the daemon's post-build dangling prune).
-//     container.sh already rebuilt the pristine image pre-boot → the seeder
-//     just records built_version = version instead of re-building.
-//   - User-diverged rows (override differs from the shipped template) are
-//     never touched, and user builds (spec-version label) make container.sh
-//     skip the tag — so a tenant-owned build survives `make container-rebuild`.
-//   - Deleted canned rows are re-seeded on the next boot, like canned workers.
-//
-// A missing daemon (headless serve) skips seeding entirely.
+// SeedCannedImages ensures one canned "stock" runtime image row exists per shipped runtime-image
+// variant the daemon reports (base first).
 func SeedCannedImages(ctx context.Context, pool *db.Pool, log *slog.Logger, rt *runtime.Client) error {
 	// NO DAEMON IS NOT "NO CATALOG" — that conflation is the whole Windows report.
 	if rt == nil {

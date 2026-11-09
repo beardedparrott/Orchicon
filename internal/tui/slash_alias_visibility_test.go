@@ -1,19 +1,6 @@
 package tui
 
 // slash_alias_visibility_test.go — a slash command's ALIAS must be visible and findable.
-//
-// The operator: "/quit is an actual slash command that shows up in the list. /exit works but
-// doesn't get displayed in the slash command list as a valid slash command. We should fix
-// that just for consistency."
-//
-// Both halves were broken, and they were broken in DIFFERENT places — which is why the two
-// surfaces disagreed:
-//
-//   * /help DID render aliases (helpLines → aliasSuffix).
-//   * the "/" PALETTE did not: refreshPalette skipped every alias row outright AND matched
-//     the filter against the PRIMARY name only (`strings.Contains(c.Name, query)`), so typing
-//     "/exit" listed "no matching commands" while submitting "/exit" worked perfectly. A
-//     command you can run but cannot see is the inconsistency.
 
 import (
 	"strings"

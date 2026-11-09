@@ -25,8 +25,7 @@ type ConversationRow struct {
 	// ProjectID is the project this conversation belongs to, or "" when unassigned.
 	ProjectID string
 	// SkillFiles is the jsonb array of absolute skill file/directory paths selected for THIS
-	// CONVERSATION, union-ed with the project's SkillFiles at render time by
-	// contextfiles.RenderManifest.
+	// CONVERSATION.
 	SkillFiles []byte
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
@@ -296,24 +295,6 @@ var (
 )
 
 // sanitizeMessage makes a message row storable, replacing every NUL with U+FFFD.
-//
-// THIS IS NOT COSMETIC. It was killing whole turns, in two directions at once, and the failure was SILENT to
-// every client:
-//
-//   - the LIVE MIRROR (the 250ms partial upsert) failed on every flush, so a client that lost the live
-//     stream — which is every client's recoverable path, and the TUI's PRIMARY render path (runTurnPoll) —
-//     saw NOTHING for the whole turn. "It just sits at 'orchicon is thinking'."
-//   - the TERMINAL write failed too, so the reply never landed durably and the NEXT turn replayed a history
-//     missing everything the model had just done: the operator's "The model is constantly losing its brain.
-//     It doesn't know it's already done things and then tries to do them again", and the reason they were
-//     re-pasting the model's last message by hand ("Please continue. You timed out. This was your last
-//     message: ...").
-//
-// Measured on the prod plane: 1554 failed "upsert partial message" flushes and 3 failed
-// "persist conversation reply" writes across 3 conversations, every one with SQLSTATE 22P05.
-//
-// The replacement character is used rather than a silent drop so the reader can see that something was
-// removed, and it is applied to the VALUES, not the query, so no write path can forget it.
 func sanitizeMessage(m MessageRow) MessageRow {
 	m.Content = strings.ReplaceAll(m.Content, nulByte, "\uFFFD")
 	m.ToolCalls = jsonSafe(m.ToolCalls)
@@ -360,8 +341,7 @@ func CreateMessage(ctx context.Context, tx pgx.Tx, m MessageRow) (MessageRow, er
 }
 
 // UpsertMessage creates a message row under its id or replaces the existing one's
-// content/reasoning/metadata AND tool ledger (tool_calls/tool_results are part of the conflict
-// overwrite so live.
+// content/reasoning/metadata AND tool ledger (tool_calls/tool_results are part of the conflict.
 func UpsertMessage(ctx context.Context, tx pgx.Tx, m MessageRow) (MessageRow, error) {
 	m = sanitizeMessage(m)
 	reasoningJSON := []byte("[]")

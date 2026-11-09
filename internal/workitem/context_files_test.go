@@ -13,20 +13,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// TestWorkItemContextFilesDB verifies the work-item context_files
-// contract end-to-end through the Connect service against a real
-// Postgres (skipped unless ORCHICON_TEST_DSN is set, same convention as
-// the validate-parent tests):
-//
-//  1. CreateWorkItem with context_files (a file + a directory) persists
-//     both and returns them on the proto row.
-//  2. CreateWorkItem without context_files defaults to an empty array
-//     (defined value, not null).
-//  3. UpdateWorkItem replaces the selection (files + directories).
-//  4. UpdateWorkItem with an empty ContextFiles list clears the
-//     selection.
-//  5. Validation rejects non-absolute / traversal paths at the API
-//     boundary (InvalidArgument).
+// TestWorkItemContextFilesDB verifies the work-item context_files contract end-to-end through the
+// Connect service against a real Postgres (skipped unless ORCHICON_TEST_DSN is set.
 func TestWorkItemContextFilesDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)

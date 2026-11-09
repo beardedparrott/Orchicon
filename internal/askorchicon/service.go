@@ -78,8 +78,7 @@ type Service struct {
 	// can drive ChatStream/Abort with a fake session client.
 	testServeClient scheduler.ChatTurnClient
 	// validationRegistry is the model-ref validation catalog (ADR-0003) threaded into the
-	// update_settings tool write path (the Ask-own second write into
-	// tenant_settings.default_ask_orchicon_model).
+	// update_settings tool write path (the Ask-own second write.
 	validationRegistry adapter.ProviderRegistry
 
 	// fileEditHook is the diff-pipeline ledger hook for Ask turns (optional, wired by the server over
@@ -560,8 +559,7 @@ func (s *Service) DeleteConversation(ctx context.Context, req *connect.Request[a
 		}
 	}
 	// Cancel any in-flight collector for this conversation so it finalizes immediately and never
-	// persists into the deleted conversation (the collector's persist path also re-checks the
-	// conversation.
+	// persists into the deleted conversation (the collector's persist path also re-checks.
 	if token, ok := s.turns.cancel(req.Msg.Id, errUserStop); ok {
 		s.turns.remove(req.Msg.Id, token)
 	}
@@ -957,19 +955,8 @@ func (s *Service) conversationRowToProto(r db.ConversationRow, messageCount int,
 	return p
 }
 
-// SetConversationProject places a conversation in a project, or clears the association when project_id is
-// empty. It is the server half of the second level of organization over conversations: the GUI's project
-// folder drop target, its per-project "new conversation" button, and the TUI's /project all resolve here.
-//
-// TWO RULES, both deliberate:
-//
-//   - A NON-EMPTY id must name a project THIS TENANT can see, and GetProject applies no status predicate — an
-//     archived project is a valid home, which is the operator's "active or otherwise".
-//   - An EMPTY id UNASSIGNS the conversation rather than failing. A conversation must always be able to leave a
-//     project (a project can be archived out from under it), and "unassigned" is a state both clients render.
-//
-// The project is read inside the SAME tenant transaction as the write, so a project deleted between the check
-// and the update cannot leave a conversation pointing at it.
+// SetConversationProject places a conversation in a project, or clears the association when
+// project_id is empty.
 func (s *Service) SetConversationProject(ctx context.Context, req *connect.Request[apiv1.SetConversationProjectRequest]) (*connect.Response[apiv1.SetConversationProjectResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1015,21 +1002,8 @@ func (s *Service) SetConversationProject(ctx context.Context, req *connect.Reque
 	}), nil
 }
 
-// SetConversationSkillFiles replaces a conversation's skill_files path array (an empty list clears it). It is
-// the conversation-level half of the skills feature: the UNION of a conversation's skill files and its project's
-// is what the Ask system prompt renders (see skillManifestSection in chat.go), through the ONE shared renderer
-// contextfiles.RenderManifest — no Ask-specific skill code exists.
-//
-// TWO VALIDATION RULES, both reusing internal/contextfiles unchanged:
-//
-//   - STRUCTURAL (Validate): every entry must be absolute, non-empty, bounded, and free of "..".
-//   - CONTAINMENT (ValidateWithin): when the conversation is assigned to a project WITH a project_dir, every
-//     entry must live inside it. The project directory is the only directory mounted into a worker's container,
-//     so a skill outside it is invisible to the worker — rejecting it at save time (with the directory NAMED in
-//     the error) is strictly better than rendering a dead "could not read" note in every turn's prompt.
-//
-// DISTINCT FROM the free-text `skills` PROMPT SECTION on the tenant agent config: that is prose, this is a list
-// of real on-disk paths.
+// SetConversationSkillFiles replaces a conversation's skill_files path array (an empty list clears
+// it).
 func (s *Service) SetConversationSkillFiles(ctx context.Context, req *connect.Request[apiv1.SetConversationSkillFilesRequest]) (*connect.Response[apiv1.SetConversationSkillFilesResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {

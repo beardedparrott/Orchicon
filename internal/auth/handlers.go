@@ -459,9 +459,7 @@ func (h *Handler) grantFirstAdminRole(ctx context.Context, tx pgx.Tx, tenantID, 
 	return nil
 }
 
-// verifyLocalCredential is the default LocalCredentialVerifier: it looks up the tenant-scoped
-// local_credentials row by username and verifies the stored hash against the plaintext in constant
-// time.
+// verifyLocalCredential is the default LocalCredentialVerifier.
 func (h *Handler) verifyLocalCredential(ctx context.Context, tenantID, username, password string) (identityID string, ok bool, err error) {
 	ttx, err := h.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -719,26 +717,6 @@ func (h *Handler) localCredential(ctx context.Context, tenantID, identityID stri
 }
 
 // setRefreshCookie sets the refresh token as an HttpOnly cookie.
-//
-// THE SECURE FLAG FOLLOWS THE ACTUAL TRANSPORT, NOT THE DEPLOYMENT MODE. It used
-// to be `h.mode == config.ModeProduction`, which was wrong in BOTH directions:
-//
-//   - TOO WEAK behind a TLS-terminating proxy. The browser speaks HTTPS to the
-//     proxy and the proxy speaks plain HTTP to the plane, so r.TLS is nil and
-//     the mode is whatever the install chose (local by default). The session
-//     cookie then goes out UNMARKED over a site the operator believes is HTTPS,
-//     which is exactly the downgrade hole a Secure flag exists to close. The
-//     proxy is the supported way to expose this plane beyond loopback, so this
-//     was the common case, not an exotic one.
-//   - TOO STRONG on loopback. Production mode on a plain-HTTP loopback plane
-//     set Secure on a response a local client had to store over http://.
-//
-// r.TLS covers direct TLS and X-Forwarded-Proto covers TLS terminated in front
-// of us. Loopback clients (the desktop app's proxy, the TUI, orch) keep
-// working over plain http because their transport really is plain http and the
-// cookie is scoped to a connection that never leaves the machine.
-//
-// The maxAge parameter is the refresh token TTL (used for MaxAge).
 func (h *Handler) setRefreshCookie(w http.ResponseWriter, r *http.Request, token string, maxAge time.Duration) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     RefreshCookie,

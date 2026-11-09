@@ -48,8 +48,7 @@ func chownHint(dir string) string {
 var windowsDirHint = platformDirHint()
 
 // elevated is the DETECTION SEAM, and it exists so the guard has coverage on the Linux CI host
-// rather than only on a Windows machine: the test suite replaces it and exercises both branch
-// outcomes.
+// rather than only on a Windows machine.
 var elevated = runningElevated
 
 // ensureHostPostgresPrivileges refuses to start HOST-RESIDENT Postgres services

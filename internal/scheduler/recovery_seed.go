@@ -152,20 +152,8 @@ func recoveryIdentityFromResult(runResult, wiResults []byte) (failedExecID strin
 	return failedExecID
 }
 
-// resolveRecoverySeed is the SHARED seed resolver used by BOTH the
-// workflow dispatch gate (recoveryDispatchReady) and the TaskReconciler's
-// file writer, so the two can never disagree about whether a dispatch is a
-// same-worker recovery-resumed dispatch:
-//
-//  1. fast path: recoverySeedFor on the step-run result + work item
-//     results (the keys the recovery engine publishes on resume);
-//  2. fallback: when no keys are present yet but a failed-execution id is
-//     resolvable, build the seed from the most recent recovery row for
-//     that execution — only if it is terminal `resumed`. The same-worker
-//     gate (failed worker == dispatching worker) still applies.
-//
-// Returns nil when the dispatch is NOT a resolvable same-worker
-// recovery-resumed dispatch.
+// resolveRecoverySeed is the SHARED seed resolver used by BOTH the workflow dispatch gate
+// (recoveryDispatchReady) and the TaskReconciler's file writer.
 func resolveRecoverySeed(ctx context.Context, tx pgx.Tx, tenantID, taskID string, runResult, wiResults []byte, workerID string) *recoverySeed {
 	if seed := recoverySeedFor(runResult, wiResults, workerID); seed != nil {
 		return seed
@@ -531,9 +519,7 @@ func (r *TaskReconciler) recoverySeedForSuccess(ctx context.Context, exec db.Exe
 	return
 }
 
-// removeRecoveryFileForSuccess is the system-side cleanup: when a recovery-resumed execution
-// succeeds, delete the seed file whose footer matches this execution (so the file never lingers
-// across.
+// removeRecoveryFileForSuccess is the system-side cleanup.
 func (r *TaskReconciler) removeRecoveryFileForSuccess(ctx context.Context, exec db.ExecutionRow, results map[string]any, succeeded bool) {
 	if !succeeded {
 		return
@@ -641,9 +627,7 @@ func partIsProductive(p db.SessionPart) bool {
 	return len([]rune(strings.TrimSpace(txt))) >= recoverySubstantiveTextMinChars
 }
 
-// tailIsBootstrapChurn applies the heuristic floor to a raw transcript tail: repeated
-// recovery-opener announcements (>=2) with NO tool_use parts, no file-diff evidence, and no
-// substantive text.
+// tailIsBootstrapChurn applies the heuristic floor to a raw transcript tail.
 func tailIsBootstrapChurn(parts []db.SessionPart) bool {
 	if len(parts) < 2 {
 		return false
@@ -693,9 +677,7 @@ func lastProductiveWindow(parts []db.SessionPart, maxParts int) ([]db.SessionPar
 	return win, true
 }
 
-// resolveRecoveryTailContent applies the substance filter to the fetched tail: a productive tail
-// renders unchanged; a churn tail renders the last productive window from the deeper scan
-// (prefixed.
+// resolveRecoveryTailContent applies the substance filter to the fetched tail.
 func resolveRecoveryTailContent(tailParts, fullScan []db.SessionPart, maxBytes int) (tail string, churnOnly bool) {
 	if !tailIsBootstrapChurn(tailParts) {
 		return transcript.RenderTail(tailParts, maxBytes), false

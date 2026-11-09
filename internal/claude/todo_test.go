@@ -59,8 +59,7 @@ func todoByContent(todos []map[string]any) map[string]map[string]any {
 }
 
 // TestMapperTaskFamilyLifecycle drives create → activate → complete → remove and asserts the
-// rendered list at each step, including that a removal DROPS the row (rather than leaving a stale
-// one).
+// rendered list at each step.
 func TestMapperTaskFamilyLifecycle(t *testing.T) {
 	m, rec := newTestMapper(t, scheduler.ExecutionManifest{})
 

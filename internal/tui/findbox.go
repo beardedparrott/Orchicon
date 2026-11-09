@@ -1,36 +1,6 @@
 package tui
 
 // findbox.go — THE FIND BOX: the modal transcript search the operator types into.
-//
-// The operator: "ctrl+f works odd. You have to first type what you want then hit ctrl+f. That's not
-// very intuitive. I would prefer a modal pop up that you can type in your search."
-//
-// They are right about the old shape, and WHY it was that shape is worth recording because it is the
-// thing this file removes: a terminal cannot open a search box, so ctrl+f took the COMPOSER's text as
-// the query — the chord really meant "search for whatever is in my message box". That made it useless
-// with an empty box, which is the state you are in while READING a transcript and the only state a
-// find is for; and it silently turned a half-written message into a search term.
-//
-// THE BOX IS A MODAL of the shape this shell already uses for one-input surfaces (the rename form,
-// the /connect form): a solid panel over the frame, owning the keyboard while it is up, so nothing
-// typed into the query can reach the composer or a screen behind it. Two things about it are NOT the
-// standard form shape, and both are deliberate:
-//
-//   - IT FILTERS LIVE rather than on submit, so the query is judged by what it finds. Every keystroke
-//     goes through the SAME functions /find and n/N use (transcript_search.go: setAskSearch ->
-//     transcriptFilterItems / transcriptSearchCount), so the box, the slash command and the chords
-//     cannot disagree about what a match is.
-//
-//   - ESC CANCELS, WHICH MEANS RESTORES. A live filter that could only be accepted would make "let me
-//     see what this matches" a commitment, so the box snapshots the search state it opened with and
-//     puts it back — including the "no search at all" case, which is the one that matters most,
-//     because that is the state on the way IN.
-//
-// ENTER KEEPS THE SEARCH AND HANDS OVER THE KEYBOARD. Committing moves focus to the TRANSCRIPT, and
-// that is the point of committing rather than a flourish: n/N step matches and home/end jump, and
-// neither can work from the composer — 'n' is a printable letter, and a bare letter in the composer is
-// the operator's message (see composerBypassKeys). A find that left the composer focused would hand
-// over a filtered transcript and no way to walk it.
 
 import (
 	"fmt"
@@ -47,8 +17,7 @@ import (
 type findBox struct {
 	input textinput.Model
 	// prevQuery and prevMatch are WHAT ESC PUTS BACK — the search the operator had before the box
-	// opened, so a box opened to look at something can always be abandoned without losing a search they
-	// had.
+	// opened.
 	prevQuery string
 	prevMatch int
 }

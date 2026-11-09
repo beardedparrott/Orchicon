@@ -9,8 +9,7 @@ import (
 )
 
 // latestTodos returns the worker's most recent todo list for an execution by walking its
-// session-transcript tool_use parts from the highest sequence downward and returning the FIRST
-// todowrite.
+// session-transcript tool_use parts from the highest sequence downward and returning the FIRST.
 func latestTodos(parts []db.SessionPart) []*apiv1.TodoItem {
 	for _, p := range parts {
 		if p.Kind != db.SessionPartToolUse {

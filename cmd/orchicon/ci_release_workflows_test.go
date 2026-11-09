@@ -866,9 +866,7 @@ func TestDesktopNotInCrossPlatforms(t *testing.T) {
 	}
 }
 
-// TestDesktopBuildRunsInTheWailsProjectDirectory — the Wails CLI has NO project-dir flag: `wails
-// build` loads ./wails.json from its WORKING DIRECTORY (wails/v2/internal/project.Load ->
-// os.Getwd).
+// TestDesktopBuildRunsInTheWailsProjectDirectory — the Wails CLI has NO project-dir flag.
 func TestDesktopBuildRunsInTheWailsProjectDirectory(t *testing.T) {
 	const projectDir = "cmd/orchicon-desktop"
 	b, err := os.ReadFile("../../.github/workflows/release.yml")
@@ -1056,21 +1054,8 @@ func TestMacOSSigningJobRunsOnAMacOSRunner(t *testing.T) {
 	}
 }
 
-// TestReleaseInstallsTheSignedMacOSArchivesOverTheUnsignedOnes pins the half of ACM-2 that stays broken
-// even once a signing job exists: the signed archives must be the ones the release PUBLISHES.
-//
-// The release job merges every artifact into ONE flat directory and writes SHA256SUMS there from a
-// non-recursive glob. Two regressions therefore pass every other test while shipping an unsigned binary
-// called signed:
-//
-//   - an upload path with `**` in it, so the signed archives land in a SUBDIRECTORY next to the unsigned
-//     archives of the same name — the glob, the checksums and `gh release` all resolve to the flat
-//     unsigned copy; and
-//   - a release job that never downloads the signed artifact explicitly, leaving which copy survives the
-//     merge to the (unspecified) artifact order.
-//
-// So both are asserted. Comments are stripped first: the explanation above names the very patterns the
-// check looks for, and a detector tripped by its own documentation is worse than none.
+// TestReleaseInstallsTheSignedMacOSArchivesOverTheUnsignedOnes pins the half of ACM-2 that stays
+// broken even once a signing job exists.
 func TestReleaseInstallsTheSignedMacOSArchivesOverTheUnsignedOnes(t *testing.T) {
 	b, err := os.ReadFile("../../.github/workflows/release.yml")
 	if err != nil {

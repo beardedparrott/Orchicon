@@ -1,31 +1,6 @@
 package orchicon
 
-// askcompact.go — context compaction for the NATIVE Ask transport
-// (scheduler.ChatCompactor). Not to be confused with compaction.go, which is
-// the WORKER loop's budget-ladder gate.
-//
-// WHY this exists: the native transports are SESSIONLESS — every turn re-sends
-// the whole accumulated history as context (see dispatchTurnMessage). That
-// makes an over-limit conversation unrecoverable: once the history exceeds the
-// model's window, EVERY send 400s and the conversation is permanently wedged.
-// opencode never reaches that state because it compacts proactively and can
-// summarize its own server-side session. A sessionless adapter has no server
-// session to summarize, so it must rewrite the history it owns.
-//
-// The two-stage shape is what makes an ALREADY-over-limit session recoverable:
-//
-//  1. REDUCE (deterministic, no model call, cannot fail). Measured on a live
-//     wedged conversation: 46% of bytes were images, 37% tool results, and
-//     only 3% actual text. Dropping images to markers and tool payloads to
-//     one-liners brings that transcript back inside ANY window, so stage 2 is
-//     a single bounded request instead of an impossible one.
-//  2. SUMMARIZE (one model call, on the conversation's own model). The reduced
-//     transcript becomes a narrative summary, and the history becomes
-//     [summary] + [most recent turns].
-//
-// Stage 1 is the whole reason this can run AFTER the limit: opencode summarizes
-// before the window fills, so its summarize request always fits. We must shrink
-// first, because we may be called precisely because it no longer fits.
+// askcompact.go — context compaction for the NATIVE Ask transport (scheduler.ChatCompactor).
 
 import (
 	"context"

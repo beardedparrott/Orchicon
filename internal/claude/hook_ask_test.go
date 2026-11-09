@@ -251,9 +251,7 @@ func TestHookMatcherCoversMCPTools(t *testing.T) {
 	}
 }
 
-// The END-TO-END consequence: with the matcher fixed, an orchicon MCP tool must produce an ALLOW
-// from the Ask profile (not an ask, and never a deny), which is what makes list_work_items
-// readable.
+// The END-TO-END consequence: with the matcher fixed.
 func TestAskProfileAllowsOrchiconMCPToolsThroughTheMatcher(t *testing.T) {
 	if !regexp.MustCompile("^(?:" + HookToolMatcher + ")$").MatchString("mcp__orchicon__list_work_items") {
 		t.Skip("matcher does not cover MCP tools; the test above already failed")

@@ -64,8 +64,7 @@ func retryableStatus(code int) bool {
 }
 
 // isConnectionErr reports whether err is a transport-level failure (as opposed to a provider
-// response): net errors, timeouts, connection resets/refused, TLS handshake failures, client
-// timeouts.
+// response).
 func isConnectionErr(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return false

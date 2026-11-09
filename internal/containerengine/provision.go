@@ -16,9 +16,7 @@ import (
 // impossible on this host, or the installer failed.
 var ErrDeclined = errors.New("container engine provisioning was not performed")
 
-// ProvisionMarkerFile is written in the instance data dir while an installer runs, so a status
-// surface can report "provisioning" truthfully instead of showing a spinner that may be a lie
-// (AC5's.
+// ProvisionMarkerFile is written in the instance data dir while an installer runs.
 const ProvisionMarkerFile = "engine-provisioning"
 
 // PodmanDocsURL is the manual path we point at when no supported installer is available.

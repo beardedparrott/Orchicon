@@ -179,36 +179,7 @@ This is a LIVE CONVERSATION, not a budgeted worker execution.
 `)
 }
 
-// writeSuiteReachBlock is the ONE statement of what the native file/shell suite
-// can REACH and when it ASKS — the filesystem half of the session contract, and
-// the block that keeps the prompt honest about the operator's own machine.
-//
-// It replaces a claim that was quietly false. The prompt used to describe the
-// suite as scoped to a project directory, which reads as "you are confined to
-// that tree": on a host process that is simply untrue, and an agent that believes
-// it will either decline a path it was allowed to read or burn turns discovering
-// the boundary by probing it. The repo already has the precedent — the
-// runtime-environment block (internal/db/prompt.go) is truthful or the agent
-// probes; a true statement costs three lines and a false one costs turns.
-//
-// THREE THINGS IT MUST SAY, in every mode, because it is emitted from
-// writePlatformPrimer, which every mode's persona calls:
-//   - the reach — the suite IS a host process, so it reaches the operator's whole
-//     filesystem, not just a project tree;
-//   - reads never ask; writes and executions ask UNLESS they are inside the
-//     conversation's pre-approved project directory (the one the prompt's
-//     "## This conversation's project" section names, and ask_file_root reports);
-//   - the relative-path anchor, and the honest limits (runs as the operator's
-//     user, so no root — say so rather than retrying).
-//
-// THE MODE HALF IS DERIVED, NEVER HAND-WRITTEN. Whether this mode has the write
-// tools is computed from the SAME table the enforcement uses (askmode.Allows,
-// behind modeAllowsTool, the def filter and the refusal), so the statement cannot
-// promise a tool the platform refuses. Brainstorm and Quick Work cannot write in
-// ANY directory, so telling them "writes ask" would be the second false claim in
-// the fix for the first: they are told the platform refuses the tools outright,
-// and the ask-versus-proceed rule is still stated because it is the platform's
-// rule, not theirs.
+// THREE THINGS IT MUST SAY, in every mode, because it is emitted from writePlatformPrimer.
 func writeSuiteReachBlock(b *strings.Builder, mode string) {
 	b.WriteString("\n## Reach and scope\n")
 	b.WriteString("The native file/shell suite runs on the operator's OWN host machine, as the operator's user: it is a HOST PROCESS, not a sandbox, so it reaches the operator's whole filesystem — any path that user can read, you can read, whether or not it sits inside a project. The suite is not confined to a project directory.")
@@ -350,33 +321,7 @@ func writeToolList(b *strings.Builder, toolRegistry *ToolRegistry, mode string) 
 	b.WriteString("When a choice or a missing fact blocks you, ASK WITH `orchicon_ask_user` — one call, with the question and 2+ options. Do NOT write a numbered list of choices in your prose: a question written as prose is not answered as a choice, and the user's reply cannot be sent as an option. The tool RECORDS the question and ENDS YOUR TURN — the user answers in their next message. Ask, then STOP: never ask a question and continue on a guess.\n")
 }
 
-// writeAdditionalInstructions appends the tenant's DB-stored prompt material, in
-// every mode — it is the shared customization surface.
-//
-// IT RENDERS THE FREE-TEXT AGENT-CONFIG PROSE, WHICH WAS PREVIOUSLY DEAD. The
-// tenant's `ask_orchicon_agent_config` row carries SystemPrompt, Role, Skills,
-// Behavior and AgentsMD, but only SystemPrompt ever reached a prompt — the other
-// four were parsed, stored and API-returned while affecting nothing.
-//
-// THE `skills` FIELD HERE IS PROSE, NOT A SCOPE, and the two must not be confused:
-//
-//   - `AgentConfig.skills` is free TEXT (one row per tenant) rendered here as a
-//     `## Skills & Responsibilities (prose)` heading;
-//   - a conversation's / project's `skill_files` are REAL on-disk paths, rendered
-//     by the ONE shared platform renderer as a `# Skills` manifest
-//     (writeSkillsManifest → contextfiles.RenderManifest).
-//
-// The two headings DIFFER on purpose (prose at `##`, the manifest at `#`) so a
-// reader can tell them apart at a glance: the prose heading claims this is prose,
-// and the manifest heading marks a list of real paths. The free-text fields are a
-// PROMPT SECTION ONLY and must NOT grow into a scope: there is no tenant MCP tier
-// and no tenant skill_files tier (mcp_servers is owner-scoped; skill_files lives on
-// the project / conversation / worker version). Scope is per-project and
-// per-conversation. This is the one surviving tenant-level Ask surface, and it
-// stays a prompt section.
-//
-// Emitted only when non-empty, mirroring the other writers so an unset field adds
-// nothing to the prompt (and cannot shift the cached static prefix).
+// The free-text fields are a PROMPT SECTION ONLY and must NOT grow into a scope.
 func writeAdditionalInstructions(b *strings.Builder, cfg db.AgentConfigRow) {
 	writeProseSection(b, "## Additional Instructions", cfg.SystemPrompt)
 	writeProseSection(b, "## Role", cfg.Role)

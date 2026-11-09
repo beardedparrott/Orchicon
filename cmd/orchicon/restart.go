@@ -25,9 +25,7 @@ func runRestart(args []string, log *slog.Logger) error {
 	name := "orchicon-cnt-" + instance
 	socketDir := env("ORCHICON_RUNTIME_SOCKET_DIR", filepath.Join(os.TempDir(), "orchicon-runtime"))
 
-	// NOT validateInstance: that is a PORT-DEFAULTS table check ("has no port defaults (known: dev,
-	// prod, test)"), and a restart needs no port defaults — it reads the ports that were actually
-	// bound.
+	// NOT validateInstance: that is a PORT-DEFAULTS table check ("has no port defaults (known.
 
 	residency, ok := recordedResidency(instance)
 	if !ok {

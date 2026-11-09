@@ -2,23 +2,6 @@ package tui
 
 // modal_test.go — the shell's modal COMPOSITION: a modal must be a solid, uniform rectangle, and
 // splicing one over the frame must not disturb a single cell outside it.
-//
-// THE OPERATOR'S REPORT: "Weird visual bug when renaming a conversation. Probably should just be its
-// own modal with a solid background. This also happens when applying to a category."
-//
-// TWO DEFECTS, both measured before they were fixed:
-//
-//  1. overlayRow took the BOX's maximum line width and used it as the width of EVERY row. A kit2
-//     form's View is not a rectangle by design (title and hint rows are written at their natural
-//     width, field rows are padded), so a SHORT row was spliced as if it were a wide one and `keep`
-//     landed past the end of the glyphs — deleting the base cells in between and returning a row
-//     shorter than the frame. fillView then padded at the FAR RIGHT, so everything after the modal
-//     shifted sideways. Measured: a 5-cell row in a 25-cell box turned a 40-cell row into a 25-cell
-//     one, and 18 base cells survived inside the box's rectangle.
-//
-//  2. The modals spliced that raw ragged form directly, so the base showed through inside the modal.
-//     They now go through modalPanel, which wraps the body in a kit2.Panel (a rectangle by
-//     construction: every interior row padded and painted with the opaque screen background).
 
 import (
 	"strings"

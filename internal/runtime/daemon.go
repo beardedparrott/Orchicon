@@ -53,8 +53,7 @@ type Daemon struct {
 	// project directories this plane knows about.
 	AllowedRootsSource func(ctx context.Context) ([]string, error)
 	// ExePath is the daemon's own executable, bind-mounted read-only into every runtime container at
-	// /usr/local/bin/orchicon so the container can exec `orchicon runtime-supervisor` /
-	// `runtime-client`.
+	// /usr/local/bin/orchicon so the container can exec `orchicon runtime-supervisor` /.
 	ExePath   string
 	CPUs      string
 	Memory    string
@@ -109,9 +108,7 @@ type CreateRequest struct {
 	// InstanceID labels the runtime container with the requesting instance (dev/prod) so each control
 	// plane only reaps its OWN containers.
 	InstanceID string `json:"instance_id,omitempty"`
-	// ServeConfig, when non-empty, requests the opencode serve inside the container: the
-	// OPENCODE_CONFIG_CONTENT JSON the serve boots with (permission rules + MCP servers; the plane
-	// builds it).
+	// ServeConfig, when non-empty, requests the opencode serve inside the container.
 	ServeConfig string `json:"serve_config,omitempty"`
 	// HOST path; converted before anything reads it (hostpaths.go).
 	ProjectDir string `json:"project_dir,omitempty" orchicon:"hostpath"`
@@ -351,8 +348,7 @@ func (d *Daemon) handleRuntimeExec(w http.ResponseWriter, r *http.Request, runID
 	name := d.pool.containerForRun(runID)
 	if name == "" {
 		// LOGGED, because this handler logged nothing and that silence is what made a wedged dispatch
-		// invisible: an execution sat in `dispatching` for twenty minutes with an empty container and no
-		// line.
+		// invisible.
 		d.Log.Warn("runtime stdio: no runtime container leased for this id — the caller must name the RUN, not the execution",
 			"run", runID)
 		httpError(w, http.StatusNotFound, "no runtime container leased for run "+runID)
@@ -865,21 +861,6 @@ func (d *Daemon) createContainerInner(name string, req CreateRequest) (*CreateRe
 	args = append(args, image, "orchicon", "runtime-supervisor")
 
 	// THE RESOLVED ADAPTER SURFACE, SAID OUT LOUD AT CREATE TIME.
-	//
-	// REPORTED as the thing that would have settled a whole round trip in seconds: "have your agent confirm
-	// which function they added the claude mount to, and whether it runs for adp_claude_dev ... the absence of
-	// any .claude string in the log says the code path was never reached."
-	//
-	// IT COULD NOT SAY THAT, for two reasons, and both are fixed here:
-	//
-	//  1. the mounts are built by the DAEMON, and the operator was reading the PLANE log — a daemon-only string
-	//     can never appear there, so the scan was structurally incapable of finding it;
-	//  2. even in the right log, a SUCCESSFUL create logged only a COUNT (`workflow runtime ensured ... mounts=12`),
-	//     never a path.
-	//
-	// So: the boot profile and the adapter data dirs the container was built for are logged BEFORE the engine is
-	// called, on the success path as well as the failure path. A missing mount is then a one-line read rather
-	// than an inference from a string search.
 	if d.Log != nil {
 		d.Log.Info("runtime container: resolved adapter surface",
 			"container", name,
@@ -1335,9 +1316,7 @@ func (d *Daemon) hostInputsFingerprint() string {
 	return hostFp + "|" + binFp + "|" + d.engineInputFingerprint()
 }
 
-// startServe asks the in-container supervisor to bring up `opencode serve` (idempotent — the
-// supervisor owns the password and reports it back), then resolves the published host loopback
-// port.
+// startServe asks the in-container supervisor to bring up `opencode serve` (idempotent.
 func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, bool, error) {
 	reqJSON, err := json.Marshal(AgentRequest{
 		Cmd: "serve",

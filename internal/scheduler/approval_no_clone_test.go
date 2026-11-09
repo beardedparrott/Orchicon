@@ -339,9 +339,7 @@ func TestApprovalRetryDoesNotCloneTicket(t *testing.T) {
 	}
 }
 
-// TestApprovalDispatchFailsWithoutTicket verifies the documented constraint: a worker-backed
-// approval step on a one-shot run with no bound ticket and no upstream WORK_ITEM marker fails the
-// step.
+// TestApprovalDispatchFailsWithoutTicket verifies the documented constraint.
 func TestApprovalDispatchFailsWithoutTicket(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()

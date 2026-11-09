@@ -128,20 +128,8 @@ func matchGlob(pattern, s string) bool {
 	return pi == len(pattern)
 }
 
-// OutsideProject reports whether a path target escapes the worker's project
-// boundary, and the rule that refuses it. It is the port of opencode's
-// `external_directory` rule (deny `*`, allow ScratchDir+"/**", allow
-// RunDirPattern) onto a LITERAL path, so the claude hook reaches the same verdict
-// the opencode profile reaches.
-//
-// A target is ALLOWED when:
-//   - it resolves inside projectDir, or
-//   - it is ScratchDir itself or inside it (the scratch carve-out), or
-//   - some path component is `.orchicon` with at least one component after it
-//     (the run-metadata carve-out, `**/.orchicon/**`).
-//
-// A RELATIVE target is resolved against projectDir first, so `../../etc/passwd`
-// is correctly refused rather than trivially allowed as "relative = in project".
+// OutsideProject reports whether a path target escapes the worker's project boundary, and the rule
+// that refuses it.
 func OutsideProject(target, projectDir string) (allowed bool, rule string) {
 	t := strings.TrimSpace(target)
 	if t == "" {

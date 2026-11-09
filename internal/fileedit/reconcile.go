@@ -11,32 +11,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// ReconcileGit reconciles an owner's ledger against the run worktree's git
-// state (AC 4). Called once on the owner's terminal state, best-effort:
-//   - ledger paths present in `git status --porcelain` → git_confirmed=TRUE
-//   - paths changed in git but absent from the ledger → corrective rows
-//     (tool=reconcile:git) carrying git's final diff
-//   - the final diff for any path then matches `git diff` by construction
-//
-// worktreeDir may be empty / non-git / missing (in-place non-repo runs) —
-// the call is a no-op there. dirEmpty distinguishes "no worktree" from an
-// empty-but-valid dir so callers pass what they have without branching.
-//
-// baseRef IS THE DIFFERENCE BETWEEN A RUN AND A CONVERSATION, and it is passed
-// rather than inferred because the two owners need opposite answers:
-//
-//   - a RUN writes its worktree on a branch forked from a base, then COMMITS
-//     (its brief orders it: "commit ALL changes ... verify `git status
-//     --porcelain` is clean"). `git status` is therefore EMPTY by the time this
-//     runs, and the run's whole contribution is invisible. Passing the base ref
-//     adds the branch's committed changes and reads the before-side from the
-//     fork point, which is the only way a committed run ever produces a diff.
-//   - an ASK conversation edits the project dir on whatever branch it happens to
-//     be on. Its own work is uncommitted, so `git status` is exactly right — and
-//     passing a base there would attribute the WHOLE BRANCH's history to the
-//     conversation. So the Ask path passes "" and keeps working-tree semantics.
-//
-// Empty baseRef = working-tree only (today's behaviour, unchanged).
+// ReconcileGit reconciles an owner's ledger against the run worktree's git state (AC 4).
 func ReconcileGit(ctx context.Context, store Store, worktreeDir, tenantID, ownerKind, ownerID, baseRef string, log *slog.Logger) error {
 	// Resolve the base to a MERGE BASE once, not per path: 'develop...HEAD' is only the branch's own
 	// delta when the fork point is used, and one git call beats one per changed file.

@@ -1,27 +1,6 @@
 package kit2
 
 // form_edit_lock_test.go — seeing, moving and scrolling a multi-line value.
-//
-// The operator, after the field grew to fit the pane: "even though the text box is
-// larger, it is still cut off and you can't see your cursor to edit. We need the
-// ability to see and move the cursor and scroll vertically with the arrow and the
-// mouse wheel. My take is we should not make 'enter' drop the next line since we
-// already have the down/up doing that, but instead, we should make enter edit that
-// field and then allow the scroll mechanism since the field would be locked until
-// you hit Esc to break out of it."
-//
-// Two things were wrong and they are separable:
-//
-//  1. THE WINDOW WAS ANCHORED AT THE START OF THE VALUE. The caret is spliced in at
-//     its position, but the visible slice was rows[0:budget] — so with the caret at
-//     the end of a 39-line value it was NOT RENDERED AT ALL (measured: "caret rune
-//     found at rendered row -1"). That is the whole of "you can't see your cursor".
-//  2. UP/DOWN MEANT "NEXT FIELD" EVERYWHERE, so there was no way to move through a
-//     value taller than its window.
-//
-// The fix keeps the caret as the single source of scroll position (so the cursor
-// cannot leave the view) and adds the operator's lock: Enter goes INTO a multi-line
-// field, where up/down and the wheel move the caret, and Esc comes back out.
 
 import (
 	"strings"

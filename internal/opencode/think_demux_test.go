@@ -48,9 +48,7 @@ func TestCompletedThinkDemuxMultipleBlocks(t *testing.T) {
 }
 
 func TestCompletedThinkDemuxBlockSpansParts(t *testing.T) {
-	// A block opened in one completed part and closed in a later part still routes: the opening part
-	// contributes its tail as a body, the closing part contributes its head, and clean text stays
-	// clean.
+	// A block opened in one completed part and closed in a later part still routes.
 	d := newCompletedThinkDemux()
 	clean1, bodies1 := d.segment("answer " + dOpen + "thinking part one")
 	if clean1 != "answer " {

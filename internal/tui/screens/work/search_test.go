@@ -30,8 +30,7 @@ func searchPlane(t *testing.T) *Model {
 }
 
 // The operator: "There is still no search box to filter through the list of work items." '/'
-// focuses the search row at the top of the list, typing narrows the visible rows live, and esc
-// clears it.
+// focuses the search row at the top of the list.
 func TestWorkItemsSearchFiltersTheList(t *testing.T) {
 	m := searchPlane(t)
 	if got := len(itemsOf(m, srcWorkItems)); got != 3 {

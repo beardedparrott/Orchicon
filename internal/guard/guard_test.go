@@ -41,26 +41,8 @@ func runGuardIn(t *testing.T, g *Guard, dir, name string, args ...string) (int, 
 	return exit, string(out)
 }
 
-// THESE TESTS EXECUTE REAL BINARIES THROUGH THE REAL SHIM, so a case the shim ALLOWS does not merely
-// fail an assertion — it RUNS. That is not hypothetical: on 2026-09-27 a run on the operator's own
-// machine deleted real data — `~/.ssh`, `~/.orchicon`, `~/ai-tools`, and this project's working tree —
-// because the shim reached a different verdict than the test expected and the case was `rm -rf /home`.
-//
-// A test whose safety depends on the verdict of the thing it is testing FAILS OPEN, and every case
-// here that named a real system path did exactly that. The targets are therefore TEMP SPACE, so the
-// failure mode of a bad verdict is a directory the test owns:
-//
-//   - absolute targets are `t.TempDir()`, never `/`, `/home`, `/tmp/whatever` or `/etc/...`;
-//   - `cmd.Dir` is a temp directory for the RELATIVE cases (`..`, `../../escape`), so those resolve
-//     inside temp space too — still a traversal the shim must refuse, which is the behaviour under
-//     test, but no longer a deletion of the repository's parent;
-//   - the `~` and `$HOME` spellings stay LITERAL, which is what the shim actually receives with no
-//     shell to expand them, and is why they can never name a real home here;
-//   - the never-allow cases (`sudo`, `dd`, `mkfs`, `shred`) keep their arguments: they are refused by
-//     the class arm before any path logic runs, and their devices need root to touch.
-//
-// THE RULE FOR ANYTHING ADDED HERE: a target that a real binary could damage if the guard failed is a
-// target that does not belong in a test.
+// THESE TESTS EXECUTE REAL BINARIES THROUGH THE REAL SHIM, so a case the shim ALLOWS does not
+// merely fail an assertion — it RUNS.
 
 func TestExecutionGuardBlocksDestructive(t *testing.T) {
 	proj := t.TempDir()
@@ -239,9 +221,7 @@ func TestExecutionGuardAppliesToPATH(t *testing.T) {
 	}
 }
 
-// TestExecutionGuardAllowsWorktreeScopedDelete pins AC3: a delete resolving inside the worker's
-// directory (the run worktree when provisioned — the guard's projectDir IS the worktree) is
-// allowed.
+// TestExecutionGuardAllowsWorktreeScopedDelete pins AC3.
 func TestExecutionGuardAllowsWorktreeScopedDelete(t *testing.T) {
 	proj := t.TempDir()
 	g, err := NewExecutionGuard(proj)

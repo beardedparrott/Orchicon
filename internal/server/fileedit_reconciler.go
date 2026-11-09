@@ -8,9 +8,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/fileedit"
 )
 
-// fileEditReconciler is the server's implementation of scheduler.FileEditReconciler: at an
-// execution's terminal transition it reconciles the durable ledger against the run worktree's git
-// state.
+// fileEditReconciler is the server's implementation of scheduler.FileEditReconciler.
 type fileEditReconciler struct {
 	pool *db.Pool
 	log  *slog.Logger

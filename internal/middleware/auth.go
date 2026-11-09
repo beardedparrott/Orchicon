@@ -29,9 +29,7 @@ var publicPaths = map[string]bool{
 	// session exists, exactly like local-login.
 	"/auth/signup":  true,
 	"/auth/refresh": true,
-	// /auth/logout is credential-free by design (cookie-based): it can only end the caller's own
-	// browser session, and requiring a bearer token here would 401 the sign-out request before the
-	// refresh.
+	// /auth/logout is credential-free by design (cookie-based).
 	"/auth/logout":        true,
 	"/auth/oidc/login":    true,
 	"/auth/oidc/callback": true,

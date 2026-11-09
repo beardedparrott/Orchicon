@@ -71,21 +71,6 @@ func claudeHostInstall() string {
 var claudeDefaultRelativePath = []string{".local", "bin", "claude"}
 
 // ClaudeBinaryPath resolves the claude executable to spawn.
-//
-// ORDER, and each step is load-bearing:
-//
-//  1. ORCHICON_CLAUDE_BIN — an explicit operator/deployment choice wins.
-//  2. $HOME/.local/bin/claude — the operator's OWN install, which is the one
-//     they signed into and the one whose version matches the catalog. $HOME is
-//     whatever the plane set (the runtime daemon passes HOME=$HostHome into a
-//     container, where the same host path is bind-mounted), so this resolves to
-//     the same install on both transports.
-//  3. A bare "claude" — the last resort, so a machine with the CLI only on PATH
-//     still works exactly as before. It is a fallback and not the primary
-//     because it is the case that silently picks the wrong installation.
-//
-// A candidate must EXIST and be a regular file; anything else falls through
-// rather than spawning a path that cannot run.
 func ClaudeBinaryPath() string { return claudeBinaryPathFor(runtime.GOOS, os.Getenv) }
 
 // claudeBinaryPathFor is ClaudeBinaryPath with the platform and environment injected, matching

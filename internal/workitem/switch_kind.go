@@ -49,35 +49,8 @@ type KindSwitchPlan struct {
 	ReparentedChildren []ChildReparent
 }
 
-// ResolveKindSwitch validates and resolves a kind switch for the work
-// item `current`, returning the mutations to apply. `explicitParentID`
-// is the caller's requested parent (nil = not provided, or equal to the
-// current parent — which is treated as "keep" and left to auto-resolution
-// because the current parent may no longer be valid for the new kind).
-// `projectID` is the effective project the item will live in (the request's
-// project_id when also reassigning, otherwise the current one); explicit
-// parents and the walk-up are validated against it.
-//
-// Preconditions (rejected with sentinel errors the caller maps to
-// CodeFailedPrecondition):
-//   - the item's status is system-managed (running/checkpointing/
-//     recovering);
-//   - an active workflow run is attached (workflow_run_id non-empty and
-//     the run not in a terminal state — same check pattern as the
-//     auto-start guard in service.go).
-//
-// Resolution (given newDepth = kindOrder[newKind]):
-//  1. Parent side:
-//     - newKind == epic → parent_id = NULL (epics are top-level).
-//     - else keep the current parent when it is strictly shallower than
-//     newDepth; otherwise walk up the ancestor chain to the nearest
-//     ancestor shallower than newDepth.
-//     - no parent + non-epic → error: a parent must be chosen explicitly.
-//  2. Child side: each direct child with depth(child) <= newDepth is
-//     reparented to the item's resolved parent (they become siblings).
-//  3. Schedulability: switching to epic/feature clears the worker
-//     binding and scheduled start, and demotes ready/assigned/scheduled
-//     to pending so ListReadyTasks can never dispatch a re-typed item.
+// ResolveKindSwitch validates and resolves a kind switch for the work item `current`, returning the
+// mutations to apply.
 func ResolveKindSwitch(ctx context.Context, tx pgx.Tx, tenantID string, current db.WorkItemRow, newKind string, explicitParentID *string, projectID string) (*KindSwitchPlan, error) {
 	kind, err := domain.NormalizeWorkItemKind(newKind)
 	if err != nil {

@@ -172,8 +172,7 @@ func TestMergeBudgets(t *testing.T) {
 }
 
 // TestCountReaskRuns verifies the re-ask budget counts ACTUAL reviewer re-asks (step runs created
-// by reaskDecisionStep with StepName "Reviewer (re-ask)") — NOT the reviewer's loop iteration
-// count.
+// by reaskDecisionStep with StepName "Reviewer (re-ask)").
 func TestCountReaskRuns(t *testing.T) {
 	ordinary := db.WorkflowStepRunRow{StepName: "PR Reviewer"}
 	loop := db.WorkflowStepRunRow{StepName: "PR Reviewer (loop)"}
@@ -296,9 +295,7 @@ func TestCapSummaryNarrativeAllFactsNoTruncation(t *testing.T) {
 	}
 }
 
-// TestExtractFactsLearned verifies the facts-ledger extraction: only FACTS LEARNED lines are
-// captured, case-insensitively, with bullet and marker prefixes stripped, while other lines are
-// ignored.
+// TestExtractFactsLearned verifies the facts-ledger extraction.
 func TestExtractFactsLearned(t *testing.T) {
 	summary := "Verified the boot sequence live.\n" +
 		"FACTS LEARNED: the supervisor runs the pre-feature daemon self-copy (old binary), so the sandbox plane does not auto-boot until the daemon rebuilds.\n" +

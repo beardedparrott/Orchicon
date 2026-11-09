@@ -203,9 +203,7 @@ func storedParts(mu *sync.Mutex, stored *[]db.SessionPart) []db.SessionPart {
 	return append([]db.SessionPart(nil), *stored...)
 }
 
-// TestContinueSessionOpencodeReattachesOnHostTransport pins AC 2's continuity half: an
-// opencode-tagged transcript re-attaches the recorded session when the OPENCODE ADAPTER'S OWN
-// persistent.
+// TestContinueSessionOpencodeReattachesOnHostTransport pins AC 2's continuity half.
 func TestContinueSessionOpencodeReattachesOnHostTransport(t *testing.T) {
 	const sessionID = "ses_reattach"
 	srv := fakeServe(t, sessionID)

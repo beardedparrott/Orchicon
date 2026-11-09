@@ -15,19 +15,7 @@ type FileStamp struct {
 	Stamp string
 }
 
-// Fingerprint computes a stable content fingerprint for a resolved
-// context-file set. paths is the raw context_files list (files AND
-// directories); each is resolved exactly as the renderer resolves it, so
-// the fingerprint and the rendered bytes always agree. Returns:
-//
-//   - fp: the hex SHA-256 fingerprint of the whole set (empty-set → a
-//     fixed "none" sentinel so an unset context is still byte-stable).
-//   - stamps: the per-path stamps (sorted), for diffing against a prior
-//     run's stamps by the cache layer.
-//
-// A path that cannot be read stamps as "missing:<path>" — identical to
-// what the renderer notes — so an unreadable file is stable across runs
-// too (no spurious churn on the same error).
+// Fingerprint computes a stable content fingerprint for a resolved context-file set.
 func Fingerprint(paths []string, projectDir string) (fp string, stamps []FileStamp, err error) {
 	if len(paths) == 0 {
 		return "none", nil, nil

@@ -231,8 +231,7 @@ func normalizeMCPEntries(entries map[string]any) map[string]any {
 const ScratchDir = workerrestrict.ScratchDir
 
 // OrchiconRunDirGlob is the external_directory carve-out for Orchicon's own run metadata
-// (`.orchicon/<run>/` under the project root, and any `.orchicon/worker.recovery` / run summary
-// files).
+// (`.orchicon/<run>/` under the project root.
 const orchidsRunDirPattern = workerrestrict.RunDirPattern
 
 // taskToolDeny denies opencode's built-in `task` (subagent) tool for every worker execution.
@@ -493,9 +492,7 @@ func BuildConfigContent(o ConfigOptions) string {
 	// denying the built-ins does not redirect anything.
 	directCompositeTools := compositeTools && !o.Shape.isV2()
 	if o.Shape.isV2() {
-		// V2 is an ordered `permissions` ARRAY with renamed actions; the V1 map would leave the sandbox
-		// unenforced, and it would fail in the permissive direction (wider tool access than intended)
-		// rather.
+		// V2 is an ordered `permissions` ARRAY with renamed actions.
 		cfg["permissions"] = v2PermissionRules(o.PermissionProfile, directCompositeTools)
 	} else {
 		cfg["permission"] = permissionRules(o.PermissionProfile, directCompositeTools)

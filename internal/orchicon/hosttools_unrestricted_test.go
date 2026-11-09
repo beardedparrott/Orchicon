@@ -121,8 +121,7 @@ func TestWorkerConstructorCannotInheritUnrestricted(t *testing.T) {
 }
 
 // TestWorkerSuiteRefusesAbsolutePathOutsideRoots is the worker-path statement of acceptance
-// criterion 4: a worker execution's suite refuses an absolute path outside its worktree/project
-// root.
+// criterion 4.
 func TestWorkerSuiteRefusesAbsolutePathOutsideRoots(t *testing.T) {
 	dir := t.TempDir()
 	outside := t.TempDir()

@@ -345,36 +345,7 @@ func (m *chatStallMonitor) stallReason() string {
 	// NO PROGRESS IS NOT JUDGED WHILE THE TRANSPORT IS ALREADY TIMING SOMETHING.
 	localToolOpen := !m.openToolTime.IsZero() && m.locallyBounded[m.openToolName]
 
-	// Gated on > 0: an explicit 0 in Settings means the operator DISABLED this
-	// check, and without the guard `now.Sub(...) > 0` holds on every tick — a
-	// disabled check would fire instantly on the first tick.
-	//
-	// AND GATED ON TWO CLOCKS THIS MONITOR DOES NOT OWN. They are separate conditions because they are
-	// separate mistakes, and BOTH are "waiting" rather than "stalled":
-	//
-	//   - `localToolOpen`, above: the TRANSPORT is already timing the call, under a hard deadline it
-	//     enforces itself (exec.CommandContext). Judging that silence here would let a no-progress
-	//     window decide how long a command may run — a number with nothing to do with the tool's budget.
-	//
-	//   - `awaitingConsent`: the OPERATOR holds the call. `lastActivity` advances on token progress, and
-	//     an ASK produces none — so an unanswered consent read as "no activity from the model" and the
-	//     turn was ABORTED at the window. The abort then resolved the outstanding ask as consentCancelled,
-	//     so the MODEL was told its approval had been cancelled when the STALL MONITOR had killed the
-	//     turn. That is the operator's report exactly: "No card ever came to me. That is why you may have
-	//     been waiting for approval" — a turn that died waiting for a card surfaces as a consent error,
-	//     and from the transcript the two are indistinguishable.
-	//
-	// EACH HAND-BACK RESTARTS THIS CLOCK at the point the wait ends (closeTool for a resolved tool,
-	// setAwaitingConsent on disarm). Without that the suspension would merely MOVE the death a step: the
-	// stale lastActivity would be read by the next tick and fire at once, still blaming whatever had just
-	// finished. A resolved tool, and an answered card, are both forward motion.
-	//
-	// Repetition stays armed below: it is about the MODEL looping, which neither a pending ask nor a
-	// running command causes or excuses.
-	// THE WINDOW IS SHORTER WHEN NOTHING IS OPEN. `localToolOpen` covers only tools THIS PROCESS
-	// times; a tool the serve runs is silent too, but the wedge signal is its detector. Either way, an
-	// OPEN tool is a reason to wait, and NO open tool is not — see
-	// defaultAskStallNoToolNoProgressWindow for the measured six-and-a-half minutes this cost.
+	// Gated on > 0: an explicit 0 in Settings means the operator DISABLED this check.
 	window := m.noProgressWindow
 	if m.openToolTime.IsZero() {
 		if short := askStallNoToolNoProgressWindow(); short < window {

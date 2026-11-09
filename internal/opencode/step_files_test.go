@@ -1,23 +1,6 @@
 package opencode
 
 // step_files_test.go — PER-STEP FILE ATTRIBUTION on a Code Mode serve.
-//
-// The board's diff viewer showed NOTHING for every opencode execution ever run
-// (measured: 0 ledger rows across 2,398 executions). Two independent captures
-// were both blind on 2.x:
-//
-//   - the LIVE hook in parseEvent keys on a TOOL NAME (write / edit /
-//     batch_write), and on 2.x no MCP tool is ever a tool name: it is called
-//     through `execute`, so the part says `execute` and every case misses;
-//   - the END-OF-RUN git reconcile is defeated separately by the worker
-//     COMMITTING its work — its brief orders a clean `git status`, which is
-//     exactly the state in which `git status` reports nothing (covered in
-//     internal/fileedit/reconcile_runbranch_test.go).
-//
-// So this file covers the remaining signal, and the only one that is a property
-// of the STEP rather than of the call: `session.step.ended.files`, which
-// opencode emits for the paths a step changed. It survives however the tool was
-// invoked, because it is the agent surface reporting its own edit.
 
 import (
 	"context"

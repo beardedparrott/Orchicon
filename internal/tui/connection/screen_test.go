@@ -456,9 +456,7 @@ func TestEmbeddedCtrlCDoesNotQuit(t *testing.T) {
 	}
 }
 
-// TestPasswordModeStoresRefreshToken pins the auto-refresh plumbing on the login path: the probe
-// stores the login's refresh token (the HttpOnly orchicon_refresh Set-Cookie value surfaced
-// through.
+// TestPasswordModeStoresRefreshToken pins the auto-refresh plumbing on the login path.
 func TestPasswordModeStoresRefreshToken(t *testing.T) {
 	m := New(nil, ProbeFuncs{
 		Versionz: func(ctx context.Context, baseURL string, insecure bool) (*client.VersionzResponse, error) {

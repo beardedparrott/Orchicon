@@ -203,17 +203,6 @@ func TestMakefileUsesTheGuardedHelpers(t *testing.T) {
 }
 
 // THE REPAIR PATH REMOVES THE LINK AND RUNS `npm ci` — asserted from the script, not by running it.
-//
-// This sandbox blocks `rm` and `ln` for every child of the test binary (an ORCHICON GUARD refuses them as
-// destructive tooling), so the repair cannot be EXECUTED here. Saying that plainly is better than a test
-// that quietly proves nothing. What is pinned instead:
-//
-//   - the DIAGNOSIS and its fix line are asserted by running the script with --check-only (above), which
-//     needs no destructive command;
-//   - the repair SEQUENCE is asserted here against the script's own text;
-//   - and the repair was exercised BY HAND on the operator's real checkout while restoring it — the actual
-//     damage this fix was written for: `rm -f node_modules && npm ci` then `tsc -b` clean and `vite build`
-//     green.
 func TestFeDepsRepairSequenceIsPresent(t *testing.T) {
 	body := readGoFile(t, filepath.Join("..", "..", "scripts", "dev", "fe-deps.sh"))
 

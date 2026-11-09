@@ -1,24 +1,7 @@
 package tui
 
-// project_move_test.go — MOVING A CONVERSATION, end to end, and the two ways it used to lie about it.
-//
-// The operator: "please also check the project-move slash command in the TUI is working properly. I did that on a
-// conversation and it is still just sitting there in the same list. I would have expected it to disappear because
-// I moved it to a project that was not currently selected."
-//
-// The WRITE and the reload were wired correctly — SetConversationProject → ConversationProjectSetMsg →
-// reloadConversations → onConversations → the rail re-filters. What was wrong was the TARGET, in two ways that
-// both end with the chat exactly where it was:
-//
-//  1. the picker OFFERED "All projects", whose value is the sentinel __all__ rather than a project id, so the
-//     server rejects the write (one row Up from the first project — in a picker whose cursor opens on the
-//     conversation's current project); and
-//  2. picking the conversation's CURRENT project — the row the cursor already sits on, so Enter alone does it —
-//     wrote, reported "moved to <the project it was already in>", and reloaded to a list where the chat had
-//     not moved at all.
-//
-// AND NONE OF IT COULD BE TESTED, because stubAskParity did not implement SetConversationProject at all. The
-// missing fixture was the missing coverage, which is why this shipped.
+// project_move_test.go — MOVING A CONVERSATION, end to end, and the two ways it used to lie about
+// it.
 
 import (
 	"net/http"

@@ -100,9 +100,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 	// New items always start recurrence-enabled: nothing in the create path
 	// represents "create already-paused" — pause is a later UpdateWorkItem.
 	w.RecurringEnabled = true
-	// Ephemeral (Ask Orchicon Quick Work) items get a CONCRETE mode at create instead of inheriting:
-	// see db.EphemeralExecutionMode for why the decision is local and why it is stamped rather than
-	// left.
+	// Ephemeral (Ask Orchicon Quick Work) items get a CONCRETE mode at create instead of inheriting.
 	if w.Ephemeral && w.ExecutionMode == nil {
 		m := EphemeralExecutionMode()
 		w.ExecutionMode = &m
@@ -223,11 +221,8 @@ type ListWorkItemsFilter struct {
 	SortOrder string  // "asc" or "desc" (default "asc")
 	PageSize  int
 	AfterID   string
-	// IncludeArchived selects which archive partition to return:
-	//   false (default) → ONLY active items (archived_at IS NULL) — every
-	//     normal view (board/tree/list/sequence/workflows/counts).
-	//   true → ONLY archived items (archived_at IS NOT NULL) — the dedicated
-	//     archive view.
+	// IncludeArchived selects which archive partition to return: false (default) → ONLY active items
+	// (archived_at IS NULL) — every normal view (board/tree/list/sequence/workflows/counts).
 	IncludeArchived bool
 	// IdeaScope scopes the idea-state split (feature 4.1): ""/"exclude" = exclude idea-state items from
 	// the normal list; "only" = Idea Cloud view (status='idea', provenance carried).

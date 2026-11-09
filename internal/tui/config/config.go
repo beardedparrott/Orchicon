@@ -138,8 +138,7 @@ func Save(path string, cfg *Config) error {
 	}
 	tmpName := tmp.Name()
 	// A no-op after a successful rename (the source is gone) and the cleanup for every error path
-	// below, so a failed save cannot leave credential-bearing droppings in the operator's config
-	// directory.
+	// below.
 	defer func() { _ = os.Remove(tmpName) }()
 	// CreateTemp already uses 0600, and this is stated anyway: these are the perms the
 	// file's own contract depends on, so they are not to be inherited from a helper.
@@ -193,20 +192,8 @@ func PreserveUnreadable(path string) (string, error) {
 // active profile from the file.
 func Resolve(cfg *Config) *Profile { return ResolveNamed(cfg, "") }
 
-// ResolveNamed is Resolve with an EXPLICIT profile selection (ORCHICON_PROFILE, or the
-// --profile flag), which is what makes more than one orch process possible at once.
-// name is trimmed; empty means "no explicit selection", in which case ORCHICON_PROFILE
-// is consulted and then the file's `active` is used, exactly as before.
-//
-// PRECEDENCE, and the one deliberate difference from the URL/token overrides:
-//
-//   - No selection + ORCHICON_URL  → the EPHEMERAL "env" profile, never persisted. This
-//     is the ad-hoc "just point me at this host" form and it is unchanged.
-//   - A selection + ORCHICON_URL   → the NAMED profile's credentials against the URL the
-//     environment asked for (a tunnel, a remote host, a moved port). Stated because it is
-//     the only combination that mixes the two, and it is the useful reading: the
-//     credential identifies WHO, the URL says WHERE.
-//   - A selection + no ORCHICON_URL → that profile, verbatim.
+// ResolveNamed is Resolve with an EXPLICIT profile selection (ORCHICON_PROFILE, or the --profile
+// flag), which is what makes more than one orch process possible at once.
 func ResolveNamed(cfg *Config, name string) *Profile {
 	name = strings.TrimSpace(name)
 	if name == "" {

@@ -1,29 +1,6 @@
 package main
 
 // tracked_symlink_test.go — the repo must never TRACK a symlink that points outside itself.
-//
-// THE DEFECT THIS EXISTS FOR. f109d2235 (PR #820) committed `frontend/node_modules` as a git symlink whose
-// content was an ABSOLUTE PATH on the author's machine:
-//
-//     <repo>/frontend/node_modules
-//
-// `.gitignore` said `node_modules/` — a trailing slash matches a DIRECTORY only, so a SYMLINK named
-// node_modules was not ignored and `git add -A` swept it in. The consequences, in order of how they were
-// noticed:
-//
-//   - on the author's machine the link pointed AT ITSELF, so every path under it failed with ELOOP,
-//     `tsc -b` died and `make rebuild-dev` reported nothing but
-//         make[2]: *** [Makefile:707: fe-build] Error 216
-//   - on ANY OTHER machine it pointed at a directory that does not exist — so a fresh clone could not
-//     build the frontend at all, and the fix (delete it, `npm ci`) was nowhere in the output.
-//
-// WHY THIS IS ASSERTED RATHER THAN REMEMBERED: `git add -A` in a worktree is exactly how it happened, and it
-// will happen again the moment another ignored-by-pattern-only path gains a symlink. The check is cheap and
-// it names the file.
-//
-// A LEGITIMATE tracked symlink is not forbidden outright — a relative link inside the repo (a test fixture,
-// say) is harmless. What is forbidden is one whose target is ABSOLUTE or escapes the repo, because those are
-// machine-specific by construction: they cannot mean the same thing on two machines.
 
 import (
 	"os/exec"

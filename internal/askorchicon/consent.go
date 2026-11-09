@@ -1,28 +1,6 @@
 package askorchicon
 
 // consent.go — the consent core for an Ask Orchicon turn.
-//
-// opencode raises a `permission.asked` bus event for every write/edit/bash a
-// turn performs under the interactive profile. Before this file, the drain
-// loop answered every ask with a hardcoded "once" (the `--auto` equivalent) and
-// threw the event's detail away, so there was nothing to show a user and no way
-// to answer "once for this directory". This file supplies the three missing
-// pieces:
-//
-//   - a TYPED extraction of the ask (tool + target paths / command) from the
-//     raw opencode property vocabulary (extractAskAction);
-//   - the DECISION PATH below the never-allow binary class, delegated to
-//     internal/permpolicy.Store.Decide (never restated here);
-//   - a pending-ask registry (awaiting a human reply) and an in-memory,
-//     directory-keyed, per-conversation session GRANT store.
-//
-// SETTLED DECISION (do not "fix" this into a second source of truth): the value
-// we POST to the serve is ALWAYS `once` or `reject`. The SESSION decision
-// ("allow for this directory") lives in OUR grant store, keyed by the target's
-// directory and scoped to the conversation. That keeps the grant state
-// authoritative in one place, lets the persistent deny/accept policy be
-// consulted first, and is robust across serve builds that may not support a
-// session-scoped response value.
 
 import (
 	"context"
@@ -389,15 +367,8 @@ func shellGlobMatch(pat, s string) bool {
 // strconvQuote quotes a pattern for a human-readable refusal.
 func strconvQuote(s string) string { return "\"" + s + "\"" }
 
-// resolveAskKey computes the grant/deny KEY (C4/C5) for an action against the
-// resolved scope directory:
-//
-//   - a file write/edit keys on the TARGET's directory (Dir of the absolute
-//     target); a multi-target batch_write keys on the FIRST target's directory
-//     (documented decision: a second directory in the batch asks again, rather
-//     than computing a common ancestor that would over-grant).
-//   - bash keys on the cwd's directory (scope.Dir): a session grant for that
-//     directory is the blanket escape for commands run there.
+// resolveAskKey computes the grant/deny KEY (C4/C5) for an action against the resolved scope
+// directory:
 func resolveAskKey(a askAction, dir string) string {
 	abs := absAskTarget(a, dir)
 	if abs == "" {
@@ -452,39 +423,8 @@ func absAskTarget(a askAction, dir string) string {
 	return t
 }
 
-// commandPaths extracts the filesystem paths a shell command NAMES as arguments.
-//
-// DELIBERATELY MODEST, AND HONEST ABOUT IT. It finds LITERAL absolute paths — `/etc/x`,
-// `--flag=/etc/x`, `~/x` — and nothing more. A path built at runtime (`$(cat cfg)`, a
-// variable, a script's own logic) is invisible to it, so this RAISES the bar rather than
-// guaranteeing containment, and the operator was told exactly that when they chose it. It
-// is worth having because the case that prompted it (`cp ~/a /etc/b`) is a literal path in
-// the text.
-//
-// WHAT IT MUST NOT DO IS INVENT PATHS, because an invented path is an ask no session grant
-// can answer — and that is exactly what it did. The operator granted the project directory
-// again and again and was asked again every time, because an awk program's REGEX was read
-// as a path: `/^func` became a consent target whose grant key is
-// filepath.Dir("/^func") = "/", which no grant can cover, so the ask repeated forever. The
-// ledger of that session shows every `awk`/`sed` command asking, each answered with "never
-// ask again", each asking again. Three rules keep invention out:
-//
-//  1. QUOTED TOKENS ARE DATA AND MUST LOOK LIKE PATHS. A quoted span is a program, a regex
-//     or a literal, not an argument, so `'/^func /'` and `'/return x/'` are rejected on
-//     SHAPE — two path segments or a home prefix, no metacharacter. Unquoted tokens keep
-//     the original permissive rule: they are arguments, and `cp ~/a /etc/b` is the case this
-//     function exists for.
-//  2. A REGEX/GLOB METACHARACTER DISQUALIFIES A TOKEN outright, quoted or not. A token
-//     containing any of `^ + ! * , ? [ ] { } ( ) |` or a backslash is a pattern, not a
-//     target we could judge.
-//  3. HEREDOC BODIES ARE FILE CONTENT, NOT ARGUMENTS. Everything between `<<'EOF'` and its
-//     terminator is text about to be WRITTEN, so a path in it is not a path this command
-//     touches — and reading them meant that writing a test file whose content mentioned
-//     /tmp raised an ask about /tmp. The heredoc operator, delimiter and the rest of the
-//     opening line are KEPT, so the redirect target itself is still judged.
-//
-// Relative paths are intentionally NOT extracted: they resolve against the cwd, which is
-// already the first judged target, so listing them would judge the same directory twice.
+// WHAT IT MUST NOT DO IS INVENT PATHS, because an invented path is an ask no session grant can
+// answer — and that is exactly what it did.
 func commandPaths(cmd string) []string {
 	if strings.TrimSpace(cmd) == "" {
 		return nil
@@ -604,21 +544,7 @@ func harmlessDevicePath(tok string) bool {
 	return false
 }
 
-// procIntrospectionPath reports whether tok reads KERNEL METADATA about a process —
-// `/proc/self/status`, `/proc/1234/exe`, `/proc/1234/maps` — rather than naming a file the
-// command could act on. Reading a process's executable, its maps or its command line is
-// introspection, and asking the operator for consent to LOOK is noise.
-//
-// DELIBERATELY NARROW, and the exclusions matter more than the inclusions:
-//
-//   - `/proc/sys/**` is WRITABLE kernel configuration and is never skipped.
-//   - `/proc/<pid>/mem` is a direct write into another process's address space and is never
-//     skipped.
-//   - `/proc/<pid>/fd/**` is never skipped either, because a redirect THROUGH an fd
-//     (`echo x > /proc/1234/fd/5`) writes into whatever that descriptor points at — and
-//     commandPaths cannot tell a read from a write, so it must assume the dangerous case.
-//
-// The remaining members are read-only metadata: there is no write-through and no unlink.
+// procIntrospectionPath reports whether tok reads KERNEL METADATA about a process.
 func procIntrospectionPath(tok string) bool {
 	clean := filepath.Clean(tok)
 	rest, ok := strings.CutPrefix(clean, "/proc/")
@@ -1459,18 +1385,8 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 	// "asked about" would be the worst outcome.
 	protRoots := protectedpath.Roots("")
 	protScope := protectedpath.ScopeRoots(scope.Dir, ct.svc.grants.Roots(ct.convID))
-	//
 	// GATED ON THE COMMAND ACTUALLY INVOKING A BINARY THE SHIM JUDGES, because this layer judges
-	// MENTIONS and the shim judges OPERATIONS. For a bash command the targets include every literal
-	// path the TEXT names — that is the point of the extraction, and it is what catches
-	// `cp ~/a /etc/b` — so a command that merely mentions a protected path was refused as though it
-	// were deleting it: `HOME=/home/me somecmd` reads as a target that contains the home directory.
-	// The shim would never look at that command (it intercepts rm/mv/cp/... and nothing else), so
-	// refusing it here was over-refusal and a false statement about the rule.
-	//
-	// The SHIM REMAINS THE ENFORCEMENT: it intercepts an invocation by PATH LOOKUP, so it covers
-	// forms the text does not literally contain. This layer's job is to refuse EARLY rather than offer
-	// a card for something no approval could permit.
+	// MENTIONS and the shim judges OPERATIONS.
 	if !isBashAsk(a.Tool) || commandInvokesScopedBinary(a.Command) {
 		for _, t := range targets {
 			if root := protectedpath.DestroyedBy(t.abstarget, protRoots, protScope); root != "" {
@@ -1518,28 +1434,8 @@ func (ct *consentTurn) decide(ctx context.Context, sid string, evt scheduler.Ses
 		ct.record(a, verdict.String(), "")
 		return "once", nil, ""
 	}
-	// FULLSEND: the operator has waived the PROMPT for this conversation, so an action
-	// that would have raised a card proceeds instead.
-	//
-	// WHERE THIS SITS IS THE WHOLE DESIGN, so it is worth being precise about what has
-	// already happened by the time control reaches here:
-	//
-	//   - binaryClassRefusal ran FIRST (the top of this function), so sudo / dd / mkfs*
-	//     are already refused and fullsend cannot reach them. That class is not a
-	//     permission, so there is no permission to waive.
-	//   - the policy has been consulted for EVERY target and a DENY verdict has already
-	//     returned `reject` above. A deny is a decision the policy MADE — no card is
-	//     raised for it — so again there is nothing here to waive. Fullsend does not
-	//     open ~/.ssh, and a mode that did would be one whose name promises more than it
-	//     does in the direction that matters.
-	//   - a malformed policy has already failed closed.
-	//
-	// So what is left to waive is exactly the ASK. It covers an UNRESOLVED action too,
-	// deliberately: an ask we could not describe is still an ask, and fullsend is the
-	// operator saying "stop asking me" — not "ask me only when you can name the target".
-	//
-	// The transcript records `fullsend`, so scrolling back shows WHY no card appeared
-	// rather than a silently missing decision.
+	// FULLSEND: the operator has waived the PROMPT for this conversation, so an action that would have
+	// raised a card proceeds instead.
 	if ct.svc.fullsend.Enabled(ct.convID) {
 		ct.record(a, "fullsend", "")
 		return "once", nil, ""

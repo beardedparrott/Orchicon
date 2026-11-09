@@ -127,31 +127,8 @@ func Resolve(p, projectDir string) string {
 	return filepath.Clean(resolved)
 }
 
-// ResolveWithin resolves a caller-supplied path against a project root,
-// rejecting path traversal (..), absolute paths outside the root, and
-// symlink escapes. It returns the cleaned absolute path for OS calls.
-//
-// Defense in depth, in order:
-//  1. The caller's path is trimmed, must be non-empty, and is bounded to
-//     MaxFilePathLen.
-//  2. The root itself is normalized through filepath.Abs + Clean + a full
-//     EvalSymlinks pass (the project_dir may live under a symlinked home),
-//     yielding the evaluated root used for the symlink re-check.
-//  3. The target is built lexically: absolute paths are cleaned as-is,
-//     relative paths are joined to the root. Both are then containment-
-//     checked against the root — this rejects `..`, `..\`-style escapes,
-//     and absolute paths that leave the root.
-//  4. The target is fully evaluated (EvalSymlinks) and re-checked against
-//     the evaluated root: a symlink inside the root that resolves outside
-//     is rejected; one that stays inside is allowed (legit generated
-//     links). A target that does not exist — or is a broken symlink —
-//     keeps its clean lexical form so the downstream operation reports
-//     the not-found itself.
-//
-// The returned path is the original cleaned target (not the evaluated
-// one), so error messages and tool responses stay in operator-facing
-// terms. Callers must still use Lstat for listing (never descend into
-// symlinked directories) — see the list tool.
+// ResolveWithin resolves a caller-supplied path against a project root, rejecting path traversal
+// (..), absolute paths outside the root, and symlink escapes.
 func ResolveWithin(root, p string) (string, error) {
 	p = strings.TrimSpace(p)
 	if p == "" {
@@ -238,22 +215,7 @@ func WalkDir(root string, maxEntries int) ([]string, error) {
 	return out, nil
 }
 
-// Render builds the prompt section for a list of context paths. rootNote
-// is the section heading (e.g. "# Project context" or "# Work item
-// context"); paths may contain files AND directories.
-//
-// Per path:
-//   - Regular file: the contents are inlined (capped at maxInlineFileBytes,
-//     with a truncation note beyond it).
-//   - Directory: a "directory context" block lists every file inside
-//     (WalkDir, capped at MaxContextFiles) and explicitly instructs the
-//     worker to read them and NOT to open the directory as a file
-//     ("not a file").
-//   - Missing / unreadable / neither: a non-fatal "could not read" note.
-//
-// Returns the rendered section (which may be empty when every path was
-// dropped). Rendering never hard-fails the prompt build — errors in a
-// single path degrade to a note.
+// Render builds the prompt section for a list of context paths.
 func Render(rootNote string, paths []string, projectDir string) string {
 	var sb strings.Builder
 	if len(paths) == 0 {
@@ -311,25 +273,7 @@ const (
 	ManifestPolicySkill
 )
 
-// RenderManifest is the context-by-reference renderer. Instead of inlining
-// every file's full contents into the prompt (each byte is re-sent on every
-// tool call of the run), it produces a compact MANIFEST of the available
-// context:
-//
-//   - Small regular files (<= ManifestInlineMaxBytes) are inlined so a
-//     worker can never be blind to a core file.
-//   - Larger files become a manifest entry: `path (N bytes)` with an
-//     instruction to READ ON DEMAND only what the task needs.
-//   - Directories become a bounded listing of their files with sizes, with
-//     the same "read what you need" instruction (no more "read EVERY file").
-//
-// The renderer is agnostic — it works for any project shape (a Go repo, an
-// automation workflow, a research folder) because it only inspects real
-// paths/sizes via WalkDir/Stat. The cumulative budget still applies so a huge
-// selection cannot blow the prompt.
-//
-// Returns the rendered section (possibly empty). Errors in a single path
-// degrade to a note; rendering never fails the prompt build.
+// RenderManifest is the context-by-reference renderer.
 func RenderManifest(rootNote string, paths []string, projectDir string) string {
 	return RenderManifestWithPolicy(rootNote, paths, projectDir, ManifestPolicyContext)
 }

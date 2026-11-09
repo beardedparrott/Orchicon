@@ -1,16 +1,6 @@
 package tui
 
 // msgmenu_test.go — THE MENU'S DECISION PATH, INCLUDING THE TWO CONFIRMATIONS.
-//
-// The operator asked for "right click for the TUI to bring up a popup menu to choose your option", with the two
-// verbs they named. This is the only DESTRUCTIVE gesture in the transcript, so what matters is not that the menu
-// renders but that:
-//
-//   - the two entries send the two DIFFERENT delete modes (an inverted mapping would delete a conversation's
-//     tail when the operator asked to forget one message);
-//   - nothing happens on the first Enter (a right-click plus a stray Enter must not destroy history);
-//   - Escape backs out of an armed action instead of closing the menu, and only closes once unarmed;
-//   - the keys are swallowed, so a character aimed at the menu never reaches the composer.
 
 import (
 	"strings"

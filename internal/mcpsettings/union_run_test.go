@@ -218,8 +218,7 @@ func withTenant(ctx context.Context, tenantID string) context.Context {
 }
 
 // TestResolveRunUnionDedupesASharedInlineID pins the union's DEDUP contract for inline
-// (worker-owned) definitions: an inline definition has no mcp_servers row, so its
-// ScopedServer.EntryID is "".
+// (worker-owned) definitions.
 func TestResolveRunUnionDedupesASharedInlineID(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {

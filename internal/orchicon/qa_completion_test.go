@@ -93,8 +93,7 @@ func TestQADecisionGateFailsAfterProbeBudget(t *testing.T) {
 		t.Errorf("errMsg = %q, want missing_decision_signal", results[0].errMsg)
 	}
 	// 4 provider calls: tool round (arms the gate) + markerless settle (fires probe 1) + probe-1's
-	// empty reply + the re-queued probe-1's second empty reply → the deferral bound (2) fails the
-	// session.
+	// empty reply + the re-queued probe-1's second empty reply → the deferral bound (2) fails.
 	if got := prov.requestCount(); got != 4 {
 		t.Errorf("StreamTurn calls = %d, want 4 (tool round + settle + 2 empty probe replies)", got)
 	}

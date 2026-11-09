@@ -31,9 +31,7 @@ import (
 	"testing"
 )
 
-// benchmarkConversation builds a conversation of n items shaped like a real one: the operator's
-// messages interleaved with model replies that carry the things that actually cost money to lay
-// out.
+// benchmarkConversation builds a conversation of n items shaped like a real one.
 func benchmarkConversation(n int) []ChatItem {
 	items := make([]ChatItem, 0, n)
 	prose := strings.Repeat("Here is what I found in the reconciler: the row is written, and then the binding is dereferenced without a nil check. ", 4)

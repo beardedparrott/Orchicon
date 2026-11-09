@@ -135,14 +135,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer cancel()
 
-	// MIGRATE HERE TOO. This path — `orchicon` with no subcommand — constructed the server
-	// directly and never applied the embedded migrations, so a plane started by hand came up
-	// against an EMPTY DATABASE: every reconciler failed with
-	//     relation "work_items" does not exist (SQLSTATE 42P01)
-	// and the web UI rejected every login because no users table existed.
-	//
-	// `serve` had always migrated. Two ways to start the same plane is how they drifted, so both
-	// now call the one function.
+	// MIGRATE HERE TOO.
 	if !migrateOnBoot(ctx, cfg, log) {
 		os.Exit(1)
 	}
@@ -423,33 +416,8 @@ func mcpLogger(w io.Writer) *slog.Logger {
 }
 
 func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
-	// STDIO TRANSPORT MEANS STDOUT IS THE PROTOCOL, NOT A LOG SINK.
-	//
-	// REPORTED as "ask cards are not rendering in both windows and Linux ... the model claims it
-	// sent and rendered a card but no card popped up", with the operator's own diagnosis: the
-	// orchicon MCP server had a failure inside opencode. It did, and this is why:
-	//
-	//   level=WARN message="mcp transport error" server=orchicon
-	//   error="... unrecognized_keys ... keys: [\"time\",\"level\",\"msg\"] ...
-	//           jsonrpc: Invalid input: expected \"2.0\" ..."
-	//
-	// That is OUR JSON LOG LINE being parsed as a JSON-RPC message. The process-wide logger is built
-	// with slog.NewJSONHandler(os.Stdout, ...) (see main), which is correct for every other
-	// subcommand — but `orchicon mcp` speaks JSON-RPC over stdin/stdout, so the first record it
-	// writes ("mcp server started (stdio transport)") lands in the middle of the protocol stream.
-	// opencode's validator rejects it, reports a transport error for the whole server, and the
-	// tool surface is unreliable — which is exactly the shape of the report: the model BELIEVES it
-	// called orchicon_ask_user (the tool result even says a card was shown) while no card can ever
-	// be raised, because the assistant's tool calls are not reaching this sidecar.
-	//
-	// IT AFFECTED BOTH PLATFORMS AND BOTH CARD KINDS because the corrupted channel is the ONLY way
-	// this sidecar is reached: clarifying questions and consent asks both arrive as tool calls, and
-	// neither can arrive over a stream opencode has declared invalid.
-	//
-	// SO LOGGING GOES TO STDERR HERE, and nowhere else in the process. stderr is what a stdio MCP
-	// child is expected to use: opencode captures it for its own logs and never parses it. The OTel
-	// handler is dropped as well — this process is a short-lived sidecar of somebody else's serve,
-	// so it has no business emitting telemetry of its own.
+	// IT AFFECTED BOTH PLATFORMS AND BOTH CARD KINDS because the corrupted channel is the ONLY way this
+	// sidecar is reached.
 	log = mcpStderrLogger()
 	slog.SetDefault(log)
 

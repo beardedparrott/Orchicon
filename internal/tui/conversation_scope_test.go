@@ -68,9 +68,7 @@ func TestSkillsClearIsALegitimateWrite(t *testing.T) {
 	}
 }
 
-// The conversation commands GUARD on an open conversation, the same idiom /fullsend uses: a
-// conversation-scoped write with no conversation is refused, never silently applied to something
-// else.
+// The conversation commands GUARD on an open conversation.
 func TestConversationScopeCommandsNeedAnOpenConversation(t *testing.T) {
 	m, _ := newAskApp(t)
 	m.chatConvID = ""

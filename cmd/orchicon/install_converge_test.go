@@ -8,20 +8,6 @@ import (
 )
 
 // install_converge_test.go — INSTALLING OVER AN EXISTING INSTANCE MUST CONVERGE IT.
-//
-// The report: "the installer allowed me to pick the instance and I chose dev, then it ran through the
-// installer and said it was complete but no auth works and the previous dev container has been up for two
-// hours."
-//
-// Two branches were responsible, and both asked the WRONG QUESTION:
-//
-//   - ensureInstallContainer asked "is a container running with the right RESIDENCY?" and stopped there, so
-//     a container kept the image it was created from while the installer pulled and reported a newer one.
-//   - startHostPlane asked "does something answer /healthz?" and stopped there, so a plane kept serving from
-//     a binary the install had already replaced — the process is still alive (the inode survives) while the
-//     path it was started from has been rewritten underneath it.
-//
-// These pin the question each should have asked: IS IT RUNNING WHAT I JUST INSTALLED.
 
 // TestServingPlanePIDReadsTheInstancePIDFile — the only truthful source for "which process is the plane".
 // A version endpoint would answer with what the OLD process believes about itself.
@@ -77,8 +63,7 @@ func TestPlaneDriftIsUnknownWithoutAPIDFile(t *testing.T) {
 }
 
 // TestStopHostPlaneNeedsTheInstanceStateDir — the installer previously had NO way to stop a host
-// plane (`serve --stop` appeared nowhere in it), which is why a stale plane could never be
-// corrected.
+// plane (`serve --stop` appeared nowhere in it).
 func TestStopHostPlanePassesTheInstanceStateDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

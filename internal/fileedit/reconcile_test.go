@@ -34,10 +34,7 @@ func (f *fakeReconcileStore) KnownPaths(ctx context.Context, tenantID, ownerKind
 	return f.known, nil
 }
 
-// TestReconcileGitConfirmedAndCorrective covers the two AC4 behaviours:
-//  1. a ledger-known path changed in git → marked git_confirmed;
-//  2. a git-changed path the ledger never saw → a corrective (reconcile:git)
-//     entry carrying git's final diff.
+// TestReconcileGitConfirmedAndCorrective covers the two AC4 behaviours: 1.
 func TestReconcileGitConfirmedAndCorrective(t *testing.T) {
 	dir := gitRepo(t)
 	ctx := context.Background()

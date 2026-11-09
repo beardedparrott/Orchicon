@@ -71,8 +71,7 @@ func TestUnionIsSortedRegardlessOfInputOrder(t *testing.T) {
 }
 
 // TestRenderManifestByteStable is the AC4 assertion: two renders of the SAME selection are
-// BYTE-IDENTICAL, including a directory-backed selection (whose entry order comes from a filesystem
-// walk).
+// BYTE-IDENTICAL.
 func TestRenderManifestByteStable(t *testing.T) {
 	root := t.TempDir()
 	// A directory with enough entries that a filesystem-dependent walk order

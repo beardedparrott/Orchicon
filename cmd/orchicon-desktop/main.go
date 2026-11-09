@@ -178,8 +178,7 @@ func main() {
 		},
 		Mac: &mac.Options{
 			// The standard native title bar, deliberately: with a hidden-inset title bar the content would
-			// start under the traffic lights and the shell would have to draw a ~28px inset the SPA knows
-			// nothing.
+			// start under the traffic lights and the shell would have to draw a ~28px inset the SPA knows.
 			TitleBar:   mac.TitleBarDefault(),
 			Appearance: mac.DefaultAppearance, // follow the OS
 		},

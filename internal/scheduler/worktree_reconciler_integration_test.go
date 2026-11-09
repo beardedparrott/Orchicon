@@ -441,8 +441,7 @@ func TestWorktreeGitDetectionCached(t *testing.T) {
 }
 
 // TestWorktreeNonRepoProjectCachesFalse verifies a non-repo project's run proceeds in place
-// (skipped) AND the cache records git_work_tree=false so the loop does not re-shell-out to git on
-// every.
+// (skipped) AND the cache records git_work_tree=false so the loop does not re-shell-out to git.
 func TestWorktreeNonRepoProjectCachesFalse(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -701,9 +700,7 @@ func setRunStatus(t *testing.T, env *worktreeTestEnv, status string) {
 	}
 }
 
-// setRunPrState writes the authoritative pr_state into the run's run_context JSONB, the way the
-// per-branch DevOps worker does after a successful merge (`gh pr merge --squash` +
-// pr_state="merged").
+// setRunPrState writes the authoritative pr_state into the run's run_context JSONB.
 func setRunPrState(t *testing.T, env *worktreeTestEnv, state string) {
 	t.Helper()
 	ctx := context.Background()
@@ -1704,9 +1701,7 @@ func TestWorktreeSweepOrphanBranchOnCompletedRun(t *testing.T) {
 	}
 }
 
-// TestWorktreeSweepSkipsFailedRunBranch pins the success-only sweep guard: a FAILED run's
-// pruned-but-recorded branch must NOT be swept (a retry re-attaches to it — carry-over of partial
-// work).
+// TestWorktreeSweepSkipsFailedRunBranch pins the success-only sweep guard.
 func TestWorktreeSweepSkipsFailedRunBranch(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -2041,9 +2036,7 @@ func TestWorktreeSweepReclaimsRunWithNoWorkItem(t *testing.T) {
 	}
 }
 
-// TestWorktreeNoneStrategyDetachedProvisionAndPrune is acceptance criterion #3: a `none`
-// (ephemeral) run's worktree is provisioned DETACHED — no named branch is created
-// (worktree_branch="").
+// TestWorktreeNoneStrategyDetachedProvisionAndPrune is acceptance criterion #3.
 func TestWorktreeNoneStrategyDetachedProvisionAndPrune(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()

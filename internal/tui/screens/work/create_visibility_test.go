@@ -34,17 +34,8 @@ func createPlane(t *testing.T) *Model {
 	return m
 }
 
-// The operator: "New work items don't seem to be actually saving and creating
-// them." The create DID work; two things hid it:
-//
-//  1. the screen's notice is appended to the body and then CUT OFF by FitLines
-//     whenever the panes fill the height, so success reported nothing visible;
-//  2. the cursor stayed on the previously selected row (selection is preserved
-//     across a reload now), so a new item below the fold changed nothing on
-//     screen.
-//
-// So: every outcome goes to the composer's dock strip, and a created row is
-// FOCUSED as soon as it appears.
+// The operator: "New work items don't seem to be actually saving and creating them." The create DID
+// work; two things hid it:
 func TestCreateIsVisibleAndFocusesTheNewItem(t *testing.T) {
 	m := createPlane(t)
 	shell := &fakeShell{}

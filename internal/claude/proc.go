@@ -17,17 +17,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// ProcSession is one live claude subprocess. Stdout is line-framed JSONL
-// (one stream-json document per line). Two impls exist:
-//
-//   - localProc — a host os/exec child (local execution mode + the
-//     env-gated live smoke test).
-//   - containerProc — a duplex streaming child inside the run's runtime
-//     container, driven over runtime.Client.Stdio.
-//
-// The session loop speaks only to this interface, so the core acceptance is
-// proven against a fake ProcSession with canned fixtures and zero real
-// Anthropic spend.
+// ProcSession is one live claude subprocess.
 type ProcSession interface {
 	// WriteTurn appends one JSON object + "\n" onto the child's stdin. The
 	// process stays alive across calls (long-lived session).

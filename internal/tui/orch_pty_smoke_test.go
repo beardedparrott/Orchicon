@@ -1,31 +1,5 @@
-// Package tui — orch_pty_smoke_test.go — the REAL-PTY smoke harness
-// (Phase 2a foundation for the Phase-2c verification gate).
-//
-// Rendered-string tests (shell_acceptance_test.go and friends) prove the
-// layout MATH, but they can never prove what an operator's terminal
-// actually shows: this harness launches the REAL `bin/orch` binary inside
-// a real pty at two sizes (80×24, 120×40) and asserts, from the live
-// process's byte stream:
-//
-//  1. LAUNCH — the program starts and paints (alt-screen enter + frames).
-//  2. FULL-SCREEN TAKEOVER — the live binary enters alt-screen and paints
-//     full-viewport frames (the shell's fillView/normalizeBlock cover the
-//     viewport; the render tests assert every row/col is covered, this
-//     test asserts the live process actually does it).
-//  3. COMPOSER FOCUSED — the composer prompt (❯) and its placeholder are
-//     on screen; typing characters shows them in the composer line
-//     immediately (no ctrl+g needed — operator finding 3).
-//
-// HARNESS DESIGN (recovered-session bug fix): the pty has exactly ONE
-// reader goroutine for the whole session lifetime. The prior design spun
-// up a NEW reader per wait phase; pty reads BLOCK (deadlines don't apply
-// to tty fds on all kernels), so dead readers kept racing live ones for
-// bytes — later phases saw 0-byte reads (the echo assertion starved) or
-// had bytes stolen mid-assertion. All reads now accumulate into one
-// mutex-guarded buffer; a wait phase just sleeps and snapshots it. The
-// reader also answers termenv's startup capability queries (OSC 11
-// background color + DSR 6n cursor position) — a real terminal would
-// reply; without a reply orch blocks before bubbletea ever paints.
+// Package tui — orch_pty_smoke_test.go — the REAL-PTY smoke harness (Phase 2a foundation for the
+// Phase-2c verification gate).
 package tui
 
 import (

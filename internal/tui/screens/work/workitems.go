@@ -1,25 +1,6 @@
 package work
 
-// workitems.go — Work Items full CRUD + the collection semantics the
-// platform contract requires:
-//
-//   - CreateWorkItem (title / kind / parent / description / acceptance
-//     criteria / priority / budgets / context window / workflow / runtime
-//     image / execution mode / context files / auto-start),
-//   - UpdateWorkItem for every mutable field, including status + priority,
-//     the workflow binding, the execution-mode OVERRIDE (set or cleared — see
-//     itemExecutionModeInherit), the schedule (scheduled_start_at) and
-//     auto_start_workflow,
-//   - AssignWorker / UnassignWorker,
-//   - ReorderWorkItems (the ONLY mutation of sequence order),
-//   - HardDeleteWorkItem (permanent — the GUI's Delete, which the TUI's ctrl+x
-//     now performs; DeleteWorkItem's soft delete is a STATUS CHANGE and lives in
-//     the status editor), ArchiveWorkItem / RestoreWorkItem — all Confirm-gated.
-//
-// Switching kind re-resolves the hierarchy and epic/feature are
-// non-schedulable (worker/schedule cleared) — both are enforced
-// server-side; the screen offers kind on create and edit and surfaces the
-// server's answer.
+// workitems.go — Work Items full CRUD + the collection semantics the platform contract requires:
 
 import (
 	"context"
@@ -353,14 +334,7 @@ func hasOption(opts []kit2.Option, v string) bool {
 	return false
 }
 
-// validateHierarchy mirrors the server's parent rules locally
-// (internal/workitem/validate.go), so an illegal combination is caught in the
-// form with a clear message instead of coming back as a rejected write:
-//   - a parentless item must be an EPIC (only epics may be top-level),
-//   - a parent must live in the SAME project as its child,
-//   - a child must be strictly DEEPER than its parent — which means an epic may
-//     parent a feature, a task or a subtask; a FEATURE may parent a task or a
-//     subtask; and a TASK may parent a subtask.
+// validateHierarchy mirrors the server's parent rules locally (internal/workitem/validate.go).
 func (m *Model) validateHierarchy(projectID, parentID, kind string) error {
 	depth := map[string]int{"epic": 1, "feature": 2, "task": 3, "subtask": 4}
 	if parentID == "" {
@@ -453,25 +427,8 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 		kit2.FieldSpec{Name: "context_files", Label: "Context files", Kind: kit2.KText, Placeholder: "/abs/path/a.go,/abs/dir"},
 		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: "false"},
 	)
-	// Derived-field rules keep the form on legal ground:
-	//
-	//  1. Changing the PROJECT re-scopes the parent picker to that project and
-	//     drops a parent that no longer belongs (the server requires the same
-	//     project).
-	//  2. Choosing a PARENT corrects the kind ONLY when the pairing is illegal.
-	//     Any strictly deeper kind is legal, so a deliberate choice survives —
-	//     an epic may parent a feature, a task or a subtask; a FEATURE may
-	//     parent a task or a subtask; a TASK may parent a subtask.
-	//
-	// THERE IS NO AUTO-START COUPLING, deliberately. Emptying the workflow must NOT clear
-	// auto-start, because a workflow-less item is exactly how a sequential workflow is kicked
-	// off: the parent carries no binding of its own and its children run in chain order. The
-	// operator: "Workflows need to be empty for a sequential workflow to kick off. We just need
-	// to remove that validation."
-	//
-	// Auto-start with no workflow is legal at every status the operator can save (the server
-	// only gates on ENTERING ready/assigned/scheduled/running, and it exempts a sequence parent
-	// entirely), so the client must not refuse it, warn about it, or clear it.
+	// Derived-field rules keep the form on legal ground: Choosing a PARENT corrects the kind ONLY when
+	// the pairing is illegal.
 	f.OnChange = func(name, value string) {
 		switch name {
 		case "project":

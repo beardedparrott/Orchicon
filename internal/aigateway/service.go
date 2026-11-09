@@ -1,15 +1,5 @@
-// Package aigateway implements the AIGatewayService Connect handler
-// (docs/07_API_Specification.md §3.10, docs/01 §2: AI Gateway embedded
-// in the control plane binary for v0.1) and the usage recording path.
-//
-// Usage is dual-written (docs/08 §1, §5.2):
-//   - Postgres usage_records table is the source of truth.
-//   - OTel metrics (orchicon_tokens_consumed, orchicon_cost_usd) flow
-//     from the producer to the OTel collector to the telemetry
-//     backends for fast telemetry queries.
-//
-// Cost attribution rolls up Tenant → Project → Task → Execution
-// (docs/10 §11 cost explorer).
+// Package aigateway implements the AIGatewayService Connect handler (docs/07_API_Specification.md
+// §3.10.
 package aigateway
 
 import (
@@ -117,8 +107,7 @@ func (s *Service) ListProviders(ctx context.Context, req *connect.Request[apiv1.
 }
 
 // providersForAdapter builds the adapter-scoped provider list from the registry's per-adapter
-// provider names, enriching each with the gateway provider table's display info where the id
-// matches.
+// provider names.
 func (s *Service) providersForAdapter(adapterKind string) []*apiv1.AIProvider {
 	names := s.registry.Providers(adapterKind)
 	byID := make(map[string]*apiv1.AIProvider, len(s.providers))
@@ -508,22 +497,8 @@ func (m *usageMetrics) ensure() {
 	})
 }
 
-// emit records a usage sample to the OTel metrics pipeline (the
-// VictoriaMetrics half of the dual-write). Best-effort: a metric error is
-// logged and never blocks the control flow (docs/08 §8 invariant #5).
-//
-// Since the cache-aware counters ADR (Option A), a sample is split into up
-// to four `token_class` buckets rather than one total:
-//   - orchicon_tokens_consumed{token_class=...} += per-bucket tokens, one
-//     Add per non-zero bucket. The four buckets partition TotalTokens, so
-//     sum by (token_class) reproduces the pre-split total exactly.
-//   - orchicon_cost_usd{token_class=...} += a pricing-weighted share of the
-//     single provider-reported CostUSD, one Add per non-zero share. Shares
-//     are renormalized to sum to CostUSD, so total cost is unchanged.
-//
-// modelCost, when provided, supplies real catalog pricing (USD per 1M
-// tokens) for the cost split; when omitted, documented default multipliers
-// are used as the fallback. ReasoningTokens is never its own class.
+// emit records a usage sample to the OTel metrics pipeline (the VictoriaMetrics half of the
+// dual-write).
 func (m *usageMetrics) emit(ctx context.Context, r *db.UsageRecordRow, modelCost ...*apiv1.ModelCost) {
 	if m == nil {
 		return

@@ -39,15 +39,7 @@ func engineBinary() string {
 	return "docker"
 }
 
-// RuntimeContainersInUse reports whether this install should assume runtime containers. Order:
-//
-//  1. ORCHICON_RUNTIME_CONTAINERS — an explicit answer (`0|off|no|false|none` = no, anything else = yes).
-//  2. ORCHICON_DOCKER_BRIDGE_IP non-empty — a PINNED bridge is proof of intent: an operator who named the
-//     bridge they want their containers to use is running containers.
-//  3. otherwise, the engine probe.
-//
-// The middle rung is what keeps a pinned-bridge host working with no daemon reachable, and it is why the
-// per-instance bind/URL test stays meaningful when the engine is absent.
+// RuntimeContainersInUse reports whether this install should assume runtime containers.
 func RuntimeContainersInUse() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(runtimeContainersEnv))) {
 	case "0", "off", "no", "false", "none":
@@ -80,8 +72,7 @@ func PlaneBindEnv(ports map[string]int) (bind, url string, err error) {
 }
 
 // The bind and the advertised URL are computed from the SAME bridge IP and the SAME port in ONE
-// place (PlaneBindEnv), so what the plane listens on and what it hands its run containers can
-// never.
+// place (PlaneBindEnv).
 func PlaneEnv(instance string, ports map[string]int, hostDataDir, runtimeSocket string) ([]string, error) {
 	_, url, err := PlaneBindEnv(ports)
 	if err != nil {

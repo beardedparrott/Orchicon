@@ -1,22 +1,6 @@
 package guard
 
 // guard_fullsend_test.go — the SHIM's half of FULLSEND.
-//
-// FULLSEND is the operator's per-conversation waiver of the permission PROMPT. It has
-// TWO enforcement points, and a mode that reached only one of them would refuse what it
-// had just approved: internal/askorchicon decides whether to raise a card, and this shim
-// is what a shell subprocess actually runs under (rm / chmod / chown / mv / cp / ln).
-//
-// These tests pin the boundary of the waiver, which is the part worth being careful
-// about, because the shim cannot ask and therefore cannot recover from being wrong:
-//
-//   - the SANCTIONED SET is waived (a target outside the project, the grants and the
-//     accept list runs);
-//   - the operator's DENY list is NOT waived, in EITHER spelling of home — the deny
-//     check runs before the waiver, and pem_match_either is what makes "~/.x" and
-//     "$HOME/.x" the same target;
-//   - the never-allow binary class is NOT waived. It is a separate case arm that never
-//     enters blocked_path, so no environment value can reach it.
 
 import (
 	"os"

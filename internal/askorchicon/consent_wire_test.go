@@ -1,16 +1,7 @@
 package askorchicon
 
-// consent_wire_test.go — the QA pass over the CLIENT-VISIBLE surface of the
-// consent core, exercised the way a client sees it:
-//
-//   - what the ask card actually carries on the ChatStreamResponse wire (the
-//     AC: "an ask reaches the client carrying the tool name and the target path
-//     (or the command) — never just an opaque id"), asserted after a proto
-//     encode/decode round trip so a missing oneof/field cannot pass;
-//   - the whole reply path against a real turn: an ask raised on the bus →
-//     registered → answered through the ReplyPermissionAsk RPC → the drain
-//     loop wakes and answers the SERVE. Every choice is asserted at the serve
-//     boundary (always `once`/`reject`) and at the grant store.
+// consent_wire_test.go — the QA pass over the CLIENT-VISIBLE surface of the consent core, exercised
+// the way a client sees it:
 
 import (
 	"context"
@@ -127,9 +118,7 @@ func waitForAsk(t *testing.T, s *Service, convID, askID string) {
 	}
 }
 
-// askBusEvents feeds the real two-event shape an MCP/host-suite ask arrives as: the tool part
-// (which carries the call's ARGS) then the permission.asked keyed by that call's id (which carries
-// none.
+// askBusEvents feeds the real two-event shape an MCP/host-suite ask arrives as.
 func mcpAskBusEvents() []opencode.BusEvent {
 	return []opencode.BusEvent{
 		{Type: "message.part.updated", Properties: map[string]any{

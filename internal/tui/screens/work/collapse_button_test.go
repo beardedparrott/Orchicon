@@ -162,9 +162,7 @@ func TestCollapseAllButtonAbsentOnAFlatList(t *testing.T) {
 	}
 }
 
-// addArchive seeds an ARCHIVED work item — one with archived_at set, which is what the plane's
-// archive partition is actually keyed on (the fake's ListWorkItems filters on `ArchivedAt != nil
-// !=.
+// addArchive seeds an ARCHIVED work item — one with archived_at set.
 func (p *fakePlane) addArchive(w *apiv1.WorkItem) *apiv1.WorkItem {
 	w.ArchivedAt = timestamppb.Now()
 	return p.addItem(w)

@@ -5,9 +5,7 @@ import (
 	"fmt"
 )
 
-// BudgetLadder holds the per-tenant execution-budget ladder: the gate ceilings and the
-// per-dimension warn → escalate → final threshold + message triple that drives the unified
-// escalation ladder.
+// BudgetLadder holds the per-tenant execution-budget ladder.
 type BudgetLadder struct {
 	// Gate ceilings.
 	Tokens          *float64 `json:"-"`
@@ -147,8 +145,7 @@ func (r *TenantSettingsRow) BudgetJSON() []byte {
 	// columns), and mergeBudgets layers a worker's override on top.
 	out["compact_tiers"] = []bool{r.Budget.CompactWarnTier, r.Budget.CompactEscalTier, r.Budget.CompactFinalTier}
 	// Compaction + memory policy (D4): the typed tenant_settings columns serialize as
-	// context_compaction / memory objects — the same keys the native session's policyFromSettings and a
-	// worker's.
+	// context_compaction / memory objects.
 	out["context_compaction"] = map[string]any{
 		"enabled":       r.ContextCompactionEnabled,
 		"pressure_frac": r.ContextCompactionPressureFrac,

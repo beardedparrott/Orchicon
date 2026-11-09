@@ -132,8 +132,7 @@ func TestStablePromptPrefixSameImageIdentical(t *testing.T) {
 }
 
 // TestCompositeStablePrefixSharedAcrossWorkers verifies the acceptance criterion for prompt
-// caching: two different workers' composite prompts share a common prefix of at least ~1k tokens
-// (~4.
+// caching.
 func TestCompositeStablePrefixSharedAcrossWorkers(t *testing.T) {
 	ctx := context.Background()
 	// No ProjectID/ContextFiles → buildCompositePrompt never touches the tx
@@ -271,8 +270,7 @@ func TestCompositePromptStepOutputDiscipline(t *testing.T) {
 }
 
 // TestCompositePromptNoEmbeddedFactsBlock verifies the embedded "## Facts learned (this run)"
-// prompt block is gone — the .orchicon/<run>/facts_learned file is now the single source of
-// established.
+// prompt block is gone.
 func TestCompositePromptNoEmbeddedFactsBlock(t *testing.T) {
 	ctx := context.Background()
 	item := db.WorkItemRow{Title: "Facts dedup", Status: "pending", RuntimeImage: "orchicon-dev:latest"}
@@ -333,9 +331,7 @@ func TestCompositePromptGitGuidanceForBareWorker(t *testing.T) {
 	}
 }
 
-// TestCompositePromptGitGuidanceGitBacked verifies the git-backed branch: a run with
-// worktree_status=ready and a recorded branch gets the develop-first discipline block naming that
-// branch.
+// TestCompositePromptGitGuidanceGitBacked verifies the git-backed branch.
 func TestCompositePromptGitGuidanceGitBacked(t *testing.T) {
 	// Simulate a git-backed run: worktree_status=ready, a recorded branch, and a project dir.
 	out := db.GitGuidanceBlock(domain.WorktreeReady, "feat/my-branch", "/tmp/proj", "pr")
@@ -352,9 +348,7 @@ func TestCompositePromptGitGuidanceGitBacked(t *testing.T) {
 			t.Errorf("git guidance missing %q for a git-backed run; got:\n%s", want, out)
 		}
 	}
-	// The hardcoded SDLC-only handoff is gone from the shared block: a DevOps-less workflow (Quick
-	// Work) must never be told that "the DevOps Engineer step creates the PR" as a standing
-	// instruction.
+	// The hardcoded SDLC-only handoff is gone from the shared block.
 	if strings.Contains(out, "DevOps Engineer step creates the PR") {
 		t.Errorf("git guidance must not hardcode the DevOps PR handoff (workflow-agnostic); got:\n%s", out)
 	}

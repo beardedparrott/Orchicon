@@ -141,8 +141,7 @@ func TestResizeClampsStaleScroll(t *testing.T) {
 }
 
 // TestFetchDoneClampsStaleScroll pins that a fetch which replaces the rows with a SHORTER diff
-// re-clamps the scroll, so a new owner (or a file whose latest edit shrank) cannot leave the
-// viewport.
+// re-clamps the scroll.
 func TestFetchDoneClampsStaleScroll(t *testing.T) {
 	vecs := vecByName(t)
 	m := NewModel(nil, nil)

@@ -29,9 +29,7 @@ func TestExitCauseNamesOnlyTransportFailures(t *testing.T) {
 	}
 }
 
-// waitErrProc is a ProcSession that dies with a TRANSPORT error and emits nothing at all: exactly
-// the shape of the reported failure, where the supervisor refused the dispatch and no child
-// existed.
+// waitErrProc is a ProcSession that dies with a TRANSPORT error and emits nothing at all.
 type waitErrProc struct {
 	err error
 }

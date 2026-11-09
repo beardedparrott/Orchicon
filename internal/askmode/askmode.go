@@ -49,9 +49,7 @@ type Policy struct {
 	MayAct bool
 }
 
-// The READ-ONLY suite stays — read, batch_read, grep, batch_grep, glob, list, list_project_dir,
-// read_project_file, ask_file_root — because understanding a project is what the other modes are
-// for.
+// The READ-ONLY suite stays — read, batch_read, grep.
 func theWorkTools() map[string]bool {
 	return map[string]bool{
 		"write": true, "edit": true, "batch_write": true, "bash": true,
@@ -130,20 +128,7 @@ func IsOpaqueMCPTool(name string) bool {
 	return server != orchiconMCPServer
 }
 
-// NormalizeToolName maps a model-emitted tool name onto the table's bare vocabulary. Two prefixed
-// spellings collapse onto the ONE name the policy table is keyed by:
-//
-//   - `orchicon_<tool>` — the MCP-style spelling the Ask prompt advertises, and the REAL name on the
-//     opencode host, where the prefix IS the name;
-//   - `mcp__orchicon__<tool>` — the spelling claude gives the platform's own sidecar's tools.
-//
-// The second exists so the SAME table classifies `mcp__orchicon__create_work_item` (a PLANNER tool)
-// as it classifies `create_work_item` — the classification the claude hook already performs in
-// claudeToolToPolicyName, now available to every adapter.
-//
-// It is exported so the native adapter's normalizeAskToolName can DELEGATE rather than keep a second
-// copy of the rule: the table's vocabulary must have exactly one definition, or a tool the adapter
-// normalises one way and the policy another is a boundary that silently does not hold.
+// NormalizeToolName maps a model-emitted tool name onto the table's bare vocabulary.
 func NormalizeToolName(name string) string {
 	trimmed := strings.TrimSpace(name)
 	if p := "mcp__" + orchiconMCPServer + "__"; strings.HasPrefix(strings.ToLower(trimmed), p) {
@@ -168,19 +153,6 @@ func PolicyFor(mode string) (Policy, bool) {
 }
 
 // Allows reports whether mode may run tool.
-//
-// AN EMPTY OR UNKNOWN MODE ALLOWS EVERYTHING, deliberately. The mode arrives from a DB column, so a value written
-// by an older build or hand-edited must not silently disable a whole session's tools; and a caller that passes no
-// mode is not making a claim about the boundary. The default is the behaviour that existed before this file —
-// the safe direction for a default to be wrong in.
-//
-// IT IS THE ONE DECISION FOR BOTH NAME CLASSES, and that is the design:
-//
-//   - an OPAQUE MCP tool (`mcp__<server>__<tool>`, server != `orchicon`) is an ACTION — allowed only in a mode
-//     that MAY ACT. Its name maps to no table entry, so without this branch it is allowed in every mode
-//     including Brainstorm, which is the hole this closes. The offered surface (the defs filter) and the
-//     enforced surface (the call guard) both read THIS function, so there is no second list of hidden tools.
-//   - anything else is the table's bare-name lookup, exactly as before, over the `orchicon_`-stripped name.
 func Allows(mode, tool string) bool {
 	p, ok := policies[mode]
 	if !ok {

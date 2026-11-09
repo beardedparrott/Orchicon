@@ -127,9 +127,7 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	}
 	inRow := settingsProtoToRow(req.Msg.Settings)
 	inRow.Budget = cur.Budget
-	// Same partial-update semantics for the compaction/memory policy (D4): absent
-	// context_compaction/memory keys in the client JSON must leave the persisted typed columns
-	// untouched.
+	// Same partial-update semantics for the compaction/memory policy (D4).
 	inRow.ContextCompactionEnabled = cur.ContextCompactionEnabled
 	inRow.ContextCompactionPressureFrac = cur.ContextCompactionPressureFrac
 	inRow.ContextRecentTurns = cur.ContextRecentTurns

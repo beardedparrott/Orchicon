@@ -536,8 +536,7 @@ func (x *toolCallIndex) stamp(part map[string]any) {
 }
 
 // argsForPermission resolves the args of the tool call a permission event's properties name
-// (`tool.callID`), or nil when the ask carries no call id or the call was not observed (a
-// subscription.
+// (`tool.callID`).
 func (x *toolCallIndex) argsForPermission(props map[string]any) map[string]any {
 	tool, _ := props["tool"].(map[string]any)
 	if tool == nil {

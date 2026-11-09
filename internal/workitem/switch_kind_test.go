@@ -944,16 +944,8 @@ func TestUpdateWorkItemDisableRecurringDemotesToPendingDB(t *testing.T) {
 	}
 }
 
-// TestBindingWorkflowClearsOneShotWorkerRef verifies the one-shot stale-data
-// self-heal + the post-update validation:
-//   - a leaf carrying a stale assigned_worker_ref (leftover from the one-shot
-//     standalone path) that the user binds to a workflow in the SAME request
-//     must have that worker ref cleared (it would otherwise flag the item as
-//     a worker-assigned one-shot in sequence validation and make its parent
-//     unschedulable), and
-//   - scheduling with the workflow selected in this request must NOT be
-//     rejected as "no workflow is set" (the validation uses the post-update
-//     binding, not the stale pre-update row).
+// TestBindingWorkflowClearsOneShotWorkerRef verifies the one-shot stale-data self-heal + the
+// post-update validation.
 func TestBindingWorkflowClearsOneShotWorkerRef(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)

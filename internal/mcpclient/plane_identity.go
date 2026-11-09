@@ -116,12 +116,6 @@ func ownerFromEnviron(environ []byte) planeOwner {
 }
 
 // alive reports whether the owning plane is still the process that spawned the child.
-//
-// THREE WAYS TO BE DEAD, and each exists for a measured reason:
-//   - no recorded pid        → the owner cannot be identified, so it cannot be trusted (unmarked children
-//     are handled by the caller's fallback, not here)
-//   - a different boot       → the recorded pid belongs to a machine generation that is over
-//   - a different start time → the pid exists but belongs to SOMEONE ELSE (pid reuse)
 func (o planeOwner) alive(nowBoot string) bool {
 	if !o.marked || o.pid <= 0 {
 		return false

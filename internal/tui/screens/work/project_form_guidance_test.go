@@ -1,12 +1,6 @@
 package work
 
 // project_form_guidance_test.go — THE RUNTIME-IMAGE PICKER AND THE CONTEXT-FILES GUIDANCE.
-//
-// Two operator reports:
-//   "when creating a project, the runtime container [should] be able to be selected from a list.
-//    We do something similar in other areas for workers, workflows, etc."
-//   "how do we handle project context files on the project create/edit form? There isn't really
-//    any guidance here."
 
 import (
 	"strings"

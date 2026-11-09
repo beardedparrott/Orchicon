@@ -1,19 +1,5 @@
-// Package scheduler implements the TaskReconciler — the control loop
-// that reconciles desired work-item state with observed runtime state
-// (docs/03_Scheduler_and_Runtime_Design.md §2–4). It is the only
-// component permitted to create WorkerExecutions and call
-// adapter.Start (docs/03 §8 invariant #1).
-//
-// The dispatch flow (docs/03 §4):
-//  1. Filter tasks in "ready" state.
-//  2. For each, check dependencies are satisfied (docs/02 §4 #1).
-//  3. Select a Worker (rule-based: runtime/model compatibility, health,
-//     concurrency — docs/03 §4.1).
-//  4. Select an Adapter (matching kind, healthy heartbeat, free capacity
-//     — docs/03 §4.2).
-//  5. Create a WorkerExecution (status=dispatching).
-//  6. Call the adapter bridge to start the execution.
-//  7. Transition the task to "assigned" and requeue.
+// Package scheduler implements the TaskReconciler — the control loop that reconciles desired
+// work-item state with observed runtime state (docs/03_Scheduler_and_Runtime_Design.md §2–4).
 package scheduler
 
 import (
@@ -60,19 +46,8 @@ type ConcurrencyLimiter interface {
 	Limit(ctx context.Context, projectID string) int
 }
 
-// DispatchLimiter resolves the configured max-concurrent-runs caps for a
-// project (concurrency-guards work item, architecture-notes
-// per-project-dispatch-limits.md). It is the seam for:
-//
-//   - D2 — the admission gate in TaskReconciler.reconcileOne, which holds
-//     a dispatch (returns without creating an execution, leaving the item
-//     'ready') when the project's effective cap is reached;
-//   - D3 — the WorktreeReconciler's in-place (non-repo) serialization
-//     gate, which atomically admits non-repo runs so two never share the
-//     mutable project_dir.
-//
-// Both methods read in the caller's transaction so the limit value is
-// consistent with the count queries that follow.
+// DispatchLimiter resolves the configured max-concurrent-runs caps for a project
+// (concurrency-guards work item, architecture-notes per-project-dispatch-limits.md).
 type DispatchLimiter interface {
 	// Limit returns the effective max-concurrent-runs cap for the project:
 	// min(tenant.max_concurrent_runs, project.max_concurrent_runs).
@@ -437,36 +412,14 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		}
 		stepRun = &sr
 	} else {
-		// Standalone dispatch. Only "ready" (docs/03 §4) and "blocked"
-		// tasks are processed:
-		//
-		//   - ready + unsat deps → flip to blocked (persisted) so the stall
-		//     is SURFACED instead of silently requeued;
-		//   - blocked + satisfied deps → flip to ready, then fall through
-		//     to dispatch in this same pass;
-		//   - blocked + unsat deps → stay blocked (return nil).
-		//
-		// A blocked item must clear back to ready before any dispatch —
-		// dispatch only ever proceeds from ready here, so the "no dispatch
-		// for blocked" invariant holds by construction.
+		// Standalone dispatch.
 		switch task.Status {
 		case domain.WorkItemReady, domain.WorkItemBlocked:
 		default:
 			return nil
 		}
-		// Skip items that belong to a WORKFLOW RUN: they are dispatched
-		// exclusively by the WorkflowReconciler's inline (step-run)
-		// dispatch, never by the standalone scan. This covers both the
-		// shared ticket and per-step artifacts like the worker-backed
-		// approval ticket (created "ready" with an assigned worker). Two
-		// failure modes without it:
-		//   (a) during the run — the scan dispatches the approval ticket
-		//       in parallel with the inline dispatch → TWO executions for
-		//       one step;
-		//   (b) after the run reaches terminal — the orphaned "ready"
-		//       approval ticket is no longer bound to an *active* run, so
-		//       a boundToActiveRun guard wouldn't catch it, and the scan
-		//       dispatches a ghost execution into the void.
+		// Skip items that belong to a WORKFLOW RUN: they are dispatched exclusively by the
+		// WorkflowReconciler's inline (step-run) dispatch, never by the standalone scan.
 		if task.WorkflowRunID != "" {
 			return nil
 		}
@@ -849,8 +802,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		}
 	}
 	// Resolve the workflow run's runtime container image (the adapter's self-heal recreates the
-	// container with the identical image the WorkflowReconciler used at run start) AND the run's
-	// provisioned.
+	// container with the identical image the WorkflowReconciler used at run start) AND the run's.
 	runtimeImage := ""
 	worktreePath := ""
 	worktreeStatus := ""
@@ -1064,20 +1016,8 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	}
 }
 
-// continuationSessionID resolves the prior session to continue for a
-// sequence-chain task (sequence-continuation flag, opt-in DEFAULT OFF).
-// It returns (sessionID, true) only when:
-//   - the task is a direct child of a sequence parent (ParentID set),
-//   - its immediate predecessor sibling is terminal-success (succeeded or
-//     skipped — a failed/cancelled predecessor never continues),
-//   - the predecessor's assigned worker is the SAME worker as the current
-//     task's (identity isolation by construction: no worker ever resumes
-//     another worker's transcript),
-//   - the predecessor has a completed execution (session id == execution
-//     id for the native engine).
-//
-// The session id for the native engine IS the execution id, so the prior
-// execution's id is the continuation target.
+// continuationSessionID resolves the prior session to continue for a sequence-chain task
+// (sequence-continuation flag, opt-in DEFAULT OFF).
 func (r *TaskReconciler) continuationSessionID(ctx context.Context, task db.WorkItemRow, version db.WorkerVersionRow) (string, bool) {
 	if task.ParentID == nil || *task.ParentID == "" {
 		return "", false
@@ -1277,8 +1217,7 @@ func (r *TaskReconciler) markFailedToStart(ctx context.Context, exec db.Executio
 }
 
 // permanentDispatchFailure reports whether a dispatcher Resolve error is a PERMANENT
-// routing/configuration failure — one no retry can fix: the adapter kind is administratively
-// disabled.
+// routing/configuration failure.
 func permanentDispatchFailure(err error) bool {
 	return errors.Is(err, ErrAdapterDisabled) ||
 		errors.Is(err, ErrAdapterKindUnregistered) ||
@@ -1456,24 +1395,8 @@ func (r *TaskReconciler) writtenFilesFor(execID string) []string {
 // OnResult is called by the adapter bridge when the execution reaches a terminal state (docs/03 §6:
 // running → succeeded|failed).
 func (r *TaskReconciler) OnResult(ctx context.Context, execID string, succeeded bool, output string, errorMessage string) {
-	// THE WORKER'S OWN VERDICT DECIDES THE OUTCOME, not the process's exit code.
-	//
-	// REPORTED, and it is the worse half of a bad run: a worker that wrote
-	// "ORCHICON WORKER SUMMARY: failure — Nothing implemented or committed" (every write had been
-	// permission-refused) was recorded as Status: succeeded, its workflow run completed, and its work item
-	// sat in a SUCCESS terminal state for ~6.5 hours. The summary word was captured the whole time — it went
-	// into `_decision` for the run view — but nothing consulted it before writing the terminal status.
-	//
-	// The asymmetry is deliberate and is the whole rule:
-	//
-	//   - DOWNGRADE ONLY. A process that FAILED is authoritative and is never upgraded by text a worker
-	//     emitted; a crashed adapter, a reclaimed container or a liveness reap all legitimately outrank
-	//     anything the model said.
-	//   - ONLY AN EXPLICIT FAILURE WORD. `firstWordAsDecision` passes custom words through verbatim
-	//     ("approved"/"rejected" for review steps), so matching a bare "not success" would invert a
-	//     reviewer's approval. Success and failure are the task vocabulary, and only `failure` downgrades.
-	//   - A MISSING MARKER CHANGES NOTHING. The output can be truncated or the adapter may produce no text at
-	//     all; punishing absence would fail runs for a reporting omission.
+	// THE WORKER'S OWN VERDICT DECIDES THE OUTCOME, not the process's exit code. The asymmetry is
+	// deliberate and is the whole rule: - DOWNGRADE ONLY.
 	if succeeded {
 		if d := extractSummaryDecision(output); d == "failure" {
 			r.log.Warn("worker reported FAILURE in its own summary while the process exited cleanly — "+
@@ -1759,13 +1682,11 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	r.writeOrchiconFiles(ctx, exec, wi, succeeded, results)
 
 	// System-side recovery-seed cleanup: a successful recovery-resumed execution removes
-	// .orchicon/worker.recovery when the file's footer matches this execution (the worker-side `rm` in
-	// the file's.
+	// .orchicon/worker.recovery when the file's footer matches this execution (the worker-side `rm`.
 	r.removeRecoveryFileForSuccess(ctx, exec, results, succeeded)
 
 	// Follow-up write-back: if this work item has a parent execution (created via
-	// CreateFollowUpExecution), append the assistant's output to the parent execution's conversation so
-	// the follow-up feels.
+	// CreateFollowUpExecution).
 	if parentExecID != "" && succeeded && output != "" {
 		r.appendToParentConversation(context.Background(), "tnt_dev", parentExecID, output)
 	}
@@ -1903,8 +1824,7 @@ func (r *TaskReconciler) writeOrchiconFiles(ctx context.Context, exec db.Executi
 		}
 	}
 	// Deterministic terminal-time backstop: at EVERY execution terminal
-	// (succeeded/failed/stalled/fail-lost — the single writeOrchiconFiles funnel) we also extract any
-	// FACTS LEARNED lines.
+	// (succeeded/failed/stalled/fail-lost.
 	stepName := r.stepNameForExecution(ctx, exec)
 	if tFacts := r.extractTranscriptFacts(ctx, exec); len(tFacts) > 0 {
 		if err := appendFactsToOrchiconFile(orchDir, stepName, tFacts); err != nil {
@@ -2050,26 +1970,8 @@ func (r *TaskReconciler) OnHealth(ctx context.Context, execID, healthState strin
 	_ = ttx.Commit(ctx)
 }
 
-// OnStall is called by the adapter bridge's progress monitor when a stall
-// signal trips (docs/06 §2: "stalled health state | no progress within
-// stall window"; docs/03 §5). The reason carries which signal fired:
-// stalled:no_progress | stalled:no_file_progress | stalled:repetition:<sig>.
-//
-// `fatal` distinguishes the two cases:
-//
-//   - FATAL (no_progress only): total silence — there is no responsive
-//     surface to nudge. The adapter has already hard-killed the subprocess,
-//     so the execution is marked unhealthy and the work item transitions to
-//     failed — the downstream recover step (if any) activates on the next
-//     reconcile pass.
-//   - ADVISORY (text_loop / repetition / no_file_progress): the worker is
-//     generating text / issuing tool calls, so a nudge can reach it. The
-//     subprocess is NOT killed and the execution is NOT failed. The
-//     execution gets a non-terminal `stalled` health notice + reason so the
-//     operator sees the flag, stays `running`, and is either revived to
-//     healthy when progress resumes (OnRecovered) or — after the nudge
-//     budget is spent without the worker breaking the pattern — escalated
-//     to a fatal kill + recovery by the session's onStall.
+// OnStall is called by the adapter bridge's progress monitor when a stall signal trips (docs/06 §2:
+// "stalled health state | no progress within stall window"; docs/03 §5).
 func (r *TaskReconciler) OnStall(ctx context.Context, execID, reason string, fatal bool) {
 	r.log.Warn("execution stalled",
 		"execution", execID, "reason", reason, "fatal", fatal)
@@ -2095,9 +1997,7 @@ func (r *TaskReconciler) OnStall(ctx context.Context, execID, reason string, fat
 	r.transitionWorkItemOnResult(ctx, execID, false, reason)
 }
 
-// OnRecovered is called by the adapter bridge's progress monitor when an advisory stall clears —
-// the worker resumed the missing progress signal (a file_diff after a no_file_progress trip)
-// before.
+// OnRecovered is called by the adapter bridge's progress monitor when an advisory stall clears.
 func (r *TaskReconciler) OnRecovered(ctx context.Context, execID, recovered string) {
 	r.log.Info("execution recovered from advisory stall",
 		"execution", execID, "recovered", recovered)
@@ -2706,23 +2606,8 @@ func firstWordAsDecision(s string) string {
 // re-embedded into every later step's prompt.
 const maxSummaryTokens = 500
 
-// capSummaryNarrative truncates the NARRATIVE portion of a worker summary to
-// ~maxTokens tokens (lenient ~4 chars/token heuristic) while preserving the
-// structural content verbatim:
-//
-//   - the ORCHICON WORKER SUMMARY: <decision> routing line, if present in the
-//     text (normally already stripped into `_decision`, kept defensively)
-//   - every FACTS LEARNED: line — extractFactsLearned must still see them.
-//     Both the plain `FACTS LEARNED: <fact>` form a worker writes and the
-//     `FACTS LEARNED (from <step>): <fact>` form the handoff writer persists to
-//     .orchicon/<run>/facts_learned (a downstream worker may quote file lines
-//     back verbatim) are treated as structural and pass through untouched.
-//
-// Narrative lines are kept from the front of the summary until the budget is
-// spent, in original order, so blocking feedback (stated up front) survives.
-// A clear marker is appended so downstream workers know the summary was
-// capped. When nothing was truncated (e.g. a summary that is entirely facts)
-// the original text is returned unchanged.
+// capSummaryNarrative truncates the NARRATIVE portion of a worker summary to ~maxTokens tokens
+// (lenient ~4 chars/token heuristic) while preserving the structural content verbatim:
 func capSummaryNarrative(summary string, maxTokens int) string {
 	if summary == "" {
 		return summary
@@ -2811,9 +2696,7 @@ func stripDispatchWait(raw []byte) ([]byte, bool) {
 	return updated, true
 }
 
-// dispatchWaitReason returns the recorded deferral note from a step run's result, if the
-// TaskReconciler deferred its dispatch for capacity (the project or worker max-concurrent-runs
-// gate).
+// dispatchWaitReason returns the recorded deferral note from a step run's result.
 func dispatchWaitReason(raw []byte) (string, bool) {
 	if len(raw) == 0 {
 		return "", false
@@ -2830,8 +2713,7 @@ func dispatchWaitReason(raw []byte) (string, bool) {
 }
 
 // writeDispatchWaitNote records why a step run's dispatch was deferred by the per-worker
-// concurrency gate, so the run-view UI can attribute the generic "waiting for dispatch…"
-// placeholder.
+// concurrency gate.
 func writeDispatchWaitNote(ctx context.Context, tx pgx.Tx, tenantID string, stepRun db.WorkflowStepRunRow, workerID string, active, limit int) error {
 	return writeDispatchWait(ctx, tx, tenantID, stepRun,
 		fmt.Sprintf("worker capacity %d/%d — waiting for a slot", active, limit), workerID)

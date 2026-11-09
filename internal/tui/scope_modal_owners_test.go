@@ -328,18 +328,7 @@ const versionPermissionsWithEnv = `{"tools":["read"],"mcp_servers":[{"id":"gh","
 // without depending on the encoding's layout.
 func flatJSON(s string) string { return strings.Join(strings.Fields(s), "") }
 
-// A STORED SECRET AND A TYPED VALUE ARE TWO INTENTIONS, AND THE FORM NEVER SHOWS BOTH AT ONCE.
-//
-// The report, exactly: "if someone already went through the list and added a current secret, it doesn't
-// matter what value they put in the custom field, the stored secret supersedes it. I think a better approach
-// would be to add another item under stored secret called Custom that then only accepts the custom entered
-// new key below". So:
-//
-//   - the new-secret pair exists ONLY under Custom — hidden, not merely ignored, while a stored name is
-//     picked, so the two answers are never on screen together;
-//   - a value left over from BEFORE the pick is REFUSED with a message naming Custom, because silently
-//     dropping it is precisely the behaviour being reported;
-//   - Custom reveals the pair, and the write goes through.
+// So: - the new-secret pair exists ONLY under Custom.
 func TestCredentialFormSeparatesPickingAStoredSecretFromStoringANewOne(t *testing.T) {
 	m, _, sec, rec := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
 	putCursor(m, rowIndexOf(t, m, "gh"))

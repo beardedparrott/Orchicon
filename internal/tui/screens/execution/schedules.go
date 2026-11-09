@@ -1,36 +1,6 @@
 package execution
 
 // schedules.go — the SCHEDULES pane: what is queued, what is running, and what has run.
-//
-// The operator: "I noticed I don't see any 'Schedules' section in the TUI under Executions. We
-// need to implement this in the TUI. We should be able to see upcoming, running, and finished
-// just like the GUI and we should have delete operations, bulk delete operations, and a key
-// that takes you to the workflow run."
-//
-// The GUI's /schedules page is ONE view with three modes, so this is one SOURCE with three
-// views cycled by `v` — the same shape as the Work Items pane's tree/archive cycle, and
-// deliberately not three submenu entries (three entries would suggest three independent
-// surfaces rather than three lenses on one).
-//
-//   upcoming  work items with status SCHEDULED, PLUS the PENDING children of an active sequence
-//             parent — derived, because only the parent carries a scheduled_start_at, so the
-//             children never match the SCHEDULED query (frontend/src/routes/schedules.tsx:443-452
-//             QueuedSection). Recurring items live on Automation → Recurring Items in the GUI and
-//             are EXCLUDED here for the same reason the GUI excludes them.
-//   running   work items whose bound workflow run is in flight (RUNNING / CHECKPOINTING /
-//             RECOVERING), plus the sequence parents that drive a chain
-//   finished  workflow runs that have actually RUN (a started_at), which is the GUI's history
-//             view
-//
-// MEMBERSHIP IS THE GUI'S, on purpose — the same predicates, so the two clients cannot disagree
-// about what is scheduled. All THREE membership sources live in frontend/src/lib/schedules-model.ts:
-//
-//   upcoming = SCHEDULED ∪ the queued sequence children (queuedSequenceChildren, :80-93)
-//   running  = ACTIVE_RUNNING_STATUSES (:48) plus the sequence-parent extension
-//              (activeSequenceParentIds, :58-71)
-//   finished = a run with a real started_at (isHistoryRun, :104-106)
-//
-// Upcoming is the one that used to be short a source — the queued half above is its fix.
 
 import (
 	"context"
@@ -150,9 +120,7 @@ func (m *Model) fetchUpcomingSchedules(ctx context.Context, pageToken string) ([
 		// (schedules.tsx:520), and in CHAIN order (queuedSequenceChildren sorts them).
 		for _, w := range queuedSequenceChildren(all) {
 			seen[w.GetId()] = true
-			// The item's own run id is NOT empty in every case, so passing it through would be a real bug:
-			// resetSubtree (internal/scheduler/sequence_reconciler.go) resets a non-terminal descendant to
-			// PENDING.
+			// The item's own run id is NOT empty in every case, so passing it through would be a real bug.
 			m.sched.remember(w.GetId(), "")
 			items = append(items, screenkit.Item{
 				ID:    w.GetId(),
@@ -656,8 +624,7 @@ func sequenceParentIDs(items []*apiv1.WorkItem) map[string]bool {
 const queuedChildStatus = apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING
 
 // activeSequenceParentIDs mirrors activeSequenceParentIds
-// (frontend/src/lib/schedules-model.ts:58-71): an in-flight item with NO bound run of its own that
-// is some item's parent.
+// (frontend/src/lib/schedules-model.ts:58-71).
 func activeSequenceParentIDs(items []*apiv1.WorkItem) map[string]bool {
 	parents := sequenceParentIDs(items)
 	active := map[string]bool{}
@@ -670,8 +637,7 @@ func activeSequenceParentIDs(items []*apiv1.WorkItem) map[string]bool {
 }
 
 // queuedSequenceChildren mirrors queuedSequenceChildren
-// (frontend/src/lib/schedules-model.ts:80-93): the PENDING children of an active sequence parent,
-// in CHAIN order.
+// (frontend/src/lib/schedules-model.ts:80-93).
 func queuedSequenceChildren(items []*apiv1.WorkItem) []*apiv1.WorkItem {
 	active := activeSequenceParentIDs(items)
 	var queued []*apiv1.WorkItem

@@ -10,8 +10,7 @@ import (
 )
 
 // TestConversationItemsEmitsAskCard proves the TUI renders a recorded ask_user call as a
-// clarifying-question card: conversationItems emits a KindAsk item carrying the question and
-// options parsed.
+// clarifying-question card.
 func TestConversationItemsEmitsAskCard(t *testing.T) {
 	msgs := []*apiv1.ChatMessage{{
 		Id:   "m1",

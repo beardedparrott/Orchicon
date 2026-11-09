@@ -1297,8 +1297,7 @@ func activeRunUsesImage(ctx context.Context, tx pgx.Tx, tenantID, tag string) (b
 }
 
 // GetStockImageTemplate returns the shipped Dockerfile for a stock image (base / :gui /
-// :orchicon-dev) so users can see how a shipped image is built and copy the pattern for a custom
-// one.
+// :orchicon-dev) so users can see how a shipped image is built and copy the pattern for a custom.
 func (s *Service) GetStockImageTemplate(ctx context.Context, req *connect.Request[apiv1.GetStockImageTemplateRequest]) (*connect.Response[apiv1.GetStockImageTemplateResponse], error) {
 	tag := strings.TrimSpace(req.Msg.Tag)
 	if tag == "" {

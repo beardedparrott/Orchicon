@@ -222,8 +222,7 @@ func TestGzipRoundTripsThroughTheStoragePath(t *testing.T) {
 }
 
 // TestTrimAskHistoryImagesReplacesPayloadsWithoutMutatingTheLiveHistory covers the last-resort
-// reduction: the image payloads must be replaced by an explicit marker (so the surviving
-// transcript.
+// reduction.
 func TestTrimAskHistoryImagesReplacesPayloadsWithoutMutatingTheLiveHistory(t *testing.T) {
 	live := []Message{
 		{Role: RoleUser, Content: []Content{{Image: strPtr("data:image/png;base64,AAAA")}}},

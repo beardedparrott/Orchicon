@@ -655,8 +655,7 @@ func TestRunOpenCodeTurnCreateFailureReturnsError(t *testing.T) {
 // --- Relay of permission.asked and tool_use ---------------------------------
 
 // TestRunOpenCodeTurnRelaysPermissionAndTool verifies that a permission.asked goes through the
-// CONSENT path (never a blind auto-approve) and that tool_use events are still relayed to the
-// callback.
+// CONSENT path (never a blind auto-approve) and that tool_use events are still relayed.
 func TestRunOpenCodeTurnRelaysPermissionAndTool(t *testing.T) {
 	client := &fakeSessionClient{}
 	feed := func(sub *fakeBusSub) {
@@ -1047,8 +1046,7 @@ func TestCollectConversationReplyRecreatesLostSession(t *testing.T) {
 }
 
 // TestCollectConversationReplyIgnoresIdleBeforeSend verifies the sent guard also protects the
-// detached collector: a session.idle observed while the send is still in flight (sent == false)
-// must.
+// detached collector.
 func TestCollectConversationReplyIgnoresIdleBeforeSend(t *testing.T) {
 	client := &fakeSessionClient{sendGate: make(chan struct{}), sentCh: make(chan struct{})}
 	opts := turnCollectOpts{
@@ -1102,9 +1100,7 @@ func TestCollectConversationReplyIgnoresIdleBeforeSend(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyStopCancels verifies the registry-cancel path (Stop button):
-// cancelling the collector context ends the turn immediately with context.Canceled instead of
-// waiting out.
+// TestCollectConversationReplyStopCancels verifies the registry-cancel path (Stop button).
 func TestCollectConversationReplyStopCancels(t *testing.T) {
 	client := &fakeSessionClient{}
 	opts := turnCollectOpts{
@@ -1153,8 +1149,7 @@ func TestCollectConversationReplyServeDownFailsFast(t *testing.T) {
 }
 
 // TestCollectConversationReplyServeDownRecovers verifies the serve-down grace is not a hard
-// failure: a serve that drops before a connection and comes back within the grace completes the
-// turn.
+// failure.
 func TestCollectConversationReplyServeDownRecovers(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_SERVE_DOWN_GRACE", "5s")
 	client := &fakeSessionClient{serveDownFails: 2}
@@ -1180,8 +1175,7 @@ func TestCollectConversationReplyServeDownRecovers(t *testing.T) {
 }
 
 // TestCollectConversationReplyDropAfterLiveKeepsWindow verifies a serve that WAS live during the
-// turn (a reply attempt connected) then drops again on a later subscribe is NOT bounded by the
-// short.
+// turn (a reply attempt connected) then drops again on a later subscribe is NOT bounded.
 func TestCollectConversationReplyDropAfterLiveKeepsWindow(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_SERVE_DOWN_GRACE", "10ms")
 	client := &fakeSessionClient{}
@@ -1210,9 +1204,7 @@ func TestCollectConversationReplyDropAfterLiveKeepsWindow(t *testing.T) {
 	}
 }
 
-// TestTurnRegistry verifies the one-turn-per-conversation gate, the
-// cancel-leaves-entry-until-remove semantics that keep a new send gated while the old turn
-// finalizes.
+// TestTurnRegistry verifies the one-turn-per-conversation gate.
 func TestTurnRegistry(t *testing.T) {
 	r := newTurnRegistry()
 	ctx1, c1 := context.WithCancelCause(context.Background())
@@ -1623,8 +1615,7 @@ func TestCollectConversationReplySupersedeMidThinkPersistsCleanPartial(t *testin
 }
 
 // TestCollectConversationReplyFoldedThinkNoDedupe verifies a native reasoning part AND a folded
-// think body in the same turn coexist as separate reasoning entries (no dedupe/merge against
-// native.
+// think body in the same turn coexist as separate reasoning entries (no dedupe/merge against.
 func TestCollectConversationReplyFoldedThinkNoDedupe(t *testing.T) {
 	client := &fakeSessionClient{}
 	opts := turnCollectOpts{
@@ -1656,9 +1647,7 @@ func TestCollectConversationReplyFoldedThinkNoDedupe(t *testing.T) {
 	}
 }
 
-// closeLiveSub closes the currently-cached subscription, which the fake treats as "the serve
-// dropped the connection" (its Subscribe hands back a FRESH stream next time — see its own
-// comment).
+// closeLiveSub closes the currently-cached subscription.
 func (f *fakeSessionClient) closeLiveSub() {
 	f.mu.Lock()
 	s := f.sub

@@ -1,36 +1,6 @@
 package project
 
 // git_setup.go — PUT THE PROJECT'S GIT STATE IN ORDER, AT THE MOMENT THE OPERATOR CREATES IT.
-//
-// THE FAILURE THIS PREVENTS, end to end. An operator created a project on Windows, chose a git strategy, and
-// kicked off a run. Every attempt failed at worktree provisioning with `git worktree add: exit status 128` —
-// and the underlying repository was in a state no strategy other than `none` can use at all:
-//
-//   - not a git repository (nothing was ever `git init`-ed in the project dir);
-//   - or initialised with NO COMMIT, so `git worktree add` has no HEAD to cut a branch from;
-//   - or a repo with no `user.name`/`user.email`, so the first commit a worker tries is refused;
-//   - or tracking a remote whose default branch cannot be resolved (see worktree_baseref.go).
-//
-// None of that is something a user should have to discover from a `fatal:` line. Choosing a git strategy is a
-// statement that "this project's work happens in git", so the platform — not the agent, and not the operator —
-// brings the repository up to the state that statement requires. The operator's own steer: "if someone chooses
-// a git strategy other than none, then when the project is created, Orchicon itself should run all necessary
-// commands to set up the git init for the user".
-//
-// WHAT IT WILL NOT DO, each a deliberate line:
-//
-//   - It never touches a repository that is already usable. The whole check is idempotent: a healthy repo is
-//     left byte-for-byte alone, including its upstream and its default branch.
-//   - It never creates a commit in a repository that already HAS commits. History is the operator's.
-//   - It never invents a remote. Adding one would mean guessing a URL.
-//   - It never rewrites the identity of a repo that already has one configured.
-//   - BEST-EFFORT BY CONTRACT: a failure is reported, never fatal to project creation. A project whose
-//     directory is on an unreachable share must still be creatable — the operator then fixes the directory and
-//     re-saves, which re-runs this.
-//
-// The bootstrap commit exists only because git cannot do anything else in an empty repo: `worktree add` needs a
-// HEAD to cut from, and a branch needs a commit to point at. It is created with an explicit Orchicon identity
-// and a message that says why it is there, so nobody later mistakes it for the operator's work.
 
 import (
 	"context"

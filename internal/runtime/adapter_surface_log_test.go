@@ -1,18 +1,6 @@
 package runtime
 
 // adapter_surface_log_test.go — A MISSING MOUNT MUST BE READABLE IN ONE LINE.
-//
-// REPORTED: "the string .claude appears ZERO times in the entire plane log for this run — no mount attempted, no
-// path resolved", offered as proof the claude code path was never reached.
-//
-// That scan could not prove it, for two reasons:
-//
-//  1. the mounts are built by the DAEMON, and the operator was reading the PLANE log;
-//  2. even in the right log, a SUCCESSFUL create logged only a COUNT ("workflow runtime ensured ... mounts=12"),
-//     never a path.
-//
-// These assertions pin the line that makes the question answerable: the resolved boot profile and adapter data
-// dirs, logged at create time.
 
 import (
 	"os"

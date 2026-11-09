@@ -7,8 +7,7 @@ import (
 )
 
 // tokenClass is the closed set of canonical usage-sample buckets used to split
-// orchicon_tokens_consumed / orchicon_cost_usd by cache class (ADR:
-// otel-metrics-cache-aware-token-cost-counters.md).
+// orchicon_tokens_consumed / orchicon_cost_usd by cache class (ADR.
 const (
 	tokenClassAttribute  = "token_class"
 	tokenClassPrompt     = "prompt"

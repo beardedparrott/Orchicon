@@ -220,16 +220,6 @@ func (r *worktreeRegistry) Execute(_ context.Context, _ *db.Pool, name string, a
 			return nil, fmt.Errorf("todowrite: %w", err)
 		}
 		// TWO WRITES, TWO CONSUMERS, and neither substitutes for the other:
-		//
-		//   - the RUN-STATE copy (<project>/.orchicon/<runID>/todos.json) is what
-		//     the execution view's todo panel reads, and it outlives the worktree;
-		//   - the WORKTREE copy is `todoread`'s local fallback for a session whose
-		//     sidecar was not told its run.
-		//
-		// A FAILED RUN-STATE WRITE IS REPORTED, not swallowed. The old silent
-		// version is precisely how this presented: the tool answered `ok:true`, the
-		// panel stayed empty, and nothing anywhere said why. The model sees the
-		// warning in its tool result, and the panel's absence becomes explainable.
 		worktree.SaveTodoSnapshot(b, a.Todos)
 		out := map[string]any{
 			"ok":      true,

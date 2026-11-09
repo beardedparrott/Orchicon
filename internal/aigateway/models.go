@@ -16,23 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// ModelDiscoverer discovers models by shelling out to the `opencode` CLI
-// (docs/04 §6). Caching strategy (2026-09: the probe costs ~1.2s — a full
-// CLI subprocess spawn parsing ~470 models — so reads never block on it
-// once a list exists):
-//
-//   - Fresh cache: served instantly (the only blocking read is the cold
-//     first load).
-//   - TTL expired: STALE-WHILE-REVALIDATE — the stale list is served
-//     immediately and a single-flight background refresh runs on a
-//     detached bounded context. New models appear without any caller
-//     paying the subprocess latency; the next read picks them up.
-//   - Provider-landscape changes out-of-band (custom provider CRUD,
-//     provider token saves) call Invalidate() so the next read refreshes
-//     immediately — "new models usable right away" is an invalidation
-//     contract, not a TTL wait.
-//   - A failed refresh backs off for the TTL window (the last error is
-//     surfaced without re-spawning the probe on every call).
+// ModelDiscoverer discovers models by shelling out to the `opencode` CLI (docs/04 §6).
 type ModelDiscoverer struct {
 	log    *slog.Logger
 	binary string // path to opencode binary
@@ -448,18 +432,7 @@ func parseModelOutput(data []byte) ([]*apiv1.OpenCodeModel, error) {
 
 	if len(models) == 0 {
 		// TWO VERY DIFFERENT SITUATIONS REACH HERE, and telling them apart is the whole value of the
-		// message. opencode 2.x reports an empty model list by printing NOTHING and exiting 0 (its
-		// handler ends with `if (models.length > 0) process.stdout.write(...)`), so "no models found"
-		// was being reported for a command that SUCCEEDED — and it reads like a parse failure, which
-		// sends the operator to the wrong place entirely.
-		//
-		// So the RAW OUTPUT is examined rather than assumed about:
-		//   * nothing printed  -> a genuinely empty list, which in practice means no provider is
-		//     authenticated for the environment this command ran in.
-		//   * something printed -> the build emits a format this parser does not understand, and the
-		//     snippet is included so that is visible without reproducing it by hand.
-		//
-		// The second case is the one no amount of guessing can resolve, so it carries its evidence.
+		// message.
 		if printed := bytes.TrimSpace(data); len(printed) == 0 {
 			// WRAPS errNoModels so the caller retries it: measured to be a TRANSIENT service-race result far
 			// more often than a real absence of providers.

@@ -24,36 +24,8 @@ func (r EphemeralSweepResult) Total() int { return r.WorkItems + r.Workers + r.W
 // EphemeralSweepBatch bounds how many records of each kind a single sweep removes.
 const EphemeralSweepBatch = 200
 
-// SweepAbandonedEphemeral hard-deletes ephemeral records for ONE tenant that
-// were created before cutoff, and reports what it removed.
-//
-// THE WINDOW IS THE ONLY GUARD, deliberately. Status is not consulted, because
-// there is no status that means "abandoned": the owner is gone and the record
-// simply stopped being updated, so a stale `running` row and a stale `pending`
-// row are the same problem. The window is chosen to be far longer than any real
-// Quick Work job (which is a conversational turn, i.e. minutes), so anything
-// past it is stale by a wide margin whatever its status says.
-//
-// DELETE ORDER IS WORKFLOWS, THEN ITEMS, THEN WORKERS, and the order is not
-// cosmetic:
-//
-//   - workflow_runs.work_item_id references work_items. Deleting the workflow
-//     first removes the runs (and their step runs) that point at the item, so
-//     the item delete does not have to write NULL back into rows that are about
-//     to disappear anyway;
-//   - workers are independent of both (assigned_worker_ref is JSONB, not a
-//     foreign key), so they are last purely because nothing depends on them.
-//
-// Each kind reuses the EXISTING hard-delete path — HardDeleteWorkItem,
-// DeleteWorker, DeleteWorkflow — rather than re-implementing the cascades here.
-// Those functions are what the operator's own delete buttons call, so a sweep
-// cannot drift into deleting a different set of child rows than a manual delete
-// would.
-//
-// Per-record failures do not abort the sweep: one un-deletable record must not
-// block the removal of the others, and the failure is returned in the error so
-// the caller logs it. A NotFound (someone else deleted it first) is not an
-// error.
+// SweepAbandonedEphemeral hard-deletes ephemeral records for ONE tenant that were created before
+// cutoff, and reports what it removed. THE WINDOW IS THE ONLY GUARD, deliberately.
 func SweepAbandonedEphemeral(ctx context.Context, tx pgx.Tx, tenantID string, cutoff time.Time) (EphemeralSweepResult, error) {
 	var res EphemeralSweepResult
 	var errs []error

@@ -143,21 +143,8 @@ func (b *Bridge) CompactExecution(ctx context.Context, execID, provider, model, 
 	return s.Compact(ctx, provider, model, remainingScope)
 }
 
-// ContinueSession implements scheduler.SessionContinuer: a follow-up runs
-// against the SAME claude session identity, never a fresh conversation.
-//
-//   - A live session for the execution: the follow-up is written onto the
-//     live stdin, so it keeps the session's full context (the same path a
-//     mid-run injection takes).
-//   - No live session (a control-plane restart, a lost runtime container, an
-//     execution that already finished): the recorded session id is
-//     RE-ATTACHED through `--resume <session-id>`, and the follow-up is
-//     driven there. The reply lands in the durable transcript through the
-//     same session machinery (the session's mapper owns that fan-out), so the
-//     reply collection is fire-and-forget and detached from the RPC context.
-//
-// An execution with neither a live session nor a recorded session id gets an
-// actionable error (never a panic).
+// ContinueSession implements scheduler.SessionContinuer: a follow-up runs against the SAME claude
+// session identity, never a fresh conversation.
 func (b *Bridge) ContinueSession(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error) {
 	if s := b.liveSession(opts.ExecutionID); s != nil {
 		if err := s.SendTurn(ctx, opts.Message); err != nil {

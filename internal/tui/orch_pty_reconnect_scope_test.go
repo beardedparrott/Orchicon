@@ -1,25 +1,5 @@
-// Package tui — orch_pty_reconnect_scope_test.go — THE LIVE OBSERVATION of the
-// launch-directory workspace default surviving a reconnect (acceptance criterion 1).
-//
-// The rendered/unit tests (project_scope_reconnect_test.go) drive two App values in
-// sequence. This file drives the REAL orch binary through the SAME two shells that
-// cmd/orch's main loop actually produces, in a real pty, against a live
-// Orchicon-shaped plane:
-//
-//  1. LAUNCH in a directory covered by a project, with a STORED session the plane
-//     rejects. That is the real entry into the second-shell path: runShell's
-//     launch-time credential probe answers Unauthenticated, main's loop calls
-//     runConnection and then re-enters runShell — a NEW App (see the reconnect
-//     topology: the in-place /connect overlay reuses the App, so this is the path
-//     a reconnect can actually lose state on).
-//  2. THE SECOND SHELL must still be handed the launch DIRECTORY (a fact about the
-//     process, needed on every shell) while its PROMPT stays disarmed (a
-//     first-shell-only rule). The observable consequence is the rail: its title
-//     names the workspace derived from the launch directory, and no launch
-//     question is asked.
-//
-// PRE-FIX (the directory blanked on a continuation) the second shell's rail reads
-// "Conversations · All projects" and this test fails.
+// Package tui — orch_pty_reconnect_scope_test.go — THE LIVE OBSERVATION of the launch-directory
+// workspace default surviving a reconnect (acceptance criterion 1).
 package tui
 
 import (

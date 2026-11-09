@@ -40,9 +40,7 @@ func TestCatalogModelCostFailsClosedWithoutDiscoverer(t *testing.T) {
 	}
 }
 
-// TestClaudeCostUsdIsCatalogPricedWithoutDiscoverer is the end-to-end Gap-4 assertion: a
-// claude/anthropic usage sample recorded through a resolver whose ONLY pricing source is the
-// offline catalog.
+// TestClaudeCostUsdIsCatalogPricedWithoutDiscoverer is the end-to-end Gap-4 assertion.
 func TestClaudeCostUsdIsCatalogPricedWithoutDiscoverer(t *testing.T) {
 	rec := aigateway.NewUsageRecorder(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	rec.SetPricingResolver(func(_ context.Context, provider, model string) (*apiv1.ModelCost, bool) {

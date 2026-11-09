@@ -161,16 +161,6 @@ func (c *clipState) bounds() (x0, y0, x1, y1 int, ok bool) {
 }
 
 // rowExtent is the first and last cell of a row that carry CONTENT.
-//
-// TWO EXCLUSIONS, and both are things the operator met in a paste:
-//
-//   - the pane's BORDER cells are chrome, not content, so selecting across the transcript otherwise puts
-//     a `│` at the start of every copied line — the "weird pipes and characters". The pane's own border is
-//     the same glyph the code block used to draw.
-//   - the REGION this selection began in, so a drag into the rail does not take the rail with it.
-//
-// Only box-drawing characters count as border: a plain `|` is CONTENT, and excluding it would corrupt a
-// copy of code that contains one.
 func (c *clipState) rowExtent(row int) (int, int) {
 	lo, hi := 0, c.rowWidth(row)-1
 	// THE REGION COMES FIRST, THEN THE BORDER STRIP — and the order is load-bearing, not stylistic.
@@ -470,15 +460,7 @@ func (c *clipState) clearToast(seq int) {
 	}
 }
 
-// handleMouse routes a mouse event through the selection. copyText is non-empty when the release
-// completed a selection that should be copied.
-//
-// The CONSUMED rules, in one place:
-//   - press   → not consumed: clicking keeps working exactly as before (the drag is only a
-//     candidate until the head MOVES).
-//   - motion  → consumed once a drag is live, so the drag is the selection.
-//   - release → consumed when it completed a selection (there is nothing else for a release to
-//     do); a release with no movement is NOT consumed, so it cannot break a click.
+// handleMouse routes a mouse event through the selection.
 func (c *clipState) handleMouse(m tea.MouseMsg) (consumed bool, copyText string) {
 	switch m.Action {
 	case tea.MouseActionPress:

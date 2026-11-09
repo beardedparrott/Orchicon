@@ -1,27 +1,6 @@
 package scheduler
 
 // worktree_baseref.go — RESOLVING A REPO'S BASE REF WITHOUT GUESSING.
-//
-// THE DEFECT. Provisioning cut every new branch from a base ref resolved by a two-step guess: try
-// `develop`/`origin/develop`, then `symbolic-ref refs/remotes/origin/HEAD`, then `HEAD`. On a repository
-// where none of those held — a hand-built repo with a dangling `origin/HEAD` and only a `develop` remote
-// branch — the resolver returned "" and provisioning asked git to start the branch at HEAD, which in an
-// unreadable state is `fatal: invalid reference`. The recorded failure was `exit status 128` (see
-// worktree_giterror.go), so neither the base ref nor the reason reached the operator.
-//
-// TWO TRAPS THIS FILE EXISTS TO AVOID, both measured on real repositories:
-//
-//  1. `git rev-parse --abbrev-ref origin/HEAD` ECHOES ITS INPUT BACK when the remote-HEAD symref is missing.
-//     It does not fail. So a resolver built on it returns the literal string "origin/HEAD", hands that to
-//     `git worktree add`, and gets `fatal: invalid reference: origin/HEAD` — a failure that looks like
-//     corruption and is actually a missing symref. Orphaned bare repositories (`init --bare` + push, no
-//     `remote set-head`) have no symref at all; `git clone` always creates one. Reading the symref DIRECTLY
-//     with `symbolic-ref refs/remotes/origin/HEAD` is what makes the absence observable.
-//
-//  2. A hand-built repository can have `origin/HEAD` pointing at a branch that does not exist (`HEAD -> master`
-//     with only `develop` pushed). The symref RESOLVES, so any resolver that stops there returns an invalid
-//     ref. Hence the final guard below: nothing is returned unless `rev-parse --verify <ref>^{commit}` has
-//     confirmed it points at a commit.
 
 import (
 	"context"
@@ -30,9 +9,7 @@ import (
 	"strings"
 )
 
-// baseRefCandidates is the CONFIGURED DEFAULT step of the chain: the branch names this platform
-// treats as a repository's integration base, in order, checked on the local refs and then on
-// origin.
+// baseRefCandidates is the CONFIGURED DEFAULT step of the chain.
 var baseRefCandidates = []string{"develop", "main", "master"}
 
 // resolveBaseRefWithProvenance resolves the ref a new run branch is cut from, and reports HOW.

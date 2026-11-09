@@ -504,15 +504,8 @@ func TestUpdateWorkItemAutoStartClearsScheduleDB(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkItemRecurringMirrorDB verifies the MCP tool mirrors the
-// Connect Update handler's recurring-status invariant (AGENTS.md: the tool
-// and the service cannot drift). The tool cannot SET a schedule, so only
-// the clear/demote direction applies:
-//   - a status switch away from "recurring" clears a carried schedule (the
-//     tool previously left it behind on a non-recurring status),
-//   - a manual status="recurring" pick on a schedule-less item is demoted to
-//     pending ("recurring" is derived, not settable),
-//   - a kind switch to a non-schedulable kind clears the schedule too.
+// TestUpdateWorkItemRecurringMirrorDB verifies the MCP tool mirrors the Connect Update handler's
+// recurring-status invariant (AGENTS.md: the tool and the service cannot drift).
 func TestUpdateWorkItemRecurringMirrorDB(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)

@@ -10,16 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// Stream is a first-class scrolling transcript/log (Ask turns, execution
-// sessions, activity feeds). Two invariants define it:
-//
-//  1. Appending NEVER yanks the operator's scroll offset: a new line only
-//     moves the viewport when the operator was already pinned to the bottom.
-//  2. Auto-follow happens ONLY when already at the bottom.
-//
-// That is the exact behaviour the old list panes lacked (they repainted
-// from a fetch, so a background append both jumped the pane and lost the
-// reader's place).
+// Appending NEVER yanks the operator's scroll offset: a new line only moves the viewport when the
+// operator was already pinned to the bottom.
 type Stream struct {
 	Lines  []string
 	Offset int // index of the top visible line

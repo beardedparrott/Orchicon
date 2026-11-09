@@ -14,9 +14,7 @@ import (
 // that used to return nil — the shell must still produce a discovery command.
 func TestTheShellDiscoversAsksWithoutATurnFlag(t *testing.T) {
 	m := newTestApp()
-	// A client set WITH an Ask client, because discovery needs one — production always has it
-	// (client.go builds the full set), and the empty `&client.Clients{}` newTestApp uses has no Ask at
-	// all.
+	// A client set WITH an Ask client, because discovery needs one.
 	m.clients = client.New(client.Options{BaseURL: "http://127.0.0.1:1", Token: "oc_t"})
 	m.chat = chat.NewController(m.clients)
 	m.chatConvID = "conv-1"

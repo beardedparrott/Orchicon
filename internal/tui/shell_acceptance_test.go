@@ -171,9 +171,7 @@ func TestPaletteNeverOverflows(t *testing.T) {
 	}
 }
 
-// TestConnectCancelClearsReconnectPins esc-cancel of the /connect overlay: it must clear
-// reconnectRequested so a LATER normal quit does not re-open the connection screen (the reconnect
-// loop.
+// TestConnectCancelClearsReconnectPins esc-cancel of the /connect overlay.
 func TestConnectCancelClearsReconnect(t *testing.T) {
 	m := newTestApp()
 	m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
@@ -323,9 +321,7 @@ func TestComposerFocusedAtLaunch(t *testing.T) {
 	}
 }
 
-// TestPaletteAboveComposerPins operator finding 4: the slash palette floats ABOVE the composer —
-// the composer input line (with the typed text) stays visible BELOW the palette box while it
-// filters.
+// TestPaletteAboveComposerPins operator finding 4: the slash palette floats ABOVE the composer.
 func TestPaletteAboveComposer(t *testing.T) {
 	m := newTestApp()
 	m.dispatch(tea.WindowSizeMsg{Width: 80, Height: 24})

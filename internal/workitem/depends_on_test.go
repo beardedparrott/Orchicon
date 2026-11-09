@@ -169,9 +169,7 @@ func TestDependsOnCreateValidationDB(t *testing.T) {
 	_ = target
 }
 
-// TestDependsOnUpdateReplaceDB verifies set-replace semantics: an update fully replaces the
-// outgoing depends_on set, an empty list clears all edges, and an absent field leaves them
-// unchanged.
+// TestDependsOnUpdateReplaceDB verifies set-replace semantics.
 func TestDependsOnUpdateReplaceDB(t *testing.T) {
 	ctx, pool, s, proj := dependsOnTestEnv(t)
 
@@ -507,9 +505,7 @@ func TestDependsOnRelatesToMixedCaseDB(t *testing.T) {
 	}
 }
 
-// TestDependsOnCreateCannotCycleDB documents the create-path invariant: a fresh item has no
-// incoming edges, so an outgoing item→target edge can never close a cycle no matter what the graph
-// around.
+// TestDependsOnCreateCannotCycleDB documents the create-path invariant.
 func TestDependsOnCreateCannotCycleDB(t *testing.T) {
 	ctx, _, s, proj := dependsOnTestEnv(t)
 

@@ -18,22 +18,8 @@ var wslEnvMarkers = []string{"WSL_DISTRO_NAME", "WSL_INTEROP"}
 // TrueColorOptOut disables the WSL true-colour default.
 const TrueColorOptOut = "ORCHICON_TRUECOLOR"
 
-// needsWSLTrueColor reports whether the app should supply the true-colour
-// advertisement its terminal failed to relay.
-//
-// EVERY GUARD IS LOAD-BEARING:
-//
-//   - tty — no terminal means no colour to get right, and this matches
-//     disableAutoWrap, which already leaves non-TTY stdout untouched. termenv would
-//     return Ascii first regardless, so this only keeps us from mutating the
-//     environment of a piped run.
-//   - COLORTERM already set — the terminal advertised after all, and its word is
-//     better than our inference. This is also the escape hatch: COLORTERM=yes pins
-//     ANSI256, because termenv maps yes/true to ANSI256.
-//   - TERM=dumb — a terminal that has told us it can do nothing.
-//   - the opt-out — see TrueColorOptOut.
-//   - a WSL marker — the actual condition. Without it we are on a platform whose
-//     advertisement we have no reason to distrust, and termenv is simply correct.
+// needsWSLTrueColor reports whether the app should supply the true-colour advertisement its
+// terminal failed to relay.
 func needsWSLTrueColor(tty bool, getenv func(string) string) bool {
 	if !tty {
 		return false

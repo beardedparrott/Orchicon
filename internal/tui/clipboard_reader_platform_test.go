@@ -1,28 +1,7 @@
 package tui
 
-// clipboard_reader_windows_test.go — WHICH CLIPBOARD READER EACH PLATFORM GETS.
-//
-// The operator, testing on Windows: "copy and paste into the composer in orch on Windows seemed to send it
-// as multiple lines on a big block of code pasted."
-//
-// TWO FAULTS MEET HERE, and this file pins the half that can be fixed and verified off-platform.
-//
-//  1. clipboardTextCommand had NO "windows" arm at all. ctrl+v is the composer's paste chord (the
-//     textarea's own binding is unreachable — the chord is taken), so on a Windows box every text paste
-//     answered "no clipboard reader on this machine — install a platform clipboard tool". A missing branch
-//     is precisely the defect that survives a hand-test on the platform that already worked, which is why
-//     the decision is now a pure function over (goos, wayland, which-binary-exists) and asserted here.
-//
-//  2. THE SEND WAS NEVER THE PASTE PATH'S FAULT. Native Windows input does not go through the byte stream
-//     in internal/tui/input: bubbletea v1.3.10 routes a Windows console to its coninput reader
-//     (inputreader_windows.go), which decodes a scancode stream and reports VK_RETURN as KeyEnter with no
-//     Shift and no Paste flag — because ENABLE_BRACKETED_PASTE is never set on that path. A pasted block is
-//     therefore a burst of ordinary Enter keys, and the dock's documented contract ("enter send") fires on
-//     each one. That is ONE cause for both reported symptoms, and it is why the reader added below matters:
-//     text inserted through clipboardTextMsg reaches the composer as text, never as keys.
-//
-// The reader decision is what this file can prove without a Windows box. The console-mode half is a
-// separate change that must be verified on the platform.
+// clipboard_reader_windows_test.go — WHICH CLIPBOARD READER EACH PLATFORM GETS. THE SEND WAS NEVER
+// THE PASTE PATH'S FAULT.
 
 import (
 	"strings"

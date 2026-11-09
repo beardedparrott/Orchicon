@@ -61,41 +61,7 @@ type Tab struct {
 	Ordinal string // "F1"…"F7" — the key the bar prints, UNDERLINED: it IS the chord, not decoration
 }
 
-// Tabs is the top tab bar, in GUI nav order. Ordinals number the tabs so
-// the tab bar matches the mockup's "1 · 2 · 3…" chrome; clicking a tab
-// (mouse) is wired in the shell dispatcher.
-//
-// THE CHORDS ARE F1 … F7, and the label the bar prints IS the chord (only the case differs), so the
-// key the operator presses and the text beside the tab cannot disagree — the same invariant the
-// chord list has carried since the ctrl+letter chords were replaced, when a letter per tab sat next
-// to an unrelated number: "I think we should get rid of the ctrl+letter for the tab menus up top".
-//
-// HOW WE GOT TO F-KEYS — three candidates, each MEASURED through a pty and bubbletea's OWN parser
-// (the same one the running program uses; the probe is validated by its delivery of plain letters
-// and of the chord under test), never assumed:
-//
-//  1. ctrl+<digit> DOES NOT EXIST as a key. ctrl+1 arrives as ctrl+q, ctrl+2 as ctrl+@, and — the
-//     reason this is more than cosmetic — **ctrl+3 arrives as ESC and ctrl+8 as BACKSPACE**, because
-//     a control byte is `digit & 0x1f` and 3 and 8 collide with the escape and delete bytes.
-//     ctrl+4/5/6/7 arrive as ctrl+\ / ctrl+] / ctrl+^ / ctrl+_. The protocols that would
-//     disambiguate (xterm's modifyOtherKeys, kitty CSI-u) are NOT negotiated by bubbletea and return
-//     nothing at all.
-//  2. alt+<digit> IS delivered correctly — measured: alt+1 genuinely arrives as alt+1 — but the
-//     operator's EMULATOR claims it first: "I use Konsole and I bet a lot of other people do as well
-//     and when I hit alt+number it moves to a different terminal tab as opposed to actually
-//     affecting orch". That is claimed at the emulator's level, before any program sees the byte, so
-//     no binding here can recover it. The operator's own suggestion, shift+<digit>, is ALSO not
-//     bindable: shift+1 arrives as the SHIFTED SYMBOL ("!"), so binding the digits' shifted forms
-//     would break typing punctuation everywhere. (Measured alongside: shift+1 → "!", ctrl+alt+1 →
-//     nothing, and both disambiguating protocols → nothing.)
-//  3. F1 … F7 IS delivered cleanly — measured: F1 → "f1". One keystroke, not claimed by the
-//     emulator, and it collides with nothing here (no screen binds an F-key).
-//
-// WHICH IS WHY THE BAR NO LONGER NAMES A MODIFIER. "alt+ 1·Ask Orchicon" existed because a bare
-// number beside a tab does not say what to hold down — it was a label explaining the MODIFIER. An
-// F-key needs no explanation: the label printed at the tab ("F1") already names the whole key, so a
-// modifier prefix would be five cells of noise in front of the operator's own tabs. The label is
-// gone, and the label printed at each tab is what the operator presses.
+// Tabs is the top tab bar, in GUI nav order.
 var Tabs = []Tab{
 	{TabAsk, "Ask Orchicon", "f1", "F1"},
 	{TabOverview, "Overview", "f2", "F2"},
@@ -1320,31 +1286,7 @@ func (m *App) closeDiffPane() {
 	m.refreshLayout()
 }
 
-// syncLayoutWidth re-applies the layout when the CONTENT WIDTH changed since it
-// was last applied.
-//
-// The width is not a pure function of a terminal resize: contentWidth() subtracts
-// ConversationsRailWidth whenever railVisible() is true, and railVisible() depends
-// on SHELL STATE (askMode / chatConvID). So the conversations rail APPEARING — the
-// launch page becoming the conversation view, or the rail being toggled — changes
-// the content width with no WindowSizeMsg to drive refreshLayout().
-//
-// The dock and the screen then keep the pre-rail (wider) width, and baseView's
-// normalizeBlock TRUNCATES their right edge down to the real width. That silently
-// cuts off everything RIGHT-ALIGNED:
-//
-//   - the composer's stat strip — the context/token/cache figures and the mode
-//     pill live at the bottom-RIGHT ("the context information and model picker on
-//     the bottom right are off the screen and I can't see it");
-//   - the operator's OWN message bubbles, which are right-aligned — so a just-sent
-//     message was missing from a transcript that plainly CONTAINED it, while the
-//     left-aligned reply rendered normally;
-//   - and it sliced long LEFT-aligned lines mid-sentence, because the renderer had
-//     wrapped them to a pane wider than the one they were finally drawn in.
-//
-// Checks the applied width rather than a change counter, so it is self-correcting:
-// every path that alters rail visibility is covered without each such path having
-// to remember to re-layout, and once corrected the check is a no-op.
+// syncLayoutWidth re-applies the layout when the CONTENT WIDTH changed since it was last applied.
 func (m *App) syncLayoutWidth() {
 	if m.width <= 0 {
 		return
@@ -1711,8 +1653,7 @@ func (m *App) OpenAskConversation(id string) tea.Cmd {
 		return nil
 	}
 	// THE SCOPE MODAL BELONGS TO ONE CONVERSATION: opening a different one closes it rather than
-	// leaving a pane on screen that edits the previous chat's servers (the GUI's Scope disclosure
-	// closes.
+	// leaving a pane on screen that edits the previous chat's servers (the GUI's Scope disclosure.
 	m.closeScopeModal()
 	m.askMode = askConversations
 	m.chatConvID = id
@@ -1862,8 +1803,7 @@ type execSessionMsg struct {
 }
 
 // navEntries returns (building once) the tab's dropdown rows from the screen inventory
-// (buildNavEntries over Sources()) — the same no-drift source as the slash registry, per
-// docs/tui-parity.md.
+// (buildNavEntries over Sources()).
 func (m *App) navEntries(tab TabID) []NavEntry {
 	if m.navReg == nil {
 		m.navReg = buildNavEntries(m)
@@ -2047,9 +1987,7 @@ func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 	}
 	ns, cmd := s.Update(msg)
 	m.screens[m.active] = ns
-	// The Ask screen's detail pane is the transcript surface: whenever it re-renders (e.g. a
-	// conversation detail just loaded — including from a rail click), relay the merged transcript into
-	// it.
+	// The Ask screen's detail pane is the transcript surface.
 	if m.active == TabAsk {
 		m.onChatWake()
 	}
@@ -2943,32 +2881,8 @@ func (s *chatStore) hasPendingConsent(convID string) bool {
 	return false
 }
 
-// drawConsentAsk puts a pending ask's card into the conversation's transcript, and reports whether it drew
-// one (false = this conversation already holds a card for that ask).
-//
-// IT IS THE ONE PLACE A CARD ENTERS THE TRANSCRIPT, called by both the shell (App.ShowConsentAsk, from the tea
-// loop) and the stream (appEventStore.ShowConsentAsk, from the turn's goroutine), so the two paths cannot
-// disagree about the ask's identity, about the conversation it lands in, or about drawing it twice.
-//
-// A CARD THE SERVER RAISED IS ALWAYS DRAWN. This used to be suppressed by the shell's own grant mirror, and
-// the suppression could only ever swallow a decision the operator needed to make:
-//
-//   - the server consults its grant store BEFORE it raises an ask (permpolicy's SessionGranted input), so an
-//     ask that arrives is one the server genuinely has no consent for. A client that mutes it does not remove
-//     a question — it removes the ANSWER, and the turn parks with nothing on screen to act on. The operator,
-//     watching both clients: "the permission ask card pops up in the GUI but it doesn't pop up in the TUI. It
-//     just sits at 'orchicon is thinking'."
-//   - the mirror's inputs were all unreliable: the server's grants are IN MEMORY and are dropped by every plane
-//     restart (the prod plane restarted 14 times in the two days this was measured); a decision this client
-//     sent may have been REFUSED (Applied=false, Expired=true) while the card was still settled locally; and
-//     the server matches a grant over its whole SUBTREE while the mirror matched the directory EXACTLY.
-//
-// A duplicate card is answerable; a missing one hangs the turn. Where the mirror used to silence a repeat, the
-// SERVER does it correctly — it will not raise the ask again once the grant is applied.
-//
-// Idempotence is kept for the SAME ask, which is not hypothetical: a dropped socket re-dials through
-// WatchTurnStream, whose replay re-emits every pending ask (chat.go), so without this the card the operator
-// already has would be drawn a second time.
+// drawConsentAsk puts a pending ask's card into the conversation's transcript, and reports whether
+// it drew one (false = this conversation already holds a card for that ask).
 func (s *chatStore) drawConsentAsk(convID string, ask chat.PermissionAsk) bool {
 	if convID == "" {
 		return false
@@ -4033,9 +3947,7 @@ func (m *App) composerClickAt(x, y int) bool {
 			// Outside the drawn box — the centered margins, or the brand/tagline above and below.
 			return false
 		}
-		// ClickAt measures the box it is placing the caret in (the prompt offset, the input rows, the
-		// textarea's width), so it MUST be given the width the box was DRAWN at rather than the layout
-		// width.
+		// ClickAt measures the box it is placing the caret in (the prompt offset.
 		prev := m.dock.Width
 		m.dock.Width = g.Width
 		ok := m.dock.ClickAt(x-g.Left, y-g.Top)
@@ -4153,9 +4065,7 @@ func (m *App) consentDecideFromRow(label string) tea.Cmd {
 		if label == chat.ConsentOther {
 			st.OtherMode = true
 			st.OtherInput = ""
-			// THE CLICK IS AN ACT ON THE CARD, so the card takes the keyboard back: a card whose claim was
-			// released by ctrl+g would otherwise draw an input row that collects nothing while the typing it
-			// asks.
+			// THE CLICK IS AN ACT ON THE CARD, so the card takes the keyboard back.
 			m.reArmConsentClaim()
 			return m.onChatWake()
 		}
@@ -4417,9 +4327,7 @@ func (m *App) modelRefForConv(convID string) string {
 	return m.currentAskModel()
 }
 
-// IT IS LIVE-ONLY BY CONSTRUCTION, and that is correct: there is no server row to reconcile
-// against, and a later successful turn's durable transcript REPLACES the local buffer
-// (chatStore.replace.
+// IT IS LIVE-ONLY BY CONSTRUCTION, and that is correct.
 func (m *App) surfaceTurnFailure(convID string, err error) tea.Cmd {
 	if convID == "" || m.chatStore == nil {
 		return nil

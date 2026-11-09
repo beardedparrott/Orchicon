@@ -1,22 +1,6 @@
 package guard
 
-// accessor_equivalence_globs_test.go — the second half of AC-6: the shim's
-// hand-written bash matcher must reach permpolicy.Decide's verdict for the
-// pattern SHAPES the accessor accepts, not just for plain literals.
-//
-// Each case here was a REAL divergence found by sweeping the shim against
-// permpolicy.Decide. The first two are FAIL-OPEN — the shim ran a command the
-// operator's deny list refused, in the one component whose job is the
-// subprocess hole consent cannot see:
-//
-//   * a deny entry using {a,b} alternation was never matched (bash 'case' has
-//     no brace expansion), so the denied target was deleted;
-//   * a deny entry with two '/**/' runs was only tried with its runs collapsed
-//     front-to-back, so 'a/**/b/**/c' never matched 'a/x/b/c'.
-//
-// The rest are drift (the shim refusing a path the accessor proceeds on), which
-// is the failure mode the work item names: a command that prompts and is then
-// refused anyway.
+// accessor_equivalence_globs_test.go — the second half of AC-6.
 
 import (
 	"os"

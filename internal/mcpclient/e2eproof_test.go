@@ -91,20 +91,8 @@ var tenantTierNeedles = []string{
 	"tenant_default_mcp",
 }
 
-// tenantTierAllowlist is the ONLY set of paths allowed to name the tier, with
-// the reason each is legitimate:
-//
-//   - the ownership migration (and its down migration) are the SQL that DROPS
-//     the column — a migration that removes a tier must name it;
-//   - the frontend panel test asserts the hooks' ABSENCE (a negative assertion
-//     cannot be written without the name);
-//   - the frontend placement test does the same for the retired component
-//     names;
-//   - the TUI's project form carries historical NOTE comments explaining what
-//     was REMOVED and why (the "no selection to write any more" record);
-//   - mcpclient/command.go's comment cites the old frontend shape by name.
-//
-// Anything ELSE matching a needle is the failure.
+// tenantTierAllowlist is the ONLY set of paths allowed to name the tier, with the reason each is
+// legitimate:
 func tenantTierAllowlist(path string) bool {
 	p := filepath.ToSlash(path)
 	// The proof harness itself NAMES every needle: the gate below, and the Ask tool-list gate that

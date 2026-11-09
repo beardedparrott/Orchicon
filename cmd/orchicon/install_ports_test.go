@@ -11,17 +11,7 @@ import (
 	"testing"
 )
 
-// TestInstallPortDefaultsMatchShellInstanceTable is the cross-language agreement
-// gate. The Go installer and scripts/lib/instances.sh each resolve the
-// per-instance port table, and they cannot share a constant — so the agreement
-// has to be ASSERTED. Two drifts matter, and this checks both:
-//
-//  1. the DEFAULTS, so `orchicon install` and `scripts/orchicon.sh start` agree
-//     on which port an instance answers on when nobody overrides anything;
-//  2. the OVERRIDE KNOB NAMES, because an operator setting one must move the
-//     port in BOTH launchers. That is the failure this test is really for: the
-//     Go side honouring ORCHICON_CONTROL_PORT while the bash side silently keeps
-//     8080 would leave the two binding different ports for one instance.
+// TestInstallPortDefaultsMatchShellInstanceTable is the cross-language agreement gate.
 func TestInstallPortDefaultsMatchShellInstanceTable(t *testing.T) {
 	src, err := os.ReadFile("../../scripts/lib/instances.sh")
 	if err != nil {
@@ -228,9 +218,7 @@ func freeExcept(taken ...int) func(int) bool {
 	return func(p int) bool { return !blocked[p] }
 }
 
-// TestPlanInstallPortsDefaultsNonInteractive pins the headless path: with no terminal and free
-// ports, every port takes its per-instance default and the choices are STATED (an operator must
-// never.
+// TestPlanInstallPortsDefaultsNonInteractive pins the headless path.
 func TestPlanInstallPortsDefaultsNonInteractive(t *testing.T) {
 	var out bytes.Buffer
 	got, err := planInstallPorts("dev", installerPorts(), nil, alwaysFree, nil, &out)
@@ -299,9 +287,7 @@ func TestValidateInstanceAcceptsExactlyTheTableColumns(t *testing.T) {
 	}
 }
 
-// TestPlanInstallPortsConflictSuggestsNext is the auto-enumeration the operator asked for: 8080
-// taken means the default becomes 8081 — but the conflict is ANNOUNCED rather than silently
-// absorbed.
+// TestPlanInstallPortsConflictSuggestsNext is the auto-enumeration the operator asked for.
 func TestPlanInstallPortsConflictSuggestsNext(t *testing.T) {
 	var out bytes.Buffer
 	got, err := planInstallPorts("dev", installerPorts(), nil, freeExcept(8080), nil, &out)

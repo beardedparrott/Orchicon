@@ -1,20 +1,6 @@
 package claude
 
 // queues_prompts_test.go — the EVIDENCE behind `Bridge.QueuesPrompts() == true`, pinned.
-//
-// The declaration says a mid-turn write is queued by the CLI and answered at the next boundary. That is only
-// true while two things hold in session.go, and both are load-bearing for interjections:
-//
-//  1. SendTurn increments `queued` when it writes, so the run loop KNOWS a turn is outstanding;
-//  2. onTerminal DECREMENTS it and returns early while it is still positive — that early return is what stops
-//     the session finishing at the first `result` and abandoning the queued turn.
-//
-// If either is removed, the declaration becomes a lie: an interjection would be written to the child and then
-// the session would close at the current turn's boundary, leaving the operator's message unanswered with no
-// error anywhere — the same class of silent loss the interjection work exists to remove.
-//
-// A SOURCE ASSERTION, deliberately: driving the real behaviour needs the claude CLI binary, which CI does not
-// have, so a behavioural test would be skipped everywhere and guard nothing.
 
 import (
 	"os"

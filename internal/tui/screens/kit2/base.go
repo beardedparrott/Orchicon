@@ -135,9 +135,7 @@ type Base struct {
 	// filter box (the search row above the list).
 	filtering bool
 
-	// pendingSelect names a row to focus as soon as it APPEARS in a source — used after a create, so
-	// the new entity is selected and visible instead of silently landing below the fold while the
-	// cursor.
+	// pendingSelect names a row to focus as soon as it APPEARS in a source.
 	pendingMu     sync.Mutex
 	pendingSelect map[string]string
 	pendingOwn    map[string]string

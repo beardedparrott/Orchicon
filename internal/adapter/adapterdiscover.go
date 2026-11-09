@@ -1,30 +1,6 @@
 package adapter
 
 // adapterdiscover.go — ASK THE OS WHERE THE BINARY IS, INSTEAD OF LISTING INSTALLS WE KNOW.
-//
-// THE PRINCIPLE. Orchicon is a tool that CALLS other tools. It should meet them where they are, not require
-// them to be where we guessed. Every candidate list in this package is evidence about what SOME machine
-// looked like: the operator's npm global, their WinGet package. That is a treadmill — Chocolatey, nix,
-// mise, a portable zip, a corporate image each need a new entry, and the entry is always added AFTER
-// somebody reports the miss.
-//
-// So this file does the two things the lists cannot:
-//
-//  1. IT ASKS THE OS. `exec.LookPath` is the `which` algorithm, implemented in-process — the same one the
-//     shell uses, with the right per-platform rules (PATHEXT on Windows, the exec bit on POSIX). Shelling
-//     out to `which` would be worse in three ways: it is not always installed (minimal images, NixOS), it is
-//     a separate process with its own environment so it can resolve a different binary than we execute, and
-//     on some systems it is a script with its own quirks.
-//
-//  2. IT USES A PATH THAT IS NOT A SNAPSHOT. This is the part that actually fixes the reported bug. LookPath
-//     reads the PROCESS's PATH, and a long-lived plane's PATH is whatever the process that started it had —
-//     so an operator who installs opencode afterwards has a shell that finds it and a plane that does not.
-//     "I reinstalled and it still says not found" is that, exactly. The fix is to read the PATH from its
-//     SOURCE (see FreshPathDirs) and search that alongside our own.
-//
-// AND IT STILL REFUSES SHIMS, because LookPath does not. On Windows LookPath will happily return
-// `opencode.cmd` — a file Go cannot execute — so a discovery built on LookPath alone would find the adapter
-// and then fail at the first dispatch. Every hit is checked before it is offered.
 
 import (
 	"os"

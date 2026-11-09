@@ -289,9 +289,7 @@ func (b *Base) SetShell(sh any) { b.shell = sh }
 // Shell returns the installed shell reference (nil when unset).
 func (b *Base) Shell() any { return b.shell }
 
-// SetOnDetail installs a hook fired whenever a detail lands (detailMsg handling): the ask
-// transcript / execution live-session views use it to (re)attach the live item stream for the
-// entity.
+// SetOnDetail installs a hook fired whenever a detail lands (detailMsg handling).
 func (b *Base) SetOnDetail(fn func(src, id string) tea.Cmd) { b.onDetail = fn }
 
 // DetailID returns the id of the item the detail pane currently shows
@@ -307,8 +305,7 @@ func (b *Base) DetailWidth() int {
 }
 
 // SetDetailContent pushes live-updated content into the open detail pane without touching scroll
-// state fields it owns (title/fields kept when body is unchanged by callers passing the same
-// title).
+// state fields it owns (title/fields kept when body is unchanged by callers passing the same.
 func (b *Base) SetDetailContent(title string, fields []Field, body string) {
 	b.detail.SetContent(title, fields, body)
 }

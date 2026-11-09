@@ -1,40 +1,5 @@
-// Package planecontrol is THE shared local plane-control mechanism: status, start, stop and restart for an
-// instance's host-resident plane.
-//
-// # THE DECISION: LOCAL PROCESS INVOCATION ONLY. THERE IS NO LIFECYCLE RPC AND THIS PACKAGE ADDS NONE.
-//
-// The question every lifecycle surface depends on is "does a control go through the plane's Connect API, or
-// does each client invoke the binary locally?" The answer is the local one, and the reason is that the API
-// path existed for exactly one consumer: the web app. A browser cannot spawn a process, so a Stop button in
-// the browser had to reach the plane over the API — and that RPC had to reply BEFORE killing the server
-// answering it, which is the awkward part. The web app is OUT OF SCOPE for lifecycle control. What remains
-// runs on the same host as the plane and can simply invoke the mechanism:
-//
-//   - the desktop app — a Go process (Wails) that can spawn another;
-//   - the TUI (`orch`) — a separate binary that does not depend on the plane serving it;
-//   - the CLI — the operator/admin path;
-//   - `scripts/orchicon.sh` / `scripts/container.sh`, which delegate to the same `orchicon plane` verb.
-//
-// So the shared layer is a Go package, not an RPC. `internal/api/api.go`, `proto/` and the generated clients
-// are untouched by this package, and internal/api's surface test asserts the API did not grow.
-//
-// A future surface that genuinely needs REMOTE control is a separate decision with its own brief; it must
-// not creep in here.
-//
-// # WHAT THIS PACKAGE MUST NOT BREAK
-//
-//   - THE FAIL-SAFE: a plane that cannot be POSITIVELY identified is LEFT ALONE. A restart we cannot justify
-//     is a blip on a working instance (see the `default:` arm of Start).
-//   - GRACEFUL, BOUNDED STOP: `serve --stop` is re-execed (it sends SIGTERM, waits the supervisor's shutdown
-//     window, escalates, and exits non-zero on a survivor); then this layer polls the PID file a bounded
-//     number of times and REPORTS failure rather than hanging when the socket is not released.
-//   - PER-INSTANCE ISOLATION: every path derives from HostDataDir(instance), so two instances can never be
-//     controlled as one. ORCHICON_SERVE_STATE_DIR is only ever set as a CHILD env built from that dir.
-//   - PORTS ARE READ BACK, NEVER RE-RESOLVED: re-resolving prompts, and a lifecycle command must never ask.
-//
-// IT IMPORTS THE STANDARD LIBRARY AND NOTHING ELSE. That is what lets the TUI (`cmd/orch`) and a Wails app
-// depend on it without pulling in the plane's HTTP server, the api package, the generated clients or the db
-// layer — an imports test in this package asserts it.
+// Package planecontrol is THE shared local plane-control mechanism: status, start, stop and restart
+// for an instance's host-resident plane.
 package planecontrol
 
 import (
@@ -82,18 +47,7 @@ var instanceEnvKeys = []string{
 	"ORCHICON_BLOB_DIR",
 	"ORCHICON_POSTGRES_DSN",
 	"ORCHICON_NATS_URL",
-	// THE PLANE'S OWN BOOT MARKERS. These are per-PROCESS, set by `serve --detach` for the child it
-	// forks, and must never be inherited by a NEW plane:
-	//
-	//   ORCHICON_SERVE_DETACHED=1  makes `serve --detach` fall straight through to running the server in
-	//                              the foreground — so any lifecycle command launched from a shell that
-	//                              inherited it becomes a foreground plane with no PID file.
-	//   ORCHICON_SERVE_LOG_FILE    points the rotating writer at ANOTHER instance's log.
-	//
-	// OBSERVED IN THIS ENVIRONMENT: a session spawned by the prod plane carried all three of
-	// ORCHICON_SERVE_DETACHED / _STATE_DIR / _LOG_FILE for prod. Every dev plane started from that shell
-	// wrote into prod's log and never wrote its PID file, which is why "the dev log stopped hours ago"
-	// and the actual failure was invisible.
+	// THE PLANE'S OWN BOOT MARKERS.
 	"ORCHICON_SERVE_DETACHED",
 	"ORCHICON_SERVE_LOG_FILE",
 }

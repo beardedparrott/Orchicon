@@ -73,8 +73,7 @@ func TestCreateContainerFlagsPodman(t *testing.T) {
 	}
 
 	// The flag block carries no bind at all — every -v comes from the validated mount set
-	// (standardHostMountArgs and the request's own mounts), so a positionally-misplaced -v cannot hide
-	// in here.
+	// (standardHostMountArgs and the request's own mounts).
 	if argvHas(args, "-v") {
 		t.Errorf("createFlagArgs must not emit -v: %v", args)
 	}

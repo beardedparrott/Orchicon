@@ -308,9 +308,7 @@ func TestBootstrapLocalAdminNoClobber(t *testing.T) {
 	}
 }
 
-// TestBootstrapLocalAdminCredentialGap pins option B (no-lockout upgrade): when the tenant admin
-// role already binds an identity but that identity has NO local credential (a volume that only
-// ever.
+// TestBootstrapLocalAdminCredentialGap pins option B (no-lockout upgrade).
 func TestBootstrapLocalAdminCredentialGap(t *testing.T) {
 	pool := testBootstrapEnv(t)
 	t.Setenv(localAdminUsernameEnv, "gap-admin")

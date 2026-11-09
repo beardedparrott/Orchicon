@@ -116,9 +116,7 @@ did (no ORCHICON WORKER SUMMARY needed — that gate is disabled in this
 mode). If a request is ambiguous, ask a short clarifying question instead
 of guessing.`
 
-// renderMutableZone renders the after-breakpoint mutable block from live session state:
-// durable-memory digest (D3), memory notes (insertion order) and the latest todo digest (array
-// order).
+// renderMutableZone renders the after-breakpoint mutable block from live session state.
 func (s *Session) renderMutableZone() string {
 	notes := s.MemoryNotes()
 	todos := s.TodosDigest()
@@ -205,9 +203,7 @@ func envFactsBlock(manifestFields envFactsFields) string {
 		"- Model: " + manifestFields.ModelRef
 }
 
-// memoryNoteToolDef is the native session's memory tool: registered by the loop itself
-// (session-scoped, never the MCP registry) so the model can persist durable notes into the mutable
-// zone.
+// memoryNoteToolDef is the native session's memory tool.
 func memoryNoteToolDef() ToolDef {
 	return ToolDef{
 		Name:        "orchicon_memory_note",

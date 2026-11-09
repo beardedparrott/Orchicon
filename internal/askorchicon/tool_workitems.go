@@ -755,9 +755,7 @@ func toolStartWorkflowFn(pool *db.Pool) scheduler.StartWorkflowFn {
 	}
 }
 
-// toolAssignWorker assigns a worker to a work item, mirroring the AssignWorker RPC: the ref
-// {worker_id, version} is stored in assigned_worker_ref and a work_item.worker_assigned outbox
-// event.
+// toolAssignWorker assigns a worker to a work item, mirroring the AssignWorker RPC.
 func toolAssignWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ID       string `json:"id"`
@@ -832,8 +830,7 @@ func toolUnassignWorker(ctx context.Context, pool *db.Pool, args json.RawMessage
 		return nil, err
 	}
 	// Clear assigned_worker_ref with a version CAS (the bytea column cannot encode NULL through the
-	// *[]byte pointer — the direct-query approach mirrors UnassignWorker in
-	// internal/workitem/service.go).
+	// *[]byte pointer.
 	const q = `UPDATE work_items
 		SET assigned_worker_ref = NULL, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
@@ -1132,15 +1129,8 @@ func toolReorderWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessa
 	return json.Marshal(map[string]any{"reordered": out, "parent_id": params.ParentID})
 }
 
-// toolControlSequence drives a sequence parent manually (start / resume /
-// stop) — mirrors the ControlSequence RPC (AGENTS.md Ask-Orchicon-sync
-// rule). A parent with children IS a sequence run; these explicit gestures
-// are what the engine's derived cursor cannot infer on its own:
-//   - start re-fires the chain from child #1 (destructive — every
-//     descendant resets to pending).
-//   - resume continues from the first non-succeeded child (keeps state).
-//   - stop parks the chain (parent → pending, schedule cleared) so
-//     children can be run standalone.
+// toolControlSequence drives a sequence parent manually (start / resume / stop) — mirrors the
+// ControlSequence RPC (AGENTS.md Ask-Orchicon-sync rule).
 func toolControlSequence(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ID     string `json:"id"`

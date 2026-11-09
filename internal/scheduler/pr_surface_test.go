@@ -65,8 +65,7 @@ func TestDeterministicPRForBranchVerified(t *testing.T) {
 }
 
 // TestPRStepSuccessStampsVerifiedPR verifies that a succeeded PR-requiring step on a
-// git_strategy=pr run with a gh-verified PR leaves its execution row (and run_context) with the
-// verified.
+// git_strategy=pr run with a gh-verified PR leaves its execution row (and run_context).
 func TestPRStepSuccessStampsVerifiedPR(t *testing.T) {
 	stubGH(t, "verify")
 	pool, rc, runID, execID := seedPRStepFixture(t, "PR_URL: https://github.com/OWNER/REPO/pull/999\nPR_STATE: open\nORCHICON WORKER SUMMARY: success\n")

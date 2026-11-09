@@ -179,22 +179,6 @@ func TestSlashDiffTogglesLeftRailFromComposer(t *testing.T) {
 }
 
 // The content width must FOLLOW the conversations rail, not merely a resize.
-//
-// railVisible() depends on SHELL STATE (askMode / chatConvID), so the rail
-// appearing shrinks the content area by ConversationsRailWidth with no
-// WindowSizeMsg to drive refreshLayout(). The dock then kept its pre-rail width
-// and baseView's normalizeBlock TRUNCATED its right edge — silently cutting off
-// everything right-aligned:
-//
-//   - the composer's context/token/cache stat strip and the mode pill, at the
-//     bottom right (the operator's "the context information and model picker on
-//     the bottom right are off the screen and I can't see it");
-//   - the operator's OWN message bubbles — user messages are right-aligned, so a
-//     just-sent message was missing from a transcript that plainly contained it
-//     while the left-aligned reply rendered normally.
-//
-// The existing frame tests could not see this: every row is still EXACTLY w
-// cells wide, because truncation preserves the frame contract.
 func TestLayoutWidthFollowsRailVisibility(t *testing.T) {
 	const w, h = 200, 50
 
@@ -380,26 +364,8 @@ func TestTabAdvancesTheRingThroughAScreenKeyClaim(t *testing.T) {
 	}
 }
 
-// The operator's five-step navigation model, end to end:
-//
-//  1. Tab moves through the menu
-//  2. up/down move through the submenu
-//  3. Enter selects the submenu
-//
-// The operator's navigation model, end to end:
-//
-//  1. Tab moves through the top-level tabs — and ONLY moves. It must not pop a
-//     submenu open ("submenus should only pop up if you enter on them"), because
-//     an open menu also eats the arrows.
-//  2. Enter on a tab opens that tab's submenu.
-//  3. up/down move through the submenu.
-//  4. Enter selects — which closes the menu AND moves focus into the pane.
-//  5. up/down then move the pane items.
-//
-// The load-bearing parts are that nothing below the tab bar receives keys until a
-// submenu entry is SELECTED ("the project page STILL captures the down/up controls
-// without actually selecting it yet"), and that once selected the arrows do reach
-// the pane ("Executions and Workers ... are locked").
+// The operator's five-step navigation model, end to end: Tab moves through the top-level tabs — and
+// ONLY moves.
 func TestNavigationModelTabEnterArrows(t *testing.T) {
 	m := newTestApp()
 	for _, tb := range Tabs {
@@ -534,9 +500,7 @@ func TestTabYieldsOnlyToAWindowedModalForm(t *testing.T) {
 	m.SwitchTo(TabWork)
 	m.setFocus(focusContent)
 
-	// A FORM owns Tab — inline editor or a windowed modal — and the operator settled the rule
-	// explicitly: "ONCE IN EDIT/NEW MODE using down/up OR tab/shift+tab should move through the edit
-	// items.
+	// A FORM owns Tab — inline editor or a windowed modal.
 	ws := m.screens[TabWork].(*work.Model)
 	form := kit2.NewForm("Edit work item",
 		kit2.FieldSpec{Name: "title", Label: "Title", Kind: kit2.KText},

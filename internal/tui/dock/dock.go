@@ -25,21 +25,7 @@ type NewlineMode string
 const (
 	NewlineAltEnter       NewlineMode = "alt+enter"
 	NewlineBackslashEnter NewlineMode = "backslash-enter"
-	// NewlineCtrlJ is the chord that works where the others cannot, and on Windows it is the default.
-	//
-	// WHY IT EXISTS. The two "natural" chords are both unavailable on a native Windows console, and neither
-	// reason is ours to fix:
-	//
-	//   - SHIFT+ENTER never arrives as a distinguishable key. Windows Terminal emits no distinct VT sequence
-	//     for it by default, and the console decoder (bubbletea's key_windows.go) maps VK_RETURN to KeyEnter
-	//     reading ONLY Alt — it never consults Shift. So the platform is told "Enter", and Enter sends.
-	//   - ALT+ENTER IS CONSUMED BY THE TERMINAL. Windows Terminal binds alt+enter to toggleFullscreen, which
-	//     is why the operator saw the tab bar disappear instead of a newline: the key never reached orch at
-	//     all. No application can recover a chord its host has claimed.
-	//
-	// CTRL+J has neither problem: Ctrl+J produces the control character 0x0A, which both the Windows console
-	// decoder and the ANSI byte reader report as KeyCtrlJ, and Windows Terminal leaves it unbound. It also
-	// works on Linux and macOS terminals, so it is a universal fallback rather than a Windows special case.
+	// Windows Terminal emits no distinct VT sequence for it by default.
 	NewlineCtrlJ NewlineMode = "ctrl+j"
 	NewlineBoth  NewlineMode = "both"
 )
@@ -66,17 +52,8 @@ func ParseNewlineMode(s string) NewlineMode {
 // platform.
 func ChordReachesOrch(mode NewlineMode) bool { return chordReachesOrchFor(mode, runtime.GOOS) }
 
-// chordReachesOrchFor is ChordReachesOrch's decision, with the platform injected so it is testable from any host.
-//
-// PER CHORD ON WINDOWS, not "everything except alt+enter", because the two chords fail for DIFFERENT reasons and
-// only one of them is a terminal binding:
-//
-//   - alt+enter: Windows Terminal binds it to toggleFullscreen. Claimed by the terminal.
-//   - shift+enter: not claimable by the terminal at all. The Windows console decoder maps VK_RETURN to KeyEnter
-//     reading ONLY Alt — it never consults Shift — so no terminal binding can make it arrive distinct. (The
-//     backslash chord needs Shift too, for its backslash, but that shift produces a RUNE, which is decoded
-//     normally, so the chord itself works.)
-//   - ctrl+j: delivered on both input paths and unbound in the terminal, so it always reaches the program.
+// The Windows console decoder maps VK_RETURN to KeyEnter reading ONLY Alt — it never consults Shift
+// — so no terminal binding can make it arrive distinct.
 func chordReachesOrchFor(mode NewlineMode, goos string) bool {
 	if goos != "windows" {
 		return true
@@ -147,9 +124,7 @@ type Model struct {
 	viewportRows int
 	Newlines     NewlineMode
 
-	// Context is the ACTIVE screen's shortcut list (the shell derives it from the screen's HintLine),
-	// rendered at the head of the affordance row so the guidance always names what the current page
-	// can.
+	// Context is the ACTIVE screen's shortcut list (the shell derives it from the screen's HintLine).
 	Context string
 
 	// Stats is the session stat strip (ask model · context · tokens · cache · cost), rendered
@@ -234,19 +209,8 @@ func New() Model {
 // The shell calls it after /theme so the box never keeps the old theme.
 func (m *Model) ApplyTheme() { m.themeStyles() }
 
-// styledTa returns the textarea with this theme's styles applied and the
-// ACTIVE-style pointer re-resolved.
-//
-// Two bubbles details make this necessary, and both produced visible bugs:
-//
-//   - EndOfBuffer defaults to a FOREGROUND-only style, and bubbles renders the
-//     cursor line's TRAILING PADDING with that style and nothing else. With no
-//     background on those cells they render on the terminal's own background —
-//     the black band that appeared the moment the operator typed.
-//   - Style resolution goes through an unexported `style` POINTER that Focus()
-//     /Blur() re-point. Assigning the Style structs alone can leave the pointer
-//     on a stale copy, so the assignment is followed by Focus()/Blur() to make
-//     bubbles re-resolve it against the styles just set.
+// styledTa returns the textarea with this theme's styles applied and the ACTIVE-style pointer
+// re-resolved.
 func (m *Model) styledTa() textarea.Model {
 	ta := m.ta
 	base := lipgloss.NewStyle().Background(theme.ComposerFill).Foreground(theme.Text)
@@ -988,24 +952,7 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 			m.insertNewline("ctrl+j")
 			return true, nil
 		case enterKey(k):
-			// NOTHING here may silently swallow a send. The composer's own hint
-			// documents the contract as "enter send · alt+enter newline", so any
-			// Enter variant that is not an explicitly configured newline chord
-			// SENDS.
-			//
-			// Three real cases made Enter appear dead, and two are fixed:
-			//  1. a "shift+enter inserts a newline" convenience the hint never
-			//     documented (removed here). It is BACK, but not as a branch in this
-			//     switch: the terminal's Shift+Enter sequence is rewritten to the
-			//     alt+enter chord as input is read (internal/tui/input), so it
-			//     arrives as the branch above;
-			//  2. Enter arriving as LF rather than CR — a different KeyType that
-			//     matched no branch here and no textarea keymap (handled by
-			//     enterKey).
-			// The notice below is the third: it makes "did the send branch run at
-			// all" observable from the UI. A key that produces neither a send nor
-			// a visible change is indistinguishable from a dead key, which is
-			// exactly how this took several rounds to pin down.
+			// NOTHING here may silently swallow a send.
 			if m.leadingBackslash() && (m.Newlines == NewlineBackslashEnter || m.Newlines == NewlineBoth) {
 				// A trailing lone backslash + Enter = newline (the escape
 				// hatch); strip the backslash and wrap.
@@ -1075,37 +1022,7 @@ func (m *Model) pasteCmd(k tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
-// enterKey reports whether a key IS the Enter key, whichever byte the terminal
-// sends for it.
-//
-// Enter does not always arrive as KeyEnter. Most terminals send CR (0x0D), which
-// bubbletea reports as KeyEnter — but some terminals and PTY configurations send
-// LF (0x0A) instead, and bubbletea reports THAT as KeyCtrlJ (keyLF), which is a
-// DIFFERENT KeyType. Nothing in this composer handled ctrl+j and nothing in the
-// textarea bound it either, so on such a terminal pressing Enter did literally
-// NOTHING: no send, no newline, no reaction at all — the operator's "enter is not
-// doing anything at all".
-//
-// The documented contract is "enter send", so both spellings of the key send.
-// Treating ctrl+j as Enter costs nothing real: it is unbound and undocumented here,
-// and "my Enter key does nothing" is a far worse failure than losing a chord
-// nobody can invoke through the UI. (KeyCtrlM is the same value as KeyEnter, so the
-// first case already covers it.)
-// isCtrlJRune reports whether a key message IS Ctrl+J arriving as a CHARACTER rather than a key code.
-//
-// WHY BOTH FORMS EXIST. The control character for Ctrl+J is LF (0x0A), and how that reaches bubbletea depends
-// entirely on the input path:
-//
-//   - the ANSI BYTE reader (Linux, macOS, and any terminal streaming bytes) decodes 0x0A to KeyCtrlJ;
-//   - the WINDOWS CONSOLE reader — which is the path in use whenever CONIN$ is opened — reads the key record and
-//     reports the character it produced, so the same chord arrives as KeyRunes("\n"). It is not reported as
-//     KeyEnter either, because the console's VK_RETURN arm is what maps to KeyEnter and Ctrl+J is not VK_RETURN.
-//
-// A composer that only knew the first form therefore had a newline chord that worked on Linux and macOS and did
-// nothing on Windows — while the hint told the operator to press it.
-//
-// IT IS DELIBERATELY NARROW. Only a rune message whose text is EXACTLY "\n" qualifies: a plain Enter arrives as
-// KeyEnter (a different Type), so this cannot swallow a send, and a multi-character paste is not a chord.
+// enterKey reports whether a key IS the Enter key, whichever byte the terminal sends for it.
 func isCtrlJRune(k tea.KeyMsg) bool {
 	return k.Type == tea.KeyRunes && len(k.Runes) == 1 && k.Runes[0] == '\n'
 }
@@ -1150,9 +1067,7 @@ func (m *Model) requestSend() tea.Cmd {
 // Hint is the persistent affordance row: the ctrl+g focus chord FIRST (so it survives truncation on
 // a narrow pane), then the ACTIVE screen's shortcut list (Context.
 func (m *Model) Hint() string {
-	// THE HINT NAMES THE CHORD THIS PROFILE ACTUALLY USES, and on Windows that is ctrl+j — because
-	// naming alt+enter there is naming a key the terminal has already claimed (toggleFullscreen in
-	// Windows.
+	// THE HINT NAMES THE CHORD THIS PROFILE ACTUALLY USES.
 	nl := "alt+enter"
 	switch m.Newlines {
 	case NewlineBackslashEnter:

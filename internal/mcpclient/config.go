@@ -1,6 +1,4 @@
-// Package mcpclient implements the native adapter's MCP (Model Context Protocol) client:
-// per-session connections to external MCP servers over stdio (CommandTransport) and streamable
-// HTTP.
+// Package mcpclient implements the native adapter's MCP (Model Context Protocol) client.
 package mcpclient
 
 import (

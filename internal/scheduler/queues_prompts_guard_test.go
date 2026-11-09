@@ -1,26 +1,6 @@
 package scheduler
 
 // queues_prompts_guard_test.go — EVERY chat adapter must STATE how it handles a mid-turn prompt.
-//
-// THE BUG THIS EXISTS FOR, and it was found by being asked rather than by testing: "did you cross check
-// against the claude code adapter as well to ensure we are handling it properly there?"
-//
-// No. The first version of SessionQueuesPrompts was declared by the two adapters that happened to be in hand
-// (opencode true, the native bridge false) and asked nothing of the other two. An adapter that declares
-// nothing falls to the DEFAULT — "does not queue" — which is safe against starting a competing turn but WRONG
-// for function:
-//
-//   - internal/claude's Bridge ALREADY QUEUES. Its session increments a `queued` counter, writes the turn to
-//     the live child's stdin, and deliberately keeps the run loop alive past the `result` boundary because "a
-//     mid-run injected turn is still outstanding" (session.go). Falling to the default meant an interjection on
-//     a claude conversation was held until the WHOLE turn finished instead of being folded in at the next
-//     boundary — a silent downgrade of exactly the behaviour the operator asked for.
-//   - internal/opencode's ClientSessionAdapter sends through the same serve via prompt_async, so it queues
-//     too, and it was ALSO falling to the default.
-//
-// A DEFAULT IS NOT A CONTRACT. This test walks the repository, finds every type that claims to implement
-// ChatTurnClient, and requires each of them to declare QueuesPrompts explicitly. A new adapter cannot be
-// added without answering the question, and an existing one cannot quietly lose its answer.
 
 import (
 	"io/fs"

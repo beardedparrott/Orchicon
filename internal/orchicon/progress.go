@@ -1,32 +1,7 @@
 package orchicon
 
-// progress.go is the NATIVE progress monitor — a direct port of the
-// opencode adapter's stall detection (internal/opencode/progress.go) so
-// both adapter engines run the SAME monitors with the SAME windows, the
-// SAME advisory/fatal split, and the SAME nudge-first escalation.
-//
-// Three stall signals (configurable via env + manifest, opencode parity):
-//   - no_progress:   no step_finish / no new tokens within the window
-//     (ORCHICON_STALL_NO_PROGRESS_WINDOW, default 300s). FATAL.
-//   - no_file_diff:  no file modifications within the window
-//     (ORCHICON_STALL_NO_FILE_DIFF_WINDOW, default 15m). ADVISORY: a
-//     non-terminal `stalled` health notice that revives (OnRecovered)
-//     when file progress resumes — reviewers legitimately go long
-//     stretches without touching files.
-//   - repetition:    the same tool-call signature repeated more than
-//     ORCHICON_STALL_REPETITION_COUNT times (default 5, tier 1:
-//     error-status only) / 2× that (tier 2: any-status) within
-//     ORCHICON_STALL_REPETITION_WINDOW (default 300s). Reset-on-progress:
-//     a file write or completed step clears the history. ADVISORY-first:
-//     nudge the live session, escalate after the nudge budget is spent.
-//   - text_loop:     text flowing but no meaningful action within
-//     ORCHICON_STALL_TEXT_LOOP_WINDOW (default 10m). ADVISORY-first.
-//   - tool_hang:     an in-flight tool call with zero events for
-//     ORCHICON_STALL_TOOL_HANG_WINDOW (default 180s). ADVISORY, latched.
-//
-// isFatalStall mirrors opencode exactly: ONLY no_progress is fatal (total
-// silence — no responsive surface to nudge). Every looping-but-responsive
-// signal nudges first and escalates through the nudge budget.
+// progress.go is the NATIVE progress monitor — a direct port of the opencode adapter's stall
+// detection (internal/opencode/progress.go) so both adapter engines run the SAME monitors.
 
 import (
 	"encoding/json"
@@ -60,9 +35,7 @@ func defaultStallWindows() stallWindows {
 	}
 }
 
-// toolHangDefaultWindow resolves the tool-hang watchdog window (opencode parity):
-// ORCHICON_STALL_TOOL_HANG_WINDOW, then the deprecated ORCHICON_TOOL_HANG_WINDOW fallback, then the
-// 180s default.
+// toolHangDefaultWindow resolves the tool-hang watchdog window (opencode parity).
 func toolHangDefaultWindow() time.Duration {
 	if v := os.Getenv("ORCHICON_STALL_TOOL_HANG_WINDOW"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
@@ -118,12 +91,8 @@ type progressMonitor struct {
 	lastMeaningfulAction time.Time // tool_call / file write / step_finish
 	lastTokenCt          int64     // cumulative tokens (no-NEW-token detection)
 
-	// Tool-call signature history for repetition detection (two-tier,
-	// opencode D5 parity):
-	//   - sigsErr: ERROR-result tool calls only (result-aware, tier 1).
-	//   - sigsAll: ANY-result identical signature (tier 2) — catches a
-	//     completed-call loop (repeatedly re-reading the same file).
-	// A file write or step finish resets both (reset-on-progress).
+	// Tool-call signature history for repetition detection (two-tier, opencode D5 parity): - sigsErr:
+	// ERROR-result tool calls only (result-aware, tier 1).
 	sigsErr map[string][]time.Time
 	sigsAll map[string][]time.Time
 
@@ -435,9 +404,7 @@ func scrubCommand(cmd string) string {
 	return re.ReplaceAllString(cmd, "<vol>")
 }
 
-// isFatalStall reports whether a stall reason terminates the session (opencode parity): ONLY
-// no_progress is fatal — a looping worker is responsive and holds full context, so it is nudged
-// first.
+// isFatalStall reports whether a stall reason terminates the session (opencode parity).
 func isFatalStall(reason string) bool {
 	return strings.HasPrefix(reason, "stalled:no_progress")
 }
@@ -468,8 +435,7 @@ func envInt(key string, fallback int) int {
 }
 
 // stallNudgeMessages are the escalating liveness/stall nudges injected into the live session
-// (opencode parity — the advisory signals reach a responsive worker through the mid-run injection
-// queue.
+// (opencode parity.
 var stallNudgeMessages = []string{
 	"Are you still making progress? If you are stuck in a loop, change approach and move the task forward.",
 	"You appear to be repeating the same actions without progress. Step back, pick a different approach, and deliver the work.",

@@ -97,9 +97,7 @@ type DateTimePicker struct {
 	// zone is the location the wall clock is read AND written in.
 	zone *time.Location
 
-	// done/committed record the OUTCOME; the HOST closes the modal, for the reason ModelPicker.Done
-	// documents (a callback capturing the host model would mutate a copy bubbletea has already
-	// replaced).
+	// done/committed record the OUTCOME; the HOST closes the modal.
 	done      bool
 	committed bool
 }

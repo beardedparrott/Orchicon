@@ -505,8 +505,7 @@ func TestRunUnionDeterministic(t *testing.T) {
 }
 
 // TestRuntimeServeConfigEmitsRunSkills proves the run's skill-file union reaches the emitted
-// instructions: a path-only entry is emitted verbatim and an inline-content entry is materialised
-// under.
+// instructions.
 func TestRuntimeServeConfigEmitsRunSkills(t *testing.T) {
 	worktree := t.TempDir()
 	out := RuntimeServeConfig("orchicon-runtime:local", worktree, "", nil, mcpclient.Resolution{

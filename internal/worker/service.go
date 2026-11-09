@@ -21,18 +21,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Service implements the WorkerService Connect handler
-// (apiv1connect.WorkerServiceHandler). Each mutation writes an outbox
-// row in the same transaction as the state change (AGENTS.md invariant
-// #3); the relay publishes it to NATS asynchronously.
-//
-// The Worker lifecycle (docs/05 §4) is enforced here:
-//   - CreateWorker creates a Worker in draft state with its first draft
-//     version.
-//   - PublishWorkerVersion transitions a draft version to published
-//     (immutable) and the Worker to published.
-//   - DeprecateWorker transitions a published Worker to deprecated.
-//   - RetireWorker transitions a deprecated Worker to retired.
+// Service implements the WorkerService Connect handler (apiv1connect.WorkerServiceHandler).
 type Service struct {
 	pool *db.Pool
 	log  *slog.Logger
@@ -483,22 +472,8 @@ func (s *Service) RevertWorkerVersionToDraft(ctx context.Context, req *connect.R
 // call; mirrors BatchDeleteExecutions (internal/execution/service.go).
 const maxBulkUpdateWorkerModel = 100
 
-// BulkUpdateWorkerModel sets model_ref on every requested Worker and
-// publishes the affected version in a single round trip. It mirrors the
-// manual edit-then-republish flow:
-//   - if the worker has a draft version, model_ref is updated in place
-//     and the version is published;
-//   - if the worker is published with no draft, the latest published
-//     version is reverted to draft, model_ref is set, and it is republished.
-//
-// Version numbers do NOT advance (no fork); current_version follows the
-// latest published version via UpdateWorkerCurrentVersion (same CAS as
-// PublishWorkerVersion). Per-worker logic runs in its own tenant
-// transaction so a failure in one row does not roll back the others —
-// the contract is partial success. Each mutation writes a
-// `worker.published` outbox row (one per affected worker) and a
-// `worker.bulk_model_updated` audit row; the batch as a whole emits one
-// `worker.bulk_model_updated_batch` audit row with the summary counts.
+// BulkUpdateWorkerModel sets model_ref on every requested Worker and publishes the affected version
+// in a single round trip.
 func (s *Service) BulkUpdateWorkerModel(ctx context.Context, req *connect.Request[apiv1.BulkUpdateWorkerModelRequest]) (*connect.Response[apiv1.BulkUpdateWorkerModelResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -615,9 +590,7 @@ func (s *Service) bulkUpdateOneWorker(ctx context.Context, tenantID, workerID, m
 // applyModelChange applies the per-version update+publish flow: - draft: set model_ref on the row
 // in place, then publish.
 func (s *Service) applyModelChange(ctx context.Context, tx pgx.Tx, worker db.WorkerRow, latest db.WorkerVersionRow, modelRef string) (db.WorkerVersionRow, error) {
-	// Validation is per-worker here (not at the bulk request level): an IDENTICAL re-save is a pure
-	// no-op — no grammar re-validation (legacy refs re-save cleanly, ADR-0004 D5), no adapter-change
-	// gate.
+	// Validation is per-worker here (not at the bulk request level).
 	if strings.TrimSpace(latest.ModelRef) != strings.TrimSpace(modelRef) {
 		if _, err := validateModelRef(ctx, worker.TenantID, modelRef); err != nil {
 			return db.WorkerVersionRow{}, err

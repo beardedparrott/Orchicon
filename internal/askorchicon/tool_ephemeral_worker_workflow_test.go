@@ -75,9 +75,7 @@ func TestEphemeralParametersAreAdvertisedOnWorkerAndWorkflowTools(t *testing.T) 
 		}
 	}
 
-	// The create tools must name the tool that removes the record: a transient left behind by a
-	// cancel-style call IS the invisible record to avoid, and the agent has to be told the disposal
-	// path.
+	// The create tools must name the tool that removes the record.
 	for _, pair := range [][2]string{
 		{"create_worker", "delete_worker"},
 		{"create_workflow", "delete_workflow"},
@@ -221,9 +219,7 @@ func TestDeleteWorkflowGuardAgainstRealRows(t *testing.T) {
 		t.Errorf("delete_workflow refused a workflow with no run history, which needs no confirmation: %v", err)
 	}
 
-	// 4. ALLOWED: the ephemeral workflow, runs and all. This is the path the tool
-	//    exists for — requiring a confirmation here would make Quick Work's
-	//    cleanup impossible.
+	// 4.
 	if _, err := call(`{"id":"` + ephWithRuns.ID + `"}`); err != nil {
 		t.Errorf("delete_workflow refused an EPHEMERAL workflow that had runs — this is exactly the cleanup "+
 			"Quick Work needs, and its runs belong to the job being removed: %v", err)

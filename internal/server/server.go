@@ -91,9 +91,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		return nil, err
 	}
 
-	// Secrets KEK: an explicit ORCHICON_SECRETS_KEK override wins; otherwise load-or-create the
-	// per-instance key in the data dir on first boot so the store works out of the box with no
-	// container/env.
+	// Secrets KEK: an explicit ORCHICON_SECRETS_KEK override wins.
 	secretsKEK, kekErr := secretcrypto.ResolveKEK(cfg.SecretsKEK, cfg.DataDir)
 	if kekErr != nil {
 		log.Warn("secrets KEK unavailable (secrets store disabled)", "error", kekErr)
@@ -170,8 +168,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	log.Info("auth configured", "issuer", cfg.Auth.Issuer, "mode", cfg.Mode)
 
 	// BootstrapLocalAdmin mints a credential ONLY when the operator pins BOTH
-	// ORCHICON_LOCAL_ADMIN_USERNAME and ORCHICON_LOCAL_ADMIN_PASSWORD; no default credential is ever
-	// seeded.
+	// ORCHICON_LOCAL_ADMIN_USERNAME and ORCHICON_LOCAL_ADMIN_PASSWORD.
 	if err := auth.BootstrapLocalAdmin(context.Background(), pool, log, cfg); err != nil {
 		log.Warn("local admin bootstrap failed (continuing)", "error", err)
 	}
@@ -282,8 +279,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// is dual-written to Postgres (source of truth) + OTel metrics (VictoriaMetrics) — docs/08 §5.2.
 	usageRecorder := aigateway.NewUsageRecorder(pool, log)
 	// Cost authority lives in the gateway: pricingResolver(modelDiscoverer)
-	// (internal/server/pricing_resolver.go) resolves per provider/model so the recorded CostUSD is
-	// cache-aware.
+	// (internal/server/pricing_resolver.go) resolves per provider/model so the recorded CostUSD.
 	usageRecorder.SetPricingResolver(pricingResolver(modelDiscoverer))
 	usageRecorderFn := func(ctx context.Context, in scheduler.UsageRecord) error {
 		// Adapter parity: attribute the sample to the adapter that ACTUALLY drove the model call.
@@ -350,9 +346,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// File-edit ledger hook (diff pipeline): the execution population's ingestion point — engine
 	// file_edits output tried first for write/edit.
 
-	// This is the ONLY place the concrete adapter appears in a dispatch-capable position — every
-	// downstream path resolves it from the Dispatcher by the execution's parsed adapter kind
-	// (ADR-0003).
+	// This is the ONLY place the concrete adapter appears in a dispatch-capable position.
 	dispatcher.Register("opencode", adapterBridge)
 
 	taskRec := scheduler.NewTaskReconciler(pool, log, dispatcher)
@@ -480,8 +474,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		log,
 	)
 	// MCP definitions are scope-addressed (ADR-0012): ResolveScope returns the project-owned ∪
-	// scope-owned union (SetScopeResolver), and ${SECRET_NAME} refs resolve to stored plaintext before
-	// connect.
+	// scope-owned union (SetScopeResolver).
 	nativeBridge.SetScopeResolver(mcpsettings.NewResolver(pool))
 	nativeBridge.SetMCPSecretResolver(func(ctx context.Context, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
 		return mcpsettings.ResolveSecretRefs(ctx, pool, secretsKEK, tenantID, env, headers)
@@ -669,9 +662,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	if lc, ok := runtimeLifecycle.(*runtime.Lifecycle); ok {
 		s.runtime = lc
 	}
-	// Wire the workflow notifier: when a work item completes, enqueue the workflow run ID so the
-	// WorkflowReconciler progresses the DAG immediately instead of waiting for its next scan pass
-	// (200ms).
+	// Wire the workflow notifier: when a work item completes.
 	taskRec.SetWorkflowNotifier(func(ctx context.Context, runID string) {
 		if s.rcmgr != nil {
 			s.rcmgr.Enqueue("workflow", runID)
@@ -745,8 +736,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	})
 
 	// Seed in-process adapter registrations (opencode + the native orchicon session engine) so the
-	// TaskReconciler can find a ready adapter for dispatch (docs/04 §6.3: in-process adapter for dev
-	// only).
+	// TaskReconciler can find a ready adapter for dispatch (docs/04 §6.3.
 	seedAllDevAdapters(context.Background(), pool, log)
 
 	return s, nil

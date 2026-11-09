@@ -1,20 +1,7 @@
 package askorchicon
 
-// ask_mcp_test.go — the NATIVE Ask MCP surface, end to end through the REAL tool
-// choke point (AskToolDefs / ExecuteAskTool), with a fake scope resolver and a fake
-// client. No server is spawned: the production connect seam (askMCPConnect) is
-// substituted, the same test-seam pattern ask_file_root uses.
-//
-// WHAT IT PROVES (the work item's AC 2 native leg, AC 3, and AC 5's native half):
-//
-//   - a conversation in a project resolves the CONVERSATION scope (project ∪
-//     conversation) and its discovered `mcp__<server>__<tool>` names are OFFERED in
-//     a mode that may act;
-//   - a call to one ROUTES to the client and returns its result;
-//   - in Brainstorm / Quick Work the tool is neither offered NOR executed, and the
-//     refusal names the mode and says the model cannot switch itself — from the SAME
-//     table;
-//   - the client is closed at conversation teardown, never per turn.
+// ask_mcp_test.go — the NATIVE Ask MCP surface, end to end through the REAL tool choke point
+// (AskToolDefs / ExecuteAskTool), with a fake scope resolver and a fake client.
 
 import (
 	"context"
