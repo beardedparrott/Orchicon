@@ -67,11 +67,51 @@ func TestGeneratedAdapterOrderIsBuildToolsThenAdapters(t *testing.T) {
 	}
 }
 
-// TestADockerfileOverrideIsLeftAlone: an operator who wrote their own Dockerfile has taken the decision, and
-// silently appending adapters to it would be second-guessing them.
-func TestADockerfileOverrideIsLeftAlone(t *testing.T) {
+// AN OVERRIDE USED TO RETURN VERBATIM, WHICH MADE include_adapters INERT.
+//
+// Reported from a live run: the stock :dev spec declared IncludeAdapters=true and carried its own
+// Dockerfile, so the adapter block was never emitted, the image shipped with no `claude`, and every session
+// in it died with `exec: "claude": executable file not found in $PATH` after 6 retries and 0 tokens. The
+// switch was on and did nothing.
+//
+// The override is still the operator's decision about their TOOLCHAIN; include_adapters remains the decision
+// about adapters, and it now wins.
+func TestAnOverrideWithAdaptersOnGetsThemInstalled(t *testing.T) {
+	const mine = "FROM base:latest\nRUN apt-get install -y jq\nUSER orchicon\nWORKDIR /home/orchicon\n"
+	got := generatedDockerfile(db.RuntimeImageRow{DockerfileOverride: mine, IncludeAdapters: true}, "base:latest")
+
+	for _, want := range []string{"@opencode/cli", "@anthropic-ai/claude-code"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("an override with include_adapters=true produced an image with no %q — the switch is inert "+
+				"again:\n%s", want, got)
+		}
+	}
+	// The install needs root, and the operator's own final USER must survive it.
+	npAt := strings.Index(got, "npm install -g")
+	rootAt := strings.LastIndex(got[:npAt], "USER root")
+	if rootAt < 0 {
+		t.Errorf("the adapter install does not run as root, so npm -g would fail against the operator's "+
+			"runtime user:\n%s", got)
+	}
+	if !strings.HasSuffix(strings.TrimRight(got, "\n"), "USER orchicon") {
+		t.Errorf("the operator's final USER was not restored, so the image no longer runs as they intend:\n%s", got)
+	}
+}
+
+// THE ESCAPE HATCH STAYS REAL: an override with adapters switched OFF is still byte-identical.
+func TestAnOverrideWithoutAdaptersIsUntouched(t *testing.T) {
 	const mine = "FROM base:latest\nRUN echo hello\n"
-	if got := generatedDockerfile(db.RuntimeImageRow{DockerfileOverride: mine, IncludeAdapters: true}, "base:latest"); got != mine {
-		t.Errorf("an override was modified:\n%q", got)
+	if got := generatedDockerfile(db.RuntimeImageRow{DockerfileOverride: mine, IncludeAdapters: false}, "base:latest"); got != mine {
+		t.Errorf("an override with include_adapters=false was modified:\n%q", got)
+	}
+}
+
+// AN OVERRIDE THAT ALREADY INSTALLS THEM IS NOT DOUBLED — this is the shipped :dev / :gui shape, and a
+// second npm -g is dead weight in every rebuild.
+func TestAnOverrideThatAlreadyInstallsTheAdaptersIsNotDuplicated(t *testing.T) {
+	const mine = "FROM base:latest\nRUN npm install -g \"@anthropic-ai/claude-code@latest\"\nUSER orchicon\n"
+	got := generatedDockerfile(db.RuntimeImageRow{DockerfileOverride: mine, IncludeAdapters: true}, "base:latest")
+	if n := strings.Count(got, "@anthropic-ai/claude-code"); n != 1 {
+		t.Errorf("the adapter install appears %d times, want exactly 1:\n%s", n, got)
 	}
 }

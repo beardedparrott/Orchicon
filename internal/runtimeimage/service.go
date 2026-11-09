@@ -1528,8 +1528,41 @@ func adapterInstallBlock(row db.RuntimeImageRow) string {
 		" && chown -R 1000:1000 /usr/local/lib/node_modules /usr/local/bin 2>/dev/null || true\n"
 }
 
+// withAdapterInstallBlock appends the adapter install to an operator's own Dockerfile.
+//
+// IT IS BRACKETED BY USER root … USER <their last> — an override normally ends on the runtime user, and npm
+// -g as that user fails. Their final USER is restored so the image still runs as they intend.
+func withAdapterInstallBlock(override, block string) string {
+	// Already installing them by hand (the shipped :dev/:gui shape) — a second npm -g is dead weight.
+	if strings.Contains(override, "@anthropic-ai/claude-code") || strings.Contains(override, "@opencode/cli") {
+		return override
+	}
+	lastUser := "orchicon"
+	for _, line := range strings.Split(override, "\n") {
+		t := strings.TrimSpace(line)
+		if len(t) > 5 && strings.EqualFold(t[:5], "USER ") {
+			if v := strings.TrimSpace(t[5:]); v != "" {
+				lastUser = v
+			}
+		}
+	}
+	var sb strings.Builder
+	sb.WriteString(strings.TrimRight(override, "\n"))
+	sb.WriteString("\n")
+	sb.WriteString("USER root\n")
+	sb.WriteString(block)
+	sb.WriteString("USER " + lastUser + "\n")
+	return sb.String()
+}
+
 func generatedDockerfile(row db.RuntimeImageRow, base string) string {
 	if strings.TrimSpace(row.DockerfileOverride) != "" {
+		// THE OVERRIDE IS KEPT, AND THE ADAPTERS ARE STILL ADDED. Returning it verbatim made
+		// include_adapters INERT for every spec that carries one — a switch that silently did nothing — and
+		// the image built from it could not start any session at all.
+		if block := adapterInstallBlock(row); block != "" {
+			return withAdapterInstallBlock(row.DockerfileOverride, block)
+		}
 		return row.DockerfileOverride
 	}
 	var sb strings.Builder
