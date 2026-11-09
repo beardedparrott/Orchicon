@@ -1781,6 +1781,19 @@ func (r *WorkflowReconciler) depsSatisfied(step workflow.StepWire, runs map[stri
 	return true
 }
 
+// upstreamFaultedByInfra reports whether a failed upstream is an INFRASTRUCTURE fault that recovery can
+// fix, rather than a verdict the loop should route on.
+//
+// A worker that ran to completion and said `ORCHICON WORKER SUMMARY: failure` DELIVERED its judgement:
+// re-dispatching it re-runs the same review against the same work, which changes nothing and costs a full
+// attempt. Recovery is for crashes, stalls and environment faults — the failures nobody judged.
+func upstreamFaultedByInfra(status, verdict string) bool {
+	if status == domain.StepRunSucceeded {
+		return false
+	}
+	return verdict == ""
+}
+
 // loopDecisionUpstreamFailed reports whether ANY upstream dependency of a loop_decision step is
 // terminal-FAILED.
 func (r *WorkflowReconciler) loopDecisionUpstreamFailed(step workflow.StepWire, runs map[string]db.WorkflowStepRunRow) bool {
@@ -2010,6 +2023,9 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			run      db.WorkflowStepRunRow
 			wid      string
 			decision string
+			// verdict is the worker's own decision when it CAUSED this upstream's failure — a DELIVERED
+			// judgement, not a crash. Empty when the failure was an infrastructure fault.
+			verdict string
 		}
 		var upInfos []upInfo
 		for _, dep := range step.DependsOn {
@@ -2020,9 +2036,24 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			var upResult struct {
 				WorkItemID string `json:"_work_item_id"`
 				Decision   string `json:"_decision"`
+				Verdict    string `json:"_verdict"`
 			}
 			json.Unmarshal(s.Result, &upResult)
-			upInfos = append(upInfos, upInfo{run: s, wid: upResult.WorkItemID, decision: upResult.Decision})
+			// The marker is written on the WORK ITEM's results (that is where the task reconciler records
+			// it), so a FAILED upstream is asked directly. Only on the failure path, so a healthy run pays
+			// no extra query.
+			verdict := upResult.Verdict
+			if verdict == "" && s.Status == domain.StepRunFailed && upResult.WorkItemID != "" {
+				if wi, werr := db.GetWorkItem(ctx, tx, tenantID, upResult.WorkItemID); werr == nil && len(wi.Results) > 0 {
+					var wiResult map[string]any
+					if json.Unmarshal(wi.Results, &wiResult) == nil {
+						verdict, _ = wiResult["_verdict"].(string)
+					}
+				}
+			}
+			upInfos = append(upInfos, upInfo{
+				run: s, wid: upResult.WorkItemID, decision: upResult.Decision, verdict: verdict,
+			})
 		}
 		if len(upInfos) == 0 {
 			return r.failStep(ctx, tx, tenantID, run, sr, runs,
@@ -2045,6 +2076,13 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		anyFailed := false
 		for _, u := range upInfos {
 			if u.run.Status == domain.StepRunSucceeded {
+				continue
+			}
+			if !upstreamFaultedByInfra(u.run.Status, u.verdict) {
+				// A WORKER VERDICT IS A DECISION, NOT A FAULT. Recovery re-runs the same review against
+				// unchanged work, so one objection can burn every attempt and never reach the fix branch.
+				r.log.Info("loop_decision: upstream delivered a verdict, routing instead of recovering",
+					"run", run.ID, "step", step.ID, "upstream", u.run.StepID, "verdict", u.verdict)
 				continue
 			}
 			anyFailed = true

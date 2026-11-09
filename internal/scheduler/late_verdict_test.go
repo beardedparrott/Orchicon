@@ -226,7 +226,7 @@ func TestLateFailureVerdictDoesNotOverwriteCompletedRun(t *testing.T) {
 
 	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
 	// What FailLostExecution does to the work item, with the reaper's verdict.
-	rec.transitionWorkItemOnResult(context.Background(), execID, false, "")
+	rec.transitionWorkItemOnResult(context.Background(), execID, false, "", "")
 
 	if got := itemStatusNow(t, env.pool, itemID); got != domain.WorkItemSucceeded {
 		t.Fatalf("item status = %q, want %q.\n"+
@@ -246,7 +246,7 @@ func TestFailureVerdictStillAppliesToUnboundItem(t *testing.T) {
 		"", domain.WorkItemRunning, false)
 
 	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
-	rec.transitionWorkItemOnResult(context.Background(), execID, false, "")
+	rec.transitionWorkItemOnResult(context.Background(), execID, false, "", "")
 
 	if got := itemStatusNow(t, env.pool, itemID); got != domain.WorkItemFailed {
 		t.Fatalf("unbound item status = %q, want %q — the guard must not suppress the only verdict an\n"+
@@ -264,7 +264,7 @@ func TestVerdictForActiveRunDoesNotDecideTheItem(t *testing.T) {
 		domain.WorkflowRunRunning, domain.WorkItemRunning, true)
 
 	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(&manifestCaptureBridge{}))
-	rec.transitionWorkItemOnResult(context.Background(), execID, false, "")
+	rec.transitionWorkItemOnResult(context.Background(), execID, false, "", "")
 
 	if got := itemStatusNow(t, env.pool, itemID); got != domain.WorkItemRunning {
 		t.Fatalf("item bound to a RUNNING run became %q, want %q — the run decides, not the execution",
