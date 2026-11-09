@@ -570,24 +570,30 @@ func adapterBinDirs(home, kind string) []string {
 // host dir (the invariant daemon.go's standardHostMountArgs doc states).
 // Empty kinds yield nil.
 func adapterPathPrefix(home string, kinds ...string) []string {
+	return adapterPathPrefixFor(home, adapter.HostGOOS(), kinds...)
+}
+
+// adapterPathPrefixFor is adapterPathPrefix with the host platform injected, so the non-Linux arm is
+// reachable from a Linux gate.
+func adapterPathPrefixFor(home, hostGOOS string, kinds ...string) []string {
 	if home == "" {
 		return nil
 	}
 	seen := make(map[string]struct{})
 	var out []string
 	for _, kind := range kinds {
-		// THE IMAGE'S ADAPTER WINS, SO ITS DIRECTORY IS NOT SHADOWED.
-		//
-		// The PATH this returns is PREPENDED to the container's, ahead of /usr/local/bin — which is exactly
-		// where an npm-installed adapter lives. Leaving a host bin dir in the prefix for a kind the image
-		// supplies would make the container run the OPERATOR'S adapter instead of the image's: the image
-		// install would be dead weight, two hosts on the same image could run different adapter versions,
-		// and the container would still depend on the host in the way it no longer needs to.
-		//
-		// THE ESCAPE HATCH IS EXPLICIT. ORCHICON_OPENCODE_BIN / ORCHICON_CLAUDE_BIN naming a path means the
-		// operator has CHOSEN a specific build — that is a decision to honour, so the host dir is kept. An
-		// ordinary discovered install is not a decision, and the image wins.
-		if _, inImage := imageSuppliesAdapter(kind); inImage && strings.TrimSpace(os.Getenv(adapter.BinEnv(kind))) == "" {
+		if normalizedKind(kind) == adapter.KindClaude {
+			// CLAUDE'S HOST INSTALL IS PREFERRED IN A CONTAINER, so its bin dir must be on the PATH that
+			// precedes /usr/local/bin. It reads the SAME gate the adapter reads for argv[0]
+			// (adapter.PreferHostAdapterInContainer): when the two answered separately they disagreed, and
+			// the container exec'd a host path that nothing on its PATH provided.
+			if ok, _ := adapter.PreferHostAdapterInContainer(hostGOOS, adapter.ResolveBinary(hostGOOS, home, kind, os.Getenv)); !ok {
+				continue
+			}
+		} else if _, inImage := imageSuppliesAdapter(kind); inImage && strings.TrimSpace(os.Getenv(adapter.BinEnv(kind))) == "" {
+			// The other kinds keep the image-first rule: their container route is not a simple exec of a
+			// mounted binary (opencode's runs the in-container serve union), so inverting it is its own
+			// decision rather than a consequence of this one.
 			continue
 		}
 		for _, dir := range adapterBinDirs(home, kind) {

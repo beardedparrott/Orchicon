@@ -152,27 +152,32 @@ func TestAdapterBakeNeedlesClaudeBenign(t *testing.T) {
 }
 
 // TestAdapterPathPrefixPerKind asserts PATH comes from the demanded kind's mounted bin dir, filtered to
-// EXISTING dirs (never an absent host dir) — EXCEPT for a kind the image supplies.
+// EXISTING dirs (never an absent host dir).
 //
-// THAT EXCEPTION IS THE POINT. The prefix is PREPENDED to the container's PATH, ahead of /usr/local/bin where
-// an npm-installed adapter lives, so leaving a discovered host dir in it would shadow the image's adapter:
-// the image install would be dead weight, two hosts on one image could run different adapter versions, and
-// the container would still depend on the host for something it no longer needs.
+// CLAUDE'S HOST DIR IS NOW INCLUDED. The preference was the image's, on the grounds that a host dir in the
+// prefix would shadow the image's adapter — but the adapter's argv[0] then went to the IMAGE by name, and a
+// stale image with no CLI in it killed every session with `executable file not found in $PATH` while the
+// operator's own install sat mounted and unreferenced. The prefix now follows the same gate as argv[0]
+// (adapter.PreferHostAdapterInContainer), so the two cannot disagree about who supplies the CLI.
 //
-// The operator's EXPLICIT choice still wins: ORCHICON_*_BIN naming a path is a decision, so that case keeps
-// the host dir — asserted below, because an escape hatch nobody tests is an escape hatch that stops working.
+// THE OTHER KINDS KEEP THE IMAGE-FIRST RULE: their container route is not a plain exec of a mounted binary.
 func TestAdapterPathPrefixPerKind(t *testing.T) {
 	home := claudeHome(t)
-	if dirs := adapterPathPrefix(home, adapter.KindClaude); len(dirs) != 0 {
-		t.Fatalf("adapterPathPrefix(claude) = %v, want NONE — the image supplies claude, so a host bin dir "+
-			"would shadow it", dirs)
-	}
-	// ...unless the operator named a binary, which is a deliberate choice.
-	t.Setenv(adapter.BinEnv(adapter.KindClaude), filepath.Join(home, ".local", "bin", "claude"))
-	dirs := adapterPathPrefix(home, adapter.KindClaude)
+	dirs := adapterPathPrefixFor(home, "linux", adapter.KindClaude)
 	if len(dirs) != 1 || dirs[0] != filepath.Join(home, ".local", "bin") {
-		t.Fatalf("with %s set, adapterPathPrefix(claude) = %v, want the host dir — an explicit choice must "+
-			"not be overridden by the image", adapter.BinEnv(adapter.KindClaude), dirs)
+		t.Fatalf("adapterPathPrefix(claude) on a Linux host = %v, want the host bin dir — the host's install "+
+			"is what the container execs, so its directory must precede /usr/local/bin", dirs)
+	}
+	// THE MACOS ARM: a Mach-O install cannot run in a Linux container, so the image's CLI is the route and
+	// the host dir must NOT shadow it.
+	if got := adapterPathPrefixFor(home, "darwin", adapter.KindClaude); len(got) != 0 {
+		t.Fatalf("adapterPathPrefix(claude) on darwin = %v, want NONE — a darwin binary cannot exec in a "+
+			"Linux container, so the image's CLI must not be shadowed", got)
+	}
+	// An explicit choice is still honoured, and is the same answer the gate reaches on its own.
+	t.Setenv(adapter.BinEnv(adapter.KindClaude), filepath.Join(home, ".local", "bin", "claude"))
+	if got := adapterPathPrefixFor(home, "linux", adapter.KindClaude); len(got) != 1 || got[0] != filepath.Join(home, ".local", "bin") {
+		t.Fatalf("with %s set, adapterPathPrefix(claude) = %v, want the host dir", adapter.BinEnv(adapter.KindClaude), got)
 	}
 	t.Setenv(adapter.BinEnv(adapter.KindClaude), "")
 	if got := adapterPathPrefix(home, "orchicon"); len(got) != 0 {

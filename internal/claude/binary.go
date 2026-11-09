@@ -49,17 +49,47 @@ const ClaudeBinEnv = "ORCHICON_CLAUDE_BIN"
 // HookBinaryFor already uses for the hook.
 const ClaudeBinaryName = "claude"
 
-// ClaudeBinaryFor returns the claude executable for a transport: the in-image name when the child
-// runs inside the run's runtime container, the resolved host install otherwise.
+// ClaudeBinaryFor returns the claude executable for a transport.
 //
-// Call this instead of ClaudeBinaryPath() anywhere a transport is known. The host path is MEANINGFUL
-// ONLY on the host: it names a Windows .exe (or a POSIX install) that a Linux container neither has
-// nor could execute.
+// IN A CONTAINER THE HOST'S INSTALL IS PREFERRED WHEN IT CAN RUN THERE, and the image's is the fallback.
+// The daemon mounts the resolved install at its IDENTICAL host path and the supervisor allowlists argv[0] by
+// BASENAME ("claude"), so an absolute host path is accepted — and the install is then the one the operator
+// authenticated, at the version they chose. See adapter.PreferHostAdapterInContainer for the gates; without
+// them a macOS host would hand a Darwin binary to a Linux container.
+//
+// The bare name is still the answer when there is nothing usable to prefer, which is the Windows case (a PE
+// cannot exec in a Linux container) and the stale-image case where the image is expected to supply it.
 func ClaudeBinaryFor(isContainer bool) string {
-	if isContainer {
-		return ClaudeBinaryName
+	if !isContainer {
+		return ClaudeBinaryPath()
 	}
-	return ClaudeBinaryPath()
+	return claudeContainerArgv0(runtime.GOOS, claudeHostInstall())
+}
+
+// claudeContainerArgv0 is the container argv[0] decision, with the platform and host install injected so the
+// non-Linux arms are reachable from a Linux gate.
+func claudeContainerArgv0(hostGOOS, hostBin string) string {
+	if ok, _ := adapter.PreferHostAdapterInContainer(hostGOOS, hostBin); ok {
+		return hostBin
+	}
+	return ClaudeBinaryName
+}
+
+// claudeHostInstall is the host install a CONTAINER child can exec, or "" when there is none.
+//
+// IT ASKS adapter.ResolveBinary RATHER THAN ClaudeBinaryPath, because the answer must be the path the daemon
+// actually MOUNTS: adapterHostMounts derives its mounts from that same resolver, so the binary named here and
+// the directory mounted for it cannot disagree. ClaudeBinaryPath's bare-name fallback would otherwise read as
+// a host install.
+func claudeHostInstall() string {
+	home := strings.TrimSpace(os.Getenv("HOME"))
+	if home == "" {
+		home = strings.TrimSpace(os.Getenv("USERPROFILE"))
+	}
+	if home == "" {
+		return ""
+	}
+	return adapter.ResolveBinary(runtime.GOOS, home, adapter.KindClaude, os.Getenv)
 }
 
 // claudeDefaultRelativePath is where the CLI's own installer puts itself, and
