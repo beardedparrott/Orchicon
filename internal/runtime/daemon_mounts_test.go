@@ -128,12 +128,10 @@ func TestStandardHostMountArgsConditionalOpencode(t *testing.T) {
 		filepath.Join(home, ".config", "gh") + ":" + filepath.Join(home, ".config", "gh") + ":ro",
 		filepath.Join(home, ".local", "share", "gh") + ":" + filepath.Join(home, ".local", "share", "gh") + ":ro",
 	}
-	// THE PREFIX IS ABSENT FOR AN IMAGE-SUPPLIED KIND NOW — claude/opencode are installed in the image, so a
-	// host bin dir would SHADOW them (this PATH is prepended, ahead of /usr/local/bin). The expectation below
-	// is therefore "the prefix appears only when the operator named a binary", asserted in the dedicated case
-	// at the end.
+	// THE PREFIX CARRIES THE HOST'S INSTALL, because the container runs it: `opencode serve` is exec'd by
+	// name, so the dir must precede /usr/local/bin. It used to be suppressed as "image-supplied", which is
+	// the rule that left an image without the CLI unable to resolve the name at all.
 	adapterPATH := filepath.Join(home, ".opencode", "bin") + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-	_ = adapterPATH
 
 	cases := []struct {
 		name        string
@@ -177,11 +175,13 @@ func TestStandardHostMountArgsConditionalOpencode(t *testing.T) {
 					t.Errorf("missing uid-owned home tmpfs %s: %v", opt, args)
 				}
 			}
-			// THE IMAGE'S ADAPTER IS NOT SHADOWED. opencode is installed in the shipped images, so its host
-			// bin dir must NOT be prepended — the container's own /usr/local/bin copy is the one that runs.
-			if got := envValue(args, "PATH", adapterPATH); got {
-				t.Errorf("the host adapter bin dir was prepended for an IMAGE-SUPPLIED kind — that shadows the "+
-					"in-image adapter and puts the container back on the host's binary (args %v)", args)
+			// THE HOST'S opencode IS WHAT THE CONTAINER RUNS WHEN IT IS DEMANDED. The supervisor's serve argv
+			// is the bare name `opencode`, so PATH is the only lever — and with an image that has no CLI in
+			// it, a PATH without the host dir is `opencode: not found` at serve time (measured on the
+			// :orchicon-dev image). It still follows the DEMAND: a native-only run has no opencode to find.
+			if got := envValue(args, "PATH", adapterPATH); got != c.wantAdapter {
+				t.Errorf("host adapter bin dir on PATH = %v, want %v — the prefix follows the adapter demand "+
+					"(args %v)", got, c.wantAdapter, args)
 			}
 		})
 	}
@@ -344,8 +344,9 @@ func TestStandardHostMountArgsClaudeRWAndPath(t *testing.T) {
 		args := d.standardHostMountArgs(CreateRequest{AdapterKinds: []string{"opencode"}, GitStrategy: "local"})
 		assertMounts(t, args, claudeAdapterMounts(home), false)
 		assertMounts(t, args, opencodeAdapterMounts(home), true)
-		if envValue(args, "PATH", ocPATH) {
-			t.Errorf("opencode is IMAGE-SUPPLIED, so its host bin dir must not be prepended (args %v)", args)
+		if !envValue(args, "PATH", ocPATH) {
+			t.Errorf("the host's opencode bin dir must be prepended — `opencode serve` is exec'd by name, so "+
+				"without it an image with no CLI in it fails at serve time (args %v)", args)
 		}
 	})
 
@@ -353,8 +354,9 @@ func TestStandardHostMountArgsClaudeRWAndPath(t *testing.T) {
 		args := d.standardHostMountArgs(CreateRequest{AdapterKinds: []string{"opencode", "claude"}, GitStrategy: "local"})
 		assertMounts(t, args, claudeAdapterMounts(home), true)
 		assertMounts(t, args, opencodeAdapterMounts(home), true)
-		if envValue(args, "PATH", bothPATH) {
-			t.Errorf("both kinds are IMAGE-SUPPLIED, so neither host bin dir may be prepended (args %v)", args)
+		if !envValue(args, "PATH", bothPATH) {
+			t.Errorf("both host bin dirs must be prepended — each adapter runs the operator's own install, "+
+				"claude by absolute path and opencode by name (args %v)", args)
 		}
 	})
 }

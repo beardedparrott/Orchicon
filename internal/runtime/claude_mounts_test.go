@@ -179,6 +179,26 @@ func TestAdapterPathPrefixPerKind(t *testing.T) {
 	if got := adapterPathPrefixFor(home, "linux", adapter.KindClaude); len(got) != 1 || got[0] != filepath.Join(home, ".local", "bin") {
 		t.Fatalf("with %s set, adapterPathPrefix(claude) = %v, want the host dir", adapter.BinEnv(adapter.KindClaude), got)
 	}
+	// OPENCODE TOO, AND FOR THE OTHER HALF OF THE SAME PROBLEM: its container child is `opencode serve`,
+	// exec'd BY NAME by the supervisor, so the PATH prefix is the only place the host's install can win.
+	// Without it an image carrying no CLI answers `opencode: not found` at serve time.
+	t.Setenv(adapter.BinEnv(adapter.KindClaude), "")
+	ocHome := home
+	if err := os.MkdirAll(filepath.Join(ocHome, ".opencode", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ocHome, ".opencode", "bin", "opencode"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := adapterPathPrefixFor(ocHome, "linux", adapter.DefaultAdapterKind); len(got) != 1 || got[0] != filepath.Join(ocHome, ".opencode", "bin") {
+		t.Fatalf("adapterPathPrefix(opencode) on a Linux host = %v, want the host bin dir — the container "+
+			"runs `opencode serve` by name", got)
+	}
+	// THE MACOS ARM: a Mach-O opencode cannot exec in a Linux container, so the image's must not be shadowed.
+	if got := adapterPathPrefixFor(ocHome, "darwin", adapter.DefaultAdapterKind); len(got) != 0 {
+		t.Fatalf("adapterPathPrefix(opencode) on darwin = %v, want NONE — a darwin binary cannot exec in a "+
+			"Linux container", got)
+	}
 	t.Setenv(adapter.BinEnv(adapter.KindClaude), "")
 	if got := adapterPathPrefix(home, "orchicon"); len(got) != 0 {
 		t.Fatalf("native adapter must contribute no bin dir, got %v", got)

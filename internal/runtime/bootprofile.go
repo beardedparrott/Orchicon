@@ -582,19 +582,23 @@ func adapterPathPrefixFor(home, hostGOOS string, kinds ...string) []string {
 	seen := make(map[string]struct{})
 	var out []string
 	for _, kind := range kinds {
-		if normalizedKind(kind) == adapter.KindClaude {
-			// CLAUDE'S HOST INSTALL IS PREFERRED IN A CONTAINER, so its bin dir must be on the PATH that
-			// precedes /usr/local/bin. It reads the SAME gate the adapter reads for argv[0]
-			// (adapter.PreferHostAdapterInContainer): when the two answered separately they disagreed, and
-			// the container exec'd a host path that nothing on its PATH provided.
+		switch normalizedKind(kind) {
+		case adapter.KindClaude, adapter.DefaultAdapterKind:
+			// THE HOST'S CLI IS WHAT THE CONTAINER RUNS, so its bin dir must be on the PATH that precedes
+			// /usr/local/bin — where an image-installed CLI lives.
+			//
+			// CLAUDE reads this for argv[0] (it sends the resolved absolute path) and OPENCODE reads it for
+			// its bare `opencode serve`: the supervisor constructs that argv, so PATH is the only lever. Both
+			// therefore consult adapter.PreferHostAdapterInContainer, which is the point — when each side
+			// derived its own answer they disagreed and the container was told to run a name nothing on its
+			// PATH provided.
 			if ok, _ := adapter.PreferHostAdapterInContainer(hostGOOS, adapter.ResolveBinary(hostGOOS, home, kind, os.Getenv)); !ok {
 				continue
 			}
-		} else if _, inImage := imageSuppliesAdapter(kind); inImage && strings.TrimSpace(os.Getenv(adapter.BinEnv(kind))) == "" {
-			// The other kinds keep the image-first rule: their container route is not a simple exec of a
-			// mounted binary (opencode's runs the in-container serve union), so inverting it is its own
-			// decision rather than a consequence of this one.
-			continue
+		default:
+			if _, inImage := imageSuppliesAdapter(kind); inImage && strings.TrimSpace(os.Getenv(adapter.BinEnv(kind))) == "" {
+				continue
+			}
 		}
 		for _, dir := range adapterBinDirs(home, kind) {
 			if _, ok := seen[dir]; ok {
