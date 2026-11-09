@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -28,6 +29,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/backup"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/e2e"
 	"github.com/beardedparrott/orchicon/internal/mcp"
 	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 	"github.com/beardedparrott/orchicon/internal/server"
@@ -99,6 +101,17 @@ func main() {
 			os.Exit(exitOnErr(runLogs(os.Args[2:])))
 		case "notices":
 			os.Exit(runNotices(os.Args[2:]))
+		case "e2e":
+			// AN INTERRUPT IS NOT A FAILURE. Ctrl-C cancels the run's context so its cleanup can fire,
+			// which surfaces as context.Canceled — reporting that as an error buries the fact that the
+			// run stopped on purpose and cleaned up.
+			if err := e2e.Run(os.Args[2:]); err != nil {
+				if errors.Is(err, context.Canceled) {
+					fmt.Println("interrupted")
+					os.Exit(130)
+				}
+				os.Exit(exitOnErr(err))
+			}
 		case "--help", "-h":
 			printHelp()
 			return
@@ -322,6 +335,11 @@ func printHelp() {
 		{cmd: bin + " logs [instance]", desc: []string{
 			"Print the plane's recent log lines and then follow it, the way `tail -f` does.",
 			"The path is also printed by `status` and by `start`."}},
+		{cmd: bin + " e2e [flags]", desc: []string{
+			"Exercise Ask in both modes across every adapter, build a six-task epic pinned to",
+			"Quick Work, dispatch it (with -dispatch) and report. Uses your `orch` profile for the",
+			"plane and credential, so an INSTALLED copy needs no Makefile or Go toolchain.",
+			"-local-only skips runtime-mode tasks (no container engine); -keep skips cleanup."}},
 		{cmd: bin + " restart", desc: []string{
 			"Restart the instance so its components re-read their environment.",
 			"Use this after installing an adapter CLI or changing PATH: a plane inherits its",

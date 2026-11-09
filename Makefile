@@ -556,10 +556,13 @@ services-status: ## Show this instance's local services state and its DSN
 
 # The adapter/mode matrix, run against a LIVE instance. Setup-only by default: it creates a
 # throwaway project, one worker per adapter and the six-task epic, then cleans up.
-#   make e2e-adapters ARGS="-instance dev -local-only"        # no containers (cloud Mac)
+#   make e2e-adapters ARGS="-local-only"                      # no containers (cloud Mac)
 #   make e2e-adapters ARGS="-claude-model claude/anthropic/claude-sonnet-4 -dispatch"
+#
+# A CONVENIENCE WRAPPER over `orchicon e2e`, which is the real surface: an INSTALLED copy has the
+# subcommand and needs no Makefile or Go toolchain, which is the only thing that works on Windows.
 e2e-adapters: ## Adapter/mode matrix against a live instance (ARGS pass through)
-	$(GO) run ./tools/orchicon-e2e $(ARGS)
+	$(GO) run ./cmd/orchicon e2e $(ARGS)
 
 synth-data: ## CI gate: no synthesized data planes in non-test source (ADR-0010)
 	scripts/check_no_synth_data.sh
