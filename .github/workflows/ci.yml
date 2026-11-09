@@ -69,6 +69,13 @@ jobs:
 
     env:
       DB_URL: postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable
+      # THE DB-BACKED SUITES RUN HERE, and this variable is the switch. Without it every DB-gated test
+      # SKIPS, silently: the scheduler's loop routing, the Ask turn lifecycle and the seed roll-forward all
+      # had no coverage anywhere, which is how a worktree-prune leak and a past-dated recurring cursor both
+      # shipped. The service above is disposable and migrated by the atlas step, so pointing the suites at it
+      # is the intended use (db/testguard refuses a test binary opening the PLANE's own database, and this
+      # is not it).
+      ORCHICON_TEST_DSN: postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable
 
     steps:
       - uses: actions/checkout@v4

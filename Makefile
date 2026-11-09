@@ -309,6 +309,13 @@ run: services fetch-tags fe-build ## Run the control plane from source (starts t
 	ORCHICON_NATS_URL="nats://localhost:$$(scripts/instance-ports.sh services-port $(instance) nats)" \
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
 
+# -p 1 WHEN A DATABASE IS IN PLAY. The DB-backed suites in internal/db, internal/scheduler and
+# internal/askorchicon all create and delete rows in the SHARED tnt_dev seed, so `go test` running those
+# packages CONCURRENTLY is two writers on one tenant: measured here as "current_version should follow the
+# promoted draft, got 4 want 3" in a package whose own run was clean. Package-level parallelism is worth
+# keeping for the 125 packages that touch no database, so it is disabled only when one is configured.
+TEST_PARALLEL := $(if $(strip $(ORCHICON_TEST_DSN)),-p 1,)
+
 test: ## Run Go tests (NEVER point ORCHICON_TEST_DSN at prod — see README §Testing)
 	@# A TEST MUST NEVER RUN AGAINST PRODUCTION, AND THIS WARNS BEFORE THE SUITES DO.
 	@#
@@ -364,7 +371,7 @@ test: ## Run Go tests (NEVER point ORCHICON_TEST_DSN at prod — see README §Te
 	@# that matters — config, live plane, guard — is unchanged.
 	@for v in ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_ONCE ORCHICON_GUARD_PROJECT \
 	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR ORCHICON_DATA_DIR; do unset "$$v"; done; \
-	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test $(PKGS)
+	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test $(TEST_PARALLEL) $(PKGS)
 
 vet: ## Run go vet
 	@test -n "$(PKGS)" || { if printf '%s\n' "$(GO_LIST_ERR)" | grep -q .; then printf 'ERROR: `go list ./...` FAILED — the local gate cannot run. This is NOT the empty-match case: tmp/ exclusion is not the cause, and the packages were never the problem.\n\n%s\n\nFix the cause above (a module cache or foreign module left in the repo scratch dirs is the usual one), then re-run.\n' "$(GO_LIST_ERR)" >&2; else printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; fi; exit 1; }
