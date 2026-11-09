@@ -67,7 +67,7 @@ func TestSkillFilesWorkerUnionRendersInCompositePrompt(t *testing.T) {
 	if err := os.MkdirAll(verDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(verDir, "vskill.md"), []byte("V\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(verDir, "vskill.md"), []byte("VERSION_SKILL_BODY\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -96,9 +96,16 @@ func TestSkillFilesWorkerUnionRendersInCompositePrompt(t *testing.T) {
 	if !strings.Contains(out, verDir) || !strings.Contains(out, "vskill.md") {
 		t.Fatalf("the worker version's skill directory did not render into the composite prompt:\n%s", out)
 	}
-	// The Skills section must be the MANIFEST form (read on demand), not an inline dump of every file.
-	if !strings.Contains(out, "(directory — read on demand)") {
-		t.Fatalf("the directory skill did not render as a read-on-demand manifest:\n%s", out)
+	// SKILLS INLINE THEIR FILES, WHICH IS THE OPPOSITE OF THE CONTEXT POLICY. A skill is instruction the
+	// worker must follow rather than material to consult, so `ManifestPolicySkill` renders the directory's
+	// files inline under "(skills — follow these)". This test asserted the read-on-demand manifest, which is
+	// the CONTEXT form — stale since the skills policy changed, and invisible because the suite never ran.
+	if !strings.Contains(out, "(skills — follow these)") {
+		t.Fatalf("the directory skill did not render under the skills heading:\n%s", out)
+	}
+	if !strings.Contains(out, "VERSION_SKILL_BODY") {
+		t.Fatalf("the skill directory's file was not inlined — a skill the worker never reads is not a "+
+			"skill:\n%s", out)
 	}
 }
 

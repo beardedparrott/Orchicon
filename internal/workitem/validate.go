@@ -735,7 +735,16 @@ func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Ti
 		}
 		candidate := anchor
 		// daysSinceAnchor COUNTS CALENDAR-DAY STEPS, rather than dividing elapsed hours by 24.
+		// WHOLE CADENCE CYCLES ARE SKIPPED FIRST for the same reason as the non-weekly path: the walk is
+		// bounded, and a month-multiplied cadence still shifts the offsets by exactly one period.
 		daysSinceAnchor := 0
+		if anchor.Before(now) {
+			if elapsed := int(now.Sub(anchor).Hours() / 24); elapsed >= cadenceDays {
+				cycles := elapsed / cadenceDays
+				candidate = anchor.AddDate(0, 0, cycles*cadenceDays)
+				daysSinceAnchor = cycles * cadenceDays
+			}
+		}
 		for i := 0; i < 1000; i++ {
 			if !candidate.Before(now) {
 				if validOffsets[daysSinceAnchor%cadenceDays] {
@@ -750,8 +759,14 @@ func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Ti
 		return &anchor
 	}
 
-	// Non-weekly: walk from anchor, gating by window.
-	candidate := anchor
+	// Non-weekly: fast-forward whole steps FIRST, then walk the remainder.
+	//
+	// THE WALK IS BOUNDED (1000 steps) as a runaway guard, and it used to start AT THE ANCHOR — so a
+	// schedule whose anchor was far enough in the past exhausted the guard and returned the ANCHOR: a
+	// next_run_at in the PAST. The item then fires, re-arms in the past, and hot-loops. Skipping whole
+	// cadence steps arithmetically makes the distance irrelevant and leaves the walk only the last few
+	// steps, where the window gating actually needs to look.
+	candidate := fastForwardToNearNow(anchor, now, freq, interval)
 	for i := 0; i < 1000; i++ {
 		if candidate.Before(now) {
 			candidate = advanceTime(candidate, freq, interval)
@@ -802,6 +817,39 @@ func weekdayOffset(day string) int {
 }
 
 // advanceTime moves the candidate forward by one step of the given frequency.
+// fastForwardToNearNow skips whole cadence steps from an anchor that is already in the past, returning the
+// last occurrence at or before now (never after it) so the bounded walk that follows has only a few steps
+// left. It never moves the candidate past `now`, which is what keeps the walk's first guard meaningful.
+func fastForwardToNearNow(anchor, now time.Time, freq string, interval int) time.Time {
+	if interval < 1 {
+		interval = 1
+	}
+	if !anchor.Before(now) {
+		return anchor
+	}
+	switch freq {
+	case "minute", "hourly":
+		step := time.Minute
+		if freq == "hourly" {
+			step = time.Hour
+		}
+		step *= time.Duration(interval)
+		if steps := now.Sub(anchor) / step; steps > 0 {
+			return anchor.Add(steps * step)
+		}
+	case "monthly":
+		months := (now.Year()-anchor.Year())*12 + int(now.Month()) - int(anchor.Month())
+		if steps := months / interval; steps > 0 {
+			return anchor.AddDate(0, steps*interval, 0)
+		}
+	default: // daily, and anything the default advanceTime treats as day-stepping
+		if days := int(now.Sub(anchor).Hours() / 24); days >= interval {
+			return anchor.AddDate(0, 0, (days/interval)*interval)
+		}
+	}
+	return anchor
+}
+
 func advanceTime(t time.Time, freq string, interval int) time.Time {
 	switch freq {
 	case "minute":

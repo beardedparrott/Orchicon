@@ -45,8 +45,44 @@ func chatDBTestPool(t *testing.T) *db.Pool {
 	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
+	ensureAskModelConfigured(t, pool)
 	return pool
 }
+
+// ensureAskModelConfigured gives the tenant a default Ask model, because startConversationTurn REFUSES to
+// send without one — there is deliberately no invented default.
+//
+// THE FIXTURE MUST OWN THIS STATE. These tests passed on a developer's machine because their dev database
+// already carried the setting, and skipped in CI because they never ran; against a fresh database every one
+// of them failed with "no model is configured for Ask Orchicon". A test that depends on ambient tenant
+// configuration is a test that only passes where it was written.
+func ensureAskModelConfigured(t *testing.T, pool *db.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	cur, err := db.GetTenantSettings(ctx, ttx.Tx, "tnt_dev")
+	if err != nil {
+		t.Fatalf("get tenant settings: %v", err)
+	}
+	if strings.TrimSpace(cur.DefaultAskOrchiconModel) != "" {
+		return // already configured — never overwrite an operator's choice
+	}
+	cur.DefaultAskOrchiconModel = askTestModelRef
+	if _, err := db.UpdateTenantSettings(ctx, ttx.Tx, "tnt_dev", cur); err != nil {
+		t.Fatalf("set default ask model: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+}
+
+// askTestModelRef is the native adapter, which needs no external binary: a test must not depend on the
+// host having a CLI installed.
+const askTestModelRef = "orchicon/deepseek/deepseek-v4-flash"
 
 // newChatService builds a Service with a real pool, a fresh turn registry, and
 // the injected fake session client (bypassing the real host serve).
@@ -170,6 +206,28 @@ func TestStartConversationTurnStallAborts(t *testing.T) {
 	}
 }
 
+// errorPersistedWithin reports whether the ack row already carries an error payload, polling until the
+// window elapses. Used to stop feeding once the stall has landed, without failing when it has not yet.
+func errorPersistedWithin(t *testing.T, pool *db.Pool, convID, ackID string, window time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(window)
+	for time.Now().Before(deadline) {
+		for _, m := range listMessages(t, pool, convID) {
+			if m.ID != ackID {
+				continue
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(m.Metadata, &meta); err == nil {
+				if s, _ := meta["error"].(string); strings.TrimSpace(s) != "" {
+					return true
+				}
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return false
+}
+
 // TestStartConversationTurnRepetitionStallAborts verifies the repetition signal: the same tool_use
 // signature repeated beyond the count within the window aborts the turn with a stall error.
 func TestStartConversationTurnRepetitionStallAborts(t *testing.T) {
@@ -186,13 +244,19 @@ func TestStartConversationTurnRepetitionStallAborts(t *testing.T) {
 		t.Fatalf("startConversationTurn: %v", err)
 	}
 
-	// Feed the SAME tool call repeatedly (after the send was accepted).
+	// Feed the SAME tool call repeatedly.
+	//
+	// NOT A FIXED SLEEP BEFORE THE BURST. The collector ignores events until the send is accepted, so a
+	// 100ms pause that is long enough on an idle machine can be too short under load — every event is then
+	// discarded as pre-accept telemetry, the repetition never trips, and the test times out on a run that
+	// did nothing wrong. Feeding until the stall lands makes the assertion independent of when `sent` flips.
 	waitForSend(t, client, 1)
-	time.Sleep(100 * time.Millisecond) // let the collector flip sent before the tool events
 	input := map[string]any{"dir": "src"}
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 60; i++ {
 		client.sub.feed(busToolWithArgs("ses_1", "orchicon_list_project_dir", input))
-		time.Sleep(20 * time.Millisecond)
+		if errorPersistedWithin(t, pool, convID, ackID, 100*time.Millisecond) {
+			break
+		}
 	}
 
 	msg := waitForErrorMessage(t, pool, convID, ackID)
@@ -600,7 +664,11 @@ func TestPartialReplyMirrorsTokenDeltas(t *testing.T) {
 			t.Fatal("turn never released after finalize")
 		}
 	}
-	final := waitForMessage(t, pool, convID, ackID)
+	// WAIT FOR THE TERMINAL FINALIZE, not merely for the row to exist: the ack row is created by the partial
+	// mirror, so waitForMessage returns the DELTA TEXT and the assertion below then fails against a reply
+	// that had not been written yet. waitForMessageSessionID is the helper that waits for the finalize
+	// marker, which is what "the durable record" means here.
+	final := waitForMessageSessionID(t, pool, convID, ackID)
 	if strings.TrimSpace(final.Content) != "The answer is 42" {
 		t.Errorf("final reply = %q, want %q (deltas must not leak into the durable record)", final.Content, "The answer is 42")
 	}

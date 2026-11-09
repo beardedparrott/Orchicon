@@ -121,8 +121,12 @@ func TestSkillManifestSectionByteStable(t *testing.T) {
 	if a != b {
 		t.Fatalf("two Ask skill renders of one selection differ:\n--- a ---\n%s\n--- b ---\n%s", a, b)
 	}
-	if !strings.Contains(a, "(directory — read on demand)") {
-		t.Fatalf("the directory skill did not render as a read-on-demand manifest:\n%s", a)
+	// SKILLS INLINE, which is the opposite of the CONTEXT policy: a skill is instruction the worker must
+	// follow, so ManifestPolicySkill renders the directory's files inline. This asserted the
+	// read-on-demand manifest — the CONTEXT form — and went stale with the policy, unnoticed because the
+	// suite never ran.
+	if !strings.Contains(a, "(skills — follow these)") {
+		t.Fatalf("the directory skill did not render under the skills heading:\n%s", a)
 	}
 	// Sorted, not filesystem-dependent.
 	ai, mi, zi := strings.Index(a, "apple.md"), strings.Index(a, "mango.md"), strings.Index(a, "zebra.md")

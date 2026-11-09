@@ -177,7 +177,12 @@ func (r *RecurringFireReconciler) scanAndFire(ctx context.Context) reconciler.Re
 func (r *RecurringFireReconciler) advanceNextRunAt(ctx context.Context,
 	tenantID, itemID string, expectedVersion int, scheduleJSON []byte) error {
 
-	next := computeRecurringNextRunAt(scheduleJSON, time.Now().UTC())
+	// THE CURSOR MUST MOVE STRICTLY FORWARD. ComputeNextRunAt returns the first occurrence >= now, so a fire
+	// that lands exactly ON an occurrence would re-arm at that same instant and fire again immediately — which
+	// is what a distant anchor produced once fast-forwarding made "exactly now" reachable. Asking from one
+	// second later gives the next occurrence after this fire, with no cadence arithmetic duplicated here.
+	now := time.Now().UTC()
+	next := computeRecurringNextRunAt(scheduleJSON, now.Add(time.Second))
 	if next == nil {
 		return nil // no schedule / compute failed → leave next_run_at unchanged
 	}

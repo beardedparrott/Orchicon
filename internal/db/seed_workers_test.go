@@ -436,10 +436,12 @@ func TestSeedQACarriesSurfaceImpactCheck(t *testing.T) {
 		t.Fatalf("query QA worker: %v", err)
 	}
 	for _, want := range []string{
-		"Surface-impact check — mandatory, before any verdict",
-		"Diff file types are not the test",
+		"Surface-impact check — decide this explicitly, before any verdict",
+		"The diff's file types are not the test",
 		"Verifying only the backend while a criterion references displayed data is an incomplete pass",
-		"State your surface-impact determination",
+		// The summary bullet was reworded; it still requires saying what was verified, or why nothing
+		// user-visible was affected.
+		"state which, or state why nothing user-visible was affected",
 		"Surface-impact analysis",
 	} {
 		if !strings.Contains(agents, want) && !strings.Contains(purpose, want) && !strings.Contains(skills, want) {
@@ -509,10 +511,13 @@ func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 		box    string
 		budget string
 	}{
-		"w_se_principal_architect":      {"Hard time-box: 20 minutes", "1500"},
-		"w_se_senior_software_engineer": {"Hard time-box: 45 minutes", "3600"},
-		"w_se_pr_reviewer":              {"Hard time-box: 30 minutes", "2400"},
-		"w_se_qa_engineer":              {"Hard time-box: 30 minutes", "2400"},
+		// ONLY THE WORKHORSES CARRY THE BUDGET SECTION. pr_reviewer and qa_engineer are deliberately not
+		// time-boxed — they run to a verdict, not to a clock — so they assert their wall-clock budget and no
+		// content marker. An empty box means "assert the budget only".
+		"w_se_principal_architect":      {"## Your time and how to spend it", "1500"},
+		"w_se_senior_software_engineer": {"## Your time and how to spend it", "3600"},
+		"w_se_pr_reviewer":              {"", "2400"},
+		"w_se_qa_engineer":              {"", "2400"},
 	}
 	for id, tc := range want {
 		resetWorker(t, pool, id)
@@ -523,7 +528,7 @@ func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 			id).Scan(&agents, &budget); err != nil {
 			t.Fatalf("query %s: %v", id, err)
 		}
-		if !strings.Contains(agents, tc.box) {
+		if tc.box != "" && !strings.Contains(agents, tc.box) {
 			t.Errorf("%s agents_md missing %q", id, tc.box)
 		}
 		if !strings.Contains(agents, "orchicon.safety=v24") {
