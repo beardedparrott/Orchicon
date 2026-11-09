@@ -58,6 +58,35 @@ func TestBothSidesReadTheSameHostPreferenceGate(t *testing.T) {
 	}
 }
 
+// BOTH CLI ADAPTERS MUST BE COVERED BY THE PREFIX GATE. claude and opencode reach the container differently —
+// claude by the absolute path the ADAPTER builds, opencode by the bare name the SUPERVISOR builds — so a
+// switch that only names one kind silently leaves the other on the old image-first rule. That was the state
+// of the first version of this change, and the opencode hole was invisible from the claude tests.
+func TestThePathPrefixGateNamesBothCLIAdapters(t *testing.T) {
+	body, err := os.ReadFile("bootprofile.go")
+	if err != nil {
+		t.Fatalf("read bootprofile.go: %v", err)
+	}
+	src := stripGoComments(string(body))
+	i := strings.Index(src, "func adapterPathPrefixFor(")
+	if i < 0 {
+		t.Fatal("adapterPathPrefixFor is gone — it is where the container's adapter PATH is decided")
+	}
+	// THE SLICE MUST END AT THIS FUNCTION'S CLOSING BRACE. Slicing to the next `func` ran on into
+	// adapterBinDirs, which names both kinds for its OWN reasons — so the assertion passed while the gate
+	// named only claude. A source gate that reads the neighbouring function proves nothing.
+	fn := src[i:]
+	if end := strings.Index(fn, "\n}\n"); end > 0 {
+		fn = fn[:end]
+	}
+	for _, kind := range []string{"adapter.KindClaude", "adapter.DefaultAdapterKind"} {
+		if !strings.Contains(fn, kind) {
+			t.Errorf("adapterPathPrefixFor does not handle %s, so that adapter keeps the image-first rule and "+
+				"its container child cannot find the host's install:\n%s", kind, fn)
+		}
+	}
+}
+
 // AND NEITHER SIDE MAY REINTRODUCE A HARD-CODED BARE NAME FOR THE ADAPTER'S CONTAINER ROUTE, which is how the
 // two drifted apart: argv() went to the image's name unconditionally while the prefix kept assuming the image.
 func TestTheAdapterDoesNotHardCodeTheImageNameAsItsOnlyContainerAnswer(t *testing.T) {
