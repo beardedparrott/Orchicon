@@ -77,22 +77,52 @@ if ! ls "$APPDIR/usr/lib/orchicon"/libwebkit2gtk-* >/dev/null 2>&1; then
 fi
 
 # --- appimagetool ----------------------------------------------------------
+# CACHED BY DIGEST, because the download is the only network dependency in this script and it is not a
+# reliable one: a 504 storm from GitHub's release CDN failed Canary twice in one day (2026-11-09 at 05:23Z
+# and 07:48Z, four retries each, with the Wails build already green), and release.yml runs this same
+# script — so the same outage can fail a release cut.
+#
+# The cache is keyed on the PINNED digest, so a hit serves a known-good binary without touching the
+# network, and an upstream republish of the mutable `continuous` tag cannot break a build: the pinned
+# copy keeps matching. A cold cache on a bad day still needs one successful download, which is the
+# honest limit of this.
+CACHE="${APPIMAGETOOL_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/orchicon-appimagetool}"
 TOOL="$WORK/appimagetool"
-echo "fetching appimagetool"
-curl -fsSL --retry 3 -o "$TOOL" "$APPIMAGETOOL_URL"
-chmod +x "$TOOL"
-MEASURED="$(sha256sum "$TOOL" | awk '{print $1}')"
-if [ -n "${APPIMAGETOOL_SHA256:-}" ]; then
-  if [ "$MEASURED" != "$APPIMAGETOOL_SHA256" ]; then
-    echo "error: appimagetool sha256 mismatch" >&2
-    echo "  expected: $APPIMAGETOOL_SHA256" >&2
-    echo "  measured: $MEASURED" >&2
-    exit 1
+CACHED="$CACHE/appimagetool-x86_64.AppImage"
+mkdir -p "$CACHE"
+
+cached_tool_ok() {
+  [ -f "$CACHED" ] || return 1
+  if [ -n "${APPIMAGETOOL_SHA256:-}" ]; then
+    [ "$(sha256sum "$CACHED" | awk '{print $1}')" = "$APPIMAGETOOL_SHA256" ] || return 1
   fi
+  return 0
+}
+
+if cached_tool_ok; then
+  echo "appimagetool: using the cached copy (no network)"
+  cp "$CACHED" "$TOOL"
 else
-  echo "note: APPIMAGETOOL_SHA256 is unset — measured $MEASURED"
-  echo "      pin that value in the release workflow to make this download verifiable"
+  echo "fetching appimagetool"
+  curl -fsSL --retry 3 -o "$TOOL" "$APPIMAGETOOL_URL"
+  MEASURED="$(sha256sum "$TOOL" | awk '{print $1}')"
+  if [ -n "${APPIMAGETOOL_SHA256:-}" ]; then
+    if [ "$MEASURED" != "$APPIMAGETOOL_SHA256" ]; then
+      echo "error: appimagetool sha256 mismatch" >&2
+      echo "  expected: $APPIMAGETOOL_SHA256" >&2
+      echo "  measured: $MEASURED" >&2
+      echo "  the upstream 'continuous' tag was republished — update APPIMAGETOOL_SHA256 to this" >&2
+      echo "  measured value once you have verified it" >&2
+      exit 1
+    fi
+  else
+    echo "note: APPIMAGETOOL_SHA256 is unset — measured $MEASURED"
+    echo "      pin that value in the release workflow to make this download verifiable"
+  fi
+  # Seed the cache so the NEXT run needs no network at all.
+  cp "$TOOL" "$CACHED"
 fi
+chmod +x "$TOOL"
 
 # --- emit ------------------------------------------------------------------
 ASSET="orchicon_desktop_${VERSION}_linux_amd64.AppImage"

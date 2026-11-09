@@ -578,9 +578,20 @@ jobs:
       # asset must be named ..._canary_linux_amd64.AppImage — no version number, exactly like the
       # Windows and macOS stems. build.sh derives the name from ORCHICON_VERSION, so this passes
       # `canary` rather than a number; a numeric version here publishes an asset nothing resolves.
+      # THE TOOL IS CACHED AND PINNED. The download was the only network dependency in the Linux desktop
+      # build and it failed Canary twice in one day (2026-11-09, 05:23Z and 07:48Z) with four retries each
+      # returning 504 — the Wails build was already green, so the package was lost to a CDN outage.
+      # Cache key IS the digest, so a hit serves the pinned binary and never touches the network.
+      - name: Cache appimagetool
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/orchicon-appimagetool
+          key: appimagetool-x86_64-e8c1169c4af66c3184d7ee110713d4be04befe671fa358e2c1591ee840553b03
+
       - name: Package the AppImage
         env:
           ORCHICON_VERSION: canary
+          APPIMAGETOOL_SHA256: e8c1169c4af66c3184d7ee110713d4be04befe671fa358e2c1591ee840553b03
         run: |
           set -euo pipefail
           bash deploy/desktop/appimage/build.sh
