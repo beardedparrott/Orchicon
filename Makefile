@@ -386,7 +386,7 @@ tidy: ## Run go mod tidy
 # the entries the next build actually wants. Run `clean` when the cache is corrupt, or when
 # you want a guaranteed-cold build (timings, or a suspected bad cache entry). It does NOT
 # touch the DB, container images, or any runtime data.
-.PHONY: clean cache-check cache-trim cache-trim-test cleanup cleanup-apply
+.PHONY: e2e-adapters clean cache-check cache-trim cache-trim-test cleanup cleanup-apply
 clean: ## Remove local build artifacts and the ENTIRE Go build cache (dev hygiene; see cache-trim)
 	$(GO) clean -cache -testcache
 	@command -v $(GO) >/dev/null 2>&1 && go clean -modcache 2>/dev/null || true
@@ -553,6 +553,13 @@ services-down: ## Stop this instance's local services and verify the ports are f
 
 services-status: ## Show this instance's local services state and its DSN
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon services status $(instance)
+
+# The adapter/mode matrix, run against a LIVE instance. Setup-only by default: it creates a
+# throwaway project, one worker per adapter and the six-task epic, then cleans up.
+#   make e2e-adapters ARGS="-instance dev -local-only"        # no containers (cloud Mac)
+#   make e2e-adapters ARGS="-claude-model claude/anthropic/claude-sonnet-4 -dispatch"
+e2e-adapters: ## Adapter/mode matrix against a live instance (ARGS pass through)
+	$(GO) run ./tools/orchicon-e2e $(ARGS)
 
 synth-data: ## CI gate: no synthesized data planes in non-test source (ADR-0010)
 	scripts/check_no_synth_data.sh
