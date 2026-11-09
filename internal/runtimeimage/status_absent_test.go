@@ -6,10 +6,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
-// TestImageStatusProtoAbsent pins the wire mapping of the seeder's ABSENT
-// state. Without it the row would surface in the UI as UNSPECIFIED, and the
-// Runtime Images page could not offer the fetch action for a not-downloaded
-// image (it must be distinct from draft, failed and unspecified).
+// TestImageStatusProtoAbsent pins the wire mapping of the seeder's ABSENT state.
 func TestImageStatusProtoAbsent(t *testing.T) {
 	if got := imageStatusProto(RuntimeImageStatusAbsent); got != apiv1.RuntimeImageStatus_RUNTIME_IMAGE_STATUS_ABSENT {
 		t.Fatalf("imageStatusProto(absent) = %v, want RUNTIME_IMAGE_STATUS_ABSENT", got)

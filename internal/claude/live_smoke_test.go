@@ -29,9 +29,7 @@ func TestClaudeLiveSmoke(t *testing.T) {
 	if os.Getenv("ORCHICON_TEST_LIVE_CLAUDE") != "1" {
 		t.Skip("live Claude smoke is opt-in: set ORCHICON_TEST_LIVE_CLAUDE=1")
 	}
-	// Same contract as TestClaudeTaskTodoLiveSmoke: a missing CLI SKIPS, it is
-	// never a false red. The gate opts a host IN; it does not assert that every
-	// host (the runtime container included) has the binary and credentials.
+	// Same contract as TestClaudeTaskTodoLiveSmoke: a missing CLI SKIPS, it is never a false red.
 	if _, err := exec.LookPath("claude"); err != nil {
 		t.Skipf("the claude CLI is not installed in this environment: %v", err)
 	}
@@ -72,9 +70,8 @@ func TestClaudeLiveSmoke(t *testing.T) {
 	if u.PromptTokens == 0 && u.CompletionTokens == 0 {
 		t.Error("no token usage reported — the stream mapping may have drifted")
 	}
-	// Attribution parity: the record must carry the pricing provider and the
-	// claude adapter kind, or the resolver can never price it (no discoverer
-	// needed — the offline catalog is the source on this plane).
+	// Attribution parity: the record must carry the pricing provider and the claude adapter kind, or
+	// the resolver can never price it (no discoverer needed.
 	if u.Provider != "anthropic" {
 		t.Errorf("usage Provider = %q, want anthropic", u.Provider)
 	}

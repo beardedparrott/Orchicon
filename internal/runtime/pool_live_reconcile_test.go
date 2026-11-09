@@ -1,12 +1,7 @@
 package runtime
 
-// pool_live_reconcile_test.go — LIVE container reconciliation: the untracked container that used to survive
-// until the next daemon restart.
-//
-// REPORTED: an orphan `orchicon-runtime-…` was reclaimed only when the runtime daemon restarted, and in the
-// meantime it held its published ports and its memory. The only reclamation was sweepPreRestartOrphans,
-// which runs once per instance per daemon lifetime — it covers what a PREVIOUS daemon left behind and
-// nothing that stops being tracked while this one is up.
+// pool_live_reconcile_test.go — LIVE container reconciliation: the untracked container that used to
+// survive until the next daemon restart.
 
 import (
 	"strings"

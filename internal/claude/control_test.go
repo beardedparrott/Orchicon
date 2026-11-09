@@ -48,9 +48,8 @@ func TestDenyResponseCarriesTheRequiredMessage(t *testing.T) {
 	}
 }
 
-// A deny with no message is a schema violation (the CLI validates
-// {behavior:"deny", message: string}), so the encoder must never emit one — a
-// refusal the model cannot read is worse than the refusal.
+// A deny with no message is a schema violation (the CLI validates {behavior:"deny", message:
+// string}), so the encoder must never emit one.
 func TestDenyResponseAlwaysEmitsAMessage(t *testing.T) {
 	var doc map[string]any
 	if err := json.Unmarshal(DenyResponse("req_1", "", ""), &doc); err != nil {
@@ -78,9 +77,7 @@ func TestAllowResponseRecordsTheDecisionClassification(t *testing.T) {
 	}
 }
 
-// The cancel settles an ask without answering it (a superseded turn, a deleted
-// conversation). It is a real value the CLI itself emits, so the host's use of it
-// is not an invention.
+// The cancel settles an ask without answering it (a superseded turn, a deleted conversation).
 func TestCancelResponse(t *testing.T) {
 	got := string(CancelResponse("req_3"))
 	want := `{"type":"control_response","response":{"subtype":"success","request_id":"req_3","response":{"behavior":"cancelled"}}}`
@@ -89,9 +86,8 @@ func TestCancelResponse(t *testing.T) {
 	}
 }
 
-// The frame must always be answerable to the ask that raised it: encoding a
-// request id and reading it back through the same nesting the CLI uses
-// (`f.response.response`) is the correlation contract.
+// The frame must always be answerable to the ask that raised it: encoding a request id and reading
+// it back through the same nesting the CLI uses (`f.response.response`) is the correlation.
 func TestResponseRequestIDRoundTripsAtTheNestingTheCLIUses(t *testing.T) {
 	const id = "req_correlate_me"
 	var doc struct {

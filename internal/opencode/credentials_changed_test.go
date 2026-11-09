@@ -1,14 +1,6 @@
 package opencode
 
 // credentials_changed_test.go — A SIGN-IN THAT LANDS AFTER THE SERVE STARTED.
-//
-// REPORTED ON WINDOWS: every `opencode-go` model failed with "Model unavailable", and opencode's own
-// message for the free model said "Connect a provider or subscribe to OpenCode Go". The provider WAS
-// connected — just 18 minutes after the serve had started. The serve's environment is fixed at spawn,
-// so it could never see the new credential, and nothing said so: the serve was healthy, and the
-// credential was one the plane already knew how to deliver.
-//
-// Recycle-on-change is the fix. These tests pin the predicate and the clock it reads.
 
 import (
 	"os"
@@ -35,8 +27,7 @@ func TestAnOlderStoreDoesNotRecycle(t *testing.T) {
 }
 
 // TestASignInInTheSameMomentDoesNotRecycleForever: without an allowance the serve would restart on
-// every single demand, because a store written just before the spawn keeps looking newer than a
-// start stamp taken a moment later.
+// every single demand.
 func TestASignInInTheSameMomentDoesNotRecycleForever(t *testing.T) {
 	started := time.Date(2026, 10, 26, 14, 43, 0, 0, time.UTC)
 	if credentialStoreIsNewer(started.Add(time.Second), started) {
@@ -84,11 +75,6 @@ func TestTheStoreClockIsTheNewestFileInIt(t *testing.T) {
 }
 
 // TestEnsureStartedRecyclesBeforeReportingReady is the WIRING guard.
-//
-// The predicate above is worthless if nothing calls it: this is exactly the failure mode the repo
-// keeps hitting — a correct helper, tested, and never reached. It asserts the call is in the demand
-// path (EnsureStarted) rather than only in some helper, because the demand point is the only place
-// that runs before a turn needs the credential.
 func TestEnsureStartedRecyclesBeforeReportingReady(t *testing.T) {
 	src, err := os.ReadFile("servehost.go")
 	if err != nil {

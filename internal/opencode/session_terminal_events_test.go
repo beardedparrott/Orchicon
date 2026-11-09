@@ -5,19 +5,8 @@ import (
 	"testing"
 )
 
-// TestTerminalEventsAreClassified is the regression guard for the HANG a 2.x
-// execution hit.
-//
-// The runner recognised v1's terminal verbs (`session.idle` to end a turn,
-// `session.error` to fail one) and NOTHING of v2's. MEASURED on 2.0.26: a v2 stream
-// ends with `session.execution.succeeded` / `.failed` and reports a failed step with
-// `session.step.failed`, and NEVER emits a bare `session.idle`. So a 2.x turn's end
-// arrived, no arm recognised it, and the run waited for a signal that surface does not
-// send — for a SUCCESSFUL turn as much as a failed one. Its text and tool parts still
-// flowed, which is why it looked productive rather than stuck.
-//
-// The vocabulary is a TABLE (terminalTurnKind) rather than switch arms precisely so
-// this test can exist: a missing switch arm is invisible, a missing row fails here.
+// MEASURED on 2.0.26: a v2 stream ends with `session.execution.succeeded` / `.failed` and reports a
+// failed step with `session.step.failed`, and NEVER emits a bare `session.idle`.
 func TestTerminalEventsAreClassified(t *testing.T) {
 	want := map[string]string{
 		// v1
@@ -46,14 +35,8 @@ func TestTerminalEventsAreClassified(t *testing.T) {
 	}
 }
 
-// TestEveryTerminalEventSurvivesThePropsEnvelope pins the OTHER half of the same bug,
-// which was a second silent failure waiting behind the first.
-//
-// The runner reads both the session filter and the failure message through BusEvent.Props(),
-// because the payload lives under `properties` on v1 and under `data` on v2. Reading
-// `Properties` directly yields an EMPTY map on v2 rather than an error, so the session
-// filter would stop filtering and the failure reason would collapse to a generic string —
-// both invisible until an operator needs the message.
+// TestEveryTerminalEventSurvivesThePropsEnvelope pins the OTHER half of the same bug, which was a
+// second silent failure waiting behind the first.
 func TestEveryTerminalEventSurvivesThePropsEnvelope(t *testing.T) {
 	for _, evtType := range []string{
 		"session.idle", "session.error", "session.execution.succeeded",
@@ -82,10 +65,8 @@ func TestEveryTerminalEventSurvivesThePropsEnvelope(t *testing.T) {
 	}
 }
 
-// TestSessionErrorMessageReadsTheV2Envelope pins that a v2 failure is DIAGNOSABLE, not
-// merely detected. The message lives under the surface-specific envelope, so reading the
-// wrong one yields the generic fallback for exactly the failures an operator most needs
-// named.
+// TestSessionErrorMessageReadsTheV2Envelope pins that a v2 failure is DIAGNOSABLE, not merely
+// detected.
 func TestSessionErrorMessageReadsTheV2Envelope(t *testing.T) {
 	raw, _ := json.Marshal(map[string]any{
 		"type": "session.execution.failed",

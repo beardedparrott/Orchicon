@@ -1,10 +1,4 @@
 // Package runtimeimage implements the RuntimeImageService Connect handler.
-//
-// A RuntimeImage is a tenant buildable container image derived from the
-// Orchicon runtime base. This service persists the build spec, delegates
-// the actual `docker build` to the runtime daemon (the only process with
-// the Docker socket), streams build logs, and exposes the merged stock +
-// custom image list that feeds the work-item runtime_image dropdown.
 package runtimeimage
 
 import (
@@ -51,9 +45,7 @@ type Service struct {
 	pool *db.Pool
 	log  *slog.Logger
 	rt   *runtime.Client // nil in headless (no daemon)
-	// presentFn reports whether a tag exists locally. A SEAM, defaulting to the daemon probe, so the
-	// two ordering/presence RULES can be tested without a container engine — the same pattern this
-	// package already uses for client construction. Nil means "ask the daemon".
+	// presentFn reports whether a tag exists locally.
 	presentFn func(ctx context.Context, ref string) (bool, error)
 	base      string // resolved base image ref from the daemon (cached at first Images call)
 	apiv1connect.UnimplementedRuntimeImageServiceHandler
@@ -61,9 +53,7 @@ type Service struct {
 
 var _ apiv1connect.RuntimeImageServiceHandler = (*Service)(nil)
 
-// New constructs a RuntimeImageService handler. rt may be nil (headless
-// `orchicon serve` without a runtime daemon) — build/delete then fail
-// with a clear error, while CRUD + list still work.
+// New constructs a RuntimeImageService handler.
 func New(pool *db.Pool, log *slog.Logger, rt *runtime.Client) *Service {
 	return &Service{pool: pool, log: log, rt: rt}
 }
@@ -136,9 +126,7 @@ func (s *Service) CreateRuntimeImage(ctx context.Context, req *connect.Request[a
 	base := s.ensureBase(ctx)
 
 	// INCLUDE ADAPTERS DEFAULTS TO TRUE, and the defaulting is here rather than in the schema because a
-	// caller that predates this field cannot express "unset" — it sends false. Reading that as "no adapters"
-	// would give every older client exactly the image this field exists to prevent: one that cannot run
-	// work. An explicit false from a client that DOES know about the field is honoured.
+	// caller that predates this field cannot express "unset" — it sends false.
 	includeAdapters := true
 	if m.IncludeAdapters != nil {
 		includeAdapters = *m.IncludeAdapters
@@ -209,18 +197,6 @@ func (s *Service) ListRuntimeImages(ctx context.Context, req *connect.Request[ap
 		status = req.Msg.Status.String()
 	}
 	// THE CATALOGUE IS RECONCILED ON EVERY PAGE LOAD, and this is that page load for all three clients.
-	//
-	// REPORTED: "I think we need to make the runtime image page pull every runtime image record that is
-	// available in our repo and if they don't exist (been deleted) add them in a non-downloaded state. This
-	// should happen upon launching the runtime images page in the web, desktop or TUI pages."
-	//
-	// The web page, the desktop app and the TUI all draw themselves from THIS call, so reconciling here is
-	// what makes "on launch" true for all three at once — three client-side reconcile calls would be three
-	// chances to disagree. It only CREATES missing rows (see EnsureCatalogRows): it cannot change the status
-	// of a row that exists, so a read cannot corrupt what the operator has.
-	//
-	// Best-effort by design: a reconcile failure must never take the page down with it, so it is logged and
-	// the list proceeds.
 	EnsureCatalogRows(ctx, s.pool, s.log)
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -440,15 +416,8 @@ func (s *Service) DeleteRuntimeImage(ctx context.Context, req *connect.Request[a
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// THE LOCAL IMAGE IS ALWAYS REMOVED — that is what "delete it off my computer" means, and skipping it
-	// for stock rows is what made the button feel like a no-op on the disk while it quietly destroyed the
-	// catalogue entry instead. Best-effort by design (the daemon may be absent, or the image already gone):
-	// the row has already moved to `absent`, which is the durable half of this operation.
-	//
-	// The base image is no longer exempt. It used to be, because every variant derives FROM it — but that is
-	// only true at BUILD time, a built image stands alone, and the base is a published tag that re-fetches
-	// like any other. The Deploy path already refuses to build a variant whose base is missing, and says so
-	// by name, so removing it is visible rather than mysterious.
+	// THE LOCAL IMAGE IS ALWAYS REMOVED — that is what "delete it off my computer" means, and skipping
+	// it for stock rows is what made the button feel like a no-op on the disk while it quietly.
 	if s.rt != nil && removesLocalImage(row.Source, row.Tag) {
 		if err := s.rt.RemoveImage(context.Background(), row.Tag); err != nil {
 			s.log.Warn("runtime image docker rmi failed", "tag", row.Tag, "error", err)
@@ -461,20 +430,8 @@ func (s *Service) DeleteRuntimeImage(ctx context.Context, req *connect.Request[a
 // already built (ready + built_version == version): no docker build ran.
 var errAlreadyUpToDate = errors.New("runtime image already up to date")
 
-// FetchRuntimeImage DOWNLOADS the row's published image (`podman pull` /
-// `docker pull`) and streams the pull output — the on-demand FETCH.
-//
-// It is deliberately NOT BuildRuntimeImage: Deploy BUILDS a spec from a
-// Dockerfile, Fetch DOWNLOADS an image someone else already built. Runtime
-// images are never pulled at install time (a project defaults to
-// execution_mode=local and needs no image), so this is how an image becomes
-// locally present when an operator opts into runtime containers.
-//
-// Idempotent, and it never downloads inside a workflow run: an image already
-// present locally short-circuits in the daemon with an immediate exit 0 and no
-// engine command, and the final message carries skipped=true. On success the
-// row is marked ready with built_version = version, so a subsequent Deploy
-// reports "up to date" instead of rebuilding an image that was just fetched.
+// FetchRuntimeImage DOWNLOADS the row's published image (`podman pull` / `docker pull`) and streams
+// the pull output — the on-demand FETCH.
 func (s *Service) FetchRuntimeImage(ctx context.Context, req *connect.Request[apiv1.FetchRuntimeImageRequest], stream *connect.ServerStream[apiv1.FetchRuntimeImageResponse]) error {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -503,15 +460,6 @@ func (s *Service) FetchRuntimeImage(ctx context.Context, req *connect.Request[ap
 			errors.New("runtime image has no tag to fetch"))
 	}
 	// NO DAEMON ON THIS HOST IS A PRECONDITION, NOT A FAILED FETCH.
-	//
-	// Fetching and building runtime images happens on the workflow runtime daemon, over a Unix socket. A host
-	// without one — a native Windows plane, which has no Unix sockets and runs no per-run Linux containers —
-	// could previously only find that out by attempting the fetch and reading a raw dial error naming a path
-	// under %TEMP%. That is a supported configuration reported as a crash.
-	//
-	// Reported as FailedPrecondition with the diagnosis, which is what the operator can act on: it tells them
-	// this host has no runtime and why, rather than handing them an address that will never exist. The CRUD and
-	// list paths are unaffected, which is the point — the images are still visible and editable here.
 	if s.rt == nil {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New(runtime.NoDaemonOnThisHost))
 	}
@@ -563,11 +511,7 @@ func (s *Service) FetchRuntimeImage(ctx context.Context, req *connect.Request[ap
 	//
 	// and it is, by construction, an image this host builds.
 	if !isRegistryRef(row.Tag) {
-		// OWNED END TO END, both ways. buildCore is the authority on a build's outcome — it writes
-		// the row ready, or failed WITH failure_reason/failed_step/log_tail/failure_category — so this
-		// path must return rather than fall through to recordFetchOutcome, which would overwrite that
-		// verdict with the far less useful "fetch failed". A stock fetch therefore reports exactly
-		// what a Deploy reports, because it IS one.
+		// OWNED END TO END, both ways.
 		if strings.TrimSpace(row.DockerfileOverride) == "" {
 			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf(
 				"stock runtime image %q has no shipped template to build from — the canned seeder did "+
@@ -591,10 +535,7 @@ func (s *Service) FetchRuntimeImage(ctx context.Context, req *connect.Request[ap
 			}); err != nil {
 				return err
 			}
-			// THE ENGINE CHECK RUNS ON THIS PATH TOO. A build that just succeeded is the strongest
-			// signal that runtime containers are about to be used — and returning above without this
-			// would have checked the engine only for PULLS, i.e. never on the dev hosts where the
-			// local tag is what gets fetched.
+			// THE ENGINE CHECK RUNS ON THIS PATH TOO.
 			s.reportEngineReadiness(ctx, stream)
 			return nil
 		}
@@ -626,12 +567,7 @@ func (s *Service) FetchRuntimeImage(ctx context.Context, req *connect.Request[ap
 	}
 	failed := perr != nil || exit != 0
 
-	// Persist the outcome. StatusOnly: a fetch is not a spec edit, so
-	// `version` never bumps. On success the row is READY at its current
-	// version (that is what built_version records). On failure the row KEEPS
-	// its status — a failed download is a configuration/network error, not a
-	// build outcome, so it must not be recorded as `failed` (which the seeder
-	// treats as "a build was attempted").
+	// Persist the outcome.
 	final, uerr := s.recordFetchOutcome(ctx, tenantID, row, perr, exit)
 	if uerr != nil {
 		s.log.Warn("persist runtime image fetch outcome failed", "id", row.ID, "error", uerr)
@@ -658,32 +594,17 @@ func (s *Service) FetchRuntimeImage(ctx context.Context, req *connect.Request[ap
 
 	// THE ENGINE IS CHECKED *AFTER* A SUCCESSFUL FETCH, because that is the moment the operator has
 	// declared they intend to use runtime containers — and the moment the engine matters.
-	//
-	// It is deliberately NOT a failure of the fetch: the image IS downloaded, and rolling that back
-	// would be a lie. It is reported as log lines on the same stream, ending with a plain statement of
-	// what is wrong and what fixes it.
-	//
-	// THE MACHINE STEP IS A REAL REPAIR on macOS and Windows: an absent or stopped podman VM is
-	// created or started here, with no elevation and no prompt, so the common fresh-desktop case heals
-	// itself. An engine that is not installed at all is REPORTED with its exact install command — a
-	// stream RPC has no terminal to confirm an elevation on, and escalating silently is worse than
-	// saying which command to run.
 	s.reportEngineReadiness(ctx, stream)
 	return nil
 }
 
 // reportEngineReadiness validates the container engine on the fetch stream, repairing what it can.
-//
-// Every line goes through the same log channel the fetch used, so the operator sees it in the dialog
-// they are already watching rather than in a server log they are not.
 func (s *Service) reportEngineReadiness(ctx context.Context, stream *connect.ServerStream[apiv1.FetchRuntimeImageResponse]) {
 	say := func(format string, args ...any) {
 		_ = stream.Send(&apiv1.FetchRuntimeImageResponse{Log: fmt.Sprintf(format, args...) + "\n"})
 	}
-	// THE PROOF COSTS ONE TRIVIAL CONTAINER (containerengine.DefaultVerifyImage, ~3 MB, already
-	// local after the first time and `--rm`-ed). That is the same rung the installer insists on, and
-	// it is the difference between "podman is installed" and "podman can run our work" — the state
-	// this check exists to report. Paid once per fetch, on a stream the operator is already watching.
+	// THE PROOF COSTS ONE TRIVIAL CONTAINER (containerengine.DefaultVerifyImage, ~3 MB, already local
+	// after the first time and `--rm`-ed).
 	say("\nchecking the container engine — the image is fetched, but runs need a usable engine\n")
 
 	res := containerengine.EnsureReady(ctx, containerengine.DefaultProbe(), engineLogWriter{send: say})
@@ -709,26 +630,12 @@ func (s *Service) reportEngineReadiness(ctx context.Context, stream *connect.Ser
 	say("the image itself is fetched and available either way\n")
 }
 
-// warnPerPlatform adds the platform-specific prerequisite that the generic message cannot know: a
-// Windows host needs WSL2 behind podman, and a Mac needs the podman machine (which is a Linux VM).
-//
 // SAID ON EVERY NON-READY PATH RATHER THAN ONLY WHEN THE ENGINE IS ABSENT, because a podman that is
-// installed but cannot start its VM is exactly the state where the platform prerequisite is the
-// thing the operator is missing, and "podman is not usable" does not point at WSL or a VM.
+// installed but cannot start its VM is exactly the state where the platform prerequisite.
 func (s *Service) warnPerPlatform(say func(string, ...any)) {
 	switch goruntime.GOOS {
 	case "windows":
-		// PODMAN ON WINDOWS, NOT PODMAN INSIDE WSL — and the difference decides whether anything
-		// works. This probe runs `podman` from the WINDOWS PATH. A podman installed *inside* a WSL
-		// distro is invisible to it, so advising "apt-get install podman in WSL" would send the
-		// operator to a state this plane cannot use — which is worse than no advice.
-		//
-		// Podman for Windows (winget RedHat.Podman, or Podman Desktop) is what belongs on PATH. It
-		// uses WSL2 as its BACKEND and manages its own machine, so WSL2 must be enabled first.
-		//
-		// WHICH STEP IS MISSING IS DETECTED, not guessed. On the reporting machine WSL was already
-		// present and podman was not, so a fixed three-step list would have led with a step that was
-		// done. The first line names the actual gap.
+		// PODMAN ON WINDOWS, NOT PODMAN INSIDE WSL — and the difference decides whether anything works.
 		_, wslErr := exec.LookPath("wsl")
 		if wslErr != nil {
 			say("  Windows: WSL2 is not enabled, and podman for Windows needs it as its backend.\n")
@@ -762,15 +669,6 @@ func (w engineLogWriter) Write(p []byte) (int, error) {
 
 // isRegistryRef reports whether a tag names a registry repository, which is what `engine pull` can
 // fetch, as opposed to a bare short name that only ever exists because this host built it.
-//
-// THE RULE IS PODMAN'S OWN: a reference is registry-qualified when its first path component looks
-// like a host — it contains a dot ("ghcr.io"), a colon (a port), or is exactly "localhost". Anything
-// else ("orchicon-runtime:local", "ubuntu:24.04") is a short name that resolves through
-// registries.conf or not at all, and is not a download this feature can perform.
-//
-// Deliberately NOT "contains a slash": "beardedparrott/orchicon-runtime:latest" has a slash and is
-// still a short name (Docker Hub), which is why the dot/colon/localhost test is the one that matches
-// the engine's behaviour rather than a plausible-looking approximation of it.
 func isRegistryRef(tag string) bool {
 	ref := strings.TrimSpace(tag)
 	if ref == "" {
@@ -796,11 +694,6 @@ func isRegistryRef(tag string) bool {
 }
 
 // alreadyBuilt decides whether a Deploy can skip its build, and why not when it cannot.
-//
-// IT IS A PURE FUNCTION SO THE DECISION IS TESTABLE. buildCore needs a database transaction and a
-// daemon, which means the RULE — "the row says built AND the engine has it" — would otherwise only be
-// exercised by an operator hitting the bug. The second return is the reason, so the log line says which
-// of the two halves failed instead of a bare "rebuilding".
 func alreadyBuilt(dbSaysBuilt, present bool, probeErr error) (bool, string) {
 	if !dbSaysBuilt {
 		return false, "the row does not record a current build"
@@ -865,9 +758,8 @@ func (s *Service) requireBasePresent(ctx context.Context, row db.RuntimeImageRow
 		row.Tag, base, base, row.Tag))
 }
 
-// recordFetchOutcome writes the row state a fetch leaves behind: ready at the
-// current spec version on success (clearing stale failure fields), untouched on
-// failure except for the error message. Returns the row as persisted.
+// recordFetchOutcome writes the row state a fetch leaves behind: ready at the current spec version
+// on success (clearing stale failure fields), untouched on failure except for the error message.
 func (s *Service) recordFetchOutcome(ctx context.Context, tenantID string, row db.RuntimeImageRow, pullErr error, exit int) (db.RuntimeImageRow, error) {
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -964,20 +856,11 @@ func (s *Service) BuildRuntimeImage(ctx context.Context, req *connect.Request[ap
 	return nil
 }
 
-// buildCore is the shared engine behind BuildRuntimeImage (RPC, streams
-// logs) and the canned-image seeder's auto-build (logs discarded). It runs
-// the transaction-safe build flow: row lock, skip gate, mark building,
-// daemon build, persist outcome. onLog is invoked with each build log chunk
-// (may be nil). Returns the final row, the docker build exit code, and an
-// error; errAlreadyUpToDate means the spec is already built and nothing ran.
+// buildCore is the shared engine behind BuildRuntimeImage (RPC, streams logs) and the canned-image
+// seeder's auto-build (logs discarded).
 func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func(string) error) (db.RuntimeImageRow, int, error) {
-	// Read the row under FOR UPDATE and keep the lock until the row is
-	// marked 'building' (one transaction). This is the OCC barrier that
-	// serializes concurrent Deploys: the marking transition is StatusOnly,
-	// so it does NOT bump `version` — without the row lock, two
-	// simultaneous Deploys could both pass the checks below and both run
-	// `docker build` on the same tag. The lock is held only for the
-	// read+mark window, never across the docker build itself.
+	// Read the row under FOR UPDATE and keep the lock until the row is marked 'building' (one
+	// transaction).
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return db.RuntimeImageRow{}, 1, connect.NewError(connect.CodeInternal, err)
@@ -995,30 +878,13 @@ func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func
 		return row, 1, connect.NewError(connect.CodeFailedPrecondition, errors.New("image is already building"))
 	}
 
-	// THE SAME RULE ON THE BUILD PATH. Deploy builds from the base too, so a variant deployed before
-	// the base fails identically — and this is the path the operator's "I tried to deploy orchicon-dev
-	// and the base image" actually took.
+	// THE SAME RULE ON THE BUILD PATH.
 	if berr := s.requireBasePresent(ctx, row); berr != nil {
 		_ = ttx.Rollback(ctx)
 		return row, 1, berr
 	}
 
-	// Rebuild gate: when the row is ready and records the CURRENT spec
-	// version as already built, the local docker image is exactly what the
-	// spec describes — re-deploying is a no-op (no docker build, no prune).
-	// This is the acceptance-criteria mechanism for custom images: the
-	// version is the change signal, and the image is only rebuilt (and only
-	// pruned) when a spec edit bumped it past built_version.
 	// THE GATE MUST ASK THE ENGINE, NOT ONLY THE DATABASE.
-	//
-	// REPORTED: "When I tried to deploy orchicon-dev and the base image, I got 'runtime image already
-	// up to date (spec version 1) — skipping rebuild' but it just says stock and the deploy button is
-	// still lit up and clickable."
-	//
-	// This compared row.Status and built_version — two facts the DATABASE holds — and never asked
-	// whether the image is actually ON this host. Those diverge exactly when it matters: a row seeded
-	// from the catalog records a version with no image behind it, and an image removed or pruned leaves
-	// the row pristine. In both cases Deploy said "up to date" and did nothing.
 	var (
 		present  bool
 		probeErr error
@@ -1039,9 +905,7 @@ func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func
 		return row, 0, errAlreadyUpToDate
 	}
 
-	// Mark building + clear the old log/error. StatusOnly=true: this is a
-	// build-flow transition, not a spec edit, so `version` (the "spec
-	// changed" signal) must NOT bump.
+	// Mark building + clear the old log/error.
 	building := "building"
 	clearErr := ""
 	row, err = db.UpdateRuntimeImage(ctx, ttx.Tx, tenantID, row.ID, row.Version, db.UpdateRuntimeImageFields{
@@ -1063,21 +927,6 @@ func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func
 	}
 
 	// THE DAEMON'S BASE WINS, and that is a correctness requirement rather than a preference.
-	//
-	// runtime's validateBuild refuses any base_image_ref that is not the DAEMON'S OWN base image
-	// ("base_image_ref must be the runtime base image (%s)"), and rewriteDockerfileBase then forces
-	// the FROM line to it anyway. So row.BaseImageRef is advisory: it is what the row was seeded
-	// against, not what will be built from.
-	//
-	// THAT MATTERS NOW because the catalog is seeded before a host has any engine (see
-	// seedPublishedCatalog), so those rows carry the PUBLISHED base — and on a development host whose
-	// daemon default is a locally-built tag, a build sent with the published base is rejected before
-	// it starts. Resolving the daemon's base first makes a seeded row buildable on whichever host it
-	// lands on, which is the whole point of seeding it.
-	//
-	// Falls back to the row's ref only when the daemon cannot say (no daemon, or it did not answer) —
-	// in which case the build fails at the daemon anyway, and the row's ref is the more informative
-	// thing to have tried.
 	base := s.ensureBase(ctx)
 	if base == "" {
 		base = row.BaseImageRef
@@ -1108,10 +957,7 @@ func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func
 		exit = 1
 	}
 
-	// Persist the outcome. StatusOnly=true again — no version bump — and on
-	// success stamp built_version = the spec version that was just built, so
-	// the next Deploy short-circuits. On failure built_version stays stale
-	// (status != ready), forcing a rebuild on retry.
+	// Persist the outcome.
 	status := "ready"
 	buildLog := truncate(logBuf.String(), maxBuildLogLen)
 	failMsg := ""
@@ -1204,9 +1050,8 @@ func (s *Service) buildCore(ctx context.Context, tenantID, id string, onLog func
 	return final, exit, nil
 }
 
-// ListAvailableRuntimeImages returns the merged dropdown list for the
-// work-item runtime_image field: the daemon's stock images plus the
-// tenant's ready custom images, with the base image as the default.
+// ListAvailableRuntimeImages returns the merged dropdown list for the work-item runtime_image
+// field: the daemon's stock images plus the tenant's ready custom images.
 
 func (s *Service) CancelRuntimeImageBuild(ctx context.Context, req *connect.Request[apiv1.CancelRuntimeImageBuildRequest]) (*connect.Response[apiv1.CancelRuntimeImageBuildResponse], error) {
 	tenantID, err := requireTenant(ctx)
@@ -1331,9 +1176,8 @@ func (s *Service) ListAvailableRuntimeImages(ctx context.Context, req *connect.R
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// Canned stock rows that are ready carry the same tag as the daemon's
-	// stock images — the dropdown must not offer them twice. Drop any ready
-	// row tag that the daemon already reports as stock.
+	// Canned stock rows that are ready carry the same tag as the daemon's stock images — the dropdown
+	// must not offer them twice.
 	stock := make(map[string]bool, len(resp.StockImages))
 	for _, s := range resp.StockImages {
 		stock[s] = true
@@ -1349,9 +1193,8 @@ func (s *Service) ListAvailableRuntimeImages(ctx context.Context, req *connect.R
 	return connect.NewResponse(resp), nil
 }
 
-// ReconcileStuckBuilding transitions stale building rows (>ttl) to failed
-// when the daemon no longer reports them as building and no image exists.
-// Called periodically and at boot to heal ghost builds without daemon restart.
+// ReconcileStuckBuilding transitions stale building rows (>ttl) to failed when the daemon no longer
+// reports them as building and no image exists.
 func (s *Service) ReconcileStuckBuilding(ctx context.Context, ttl time.Duration) (int, error) {
 	if s == nil || s.pool == nil {
 		return 0, nil
@@ -1453,11 +1296,9 @@ func activeRunUsesImage(ctx context.Context, tx pgx.Tx, tenantID, tag string) (b
 	return n > 0, err
 }
 
-// GetStockImageTemplate returns the shipped Dockerfile for a stock image
-// (base / :gui / :orchicon-dev) so users can see how a shipped image is
-// built and copy the pattern for a custom one. Lookup is by tag suffix:
-// a tag ending in "-gui"/":gui" maps to the GUI variant, "-dev"/
-// ":orchicon-dev" to the dev variant, anything else to the base.
+// GetStockImageTemplate returns the shipped Dockerfile for a stock image (base / :gui /
+// :orchicon-dev) so users can see how a shipped image is built and copy the pattern for a custom
+// one.
 func (s *Service) GetStockImageTemplate(ctx context.Context, req *connect.Request[apiv1.GetStockImageTemplateRequest]) (*connect.Response[apiv1.GetStockImageTemplateResponse], error) {
 	tag := strings.TrimSpace(req.Msg.Tag)
 	if tag == "" {
@@ -1498,24 +1339,10 @@ func (s *Service) GetStockImageTemplate(ctx context.Context, req *connect.Reques
 	}), nil
 }
 
-// generatedDockerfile builds the image Dockerfile from the structured
-// spec. The base FROM line is emitted by the service; the daemon
-// RE-writes it to its own base anyway (defense in depth), and injects
-// the runtime-base label. The root/chown wrapper keeps the rootfs
-// writable by the non-root runtime user.
+// generatedDockerfile builds the image Dockerfile from the structured spec.
 
-// adapterInstallBlock is the Dockerfile fragment that installs the runtime CLI adapters into a generated
-// image, or "" when the row has them switched off.
-//
-// IT MIRRORS THE SHIPPED VARIANTS DELIBERATELY. deploy/runtime/Dockerfile.gui and Dockerfile.dev carry the
-// same two packages with the same rationale, and the two must not drift: a custom image and a stock image
-// that disagree about which adapters exist is how "it works on :dev but not on my image" happens.
-//
-// THE PACKAGE NAMES ARE VERIFIED AGAINST THE npm REGISTRY, not guessed: @opencode/cli (2.x; "opencode-ai"
-// is the 1.x line and provides the same `opencode` bin) and @anthropic-ai/claude-code (bin: claude).
-//
-// Versions are pinnable, because a rebuild months later silently changing the adapter is a behaviour
-// change in the thing that drives the operator's work.
+// adapterInstallBlock is the Dockerfile fragment that installs the runtime CLI adapters into a
+// generated image, or "" when the row has them switched off.
 func adapterInstallBlock(row db.RuntimeImageRow) string {
 	if !row.IncludeAdapters {
 		return ""
@@ -1529,9 +1356,6 @@ func adapterInstallBlock(row db.RuntimeImageRow) string {
 }
 
 // withAdapterInstallBlock appends the adapter install to an operator's own Dockerfile.
-//
-// IT IS BRACKETED BY USER root … USER <their last> — an override normally ends on the runtime user, and npm
-// -g as that user fails. Their final USER is restored so the image still runs as they intend.
 func withAdapterInstallBlock(override, block string) string {
 	// Already installing them by hand (the shipped :dev/:gui shape) — a second npm -g is dead weight.
 	if strings.Contains(override, "@anthropic-ai/claude-code") || strings.Contains(override, "@opencode/cli") {
@@ -1557,9 +1381,7 @@ func withAdapterInstallBlock(override, block string) string {
 
 func generatedDockerfile(row db.RuntimeImageRow, base string) string {
 	if strings.TrimSpace(row.DockerfileOverride) != "" {
-		// THE OVERRIDE IS KEPT, AND THE ADAPTERS ARE STILL ADDED. Returning it verbatim made
-		// include_adapters INERT for every spec that carries one — a switch that silently did nothing — and
-		// the image built from it could not start any session at all.
+		// THE OVERRIDE IS KEPT, AND THE ADAPTERS ARE STILL ADDED.
 		if block := adapterInstallBlock(row); block != "" {
 			return withAdapterInstallBlock(row.DockerfileOverride, block)
 		}
@@ -1588,21 +1410,6 @@ func generatedDockerfile(row db.RuntimeImageRow, base string) string {
 		fmt.Fprintf(&sb, "ENV %s=%s\n", k, v)
 	}
 	// RUNTIME CLI ADAPTERS COME LAST, AFTER THE ROW'S OWN BUILD TOOLS — order is load-bearing.
-	//
-	// A row's apt packages and toolchain lines are what the operator came to specify; the adapters are
-	// infrastructure the image needs in order to run any work at all. Installing them FIRST would also mean
-	// a later toolchain line that replaces or removes node/npm silently takes them with it, and the failure
-	// would surface at the first session spawn rather than at the Dockerfile that caused it.
-	//
-	// ON BY DEFAULT, because REPORTED AS A DESIGN GAP rather than a bug: an operator creating a runtime
-	// image in the console got a perfectly good toolchain image with no adapter in it, sent work to it, and
-	// found out when the first session could not spawn — with the reason buried in a container log. Nobody
-	// creating "a runtime image" is asking for one that cannot run work.
-	//
-	// ON BY DEFAULT RATHER THAN ALWAYS, because a container that runs no adapter CLI is a supported shape (a
-	// shell-only toolchain, a build image). The field is PERSISTED, so switching it off is a decision rather
-	// than an omission. A row with a dockerfile_override gets nothing here: writing your own Dockerfile is a
-	// decision too, and second-guessing it would be worse than trusting it.
 	sb.WriteString(adapterInstallBlock(row))
 	sb.WriteString("RUN chown -R 1000:1000 /usr /opt /var 2>/dev/null || true\n")
 	sb.WriteString("USER orchicon\n")
@@ -1649,10 +1456,8 @@ func imageStatusProto(status string) apiv1.RuntimeImageStatus {
 	case "failed":
 		return apiv1.RuntimeImageStatus_RUNTIME_IMAGE_STATUS_FAILED
 	case RuntimeImageStatusAbsent:
-		// The spec is correct but its image is not downloaded locally and no
-		// build is running — distinct from draft (never built) and failed (a
-		// build was attempted and failed). Without this case the seeder's new
-		// state would surface in the UI as UNSPECIFIED.
+		// The spec is correct but its image is not downloaded locally and no build is running — distinct
+		// from draft (never built) and failed (a build was attempted and failed).
 		return apiv1.RuntimeImageStatus_RUNTIME_IMAGE_STATUS_ABSENT
 	}
 	return apiv1.RuntimeImageStatus_RUNTIME_IMAGE_STATUS_UNSPECIFIED
@@ -1739,9 +1544,8 @@ func truncate(s string, max int) string {
 
 // --- audit helpers ---------------------------------------------------------
 
-// recordAudit writes an actor-based audit row in the caller's tx,
-// resolving the actor from the request context. Must be called in the
-// same transaction as the mutation so the row commits atomically.
+// recordAudit writes an actor-based audit row in the caller's tx, resolving the actor from the
+// request context.
 func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
 	if e.TenantID == "" {
@@ -1755,10 +1559,8 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 	return audit.Record(ctx, tx, e)
 }
 
-// runtimeImageAuditSnapshot is the non-secret projection of a runtime
-// image spec for the audit trail. Env and the dockerfile override can
-// embed secrets; apt_packages/toolchains are install commands (also
-// potentially sensitive) — keep the snapshot to identity + status.
+// runtimeImageAuditSnapshot is the non-secret projection of a runtime image spec for the audit
+// trail.
 func runtimeImageAuditSnapshot(r db.RuntimeImageRow) map[string]any {
 	return map[string]any{
 		"id":      r.ID,

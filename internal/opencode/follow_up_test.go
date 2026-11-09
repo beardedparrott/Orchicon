@@ -21,10 +21,8 @@ import (
 // the session a follow-up FRESH-SEEDS on the adapter's transport.
 const freshSessionID = "ses_fresh"
 
-// fakeServe emulates the opencode serve HTTP+SSE surface used by a
-// follow-up: /global/health (attach check), /event (SSE bus), and
-// /session/{id}/prompt_async (fire-and-forget send). The SSE stream emits a
-// session.idle for the session after a short delay so collectReply returns.
+// fakeServe emulates the opencode serve HTTP+SSE surface used by a follow-up: /global/health
+// (attach check), /event (SSE bus), and /session/{id}/prompt_async (fire-and-forget send).
 func fakeServe(t *testing.T, sessionID string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -51,12 +49,8 @@ func fakeServe(t *testing.T, sessionID string) *httptest.Server {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
 			fl.Flush()
-			// Emit the SSE events synchronously (guarded by the request
-			// context) rather than from a detached goroutine. Writing to the
-			// ResponseWriter from a goroutine after the handler returns races
-			// with the http.Server's connection teardown, which the race
-			// detector flags. The handler stays open until the client
-			// disconnects, mirroring a long SSE stream.
+			// Emit the SSE events synchronously (guarded by the request context) rather than from a detached
+			// goroutine.
 			select {
 			case <-r.Context().Done():
 				return
@@ -79,11 +73,8 @@ func fakeServe(t *testing.T, sessionID string) *httptest.Server {
 	return srv
 }
 
-// TestContinueSessionFireAndForget verifies the H5 follow-up semantics: the
-// RPC returns IMMEDIATELY (the user message is recorded synchronously so the
-// chat shows it right away) and the assistant reply is collected in the
-// background and appended to the durable transcript — a long model turn can
-// never block (and time out) the browser connection.
+// TestContinueSessionFireAndForget verifies the H5 follow-up semantics: the RPC returns IMMEDIATELY
+// (the user message is recorded synchronously so the chat shows it right away) and the assistant.
 func TestContinueSessionFireAndForget(t *testing.T) {
 	const (
 		sessionID = "ses_followup"
@@ -154,11 +145,8 @@ func TestContinueSessionFireAndForget(t *testing.T) {
 	}
 }
 
-// TestContinueSessionTriggersLazyHostServeAndFailsLoud pins AC 2 + AC 4 for
-// the follow-up continuation: a follow-up that cannot reuse the original
-// serve is opencode DEMAND, so it must go through HostServe.EnsureStarted
-// (the lazy start) — and when the operator kill-switch blocks that, it must
-// return that loud reason rather than a generic "no serve".
+// TestContinueSessionTriggersLazyHostServeAndFailsLoud pins AC 2 + AC 4 for the follow-up
+// continuation: a follow-up that cannot reuse the original serve is opencode DEMAND.
 func TestContinueSessionTriggersLazyHostServeAndFailsLoud(t *testing.T) {
 	t.Setenv("ORCHICON_OPCODE_SESSION_TRANSPORT", "0")
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -177,9 +165,8 @@ func TestContinueSessionTriggersLazyHostServeAndFailsLoud(t *testing.T) {
 	}
 }
 
-// TestContinueSessionNoServeIsSynchronousError verifies that when no serve is
-// reachable the RPC returns an immediate error (the UI shows a real error, not
-// a hung connection).
+// TestContinueSessionNoServeIsSynchronousError verifies that when no serve is reachable the RPC
+// returns an immediate error (the UI shows a real error, not a hung connection).
 func TestContinueSessionNoServeIsSynchronousError(t *testing.T) {
 	a := &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	_, err := a.ContinueSession(context.Background(), ContinueSessionOpts{
@@ -195,10 +182,8 @@ func TestContinueSessionNoServeIsSynchronousError(t *testing.T) {
 	}
 }
 
-// hostAdapter builds an Adapter whose ONLY transport is the given serve — the
-// adapter's PERSISTENT host transport, which is what a follow-up must resolve
-// to (a follow-up belongs to the execution's adapter, never to a per-execution
-// "execution serve").
+// hostAdapter builds an Adapter whose ONLY transport is the given serve — the adapter's PERSISTENT
+// host transport, which is what a follow-up must resolve to (a follow-up belongs.
 func hostAdapter(srv *httptest.Server, mu *sync.Mutex, stored *[]db.SessionPart) *Adapter {
 	return &Adapter{
 		log:  slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -218,10 +203,9 @@ func storedParts(mu *sync.Mutex, stored *[]db.SessionPart) []db.SessionPart {
 	return append([]db.SessionPart(nil), *stored...)
 }
 
-// TestContinueSessionOpencodeReattachesOnHostTransport pins AC 2's continuity
-// half: an opencode-tagged transcript re-attaches the recorded session when the
-// OPENCODE ADAPTER'S OWN persistent transport still holds it — no fresh session
-// is created (so nothing but the question is recorded synchronously).
+// TestContinueSessionOpencodeReattachesOnHostTransport pins AC 2's continuity half: an
+// opencode-tagged transcript re-attaches the recorded session when the OPENCODE ADAPTER'S OWN
+// persistent.
 func TestContinueSessionOpencodeReattachesOnHostTransport(t *testing.T) {
 	const sessionID = "ses_reattach"
 	srv := fakeServe(t, sessionID)
@@ -247,11 +231,8 @@ func TestContinueSessionOpencodeReattachesOnHostTransport(t *testing.T) {
 	}
 }
 
-// TestContinueSessionOpencodeSeedsFreshWhenTransportLostSession pins AC 2's
-// fallback half: when the recorded session is no longer in the adapter's store
-// (a 404 on the re-attach probe — the container/run that hosted it is gone) the
-// follow-up seeds a FRESH session on that same persistent transport and records
-// its identity with the adapter kind.
+// TestContinueSessionOpencodeSeedsFreshWhenTransportLostSession pins AC 2's fallback half: when the
+// recorded session is no longer in the adapter's store (a 404 on the re-attach probe.
 func TestContinueSessionOpencodeSeedsFreshWhenTransportLostSession(t *testing.T) {
 	// The fake serve holds a DIFFERENT session: the recorded id probes 404.
 	srv := fakeServe(t, "ses_somewhere_else")
@@ -291,11 +272,8 @@ func TestContinueSessionOpencodeSeedsFreshWhenTransportLostSession(t *testing.T)
 	}
 }
 
-// TestContinueSessionForeignAdapterNeverReattaches pins the adapter isolation
-// rule: a transcript recorded by ANOTHER adapter (native "orchicon") must never
-// re-attach its session here — even when the recorded serve is healthy AND holds
-// that session id. The follow-up seeds a fresh session on this adapter's own
-// transport instead (recording the opencode kind).
+// TestContinueSessionForeignAdapterNeverReattaches pins the adapter isolation rule: a transcript
+// recorded by ANOTHER adapter (native "orchicon") must never re-attach its session here.
 func TestContinueSessionForeignAdapterNeverReattaches(t *testing.T) {
 	const sessionID = "ses_native"
 	srv := fakeServe(t, sessionID) // healthy, and DOES hold sessionID

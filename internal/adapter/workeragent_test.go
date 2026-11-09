@@ -2,10 +2,8 @@ package adapter
 
 import "testing"
 
-// TestWorkerAgentNameIsDerivedAndStable pins the contract the plane and the
-// execution both depend on: the name is COMPUTED from the worker id, so the
-// writer (which bakes the agent into the serve config) and the selector (which
-// switches a session to it) agree without the name ever being transmitted.
+// TestWorkerAgentNameIsDerivedAndStable pins the contract the plane and the execution both depend
+// on: the name is COMPUTED from the worker id.
 func TestWorkerAgentNameIsDerivedAndStable(t *testing.T) {
 	const id = "01M1ERH9921YS9S1QWGZV8D1VM"
 	got := WorkerAgentName(id)
@@ -17,9 +15,8 @@ func TestWorkerAgentNameIsDerivedAndStable(t *testing.T) {
 	}
 }
 
-// TestWorkerAgentNameSurvivesALookupKey pins the sanitisation: an agent id is a
-// lookup key, so a worker id carrying a separator (or any character outside the
-// id grammar) must not produce a name that cannot be addressed.
+// TestWorkerAgentNameSurvivesALookupKey pins the sanitisation: an agent id is a lookup key, so a
+// worker id carrying a separator (or any character outside the id grammar) must not produce a name.
 func TestWorkerAgentNameSurvivesALookupKey(t *testing.T) {
 	for _, in := range []string{"Weird/ID With Spaces", "a.b:c", "tab\there"} {
 		got := WorkerAgentName(in)
@@ -33,10 +30,8 @@ func TestWorkerAgentNameSurvivesALookupKey(t *testing.T) {
 	}
 }
 
-// TestWorkerAgentNameIsPrefixedAndEmptySafe pins the boundary behaviours the
-// caller relies on: the name is always prefixed, so it cannot collide with
-// opencode's own built-in agents, and an empty id still yields a usable string
-// rather than a bare prefix a caller would have to special-case.
+// TestWorkerAgentNameIsPrefixedAndEmptySafe pins the boundary behaviours the caller relies on: the
+// name is always prefixed, so it cannot collide with opencode's own built-in agents.
 func TestWorkerAgentNameIsPrefixedAndEmptySafe(t *testing.T) {
 	if got := WorkerAgentName(""); got == "" {
 		t.Error("an empty worker id must still yield a non-empty name")

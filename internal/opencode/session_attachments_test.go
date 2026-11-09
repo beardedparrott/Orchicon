@@ -10,12 +10,8 @@ import (
 	"testing"
 )
 
-// mockPromptAsyncServe stands up a fake opencode serve that validates the
-// prompt_async part schema the way the real serve does: every part must be
-// {type:"text", text} or {type:"file", mime, url} (the vendored SDK
-// FilePartInput shape). Unknown types or legacy keys (mimeType/data) get a
-// 400 with a validation message — the exact failure Attachments hit in the
-// wild. It records the decoded parts for wire-key assertions.
+// mockPromptAsyncServe stands up a fake opencode serve that validates the prompt_async part schema
+// the way the real serve does: every part must be {type:"text", text} or {type:"file", mime.
 func mockPromptAsyncServe(t *testing.T, status int, message string) (*httptest.Server, *[]map[string]any) {
 	t.Helper()
 	var got []map[string]any
@@ -79,9 +75,8 @@ func mockPromptAsyncServe(t *testing.T, status int, message string) (*httptest.S
 	return srv, &got
 }
 
-// Acceptance B: text + PNG image + .md text-file parts POST to
-// /session/{id}/prompt_async and the serve returns 2xx for the exact
-// serialized shape; wire keys match the SDK FilePartInput schema.
+// Acceptance B: text + PNG image + .md text-file parts POST to /session/{id}/prompt_async and the
+// serve returns 2xx for the exact serialized shape; wire keys match the SDK FilePartInput schema.
 func TestSendMessageWithAttachmentsRoundTrip(t *testing.T) {
 	srv, got := mockPromptAsyncServe(t, 0, "")
 	c := NewSessionClient(srv.URL, "", "")

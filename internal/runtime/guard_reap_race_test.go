@@ -47,9 +47,7 @@ import (
 // file comment for why one iteration is not enough.
 const reapRaceIterations = 40
 
-// execEvents drives runExec for one argv and returns the decoded event stream. It mirrors
-// stdioEvents (same shim-free PATH pin, same decode) so both transports are asserted the
-// same way; runExec writes to the encoder directly and takes no decoder.
+// execEvents drives runExec for one argv and returns the decoded event stream.
 func execEvents(t *testing.T, req AgentRequest) []AgentEvent {
 	t.Helper()
 	req.Env = append(append([]string(nil), req.Env...), "PATH="+shimFreePath(t))
@@ -74,14 +72,6 @@ func execEvents(t *testing.T, req AgentRequest) []AgentEvent {
 
 // assertEveryRefusalNamesItself runs the same destructive command through one driver,
 // reapRaceIterations times, and requires EVERY run to report the refusal AND the reason.
-//
-// It cannot fail on an idle machine even with the bug present (see the file comment); repeat
-// rather than single-run is what makes it catch the regression once there is scheduling
-// pressure.
-//
-// The target is one directory owned by the test (the rule internal/guard/guard_test.go
-// documents): a test whose safety depends on the verdict of the thing it tests fails open,
-// so the failure mode of a bad verdict is a directory this test owns.
 func assertEveryRefusalNamesItself(
 	t *testing.T,
 	cmd string,
@@ -108,9 +98,7 @@ func assertEveryRefusalNamesItself(
 			t.Fatalf("iteration %d: the destructive command DELETED %s — the guard did not refuse",
 				i, outside)
 		}
-		// THE ASSERTION THIS FILE EXISTS FOR. Before the reaping order was fixed this failed
-		// intermittently with an EMPTY string: the refusal was reported, the directory was
-		// intact, and the message had been discarded by cmd.Wait() closing the pipe.
+		// THE ASSERTION THIS FILE EXISTS FOR.
 		if out := stdioStreamText(events); !strings.Contains(strings.ToUpper(out), "ORCHICON GUARD") {
 			t.Fatalf("iteration %d: the %s path refused `rm -rf %s` but the reason was LOST (out=%q) — "+
 				"the child's output was discarded by reaping before the pumps drained; see "+
@@ -127,11 +115,8 @@ func TestExecGuardRefusalSurvivesTheReapRace(t *testing.T) {
 	assertEveryRefusalNamesItself(t, "exec", execEvents)
 }
 
-// funcBody returns the source of one top-level function, so an ordering assertion can be
-// scoped to it. Scoping matters here rather than being pedantic: `go h.watchExec(s)` appears
-// in FOUR functions (the serve and sandbox paths as well as runStdio), so an unscoped
-// strings.Index finds runServe's and compares offsets from two different functions — which
-// is how the first version of this test reported a false failure.
+// funcBody returns the source of one top-level function, so an ordering assertion can be scoped to
+// it.
 func funcBody(t *testing.T, src, decl string) string {
 	t.Helper()
 	i := strings.Index(src, decl)
@@ -159,13 +144,8 @@ func mustBeOrdered(t *testing.T, body, first, second, why string) {
 	}
 }
 
-// TestTheReaperIsStartedAfterThePumps pins the ORDER as a wiring property, in addition to
-// the behaviour asserted above.
-//
-// Behaviour alone can pass by luck on a fast machine (see the file comment), so a refactor
-// that reintroduced the reaping-first order might keep this suite green on a developer's
-// laptop and drop the reason in production. Asserting the ordering makes the INTENT explicit
-// and unsilenceable — the same idiom the rest of this package's guards use.
+// TestTheReaperIsStartedAfterThePumps pins the ORDER as a wiring property, in addition to the
+// behaviour asserted above.
 func TestTheReaperIsStartedAfterThePumps(t *testing.T) {
 	src, err := os.ReadFile("agent.go")
 	if err != nil {

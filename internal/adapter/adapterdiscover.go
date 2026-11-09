@@ -33,16 +33,8 @@ import (
 	"strings"
 )
 
-// FreshPathDirs returns the directories the OS says are on PATH, read from the SOURCE rather than from this
-// process's copy.
-//
-// WINDOWS reads HKCU\Environment and the machine-wide Path (see freshpath_windows.go): that list IS the
-// source, and a process keeps looking in its old one for as long as it lives. POSIX has no equivalent single
-// store — a login shell composes PATH from profile files this process has already sourced — so the closest
-// honest answer is the system configuration files plus our own PATH (see freshpath_other.go).
-//
-// THE RESULT IS APPENDED TO the process PATH, never a replacement: a process whose PATH carries something the
-// system store does not (an injected dev shell, a CI harness, a test) keeps working.
+// FreshPathDirs returns the directories the OS says are on PATH, read from the SOURCE rather than
+// from this process's copy.
 func FreshPathDirs() []string { return freshPathDirsHook() }
 
 // freshPathDirsHook is the platform seam, and a VARIABLE so a test can drive it from any host: a path table
@@ -83,10 +75,6 @@ func searchPath(getenv func(string) string) string {
 }
 
 // execUsable reports whether a path is a file this process could actually START.
-//
-// THE SHIM CHECK IS THE POINT. exec.LookPath returns `.cmd`/`.bat`/`.ps1` on Windows because the CMD shell
-// can run them; Go cannot (CreateProcess refuses, it needs cmd.exe). Offering one would be a discovery that
-// succeeds and a dispatch that dies later, where the operator has least context.
 func execUsable(p string) bool {
 	if p == "" {
 		return false
@@ -102,27 +90,14 @@ func execUsable(p string) bool {
 	return true
 }
 
-// DiscoverKind returns every USABLE binary for a kind that the OS's PATH knows about, deduplicated, in search
-// order.
-//
-// IT LOOKS FOR BOTH SPELLINGS. The bare name is what `which claude` answers, and the platform's own extension
-// form (`claude.exe`) is what the OS store usually holds. LookPath handles the extension rules per platform,
-// so both are asked for rather than one assumed.
-//
-// AN EMPTY RESULT IS NORMAL AND NOT AN ERROR: plenty of hosts have no adapter installed, and the caller decides
-// whether that matters (a workflow whose sessions need no adapter does not care).
+// DiscoverKind returns every USABLE binary for a kind that the OS's PATH knows about, deduplicated,
+// in search order.
 func DiscoverKind(goos, home, kind string, getenv func(string) string) []string {
 	base := canonicalKind(kind)
 	if base == "" {
 		return nil
 	}
 	// THE NATIVE ADAPTER IS ORCHICON ITSELF, and it must never be discovered.
-	//
-	// Its binary IS this product — `/home/op/.local/bin/orchicon`, `%LOCALAPPDATA%\Programs\Orchicon\orchicon.exe`
-	// — and it is bind-mounted into containers by the DAEMON from its own path (ContainerExe), not as an adapter
-	// install. Discovering it would put the product binary on the container's adapter PATH and derive an
-	// "adapter mount" for it, which is both wrong and noisy: found by TestAdapterPathPrefixPerKind, where the
-	// native kind suddenly contributed ~/.local/bin.
 	if base == "orchicon" {
 		return nil
 	}
@@ -147,15 +122,6 @@ func DiscoverKind(goos, home, kind string, getenv func(string) string) []string 
 }
 
 // lookPathIn runs LookPath against an EXPLICIT PATH rather than the process's own.
-//
-// `exec.LookPath` is specified against os.Getenv("PATH"), so the mechanism is borrowed by setting PATH for
-// the duration of the call. That is deliberate rather than clever: it means the per-platform extension rules
-// (PATHEXT, the exec bit, the weird `foo.bat.exe` case) are Go's, not ours — the exact behaviours a
-// hand-rolled search gets wrong.
-//
-// IT IS NOT SAFE FOR CONCURRENT USE, and does not need to be: resolution happens at process start and per
-// session spawn, not on a hot path. A caller that ever needs concurrency should take the dirs and do its own
-// join instead.
 func lookPathIn(path, name string) (string, error) {
 	prev, had := os.LookupEnv("PATH")
 	if err := os.Setenv("PATH", path); err != nil {
@@ -184,13 +150,8 @@ type Candidate struct {
 	Why         string
 }
 
-// Candidates returns every place a kind's binary can be found, WITH provenance, so the caller can show the
-// operator what exists and let them choose.
-//
-// ORDER IS BY CONFIDENCE, not by discovery: an explicit override, then what the OS reports, then the
-// known-install list. A single candidate is unambiguous; two are exactly the case that must be SURFACED
-// rather than silently resolved, because picking one for the operator is how "it works on my machine"
-// happens.
+// Candidates returns every place a kind's binary can be found, WITH provenance, so the caller can
+// show the operator what exists and let them choose.
 func Candidates(goos, home, kind string, getenv func(string) string) []Candidate {
 	var out []Candidate
 	seen := map[string]struct{}{}
@@ -232,9 +193,6 @@ func Candidates(goos, home, kind string, getenv func(string) string) []Candidate
 	return out
 }
 
-// Ambiguous reports whether the candidate set needs a human decision: more than one distinct binary.
-//
-// TWO BINARIES IS THE CASE THAT MUST NOT BE RESOLVED SILENTLY. `claude` on PATH plus a different `claude.exe`
-// in a WinGet package is two installs with different versions and different credentials, and picking one for
-// the operator is how a session signs in as the wrong account.
+// Ambiguous reports whether the candidate set needs a human decision: more than one distinct
+// binary. TWO BINARIES IS THE CASE THAT MUST NOT BE RESOLVED SILENTLY.
 func Ambiguous(cands []Candidate) bool { return len(cands) > 1 }

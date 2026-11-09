@@ -41,19 +41,12 @@ import (
 //     a second, lossy encoding of the list is exactly what
 //     internal/neverallow/share_test.go exists to prevent.
 
-// HookBinEnv is the operator/deployment override for the absolute path of the
-// `orchicon` binary the PreToolUse hook command invokes when the session runs as
-// a HOST subprocess (the local transport). It is deliberately NOT consulted on
-// the container transport — see HookBinaryFor.
+// HookBinEnv is the operator/deployment override for the absolute path of the `orchicon` binary the
+// PreToolUse hook command invokes when the session runs as a HOST subprocess (the local.
 const HookBinEnv = "ORCHICON_CLAUDE_HOOK_BIN"
 
-// HookBinaryContainerPath is where the runtime daemon bind-mounts its own
-// executable inside EVERY runtime container (internal/runtime/daemon.go:
-// createContainer hard-fails when it cannot — "the orchicon binary is
-// bind-mounted into every runtime container, never baked"). It is the same
-// convention opencode's runtimeContainerBinaryPath follows for its MCP
-// sidecars, and it is the only orchicon path GUARANTEED to exist in the
-// container: the control plane's own os.Executable() is a host path.
+// HookBinaryContainerPath is where the runtime daemon bind-mounts its own executable inside EVERY
+// runtime container (internal/runtime/daemon.go: createContainer hard-fails when it cannot.
 const HookBinaryContainerPath = "/usr/local/bin/orchicon"
 
 // ProjectDirEnv is the env var the hook reads to learn the worker's project
@@ -63,24 +56,8 @@ const ProjectDirEnv = "ORCHICON_CLAUDE_PROJECT_DIR"
 // HookBinFallback is used when neither the env var nor os.Executable() resolves.
 const HookBinFallback = "orchicon"
 
-// PreflightHookExecutable proves the PreToolUse hook can actually RUN, and reports the consequence when it
-// cannot.
-//
-// THE HOOK IS THE AUTHORITY FOR EVERY GATED TOOL IN A WORKER SESSION, and nothing checked that it would
-// launch. When it does not, the session degrades in a way that looks like a permission WALL rather than a
-// broken hook: no allow verdict arrives, so each tool falls through to claude's own permission flow, whose
-// ask cannot be answered in a `-p` session and therefore becomes a TERMINAL DENIAL. The operator recorded
-// exactly that — a worker reporting that it was refused, waiting for "an approval that no human can give in
-// this run", for `git merge --ff-only` among other commands, while this package's own decideBash ALLOWS
-// those commands (measured).
-//
-// So the failure to launch is what must be loud, and it must happen BEFORE the session starts rather than as
-// sixty inexplicable refusals inside it. Failing the launch is the honest outcome: a claude worker whose
-// boundary cannot be enforced is not a worker that should run.
-//
-// IN CONTAINER MODE the binary is a path inside the container image, which this process cannot stat — the
-// daemon guarantees it by bind-mounting itself there and refusing to create the container otherwise, so only
-// the form is checked.
+// PreflightHookExecutable proves the PreToolUse hook can actually RUN, and reports the consequence
+// when it cannot.
 func PreflightHookExecutable(isContainer bool) error {
 	bin := strings.TrimSpace(HookBinaryFor(isContainer))
 	if bin == "" {
@@ -113,27 +90,16 @@ func PreflightHookExecutable(isContainer bool) error {
 	if st.IsDir() {
 		return fmt.Errorf("claude worker: the permission hook path %s is a directory, not an executable", bin)
 	}
-	// THE COMMAND MUST SURVIVE A SHELL, and this is the only place that can say so before every write is
-	// refused. claude runs the hook command through a shell; an unquoted path with a space is split at the
-	// first space, the hook never runs, and claude treats a FAILING PreToolUse hook as a BLOCK — so the
-	// symptom is "permission denied for all project files", which points at the policy and not at a broken
-	// command. The os.Stat checks above cannot see it: the FILE is perfect, and only the COMMAND is wrong.
-	//
-	// REPORTED as a non-durable permission grant ("run 1 refused every write, run 2 wrote everything, and
-	// permission-policy.yaml never changed"). It was the command, and the file's own binary did change
-	// between those runs. Checking the rendered command turns the silent class into a startup failure.
+	// THE COMMAND MUST SURVIVE A SHELL, and this is the only place that can say so before every write
+	// is refused.
 	if err := validateHookCommand(hookCommand(bin)); err != nil {
 		return err
 	}
 	return nil
 }
 
-// validateHookCommand checks that a rendered hook command parses into exactly the binary and the subcommand,
-// which is what will actually be executed.
-//
-// The split is the shell's, approximated: a double-quoted token is one argument, and everything outside
-// quotes splits on whitespace. That is enough to catch the failure this exists for — an unquoted path
-// containing a space — without pretending to be a shell.
+// validateHookCommand checks that a rendered hook command parses into exactly the binary and the
+// subcommand, which is what will actually be executed.
 func validateHookCommand(cmd string) error {
 	tokens := splitHookCommand(cmd)
 	if len(tokens) != 2 {
@@ -206,17 +172,7 @@ func splitHookCommand(cmd string) []string {
 // the deny list, the project boundary) stays in force.
 const TodoToolsEnv = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
 
-// TodoTrackToolNames are the task/todo-tracking tools a claude worker session
-// must be OPTED INTO. Claude Code's task tracking is not on by default for a
-// non-interactive (`-p`) session: a tool that carries no allow verdict falls to
-// claude's default permission flow, which refuses an unanswerable ask. This
-// adapter therefore (a) names the tools in the PreToolUse hook matcher,
-// (b) pre-approves them with `permissions.allow` and (c) sets TodoToolsEnv,
-// all NON-BYPASS — no
-// `--dangerously-*` token is ever emitted (TestNoBypassPermissionFlagIsEverEmitted
-// pins that). TodoWrite is the whole-list-replacement tool; TaskCreate/TaskUpdate
-// are the cumulative task family (see parse.go). TaskList/TaskGet/TaskOutput are
-// read-only members of the same family, named so the family is uniformly allowed.
+// TodoTrackToolNames are the task/todo-tracking tools a claude worker session must be OPTED INTO.
 var TodoTrackToolNames = []string{
 	"TodoWrite",
 	"TaskCreate",
@@ -228,26 +184,6 @@ var TodoTrackToolNames = []string{
 
 // AskPermissionToolNames are the tools the ASK profile must PROMPT about, expressed as
 // `permissions.ask` entries in the settings document.
-//
-// THEY ARE NAMED HERE RATHER THAN ASKED FOR BY THE HOOK, and that distinction is the whole fix. A
-// PreToolUse hook's `permissionDecision: "ask"` is NOT routed to `--permission-prompts host` in a
-// headless session: MEASURED against the real CLI (2.1.289), it becomes an immediate tool ERROR the
-// model reads as "this call needs the operator's approval" — 18 asks produced 0 `can_use_tool`
-// control frames and 0 consent cards, which is the operator's "claude adapter ask sessions seem
-// blocked by everything". Only the PERMISSION SYSTEM's prompt reaches the host, so the tools that
-// need an operator decision belong in this list, and the hook stays silent about them
-// (RunHook abstains on an ask verdict).
-//
-// `mcp__*` USED TO BE THE THIRD-PARTY HALF and has been REMOVED. It read "consent gates each MCP
-// call", which is no longer the rule: the operator's MCP servers are allowed outright —
-// "if it's added in scope it should just have access" — because attaching a server to a
-// conversation or its project IS the approval, made deliberately at configuration time.
-//
-// NO MCP ENTRY BELONGS HERE AT ALL, for the platform's own surface or anyone else's. An entry in
-// this list makes the permission system PROMPT, and a prompt is a card; the hook instead returns an
-// explicit ALLOW for the whole `mcp__` class (isMCPTool), which bypasses the permission system.
-// Leaving `mcp__*` here would re-introduce the card by the other route, so the two halves move
-// together. The MODE boundary remains the governor for an opaque MCP tool — see internal/askmode.
 var AskPermissionToolNames = []string{
 	"Write", "Edit", "MultiEdit", "NotebookEdit",
 	"Bash",
@@ -279,9 +215,7 @@ var AskPermissionToolNames = []string{
 // so an operator-configured server is usable.
 const HookToolMatcher = "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep|Task|Agent|TodoWrite|TaskCreate|TaskUpdate|TaskList|TaskGet|TaskOutput|mcp__.*"
 
-// bypassLaunchFlags are the LAUNCH spellings that would discard the
-// restrictions. Their ABSENCE from the argv and the settings document is pinned
-// by TestNoBypassPermissionFlagIsEverEmitted.
+// bypassLaunchFlags are the LAUNCH spellings that would discard the restrictions.
 var bypassLaunchFlags = []string{
 	"--dangerously-skip-permissions",
 	"--allow-dangerously-skip-permissions",
@@ -289,10 +223,8 @@ var bypassLaunchFlags = []string{
 	"--dangerously-skip-permissions-with-sandbox",
 }
 
-// bypassPermissionMode is the --permission-mode value that would disable the
-// permission system entirely. It must never be the mode this adapter launches
-// with; the settings document additionally pins it off with
-// `disableBypassPermissionsMode: "disable"`.
+// bypassPermissionMode is the --permission-mode value that would disable the permission system
+// entirely.
 const bypassPermissionMode = "bypassPermissions"
 
 // PermissionOptions is the launch-time input to the settings document.
@@ -311,18 +243,13 @@ type PermissionOptions struct {
 	// AdditionalDirs widens the in-scope directory set (the carve-outs are
 	// always derived from workerrestrict and cannot be removed).
 	AdditionalDirs []string
-	// Profile selects the hook's rule set (ProfileWorkerEnvValue is the
-	// non-interactive sandbox and the ZERO VALUE, so an existing caller is
-	// unchanged; ProfileAskEnvValue is the interactive profile where consent
-	// gates the action). It also switches on `--permission-prompts host`, which
-	// is what makes the CLI raise the ask rather than auto-deny it.
+	// Profile selects the hook's rule set (ProfileWorkerEnvValue is the non-interactive sandbox and the
+	// ZERO VALUE, so an existing caller is unchanged.
 	Profile string
 }
 
-// HookBinaryPath resolves the binary the PreToolUse hook invokes: the explicit
-// env override first (the runtime container's /usr/local/bin/orchicon), then
-// this process's own executable (the control plane IS the orchicon binary), then
-// a bare `orchicon` on PATH.
+// HookBinaryPath resolves the binary the PreToolUse hook invokes: the explicit env override first
+// (the runtime container's /usr/local/bin/orchicon).
 func HookBinaryPath() string {
 	if v := strings.TrimSpace(os.Getenv(HookBinEnv)); v != "" {
 		return v
@@ -333,17 +260,7 @@ func HookBinaryPath() string {
 	return HookBinFallback
 }
 
-// HookBinaryFor resolves the binary the PreToolUse hook command invokes for one
-// transport.
-//
-// The container arm is not a nicety. The claude argv — and therefore the
-// settings document naming the hook command — is built by the CONTROL PLANE on
-// the host and executed by the supervisor inside the run's container, so a host
-// path there is a hook that cannot launch: the whole AUTHORITY layer (protected
-// paths, the project boundary with its carve-outs, the operator policy) would
-// silently disappear for every container run, which is every run this platform
-// makes. HookBinEnv is deliberately ignored on this transport: whatever the
-// plane's own environment says, it names a host path.
+// HookBinaryFor resolves the binary the PreToolUse hook command invokes for one transport.
 func HookBinaryFor(isContainer bool) string {
 	if isContainer {
 		return HookBinaryContainerPath
@@ -351,14 +268,8 @@ func HookBinaryFor(isContainer bool) string {
 	return HookBinaryPath()
 }
 
-// PermissionArgs returns the FULL permission launch argv: the mode flag, the
-// inline settings document, and the disallowed-tool list.
-//
-// The returned error is a POLICY LOAD failure only. It is returned rather than
-// swallowed so the caller records it; the launch still happens (the hook fails
-// closed on the same file, and `permissions.deny` carries the never-allow class
-// regardless), so a broken operator policy degrades to STRICTER, never to
-// permissive.
+// PermissionArgs returns the FULL permission launch argv: the mode flag, the inline settings
+// document, and the disallowed-tool list.
 func PermissionArgs(o PermissionOptions) ([]string, error) {
 	settings, err := BuildSettings(o)
 	args := []string{"--permission-mode", "default"}
@@ -366,39 +277,18 @@ func PermissionArgs(o PermissionOptions) ([]string, error) {
 		args = append(args, "--settings", settings)
 	}
 	if o.Profile == ProfileAskEnvValue {
-		// The Ask session DEPENDS on the CLI asking the host: that request is what
-		// raises the can_use_tool control frame the consent cards answer. The CLI's
-		// default for this flag is already "host", but it is named EXPLICITLY here
-		// because the alternative — "none", nobody answers and anything that would
-		// prompt is denied automatically — would silently turn the interactive
-		// profile back into the worker sandbox on an operator's screen: every write
-		// refused with no card and no explanation.
+		// The Ask session DEPENDS on the CLI asking the host: that request is what raises the can_use_tool
+		// control frame the consent cards answer.
 		args = append(args, "--permission-prompts", "host")
 	}
-	// Deny the built-in subagent tool by NAME as well as through the hook — the
-	// CLI-level deny survives a hook that fails to launch. Denied in EVERY profile
-	// (see DecideToolForAsk).
+	// Deny the built-in subagent tool by NAME as well as through the hook — the CLI-level deny survives
+	// a hook that fails to launch.
 	args = append(args, "--disallowedTools", strings.Join(workerrestrict.SubagentToolNames, " "))
 	return args, err
 }
 
-// BuildSettings marshals the `--settings` document. Empty-string return means
-// "no settings" (only possible if marshalling failed, which cannot happen for
-// this shape); the error is the policy load failure, if any.
-// hookCommand renders the shell command claude runs for the PreToolUse hook.
-//
-// THE PATH MUST BE QUOTED, and this is a Windows defect that reads as a permissions defect. The command is
-// executed by a SHELL, so an unquoted path is split at its first space: `C:\Program Files\Orchicon\orchicon.exe
-// claude-hook` becomes `C:\Program` plus arguments, the hook never runs, and claude treats a FAILING
-// PreToolUse hook as a BLOCK. Every gated tool is then refused — reported as "Write/Edit permission was
-// denied for all project files", which points at the permission POLICY rather than at a broken command.
-//
-// It is silent in exactly the way that matters: PreflightHookExecutable checks that the FILE exists and is
-// executable, and a path with spaces satisfies that. The breakage only appears at shell-split time.
-//
-// Quoting is applied unconditionally rather than only when a space is present: it changes nothing for a path
-// without spaces, and a conditional would leave the next odd path (a quote character, a unicode space)
-// uncovered. The path never contains a double quote itself on either platform — an executable name cannot.
+// BuildSettings marshals the `--settings` document. THE PATH MUST BE QUOTED, and this is a Windows
+// defect that reads as a permissions defect.
 func hookCommand(hookBin string) string {
 	return `"` + hookBin + `" claude-hook`
 }
@@ -407,9 +297,7 @@ func BuildSettings(o PermissionOptions) (string, error) {
 	policyDeny, policyErr := policyDenyEntries(o.PolicyPath)
 
 	deny := make([]string, 0, len(neverallow.Shimmed())*2+len(policyDeny)*2+len(workerrestrict.SubagentToolNames))
-	// The shared never-allow class, as claude's own Bash rule syntax. The
-	// binaries come from the CLASS (neverallow.Shimmed()), not from a second
-	// hand-written list.
+	// The shared never-allow class, as claude's own Bash rule syntax.
 	for _, b := range neverallow.Shimmed() {
 		deny = append(deny, "Bash("+b+":*)")
 	}
@@ -439,26 +327,16 @@ func BuildSettings(o PermissionOptions) (string, error) {
 	}
 
 	// THE ASK PROFILE'S PROMPTS COME FROM THE PERMISSION SYSTEM, NOT FROM THE HOOK.
-	//
-	// Only a permission-system prompt reaches the host (`--permission-prompts host`), and that host
-	// prompt is the `can_use_tool` frame the consent cards answer. A hook verdict of "ask" never gets
-	// there — see AskPermissionToolNames. The worker profile gets NO ask list: it is non-interactive
-	// by design, so a prompt there would be an unanswerable refusal.
 	perms := map[string]any{
 		// NOT acceptEdits and NOT bypassPermissions: an unanswerable ask in
 		// -p mode is a refusal, which is the honest worker semantic.
 		"defaultMode": "default",
 		"deny":        deny,
-		// The task/todo-tracking family is PRE-APPROVED so it streams at all
-		// in a non-interactive session. This is an explicit opts-in, not a
-		// bypass: every other restriction (the hook authority, the deny list,
-		// the project boundary) stays in force, and these tools only write
-		// the in-session todo list.
+		// The task/todo-tracking family is PRE-APPROVED so it streams at all in a non-interactive session.
 		"allow":                 append([]string(nil), TodoTrackToolNames...),
 		"additionalDirectories": dirs,
-		// Pin the bypass mode OFF at the settings layer too, so a later
-		// `--permission-mode bypassPermissions` on the command line is refused
-		// by claude itself.
+		// Pin the bypass mode OFF at the settings layer too, so a later `--permission-mode
+		// bypassPermissions` on the command line is refused by claude itself.
 		"disableBypassPermissionsMode": "disable",
 	}
 	if o.Profile == ProfileAskEnvValue {
@@ -474,18 +352,7 @@ func BuildSettings(o PermissionOptions) (string, error) {
 			}},
 		}},
 	}
-	// THE CARD'S ONLY DELIVERY PATH. A `PreToolUse` verdict cannot ask the operator in this launch shape
-	// (a hook's "ask" is a tool error, and the permission system's ask is terminal — both MEASURED against
-	// 2.1.289), but a `PermissionRequest` hook FIRES and its allow/deny IS honoured. So the Ask profile
-	// registers one: it connects to the session's consent socket, raises the card through the ordinary
-	// consent path, blocks until the operator answers, and returns the decision.
-	//
-	// THE TIMEOUT EXCEEDS THE WAIT (consent_hook.go: 960s vs 15m) so OUR side expires first and the hook
-	// still exits cleanly with a deny, rather than being killed mid-write while the operator is reading.
-	//
-	// THE MATCHER IS DERIVED FROM AskPermissionToolNames, so the tools that prompt and the tools that card
-	// cannot diverge: a name in one and not the other is a call the permission system asks about with no
-	// hook to answer it — a terminal denial, which is the whole defect.
+	// THE CARD'S ONLY DELIVERY PATH.
 	if o.Profile == ProfileAskEnvValue {
 		hooks["PermissionRequest"] = []map[string]any{{
 			"matcher": askHookToolMatcher(),
@@ -510,10 +377,6 @@ func BuildSettings(o PermissionOptions) (string, error) {
 }
 
 // policyDenyEntries reads the operator's policy and returns its deny patterns.
-// An ABSENT policy is a nil error and no entries ("no policy" is a legitimate
-// state, exactly as permpolicy.Load documents); a MALFORMED one is returned as
-// its PolicyLoadError so the caller can record it — it is never silently
-// dropped, and the hook fails closed on the same file.
 func policyDenyEntries(path string) ([]string, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, nil
@@ -543,13 +406,10 @@ func SettingsHookBinary(settings string) string {
 	for _, m := range doc.Hooks.PreToolUse {
 		for _, h := range m.Hooks {
 			if h.Command != "" {
-				// Unquote as well as untrim: hookCommand always quotes the binary path (a Windows install
-				// path contains spaces), so the raw command is `"<path>" claude-hook` and returning it with
-				// the quotes still on would break every caller that compares it to a path.
+				// Unquote as well as untrim: hookCommand always quotes the binary path (a Windows install path
+				// contains spaces), so the raw command is `"<path>" claude-hook` and returning it with the quotes.
 				bin := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(h.Command), " claude-hook"))
-				// SHELL quoting, not Go quoting: strip one surrounding pair of double quotes. strconv.Unquote
-				// is the wrong tool here — a Windows path's backslashes are not valid Go escapes, so it
-				// fails and the quotes would survive.
+				// SHELL quoting, not Go quoting: strip one surrounding pair of double quotes.
 				bin = strings.TrimSuffix(strings.TrimPrefix(bin, `"`), `"`)
 				return bin
 			}

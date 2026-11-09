@@ -17,8 +17,6 @@ import (
 func TestDecideToolTable(t *testing.T) {
 	project := t.TempDir()
 	// A PROPER ANCESTOR of the project: destroying it takes the project with it.
-	// (No deny pattern covers this command, so the protected-root rule is the one
-	// under test.)
 	ancestor := filepath.Dir(project)
 	denyAll := filepath.Join(t.TempDir(), "deny.yaml")
 	if err := os.WriteFile(denyAll, []byte("deny:\n  - \""+project+"/secrets/**\"\n"), 0o600); err != nil {
@@ -85,9 +83,8 @@ func TestDecideToolTable(t *testing.T) {
 	}
 }
 
-// The policy load failure must NAME the file it could not read, so the operator's
-// next move is to fix that line — the same contract
-// internal/permpolicy/policy_load_failure_test.go pins for the decision layer.
+// The policy load failure must NAME the file it could not read, so the operator's next move is to
+// fix that line — the same contract internal/permpolicy/policy_load_failure_test.go pins.
 func TestPolicyLoadFailureNamesTheFile(t *testing.T) {
 	project := t.TempDir()
 	broken := filepath.Join(t.TempDir(), "broken.yaml")
@@ -160,9 +157,8 @@ func TestRunHookProtocol(t *testing.T) {
 	}
 }
 
-// A malformed or empty stdin is exit 0 with NO decision — never a crash, and
-// never a blanket deny: claude then applies its own permission flow, with the
-// launch-time deny rules and the OS-level shim still in force underneath.
+// A malformed or empty stdin is exit 0 with NO decision — never a crash, and never a blanket deny:
+// claude then applies its own permission flow.
 func TestRunHookToleratesMalformedInput(t *testing.T) {
 	for _, in := range []string{"", "   ", "not json at all", `{"hook_event_name":"PreToolUse"}`} {
 		var out bytes.Buffer

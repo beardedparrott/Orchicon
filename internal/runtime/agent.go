@@ -28,34 +28,18 @@ import (
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// AgentRequest is a single dispatch from the daemon to the in-container
-// supervisor. It travels as one JSON document over the supervisor's unix
-// socket (written by `orchicon runtime-client`, which the daemon reaches
-// via `docker exec`). Commands: "ping" (readiness), "serve" (the
-// container's opencode serve handshake), "exec" (one-shot shell command
-// for always-container native sessions — argv is fixed to bash/sh -c by
-// the allowlist below), "stdio" (the long-lived duplex streaming child the
-// claude adapter drives across many turns), and "signal" (deliver a signal
-// to a live stdio child by exec id).
-//
-// The "stdio"/"signal" cmds are ADDITIVE: an older supervisor answers them
-// through the default branch with a loud "unknown cmd" rather than
-// mis-handling them.
+// AgentRequest is a single dispatch from the daemon to the in-container supervisor.
 type AgentRequest struct {
 	Cmd  string   `json:"cmd"` // "ping" | "serve" | "exec" | "stdio" | "signal"
 	Argv []string `json:"argv,omitempty"`
-	// ExecID names the tracked child for the "stdio"/"signal" cmds (the
-	// long-lived streaming stdio transport). Empty for a "stdio" start is
-	// rejected loudly.
+	// ExecID names the tracked child for the "stdio"/"signal" cmds (the long-lived streaming stdio
+	// transport).
 	ExecID string `json:"exec_id,omitempty"`
 	// Data is one stdin frame payload ("stdio" connection, cmd "stdin").
 	Data string `json:"data,omitempty"`
 	// Signal is the signal name for cmd "signal" ("INT"|"TERM"|"KILL").
 	Signal string `json:"signal,omitempty"`
-	// AdapterKind is the adapter kind whose serve this request brings up
-	// (the "serve" cmd only). The supervisor keys its per-adapter serve
-	// state on it, so one container can multiplex a serve per demanded kind
-	// (AC 2). Empty → the default adapter kind (opencode).
+	// AdapterKind is the adapter kind whose serve this request brings up (the "serve" cmd only).
 	AdapterKind string   `json:"adapter_kind,omitempty"`
 	Env         []string `json:"env,omitempty"`
 	// Cwd and ProjectDir are HOST paths until mapHostPathFields converts them (hostpaths.go). The tag is the
@@ -64,10 +48,8 @@ type AgentRequest struct {
 	ProjectDir string `json:"project_dir,omitempty" orchicon:"hostpath"`
 }
 
-// AgentEvent is one JSON-lines record the supervisor or the image-build
-// path streams back: the {event:"serve", port, password} handshake answer,
-// an {event:"error"} for a failed bring-up, {pong:true} for a ping, or a
-// {stream,data} chunk of `docker build` output (Runtime Image Deploy).
+// AgentEvent is one JSON-lines record the supervisor or the image-build path streams back: the
+// {event:"serve", port, password} handshake answer, an {event:"error"} for a failed bring-up.
 type AgentEvent struct {
 	Stream   string `json:"stream,omitempty"` // "stdout" | "stderr" (docker build relay)
 	Data     string `json:"data,omitempty"`
@@ -78,51 +60,28 @@ type AgentEvent struct {
 	PID      int    `json:"pid,omitempty"`      // stdio cmd: the streaming child's pid
 	Port     int    `json:"port,omitempty"`     // serve cmd: the container-internal serve port
 	Password string `json:"password,omitempty"` // serve cmd: the container's serve password
-	// PlaneEnabled reports (serve handshake) whether this image boots the
-	// sandbox plane (postgres + nats-server present). The daemon uses it
-	// to publish the plane's /healthz URL so the run-start gate can verify
-	// the sandbox plane before dispatching. Base/gui images answer false.
+	// PlaneEnabled reports (serve handshake) whether this image boots the sandbox plane (postgres +
+	// nats-server present).
 	PlaneEnabled bool `json:"plane_enabled,omitempty"`
-	// Skipped reports (pull) that the requested image was ALREADY present
-	// locally, so no download ran. It is how the fetch RPC stays idempotent
-	// without parsing the human-readable log line.
+	// Skipped reports (pull) that the requested image was ALREADY present locally, so no download ran.
 	Skipped bool `json:"skipped,omitempty"`
 }
 
-// envGitdirMaps carries the host->guest project prefix pairs this container was mounted with. Formatted
-// "<host>|<guest>" joined by ';', because a Windows host path contains ':' and a POSIX guest path cannot
-// contain '|'. Emitted by the daemon from the SAME mounts it creates, so the pairs cannot drift from what is
-// actually mounted.
-//
-// It is used to RECOGNISE a worktree (whose `.git` names the host form), never to rewrite one.
+// envGitdirMaps carries the host->guest project prefix pairs this container was mounted with.
 const envGitdirMaps = "ORCHICON_GITDIR_MAPS"
 
-// DefaultAgentSocket is the in-container path of the supervisor's unix
-// socket. It lives under /tmp (tmpfs) so it is ephemeral like everything
-// else in the runtime container.
+// DefaultAgentSocket is the in-container path of the supervisor's unix socket.
 const DefaultAgentSocket = "/tmp/orchicon-agent.sock"
 
-// Sandbox plane — a disposable, in-container Orchicon control plane that
-// the supervisor boots at container start on images that bake the pieces
-// (currently :orchicon-dev: PostgreSQL + nats-server + the mounted orchicon
-// binary). Postgres -> NATS -> `orchicon serve` on container-local ports
-// gives every worker a consistent full environment — curl
-// http://localhost:8080/healthz, DB-backed tests against localhost:5432,
-// and the `orchicon_*` MCP tools against the sandbox DB — instead of each
-// worker booting Postgres/the app itself ad-hoc. The plane dies with the
-// container (pool reset recreates pristine), preserving the no-DB-route
-// sandbox invariant: it never reaches the host plane's Postgres.
+// Sandbox plane — a disposable, in-container Orchicon control plane that the supervisor boots at
+// container start on images that bake the pieces (currently :orchicon-dev.
 const (
-	// SandboxPostgresDSN is the in-container DSN of the sandbox plane's
-	// Postgres (trust auth, user orchicon). Exported for the opencode
-	// package, which injects it into the sandbox Orchicon MCP sidecar.
+	// SandboxPostgresDSN is the in-container DSN of the sandbox plane's Postgres (trust auth, user
+	// orchicon).
 	SandboxPostgresDSN = "postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable"
 
-	// sandboxDataDir is the stable per-container sandbox state root (the
-	// rootfs is chowned to the runtime uid, so the non-root user owns it).
-	// Stable across supervisor/plane restarts — the watchdog reuses the
-	// Postgres cluster instead of re-initdb'ing — and wiped when the
-	// container dies (pool reset recreates pristine).
+	// sandboxDataDir is the stable per-container sandbox state root (the rootfs is chowned to the
+	// runtime uid, so the non-root user owns it).
 	sandboxDataDir     = "/var/lib/orchicon-sandbox"
 	sandboxPgDataDir   = "/var/lib/orchicon-sandbox/postgres"
 	sandboxNATSDataDir = "/var/lib/orchicon-sandbox/nats"
@@ -144,11 +103,8 @@ const (
 	sandboxWatchInterval = 15 * time.Second
 )
 
-// IsDevImageTag reports whether a runtime image tag is a dev variant — the
-// stock variant that bakes the sandbox-plane pieces (postgres + nats-server),
-// so the sandbox plane boots there and the container serve should register
-// the Orchicon MCP against the sandbox DB. Mirrors the dev-tag suffix
-// resolution in internal/runtimeimage (resolveVariant).
+// IsDevImageTag reports whether a runtime image tag is a dev variant — the stock variant that bakes
+// the sandbox-plane pieces (postgres + nats-server).
 func IsDevImageTag(tag string) bool {
 	lower := strings.ToLower(tag)
 	colon := strings.LastIndex(lower, ":")
@@ -162,12 +118,7 @@ func IsDevImageTag(tag string) bool {
 		strings.HasPrefix(suffix, "dev_")
 }
 
-// runtimeBinAllowlist is the set of binaries the runtime supervisor may
-// exec (argv[0] basenames). It mirrors the adapter CLIs Orchicon drives:
-// opencode and Claude Code (`claude`) today, with Codex (`codex`) to be
-// added here when that adapter lands. Orchicon never ships any of these
-// in the image — the daemon mounts the operator's host installs into the
-// container at runtime (see daemon.go standard mounts).
+// runtimeBinAllowlist is the set of binaries the runtime supervisor may exec (argv[0] basenames).
 var runtimeBinAllowlist = map[string]bool{
 	"opencode": true,
 	"claude":   true,
@@ -176,18 +127,8 @@ var runtimeBinAllowlist = map[string]bool{
 	"sh":       true,
 }
 
-// guestArgv0Refusal is the single explanation for a refused argv[0], and it names the HOST-PATH case
-// explicitly because that case does not look like one from this side.
-//
-// THE REPORTED FAILURE. Claude is the only adapter on the duplex stdio transport, and it used to send
-// the operator's HOST install path. Here, inside a Linux container, filepath.Base splits on "/" only,
-// so the basename of `C:\Users\justi\...\claude.exe` is that WHOLE string — the refusal then read
-// "stdio argv[0] not allowlisted: C:\Users\justi\...\claude.exe", which is accurate and says nothing
-// about what to do. It is not a list-membership mistake to correct but a boundary violation to undo:
-// argv[0] crosses from the host into the container, so only a name the IMAGE provides can be exec'd.
-//
-// The wording matters more than usual here: this error is what the plane now surfaces verbatim (see
-// internal/claude exitCause), so it IS the operator's diagnostic.
+// guestArgv0Refusal is the single explanation for a refused argv[0], and it names the HOST-PATH
+// case explicitly because that case does not look like one from this side.
 func guestArgv0Refusal(prefix, argv0, base string) string {
 	reason := prefix + " not allowlisted: " + base
 	if strings.ContainsRune(argv0, '\\') || strings.HasSuffix(strings.ToLower(argv0), ".exe") {
@@ -198,11 +139,7 @@ func guestArgv0Refusal(prefix, argv0, base string) string {
 	return reason
 }
 
-// RunSupervisor runs the in-container dispatch loop as PID 1. It accepts
-// ping/serve/exec requests on socketPath: ping (readiness), serve (bring
-// up the container's opencode serve), exec (run one shell command with
-// streamed output — the always-container native transport). Each serve is
-// a tracked child process; execs are one-shot with a terminal exit event.
+// RunSupervisor runs the in-container dispatch loop as PID 1.
 func RunSupervisor(socketPath string, log *slog.Logger) error {
 	if socketPath == "" {
 		socketPath = DefaultAgentSocket
@@ -211,10 +148,8 @@ func RunSupervisor(socketPath string, log *slog.Logger) error {
 	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
 		return fmt.Errorf("supervisor: mkdir: %w", err)
 	}
-	// Pre-create the worker scratch directory (matching the opencode
-	// external_directory carve-out in internal/opencode/config.go) so it
-	// exists as the runtime user's own dir before any worker runs. /tmp is
-	// a tmpfs here, so this is ephemeral — wiped with the container.
+	// Pre-create the worker scratch directory (matching the opencode external_directory carve-out in
+	// internal/opencode/config.go) so it exists as the runtime user's own dir before any worker runs.
 	if err := os.MkdirAll("/tmp/orchicon", 0o755); err != nil {
 		return fmt.Errorf("supervisor: mkdir scratch: %w", err)
 	}
@@ -225,15 +160,7 @@ func RunSupervisor(socketPath string, log *slog.Logger) error {
 	defer l.Close()
 	log.Info("runtime supervisor listening", "socket", socketPath)
 
-	// GIT IS TOLD HOW TO READ A WORKTREE; THE WORKTREE IS NOT ALTERED. See gitEnvFor in this file.
-	//
-	// This used to REWRITE each worktree's `.git` to the guest path. The file is bind-mounted, so the rewrite
-	// was visible to the HOST as well — and a host that cannot resolve `/mnt/c/...` then failed to validate its
-	// own worktree, refused to provision, and could not satisfy git's worktree registration. The container was
-	// given a usable worktree by breaking the host's.
-	//
-	// The pointer is now LEFT ALONE (the host wrote it, the host needs it) and each container CHILD receives
-	// GIT_DIR/GIT_WORK_TREE in its own environment, which git prefers to the pointer entirely.
+	// GIT IS TOLD HOW TO READ A WORKTREE; THE WORKTREE IS NOT ALTERED.
 
 	// Reap orphaned children on exit so a container kill never leaves a
 	// stray opencode running inside.
@@ -241,22 +168,12 @@ func RunSupervisor(socketPath string, log *slog.Logger) error {
 	defer handle.killAll(syscall.SIGKILL)
 	defer handle.stopSandboxPlane()
 
-	// Serve watchdog: poll the container's opencode serve and restart it
-	// when it stops answering /global/health (wedged OR exited). A serve
-	// that wedges is otherwise invisible — watchExec only fires on process
-	// exit — and the daemon's idempotent handshake would keep reporting it
-	// as up while every dispatch burned its 30s readiness probe. The
-	// watchdog restarts the serve in place (same port + password, stable
-	// XDG data dir), so sessions survive and the SSE client re-attaches.
+	// Serve watchdog: poll the container's opencode serve and restart it when it stops answering
+	// /global/health (wedged OR exited).
 	go handle.watchServe()
 
-	// Sandbox plane: boot the disposable in-container Orchicon control
-	// plane (Postgres -> NATS -> `orchicon serve`) on images that bake the
-	// pieces, so workers get a consistent full environment without booting
-	// Postgres/the app themselves ad-hoc. Self-gating on binary presence —
-	// base/gui images (no postgres/nats-server) skip entirely and behave
-	// exactly as today. Both run in the background so the socket accept
-	// loop (ping / serve handshakes) stays responsive during the ~2s boot.
+	// Sandbox plane: boot the disposable in-container Orchicon control plane (Postgres -> NATS ->
+	// `orchicon serve`) on images that bake the pieces.
 	go handle.bootSandboxPlane()
 	go handle.watchSandboxPlane()
 
@@ -273,12 +190,7 @@ func RunSupervisor(socketPath string, log *slog.Logger) error {
 	}
 }
 
-// execSession is one running child. After the one-shot exec transport was
-// removed, the only child the supervisor tracks is the container's opencode
-// serve (a DETACHED process: no attached clients, no reconnect grace — it
-// lives until explicitly killed or the container tears down). It keeps the
-// terminal state so a later signal/kill can target it and so the serve
-// watchdog can restart a wedged process.
+// execSession is one running child.
 type execSession struct {
 	id       string
 	cmd      *exec.Cmd
@@ -291,10 +203,7 @@ type execSession struct {
 	exitErr  error
 	done     chan struct{}
 
-	// pumpsDone is closed once the stdio pumps have drained their pipes. watchExec
-	// waits on it before calling cmd.Wait(), because Wait closes the pipe read ends
-	// (see the measurement in watchExec). nil for children with no pumps — the serve
-	// and sandbox paths do not set it, and their behaviour is unchanged.
+	// pumpsDone is closed once the stdio pumps have drained their pipes.
 	pumpsDone chan struct{}
 }
 
@@ -305,28 +214,18 @@ func newExecSession(id string) *execSession {
 	}
 }
 
-// childRegistry tracks running children by exec_id so signals can target
-// a specific execution (the TaskReconciler's wall-clock timeout path
-// relies on this).
+// childRegistry tracks running children by exec_id so signals can target a specific execution (the
+// TaskReconciler's wall-clock timeout path relies on this).
 type childRegistry struct {
 	mu  sync.Mutex
 	log *slog.Logger
 	cmd map[string]*execSession
-	// serveMu serializes serve lifecycle operations (bring-up + watchdog
-	// restart). A concurrent runServe handshake and watchServe restart must
-	// never both spawn a serve on the same port — the second Start fails
-	// ("address already in use") and would corrupt the registry.
+	// serveMu serializes serve lifecycle operations (bring-up + watchdog restart).
 	serveMu sync.Mutex
-	// serves holds the per-ADAPTER serve state, keyed by adapter kind. The
-	// supervisor MULTIPLEXES one in-container serve per demanded kind (AC 2)
-	// while native steps keep executing through the one-shot exec path
-	// (runExec) with no serve at all. Today only "opencode" is ever
-	// registered; the map is the extensibility seam for the next adapter's
-	// serve. Guarded by mu; lifecycle operations serialize on serveMu.
+	// serves holds the per-ADAPTER serve state, keyed by adapter kind.
 	serves map[string]*serveState
-	// sandboxChecked/sandboxOK cache the sandbox-plane self-gate (binary
-	// presence in the image — the image's contents never change while the
-	// container runs). Guarded by mu.
+	// sandboxChecked/sandboxOK cache the sandbox-plane self-gate (binary presence in the image — the
+	// image's contents never change while the container runs).
 	sandboxChecked bool
 	sandboxOK      bool
 	// sandboxMu serializes sandbox-plane bring-up (boot + watchdog
@@ -346,16 +245,14 @@ func newChildRegistry(log *slog.Logger) *childRegistry {
 type serveState struct {
 	// execID is the reserved child-registry id this serve is tracked under.
 	execID string
-	// pw is the serve's basic-auth password, generated once by the
-	// supervisor on first startup and reused for the container's lifetime
-	// so idempotent handshakes return a stable credential.
+	// pw is the serve's basic-auth password, generated once by the supervisor on first startup and
+	// reused for the container's lifetime so idempotent handshakes return a stable credential.
 	pw string
 	// req is the AgentRequest the serve was last started with. The watchdog
 	// reuses it to restart the serve (same argv/env/cwd) after a wedge.
 	req AgentRequest
-	// started marks that this kind's serve has been brought up at least
-	// once, so the watchdog only acts on a serve the plane actually asked
-	// for.
+	// started marks that this kind's serve has been brought up at least once, so the watchdog only acts
+	// on a serve the plane actually asked for.
 	started bool
 }
 
@@ -406,9 +303,7 @@ const serveExecID = "__orchicon_serve__"
 // the daemon publishes to a random host loopback port).
 const defaultServePort = 4096
 
-// serveExecIDFor returns the reserved exec id for adapter kind's
-// in-container serve. The opencode serve keeps the historical id so the
-// existing teardown/signal paths are unchanged.
+// serveExecIDFor returns the reserved exec id for adapter kind's in-container serve.
 func serveExecIDFor(kind string) string {
 	k := normalizedKind(kind)
 	if k == adapter.DefaultAdapterKind {
@@ -417,11 +312,7 @@ func serveExecIDFor(kind string) string {
 	return "__orchicon_serve_" + k + "__"
 }
 
-// servePortFor returns the container-internal port adapter kind's serve
-// binds. 0 means the kind has no bring-up path yet, so the caller fails the
-// handshake rather than binding a colliding port. Only opencode — the one
-// dispatcher-registered serve-dependent kind — has one today; a future
-// adapter's serve picks its own free port at the caller.
+// servePortFor returns the container-internal port adapter kind's serve binds.
 func servePortFor(kind string) int {
 	if normalizedKind(kind) == adapter.DefaultAdapterKind {
 		return defaultServePort
@@ -430,28 +321,13 @@ func servePortFor(kind string) int {
 }
 
 // serveDataDir is the stable per-container XDG_DATA_HOME for the serve.
-// It is deliberately NOT a fresh MkdirTemp per serve start (that is what
-// isolateOpenCodeData does for one-shot execs): a stable dir means a
-// watchdog restart of the serve preserves the container's sessions, and
-// the SSE client re-attaches by session id (same contract as the host
-// serve, which keeps its data dir across restarts). /tmp is a tmpfs in
-// runtime containers, so this is still ephemeral — wiped with the
-// container, never reaching the host's opencode data.
 const serveDataDir = "/tmp/orchicon-serve-data"
 
-// runServe starts the container's opencode serve as a DETACHED child and
-// answers with the port once it is healthy. The serve owns the agent
-// loops for every session in this container (one per execution); the
-// plane reaches it through the daemon-published loopback port. The serve
-// is registered under a reserved exec id so signals and container teardown
-// can target it; it has no clients and no reconnect-grace kill.
-//
-// argv defaults to `opencode serve --hostname 127.0.0.1 --port 4096` (the
-// port the daemon publishes); a request may override the argv.
+// runServe starts the container's opencode serve as a DETACHED child and answers with the port once
+// it is healthy.
 func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
-	// Serialize serve lifecycle against the watchdog: a concurrent
-	// runServe handshake and watchServe restart must never both spawn a
-	// serve on the same port.
+	// Serialize serve lifecycle against the watchdog: a concurrent runServe handshake and watchServe
+	// restart must never both spawn a serve on the same port.
 	h.serveMu.Lock()
 	defer h.serveMu.Unlock()
 
@@ -473,11 +349,8 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 		return
 	}
 
-	// Snapshot the registry under mu, then RELEASE it before the health
-	// probe: serveHealthy is an HTTP call with a 2s timeout, and holding
-	// h.mu across it would stall every other registry operation (the
-	// daemon's readiness ping, exec starts, watchExec reaping) for the
-	// length of a wedged serve's timeout.
+	// Snapshot the registry under mu, then RELEASE it before the health probe: serveHealthy is an HTTP
+	// call with a 2s timeout.
 	h.mu.Lock()
 	st := h.serveStateLocked(kind)
 	pw := st.pw
@@ -485,23 +358,14 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	if registered {
 		cachedPw := pw
 		h.mu.Unlock()
-		// This kind's serve is already registered. Liveness-gate the
-		// idempotent path: a WEDGED serve (process alive but not answering
-		// health) must NOT be reported as up — that was the failure mode
-		// where every dispatch retry burned its 30s probe against a dead
-		// serve and then degraded. If the registered serve no longer
-		// answers, kill it and drop it from the registry NOW so the fresh
-		// start below can register a new session without racing the stale
-		// entry (watchExec also removes it once the process is reaped).
+		// This kind's serve is already registered.
 		if cachedPw != "" && serveHealthy(port, cachedPw) {
 			_ = enc.Encode(AgentEvent{Event: "serve", Port: port, Password: cachedPw, PlaneEnabled: h.sandboxAvailable()})
 			return
 		}
 		h.log.Warn("serve registered but not healthy — restarting", "kind", kind, "pid", existing.pidOrZero())
 		existing.kill()
-		// Re-take mu for the registry mutation. Only runServe/startServeAgain
-		// register sessions and both serialize on serveMu, so nothing can have
-		// registered a newer session under execID in the window.
+		// Re-take mu for the registry mutation.
 		h.mu.Lock()
 		delete(h.cmd, execID)
 	}
@@ -527,10 +391,8 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	// destructive commands are refused even from worker subprocesses.
 	guardDir, guardErr := guard.MakeGuard("/tmp", req.ProjectDir)
 	if guardErr != nil || guardDir == "" {
-		// guardDir == "" is the UNSUPPORTED-PLATFORM case (Windows), not a failure:
-		// MakeGuard reports it with a nil error because no guard can exist there. Both
-		// cases mean "run without the shim", and prepending "" to PATH would put the
-		// working directory on the worker's search path.
+		// guardDir == "" is the UNSUPPORTED-PLATFORM case (Windows), not a failure: MakeGuard reports it
+		// with a nil error because no guard can exist there.
 		h.log.Warn("supervisor: guard not applied to serve", "error", guardErr, "supported", guardDir != "")
 	} else {
 		env = prependGuard(env, guardDir)
@@ -590,28 +452,14 @@ func (h *childRegistry) runServe(enc *json.Encoder, req AgentRequest) {
 	_ = enc.Encode(AgentEvent{Event: "error", Error: "serve did not become ready within 30s"})
 }
 
-// runExec runs one synchronous shell command inside the container — the
-// always-container native transport. Native sessions keep their model loop
-// on the plane but execute every `bash` tool call here: cwd is the
-// in-container worktree path (bind-mounted at the same absolute path as the
-// host, so host and container paths agree), env carries the sandbox DSN,
-// and stdout+stderr stream back as {stream,data} chunks followed by a
-// terminal {event:exit, exit_code} (a non-zero exit is a RESULT the worker
-// course-corrects on, not a transport error). argv[0] is allowlisted to
-// bash/sh (same gate family as the serve's runtimeBinAllowlist) and the
-// execution-guard shim applies, so a worker subprocess cannot run
-// destructive commands even inside the container.
-// BOUNDS ON REAPING, declared once. Both exist because cmd.Wait() closes the
-// pipe read ends: a child that exits fast leaves its output in the KERNEL buffer
-// until a pump reads it, so reaping first DISCARDS it.
+// runExec runs one synchronous shell command inside the container — the always-container native
+// transport.
 const (
 	// stdioDrainKillTimeout bounds the wait for the pumps after stdin closes. A child
 	// that will not exit is killed, and killing it is what closes the write ends.
 	stdioDrainKillTimeout = 15 * time.Second
 
-	// stdioPumpDrainGrace bounds the wait for the pumps BEFORE reaping. It is
-	// deliberately LONGER than the kill timeout above, so that for a wedged child it is
-	// the kill — not this bound — that resolves the wait.
+	// stdioPumpDrainGrace bounds the wait for the pumps BEFORE reaping.
 	stdioPumpDrainGrace = 20 * time.Second
 )
 
@@ -676,14 +524,8 @@ func (h *childRegistry) runExec(enc *json.Encoder, req AgentRequest) {
 	wg.Add(2)
 	go pump("stdout", stdout)
 	go pump("stderr", stderr)
-	// DRAIN BEFORE REAPING — the same hazard as watchExec, and the same measurement:
-	// reaping closes the read ends, so a fast child's output is gone before a pump that
-	// is only scheduled can read it. runExec is a one-shot container command, and a
-	// refusal through it is just as fast, so it needs the same ordering.
-	//
-	// Bounded, so a grandchild inheriting the write end cannot turn a lost message into a
-	// wedged exec: after the bound we reap anyway, and Wait closing the read ends is what
-	// releases the pumps — so the receive below cannot block.
+	// DRAIN BEFORE REAPING — the same hazard as watchExec, and the same measurement: reaping closes the
+	// read ends, so a fast child's output is gone before a pump that is only scheduled can read it.
 	drained := make(chan struct{})
 	go func() { wg.Wait(); close(drained) }()
 	select {
@@ -706,13 +548,8 @@ func (h *childRegistry) runExec(enc *json.Encoder, req AgentRequest) {
 	write(AgentEvent{Event: "exit", ExitCode: code, Error: emsg})
 }
 
-// runStdio runs one long-lived duplex streaming child — the transport the
-// claude adapter drives across many turns on a SINGLE subprocess. Unlike
-// runExec (one shot, collected), it keeps the child's stdin open and reads
-// follow-up frames ("stdin" | "signal" | "close") from the SAME decoder
-// while its stdout/stderr stream back as {stream,data} events. argv[0] is
-// allowlisted (runtimeBinAllowlist) and the execution-guard shim applies,
-// exactly like runExec. Exactly ONE child may be live per exec id.
+// runStdio runs one long-lived duplex streaming child — the transport the claude adapter drives
+// across many turns on a SINGLE subprocess.
 func (h *childRegistry) runStdio(dec *json.Decoder, enc *json.Encoder, req AgentRequest) {
 	if req.ExecID == "" {
 		_ = enc.Encode(AgentEvent{Event: "error", Error: "stdio requires exec_id"})
@@ -783,9 +620,7 @@ func (h *childRegistry) runStdio(dec *json.Decoder, enc *json.Encoder, req Agent
 	s := newExecSession(req.ExecID)
 	s.cmd = cmd
 	s.guardDir = guardDir
-	// The reaper is NOT started here. It calls cmd.Wait(), which closes the pipes, so it
-	// must be started only once the pumps exist AND gated on them draining — see below
-	// and watchExec.
+	// The reaper is NOT started here.
 	pumpsDone := make(chan struct{})
 	s.pumpsDone = pumpsDone
 	h.mu.Lock()
@@ -815,10 +650,7 @@ func (h *childRegistry) runStdio(dec *json.Decoder, enc *json.Encoder, req Agent
 	wg.Add(2)
 	go pump("stdout", stdout)
 	go pump("stderr", stderr)
-	// NOW the reaper may start, and it waits for these pumps before reaping. Starting it
-	// before them — as this did — let cmd.Wait() close the pipe read ends while the pumps
-	// were still only SCHEDULED, and a guard refusal is exactly the fast child that loses
-	// the race.
+	// NOW the reaper may start, and it waits for these pumps before reaping.
 	go func() { wg.Wait(); close(pumpsDone) }()
 	go h.watchExec(s)
 
@@ -844,10 +676,7 @@ func (h *childRegistry) runStdio(dec *json.Decoder, enc *json.Encoder, req Agent
 	}
 drain:
 	_ = stdin.Close()
-	// The child should now see EOF and exit. Bound the wait so a stubborn
-	// child cannot wedge the connection forever.
-	// pumpsDone, not a second waiter: the same signal both releases the reaper and ends
-	// this wait, so the two can never disagree about whether the pipes were drained.
+	// The child should now see EOF and exit.
 	select {
 	case <-pumpsDone:
 	case <-time.After(stdioDrainKillTimeout):
@@ -863,9 +692,7 @@ drain:
 	write(AgentEvent{Event: "exit", ExitCode: s.exitCodeValue()})
 }
 
-// runSignal delivers a signal to a live stdio child by exec id. An unknown
-// or finished execution is a SILENT no-op (the Aborter contract): a cancel
-// of an already-dead session is not an error.
+// runSignal delivers a signal to a live stdio child by exec id.
 func (h *childRegistry) runSignal(enc *json.Encoder, req AgentRequest) {
 	h.mu.Lock()
 	s := h.cmd[req.ExecID]
@@ -920,14 +747,7 @@ func (s *execSession) pidOrZero() int {
 	return 0
 }
 
-// watchServe is the serve health watchdog. It polls the container's
-// opencode serve every few seconds and, when it stops answering
-// /global/health (wedged — alive but hung — or exited), restarts it in
-// place: same port, same password, same stable XDG data dir, so sessions
-// survive and the SSE client re-attaches by id (the same contract as the
-// host serve's Watch loop). A wedged serve is otherwise invisible to
-// watchExec (which only fires on process exit) and would make every
-// dispatch burn its 30s readiness probe then fail.
+// watchServe is the serve health watchdog.
 func (h *childRegistry) watchServe() {
 	backoff := serveWatchInterval
 	for {
@@ -963,17 +783,11 @@ func (h *childRegistry) watchServe() {
 				backoff = serveWatchInterval
 				continue
 			}
-			// Unhealthy. Restart with backoff: kill the wedged process, let
-			// watchExec unregister it, then bring the serve back up with the
-			// same request. If the serve has genuinely gone away (crashed),
-			// a fresh one takes its place.
+			// Unhealthy.
 			h.log.Warn("serve unhealthy — restarting", "kind", sl.kind, "pid", sl.s.pidOrZero(), "backoff", backoff.String())
 			time.Sleep(backoff)
 			h.serveMu.Lock()
-			// Re-check under serveMu: a runServe handshake may have already
-			// replaced the serve while we slept. Only restart if the
-			// registered session is still this (wedged) one and still
-			// unhealthy.
+			// Re-check under serveMu: a runServe handshake may have already replaced the serve while we slept.
 			h.mu.Lock()
 			st := h.serves[sl.kind]
 			cur, ok := h.cmd[serveExecIDFor(sl.kind)]
@@ -1008,10 +822,8 @@ func (h *childRegistry) watchServe() {
 	}
 }
 
-// startServeAgain restarts the container's opencode serve after a wedge,
-// using the stored AgentRequest. It shares the fresh-start path of
-// runServe but encodes nothing (the requesting plane's conn is long
-// gone) — the daemon's next Create handshake converges to it.
+// startServeAgain restarts the container's opencode serve after a wedge, using the stored
+// AgentRequest.
 func (h *childRegistry) startServeAgain(kind string, req AgentRequest) error {
 	kind = normalizedKind(kind)
 	execID := serveExecIDFor(kind)
@@ -1120,11 +932,8 @@ func serveHealthy(port int, password string) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// sandboxAvailable reports whether this image can boot the sandbox plane
-// (a Postgres server bin dir + nats-server on PATH). Base/gui images
-// answer false and behave exactly as today — no plane, no extra children.
-// The probe is cheap (a few stat calls) and cached once per supervisor
-// lifetime: the image's contents never change while the container runs.
+// sandboxAvailable reports whether this image can boot the sandbox plane (a Postgres server bin dir
+// + nats-server on PATH).
 func (h *childRegistry) sandboxAvailable() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1136,10 +945,7 @@ func (h *childRegistry) sandboxAvailable() bool {
 	return h.sandboxOK
 }
 
-// sandboxPgBinDir resolves the Postgres server bin dir (initdb/pg_ctl/
-// pg_isready/postgres). Postgres 15 on Debian installs these under
-// /usr/lib/postgresql/<ver>/bin, not on PATH. Returns "" when absent
-// (base/gui images — the sandbox plane is skipped entirely).
+// sandboxPgBinDir resolves the Postgres server bin dir (initdb/pg_ctl/ pg_isready/postgres).
 func sandboxPgBinDir() string {
 	dirs, err := filepath.Glob("/usr/lib/postgresql/*/bin")
 	if err != nil {
@@ -1154,11 +960,8 @@ func sandboxPgBinDir() string {
 	return ""
 }
 
-// sandboxPgBinDirComplete reports whether a Postgres bin dir contains ALL
-// four server binaries the sandbox plane execs (initdb, pg_ctl,
-// pg_isready, postgres). A partial dir must NOT satisfy the self-gate:
-// bootSandboxPlane execs each of these, so a dir with only some of them
-// would pass sandboxAvailable() and then fail at boot.
+// sandboxPgBinDirComplete reports whether a Postgres bin dir contains ALL four server binaries the
+// sandbox plane execs (initdb, pg_ctl, pg_isready, postgres).
 func sandboxPgBinDirComplete(dir string) bool {
 	for _, bin := range []string{"initdb", "pg_ctl", "pg_isready", "postgres"} {
 		if _, err := os.Stat(filepath.Join(dir, bin)); err != nil {
@@ -1168,12 +971,8 @@ func sandboxPgBinDirComplete(dir string) bool {
 	return true
 }
 
-// bootSandboxPlane brings up the sandbox plane in dependency order —
-// Postgres (initdb once into the stable data dir, then pg_ctl start) ->
-// nats-server -js (tracked child) -> `orchicon serve` (tracked child,
-// sandbox env). Idempotent and restart-safe: a watchdog re-runs it after
-// a failure, and each component's "already up" probe short-circuits, so a
-// restart reuses the stable Postgres cluster instead of re-initializing.
+// bootSandboxPlane brings up the sandbox plane in dependency order — Postgres (initdb once into the
+// stable data dir, then pg_ctl start) -> nats-server -js (tracked child) -> `orchicon serve`.
 func (h *childRegistry) bootSandboxPlane() {
 	h.sandboxMu.Lock()
 	defer h.sandboxMu.Unlock()
@@ -1214,12 +1013,8 @@ func (h *childRegistry) bootSandboxPostgres() error {
 			return fmt.Errorf("initdb: %v: %s", err, out)
 		}
 	}
-	// pg_ctl -w start blocks until the server is up; it errors when the
-	// server is already running (a previous boot / watchdog restart) — the
-	// readiness probe below decides either way. unix_socket_directories
-	// must point at a dir the runtime user owns: /var/run/postgresql (the
-	// default) is root-owned in the container (docker's /run tmpfs), and
-	// postgres refuses to start without a writable socket dir.
+	// pg_ctl -w start blocks until the server is up; it errors when the server is already running (a
+	// previous boot / watchdog restart) — the readiness probe below decides either way.
 	opts := fmt.Sprintf("-p %d -c listen_addresses=localhost -c unix_socket_directories=%s", sandboxPgPort, sandboxDataDir)
 	if out, err := procwin.Command(filepath.Join(pgb, "pg_ctl"),
 		"-D", sandboxPgDataDir, "-l", sandboxPgLog, "-o", opts, "-w", "start").CombinedOutput(); err != nil {
@@ -1301,13 +1096,8 @@ func natsReady() bool {
 	return true
 }
 
-// bootSandboxServe starts the sandbox `orchicon serve` (the sandbox
-// control plane) as a tracked child and waits for its /healthz. The plane
-// runs migrations + tenant/worker seeding on boot against the sandbox DB.
-// Sessions are OFF (ORCHICON_OPCODE_SESSION_TRANSPORT=0): the sandbox is
-// an API/DB/MCP surface, not a second execution plane, so it never spawns
-// a nested opencode serve (whose eager MCP connects would hang) and never
-// competes with the supervisor's opencode serve.
+// bootSandboxServe starts the sandbox `orchicon serve` (the sandbox control plane) as a tracked
+// child and waits for its /healthz.
 func (h *childRegistry) bootSandboxServe() error {
 	if sandboxPlaneHealthy() {
 		return nil
@@ -1337,9 +1127,8 @@ func (h *childRegistry) bootSandboxServe() error {
 	h.cmd[sandboxPlaneExecID] = s
 	h.mu.Unlock()
 	go h.watchExec(s)
-	// The plane runs migrations + seeds on boot against a fresh DB; give
-	// it the full window (the run-start gate's own 120s window bounds the
-	// total wait either way).
+	// The plane runs migrations + seeds on boot against a fresh DB; give it the full window (the
+	// run-start gate's own 120s window bounds the total wait either way).
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
 		if sandboxPlaneHealthy() {
@@ -1367,13 +1156,7 @@ func sandboxPlaneHealthy() bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-// watchSandboxPlane is the sandbox-plane health watchdog. It polls the
-// plane's /healthz and, when it stops answering (wedged or exited —
-// invisible to watchExec's process-exit-only watch), re-boots the stack
-// via the idempotent bootSandboxPlane: Postgres is restarted in place
-// (pg_ctl reuses the stable cluster — no re-initdb), NATS re-leased, the
-// serve re-spawned. A dead plane would otherwise fail the run-start gate
-// with no recovery path.
+// watchSandboxPlane is the sandbox-plane health watchdog.
 func (h *childRegistry) watchSandboxPlane() {
 	interval := sandboxWatchInterval
 	for {
@@ -1392,9 +1175,8 @@ func (h *childRegistry) watchSandboxPlane() {
 	}
 }
 
-// killAndClear terminates a tracked child (if any) and removes it from
-// the registry, waiting briefly for the reap so a restart doesn't race
-// "address already in use" on the next Start.
+// killAndClear terminates a tracked child (if any) and removes it from the registry, waiting
+// briefly for the reap so a restart doesn't race "address already in use" on the next Start.
 func (h *childRegistry) killAndClear(id string) {
 	h.mu.Lock()
 	s, ok := h.cmd[id]
@@ -1411,12 +1193,7 @@ func (h *childRegistry) killAndClear(id string) {
 	h.mu.Unlock()
 }
 
-// stopSandboxPlane is a best-effort teardown of the sandbox plane on
-// supervisor exit. The tracked children (nats + serve) are covered by
-// killAll; this stops the pg_ctl-detached Postgres. Container teardown is
-// the real guarantee (pool resets `docker rm -f`) — this just avoids a
-// stray postgres lingering if the supervisor exits while the container
-// lives.
+// stopSandboxPlane is a best-effort teardown of the sandbox plane on supervisor exit.
 func (h *childRegistry) stopSandboxPlane() {
 	if !h.sandboxAvailable() {
 		return
@@ -1431,29 +1208,9 @@ func (h *childRegistry) stopSandboxPlane() {
 		"-D", sandboxPgDataDir, "-m", "fast", "stop").Run()
 }
 
-// watchExec waits for the child to exit, records the terminal state, and
-// closes the session. The serve has no attached clients (it is detached),
-// so there is nothing to broadcast to — the terminal state is what a
-// later liveness-gated runServe / the watchdog uses to decide a restart.
+// watchExec waits for the child to exit, records the terminal state, and closes the session.
 func (h *childRegistry) watchExec(s *execSession) {
 	// DRAIN BEFORE REAPING, and this ordering is load-bearing rather than tidy.
-	//
-	// cmd.Wait() closes the pipe READ ends. A child that exits fast — an execution-guard
-	// refusal exits in about a millisecond — leaves its message in the kernel buffer
-	// until a pump reads it, so reaping first THROWS IT AWAY. The child still reports a
-	// non-zero exit, the command still did nothing, and the reason is simply gone: a
-	// failed command with no explanation, which a model cannot course-correct from and
-	// an operator cannot see.
-	//
-	// MEASURED, on this repo's own shape (a child that writes one line then exits 1):
-	// with the pump scheduled 0ms after Wait the message survived 50/50; at 1ms it was
-	// lost in 26/50; at 5ms, 50/50. The window is just the scheduling gap, which is
-	// negligible on an idle machine and easily exceeded under a loaded one — which is
-	// why this presented as an intermittent test failure rather than a bug report.
-	//
-	// The bound is a wedge guard, not the normal path: for a child that exits on its own
-	// the pumps hit EOF immediately, and for a child that will not exit, the drain's kill
-	// closes the write ends, which is what releases them.
 	if s.pumpsDone != nil {
 		select {
 		case <-s.pumpsDone:
@@ -1473,10 +1230,7 @@ func (h *childRegistry) watchExec(s *execSession) {
 	}
 	s.mu.Unlock()
 	close(s.done)
-	// Only unregister if this session is STILL the registered one. A wedged
-	// serve that was killed and replaced by the watchdog / a liveness-gated
-	// runServe has a new session under the same serveExecID — its stale
-	// watchExec must not remove the replacement from the registry.
+	// Only unregister if this session is STILL the registered one.
 	h.mu.Lock()
 	if cur, ok := h.cmd[s.id]; ok && cur == s {
 		delete(h.cmd, s.id)
@@ -1509,23 +1263,8 @@ func (h *childRegistry) killAll(sig syscall.Signal) {
 	}
 }
 
-// gitEnvFor returns GIT_DIR and GIT_WORK_TREE for a child whose working directory is cwd, or nil when cwd is
-// not a worktree of a mounted project.
-//
-// THIS IS THE WHOLE MECHANISM, and it replaces rewriting the worktree's `.git`.
-//
-// A git worktree has a `.git` FILE whose content is an absolute path — written by the HOST, naming the host's
-// form. That file lives in a BIND MOUNT, so the host and the container open the SAME BYTES, and no content
-// satisfies both: `C:/...` is unresolvable here, `/mnt/c/...` is unresolvable there. Rewriting it gave the
-// container a working git by breaking the host's — which is what produced a host that could not validate its
-// own worktree, refused to provision, and could not satisfy git's worktree registration.
-//
-// So the file keeps the HOST form and each CONTAINER CHILD is told where its gitdir is. GIT_DIR OVERRIDES the
-// pointer entirely: git never reads the file, so nothing about the host's view changes.
-//
-// PER-CHILD, DERIVED FROM CWD — load-bearing, not tidy: a parallel-branch step runs in its own sibling
-// worktree, so "the run's worktree" is the wrong answer for it. The cwd the child was actually given is the only
-// form correct for both.
+// gitEnvFor returns GIT_DIR and GIT_WORK_TREE for a child whose working directory is cwd, or nil
+// when cwd is not a worktree of a mounted project.
 func gitEnvFor(cwd string) []string {
 	workDir := strings.TrimSpace(cwd)
 	if workDir == "" {
@@ -1597,9 +1336,8 @@ type pathMapping struct {
 	Guest string
 }
 
-// agentEnv builds the child environment: the supervisor's environment
-// plus the daemon-provided overrides (HOME, OPENCODE_CONFIG_CONTENT,
-// OPENCODE_EXECUTION_ID, etc.).
+// agentEnv builds the child environment: the supervisor's environment plus the daemon-provided
+// overrides (HOME, OPENCODE_CONFIG_CONTENT, OPENCODE_EXECUTION_ID, etc.).
 func agentEnv(req AgentRequest) []string {
 	out := os.Environ()
 	for _, kv := range req.Env {
@@ -1617,17 +1355,8 @@ func agentEnv(req AgentRequest) []string {
 		}
 		out = append(kept, kv)
 	}
-	// Ensure every MOUNTED adapter CLI bin is on the child's PATH —
-	// belt-and-suspenders to the daemon's container-level PATH. Only the
-	// kinds the daemon actually mounted (ORCHICON_ADAPTER_KINDS) are
-	// considered, and only dirs that exist in THIS container (i.e. were
-	// actually mounted) are prepended. A request without the env var
-	// contributes no prefix (the container-level PATH the daemon set still
-	// resolves the CLIs), so an older daemon cannot have a prefix pointing
-	// at a dir it never mounted.
-	// GIT_DIR / GIT_WORK_TREE FOR THIS CHILD'S WORKTREE. Set here — after the request's own env, so an explicit
-	// override still loses to the derived truth about the directory the child is actually in, and BEFORE the
-	// PATH work below, which does not touch them.
+	// Ensure every MOUNTED adapter CLI bin is on the child's PATH — belt-and-suspenders to the daemon's
+	// container-level PATH.
 	if gitEnv := gitEnvFor(req.Cwd); len(gitEnv) > 0 {
 		for _, kv := range gitEnv {
 			out = setEnv(out, kv[:strings.Index(kv, "=")], kv[strings.Index(kv, "=")+1:])
@@ -1663,10 +1392,8 @@ func envPath(env []string) string {
 	return ""
 }
 
-// isolateOpenCodeDataInto redirects opencode state into a caller-chosen
-// directory (seeded with the model auth) and returns the env with
-// XDG_DATA_HOME set. The serve uses a STABLE dir (serveDataDir) so a
-// watchdog restart preserves sessions.
+// isolateOpenCodeDataInto redirects opencode state into a caller-chosen directory (seeded with the
+// model auth) and returns the env with XDG_DATA_HOME set.
 func isolateOpenCodeDataInto(env []string, xdg string) []string {
 	if xdg == "" {
 		return env
@@ -1703,14 +1430,7 @@ func setEnv(env []string, key, value string) []string {
 	return out
 }
 
-// forwardFrames relays every follow-up stdin frame of a long-lived "stdio"
-// request onto the supervisor connection until the plane closes its request
-// body. A clean EOF is translated into a "close" frame so the supervisor
-// closes the child's stdin and the child exits (keeping the exit event on the
-// relay path) even when the plane drops the body without saying "close" —
-// otherwise the supervisor's control loop would wait forever and leak the
-// child. After the initial request this goroutine is the ONLY writer on the
-// supervisor connection.
+// After the initial request this goroutine is the ONLY writer on the supervisor connection.
 func forwardFrames(inDec *json.Decoder, enc *json.Encoder, execID string) {
 	for {
 		var f AgentRequest
@@ -1741,18 +1461,8 @@ func prependGuard(env []string, guardDir string) []string {
 	return out
 }
 
-// RunClient connects to the supervisor socket, forwards one request (read
-// from stdin) and relays the streamed events to stdout as JSON-lines. It
-// exits with the child's exit code so the daemon can propagate it. It is
-// invoked by the daemon via `docker exec`.
-//
-// For the "stdio" cmd the request is a LONG-LIVED duplex transport, not a
-// single dispatch: every later frame the plane writes on the same stdin (a
-// user turn, a signal, or "close") must ride the SAME supervisor connection,
-// so a forwarding goroutine keeps decoding stdin and encoding onto the
-// socket while the event relay below streams stdout back. Without it the
-// child's stdin would never see a follow-up turn — the streaming session
-// would silently degrade to a one-shot.
+// RunClient connects to the supervisor socket, forwards one request (read from stdin) and relays
+// the streamed events to stdout as JSON-lines.
 func RunClient(socketPath string, in io.Reader, out io.Writer) (int, error) {
 	if socketPath == "" {
 		socketPath = DefaultAgentSocket
@@ -1804,17 +1514,8 @@ func RunClient(socketPath string, in io.Reader, out io.Writer) (int, error) {
 	}
 }
 
-// serveEnvSummary renders an environment as the NAMES it sets, for the serve-start
-// diagnostic. It exists so a failing serve's inputs are recoverable after the fact —
-// the config rides the serve PROCESS's environment rather than the container's, so
-// `docker inspect` never shows it and it dies with the process.
-//
-// VALUES ARE NEVER RENDERED, and that is a hard rule rather than a caution: this
-// environment carries provider credentials (the daemon injects OLLAMA_API_KEY and
-// friends), and the line is permanent, so a value leaking here would be a credential
-// leak into the logs. The one name whose VALUE matters for diagnosis is the serve
-// config, and it is reduced to a digest plus a length — enough to tell two different
-// configs apart, which is what the comparison needs, without reproducing either.
+// VALUES ARE NEVER RENDERED, and that is a hard rule rather than a caution: this environment
+// carries provider credentials (the daemon injects OLLAMA_API_KEY and friends).
 func serveEnvSummary(env []string) string {
 	out := make([]string, 0, len(env))
 	for _, kv := range env {

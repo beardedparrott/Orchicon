@@ -49,9 +49,8 @@ func TestStdioRefusesAHostInstallPathAndSaysSo(t *testing.T) {
 	}
 }
 
-// The other side of the contract: what the claude adapter actually sends for a container is accepted.
-// If this ever fails, container dispatch is broken again — and it fails HERE, in the daemon's own
-// package, rather than at the end of a 400ms no-op on an operator's Windows box.
+// The other side of the contract: what the claude adapter actually sends for a container is
+// accepted.
 func TestStdioAcceptsTheNameAContainerDispatchSends(t *testing.T) {
 	// "claude" is internal/claude.ClaudeBinaryName. It is spelled out rather than imported: importing
 	// the adapter into the daemon's test would let a change to BOTH sides pass while dispatch broke.
@@ -59,9 +58,7 @@ func TestStdioAcceptsTheNameAContainerDispatchSends(t *testing.T) {
 		t.Fatal("runtimeBinAllowlist no longer accepts \"claude\" — that IS the name a container claude " +
 			"dispatch sends, so every claude container worker would be refused before spawn")
 	}
-	// A bare name must get past the allowlist gate. It will then fail to exec (this host need not have
-	// claude installed) — which is fine and is a DIFFERENT failure: the point is that it is not refused
-	// at the boundary, so the child-exit path is reachable.
+	// A bare name must get past the allowlist gate.
 	events := stdioEvents(t, AgentRequest{
 		Cmd:    "stdio",
 		ExecID: "exec-argv0-ok",

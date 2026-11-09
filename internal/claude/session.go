@@ -23,14 +23,12 @@ import (
 // hard-kills the child.
 var timeAfterProcClose = 5 * time.Second
 
-// abortGrace is how long a cancelled session is given after SIGINT before
-// the bridge escalates to SIGTERM. An unfinished turn stays resumable via
-// --resume <session-id>.
+// abortGrace is how long a cancelled session is given after SIGINT before the bridge escalates to
+// SIGTERM.
 var abortGrace = 3 * time.Second
 
-// session is ONE long-lived claude session: a single subprocess spawned
-// once and driven across N user turns on the same stdin. It owns the
-// callback fan-out and the durable transcript writes.
+// session is ONE long-lived claude session: a single subprocess spawned once and driven across N
+// user turns on the same stdin.
 type session struct {
 	b        *Bridge
 	execID   string
@@ -41,9 +39,7 @@ type session struct {
 	model    string
 	resumeID string
 
-	// stderrRing holds the LAST stderr lines the CLI emitted. Drained continuously, not at failure time: a
-	// fatal message is the LAST line, and the previously-on-demand drain took the FIRST 512 bytes. See
-	// stderrRing in stderrtail.go.
+	// stderrRing holds the LAST stderr lines the CLI emitted.
 	stderrRing *stderrRing
 	proc     ProcSession
 
@@ -51,12 +47,7 @@ type session struct {
 	// the durable transcript / ledger / todo side effects (parse.go).
 	mapper *Mapper
 
-	// Shared budget gate (ONE source of truth). ladder is parsed from the
-	// SAME merged budget JSON the opencode adapter reads
-	// (manifest.Budgets → opencode.ParseBudgetLadder, tenant defaults merged
-	// with the worker's budget_overrides); spend is fed the SAME cache-aware
-	// usage the telemetry path records. The claude package holds no budget
-	// threshold or message text of its own.
+	// Shared budget gate (ONE source of truth).
 	ladder    *opencode.BudgetLadder
 	spend     *opencode.BudgetSpend
 	startedAt time.Time
@@ -66,9 +57,8 @@ type session struct {
 	compactions     int
 	tierLatch       map[string]bool
 
-	// abortWindow is this session's SIGINT→SIGTERM grace, resolved once at
-	// construction from the package default so a live session never re-reads
-	// a package-level var.
+	// abortWindow is this session's SIGINT→SIGTERM grace, resolved once at construction from the
+	// package default so a live session never re-reads a package-level var.
 	abortWindow time.Duration
 
 	mu       sync.Mutex
@@ -113,27 +103,22 @@ func newSession(b *Bridge, execID, tenantID string, manifest scheduler.Execution
 
 // run spawns the single subprocess and drives it to a terminal turn.
 func (s *session) run(ctx context.Context) error {
-	// THE HOOK MUST BE ABLE TO RUN BEFORE ANYTHING ELSE HAPPENS. Without it no tool call is gated, every
-	// gated tool falls back to claude's own prompt, and in a `-p` session that prompt is a TERMINAL DENIAL —
-	// which the operator sees as a worker reporting a permission wall it cannot get past, not as a broken
-	// hook. Fail here instead, with the cause named (see PreflightHookExecutable).
+	// THE HOOK MUST BE ABLE TO RUN BEFORE ANYTHING ELSE HAPPENS.
 	if err := PreflightHookExecutable(s.inContainer()); err != nil {
 		s.finish(ctx, false, err.Error(), err)
 		return err
 	}
 	argv := s.argv()
-	// The child's environment carries the project boundary the PreToolUse hook
-	// reads, and — on the LOCAL transport — the OS-level execution guard shim on
-	// PATH. The cleanup closes the shim directory when the session ends.
+	// The child's environment carries the project boundary the PreToolUse hook reads, and — on the
+	// LOCAL transport — the OS-level execution guard shim on PATH.
 	env, envCleanup := s.childEnv()
 	defer envCleanup()
 	spec := procSpec{
 		ExecID: s.execID,
 		Argv:   argv,
 		Cwd:    executionDir(s.manifest),
-		// The container is leased by RUN id, so the transport must name the run —
-		// see procSpec.WorkflowRunID. Empty here is the local transport, which
-		// spawns on the host and needs no container.
+		// The container is leased by RUN id, so the transport must name the run — see
+		// procSpec.WorkflowRunID.
 		ProjectDir:    s.manifest.ProjectDir,
 		Env:           env,
 		WorkflowRunID: s.manifest.RuntimeWorkflowID,
@@ -160,9 +145,8 @@ func (s *session) run(ctx context.Context) error {
 	}
 
 	lines := p.Lines()
-	// The stall watchdog ticks independently of stdout: total silence past
-	// the no-progress window is fatal (the child is hard-killed and the
-	// execution fails), while activity with no file write is advisory.
+	// The stall watchdog ticks independently of stdout: total silence past the no-progress window is
+	// fatal (the child is hard-killed and the execution fails).
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
@@ -179,16 +163,12 @@ func (s *session) run(ctx context.Context) error {
 			}
 		case line, ok := <-lines:
 			if !ok {
-				// stdout closed → the child exited. If the turn already
-				// completed this is a clean session end; otherwise the
-				// process died mid-turn (a failure whose captured session id
-				// keeps the retry resumable).
+				// stdout closed → the child exited.
 				if s.isFinished() {
 					return nil
 				}
-				// Tear the transport down first so Wait cannot block on a
-				// stream that is already gone, then read the exit code with
-				// a bounded wait.
+				// Tear the transport down first so Wait cannot block on a stream that is already gone, then read
+				// the exit code with a bounded wait.
 				_ = p.Close()
 				code := 0
 				var waitErr error
@@ -206,9 +186,7 @@ func (s *session) run(ctx context.Context) error {
 					code, waitErr = r.code, r.err
 				case <-time.After(2 * time.Second):
 				}
-				// THE CAUSE THE PROC HOLDS COMES FIRST. A child that never spawned cannot write
-				// stderr, so without this the message blames the CLI for silence it never had a
-				// chance to break — see exitCause.
+				// THE CAUSE THE PROC HOLDS COMES FIRST.
 				msg := fmt.Sprintf("claude session exited without a terminal result message (exit code %d)%s%s", code, exitCause(waitErr), s.stderrTail())
 				err := fmt.Errorf("%s", msg)
 				s.finish(ctx, false, msg, err)
@@ -224,9 +202,8 @@ func (s *session) run(ctx context.Context) error {
 	}
 }
 
-// handleLine decodes one stream-json line and hands it to the mapper, then
-// applies the turn-boundary logic (a queued injected turn keeps the session
-// alive past the `result` message).
+// handleLine decodes one stream-json line and hands it to the mapper, then applies the
+// turn-boundary logic (a queued injected turn keeps the session alive past the `result` message).
 func (s *session) handleLine(ctx context.Context, line []byte) error {
 	ev, err := ParseLine(line)
 	if err != nil {
@@ -236,11 +213,9 @@ func (s *session) handleLine(ctx context.Context, line []byte) error {
 		s.onCompactBoundary(ctx)
 	}
 	if s.mapper.Handle(ctx, ev) {
-		// Turn boundary: charge the SHARED, cache-aware budget gate and
-		// evaluate the ladder BEFORE the boundary is applied, so a compact
-		// directive (or a terminal budget abort) is decided on this turn's
-		// real spend. Both paths keep the session alive for the directive
-		// turn they just wrote (SendTurn queues a turn).
+		// Turn boundary: charge the SHARED, cache-aware budget gate and evaluate the ladder BEFORE the
+		// boundary is applied, so a compact directive (or a terminal budget abort) is decided on this
+		// turn's.
 		if reason := s.observeTurnBudget(ctx); reason != "" {
 			s.abort()
 			err := fmt.Errorf("%s", reason)
@@ -253,11 +228,8 @@ func (s *session) handleLine(ctx context.Context, line []byte) error {
 	return nil
 }
 
-// onCompactBoundary observes a compaction boundary reported by the child
-// (Claude Code's own auto-compact, or the boundary that follows a compact
-// directive turn). The transcript shrank in place, which is a HEALTHY,
-// forward-progress event: it is recorded for the session pane and counts as
-// progress for the stall watchdog.
+// onCompactBoundary observes a compaction boundary reported by the child (Claude Code's own
+// auto-compact, or the boundary that follows a compact directive turn).
 func (s *session) onCompactBoundary(ctx context.Context) {
 	s.mapper.stall.sawOutput(time.Now())
 	s.recordPart(ctx, db.SessionPartCompacted, map[string]any{"source": "claude_auto_compact"})
@@ -284,8 +256,7 @@ func (s *session) onTerminal(ctx context.Context, ev StreamEvent) {
 }
 
 // bindSession claims the claude session id for this execution, enforcing the
-// one-active-subprocess-per-session invariant. The durable session_info part
-// is written by the mapper (the single owner of the transcript fan-out).
+// one-active-subprocess-per-session invariant.
 func (s *session) bindSession(_ context.Context, sid string) {
 	if !s.b.bindSessionID(sid, s.execID) {
 		s.b.log.Warn("claude: a live subprocess already owns this session id — refusing the second writer",
@@ -293,9 +264,8 @@ func (s *session) bindSession(_ context.Context, sid string) {
 	}
 }
 
-// sessionIdentity is the claude session id this session is bound to (the id
-// the CLI reported, else the resumed id). It is the identity a follow-up or
-// a recovery must re-attach to.
+// sessionIdentity is the claude session id this session is bound to (the id the CLI reported, else
+// the resumed id).
 func (s *session) sessionIdentity() string {
 	if sid := s.mapper.sessionIDFor(); sid != "" {
 		return sid
@@ -303,9 +273,8 @@ func (s *session) sessionIdentity() string {
 	return s.resumeID
 }
 
-// SendTurn writes a follow-up user turn onto the live stdin and queues it so
-// the run loop does not terminate at the next result boundary. Returns an
-// error when no session is live.
+// SendTurn writes a follow-up user turn onto the live stdin and queues it so the run loop does not
+// terminate at the next result boundary.
 func (s *session) SendTurn(ctx context.Context, message string) error {
 	s.mu.Lock()
 	if s.finished {
@@ -378,10 +347,6 @@ func (s *session) isFinished() bool {
 }
 
 // stderrTail renders the LAST stderr lines the CLI emitted, for a failure message.
-//
-// IT SAYS SO WHEN THERE WAS NONE ("no stderr was emitted"), because silence is ambiguous: the operator could
-// not tell whether the CLI printed nothing or the adapter failed to capture it, and that ambiguity is what
-// made the reported 0-token failure un-diagnosable.
 func (s *session) stderrTail() string {
 	if s.stderrRing == nil {
 		return ""
@@ -393,20 +358,10 @@ func (s *session) stderrTail() string {
 	return "; stderr: " + strings.Join(lines, " ")
 }
 
-// argv builds the claude command line. Model is bound ONCE here (there is no
-// per-turn model switch); --resume re-attaches a prior transcript.
-//
-// The RESTRICTIONS ride this same command line, through claude's own permission
-// mechanism (see internal/claude/permissions.go): --permission-mode default plus
-// an inline --settings document carrying the never-allow deny rules, the
-// carve-outs and the PreToolUse hook, plus --disallowedTools for the built-in
-// subagent tool. There is deliberately NO bypass flag anywhere on this line —
-// TestNoBypassPermissionFlagIsEverEmitted fails if one is introduced.
+// argv builds the claude command line.
 func (s *session) argv() []string {
 	argv := []string{
-		// NOT the bare name on the HOST: see binary.go. A PATH that reaches a system
-		// install runs a CLI that rejects this argv outright. In a CONTAINER it must be
-		// the bare name, because the only install in there is the image's — see ClaudeBinaryFor.
+		// NOT the bare name on the HOST: see binary.go.
 		ClaudeBinaryFor(s.inContainer()), "-p",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
@@ -436,10 +391,7 @@ func (s *session) argv() []string {
 		// path is host-only, so there the check is exact.
 		argv = append(argv, "--resume", rid)
 	}
-	// A policy LOAD failure is recorded, never silently dropped. PermissionArgs
-	// still returns a complete, restrictive argv in that case (the never-allow
-	// deny rules and the fail-closed hook are unaffected), so the launch
-	// degrades to STRICTER, never to permissive.
+	// A policy LOAD failure is recorded, never silently dropped.
 	args, err := PermissionArgs(s.permissionOptions())
 	if err != nil {
 		slog.Default().Warn("claude: the operator permission policy could not be loaded — launching with the never-allow class, the project boundary and the fail-closed hook, but without its deny entries", "error", err)
@@ -478,12 +430,8 @@ func (s *session) mcpArgs() []string {
 		s.tenantID,
 		workerMCPExtraEnv(inContainer, s.manifest.RuntimeWorkflowID),
 	)
-	// The SAME resolution the native bridge runs, at the SAME scope: the
-	// WORKER scope — the project's owned definitions ∪ THE EXECUTING VERSION's
-	// inline specs, the latter carried on the manifest
-	// (ExecutionManifest.Permissions, from worker_versions.permissions) so a
-	// PINNED dispatch resolves the version it actually pinned rather than
-	// whatever is latest published. This adapter only renders the result.
+	// The SAME resolution the native bridge runs, at the SAME scope: the WORKER scope — the project's
+	// owned definitions ∪ THE EXECUTING VERSION's inline specs.
 	ref := mcpclient.ScopeRef{
 		Kind:           mcpclient.ScopeWorker,
 		ProjectID:      s.manifest.ProjectID,
@@ -499,13 +447,8 @@ func (s *session) mcpArgs() []string {
 	}
 	provenance := mcpclient.ProvenanceString(res.Servers)
 	if err != nil {
-		// Fail the launch rather than run a worker without the MCP servers it was
-		// configured to have, which is the native bridge's contract too. argv()
-		// cannot return an error, so this is surfaced through the returned argv as
-		// a `--mcp-config` the model will report as failed — and logged loudly,
-		// naming the server AND the scope it came from (DescribeFailedServer) so
-		// the operator can tell "misconfigured server" from "server resolved from
-		// the wrong scope".
+		// Fail the launch rather than run a worker without the MCP servers it was configured to have, which
+		// is the native bridge's contract too.
 		slog.Default().Warn("claude: MCP resolution failed — the worker will run without its configured MCP servers",
 			"execution", s.execID, "error", mcpclient.DescribeFailedServer(err, res.Servers))
 		servers = []MCPServer{builtin}
@@ -517,9 +460,8 @@ func (s *session) mcpArgs() []string {
 	return MCPArgs(servers)
 }
 
-// workerMCPExtraEnv is the transport-dependent part of a worker's MCP
-// registration, split out so it is testable without a runtime client (which is
-// what `inContainer` otherwise needs to establish).
+// workerMCPExtraEnv is the transport-dependent part of a worker's MCP registration, split out so it
+// is testable without a runtime client (which is what `inContainer` otherwise needs to establish).
 func workerMCPExtraEnv(inContainer bool, workflowRunID string) map[string]string {
 	extra := map[string]string{}
 	if inContainer {
@@ -543,17 +485,14 @@ func (s *session) permissionOptions() PermissionOptions {
 	}
 }
 
-// inContainer reports whether this session's child runs inside the run's
-// runtime container — the same predicate Bridge.isContainer uses to pick the
-// transport, so the two cannot disagree about who owns the OS-level guard or
-// which orchicon path exists.
+// inContainer reports whether this session's child runs inside the run's runtime container — the
+// same predicate Bridge.isContainer uses to pick the transport.
 func (s *session) inContainer() bool {
 	return s.b != nil && s.b.isContainer(s.manifest)
 }
 
-// hookBinary is the binary the PreToolUse hook command invokes for this
-// session's transport: the in-container bind mount when the child runs inside
-// the run's container, the control plane's own binary otherwise.
+// hookBinary is the binary the PreToolUse hook command invokes for this session's transport: the
+// in-container bind mount when the child runs inside the run's container.
 func (s *session) hookBinary() string { return HookBinaryFor(s.inContainer()) }
 
 // childEnv builds the environment the claude child (and every process IT spawns)
@@ -573,17 +512,10 @@ func (s *session) hookBinary() string { return HookBinaryFor(s.inContainer()) }
 func (s *session) childEnv() ([]string, func()) {
 	env := os.Environ()
 	env = setEnvVar(env, ProjectDirEnv, executionDir(s.manifest))
-	// Opt the session into claude's todo/task-tracking tool family. VERIFIED
-	// against the installed 2.1.261 binary: on Sonnet 5 / Opus 4.8 / Fable 5 /
-	// Mythos 5 and newer the family is REMOVED from the tool registry unless this
-	// is set (see TodoToolsEnv), so without it no todo part is ever emitted and
-	// the parity feature is inert. Set for BOTH transports (the runtime daemon
-	// forwards spec.Env into the container — proc.go's StdioRequest.Env), and it
-	// is an opt-in, never a bypass.
+	// Opt the session into claude's todo/task-tracking tool family.
 	env = setEnvVar(env, TodoToolsEnv, "1")
-	// The hook binary follows the TRANSPORT, not this process: inside the run's
-	// container only the daemon's bind mount exists, so shipping the control
-	// plane's own path there would be a hook that cannot launch.
+	// The hook binary follows the TRANSPORT, not this process: inside the run's container only the
+	// daemon's bind mount exists.
 	env = setEnvVar(env, HookBinEnv, s.hookBinary())
 	cleanup := func() {}
 	if s.inContainer() {
@@ -611,9 +543,8 @@ func setEnvVar(env []string, key, value string) []string {
 	return append(out, prefix+value)
 }
 
-// initialTurnPayload is the first user turn: system prompt + goal +
-// acceptance criteria in ONE text block (claude -p stream-json input carries
-// no separate system field).
+// initialTurnPayload is the first user turn: system prompt + goal + acceptance criteria in ONE text
+// block (claude -p stream-json input carries no separate system field).
 func (s *session) initialTurnPayload() []byte {
 	return userTurnPayload(composeInitialPrompt(s.manifest))
 }
@@ -689,16 +620,7 @@ func userTurnPayload(text string) []byte {
 	return userTurnPayloadContent([]map[string]any{{"type": "text", "text": text}})
 }
 
-// userTurnPayloadContent builds one stdin user-turn frame from an explicit
-// content-block list.
-//
-// The frame's `content` has always been an ARRAY of Messages-API blocks — the
-// text-only builder above is just its one-block case — so an attachment is an
-// additional block rather than a different frame shape. The CLI models `text`,
-// `image`, `document`, `tool_result` and `thinking` blocks, and its own
-// user-message schema directs attachments into `message.content` (it documents
-// `pasted_content` as ignoring everything that is not text), so this is the wire
-// the transport was always able to carry.
+// userTurnPayloadContent builds one stdin user-turn frame from an explicit content-block list.
 func userTurnPayloadContent(content []map[string]any) []byte {
 	body := map[string]any{
 		"type": "user",

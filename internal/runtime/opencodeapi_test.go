@@ -1,16 +1,6 @@
 package runtime
 
 // opencodeapi_test.go — THE RUN-START GATE MUST PASS ON BOTH API GENERATIONS.
-//
-// The regression: serveUsableAt hardcoded the v1 pair (`GET /global/health` + `POST /session`) and
-// required 200 from each. Against opencode 2.x the health path still answers — the newer serve keeps
-// it as compatibility — but `POST /session` is answered with 405, so the gate returned false for ever.
-// Its caller reports "serve did not become usable within 30s", which is the run-start gate for every
-// workflow EXECUTION: on a 2.x install executions could not start at all while Ask Orchicon worked,
-// because Ask goes through the session client (fixed) and this gate does not.
-//
-// The status codes below are the ones MEASURED against opencode 2.0.26 and 1.18.34, not invented — the
-// 405 is the detail that made the old gate fail rather than merely mis-report.
 
 import (
 	"net/http"
@@ -73,8 +63,7 @@ func TestTheRunStartGatePassesOnAV2Serve(t *testing.T) {
 
 func TestTheGateStillRejectsAServeThatCannotCreateSessions(t *testing.T) {
 	// The gate's whole reason for probing a CREATE and not just health: a cold-starting serve answers
-	// health before its session machinery is up, so health alone would dispatch into a serve that
-	// cannot accept a turn. Widening it to two surfaces must not weaken that.
+	// health before its session machinery is up.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Health answers on both surfaces; NO create ever succeeds.
 		if r.Method == http.MethodGet && (r.URL.Path == "/global/health" || r.URL.Path == "/api/info") {

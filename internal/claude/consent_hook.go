@@ -50,39 +50,15 @@ import (
 // mode file, because both are per-conversation facts the hook cannot otherwise discover.
 const ConsentSockEnv = "ORCHICON_CLAUDE_CONSENT_SOCK"
 
-// hookConsentWaitDefault bounds how long an ask may sit before it is DENIED, and it is
-// NO BOUND — the same default, for the same human decision, as the native adapter's
-// nativeConsentWaitDefault (internal/orchicon). The two are one decision: a shorter leash
-// here would make the claude transport refuse calls the native one still allows, which is
-// exactly the divergence those two constants exist to prevent.
-//
-// See the native constant for the whole argument. In short: an expiry is what took the
-// card away from an operator who stepped away from their keyboard, and their rule is that
-// a card waits for the user no matter what. Set ORCHICON_CLAUDE_CONSENT_WAIT to reinstate
-// a fail-closed bound.
+// hookConsentWaitDefault bounds how long an ask may sit before it is DENIED, and it is NO BOUND —
+// the same default, for the same human decision.
 const hookConsentWaitDefault = time.Duration(0)
 
-// AskHookTimeoutSeconds is the `PermissionRequest` hook's timeout in the settings document:
-// the CLI's OWN bound on the hook process.
-//
-// IT USED TO BE 16 MINUTES, one minute above a 15-minute consent wait, so that this side
-// expired FIRST and the hook exited cleanly with a deny instead of being killed mid-write.
-// With this side unbounded, that margin is inverted: it would make the CLI the thing that
-// takes the card away, at sixteen minutes instead of fifteen — the same cliff, moved.
-//
-// So it is now a BACKSTOP rather than a leash: long enough that a human's absence is never
-// what ends the wait, short enough that a stranded hook cannot sit connected to the consent
-// socket forever. The operator's own bound, when set, still expires first because it is
-// minutes, not hours.
+// AskHookTimeoutSeconds is the `PermissionRequest` hook's timeout in the settings document: the
+// CLI's OWN bound on the hook process.
 const AskHookTimeoutSeconds = 24 * 60 * 60 // 24 hours
 
-// askHookToolMatcher matches the tools the Ask profile sends to a card. It is DERIVED from
-// AskPermissionToolNames — the same list the permission system prompts on — so the hooks cannot fire for
-// a different set than the one that raises the ask. A tool named there but absent here would be prompted
-// by the permission system with no hook to answer it: a terminal denial, which is the defect this file
-// exists to close.
-//
-// It is a REGEX (claude matches hook matchers as regexes), so the names are alternated verbatim.
+// askHookToolMatcher matches the tools the Ask profile sends to a card.
 func askHookToolMatcher() string {
 	return strings.Join(AskPermissionToolNames, "|")
 }
@@ -106,17 +82,8 @@ type hookAsk struct {
 	tool     string
 }
 
-// consentSockDir is where consent sockets live: a SHORT, per-user directory, deliberately NOT under the
-// ask directory.
-//
-// A unix socket path is capped near 108 bytes (`sun_path`), and `bind` fails with EINVAL past it — the
-// ask directory cannot be used for this, because its length is NOT OURS: `ORCHICON_CLAUDE_ASK_ROOT` is an
-// operator setting and a test harness's temp dir is ~120 bytes by itself. Deriving the socket from it made
-// bind fail, and the failure mode is the quiet one that matters: the hook fails CLOSED, so the operator
-// loses the card and the call is refused, with only a log line to say why.
-//
-// The per-user subdirectory is what keeps a SHARED /tmp safe: the socket is owner-only (0600) inside a
-// 0700 directory, so another user cannot connect to it and answer a permission on this operator's behalf.
+// consentSockDir is where consent sockets live: a SHORT, per-user directory, deliberately NOT under
+// the ask directory.
 func consentSockDir() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("orchicon-consent-%d", os.Getuid()))
 }
@@ -146,8 +113,7 @@ func (s *askSession) serveConsentSocket() error {
 	}
 	path := s.consentSockPath()
 	// A socket left by a previous process would make Listen fail with "address already in use"; it is
-	// ours by construction (same conversation), and the live listener check above already ruled out a
-	// live one here.
+	// ours by construction (same conversation).
 	_ = os.Remove(path)
 
 	ln, err := net.Listen("unix", path)
@@ -181,10 +147,6 @@ func (s *askSession) stopConsentSocket() {
 }
 
 // acceptConsentConns serves asks until the listener closes.
-//
-// ONE CONNECTION PER ASK, each handled on its own goroutine: the hook connects, sends one request, blocks
-// for one reply, and disconnects. That keeps the protocol trivial and means a hook killed mid-ask cannot
-// disturb the next one.
 func (s *askSession) acceptConsentConns(ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
@@ -249,14 +211,6 @@ func writeConsentReply(conn net.Conn, reply hookConsentReply) {
 }
 
 // awaitHookConsent parks an ask and blocks for the operator's decision.
-//
-// IT RAISES THE CARD THROUGH THE SAME BUS EVENT THE can_use_tool PATH EMITS, deliberately: the collector's
-// precedence chain (never-allow, the policy, the grants, FULLSEND), the card's wording and the reply RPC
-// all key off that event, so a hook ask and a control-request ask are the same ask as far as every other
-// layer is concerned. This is why the change is a TRANSPORT, not a second consent implementation.
-//
-// ok is false when no decision arrived — the window, a teardown, or the turn ending — and the caller
-// turns that into a DENY.
 func (s *askSession) awaitHookConsent(req hookConsentRequest) (string, bool) {
 	askID := "hook-" + s.nextHookAskID()
 
@@ -288,10 +242,7 @@ func (s *askSession) awaitHookConsent(req hookConsentRequest) (string, bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// ONLY A CONFIGURED bound can time this out. With none the channel stays nil and the select
-	// never takes that arm, so the wait ends on the operator's decision or on the session ending —
-	// which is the whole point: an absent operator must not lose the card they are being asked to
-	// answer. See hookConsentWaitDefault.
+	// ONLY A CONFIGURED bound can time this out.
 	var expired <-chan time.Time
 	if d := hookConsentWait(); d > 0 {
 		timer := time.NewTimer(d)
@@ -327,11 +278,6 @@ func hookPermissionEvent(askID, tool string, ev StreamEvent, rawInput json.RawMe
 }
 
 // takeHookWait removes and returns a parked hook ask, if the id names one.
-//
-// ReplyPermissionDecision consults this FIRST: a hook ask is answered by writing a decision down the
-// socket, not by a control_response frame (the CLI is not parked on one — it is waiting on the hook).
-// Getting that wrong would send a frame for a request id the CLI never issued, and the hook would sit
-// until it timed out with the operator believing they had approved the call.
 func (s *askSession) takeHookWait(permissionID string) *hookAsk {
 	s.hookMu.Lock()
 	defer s.hookMu.Unlock()

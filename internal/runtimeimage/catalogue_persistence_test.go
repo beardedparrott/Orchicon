@@ -1,18 +1,7 @@
 package runtimeimage
 
-// catalogue_persistence_test.go — the catalogue must OUTLIVE a delete, and a delete must reach the disk.
-//
-// REPORTED: "I saw there was a delete command in the runtime images section. It did remove them from the
-// console, and then on restart they came back. The only one that did not come back was the web research
-// container for some reason. I think we need to make the runtime image page pull every runtime image
-// record that is available in our repo and if they don't exist (been deleted) add them in a non-downloaded
-// state. This should happen upon launching the runtime images page in the web, desktop or TUI pages. Also,
-// the delete button should definitely delete them off of someone's computer if it doesn't now."
-//
-// Every clause of that is pinned below. The old behaviour was the INVERSE of all of it: delete removed the
-// ROW (the catalogue entry) and kept the IMAGE (the artifact), and the next boot re-derived the rows from
-// what the daemon could see on the local disk — which is why three of them "came back" and the fourth,
-// having no published tag, did not.
+// catalogue_persistence_test.go — the catalogue must OUTLIVE a delete, and a delete must reach the
+// disk.
 
 import (
 	"strings"
@@ -50,11 +39,6 @@ func TestADeleteAlwaysReachesTheDisk(t *testing.T) {
 }
 
 // TestACatalogRowIsNotDownloadedAndIsNotUserDiverged — the row a page-load reconcile creates.
-//
-// THE SECOND ASSERTION IS THE LOAD-BEARING ONE. The boot seeder backs off a row whose template no longer
-// hashes to its own marker ("user-diverged — never touch"). A reconciled row must therefore be written as a
-// PRISTINE seed, or it would be treated as an operator edit for ever: it would never be rolled forward,
-// never re-tagged, and never marked ready even after its image was fetched.
 func TestACatalogRowIsNotDownloadedAndIsNotUserDiverged(t *testing.T) {
 	variant := stockVariants[1] // :gui — a non-base variant, so the base's special cases are not in play
 	content, err := assets.RuntimeImageTemplatesFS.ReadFile(variant.File)
@@ -106,10 +90,7 @@ func TestTheCatalogIsTheSameSetWhicheverPathSeedsIt(t *testing.T) {
 		}
 		catalogued[stockSlug(v)] = true
 	}
-	// WEB-RESEARCH IS IN, and that reverses an earlier decision deliberately. It used to be excluded
-	// because it was never released, so a fetch could only fail — but it is buildable from its shipped
-	// template, and building locally IS the model now. Excluding it would be the same defect as excluding
-	// gui and dev: a shipped template nobody can use.
+	// WEB-RESEARCH IS IN, and that reverses an earlier decision deliberately.
 	if !catalogued["stock-web-research"] {
 		t.Error("web-research has a shipped template and can be built locally, so it belongs in the catalogue")
 	}
@@ -121,10 +102,6 @@ func TestTheCatalogIsTheSameSetWhicheverPathSeedsIt(t *testing.T) {
 }
 
 // TestACatalogSlugIsStableAcrossTags — one variant is one row, whichever tag it is known by.
-//
-// The reported screenshot was SIX rows for THREE images: one "not downloaded" per variant from the
-// published tag, and one "ready" from the local tag. Keying the row on its tag creates a new row per
-// spelling; keying it on the variant is what collapses them.
 func TestACatalogSlugIsStableAcrossTags(t *testing.T) {
 	for _, v := range stockVariants {
 		slug := stockSlug(v)

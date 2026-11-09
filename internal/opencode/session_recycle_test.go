@@ -4,10 +4,8 @@ import (
 	"testing"
 )
 
-// TestSessionErrorMessageSurfacesNestedReason verifies that a
-// session.error bus event surfaces the provider's readable reason (nested
-// at error.data.message) instead of the generic fallback, so the failure
-// is diagnosable in the run view.
+// TestSessionErrorMessageSurfacesNestedReason verifies that a session.error bus event surfaces the
+// provider's readable reason (nested at error.data.message) instead of the generic fallback.
 func TestSessionErrorMessageSurfacesNestedReason(t *testing.T) {
 	cases := []struct {
 		name string
@@ -44,10 +42,8 @@ func TestSessionErrorMessageSurfacesNestedReason(t *testing.T) {
 	}
 }
 
-// TestCountSessionErrorThreshold verifies the consecutive-error counter
-// only recycles once the threshold is reached, and that genuine progress
-// (noteSessionProgress) resets it so a single transient failure never
-// triggers a container recycle.
+// TestCountSessionErrorThreshold verifies the consecutive-error counter only recycles once the
+// threshold is reached, and that genuine progress (noteSessionProgress) resets it so a single.
 func TestCountSessionErrorThreshold(t *testing.T) {
 	t.Setenv("ORCHICON_SESSION_ERROR_RECYCLE_THRESHOLD", "3")
 	a := &Adapter{}

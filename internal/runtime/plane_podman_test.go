@@ -1,20 +1,7 @@
 package runtime
 
-// Plane URL derivation under the PODMAN engine (engine.go +
-// lifecycle.go planePublicURL), for the parts that are NOT the host-alias
-// spelling.
-//
-// The alias itself is decided ONCE, for BOTH engines, by ADR-0013 D2.4: the
-// daemon maps host.docker.internal -> host-gateway at create time
-// (Engine.CreateBaseArgs), so the plane URL string is platform-independent and
-// podman needs no separate name. What must still change with the engine is the
-// CONTAINER-residency fallback: 172.17.0.1 is a Docker bridge address that
-// rootless Podman (slirp4netns/pasta) and the podman machine on macOS/Windows
-// do not have.
-//
-// What must NOT change with the engine: the PORT derivation (planeHTTPPort).
-// dev and prod sit on different ports, so an instance can only ever hand out its
-// own plane address, whichever engine runs its containers.
+// Plane URL derivation under the PODMAN engine (engine.go + lifecycle.go planePublicURL), for the
+// parts that are NOT the host-alias spelling.
 
 import (
 	"strings"
@@ -75,9 +62,7 @@ func TestPlanePublicURLPodmanContainerResidency(t *testing.T) {
 			}
 			return
 		}
-		// Rootless podman: no bridge IP exists. Emitting 172.17.0.1 would hand
-		// the run a Docker bridge address that can only time out, so the
-		// derivation refuses (empty) and the mint path fails loudly.
+		// Rootless podman: no bridge IP exists.
 		if got != "" {
 			t.Fatalf("podman container mode without a resolvable IP = %q, want empty (explicit ORCHICON_PLANE_PUBLIC_URL required)", got)
 		}
@@ -96,9 +81,8 @@ func TestPlanePublicURLPodmanContainerResidency(t *testing.T) {
 }
 
 func TestPlanePublicURLPodmanPerInstance(t *testing.T) {
-	// dev and prod share one podman machine and the same host alias; only the
-	// PORT tells their planes apart. A hardcoded port would make one
-	// instance's workers dial the other instance's plane.
+	// dev and prod share one podman machine and the same host alias; only the PORT tells their planes
+	// apart.
 	clearPlaneURLEnvForEngine(t,
 		EnvEngine, enginePodman,
 		"ORCHICON_HTTP_ADDR", "127.0.0.1:8080",
@@ -123,12 +107,6 @@ func TestPlanePublicURLPodmanPerInstance(t *testing.T) {
 }
 
 // TestPlaneURLForRun pins the mint-path guard around the derivation.
-//
-// planeURLForRun is called BEFORE the mint transaction writes anything
-// (mintPlaneCredentialUncached), so a plane URL this instance cannot derive
-// must surface as an actionable error naming ORCHICON_PLANE_PUBLIC_URL —
-// never as an empty URL baked into a run's container env, and never after a
-// live role-scoped API key has already been committed.
 func TestPlaneURLForRun(t *testing.T) {
 	t.Run("undeliverable container-resident podman plane fails loudly", func(t *testing.T) {
 		clearPlaneURLEnvForEngine(t,
@@ -136,9 +114,8 @@ func TestPlaneURLForRun(t *testing.T) {
 			"ORCHICON_CONTAINER_MODE", "1",
 			"ORCHICON_HTTP_ADDR", ":8092",
 		)
-		// Pin the UNDERIVABLE case instead of inheriting the test host's
-		// /etc/hosts: a container-resident plane with no hostname entry has no
-		// address to derive, which is exactly the Podman topology.
+		// Pin the UNDERIVABLE case instead of inheriting the test host's /etc/hosts: a container-resident
+		// plane with no hostname entry has no address to derive, which is exactly the Podman topology.
 		prevHosts := hostsFilePath
 		hostsFilePath = "/nonexistent-hosts-file-for-test"
 		t.Cleanup(func() { hostsFilePath = prevHosts })

@@ -10,11 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
 )
 
-// fakeMCPConfigSource is a ScopeResolver backed by literals — the seam every
-// adapter consumes, so a test can drive the full resolution without storage.
-// It returns `servers` for EVERY scope (the union shape); `project`/`worker`
-// are the ids it reports as selected, kept so the existing assertions read
-// the same way.
+// fakeMCPConfigSource is a ScopeResolver backed by literals — the seam every adapter consumes, so a
+// test can drive the full resolution without storage.
 type fakeMCPConfigSource struct {
 	servers []mcpclient.ServerSpec
 	worker  []string
@@ -98,9 +95,8 @@ func TestResolveMCPServersUsesTheSharedSource(t *testing.T) {
 	}
 }
 
-// NO SOURCE must still yield the built-in: a plane with no MCP storage wiring (or
-// no tenant servers) must keep `orchicon_*` tools, which is the state the
-// operator found claude in.
+// NO SOURCE must still yield the built-in: a plane with no MCP storage wiring (or no tenant
+// servers) must keep `orchicon_*` tools, which is the state the operator found claude in.
 func TestResolveMCPServersAlwaysRegistersTheBuiltin(t *testing.T) {
 	b := New(quietLogger())
 	got, err := b.resolveMCPServers(context.Background(), "tnt_dev", "", "", builtinFor(t))
@@ -125,9 +121,8 @@ func TestResolveMCPServersAlwaysRegistersTheBuiltin(t *testing.T) {
 	}
 }
 
-// A SELECTED BUT UNCONFIGURED server is the native bridge's documented failure,
-// and it must fail here too: a worker running without the MCP servers it was
-// configured to have looks healthy and cannot do its job.
+// A SELECTED BUT UNCONFIGURED server is the native bridge's documented failure, and it must fail
+// here too: a worker running without the MCP servers it was configured to have looks healthy.
 func TestResolveMCPServersFailsOnAMissingSelection(t *testing.T) {
 	b := New(quietLogger())
 	b.SetScopeResolver(&fakeMCPConfigSource{
@@ -189,9 +184,8 @@ func TestResolveMCPServersExpandsSecrets(t *testing.T) {
 	}
 }
 
-// A resolver failure must fail the launch, not emit a config with a literal
-// ${SECRET} in it — that would hand the CLI a token-shaped string that is not a
-// token, and the server would just fail to authenticate.
+// A resolver failure must fail the launch, not emit a config with a literal ${SECRET} in it — that
+// would hand the CLI a token-shaped string that is not a token.
 func TestResolveMCPServersFailsOnASecretError(t *testing.T) {
 	b := New(quietLogger())
 	b.SetScopeResolver(&fakeMCPConfigSource{
@@ -206,9 +200,7 @@ func TestResolveMCPServersFailsOnASecretError(t *testing.T) {
 	}
 }
 
-// END TO END AT THE ARGV. This is the one that matters for the operator's
-// request: a project's configured MCP server must reach the `--mcp-config`
-// claude is actually launched with, alongside the built-in.
+// END TO END AT THE ARGV.
 func TestAskArgvCarriesResolvedOperatorMCPs(t *testing.T) {
 	builtinFor(t) // installs the fake CLI + HOME
 	b := New(quietLogger())

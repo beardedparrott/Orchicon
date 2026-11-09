@@ -8,10 +8,8 @@ import (
 	"testing"
 )
 
-// The Ask profile is the security boundary an interactive claude session runs
-// under, so every row is pinned rather than described. The reference is
-// opencode's interactive profile (internal/opencode/config.go), which the
-// platform already trusts for Ask.
+// The Ask profile is the security boundary an interactive claude session runs under, so every row
+// is pinned rather than described.
 func TestDecideToolForAsk(t *testing.T) {
 	const askDir = "/tmp/orchicon-ask-t"
 
@@ -60,10 +58,8 @@ func TestDecideToolForAsk(t *testing.T) {
 			reason: "external_directory is allowed in the interactive profile — consent gates the ACTION, not the scope",
 		},
 		{
-			// THE TABLE HAD NO Glob/Grep ROW, and that absence is the coverage gap this bug
-			// shipped through: Read has a MANDATORY file_path so it always resolved a target and
-			// always reached the allow, while Glob/Grep name theirs optionally and were never
-			// exercised. Two of the three read-only tools were therefore untested.
+			// THE TABLE HAD NO Glob/Grep ROW, and that absence is the coverage gap this bug shipped through:
+			// Read has a MANDATORY file_path so it always resolved a target and always reached the allow.
 			name:   "a Glob with a relative pattern is ALLOWED — no resolvable target",
 			tool:   "Glob",
 			input:  map[string]any{"pattern": "**/*.go"},
@@ -118,9 +114,8 @@ func TestDecideToolForAsk(t *testing.T) {
 	}
 }
 
-// A read must NOT be gated while an execution must be: if both were asks the
-// profile would be a prompt queue, and if both were allows the consent cards
-// would be decorative. This pins the distinction that makes the profile useful.
+// A read must NOT be gated while an execution must be: if both were asks the profile would be a
+// prompt queue, and if both were allows the consent cards would be decorative.
 func TestAskProfileSeparatesReadsFromActions(t *testing.T) {
 	read := DecideToolForAsk(HookInput{ToolName: "Read", ToolInput: map[string]any{"file_path": "/etc/hosts"}}, "/tmp/ask", "")
 	exec := DecideToolForAsk(HookInput{ToolName: "Bash", ToolInput: map[string]any{"command": "ls"}}, "/tmp/ask", "")
@@ -151,24 +146,6 @@ func TestHookVerdictZeroValueIsDeny(t *testing.T) {
 }
 
 // AN ASK IS DELIVERED BY ABSTAINING — THE HOOK MUST EMIT NOTHING.
-//
-// This test used to require `permissionDecision: "ask"` on the wire, on the belief that "the CLI only
-// consults its permission flow ... when the hook says ask rather than allowing the call outright".
-// THAT BELIEF WAS WRONG, and it is the bug this change fixes: MEASURED against the real CLI
-// (2.1.289) on a real Ask session, a hook's "ask" becomes an immediate TOOL ERROR to the model
-// ("this call needs the operator's approval") and NO `can_use_tool` control frame is ever raised —
-// 18 asks produced 0 control frames and 0 consent cards. The operator: "claude adapter ask sessions
-// seem blocked by everything."
-//
-// `--permission-prompts host` governs the PERMISSION SYSTEM's prompts, not a hook verdict. So the
-// tools that need an operator decision are named in `permissions.ask` (BuildSettings,
-// AskPermissionToolNames) and this hook stays SILENT about them — empty output, exit 0, which the CLI
-// reads as "no decision" and then applies its own permission flow to.
-//
-// THE INVARIANT THIS TEST WAS WRITTEN FOR IS UNCHANGED: a Bash call in the Ask profile must reach the
-// operator as a card rather than being silently allowed or silently refused. What changed is the
-// MECHANISM, and the new assertion is therefore stricter about the failure that actually occurred —
-// any output here at all would re-break the card path.
 func TestRunHookAbstainsSoThePermissionSystemCanAsk(t *testing.T) {
 	env := map[string]string{
 		HookProfileEnv: ProfileAskEnvValue,
@@ -193,8 +170,7 @@ func TestRunHookAbstainsSoThePermissionSystemCanAsk(t *testing.T) {
 }
 
 // AND THE OTHER DIRECTION, so this fix cannot be satisfied by emitting nothing at all: a DENY must
-// still be delivered on the wire. The hook is silent only about ASKS; its refusals are the thing the
-// settings document cannot express, so they must reach the CLI.
+// still be delivered on the wire.
 func TestRunHookStillEmitsDenyInTheAskProfile(t *testing.T) {
 	env := map[string]string{HookProfileEnv: ProfileAskEnvValue}
 	payload := `{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"sudo rm -rf /tmp/x"}}`
@@ -235,10 +211,8 @@ func TestRunHookDeniesNeverAllowInTheAskProfile(t *testing.T) {
 	}
 }
 
-// NO REGRESSION: with no profile set the hook is the worker sandbox, which is
-// non-interactive — it must decide, never defer. A worker "ask" would be an
-// unanswerable prompt (no canUseTool handler is installed on that transport),
-// i.e. a hang or a silent refusal where a real verdict was intended.
+// NO REGRESSION: with no profile set the hook is the worker sandbox, which is non-interactive — it
+// must decide, never defer.
 func TestRunHookDefaultsToTheWorkerProfile(t *testing.T) {
 	payload := `{"hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{"file_path":"/project/main.go"},"cwd":"/project"}`
 
@@ -254,11 +228,7 @@ func TestRunHookDefaultsToTheWorkerProfile(t *testing.T) {
 	}
 }
 
-// THE MATCHER MUST COVER MCP TOOLS. A tool the matcher does not name never
-// reaches this hook, so its verdict — including the allow that makes the
-// platform's own tools usable — never happens, and claude denies the call with
-// "requested permissions ... but you haven't granted it yet". Reproduced live
-// against the real CLI before this was fixed: the hook was not invoked at all.
+// THE MATCHER MUST COVER MCP TOOLS.
 func TestHookMatcherCoversMCPTools(t *testing.T) {
 	if !strings.Contains(HookToolMatcher, "mcp__") {
 		t.Fatalf("HookToolMatcher = %q has no MCP pattern, so no mcp__* tool ever reaches the hook", HookToolMatcher)
@@ -281,9 +251,9 @@ func TestHookMatcherCoversMCPTools(t *testing.T) {
 	}
 }
 
-// The END-TO-END consequence: with the matcher fixed, an orchicon MCP tool must
-// produce an ALLOW from the Ask profile (not an ask, and never a deny), which is
-// what makes list_work_items readable.
+// The END-TO-END consequence: with the matcher fixed, an orchicon MCP tool must produce an ALLOW
+// from the Ask profile (not an ask, and never a deny), which is what makes list_work_items
+// readable.
 func TestAskProfileAllowsOrchiconMCPToolsThroughTheMatcher(t *testing.T) {
 	if !regexp.MustCompile("^(?:" + HookToolMatcher + ")$").MatchString("mcp__orchicon__list_work_items") {
 		t.Skip("matcher does not cover MCP tools; the test above already failed")
@@ -324,36 +294,16 @@ func TestWorkerProfileAllowsMCPTools(t *testing.T) {
 		if d := got.Decision(); d != DecisionAllow {
 			t.Errorf("worker profile: %s = %s, want allow — native and opencode both permit MCP tools to a worker", tool, d)
 		}
-		// And never an ASK: a worker transport installs no canUseTool handler, so
-		// asking is an unanswerable prompt (the same reason the worker profile has
-		// no ask arm at all).
+		// And never an ASK: a worker transport installs no canUseTool handler, so asking is an unanswerable
+		// prompt (the same reason the worker profile has no ask arm at all).
 		if got.Ask {
 			t.Errorf("worker profile asked about %s; a worker session cannot answer a prompt", tool)
 		}
 	}
 }
 
-// THE REPORTED BUG: an Ask session was blocked by EVERYTHING, because the two
-// read-only tools an agent uses most — Glob and Grep — raised a consent card on
-// every single call.
-//
-// THE MECHANISM IS AN ORDERING BUG, not a wrong rule. decidePathForAsk returned
-// askVerdict() the moment no target could be resolved, and that guard sat BEFORE
-// the readOnlyToolNames allow — so the allow at the bottom of the function was
-// UNREACHABLE for exactly the tools whose input does not name a path.
-//
-// Glob and Grep take an OPTIONAL `path` plus a `pattern`. The normal call omits
-// the path and passes a RELATIVE pattern (`**/*.go`, `func DecideToolForAsk`),
-// and dirOfPattern returns "" for anything that is not absolute. So the COMMON
-// call was the asking call, and an interactive session became the prompt queue
-// this file's own comment says it must never be.
-//
-// THE DIVERGENCE IS BACKWARDS, which is what makes this a defect rather than a
-// policy choice: the WORKER profile — the sandboxed, non-interactive one —
-// ALLOWS a path tool whose target does not resolve (decidePath: "empty target ->
-// allow"), and its tests pin that shape. The INTERACTIVE profile, whose whole
-// premise is that a read is not a decision the operator needs to make, was
-// therefore STRICTER THAN THE SANDBOX.
+// THE REPORTED BUG: an Ask session was blocked by EVERYTHING, because the two read-only tools an
+// agent uses most — Glob and Grep — raised a consent card on every single call.
 func TestReadOnlyToolsAreAllowedWhenNoTargetResolves(t *testing.T) {
 	const askDir = "/tmp/orchicon-ask-t"
 
@@ -380,9 +330,7 @@ func TestReadOnlyToolsAreAllowedWhenNoTargetResolves(t *testing.T) {
 		})
 	}
 
-	// THE ACTION RULE IS UNCHANGED. A write with no resolvable target is still the
-	// operator's decision, so the fix cannot have widened into writes — the same
-	// guard, reached with a tool that is NOT read-only.
+	// THE ACTION RULE IS UNCHANGED.
 	for _, tool := range []string{"Write", "Edit", "MultiEdit", "NotebookEdit"} {
 		if got := DecideToolForAsk(HookInput{ToolName: tool, ToolInput: map[string]any{}}, askDir, ""); got.Decision() != DecisionAsk {
 			t.Errorf("%s with no resolvable target = %s, want ask — the read fix must not turn a write into an allow",

@@ -50,11 +50,8 @@ func (c *liveCallbacks) result() (bool, string, string, bool) {
 	return c.ok, c.output, c.errMsg, c.got
 }
 
-// TestSessionRunLive is the end-to-end sanity check of the session
-// transport: a real host serve + a real (free) model, driven through the
-// exact sessionRun the adapter uses. Set ORCHICON_TEST_OPENCODE=1 to run
-// (it spawns opencode and makes one free-model call). Skipped in `make
-// ci` by default.
+// TestSessionRunLive is the end-to-end sanity check of the session transport: a real host serve + a
+// real (free) model, driven through the exact sessionRun the adapter uses.
 func TestSessionRunLive(t *testing.T) {
 	if os.Getenv("ORCHICON_TEST_OPENCODE") != "1" {
 		t.Skip("set ORCHICON_TEST_OPENCODE=1 to run the live serve test")

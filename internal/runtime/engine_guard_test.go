@@ -1,27 +1,6 @@
 package runtime
 
 // AC 1 as a SOURCE guard: no `docker` invocation may re-enter the DAEMON tree.
-//
-// Renaming DockerBin → Engine and d.docker → d.engine is a one-way door only if
-// something keeps it shut. The engine binary is resolved in ONE place
-// (engine.go, via Engine.binary()) and executed in ONE place (Daemon.engine /
-// exec.Command(d.engineBin(), …)); this walks internal/runtime and fails on any
-// call that names the engine binary as a string literal — exec.Command,
-// exec.CommandContext or exec.LookPath — or on the retired identifiers, so a
-// later hurried change cannot quietly reintroduce a second engine identity.
-//
-// It is an AST scan, not a text match, because the shape being caught is
-// "the ENGINE BINARY as a literal argument", and the argument position varies
-// with the call (CommandContext puts it second). A regex over source either
-// misses `exec.CommandContext(ctx, "docker")` or false-positives on
-// `exec.Command(d.engineBin(), "exec", …)`; the AST sees exactly which argument
-// is the binary.
-//
-// cmd/orchicon is walked too, with a SHORT, EXPLICIT allowlist: the host-install
-// / control-plane lifecycle commands still drive docker by name. Those are
-// ADR-0013 §12 item 13's slice (the install task) — pinning them here as known
-// exceptions is deliberate, so the residual is visible rather than forgotten,
-// and so any NEW literal in cmd/orchicon still fails this test.
 
 import (
 	"go/ast"
@@ -37,18 +16,15 @@ import (
 // engineBinaryNames are the engine binaries a literal may not name.
 var engineBinaryNames = map[string]bool{"docker": true, "podman": true}
 
-// engineGuardBanned are the identifiers/forms the rename retired. They are
-// checked literally (no regex) so a match is unambiguous. `d.docker(` includes
-// its paren so a `dockerSomethingElse` identifier cannot trip it.
+// engineGuardBanned are the identifiers/forms the rename retired.
 var engineGuardBanned = []string{
 	"DockerBin",
 	"d.docker(",
 	".dockerFn",
 }
 
-// engineGuardAllowed names the cmd/orchicon files whose docker literals are
-// KNOWN and owned by another slice of ADR-0013. internal/runtime is NOT allowed
-// any entry — the daemon must go through Engine, full stop.
+// engineGuardAllowed names the cmd/orchicon files whose docker literals are KNOWN and owned by
+// another slice of ADR-0013.
 var engineGuardAllowed = map[string]string{
 	"install.go":        "ADR-0013 §12 item 13: the host-install lifecycle still drives docker (containerEngineAvailable must learn podman there)",
 	"install_bridge.go": "ADR-0013 §12 item 13: docker bridge-IP discovery moves to the engine probe in the install slice",
@@ -149,9 +125,8 @@ func TestNoDirectEngineInvocation(t *testing.T) {
 	}
 }
 
-// TestEngineGuardCatchesEachCallShape proves the guard is not vacuous: every
-// shape it exists to forbid is detected, and the production (seam-based) shape
-// is not. A guard whose matcher quietly stops matching is worse than none.
+// TestEngineGuardCatchesEachCallShape proves the guard is not vacuous: every shape it exists to
+// forbid is detected, and the production (seam-based) shape is not.
 func TestEngineGuardCatchesEachCallShape(t *testing.T) {
 	caught := []string{
 		"package x\nimport \"os/exec\"\nfunc f() { exec.Command(\"docker\", \"ps\") }\n",

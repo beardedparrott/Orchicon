@@ -1,15 +1,6 @@
 package claude
 
 // hookpreflight_test.go — A HOOK THAT CANNOT RUN IS A PERMISSION WALL, NOT A NO-OP.
-//
-// The operator recorded a claude worker reporting that `git merge --ff-only` and several other commands were
-// refused, "waiting for an approval that no human can give in this run". This package's decideBash ALLOWS
-// every one of those commands (measured), which means the hook never ran: with no allow verdict each gated
-// tool falls through to claude's own permission flow, and in a `-p` session that ask has no host arm, so it
-// resolves to a terminal denial.
-//
-// Nothing detected that. These assertions make the failure loud BEFORE the session starts, because a claude
-// worker whose boundary cannot be enforced is not a worker that should run.
 
 import (
 	"os"
@@ -19,10 +10,6 @@ import (
 )
 
 // TestABareHookNameMustResolveOnPATH pins the fallback that made this possible.
-//
-// HookBinFallback is the bare string "orchicon". If os.Executable() fails AND the binary is not on the child's
-// PATH, the hook command is `orchicon claude-hook`, which then fails on every single tool call — silently, as
-// far as the session is concerned.
 func TestABareHookNameMustResolveOnPATH(t *testing.T) {
 	t.Setenv(HookBinEnv, "definitely-not-on-path-orchicon-hook")
 	err := PreflightHookExecutable(false)
@@ -81,9 +68,8 @@ func TestTheContainerHookMustBeTheMountedAbsolutePath(t *testing.T) {
 		t.Fatalf("the container hook path %s must be accepted (the daemon guarantees it, and this process "+
 			"cannot stat inside the container): %v", HookBinaryContainerPath, err)
 	}
-	// THE OVERRIDE DOES NOT APPLY IN A CONTAINER, deliberately: HookBinaryFor ignores HookBinEnv for the
-	// container transport, because an operator's host path is meaningless inside the image. Asserting the
-	// override is IGNORED is the useful half — it is the property that keeps a host path out of a container.
+	// THE OVERRIDE DOES NOT APPLY IN A CONTAINER, deliberately: HookBinaryFor ignores HookBinEnv for
+	// the container transport, because an operator's host path is meaningless inside the image.
 	t.Setenv(HookBinEnv, "orchicon")
 	if got := HookBinaryFor(true); got != HookBinaryContainerPath {
 		t.Errorf("a container session resolved the hook to %q; it must be the daemon's bind-mounted binary %s "+

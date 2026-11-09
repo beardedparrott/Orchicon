@@ -12,17 +12,6 @@ import (
 )
 
 // shortSocketPath returns a unix socket path short enough to bind.
-//
-// A unix socket path is capped by the kernel at 108 bytes INCLUDING the
-// terminating NUL (sun_path), and exceeding it fails with a bare
-// "bind: invalid argument" (EINVAL) that names neither the length nor the
-// limit. t.TempDir() is unbounded: TMPDIR + the test name + a random suffix
-// (+ an ordinal for each further call in the same test), and `go test`
-// inherits GOTMPDIR — which this repo's Makefile points at
-// <repo>/.dev/tools/gotmp. On a deep checkout the tests below therefore
-// overflow the cap and fail to bind on the operator's machine while passing
-// in a container with a short path. /tmp keeps this at ~30 bytes, matching
-// the choice already made in daemon_secrets_test.go.
 func shortSocketPath(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "ocs-")
@@ -37,12 +26,8 @@ func shortSocketPath(t *testing.T) string {
 	return sock
 }
 
-// TestRunClientStdioForwardsFollowUpFrames pins the DUPLEX contract of the
-// in-container `runtime-client` shim: a "stdio" request is long-lived, so
-// every follow-up frame the plane writes on the same stdin (a user turn, a
-// signal, "close") must reach the supervisor on the SAME connection. Without
-// the forwarding goroutine only the opening frame arrives and the claude
-// session silently degrades to a one-shot (container transport).
+// TestRunClientStdioForwardsFollowUpFrames pins the DUPLEX contract of the in-container
+// `runtime-client` shim: a "stdio" request is long-lived.
 func TestRunClientStdioForwardsFollowUpFrames(t *testing.T) {
 	sock := shortSocketPath(t)
 	l, err := net.Listen("unix", sock)
@@ -56,9 +41,8 @@ func TestRunClientStdioForwardsFollowUpFrames(t *testing.T) {
 		err    error
 	}
 	got := make(chan result, 1)
-	// Fake supervisor: read frames off the connection until it has seen the
-	// opening frame plus the two follow-ups, then answer with the terminal
-	// exit event so RunClient returns.
+	// Fake supervisor: read frames off the connection until it has seen the opening frame plus the two
+	// follow-ups, then answer with the terminal exit event so RunClient returns.
 	go func() {
 		conn, aerr := l.Accept()
 		if aerr != nil {
@@ -111,10 +95,8 @@ func TestRunClientStdioForwardsFollowUpFrames(t *testing.T) {
 	}
 }
 
-// TestRunClientStdioEOFClosesChild pins that a plane that drops its request
-// body WITHOUT a "close" frame still terminates the child: the client
-// translates the EOF into a "close" frame, so the supervisor's control loop
-// drains instead of waiting forever (a leaked child + a wedged daemon relay).
+// TestRunClientStdioEOFClosesChild pins that a plane that drops its request body WITHOUT a "close"
+// frame still terminates the child: the client translates the EOF into a "close" frame.
 func TestRunClientStdioEOFClosesChild(t *testing.T) {
 	sock := shortSocketPath(t)
 	l, err := net.Listen("unix", sock)

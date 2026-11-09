@@ -152,16 +152,6 @@ func TestDescribeCreateArgvRedactsSecrets(t *testing.T) {
 }
 
 // TestTheCreatePathSweepsItsArgv pins the WIRING, not the function.
-//
-// The tests above prove guestifyCreateArgv works; none of them can prove it is CALLED. That distinction is the
-// whole failure mode being fixed — every mount producer in this package was "supposed to" map, and the one that
-// did not was invisible because Linux identity makes a missing map indistinguishable from a correct one. A guard
-// nothing calls is exactly that bug with a new name.
-//
-// It reads the source because there is no seam: createContainer's body is engine-bound (createFn short-circuits
-// before the argv is built), so an in-process assertion cannot observe the sweep. Asserting that the call exists
-// at the point the argv is handed to the engine is the strongest claim available here, and it fails if a refactor
-// removes it.
 func TestTheCreatePathSweepsItsArgv(t *testing.T) {
 	b, err := os.ReadFile("daemon.go")
 	if err != nil {
@@ -188,13 +178,7 @@ func TestTheCreatePathSweepsItsArgv(t *testing.T) {
 	}
 }
 
-// pathTakingFlags is EVERY create flag whose argument is a path. A new mount-ish flag added to the argv
-// builder must be added here, and the tests below then cover it for free.
-//
-// THIS LIST IS THE POINT. The first sweep covered `-v` only, and the reported failure was a `--tmpfs`: every
-// volume argument in that argv was already in guest form, so the guard that was supposed to make a producer
-// unable to slip looked straight past the one argument still in host form. Enumerating the flags is what turns
-// "we fixed the one we saw" into "the class is closed".
+// pathTakingFlags is EVERY create flag whose argument is a path.
 var pathTakingFlags = []string{"-v", "--volume", "--tmpfs"}
 
 // TestEveryPathTakingFlagIsGuestified is the table-driven assertion, over the flag list rather than the call
@@ -276,10 +260,6 @@ func TestEveryPathFlagInARealisticArgvIsGuarded(t *testing.T) {
 }
 
 // TestDedupeMountsKeepsTheFirst pins the fix for the duplicate project bind in the reported argv.
-//
-// Not fatal, but pure noise in the vector an operator reads while debugging — and a duplicate here means the
-// list is assembled from more than one place, so the NEXT duplicate could be two different SOURCES for one
-// destination, which the engine resolves by order.
 func TestDedupeMountsKeepsTheFirst(t *testing.T) {
 	mounts := []MountSpec{
 		{Source: "/p", Dest: "/p"},
@@ -300,12 +280,8 @@ func TestDedupeMountsKeepsTheFirst(t *testing.T) {
 	}
 }
 
-// TestSupervisorTimeoutReportsWhyItTimedOut is the reported complaint, as a test.
-//
-// The operator's log line was "started but supervisor socket not ready" — a symptom with no cause. On
-// Windows the actual cause (a PE entrypoint the container could not exec) was visible ONLY in
-// `podman logs`, so the failure cost a round trip to diagnose. The error now carries the container's state
-// and the last line of its own output, which is where an exec failure appears.
+// On Windows the actual cause (a PE entrypoint the container could not exec) was visible ONLY in
+// `podman logs`, so the failure cost a round trip to diagnose.
 func TestSupervisorTimeoutReportsWhyItTimedOut(t *testing.T) {
 	var calls [][]string
 	d := &Daemon{

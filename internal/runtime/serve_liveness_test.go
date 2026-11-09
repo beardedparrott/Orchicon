@@ -9,14 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/adapter"
 )
 
-// TestRunServeLivenessGate verifies the liveness-gated idempotent path: a
-// serve that is registered but NO LONGER answers /global/health must NOT
-// be reported as "up" (the cached port+password are not returned blindly)
-// — the wedge that previously made every dispatch burn its 30s probe and
-// then degrade. The test registers a wedged serve under the reserved
-// serveExecID, then drives runServe with a child that dies immediately
-// (so the restart can never become healthy). The handshake must surface
-// an error, never the cached serve event.
+// TestRunServeLivenessGate verifies the liveness-gated idempotent path: a serve that is registered
+// but NO LONGER answers /global/health must NOT be reported as "up" (the cached port+password.
 func TestRunServeLivenessGate(t *testing.T) {
 	h := newChildRegistry(slog.New(slog.NewTextHandler(io.Discard, nil)))
 
@@ -24,9 +18,8 @@ func TestRunServeLivenessGate(t *testing.T) {
 	// the default port, so serveHealthy fails).
 	h.mu.Lock()
 	h.cmd[serveExecID] = newExecSession(serveExecID)
-	// The opencode serve slot, registered-but-dead: the supervisor keys serve
-	// state by adapter kind now (one serve per demanded kind), so the wedge
-	// is seeded on the default (opencode) kind's slot.
+	// The opencode serve slot, registered-but-dead: the supervisor keys serve state by adapter kind now
+	// (one serve per demanded kind), so the wedge is seeded on the default (opencode) kind's slot.
 	h.serves = map[string]*serveState{
 		adapter.DefaultAdapterKind: {execID: serveExecID, pw: "dead-serve-password", started: true},
 	}
@@ -36,10 +29,7 @@ func TestRunServeLivenessGate(t *testing.T) {
 	defer pr.Close()
 	enc := json.NewEncoder(pw)
 
-	// The wedge is liveness-gated: runServe kills the dead serve and tries
-	// a fresh start. A child that exits immediately can never become
-	// healthy, so the handshake must return an error — the cached creds
-	// must never be handed back for a serve that isn't usable.
+	// The wedge is liveness-gated: runServe kills the dead serve and tries a fresh start.
 	req := AgentRequest{
 		Cmd:  "serve",
 		Argv: []string{"bash", "-c", "exit 0"},

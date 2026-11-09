@@ -143,9 +143,7 @@ func TestTheAskPathDeliversOnceViaTheCreationMark(t *testing.T) {
 }
 
 func TestAFollowUpOnAnUncreatedSessionNeverCarriesThePrompt(t *testing.T) {
-	// THE SAFETY CASE. A follow-up ATTACHES to a session this client did not create (a recorded URL
-	// from an earlier execution), so it must never re-state the prompt — the conversation already has
-	// it, and re-sending would append a second copy.
+	// THE SAFETY CASE.
 	var seen []capturedReq
 	srv := captureServer(t, &seen)
 
@@ -165,8 +163,6 @@ func TestAFollowUpOnAnUncreatedSessionNeverCarriesThePrompt(t *testing.T) {
 
 func TestTheAfterCompactReminderCarriesThePromptAgain(t *testing.T) {
 	// A compact summarizes the conversation away, INCLUDING the first message the prompt travelled in.
-	// Without re-stating it the resumed turns run with no standing instructions while appearing to
-	// continue normally — which is why this send is explicit rather than mark-driven.
 	var seen []capturedReq
 	srv := captureServer(t, &seen)
 

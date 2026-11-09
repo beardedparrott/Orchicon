@@ -58,9 +58,8 @@ func TestCreateSessionUnwrapsTheV2Envelope(t *testing.T) {
 }
 
 func TestSessionExistsUnwrapsTheV2Envelope(t *testing.T) {
-	// The same decode path serves this, and it was silently working by accident: it returned true on
-	// a SUCCESSFUL decode and never inspected the body, so a shape mismatch was invisible. Now that a
-	// decode failure is an error rather than a zero value, it has to actually decode.
+	// The same decode path serves this, and it was silently working by accident: it returned true on a
+	// SUCCESSFUL decode and never inspected the body, so a shape mismatch was invisible.
 	srv := jsonServer(t, realV2SessionCreate)
 
 	c := NewSessionClient(srv.URL, "", "")
@@ -108,9 +107,7 @@ func TestV1ResponsesAreUnchanged(t *testing.T) {
 }
 
 func TestAShapeMismatchReportsTheBytes(t *testing.T) {
-	// The failure mode that costs the most time is a SILENT empty field. A response we cannot decode
-	// at all must therefore name the surface and show what arrived, because on a new API generation
-	// "what does it actually return?" is the only useful question and it cannot be guessed.
+	// The failure mode that costs the most time is a SILENT empty field.
 	srv := jsonServer(t, `{"unexpected":"shape"}`)
 
 	c := NewSessionClient(srv.URL, "", "")

@@ -85,13 +85,8 @@ func TestAllowlistMatchesTheSameFormsItPrints(t *testing.T) {
 	}
 }
 
-// TestGuestFormIsPlatformIndependent is the anti-regression for the ORIGINAL defect: it pins that the guest
-// form does not depend on the running platform's separator at all.
-//
-// On Linux this passes trivially; on Windows it fails for any implementation that lets filepath.Clean touch the
-// guest form. That asymmetry is deliberate and stated here rather than hidden: this is the one assertion whose
-// VALUE differs by platform, so a green Linux run is not evidence — which is exactly why the two tests above
-// assert properties instead of a single string.
+// TestGuestFormIsPlatformIndependent is the anti-regression for the ORIGINAL defect: it pins that
+// the guest form does not depend on the running platform's separator at all.
 func TestGuestFormIsPlatformIndependent(t *testing.T) {
 	m := NewPathMapper("windows", "wsl")
 	got := guestForm(m, `C:\projects\weatherapp`)
@@ -137,23 +132,13 @@ func guestForms(m *PathMapper, roots []string) []string {
 	return out
 }
 
-// windowsCleanGuest reproduces Go's WINDOWS filepath.Clean for a guest path, so the defect can be asserted on a
-// Linux CI host.
-//
-// A guest path has no drive letter, so Windows treats it as drive-RELATIVE and rewrites the separator; the
-// segment resolution is otherwise the same as path.Clean.
+// windowsCleanGuest reproduces Go's WINDOWS filepath.Clean for a guest path, so the defect can be
+// asserted on a Linux CI host.
 func windowsCleanGuest(p string) string {
 	return strings.ReplaceAll(path.Clean(p), "/", `\`)
 }
 
 // TestTheWindowsDefectIsDetectedOnAnyHost is the assertion the earlier tests could not make.
-//
-// The behavioural tests above all PASSED against the unfixed code when run on linux/amd64, because
-// filepath.Clean leaves forward slashes alone there — so the two sides accidentally agreed. A test of a
-// platform-dependent function, run on one platform, tests that platform only.
-//
-// This one states WHAT WINDOWS WOULD DO and asserts the two implementations differ, so it fails on any host if
-// the code ever goes back to cleaning a guest path with filepath.
 func TestTheWindowsDefectIsDetectedOnAnyHost(t *testing.T) {
 	const guest = "/mnt/c/projects/weatherapp"
 

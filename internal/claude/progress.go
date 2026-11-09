@@ -56,20 +56,15 @@ const (
 	defaultStallRepetitionWindow = 300 * time.Second
 )
 
-// isFatalStall reports whether a stall reason terminates the session
-// (opencode parity): ONLY no_progress is fatal — a looping worker is
-// responsive and holds full context, so it is nudged instead.
+// isFatalStall reports whether a stall reason terminates the session (opencode parity): ONLY
+// no_progress is fatal — a looping worker is responsive and holds full context, so it is nudged
+// instead.
 func isFatalStall(reason string) bool {
 	return strings.HasPrefix(reason, reasonNoProgress)
 }
 
-// stallMonitor is the pure progress watchdog: total silence past the
-// no-progress window is FATAL (the caller hard-kills the child), while
-// ongoing activity with no file write past the no-file window is ADVISORY
-// (the subprocess keeps running; a later file write clears it). A repeated
-// tool-call signature is ADVISORY too. It is driven from the session's
-// single run goroutine (stream events + the watchdog tick), so it needs no
-// internal locking.
+// stallMonitor is the pure progress watchdog: total silence past the no-progress window is FATAL
+// (the caller hard-kills the child).
 type stallMonitor struct {
 	started       time.Time
 	lastOutput    time.Time
@@ -81,9 +76,7 @@ type stallMonitor struct {
 	repetitionN int
 	repetitionW time.Duration
 
-	// sigsErr holds ERROR-result signatures (tier 1); sigsAll holds
-	// ANY-result signatures (tier 2). repFired latches one report per
-	// signature until progress resets the history.
+	// sigsErr holds ERROR-result signatures (tier 1); sigsAll holds ANY-result signatures (tier 2).
 	sigsErr  map[string][]time.Time
 	sigsAll  map[string][]time.Time
 	repFired map[string]bool
@@ -93,9 +86,7 @@ type stallMonitor struct {
 	fatalFired    bool
 }
 
-// newStallMonitor resolves the windows from the manifest. nil pointer = the
-// tenant has no opinion → the adapter default; non-nil = explicit, and 0
-// disables that dimension.
+// newStallMonitor resolves the windows from the manifest.
 func newStallMonitor(m scheduler.ExecutionManifest, now time.Time) *stallMonitor {
 	return &stallMonitor{
 		started:          now,
@@ -111,9 +102,8 @@ func newStallMonitor(m scheduler.ExecutionManifest, now time.Time) *stallMonitor
 	}
 }
 
-// resolveWindow resolves one manifest window: nil = the tenant left it
-// blank (env override, then the adapter default); non-nil = explicit, and
-// <= 0 DISABLES the dimension.
+// resolveWindow resolves one manifest window: nil = the tenant left it blank (env override, then
+// the adapter default); non-nil = explicit, and <= 0 DISABLES the dimension.
 func resolveWindow(v *int64, def time.Duration) time.Duration {
 	if v == nil {
 		return def
@@ -151,9 +141,8 @@ func (s *stallMonitor) sawOutput(now time.Time) {
 	s.progressed = true
 }
 
-// sawFileWrite records a file write and reports whether it cleared an
-// outstanding ADVISORY stall (which the caller surfaces via OnRecovered).
-// A file write also clears the repetition history (reset-on-progress).
+// sawFileWrite records a file write and reports whether it cleared an outstanding ADVISORY stall
+// (which the caller surfaces via OnRecovered).
 func (s *stallMonitor) sawFileWrite(now time.Time) bool {
 	s.lastFileWrite = now
 	s.resetRepetition()
@@ -164,9 +153,8 @@ func (s *stallMonitor) sawFileWrite(now time.Time) bool {
 	return false
 }
 
-// sawToolCall records one completed tool round-trip with its result status
-// for repetition detection (opencode parity: content payloads are fingerprinted
-// so a retry with new content still collapses onto one signature).
+// sawToolCall records one completed tool round-trip with its result status for repetition detection
+// (opencode parity: content payloads are fingerprinted so a retry with new content still.
 func (s *stallMonitor) sawToolCall(now time.Time, name, argsJSON string, isError bool) {
 	if name == "" {
 		return
@@ -263,10 +251,8 @@ func trimWindow(ts []time.Time, cutoff time.Time) []time.Time {
 	return kept
 }
 
-// toolCallSignature builds the repetition signature for a claude tool call:
-// the canonical tool name plus a stable canonical marshal of its normalized
-// arguments, so identical retries collapse while distinct calls stay
-// distinct (opencode parity).
+// toolCallSignature builds the repetition signature for a claude tool call: the canonical tool name
+// plus a stable canonical marshal of its normalized arguments.
 func toolCallSignature(tool, argsJSON string, isError bool) string {
 	var args any
 	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
@@ -280,12 +266,8 @@ func toolCallSignature(tool, argsJSON string, isError bool) string {
 	return tool + "|" + string(b)
 }
 
-// normalizeToolArgs strips volatile payloads from claude's built-in tool
-// arguments so a retry with fresh content still collapses onto one
-// signature (opencode parity, adapted to claude's arg vocabulary):
-//   - write -> file_path (the volatile content payload is dropped)
-//   - edit  -> file_path + fingerprints of old_string/new_string
-//   - bash  -> scrubbed command
+// normalizeToolArgs strips volatile payloads from claude's built-in tool arguments so a retry with
+// fresh content still collapses onto one signature (opencode parity.
 func normalizeToolArgs(tool string, args any) any {
 	m, ok := args.(map[string]any)
 	if !ok {
@@ -317,9 +299,8 @@ func fingerprint(s string) string {
 	return fmt.Sprintf("%x", h.Sum32())
 }
 
-// scrubCommand removes volatile tokens (long hex/digit runs, temp paths)
-// from a bash command so retries collapse while distinct commands stay
-// distinct (opencode parity).
+// scrubCommand removes volatile tokens (long hex/digit runs, temp paths) from a bash command so
+// retries collapse while distinct commands stay distinct (opencode parity).
 func scrubCommand(cmd string) string {
 	re := regexp.MustCompile(`(?:[0-9a-fA-F]{8,}|[0-9]{4,}|/tmp/[A-Za-z0-9._-]+)`)
 	return re.ReplaceAllString(cmd, "<vol>")

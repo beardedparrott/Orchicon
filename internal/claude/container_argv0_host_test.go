@@ -104,12 +104,8 @@ func TestClaudeBinaryForContainerFindsTheInstalledHostCLI(t *testing.T) {
 	}
 }
 
-// AN ABSENT INSTALL STILL YIELDS THE BARE NAME, so an image-supplied CLI keeps working.
-//
-// THE FIXTURE CANNOT MANUFACTURE ABSENCE BY MOVING HOME: the resolver also asks the OS's PATH (read from its
-// SOURCE) and the known-install lists, so an install anywhere the machine can see it is found — moving HOME
-// would make this pass or fail on whether the RUNNING HOST happens to have claude, which is a false signal
-// either way. So it asks the resolver first and only asserts when there is genuinely nothing to prefer.
+// THE FIXTURE CANNOT MANUFACTURE ABSENCE BY MOVING HOME: the resolver also asks the OS's PATH (read
+// from its SOURCE) and the known-install lists.
 func TestClaudeBinaryForContainerWithoutAHostInstallUsesTheBareName(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("the container route only prefers the host on Linux")

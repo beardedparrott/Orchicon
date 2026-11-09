@@ -1,17 +1,6 @@
 package runtime
 
 // gitenv_test.go — GIT IS TOLD HOW TO READ A WORKTREE; THE WORKTREE IS NEVER ALTERED.
-//
-// THE DEFECT THIS REPLACES. #906 rewrote each worktree's `.git` pointer to the GUEST path so a git inside the
-// container could follow it. That file is BIND-MOUNTED, so the HOST read the rewrite too — and a host that
-// cannot resolve `/mnt/c/...` then failed to validate its own worktree, refused to provision
-// ("occupied by a non-worktree directory"), and could not satisfy git's registration
-// ("'<branch>' is already used by worktree at '/mnt/...'"). The container was given a working worktree by
-// breaking the host's.
-//
-// The worktree is created ONCE, by the host. The container uses the same one. Nothing is rewritten, and no
-// second worktree is created: each container CHILD is handed GIT_DIR/GIT_WORK_TREE, which git prefers to the
-// pointer file.
 
 import (
 	"os"

@@ -15,11 +15,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// costGatedBudgets is a merged-budget payload exercising the SHARED ladder:
-// a cheap cost gate, a tax-free token gate (disabled), compaction permitted
-// only on the cost dimension, and tenant-authored ladder MESSAGES. Every one
-// of these values must be read out of this JSON — the claude package holds
-// none of them as literals.
+// costGatedBudgets is a merged-budget payload exercising the SHARED ladder: a cheap cost gate, a
+// tax-free token gate (disabled), compaction permitted only on the cost dimension.
 const costGatedBudgets = `{
   "tokens": 0,
   "cost_usd": 0.06,
@@ -31,10 +28,8 @@ const costGatedBudgets = `{
   }
 }`
 
-// cacheHeavyResult is a result line whose prompt is almost entirely CACHE
-// READS (40k of them) with negligible fresh tokens: the token gate could
-// never fire on this turn, so any trigger must come from the CACHE-AWARE
-// cost the provider priced (total_cost_usd).
+// cacheHeavyResult is a result line whose prompt is almost entirely CACHE READS (40k of them) with
+// negligible fresh tokens: the token gate could never fire on this turn.
 const cacheHeavyResult = `{"type":"result","subtype":"success","session_id":"sess-1","result":"ok","total_cost_usd":0.02,"usage":{"input_tokens":5,"output_tokens":7,"cache_read_input_tokens":40000,"cache_creation_input_tokens":0}}`
 
 // noAutoCompactBudgets is the same ladder with EVERY dimension opted out of
@@ -100,12 +95,8 @@ func budgetSession(t *testing.T, fp *fakeProc, manifest scheduler.ExecutionManif
 	return h, done
 }
 
-// TestClaudeBudgetCompactFiresOnCacheAwareCost proves the keystone: a budget
-// breach on the SHARED ladder compacts the claude transcript, the trigger
-// fires on cache-aware COST (a turn whose tokens are almost all cache reads
-// still counts at the provider's real price), the compaction is written as a
-// NATIVE in-session directive turn (never an HTTP call — claude has no
-// serve), and the ladder's own tenant-authored message is the text injected.
+// TestClaudeBudgetCompactFiresOnCacheAwareCost proves the keystone: a budget breach on the SHARED
+// ladder compacts the claude transcript.
 func TestClaudeBudgetCompactFiresOnCacheAwareCost(t *testing.T) {
 	fp := newFakeProc()
 	rec := &captureCallbacks{}
@@ -143,18 +134,15 @@ func TestClaudeBudgetCompactFiresOnCacheAwareCost(t *testing.T) {
 		t.Fatalf("the compact directive did not direct the remaining scope: %v", payload["scope"])
 	}
 
-	// The compacted session is REVERSIBLE: it is still live, the CLI's own
-	// compaction boundary is observed, and a further turn still terminates
-	// the execution normally.
+	// The compacted session is REVERSIBLE: it is still live, the CLI's own compaction boundary is
+	// observed, and a further turn still terminates the execution normally.
 	if !h.b.IsExecutionActive("exec-budget") {
 		t.Fatal("the session did not survive its own compaction")
 	}
 	fp.push(`{"type":"system","subtype":"compact_boundary","session_id":"sess-1"}`)
 	waitFor(t, func() bool { return len(boundaryParts(rec)) == 1 }, "compact boundary recorded")
-	// Two further turns: the first consumes the outstanding queued turn the
-	// compact directive opened, the second reaches the boundary with an empty
-	// queue and ends the execution cleanly (nothing new is injected — the
-	// escalate tier is already latched and the min-turn floor holds).
+	// Two further turns: the first consumes the outstanding queued turn the compact directive opened,
+	// the second reaches the boundary with an empty queue and ends the execution cleanly (nothing new.
 	fp.push(freeResult)
 	fp.push(freeResult)
 	select {
@@ -193,9 +181,9 @@ func mustJSON(t *testing.T, v map[string]any) []byte {
 	return b
 }
 
-// TestClaudeBudgetAbortIsTerminal proves the ladder ceiling ENDS the
-// execution (opencode budget_abort parity): the abort tier is not a
-// compaction, it fails the run and hard-kills the child.
+// TestClaudeBudgetAbortIsTerminal proves the ladder ceiling ENDS the execution (opencode
+// budget_abort parity): the abort tier is not a compaction, it fails the run and hard-kills the
+// child.
 func TestClaudeBudgetAbortIsTerminal(t *testing.T) {
 	fp := newFakeProc()
 	rec := &captureCallbacks{}
@@ -225,9 +213,8 @@ func TestClaudeBudgetAbortIsTerminal(t *testing.T) {
 	}
 }
 
-// TestClaudeCompactGuardsAtMostOncePerStep drives the shared guards directly:
-// never at session start, at most once per step, min-turn floor between
-// compactions and the per-execution cap.
+// TestClaudeCompactGuardsAtMostOncePerStep drives the shared guards directly: never at session
+// start, at most once per step, min-turn floor between compactions and the per-execution cap.
 func TestClaudeCompactGuardsAtMostOncePerStep(t *testing.T) {
 	fp := newFakeProc()
 	rec := &captureCallbacks{}
@@ -266,10 +253,8 @@ func TestClaudeCompactGuardsAtMostOncePerStep(t *testing.T) {
 	}
 }
 
-// twoDimBudgets is a merged-budget payload where BOTH spend dimensions
-// escalate into a compacting tier, so one step that crosses a compacting tier
-// on BOTH dimensions must still yield exactly ONE compaction. compact_tiers
-// index 0 (warn) does not compact; escalate and final do.
+// twoDimBudgets is a merged-budget payload where BOTH spend dimensions escalate into a compacting
+// tier, so one step that crosses a compacting tier on BOTH dimensions must still yield exactly ONE.
 const twoDimBudgets = `{
   "tokens": 1000,
   "cost_usd": 0.06,
@@ -285,23 +270,15 @@ const twoDimBudgets = `{
   }
 }`
 
-// twoDimTurnOne / twoDimTurnTwo are the two completed turns the cross-dimension
-// guard test needs: turn one crosses only the non-compacting WARN tier of the
-// cost dimension (so the session stays alive with a queued warning turn and the
-// token dimension is still below every tier), turn two crosses the compacting
-// ESCALATE tier on BOTH dimensions on the SAME step.
+// twoDimTurnOne / twoDimTurnTwo are the two completed turns the cross-dimension guard test needs:
+// turn one crosses only the non-compacting WARN tier of the cost dimension (so the session stays.
 const (
 	twoDimTurnOne = `{"type":"result","subtype":"success","session_id":"sess-1","result":"ok","total_cost_usd":0.02,"usage":{"input_tokens":80,"output_tokens":20}}`
 	twoDimTurnTwo = `{"type":"result","subtype":"success","session_id":"sess-1","result":"ok","total_cost_usd":0.02,"usage":{"input_tokens":400,"output_tokens":100}}`
 )
 
-// TestClaudeCompactFiresAtMostOncePerStepAcrossDimensions drives the AC
-// literally on the LADDER path (not just through armCompact): when cost AND
-// fresh tokens both reach a compacting tier on the SAME completed step, exactly
-// one compact directive turn is written and exactly one compaction is recorded
-// — while EVERY crossed tier's own warning is still injected, nothing compacts
-// at session start, and the session stays live (a compaction is best-effort,
-// never terminal).
+// TestClaudeCompactFiresAtMostOncePerStepAcrossDimensions drives the AC literally on the LADDER
+// path (not just through armCompact).
 func TestClaudeCompactFiresAtMostOncePerStepAcrossDimensions(t *testing.T) {
 	fp := newFakeProc()
 	rec := &captureCallbacks{}
@@ -398,17 +375,14 @@ func newDirectSession(t *testing.T, manifest scheduler.ExecutionManifest, rec *c
 	return s
 }
 
-// failWriteProc is a live ProcSession whose stdin writes always fail, so the
-// compact path's error FIDELITY can be pinned: the session stays live, and a
-// refused directive write surfaces its own cause rather than a misleading
-// "no live session" diagnosis.
+// failWriteProc is a live ProcSession whose stdin writes always fail, so the compact path's error
+// FIDELITY can be pinned: the session stays live.
 type failWriteProc struct{ ProcSession }
 
 func (failWriteProc) WriteTurn([]byte) error { return errors.New("stdin pipe broken") }
 
-// TestClaudeCompactSurfacesTheWriteCause proves the compact API reports WHY a
-// live session could not be compacted (and records no phantom compaction): a
-// transport failure must not be reported as "no live session".
+// TestClaudeCompactSurfacesTheWriteCause proves the compact API reports WHY a live session could
+// not be compacted (and records no phantom compaction).
 func TestClaudeCompactSurfacesTheWriteCause(t *testing.T) {
 	fp := newFakeProc()
 	rec := &captureCallbacks{}
@@ -434,9 +408,8 @@ func TestClaudeCompactSurfacesTheWriteCause(t *testing.T) {
 	}
 }
 
-// TestClaudeBudgetLadderComesFromTheMergedJSON proves there is exactly ONE
-// source of truth: the values the claude bridge gates on are the same values
-// opencode's parseBudgetSpec resolves from the same merged JSON.
+// TestClaudeBudgetLadderComesFromTheMergedJSON proves there is exactly ONE source of truth: the
+// values the claude bridge gates on are the same values opencode's parseBudgetSpec resolves.
 func TestClaudeBudgetLadderComesFromTheMergedJSON(t *testing.T) {
 	rec := &captureCallbacks{}
 	s := newDirectSession(t, scheduler.ExecutionManifest{
@@ -466,9 +439,8 @@ func TestClaudeBudgetLadderComesFromTheMergedJSON(t *testing.T) {
 	}
 }
 
-// TestClaudeBudgetSpendIsCacheAware pins the accumulator semantics the cost
-// gate depends on: cache reads are PRICED (they cost real money) but never
-// counted as fresh work.
+// TestClaudeBudgetSpendIsCacheAware pins the accumulator semantics the cost gate depends on: cache
+// reads are PRICED (they cost real money) but never counted as fresh work.
 func TestClaudeBudgetSpendIsCacheAware(t *testing.T) {
 	rec := &captureCallbacks{}
 	s := newDirectSession(t, scheduler.ExecutionManifest{
@@ -494,10 +466,9 @@ func TestClaudeBudgetSpendIsCacheAware(t *testing.T) {
 	}
 }
 
-// TestClaudePackageHoldsNoBudgetThresholdsOrLadderText is the "one source of
-// truth" guard: no production file in the claude package may restate a
-// ladder threshold or the ladder's message copy — all of it comes from the
-// merged budget JSON through the shared facade.
+// TestClaudePackageHoldsNoBudgetThresholdsOrLadderText is the "one source of truth" guard: no
+// production file in the claude package may restate a ladder threshold or the ladder's message
+// copy.
 func TestClaudePackageHoldsNoBudgetThresholdsOrLadderText(t *testing.T) {
 	banned := []string{
 		"You have used", "{pct}", "compact_max_turns", "compact_dims", "compact_tiers",
@@ -532,9 +503,8 @@ func TestClaudePackageHoldsNoBudgetThresholdsOrLadderText(t *testing.T) {
 	}
 }
 
-// TestClaudeCompactionIsNeverHTTP proves the compact is NOT implemented by any
-// HTTP call: no serve, no endpoint, no client — only the session's own stdin
-// write path.
+// TestClaudeCompactionIsNeverHTTP proves the compact is NOT implemented by any HTTP call: no serve,
+// no endpoint, no client — only the session's own stdin write path.
 func TestClaudeCompactionIsNeverHTTP(t *testing.T) {
 	for _, name := range []string{"compact.go", "session.go", "adapter.go"} {
 		body, err := os.ReadFile(name)

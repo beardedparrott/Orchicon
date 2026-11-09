@@ -32,9 +32,8 @@ import (
 
 const v2StepEndedWithFiles = `{"type":"session.step.ended","data":{"sessionID":"ses_a","assistantMessageID":"msg_1","finish":"stop","cost":0.01,"tokens":{"input":10,"output":5},"files":["frontend/src/App.tsx","internal/tui/app.go"]}}`
 
-// TestV2StepEndedCarriesTheChangedFiles asserts the mapper does not DISCARD the
-// payload — the original omission was silent, and a dropped field is invisible
-// from the transcript it should have reached.
+// TestV2StepEndedCarriesTheChangedFiles asserts the mapper does not DISCARD the payload — the
+// original omission was silent.
 func TestV2StepEndedCarriesTheChangedFiles(t *testing.T) {
 	legacy, ok := LegacyEventFromBus(v2Bus(t, v2StepEndedWithFiles))
 	if !ok {
@@ -60,10 +59,8 @@ func stepFinishEvt(files ...string) map[string]any {
 	return map[string]any{"type": "step_finish", "part": map[string]any{"files": list}}
 }
 
-// TestStepFilesReachTheFileEditHook is the wiring: the paths a step reports must
-// arrive at the ledger hook, through the SAME "file_diff" arm the diff-event path
-// uses (so the observer's before/after reading and its no-op suppression are
-// shared rather than reimplemented).
+// TestStepFilesReachTheFileEditHook is the wiring: the paths a step reports must arrive at the
+// ledger hook, through the SAME "file_diff" arm the diff-event path uses (so the observer's.
 func TestStepFilesReachTheFileEditHook(t *testing.T) {
 	type call struct{ tool, path string }
 	var got []call
@@ -93,9 +90,8 @@ func TestStepFilesReachTheFileEditHook(t *testing.T) {
 	}
 }
 
-// TestStepFilesSkipEngineCoveredPaths pins the de-duplication: a path the engine
-// already recorded an EXACT diff for must not also get a snapshot row, or one
-// edit renders twice in the viewer.
+// TestStepFilesSkipEngineCoveredPaths pins the de-duplication: a path the engine already recorded
+// an EXACT diff for must not also get a snapshot row, or one edit renders twice in the viewer.
 func TestStepFilesSkipEngineCoveredPaths(t *testing.T) {
 	var got []string
 	a := &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -117,9 +113,8 @@ func TestStepFilesSkipEngineCoveredPaths(t *testing.T) {
 	}
 }
 
-// TestStepWithoutFilesTouchesNoLedger is the CONTROL: a step that reports no
-// files must not reach the hook at all. Otherwise every step would manufacture a
-// row for an empty path, and the ledger would fill with noise.
+// TestStepWithoutFilesTouchesNoLedger is the CONTROL: a step that reports no files must not reach
+// the hook at all.
 func TestStepWithoutFilesTouchesNoLedger(t *testing.T) {
 	calls := 0
 	a := &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))}

@@ -2,15 +2,8 @@
 
 package runtime
 
-// The daemon's engine seam, proven END TO END rather than by inspection: the
-// binary the daemon EXECUTES is the one ResolveEngine resolved (an absolute
-// path found on PATH), and the argv it passes arrives intact.
-//
-// This closes the gap the rename itself cannot: `d.engine("inspect", …)` would
-// still pass every argv-capturing test (they override engineFn and never touch
-// the real exec path) if the production path had kept a hardcoded "docker" — or
-// resolved to "". A fake engine shim on PATH is enough to prove it with no
-// container engine installed, which is the situation in CI and in this image.
+// The daemon's engine seam, proven END TO END rather than by inspection: the binary the daemon
+// EXECUTES is the one ResolveEngine resolved (an absolute path found on PATH).
 
 import (
 	"os"
@@ -20,9 +13,8 @@ import (
 	"time"
 )
 
-// TestDaemonExecutesTheResolvedEngineBinary installs a fake `podman` ahead of
-// the real PATH, resolves the engine from the environment, and asserts the
-// daemon ran THAT file with the args it was given.
+// TestDaemonExecutesTheResolvedEngineBinary installs a fake `podman` ahead of the real PATH,
+// resolves the engine from the environment.
 func TestDaemonExecutesTheResolvedEngineBinary(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "argv.log")
@@ -68,10 +60,8 @@ func TestDaemonExecutesTheResolvedEngineBinary(t *testing.T) {
 	}
 }
 
-// TestZeroDaemonNeverExecsAnEmptyBinary pins the defensive default: a Daemon
-// built without an Engine (tests, or a caller that forgot to resolve) must run
-// the DEFAULT engine's name, never "" — an empty binary name is an exec error
-// with no operator-facing meaning.
+// TestZeroDaemonNeverExecsAnEmptyBinary pins the defensive default: a Daemon built without an
+// Engine (tests, or a caller that forgot to resolve) must run the DEFAULT engine's name, never "".
 func TestZeroDaemonNeverExecsAnEmptyBinary(t *testing.T) {
 	var d Daemon
 	if got := d.engineBin(); got != DefaultEngineName() {

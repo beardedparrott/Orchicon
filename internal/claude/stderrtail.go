@@ -41,9 +41,6 @@ type stderrRing struct {
 }
 
 // startStderrDrain consumes ch until it closes, retaining the last stderrRingMaxLines lines.
-//
-// It must be called with the proc's channel and must be stopped (stop) before the proc is closed, or the
-// goroutine outlives the session.
 func startStderrDrain(ch <-chan []byte) *stderrRing {
 	r := &stderrRing{done: make(chan struct{})}
 	go func() {

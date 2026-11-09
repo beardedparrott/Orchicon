@@ -1,12 +1,6 @@
 package runtimeimage
 
 // ordering_and_presence_test.go — the two rules behind the runtime-image reports.
-//
-// REPORTED together: "images are downloading now, however, they fail unless you download the base image
-// first. I think we should prevent the download of the other images until the base is downloaded first
-// and say so" and "When I tried to deploy orchicon-dev and the base image, I got 'runtime image already
-// up to date (spec version 1) — skipping rebuild' but it just says stock and the deploy button is still
-// lit up and clickable."
 
 import (
 	"context"
@@ -30,8 +24,7 @@ func newPresenceService(base string, present map[string]bool, err error) *Servic
 		return present[ref], nil
 	}
 	// NO rt AND A SEAM: the probe goes through presentFn, and ensureBase returns the base this helper
-	// was given. A zero *runtime.Client here would dereference its own nil internals the first time a
-	// test asked it for anything — which is exactly what happened when this helper first set one.
+	// was given.
 	return s
 }
 
@@ -104,9 +97,6 @@ func TestAPresenceProbeFailureDoesNotBlock(t *testing.T) {
 }
 
 // TestADeploySkipsOnlyWhenTheImageIsReallyThere is the "already up to date" report, as a table.
-//
-// The row and the engine are two different sources of truth, and the whole defect was consulting only
-// the first. Each row below is a case where they disagree.
 func TestADeploySkipsOnlyWhenTheImageIsReallyThere(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

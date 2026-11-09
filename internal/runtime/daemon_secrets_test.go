@@ -42,9 +42,6 @@ import (
 )
 
 // runCallTimeout bounds the wait for the create goroutine to reach `docker run`.
-// Generous — this is a scheduling deadline, not a performance assertion — so a
-// slow or heavily loaded machine reports a real failure ("run was never called")
-// rather than a timing flake.
 const runCallTimeout = 10 * time.Second
 
 func TestCreateContainerInjectsSecretsAsEnv(t *testing.T) {
@@ -84,9 +81,8 @@ func TestCreateContainerInjectsSecretsAsEnv(t *testing.T) {
 			case runArgs <- cp:
 			default:
 			}
-			// Simulate a successful create; the readiness ping that follows
-			// will keep failing (no real supervisor socket), which is fine —
-			// the create goroutine simply gives up at its own deadline.
+			// Simulate a successful create; the readiness ping that follows will keep failing (no real
+			// supervisor socket), which is fine — the create goroutine simply gives up at its own deadline.
 			return "cid123", nil
 		}
 		return "ok", nil
@@ -119,19 +115,15 @@ func TestCreateContainerInjectsSecretsAsEnv(t *testing.T) {
 		t.Errorf("run argv does not name the container: %v", run)
 	}
 
-	// Each secret rides as its OWN `-e K=V` flag. Asserting the flag and the
-	// pair TOGETHER (not "K=V somewhere" plus "-e somewhere else") is the whole
-	// point: a value that leaked into some other argument would not be injected
-	// as an environment variable.
+	// Each secret rides as its OWN `-e K=V` flag.
 	for _, want := range []string{"-e TAVILY_API_KEY=tvly-secret", "-e OTHER_KEY=val2"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("run argv missing %q\ngot: %v", want, run)
 		}
 	}
 
-	// The secrets are ENVIRONMENT flags, not image/command arguments: they must
-	// precede the image + entrypoint tail, or docker would treat them as the
-	// command to exec.
+	// The secrets are ENVIRONMENT flags, not image/command arguments: they must precede the image +
+	// entrypoint tail, or docker would treat them as the command to exec.
 	imageIdx := -1
 	for i, a := range run {
 		if a == d.Image {

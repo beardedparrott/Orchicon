@@ -12,9 +12,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/askmode"
 )
 
-// The mode vocabulary differs between the policy and claude's tool surface, and
-// an untranslated denial is a boundary that silently does not hold. Every row is
-// pinned.
+// The mode vocabulary differs between the policy and claude's tool surface, and an untranslated
+// denial is a boundary that silently does not hold.
 func TestClaudeToolToPolicyName(t *testing.T) {
 	cases := map[string]string{
 		"Write":        "write",
@@ -40,8 +39,6 @@ func TestClaudeToolToPolicyName(t *testing.T) {
 }
 
 // Write/Edit/MultiEdit/NotebookEdit are all the SAME action to a mode boundary.
-// MultiEdit and NotebookEdit are the easy ones to forget, and forgetting them
-// leaves a brainstorm conversation able to write through two other tools.
 func TestModeDeniesEveryWriteShapedTool(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "conv.mode.json")
 	if err := writeAskModeFile(path, askmode.Brainstorm); err != nil {
@@ -66,9 +63,8 @@ func TestModeDeniesEveryWriteShapedTool(t *testing.T) {
 	}
 }
 
-// The gate is POLICY-driven, not "writes are always refused": iteration denies
-// the PLANNER tools, so a write is legitimate there. A test asserting only the
-// brainstorm half would pass even if the implementation hard-denied writes.
+// The gate is POLICY-driven, not "writes are always refused": iteration denies the PLANNER tools,
+// so a write is legitimate there.
 func TestIterationModeDoesNotDenyClaudesTools(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "conv.mode.json")
 	if err := writeAskModeFile(path, askmode.Iteration); err != nil {
@@ -90,9 +86,8 @@ func TestIterationModeDoesNotDenyClaudesTools(t *testing.T) {
 	}
 }
 
-// A mode with no policy allows everything (askmode.Allows), and absence and
-// "denies nothing" must mean the same thing to the reader — otherwise a stale
-// file outlives the mode that wrote it.
+// A mode with no policy allows everything (askmode.Allows), and absence and "denies nothing" must
+// mean the same thing to the reader — otherwise a stale file outlives the mode that wrote it.
 func TestWriteAskModeFileClearsAPolicyLessMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "conv.mode.json")
 	if err := writeAskModeFile(path, askmode.Brainstorm); err != nil {
@@ -112,10 +107,8 @@ func TestWriteAskModeFileClearsAPolicyLessMode(t *testing.T) {
 	}
 }
 
-// The anti-tamper rule: the mode file IS the enforcement, so a session must not
-// be able to write it. claude's Write/Edit act in-process, so the OS shim never
-// sees them — this check is the only thing standing between the model and its own
-// restriction.
+// The anti-tamper rule: the mode file IS the enforcement, so a session must not be able to write
+// it.
 func TestIsAskStatePath(t *testing.T) {
 	modeFile := "/tmp/orchicon-ask/.state/conv-1.mode.json"
 	cases := map[string]bool{
@@ -134,9 +127,8 @@ func TestIsAskStatePath(t *testing.T) {
 	}
 }
 
-// END TO END through the hook's wire protocol: in brainstorm mode a Write must be
-// refused with a DENY, not offered as a consent card. A card here would tell the
-// operator they may approve something the mode has already refused.
+// END TO END through the hook's wire protocol: in brainstorm mode a Write must be refused with a
+// DENY, not offered as a consent card.
 func TestRunHookDeniesAModeBlockedToolInTheAskProfile(t *testing.T) {
 	askDir := t.TempDir()
 	modeFile := filepath.Join(askDir, "conv.mode.json")
@@ -168,12 +160,6 @@ func TestRunHookDeniesAModeBlockedToolInTheAskProfile(t *testing.T) {
 
 // NO MODE FILE = no mode claim, and a write is still the operator's decision — the regression guard
 // for the pre-mode behaviour.
-//
-// THE VERDICT IS "ASK", AND THE WIRE CARRIES NOTHING: the mode file decides whether the MODE refuses a
-// call; an ask is not a refusal, and the hook delivers an ask by abstaining so the permission system
-// raises the host prompt (see TestRunHookAbstainsSoThePermissionSystemCanAsk). So the assertion is on
-// the DECISION — the mode file was consulted and produced no denial — and on the ABSENCE of any wire
-// verdict, which is the half that was broken.
 func TestRunHookWithoutAModeFileStillAsks(t *testing.T) {
 	env := map[string]string{
 		HookProfileEnv: ProfileAskEnvValue,
@@ -196,9 +182,8 @@ func TestRunHookWithoutAModeFileStillAsks(t *testing.T) {
 	}
 }
 
-// The tamper rule through the wire: a write into the platform's Ask state is
-// refused even though the target is a plain path the Ask profile would otherwise
-// be happy to ask about.
+// The tamper rule through the wire: a write into the platform's Ask state is refused even though
+// the target is a plain path the Ask profile would otherwise be happy to ask about.
 func TestRunHookRefusesWritesToTheAskState(t *testing.T) {
 	askDir := t.TempDir()
 	modeFile := filepath.Join(askDir, askModeStateDirName, "conv-1.mode.json")
@@ -221,9 +206,8 @@ func TestRunHookRefusesWritesToTheAskState(t *testing.T) {
 	}
 }
 
-// THE ADAPTER HALF: the mode file is written per TURN from the context the
-// platform stamped, so a mid-conversation switch is enforced on the next turn,
-// and clearing it removes the boundary. This is the end the hook reads.
+// THE ADAPTER HALF: the mode file is written per TURN from the context the platform stamped, so a
+// mid-conversation switch is enforced on the next turn, and clearing it removes the boundary.
 func TestSendTurnMessageRecordsTheTurnsMode(t *testing.T) {
 	h, _ := askHarness(t)
 	s := h.b.ensureAskSession("conv-mode")

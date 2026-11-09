@@ -86,10 +86,6 @@ func askOverSocket(t *testing.T, sock, tool string, input map[string]any) hookCo
 }
 
 // AN APPROVED CALL COMES BACK "allow" — the whole point of the mechanism.
-//
-// It also pins that the ask reaches the collector: the adapter must emit the SAME `permission` bus event
-// the can_use_tool path emits, or the precedence chain, the grants and the card would all be bypassed and
-// the operator would be approving something else.
 func TestConsentSocketAllowsWhenTheOperatorApproves(t *testing.T) {
 	b, s, bus := consentHarness(t)
 
@@ -162,12 +158,6 @@ func TestConsentSocketDeniesWhenNobodyAnswers(t *testing.T) {
 }
 
 // NO BOUND BY DEFAULT, and the CLI's own timeout must not become the new cliff.
-//
-// The two halves of this are one decision: this side waits for the operator indefinitely (the same
-// default as the native adapter — a card must not be taken from someone who stepped away), and the
-// `timeout` written into the settings document is a BACKSTOP rather than a leash. It used to be 16
-// minutes — one minute above a 15-minute consent wait — which, with the wait unbounded, would make the
-// CLI the thing that kills the hook at sixteen minutes instead of fifteen: the same cliff, moved.
 func TestConsentWaitIsUnboundedByDefaultAndTheHookTimeoutIsNotACliff(t *testing.T) {
 	t.Setenv("ORCHICON_CLAUDE_CONSENT_WAIT", "") // the default: unset
 	if got := hookConsentWait(); got != 0 {
@@ -269,9 +259,7 @@ func TestPermissionRequestHookAllowsOnApproval(t *testing.T) {
 	}
 }
 
-// A HOOK ASK MUST NOT BE ANSWERED WITH A can_use_tool FRAME. The CLI is waiting on the hook, not on a
-// control request, so writing a frame would answer nothing and the operator's approval would be silently
-// lost. This pins that ReplyPermissionDecision routes a parked hook ask down the socket instead.
+// A HOOK ASK MUST NOT BE ANSWERED WITH A can_use_tool FRAME.
 func TestReplyPermissionDecisionRoutesHookAsksNotControlFrames(t *testing.T) {
 	b, s, bus := consentHarness(t)
 
@@ -301,9 +289,8 @@ func TestReplyPermissionDecisionRoutesHookAsksNotControlFrames(t *testing.T) {
 	}
 }
 
-// THE SETTINGS DOCUMENT REGISTERS THE CARD'S ONLY DELIVERY PATH, and the matcher is DERIVED from the tools
-// the permission system prompts on. A name in one list and not the other is a call the permission system
-// asks about with no hook to answer it — a terminal denial, which is the defect this whole change closes.
+// THE SETTINGS DOCUMENT REGISTERS THE CARD'S ONLY DELIVERY PATH, and the matcher is DERIVED from
+// the tools the permission system prompts on.
 func TestAskProfileRegistersThePermissionRequestHook(t *testing.T) {
 	raw, err := BuildSettings(PermissionOptions{Profile: ProfileAskEnvValue, HookBinary: "/bin/orchicon"})
 	if err != nil || raw == "" {

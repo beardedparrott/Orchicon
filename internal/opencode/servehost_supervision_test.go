@@ -1,10 +1,7 @@
 package opencode
 
-// servehost_supervision_test.go — the four supervision defects, each pinned by the symptom it caused.
-//
-// The host opencode serve is the process every opencode turn runs through, so a defect in its supervision
-// is not a cosmetic one: it shows up as turns that fail with "connection refused", a serve that is dead
-// while the plane believes it is up, and defunct processes in `ps`.
+// servehost_supervision_test.go — the four supervision defects, each pinned by the symptom it
+// caused.
 
 import (
 	"context"
@@ -34,10 +31,6 @@ func waitFor(t *testing.T, d time.Duration, what string, cond func() bool) {
 }
 
 // DEFECT 2: a nil client used to read as a HEALTHY serve.
-//
-// The condition was `client == nil || client.Healthy(ctx)`, so a watchdog that outlived a Stop() — which
-// nils the client — continued forever, reporting nothing, while no serve existed at all. Nil means there
-// is nothing to answer with, which is exactly when a restart is due.
 func TestNilClientIsNotAHealthyServe(t *testing.T) {
 	if serveAnswering(context.Background(), nil) {
 		t.Fatal("a nil client reported as answering — the watchdog would spin forever over a dead serve " +
@@ -46,13 +39,6 @@ func TestNilClientIsNotAHealthyServe(t *testing.T) {
 }
 
 // DEFECTS 1 + 4: the exit is recorded, and the process is reaped.
-//
-// A serve that exits on its own used to leave `started`/`client` set, so ready() kept answering true and
-// EnsureStarted short-circuited ("already up") — the dispatch then failed with "connection refused"
-// rather than restarting. And nothing Wait()ed it, so it lingered as a defunct process until the
-// watchdog's next 15s poll happened to notice.
-//
-// This drives the REAL path (reapAsync + markExited) against a real child process.
 func TestASelfExitedServeIsReapedAndReadsAsDown(t *testing.T) {
 	h := NewHostServe(supervisionLogger(), t.TempDir(), t.TempDir())
 
@@ -90,10 +76,6 @@ func TestASelfExitedServeIsReapedAndReadsAsDown(t *testing.T) {
 }
 
 // markExited must not clear the state of a serve that REPLACED the one that exited.
-//
-// A restart kills the old process and starts a new one; the old process's reaper then fires with a stale
-// cmd. Clearing unconditionally would null out the live serve's fields — after which ready() would report
-// a running serve as absent and EnsureStarted would stack a second process on the same port.
 func TestASupersededProcessCannotClearItsReplacement(t *testing.T) {
 	h := NewHostServe(supervisionLogger(), t.TempDir(), t.TempDir())
 
@@ -121,11 +103,8 @@ func TestASupersededProcessCannotClearItsReplacement(t *testing.T) {
 	}
 }
 
-// DEFECT 3: supervision was armed by exactly ONE caller (EnsureStarted), and arming twice started a second
-// watchdog whose handle overwrote the first — leaking it, with both then racing to restart one serve.
-//
-// The invariant is "exactly one watchdog", and it must survive repeated arming and survive Stop() so a later
-// Start can re-arm.
+// DEFECT 3: supervision was armed by exactly ONE caller (EnsureStarted), and arming twice started a
+// second watchdog whose handle overwrote the first — leaking it.
 func TestArmSupervisionStartsExactlyOneWatchdog(t *testing.T) {
 	var live int32
 	watchLiveHook = func(delta int) { atomic.AddInt32(&live, int32(delta)) }

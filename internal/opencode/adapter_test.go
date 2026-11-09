@@ -40,10 +40,8 @@ func (noopCallbacks) OnRecovered(context.Context, string, string)            {}
 func (noopCallbacks) OnResult(context.Context, string, bool, string, string) {}
 func (noopCallbacks) OnText(context.Context, string, string)                 {}
 
-// TestExecutionDir verifies the execution working-directory resolution: the
-// provisioned worktree path wins when set, otherwise the project dir. This is
-// the single resolution the session directory (the worker's cwd) and the
-// safety-lint write location share.
+// TestExecutionDir verifies the execution working-directory resolution: the provisioned worktree
+// path wins when set, otherwise the project dir.
 func TestExecutionDir(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -83,11 +81,8 @@ func TestExecutionDir(t *testing.T) {
 	}
 }
 
-// TestExecutionSystemPrompt verifies the run-prelude notes are appended only
-// under the right conditions: the worktree-path discipline note only when the
-// run has a provisioned worktree (WorktreePath != ""), and the batch-tool
-// discipline only for a runtime-container run with a project dir. It also
-// checks the base system prompt is always preserved.
+// TestExecutionSystemPrompt verifies the run-prelude notes are appended only under the right
+// conditions: the worktree-path discipline note only when the run has a provisioned worktree.
 func TestExecutionSystemPrompt(t *testing.T) {
 	base := "You are an autonomous coding agent."
 	cases := []struct {
@@ -136,9 +131,7 @@ func TestExecutionSystemPrompt(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := executionSystemPrompt(tc.manifest, shapeV1)
-			// The worktree-path discipline note is present only under a
-			// provisioned worktree. Reference the const directly so the test
-			// and the source cannot drift apart.
+			// The worktree-path discipline note is present only under a provisioned worktree.
 			if hasWorktree := strings.Contains(got, worktreePathDiscipline); hasWorktree != tc.wantWorktree {
 				t.Errorf("executionSystemPrompt() worktree note present = %v, want %v; prompt=%q", hasWorktree, tc.wantWorktree, got)
 			}
@@ -154,9 +147,8 @@ func TestExecutionSystemPrompt(t *testing.T) {
 	}
 }
 
-// TestAbortExecutionNoLiveSession verifies AbortExecution is a safe no-op for
-// an unknown/already-finished execution (no live session on the transport).
-// Cancelling a non-running execution must never panic or error.
+// TestAbortExecutionNoLiveSession verifies AbortExecution is a safe no-op for an
+// unknown/already-finished execution (no live session on the transport).
 func TestAbortExecutionNoLiveSession(t *testing.T) {
 	a := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err := a.AbortExecution(context.Background(), "exec-nonexistent", "test-cancel"); err != nil {
@@ -164,10 +156,8 @@ func TestAbortExecutionNoLiveSession(t *testing.T) {
 	}
 }
 
-// TestParseTodoItems verifies the todowrite → sidecar-snapshot parsing: the
-// full replacement array shape, malformed-item dropping, empty-content
-// skipping, and status defaulting. This is the parsing layer that feeds
-// `todoread` (and the native todo surface) for DB-less sessions.
+// TestParseTodoItems verifies the todowrite → sidecar-snapshot parsing: the full replacement array
+// shape, malformed-item dropping, empty-content skipping, and status defaulting.
 func TestParseTodoItems(t *testing.T) {
 	cases := []struct {
 		name string
@@ -225,11 +215,8 @@ func TestParseTodoItems(t *testing.T) {
 	}
 }
 
-// TestTodoWriteSnapshotSidecar verifies the full wiring: a todowrite tool_use
-// event flows through parseEvent and persists the snapshot to
-// .orchicon/todos.json under the execution dir, which `todoread` then
-// returns. This is the native todo surface working end-to-end without any
-// parsing layer for DB-less sessions.
+// TestTodoWriteSnapshotSidecar verifies the full wiring: a todowrite tool_use event flows through
+// parseEvent and persists the snapshot to .orchicon/todos.json under the execution dir.
 func TestTodoWriteSnapshotSidecar(t *testing.T) {
 	execDir := t.TempDir()
 	manifest := scheduler.ExecutionManifest{ProjectDir: execDir}
@@ -271,12 +258,6 @@ func TestTodoWriteSnapshotSidecar(t *testing.T) {
 }
 
 // TestExecutionSystemPromptCodeMode pins the 2.x branch of the composed prompt.
-//
-// THE TWO DISCIPLINES ARE MUTUALLY EXCLUSIVE, and emitting the wrong one is silently harmful
-// rather than loud: batchToolsDiscipline tells the worker to call `batch_read` directly, which a
-// Code Mode serve FORBIDS (every MCP tool is callable only inside `execute`). A worker given that
-// instruction reports the tools as missing from its catalog and falls back to `shell` — observed on
-// a real 2.x run that made 63 shell calls and zero `batch_*`.
 func TestExecutionSystemPromptCodeMode(t *testing.T) {
 	manifest := scheduler.ExecutionManifest{
 		SystemPrompt:      "base",

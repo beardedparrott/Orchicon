@@ -74,10 +74,8 @@ func defaultStallWindows() stallWindows {
 	}
 }
 
-// toolHangDefaultWindow resolves the Tier A in-flight tool-hang watchdog
-// window: canonical ORCHICON_STALL_TOOL_HANG_WINDOW first, deprecated
-// ORCHICON_TOOL_HANG_WINDOW fallback (kept for one release), then the 180s
-// code default. A resolved value <= 0 disables the watchdog.
+// toolHangDefaultWindow resolves the Tier A in-flight tool-hang watchdog window: canonical
+// ORCHICON_STALL_TOOL_HANG_WINDOW first.
 func toolHangDefaultWindow() time.Duration {
 	if v := os.Getenv("ORCHICON_STALL_TOOL_HANG_WINDOW"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
@@ -90,22 +88,6 @@ func toolHangDefaultWindow() time.Duration {
 		}
 	}
 	// RAISED FROM 180s: A LEGITIMATE COLD BUILD OUTLASTS IT.
-	//
-	// The tool-hang watchdog cancels an in-flight tool call that has emitted no events for this long and
-	// injects a course-correcting redirect. 180s is a sensible ceiling for a call that is genuinely
-	// WEDGED, and a badly wrong one for a call that is legitimately slow: a cold-cache `go build ./...`
-	// on a large repository, a first `bun install`, a full test suite on a fresh worktree — each routinely
-	// runs past three silent minutes, and emits nothing at all while it does.
-	//
-	// MEASURED ON THIS PLATFORM: execution 01M5X66JMHHATS0DG155049E03 ran 11m01s and 4,194,878 tokens and
-	// died with `stalled:no_progress; execution ended before the final model step completed`. That is a
-	// cold build being reported as a worker fault, and it is the single largest stall signature in the
-	// 1,643-line FACTS LEARNED ledger (`stall` appears 268 times).
-	//
-	// The cost of raising it is bounded and the cost of leaving it is not: a truly wedged call now wastes
-	// ten minutes instead of three, while a legitimate build no longer destroys a 45-minute run's context.
-	// A worker can also set an explicit `timeout_seconds` on its own shell calls, but it cannot raise this
-	// watchdog from inside — which is why the default has to be right.
 	return 600 * time.Second
 }
 
@@ -148,9 +130,7 @@ func stallWindowsFromManifest(m scheduler.ExecutionManifest) stallWindows {
 	if m.StallRepetitionWindowSeconds != nil && os.Getenv("ORCHICON_STALL_REPETITION_WINDOW") == "" {
 		w.repetitionW = time.Duration(*m.StallRepetitionWindowSeconds) * time.Second
 	}
-	// Tool-hang keeps its two env names (the deprecated one is still honoured
-	// for one release). An explicit 0 resolves to a zero duration, which
-	// checkToolHangLocked gates on — disabled.
+	// Tool-hang keeps its two env names (the deprecated one is still honoured for one release).
 	if m.StallToolHangSeconds != nil && os.Getenv("ORCHICON_STALL_TOOL_HANG_WINDOW") == "" && os.Getenv("ORCHICON_TOOL_HANG_WINDOW") == "" {
 		w.toolHang = time.Duration(*m.StallToolHangSeconds) * time.Second
 	}
@@ -158,9 +138,6 @@ func stallWindowsFromManifest(m scheduler.ExecutionManifest) stallWindows {
 }
 
 // progressMonitor tracks per-execution progress signals and detects stalls.
-// It is fed events from parseEvent (the session-transport bus mapping) and
-// runs a background ticker that checks the stall windows. Thread-safe (the
-// event goroutine + the ticker both touch it).
 type progressMonitor struct {
 	mu sync.Mutex
 
@@ -189,32 +166,18 @@ type progressMonitor struct {
 	sigsErr map[string][]time.Time
 	sigsAll map[string][]time.Time
 
-	// fired tracks whether the monitor has already raised a FATAL stall
-	// (no_progress / text_loop / repetition) for this execution. A fatal
-	// trigger fires once; the hard-kill + recovery it triggers is the
-	// response (docs/06 §9 idempotency guards against re-trigger).
+	// fired tracks whether the monitor has already raised a FATAL stall (no_progress / text_loop /
+	// repetition) for this execution.
 	fired bool
 
-	// In-flight tool-hang tracking (Tier A detection): the single
-	// currently in-flight tool call (name + last-activity time). Only one
-	// call is tracked — a new tool start supersedes the previous slot.
-	// ANY event observed while a call is in flight refreshes toolHangStart,
-	// so only a call with zero events for the whole window trips.
-	// toolHangFired latches once per monitor (= per execution). The hang
-	// signal stays ADVISORY (isFatalStall is unchanged): a still-stuck
-	// worker escalates through the existing probe → kill path.
+	// In-flight tool-hang tracking (Tier A detection): the single currently in-flight tool call (name +
+	// last-activity time).
 	toolHangName  string
 	toolHangStart time.Time
 	toolInFlight  bool
 	toolHangFired bool
 
-	// warned tracks an active ADVISORY stall (no_file_progress). Unlike a
-	// fatal trip, an advisory trip does not end monitoring: the subprocess
-	// is not killed, the execution stays running with a non-terminal
-	// `stalled` health notice, and the monitor keeps ticking so it can
-	// revive the execution to `healthy` (checkRevival) when the missing
-	// file progress resumes — or trip a fatal signal if the worker truly
-	// hangs. `warned` clears on revival so the window can trip again.
+	// warned tracks an active ADVISORY stall (no_file_progress).
 	warned bool
 
 	stop chan struct{}
@@ -238,17 +201,13 @@ func newProgressMonitor(execID string, w stallWindows) *progressMonitor {
 	return m
 }
 
-// observe feeds a parsed event into the monitor. Called from the session
-// transport's event dispatch (parseEvent). eventType matches opencode's
-// `--format json` event types (docs/04 §6.1).
+// observe feeds a parsed event into the monitor.
 func (m *progressMonitor) observe(eventType string, part map[string]any) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
-	// Tier A (tool-hang): ANY non-tool event while a tool call is in flight
-	// is activity — refresh the hang start so only a call with zero events
-	// for the whole window trips. Terminal tool resolutions disarm in the
-	// tool_use case below.
+	// Tier A (tool-hang): ANY non-tool event while a tool call is in flight is activity — refresh the
+	// hang start so only a call with zero events for the whole window trips.
 	if m.toolInFlight && eventType != "tool_use" && eventType != "tool_call" {
 		m.toolHangStart = now
 	}
@@ -260,9 +219,8 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 	case "step_finish":
 		m.lastStepFinish = now
 		m.lastMeaningfulAction = now
-		// A step finishing is real progress — reset the repetition
-		// signature history (the worker is making forward progress, not
-		// looping).
+		// A step finishing is real progress — reset the repetition signature history (the worker is making
+		// forward progress, not looping).
 		m.sigsErr = make(map[string][]time.Time)
 		m.sigsAll = make(map[string][]time.Time)
 		// Track cumulative token count so no-new-tokens is detectable even
@@ -284,9 +242,8 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 	case "tool_use", "tool_call":
 		m.lastMeaningfulAction = now
 		status, _ := part["state"].(map[string]any)["status"].(string)
-		// Tier A: a tool part still in flight (running / no status) arms or
-		// refreshes the single in-flight slot (a new start supersedes the
-		// previous one); a resolved part (completed/error) disarms it.
+		// Tier A: a tool part still in flight (running / no status) arms or refreshes the single in-flight
+		// slot (a new start supersedes the previous one); a resolved part (completed/error) disarms it.
 		if status == "completed" || status == "error" {
 			m.toolInFlight = false
 		} else {
@@ -298,28 +255,20 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 		}
 		sig := toolUseSignature(part)
 		cutoff := now.Add(-m.w.repetitionW)
-		// Tier 1 (existing): only ERROR-status tool calls count toward the
-		// repetition threshold. A completed call is real progress — it
-		// resets the error history (the normal build-fix-iterate-debug
-		// loop).
+		// Tier 1 (existing): only ERROR-status tool calls count toward the repetition threshold.
 		if status == "error" {
 			m.sigsErr[sig] = appendInWindow(m.sigsErr[sig], now, cutoff)
 		} else {
 			m.sigsErr = make(map[string][]time.Time)
 		}
-		// Tier 2 (D5): ANY-status identical signature — catches a
-		// completed-call loop (repeatedly re-reading the same file, the
-		// same write). The same call repeated without forward progress
-		// accumulates; a file_diff / step_finish between identical calls
-		// resets the count (reset-on-progress).
+		// Tier 2 (D5): ANY-status identical signature — catches a completed-call loop (repeatedly
+		// re-reading the same file, the same write).
 		m.sigsAll[sig] = appendInWindow(m.sigsAll[sig], now, cutoff)
 	}
 }
 
-// observeToolStart arms the Tier A tool-hang slot for one in-flight tool
-// call (a new start supersedes the previous slot — only the longest/single
-// in-flight call is tracked). Called with the tool name from the raw bus
-// tool-start event (a hung tool never produces a completed part).
+// observeToolStart arms the Tier A tool-hang slot for one in-flight tool call (a new start
+// supersedes the previous slot — only the longest/single in-flight call is tracked).
 func (m *progressMonitor) observeToolStart(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -338,9 +287,8 @@ func (m *progressMonitor) observeToolEnd() {
 	m.toolInFlight = false
 }
 
-// noteToolActivity refreshes the Tier A hang start without disarming: the
-// in-flight call produced (or was followed by) an event, so the
-// zero-events-only trip condition restarts. Never arms an idle slot.
+// noteToolActivity refreshes the Tier A hang start without disarming: the in-flight call produced
+// (or was followed by) an event, so the zero-events-only trip condition restarts.
 func (m *progressMonitor) noteToolActivity() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -349,12 +297,8 @@ func (m *progressMonitor) noteToolActivity() {
 	}
 }
 
-// checkToolHang reports the hung in-flight tool call when it has produced
-// zero events for the whole toolHang window. Latched once per monitor
-// (= per execution); a disabled window (<= 0) never trips. The second and
-// later calls after a trip return ("", false) — the still-stuck worker
-// escalates through the existing probe → liveness_probe_no_response →
-// kill path, never through a second hang intervention.
+// checkToolHang reports the hung in-flight tool call when it has produced zero events for the whole
+// toolHang window.
 func (m *progressMonitor) checkToolHang() (string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -390,28 +334,8 @@ func appendInWindow(hist []time.Time, now, cutoff time.Time) []time.Time {
 	return append(kept, now)
 }
 
-// toolUseSignature builds the repetition signature for a tool event: the
-// tool name plus a stable, canonical marshal of its arguments. Repeating
-// the exact same call (same tool, same args) is the loop signal.
-//
-// opencode's `--format json` emits tool parts with args nested under
-// part.state.input (e.g. state.input.command for bash), NOT under a
-// top-level part["args"] (progress.go's legacy tool_call case read the
-// nonexistent top-level field, so every call of a tool collapsed to one
-// signature like "bash|null"). LegacyEventFromBus (session.go) maps these
-// to the "tool_use" event type. Fall back to the whole state when input is
-// absent so signature extraction degrades gracefully.
-//
-// Go's encoding/json marshal of a map[string]any sorts map keys, so equal
-// args maps produce identical bytes regardless of insertion order — this
-// gives stable signatures for semantically identical calls.
-//
-// Conservative normalization (design A, gated through result-aware B):
-// the signature is normalized ONLY for ERRORING calls, so a worker looping
-// on a blocked write (each retry carrying different volatile content/path)
-// collapses to a stable signature while genuinely distinct legitimate
-// commands stay distinct. Successful calls keep the exact full-args
-// signature (never collapsed) and reset the counter state in observe().
+// Conservative normalization (design A, gated through result-aware B): the signature is normalized
+// ONLY for ERRORING calls.
 func toolUseSignature(part map[string]any) string {
 	tool, _ := part["tool"].(string)
 	args := part["state"]
@@ -479,25 +403,16 @@ func fingerprint(s string) string {
 	return fmt.Sprintf("%x", h.Sum32())
 }
 
-// scrubCommand removes volatile tokens from a bash command so a worker
-// retrying the same command with different timestamps/temp IDs collapses to
-// one signature, while distinct commands (git status vs git log) stay
-// distinct. It replaces long hex/digit runs and common volatile patterns
-// with a placeholder.
+// scrubCommand removes volatile tokens from a bash command so a worker retrying the same command
+// with different timestamps/temp IDs collapses to one signature.
 func scrubCommand(cmd string) string {
 	re := regexp.MustCompile(`(?:[0-9a-fA-F]{8,}|[0-9]{4,}|/tmp/[A-Za-z0-9._-]+)`)
 	return re.ReplaceAllString(cmd, "<vol>")
 }
 
-// run starts the background stall checker. It ticks every pollInterval
-// and, on the first tripped signal, calls onStall once with the reason.
-// A fatal stall ends monitoring (the subprocess is hard-killed). An
-// advisory stall (no_file_progress) keeps monitoring so the execution can
-// revive to healthy via onRecovered when the missing file progress resumes.
+// run starts the background stall checker.
 func (m *progressMonitor) run(ctx context.Context, onStall func(execID, reason string), onRecovered func(execID, recovered string)) {
-	// The tick interval is the SHORTEST ENABLED window, so a short window is
-	// never checked late. Disabled windows (<= 0) are skipped rather than being
-	// treated as "check every tick" — a poll of 0 would spin the checker.
+	// The tick interval is the SHORTEST ENABLED window, so a short window is never checked late.
 	poll := 30 * time.Second
 	if m.w.noProgress > 0 && m.w.noProgress < poll {
 		poll = m.w.noProgress
@@ -551,56 +466,26 @@ func (m *progressMonitor) check() string {
 		return ""
 	}
 	now := m.now()
-	// tool_hang (Tier A): an in-flight tool call with zero events for the
-	// whole window. ADVISORY and latched once (toolHangFired, never fired):
-	// the run's actuator aborts only the in-flight turn and redirects; a
-	// still-stuck worker escalates through the existing probe → kill
-	// path. Checked BEFORE no_progress so a hung tool redirects before
-	// silence kills. Disabled when the window is <= 0.
+	// tool_hang (Tier A): an in-flight tool call with zero events for the whole window.
 	if tool, ok := m.checkToolHangLocked(); ok {
 		return "stalled:tool_hang:" + tool
 	}
 	// no_progress: no step_finish (no token progress) within the window.
-	// Gated on `> 0`: an explicit 0 means the operator DISABLED this check, and
-	// without the guard `now.Sub(...) > 0` holds on every tick — a disabled
-	// check would fire instantly and kill every run.
 	if m.w.noProgress > 0 && now.Sub(m.lastStepFinish) > m.w.noProgress {
 		m.fired = true
 		return "stalled:no_progress"
 	}
 	// no_file_diff: no file modifications within the window.
-	// Skipped when noFileDiff is 0 or negative (disabled), because
-	// reviewers/QA workers may never write files.
-	//
-	// ADVISORY (not fatal): trips into the revivable `warned` state rather
-	// than `fired`. The subprocess is not killed and the execution is not
-	// failed — it gets a non-terminal `stalled` health notice and revives
-	// to healthy (checkRevival) once a file_diff arrives again. A reviewer
-	// or analyst may legitimately go long stretches without touching files
-	// while still producing output (observed: the SSE worker was flagged
-	// yet completed successfully).
 	if m.w.noFileDiff > 0 && now.Sub(m.lastFileDiff) > m.w.noFileDiff && !m.warned {
 		m.warned = true
 		return "stalled:no_file_progress"
 	}
-	// text_loop: text flowing but no meaningful action (tool call, file
-	// diff, step finish) within the window. Catches workers that talk
-	// forever ("but wait, let me reconsider…") without ever doing work.
-	//
-	// ADVISORY-first (nudge-first routing): the worker is generating text,
-	// so a nudge can reach it. The monitor keeps ticking so the session's
-	// onStall can nudge the live session; only after the nudge budget is
-	// spent (and the worker still hasn't broken the pattern) does the
-	// session escalate to a fatal kill + recovery.
+	// text_loop: text flowing but no meaningful action (tool call, file diff, step finish) within the
+	// window.
 	if m.w.textLoop > 0 && now.Sub(m.lastMeaningfulAction) > m.w.textLoop {
 		return "stalled:text_loop:You were talking in circles without making progress. On the next attempt, start fresh with a clear plan, make a concrete tool call or file edit within the first few turns."
 	}
-	// repetition: same tool_call signature repeated more than the
-	// threshold within the window.
-	//
-	// ADVISORY-first (nudge-first routing): same as text_loop — nudge the
-	// live session first, escalate to fatal only after the nudge budget is
-	// spent.
+	// repetition: same tool_call signature repeated more than the threshold within the window.
 	if m.w.repetitionN > 0 {
 		cutoff := now.Add(-m.w.repetitionW)
 		// Tier 1: error-status repeats (result-aware).
@@ -611,16 +496,9 @@ func (m *progressMonitor) check() string {
 				return fmt.Sprintf("stalled:repetition:%s", sig)
 			}
 		}
-		// Tier 2 (D5): ANY-status identical signature — a completed-call
-		// loop (repeatedly re-reading the same file, re-issuing the same
-		// write) is invisible to tier 1 (only erroring calls count) but
-		// must still trip advisory → hard stop. Reset-on-progress (a
-		// file_diff / step_finish between identical calls clears the
-		// history) keeps legitimate long steps from false-positiving.
-		// The threshold for tier 2 is deliberately a bit higher than
-		// tier 1's so a normal build-iterate loop (which legitimately
-		// repeats the same bash/grep calls with different results) is
-		// not flagged at the same count.
+		// Tier 2 (D5): ANY-status identical signature — a completed-call loop (repeatedly re-reading the
+		// same file, re-issuing the same write) is invisible to tier 1 (only erroring calls count) but
+		// must.
 		tier2N := m.w.repetitionN * 2
 		if tier2N < m.w.repetitionN+3 {
 			tier2N = m.w.repetitionN + 3
@@ -647,16 +525,8 @@ func trimWindow(ts []time.Time, cutoff time.Time) []time.Time {
 	return kept
 }
 
-// checkRevival returns a revival reason (and clears the `warned` state)
-// when an active advisory stall has cleared — i.e. the missing progress
-// signal arrived before the execution terminated. Currently the only
-// advisory signal is no_file_progress, which clears when a file_diff event
-// arrives again: lastFileDiff only advances on file_diff events, so the
-// "back within the window" condition is exactly "a diff landed since the
-// trip". The caller (run) turns this into an OnRecovered callback so the
-// reconciler flips the execution back to healthy and clears the stall
-// notice, while status stays running and the terminal OnResult still
-// decides success/failure.
+// checkRevival returns a revival reason (and clears the `warned` state) when an active advisory
+// stall has cleared — i.e. the missing progress signal arrived before the execution terminated.
 func (m *progressMonitor) checkRevival() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -680,11 +550,7 @@ func (m *progressMonitor) close() {
 	}
 }
 
-// revive clears an active advisory stall (warned) and resets every stall
-// timestamp to now. Called when a liveness probe reply proves the worker
-// is alive even though it has not touched files — the probe response IS
-// the progress signal, so the advisory notice clears and the file window
-// restarts. Returns whether an advisory stall was actually active.
+// revive clears an active advisory stall (warned) and resets every stall timestamp to now.
 func (m *progressMonitor) revive() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -742,25 +608,8 @@ func isFatalStall(reason string) bool {
 	return strings.HasPrefix(reason, "stalled:no_progress")
 }
 
-// wallClockDeadline parses the execution's merged budget JSON
-// (budget_overrides after tenant-default merge, docs/05 §8) and returns the
-// absolute deadline for the execution. Returns ok=false if no wall-clock
-// budget is set (no deadline). The deadline is enforced via
-// context.WithDeadline in Start; when it hits, the subprocess is killed
-// (exec.CommandContext) and OnResult(false) fires → recovery with reason
-// "wall_clock_timeout" (docs/06 §2 budget overrun trigger).
-//
-// Precedence (applied before this call, in the reconciler): worker
-// budget_overrides.wall_clock_seconds → tenant
-// default_budget_overrides.wall_clock_seconds. UNSET → NO DEADLINE: the old
-// 3600s backstop killed working sessions mid-deliverable on a number nobody
-// had set, so a hard stop is now an explicit decision. An explicit 0 in the
-// worker OR the tenant default also means no deadline (the historical opt-out,
-// still honoured). A wedged session is caught by the stall monitor, whose
-// windows are activity-based. ORCHICON_STALL_WALL_CLOCK_SECONDS overrides both.
-//
-// The wall-clock dimension shares the single budget parse (parseBudgetSpec)
-// with the compaction gate so both read the same merged budget.
+// wallClockDeadline parses the execution's merged budget JSON (budget_overrides after
+// tenant-default merge, docs/05 §8) and returns the absolute deadline for the execution.
 func wallClockDeadline(ctx context.Context, budgets []byte) (time.Time, bool) {
 	if v := os.Getenv("ORCHICON_STALL_WALL_CLOCK_SECONDS"); v != "" {
 		if d, err := time.ParseDuration(v + "s"); err == nil && d > 0 {

@@ -28,9 +28,6 @@ import (
 )
 
 // closedSocketPath returns a path inside a fresh temp dir that NOBODY is listening on.
-//
-// The daemon is "missing" in the way production sees it: the path may not exist at all, which is also the
-// Windows case (nothing ever bound it). Dialling it fails at connect.
 func closedSocketPath(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp(os.TempDir(), "orchicon-nodaemon-")
@@ -139,9 +136,8 @@ func TestALiveDaemonAnswerIsNotRewritten(t *testing.T) {
 				defer c.Close()
 				buf := make([]byte, 1024)
 				_, _ = c.Read(buf)
-				// The body length must be the REAL byte count: a short Content-Length truncated the JSON
-				// mid-string and sent the reader down its raw-body fallback, which tested the fixture rather
-				// than the wrapper.
+				// The body length must be the REAL byte count: a short Content-Length truncated the JSON mid-string
+				// and sent the reader down its raw-body fallback.
 				const body = `{"error":"pull exploded"}`
 				_, _ = c.Write([]byte("HTTP/1.1 500 Internal Server Error\r\nContent-Length: " +
 					itoa(len(body)) + "\r\n\r\n" + body))

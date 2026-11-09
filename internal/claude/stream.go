@@ -65,20 +65,12 @@ type StreamEvent struct {
 	Subtype   string
 	SessionID string
 
-	// Text is the assistant text for this line: the whole text for an
-	// `assistant` message (all text blocks concatenated), or one delta for a
-	// `stream_event` text delta.
+	// Text is the assistant text for this line: the whole text for an `assistant` message (all text
+	// blocks concatenated), or one delta for a `stream_event` text delta.
 	Text string
 
-	// Reasoning is the assistant's THINKING content for this line — a
-	// `thinking_delta`'s text, or an `assistant` message's `thinking` blocks
-	// concatenated. It is kept SEPARATE from Text on purpose: reasoning is not
-	// prose the worker produced, it must never leak into the worker's reported
-	// output or its ORCHICON WORKER SUMMARY, and the transcript records it under
-	// its own part kind (db.SessionPartReasoning) so the UI renders it in a
-	// reasoning bubble rather than inline in the text.
-	//
-	// IsReasoning marks a line whose Text holds reasoning (a thinking delta).
+	// Reasoning is the assistant's THINKING content for this line — a `thinking_delta`'s text, or an
+	// `assistant` message's `thinking` blocks concatenated.
 	Reasoning   string
 	IsReasoning bool
 
@@ -92,28 +84,17 @@ type StreamEvent struct {
 	TotalCostUSD float64
 	NumTurns     int
 
-	// Usage carries the token counts decoded for this line. UsagePresent is
-	// true when a usage object was actually decoded (result / assistant /
-	// message_start / message_delta) so "no usage" is never mistaken for
-	// "zero usage". UsageIsAggregate is true ONLY for the terminal `result`
-	// line, whose usage is the authoritative TURN AGGREGATE. Per-message
-	// samples (assistant / message_start / message_delta) set it false so the
-	// mapper can accumulate them as a fallback WITHOUT ever summing them into
-	// the aggregate — that would double-count the turn.
+	// Usage carries the token counts decoded for this line. UsageIsAggregate is true ONLY for the
+	// terminal `result` line, whose usage is the authoritative TURN AGGREGATE.
 	Usage            Usage
 	UsagePresent     bool
 	UsageIsAggregate bool
-	// MessageID is the Anthropic message a per-message usage sample belongs
-	// to (empty when the wire carries none); repeated samples for one message
-	// are merged once by the mapper rather than summed.
+	// MessageID is the Anthropic message a per-message usage sample belongs to (empty when the wire
+	// carries none); repeated samples for one message are merged once by the mapper rather than summed.
 	MessageID string
 
-	// IsCompactBoundary marks a line reporting a context-compaction boundary
-	// (Claude Code's own auto-compact, or the boundary that follows the
-	// adapter's compact directive turn). Detection is tolerant by
-	// construction: an unknown system subtype is a no-op in ParseLine, so a
-	// CLI that renames the event degrades to "no boundary observed" rather
-	// than failing the session.
+	// IsCompactBoundary marks a line reporting a context-compaction boundary (Claude Code's own
+	// auto-compact, or the boundary that follows the adapter's compact directive turn).
 	IsCompactBoundary bool
 
 	// --- Control protocol (Type == "control_request") ---
@@ -150,10 +131,8 @@ type StreamEvent struct {
 	ControlSuggestions    []any
 	ControlBlockedPath    string
 	ControlDecisionReason string
-	// IsControlCancel marks a control_cancel_request: the CLI settling an
-	// in-flight control request (a pending can_use_tool after an interrupted
-	// turn, or one another client already answered). The Ask transport uses it
-	// to clear a consent card that is no longer answerable.
+	// IsControlCancel marks a control_cancel_request: the CLI settling an in-flight control request (a
+	// pending can_use_tool after an interrupted turn, or one another client already answered).
 	IsControlCancel bool
 
 	// Raw is the original JSON line, kept for the durable transcript.
@@ -166,15 +145,10 @@ func (e StreamEvent) IsToolPermissionAsk() bool {
 	return e.IsControlRequest && strings.EqualFold(e.ControlSubtype, "can_use_tool")
 }
 
-// CompactBoundarySubtypes are the system-message subtypes that report a
-// context compaction. Matched case-insensitively so a CLI that switches
-// between compact_boundary / compactBoundary still reports the boundary.
+// CompactBoundarySubtypes are the system-message subtypes that report a context compaction.
 var CompactBoundarySubtypes = []string{"compact_boundary", "compactboundary", "compact"}
 
-// ParseLine decodes one stdout line of the claude stream-json protocol into
-// a StreamEvent. An unknown/irrelevant shape yields a zero-value event with
-// only Type populated (never an error) so a CLI version that adds event
-// types cannot break the loop; only genuinely malformed JSON errors.
+// ParseLine decodes one stdout line of the claude stream-json protocol into a StreamEvent.
 func ParseLine(line []byte) (StreamEvent, error) {
 	var raw map[string]any
 	if err := json.Unmarshal(line, &raw); err != nil {
@@ -206,10 +180,7 @@ func ParseLine(line []byte) (StreamEvent, error) {
 		ev.IsControlCancel = true
 		ev.ControlRequestID = strField(raw, "request_id")
 	case "system":
-		// A compaction boundary is a healthy, forward-progress event (the
-		// transcript shrank in place). Everything else under "system" is
-		// handled by the mapper (init / session identity) and stays a no-op
-		// here.
+		// A compaction boundary is a healthy, forward-progress event (the transcript shrank in place).
 		sub := strings.ToLower(ev.Subtype)
 		for _, want := range CompactBoundarySubtypes {
 			if sub == want {
@@ -233,17 +204,7 @@ func ParseLine(line []byte) (StreamEvent, error) {
 				ev.Type = "text_delta"
 				ev.Text = strField(delta, "text")
 			case "thinking_delta":
-				// ASSISTANT REASONING. Anthropic streams extended thinking as
-				// `thinking_delta`, and the text rides `delta.thinking` — NOT
-				// `delta.text`, the same asymmetry the native anthropic path
-				// handles (internal/orchicon/anthropic.go: "case
-				// \"thinking_delta\": return ReasoningDelta{Text: d.Thinking}").
-				// Reading `text` here would produce empty reasoning on every
-				// delta, silently.
-				//
-				// This was dropped ENTIRELY before: the switch admitted only
-				// text_delta, so a thinking block produced no event at all and
-				// executions showed no reasoning even when the model thought.
+				// ASSISTANT REASONING.
 				ev.Type = "thinking_delta"
 				ev.Text = strField(delta, "thinking")
 				ev.IsReasoning = true
@@ -251,11 +212,8 @@ func ParseLine(line []byte) (StreamEvent, error) {
 			// `signature_delta` carries the block's cryptographic signature —
 			// no displayable content, so it is deliberately not surfaced.
 		case "message_start":
-			// With --include-partial-messages each API message opens with a
-			// message_start carrying the SAME usage object as the eventual
-			// assistant message. Decode it as a PER-MESSAGE sample (not the
-			// authoritative aggregate) so the mapper can use it as a fallback
-			// without double-counting the terminal result.
+			// With --include-partial-messages each API message opens with a message_start carrying the SAME
+			// usage object as the eventual assistant message.
 			msg, _ := inner["message"].(map[string]any)
 			if msg != nil {
 				if u, ok := usageMap(msg["usage"]); ok {
@@ -264,13 +222,7 @@ func ParseLine(line []byte) (StreamEvent, error) {
 				}
 			}
 		}
-		// NOTE: message_delta is deliberately NOT decoded into usage. Its
-		// `usage` carries only the cumulative output_tokens and NO message id,
-		// so it cannot be merged into the in-flight message's accumulator and
-		// would double-count that message's output. The `assistant` message
-		// (which the partial-message stream always emits) reports the message's
-		// FINAL usage under the same message id, and the terminal `result`
-		// carries the authoritative turn aggregate.
+		// NOTE: message_delta is deliberately NOT decoded into usage.
 	case "assistant":
 		msg, _ := raw["message"].(map[string]any)
 		for _, block := range contentBlocks(msg) {
@@ -285,10 +237,7 @@ func ParseLine(line []byte) (StreamEvent, error) {
 					Input: in,
 				})
 			case "thinking", "redacted_thinking":
-				// A whole thinking block (no partial-delta stream, or a resumed
-				// session replaying one). `redacted_thinking` carries no text by
-				// design — the provider withheld it — so it contributes nothing
-				// and is only matched so it is not mistaken for prose.
+				// A whole thinking block (no partial-delta stream, or a resumed session replaying one).
 				if t := strField(block, "thinking"); t != "" {
 					ev.Reasoning += t
 					ev.IsReasoning = true
@@ -327,11 +276,7 @@ func ParseLine(line []byte) (StreamEvent, error) {
 	return ev, nil
 }
 
-// usageMap decodes an Anthropic `usage` object into the adapter Usage. The
-// key vocabulary is identical across the result / assistant / message_start
-// shapes (input_tokens, output_tokens, cache_read_input_tokens,
-// cache_creation_input_tokens). ok is false when the field is absent so a
-// caller never mistakes "no usage" for "zero usage".
+// usageMap decodes an Anthropic `usage` object into the adapter Usage.
 func usageMap(v any) (Usage, bool) {
 	u, ok := v.(map[string]any)
 	if !ok {
@@ -434,10 +379,8 @@ func floatField(m map[string]any, key string) float64 {
 	return f
 }
 
-// writtenFilesFromTool extracts the file paths a claude built-in file tool
-// touched, given the tool name and its input map. Write/Edit/MultiEdit/
-// NotebookEdit all carry a `file_path`. Any other tool yields nil. Tolerant:
-// a shape change yields nil rather than an error.
+// writtenFilesFromTool extracts the file paths a claude built-in file tool touched, given the tool
+// name and its input map.
 func writtenFilesFromTool(toolName string, input map[string]any) []string {
 	switch toolName {
 	case "Write", "Edit", "MultiEdit", "NotebookEdit", "ApplyPatch":

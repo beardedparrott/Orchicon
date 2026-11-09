@@ -29,9 +29,9 @@ func TestExitCauseNamesOnlyTransportFailures(t *testing.T) {
 	}
 }
 
-// waitErrProc is a ProcSession that dies with a TRANSPORT error and emits nothing at all: exactly the
-// shape of the reported failure, where the supervisor refused the dispatch and no child existed. It is
-// a separate type rather than a change to fakeProc so no existing test changes behaviour.
+// waitErrProc is a ProcSession that dies with a TRANSPORT error and emits nothing at all: exactly
+// the shape of the reported failure, where the supervisor refused the dispatch and no child
+// existed.
 type waitErrProc struct {
 	err error
 }
@@ -47,10 +47,7 @@ func (p *waitErrProc) Signal(string) error   { return nil }
 func (p *waitErrProc) Wait() (int, error)    { return 1, p.err }
 func (p *waitErrProc) Close() error          { return nil }
 
-// THE REPORTED MESSAGE, FIXED. The cause was in hand at every layer — the supervisor emitted it, the
-// proc stored it — and the operator was shown "exited without a terminal result message (exit code 1);
-// the CLI emitted no stderr at all before exiting". "The CLI emitted no stderr" is what sent the
-// investigation to mounts and credentials; the CLI had never started.
+// THE REPORTED MESSAGE, FIXED.
 func TestTransportErrorSurvivesIntoTheFailureMessage(t *testing.T) {
 	cause := errors.New("runtime stdio: stdio argv[0] not allowlisted: C:\\Users\\justi\\claude.exe")
 	h := newHarness(t, func() *fakeProc { return newFakeProc() })

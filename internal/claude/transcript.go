@@ -49,12 +49,6 @@ func ClaudeProjectsDir() string {
 }
 
 // claudeSessionHasTranscript reports whether the CLI has a transcript for sid.
-//
-// Any project directory counts (see the file header): the id is what resumes, not
-// the path. An unreadable or absent projects dir reports false, which makes the
-// caller treat the session as NEW — the safe direction, because `--session-id` on
-// a session that does exist is the silent failure, while `--session-id` on one
-// that does not is exactly right.
 func claudeSessionHasTranscript(sid string) bool {
 	sid = strings.TrimSpace(sid)
 	if sid == "" {

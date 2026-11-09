@@ -1,13 +1,6 @@
 package opencode
 
 // config_profile_test.go — THE TWO PROFILES.
-//
-// config_permission_test.go (untouched) remains the WORKER regression net: it
-// asserts the worker denies by name. This file asserts the other half — that
-// the worker output is byte-for-byte what it was before the split, that the
-// zero value still selects it, and that the interactive profile is what the Ask
-// serve needs (allows the filesystem, asks on writes, keeps the never-allow
-// class, and does NOT inherit the worker-only composite read/grep deny).
 
 import (
 	"bytes"
@@ -43,10 +36,7 @@ func permissionSubtree(t *testing.T, o ConfigOptions) []byte {
 	return b
 }
 
-// THE WORKER PATH IS UNCHANGED, PINNED BYTE-FOR-BYTE. The interactive profile
-// exists so Ask stops living in the worker sandbox; the sandbox an execution
-// gets must not move by a single byte, or every dispatched worker inherits a
-// permission change nobody asked for.
+// THE WORKER PATH IS UNCHANGED, PINNED BYTE-FOR-BYTE.
 func TestWorkerPermissionRulesGolden(t *testing.T) {
 	got := permissionSubtree(t, ConfigOptions{})
 	if *updateGolden {
@@ -68,9 +58,7 @@ func TestWorkerPermissionRulesGolden(t *testing.T) {
 	}
 }
 
-// THE DEFAULT IS EXPLICITLY THE WORKER. The zero value and an unrecognised
-// value must both select the worker rules: the profile is opted INTO, so a
-// missing or misspelled one fails closed rather than widening a session.
+// THE DEFAULT IS EXPLICITLY THE WORKER.
 func TestDefaultProfileIsWorker(t *testing.T) {
 	marshal := func(p PermissionProfile) []byte {
 		t.Helper()
@@ -88,9 +76,8 @@ func TestDefaultProfileIsWorker(t *testing.T) {
 		t.Errorf("an unrecognised profile did not fall back to the worker profile:\nzero:  %s\nbogus: %s", zero, marshal(PermissionProfile("bogus")))
 	}
 
-	// ...and the same at the document level: an unset profile produces the
-	// identical injected config as an explicit worker one, and a DIFFERENT one
-	// from the interactive profile.
+	// ...and the same at the document level: an unset profile produces the identical injected config as
+	// an explicit worker one, and a DIFFERENT one from the interactive profile.
 	unset := BuildConfigContent(ConfigOptions{SkipUserMCP: true})
 	explicit := BuildConfigContent(ConfigOptions{SkipUserMCP: true, PermissionProfile: ProfileWorker})
 	if unset != explicit {

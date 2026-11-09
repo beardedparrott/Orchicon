@@ -95,10 +95,6 @@ func TestTheHostServeDeliversTheFRESHCredentialFromARealStore(t *testing.T) {
 }
 
 // TestTheHostServeFindsTheStoreFromHomeNotFromTheDataDir is the one-line cause, pinned directly.
-//
-// The resolver takes HOME and appends `.local/share/opencode`. Passing the data dir instead doubles the
-// suffix, so the store is never found. This asserts the real resolver against a real store, which is the
-// only shape of test that can tell the two apart.
 func TestTheHostServeFindsTheStoreFromHomeNotFromTheDataDir(t *testing.T) {
 	home := t.TempDir()
 	writeOpencodeStore(t, home, map[string]string{"deepseek": "DS-KEY"}, map[string]int64{"deepseek": 1})
@@ -128,15 +124,6 @@ func credentialEnvFor(base string) ([]string, []string) {
 }
 
 // TestAnEmptyResolutionAgainstAPresentStoreIsLoud pins the diagnosability half of the incident.
-//
-// The reported failure was SILENT: the resolver read a doubled path, found nothing, and reported nothing
-// undeliverable — because there was nothing to judge. From the outside that is indistinguishable from a host
-// that never signed in to opencode, so the only symptom was an expired-key error at the model call and no line
-// anywhere naming credentials. The operator found the cause, not the logs.
-//
-// The decision is a pure function so the three cases stay distinguishable: "nothing to deliver" must stay
-// quiet, "there IS a store and we resolved nothing from it" must be loud, and a partial delivery is already
-// covered by its own warning.
 func TestAnEmptyResolutionAgainstAPresentStoreIsLoud(t *testing.T) {
 	cases := []struct {
 		name         string

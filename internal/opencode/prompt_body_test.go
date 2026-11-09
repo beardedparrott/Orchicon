@@ -56,11 +56,6 @@ type capturedReq struct {
 }
 
 // promptRequest returns the request that carried the MESSAGE.
-//
-// It matches the prompt ROUTE rather than "the first POST", and that distinction is not pedantry: on
-// v2 the model is set with a POST before the prompt, so returning the first POST handed back the
-// wrong request and made the ordering assertion below compare a request with itself. A helper that
-// answers the wrong question makes the test lie.
 func promptRequest(t *testing.T, seen []capturedReq) capturedReq {
 	t.Helper()
 	for _, r := range seen {
@@ -131,15 +126,12 @@ func TestV2PromptUsesTopLevelText(t *testing.T) {
 			"saw (Missing key at [\"text\"]); got %v", got.body)
 	}
 	// `parts` must NOT be sent: the schema is additionalProperties:false, and an unknown key is
-	// silently DROPPED by the server rather than rejected, so a body that still carried `parts`
-	// would look accepted while carrying nothing.
+	// silently DROPPED by the server rather than rejected.
 	if _, ok := got.body["parts"]; ok {
 		t.Errorf("the v2 body must NOT carry `parts` — v2 has no such field and would drop it "+
 			"silently; got %v", got.body)
 	}
-	// AND IT MUST ASK TO STEER. Omitting `delivery` leaves the serve to pick, and what it picked was
-	// the behaviour the operator reported: the message was not seen until the turn was over. "steer"
-	// runs the input at the NEXT STEP BOUNDARY of the running turn; "queue" parks it behind the turn.
+	// AND IT MUST ASK TO STEER.
 	if got.body["delivery"] != "steer" {
 		t.Errorf("the v2 prompt body must carry delivery:\"steer\" so a mid-turn message joins the "+
 			"running turn at its next step rather than queueing until the turn ends; got %v",
@@ -230,9 +222,8 @@ func TestV2FilesUseTheUriShape(t *testing.T) {
 	}
 }
 
-// TestV1APIPromptSteersWithNestedBody pins the 1.x steer wire, measured against a real 1.19.4 serve:
-// the content nests under `prompt`, `delivery` is its SIBLING, and the model is set on the SESSION
-// because this body has no model field (the serve's own reply echoes {"prompt":{"text":…}} alone).
+// TestV1APIPromptSteersWithNestedBody pins the 1.x steer wire, measured against a real 1.19.4
+// serve: the content nests under `prompt`, `delivery` is its SIBLING.
 func TestV1APIPromptSteersWithNestedBody(t *testing.T) {
 	var seen []capturedReq
 	srv := captureServer(t, &seen)
@@ -298,10 +289,8 @@ func aWebAppServer(t *testing.T, seen *[]capturedReq) *httptest.Server {
 	return srv
 }
 
-// TestV1APIPromptFallsBackToPromptAsyncWhenTheRouteIsAbsent is the safety net that makes the version
-// floor non-critical: if a 1.x serve does NOT carry the /api prompt route, its catch-all answers 200
-// with HTML. Treating that as success would SILENTLY DROP the operator's message, so the reply is
-// decoded and anything that is not a prompt admission falls back to prompt_async.
+// TestV1APIPromptFallsBackToPromptAsyncWhenTheRouteIsAbsent is the safety net that makes the
+// version floor non-critical: if a 1.x serve does NOT carry the /api prompt route.
 func TestV1APIPromptFallsBackToPromptAsyncWhenTheRouteIsAbsent(t *testing.T) {
 	var seen []capturedReq
 	srv := aWebAppServer(t, &seen)

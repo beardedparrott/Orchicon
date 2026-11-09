@@ -1,21 +1,7 @@
 package claude
 
-// Parity matrix (consolidated) — one subtest per acceptance-criterion surface
-// of the claude → ExecutionCallbacks normalization layer, driven end to end
-// through Bridge.Start with the fake ProcSession and CANNED stream-json
-// fixtures. There is no live Claude API session by default (the live smoke
-// lives in live_smoke_test.go behind ORCHICON_TEST_LIVE_CLAUDE=1).
-//
-// It mirrors internal/orchicon/parity_matrix_test.go: every acceptance
-// surface is asserted in ONE named matrix so the reviewer / QA can point at a
-// single place. The reference for "renders identically" is
-// internal/opencode/adapter.go:1041-1073 (write → artifact, todowrite →
-// snapshot, fileEdits with the canonical name).
-//
-// NOTE on reading the recorder: the callbacks are invoked from the session's
-// run goroutine, so every assertion reads a LOCKED snapshot (`rec.snap()` or
-// the locked count/slice accessors). Reading the fields directly would be a
-// genuine data race (and `go test -race` catches it).
+// Parity matrix (consolidated) — one subtest per acceptance-criterion surface of the claude →
+// ExecutionCallbacks normalization layer.
 
 import (
 	"context"
@@ -46,9 +32,8 @@ const (
 	pmEditRes  = `{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"e-1","content":"The file has been updated","is_error":false}]}}`
 )
 
-// ledgerStore is the durable half of the file-edit ledger (the server wires a
-// Postgres-backed store; this captures the rows instead) so the parity test
-// can drive the REAL fileedit.Service for the claude delta.
+// ledgerStore is the durable half of the file-edit ledger (the server wires a Postgres-backed
+// store; this captures the rows instead) so the parity test can drive the REAL fileedit.Service.
 type ledgerStore struct {
 	mu   sync.Mutex
 	rows []*db.FileEditLedgerRow
@@ -86,11 +71,7 @@ func (s *ledgerStore) snapshot() []*db.FileEditLedgerRow {
 }
 
 // observerLedgerHook is the server's BUILT-IN write/edit ledger branch
-// (internal/server/fileedit_hook.go): a claude delta carries no `file_edits`
-// engine payload, so the hook falls through to the plane-side observer, which
-// diffs the file against its last-known content. Wired over a REAL
-// fileedit.Observer + Service here so the parity test exercises the same
-// pipeline the server does rather than a mirror of it.
+// (internal/server/fileedit_hook.go): a claude delta carries no `file_edits` engine payload.
 func observerLedgerHook(dir string, svc *fileedit.Service) FileEditHookFunc {
 	o := fileedit.NewObserver(dir)
 	return func(ctx context.Context, execID, tenantID, _, toolName string, input map[string]any, _ string) {
@@ -105,9 +86,8 @@ func observerLedgerHook(dir string, svc *fileedit.Service) FileEditHookFunc {
 	}
 }
 
-// pmSession starts a claude execution against a fake proc, wiring the
-// recorder into every optional dependency the mapper consumes (transcript,
-// ledger, usage).
+// pmSession starts a claude execution against a fake proc, wiring the recorder into every optional
+// dependency the mapper consumes (transcript, ledger, usage).
 func pmSession(t *testing.T, fp *fakeProc, manifest scheduler.ExecutionManifest, rec *captureCallbacks) <-chan error {
 	t.Helper()
 	h := newHarness(t, func() *fakeProc { return fp })
@@ -166,9 +146,8 @@ func TestClaudeParityMatrix(t *testing.T) {
 		}
 	})
 
-	// todo panel: the TodoWrite round updates the tool surface AND leaves a
-	// durable {"part":…} envelope the shared todos parser reads, plus the
-	// DB-less sidecar snapshot.
+	// todo panel: the TodoWrite round updates the tool surface AND leaves a durable {"part":…} envelope
+	// the shared todos parser reads, plus the DB-less sidecar snapshot.
 	t.Run("todo_panel", func(t *testing.T) {
 		fp := newFakeProc()
 		rec := &captureCallbacks{}
@@ -201,9 +180,9 @@ func TestClaudeParityMatrix(t *testing.T) {
 		}
 	})
 
-	// file diffs: write + edit both reach OnWrittenFiles exactly once, and the
-	// SHARED ledger hook is called with the canonical name + the filePath key
-	// it actually reads (the diff pipeline's ingestion point).
+	// file diffs: write + edit both reach OnWrittenFiles exactly once, and the SHARED ledger hook is
+	// called with the canonical name + the filePath key it actually reads (the diff pipeline's
+	// ingestion.
 	t.Run("file_diffs", func(t *testing.T) {
 		fp := newFakeProc()
 		rec := &captureCallbacks{}
@@ -232,12 +211,8 @@ func TestClaudeParityMatrix(t *testing.T) {
 		}
 	})
 
-	// file diffs (real ledger): the SAME diff pipeline the server wires — a
-	// real fileedit.Observer over the execution dir under a real
-	// fileedit.Service — must record a row for a claude Write's ABSOLUTE
-	// file_path (claude's real shape) once the tool_result lands. This is the
-	// execution view's file-diff pane data source; an empty ledger is a blank
-	// diff pane.
+	// file diffs (real ledger): the SAME diff pipeline the server wires — a real fileedit.Observer over
+	// the execution dir under a real fileedit.Service.
 	t.Run("file_diffs_ledger", func(t *testing.T) {
 		fp := newFakeProc()
 		rec := &captureCallbacks{}
@@ -310,9 +285,8 @@ func TestClaudeParityMatrix(t *testing.T) {
 		}
 	})
 
-	// tool errors: a tool_result with is_error surfaces on the tool-call
-	// channel with the error text, and the durable part carries both
-	// state.status="error" and a top-level "error" (there is no OnError).
+	// tool errors: a tool_result with is_error surfaces on the tool-call channel with the error text,
+	// and the durable part carries both state.status="error" and a top-level "error" (there is no.
 	t.Run("tool_errors", func(t *testing.T) {
 		fp := newFakeProc()
 		rec := &captureCallbacks{}
@@ -382,9 +356,8 @@ func TestClaudeParityMatrix(t *testing.T) {
 		}
 	})
 
-	// stall (fatal): total stdout silence past the no-progress window is a
-	// hard hang — OnStall(reason, fatal=true), the child is SIGINTed, and the
-	// execution ends with OnResult(false).
+	// stall (fatal): total stdout silence past the no-progress window is a hard hang — OnStall(reason,
+	// fatal=true), the child is SIGINTed, and the execution ends with OnResult(false).
 	t.Run("stall_fatal", func(t *testing.T) {
 		fp := newFakeProc()
 		rec := &captureCallbacks{}
@@ -418,9 +391,8 @@ func TestClaudeParityMatrix(t *testing.T) {
 		}
 	})
 
-	// stall (advisory) + recovery: activity with no file write trips the
-	// ADVISORY notice; a later file write clears it via OnRecovered and the
-	// execution still succeeds.
+	// stall (advisory) + recovery: activity with no file write trips the ADVISORY notice; a later file
+	// write clears it via OnRecovered and the execution still succeeds.
 	t.Run("stall_advisory_recovered", func(t *testing.T) {
 		fp := newFakeProc()
 		rec := &captureCallbacks{}
@@ -435,10 +407,8 @@ func TestClaudeParityMatrix(t *testing.T) {
 		}
 		fp.push(pmWrite)
 		waitFor(t, func() bool { return rec.recoveredCount() == 1 }, "recovery")
-		// The recovery label is the RECOVERY signal, byte-identical to what BOTH
-		// other bridges emit for the same cleared trip (opencode/progress.go and
-		// the native engine's internal/orchicon/progress.go both report
-		// "recovered:no_file_progress") — never the stall reason.
+		// The recovery label is the RECOVERY signal, byte-identical to what BOTH other bridges emit for the
+		// same cleared trip (opencode/progress.go and the native engine's internal/orchicon/progress.go.
 		if got := rec.recoveredSnapshot(); got[0] != recoveredNoFilePrefix {
 			t.Errorf("OnRecovered = %v, want %q", got, recoveredNoFilePrefix)
 		}
@@ -452,9 +422,8 @@ func TestClaudeParityMatrix(t *testing.T) {
 		}
 	})
 
-	// defensive inputs: claude's repaired key names (id / task_id /
-	// active_form / activeForm) and unknown status strings must not panic and
-	// must still produce the canonical todo shape.
+	// defensive inputs: claude's repaired key names (id / task_id / active_form / activeForm) and
+	// unknown status strings must not panic and must still produce the canonical todo shape.
 	t.Run("defensive_inputs", func(t *testing.T) {
 		fp := newFakeProc()
 		rec := &captureCallbacks{}
@@ -479,11 +448,8 @@ func TestClaudeParityMatrix(t *testing.T) {
 		}
 	})
 
-	// ask_coupling: the bridge is Ask-capable as well as worker-execution
-	// capable, so the dispatcher can route an Ask turn to it. This assertion used
-	// to require the OPPOSITE (Ask-on-claude was an explicit follow-up); the
-	// requirement changed and the assertion flipped with it, rather than being
-	// dropped.
+	// ask_coupling: the bridge is Ask-capable as well as worker-execution capable, so the dispatcher
+	// can route an Ask turn to it.
 	t.Run("ask_coupling", func(t *testing.T) {
 		b := New(quietLogger())
 		if _, ok := any(b).(scheduler.ChatTurnClient); !ok {
@@ -491,11 +457,7 @@ func TestClaudeParityMatrix(t *testing.T) {
 		}
 	})
 
-	// ask_attachments: the second capability Ask routing hinges on. An Ask turn
-	// carrying an image type-asserts SendTurnMessageWithAttachments off the
-	// bridge and FAILS AT DISPATCH without it, so this is pinned for the same
-	// reason as ask_coupling: an assertion that lives only as a type-assert in
-	// another package can be dropped by a refactor with nothing failing.
+	// ask_attachments: the second capability Ask routing hinges on.
 	t.Run("ask_attachments", func(t *testing.T) {
 		b := New(quietLogger())
 		if _, ok := any(b).(scheduler.SendTurnMessageWithAttachments); !ok {

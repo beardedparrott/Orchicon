@@ -44,17 +44,7 @@ type ProcSession interface {
 	Close() error
 }
 
-// exitCause renders a TRANSPORT-level failure so it reaches the operator. It returns "" for an
-// ordinary non-zero exit, whose code the caller already reports.
-//
-// WHY IT EXISTS — the reported Windows failure. The supervisor answered the dispatch with a precise
-// refusal (`{event:"error", error:"stdio argv[0] not allowlisted: C:\\Users\\...\\claude.exe"}`)
-// because no child was ever spawned. containerProc stored it on the proc, and the session loop then did
-// `c, _ := p.Wait()` — DISCARDING it — and reported "exited without a terminal result message (exit
-// code 1); the CLI emitted no stderr at all before exiting". Every clause of that sentence was true and
-// the sentence still sent the investigation in the wrong direction: "the CLI emitted no stderr" reads
-// as a CLI problem, when the CLI had never started. A transport error is the one class of failure the
-// child cannot report for itself, so it must never be dropped here.
+// exitCause renders a TRANSPORT-level failure so it reaches the operator.
 func exitCause(err error) string {
 	if err == nil {
 		return ""
@@ -75,17 +65,7 @@ type procSpec struct {
 	// ProjectDir is the project root (the guard/hook boundary).
 	ProjectDir string
 	Env        []string
-	// WorkflowRunID is the RUN whose runtime container this execution dispatches
-	// into. It is NOT the execution id, and the difference is load-bearing: the
-	// daemon resolves the container from a LEASE TABLE keyed by RUN id
-	// (daemonPool.containerForRun), so a request naming the execution id finds no
-	// container.
-	//
-	// Passing the wrong one does not fail fast, which is why it cost a dispatch:
-	// the daemon's not-found path could not deliver a response while the client
-	// streamed a body that never ends, and ResponseHeaderTimeout never starts for
-	// an unfinished body — so the call blocked INDEFINITELY. Observed live as an
-	// execution stuck in `dispatching` with zero tokens and no log line.
+	// WorkflowRunID is the RUN whose runtime container this execution dispatches into.
 	WorkflowRunID string
 }
 
@@ -94,13 +74,6 @@ type procSpec struct {
 type procFactory func(ctx context.Context, spec procSpec) (ProcSession, error)
 
 // stdioOpener is the slice of *runtime.Client this file needs.
-//
-// IT EXISTS SO THE WORKFLOW ID CAN BE PINNED BY A TEST. The container is leased
-// by RUN id, and naming the execution id instead made a live dispatch hang
-// forever — invisibly, because the daemon could not answer while the client
-// streamed a body that never ends and the transport cannot bound that. A test on
-// the SPEC alone does not catch it (the spec can be right while the call names the
-// wrong field), so the seam lets a fake record exactly which id was named.
 type stdioOpener interface {
 	Stdio(ctx context.Context, workflowID string, req runtime.StdioRequest) (*runtime.StdioSession, error)
 }

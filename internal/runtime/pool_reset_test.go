@@ -51,9 +51,8 @@ type resetHarness struct {
 	d   *Daemon
 	p   *daemonPool
 
-	// onResetCreate, when set, runs inside the createContainer stub for a RESET
-	// create (req.WorkflowID == ""). It is how TestCheckoutWithEmptyPoolCreates-
-	// FreshWithoutBlocking holds the reset mid-flight.
+	// onResetCreate, when set, runs inside the createContainer stub for a RESET create (req.WorkflowID
+	// == "").
 	onResetCreate func()
 }
 
@@ -194,11 +193,8 @@ func resetTestReq(workflowID string) CreateRequest {
 	}
 }
 
-// TestResetRemovesBeforeCreatingFresh is AC 1's hermetic proof: on release the
-// predecessor is removed BEFORE a fresh container is created, the replacement
-// carries the IDENTICAL create spec from a NEW name (so nothing of the previous
-// container's writable state can be reached), and its serve is up before it
-// enters the clean pool.
+// TestResetRemovesBeforeCreatingFresh is AC 1's hermetic proof: on release the predecessor is
+// removed BEFORE a fresh container is created.
 func TestResetRemovesBeforeCreatingFresh(t *testing.T) {
 	h := newResetHarness(t)
 	req := resetTestReq("run-A")
@@ -276,9 +272,9 @@ func TestResetRemovesBeforeCreatingFresh(t *testing.T) {
 	}
 }
 
-// TestResetWaitsForNameRelease pins D-4's bounded wait: podman can keep the name
-// reserved for a moment after `rm -f`, so the reset must poll until the engine
-// reports the container gone BEFORE it creates.
+// TestResetWaitsForNameRelease pins D-4's bounded wait: podman can keep the name reserved for a
+// moment after `rm -f`, so the reset must poll until the engine reports the container gone BEFORE
+// it.
 func TestResetWaitsForNameRelease(t *testing.T) {
 	h := newResetHarness(t)
 	h.pendingExists = 2 // the engine reports the name still present twice
@@ -319,9 +315,8 @@ func TestResetWaitsForNameRelease(t *testing.T) {
 	}
 }
 
-// TestResetDropsEntryWhenServeNotUsable pins D-6: a reset container whose serve
-// does not answer never enters the clean pool. Without the probe it would idle
-// there for the whole idle window and hand the next run a cold container.
+// TestResetDropsEntryWhenServeNotUsable pins D-6: a reset container whose serve does not answer
+// never enters the clean pool.
 func TestResetDropsEntryWhenServeNotUsable(t *testing.T) {
 	h := newResetHarness(t)
 	req := resetTestReq("run-A")
@@ -442,10 +437,7 @@ func TestConcurrentCheckoutsSameEnvGetDistinctContainers(t *testing.T) {
 	}
 }
 
-// TestCheckoutWithEmptyPoolCreatesFreshWithoutBlocking is AC 2: dispatch never
-// blocks on a reset. `release` returns immediately (the reset is off the
-// dispatch path), and a checkout that finds the pool empty creates fresh while
-// that reset is still in flight.
+// TestCheckoutWithEmptyPoolCreatesFreshWithoutBlocking is AC 2: dispatch never blocks on a reset.
 func TestCheckoutWithEmptyPoolCreatesFreshWithoutBlocking(t *testing.T) {
 	h := newResetHarness(t)
 	req := resetTestReq("run-A")
@@ -503,9 +495,8 @@ func TestCheckoutWithEmptyPoolCreatesFreshWithoutBlocking(t *testing.T) {
 	waitClean(t, h.p, key, 1)
 }
 
-// TestPoolWindowOverridesHonourEnv pins the two window knobs AC 5 names that no
-// other test asserted: the idle window (ORCHICON_RUNTIME_POOL_IDLE) and the cap
-// (ORCHICON_RUNTIME_POOL_CAP), with their documented defaults.
+// TestPoolWindowOverridesHonourEnv pins the two window knobs AC 5 names that no other test
+// asserted: the idle window (ORCHICON_RUNTIME_POOL_IDLE) and the cap (ORCHICON_RUNTIME_POOL_CAP).
 func TestPoolWindowOverridesHonourEnv(t *testing.T) {
 	d := &Daemon{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	p := newDaemonPool(d)

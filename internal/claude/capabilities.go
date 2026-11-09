@@ -35,22 +35,14 @@ import "encoding/json"
 // code-path change here — the same reason the native builder does.
 func BuildCapabilitiesJSON() string {
 	caps := map[string]any{
-		// The CLI's tool surface. Names are claude's own, not the native suite's:
-		// this describes what THIS adapter drives, and a consumer comparing kinds
-		// should see a difference rather than a copied list.
+		// The CLI's tool surface.
 		"tools":   []string{"Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "TodoWrite", "TaskCreate", "TaskUpdate"},
 		"context": []string{"file_index"},
 		"execution": []string{
 			"cancellation", "resume", "mid_run_injection", "context_compaction",
 		},
 		"telemetry": []string{"tool_calls_streamed", "file_diffs", "transcript_jsonl"},
-		// NB: these keys are the generic ones the control plane reads uniformly across
-		// kinds. Ask capability is NOT advertised here at all — it is derived from the
-		// live type assertion on the registered chat bridge (Dispatcher.ChatKinds), so
-		// there is nothing to claim in this document and nothing here that can go
-		// stale. The note that used to sit here said claude implemented no
-		// ChatTurnClient and so must not advertise Ask; that was wrong (see
-		// internal/claude/ask.go, which implements it, attachments included).
+		// NB: these keys are the generic ones the control plane reads uniformly across kinds.
 	}
 	b, _ := json.Marshal(caps)
 	return string(b)

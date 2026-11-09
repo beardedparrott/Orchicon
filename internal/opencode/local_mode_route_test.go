@@ -54,13 +54,9 @@ func TestRuntimeModeStillRoutes(t *testing.T) {
 	}
 }
 
-// TestEmptyExecutionModeRoutesToAContainerAndThatIsTheTrap states the zero-value
-// behaviour OUT LOUD, because it is the mechanism of the defect and the reason
-// startExecution must always COMPUTE the field rather than default it.
-//
-// It is written as an explicit expectation, not an endorsement: if this ever
-// flips to "empty means local", the defensive default in startExecution becomes
-// redundant — but nobody should change it without reading the incident above.
+// TestEmptyExecutionModeRoutesToAContainerAndThatIsTheTrap states the zero-value behaviour OUT
+// LOUD, because it is the mechanism of the defect and the reason startExecution must always
+// COMPUTE.
 func TestEmptyExecutionModeRoutesToAContainerAndThatIsTheTrap(t *testing.T) {
 	m := scheduler.ExecutionManifest{RuntimeWorkflowID: "run-1"} // ExecutionMode left empty
 	if !runtimeContainerRouteEnabled(true, m) {

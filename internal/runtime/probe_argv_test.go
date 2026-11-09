@@ -1,14 +1,6 @@
 package runtime
 
 // probe_argv_test.go — THE ACCEPTANCE PROBE for the --tmpfs grammar fix.
-//
-// It emits the daemon's REAL argv on stdout so it can be handed to the REAL engine
-// and actually create a container. The unit tests assert the strings; this exists
-// because the defect was precisely that a string can be wrong in a way only the
-// engine knows, and the previous suite could not see it.
-//
-// It is skipped unless ORCHICON_PROBE_ARGV=1, so it never slows the normal suite and
-// never depends on an engine being present in CI.
 
 import (
 	"fmt"

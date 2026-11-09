@@ -13,28 +13,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// FileEditHookFunc is the diff-pipeline ledger callback (the same shape the
-// opencode adapter's concrete SetFileEditHook takes). Declared as an ALIAS
-// (not a distinct named type) so the server's single newFileEditHook value
-// satisfies both adapters without a conversion. SetHostServe-style setters
-// are deliberately concrete (scheduler.ConfigurableBridge does not carry
-// them).
+// FileEditHookFunc is the diff-pipeline ledger callback (the same shape the opencode adapter's
+// concrete SetFileEditHook takes).
 type FileEditHookFunc = func(ctx context.Context, execID, tenantID, execDir, toolName string, input map[string]any, output string)
 
-// Bridge is the Claude Code adapter. It satisfies scheduler.AdapterBridge
-// (Start) plus the optional capabilities MessageInjector, SessionContinuer,
-// Aborter, LivenessReporter and ContextCompacter — and it DOES implement
-// ChatTurnClient (and its attachment-aware sender) in internal/claude/ask.go.
-// Dispatcher.ChatKinds() therefore includes "claude" and an Ask turn can be
-// routed to it. Ask-on-claude was once an explicit non-goal and the note that
-// said so is superseded; the compile-time assertions in ask.go are what define
-// the capable set now, so that is the place to read it from.
-//
-// Context compaction is Claude-NATIVE: claude has no in-container serve
-// (servePortFor("claude") == 0 and it is a MOUNT-only boot-profile entry),
-// so there is no summarize endpoint — CompactExecution writes an in-session
-// directive turn that makes the session summarize its own working context,
-// exactly the soft/lossy compact the opencode adapter's summarize produces.
+// Bridge is the Claude Code adapter.
 type Bridge struct {
 	log           *slog.Logger
 	usageRecorder scheduler.UsageRecorderFunc
@@ -45,29 +28,20 @@ type Bridge struct {
 	askFileEdits FileEditHookFunc
 	rt            *runtime.Client
 
-	// spawn is the process factory (local vs container). Overridable in
-	// tests so the core acceptance runs against a fake ProcSession with no
-	// real Anthropic spend.
+	// spawn is the process factory (local vs container).
 	spawnOverride procFactory
 
 	mu        sync.Mutex
 	live      map[string]*session // execID → live session
 	bySession map[string]string   // claude session id → owning execID
 
-	// Ask (interactive) conversations. SEPARATE from the execution registry
-	// above: an Ask session has no execution id, no manifest and no worktree, and
-	// its permission profile differs, so sharing the maps would conflate two
-	// session shapes that must not be confused (see ask.go).
+	// Ask (interactive) conversations.
 	askMu           sync.Mutex
 	askByConv       map[string]*askSession // conversationID → session
 	askBySID        map[string]*askSession // claude session id → session
 	askRootOverride string                 // test/server override for the ask dir
 
-	// mcpResolver resolves the MCP definitions a scope gets (the owner-scoped
-	// union). It is the SAME seam the native bridge consumes
-	// (orchicon.SetScopeResolver ← mcpsettings.NewResolver), so the adapters
-	// cannot drift about WHICH servers apply — only about how each renders them
-	// into its own config format (see mcpconfig.go).
+	// mcpResolver resolves the MCP definitions a scope gets (the owner-scoped union).
 	mcpResolver mcpclient.ScopeResolver
 	// mcpSecretResolver expands ${SECRET_NAME} refs in a spec's env/headers
 	// before the config is rendered. Nil passes them through (tests / degrade).
@@ -100,12 +74,6 @@ func (b *Bridge) SetRuntimeClient(rt *runtime.Client) { b.rt = rt }
 func (b *Bridge) SetFileEditHook(fn FileEditHookFunc) { b.fileEdits = fn }
 
 // SetDiffLedger implements scheduler.DiffLedgerSink.
-//
-// THE ASK HALF WAS MISSING HERE TOO. claude implements ChatTurnClient, so its
-// Ask conversations run through this bridge, and the Ask ledger hook was never
-// installed — those turns recorded nothing and the diff pane stayed empty. See
-// opencode's identical note; the cause is one wiring step applied to the native
-// bridge alone.
 func (b *Bridge) SetDiffLedger(execution, ask FileEditHookFunc) {
 	b.fileEdits = execution
 	if ask != nil {
@@ -116,9 +84,7 @@ func (b *Bridge) SetDiffLedger(execution, ask FileEditHookFunc) {
 // SetSpawnOverride replaces the process factory (tests only).
 func (b *Bridge) SetSpawnOverride(fn procFactory) { b.spawnOverride = fn }
 
-// Start implements scheduler.AdapterBridge. It spawns ONE long-lived claude
-// subprocess and drives it across the execution's turns; it returns when the
-// execution reaches a terminal turn (or fails).
+// Start implements scheduler.AdapterBridge.
 func (b *Bridge) Start(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest, callbacks scheduler.ExecutionCallbacks) error {
 	execID := exec.ID
 	if execID == "" {
@@ -144,9 +110,8 @@ func (b *Bridge) Start(ctx context.Context, exec db.ExecutionRow, manifest sched
 	return s.run(ctx)
 }
 
-// SendExecutionMessage implements scheduler.MessageInjector: it writes a
-// user turn onto the live session's stdin; the reply streams back on the
-// same session.
+// SendExecutionMessage implements scheduler.MessageInjector: it writes a user turn onto the live
+// session's stdin; the reply streams back on the same session.
 func (b *Bridge) SendExecutionMessage(ctx context.Context, execID, message string) error {
 	s := b.liveSession(execID)
 	if s == nil {
@@ -168,11 +133,8 @@ func (b *Bridge) AbortExecution(ctx context.Context, execID, reason string) erro
 	return nil
 }
 
-// CompactExecution implements scheduler.ContextCompacter: it compacts the
-// live claude session's working context in place (the Claude-native compact
-// directive turn — there is no serve to call, so no HTTP path exists here).
-// An execution with no live session gets an actionable error naming the
-// capability, never a panic (bridge contract rule).
+// CompactExecution implements scheduler.ContextCompacter: it compacts the live claude session's
+// working context in place (the Claude-native compact directive turn — there is no serve to call.
 func (b *Bridge) CompactExecution(ctx context.Context, execID, provider, model, remainingScope string) error {
 	s := b.liveSession(execID)
 	if s == nil {
@@ -209,9 +171,8 @@ func (b *Bridge) ContinueSession(ctx context.Context, opts scheduler.ContinueSes
 	}
 	manifest := b.followUpManifest(opts)
 	go func() {
-		// WithoutCancel strips the request's cancellation/deadline while
-		// keeping its values: an RPC returning (or a browser disconnect) must
-		// neither cancel the resumed session nor lose its reply.
+		// WithoutCancel strips the request's cancellation/deadline while keeping its values: an RPC
+		// returning (or a browser disconnect) must neither cancel the resumed session nor lose its reply.
 		detached := context.WithoutCancel(ctx)
 		cbs := &followUpCallbacks{log: b.log, execID: opts.ExecutionID}
 		if err := b.Start(detached, db.ExecutionRow{ID: opts.ExecutionID, TenantID: opts.TenantID}, manifest, cbs); err != nil {
@@ -221,10 +182,8 @@ func (b *Bridge) ContinueSession(ctx context.Context, opts scheduler.ContinueSes
 	return sid, nil
 }
 
-// followUpManifest reconstructs the execution manifest a resumed follow-up
-// needs: the SAME session identity (ContinueFromSessionID → `--resume`), the
-// follow-up as the turn's goal, and the caller's model/system prompt so the
-// follow-up runs with the worker's own configuration.
+// followUpManifest reconstructs the execution manifest a resumed follow-up needs: the SAME session
+// identity (ContinueFromSessionID → `--resume`), the follow-up as the turn's goal.
 func (b *Bridge) followUpManifest(opts scheduler.ContinueSessionOpts) scheduler.ExecutionManifest {
 	return scheduler.ExecutionManifest{
 		ExecutionID:           opts.ExecutionID,
@@ -237,10 +196,7 @@ func (b *Bridge) followUpManifest(opts scheduler.ContinueSessionOpts) scheduler.
 	}
 }
 
-// followUpCallbacks is the minimal ExecutionCallbacks sink for a resumed
-// follow-up session. The durable transcript is written by the session's own
-// mapper, so this sink exists to observe the outcome (and to keep the bridge
-// contract honest: Start always receives a callbacks value).
+// followUpCallbacks is the minimal ExecutionCallbacks sink for a resumed follow-up session.
 type followUpCallbacks struct {
 	log    *slog.Logger
 	execID string
@@ -324,9 +280,8 @@ func (b *Bridge) sessionOwner(sid string) string {
 	return b.bySession[sid]
 }
 
-// spawn selects the transport: a container child when the execution belongs
-// to a workflow run with a daemon wired and is not in local mode; otherwise
-// a host-local subprocess.
+// spawn selects the transport: a container child when the execution belongs to a workflow run with
+// a daemon wired and is not in local mode; otherwise a host-local subprocess.
 func (b *Bridge) spawn(ctx context.Context, spec procSpec, manifest scheduler.ExecutionManifest) (ProcSession, error) {
 	if b.spawnOverride != nil {
 		return b.spawnOverride(ctx, spec)
@@ -337,11 +292,8 @@ func (b *Bridge) spawn(ctx context.Context, spec procSpec, manifest scheduler.Ex
 	return newLocalProc(ctx, spec)
 }
 
-// isContainer reports whether this execution's child runs inside the run's
-// runtime container rather than as a host subprocess. It MUST agree with
-// spawn()'s transport selection: childEnv uses it to decide who owns the
-// OS-level guard shim (the supervisor inside the container, the adapter on the
-// host).
+// It MUST agree with spawn()'s transport selection: childEnv uses it to decide who owns the
+// OS-level guard shim (the supervisor inside the container, the adapter on the host).
 func (b *Bridge) isContainer(m scheduler.ExecutionManifest) bool {
 	if b.spawnOverride != nil {
 		return false
@@ -349,9 +301,8 @@ func (b *Bridge) isContainer(m scheduler.ExecutionManifest) bool {
 	return b.rt != nil && m.RuntimeWorkflowID != "" && m.ExecutionMode != db.ExecutionModeLocal
 }
 
-// parseModelRefLoose extracts the model segment from a model_ref, tolerating
-// structural-only parsing (nil registry) for refs whose provider is unknown
-// at this layer. Returns "" on error.
+// parseModelRefLoose extracts the model segment from a model_ref, tolerating structural-only
+// parsing (nil registry) for refs whose provider is unknown at this layer.
 func parseModelRefLoose(ref string) (string, error) {
 	mr, err := adapter.ParseModelRef(ref, nil)
 	if err != nil {

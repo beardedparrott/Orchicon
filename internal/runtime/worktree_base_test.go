@@ -8,26 +8,12 @@ import (
 	"testing"
 )
 
-// TestRunWorktreeBaseResolvesRunWorktree verifies the composite worktree MCP
-// base decision: a git-backed project resolves to the run's deterministic
-// worktree path (<projectDir>/.orchicon-worktrees/<runID>), while a non-repo
-// directory stays at the project dir (in-place execution). This mirrors the
-// WorktreeReconciler's isInsideWorkTree decision so the baked
-// ORCHICON_MCP_WORKTREE_DIR matches the execution cwd — the fix for the
-// batch tools writing into the main checkout instead of the run worktree.
+// TestRunWorktreeBaseResolvesRunWorktree verifies the composite worktree MCP base decision: a
+// git-backed project resolves to the run's deterministic worktree path.
 func TestRunWorktreeBaseResolvesRunWorktree(t *testing.T) {
 	ctx := context.Background()
 	base := t.TempDir()
-	// The "non-repo" half below needs a directory that is genuinely outside any
-	// git repository. t.TempDir() does NOT guarantee that: it follows GOTMPDIR,
-	// and the documented dev setup exports GOTMPDIR=$PWD/.gotmp — INSIDE this
-	// repo. Git would then discover the enclosing repo from the fixture, the
-	// project would correctly resolve to a worktree path, and the assertion would
-	// fail for a reason unrelated to the behavior under test.
-	//
-	// GIT_CEILING_DIRECTORIES stops git's upward repository search at the
-	// fixture, so the non-repo premise holds wherever the temp dir lives (the
-	// git calls are subprocesses and inherit this env).
+	// The "non-repo" half below needs a directory that is genuinely outside any git repository.
 	t.Setenv("GIT_CEILING_DIRECTORIES", base)
 
 	// Non-repo project: run proceeds in place at the project dir.
@@ -65,11 +51,9 @@ func TestRunWorktreeBaseResolvesRunWorktree(t *testing.T) {
 	}
 }
 
-// TestPoolEnvKeyServeConfigInvalidatesKey is covered by
-// TestPoolEnvKeyStabilityAndInvalidation; this is a focused regression for
-// the stale-serve-config reuse class (a warm container baked before the
-// plane channel / with the wrong worktree base must never be handed to a run
-// whose serve config differs).
+// TestPoolEnvKeyServeConfigInvalidatesKey is covered by TestPoolEnvKeyStabilityAndInvalidation;
+// this is a focused regression for the stale-serve-config reuse class (a warm container baked
+// before.
 func TestPoolEnvKeyServeConfigInvalidatesKey(t *testing.T) {
 	req := CreateRequest{Image: "img:v1", Mounts: []MountSpec{{Source: "/p", Dest: "/p"}}}
 	kNoCfg := poolEnvKey(req, "fp")

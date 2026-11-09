@@ -33,32 +33,11 @@ import (
 // an install in an unusual place, mirroring ORCHICON_OPENCODE_BIN.
 const ClaudeBinEnv = "ORCHICON_CLAUDE_BIN"
 
-// ClaudeBinaryName is the claude CLI's name ON A CONTAINER'S PATH, and it is the value a
-// container dispatch must put in argv[0].
-//
-// THE TWO TRANSPORTS NEED DIFFERENT ANSWERS, and conflating them is the reported Windows failure.
-// Claude is the only adapter on the daemon's duplex STDIO transport, and it used to send
-// ClaudeBinaryPath() — a path on the OPERATOR'S HOST — into a Linux container. The supervisor refuses
-// any argv[0] whose basename is not in runtimeBinAllowlist (internal/runtime/agent.go runStdio), and
-// the container's filepath.Base splits on "/" only, so the basename of `C:\Users\...\claude.exe` is
-// that whole string. The request was refused before any child was spawned: 0 tokens, ~400ms, and
-// "the CLI emitted no stderr at all" — because there was no CLI.
-//
-// The image supplies the CLI (deploy/runtime/Dockerfile.dev installs @anthropic-ai/claude-code
-// globally), so the container's answer is the bare name and PATH does the rest — the same shape
-// HookBinaryFor already uses for the hook.
+// ClaudeBinaryName is the claude CLI's name ON A CONTAINER'S PATH, and it is the value a container
+// dispatch must put in argv[0].
 const ClaudeBinaryName = "claude"
 
 // ClaudeBinaryFor returns the claude executable for a transport.
-//
-// IN A CONTAINER THE HOST'S INSTALL IS PREFERRED WHEN IT CAN RUN THERE, and the image's is the fallback.
-// The daemon mounts the resolved install at its IDENTICAL host path and the supervisor allowlists argv[0] by
-// BASENAME ("claude"), so an absolute host path is accepted — and the install is then the one the operator
-// authenticated, at the version they chose. See adapter.PreferHostAdapterInContainer for the gates; without
-// them a macOS host would hand a Darwin binary to a Linux container.
-//
-// The bare name is still the answer when there is nothing usable to prefer, which is the Windows case (a PE
-// cannot exec in a Linux container) and the stale-image case where the image is expected to supply it.
 func ClaudeBinaryFor(isContainer bool) string {
 	if !isContainer {
 		return ClaudeBinaryPath()
@@ -76,11 +55,6 @@ func claudeContainerArgv0(hostGOOS, hostBin string) string {
 }
 
 // claudeHostInstall is the host install a CONTAINER child can exec, or "" when there is none.
-//
-// IT ASKS adapter.ResolveBinary RATHER THAN ClaudeBinaryPath, because the answer must be the path the daemon
-// actually MOUNTS: adapterHostMounts derives its mounts from that same resolver, so the binary named here and
-// the directory mounted for it cannot disagree. ClaudeBinaryPath's bare-name fallback would otherwise read as
-// a host install.
 func claudeHostInstall() string {
 	home := strings.TrimSpace(os.Getenv("HOME"))
 	if home == "" {
@@ -115,14 +89,7 @@ var claudeDefaultRelativePath = []string{".local", "bin", "claude"}
 func ClaudeBinaryPath() string { return claudeBinaryPathFor(runtime.GOOS, os.Getenv) }
 
 // claudeBinaryPathFor is ClaudeBinaryPath with the platform and environment injected, matching
-// opencode's resolver and for the same reason: this is now platform-SPECIFIC behaviour, and a path that
-// can only be checked on Windows is a path that a Linux gate will never check.
-//
-// THE CANDIDATE LIST IS PLATFORM-AWARE. On POSIX it is the single `$HOME/.local/bin/claude` it always was.
-// On Windows it is the conventional install locations — WinGet's content-addressed package directory
-// (where the operator's own `claude.exe` was), %LOCALAPPDATA%\Programs, %ProgramFiles% — plus the POSIX
-// shape, because PATH alone cannot be relied on: the plane is a long-lived detached process and its PATH
-// is the one it STARTED with, so an install that happened afterwards is invisible to it.
+// opencode's resolver and for the same reason: this is now platform-SPECIFIC behaviour.
 func claudeBinaryPathFor(goos string, getenv func(string) string) string {
 	env := func(k string) string {
 		if getenv == nil {
@@ -143,13 +110,8 @@ func claudeBinaryPathFor(goos string, getenv func(string) string) string {
 		candidates = append(candidates, filepath.Join(append([]string{home}, claudeDefaultRelativePath...)...))
 	}
 	candidates = append(candidates, claudeWindowsCandidates(goos, getenv)...)
-	// THE AGNOSTIC ANSWER, AFTER the known shapes and BEFORE the bare-name fallback: ask the OS's PATH — read
-	// from its SOURCE, not this process's snapshot — so an install by any means we did not anticipate
-	// (Chocolatey, nix, a portable zip) is found rather than reported missing. This is the half that makes the
-	// resolver adapt to the machine instead of requiring the machine to match our list.
-	//
-	// It cannot offer a shim: internal/adapter's discovery filters .cmd/.bat/.ps1 itself, for the same reason
-	// the check below exists.
+	// THE AGNOSTIC ANSWER, AFTER the known shapes and BEFORE the bare-name fallback: ask the OS's PATH
+	// — read from its SOURCE, not this process's snapshot.
 	candidates = append(candidates, adapter.DiscoverKind(goos, home, adapter.KindClaude, getenv)...)
 	for _, cand := range candidates {
 		// A candidate must EXIST and be a regular file, and must never be a shell SHIM: Go cannot execute

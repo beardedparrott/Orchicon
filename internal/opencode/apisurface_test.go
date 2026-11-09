@@ -1,12 +1,7 @@
 package opencode
 
-// apisurface_test.go — the two API surfaces, and the fact that the client actually uses the right one.
-//
-// opencode 2.x moved every session endpoint under /api and renamed several operations
-// (V2_HTTP_API_AUDIT.md). The client used to write those routes as literals, so supporting both
-// versions means the routes had to become data (apisurface.go) — and a data change is only worth
-// anything if something asserts the client really follows it. That is what the end-to-end cases here
-// do: they run the REAL client against a recording server and check which path arrived.
+// apisurface_test.go — the two API surfaces, and the fact that the client actually uses the right
+// one.
 
 import (
 	"context"
@@ -27,11 +22,8 @@ func TestAPIShapeForVersion(t *testing.T) {
 		parsed  bool
 		why     string
 	}{
-		// 1.18.34 IS "v1+api-prompt", NOT PLAIN v1, and that was measured rather than assumed: the
-		// 1.18.34 binary from npm was run as a serve and POST /api/session/{id}/prompt admitted
-		// {"prompt":{"text":…},"delivery":"steer"} with 200, while an invalid delivery value was REJECTED
-		// (`Expected "steer" | "queue"`). Its v1 prompt_async route has no delivery key at all, so this
-		// route is the only way to steer on 1.x.
+		// 1.18.34 IS "v1+api-prompt", NOT PLAIN v1, and that was measured rather than assumed: the 1.18.34
+		// binary from npm was run as a serve and POST /api/session/{id}/prompt admitted.
 		{"1.18.34", "v1+api-prompt", true, "the version on the development host, measured to carry the /api prompt route"},
 		{"1.19.4", "v1+api-prompt", true, "the last 1.x measured; same route, same body"},
 		{"1.17.9", "v1", true, "below the measured floor: unchanged v1 behaviour (a missed improvement, never a break)"},
@@ -52,9 +44,7 @@ func TestAPIShapeForVersion(t *testing.T) {
 	}
 }
 
-// TestV2PathsMatchTheAudit is the mapping in executable form. Each expectation is the path from
-// V2_HTTP_API_AUDIT.md's endpoint table, so a silent edit to a v2 route fails here with the audit
-// quoted next to it rather than surfacing as a 404 in a worker.
+// TestV2PathsMatchTheAudit is the mapping in executable form.
 func TestV2PathsMatchTheAudit(t *testing.T) {
 	cases := []struct {
 		got, want, audit string
@@ -228,8 +218,6 @@ func TestTheClientUsesTheShapeItWasGiven(t *testing.T) {
 
 func TestThePermissionReplyBodyKeyFollowsTheShape(t *testing.T) {
 	// The audit's one documented BODY rename for this endpoint: v1 takes `response`, v2 `decision`.
-	// Asserted on the wire rather than on the constant, because a rename that never reaches the
-	// request is what a wrong constant would look like.
 	cases := []struct {
 		shape  apiShape
 		key    string

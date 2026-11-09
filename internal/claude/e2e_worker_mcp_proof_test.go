@@ -1,18 +1,7 @@
 package claude
 
-// e2e_worker_mcp_proof_test.go — AC 2 (the CLAUDE worker leg) and AC 5.1 (the
-// claude negative proof, plus the claude Ask negative).
-//
-// WHAT IS REAL HERE. The claude adapter renders its MCP set into FIXED
-// `--mcp-config` argv, so the observation is the argv the process is actually
-// launched with: the assertion parses `--mcp-config` out of the REAL
-// `session.argv()` / `askSession.argv()` — the same function the spawn path
-// consumes — after the set was resolved from REAL mcp_servers rows by
-// mcpsettings.NewResolver(pool), the SAME resolver internal/server/server.go
-// wires at :756.
-//
-// A resolved-from-a-stub argv proves the renderer; a resolved-from-Postgres argv
-// proves the adapter's whole path. This is the second.
+// e2e_worker_mcp_proof_test.go — AC 2 (the CLAUDE worker leg) and AC 5.1 (the claude negative
+// proof, plus the claude Ask negative).
 
 import (
 	"context"
@@ -69,9 +58,8 @@ func e2eArgvServerNames(t *testing.T, argv []string) map[string]string {
 	return out
 }
 
-// AC 2 (worker): a REAL claude worker session's argv carries the PROJECT's MCP
-// server — resolved from the DB row, not a stub — beside the built-in Orchicon
-// sidecar, and the per-session log names its provenance.
+// AC 2 (worker): a REAL claude worker session's argv carries the PROJECT's MCP server — resolved
+// from the DB row, not a stub — beside the built-in Orchicon sidecar.
 func TestE2EClaudeWorkerArgvCarriesTheProjectServer(t *testing.T) {
 	pool := testfixtures.Pool(t)
 	builtinFor(t) // installs the fake CLI + a temp HOME (ClaudeBinaryPath resolution)
@@ -132,13 +120,8 @@ func e2eArgvNames(m map[string]string) []string {
 	return out
 }
 
-// AC 2 (claude, live half): the real CLI is spawned with that same argv and the
-// model calls the project's tool.
-//
-// GATED on ORCHICON_TEST_LIVE_CLAUDE=1 AND a `claude` binary on PATH. When
-// either is absent the leg records `model_access: unavailable` WITH the reason
-// and skips — a recorded distinction, never a red: no permitted model exists in
-// this container, and turning that into a failure would prove nothing about MCP.
+// AC 2 (claude, live half): the real CLI is spawned with that same argv and the model calls the
+// project's tool.
 func TestE2EClaudeWorkerLiveToolCall(t *testing.T) {
 	if bin, err := exec.LookPath("claude"); err != nil || bin == "" {
 		testfixtures.WriteEvidence(t, testfixtures.EvidenceRecord{
@@ -214,9 +197,7 @@ func TestE2EClaudeWorkerLiveToolCall(t *testing.T) {
 	})
 }
 
-// AC 5.1 (claude negative): REMOVING the definition removes it from the NEXT
-// session. claude's servers ride FIXED argv, so this is exactly the stale-config
-// risk the criterion names.
+// AC 5.1 (claude negative): REMOVING the definition removes it from the NEXT session.
 func TestE2EClaudeAskDropsADeletedServerOnTheNextTurn(t *testing.T) {
 	pool := testfixtures.Pool(t)
 	builtinFor(t)
@@ -276,9 +257,8 @@ func e2eDeleteServerRow(t *testing.T, pool *db.Pool, id string) {
 	}
 }
 
-// e2eDriveProc reads the CLI's stream-json lines until it sees a tool_use or the
-// process goes quiet, returning the tool name it called and the accumulated
-// output. It never hangs: the read is bounded by a deadline.
+// e2eDriveProc reads the CLI's stream-json lines until it sees a tool_use or the process goes
+// quiet, returning the tool name it called and the accumulated output.
 func e2eDriveProc(t *testing.T, proc ProcSession) (called string, output string) {
 	t.Helper()
 	deadline := time.After(60 * time.Second)

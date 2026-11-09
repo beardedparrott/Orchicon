@@ -7,12 +7,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// TestRuntimeContainerRouteEnabled pins the always-container routing gate
-// (acceptance C + the local-mode contract): an opencode session dispatches
-// into the run's container only when a daemon client is wired AND the run
-// is workflow-bound AND the run is NOT in local execution mode. A local
-// run has no container (EnsureForRun skipped) — it must use the host serve
-// (in-process), never create a fresh container.
+// TestRuntimeContainerRouteEnabled pins the always-container routing gate (acceptance C + the
+// local-mode contract): an opencode session dispatches into the run's container only when a daemon.
 func TestRuntimeContainerRouteEnabled(t *testing.T) {
 	cases := []struct {
 		name      string

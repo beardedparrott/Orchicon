@@ -33,14 +33,8 @@ import (
 	"testing"
 )
 
-// TestPodmanTmpfsCarriesNoOwnershipOptions is the direct regression: no `--tmpfs`
-// element in a podman argv may contain uid= or gid=, on ANY mount, because the
-// engine refuses the whole create when it does.
-//
-// It walks the COMPLETE argv (create flags + the standard host mounts) rather than
-// one function's output, because the offending options came from the host-mount
-// block and were emitted through three separate call sites. A future call site that
-// reintroduces the grammar is caught wherever it puts it.
+// TestPodmanTmpfsCarriesNoOwnershipOptions is the direct regression: no `--tmpfs` element in a
+// podman argv may contain uid= or gid=, on ANY mount.
 func TestPodmanTmpfsCarriesNoOwnershipOptions(t *testing.T) {
 	d, _ := podmanCreateDaemon(t)
 	d.TmpfsSize, d.HomeTmpfsSize = "2g", "2g"
@@ -63,19 +57,15 @@ func TestPodmanTmpfsCarriesNoOwnershipOptions(t *testing.T) {
 			}
 		}
 	}
-	// A vacuity guard: if the argv stopped carrying tmpfs entries at all, the loop
-	// above would pass without checking anything — the same blind spot that let the
-	// original defect through.
+	// A vacuity guard: if the argv stopped carrying tmpfs entries at all, the loop above would pass
+	// without checking anything — the same blind spot that let the original defect through.
 	if sawTmpfs == 0 {
 		t.Fatal("the podman create argv carries no --tmpfs at all, so this test proved nothing")
 	}
 }
 
-// TestDockerTmpfsKeepsItsOwnershipOptions pins the OTHER half: docker is not being
-// silently changed to the podman spelling. Docker accepts uid=/gid= and the daemon
-// has always relied on them there, so losing them would be a regression on the
-// grandfathered path — the writable-$HOME guarantee would drop to whatever mode
-// the engine defaulted to.
+// TestDockerTmpfsKeepsItsOwnershipOptions pins the OTHER half: docker is not being silently changed
+// to the podman spelling.
 func TestDockerTmpfsKeepsItsOwnershipOptions(t *testing.T) {
 	d, home := podmanCreateDaemon(t)
 	d.Engine = Engine{Name: "docker", Bin: "docker"}
@@ -98,20 +88,8 @@ func TestDockerTmpfsKeepsItsOwnershipOptions(t *testing.T) {
 	}
 }
 
-// TestTmpfsOwnershipIsChosenByEngineNotByPlatform is the macOS/Windows guarantee,
-// stated as a test because it is the thing most likely to be "fixed" wrongly.
-//
-// On macOS and Windows podman runs INSIDE its `podman machine` VM, and the options
-// are parsed by the same podman code that rejected them on Linux. So the argv must
-// key on the ENGINE FAMILY, never on GOOS: a GOOS branch would hand those hosts a
-// grammar that is already proven unbuildable on Linux, and the bug would reappear
-// on exactly the two platforms no CI runner here can create containers on.
-//
-// The test asserts the property that makes that safe: for a given engine, the
-// emitted grammar is IDENTICAL regardless of platform, because nothing in this path
-// reads GOOS. It is checked by confirming the podman and docker spellings are
-// distinct AND that the podman one is the mode-only form — the portable
-// intersection docker also accepts (so a docker host on any OS is unaffected too).
+// TestTmpfsOwnershipIsChosenByEngineNotByPlatform is the macOS/Windows guarantee, stated as a test
+// because it is the thing most likely to be "fixed" wrongly.
 func TestTmpfsOwnershipIsChosenByEngineNotByPlatform(t *testing.T) {
 	podman := tmpfsOwnershipSuffix(true)
 	docker := tmpfsOwnershipSuffix(false)
@@ -137,13 +115,6 @@ func TestTmpfsOwnershipIsChosenByEngineNotByPlatform(t *testing.T) {
 }
 
 // TestPodmanTmpfsModeIsWritableNotSticky pins 0777 rather than the tempting 1777.
-//
-// Both were measured as uid 1000 under rootless --userns=keep-id. 0755 cannot be
-// written at all. 1777 permits creation but the sticky bit then forbids removing an
-// entry the caller does not own — and every entry inherits the tmpfs root's
-// ownership, so a stale entry could never be replaced. 0777 permits both, and these
-// mounts are private to one container for one run with a single uid inside them, so
-// there is no second user for a restrictive mode to protect against.
 func TestPodmanTmpfsModeIsWritableNotSticky(t *testing.T) {
 	for _, tc := range []struct {
 		podman bool

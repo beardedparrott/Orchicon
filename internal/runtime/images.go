@@ -17,9 +17,6 @@ import (
 )
 
 // baseImageLabel marks an image as derived from the Orchicon runtime base.
-// Both engines inherit labels through `FROM`, so any image built on top of the
-// base carries it automatically; the container-create gate uses it to
-// accept UI-built custom images without a separate registration step.
 const baseImageLabel = "org.orchicon.runtime-base"
 
 // slugPattern matches the image slug / tag basename (same rule as project
@@ -34,14 +31,8 @@ var imageTagPattern = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+
 type ImageList struct {
 	Default string   `json:"default"`
 	Images  []string `json:"images"`
-	// Infos carries per-image version labels, aligned with Images by index:
-	// RuntimeVersion = org.orchicon.runtime.version (stock builds:
-	// "<app-version>-<dockerfile-sha12>"), SpecVersion =
-	// org.orchicon.runtime.spec-version (custom/daemon builds: the
-	// runtime_images.version the image was built from). Either may be empty
-	// when the label is absent. The control plane uses this to reconcile
-	// canned stock rows against the actual local images (skip auto-builds
-	// when container.sh already produced a current pristine image).
+	// Infos carries per-image version labels, aligned with Images by index: RuntimeVersion =
+	// org.orchicon.runtime.version (stock builds: "<app-version>-<dockerfile-sha12>").
 	Infos []ImageInfo `json:"infos"`
 }
 
@@ -50,30 +41,17 @@ type ImageInfo struct {
 	Ref            string `json:"ref"`
 	RuntimeVersion string `json:"runtime_version,omitempty"`
 	SpecVersion    string `json:"spec_version,omitempty"`
-	// Present reports whether the image exists LOCALLY. It is reported
-	// explicitly (from the inspect's error) rather than inferred from an
-	// empty label: an image built locally without the version label is
-	// present-but-unlabelled, and conflating that with "not downloaded" is
-	// exactly the ambiguity that made the stock seeder auto-build images
-	// nobody asked for. A missing image is NOT an error here.
+	// Present reports whether the image exists LOCALLY.
 	Present bool `json:"present"`
 }
 
-// BuildRequest is the body of POST /v1/images/build. `Base` must resolve
-// to the daemon's configured base image; the daemon ALWAYS rewrites the
-// Dockerfile's FROM line to its own base image and injects the
-// runtime-base label, so the base is structurally part of every built
-// image regardless of what `Dockerfile` says.
+// BuildRequest is the body of POST /v1/images/build.
 type BuildRequest struct {
 	Slug       string `json:"slug"`
 	Tag        string `json:"tag"`
 	Base       string `json:"base_image_ref"`
 	Dockerfile string `json:"dockerfile"`
-	// SpecVersion is the runtime_images.version of the spec being built
-	// (0 when unknown). It is baked into the image as the
-	// org.orchicon.runtime.spec-version label so the row and the image can
-	// be cross-checked after the fact; it is the rebuild signal on the
-	// service side (built_version == version), not a daemon gate.
+	// SpecVersion is the runtime_images.version of the spec being built (0 when unknown).
 	SpecVersion int `json:"spec_version"`
 }
 
@@ -85,9 +63,7 @@ type BuildResponse struct {
 	Error    string `json:"error,omitempty"`
 }
 
-// allowedImages returns the base image plus the operator-configured
-// allowlist. The base is ALWAYS present — you can add images, never remove
-// the base.
+// allowedImages returns the base image plus the operator-configured allowlist.
 func (d *Daemon) allowedImages() []string {
 	out := []string{d.Image}
 	for _, img := range d.Images {
@@ -98,13 +74,7 @@ func (d *Daemon) allowedImages() []string {
 	return out
 }
 
-// imageAllowed reports whether a requested image may be used for a runtime
-// container. Accepted: the base, any operator-allowlisted stock image, or
-// any locally-present image carrying the inherited runtime-base label
-// (i.e. built on top of the base — the UI build path always produces
-// these). An image that is neither allowlisted nor present locally is
-// rejected rather than pulled implicitly, keeping the container-create
-// surface closed.
+// imageAllowed reports whether a requested image may be used for a runtime container.
 func (d *Daemon) imageAllowed(name string) bool {
 	if name == "" || name == d.Image {
 		return true
@@ -121,10 +91,7 @@ func (d *Daemon) imageAllowed(name string) bool {
 	return strings.TrimSpace(out) == "true"
 }
 
-// imageLabel reads one config label from a local image. Best-effort: an
-// inspect failure (image missing) yields "". The image must already be local
-// for the label to exist — allowedImages only lists the base + configured
-// variants, which scripts/runtime.sh / the release workflow build or pull first.
+// imageLabel reads one config label from a local image.
 func (d *Daemon) imageLabel(name, label string) string {
 	out, err := d.engine("image", "inspect", "--format", d.Engine.ImageLabelFormat(label), name)
 	if err != nil {
@@ -134,18 +101,10 @@ func (d *Daemon) imageLabel(name, label string) string {
 }
 
 // imageReport is the single inspect behind presence + both version labels.
-//
-// Present comes from the inspect ERROR (a missing image makes inspect fail),
-// the labels from one template. A missing image must report Present=false
-// with empty labels and NO error: the stock seeder depends on that to tell
-// "not downloaded" apart from "needs a rebuild".
 func (d *Daemon) imageReport(ref string) ImageInfo {
 	info := ImageInfo{Ref: ref}
-	// The label template comes from the ENGINE: docker reports image labels at
-	// .Config.Labels and podman at .Labels, so a hardcoded template reads ""
-	// under the other engine — which would make the create gate reject a
-	// perfectly good stock image. The one template per engine lives in
-	// engine.go (Engine.ImageLabelFormat); compose it here, once per label.
+	// The label template comes from the ENGINE: docker reports image labels at .Config.Labels and
+	// podman at .Labels, so a hardcoded template reads "" under the other engine.
 	format := d.Engine.ImageLabelFormat("org.orchicon.runtime.version") + "|" +
 		d.Engine.ImageLabelFormat("org.orchicon.runtime.spec-version")
 	out, err := d.engine("image", "inspect", "--format", format, ref)
@@ -225,11 +184,8 @@ func (d *Daemon) validateBuild(req BuildRequest) error {
 	return nil
 }
 
-// handleBuild runs an engine `build` for a custom image, streaming log lines
-// as AgentEvent {stream,data} NDJSON until the build exits, then a final
-// AgentEvent {event:"exit", exit_code}. The Dockerfile's FROM line is
-// ALWAYS rewritten to the daemon's base image and the runtime-base label
-// injected — the base-inclusion guarantee is enforced here, not documented.
+// handleBuild runs an engine `build` for a custom image, streaming log lines as AgentEvent
+// {stream,data} NDJSON until the build exits, then a final AgentEvent {event:"exit", exit_code}.
 func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRequest) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	df := rewriteDockerfileForBuild(req.Dockerfile, d.Image, req.Tag, req.SpecVersion)
@@ -247,50 +203,26 @@ func (d *Daemon) handleBuild(w http.ResponseWriter, r *http.Request, req BuildRe
 		return
 	}
 
-	// THE BUILD CONTEXT IS A HOST PATH THE ENGINE MUST RESOLVE, so it is mapped into the engine's view — and
-	// `cmd.Dir` stays the HOST path, because this process (not the engine) changes directory.
-	//
-	// FOUND BY AUDIT, NOT BY A REPORT. Every other engine call in this package passes refs or names; this one
-	// and the create argv are the only two that hand over a filesystem path. On Windows the context is
-	// `C:\Users\…\Temp\orchicon-build-…`, which inside the podman machine is `/mnt/c/Users/…` — so an unmapped
-	// context would have failed the FIRST custom-image build on Windows with a path the operator never typed.
+	// THE BUILD CONTEXT IS A HOST PATH THE ENGINE MUST RESOLVE, so it is mapped into the engine's view
+	// — and `cmd.Dir` stays the HOST path, because this process (not the engine) changes directory.
 	cmd := procwin.Command(d.engineBin(), "build", "-t", req.Tag, d.Paths.Map(ctxDir))
 	cmd.Dir = ctxDir
 	code, started := d.streamCommand(w, r, req.Tag, "build", cmd)
 	if !started || code != 0 {
 		return
 	}
-	// Rebuilding a tag orphans the previous image (which is still
-	// referenced by nothing but its now-overwritten tag). Prune the
-	// dangling orphans so repeated custom-image builds don't pile up
-	// tens of GB of unreferenced layers. Only untagged images are
-	// removed; running containers pin their image by ID. Podman accepts
-	// the same flags, so the prune is engine-independent.
+	// Rebuilding a tag orphans the previous image (which is still referenced by nothing but its
+	// now-overwritten tag).
 	if out, perr := d.engine("image", "prune", "-f", "--filter", "dangling=true"); perr == nil {
 		_ = out
 	}
 }
 
-// streamCommand runs one engine command, relaying its stdout/stderr as
-// AgentEvent {stream,data} NDJSON until it exits, then a final AgentEvent
-// {event:"exit", exit_code}. It is shared by `build` and `pull` so the log
-// relay, the cancel registration and the exit framing have exactly ONE
-// implementation for both engines and both verbs.
-//
-// `key` is the active-builds key (the image ref). DELETE
-// /v1/images/build?tag=<key> therefore cancels whatever that ref is doing —
-// a build or a pull — with no extra endpoint, and GET on the same route is
-// the probe. `verb` names the operation in operator-facing errors.
-//
-// Returns the exit code and whether the command actually started (false
-// means an error response was already written).
+// streamCommand runs one engine command, relaying its stdout/stderr as AgentEvent {stream,data}
+// NDJSON until it exits, then a final AgentEvent {event:"exit", exit_code}.
 func (d *Daemon) streamCommand(w http.ResponseWriter, r *http.Request, key, verb string, cmd *exec.Cmd) (code int, started bool) {
-	// The engine's output is read through pipes this function owns rather
-	// than exec's StdoutPipe/StderrPipe: Wait() closes StdoutPipe descriptors
-	// as soon as the child exits, which truncates whatever the relay had not
-	// read yet — the exit event could then overtake the last lines of the
-	// build log. Owning the read end lets the relays drain to EOF before the
-	// terminal event is written.
+	// The engine's output is read through pipes this function owns rather than exec's
+	// StdoutPipe/StderrPipe: Wait() closes StdoutPipe descriptors as soon as the child exits.
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		httpError(w, http.StatusInternalServerError, err.Error())
@@ -346,15 +278,6 @@ func (d *Daemon) streamCommand(w http.ResponseWriter, r *http.Request, key, verb
 	enc := json.NewEncoder(w)
 	flusher, _ := w.(http.Flusher)
 	// THE TWO RELAYS SHARE ONE ResponseWriter, AND A ResponseWriter IS NOT SAFE FOR CONCURRENT USE.
-	//
-	// stdout and stderr are drained by two goroutines (they must be, or a build that fills one pipe's
-	// buffer while nobody reads the other deadlocks). Both then wrote to `w` through the same encoder
-	// with no coordination, which is a DATA RACE on the response — `go test -race` reports it at the
-	// Write below, and its consequence in production is exactly what an operator would blame on the
-	// build: interleaved or LOST log lines, because two goroutines mutate the writer's buffer at once.
-	//
-	// A mutex serialises the writes. Each event is one Encode + one Flush under the lock, so a line can
-	// never be torn in half and the flush cannot race the next write's header.
 	var writeMu sync.Mutex
 	writeEvent := func(ev AgentEvent) {
 		writeMu.Lock()
@@ -384,10 +307,9 @@ func (d *Daemon) streamCommand(w http.ResponseWriter, r *http.Request, key, verb
 	if werr != nil {
 		code = 1
 	}
-	// Drain the engine's remaining output BEFORE the exit event: the terminal
-	// event must be the last line the UI sees, otherwise a build log loses its
-	// tail (the failure text) exactly when it matters. Bounded, because a
-	// grandchild builder can hold the write end open past the CLI's exit.
+	// Drain the engine's remaining output BEFORE the exit event: the terminal event must be the last
+	// line the UI sees, otherwise a build log loses its tail (the failure text) exactly when it
+	// matters.
 	drained := make(chan struct{})
 	go func() { relayWG.Wait(); close(drained) }()
 	select {
@@ -408,15 +330,7 @@ func (d *Daemon) streamCommand(w http.ResponseWriter, r *http.Request, key, verb
 	return code, true
 }
 
-// handlePull implements POST /v1/images/pull?ref=... — the on-demand FETCH
-// for a runtime image that is not downloaded yet.
-//
-// Fetch is distinct from Deploy: Deploy BUILDS a spec from a Dockerfile,
-// Fetch DOWNLOADS a published image. Both stream through the same relay, and
-// both are idempotent — an image that is already present short-circuits with
-// an immediate exit 0 and no engine command at all.
-//
-// There is no prune after a pull: nothing is orphaned by downloading.
+// handlePull implements POST /v1/images/pull?ref=...
 func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		httpError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -438,13 +352,8 @@ func (d *Daemon) handlePull(w http.ResponseWriter, r *http.Request) {
 	d.streamCommand(w, r, ref, "pull", cmd)
 }
 
-// rewriteDockerfileBase strips any FROM lines from the user's Dockerfile
-// and prepends `FROM <base>` + the runtime-base label, guaranteeing every
-// built image derives from the base regardless of the author's text. When
-// specVersion > 0 it also injects the org.orchicon.runtime.spec-version
-// label next to the runtime-base label so the built image records which
-// spec version it was built from (audit/trace; the label is inherited
-// through FROM like the base label).
+// rewriteDockerfileBase strips any FROM lines from the user's Dockerfile and prepends `FROM <base>`
+// + the runtime-base label.
 
 // handleBuildCancel implements cancel/probe for in-flight builds:
 //

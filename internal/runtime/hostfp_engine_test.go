@@ -1,23 +1,6 @@
 package runtime
 
 // hostfp_engine_test.go — THE POOL KEY'S ENGINE TERM (ADR-0013 D7.1/D7.2).
-//
-// The warm pool's key is "environment AND host inputs". After the engine swap
-// that must ALSO carry the engine: a container created by podman is not a
-// container the docker daemon can hand out, a podman UPGRADE can change
-// create/removal semantics under a warm container, and an engine whose mount
-// SHAPE changes (the `,z` relabel, ADR-0013 D3.2) must invalidate every warm
-// container created without it — a running container's mounts cannot be
-// changed in place.
-//
-// The fingerprint is folded through Daemon.hostInputsFingerprint (daemon.go), so
-// poolEnvKey keeps its 2-argument signature: dozens of call sites (pool_test.go,
-// hostfp_test.go) stay valid and there is exactly ONE place a host input can be
-// added or forgotten.
-//
-// Every case here is HERMETIC: the engine version comes from the engineVersionFn
-// seam, never a real engine exec, so the suite is deterministic on a host with no
-// container engine installed at all.
 
 import (
 	"log/slog"
@@ -54,9 +37,8 @@ type discardWriter struct{}
 
 func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
 
-// TestEngineFingerprintChangesWithEngineAndVersion is AC 3's engine half: the
-// pool key must change when the ENGINE changes and when its VERSION changes, and
-// must stay stable when neither does.
+// TestEngineFingerprintChangesWithEngineAndVersion is AC 3's engine half: the pool key must change
+// when the ENGINE changes and when its VERSION changes, and must stay stable when neither does.
 func TestEngineFingerprintChangesWithEngineAndVersion(t *testing.T) {
 	podman5 := engineTestDaemon(t, Engine{Name: "podman"}, "5.0.0")
 	podman5Again := engineTestDaemon(t, Engine{Name: "podman"}, "5.0.0")
@@ -99,9 +81,8 @@ func TestEngineFingerprintChangesWithEngineAndVersion(t *testing.T) {
 	}
 }
 
-// TestEngineFingerprintShapeTerm pins the shape term: it is derived from the
-// Engine value alone (no exec), it differs per engine family, and it names the
-// relabel marker that ADR-0013 D3.2 will flip to "z".
+// TestEngineFingerprintShapeTerm pins the shape term: it is derived from the Engine value alone (no
+// exec), it differs per engine family.
 func TestEngineFingerprintShapeTerm(t *testing.T) {
 	podman := Engine{Name: "podman"}
 	docker := Engine{Name: "docker"}
@@ -127,10 +108,8 @@ func TestEngineFingerprintShapeTerm(t *testing.T) {
 	}
 }
 
-// TestEngineFingerprintNeverEmpty pins the fail-safe direction: an engine whose
-// version cannot be resolved must NOT fold an empty term away (that is the exact
-// silent-degradation the fingerprint exists to prevent). It resolves to the
-// literal "unknown", which is still an engine term.
+// TestEngineFingerprintNeverEmpty pins the fail-safe direction: an engine whose version cannot be
+// resolved must NOT fold an empty term away (that is the exact silent-degradation the fingerprint.
 func TestEngineFingerprintNeverEmpty(t *testing.T) {
 	d := engineTestDaemon(t, Engine{Name: "podman", Bin: "/nonexistent/orchicon-no-such-engine-binary"}, "")
 	got := d.engineInputFingerprint()
@@ -147,9 +126,8 @@ func TestEngineFingerprintNeverEmpty(t *testing.T) {
 	}
 }
 
-// TestEngineVersionResolvedOnce pins the sync.Once: the pool key is computed on
-// every checkout and every reset, so a version probe per call would exec the
-// engine on the dispatch path.
+// TestEngineVersionResolvedOnce pins the sync.Once: the pool key is computed on every checkout and
+// every reset, so a version probe per call would exec the engine on the dispatch path.
 func TestEngineVersionResolvedOnce(t *testing.T) {
 	d := engineTestDaemon(t, Engine{Name: "podman"}, "")
 	var calls int32

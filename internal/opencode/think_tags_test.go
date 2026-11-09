@@ -2,15 +2,8 @@ package opencode
 
 import "testing"
 
-// TestThinkTagTableHoldsPlainThinkPair is the acceptance-A drift guard:
-// the ONE shared folded-think tag table both consumers match against must
-// contain the plain "<think>" / "</think>" pair. Literals are built by
-// concatenation — raw markup is never typed verbatim in this repo because
-// tooling rewrites it in transit (see think_tags.go).
-//
-// internal/askorchicon/thinksegmenter.go (Ask live deltas + completed
-// parts) and think_demux.go (execution transcripts) both range over THESE
-// slices, so contents pinned here can never drift between the two paths.
+// TestThinkTagTableHoldsPlainThinkPair is the acceptance-A drift guard: the ONE shared folded-think
+// tag table both consumers match against must contain the plain "<think>" / "</think>" pair.
 func TestThinkTagTableHoldsPlainThinkPair(t *testing.T) {
 	open := "<" + "think>"
 	close := "<" + "/think>"

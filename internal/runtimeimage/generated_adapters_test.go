@@ -1,10 +1,6 @@
 package runtimeimage
 
 // generated_adapters_test.go — A GENERATED IMAGE MUST BE ABLE TO RUN WORK, AND IN THE RIGHT ORDER.
-//
-// Reported as a design gap: an operator creating a runtime image in the console got a toolchain image with
-// no adapter in it, sent work to it, and discovered the hole only when the first session could not spawn.
-// Nobody creating "a runtime image" is asking for one that cannot run any work.
 
 import (
 	"strings"
@@ -44,9 +40,8 @@ func TestGeneratedImageAdaptersCanBeSwitchedOff(t *testing.T) {
 	}
 }
 
-// TestGeneratedAdapterOrderIsBuildToolsThenAdapters pins the ORDER, which an operator asked for explicitly
-// and which is load-bearing: a toolchain line that replaces or removes node/npm would silently take adapters
-// installed BEFORE it, and the damage would surface at the first session spawn rather than here.
+// TestGeneratedAdapterOrderIsBuildToolsThenAdapters pins the ORDER, which an operator asked for
+// explicitly and which is load-bearing.
 func TestGeneratedAdapterOrderIsBuildToolsThenAdapters(t *testing.T) {
 	df := generatedDockerfile(db.RuntimeImageRow{
 		AptPackages:     []byte(`["jq"]`),
@@ -68,14 +63,6 @@ func TestGeneratedAdapterOrderIsBuildToolsThenAdapters(t *testing.T) {
 }
 
 // AN OVERRIDE USED TO RETURN VERBATIM, WHICH MADE include_adapters INERT.
-//
-// Reported from a live run: the stock :dev spec declared IncludeAdapters=true and carried its own
-// Dockerfile, so the adapter block was never emitted, the image shipped with no `claude`, and every session
-// in it died with `exec: "claude": executable file not found in $PATH` after 6 retries and 0 tokens. The
-// switch was on and did nothing.
-//
-// The override is still the operator's decision about their TOOLCHAIN; include_adapters remains the decision
-// about adapters, and it now wins.
 func TestAnOverrideWithAdaptersOnGetsThemInstalled(t *testing.T) {
 	const mine = "FROM base:latest\nRUN apt-get install -y jq\nUSER orchicon\nWORKDIR /home/orchicon\n"
 	got := generatedDockerfile(db.RuntimeImageRow{DockerfileOverride: mine, IncludeAdapters: true}, "base:latest")

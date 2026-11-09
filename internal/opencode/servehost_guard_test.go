@@ -6,23 +6,6 @@ import (
 )
 
 // servehost_guard_test.go — an unavailable OS guard must not disable Ask chat.
-//
-// REPORTED: "We got opencode and its models discoverable now, but when I try to submit a chat it says
-// 'create conversation session: host opencode serve unavailable — Ask chat transport is disabled: host
-// serve guard: guard: symlink sudo: … A required privilege is not held by the client.' This seems
-// wrong. Why is there a sudo in windows?"
-//
-// It is wrong, and there is no sudo — that is a SYMLINK named `sudo`, the execution guard's
-// interception mechanism, which cannot exist on an unelevated Windows token. The guard itself being
-// unavailable is a legitimate platform limitation (internal/guard/platform_windows.go). THE DEFECT WAS
-// THE SEVERITY: startOnce returned that error, so a defense-in-depth backstop being absent disabled the
-// entire Ask chat transport. internal/runtime's supervisor and internal/askorchicon's bash path both
-// warn and continue; the host serve was the one caller that disagreed.
-//
-// ASSERTED ON THE SOURCE, deliberately. Driving startOnce for real needs an opencode binary and a
-// spawnable serve; the regression is a CONTROL-FLOW property — does this function return when the
-// guard cannot be built — and control flow is exactly what a source assertion pins without a fixture
-// that would test the fixture. Same approach as servehost_credentials_test.go.
 func TestStartOnceDoesNotFailWhenTheGuardIsUnavailable(t *testing.T) {
 	src := readServehostSource(t)
 

@@ -1,14 +1,6 @@
 package runtime
 
 // exe_resolve_test.go — THE CONTAINER NEEDS A BINARY ITS KERNEL CAN EXECUTE.
-//
-// The runtime container is Linux (deploy/runtime/Dockerfile: FROM debian:bookworm-slim) and runs
-// `orchicon runtime-supervisor`. The image deliberately does not bake the binary in; the daemon mounts its own
-// executable in at create time. On a Linux host those are the same file. On Windows the daemon's file is a PE
-// image, and mounting it into a Linux container produces a container whose supervisor cannot start — the
-// runtime never becomes ready, which is the shape of the Windows runtime failure these tests cover.
-//
-// No path mapping can repair that: the problem is WHICH FILE, not how the engine addresses it.
 
 import (
 	"os"
@@ -110,10 +102,6 @@ func TestUnknownHostExeIsReported(t *testing.T) {
 }
 
 // TestDarwinAlsoNeedsALinuxBinary pins the platform that was silently broken.
-//
-// The resolver used to branch on `goos != "windows"`, so a macOS daemon handed its own MACH-O binary to a Linux
-// container's entrypoint. ContainerExeRequired is true on darwin, so the create path's ELF check then refused
-// every container: container mode could not work on a Mac at all, and nothing said why.
 func TestDarwinAlsoNeedsALinuxBinary(t *testing.T) {
 	dir := t.TempDir()
 	self := writeFile(t, dir, "orchicon", "\xcf\xfa\xed\xfe") // Mach-O magic: the macOS build

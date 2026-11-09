@@ -2,15 +2,8 @@ package claude
 
 import "testing"
 
-// The control protocol is the whole basis of Ask support: the CLI raises a
-// can_use_tool control_request when a tool needs permission and no handler
-// refused it outright, and the Ask transport answers it. If ParseLine drops or
-// mis-decodes that line, an Ask session would hang on an unanswerable tool
-// call with nothing on screen — so the decoding is pinned here.
-//
-// The fixture mirrors the wire shape documented in the installed binary
-// (2.1.261): {"type":"control_request","request_id":…,"request":{subtype,
-// tool_name, input, permission_suggestions, blocked_path, decision_reason}}.
+// The control protocol is the whole basis of Ask support: the CLI raises a can_use_tool
+// control_request when a tool needs permission and no handler refused it outright.
 func TestParseLineDecodesCanUseToolControlRequest(t *testing.T) {
 	line := []byte(`{"type":"control_request","request_id":"req_abc123",` +
 		`"request":{"subtype":"can_use_tool","tool_name":"Bash",` +
@@ -59,9 +52,8 @@ func TestParseLineDecodesCanUseToolControlRequest(t *testing.T) {
 	}
 }
 
-// A control message that is NOT a permission ask must not be mistaken for one:
-// treating every control_request as an ask would raise consent cards for
-// protocol housekeeping and wedge the turn on an operator answer nobody needs.
+// A control message that is NOT a permission ask must not be mistaken for one: treating every
+// control_request as an ask would raise consent cards for protocol housekeeping and wedge the turn.
 func TestParseLineIgnoresNonAskControlRequests(t *testing.T) {
 	ev, err := ParseLine([]byte(`{"type":"control_request","request_id":"req_2","request":{"subtype":"interrupt"}}`))
 	if err != nil {
@@ -75,10 +67,8 @@ func TestParseLineIgnoresNonAskControlRequests(t *testing.T) {
 	}
 }
 
-// The cancel sighting: the binary documents a control_cancel_request as how an
-// in-flight request is settled (a pending can_use_tool after an interrupted
-// turn, or one another client already answered). The Ask transport uses it to
-// clear a card that can no longer be answered, so it must be decodable.
+// The cancel sighting: the binary documents a control_cancel_request as how an in-flight request is
+// settled (a pending can_use_tool after an interrupted turn.
 func TestParseLineDecodesControlCancel(t *testing.T) {
 	ev, err := ParseLine([]byte(`{"type":"control_cancel_request","request_id":"req_abc123"}`))
 	if err != nil {
@@ -95,9 +85,9 @@ func TestParseLineDecodesControlCancel(t *testing.T) {
 	}
 }
 
-// No regression: an ordinary assistant line is not a control message, and a
-// malformed control_request degrades rather than failing the session loop (a
-// CLI version that reshapes the request must not break the stream).
+// No regression: an ordinary assistant line is not a control message, and a malformed
+// control_request degrades rather than failing the session loop (a CLI version that reshapes the
+// request must.
 func TestParseLineControlDoesNotDisturbOrdinaryEvents(t *testing.T) {
 	ev, err := ParseLine([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}`))
 	if err != nil {

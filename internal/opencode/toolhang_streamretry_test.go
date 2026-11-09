@@ -1,12 +1,6 @@
 package opencode
 
 // Tier A (tool-hang watchdog) + Tier B (stream-drop turn retry) unit tests.
-// Detection lives in progressMonitor (clock-injectable); actuation lives in
-// sessionRun (httptest serve). Acceptance criteria covered:
-// trip/reset/latch/escalation + the disabled gate, abort-then-redirect
-// order, the abort-echo guard, the bounded-2 retry + fall-through kill,
-// no-duplication (exactly one user part per intervention), and the
-// session-survives-abort integration shape.
 
 import (
 	"context"
@@ -180,11 +174,6 @@ func TestToolHangManifestBranch(t *testing.T) {
 	t.Setenv("ORCHICON_TOOL_HANG_WINDOW", "")
 
 	// BLANK (nil) — the tenant left it unset, so the built-in default applies.
-	// This is what a never-configured tenant has.
-	// RAISED FROM 180s: a legitimate cold build (a fresh-worktree `go build ./...`, a first
-	// `bun install`, a full suite) routinely runs past three silent minutes and emits nothing while it
-	// does, so 180s reported healthy work as `stalled:no_progress`. The default now bounds a genuinely
-	// WEDGED call without killing a slow one. See toolHangDefaultWindow for the measurement.
 	if w := stallWindowsFromManifest(scheduler.ExecutionManifest{}); w.toolHang != 600*time.Second {
 		t.Fatalf("blank -> %v, want the 600s default", w.toolHang)
 	}
@@ -192,16 +181,12 @@ func TestToolHangManifestBranch(t *testing.T) {
 	if w := stallWindowsFromManifest(newToolHangManifest(90)); w.toolHang != 90*time.Second {
 		t.Fatalf("manifest 90 -> %v, want 90s", w.toolHang)
 	}
-	// An explicit 0 DISABLES the watchdog. This is the changed behaviour: 0 used
-	// to mean "unset" and therefore resolved to the 180s default, leaving only a
-	// NEGATIVE able to switch the check off. Now blank means "unset" and 0 means
-	// off, so the two states are finally independent.
+	// An explicit 0 DISABLES the watchdog.
 	if w := stallWindowsFromManifest(newToolHangManifest(0)); w.toolHang > 0 {
 		t.Fatalf("manifest 0 -> %v, want disabled (<=0)", w.toolHang)
 	}
-	// A negative cannot reach here (the Settings API rejects it), but if a
-	// legacy row ever leaked one through, the adapter must still degrade to
-	// "off" rather than to an absurdly short window.
+	// A negative cannot reach here (the Settings API rejects it), but if a legacy row ever leaked one
+	// through, the adapter must still degrade to "off" rather than to an absurdly short window.
 	if w := stallWindowsFromManifest(newToolHangManifest(-5)); w.toolHang > 0 {
 		t.Fatalf("manifest -5 -> %v, want disabled (<=0)", w.toolHang)
 	}
@@ -422,9 +407,8 @@ func TestOnStallToolHangRoutesToActuator(t *testing.T) {
 	}
 }
 
-// TestSessionSurvivesAbortAndCompletes is the AC integration shape: abort
-// the in-flight turn, land the redirect, and prove the session completes
-// its task afterwards (mock serve: redirect answered + summary delivered).
+// TestSessionSurvivesAbortAndCompletes is the AC integration shape: abort the in-flight turn, land
+// the redirect, and prove the session completes its task afterwards (mock serve.
 func TestSessionSurvivesAbortAndCompletes(t *testing.T) {
 	var mu sync.Mutex
 	var aborted, redirected bool

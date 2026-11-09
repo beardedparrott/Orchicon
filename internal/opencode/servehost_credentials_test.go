@@ -42,16 +42,8 @@ func TestTheHostServeIsGivenProviderCredentials(t *testing.T) {
 	if len(unusable) != 1 || unusable[0] != "ollama-cloud" {
 		t.Errorf("unusable = %v, want the undeliverable ids so the gap is reportable", unusable)
 	}
-	// IT RESOLVES FROM THE OPERATOR'S HOME, not their opencode DATA DIR and not the serve's private one.
-	//
-	// THIS ASSERTION USED TO CHECK THE OPPOSITE, and it is why the bug shipped: it required the passed value
-	// to CONTAIN ".local/share/opencode" — which is exactly what authSource() returns, and exactly the wrong
-	// argument. The resolver appends that suffix itself, so the lookup composed
-	// `<data>/.local/share/opencode/opencode.db`, found nothing, and delivered no credentials at all.
-	//
 	// A CONTAINS CHECK CANNOT SEE THAT, so this one is functional: it asserts the value the resolver is
-	// given is the base that composes onto a REAL store. A non-existent path is the failure mode, and it is
-	// invisible to any assertion that only inspects the string's shape.
+	// given is the base that composes onto a REAL store.
 	h2 := NewHostServe(nil, "/tmp/serve-data", t.TempDir())
 	var resolvedBase string
 	credentialResolver = func(home string, kinds ...string) ([]string, []string) {
@@ -117,12 +109,6 @@ func TestTheEnvironmentReachesTheSpawn(t *testing.T) {
 		t.Error("the credentials are not applied before the serve is spawned")
 	}
 	// AND THE CALL MUST PASS THE OPERATOR'S HOME, NOT THE OPENCODE DATA DIR.
-	//
-	// THIS ASSERTION USED TO REQUIRE `credentialResolver(h.authSource(), …)` — it pinned the BUG. The
-	// resolver appends `.local/share/opencode` itself, so passing authSource() (which already IS that dir)
-	// makes every store path it builds non-existent, and the delivery is silently empty. Spelling out the
-	// correct call here keeps the two halves from drifting apart again, since the stubbed tests cannot see
-	// which directory was passed.
 	if !strings.Contains(src, "return credentialResolver(h.operatorHome(), adapter.DefaultAdapterKind)") {
 		t.Error("credentialEnv must resolve from the operator's HOME (the resolver appends " +
 			".local/share/opencode itself); passing the data dir doubles the suffix and finds nothing")

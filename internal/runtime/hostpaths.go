@@ -46,11 +46,8 @@ const hostPathTag = "orchicon"
 // hostPathTagValue is the value of that tag on a path-bearing field.
 const hostPathTagValue = "hostpath"
 
-// mapHostPathFields rewrites every field tagged `orchicon:"hostpath"` on v into the container's form.
-//
-// v must be a pointer to a struct. Nested structs and slices are NOT descended: a mount spec is handled at
-// the argv boundary by guestifyCreateArgv, which has to parse `src:dst:opts` anyway and so cannot share this
-// walk. The fields this covers are the plain string ones — which is exactly the shape the reported bug had.
+// mapHostPathFields rewrites every field tagged `orchicon:"hostpath"` on v into the container's
+// form.
 func mapHostPathFields(m *PathMapper, v any) {
 	if m == nil || v == nil {
 		return

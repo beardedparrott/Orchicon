@@ -5,13 +5,8 @@ import (
 	"testing"
 )
 
-// TestTrimCarriedAgentPrompt pins the trim that removes the duplicated prefix on
-// 2.x — and, more importantly, every case where it must REFUSE to trim.
-//
-// The two failures are not equivalent. A trim that does not happen costs tokens
-// (the prefix is sent twice); a trim that lands in the wrong place DELETES the
-// beginning of the worker's task. So every uncertain case must send the full
-// prompt, and that is what this asserts.
+// TestTrimCarriedAgentPrompt pins the trim that removes the duplicated prefix on 2.x — and, more
+// importantly, every case where it must REFUSE to trim.
 func TestTrimCarriedAgentPrompt(t *testing.T) {
 	const prefix = "PLATFORM PROMPT AND WORKER IDENTITY\n\n"
 	const composite = prefix + "# Task\n\nFix the thing.\n\n# Instructions\n\nGo."
@@ -41,9 +36,8 @@ func TestTrimCarriedAgentPrompt(t *testing.T) {
 	})
 
 	t.Run("a length that lands in the WRONG place sends the full prompt", func(t *testing.T) {
-		// The drift case: the recorded length no longer matches the composite's
-		// opening, so the remainder does not begin with the task section. Trimming
-		// here would cut into the worker's instructions.
+		// The drift case: the recorded length no longer matches the composite's opening, so the remainder
+		// does not begin with the task section.
 		for _, n := range []int{3, len(prefix) - 5, len(prefix) + 4} {
 			if got := trimCarriedAgentPrompt(log, "e1", composite, n); got != composite {
 				t.Errorf("n=%d landed mid-text: the full prompt must be sent, got %q", n, got)

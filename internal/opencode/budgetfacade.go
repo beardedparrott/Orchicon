@@ -1,12 +1,7 @@
 package opencode
 
-// budgetfacade.go is the thin EXPORTED surface over the existing
-// shared budget-compact machinery in compact.go (ONE implementation —
-// no parallel budget code). The native in-process engine
-// (internal/orchicon) imports this package to evaluate the SAME merged
-// budget JSON the opencode adapter evaluates, so the budget-compact
-// pipeline is shared, never duplicated. All values flow through the
-// unexported budgetSpec/budgetAccumulator types below.
+// budgetfacade.go is the thin EXPORTED surface over the existing shared budget-compact machinery in
+// compact.go (ONE implementation — no parallel budget code).
 
 import "time"
 
@@ -16,10 +11,8 @@ type BudgetLadder struct {
 	spec budgetSpec
 }
 
-// ParseBudgetLadder parses the merged budget JSON (the same payload the
-// opencode adapter parses via parseBudgetSpec — tenant defaults merged
-// with the worker's budget_overrides by the scheduler). Empty or
-// unparseable JSON yields a ladder with built-in defaults.
+// ParseBudgetLadder parses the merged budget JSON (the same payload the opencode adapter parses via
+// parseBudgetSpec — tenant defaults merged with the worker's budget_overrides by the scheduler).
 func ParseBudgetLadder(budgets []byte) *BudgetLadder {
 	return &BudgetLadder{spec: parseBudgetSpec(budgets)}
 }
@@ -60,9 +53,8 @@ func (l *BudgetLadder) LevelName(dim string, frac float64) string {
 	return levelName(l.spec.levelFor(d, frac))
 }
 
-// CompactsAt reports whether the ladder tier triggers a context
-// compaction (independent of injecting its warning). tier is one of
-// none|warn|escalate|final|abort.
+// CompactsAt reports whether the ladder tier triggers a context compaction (independent of
+// injecting its warning).
 func (l *BudgetLadder) CompactsAt(tier string) bool {
 	return l.spec.compactsAt(levelFromName(tier))
 }
@@ -77,14 +69,8 @@ func (l *BudgetLadder) CompactsDim(dim string) bool {
 	return l.spec.compactsDim(d)
 }
 
-// Message returns the ladder's OWN message for a dimension at the given
-// fraction of its limit — the exact text parseBudgetSpec resolved (tenant
-// warnings.messages merged with the worker's budget_overrides), with {pct}
-// substituted. An adapter that injects a budget warning MUST read the text
-// from here: it holds no message text of its own, so opencode and every
-// other adapter share ONE source of truth for the warn/escalate/final
-// ladder copy. Returns "" for an unknown dimension or the abort tier (the
-// abort tier has no message — the session is stopped).
+// An adapter that injects a budget warning MUST read the text from here: it holds no message text
+// of its own, so opencode and every other adapter share ONE source of truth.
 func (l *BudgetLadder) Message(dim string, frac float64) string {
 	d, ok := dimFromName(dim)
 	if !ok {
@@ -97,27 +83,20 @@ func (l *BudgetLadder) Message(dim string, frac float64) string {
 // budget/turn gate is armed (ORCHICON_COMPACT_MIN_TURNS).
 func (l *BudgetLadder) CompactionTurnFloor() int { return compactMinTurns() }
 
-// CompactMaxTurns resolves the turn-count context-hygiene gate
-// (compact_max_turns) from the SAME merged budget JSON, plus ok=false when the
-// gate is unset OR explicitly disabled (<= 0) — both mean "do not collapse on
-// turn count". Callers never restate a default.
+// CompactMaxTurns resolves the turn-count context-hygiene gate (compact_max_turns) from the SAME
+// merged budget JSON, plus ok=false when the gate is unset OR explicitly disabled (<= 0).
 func (l *BudgetLadder) CompactMaxTurns() (int, bool) { return effectiveCompactMaxTurns(l.spec) }
 
 // CompactionMax returns the per-execution compaction cap
 // (ORCHICON_COMPACT_MAX; 0 disables).
 func (l *BudgetLadder) CompactionMax() int { return compactMax() }
 
-// DefaultCompactMaxTurns returns the turn-count hygiene gate the native
-// engine's policyFromSettings falls back to when the merged budget JSON omits
-// compact_max_turns. It is 0 = DISABLED: a lossy mid-run collapse is the
-// operator's decision, and the old 30-turn fallback collapsed healthy runs
-// nobody had budgeted. An explicit compact_max_turns in the merged JSON still
-// arms it. ONE source of the value: the native gate never re-states a number.
+// DefaultCompactMaxTurns returns the turn-count hygiene gate the native engine's policyFromSettings
+// falls back to when the merged budget JSON omits compact_max_turns.
 func DefaultCompactMaxTurns() int { return 0 }
 
-// BudgetSpend is the exported view of a cumulative spend accumulator
-// (fresh tokens + cost + step count). Fed from LIVE provider-reported
-// usage only.
+// BudgetSpend is the exported view of a cumulative spend accumulator (fresh tokens + cost + step
+// count).
 type BudgetSpend struct {
 	acc *budgetAccumulator
 }
@@ -125,9 +104,7 @@ type BudgetSpend struct {
 // NewBudgetSpend creates an empty spend accumulator.
 func NewBudgetSpend() *BudgetSpend { return &BudgetSpend{acc: &budgetAccumulator{}} }
 
-// AddFromUsage folds one provider turn's LIVE usage + cost into the
-// accumulator. cost is the provider-reported priced figure (0 when the
-// provider does not price).
+// AddFromUsage folds one provider turn's LIVE usage + cost into the accumulator.
 func (a *BudgetSpend) AddFromUsage(input, output, reasoning, cacheRead int64, cost float64) {
 	a.acc.add(map[string]any{
 		"input":     input,

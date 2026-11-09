@@ -32,9 +32,7 @@ func TestLiveV1SteerIsAdmitted(t *testing.T) {
 	c := NewSessionClient(url, "", "")
 	c.setAPIShape(shapeV1APIPrompt)
 
-	// A plain send: the route must exist and admit it. If the serve answered with its web app instead,
-	// the client would fall back to prompt_async — which would ALSO succeed, so this alone cannot tell
-	// them apart. The assertion below is what does.
+	// A plain send: the route must exist and admit it.
 	if err := c.SendMessage(context.Background(), sid, "", "", "live steer probe"); err != nil {
 		t.Fatalf("SendMessage against the real 1.x serve: %v", err)
 	}

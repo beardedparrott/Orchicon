@@ -15,9 +15,7 @@ import (
 // constant into the test body (so a change to it is a change in one place).
 const runtimeSandboxDSNForTest = runtime.SandboxPostgresDSN
 
-// The document shape claude accepts. Verified against the real CLI, which
-// reported mcp_servers:[{"name":"orchicon","status":"connected"}] for exactly
-// this JSON.
+// The document shape claude accepts.
 func TestMCPConfigJSONShape(t *testing.T) {
 	cfg := MCPConfigJSON([]MCPServer{
 		{Name: "orchicon", Command: "/usr/local/bin/orchicon", Args: []string{"mcp"},
@@ -52,9 +50,8 @@ func TestMCPConfigJSONShape(t *testing.T) {
 	}
 }
 
-// An entry with no command AND no url is not startable, and a server claude
-// tries and fails to start is a startup it WAITS on — so it is dropped rather
-// than emitted.
+// An entry with no command AND no url is not startable, and a server claude tries and fails to
+// start is a startup it WAITS on — so it is dropped rather than emitted.
 func TestMCPConfigJSONDropsUnusableEntries(t *testing.T) {
 	if got := MCPConfigJSON([]MCPServer{{Name: "empty"}, {Command: "x"}}); got != "" {
 		t.Fatalf("MCPConfigJSON = %q, want empty — neither entry is startable", got)
@@ -128,10 +125,7 @@ func TestAskArgvRegistersTheOrchiconMCP(t *testing.T) {
 	}
 }
 
-// THE MCP NAME MAPPING IS THE BOUNDARY. claude prefixes MCP tools
-// (`mcp__orchicon__create_work_item`); askmode names them bare. Without the
-// translation the mode gate is inert for exactly the tools it governs, and
-// silently — no error, no refusal, just no enforcement.
+// THE MCP NAME MAPPING IS THE BOUNDARY.
 func TestClaudeToolToPolicyNameMapsMCPTools(t *testing.T) {
 	cases := map[string]string{
 		"mcp__orchicon__create_work_item":   "create_work_item",
@@ -205,19 +199,14 @@ func TestModeGateAppliesThePlannerDenyToMCPTools(t *testing.T) {
 	}
 }
 
-// The Ask profile must not ask consent for the platform's OWN tools — the mode
-// gate already governs them. A card in front of get_current_conversation would
-// make the session unusable for the thing the operator asked for.
+// The Ask profile must not ask consent for the platform's OWN tools — the mode gate already governs
+// them.
 func TestAskProfileAllowsOrchiconMCPTools(t *testing.T) {
 	h := HookInput{ToolName: "mcp__orchicon__get_current_conversation", ToolInput: map[string]any{}}
 	if got := DecideToolForAsk(h, "/tmp/ask", ""); got.Decision() != DecisionAllow {
 		t.Fatalf("an orchicon MCP tool = %s, want allow (the mode gate governs these, not a per-call card)", got.Decision())
 	}
-	// THE OPERATOR'S OWN MCP SERVERS ARE ALLOWED TOO. This used to require `ask`, on the reasoning
-	// that a third-party tool is where consent matters. The operator overruled it — "if it's added in
-	// scope it should just have access; I don't want cards for that" — because attaching the server
-	// IS the approval. The MODE boundary still governs an opaque MCP tool (RunHook checks it before
-	// this function is reached), which is what makes the allowance safe.
+	// THE OPERATOR'S OWN MCP SERVERS ARE ALLOWED TOO.
 	other := HookInput{ToolName: "mcp__github__create_issue", ToolInput: map[string]any{}}
 	if got := DecideToolForAsk(other, "/tmp/ask", ""); got.Decision() != DecisionAllow {
 		t.Fatalf("a third-party MCP tool = %s, want allow — an MCP server is in scope because the "+
@@ -242,10 +231,7 @@ func TestIsOrchiconMCPTool(t *testing.T) {
 	}
 }
 
-// The WORKER path's transport-dependent env, which is the part that differs from
-// Ask. A container must be pointed at the IN-CONTAINER sandbox Postgres: the DSN
-// it inherits from the plane names the HOST's database, which inside the
-// container is nothing.
+// The WORKER path's transport-dependent env, which is the part that differs from Ask.
 func TestWorkerMCPExtraEnv(t *testing.T) {
 	container := workerMCPExtraEnv(true, "run-1")
 	if container["ORCHICON_POSTGRES_DSN"] != runtimeSandboxDSNForTest {
@@ -301,9 +287,8 @@ func TestWorkerArgvRegistersTheOrchiconMCP(t *testing.T) {
 	}
 }
 
-// A name collision between the built-in and an operator-configured entry resolves
-// to the OPERATOR'S — the rule opencode applies too. Getting this backwards would
-// silently override an operator's own connection with ours.
+// A name collision between the built-in and an operator-configured entry resolves to the OPERATOR'S
+// — the rule opencode applies too.
 func TestMCPConfigJSONOperatorEntryWinsANameCollision(t *testing.T) {
 	cfg := MCPConfigJSON([]MCPServer{
 		// built-in first, exactly as resolveMCPServers orders them

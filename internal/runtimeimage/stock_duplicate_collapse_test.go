@@ -20,12 +20,8 @@ import (
 	"testing"
 )
 
-// TestTheReadPathCommitsTheDuplicateCollapse is the wiring assertion: EnsureCatalogRows must COMMIT when it
-// removed rows, not roll back.
-//
-// It reads the source because the behaviour needs a database and a seeded duplicate to observe, and the defect
-// is precisely an ordering between two calls two lines apart — which is what a reader can check and a unit test
-// without a DB cannot.
+// TestTheReadPathCommitsTheDuplicateCollapse is the wiring assertion: EnsureCatalogRows must COMMIT
+// when it removed rows, not roll back.
 func TestTheReadPathCommitsTheDuplicateCollapse(t *testing.T) {
 	b, err := os.ReadFile("seed.go")
 	if err != nil {
@@ -63,9 +59,6 @@ func TestTheReadPathCommitsTheDuplicateCollapse(t *testing.T) {
 }
 
 // TestTheDatabaseEnforcesOneStockRowPerSlug is the root cause, asserted where it lives.
-//
-// Application cleanup runs only when something calls it — and the reported instance showed the duplicate for
-// long enough to reach a screenshot. A partial unique index makes the state unrepresentable instead.
 func TestTheDatabaseEnforcesOneStockRowPerSlug(t *testing.T) {
 	entries, err := os.ReadDir("../../db/migrations")
 	if err != nil {

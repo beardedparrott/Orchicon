@@ -7,9 +7,7 @@ import (
 	"testing"
 )
 
-// writeAuthStore writes an opencode credential store into a temp home. Values
-// are DELIBERATELY fake: this asserts the TRANSLATION (provider id -> env var),
-// which is the part that can be wrong, not any real credential.
+// writeAuthStore writes an opencode credential store into a temp home.
 func writeAuthStore(t *testing.T, home, body string) {
 	t.Helper()
 	p := openCodeAuthPath(home)
@@ -21,12 +19,8 @@ func writeAuthStore(t *testing.T, home, body string) {
 	}
 }
 
-// TestAdapterCredentialEnvTranslatesTheStore pins the translation of the
-// operator's opencode store into container environment variables: api-key
-// entries with a known provider become KEY=VALUE, and everything else is
-// REPORTED rather than silently dropped (an oauth entry, an id with no known
-// env var, an empty key). The ordering is asserted because a map-ordered argv
-// would make the emitted docker arguments non-deterministic.
+// TestAdapterCredentialEnvTranslatesTheStore pins the translation of the operator's opencode store
+// into container environment variables: api-key entries with a known provider become KEY=VALUE.
 func TestAdapterCredentialEnvTranslatesTheStore(t *testing.T) {
 	home := t.TempDir()
 	writeAuthStore(t, home, `{
@@ -54,11 +48,8 @@ func TestAdapterCredentialEnvTranslatesTheStore(t *testing.T) {
 	}
 }
 
-// TestAdapterCredentialEnvIsGatedAndForgiving pins the three cases that must be
-// a quiet no-op, because each is a NORMAL state rather than a fault: a native
-// only run (its adapter does not read these), a host that has never signed in,
-// and a store that is not valid JSON. Failing loudly on any of them would turn
-// an ordinary native-only run into an error.
+// TestAdapterCredentialEnvIsGatedAndForgiving pins the three cases that must be a quiet no-op,
+// because each is a NORMAL state rather than a fault.
 func TestAdapterCredentialEnvIsGatedAndForgiving(t *testing.T) {
 	home := t.TempDir()
 	writeAuthStore(t, home, `{"openrouter": {"type": "api", "key": "sk-or-FAKE"}}`)
@@ -79,11 +70,8 @@ func TestAdapterCredentialEnvIsGatedAndForgiving(t *testing.T) {
 	}
 }
 
-// TestStandardHostMountArgsCarryAdapterCredentials is the DAEMON-level half:
-// the pairs the resolver produces must actually reach `docker run` as `-e` for
-// an opencode-demanding run, and must NOT appear for a native-only one. This is
-// the edge that would otherwise be easy to get right in isolation and forget to
-// wire — credentials resolved but never passed.
+// TestStandardHostMountArgsCarryAdapterCredentials is the DAEMON-level half: the pairs the resolver
+// produces must actually reach `docker run` as `-e` for an opencode-demanding run.
 func TestStandardHostMountArgsCarryAdapterCredentials(t *testing.T) {
 	home, d := bootProfileTestHome(t)
 	writeAuthStore(t, home, `{"deepseek": {"type": "api", "key": "sk-ds-FAKE"}}`)
