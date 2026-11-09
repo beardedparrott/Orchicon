@@ -33,9 +33,8 @@ func orderByAndPredicate(t *testing.T, sql string) (before, after string) {
 	return sql[:i], sql[i:]
 }
 
-// assertNoPredicateAfterOrderBy is the core invariant: everything that filters
-// rows must be emitted BEFORE the ORDER BY, because after it the clause is no
-// longer valid.
+// assertNoPredicateAfterOrderBy is the core invariant: everything that filters rows must be emitted
+// BEFORE the ORDER BY, because after it the clause is no longer valid.
 func assertNoPredicateAfterOrderBy(t *testing.T, sql string) {
 	t.Helper()
 	_, after := orderByAndPredicate(t, sql)
@@ -115,10 +114,8 @@ func TestListWorkflowRunsCursorPrecedesOrderBy(t *testing.T) {
 	}
 }
 
-// TestListWorkflowRunsFirstPageIsUnpaginated guards the other direction: a page
-// with no cursor must NOT carry a keyset predicate, so the first page stays a
-// plain scan. This is what made the bug look like a UI problem — page one was
-// correct, which is why nothing noticed page two was not.
+// TestListWorkflowRunsFirstPageIsUnpaginated guards the other direction: a page with no cursor must
+// NOT carry a keyset predicate, so the first page stays a plain scan.
 func TestListWorkflowRunsFirstPageIsUnpaginated(t *testing.T) {
 	sql, _ := listWorkflowRunsQuery(ListWorkflowRunsFilter{TenantID: "tnt_dev", PageSize: 10})
 	if strings.Contains(sql, "AND id") {

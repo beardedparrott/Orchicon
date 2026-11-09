@@ -10,9 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/aigateway"
 )
 
-// GAP 4 on an opencode-free plane: with NO discoverer (no opencode binary), the
-// wired pricing resolver still answers for an anthropic model from the vendored
-// catalog — and never nil-panics on the missing discoverer.
+// GAP 4 on an opencode-free plane: with NO discoverer (no opencode binary), the wired pricing
+// resolver still answers for an anthropic model from the vendored catalog.
 func TestPricingResolverAnswersWithoutADiscoverer(t *testing.T) {
 	r := pricingResolver(nil)
 
@@ -37,9 +36,9 @@ func TestPricingResolverAnswersWithoutADiscoverer(t *testing.T) {
 	}
 }
 
-// The end of the chain: a claude/anthropic usage record on a plane with no
-// opencode binary is priced from the catalog, cache-read at the cache-read
-// rate — not from the adapter-reported number.
+// The end of the chain: a claude/anthropic usage record on a plane with no opencode binary is
+// priced from the catalog, cache-read at the cache-read rate — not from the adapter-reported
+// number.
 func TestUsageRecordPricedFromCatalogWithoutADiscoverer(t *testing.T) {
 	rec := aigateway.NewUsageRecorder(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	rec.SetPricingResolver(pricingResolver(nil)) // no opencode binary on this plane

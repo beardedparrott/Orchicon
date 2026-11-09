@@ -11,10 +11,8 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-// OutboxRow is the in-memory representation of an outbox row to be
-// persisted within the same transaction as a state mutation
-// (docs/09_Database_Schema.md §6). The relay polls unpublished rows and
-// publishes them to NATS, then marks published_at.
+// OutboxRow is the in-memory representation of an outbox row to be persisted within the same
+// transaction as a state mutation (docs/09_Database_Schema.md §6).
 type OutboxRow struct {
 	ID            string // ULID, also used as the NATS MsgId for dedup
 	TenantID      string // scopes the row via RLS
@@ -28,11 +26,7 @@ type OutboxRow struct {
 	CorrelationID string
 }
 
-// EnqueueOutbox inserts an outbox row within the given transaction. It
-// must be called in the same transaction as the state mutation so the
-// outbox entry and the state change commit atomically (AGENTS.md
-// invariant #3). The row is tenant-scoped via the TenantTx's
-// app.tenant_id session variable and enforced again by RLS.
+// EnqueueOutbox inserts an outbox row within the given transaction.
 func EnqueueOutbox(ctx context.Context, tx pgx.Tx, row OutboxRow) error {
 	if row.ID == "" {
 		row.ID = newULID()
@@ -66,13 +60,7 @@ type UnpublishedRow struct {
 	OccurredAt    time.Time
 }
 
-// PollOutbox returns up to limit unpublished outbox rows ordered by
-// occurrence time. The relay publishes them to NATS and then calls
-// MarkPublished. This read is against the primary (v0.1 has no
-// read replicas — docs/09 §2) and is not tenant-scoped at the relay
-// level: the relay uses a BYPASSRLS-free role but queries all tenants
-// because it publishes on behalf of every tenant. RLS still guards
-// writes; the relay only reads and updates published_at.
+// PollOutbox returns up to limit unpublished outbox rows ordered by occurrence time.
 func (p *Pool) PollOutbox(ctx context.Context, limit int) ([]UnpublishedRow, error) {
 	const q = `SELECT id, tenant_id, event_id, aggregate_type, aggregate_id,
 		event_type, payload, occurred_at
@@ -97,9 +85,7 @@ func (p *Pool) PollOutbox(ctx context.Context, limit int) ([]UnpublishedRow, err
 	return out, rows.Err()
 }
 
-// MarkPublished sets published_at for the given outbox row IDs. Called by
-// the relay after a successful NATS publish. Idempotent: re-marking a
-// published row is a no-op.
+// MarkPublished sets published_at for the given outbox row IDs.
 func (p *Pool) MarkPublished(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
@@ -111,9 +97,7 @@ func (p *Pool) MarkPublished(ctx context.Context, ids []string) error {
 	return nil
 }
 
-// CountUnpublished returns the number of outbox rows with
-// published_at IS NULL. Used by the relay's lag reporter for the
-// orchicon_outbox_lag metric (docs/08 §5.2).
+// CountUnpublished returns the number of outbox rows with published_at IS NULL.
 func (p *Pool) CountUnpublished(ctx context.Context) (int64, error) {
 	var count int64
 	err := p.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE published_at IS NULL`).Scan(&count)
@@ -123,22 +107,8 @@ func (p *Pool) CountUnpublished(ctx context.Context) (int64, error) {
 	return count, nil
 }
 
-// PrunePublishedOutbox deletes up to batchLimit published outbox rows whose
-// published_at is older than olderThan, oldest first.
-//
-// This is the outbox retention pass. Published rows are otherwise never
-// removed and the table grows without bound — the exact pathology that
-// produced the 8.4M-row / 8.4 GB backlog this retention exists to prevent.
-//
-// Rows with published_at IS NULL are NEVER touched: an unpublished row is an
-// event that has not yet been delivered, and pruning it would silently drop a
-// delivery guarantee. The statement is bounded per call (batchLimit clamped to
-// [1, 100000]) so a single pass cannot hold a long lock or spike WAL; the
-// caller loops until a short batch is returned. It runs on the same
-// non-tenant pool path as PollOutbox/MarkPublished (the relay publishes on
-// behalf of every tenant), and the new partial outbox_published_at_idx makes
-// the ORDER BY published_at LIMIT scan index-backed instead of a seq scan over
-// the whole table.
+// Rows with published_at IS NULL are NEVER touched: an unpublished row is an event that has not yet
+// been delivered, and pruning it would silently drop a delivery guarantee.
 func (p *Pool) PrunePublishedOutbox(ctx context.Context, olderThan time.Time, batchLimit int) (int64, error) {
 	if batchLimit <= 0 {
 		batchLimit = 10000
@@ -158,14 +128,8 @@ func (p *Pool) PrunePublishedOutbox(ctx context.Context, olderThan time.Time, ba
 	return tag.RowsAffected(), nil
 }
 
-// CountAndOldestUnpublished returns the number of unpublished outbox rows and
-// the occurred_at of the oldest one (nil when there are none). Both come from
-// one index-backed query against the partial outbox_unpublished_idx, so the
-// relay's lag reporter costs a single round-trip per poll.
-//
-// Depth alone cannot distinguish "a busy relay keeping up" from "a stalled
-// relay falling behind" — the age of the oldest unpublished row is the stall
-// signal (docs/08 §5.2), which is why both are reported together.
+// CountAndOldestUnpublished returns the number of unpublished outbox rows and the occurred_at of
+// the oldest one (nil when there are none).
 func (p *Pool) CountAndOldestUnpublished(ctx context.Context) (int64, *time.Time, error) {
 	var count int64
 	var oldest *time.Time
@@ -188,11 +152,7 @@ func nullableStr(s string) any {
 // entropy is a process-local ULID entropy source. crypto/rand provides
 // the 124-bit uniqueness required for ULID's monotonicity guarantees.
 var (
-	// ulidMu serializes ULID generation. ulid.Monotonic's MonotonicRead is
-	// NOT safe for concurrent use: without the lock, two goroutines (e.g.
-	// the outbox relay and a service handler) race on the shared
-	// crypto/rand bufio buffer and panic with "slice bounds out of range
-	// [:8192] with capacity 4096".
+	// ulidMu serializes ULID generation.
 	ulidMu  sync.Mutex
 	entropy = ulid.Monotonic(rand.Reader, 0)
 )
@@ -204,9 +164,7 @@ func newULID() string {
 	return ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
 }
 
-// NewID generates a ULID suitable for use as a primary key. IDs are
-// generated server-side, never accepted from the client on create
-// (AGENTS.md security standards).
+// NewID generates a ULID suitable for use as a primary key.
 func NewID() string {
 	return newULID()
 }

@@ -11,10 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ProjectRow is the data-access shape of a projects table row. It maps
-// 1:1 to domain.Project but stays in the db package so all SQL is
-// centralized here (AGENTS.md invariant #4). Callers translate to/from
-// the domain or API types at the service boundary.
+// ProjectRow is the data-access shape of a projects table row.
 type ProjectRow struct {
 	ID           string
 	TenantID     string
@@ -27,47 +24,30 @@ type ProjectRow struct {
 	UpdatedAt    time.Time
 	ProjectDir   string
 	ContextFiles []byte // jsonb: absolute file paths selected as context
-	// SkillFiles is the jsonb array of absolute skill file/directory paths
-	// selected for this project. It is the SELECTABLE-skill half of the
-	// prompt, union-ed with a worker version's (or a conversation's)
-	// SkillFiles at render time. DISTINCT from the free-text `skills`
-	// prompt section on worker_versions / ask_orchicon_agent_config: these
-	// are real on-disk paths rendered by contextfiles.RenderManifest, not
-	// prose.
+	// SkillFiles is the jsonb array of absolute skill file/directory paths selected for this project.
 	SkillFiles []byte // jsonb: absolute skill file/directory paths
 
-	// MaxConcurrentRuns caps how many executions may run concurrently for
-	// this project (concurrency guards). 0 = no additional restriction
-	// (the tenant cap, or no cap, applies).
+	// MaxConcurrentRuns caps how many executions may run concurrently for this project (concurrency
+	// guards).
 	MaxConcurrentRuns int
 
-	// Git work-tree detection cache (non-repo in-place fallback). The
-	// WorktreeReconciler shells out to `git rev-parse --is-inside-work-tree`
-	// once and records the result here so the loop never repeats the
-	// subprocess on every pass. git_detected_at == nil means the cache is
-	// empty/undetermined and the reconciler must detect.
+	// Git work-tree detection cache (non-repo in-place fallback).
 	GitWorkTree   bool
 	GitDetectedAt *time.Time
 
-	// RepoSlug is the cached git origin ("owner/repo") of the project_dir,
-	// captured alongside git detection. Used to derive deterministic
-	// per-branch PR links without a provider call. NULL when the project is
-	// not git-backed or the origin is unknown.
+	// RepoSlug is the cached git origin ("owner/repo") of the project_dir, captured alongside git
+	// detection.
 	RepoSlug *string
 
 	// GitStrategy controls how worktrees materialize: local=push branch only, pr=push+PR, none=ephemeral. Values: local, pr, none.
 	GitStrategy string
 
-	// DefaultRuntimeImage is the project-level default runtime container
-	// image tag (always-container runtime). NULL (nil) = inherit
-	// tenant/base. Copied onto work items at create time when the caller
-	// passes an empty runtime_image; explicit per-item values win, and
-	// updating the default never retro-mutates existing items.
+	// DefaultRuntimeImage is the project-level default runtime container image tag (always-container
+	// runtime).
 	DefaultRuntimeImage *string
 
-	// ExecutionMode controls where native executions run: "local"
-	// (default) = in-process allowed with an honest prompt block + a hard
-	// DSN fence, "runtime" (opt-in) = always-container.
+	// ExecutionMode controls where native executions run: "local" (default) = in-process allowed with
+	// an honest prompt block + a hard DSN fence, "runtime" (opt-in) = always-container.
 	ExecutionMode string
 }
 
@@ -81,18 +61,10 @@ const (
 	ExecutionModeLocal   = "local"
 )
 
-// ExecutionModeInvalidMsg is the ONE message for a rejected mode. It names
-// both accepted values, so widening the enum means changing this string in
-// the same edit.
+// ExecutionModeInvalidMsg is the ONE message for a rejected mode.
 const ExecutionModeInvalidMsg = "execution_mode must be runtime or local"
 
 // ParseExecutionMode maps a stored/wire mode string to a validated mode.
-//
-// An empty (unset) value yields `unset`, which the caller decides: creation
-// passes DefaultExecutionMode (an absent mode means "the default"), while an
-// update passes "" so an absent field still means "leave it unchanged".
-// Any non-empty value that is not runtime or local is an error carrying
-// ExecutionModeInvalidMsg — rejected at the boundary, never silently coerced.
 func ParseExecutionMode(raw, unset string) (string, error) {
 	v := strings.ToLower(strings.TrimSpace(raw))
 	switch v {
@@ -124,18 +96,8 @@ func ParseExecutionMode(raw, unset string) (string, error) {
 // barrier before resolving anything.
 const BaseRuntimeImage = "orchicon-runtime:base"
 
-// SetBaseRuntimeImage replaces the resolve chain's fallback with the image the
-// runtime daemon ACTUALLY uses.
-//
-// A SETTER RATHER THAN A CONFIG STRUCT FIELD, because the dependency cannot run the
-// other way: internal/runtime imports internal/db (lifecycle.go), so db may not
-// import internal/runtime without a cycle. A pull from the daemon is therefore
-// impossible from here, and this push is the only shape that keeps the resolve
-// chain's fallback and the daemon's allowlist in agreement without moving the
-// constant to a third package and re-exporting it from both.
-//
-// Empty is ignored: the fallback must never become empty, or the resolve chain would
-// hand the daemon an empty image and get "no image specified" instead.
+// SetBaseRuntimeImage replaces the resolve chain's fallback with the image the runtime daemon
+// ACTUALLY uses.
 func SetBaseRuntimeImage(ref string) {
 	if ref = strings.TrimSpace(ref); ref == "" {
 		return
@@ -155,25 +117,14 @@ func RuntimeBaseImage() string {
 	return BaseRuntimeImage
 }
 
-// ErrNotFound is returned when a single-row query matches no rows. The
-// data-access layer treats this as a not-found condition; the API layer
-// maps it to connect.CodeNotFound.
+// ErrNotFound is returned when a single-row query matches no rows.
 var ErrNotFound = errors.New("db: not found")
 
-// ErrVersionConflict is returned when an optimistic-concurrency UPDATE
-// matches no row because the version is stale but the row still exists.
-// It is distinct from ErrNotFound so callers can retry or map the error
-// without the misleading "db: not found" for an existing item.
+// ErrVersionConflict is returned when an optimistic-concurrency UPDATE matches no row because the
+// version is stale but the row still exists.
 var ErrVersionConflict = errors.New("db: version conflict")
 
-// CreateProject inserts a new project row within the given tenant
-// transaction. The caller controls the transaction so the outbox row can
-// be enqueued in the same atomic unit (docs/09 §6). Optimistic
-// concurrency is not needed on insert; version starts at 1. The
-// generated id, timestamps, and version are returned via RETURNING.
-//
-// The tenant_id is written from p.TenantID (the primary isolation layer)
-// and RLS is the backstop (docs/09 §8.5).
+// CreateProject inserts a new project row within the given tenant transaction.
 func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) (ProjectRow, error) {
 	const q = `INSERT INTO projects
 		(id, tenant_id, name, slug, status, goals, project_dir, max_concurrent_runs, git_strategy, default_runtime_image, execution_mode)
@@ -205,8 +156,6 @@ func CreateProject(ctx context.Context, tx pgx.Tx, p ProjectRow) (ProjectRow, er
 }
 
 // GetProject fetches a single project by id within the tenant scope.
-// The tenant_id is injected into the WHERE clause as the primary
-// isolation layer; RLS is the backstop (docs/09 §8.5).
 func GetProject(ctx context.Context, tx pgx.Tx, tenantID, id string) (ProjectRow, error) {
 	const q = `SELECT id, tenant_id, name, slug, status, goals, version,
 		created_at, updated_at, project_dir, context_files, skill_files, max_concurrent_runs, git_work_tree, git_detected_at, repo_slug, git_strategy, default_runtime_image, execution_mode
@@ -271,15 +220,7 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 	if f.SortOrder == "desc" {
 		sortOrder = "DESC"
 	}
-	// THE CURSOR MUST AGREE WITH THE ORDER. It used to be a bare `id > $n` while the default ordering
-	// is (created_at ASC, ...) — two different orders, so page 2 could both repeat and skip rows. That
-	// is not theoretical here: the live tenant has 499 project pairs whose id order DISAGREES with
-	// their created_at order, because an id is minted when a row is CREATED while created_at is
-	// assigned by the database, and a bulk import or a restored dump reorders the two.
-	//
-	// The cursor is now a keyset on the SAME (sort key, id) tuple the ORDER BY uses — the pattern
-	// ListExecutions and ListWorkItems already use — so page N+1 continues exactly where page N
-	// stopped, whatever the direction and whichever column is the sort key.
+	// THE CURSOR MUST AGREE WITH THE ORDER.
 	if f.AfterID != "" {
 		cmp := ">"
 		if sortOrder == "DESC" {
@@ -315,11 +256,8 @@ func ListProjects(ctx context.Context, tx pgx.Tx, f ListProjectsFilter) ([]Proje
 	return out, rows.Err()
 }
 
-// UpdateProjectFields is a partial update applied with optimistic
-// concurrency: the row is updated only if its version matches
-// expectedVersion, then version is bumped (docs/09 §5). Only non-nil
-// fields are written; nil fields are left untouched (field-mask
-// semantics — docs/07 §5.4).
+// UpdateProjectFields is a partial update applied with optimistic concurrency: the row is updated
+// only if its version matches expectedVersion, then version is bumped (docs/09 §5).
 type UpdateProjectFields struct {
 	Name                *string
 	Slug                *string
@@ -334,9 +272,6 @@ type UpdateProjectFields struct {
 }
 
 // UpdateProject applies a partial update with optimistic concurrency.
-// The tenant_id is injected into the WHERE clause as the primary
-// isolation layer. Returns ErrNotFound if no row matches the
-// id+tenant+version.
 func UpdateProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, f UpdateProjectFields) (ProjectRow, error) {
 	q := `UPDATE projects SET updated_at = now(), version = version + 1`
 	args := []any{tenantID, id, expectedVersion}
@@ -360,10 +295,9 @@ func UpdateProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expected
 		q += fmt.Sprintf(`, project_dir = $%d`, setIdx)
 		args = append(args, *f.ProjectDir)
 		setIdx++
-		// A project_dir change invalidates the cached git detection: reset
-		// the cache to "undetermined" (git_detected_at = NULL) so the
-		// WorktreeReconciler re-detects on its next pass instead of trusting
-		// a stale value for the old directory.
+		// A project_dir change invalidates the cached git detection: reset the cache to "undetermined"
+		// (git_detected_at = NULL) so the WorktreeReconciler re-detects on its next pass instead of
+		// trusting.
 		q += fmt.Sprintf(`, git_work_tree = false, git_detected_at = NULL`)
 	}
 	if f.ContextFiles != nil {
@@ -413,12 +347,8 @@ func UpdateProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expected
 	return p, nil
 }
 
-// UpdateProjectGitDetection records the WorktreeReconciler's cached git
-// work-tree detection on the project row (non-repo in-place fallback),
-// along with the remote origin's owner/repo slug (for deterministic
-// per-branch PR links). The update is guarded by optimistic concurrency; a
-// lost-write race with a concurrent reconciler pass simply converges on the
-// next pass, so the caller treats a failure as best-effort.
+// UpdateProjectGitDetection records the WorktreeReconciler's cached git work-tree detection on the
+// project row (non-repo in-place fallback).
 func UpdateProjectGitDetection(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, isWorkTree bool, repoSlug string) (ProjectRow, error) {
 	q := `UPDATE projects SET updated_at = now(), version = version + 1,
 		git_work_tree = $4, git_detected_at = now(), repo_slug = $5
@@ -515,9 +445,7 @@ func DeleteProject(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
 			return fmt.Errorf("db: delete project cascade %s: %w", s.what, err)
 		}
 	}
-	// The project itself. A missing row is not an error here: the caller may be retrying a delete
-	// whose cascade already ran, and the contract this function owes is "the project and its data are
-	// gone" — which is true either way.
+	// The project itself.
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM projects WHERE id = $1 AND tenant_id = $2`,
 		id, tenantID); err != nil {
@@ -526,9 +454,7 @@ func DeleteProject(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
 	return nil
 }
 
-// ArchiveProject transitions a project to archived status with optimistic
-// concurrency. The tenant_id is injected into the WHERE clause. Returns
-// the updated row or ErrNotFound.
+// ArchiveProject transitions a project to archived status with optimistic concurrency.
 func ArchiveProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int) (ProjectRow, error) {
 	const q = `UPDATE projects
 		SET status = 'archived', updated_at = now(), version = version + 1
@@ -550,9 +476,7 @@ func ArchiveProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 	return p, nil
 }
 
-// RequireProjectActive checks that the project with the given ID exists
-// and has status='active'. Returns ErrNotFound if the project doesn't
-// exist, or a descriptive error if it's in another state.
+// RequireProjectActive checks that the project with the given ID exists and has status='active'.
 func RequireProjectActive(ctx context.Context, tx pgx.Tx, tenantID, projectID string) error {
 	const q = `SELECT status FROM projects WHERE id = $1 AND tenant_id = $2`
 	var status string

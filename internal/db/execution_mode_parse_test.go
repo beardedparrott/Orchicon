@@ -1,11 +1,6 @@
 package db_test
 
 // Pure unit tests for the ONE execution-mode default/parser (no DSN needed).
-//
-// The default is an operator decision: local (in-process, fenced) is what a
-// project lands in when the caller sends no mode; containers are opt-in
-// (runtime). Every entry point — Ask tools, Connect API, web UI, TUI, db layer
-// — routes through these so they cannot drift.
 
 import (
 	"testing"

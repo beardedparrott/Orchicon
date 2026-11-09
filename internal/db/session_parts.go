@@ -10,10 +10,7 @@ import (
 )
 
 // SessionPart is one entry of the durable per-execution session transcript
-// (execution_session_parts). kind identifies the side of the conversation:
-// user_message (goal / nudge / human), text, tool_use, reasoning,
-// step_start, step_finish, error. payload is the raw opencode part/message
-// JSON (high-fidelity enough to reconstruct the session later).
+// (execution_session_parts).
 type SessionPart struct {
 	ExecutionID string
 	TenantID    string
@@ -23,10 +20,8 @@ type SessionPart struct {
 	CreatedAt   time.Time
 }
 
-// AppendExecutionSessionParts inserts transcript entries idempotently
-// (ON CONFLICT DO NOTHING, so a replayed batch cannot double-record).
-// seq must be globally increasing per execution; the caller owns the
-// counter.
+// AppendExecutionSessionParts inserts transcript entries idempotently (ON CONFLICT DO NOTHING, so a
+// replayed batch cannot double-record).
 func AppendExecutionSessionParts(ctx context.Context, tx pgx.Tx, tenantID string, parts []SessionPart) error {
 	if len(parts) == 0 {
 		return nil
@@ -46,15 +41,9 @@ func AppendExecutionSessionParts(ctx context.Context, tx pgx.Tx, tenantID string
 	return nil
 }
 
-// ListExecutionSessionParts returns the transcript for an execution in
-// chronological order. beforeSeq paginates backwards (exclusive); 0 = from
-// the start. limit bounds the page.
+// ListExecutionSessionParts returns the transcript for an execution in chronological order.
 func ListExecutionSessionParts(ctx context.Context, tx pgx.Tx, tenantID, executionID string, limit int, beforeSeq int64) ([]SessionPart, error) {
-	// A session chat must render the WHOLE transcript. The old 1000 cap
-	// dropped the newest parts (highest seqs) for a long execution — a
-	// follow-up reply (the highest seqs) was silently cut off while the
-	// oldest 1000 parts were returned. A caller that wants a tail passes
-	// beforeSeq; the cap is generous enough to cover a long run.
+	// A session chat must render the WHOLE transcript.
 	if limit <= 0 {
 		limit = 1000
 	}
@@ -94,11 +83,8 @@ func ListExecutionSessionParts(ctx context.Context, tx pgx.Tx, tenantID, executi
 	return out, rows.Err()
 }
 
-// ListExecutionSessionPartsTail returns the LAST `limit` parts of an
-// execution's transcript (ORDER BY seq DESC LIMIT n), which is what the
-// recovery-resumed dispatch seeds into the .orchicon/worker.recovery file.
-// The caller reverses the result to restore chronological order. limit is
-// clamped to 1..1000.
+// ListExecutionSessionPartsTail returns the LAST `limit` parts of an execution's transcript (ORDER
+// BY seq DESC LIMIT n).
 func ListExecutionSessionPartsTail(ctx context.Context, tx pgx.Tx, tenantID, executionID string, limit int) ([]SessionPart, error) {
 	if limit <= 0 {
 		limit = 1
@@ -128,12 +114,8 @@ func ListExecutionSessionPartsTail(ctx context.Context, tx pgx.Tx, tenantID, exe
 	return out, rows.Err()
 }
 
-// LatestToolUseParts returns the MOST RECENT `limit` tool_use parts of an
-// execution's transcript (kind='tool_use' ORDER BY seq DESC LIMIT n), which
-// is what the todos parser walks to find the latest todowrite payload.
-// limit is clamped to 1..1000; the caller may reverse the result if it needs
-// chronological order. The query is index-backed by the
-// UNIQUE(tenant_id, execution_id, seq) constraint.
+// LatestToolUseParts returns the MOST RECENT `limit` tool_use parts of an execution's transcript
+// (kind='tool_use' ORDER BY seq DESC LIMIT n).
 func LatestToolUseParts(ctx context.Context, tx pgx.Tx, tenantID, executionID string, limit int) ([]SessionPart, error) {
 	if limit <= 0 {
 		limit = 1000

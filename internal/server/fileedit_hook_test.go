@@ -1,13 +1,7 @@
 package server
 
-// Regression test for the live-run file-edit ledger gap: since the
-// composite-tools rollout the tool names "write"/"edit" denote BOTH the
-// worktree engine's single-op wrappers (ground truth in the structured
-// `file_edits` output) AND the opencode built-in file tools (plane-side
-// after-snapshot). The old hook routed write/edit exclusively down the
-// observer path, silently dropping every successful single-op engine edit.
-// The fixed hook (newFileEditHook) tries the engine payload first and falls
-// back to the observer only for genuine built-in usage.
+// Regression test for the live-run file-edit ledger gap: since the composite-tools rollout the tool
+// names "write"/"edit" denote BOTH the worktree engine's single-op wrappers (ground truth.
 
 import (
 	"context"
@@ -68,11 +62,7 @@ func (f *fakeFileEditStore) tools() []string {
 	return tools
 }
 
-// ownerTuples returns each row's owner as "kind|id" — the tuple a client
-// queries by. Asserting on it (rather than a row count) is what makes a test
-// delta-proof against the post-turn git sweep: the sweep writes CORRECT rows
-// under the right owner, so only a tuple assertion can distinguish a live,
-// correctly-attributed hook row from the sweep's backstop.
+// ownerTuples returns each row's owner as "kind|id" — the tuple a client queries by.
 func (f *fakeFileEditStore) ownerTuples() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -93,12 +83,8 @@ const engineEditOutput = "edit: applied 1 edit(s): notes/a.txt\n" +
 	`{"path":"notes/a.txt","kind":"modify","unified_diff":"--- a/notes/a.txt\n+++ b/notes/a.txt\n@@ -1 +1 @@\n-hi\n+yo\n",` +
 	`"existed_before":true,"existed_after":true,"size_before":3,"size_after":3}]}`
 
-// TestFileEditHookEngineWriteEdit: engine single-op write/edit outputs with a
-// file_edits payload yield exactly one ledger row each, tagged with the tool
-// name — the payload is tried BEFORE the observer, so no plane-side read is
-// needed (execDir points at an empty dir to prove the observer never fires:
-// any observer fallback would find no file and record nothing, or record a
-// wrong-base row).
+// TestFileEditHookEngineWriteEdit: engine single-op write/edit outputs with a file_edits payload
+// yield exactly one ledger row each, tagged with the tool name.
 func TestFileEditHookEngineWriteEdit(t *testing.T) {
 	store := &fakeFileEditStore{}
 	svc := fileedit.NewService(store, slog.Default())
@@ -118,9 +104,8 @@ func TestFileEditHookEngineWriteEdit(t *testing.T) {
 	}
 }
 
-// TestFileEditHookBuiltinFallback: a genuine built-in-shaped write (no
-// file_edits payload, content input) falls back to the plane-side
-// after-snapshot and records one opencode:write row from real file state.
+// TestFileEditHookBuiltinFallback: a genuine built-in-shaped write (no file_edits payload, content
+// input) falls back to the plane-side after-snapshot and records one opencode:write row from real.
 func TestFileEditHookBuiltinFallback(t *testing.T) {
 	store := &fakeFileEditStore{}
 	svc := fileedit.NewService(store, slog.Default())
@@ -142,9 +127,8 @@ func TestFileEditHookBuiltinFallback(t *testing.T) {
 	}
 }
 
-// TestFileEditHookFailedOutputSilent: a failed edit call's output (no payload,
-// error text) yields zero rows — the tolerant design: failed tools stay
-// silent, never phantom rows.
+// TestFileEditHookFailedOutputSilent: a failed edit call's output (no payload, error text) yields
+// zero rows — the tolerant design: failed tools stay silent, never phantom rows.
 func TestFileEditHookFailedOutputSilent(t *testing.T) {
 	store := &fakeFileEditStore{}
 	svc := fileedit.NewService(store, slog.Default())
@@ -183,12 +167,8 @@ func TestFileEditHookBatchWrite(t *testing.T) {
 	}
 }
 
-// TestFileEditHookAskOwnerTuple pins the Ask half of the owner attribution:
-// the SAME constructor, built with the Ask owner kind, records the row under
-// (ask_conversation, <conversation id>) — the exact tuple both clients' Ask
-// diff panes query. It is a TUPLE assertion, not a row count: a count would
-// also pass for a row written under the wrong owner, which is the bug this
-// item exists to fix.
+// TestFileEditHookAskOwnerTuple pins the Ask half of the owner attribution: the SAME constructor,
+// built with the Ask owner kind, records the row under (ask_conversation, <conversation id>).
 func TestFileEditHookAskOwnerTuple(t *testing.T) {
 	store := &fakeFileEditStore{}
 	svc := fileedit.NewService(store, slog.Default())
@@ -203,9 +183,8 @@ func TestFileEditHookAskOwnerTuple(t *testing.T) {
 	}
 }
 
-// TestFileEditHookExecutionOwnerTuple is the no-regression half: a hook built
-// with the execution owner kind still records (execution, <execution id>) —
-// worker/execution sessions must be unchanged by the Ask wiring.
+// TestFileEditHookExecutionOwnerTuple is the no-regression half: a hook built with the execution
+// owner kind still records (execution, <execution id>).
 func TestFileEditHookExecutionOwnerTuple(t *testing.T) {
 	store := &fakeFileEditStore{}
 	svc := fileedit.NewService(store, slog.Default())

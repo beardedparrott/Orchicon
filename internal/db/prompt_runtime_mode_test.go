@@ -5,11 +5,8 @@ import (
 	"testing"
 )
 
-// TestRuntimeEnvironmentBlockBranches pins acceptance D: the runtime branch
-// renders the container claim with the resolved image name; the local
-// branch renders the HONEST in-process block (no container, loopback is
-// LIVE). StablePromptPrefix threads the mode through and splits the KV
-// cache across modes while sharing it within a mode.
+// TestRuntimeEnvironmentBlockBranches pins acceptance D: the runtime branch renders the container
+// claim with the resolved image name.
 func TestRuntimeEnvironmentBlockBranches(t *testing.T) {
 	rt := RuntimeEnvironmentBlock("orchicon-runtime:orchicon-dev", ExecutionModeRuntime)
 	if !strings.Contains(rt, "orchicon-runtime:orchicon-dev") {

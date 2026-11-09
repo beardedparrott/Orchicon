@@ -46,9 +46,6 @@ import (
 )
 
 // TestAskBaseDirIsTheConversationsProjectNotTheProcessCwd is the regression pin.
-//
-// It needs a DB (the conversation's project is read from a row, which is the whole
-// point — the directory comes from the same authority the tools use).
 func TestAskBaseDirIsTheConversationsProjectNotTheProcessCwd(t *testing.T) {
 	pool := askDirPool(t)
 	ctx := context.Background()
@@ -60,13 +57,8 @@ func TestAskBaseDirIsTheConversationsProjectNotTheProcessCwd(t *testing.T) {
 	convID := db.NewID()
 	proj := createAskDirTestProject(t, pool, tenantID, projDir)
 
-	// The conversation's project id rides the context — the same stamping chat.go
-	// does for a turn (withAskConversationProject), which is what AskFileScopeFor
-	// reads. Driving it through the context rather than a parameter is deliberate:
-	// it is the production shape.
-	// BOTH stamps, because AskFileScopeFor requires them: the TENANT (the RLS scope
-	// every DB read needs) and the conversation's project. The production turn carries
-	// exactly these two, so the test drives the real shape rather than a partial one.
+	// The conversation's project id rides the context — the same stamping chat.go does for a turn
+	// (withAskConversationProject), which is what AskFileScopeFor reads.
 	cctx := tenant.WithID(
 		askmode.WithConversationScope(ctx, askmode.ConversationScope{ConversationID: convID, ProjectID: proj.ID}),
 		tenantID,
@@ -83,9 +75,6 @@ func TestAskBaseDirIsTheConversationsProjectNotTheProcessCwd(t *testing.T) {
 	}
 
 	// THE ACTUAL BUG, asserted directly: it must NOT be the process working directory.
-	// This is the comparison that would have failed before the fix, on any machine
-	// where the plane was started from a different tree than the session works in —
-	// and it failed SILENTLY there, because both directories exist.
 	if wd, err := os.Getwd(); err == nil && got == wd {
 		t.Errorf("askBaseDir = the PROCESS CWD (%q) — the observer would diff files the session "+
 			"never touched, which is the defect: the session writes in its own tree while the "+
@@ -138,9 +127,8 @@ func askDirPool(t *testing.T) *db.Pool {
 	return pool
 }
 
-// createAskDirTestProject inserts a project whose project_dir is a real, distinctive
-// temporary directory. It is cleaned up through the platform's own cascade so the test
-// leaves nothing behind.
+// createAskDirTestProject inserts a project whose project_dir is a real, distinctive temporary
+// directory.
 func createAskDirTestProject(t *testing.T, pool *db.Pool, tenant, dir string) db.ProjectRow {
 	t.Helper()
 	ctx := context.Background()

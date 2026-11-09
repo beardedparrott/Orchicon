@@ -1,14 +1,6 @@
 package db
 
 // prompt_mode_test.go — THE PROMPT MUST NOT TELL A WORKER TO DO WHAT THE PROJECT CANNOT SUPPORT.
-//
-// Reported: three runs produced fully green, fully committed code and still reported `failure`, because the
-// canned prompt unconditionally told the worker to `git push`, `gh pr create`, `gh pr merge` — and the project
-// had `git_strategy=local` with NO REMOTE. Every one of those commands can only fail there, so the worker
-// spent its time-box on an impossible operation and reported the failure as its own.
-//
-// The unit under test is the guidance the dispatch actually emits (GitGuidanceBlock), because that is the
-// prompt that reaches the worker; a canned AGENTS.md cannot override it.
 
 import (
 	"strings"
@@ -69,11 +61,6 @@ func TestCommitAlwaysIsStated(t *testing.T) {
 }
 
 // TestTheSeedPromptsDoNotClaimDirectoriesAreGitignored pins §5.21.
-//
-// The Quick and DevOps prompts told workers that `architecture-notes/` and `design-notes/` are "gitignored
-// working notes, just delete the files". A worker VERIFIED that against the repo and found .gitignore contains
-// only `01*/` — so the instruction asserted something false, and a worker that trusted it would leave files
-// that land in the next commit.
 func TestTheSeedPromptsDoNotClaimDirectoriesAreGitignored(t *testing.T) {
 	var b strings.Builder
 	for _, w := range CannedWorkers() {

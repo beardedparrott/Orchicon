@@ -42,9 +42,8 @@ func TestClearUsageSessionIDsDelinksKeepsRows(t *testing.T) {
 	convID := "delink-conv-" + db.NewID()
 	sessionID := "orchicon-ask:" + convID
 
-	// Two attribution styles must BOTH de-link: the canonical Ask attribution
-	// (session_id = conversation id, what recordTurnUsage writes) and a
-	// session-id attribution (defensive, for a session-ful adapter).
+	// Two attribution styles must BOTH de-link: the canonical Ask attribution (session_id =
+	// conversation id, what recordTurnUsage writes) and a session-id attribution (defensive.
 	var ids []string
 	for _, sid := range []string{convID, sessionID} {
 		ttx, err := pool.BeginTenantTx(ctx, tenant)
@@ -135,9 +134,8 @@ func TestClearUsageSessionIDsEmptyIDsNoop(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 
-	// A legacy conversation with no session id still de-links by conversation
-	// id; with NO usable id at all the call is a no-op that cannot silently
-	// clear every row (an empty-string id must never become a mass update).
+	// A legacy conversation with no session id still de-links by conversation id; with NO usable id at
+	// all the call is a no-op that cannot silently clear every row (an empty-string id must never.
 	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)

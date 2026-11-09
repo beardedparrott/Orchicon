@@ -9,13 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// TestSeedRetiresRetiredWorkflows verifies the workflow seeder's cleanup
-// pass: templates that were canned in an earlier build but removed from
-// cannedWorkflows are hard-deleted on boot — but ONLY while they are still
-// seed-managed (their current version is the original seed version). A
-// workflow the user has forked (new versions) is left untouched.
-//
-// Guarded by ORCHICON_TEST_DSN like the other DB-backed seed tests.
+// TestSeedRetiresRetiredWorkflows verifies the workflow seeder's cleanup pass: templates that were
+// canned in an earlier build but removed from cannedWorkflows are hard-deleted on boot.
 func TestSeedRetiresRetiredWorkflows(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -25,9 +20,8 @@ func TestSeedRetiresRetiredWorkflows(t *testing.T) {
 		t.Fatalf("seed dev workflows: %v", err)
 	}
 
-	// Simulate a legacy install: two retired templates still at their
-	// original seed version (pristine — expect deletion) and one that the
-	// user forked by publishing a new version (expect preservation).
+	// Simulate a legacy install: two retired templates still at their original seed version (pristine —
+	// expect deletion) and one that the user forked by publishing a new version (expect preservation).
 	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
 		t.Fatal(err)
@@ -192,10 +186,8 @@ func TestQuickWorkSeedUnpinsAnExistingPin(t *testing.T) {
 	}
 }
 
-// TestNoCannedWorkflowPinsAGitStrategy is the rule rather than the instance: a canned
-// template is shared by every project, so pinning a strategy on one overrides whatever the
-// operator configured. If a future workflow genuinely needs a pin, this test is where that
-// decision gets argued.
+// TestNoCannedWorkflowPinsAGitStrategy is the rule rather than the instance: a canned template is
+// shared by every project, so pinning a strategy on one overrides whatever the operator configured.
 func TestNoCannedWorkflowPinsAGitStrategy(t *testing.T) {
 	for _, w := range db.CannedWorkflowViews() {
 		if w.GitStrategy != "" {
@@ -255,16 +247,6 @@ func TestUnpinClearsAStoredStrategyDB(t *testing.T) {
 }
 
 // TestQuickWorkVerifiesItsOwnPR pins that the all-in-one Quick Work step is PR-verified.
-//
-// Quick Work is a SINGLE worker step (step-quick → step-end, no DevOps step), and it is the
-// platform's most-used path — every Quick Work dispatch runs it. Without `requires_pr`, the
-// deterministic PR check in the workflow reconciler never runs for it, so the platform never confirms
-// a PR exists for the run's branch and the worker's own claim is the only evidence there is. That is
-// exactly the gap the evidence gate closes for the code, applied to the ship half.
-//
-// Why it matters even though the worker still self-reports: `requires_pr` makes the platform go and
-// LOOK (deterministicPRForBranch queries the repo for a PR whose head is the run branch), so a worker
-// that says "opened and merged" without doing it now fails the step instead of completing the run.
 func TestQuickWorkVerifiesItsOwnPR(t *testing.T) {
 	var found bool
 	for _, w := range db.CannedWorkflows() {

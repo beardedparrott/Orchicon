@@ -60,9 +60,8 @@ func workerCursorTx(t *testing.T) (context.Context, pgx.Tx, string) {
 	return ctx, ttx.Tx, tenant
 }
 
-// seedCursorWorkers inserts workers whose ID ORDER DISAGREES with their created_at order, which is the
-// shape that breaks a mismatched cursor. The created_at values interleave `01…` and `w_…` ids so neither
-// order contains the other.
+// seedCursorWorkers inserts workers whose ID ORDER DISAGREES with their created_at order, which is
+// the shape that breaks a mismatched cursor.
 func seedCursorWorkers(t *testing.T, ctx context.Context, tx pgx.Tx, tenant string) []string {
 	t.Helper()
 	rows := []struct {
@@ -136,10 +135,7 @@ func assertEveryWorkerExactlyOnce(t *testing.T, want, got []string, pageSize int
 	}
 }
 
-// TestWorkerListCursorIsStableAcrossPageSizes is the regression pin. Every page size is exercised
-// because the two failure modes need different ones: a page LARGER than the row count re-serves the
-// whole list (the operator's 30-of-19), while a small page SKIPS (a late-sorting row's cursor hides
-// everything after it in id order).
+// TestWorkerListCursorIsStableAcrossPageSizes is the regression pin.
 func TestWorkerListCursorIsStableAcrossPageSizes(t *testing.T) {
 	ctx, tx, tenant := workerCursorTx(t)
 	want := seedCursorWorkers(t, ctx, tx, tenant)
@@ -149,9 +145,8 @@ func TestWorkerListCursorIsStableAcrossPageSizes(t *testing.T) {
 	}
 }
 
-// TestWorkerListCursorHoldsUnderEachSort: the cursor has to agree with WHATEVER order the query used, so
-// the same walk is checked for every supported sort key and direction. A fix that only handled the
-// default would leave the same bug one keystroke away (the pane sorts by name and by status too).
+// TestWorkerListCursorHoldsUnderEachSort: the cursor has to agree with WHATEVER order the query
+// used, so the same walk is checked for every supported sort key and direction.
 func TestWorkerListCursorHoldsUnderEachSort(t *testing.T) {
 	ctx, tx, tenant := workerCursorTx(t)
 	want := seedCursorWorkers(t, ctx, tx, tenant)

@@ -71,9 +71,8 @@ func TestEffectiveGitStrategyPrecedenceBitIdentical(t *testing.T) {
 	}
 }
 
-// TestEffectiveGitStrategyNoneWinsEverywhere asserts that a `none` workflow
-// strategy overrides even an explicitly-specified project strategy — the
-// enforcement guarantee that `git_strategy=none` is honoured end-to-end.
+// TestEffectiveGitStrategyNoneWinsEverywhere asserts that a `none` workflow strategy overrides even
+// an explicitly-specified project strategy.
 func TestEffectiveGitStrategyNoneWinsEverywhere(t *testing.T) {
 	cases := []struct {
 		name             string

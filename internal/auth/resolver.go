@@ -6,9 +6,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/audit"
 )
 
-// ResolvedIdentity is the authenticated identity context the middleware
-// resolves per request and stores in the request context. Handlers and
-// the RBAC layer read it to enforce per-call authorization (docs/07 §6.3).
+// ResolvedIdentity is the authenticated identity context the middleware resolves per request and
+// stores in the request context.
 type ResolvedIdentity struct {
 	IdentityID   string
 	TenantID     string
@@ -34,11 +33,7 @@ func FromContext(ctx context.Context) (ResolvedIdentity, bool) {
 	return v, ok
 }
 
-// ActorFromContext returns the audit actor fields for the resolved
-// identity in the context. actor_type is "user" for any real actor
-// (including API-key callers and self-service signups), "system" when no
-// identity is attributable — the migration's DEFAULT 'system' is the
-// fallback for FK-nulled legacy rows, never for live user actions.
+// ActorFromContext returns the audit actor fields for the resolved identity in the context.
 func ActorFromContext(ctx context.Context) audit.Entry {
 	id, ok := FromContext(ctx)
 	if !ok {
@@ -52,9 +47,7 @@ func ActorFromContext(ctx context.Context) audit.Entry {
 	}
 }
 
-// HasEntitlement reports whether the identity holds the given
-// resource:action entitlement. Admins bypass the check (return true).
-// "*" matches any resource or action.
+// HasEntitlement reports whether the identity holds the given resource:action entitlement.
 func (r ResolvedIdentity) HasEntitlement(ent string) bool {
 	if r.IsAdmin {
 		return true

@@ -5,12 +5,7 @@ import (
 	"testing"
 )
 
-// TestResearchTrioEphemeralSeed is acceptance criterion #6: the
-// Automation Research trio's seed definitions must NOT carry the
-// unconditional "commit + push to the run branch" contract — the run is
-// ephemeral (`git_strategy=none`), so the seed must tell the worker the
-// worktree is a detached HEAD with nothing pushed. The trio's RollMarker
-// must be the ephemeral fragment so ONLY the trio re-rolls (never the whole
+// The trio's RollMarker must be the ephemeral fragment so ONLY the trio re-rolls (never the whole
 // fleet), and the old push contract must be gone from the seeded AGENTS.md.
 func TestResearchTrioEphemeralSeed(t *testing.T) {
 	slugs := map[string]bool{

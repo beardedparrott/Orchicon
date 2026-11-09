@@ -1,14 +1,6 @@
 package db
 
 // conversation_project_test.go — THE CONVERSATION COLUMN LIST CANNOT DRIFT FROM ITS SCAN.
-//
-// A conversation query returns conversationCols and hand-scans into the same fields, so the two have to agree
-// COLUMN BY COLUMN. They used to be nine separate literal lists (the insert, the get, the list, three updates'
-// RETURNING, and two scans), which made adding a column a nine-place edit with eight chances to miss one — and
-// a miss is not a compile error, it is a runtime "number of field descriptions must equal number of values"
-// from whichever path was forgotten.
-//
-// These tests pin the ONE source, so the next column is a deliberate edit rather than a hunt.
 
 import (
 	"strings"
@@ -29,10 +21,7 @@ func TestConversationColumnsIncludeTheProject(t *testing.T) {
 	}
 }
 
-// AND THE QUALIFIED FORM HAS THE SAME COLUMNS IN THE SAME ORDER. The LIST query aliases the table as `c`
-// because it computes a correlated message count, so it renders the list through conversationSelect("c") — a
-// qualifying path that could otherwise drop or reorder a column and break only the rail and the GUI list, not
-// the single-conversation reads.
+// AND THE QUALIFIED FORM HAS THE SAME COLUMNS IN THE SAME ORDER.
 func TestTheQualifiedColumnListMatchesThePlainOne(t *testing.T) {
 	plain := strings.Split(conversationSelect(""), ", ")
 	qualified := strings.Split(conversationSelect("c"), ", ")

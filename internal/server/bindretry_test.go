@@ -1,11 +1,6 @@
 package server
 
 // bindretry_test.go — the retry must fire for ephemeral exhaustion and for NOTHING else.
-//
-// The interesting half of the helper is the refusals. A retry that also swallowed a privileged-port or
-// not-on-this-host failure would turn a clear, permanent error into a 500ms delay followed by the same
-// error — and worse, it would make a REAL bind bug look like host flakiness, which is the failure mode
-// this whole change exists to avoid.
 
 import (
 	"errors"
@@ -79,9 +74,6 @@ func TestRetryBindIsBounded(t *testing.T) {
 }
 
 // A REAL BIND FAILURE IS NOT RETRIED — it reaches the caller on the FIRST attempt.
-//
-// This is the assertion that keeps the retry from becoming a disguise: a privileged port, an address that
-// is not on this host, a malformed addr must all fail immediately and unchanged.
 func TestRetryBindDoesNotRetryOtherFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -144,10 +136,6 @@ func indexOf(hay, needle string) int {
 }
 
 // THE FLAKY FORM MUST NOT COME BACK.
-//
-// A future edit that binds port 0 directly — or calls startListeners with a bare t.Fatalf — reintroduces
-// exactly the failure that was reported: four tests failing a build because the HOST momentarily had no
-// ephemeral port to give. The helper is the fix; this is the guard that keeps it used.
 func TestEphemeralBindsGoThroughTheHelper(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {

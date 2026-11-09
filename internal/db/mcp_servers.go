@@ -11,14 +11,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// MCPServerRow is the data-access shape of a mcp_servers row (tenant-
-// scoped MCP server entry; stdio or streamable HTTP). Env/headers are
-// decoded JSONB maps whose values may be ${SECRET_NAME} references.
-//
-// EXACTLY ONE of ProjectID / ConversationID is non-empty: the row's OWNER
-// (mcp_servers_owner_xor enforces it). A definition is no longer an
-// ownerless tenant-wide row referenced by a join table — selection IS
-// ownership.
+// MCPServerRow is the data-access shape of a mcp_servers row (tenant- scoped MCP server entry;
+// stdio or streamable HTTP).
 type MCPServerRow struct {
 	ID            string
 	TenantID      string
@@ -124,12 +118,7 @@ func ListMCPServers(ctx context.Context, tx pgx.Tx, tenantID string) ([]MCPServe
 	return out, rows.Err()
 }
 
-// UpsertMCPServer inserts or updates one row. The conflict target is the
-// PRIMARY KEY (id), not the name: name uniqueness is now OWNER-SCOPED
-// (mcp_servers_project_name_key / mcp_servers_conversation_name_key), so
-// two owners may each hold a `postgres`-named row while one owner may not
-// hold two. Create mints a fresh id; Update passes the existing one, so
-// the PK conflict is exact. Renaming stays delete+create.
+// UpsertMCPServer inserts or updates one row.
 func UpsertMCPServer(ctx context.Context, tx pgx.Tx, r MCPServerRow) (MCPServerRow, error) {
 	argsJSON, err := marshalMCPJSON(orEmptyList(r.Args), "[]")
 	if err != nil {
@@ -192,9 +181,8 @@ func UpdateMCPServerInstallResult(ctx context.Context, tx pgx.Tx, tenantID, id, 
 	return nil
 }
 
-// UpdateMCPServerConfig applies a partial config update (env/headers maps
-// replace-or-merge via the JSON merge). Used by SetMCPServerSecret /
-// ClearMCPServerSecret to write ${SECRET_NAME} references.
+// UpdateMCPServerConfig applies a partial config update (env/headers maps replace-or-merge via the
+// JSON merge).
 func UpdateMCPServerConfig(ctx context.Context, tx pgx.Tx, tenantID, id string, env map[string]string, headers map[string]string) error {
 	const q = `UPDATE mcp_servers SET env=$3::jsonb, headers=$4::jsonb, updated_at=now()
 		WHERE tenant_id=$1 AND id=$2`
@@ -229,15 +217,8 @@ func DeleteMCPServer(ctx context.Context, tx pgx.Tx, tenantID, id string) error 
 	return nil
 }
 
-// ListMCPServersByOwner returns the OWNER-SCOPED definitions visible to a
-// scope, ordered by name (the union's project-first ordering). The
-// predicate is an OR over both owner columns, so ONE call serves both the
-// project scope (conversationID empty → project rows only) and the
-// conversation scope (both ids → project ∪ conversation rows).
-//
-// It replaces the join-table pair (SetProjectMCPServers /
-// ListProjectMCPServerIDs) of the reference model: there is no selection to
-// write any more — the owner column IS the selection.
+// ListMCPServersByOwner returns the OWNER-SCOPED definitions visible to a scope, ordered by name
+// (the union's project-first ordering).
 func ListMCPServersByOwner(ctx context.Context, tx pgx.Tx, tenantID, projectID, conversationID string) ([]MCPServerRow, error) {
 	const q = `SELECT ` + mcpServerCols + ` FROM mcp_servers
 		WHERE tenant_id=$1
@@ -260,9 +241,8 @@ func ListMCPServersByOwner(ctx context.Context, tx pgx.Tx, tenantID, projectID, 
 	return out, rows.Err()
 }
 
-// ListMCPServersByIDs returns the rows whose ids are in the list,
-// tenant-scoped (used for validation + picker resolution). Unknown ids
-// are simply absent from the result.
+// ListMCPServersByIDs returns the rows whose ids are in the list, tenant-scoped (used for
+// validation + picker resolution).
 func ListMCPServersByIDs(ctx context.Context, tx pgx.Tx, tenantID string, ids []string) ([]MCPServerRow, error) {
 	if len(ids) == 0 {
 		return nil, nil
@@ -294,13 +274,8 @@ func nullIfEmpty(s string) *string {
 	return &s
 }
 
-// InlineMCPServer is ONE inline MCP definition carried by a worker
-// version's permissions jsonb ("mcp_servers"). Full specs and the legacy
-// id-only / {id,command} shapes all decode into this.
-//
-// An inline definition has no mcp_servers ROW — the worker version owns it
-// (see the epic), which is why EntryID is empty for one in
-// mcpclient.ScopedServer.
+// InlineMCPServer is ONE inline MCP definition carried by a worker version's permissions jsonb
+// ("mcp_servers").
 type InlineMCPServer struct {
 	ID      string            `json:"id"`
 	Type    string            `json:"type,omitempty"` // "stdio" | "http"
@@ -313,16 +288,7 @@ type InlineMCPServer struct {
 	OnError string `json:"onError,omitempty"`
 }
 
-// MCPServersFromPermissions is THE parser of worker_versions.permissions'
-// "mcp_servers" jsonb. THREE shapes decode here and NOTHING else parses
-// that key, so the reader and the writers can never disagree:
-//
-//  1. full inline spec  {"id","type","command":["npx","-y","x"],"url","headers","env","enabled","onError"}
-//  2. legacy reference  {"id":"01H…","command":"npx -y x"}   (command is a *string* → strings.Fields)
-//  3. legacy bare id    "01H…"
-//
-// A malformed jsonb yields nil (read-time normalization degrades, never
-// fails a session over worker config shape).
+// MCPServersFromPermissions is THE parser of worker_versions.permissions' "mcp_servers" jsonb.
 func MCPServersFromPermissions(permissions []byte) []InlineMCPServer {
 	if len(permissions) == 0 {
 		return nil
@@ -373,9 +339,8 @@ func MCPServersFromPermissions(permissions []byte) []InlineMCPServer {
 	return out
 }
 
-// decodeInlineCommand decodes the "command" member, which is EITHER the
-// full-spec argv array OR the legacy single string (split on fields, the
-// same rule the old mcpclient string form used). Absent/null → nil.
+// decodeInlineCommand decodes the "command" member, which is EITHER the full-spec argv array OR the
+// legacy single string (split on fields, the same rule the old mcpclient string form used).
 func decodeInlineCommand(raw json.RawMessage) []string {
 	t := strings.TrimSpace(string(raw))
 	if t == "" || t == "null" {
@@ -399,10 +364,8 @@ func decodeInlineCommand(raw json.RawMessage) []string {
 	return strings.Fields(s)
 }
 
-// MCPServerRefsFromPermissions keeps the ID-ONLY view of the same jsonb for
-// callers that only want ids. It DELEGATES to MCPServersFromPermissions:
-// ONE parser, ONE place — a second id parser here is exactly how the reader
-// and the writer drift apart.
+// MCPServerRefsFromPermissions keeps the ID-ONLY view of the same jsonb for callers that only want
+// ids.
 func MCPServerRefsFromPermissions(permissions []byte) []string {
 	defs := MCPServersFromPermissions(permissions)
 	if len(defs) == 0 {
@@ -417,18 +380,14 @@ func MCPServerRefsFromPermissions(permissions []byte) []string {
 	return ids
 }
 
-// InlineSkillFile is one inline skill file carried by a worker version's
-// permissions jsonb ("skill_files"). The skill-FILE STORE is child 2's; this
-// child only gives the run union its inline half, through the same
-// single-parser rule.
+// InlineSkillFile is one inline skill file carried by a worker version's permissions jsonb
+// ("skill_files").
 type InlineSkillFile struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
 }
 
-// SkillsFromPermissions is THE parser of worker_versions.permissions'
-// "skill_files" array. Absent/malformed → nil. Entries without a path are
-// dropped (an anonymous skill file cannot be deduped or placed).
+// SkillsFromPermissions is THE parser of worker_versions.permissions' "skill_files" array.
 func SkillsFromPermissions(permissions []byte) []InlineSkillFile {
 	if len(permissions) == 0 {
 		return nil

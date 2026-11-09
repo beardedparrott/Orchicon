@@ -9,10 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// AdapterRow is the data-access shape of a runtime_adapters table row
-// (docs/02 §2.8, docs/04 §2, docs/09 §3.7). A registered adapter
-// process offering execution capabilities. tenant_id is the primary
-// isolation layer; RLS is the backstop (docs/09 §8.5).
+// AdapterRow is the data-access shape of a runtime_adapters table row (docs/02 §2.8, docs/04 §2,
+// docs/09 §3.7).
 type AdapterRow struct {
 	ID                      string
 	TenantID                string
@@ -27,16 +25,6 @@ type AdapterRow struct {
 }
 
 // CreateAdapter registers a runtime adapter row.
-//
-// last_heartbeat_at IS persisted when the caller sets one. It used to be DROPPED — the INSERT's
-// column list omitted it and the field was only read back — so a caller that passed a heartbeat got
-// a row with NULL instead, silently. That mattered far beyond a missing column: the dispatcher's
-// candidate query treats NULL as FRESH (`last_heartbeat_at IS NULL OR last_heartbeat_at >= now() -
-// ttl`), so every test fixture that created an adapter with `LastHeartbeatAt: &now` in fact created
-// one that could never expire. 156 such rows accumulated in the live tenant, and because
-// selectAdapter's tiebreak is the adapter ID, they entered the same candidate pool as the real
-// adapter — 993 real executions were dispatched onto a `localhost:0` phantom, and every one of them
-// after the real adapter stopped being preferred came back failed/failed_to_start.
 func CreateAdapter(ctx context.Context, tx pgx.Tx, a AdapterRow) (AdapterRow, error) {
 	const q = `INSERT INTO runtime_adapters
 		(id, tenant_id, kind, version, endpoint, capabilities, status, max_concurrent_executions,
@@ -59,10 +47,7 @@ func CreateAdapter(ctx context.Context, tx pgx.Tx, a AdapterRow) (AdapterRow, er
 	return row, nil
 }
 
-// DeleteAdapter removes an adapter row. It exists so a TEST FIXTURE can clean up after itself: the
-// dispatch fixtures create adapters to exercise selectAdapter, and without this the rows outlived the
-// test that made them and stayed dispatch candidates forever. Absent means success (idempotent),
-// which is what a t.Cleanup wants.
+// DeleteAdapter removes an adapter row.
 func DeleteAdapter(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
 	const q = `DELETE FROM runtime_adapters WHERE id = $1 AND tenant_id = $2`
 	if _, err := tx.Exec(ctx, q, id, tenantID); err != nil {
@@ -179,13 +164,11 @@ func UpdateAdapterStatus(ctx context.Context, tx pgx.Tx, tenantID, id string, ex
 	return a, nil
 }
 
-// ListReadyAdaptersByKind returns adapters matching a kind that are in
-// ready/registered state with a recent heartbeat (within ttl). Used by
-// the TaskReconciler for adapter selection (docs/03 §4.2).
+// ListReadyAdaptersByKind returns adapters matching a kind that are in ready/registered state with
+// a recent heartbeat (within ttl).
 func ListReadyAdaptersByKind(ctx context.Context, tx pgx.Tx, tenantID, kind string, heartbeatTTL time.Duration) ([]AdapterRow, error) {
-	// Multiply the numeric seconds by a 1-second interval so pgx only has
-	// to encode a float64 (not an interval) — pgx v5 cannot encode a Go
-	// float64 directly into the interval OID.
+	// Multiply the numeric seconds by a 1-second interval so pgx only has to encode a float64 (not an
+	// interval) — pgx v5 cannot encode a Go float64 directly into the interval OID.
 	const q = `SELECT id, tenant_id, kind, version, endpoint, capabilities, status,
 		max_concurrent_executions, registered_at, last_heartbeat_at
 		FROM runtime_adapters
@@ -213,24 +196,8 @@ func ListReadyAdaptersByKind(ctx context.Context, tx pgx.Tx, tenantID, kind stri
 	return out, rows.Err()
 }
 
-// CountActiveExecutionsForAdapter returns the number of in-flight
-// (non-terminal) executions for an adapter. Used for capacity checks
-// (docs/03 §4.2: prefer adapters with free capacity).
-//
-// "Active" is the negation of "terminal". The terminal states are the
-// end-of-life outcomes — TERMINATED, FAILED_TO_START, SUCCEEDED,
-// FAILED, and UNHEALTHY (a permanently-broken adapter is also no
-// longer accepting new work, so it shouldn't count against the active
-// budget). Only DISPATCHING / RUNNING / HEALTHY / STALLED /
-// TERMINATING are actively using a concurrency slot.
-//
-// Earlier this query only excluded the three outcomes that
-// `updateExecStatus` writes most often, which meant old
-// `succeeded` and `failed` rows from previous runs accumulated
-// against an adapter's count and made it look permanently at
-// capacity even after every in-flight run had finished. That bug
-// surfaced as "no suitable adapter for task" warnings on the
-// recovery retry path.
+// CountActiveExecutionsForAdapter returns the number of in-flight (non-terminal) executions for an
+// adapter.
 func CountActiveExecutionsForAdapter(ctx context.Context, tx pgx.Tx, tenantID, adapterID string) (int, error) {
 	var count int
 	err := tx.QueryRow(ctx,
@@ -247,11 +214,8 @@ func CountActiveExecutionsForAdapter(ctx context.Context, tx pgx.Tx, tenantID, a
 	return count, nil
 }
 
-// CountActiveExecutionsForWorker mirrors CountActiveExecutionsForAdapter
-// above — same status-exclusion set, same reasoning: a stale terminal row
-// (succeeded/failed/terminated/failed_to_start/unhealthy) must not count
-// against a worker's concurrency budget, or a worker with a long history
-// looks permanently at capacity even with zero live executions.
+// CountActiveExecutionsForWorker mirrors CountActiveExecutionsForAdapter above — same
+// status-exclusion set, same reasoning.
 func CountActiveExecutionsForWorker(ctx context.Context, tx pgx.Tx, tenantID, workerID string) (int, error) {
 	var count int
 	err := tx.QueryRow(ctx,

@@ -5,10 +5,8 @@ import (
 	"testing"
 )
 
-// TestStablePromptPrefixMemoryPlaybook pins the memory playbook block: the
-// four durable memory tools must be named in StablePromptPrefix (the cached
-// shared prefix every worker receives), and the prefix must stay
-// byte-identical for identical inputs (KV/prompt-cache reuse).
+// TestStablePromptPrefixMemoryPlaybook pins the memory playbook block: the four durable memory
+// tools must be named in StablePromptPrefix (the cached shared prefix every worker receives).
 func TestStablePromptPrefixMemoryPlaybook(t *testing.T) {
 	p := StablePromptPrefix("test-image", "")
 	for _, tool := range []string{"memory_search", "memory_write", "memory_read", "memory_list"} {

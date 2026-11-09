@@ -8,15 +8,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// TestListBackfillPRRuns verifies the one-shot PR-backfill scan: it must
-// return git-backed terminal runs (completed/failed/aborted) that have a
-// branch recorded and NO captured pr_url yet, and must exclude in-flight
-// runs, non-git-backed runs, and runs that already have a pr_url.
-//
-// The scan is tenant-scoped, so this test runs in its OWN fresh tenant —
-// the shared tnt_dev dev database accumulates qualifying rows from other
-// seeds/tests, which would break the "exactly 1" assertion (the count
-// drifts upward as the sandbox database lives on).
+// TestListBackfillPRRuns verifies the one-shot PR-backfill scan: it must return git-backed terminal
+// runs (completed/failed/aborted) that have a branch recorded and NO captured pr_url yet.
 func TestListBackfillPRRuns(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()

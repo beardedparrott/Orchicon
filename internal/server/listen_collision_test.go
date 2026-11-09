@@ -1,11 +1,6 @@
 package server
 
-// Tests for the bind-set collision guard (listen.go). The host plane used to
-// boot with a WILDCARD primary (`ORCHICON_HTTP_ADDR=:8080`) plus the
-// docker-bridge extra bind: the wildcard already owns <bridge ip>:8080 on every
-// interface, so serveExtra's net.Listen could never succeed and the plane
-// retried it every 30s forever ("bridge listener bind failed — runtime-
-// container workers cannot reach the plane … address already in use").
+// Tests for the bind-set collision guard (listen.go).
 
 import (
 	"context"
@@ -38,9 +33,8 @@ func TestBindSetCollides(t *testing.T) {
 	}
 }
 
-// A wildcard primary is reported LOUD and ONCE, naming the env var that fixes
-// it, and the doomed bridge goroutine is never started — neither its success
-// nor its failure line can appear, and there is no 30s retry loop.
+// A wildcard primary is reported LOUD and ONCE, naming the env var that fixes it, and the doomed
+// bridge goroutine is never started — neither its success nor its failure line can appear.
 func TestWildcardPrimarySkipsDoomedBridgeBind(t *testing.T) {
 	prev := extraBindRetryInterval
 	extraBindRetryInterval = 10 * time.Millisecond

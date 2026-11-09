@@ -20,34 +20,27 @@ type Config struct {
 	SigningKey string
 	// ClientID is the built-in client id (defaults to DefaultClientID).
 	ClientID string
-	// RedirectURIs are the registered redirect URIs for the built-in
-	// client. Empty falls back to [config.DefaultOPRedirectURIs] at the
-	// wire layer.
+	// RedirectURIs are the registered redirect URIs for the built-in client.
 	RedirectURIs []string
 	// OPIssuer pins a static issuer; empty derives it from the request
 	// Host on every request.
 	OPIssuer string
-	// TenantID is the deployment tenant id (ORCHICON_DEPLOYMENT_TENANT_ID)
-	// identities resolve into when an auth/refresh request carries no
-	// explicit tenant. Empty falls back to DefaultTenantID ("tnt_dev"),
-	// which keeps standalone OP wiring and op-package tests unchanged.
+	// TenantID is the deployment tenant id (ORCHICON_DEPLOYMENT_TENANT_ID) identities resolve into when
+	// an auth/refresh request carries no explicit tenant.
 	TenantID string
 	// AllowInsecure permits an http:// issuer (local mode only).
 	AllowInsecure bool
 	// Identity resolves identity claims (sub = identity ULID).
 	Identity IdentityResolver
-	// Pool is the tenant-scoped DB pool used to resolve identities when
-	// Identity is nil (falls back to db.GetIdentity in the deployment
-	// tenant).
+	// Pool is the tenant-scoped DB pool used to resolve identities when Identity is nil (falls back to
+	// db.GetIdentity in the deployment tenant).
 	Pool *db.Pool
 	// Log is the structured logger.
 	Log *slog.Logger
 }
 
-// Provider wraps the zitadel OpenID Provider with the plane's wiring:
-// endpoint paths, the in-memory storage, and the login bridge. It serves
-// only the six OP paths (see Register); every other path 404s so the
-// plane's own /healthz etc. are never shadowed.
+// Provider wraps the zitadel OpenID Provider with the plane's wiring: endpoint paths, the in-memory
+// storage, and the login bridge.
 type Provider struct {
 	*zitadelop.Provider
 	storage *Storage
@@ -163,11 +156,7 @@ func (p *Provider) Close() {
 	p.storage.Stop()
 }
 
-// opPaths are the only endpoints the provider is allowed to serve. The
-// zitadel router also mounts /healthz, /ready, /oauth/introspect, /revoke,
-// /end_session and /device_authorization — mounting the router at "/" would
-// shadow the plane's /healthz. The wrapper 404s everything outside this
-// list so no dead surface is reachable.
+// opPaths are the only endpoints the provider is allowed to serve.
 var opPaths = map[string]bool{
 	"/.well-known/openid-configuration": true,
 	"/authorize":                        true,
@@ -197,10 +186,8 @@ func (p *Provider) Register(mux *http.ServeMux) {
 // bridge reads it by id and marks it authenticated.
 type AuthRequest = zitadelop.AuthRequest
 
-// MarkAuthenticated authenticates a stored authorize request for the
-// identity the caller resolved from the Orchicon session, recording
-// auth_time + amr. The bridge redirects to /authorize/callback?id=<id>
-// only after this succeeds.
+// MarkAuthenticated authenticates a stored authorize request for the identity the caller resolved
+// from the Orchicon session, recording auth_time + amr.
 func (p *Provider) MarkAuthenticated(ctx context.Context, id, identityID, tenantID string) error {
 	req, err := p.storage.AuthRequestByID(ctx, id)
 	if err != nil {
@@ -214,9 +201,8 @@ func (p *Provider) MarkAuthenticated(ctx context.Context, id, identityID, tenant
 	return nil
 }
 
-// claimsFromIdentity maps a tenant-scoped identity row onto the OIDC
-// claims the OP carries (sub = identity ULID — non-PII, stable across
-// subject renames).
+// claimsFromIdentity maps a tenant-scoped identity row onto the OIDC claims the OP carries (sub =
+// identity ULID — non-PII, stable across subject renames).
 func claimsFromIdentity(row db.IdentityRow) IdentityClaims {
 	c := IdentityClaims{Name: row.DisplayName, Username: row.DisplayName}
 	if row.Subject != "" && containsAt(row.Subject) {

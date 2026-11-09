@@ -25,10 +25,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/migrate"
 )
 
-// testTenantMappingEnv wires a real auth.Handler over a migrated test DB
-// with the deployment tenant set to a non-default value (ORCHICON_
-// DEPLOYMENT_TENANT_ID). Guarded by ORCHICON_TEST_DSN like the other
-// DB-backed auth tests.
+// testTenantMappingEnv wires a real auth.Handler over a migrated test DB with the deployment tenant
+// set to a non-default value (ORCHICON_ DEPLOYMENT_TENANT_ID).
 func testTenantMappingEnv(t *testing.T, deploymentTenant string) (*httptest.Server, *db.Pool, *Handler) {
 	t.Helper()
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
@@ -83,9 +81,8 @@ func tenantMappingCleanup(t *testing.T, pool *db.Pool, tenantID, subject string)
 	}
 }
 
-// TestLocalLoginLandsInDeploymentTenant pins the embedded-OP local-login
-// path resolves within the deployment tenant: an account created in acme
-// logs in there (never the hardcoded tnt_dev).
+// TestLocalLoginLandsInDeploymentTenant pins the embedded-OP local-login path resolves within the
+// deployment tenant: an account created in acme logs in there (never the hardcoded tnt_dev).
 func TestLocalLoginLandsInDeploymentTenant(t *testing.T) {
 	srv, pool, h := testTenantMappingEnv(t, "acme")
 	createLocalAccount(t, pool, "acme", "local-acme@orchicon.local", "acmeuser", "acme-password", false)
@@ -117,10 +114,7 @@ func TestLocalLoginLandsInDeploymentTenant(t *testing.T) {
 	}
 }
 
-// identityExists reports whether an identity row for the subject exists in
-// the given tenant. The tenant_id filter is explicit (the test connection
-// is a superuser that bypasses RLS, so relying on the session variable
-// would make every tenant look identical).
+// identityExists reports whether an identity row for the subject exists in the given tenant.
 func identityExists(t *testing.T, pool *db.Pool, tenantID, subject string) bool {
 	t.Helper()
 	ctx := context.Background()
@@ -138,10 +132,8 @@ func identityExists(t *testing.T, pool *db.Pool, tenantID, subject string) bool 
 
 // --- fake external OIDC IdP -----------------------------------------------
 
-// fakeOIDCIdP stands up a minimal external OIDC provider (discovery +
-// token + jwks) that exchanges any code for a real RS256-signed ID token.
-// No PKCE is advertised, so the client-side state is a no-op — the same
-// byte-for-byte flow a non-PKCE IdP gets in production.
+// fakeOIDCIdP stands up a minimal external OIDC provider (discovery + token + jwks) that exchanges
+// any code for a real RS256-signed ID token.
 func fakeOIDCIdP(t *testing.T) *httptest.Server {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -227,9 +219,8 @@ func signRS256JWT(t *testing.T, key *rsa.PrivateKey, kid string, payload map[str
 	return signingInput + "." + enc(sig)
 }
 
-// TestOIDCCallbackLandsInDeploymentTenant is the headline acceptance
-// criterion: an external-OIDC login lands in the tenant resolved from the
-// mapping (the configured deployment tenant), never the hardcoded tnt_dev.
+// TestOIDCCallbackLandsInDeploymentTenant is the headline acceptance criterion: an external-OIDC
+// login lands in the tenant resolved from the mapping (the configured deployment tenant).
 func TestOIDCCallbackLandsInDeploymentTenant(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {

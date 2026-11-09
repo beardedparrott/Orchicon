@@ -9,9 +9,6 @@ import (
 )
 
 // GetSecretByName resolves a tenant secret by NAME within a tenant.
-// Consumed by the provider credential resolver (internal/orchicon), which
-// stores secret NAMES (not ids) in provider profiles. Same tx/RLS pattern
-// as GetSecret.
 func GetSecretByName(ctx context.Context, tx pgx.Tx, tenantID, name string) (SecretRow, error) {
 	const q = `SELECT ` + secretCols + ` FROM tenant_secrets WHERE tenant_id=$1 AND name=$2`
 	var r SecretRow

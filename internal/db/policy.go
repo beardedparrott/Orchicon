@@ -9,9 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// PolicyRow is the data-access shape of a policies table row — the
-// immutable header (docs/02 §2.5, docs/09 §3.5). The mutable snapshot
-// (rego_module, decision_point, scope, effect) lives in PolicyVersionRow.
+// PolicyRow is the data-access shape of a policies table row — the immutable header (docs/02 §2.5,
+// docs/09 §3.5).
 type PolicyRow struct {
 	ID             string
 	TenantID       string
@@ -23,9 +22,8 @@ type PolicyRow struct {
 	UpdatedAt      time.Time
 }
 
-// PolicyVersionRow is the data-access shape of a policy_versions table
-// row — the immutable snapshot of a Policy's Rego module at a specific
-// version (docs/02 §2.5). Once published, a version is immutable.
+// PolicyVersionRow is the data-access shape of a policy_versions table row — the immutable snapshot
+// of a Policy's Rego module at a specific version (docs/02 §2.5).
 type PolicyVersionRow struct {
 	ID            string
 	TenantID      string
@@ -43,9 +41,8 @@ type PolicyVersionRow struct {
 	CreatedAt     time.Time
 }
 
-// PolicyDecisionRow is the data-access shape of a policy_decisions table
-// row (docs/02 §2.5, docs/07 §3.5). Persisted so ExplainDecision can
-// return the Rego trace for a past policy.evaluated event.
+// PolicyDecisionRow is the data-access shape of a policy_decisions table row (docs/02 §2.5, docs/07
+// §3.5).
 type PolicyDecisionRow struct {
 	ID            string
 	TenantID      string
@@ -418,9 +415,7 @@ func UpdatePolicyVersion(ctx context.Context, tx pgx.Tx, tenantID, policyID stri
 
 // --- PolicyDecision --------------------------------------------------------
 
-// CreatePolicyDecision persists a recorded evaluation (docs/02 §2.5,
-// docs/07 §3.5). Used by the Policy Engine so ExplainDecision can return
-// the Rego trace for a past policy.evaluated event.
+// CreatePolicyDecision persists a recorded evaluation (docs/02 §2.5, docs/07 §3.5).
 func CreatePolicyDecision(ctx context.Context, tx pgx.Tx, d PolicyDecisionRow) (PolicyDecisionRow, error) {
 	row := d
 	if row.Input == nil {
@@ -567,10 +562,9 @@ func ListPolicyDecisions(ctx context.Context, tx pgx.Tx, f ListPolicyDecisionsFi
 	return out, rows.Err()
 }
 
-// ListPublishedPoliciesByDecisionPoint returns all published policy
-// versions for a tenant at a given decision point, ordered by scope
-// narrowness (task > worker > project > tenant) so the engine can apply
-// first-definitive-decision-wins (docs/02 §2.5).
+// ListPublishedPoliciesByDecisionPoint returns all published policy versions for a tenant at a
+// given decision point, ordered by scope narrowness (task > worker > project > tenant) so the
+// engine.
 func ListPublishedPoliciesByDecisionPoint(ctx context.Context, tx pgx.Tx, tenantID, decisionPoint string) ([]PolicyVersionRow, error) {
 	const q = `SELECT id, tenant_id, policy_id, version, version_note, status,
 		decision_point, scope, scope_ref, effect, rego_module, query,

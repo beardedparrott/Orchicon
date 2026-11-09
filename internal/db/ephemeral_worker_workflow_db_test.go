@@ -1,21 +1,6 @@
 package db_test
 
-// ephemeral_worker_workflow_db_test.go — the gate and the sweep for the two
-// tables that joined the ephemeral mechanism after work_items: workers and
-// workflows.
-//
-// The operator: "Yeah I would like ephemeral only on the workers and workflows
-// Quick Work creates." Quick Work builds a throwaway worker (pinned to the
-// agent's own model_ref) and a throwaway workflow per job, and both must be
-// invisible in the Workers and Workflows screens while the job runs and gone
-// when it ends.
-//
-// This file exists because the pure predicate tests CANNOT see the wiring. If
-// `ephemeral` were missing from a RETURNING list or landed in the wrong scan
-// slot, the predicate would filter on a value that is never loaded and every
-// pure test would still pass. Only a real row proves the round-trip.
-//
-// Guarded by ORCHICON_TEST_DSN like the other DB-backed tests in this package.
+// This file exists because the pure predicate tests CANNOT see the wiring.
 
 import (
 	"context"
@@ -83,9 +68,7 @@ func ephWorkerWorkflowFixture(t *testing.T, ctx context.Context, tenant string) 
 	ordinaryWorkflow := mkWorkflow("ordinary-workflow", false)
 	ephWorkflow := mkWorkflow("quick-work-workflow", true)
 
-	// THE ROUND-TRIP. If either of these fails, the create path wrote the flag
-	// somewhere the read path cannot see it, and a transient would be VISIBLE
-	// despite being marked — the exact leak the flag exists to prevent.
+	// THE ROUND-TRIP.
 	if ephWorker.Ephemeral != true {
 		t.Fatalf("CreateWorker returned Ephemeral=false for an ephemeral worker — the flag is not round-tripping "+
 			"through INSERT ... RETURNING (worker id %s)", ephWorker.ID)
@@ -168,10 +151,8 @@ func TestEphemeralWorkerIsHiddenFromTheDefaultList(t *testing.T) {
 	}
 }
 
-// THE JOINED LIST — the query the Workers pane actually calls — is gated on the
-// QUALIFIED column, and this is the test that proves the qualifier is right: an
-// unqualified `ephemeral` in that join is ambiguous and Postgres rejects the
-// statement outright, so a green result here means the SQL is unambiguous.
+// THE JOINED LIST — the query the Workers pane actually calls — is gated on the QUALIFIED column,
+// and this is the test that proves the qualifier is right.
 func TestEphemeralWorkerIsHiddenFromTheJoinedListThePaneUses(t *testing.T) {
 	ctx := context.Background()
 	_, ttx, ordinaryID, ephID := ephWorkerWorkflowFixture(t, ctx, "tnt_eph_worker_join")
@@ -249,19 +230,13 @@ func TestEphemeralWorkflowIsHiddenFromTheDefaultList(t *testing.T) {
 }
 
 // THE SWEEP REMOVES ABANDONED TRANSIENTS AND NOTHING ELSE.
-//
-// This is the backstop test: an agent that dies leaves its records behind, and
-// the sweep is the only thing that ever collects them. So it has to remove
-// exactly the stale transients — no real work, and no live job.
 func TestSweepRemovesOnlyAbandonedEphemeralRecords(t *testing.T) {
 	ctx := context.Background()
 	tenant := "tnt_eph_sweep"
 	pool, ttx, _, _ := ephWorkerWorkflowFixture(t, ctx, tenant)
 
-	// THE ORDER MATTERS: the old records are created and then BACKDATED, and only
-	// afterwards are the live ones created. Backdating after creating a "fresh"
-	// row would age it too, which is how the first version of this test managed to
-	// delete records it was asserting should survive.
+	// THE ORDER MATTERS: the old records are created and then BACKDATED, and only afterwards are the
+	// live ones created.
 	oldItem, err := db.CreateWorkItem(ctx, ttx.Tx, db.WorkItemRow{
 		ID: db.NewID(), TenantID: tenant, Kind: domain.WorkItemKindTask,
 		Title: "old real work", Description: "d", AcceptanceCriteria: "ac",
@@ -271,9 +246,7 @@ func TestSweepRemovesOnlyAbandonedEphemeralRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Backdate EVERYTHING that exists now — ephemeral and ordinary alike. The
-	// ordinary rows are backdated too on purpose: age alone must not be enough,
-	// or the sweep would eventually delete records a human created.
+	// Backdate EVERYTHING that exists now — ephemeral and ordinary alike.
 	for _, stmt := range []string{
 		`UPDATE work_items SET created_at = now() - interval '7 hours' WHERE tenant_id = $1`,
 		`UPDATE workers SET created_at = now() - interval '7 hours' WHERE tenant_id = $1`,
@@ -357,11 +330,6 @@ func TestSweepRemovesOnlyAbandonedEphemeralRecords(t *testing.T) {
 }
 
 // A WORKFLOW WITH RUN HISTORY SWEEPS CLEANLY — the ordering claim.
-//
-// workflow_runs.work_item_id references work_items, so deleting the item first
-// would make the database write NULL into a run that is about to be deleted
-// anyway. The sweep deletes workflows FIRST for that reason, and this test
-// creates the exact shape that would expose getting it wrong.
 func TestSweepRemovesAnAbandonedWorkflowWithItsRuns(t *testing.T) {
 	ctx := context.Background()
 	tenant := "tnt_eph_sweep_runs"

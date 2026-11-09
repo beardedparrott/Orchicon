@@ -101,15 +101,8 @@ func GetRuntimeImageByTag(ctx context.Context, tx pgx.Tx, tenantID, tag string) 
 	return r, err
 }
 
-// GetRuntimeImageForUpdate loads one image spec by id (tenant-scoped) and
-// locks the row for the rest of the transaction (SELECT ... FOR UPDATE).
-// marking transition is StatusOnly (it must NOT bump `version`, the "spec
-// changed" signal), so the version-based OCC check alone cannot serialize
-// two simultaneous Deploys — both would pass it and run `docker build` on
-// the same tag. The row lock closes that gap: the first caller marks the
-// row 'building' and commits; a concurrent caller blocks on the lock and
-// then re-reads the committed row (READ COMMITTED re-evaluates after the
-// lock wait), sees status 'building', and fails fast.
+// GetRuntimeImageForUpdate loads one image spec by id (tenant-scoped) and locks the row for the
+// rest of the transaction (SELECT ...
 func GetRuntimeImageForUpdate(ctx context.Context, tx pgx.Tx, tenantID, id string) (RuntimeImageRow, error) {
 	q := `SELECT ` + runtimeImageCols + ` FROM runtime_images WHERE id = $1 AND tenant_id = $2 FOR UPDATE`
 	r, err := scanRuntimeImage(tx.QueryRow(ctx, q, id, tenantID))
@@ -156,13 +149,6 @@ func ListRuntimeImages(ctx context.Context, tx pgx.Tx, f RuntimeImageFilter) ([]
 }
 
 // UpdateRuntimeImage applies a partial update with optimistic concurrency.
-// Field pointers match UpdateRuntimeImageFields; nil = unchanged.
-//
-// StatusOnly marks a build-flow transition (draft→building→ready/failed)
-// that must NOT bump `version`: the version is the "spec changed" signal
-// (docs/09 §5) and the rebuild gate compares it to `built_version`, so a
-// mere status flip must leave it untouched. Spec edits and every other
-// caller leave StatusOnly false (version bumps, OCC preserved).
 type UpdateRuntimeImageFields struct {
 	Name               *string
 	Slug               *string
@@ -248,10 +234,7 @@ func UpdateRuntimeImage(ctx context.Context, tx pgx.Tx, tenantID, id string, ver
 	if len(sets) == 0 {
 		return GetRuntimeImage(ctx, tx, tenantID, id)
 	}
-	// The spec version only advances on a real spec edit. Build-flow
-	// transitions (StatusOnly) keep it — that is what makes `version` a
-	// faithful "did the spec change" signal for the rebuild gate. The OCC
-	// WHERE clause still checks the caller-supplied version either way.
+	// The spec version only advances on a real spec edit.
 	if !f.StatusOnly {
 		add("version", version+1)
 	}
@@ -280,9 +263,8 @@ func DeleteRuntimeImage(ctx context.Context, tx pgx.Tx, tenantID, id string) err
 	return nil
 }
 
-// ReadyRuntimeImageTags returns the tags of all ready custom images for a
-// tenant — the list merged with the daemon's stock images for the
-// work-item runtime_image dropdown.
+// ReadyRuntimeImageTags returns the tags of all ready custom images for a tenant — the list merged
+// with the daemon's stock images for the work-item runtime_image dropdown.
 func ReadyRuntimeImageTags(ctx context.Context, tx pgx.Tx, tenantID string) ([]string, error) {
 	rows, err := tx.Query(ctx,
 		`SELECT tag FROM runtime_images WHERE tenant_id = $1 AND status = 'ready' AND tag <> '' ORDER BY name`,

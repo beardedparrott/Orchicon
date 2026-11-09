@@ -322,9 +322,8 @@ func mustCreateIdentity(t *testing.T, calls *identityCalls, identityType, subjec
 	return resp.Msg.Identity
 }
 
-// deleteIdentityRow returns a cleanup func that removes an identity row
-// directly (some fixtures delete via the service already; this is the
-// belt-and-braces cleanup for rows the service tests create).
+// deleteIdentityRow returns a cleanup func that removes an identity row directly (some fixtures
+// delete via the service already.
 func deleteIdentityRow(t *testing.T, pool *db.Pool, tenantID, id string) func() {
 	t.Helper()
 	return func() {
@@ -339,10 +338,8 @@ func deleteIdentityRow(t *testing.T, pool *db.Pool, tenantID, id string) func() 
 	}
 }
 
-// TestIdentityUsernameLeftJoin pins the Identity.username projection: the
-// read paths (GetIdentity / ListIdentities) surface the local_credentials
-// login handle via the LEFT JOIN — populated when a credential exists,
-// empty when none does — and never leak the password hash.
+// TestIdentityUsernameLeftJoin pins the Identity.username projection: the read paths (GetIdentity /
+// ListIdentities) surface the local_credentials login handle via the LEFT JOIN.
 func TestIdentityUsernameLeftJoin(t *testing.T) {
 	pool, svc, ctx, tenantID := newIdentityCRUDService(t)
 

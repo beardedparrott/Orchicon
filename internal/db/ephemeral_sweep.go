@@ -8,19 +8,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ephemeral_sweep.go — the abandonment sweep for machine-managed transient
-// records (Ask Orchicon Quick Work).
-//
-// Quick Work's contract is that its worker, workflow and work item are
-// HARD-DELETED when the job ends. But the deletion is performed BY THE AGENT,
-// and an agent can die: a killed process, a crashed plane, an OOM. When it
-// does, its ephemeral records are left behind — invisible to every view and
-// still in the table. That is precisely the "invisible record" the hard-delete
-// rule exists to prevent, arriving by a different route, and it is the one
-// failure mode the protocol itself cannot cover.
-//
-// So the sweep is the backstop, not the primary path: it deletes ephemeral
-// rows that are simply too old to belong to a live job.
+// ephemeral_sweep.go — the abandonment sweep for machine-managed transient records (Ask Orchicon
+// Quick Work).
 
 // EphemeralSweepResult counts what one sweep removed, per table.
 type EphemeralSweepResult struct {
@@ -32,14 +21,7 @@ type EphemeralSweepResult struct {
 // Total is the number of records removed.
 func (r EphemeralSweepResult) Total() int { return r.WorkItems + r.Workers + r.Workflows }
 
-// EphemeralSweepBatch bounds how many records of each kind a single sweep
-// removes.
-//
-// The bound matters because the sweep runs on a timer inside the control plane:
-// an unbounded sweep over a table that somehow accumulated transients would
-// hold a transaction open for an unbounded time and could stall the plane it is
-// supposed to be tidying. The next tick continues the work, so a bound only
-// makes the sweep take longer, never less complete.
+// EphemeralSweepBatch bounds how many records of each kind a single sweep removes.
 const EphemeralSweepBatch = 200
 
 // SweepAbandonedEphemeral hard-deletes ephemeral records for ONE tenant that
@@ -121,14 +103,8 @@ func SweepAbandonedEphemeral(ctx context.Context, tx pgx.Tx, tenantID string, cu
 	return res, nil
 }
 
-// ephemeralIDs returns the ids of ephemeral rows in `table` created before
-// cutoff, oldest first, bounded by EphemeralSweepBatch.
-//
-// `table` is a package constant at every call site (never user input), which is
-// why it can be interpolated; the tenant and the cutoff remain bound
-// parameters. The ix_<table>_ephemeral_created partial indexes
-// (created_at WHERE ephemeral) make this proportional to the handful of live
-// transients rather than to the table.
+// ephemeralIDs returns the ids of ephemeral rows in `table` created before cutoff, oldest first,
+// bounded by EphemeralSweepBatch.
 func ephemeralIDs(ctx context.Context, tx pgx.Tx, table, tenantID string, cutoff time.Time) ([]string, error) {
 	q := fmt.Sprintf(`SELECT id FROM %s
 		WHERE tenant_id = $1 AND ephemeral AND created_at < $2

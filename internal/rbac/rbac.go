@@ -1,14 +1,4 @@
-// Package rbac implements role-based access control for Orchicon
-// (docs/07 §6.2). Entitlements are resource:action pairs (e.g.
-// "project:create") granted to an identity via roles. The middleware
-// resolves the identity's entitlement set per request; per-RPC
-// enforcement is a Connect interceptor that maps each RPC procedure to
-// the required entitlement and checks the resolved set.
-//
-// Admins (identity with the "admin" role) bypass per-call checks.
-// API keys carry their own scopes union the bound identity's
-// entitlements (docs/07 §6.1). UI gating is a UX convenience; the
-// server is the security boundary (docs/10 §10 invariant #5).
+// Package rbac implements role-based access control for Orchicon (docs/07 §6.2).
 package rbac
 
 import (
@@ -19,16 +9,7 @@ import (
 // resource or action (admin role carries "*").
 type Entitlement string
 
-// EntitlementFor returns the entitlement required to invoke an RPC
-// procedure. The procedure is the fully-qualified name
-// "/orchicon.api.v1.<Service>/<Method>". Read RPCs (Get/List/Stream)
-// require "<resource>:read"; mutating RPCs require "<resource>:write"
-// or a specific action. Unknown RPCs require nothing (fail-open at the
-// entitlement layer; the Policy Engine handles finer-grained
-// governance — docs/02 §2.5).
-//
-// This is the resource-level RBAC check (docs/07 §6.2); it is distinct
-// from the domain Policy evaluation at decision points.
+// EntitlementFor returns the entitlement required to invoke an RPC procedure.
 func EntitlementFor(procedure string) Entitlement {
 	// procedure = "/orchicon.api.v1.<Service>/<Method>"
 	if !strings.HasPrefix(procedure, "/orchicon.api.v1.") {

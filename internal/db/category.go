@@ -103,10 +103,7 @@ func withSavepoint(ctx context.Context, tx pgx.Tx, name string, fn func() error)
 	return nil
 }
 
-// isDuplicateKey reports whether err is a UNIQUE violation naming the given constraint part. The two
-// constraints are `…_name_key` and `…_slug_key`, so "name" and "slug" pick them apart unambiguously —
-// and the part is checked FIRST in each caller because a name collision is the one the operator can
-// act on, while a slug collision is invisible to them and is what the retry is for.
+// isDuplicateKey reports whether err is a UNIQUE violation naming the given constraint part.
 func isDuplicateKey(err error, constraintPart string) bool {
 	return err != nil &&
 		strings.Contains(err.Error(), "duplicate key") &&
@@ -132,9 +129,6 @@ func CreateCategory(ctx context.Context, tx pgx.Tx, tenantID, targetType, name, 
 	const q = `INSERT INTO categories (id, tenant_id, target_type, name, description, slug, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id, tenant_id, target_type, name, description, slug, sort_order, created_at, updated_at`
 	// Retry with a suffixed slug on collision, each attempt inside its OWN savepoint — see
 	// withSavepoint for why the attempt cannot simply be repeated in the same transaction.
-	//
-	// This is reachable from the operator's side: Slugify lowercases, so two names that differ only in
-	// case ("Frontend" and "FrontEnd") pass the NAME constraint and collide on the SLUG.
 	for attempt := 0; attempt < 3; attempt++ {
 		trySlug := slug
 		if attempt > 0 {
@@ -215,8 +209,7 @@ func UpdateCategory(ctx context.Context, tx pgx.Tx, tenantID, id string, name *s
 		cat.Description = d
 	}
 	// try update with slug collision handling — the SAME savepoint requirement as CreateCategory:
-	// renaming a grouping to a case-variant of another one ("FrontEnd" against "Frontend") collides
-	// on the slug, and without a savepoint the retry could not run.
+	// renaming a grouping to a case-variant of another one ("FrontEnd" against "Frontend") collides.
 	const q = `UPDATE categories SET name=$3, description=$4, slug=$5, updated_at=now() WHERE tenant_id=$1 AND id=$2 RETURNING id, tenant_id, target_type, name, description, slug, sort_order, created_at, updated_at`
 	for attempt := 0; attempt < 3; attempt++ {
 		trySlug := cat.Slug

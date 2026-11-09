@@ -10,18 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/containerengine"
 )
 
-// engineStatusCache serves GET /enginez — whether runtime containers are available on THIS
-// host, and why not when they are not.
-//
-// WHY A PLAIN JSON ENDPOINT NEXT TO /versionz: the UI polls it from the page where execution
-// mode is chosen (AC5), so it must be cheap and it must not need a proto change or a
-// `buf generate` for one operational status. The status is built by
-// internal/containerengine.Inspect — the same package the installer decided with — so the UI
-// cannot claim an availability the install did not produce.
-//
-// THE MEMO IS DELIBERATE. Every probe may exec `podman machine list` and `podman --version`;
-// a browser polling once a second must not fork a process a second. 30s is the window; a
-// caller that knows better (the page right after an install) passes ?refresh=1.
+// engineStatusCache serves GET /enginez — whether runtime containers are available on THIS host,
+// and why not when they are not.
 type engineStatusCache struct {
 	mu    sync.Mutex
 	ttl   time.Duration

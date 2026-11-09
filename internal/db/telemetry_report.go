@@ -8,22 +8,12 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// DurationStats is a per-group duration + failure aggregate over the
-// Orchicon domain model (worker_executions / workflow_runs). It supplies
-// the two report columns usage_records cannot answer: how long work took
-// and how much of it failed.
-//
-// Failure is derived from the terminal-status vocabulary, never a fresh
-// list: an execution counts as failed when it is terminal and not
-// 'succeeded' (terminal = NOT IN activeExecutionStatuses); a workflow run
-// counts as failed when it is terminal and not 'completed' ('failed' /
-// 'aborted'). See internal/db/execution.go for the single source of truth
-// on the active set.
+// DurationStats is a per-group duration + failure aggregate over the Orchicon domain model
+// (worker_executions / workflow_runs).
 type DurationStats struct {
 	GroupKey string
-	// GroupName is populated only by the workflow query (workflows.name);
-	// the project query leaves it empty and the service layer resolves a
-	// project display name.
+	// GroupName is populated only by the workflow query (workflows.name); the project query leaves it
+	// empty and the service layer resolves a project display name.
 	GroupName       string
 	Executions      int32
 	Failed          int32
@@ -52,12 +42,7 @@ func GetProjectNames(ctx context.Context, tx pgx.Tx, tenantID string) (map[strin
 	return out, nil
 }
 
-// GetProjectDurationStats aggregates worker_executions per project over an
-// optional window. `ended_at IS NULL` executions contribute to the count
-// but not to the duration sum (they have not finished). Durations use
-// EXTRACT(EPOCH FROM (ended_at - started_at)) * 1000 — EXTRACT(MILLISECOND
-// …) truncates to the seconds field and silently loses sub-minute parts.
-// Empty projectID / executionID / workItemID mean "no scope on that column".
+// GetProjectDurationStats aggregates worker_executions per project over an optional window.
 func GetProjectDurationStats(ctx context.Context, tx pgx.Tx, tenantID, projectID, executionID, workItemID string, start, end time.Time) ([]DurationStats, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("db: project duration stats: tenant_id required")
@@ -91,15 +76,7 @@ func GetProjectDurationStats(ctx context.Context, tx pgx.Tx, tenantID, projectID
 	return out, rows.Err()
 }
 
-// GetWorkflowDurationStats aggregates workflow_runs per workflow over an
-// optional window. A run is failed when it is terminal and not
-// 'completed' — workflow_runs.status lives in
-// {'pending','running','completed','failed','aborted'} (internal/db/workflow.go).
-//
-// projectID / workItemID / executionID scope the aggregate the same way
-// GetWorkflowAggregateCosts does, so both halves of a workflow report row
-// answer to the same filters. executionID matches the run through its
-// worker_executions, since a workflow run has no execution column of its own.
+// GetWorkflowDurationStats aggregates workflow_runs per workflow over an optional window.
 func GetWorkflowDurationStats(ctx context.Context, tx pgx.Tx, tenantID, projectID, workItemID, executionID string, start, end time.Time) ([]DurationStats, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("db: workflow duration stats: tenant_id required")

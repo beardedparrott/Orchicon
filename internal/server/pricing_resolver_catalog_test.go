@@ -11,10 +11,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/aigateway"
 )
 
-// pricing_resolver_catalog_test.go pins Gap 4: on a plane with NO opencode
-// binary (modelDiscoverer == nil) the pricing resolver must still answer for an
-// anthropic model, from the OFFLINE vendored catalog, and still fail CLOSED on
-// a genuine catalog miss.
+// pricing_resolver_catalog_test.go pins Gap 4: on a plane with NO opencode binary (modelDiscoverer
+// == nil) the pricing resolver must still answer for an anthropic model.
 
 // TestCatalogModelCostAnswersWithoutDiscoverer asserts the catalog-backed
 // fallback returns the authored cache-aware rates (no discoverer needed).
@@ -28,9 +26,8 @@ func TestCatalogModelCostAnswersWithoutDiscoverer(t *testing.T) {
 	}
 }
 
-// TestCatalogModelCostFailsClosedWithoutDiscoverer pins the fail-CLOSED half:
-// a genuine catalog miss returns (nil,false) — never a panic, never a
-// fabricated price.
+// TestCatalogModelCostFailsClosedWithoutDiscoverer pins the fail-CLOSED half: a genuine catalog
+// miss returns (nil,false) — never a panic, never a fabricated price.
 func TestCatalogModelCostFailsClosedWithoutDiscoverer(t *testing.T) {
 	for _, c := range []struct{ provider, model string }{
 		{"anthropic", "claude-not-a-real-model"},
@@ -43,11 +40,9 @@ func TestCatalogModelCostFailsClosedWithoutDiscoverer(t *testing.T) {
 	}
 }
 
-// TestClaudeCostUsdIsCatalogPricedWithoutDiscoverer is the end-to-end Gap-4
-// assertion: a claude/anthropic usage sample recorded through a resolver whose
-// ONLY pricing source is the offline catalog gets a cost_usd EQUAL to the
-// catalog-priced value — cache reads priced at the cache-read rate — over the
-// adapter-reported cost.
+// TestClaudeCostUsdIsCatalogPricedWithoutDiscoverer is the end-to-end Gap-4 assertion: a
+// claude/anthropic usage sample recorded through a resolver whose ONLY pricing source is the
+// offline catalog.
 func TestClaudeCostUsdIsCatalogPricedWithoutDiscoverer(t *testing.T) {
 	rec := aigateway.NewUsageRecorder(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	rec.SetPricingResolver(func(_ context.Context, provider, model string) (*apiv1.ModelCost, bool) {

@@ -94,10 +94,8 @@ func authorizeURL(issuer string, state, codeChallenge, nonce string) string {
 	return issuer + "/authorize?" + v.Encode()
 }
 
-// runCodeFlow drives authorize → login bridge → authorize callback and
-// returns the authorization code from the final redirect to the client.
-// When cookieValue is non-empty the request carries it (authenticated);
-// otherwise the flow bounces to the SPA login page.
+// runCodeFlow drives authorize → login bridge → authorize callback and returns the authorization
+// code from the final redirect to the client.
 func runCodeFlow(t *testing.T, env *testEnv, authzURL, cookieValue string) (code, state string) {
 	t.Helper()
 	client := noRedirectClient()
@@ -520,9 +518,8 @@ func TestEmbeddedOPIDTokenClaims(t *testing.T) {
 
 func TestEmbeddedOPUnreachablePathsNotFound(t *testing.T) {
 	env := newTestEnv(t)
-	// The plane's /healthz is NOT served by the OP (mounted elsewhere);
-	// the OP wrapper must not expose its own introspection/revoke/device
-	// surface.
+	// The plane's /healthz is NOT served by the OP (mounted elsewhere); the OP wrapper must not expose
+	// its own introspection/revoke/device surface.
 	for _, path := range []string{"/oauth/introspect", "/revoke", "/end_session", "/device_authorization", "/ready"} {
 		resp, err := http.Get(env.srv.URL + path)
 		if err != nil {

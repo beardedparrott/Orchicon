@@ -12,20 +12,10 @@ import (
 )
 
 // pkceVerifierTTL bounds how long an unused state→verifier mapping lives.
-// A login that stalls past this window simply loses the verifier; the IdP
-// rejects the code exchange and the user re-initiates.
 const pkceVerifierTTL = 10 * time.Minute
 
-// OIDCVerifier wraps a configured OIDC provider + verifier for the
-// production authorization-code flow (docs/07 §6.1). It is lazily
-// initialized on first use so the control plane boots even when the
-// IdP is unreachable at startup (the outbox relay pattern — degrade
-// gracefully, retry on demand).
-//
-// PKCE is capability-gated: only IdPs that advertise S256 in
-// code_challenge_methods_supported receive a per-login code challenge.
-// IdPs that do not advertise it get byte-for-byte the same flow as
-// before this feature landed (no challenge params on the wire).
+// OIDCVerifier wraps a configured OIDC provider + verifier for the production authorization-code
+// flow (docs/07 §6.1).
 type OIDCVerifier struct {
 	issuer       string
 	clientID     string
@@ -49,9 +39,7 @@ type pkceEntry struct {
 	expiresAt time.Time
 }
 
-// NewOIDCVerifier constructs a verifier. The provider is resolved lazily
-// on first Verify/AuthorizeURL call so construction never blocks on the
-// IdP being reachable.
+// NewOIDCVerifier constructs a verifier.
 func NewOIDCVerifier(issuer, clientID, clientSecret, redirectURL string) *OIDCVerifier {
 	return &OIDCVerifier{
 		issuer:       issuer,
@@ -62,9 +50,6 @@ func NewOIDCVerifier(issuer, clientID, clientSecret, redirectURL string) *OIDCVe
 }
 
 // ensureProvider resolves the OIDC provider + verifier on first use.
-// Subsequent calls reuse the cached provider. It also reads
-// code_challenge_methods_supported from discovery to decide whether PKCE
-// is sent for this IdP.
 func (o *OIDCVerifier) ensureProvider(ctx context.Context) error {
 	if o.provider != nil {
 		return nil
@@ -132,10 +117,8 @@ type ExchangeOutcome struct {
 	DisplayName string
 }
 
-// Exchange exchanges an authorization code for tokens, verifies the ID
-// token, and returns the identity claims (subject + profile). On the PKCE
-// path, state carries the round-trip verifier (single-use); on the
-// no-PKCE path it is ignored — the flow is unchanged from before.
+// Exchange exchanges an authorization code for tokens, verifies the ID token, and returns the
+// identity claims (subject + profile).
 func (o *OIDCVerifier) Exchange(ctx context.Context, state, code string) (ExchangeOutcome, error) {
 	if err := o.ensureProvider(ctx); err != nil {
 		return ExchangeOutcome{}, err

@@ -94,15 +94,8 @@ func durPtr(start time.Time, d time.Duration) *time.Time {
 	return &end
 }
 
-// TestWorkflowReportScopesBothHalves guards the workflow-grouped report's
-// filters: the project / work-item / execution scope must narrow the COST
-// aggregate exactly like it narrows the duration/failure aggregate beside it.
-//
-// Before this, db.GetWorkflowAggregateCosts took no scope at all while
-// GetWorkflowDurationStats took the project, so one report row could carry
-// project-scoped run times next to tenant-wide spend. A filter that applies
-// to half a row is worse than no filter: the numbers look authoritative and
-// are not.
+// TestWorkflowReportScopesBothHalves guards the workflow-grouped report's filters: the project /
+// work-item / execution scope must narrow the COST aggregate exactly like it narrows.
 func TestWorkflowReportScopesBothHalves(t *testing.T) {
 	pool := telemetryReportTestPool(t)
 	ctx := context.Background()

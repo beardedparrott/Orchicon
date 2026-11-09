@@ -11,9 +11,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/config"
 )
 
-// testDeps builds a Dependencies with a DB-free auth handler and nil pool —
-// enough to exercise the api.Mount wiring. No RPC handler is reached by
-// these tests: auth rejects the requests before dispatch.
+// testDeps builds a Dependencies with a DB-free auth handler and nil pool — enough to exercise the
+// api.Mount wiring.
 func testDeps() Dependencies {
 	log := slog.New(slog.DiscardHandler)
 	cfg := config.Config{
@@ -33,14 +32,8 @@ func testDeps() Dependencies {
 	}
 }
 
-// TestMountBackfillsDependencies pins the pointer contract of Mount: the
-// struct the CALLER holds must observe the services Mount constructs
-// (ProvidersService for the native bridge's lazy ProviderResolver;
-// ModelRefRegistry when the caller passed nil). Mount takes
-// *Dependencies precisely so these back-fills are visible to the caller —
-// the by-value signature silently dropped them into a local copy, which
-// made every orchicon-kind dispatch fail with "providers service not yet
-// constructed (api.Mount)".
+// TestMountBackfillsDependencies pins the pointer contract of Mount: the struct the CALLER holds
+// must observe the services Mount constructs (ProvidersService for the native bridge's lazy.
 func TestMountBackfillsDependencies(t *testing.T) {
 	mux := http.NewServeMux()
 	deps := testDeps()
@@ -53,10 +46,8 @@ func TestMountBackfillsDependencies(t *testing.T) {
 	}
 }
 
-// TestMountRequiresCredential pins AC1/AC2 at the api.Mount level: a
-// request with no Authorization header is 401. There is no tenant-only
-// fallback — Mount always wraps with ResolveAuth, so no credential-less
-// request can reach tenant-scoped data.
+// TestMountRequiresCredential pins AC1/AC2 at the api.Mount level: a request with no Authorization
+// header is 401.
 func TestMountRequiresCredential(t *testing.T) {
 	mux := http.NewServeMux()
 	deps := testDeps()
@@ -69,9 +60,8 @@ func TestMountRequiresCredential(t *testing.T) {
 	}
 }
 
-// TestMountTenantHeaderIsNotIdentity pins AC3 at the api.Mount level: the
-// x-orchicon-tenant-id header alone (no credential) must never substitute
-// for a resolved identity.
+// TestMountTenantHeaderIsNotIdentity pins AC3 at the api.Mount level: the x-orchicon-tenant-id
+// header alone (no credential) must never substitute for a resolved identity.
 func TestMountTenantHeaderIsNotIdentity(t *testing.T) {
 	mux := http.NewServeMux()
 	deps := testDeps()

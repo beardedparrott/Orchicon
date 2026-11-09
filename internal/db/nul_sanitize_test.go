@@ -6,9 +6,8 @@ import (
 	"testing"
 )
 
-// A NUL in a message's content killed the whole write — both the 250ms live mirror and the terminal reply —
-// with "unsupported Unicode escape sequence (SQLSTATE 22P05)" on a jsonb argument. The two shapes it takes are
-// pinned here, because a fix that handled only one of them would look correct and still lose turns.
+// A NUL in a message's content killed the whole write — both the 250ms live mirror and the terminal
+// reply — with "unsupported Unicode escape sequence (SQLSTATE 22P05)" on a jsonb argument.
 func TestSanitizeMessageStripsBothNulShapes(t *testing.T) {
 	toolCalls, _ := json.Marshal([]map[string]any{
 		{"name": "bash", "output": "binary\x00payload"},

@@ -1,12 +1,6 @@
 package api
 
-// lifecycle_surface_test.go — AC2: NO lifecycle RPC was added. This test is the tripwire: the generated
-// Connect surface is enumerated and its SIZE is pinned, so adding an RPC is a deliberate act (bump the number
-// below) rather than an accident, and no procedure may be named like a plane lifecycle control.
-//
-// IT IS ALSO THE REASON THE MECHANISM IS A GO PACKAGE (internal/planecontrol) AND NOT AN RPC. The API path
-// existed for the web app — a browser cannot spawn a process — and the web app is out of scope for lifecycle
-// control, so there is deliberately nothing here to call.
+// lifecycle_surface_test.go — AC2: NO lifecycle RPC was added.
 
 import (
 	"os"
@@ -17,21 +11,7 @@ import (
 	"testing"
 )
 
-// generatedProcedures is the number of Connect procedures the generated clients declare. BUMPING IT IS THE
-// DELIBERATE ACT OF ADDING AN RPC; a lifecycle control must not be one of them.
-//
-// 238 -> 239: develop added one procedure to RuntimeImageService (FetchRuntimeImage) while this
-// branch was open, and it is the deliberate act this pin demands — a runtime-image query, not a lifecycle
-// control. The name tripwire below re-checks that on every run, so a lifecycle RPC cannot ride in on a bump.
-//
-// 239 -> 240: the native Telemetry page added TelemetryService.GetTelemetryReport (a read-only Postgres
-// report aggregate for the Reports view). Read-only query, not a lifecycle control.
-//
-// 240 -> 241: AskOrchiconService.DeleteConversationMessage — the transcript edit an operator asked for
-// ("undo it ... and also revert to that message removing anything that has come after it"). It removes a
-// message, and RECYCLES the conversation's model session so the text leaves the model's context as well as
-// the screen. A transcript write on the Ask service, not a plane lifecycle control; the name tripwire below
-// re-checks that.
+// generatedProcedures is the number of Connect procedures the generated clients declare.
 const generatedProcedures = 241
 
 // lifecycleName matches a procedure or RPC that would put plane lifecycle control on the API.
@@ -93,12 +73,7 @@ func TestProtoDeclaresNoLifecycleService(t *testing.T) {
 	}
 }
 
-// TestAPIHasNoOuterMux is the SOURCE-LEVEL half of the auth-surface tripwire (AC4/AC5). TestAPISurfaceDidNotGrow
-// above pins the shape of the Connect surface, but it cannot see net/http muxes — and an outer mux is exactly
-// the shape the removed /grafana bypass took: a second ServeMux built ahead of the guarded catch-all, serving
-// a subtree with no ResolveAuth in front of it. Since the lifecycle work adds no route, internal/api's surface
-// must be SMALLER OR EQUAL after every change, and these three assertions make a widening fail here rather
-// than pass review.
+// TestAPIHasNoOuterMux is the SOURCE-LEVEL half of the auth-surface tripwire (AC4/AC5).
 func TestAPIHasNoOuterMux(t *testing.T) {
 	src, err := os.ReadFile("api.go")
 	if err != nil {

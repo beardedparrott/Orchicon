@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-// TenantSettingsRow's BudgetJSON/ApplyBudgetJSON round-trip the per-tier
-// compaction toggles (`compact_tiers`) so the Settings API and the dispatcher
-// (mergeBudgets → parseBudgetSpec) both see the operator's compaction policy.
+// TenantSettingsRow's BudgetJSON/ApplyBudgetJSON round-trip the per-tier compaction toggles
+// (`compact_tiers`) so the Settings API and the dispatcher (mergeBudgets → parseBudgetSpec) both
+// see.
 func TestBudgetJSONEmitsCompactTiers(t *testing.T) {
 	row := &TenantSettingsRow{}
 	row.Budget.CompactWarnTier = true
@@ -61,10 +61,9 @@ func TestApplyBudgetJSONCompactTiersPartialKeepsCurrent(t *testing.T) {
 	}
 }
 
-// The typed compaction/memory columns (D4) serialize into the budget JSON
-// as context_compaction / memory objects — the keys the native session's
-// policyFromSettings and a worker's budget_overrides parse — so the
-// Settings API and the dispatcher (mergeBudgets) both carry the policy.
+// The typed compaction/memory columns (D4) serialize into the budget JSON as context_compaction /
+// memory objects — the keys the native session's policyFromSettings and a worker's
+// budget_overrides.
 func TestBudgetJSONEmitsCompactionAndMemoryPolicy(t *testing.T) {
 	row := &TenantSettingsRow{
 		ContextCompactionEnabled:      true,

@@ -1,12 +1,6 @@
 package db
 
 // local_integrations_test.go — THE RECORD, AGAINST A REAL DATABASE.
-//
-// These are not shape tests. Every assertion here is a property the reported failure needed and did not have:
-// the obligation exists even before anything was attempted, a second enqueue cannot erase an outcome, the queue
-// is ordered by production order, a conflict KEEPS BLOCKING, and the gate's count is what a run waits on.
-//
-// Skipped (never failed) without ORCHICON_TEST_DSN, like the rest of the repo's DB-backed proofs.
 
 import (
 	"context"
@@ -218,9 +212,6 @@ func TestQueueIsOldestFirstAndARunDoesNotBlockItself(t *testing.T) {
 }
 
 // THE BACKFILL QUERY FINDS A RUN WITH NO RECORD, AND STOPS FINDING IT ONCE IT HAS ONE.
-//
-// This is the self-healing half: a run that completed while the plane was down still enters the queue, and a
-// run that already has a record is not enqueued twice.
 func TestRunsNeedingLocalIntegrationExcludesRecordedRuns(t *testing.T) {
 	pool, ctx := localIntegrationTestPool(t)
 	tenantID, projectID := localIntegrationTenant(t, ctx, pool)

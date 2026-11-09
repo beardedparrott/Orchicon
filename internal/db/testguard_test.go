@@ -1,15 +1,6 @@
 package db
 
 // testguard_test.go — the prod guard must refuse the incident, and must not refuse anything else.
-//
-// A guard is only worth having if BOTH halves hold: it stops the thing it exists for, and it does not stop the
-// work it sits in front of. The second half is not decoration — a guard that refuses `make test` gets deleted
-// within a day, and then the first half is gone with it.
-//
-// The incident, for the record: ORCHICON_INSTANCE=prod and ORCHICON_POSTGRES_DSN were in the shell, and
-// ORCHICON_TEST_DSN was assigned that same live DSN. ~125 test projects landed in the deployment tenant and 281
-// throwaway tenants were created in a live instance. Every case below is a spelling of that mistake, or a
-// legitimate run that must still work.
 
 import (
 	"flag"
@@ -17,9 +8,7 @@ import (
 	"testing"
 )
 
-// asTestBinary forces isTestBinary() to answer true, and restores the real lookup afterwards. Without this the
-// guard's test binary detection would depend on the flags the real `go test` registered — which is true in
-// practice but leaves the NEGATIVE half (a server process must never be refused) untestable.
+// asTestBinary forces isTestBinary() to answer true, and restores the real lookup afterwards.
 func asTestBinary(t *testing.T) {
 	t.Helper()
 	prev := flagLookup
@@ -101,12 +90,6 @@ func TestGuardRefusesARemoteDatabaseOnAProdHost(t *testing.T) {
 }
 
 // THE CASE THE FIRST VERSION OF THIS GUARD GOT WRONG, and the reason it is pinned separately.
-//
-// In this installation PRODUCTION RUNS ON LOOPBACK (a host plane on localhost:5433) while the dev container
-// publishes 5432. The first version allowed any loopback DSN as "the test's own", so the live prod DSN slipped
-// through the escape hatch and a DB-backed test with the shell's own prod DSN was ALLOWED — the incident,
-// reproduced by the guard meant to prevent it. Every other case here passed while that was true, because they
-// asserted against a REMOTE prod DSN and never the local one this machine actually uses.
 func TestGuardRefusesALocalProdDSNBecauseProdIsLocalHere(t *testing.T) {
 	asTestBinary(t)
 	// The real shape of this installation: a loopback production plane.
@@ -159,9 +142,8 @@ func TestGuardAllowsTheOrdinaryDevRun(t *testing.T) {
 	}
 }
 
-// AND THE OPERATOR'S OWN `make test` KEEPS WORKING even with a prod plane in the shell — because that is exactly
-// the shell the incident happened in, and forbidding it would forbid the fix. A LOOPBACK database is the dev
-// instance / the services container, never the remote prod one.
+// AND THE OPERATOR'S OWN `make test` KEEPS WORKING even with a prod plane in the shell — because
+// that is exactly the shell the incident happened in, and forbidding it would forbid the fix.
 func TestGuardAllowsALocalDatabaseEvenOnAProdLabelledHost(t *testing.T) {
 	asTestBinary(t)
 	t.Setenv(instanceEnv, "prod")

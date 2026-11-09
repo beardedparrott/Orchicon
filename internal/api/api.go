@@ -1,9 +1,4 @@
-// Package api wires Connect handlers for the public API surface
-// (docs/07_API_Specification.md). The generated connect-go service
-// handlers are mounted here onto a single mux, wrapped by the
-// auth-resolution middleware, with the RBAC Connect interceptor applied
-// per-RPC. Auth is mandatory in every mode: every non-public request
-// carries a resolved identity or is rejected 401.
+// Package api wires Connect handlers for the public API surface (docs/07_API_Specification.md).
 package api
 
 import (
@@ -59,127 +54,67 @@ type Dependencies struct {
 	PolicyEngine   *policy.Engine
 	RecoveryEngine *recovery.Engine
 	TelemetryQuery *telemetry.QueryClient
-	// SecretsKEK is the resolved 32-byte KEK for the tenant secrets store
-	// (ORCHICON_SECRETS_KEK override, or the per-instance data-dir key).
-	// nil/len != 32 disables the store (fail-closed at the service layer).
+	// SecretsKEK is the resolved 32-byte KEK for the tenant secrets store (ORCHICON_SECRETS_KEK
+	// override, or the per-instance data-dir key).
 	SecretsKEK []byte
-	// UsageRecorder is the shared AI Gateway usage recorder (Postgres +
-	// OTel dual-write) worker executions use. Wired into Ask Orchicon so
-	// Ask sessions capture live usage per adapter. Nil disables Ask usage
-	// recording.
+	// UsageRecorder is the shared AI Gateway usage recorder (Postgres + OTel dual-write) worker
+	// executions use.
 	UsageRecorder *aigateway.UsageRecorder
-	// FileEditService is the shared diff-pipeline ledger service (server
-	// constructed over the PG store). Wired into Ask Orchicon so Ask
-	// conversations ledger file edits from real file-state snapshots
-	// (owner_kind ask_conversation) — the same ground truth executions
-	// record. Nil disables the Ask-side ledger.
+	// FileEditService is the shared diff-pipeline ledger service (server constructed over the PG
+	// store).
 	FileEditService *fileedit.Service
-	// Phase 9: auth + webhooks + blobstore. AuthHandler is required in
-	// every mode: api.Mount resolves identity through it, so a plane
-	// without one is a programming error (config validation requires an
-	// IdP in every mode and auth.NewHandler never returns nil).
+	// Phase 9: auth + webhooks + blobstore.
 	AuthHandler       *auth.Handler
 	WebhookDispatcher *webhook.Dispatcher
 	Mode              config.DeploymentMode
 	// ModelDiscoverer enumerates models from opencode CLI.
 	ModelDiscoverer *aigateway.ModelDiscoverer
 	MCPDiscoverer   *aigateway.MCPDiscoverer
-	// DiscovererFactory re-resolves the pair above when boot could not. Without it, a plane whose
-	// first probe failed at startup answers "model discovery is not configured" for its whole life
-	// and the only remedy is a restart — which is the reported bug (aigateway/discoverer_lazy.go).
-	// nil means no late resolution is available (headless/tests), and the message stays as before.
+	// DiscovererFactory re-resolves the pair above when boot could not.
 	DiscovererFactory aigateway.DiscovererFactory
-	// ModelRefRegistry is the per-adapter provider catalog (built-in ∪
-	// tenant custom) for adapter-scoped model listing and legacy 2-segment
-	// inference (ADR-0003). nil falls back to the built-in catalog.
+	// ModelRefRegistry is the per-adapter provider catalog (built-in ∪ tenant custom) for
+	// adapter-scoped model listing and legacy 2-segment inference (ADR-0003).
 	ModelRefRegistry adapter.ProviderRegistry
-	// AdapterKinds returns the adapter kinds registered with the Dispatcher
-	// (ADR-0004 D1) — the source of the model picker's adapter bubble tier.
-	// Injected as a func to avoid an api → scheduler import cycle; nil falls
-	// back to the default adapter kind.
+	// AdapterKinds returns the adapter kinds registered with the Dispatcher (ADR-0004 D1) — the source
+	// of the model picker's adapter bubble tier.
 	AdapterKinds func() []string
-	// AdapterChatKinds returns the adapter kinds whose bridge implements the
-	// ChatTurnClient (Ask chat) capability (ADR-0004 D1). It is the
-	// Kinds()-adjacent surface the Ask model picker + conversation-creation
-	// guard consume: a kind that registers but does not implement Ask chat is
-	// still dispatchable for worker executions (AdapterKinds) but is NOT
-	// offered for Ask. Injected as a func to avoid an api → scheduler import
-	// cycle; nil falls back to the default adapter kind.
+	// AdapterChatKinds returns the adapter kinds whose bridge implements the ChatTurnClient (Ask chat)
+	// capability (ADR-0004 D1).
 	AdapterChatKinds func() []string
-	// Dispatcher is the shared adapter routing substrate (ADR-0003). Ask
-	// Orchicon conversations resolve their adapter kind from the model_ref
-	// through it and drive the resolved ChatTurnClient capability; worker
-	// executions resolve their bridge the same way. It is injected directly
-	// (api.go imports internal/scheduler, so no import cycle).
+	// Dispatcher is the shared adapter routing substrate (ADR-0003).
 	Dispatcher *scheduler.Dispatcher
 	// BlobStore is the object storage abstraction (local filesystem + S3).
 	BlobStore blobstore.Store
-	// ProvidersService is the providers settings core (ADR-0006). Mount
-	// constructs it and stores it back here so the wiring order is a
-	// single Mount call; nil until Mount runs (or in tests that mount
-	// without the secrets KEK — token writes then fail closed).
+	// ProvidersService is the providers settings core (ADR-0006).
 	ProvidersService *providers.Service
 	// PostgresDSN is the Postgres connection string for backup/restore.
 	PostgresDSN string
 
-	// PermissionPolicyPath is the operator's persistent permission policy
-	// file (ORCHICON_PERMISSION_POLICY). Empty falls back to
-	// permpolicy.DefaultPath() inside the settings service.
+	// PermissionPolicyPath is the operator's persistent permission policy file
+	// (ORCHICON_PERMISSION_POLICY).
 	PermissionPolicyPath string
-	// RuntimeClient talks to the host-side runtime daemon over its unix
-	// socket (build/remove runtime images). Nil when the daemon is not
-	// configured (headless serve).
+	// RuntimeClient talks to the host-side runtime daemon over its unix socket (build/remove runtime
+	// images).
 	RuntimeClient *runtime.Client
-	// SendExecutionMessage routes a mid-run human message into a live
-	// execution's adapter session (type-asserts the MessageInjector
-	// capability; a non-supporting bridge yields an actionable error, never
-	// a panic). Nil when the session transport is unavailable.
+	// SendExecutionMessage routes a mid-run human message into a live execution's adapter session
+	// (type-asserts the MessageInjector capability; a non-supporting bridge yields an actionable error.
 	SendExecutionMessage func(ctx context.Context, execID, message string) error
-	// ContinueSession runs a one-shot follow-up question against a worker's
-	// session in place (no new execution/work item). Nil when the session
-	// transport is unavailable.
+	// ContinueSession runs a one-shot follow-up question against a worker's session in place (no new
+	// execution/work item).
 	ContinueSession func(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error)
-	// AbortExecution stops a live execution's opencode session when a human
-	// cancels it, so the model stops generating immediately (prevents the
-	// "terminated but still active" token burn). Nil when the session
-	// transport is unavailable.
+	// AbortExecution stops a live execution's opencode session when a human cancels it, so the model
+	// stops generating immediately (prevents the "terminated but still active" token burn).
 	AbortExecution func(ctx context.Context, execID, reason string) error
-	// ReleaseStuckExecutions runs the execution-liveness reaper NOW, scoped to
-	// one project, and returns the ids it released along with how many
-	// slot-holding executions it examined. Backs the run view's "release stuck
-	// executions" action: a project pinned at its dispatch cap by unreaped
-	// executions cannot dispatch anything, so waiting for the next reaper tick
-	// stalls every run in it. Nil when no reaper is wired (headless without a
-	// runtime daemon) → the RPC reports Unimplemented rather than pretending
-	// to have cleared something.
+	// ReleaseStuckExecutions runs the execution-liveness reaper NOW, scoped to one project, and returns
+	// the ids it released along with how many slot-holding executions it examined.
 	ReleaseStuckExecutions func(ctx context.Context, projectID string) (releasedIDs []string, examined int, err error)
-	// HostServe is the always-on host opencode serve. Ask Orchicon
-	// conversation turns run as persistent sessions on it (first message
-	// CreateSession, follow-ups prompt_async on the same session). Nil when
-	// the transport is disabled or the serve could not start — the chat
-	// degrades to the legacy per-message subprocess path.
+	// HostServe is the always-on host opencode serve.
 	HostServe *opencode.HostServe
-	// AskService is the AskOrchiconService handler Mount constructs. It is
-	// stored back here (like ProvidersService) so the server can wire the
-	// product tool registry into the native bridge's Ask turns — nil until
-	// Mount runs.
+	// AskService is the AskOrchiconService handler Mount constructs.
 	AskService *askorchicon.Service
 }
 
-// Mount returns an http.Handler serving the Orchicon API. Generated
-// connect-go handlers are registered with the RBAC interceptor applied
-// per-RPC (docs/07 §6.3). The whole surface is wrapped by the
-// auth-resolution middleware so every tenant-scoped RPC carries
-// identity + tenant context into the data-access layer.
-//
-// deps is taken by POINTER and mutated: Mount constructs services that
-// callers need back (ProvidersService for the native bridge's lazy
-// ProviderResolver, ModelRefRegistry when nil) and writes them through
-// the pointer. A by-value signature silently dropped those writes into
-// Mount's local copy — the caller's struct stayed nil forever and every
-// orchicon-kind dispatch failed with "providers service not yet
-// constructed" (latent until the runtime_ref retirement made the native
-// path live; regression-pinned by TestMountBackfillsDependencies).
+// Mount returns an http.Handler serving the Orchicon API.
 func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	if deps == nil {
 		panic("api.Mount: nil *Dependencies — programming error")
@@ -193,10 +128,8 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 		_, _ = w.Write([]byte(`{"version":"` + version.Current().Tag + `"}`))
 	})
 
-	// /enginez reports whether RUNTIME CONTAINERS are available on this host, and why not when
-	// they are not (AC5). It is built by internal/containerengine.Inspect — the same package
-	// the installer decided with — so the UI cannot advertise an availability the install did
-	// not produce. Plain JSON next to /versionz: one operational status needs no proto change.
+	// /enginez reports whether RUNTIME CONTAINERS are available on this host, and why not when they are
+	// not (AC5).
 	mux.Handle("/enginez", newEngineStatusCache(30*time.Second, containerengine.DefaultProbe()))
 
 	// Phase 9: out-of-band auth HTTP endpoints (OIDC code-flow + dev
@@ -218,18 +151,11 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	catSvc := category.New(deps.Pool, deps.Log)
 	mux.Handle(apiv1connect.NewCategoryServiceHandler(catSvc, interceptorOpt))
 
-	// ProviderService (ADR-0006) — tenant-facing Providers management
-	// surface behind Settings → Adapters. Constructed here (before
-	// WorkerService) so the worker validation path can consume the
-	// tenant's enabled custom provider ids; the handler is registered on
-	// the mux exactly once (the earlier/only Handle call). Note: the
-	// comment above originally grouped this under WorkerService — the
-	// service construction, substrate loader registration, and handler
-	// mount all belong together.
+	// ProviderService (ADR-0006) — tenant-facing Providers management surface behind Settings →
+	// Adapters.
 	providerSvc := providers.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
-	// Provider-landscape mutations invalidate the model discoverer's cache
-	// immediately (custom provider CRUD, token saves): new models become
-	// usable right away instead of after the discovery TTL.
+	// Provider-landscape mutations invalidate the model discoverer's cache immediately (custom provider
+	// CRUD, token saves): new models become usable right away instead of after the discovery TTL.
 	if deps.ModelDiscoverer != nil {
 		providerSvc.OnProviderChange = deps.ModelDiscoverer.Invalidate
 	}
@@ -237,24 +163,17 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	deps.ProvidersService = providerSvc.Service()
 	mux.Handle(apiv1connect.NewProviderServiceHandler(providerSvc, interceptorOpt))
 
-	// MCPService (adapter-settings MCP management) — tenant-facing MCP
-	// server surface behind Settings → Adapters → MCP: CRUD over server
-	// definitions (project XOR Ask conversation), the curated registry catalog
-	// with one-click prefill, explicit-only auto-install (dry-run for CI), and
-	// tenant-scoped credentials. The sibling MCP-client task resolves the
-	// project-owned ∪ scope-owned union at session time.
+	// MCPService (adapter-settings MCP management) — tenant-facing MCP server surface behind Settings →
+	// Adapters → MCP: CRUD over server definitions (project XOR Ask conversation).
 	mcpSvc := mcpsettings.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
 	mux.Handle(apiv1connect.NewMCPServiceHandler(mcpSvc, interceptorOpt))
 
 	workerSvc := worker.New(deps.Pool, deps.Log)
-	// Explicit adapter selections validate against the Dispatcher's
-	// registered kinds (ADR-0005 D2) — the injected func avoids the
-	// api → scheduler import cycle.
+	// Explicit adapter selections validate against the Dispatcher's registered kinds (ADR-0005 D2) —
+	// the injected func avoids the api → scheduler import cycle.
 	workerSvc.SetAdapterKinds(deps.AdapterKinds)
-	// Tenant custom providers join model-ref validation (ADR-0006 D6): the
-	// global validation registry stays built-in-only; the worker service
-	// merges the requesting tenant's enabled custom ids where tenant
-	// context exists.
+	// Tenant custom providers join model-ref validation (ADR-0006 D6): the global validation registry
+	// stays built-in-only; the worker service merges the requesting tenant's enabled custom ids.
 	if deps.ProvidersService != nil {
 		workerSvc.SetCustomProviderIDs(deps.ProvidersService.EnabledCustomProviderIDs)
 	}
@@ -273,9 +192,8 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	workItemSvc.SetStartWorkflowStarter(func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
 		return workflow.StartWorkflowDirect(ctx, deps.Pool, deps.Log, tenantID, workflowID, projectID, workItemID)
 	})
-	// Sequence auto-start (run-instant on a parent with children): fire
-	// the chain through the sequence engine. Validation of the subtree
-	// runs in the handler before this is invoked.
+	// Sequence auto-start (run-instant on a parent with children): fire the chain through the sequence
+	// engine.
 	workItemSvc.SetStartSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
 		return scheduler.StartSequence(ctx, deps.Pool, deps.Log, tenantID, parentID,
 			func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
@@ -349,23 +267,13 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	telemetrySvc := telemetry.NewService(deps.Pool, deps.TelemetryQuery, deps.Subscriber)
 	mux.Handle(apiv1connect.NewTelemetryServiceHandler(telemetrySvc, interceptorOpt))
 
-	// AIGatewayService (docs/07 §3.10). The CLI-aware validation registry
-	// composes BEFORE the gateway and settings services: the static
-	// registry (builtin ∪ tenant customs) wrapped with live CLI provider
-	// discovery, so CLI-namespace refs (e.g. opencode/deepseek/…) validate
-	// at save time and the gateway's models RPC scopes through the same
-	// composition. ModelRefRegistry nil → the composition becomes the
-	// registry.
+	// AIGatewayService (docs/07 §3.10).
 	cliRegistry := aigateway.NewCLIProviderRegistry(deps.ModelRefRegistry, deps.ModelDiscoverer)
 	if deps.ModelRefRegistry == nil {
 		deps.ModelRefRegistry = cliRegistry
 	}
-	// Worker model_ref validation shares the same composition as the
-	// picker and settings (builtin ∪ tenant customs ∪ live CLI provider
-	// ids): validation must agree with what the picker offers, or every
-	// freshly-selected ref fails at save ("provider not found"). Without
-	// this, a plugin-served provider like commandcode is picker-valid but
-	// worker-save-invalid.
+	// Worker model_ref validation shares the same composition as the picker and settings (builtin ∪
+	// tenant customs ∪ live CLI provider ids): validation must agree with what the picker offers.
 	worker.SetModelRefRegistry(cliRegistry)
 	aiGatewaySvc := aigateway.NewService(deps.Pool, deps.Log, deps.Subscriber, deps.ModelDiscoverer, deps.MCPDiscoverer, deps.ModelRefRegistry, deps.AdapterKinds, deps.AdapterChatKinds)
 	if deps.DiscovererFactory != nil {
@@ -383,8 +291,6 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	mux.Handle(apiv1connect.NewWebhookServiceHandler(webhookSvc, interceptorOpt))
 
 	// ApprovalService — human-in-the-loop approval gates for workflow steps.
-	// A higher read cap so approval decisions can carry attached files and
-	// screenshots (up to 20 attachments, each up to 2-3 MiB).
 	approvalSvc := approval.NewService(deps.Pool, deps.Log)
 	mux.Handle(apiv1connect.NewApprovalServiceHandler(
 		approvalSvc,
@@ -395,9 +301,8 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	// SettingsService — tenant-level configuration defaults.
 	settingsSvc := settings.New(deps.Pool, deps.Log, deps.PostgresDSN)
 	settingsSvc.SetPermissionPolicyPath(deps.PermissionPolicyPath)
-	// The settings validator shares the CLI-aware registry (composed above):
-	// the validator must agree with the picker or every CLI-namespace ref
-	// the picker offered fails at save with "provider not found".
+	// The settings validator shares the CLI-aware registry (composed above): the validator must agree
+	// with the picker or every CLI-namespace ref the picker offered fails at save with "provider not.
 	settingsSvc.SetValidationRegistry(cliRegistry)
 	mux.Handle(apiv1connect.NewSettingsServiceHandler(settingsSvc, interceptorOpt))
 
@@ -414,16 +319,8 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	go runtimeImageSvc.StartReconciler(context.Background())
 
 	// SecretsService — tenant-scoped encrypted secrets (Tavily etc.).
-	// The KEK is resolved once at server construction (env override or
-	// first-boot generation in the instance data dir); a nil/short key
-	// leaves the store disabled (fail-closed at the service layer).
 	secretsSvc := secrets.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
-	// A ROTATED PROVIDER KEY MUST REACH THE NEXT REQUEST. Provider clients are
-	// cached with the resolved credential baked in, and the resolver caches the
-	// decrypted plaintext for the process's life — both dropped only by
-	// Registry.Invalidate. The PROVIDERS service calls it on its own token
-	// mutations; this makes a write through Settings → Secrets do the same, so
-	// replacing an expired key does not need a plane restart to take effect.
+	// A ROTATED PROVIDER KEY MUST REACH THE NEXT REQUEST.
 	if deps.ProvidersService != nil {
 		secretsSvc.SetOnChanged(deps.ProvidersService.InvalidateSecret)
 	}
@@ -434,9 +331,8 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	askSvc.SetAdapterKinds(deps.AdapterKinds)
 	askSvc.SetChatKinds(deps.AdapterChatKinds)
 	askSvc.SetDispatcher(deps.Dispatcher)
-	// The Ask update_settings tool write path shares the same CLI-aware model
-	// ref registry as the settings validator/picker: a CLI-namespace ref the
-	// picker offered validates at save through this agent-controlled path too.
+	// The Ask update_settings tool write path shares the same CLI-aware model ref registry as the
+	// settings validator/picker.
 	askSvc.SetValidationRegistry(cliRegistry)
 	if deps.SendExecutionMessage != nil {
 		askSvc.SetSendExecutionMessage(deps.SendExecutionMessage)
@@ -448,14 +344,7 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	if deps.UsageRecorder != nil {
 		askSvc.SetUsageRecorder(deps.UsageRecorder)
 	}
-	// Diff pipeline (plan step 8): the Ask-side ledger hook + terminal-turn
-	// git reconciliation. Ask conversations ledger file edits with
-	// owner_kind ask_conversation from real file-state snapshots — the
-	// built-in write/edit tools take a plane-side after-read (observer
-	// cache vs fresh read under the conversation's project dir), the
-	// worktree engine tools parse their structured file_edits output. The
-	// terminal hook reconciles the ledger against the project dir's git
-	// state once per turn. Both best-effort; nil service = no ledger.
+	// Diff pipeline (plan step 8): the Ask-side ledger hook + terminal-turn git reconciliation.
 	if deps.FileEditService != nil && deps.Pool != nil {
 		feAsk := deps.FileEditService
 		// Per-conversation observers: cache last-seen content per path
@@ -479,14 +368,8 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 		askSvc.SetFileEditHook(func(ctx context.Context, tenantID, convID, toolName string, input map[string]any, output string) {
 			switch toolName {
 			case "write", "edit":
-				// The worktree engine's single-op write/edit wrappers emit the
-				// structured file_edits payload (exact ground truth) under these
-				// same tool names — try it FIRST and claim the edit when the
-				// output carries a payload (even a funnel-dropped no-op: the
-				// HEAD-seeded observer must not hallucinate a row for it).
-				// Genuine built-in output never contains "file_edits", so the
-				// branch is unambiguous; only then take the plane-side
-				// after-snapshot under the conversation's project dir.
+				// The worktree engine's single-op write/edit wrappers emit the structured file_edits payload (exact
+				// ground truth) under these same tool names.
 				if parsed, _ := feAsk.RecordEngineOutput(ctx, tenantID, db.FileEditOwnerAskConversation, convID, toolName, output); parsed > 0 {
 					break
 				}
@@ -528,79 +411,24 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	deps.AskService = askSvc
 	mux.Handle(apiv1connect.NewAskOrchiconServiceHandler(askSvc, interceptorOpt))
 
-	// HISTORICAL NOTE — the /grafana auth bypass that used to live here.
-	// This function used to build an OUTER http.ServeMux and register a
-	// reverse proxy to Grafana on /grafana and /grafana/ ahead of the
-	// guarded "/" catch-all, so those requests never met ResolveAuth. The
-	// reason was real: the Telemetry page embedded Grafana in an <iframe>,
-	// and an iframe request cannot carry an Authorization header, so under
-	// ResolveAuth every pane 401'd with {"error":"missing credentials"} —
-	// and the tests passed only because they exercised the proxy without
-	// the wrapper. The bypass was the WRONG REMEDY: Grafana is gone, the
-	// panes are native, and they fetch through the authenticated Connect
-	// client. ANY future UI surface that finds itself unable to send a
-	// credential must satisfy that constraint the same way — read through
-	// the authenticated client — and MUST NOT be mounted outside
-	// ResolveAuth. Every request now leaves this function through the
-	// single guarded return below; /grafana falls through and is 401.
+	// ANY future UI surface that finds itself unable to send a credential must satisfy that constraint
+	// the same way — read through the authenticated client.
 
-	// The auth-resolution middleware (docs/07 §6.3) resolves the caller's
-	// identity from the bearer token (OIDC access token or API key) and
-	// stores identity + tenant in the context. Auth is mandatory in every
-	// mode — a request without a valid credential is 401 and the tenant
-	// always comes from the resolved identity, never a request header.
-	// There is no tenant-only fallback and no anonymous path into
-	// tenant-scoped data, and it is the ONLY handler chain this package
-	// returns — there is no outer mux (see the historical note above).
+	// There is no tenant-only fallback and no anonymous path into tenant-scoped data, and it is the
+	// ONLY handler chain this package returns — there is no outer mux (see the historical note above).
 	h := middleware.ResolveAuth(mux, deps.AuthHandler.Issuer(), deps.AuthHandler.Resolver(), deps.Log)
 	_ = blobstore.ErrNotFound
 	return h
 }
 
 // askBaseDir resolves the directory an Ask conversation's file edits resolve against.
-//
-// IT IS THE CONVERSATION'S PROJECT DIRECTORY, and getting that wrong is why the Ask
-// diff pane showed nothing.
-//
-// This used to return os.Getwd() — the CONTROL PLANE's working directory — on the
-// stated reasoning that "Ask sessions run on the host opencode serve as
-// directory-less sessions, so relative paths resolve against the server process's
-// working directory". That was true of the opencode-serve transport and FALSE of
-// every other one: a native orchicon session runs its file/shell suite against
-// AskFileScopeFor's directory (the conversation's project), and a claude session
-// runs against its own cwd. So the observer watched the plane's cwd while the
-// session wrote somewhere else, every snapshot pair was "unchanged", and the ledger
-// recorded NOTHING — the operator's "I don't see ANY files under diff viewer right
-// now in this ask session".
-//
-// It is worse than a miss, because it is SILENT: the plane's cwd usually EXISTS and
-// usually contains a file at the same relative path (it is the repo the plane was
-// started from), so the observer compares the WRONG FILE against the previous
-// contents of the wrong file. A session editing `internal/db/usage.go` in its own
-// worktree had the plane diff `<plane cwd>/internal/db/usage.go`, which it never
-// touched — so the row was either dropped as unchanged or, on a coincidental
-// difference, recorded against a file the session never opened.
-//
-// THE FIX IS TO ASK THE SAME AUTHORITY THE TOOLS ASK. AskFileScopeFor already
-// resolves the conversation's directory from one read of one row, and its own
-// comment insists the prompt and the suite "agree by construction, from one read of
-// one row". The diff observer is a third reader of that same question, so it now
-// reads it the same way rather than inventing a second answer. An unassigned
-// conversation still resolves to the anchor AskFileScopeFor names, so the
-// directory-less case keeps working exactly as before.
-//
-// Returns "" when there is no resolvable directory — callers then skip ledger
-// observation/reconciliation (never fail the turn), which is the pre-existing
-// posture for a DB-less plane.
 func askBaseDir(ctx context.Context, deps *Dependencies) string {
 	if deps == nil || deps.Pool == nil {
 		return ""
 	}
 	scope, err := askorchicon.AskFileScopeFor(ctx, deps.Pool)
 	if err != nil {
-		// A conversation with no project, or a project whose dir is unset. The turn
-		// proceeds; the ledger simply observes nothing rather than observing the
-		// wrong tree.
+		// A conversation with no project, or a project whose dir is unset.
 		return ""
 	}
 	return strings.TrimSpace(scope.Dir)

@@ -23,9 +23,8 @@ import (
 	"testing"
 )
 
-// TestGrafanaRouteFallsThroughToAuth pins AC4: the removed bypass leaves nothing unauthenticated behind.
-// These are the paths the old outer mux served (the SPA shell, its assets, and the Grafana API); every one of
-// them must now die at ResolveAuth with 401 — without a single one being registered on the guarded mux.
+// TestGrafanaRouteFallsThroughToAuth pins AC4: the removed bypass leaves nothing unauthenticated
+// behind.
 func TestGrafanaRouteFallsThroughToAuth(t *testing.T) {
 	mux := http.NewServeMux()
 	deps := testDeps()
@@ -51,11 +50,8 @@ func TestGrafanaRouteFallsThroughToAuth(t *testing.T) {
 	}
 }
 
-// TestRemovedGrafanaPathsAreNotMounted is the companion positive check: none of the old /grafana paths are
-// registered on the guarded mux either. A route that exists on the mux would answer 401 here too, so the
-// served-surface assertion has to be structural — mux.Handler reports the "/" catch-all (or no handler) for
-// a path that was never registered. Keeping it explicit means a reintroduced /grafana registration shows up
-// as a failure of THIS test rather than as a silently still-guarded-but-present route.
+// TestRemovedGrafanaPathsAreNotMounted is the companion positive check: none of the old /grafana
+// paths are registered on the guarded mux either.
 func TestRemovedGrafanaPathsAreNotMounted(t *testing.T) {
 	mux := http.NewServeMux()
 	deps := testDeps()

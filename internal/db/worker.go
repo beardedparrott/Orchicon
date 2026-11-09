@@ -9,10 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// WorkerRow is the data-access shape of a workers table row — the
-// immutable header (docs/05 §3.1, docs/09 §3.3). The mutable snapshot
-// lives in WorkerVersionRow. tenant_id is the primary isolation layer;
-// RLS is the backstop (docs/09 §8.5).
+// WorkerRow is the data-access shape of a workers table row — the immutable header (docs/05 §3.1,
+// docs/09 §3.3).
 type WorkerRow struct {
 	ID             string
 	TenantID       string
@@ -27,28 +25,13 @@ type WorkerRow struct {
 	Version        int
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
-	// Ephemeral marks a machine-managed transient worker (Ask Orchicon
-	// Quick Work): created for one job, pinned to the Quick Work agent's own
-	// model_ref, hidden from the Workers view, and HARD-DELETED when the job
-	// ends. Always false for a human-created worker.
-	//
-	// Ungated by id: GetWorker and dispatch-time resolution read this row
-	// directly and deliberately ignore the flag, because a run must be able
-	// to execute the very worker the list gate hides. Only the LIST gate
-	// applies. See ephemeralPredicateOn.
+	// Ephemeral marks a machine-managed transient worker (Ask Orchicon Quick Work): created for one
+	// job, pinned to the Quick Work agent's own model_ref, hidden from the Workers view.
 	Ephemeral bool
 }
 
-// WorkerVersionRow is the data-access shape of a worker_versions table
-// row - the mutable snapshot of a Worker at a specific version. "Mutable"
-// is literal: a PUBLISHED version has its fields edited in place by
-// UpdateWorkerVersion{republish} (revert, update and republish inside one
-// transaction, so the draft guard in UpdateDraftVersion is satisfied
-// without the draft ever escaping that transaction). The version NUMBER
-// advances only through CreateWorkerVersion.
-//
-// JSON-typed columns (permissions, budget_overrides, etc.) are stored as raw
-// []byte and validated at the API boundary (AGENTS.md security standards).
+// WorkerVersionRow is the data-access shape of a worker_versions table row - the mutable snapshot
+// of a Worker at a specific version.
 type WorkerVersionRow struct {
 	ID          string
 	TenantID    string
@@ -57,42 +40,16 @@ type WorkerVersionRow struct {
 	VersionNote string
 	Status      string
 	ModelRef    string
-	// SystemPrompt is the LEGACY RAW PROMPT: one pre-composed prompt, used only
-	// when all four structured fields below are blank. That fallback is LIVE, not
-	// dead — internal/scheduler/reconciler.go's composeSystemPrompt returns this
-	// column in exactly that case, and its result becomes the "# Worker" section
-	// of the composite, which travels as ExecutionManifest.SystemPrompt to BOTH
-	// adapters (opencode reads it in opencode/adapter.go executionSystemPrompt;
-	// the native bridge in orchicon/session.go and orchicon/bridge.go) and to
-	// session follow-ups (opencode/follow_up.go).
-	//
-	// It is also NOT PERSISTED: neither CreateWorkerVersion's INSERT nor
-	// UpdateDraftVersion's UPDATE names this column, so the service's
-	// validate/merge/compose work for a raw-prompt-only worker is silently
-	// dropped before it reaches the row. A worker created with only
-	// system_prompt therefore dispatches with an EMPTY "# Worker" section, while
-	// create.go's comment claims "the DB column always matches what dispatch
-	// would send".
-	//
-	// Measured on the dev tenant: 0 of 388 rows non-empty — every live worker uses
-	// the structured fields, so the fallback never fires and the gap is invisible
-	// in practice. Adding the column to those two statements is the fix; it is
-	// left undone pending a decision on whether a raw-prompt-only worker is still
-	// a supported shape.
+	// SystemPrompt is the LEGACY RAW PROMPT: one pre-composed prompt, used only when all four
+	// structured fields below are blank.
 	SystemPrompt   string
 	Role           string
 	Skills         string
 	Behavior       string
 	AgentsMD       string
 	ContextSources []byte // jsonb
-	// SkillFiles is the jsonb array of absolute skill file/directory paths for
-	// THIS VERSION (never the worker header: published versions are immutable by
-	// version and the version is what every dispatch pins to), union-ed with the
-	// project's SkillFiles at render time by contextfiles.RenderManifest.
-	//
-	// DISTINCT from Skills above: Skills is FREE-TEXT prompt prose ("bullet-style
-	// skill list") the service composes into `# Skills`; SkillFiles is a list of
-	// real on-disk paths. The serialized names stay distinct on purpose.
+	// SkillFiles is the jsonb array of absolute skill file/directory paths for THIS VERSION (never the
+	// worker header: published versions are immutable by version and the version is what every.
 	SkillFiles          []byte // jsonb
 	Permissions         []byte // jsonb
 	GatedTools          []byte // jsonb
@@ -105,9 +62,7 @@ type WorkerVersionRow struct {
 	CreatedAt           time.Time
 }
 
-// WorkerSlugExists reports whether a worker with the given slug already
-// exists in the tenant. Used by the service to dedupe slugs (e.g. cloning a
-// worker) so the unique workers_tenant_slug_idx constraint is never hit.
+// WorkerSlugExists reports whether a worker with the given slug already exists in the tenant.
 func WorkerSlugExists(ctx context.Context, tx pgx.Tx, tenantID, slug string) (bool, error) {
 	var exists bool
 	err := tx.QueryRow(ctx,
@@ -116,10 +71,7 @@ func WorkerSlugExists(ctx context.Context, tx pgx.Tx, tenantID, slug string) (bo
 	return exists, err
 }
 
-// CreateWorker inserts a new worker header row within the given tenant
-// transaction. The caller controls the transaction so the outbox row can
-// be enqueued in the same atomic unit (docs/09 §6). Version starts at 1;
-// current_version starts at 0 (no published versions yet).
+// CreateWorker inserts a new worker header row within the given tenant transaction.
 func CreateWorker(ctx context.Context, tx pgx.Tx, w WorkerRow) (WorkerRow, error) {
 	const q = `INSERT INTO workers
 		(id, tenant_id, name, slug, description, purpose, role_ref, status, current_version, created_by, ephemeral)
@@ -171,43 +123,27 @@ type ListWorkersFilter struct {
 	SortOrder string
 	PageSize  int
 	AfterID   string
-	// EphemeralScope scopes the ephemeral split (Ask Orchicon Quick Work):
-	// ""/"exclude" (the default) = ONLY ordinary workers — the Workers
-	// view; "only" = only ephemeral workers; "include" = both, for the
-	// Quick Work agent managing the workers it created.
-	//
-	// The zero value is the SAFE value on purpose: a caller that has never
-	// heard of ephemeral workers hides them by default. See
-	// ephemeralPredicateOn.
+	// EphemeralScope scopes the ephemeral split (Ask Orchicon Quick Work): ""/"exclude" (the default) =
+	// ONLY ordinary workers — the Workers view; "only" = only ephemeral workers; "include" = both.
 	EphemeralScope string
 }
 
 // Page-size bounds, EXPORTED so a caller can tell whether a page came back FULL.
-//
-// A list endpoint answers with a page token only when there MIGHT be another page, and "might" is
-// exactly `len(page) == PageSize`. Without knowing the size, the only safe signal was "the page was
-// non-empty", which is why the worker list used to hand out a token on its last page too: every load
-// then paid one extra round trip to be told there was nothing left.
 const (
 	DefaultListPageSize = 100
 	MaxListPageSize     = 1000
 )
 
-// WorkerListRow is the enriched list row — the Worker header plus the
-// active version's model_ref and status. The active version is the row
-// pinned by current_version when >0, otherwise the latest version.
+// WorkerListRow is the enriched list row — the Worker header plus the active version's model_ref
+// and status.
 type WorkerListRow struct {
 	WorkerRow
 	ActiveModelRef      string
 	ActiveVersionStatus string
 }
 
-// ListWorkersWithActiveVersion returns a page of workers with the active
-// version's model_ref and publish state in one round-trip. The active
-// version is workers.current_version when >0, otherwise the latest
-// version by version number — matches dispatch pinning and avoids an
-// N+1 ListWorkerVersions per card. Tenant isolation is preserved on
-// every join.
+// ListWorkersWithActiveVersion returns a page of workers with the active version's model_ref and
+// publish state in one round-trip.
 func ListWorkersWithActiveVersion(ctx context.Context, tx pgx.Tx, f ListWorkersFilter) ([]WorkerListRow, error) {
 	if f.PageSize <= 0 || f.PageSize > MaxListPageSize {
 		f.PageSize = DefaultListPageSize
@@ -241,15 +177,6 @@ func ListWorkersWithActiveVersion(ctx context.Context, tx pgx.Tx, f ListWorkersF
 	}
 	// THE CURSOR MUST AGREE WITH THE ORDER — the SAME correction ListWorkers already carries, applied
 	// here because THIS is the function the Workers pane calls.
-	//
-	// It cost the operator real rows: a bare `id > $n` against a `created_at` ordering is two different
-	// orders, and the dev tenant is a perfect illustration — its 7 seeded workers have ids like
-	// `w_se_qa_engineer`, and 'w' sorts AFTER every digit, so every one of them is "greater than" the
-	// last row of a created_at-ordered page. The walk therefore returned the whole list, then those 7
-	// again, then 4 of them again: 19 workers rendered as 30 rows with the same names repeated three
-	// times over. (Measured against the live tenant: page1=19, page2=7, page3=4.)
-	//
-	// The keyset compares the SAME (sort key, id) tuple the ORDER BY uses.
 	if f.AfterID != "" {
 		cmp := ">"
 		if sortOrder == "DESC" {
@@ -321,10 +248,7 @@ func ListWorkers(ctx context.Context, tx pgx.Tx, f ListWorkersFilter) ([]WorkerR
 	if f.SortOrder == "desc" {
 		sortOrder = "DESC"
 	}
-	// THE CURSOR MUST AGREE WITH THE ORDER — the same correction as ListWorkItems and ListProjects. A
-	// bare `id > $n` against a `created_at` ordering is two different orders, and the live tenant has
-	// 1213 worker pairs whose id order DISAGREES with their created_at order, so page 2 could both
-	// repeat and SKIP rows. The keyset compares the SAME (sort key, id) tuple the ORDER BY uses.
+	// THE CURSOR MUST AGREE WITH THE ORDER — the same correction as ListWorkItems and ListProjects.
 	if f.AfterID != "" {
 		cmp := ">"
 		if sortOrder == "DESC" {
@@ -360,9 +284,7 @@ func ListWorkers(ctx context.Context, tx pgx.Tx, f ListWorkersFilter) ([]WorkerR
 	return out, rows.Err()
 }
 
-// UpdateWorkerStatus transitions a worker's status with optimistic
-// concurrency. The tenant_id is injected into the WHERE clause. Returns
-// ErrNotFound if no row matches the id+tenant+version.
+// UpdateWorkerStatus transitions a worker's status with optimistic concurrency.
 func UpdateWorkerStatus(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, status string) (WorkerRow, error) {
 	const q = `UPDATE workers
 		SET status = $4, updated_at = now(), version = version + 1
@@ -385,9 +307,6 @@ func UpdateWorkerStatus(ctx context.Context, tx pgx.Tx, tenantID, id string, exp
 }
 
 // UpdateWorkerFields is a partial update for worker header fields.
-// Only non-nil fields are written (field-mask semantics). There is no
-// draft-only exception any more: every field here is writable on any status
-// except RETIRED (see UpdateWorker).
 type UpdateWorkerFields struct {
 	Name        *string
 	Description *string
@@ -395,31 +314,8 @@ type UpdateWorkerFields struct {
 	RoleRef     *string
 }
 
-// UpdateWorker applies a partial update to worker header fields with
-// optimistic concurrency. Returns ErrNotFound if no row matches the
-// id+tenant+version.
-//
-// Header text (name/description/purpose) and the role binding are both
-// writable on any status except RETIRED, and may be sent together.
-//
-// WHY HEADER TEXT IS NO LONGER DRAFT-ONLY. workers.status NEVER returns to
-// draft — its only writers are create (draft), UpdateWorkerCurrentVersion
-// (published), and UpdateWorkerStatus (deprecated/retired, which is how the
-// service calls it) — so a draft-only header froze a worker's name, purpose
-// and description permanently at its first publish. Measured on the dev
-// tenant: 104 workers in that state, unfixable through any path.
-//
-// The rule itself belonged to version CONTENT, and the platform no longer
-// applies it there either: BulkUpdateWorkerModel and
-// UpdateWorkerVersion{republish} both edit a published version in place. A
-// name is a LABEL, not dispatch state — nothing resolves a worker by name
-// (workflow steps reference it by ID), and the slug, which is the
-// identity-like field, is immutable after create.
-//
-// RETIRED is the one carve-out, and the `onlyRole` flag preserves the
-// behaviour that pre-dates this change: a role-ONLY update is still accepted
-// on a retired worker, because the binding gates plane access and is not
-// header content.
+// UpdateWorker applies a partial update to worker header fields with optimistic concurrency. WHY
+// HEADER TEXT IS NO LONGER DRAFT-ONLY.
 func UpdateWorker(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, f UpdateWorkerFields) (WorkerRow, error) {
 	q := `UPDATE workers SET updated_at = now(), version = version + 1`
 	args := []any{tenantID, id, expectedVersion}
@@ -496,9 +392,8 @@ func jsonbOrDefault(v []byte, def string) []byte {
 	return v
 }
 
-// CreateWorkerVersion inserts a new worker version snapshot row within
-// the given tenant transaction. The version number is computed by the
-// caller (max+1). Status starts as "draft".
+// CreateWorkerVersion inserts a new worker version snapshot row within the given tenant
+// transaction.
 func CreateWorkerVersion(ctx context.Context, tx pgx.Tx, v WorkerVersionRow) (WorkerVersionRow, error) {
 	const q = `INSERT INTO worker_versions
 		(id, tenant_id, worker_id, version, version_note, status,
@@ -514,10 +409,6 @@ func CreateWorkerVersion(ctx context.Context, tx pgx.Tx, v WorkerVersionRow) (Wo
 			gated_tools, budget_overrides, execution_policy_ref, concurrency_limit,
 			recovery_workflow_ref, labels, published_at, created_at`
 	// Every jsonb column on worker_versions is NOT NULL with a schema default.
-	// The INSERT names them explicitly, so a caller that leaves a field at its
-	// zero value sends an explicit NULL — which OVERRIDES the column default
-	// and violates NOT NULL. Normalize each to the column's own default so an
-	// omitted field means exactly what the schema intends.
 	if len(v.ContextSources) == 0 {
 		v.ContextSources = []byte("[]")
 	}
@@ -537,11 +428,8 @@ func CreateWorkerVersion(ctx context.Context, tx pgx.Tx, v WorkerVersionRow) (Wo
 		v.Labels = []byte("{}")
 	}
 	row := v
-	// The jsonb columns are NOT NULL with schema defaults ([] / {}), but a caller
-	// that leaves a field nil binds SQL NULL and trips the constraint instead of
-	// taking the default. Coalesce to the column's OWN default so a
-	// partially-populated row behaves the way the schema intends (the DB-backed
-	// tests seed rows exactly this way).
+	// The jsonb columns are NOT NULL with schema defaults ([] / {}), but a caller that leaves a field
+	// nil binds SQL NULL and trips the constraint instead of taking the default.
 	err := tx.QueryRow(ctx, q,
 		v.ID, v.TenantID, v.WorkerID, v.Version, v.VersionNote, v.Status,
 		v.ModelRef, v.Role, v.Skills, v.Behavior, v.AgentsMD,
@@ -561,9 +449,7 @@ func CreateWorkerVersion(ctx context.Context, tx pgx.Tx, v WorkerVersionRow) (Wo
 	return row, nil
 }
 
-// PublishWorkerVersion transitions a draft version to published,
-// setting published_at. Uses status CAS (draft → published). Returns
-// ErrNotFound if the version is not in draft state.
+// PublishWorkerVersion transitions a draft version to published, setting published_at.
 func PublishWorkerVersion(ctx context.Context, tx pgx.Tx, tenantID, workerID string, version int) (WorkerVersionRow, error) {
 	const q = `UPDATE worker_versions
 		SET status = 'published', published_at = now()
@@ -588,10 +474,7 @@ func PublishWorkerVersion(ctx context.Context, tx pgx.Tx, tenantID, workerID str
 	return v, nil
 }
 
-// GetLatestWorkerVersion returns the latest version (by version number)
-// for a worker. If includePublishedOnly is true, returns the latest
-// published version; otherwise returns the newest version regardless of
-// status.
+// GetLatestWorkerVersion returns the latest version (by version number) for a worker.
 func GetLatestWorkerVersion(ctx context.Context, tx pgx.Tx, tenantID, workerID string, publishedOnly bool) (WorkerVersionRow, error) {
 	q := `SELECT id, tenant_id, worker_id, version, version_note, status,
 		model_ref, role, skills, behavior, agents_md, context_sources, skill_files, permissions,
@@ -676,9 +559,8 @@ func DeprecateWorkerVersion(ctx context.Context, tx pgx.Tx, tenantID, workerID s
 	return v, nil
 }
 
-// DeleteWorker hard-deletes a worker and cascades to all owned entities
-// (worker versions, edit locks). The tenant_id is injected into the
-// WHERE clause for isolation. Returns ErrNotFound if no row matches.
+// DeleteWorker hard-deletes a worker and cascades to all owned entities (worker versions, edit
+// locks).
 func DeleteWorker(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM worker_versions WHERE tenant_id = $1 AND worker_id = $2`, tenantID, id); err != nil {
 		return fmt.Errorf("db: delete worker versions: %w", err)
@@ -739,9 +621,8 @@ func RevertWorkerVersionToDraft(ctx context.Context, tx pgx.Tx, tenantID, versio
 	return nil
 }
 
-// GetWorkerIDForVersion resolves the owning worker_id for a worker
-// version within the tenant scope (used to target audit rows for
-// version-only requests like RevertWorkerVersionToDraft).
+// GetWorkerIDForVersion resolves the owning worker_id for a worker version within the tenant scope
+// (used to target audit rows for version-only requests like RevertWorkerVersionToDraft).
 func GetWorkerIDForVersion(ctx context.Context, tx pgx.Tx, tenantID, versionID string) (string, error) {
 	var workerID string
 	err := tx.QueryRow(ctx,
@@ -838,11 +719,7 @@ func GetWorkerVersionByNumber(ctx context.Context, tx pgx.Tx, tenantID, workerID
 	return v, nil
 }
 
-// UpdateDraftVersion overwrites all mutable fields of a draft
-// WorkerVersion row. Only versions with status='draft' may be updated.
-// The caller is responsible for merging request fields into a full
-// WorkerVersionRow before calling (the service layer reads the current,
-// applies overrides, and passes the merged row here).
+// UpdateDraftVersion overwrites all mutable fields of a draft WorkerVersion row.
 func UpdateDraftVersion(ctx context.Context, tx pgx.Tx, v WorkerVersionRow) (WorkerVersionRow, error) {
 	const q = `UPDATE worker_versions
 		SET model_ref = $3,
@@ -900,17 +777,8 @@ func NextWorkerVersionNumber(ctx context.Context, tx pgx.Tx, tenantID, workerID 
 	return maxVersion + 1, nil
 }
 
-// ListPublishedWorkerModelRefs returns each dispatchable worker's latest
-// PUBLISHED version model_ref for a tenant — one entry per worker, in
-// worker-id order (stable). It is the worker half of the adapter demand
-// set (internal/adapter.TenantDemandSet): a worker that never publishes
-// dispatches nothing and contributes no demand.
-//
-// Status mirrors dispatchability (TaskReconciler.selectWorker accepts
-// published + deprecated), and drafts are excluded because their refs are
-// not yet dispatchable. Refs are returned VERBATIM (empty included) — the
-// demand-set primitive owns the conservative empty→default-kind rule, so
-// there is exactly one place that decides what an unresolvable ref means.
+// ListPublishedWorkerModelRefs returns each dispatchable worker's latest PUBLISHED version
+// model_ref for a tenant — one entry per worker, in worker-id order (stable).
 func ListPublishedWorkerModelRefs(ctx context.Context, tx pgx.Tx, tenantID string) ([]string, error) {
 	const q = `SELECT DISTINCT ON (w.id) v.model_ref
 		FROM workers w

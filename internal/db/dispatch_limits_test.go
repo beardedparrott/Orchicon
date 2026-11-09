@@ -41,12 +41,8 @@ func openTestPool(t *testing.T) *db.Pool {
 	return pool
 }
 
-// TestUpdateTenantSettingsNilBudgetOverrides verifies the upsert tolerates a
-// caller that leaves DefaultBudgetOverrides unset (nil). The column is jsonb
-// NOT NULL, and a literal NULL in the INSERT branch violates the constraint
-// BEFORE the ON CONFLICT arbiter engages — so the fix coerces nil/empty to
-// '{}'. Regression for the MCP update_settings tool (which builds the row
-// without the budget field): every write returned "no row returned".
+// TestUpdateTenantSettingsNilBudgetOverrides verifies the upsert tolerates a caller that leaves
+// DefaultBudgetOverrides unset (nil).
 func TestUpdateTenantSettingsNilBudgetOverrides(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()
@@ -80,11 +76,7 @@ func TestUpdateTenantSettingsNilBudgetOverrides(t *testing.T) {
 	if got.StallNoProgressWindowSeconds == nil || *got.StallNoProgressWindowSeconds != 600 {
 		t.Fatalf("reloaded stall_no_progress = %v, want 600", got.StallNoProgressWindowSeconds)
 	}
-	// Reset the field so the shared tnt_dev row stays clean. An EMPTY ROW, not
-	// `StallNoProgressWindowSeconds: 0`: 0 now means "disabled", so writing it
-	// here would leave the shared tenant with no-progress detection switched OFF
-	// for the rest of the run. An empty row is all-blank = all built-in defaults,
-	// which is the clean state this test wants.
+	// Reset the field so the shared tnt_dev row stays clean.
 	if _, err := db.UpdateTenantSettings(ctx, ttx.Tx, tenant, db.TenantSettingsRow{}); err != nil {
 		t.Fatalf("reset tenant settings: %v", err)
 	}
@@ -197,16 +189,8 @@ func TestDispatchLimitSettingsRoundTrip(t *testing.T) {
 	}
 }
 
-// TestAdmitInPlaceRun serializes admissions on the project-row lock: the
-// first admitted run claims the single slot, the second is denied, and a
-// third is admitted after the first reaches a terminal state.
-//
-// It runs in its OWN fresh tenant: the test creates synthetic 'running'
-// runs and later marks them terminal via optimistic-concurrency updates —
-// in the shared tnt_dev dev tenant the live sandbox daemon can touch
-// those rows between the re-fetch and the update, failing the test with
-// "db: not found" (row drift, same class as the TestListBackfillPRRuns
-// flake fixed in fd22fed2b).
+// TestAdmitInPlaceRun serializes admissions on the project-row lock: the first admitted run claims
+// the single slot, the second is denied.
 func TestAdmitInPlaceRun(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()
@@ -307,12 +291,8 @@ func TestAdmitInPlaceRun(t *testing.T) {
 	}
 }
 
-// TestCompactionMemoryPolicyDBRoundTrip verifies the typed compaction +
-// memory policy columns (D4) persist through UpdateTenantSettings and come
-// back through GetTenantSettings + BudgetJSON — the full F1 wiring. The
-// BudgetJSON transport carries the context_compaction/memory keys the
-// native session and worker overrides parse, so this round-trip is the
-// proof that per-tenant policy is reachable at dispatch.
+// TestCompactionMemoryPolicyDBRoundTrip verifies the typed compaction + memory policy columns (D4)
+// persist through UpdateTenantSettings and come back through GetTenantSettings + BudgetJSON.
 func TestCompactionMemoryPolicyDBRoundTrip(t *testing.T) {
 	pool := openTestPool(t)
 	ctx := context.Background()

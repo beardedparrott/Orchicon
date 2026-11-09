@@ -111,8 +111,6 @@ func TestLocalCredentialsCRUD(t *testing.T) {
 	}
 
 	// Upsert is idempotent per (tenant, identity) and bumps the version.
-	// Replacing with the flag false must clear the flag (the ON CONFLICT
-	// DO UPDATE path — this is how SetLocalCredential clears the state).
 	upsert(false)
 	gtx2, err := pool.BeginTenantTx(ctx, tenant)
 	if err != nil {

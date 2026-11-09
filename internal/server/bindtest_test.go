@@ -46,16 +46,12 @@ import (
 // allocation burst and short enough that a genuinely broken host still fails quickly.
 const bindRetryAttempts = 20
 
-// bindRetryDelay is a VAR, not a const, so a test can shrink it — the same seam pattern this package
-// already uses for extraBindRetryInterval (a test of a retry loop should not spend half a second proving
-// that it loops).
+// bindRetryDelay is a VAR, not a const, so a test can shrink it — the same seam pattern this
+// package already uses for extraBindRetryInterval (a test of a retry loop should not spend half a
+// second.
 var bindRetryDelay = 25 * time.Millisecond
 
 // isEphemeralExhaustion reports whether err is the kernel declining to allocate a port.
-//
-// The error is matched STRUCTURALLY first (both Unix and Windows wrap a syscall.Errno that errors.Is
-// resolves) and by text second, because the Windows errno for this does not always satisfy errors.Is
-// against the portable constant and a test helper must not be the thing that fails on one platform.
 func isEphemeralExhaustion(err error) bool {
 	if err == nil {
 		return false
@@ -77,11 +73,6 @@ type bindOutcome struct {
 }
 
 // retryBind runs bind until it succeeds, retrying ONLY an ephemeral-port allocation failure.
-//
-// IT IS A SEPARATE FUNCTION SO THE DECISION IS TESTABLE. The interesting behaviour here is not "it retries"
-// — it is "it retries THIS and nothing else", and a loop buried inside a t.Fatalf wrapper cannot be
-// asserted at all. A genuine bind failure must reach the caller on the FIRST attempt, unchanged: retrying a
-// privileged port or an address that is not on this host would turn a clear error into a delay.
 func retryBind(bind func() (net.Listener, error)) bindOutcome {
 	out := bindOutcome{}
 	for try := 1; try <= bindRetryAttempts; try++ {
@@ -113,9 +104,6 @@ func outOfPortsMessage(what string, last error) string {
 }
 
 // mustStartListeners starts s's listeners, retrying a transient ephemeral-port allocation failure.
-//
-// Retrying the whole call is safe: startListeners binds the primary FIRST and returns on failure, before
-// it spawns the bridge goroutine — so a retry cannot leave a second serveExtra behind.
 func mustStartListeners(t *testing.T, s *Server, ctx context.Context) net.Listener {
 	t.Helper()
 	out := retryBind(func() (net.Listener, error) { return s.startListeners(ctx) })
@@ -130,9 +118,6 @@ func mustStartListeners(t *testing.T, s *Server, ctx context.Context) net.Listen
 }
 
 // mustHoldLoopback binds an ephemeral loopback address in order to HOLD it, retrying the same way.
-//
-// This is the "something else already owns the address" half of the bridge tests: the value here is the
-// exclusive hold, not the number.
 func mustHoldLoopback(t *testing.T) net.Listener {
 	t.Helper()
 	out := retryBind(func() (net.Listener, error) { return net.Listen("tcp", "127.0.0.1:0") })

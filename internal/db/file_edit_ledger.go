@@ -8,12 +8,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// FileEditLedgerRow is one entry of the durable file-edit ledger
-// (file_edit_ledger): a single server-computed ground-truth diff for one
-// path touched by one file-editing tool event of one owner (an execution or
-// an Ask conversation). seq is monotonic per (tenant, owner_kind, owner_id)
-// and doubles as the stream sequence for resume; id doubles as the stream
-// event_id for dedup.
+// FileEditLedgerRow is one entry of the durable file-edit ledger (file_edit_ledger): a single
+// server-computed ground-truth diff for one path touched by one file-editing tool event of one
+// owner.
 type FileEditLedgerRow struct {
 	ID           string
 	TenantID     string
@@ -40,12 +37,8 @@ const (
 	FileEditOwnerAskConversation = "ask_conversation"
 )
 
-// AppendFileEditLedger inserts ledger entries idempotently, allocating the
-// per-owner seq inside the same transaction (the caller-owned-seq model of
-// AppendExecutionSessionParts, but with the counter owned by the ledger
-// itself so concurrent writers cannot collide). ON CONFLICT DO NOTHING keeps
-// a replayed batch from double-recording. Rows already carry their intended
-// content; only Seq is assigned here when zero.
+// AppendFileEditLedger inserts ledger entries idempotently, allocating the per-owner seq inside the
+// same transaction (the caller-owned-seq model of AppendExecutionSessionParts.
 func AppendFileEditLedger(ctx context.Context, tx pgx.Tx, tenantID string, ownerKind, ownerID string, rows []*FileEditLedgerRow) error {
 	if len(rows) == 0 {
 		return nil
@@ -86,9 +79,7 @@ func AppendFileEditLedger(ctx context.Context, tx pgx.Tx, tenantID string, owner
 	return nil
 }
 
-// NextFileEditSeq returns MAX(seq)+1 for an owner (1 when the owner has no
-// rows yet). Called inside the writer's transaction so seq allocation is
-// serialized with the inserts.
+// NextFileEditSeq returns MAX(seq)+1 for an owner (1 when the owner has no rows yet).
 func NextFileEditSeq(ctx context.Context, tx pgx.Tx, tenantID, ownerKind, ownerID string) (int64, error) {
 	const q = `SELECT COALESCE(MAX(seq),0)+1 FROM file_edit_ledger
 		WHERE tenant_id=$1 AND owner_kind=$2 AND owner_id=$3`
@@ -99,10 +90,8 @@ func NextFileEditSeq(ctx context.Context, tx pgx.Tx, tenantID, ownerKind, ownerI
 	return next, nil
 }
 
-// ListFileEditLedger returns the ledger for an owner in seq order, optionally
-// from a sequence (exclusive; 0 = from the start) — the fetch/resume read of
-// the GetSessionFileEdits RPC. maxSeq is the owner's current highest seq (0
-// when empty), so a client knows when it is caught up.
+// ListFileEditLedger returns the ledger for an owner in seq order, optionally from a sequence
+// (exclusive; 0 = from the start) — the fetch/resume read of the GetSessionFileEdits RPC.
 func ListFileEditLedger(ctx context.Context, tx pgx.Tx, tenantID, ownerKind, ownerID string, fromSeq int64) ([]*FileEditLedgerRow, int64, error) {
 	q := `SELECT id, tenant_id, owner_kind, owner_id, seq, path, kind, unified_diff,
 		before_size, after_size, before_sha256, after_sha256, tool,
@@ -151,9 +140,8 @@ func ListFileEditLedger(ctx context.Context, tx pgx.Tx, tenantID, ownerKind, own
 	return out, maxSeq, nil
 }
 
-// LastObservedFileEdit returns the newest ledger row for one owner+path —
-// the "before" side for the next edit of that path (the opencode built-in
-// tool observer). Returns nil when the owner never touched the path.
+// LastObservedFileEdit returns the newest ledger row for one owner+path — the "before" side for the
+// next edit of that path (the opencode built-in tool observer).
 func LastObservedFileEdit(ctx context.Context, tx pgx.Tx, tenantID, ownerKind, ownerID, path string) (*FileEditLedgerRow, error) {
 	const q = `SELECT id, tenant_id, owner_kind, owner_id, seq, path, kind, unified_diff,
 		before_size, after_size, before_sha256, after_sha256, tool,
@@ -176,9 +164,8 @@ func LastObservedFileEdit(ctx context.Context, tx pgx.Tx, tenantID, ownerKind, o
 	return r, nil
 }
 
-// MarkFileEditsGitConfirmed flips git_confirmed=TRUE for every unconfirmed
-// row of an owner whose path is in the given set (the git reconciliation
-// match step). Returns the number of rows updated.
+// MarkFileEditsGitConfirmed flips git_confirmed=TRUE for every unconfirmed row of an owner whose
+// path is in the given set (the git reconciliation match step).
 func MarkFileEditsGitConfirmed(ctx context.Context, tx pgx.Tx, tenantID, ownerKind, ownerID string, paths []string) (int64, error) {
 	if len(paths) == 0 {
 		return 0, nil

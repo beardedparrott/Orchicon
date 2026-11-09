@@ -1,37 +1,6 @@
 package db
 
 // testguard.go — A TEST BINARY MAY NEVER OPEN THE PRODUCTION DATABASE.
-//
-// WHY THIS EXISTS, STATED PLAINLY, because it is not hypothetical.
-//
-// A full `go test ./...` was run from a shell that had a live PROD plane in it — the launcher had exported that
-// plane's ORCHICON_INSTANCE=prod and its ORCHICON_POSTGRES_DSN. The DB-backed suites read ORCHICON_TEST_DSN, and
-// that variable was pointed at the SAME prod database so the suites could run. They ran. Every one of them wrote
-// to production: ~125 test projects appeared in the deployment tenant and 281 throwaway tenants were created in
-// a live instance, because the tests create real rows, real projects and real work items by design.
-//
-// The mistake was a single variable assignment, and the reason it was POSSIBLE is that nothing in the code knew
-// the difference between "a database" and "THIS database". A test that opens whatever DSN it is handed will
-// happily open the operator's production instance, and every guard around it — the skip when the variable is
-// unset, the per-test temp tenant, the cleanup hook — is about isolation BETWEEN tests, not about protection
-// FROM the live one.
-//
-// SO THE GUARD IS HERE, at db.Open, because that is the ONE place every database handle is created: all 69
-// DB-backed test call sites funnel through out, and no test in the tree reaches pgxpool directly except one that
-// points at a deliberately unreachable host. A guard anywhere else would be a guard some test could walk past.
-//
-// HOW IT DECIDES. Under `go test` the binary is a test binary, and it is about to open a DSN. The question is
-// only "is this the instance the operator is RUNNING?", and that is answered by the environment the shell
-// already carries: an exported ORCHICON_INSTANCE=prod, or an ORCHICON_POSTGRES_DSN that matches the DSN being
-// opened. Both are evidence that the shell belongs to a live plane rather than to CI.
-//
-// IT REFUSES RATHER THAN WARNS. A warning in a test log is read by nobody, and the damage is already done by the
-// time it prints. A refusal is a failing test with a message that names the variable to change.
-//
-// AND IT IS ESCAPABLE, deliberately. There are legitimate reasons to run a DB test against a prod-like database
-// (a restore rehearsal on a scratch clone that happens to be labelled prod), so a test may set
-// ORCHICON_TEST_ALLOW_PROD=1 to state that it means it. The point is that reaching production becomes a
-// DECISION WITH A NAME, never an accident of which shell the operator happened to be in.
 
 import (
 	"fmt"
@@ -40,10 +9,7 @@ import (
 	"strings"
 	"time"
 
-	// THE LAYERING TRADE IS ACCEPTED DELIBERATELY. A storage package reading plane state is a smell, but
-	// planecontrol imports only the standard library, so there is no cycle — and the alternative is
-	// duplicating the state-dir and port-record layout here, which is the kind of second implementation that
-	// drifts. The guard is worth one import.
+	// THE LAYERING TRADE IS ACCEPTED DELIBERATELY.
 	"github.com/beardedparrott/orchicon/internal/planecontrol"
 )
 
@@ -51,29 +17,20 @@ import (
 // otherwise refuse.
 const allowProdEnv = "ORCHICON_TEST_ALLOW_PROD"
 
-// instanceEnv and dsnEnv are the ambient plane's own variables — the ones the launcher exports into the
-// operator's shell. They are READ here, never written: the guard's job is to notice them, and a guard that
-// mutated the operator's environment would break the shell it is protecting.
+// instanceEnv and dsnEnv are the ambient plane's own variables — the ones the launcher exports into
+// the operator's shell.
 const (
 	instanceEnv = "ORCHICON_INSTANCE"
 	dsnEnv      = "ORCHICON_POSTGRES_DSN"
 )
 
 // isTestBinary reports whether this process is a `go test` binary.
-//
-// `go test` compiles the test binary with a `-test.*` flag already registered, so a registered flag is the
-// reliable signal — and it is a flag REGISTRATION rather than a flag VALUE, so it holds however the binary is
-// invoked. (The alternative, strings.HasSuffix(os.Args[0], ".test"), misses `go test -c` output that was
-// renamed, and `go test` sets no TESTING variable of its own.)
 func isTestBinary() bool {
 	return flagLookup("test.v") != nil || flagLookup("test.run") != nil || flagLookup("test.timeout") != nil
 }
 
-// guardAgainstProdDSN refuses a test-binary Open of the live plane's database.
-//
-// It returns an error ONLY for the case it is for. Everything else — a dev instance, a temp database, a DSN that
-// is not the ambient plane's, a non-test process — falls straight through, because a guard that refuses
-// legitimate work is a guard that gets deleted.
+// guardAgainstProdDSN refuses a test-binary Open of the live plane's database. It returns an error
+// ONLY for the case it is for.
 func guardAgainstProdDSN(dsn string) error {
 	if !isTestBinary() {
 		return nil
@@ -89,25 +46,11 @@ func guardAgainstProdDSN(dsn string) error {
 	// incident — ORCHICON_TEST_DSN was assigned the live ORCHICON_POSTGRES_DSN.
 	sameDatabase := ambientDSN != "" && dsnEqual(ambientDSN, dsn)
 
-	// The weaker one: the shell says it is a production instance, and the test is opening a REAL database. A
-	// test is allowed to open a throwaway database on a prod-labelled host only by saying so explicitly
-	// (ORCHICON_TEST_ALLOW_PROD), because "it is only a scratch db" is not something this function can verify
-	// and the cost of being wrong is a live tenant full of test rows.
+	// The weaker one: the shell says it is a production instance, and the test is opening a REAL
+	// database.
 	prodInstance := strings.EqualFold(ambientInstance, "prod")
 
 	// ORDER MATTERS HERE, AND GETTING IT WRONG IS HOW THIS GUARD FAILED ITS OWN LIVE PROOF.
-	//
-	// The first version checked `prodInstance && isLocalDSN(dsn)` BEFORE deciding, on the assumption that a
-	// loopback database is the test's own. In THIS installation that assumption is false in the worst way: the
-	// production plane runs as a HOST process on localhost:5433 while the dev container publishes on 5432. So
-	// the live production DSN is a "local" DSN, the escape hatch swallowed it, and running a DB-backed test with
-	// the shell's own prod DSN — the exact incident — was ALLOWED. The guard reproduced the bug it was written
-	// to prevent, and only the end-to-end run showed it: every unit case passed, because they asserted the
-	// decision function on a REMOTE prod DSN and never on the local one this machine actually uses.
-	//
-	// So: MATCHING THE PLANE'S OWN DATABASE IS REFUSED FIRST, unconditionally, however local it looks. There is
-	// no reading of "the test is opening the database the running plane is using" that this should permit
-	// silently, and the explicit opt-out remains for the operator who means it.
 	if sameDatabase {
 		return guardRefusal(sameDatabase, dsn, ambientInstance, ambientDSN)
 	}
@@ -115,10 +58,7 @@ func guardAgainstProdDSN(dsn string) error {
 		return nil
 	}
 
-	// A PROD-LABELLED SHELL, opening something that is NOT the plane's database. A loopback DSN is the test's
-	// own (the dev instance / the services container that `make test` and CI use), and refusing it would break
-	// the very command this guard protects — in the shell it was written for. Note this is safe NOW only because
-	// the equal case has already returned above: a "local" DSN that IS the plane's can no longer reach here.
+	// A PROD-LABELLED SHELL, opening something that is NOT the plane's database.
 	if isLocalDSN(dsn) {
 		return nil
 	}
@@ -181,18 +121,12 @@ func guardAgainstLivePlaneDSN(dsn string) error {
 	return nil
 }
 
-// livePlaneTargetFn is the DETECTION SEAM, so the guard has coverage on a CI host with no plane rather than only
-// on a developer's workstation — the same reason `isTestBinary` is built on a `flagLookup` seam. Tests replace it
-// to drive both branch outcomes without a running plane.
+// livePlaneTargetFn is the DETECTION SEAM, so the guard has coverage on a CI host with no plane
+// rather than only on a developer's workstation.
 var livePlaneTargetFn = livePlaneTarget
 
-// livePlaneTarget returns the "host:port/database" an instance's plane opens WHEN THAT PLANE IS RUNNING, or ""
-// when the instance has no port record or its plane does not answer.
-//
-// The database name and host are the ones planeEnv builds for the plane itself
-// (internal/planecontrol/env.go: `postgres://orchicon:orchicon@localhost:<port>/orchicon`). They are spelled here
-// rather than derived because that DSN is what the plane is HANDED, and it is a fixed shape — but the PORT comes
-// from the instance's own record, so a non-default install is honoured.
+// livePlaneTarget returns the "host:port/database" an instance's plane opens WHEN THAT PLANE IS
+// RUNNING, or "" when the instance has no port record or its plane does not answer.
 func livePlaneTarget(instance string) string {
 	ports, err := planecontrol.ReadPorts(instance)
 	if err != nil {
@@ -223,12 +157,8 @@ func planeAnswers(controlPort int) bool {
 
 // allowSharedPlaneEnv is the deliberate opt-out for running DB-backed tests against a live plane's database.
 const allowSharedPlaneEnv = "ORCHICON_TEST_ALLOW_SHARED_DB"
-// sameDatabaseTarget compares two "host:port/database" targets, treating every LOOPBACK SPELLING as the same host.
-//
-// IT IS NOT A COSMETIC NORMALISATION. The plane is handed `localhost`; an operator's ORCHICON_TEST_DSN very
-// commonly says `127.0.0.1` (that is what the README's own example and most copy-pasted DSNs use). Compared as
-// raw strings those two never match, so the guard silently did nothing on the exact workstation it was written
-// for — found by running it, not by reading it.
+// sameDatabaseTarget compares two "host:port/database" targets, treating every LOOPBACK SPELLING as
+// the same host.
 func sameDatabaseTarget(a, b string) bool {
 	ah, ap, ad, ok := splitDatabaseTarget(a)
 	bh, bp, bd, bok := splitDatabaseTarget(b)
@@ -253,9 +183,6 @@ func splitDatabaseTarget(t string) (host, port, database string, ok bool) {
 }
 
 // loopbackEquivalent reports whether two hosts both name the local machine.
-//
-// `localhost`, `127.0.0.1` and `::1` are the same database to a test; anything else is a different host and must
-// never be treated as equivalent, because the guard would then refuse a genuinely remote database.
 func loopbackEquivalent(a, b string) bool {
 	if strings.EqualFold(a, b) {
 		return true
@@ -284,12 +211,8 @@ func guardRefusal(sameDatabase bool, dsn, ambientInstance, ambientDSN string) er
 		reason, redactDSN(dsn), instanceEnv, ambientInstance, dsnEnv, redactDSN(ambientDSN), "ORCHICON_TEST_DSN", allowProdEnv)
 }
 
-// isLocalDSN reports whether a DSN points at a host-local database (a loopback address or a unix socket), which
-// is where the dev instance and the test services containers live.
-//
-// It is deliberately permissive in what it RECOGNISES and strict in what it concludes: only an explicitly local
-// host qualifies, so an unrecognised DSN is treated as remote — the safe direction, since treating a remote
-// database as local is the failure that costs a tenant.
+// isLocalDSN reports whether a DSN points at a host-local database (a loopback address or a unix
+// socket), which is where the dev instance and the test services containers live.
 func isLocalDSN(dsn string) bool {
 	d := strings.ToLower(dsn)
 	for _, local := range []string{"localhost", "127.0.0.1", "::1", "host=/", "host =/"} {
@@ -320,12 +243,8 @@ func redactDSN(dsn string) string {
 	return head[:schemeEnd+3] + creds[:colon] + ":***" + dsn[at:]
 }
 
-// dsnEqual compares two DSNs for "the same database", tolerating the two differences that do not change the
-// target: surrounding whitespace, and a trailing query string that only sets sslmode.
-//
-// IT IS DELIBERATELY CONSERVATIVE. A false negative here (failing to notice two spellings of one database) means
-// the guard misses and the weaker prodInstance rule still applies; a false POSITIVE would refuse a legitimate
-// test database. So it compares the host/port/database triple, not the whole string.
+// dsnEqual compares two DSNs for "the same database", tolerating the two differences that do not
+// change the target: surrounding whitespace, and a trailing query string that only sets sslmode.
 func dsnEqual(a, b string) bool {
 	if strings.TrimSpace(a) == strings.TrimSpace(b) {
 		return true
