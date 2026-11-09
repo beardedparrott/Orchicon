@@ -24,6 +24,7 @@ import (
 func Run(args []string) error {
 	fs := flag.NewFlagSet("orchicon e2e", flag.ContinueOnError)
 	var (
+		instance    = fs.String("instance", "", "dev|test|prod — target that instance's control port and ITS saved credential")
 		profile     = fs.String("profile", "", "orch profile to use (default: $ORCHICON_PROFILE, else the active profile)")
 		baseURL     = fs.String("url", "", "plane base URL (default: the resolved profile's, else $ORCHICON_URL)")
 		token       = fs.String("token", "", "bearer token (default: the resolved profile's, else $ORCHICON_TOKEN)")
@@ -54,7 +55,7 @@ func Run(args []string) error {
 
 	// CREDENTIALS COME FROM THE SAME PLACE `orch` USES, because that is what is already configured on an
 	// installed box. The flags and the environment override it, in that order.
-	if err := resolveConnection(&c, *profile, *baseURL, *token); err != nil {
+	if err := resolveConnection(&c, *instance, *profile, *baseURL, *token); err != nil {
 		return err
 	}
 	if c.out == "" {
@@ -186,14 +187,34 @@ func Run(args []string) error {
 
 // resolveConnection fills the base URL and token from the flags, then the environment, then the orch
 // profile file — the same precedence `orch` itself uses, so an installed box needs no extra setup.
-func resolveConnection(c *opts, profileName, urlFlag, tokenFlag string) error {
-	path, err := config.DefaultPath()
-	if err == nil {
-		if cfg, lerr := config.Load(path); lerr == nil {
-			if p := config.ResolveNamed(cfg, profileName); p != nil {
-				c.baseURL, c.token = p.URL, p.Token
-				c.refreshToken, c.insecureTLS = p.RefreshToken, p.InsecureSkipVerify
-			}
+func resolveConnection(c *opts, instance, profileName, urlFlag, tokenFlag string) error {
+	var cfg *config.Config
+	if path, err := config.DefaultPath(); err == nil {
+		if loaded, lerr := config.Load(path); lerr == nil {
+			cfg = loaded
+		}
+	}
+
+	if strings.TrimSpace(instance) != "" {
+		// AN INSTANCE IS A URL *AND* A CREDENTIAL, and they must be a matched pair: each instance has its own
+		// signing key, so a dev URL with the active (prod) token fails `unauthenticated` with no hint that the
+		// two disagreed. So the instance picks the URL, and only a profile ALREADY POINTING AT IT may supply
+		// the credential.
+		c.baseURL = config.InstanceURL(instance)
+		if c.baseURL == "" {
+			return fmt.Errorf("-instance %q is not dev, test or prod", instance)
+		}
+		p := config.ProfileForInstance(cfg, instance)
+		if p == nil {
+			return fmt.Errorf("no saved `orch` profile points at the %s instance (%s), so there is no credential "+
+				"for it.\n  Connect `orch` to that instance once, or pass -token for it, or set ORCHICON_TOKEN.\n"+
+				"  (The active profile's token will not work: each instance signs its own.)", instance, c.baseURL)
+		}
+		c.token, c.refreshToken, c.insecureTLS = p.Token, p.RefreshToken, p.InsecureSkipVerify
+	} else if cfg != nil {
+		if p := config.ResolveNamed(cfg, profileName); p != nil {
+			c.baseURL, c.token = p.URL, p.Token
+			c.refreshToken, c.insecureTLS = p.RefreshToken, p.InsecureSkipVerify
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv(config.EnvURL)); v != "" && c.baseURL == "" {
