@@ -1839,14 +1839,56 @@ func (r *WorktreeReconciler) removeWorktree(ctx context.Context, projectDir, pat
 	return nil
 }
 
-// worktreeIsDirty reports whether the worktree at path holds modified, staged, or untracked files.
+// worktreeIsDirty reports whether the worktree at path holds work that exists nowhere else: modified,
+// staged, or untracked USER files.
+//
+// THE PLATFORM'S OWN ARTEFACTS ARE NOT DIRT. ensureRunWorktreeStepIgnore writes an untracked .gitignore at
+// the worktree root, so counting every untracked entry made EVERY provisioned worktree permanently dirty —
+// removeWorktree then refused every prune, and worktrees leaked forever. An untracked file that is not the
+// platform's still counts, which is what protects the operator's real work.
 func (r *WorktreeReconciler) worktreeIsDirty(ctx context.Context, path string) (bool, error) {
 	out, err := runGit(ctx, path, "status", "--porcelain")
 	if err != nil {
 		return true, err
 	}
-	return strings.TrimSpace(out) != "", nil
+	return worktreeDirtyFrom(out, path), nil
 }
+
+// worktreeDirtyFrom applies the dirt rule to `git status --porcelain` output. Separated so the rule is
+// unit-testable without a repository or a database.
+func worktreeDirtyFrom(porcelain, worktreePath string) bool {
+	for _, line := range strings.Split(porcelain, "\n") {
+		entry := strings.TrimSpace(line)
+		if entry == "" {
+			continue
+		}
+		// "?? <path>" is untracked. Anything else (M/A/D/R, staged or not) is a real change.
+		if strings.HasPrefix(entry, "?? ") && platformOwnsUntrackedFile(strings.TrimSpace(entry[3:]), worktreePath) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// platformOwnsUntrackedFile reports whether an untracked path is an artefact the platform itself wrote.
+//
+// IT MATCHES ON CONTENT, NOT ON THE NAME ALONE: the operator may legitimately have their own untracked
+// .gitignore, and that IS work. Only a file carrying the platform's marker is exempt.
+func platformOwnsUntrackedFile(relPath, worktreePath string) bool {
+	if relPath != ".gitignore" {
+		return false
+	}
+	data, err := os.ReadFile(filepath.Join(worktreePath, ".gitignore"))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), platformGitignoreMarker)
+}
+
+// platformGitignoreMarker identifies the ignore file ensureRunWorktreeStepIgnore writes, so the dirt check
+// can tell the platform's artefact from the operator's own file.
+const platformGitignoreMarker = "# Orchicon: ignore nested step worktrees"
 
 // cleanupFailedProvision removes what a FAILED `git worktree add` may have left behind.
 func (r *WorktreeReconciler) cleanupFailedProvision(ctx context.Context, projectDir, path, branch string, named bool) []string {
@@ -2190,7 +2232,7 @@ func (r *WorktreeReconciler) isAncestor(ctx context.Context, projectDir, a, b st
 func (r *WorktreeReconciler) ensureRunWorktreeStepIgnore(ctx context.Context, runWorktreePath string) {
 	// Create a .gitignore at the run worktree root that ignores nested step worktrees.
 	ignorePath := runWorktreePath + "/.gitignore"
-	content := "# Orchicon: ignore nested step worktrees (parallel-branch children)\n01*/\n"
+	content := platformGitignoreMarker + " (parallel-branch children)\n01*/\n"
 	if data, err := os.ReadFile(ignorePath); err == nil {
 		if strings.Contains(string(data), "01*/") {
 			return
