@@ -1,30 +1,7 @@
 package tui
 
-// railrows.go — the conversations rail's rows: the ACTIVE PROJECT's conversations, grouped by category.
-//
-// THE OPERATOR, correcting the first attempt:
-//
-//   "I wanted a hierarchy. So a conversation would belong to a project and inside the project it would still
-//    have the normal categories we had before. ... Projects are WORKSPACES essentially. ... you would only see
-//    THAT PROJECT'S Conversations and Categories."
-//
-// The first attempt built a SECOND level of folders — one per project — with the category folders nested beneath
-// them. That is not a hierarchy the operator wanted; it is two rival groupings of the same list. It is deleted.
-//
-// WHAT A PROJECT IS HERE: a FILTER. The rail shows the conversations in the active scope, and the category
-// grouping runs over THAT set exactly as it always did. The folders, their order, the Uncategorized rule, the
-// counts, the collapse state, the rename/delete chords and the drop targets are all untouched — they simply hold
-// fewer items. The hierarchy therefore falls out of the existing code rather than being built beside it, which is
-// why this file got SMALLER and why nothing about categories can regress.
-//
-// THE ONE THING SCOPING DOES CHANGE is WHICH FOLDERS ARE DRAWN: a category with nothing in the active workspace
-// is not part of it, so it is filtered out of the group list below (All projects keeps every folder — see the
-// comment there). The folder rule itself is otherwise untouched.
-//
-// M.convSel indexes THIS list, not m.conversations: the cursor moves through what is on screen, and a scoped-out
-// conversation is not on screen. Every site that wants the conversation behind the cursor goes through
-// railConvIndexAt, which is what keeps "the row I am pointing at" and "the conversation I am acting on" from
-// drifting apart.
+// railrows.go — the conversations rail's rows: the ACTIVE PROJECT's conversations, grouped by
+// category.
 
 import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"

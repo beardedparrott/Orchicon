@@ -332,9 +332,7 @@ func TestNativeAskExecuteProductToolRoutesThroughRegistry(t *testing.T) {
 	}
 }
 
-// TestNativeAskBashGuardBlocksDestructive proves the OS-level guard rides Ask-path bash:
-// `sudo`/`dd`-class binaries are refused even though bash itself runs in-process (the worker
-// path's.
+// TestNativeAskBashGuardBlocksDestructive proves the OS-level guard rides Ask-path bash.
 func TestNativeAskBashGuardBlocksDestructive(t *testing.T) {
 	r := testToolRegistry()
 	p := (&Service{toolRegistry: r}).NativeAskTools()

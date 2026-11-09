@@ -90,8 +90,7 @@ func isAskUserCall(functionName string) bool {
 }
 
 // It NEVER panics or errors outward: a malformed arguments payload yields a card carrying the
-// question-less error text the operator can see, rather than dropping the call or crashing the
-// pane.
+// question-less error text the operator can see.
 func IsAwaitingAskAnswer(output string) bool {
 	return strings.TrimSpace(output) == "__orchicon_ask_awaiting_answer__"
 }

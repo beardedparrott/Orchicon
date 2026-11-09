@@ -131,9 +131,7 @@ func (m *Model) prepBulkSet() tea.Cmd {
 	}
 }
 
-// newBulkSetForm builds the bulk picker: ONE workflow picker and ONE runtime-image picker, each
-// defaulting to "leave unchanged" so a workflow-only set cannot touch runtime images (and vice
-// versa).
+// newBulkSetForm builds the bulk picker: ONE workflow picker and ONE runtime-image picker.
 func (m *Model) newBulkSetForm(wfs []workflowOpt, imgs []kit2.Option) *kit2.Form {
 	wfOpts := []kit2.Option{
 		{Value: bulkSetSkip, Label: "— leave workflow unchanged —"},

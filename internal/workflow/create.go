@@ -47,9 +47,7 @@ func validateStepsString(s string) (string, error) {
 	return string(b), nil
 }
 
-// ValidateCreateWorkflowInput validates and normalizes every field in place: the name is trimmed
-// and required, the version note is bounds-checked, steps must be a JSON array (empty becomes
-// "[]").
+// ValidateCreateWorkflowInput validates and normalizes every field in place.
 func ValidateCreateWorkflowInput(in *CreateWorkflowInput) error {
 	name, err := validateName(in.Name)
 	if err != nil {

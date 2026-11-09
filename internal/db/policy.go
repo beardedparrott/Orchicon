@@ -563,8 +563,7 @@ func ListPolicyDecisions(ctx context.Context, tx pgx.Tx, f ListPolicyDecisionsFi
 }
 
 // ListPublishedPoliciesByDecisionPoint returns all published policy versions for a tenant at a
-// given decision point, ordered by scope narrowness (task > worker > project > tenant) so the
-// engine.
+// given decision point.
 func ListPublishedPoliciesByDecisionPoint(ctx context.Context, tx pgx.Tx, tenantID, decisionPoint string) ([]PolicyVersionRow, error) {
 	const q = `SELECT id, tenant_id, policy_id, version, version_note, status,
 		decision_point, scope, scope_ref, effect, rego_module, query,

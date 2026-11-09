@@ -1,17 +1,7 @@
 package execution
 
-// execution_pane_test.go — regression tests for three operator reports about the Executions pane and
-// the step→execution jump. Each one pins a defect that was live in the shipped binary:
-//
-//  1. "On a workflow run page, hitting enter on a step is not taking you to the execution page for
-//     that step."  TWO independent causes, so there are two tests: the key was gated behind a focus
-//     the pane's own text did not ask for, and the jump was then reverted by the executions list
-//     landing and auto-loading the row under the cursor.
-//  2. "they are flicking repeatedly like they are refreshing poorly over and over" and "several of
-//     them still look like the old ones and they don't have all of the same details". Both were the
-//     same closed loop: a todo landing asked for the DETAIL again, and the detail landing issued the
-//     next todo fetch — one round trip per lap, every lap repainting the pane. The flicker test
-//     proves the loop terminates; the composition tests prove the pane keeps all its parts.
+// execution_pane_test.go — regression tests for three operator reports about the Executions pane
+// and the step→execution jump.
 
 import (
 	"context"

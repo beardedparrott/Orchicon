@@ -214,8 +214,7 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		return nil, mapParentError(err)
 	}
 	// Flat-recurring invariants (D1/D7): recurring items are flat top-level tasks (no hierarchy
-	// participation), and a schedulable recurring LEAF must be bound to a workflow (the recurring fire
-	// has.
+	// participation).
 	if isRecurring {
 		if err := ValidateRecurringFlatness(true, kind, msg.ParentId); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -231,9 +230,7 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		t := msg.ScheduledStartAt.AsTime()
 		scheduledStartAt = &t
 	}
-	// auto_start_workflow defaults to false when unset (proto optional) — "Start immediately on save"
-	// is opt-in, never the default (bug fix: the old true default kicked off runs on every
-	// create/save).
+	// auto_start_workflow defaults to false when unset (proto optional).
 	autoStart := false
 	if msg.AutoStartWorkflow != nil && *msg.AutoStartWorkflow {
 		autoStart = true
@@ -1808,19 +1805,7 @@ func (s *Service) RestoreWorkItem(ctx context.Context, req *connect.Request[apiv
 	return connect.NewResponse(&apiv1.RestoreWorkItemResponse{WorkItem: rowToProto(restored)}), nil
 }
 
-// ControlSequence drives a sequence parent manually (START / RESUME /
-// STOP). A parent with children IS a sequence run; these explicit gestures
-// are what the engine's derived cursor cannot infer on its own:
-//   - START re-fires the chain from child #1 (destructive — every
-//     descendant resets to pending); validations + in-flight guards run
-//     server-side.
-//   - RESUME continues from the first non-succeeded child (keeps state).
-//   - STOP parks the chain (parent → pending, schedule cleared) so
-//     children can be run standalone.
-//
-// All three actions require a work item that IS a sequence parent: it must
-// have at least one direct child and carry no bound workflow run (a parent
-// with children and a bound run is a run ticket, not a sequence).
+// ControlSequence drives a sequence parent manually (START / RESUME / STOP).
 func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv1.ControlSequenceRequest]) (*connect.Response[apiv1.ControlSequenceResponse], error) {
 	msg := req.Msg
 	tenantID, err := requireTenant(ctx)
@@ -1838,14 +1823,8 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("action must be one of START, RESUME, STOP"))
 	}
 
-	// Load the item and determine whether it is a sequence parent (has
-	// children) or a leaf (bound to a workflow run / standalone). The
-	// engine's reconcileParent guard uses the same predicate, so this can
-	// never drift. Controls work on BOTH kinds:
-	//   - parent (has children): START/RESUME re-fire/continue the chain;
-	//     STOP cascades — parks the whole subtree and aborts in-flight runs.
-	//   - leaf (no children): START/RESUME fire the item's own bound
-	//     workflow; STOP parks just the leaf and aborts its run.
+	// Load the item and determine whether it is a sequence parent (has children) or a leaf (bound to a
+	// workflow run / standalone).
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)

@@ -195,28 +195,7 @@ type Detail struct {
 	// vpTitle is the TITLE the loaded body belongs to.
 	vpTitle string
 	dirty   bool // Body changed since the viewport last loaded it
-	// bodyLaidOut declares that the CALLER has already laid this body out — wrapped it, styled it,
-	// punctuated it with its own newlines — so the pane must return it verbatim rather than treating it as
-	// markdown source.
-	//
-	// WHY THIS MUST BE DECLARED AND CANNOT BE INFERRED. The pane shares one body slot across every
-	// list+detail screen, and the two kinds of body are indistinguishable by CONTENT:
-	//
-	//   - a work item's description is markdown SOURCE (a blockquote quoting the operator's own wording),
-	//     which must be rendered — that is what the markdown commit was for;
-	//   - an execution's transcript is ALREADY RENDERED (collapsible blocks, a todo list, flow views, a
-	//     build log), where every newline is meaningful.
-	//
-	// The heuristic gate (md.LooksLikeMarkdown) cannot separate them, and it fails LOUDLY when it guesses
-	// wrong: markdown JOINS consecutive non-blank lines into one paragraph, so an already-laid-out body comes
-	// out as a single scrunched line. Measured on a real execution body, the todo list:
-	//
-	//   todo (6/6 done) [x] Read run .orchicon files + verify repo/branch state (!) [x] Delete leftover ...
-	//
-	// — the operator's report exactly ("todo is scrunched and has no newlines"), caused by ONE `**success**`
-	// further down in the same body making the WHOLE thing look like markdown. The collapse markers went with
-	// it, which is why "tools and chats are no longer being collapsed": the blocks were still built, and then
-	// flattened by the renderer.
+	// WHY THIS MUST BE DECLARED AND CANNOT BE INFERRED.
 	bodyLaidOut bool
 	// pendingOffset/pendingOffsetSet pin the viewport to a line offset on the NEXT render, overriding
 	// the usual "keep the reader's scroll" rule.

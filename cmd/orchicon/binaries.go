@@ -1,50 +1,6 @@
 package main
 
 // Infrastructure-binary acquisition: DETECT, ELSE DOWNLOAD.
-//
-// WHY THIS EXISTS. The binaries the stack runs (postgres, initdb, pg_ctl,
-// pg_isready, createdb and nats-server) used to arrive inside a container image.
-// There is no image to carry them any more, so they have to come from the host —
-// either because the host already has them, or because we fetch a pinned build on
-// first run. The operator chose detect-else-download, so this file is the ONE
-// mechanism that decides which of the two happens, and it is the same mechanism
-// for every binary.
-//
-// THE FAILURE MODES MATTER MORE THAN THE HAPPY PATH, because this is the task
-// that decides whether a normal person can install Orchicon at all:
-//
-//   - A PARTIAL install is rejected loudly rather than satisfied. Client-only
-//     packages ship psql/pg_isready but not postgres/initdb, and a dir that
-//     "almost" has a server would otherwise fail much later, at initdb time,
-//     with a message about nothing in particular. This is the same posture
-//     internal/runtime/agent.go takes for the sandbox probe ("ALL four, a
-//     partial dir is rejected").
-//   - A CHECKSUM MISMATCH IS A HARD FAILURE. There is no "continue anyway"
-//     branch: an unverified binary is exactly the thing a checksum exists to
-//     prevent, so we delete the download and say so.
-//   - A TOO-OLD detected server is REPORTED, not attempted. A server we cannot
-//     run is not a server we should hand to the operator as if it worked.
-//   - The download needs NO ROOT. It lands in the instance data dir, which the
-//     operator already owns — that is the whole point of the download path.
-//
-// ONE RESOLVER, ONE RECORD. The resolved absolute paths are written once to
-// <DataDir>/infra-binaries.json and every consuming process reads that record.
-// A second resolution path that disagreed with the first is the exact failure
-// planeEnv's comment warns about (two launchers disagreeing about the data dir),
-// and a service proc that re-probed PATH would quietly run a different postgres
-// than the one the installer reported.
-//
-// PINNED VERSIONS. postgres 16.4 and nats-server 2.10.29, mirroring the lines the
-// container images already ship (deploy/container/Dockerfile: postgres:16 /
-// nats:2.10; deploy/runtime/Dockerfile.dev pins nats-server v2.10.29). The
-// Postgres build is the self-contained distribution published for the
-// theseus-rs/postgresql-binaries project — a plain tarball needing no package
-// manager and no root, which is what the download path requires.
-//
-// MINIMUM SUPPORTED POSTGRESQL: major 14 (minPostgresMajor). Below that the
-// plane's schema and migration tooling are not supported; a detected older
-// server is refused with the version it found, and the download path never picks
-// a version below it.
 
 import (
 	"archive/tar"
@@ -516,8 +472,7 @@ func loadInfraBinaries(dataDir string) (*infraBinaries, error) {
 // ---------------------------------------------------------------------------
 
 // homeDir returns the operator's home directory, or "" when it cannot be resolved (a service
-// account with no passwd entry) — the conventional install locations simply contribute nothing
-// then.
+// account with no passwd entry).
 func homeDir() string {
 	h, err := os.UserHomeDir()
 	if err != nil {
@@ -1186,23 +1141,8 @@ func extractZip(archive string, a infraArtifact, dst, goos string) error {
 	return nil
 }
 
-// extractRelPath maps an archive entry name to a destination-relative path,
-// rejecting anything that would escape dst, and reports whether the entry should
-// be skipped entirely.
-//
-// THE TWO ARCHIVE LAYOUTS ARE DIFFERENT AND MUST NOT SHARE ONE RULE:
-//
-//   - NESTED (postgres, nats-server): everything sits under ONE top-level
-//     directory, which is stripped. PostgreSQL resolves its share/ and lib/
-//     relative to its own executable, so the tree must end up as <dst>/{bin,lib,
-//     share} with nothing in between.
-//   - FLAT (the four telemetry backends): the binary sits at the archive ROOT with
-//     siblings (tempo's tar also carries CHANGELOG.md, LICENSE, tempo-cli,
-//     tempo-query). Stripping a segment here would be DESTRUCTIVE: an entry named
-//     "tempo" has no '/', so the strip produced "" and the entry was SKIPPED —
-//     which is how the four binaries silently vanished. A flat artifact therefore
-//     keeps the root and accepts ONLY the member this platform declares, emitting
-//     the CANONICAL name so `loki-linux-amd64` installs as `loki`.
+// THE TWO ARCHIVE LAYOUTS ARE DIFFERENT AND MUST NOT SHARE ONE RULE: - NESTED (postgres,
+// nats-server): everything sits under ONE top-level directory, which is stripped.
 func extractRelPath(name string, a infraArtifact, goos string) (rel string, skip bool, err error) {
 	n := filepath.ToSlash(strings.TrimPrefix(filepath.ToSlash(name), "./"))
 	if n == "" || n == "." {
@@ -1565,21 +1505,7 @@ func fieldFor(rec *infraBinaries, bin string) string {
 // ENVIRONMENT
 // ---------------------------------------------------------------------------
 
-// Env knobs, deliberately few. Each exists because an install on a real host hit
-// a case the defaults cannot serve:
-//
-//   ORCHICON_SKIP_DOWNLOAD=1      — a host that forbids outbound network at
-//                                   install time. Absence becomes fatal with a
-//                                   message naming the binary, rather than a
-//                                   download that hangs or half-succeeds.
-//   ORCHICON_INFRA_URL_<NAME>     — a mirror, or an internal artifact store. The
-//                                   NAME is the artifact name upper-cased with
-//                                   '-' → '_' (ORCHICON_INFRA_URL_POSTGRES,
-//                                   ORCHICON_INFRA_URL_NATS_SERVER).
-//   ORCHICON_INFRA_SHA256_<NAME>  — the checksum for a mirror. An override URL
-//                                   WITHOUT an override checksum keeps the pinned
-//                                   checksum, so pointing at a mirror that serves
-//                                   the pinned artifact is a one-variable change.
+// Env knobs, deliberately few.
 
 const (
 	skipDownloadEnv   = "ORCHICON_SKIP_DOWNLOAD"

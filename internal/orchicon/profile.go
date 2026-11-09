@@ -85,8 +85,7 @@ type Profile struct {
 	HiddenModels []string
 
 	// ManualModels are operator-added model entries for custom providers (optional
-	// context/output/reasoning hints) — the expected path for local models whose servers omit metadata
-	// (D9).
+	// context/output/reasoning hints).
 	ManualModels []ModelInfo
 
 	// NumCtxDefault is the Ollama profile's default context window (options.num_ctx sent per request);

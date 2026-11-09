@@ -2,19 +2,8 @@ package db
 
 import "testing"
 
-// TestEffectiveGitStrategyPrecedenceBitIdentical proves the centralized
-// EffectiveGitStrategy decision (effectiveGitStrategyValue) is bit-identical
-// to the two pre-existing inline resolution sites it replaced:
-//
-//   - reconciler.go skipPRMarkerStamp (default "" — workflow wins, else project)
-//   - workflow_reconciler.go step-success PR gate (default "local" — workflow
-//     wins, else project)
-//
-// The only legitimate divergence is the default: site A's empty "unset" and
-// site B's "local" behave identically at the PR gate (`!= "pr"`), and the
-// task's canonical default is "local". A `none`-strategy run must resolve to
-// "none" at every layer, and nothing may change whether a `pr`/`local` run
-// is considered for the PR gate.
+// TestEffectiveGitStrategyPrecedenceBitIdentical proves the centralized EffectiveGitStrategy
+// decision (effectiveGitStrategyValue) is bit-identical to the two pre-existing inline resolution.
 func TestEffectiveGitStrategyPrecedenceBitIdentical(t *testing.T) {
 	valid := []string{"", "local", "pr", "none"}
 

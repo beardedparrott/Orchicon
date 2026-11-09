@@ -196,8 +196,7 @@ func coveredByProxy(p string) bool {
 }
 
 // TestProxyPrefixesCoverPlanePassthrough reads the PLANE'S OWN definition of "not the SPA"
-// (withFrontend's passthrough list in cmd/orchicon/serve_state.go) and asserts the shell forwards
-// every.
+// (withFrontend's passthrough list in cmd/orchicon/serve_state.go) and asserts the shell forwards.
 func TestProxyPrefixesCoverPlanePassthrough(t *testing.T) {
 	src := readFile(t, filepath.Join("..", "..", "cmd", "orchicon", "serve_state.go"))
 	start := strings.Index(src, "func withFrontend(")

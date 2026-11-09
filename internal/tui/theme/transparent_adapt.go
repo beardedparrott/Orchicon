@@ -8,34 +8,6 @@ import (
 )
 
 // transparent_adapt.go — how a TRANSPARENT theme stays legible while it gets out of the way.
-//
-// THE PROBLEM IT SOLVES, and it took three rounds with the operator to state properly. A transparent theme
-// leaves the background UNPAINTED so the terminal shows through — and the moment it does, the palette's
-// colours are being drawn on a surface the palette knows nothing about: the terminal's own background. A
-// palette built for a near-white page is dark text, and on a dark terminal that is dark text on black. The
-// operator, seeing exactly that: "the light transparent themes are almost impossible to see/read."
-//
-// THE FIX IS NOT TO RE-TINT THE PANELS — that is what breaks the transparency the theme exists for, and it is
-// what the operator caught: "now the transparents are not transparent at all ... the terminal should bleed
-// through everywhere." A panel that paints a fill is a panel that stops the bleed-through, so the answer has to
-// be the FOREGROUNDS, not the fills.
-//
-// So a transparent theme is adapted at `Use()` time against the TERMINAL's own background:
-//
-//   - WHAT GROUND IS IT? lipgloss/termenv asks the terminal (OSC 11), falls back to $COLORFGBG, and assumes
-//     DARK when neither answers — the same default every TUI uses, and the right one for the majority.
-//     $ORCHICON_TERMINAL_BG overrides it, for the terminals that answer neither question truthfully (a
-//     transparent terminal's idea of "its" background is exactly the thing the operator has configured away).
-//   - WHAT DOES IT MEASURE AGAINST? The WORST CASE for that ground: pure black or pure white. A real terminal
-//     background is almost never at the extreme, so anything that clears the floor against the extreme clears it
-//     against the real thing — the adaptation is conservative by construction rather than by luck.
-//   - WHAT MOVES? Every FOREGROUND token, each nudged toward the readable end until it clears the same floor the
-//     theme gates already hold the solid palettes to. A token that already passes is left BYTE-IDENTICAL, so a
-//     dark transparent theme on a dark terminal renders exactly as it did before this file existed.
-//   - WHAT STAYS? The FILLED elements — the selection fill, the code chip / code block / diff fills. A selection
-//     the operator cannot see is a selection they cannot trust, and a code span that is not on a chip is not a
-//     code span: those are content, not surfaces, and they must keep a fill to function. They are self-contained
-//     (their text is chosen against them, already gated), so the terminal under them does not matter.
 
 // SetTerminalBgEnv names the override for the detected ground. IT EXISTS FOR THE TERMINALS THAT
 // CANNOT ANSWER.

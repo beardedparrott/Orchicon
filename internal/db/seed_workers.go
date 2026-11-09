@@ -187,29 +187,8 @@ var QASurfaceImpactMarker = qaSurfaceImpactMarker
 // prove a worker did NOT reuse the shared fragment.
 var SDLCWorkhorseMarker = sdlcWorkhorseMarker
 
-// workBudgetBlock replaces the old "## Hard time-box: N minutes" section in every worker that carried
-// one. THE TIME BOX ITSELF IS GONE AS AN INSTRUCTION, and this is the reasoning, because removing it
-// looks like removing discipline.
-//
-// WHAT THE TIME BOX ACTUALLY DID. It told a worker "you have 45 minutes" and, in the same breath, "when
-// the box nears its end, land what you have — a green build with partial scope beats an unshipped
-// complete design". That second half is a PERMISSION TO DECLARE DONE, and it was granted at a fixed
-// wall-clock mark that had nothing to do with whether the work was finished. A worker at minute 40
-// chose between "finish the criterion" and "report success with it missing", and the prompt told it
-// which. The evidence gate now catches the result, but the prompt was actively manufacturing the
-// failure it catches — and a gate is far more expensive than never creating the defect.
-//
-// THE REAL CONSTRAINT DID NOT GO AWAY, and pretending otherwise would be worse than the time box: a
-// budget still exists in the engine (`wall_clock_seconds`, per worker and per tenant) and a worker that
-// ignores it gets reaped mid-write, losing whatever it had. So the block keeps the constraint and drops
-// the permission:
-//
-//   - the budget is REAL and named as real;
-//   - the guidance is about ORDER (do the criteria that carry the deliverable first), not about
-//     abandoning them;
-//   - the only sanctioned early stop is an HONEST PARTIAL: commit what is done, report `failure` with
-//     what remains. That is recoverable. "Land what you have and call it a success" is not — it is the
-//     exact defect this whole change exists to remove.
+// workBudgetBlock replaces the old "## Hard time-box: N minutes" section in every worker that
+// carried one.
 const workBudgetBlock = "## Your time and how to spend it\n" +
 	"Your run has a wall-clock budget enforced by the platform. That budget is real: if it is exhausted mid-work the session is stopped and anything uncommitted is lost. Work accordingly, but understand what it is FOR — it exists to bound a run, not to license an unfinished deliverable.\n\n" +
 	"- **Do the work the acceptance criteria require, in the order that gets the deliverable standing first.** If you must choose what to leave undone, leave the optional polish undone, never a criterion.\n" +
@@ -248,53 +227,8 @@ const researchHygieneBlock = "## Worktree hygiene\n" +
 	"- Write research deliverables (`research/plan.md`, `research/evidence/*`, `research/findings.md`, `research/brief-<date>.md`) **only inside the run worktree** — never to the main checkout.\n" +
 	"- Do **not** create a branch, commit a branch, or push to origin. Leave the tree clean and report via the `ORCHICON WORKER SUMMARY:` contract.\n\n"
 
-// quickWorkerMarker is the Quick Software Engineer seed's per-worker roll
-// marker (cannedWorker.RollMarker). The Quick Work workflow is a SINGLE
-// worker step (step-quick → step-end, no separate DevOps step in
-// wfv_quick_work_v1), so this worker is the all-in-one: it implements,
-// verifies green, commits to the run branch, pushes, AND opens + merges the
-// PR into develop itself (git_strategy pr).
-//
-// MARKER GENERATIONS (each must be present in the new AgentsMD and ABSENT from
-// the published content it supersedes, or the stale worker never re-rolls):
-//  1. "single-step implementer" — the first all-in-one wording.
-//  2. "no separate DevOps Engineer step" — replaced wording that wrongly handed
-//     the PR to a DevOps step that does not exist in the workflow.
-//  3. "SHIPPING IS IDEMPOTENT" (current) — the ship step now checks for an
-//     existing PR before creating one.
-//
-// WHY GENERATION 3 EXISTS: shipping was not idempotent, and a recovery RESUME
-// re-enters the ship step against the same run branch. Observed live: PRs #703
-// and #704 shared one branch AND one head commit (f9b3c408), and #704's merge
-// (49b89b72, tagged v0.5.32) changed ZERO files — an empty merge commit on
-// develop, making v0.5.32 content-identical to v0.5.31.
-//
-// Bumping is load-bearing, not bookkeeping. Generation 2's fragment is still
-// present in the generation-3 text (the workflow really does have no separate
-// DevOps step), so leaving the marker unchanged would leave the roll-forward
-// test SATISFIED and the fix would never reach the live worker.
-// mergeGateMarker is the roll-forward fragment for the CI-before-merge rule (cannedWorker.RollMarker
-// on the Quick worker AND the DevOps worker). It is a per-worker marker rather than a global one
-// because the DevOps Engineers other than the shipping one do not carry this prompt section.
-//
-// WHY THIS EXISTS (the incident). PR #850 was merged with TWO RED CI JOBS — `fe-lint` and
-// `windows desktop + MSI`, both failing on a whole-project typecheck — and landed a `develop`
-// that could not build. The prompts were not silent on verification: the Quick worker's said
-// "never report success with failing build, failing tests" and "run the test suite for the
-// packages you touched". Two things defeated that:
-//
-//  1. NO GATE ON THE MERGE. The ship step went straight from `gh pr create` to
-//     `gh pr merge --squash --admin` — and `--admin` BYPASSES checks. Verification was
-//     described as an ACTIVITY, never as a PRECONDITION on the merge.
-//  2. THE SCOPE WAS A SUBSET THE WORKER CHOSE. "the packages you touched" is exactly the
-//     instruction that misses a whole-repo gate: the worker's own unit tests passed while a
-//     project-wide typecheck failed.
-//
-// `--admin` is KEPT, deliberately (it is how these workers merge at all). The rule therefore
-// has to be the checks themselves, read before the merge — not the flag.
-//
-// IT NAMES NO TOOLCHAIN. These are CANNED workers used against other projects, so the gate is
-// "the project's CI, as the project defines it" — never `make`, `tsc`, `npm`, or a language.
+// quickWorkerMarker is the Quick Software Engineer seed's per-worker roll marker
+// (cannedWorker.RollMarker).
 const mergeGateMarker = "GATED ON A GREEN RESULT"
 
 // mergeGateBlock is shared verbatim by every canned worker that MERGES to develop, so the two
@@ -535,8 +469,7 @@ var cannedWorkers = []cannedWorker{
 			"The engineer implements, the reviewer reviews, and the QA engineer tests. You open the PR and merge only when work is passed to you after approval.\n",
 		ConcurrencyLimit: 0,
 		// ITS OWN MARKER: this worker had NONE, so without this the new gate would never reach the
-		// published version — the seeder only rolls a canned worker forward when its current agents_md
-		// lacks.
+		// published version.
 		RollMarker: devopsShipMarker,
 	},
 	{

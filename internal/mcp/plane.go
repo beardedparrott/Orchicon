@@ -170,8 +170,7 @@ func (p *planeRegistry) listWorkItems(ctx context.Context, raw json.RawMessage) 
 		}
 	}
 	// idea_scope="only" reads the Idea Cloud (idea-state items are hidden from the normal list
-	// server-side) — the plane surface of the automation-spawn dedupe gate ("check the Idea Cloud
-	// first").
+	// server-side).
 	if strings.TrimSpace(strings.ToLower(a.IdeaScope)) == "only" {
 		req.IdeaScope = apiv1.IdeaScope_IDEA_SCOPE_ONLY_IDEA
 	}

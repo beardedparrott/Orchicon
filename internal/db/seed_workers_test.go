@@ -556,23 +556,8 @@ func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 	}
 }
 
-// TestSeedPreExistingFailureRemedyContract pins the SPLIT between the implementer and the gates, which
-// replaced the old shared "remedy it yourself" contract.
-//
-// WHY IT CHANGED. The remedy contract used to be shared by all three quality workers, and it authorised
-// each of them to "remove or correct" a failing test when their own investigation concluded it no longer
-// protected anything. That is a defensible instruction for the IMPLEMENTER — it owns the code — and a
-// catastrophic one for a REVIEWER: a gate that may edit the suite to reach green is not a gate, and the
-// failure is invisible because the edit appears in the same diff as the fix. Combined with the reviewers
-// also being told to repair every bug they found, no step in the pipeline could ever return `failure` for
-// the class of defect the pipeline exists to catch.
-//
-// The contract now differs by ROLE, and this test is what keeps them from drifting back together:
-//
-//   - SSE (implementer): owns the suite. May fix a failing test's CAUSE, and may correct or remove the
-//     test itself — but the decision and its rationale must be recorded, so it is visible.
-//   - PR Reviewer / QA (gates): NEVER edit the suite. A pre-existing failure is reported as context with
-//     the base-commit evidence, and a wrong test is a FINDING for the engineer, not an edit by the gate.
+// TestSeedPreExistingFailureRemedyContract pins the SPLIT between the implementer and the gates,
+// which replaced the old shared "remedy it yourself" contract.
 func TestSeedPreExistingFailureRemedyContract(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -946,8 +931,7 @@ func TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes(t *testing.T
 			t.Fatalf("query version %s: %v", tc.slug, err)
 		}
 		// Worker-level runtime_ref is retired (ADR-0003): the trio seeds an empty model_ref (dispatch
-		// derives the kind at run time), so the version row must carry no model_ref and no runtime_ref
-		// column.
+		// derives the kind at run time).
 		if modelRef != "" {
 			t.Errorf("%s model_ref = %q, want empty (runtime_ref retired; dispatch kind derives at run time)", tc.slug, modelRef)
 		}

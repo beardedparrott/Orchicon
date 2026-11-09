@@ -138,9 +138,7 @@ func mcpServerNames(servers []mcpclient.ScopedServer) string {
 	return strings.Join(names, ",")
 }
 
-// recordMCPFingerprint stores the resolved set the child is being launched with, tagged with
-// whether the mode could act (which is what decided whether the operator's opaque servers were
-// offered).
+// recordMCPFingerprint stores the resolved set the child is being launched with.
 func (s *askSession) recordMCPFingerprint(fp string) {
 	s.mu.Lock()
 	s.mcpFingerprint = fp

@@ -337,9 +337,7 @@ func TestInProcessToolRunnerOnlyForDeclaringTransports(t *testing.T) {
 	}
 }
 
-// inProcTransport / serveTransport are minimal declarations of the OPTIONAL capability: the
-// embedded nil interface supplies the rest of ChatTurnClient and panics if it is ever called (it
-// never.
+// inProcTransport / serveTransport are minimal declarations of the OPTIONAL capability.
 type inProcTransport struct {
 	scheduler.ChatTurnClient
 }

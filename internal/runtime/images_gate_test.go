@@ -35,9 +35,7 @@ func gateEngine(t *testing.T, wantRef, labelOut, stderr string, err error) (*[]s
 	return &calls, fn
 }
 
-// TestCreateGateRejectsAnImageWithoutTheMarker is AC 2: an image that is neither the base, a
-// configured stock variant, nor locally-present WITH the inherited runtime-base marker cannot be
-// used.
+// TestCreateGateRejectsAnImageWithoutTheMarker is AC 2.
 func TestCreateGateRejectsAnImageWithoutTheMarker(t *testing.T) {
 	const base = "orchicon-runtime:base"
 	const stock = "ghcr.io/beardedparrott/orchicon-runtime:gui"
@@ -136,8 +134,7 @@ func TestCreateGateRejectsAnImageWithoutTheMarker(t *testing.T) {
 }
 
 // TestImageInspectJoinsPresenceAndLabels pins the single inspect that reports presence + both
-// version labels for GET /v1/images (AC 7): a missing image must report Present=false with NO
-// error.
+// version labels for GET /v1/images (AC 7).
 func TestImageInspectJoinsPresenceAndLabels(t *testing.T) {
 	d := &Daemon{Engine: Engine{Name: "podman", Bin: "podman"}}
 	d.engineFn = func(args ...string) (string, error) {

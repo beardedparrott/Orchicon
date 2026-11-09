@@ -1,27 +1,6 @@
 package tui
 
 // selection_region_test.go — A COPY STAYS IN THE PANE IT STARTED IN, AND CHROME IS NOT CONTENT.
-//
-// The operator: "When copying something in conversations it is copying the ENTER line even past the
-// conversations window into the conversation list."
-//
-// They were describing two things at once, and both are mechanical:
-//
-//  1. A selection is a RECTANGLE over the whole frame — deliberate, since the shell is the only layer that
-//     owns the frame — so a drag from the transcript into the conversations rail copied the RAIL's rows
-//     too, interleaved line by line.
-//  2. The pane's own BORDER cells sit inside every row, so a selection across the transcript put a `│` at
-//     the start of every copied line — the same glyph the code block used to draw.
-//
-// So a drag is confined to the pane its ANCHOR falls in, and the border cells are never content. Both are
-// asserted against a REAL rendered frame, because the geometry is the part that can drift.
-//
-// ⚠️ EVERY TEST HERE HAS TO DRAG ON A ROW WHERE BOTH PANES HAVE CONTENT, and that is not a detail — it is
-// what makes them mean anything. The first version of this file dragged along the transcript's body row,
-// where the rail happens to be BLANK, and then asserted the rail was absent: both assertions passed with
-// the confinement switched OFF, so the file "proved" a fix it never exercised. A drag only demonstrates a
-// leak if there is something to leak. rowWith() is what keeps that honest, and the check is in the test
-// rather than in a comment.
 
 import (
 	"strings"

@@ -75,9 +75,7 @@ func TestStorageTenantExplicitRequestWins(t *testing.T) {
 	}
 }
 
-// TestStorageTenantEmptyFallsBackToDefault pins the standalone-wiring contract: a provider
-// constructed without a deployment tenant id keeps the DefaultTenantID behavior (op-package tests
-// /.
+// TestStorageTenantEmptyFallsBackToDefault pins the standalone-wiring contract.
 func TestStorageTenantEmptyFallsBackToDefault(t *testing.T) {
 	s := storageWithTenant(t, "")
 	req := testAuthRequest("req-3")

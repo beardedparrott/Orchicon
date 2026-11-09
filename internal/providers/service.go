@@ -1,6 +1,5 @@
 // Package providers implements the tenant-facing Providers management surface behind Settings →
-// Adapters (ADR-0006): the merged provider view (built-in profiles ⊕ stored overrides ⊕ tenant
-// custom.
+// Adapters (ADR-0006).
 package providers
 
 import (
@@ -59,9 +58,7 @@ func invalidf(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", errInvalidArgument, fmt.Sprintf(format, a...))
 }
 
-// builtinSecretNames is the standard-name auto-write map (ADR-0006 D5) — the single source of
-// truth, matching the credential resolver's canonical naming (secret names coincide with the env
-// var.
+// builtinSecretNames is the standard-name auto-write map (ADR-0006 D5).
 var builtinSecretNames = map[string]string{
 	"anthropic":   "ANTHROPIC_API_KEY",
 	"openai":      "OPENAI_API_KEY",
@@ -372,8 +369,7 @@ func profileFromRow(r db.ProviderSettingsRow) (orchicon.Profile, bool) {
 			base.NumCtxDefault = r.NumCtxDefault
 		}
 		// Bind the standard secret name so the credential resolver finds the tab-written token
-		// (AuthSecretRef-first, env fallback) — without this the E2E flow fails ErrAuthMissing after a
-		// token save.
+		// (AuthSecretRef-first.
 		if ref := builtinSecretNames[r.ProviderID]; ref != "" {
 			base.AuthSecretRef = ref
 		}
@@ -1308,21 +1304,6 @@ func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID s
 	// OFFLINE CATALOG SEED (picker view only).
 	if len(res.Models) == 0 {
 		// SOURCE ORDER, best-authority first:
-		//
-		//  1. the Claude Code MANAGED catalog for the anthropic provider — the
-		//     signed document the CLI's own model selector reads, so the list is
-		//     current by construction rather than by anyone remembering to edit a
-		//     snapshot. (The vendored snapshot listed three anthropic models and
-		//     NONE of them are offered any more.)
-		//  2. the vendored catalog — the offline fallback, and the authored
-		//     PRICING source. For claude this is a REFINEMENT, not what makes
-		//     pricing work: the CLI reports `total_cost_usd` on every turn and the
-		//     usage recorder keeps it whenever this catalog declines, so a model
-		//     newer than the snapshot is still costed.
-		//
-		// The managed catalog returns nil on any failure, INCLUDING a signature
-		// that does not verify, so an untrusted document degrades to the snapshot
-		// rather than being shown.
 		if managed := s.claudeManagedCatalogModels(ctx, providerID); len(managed) > 0 {
 			res.Models = append(res.Models, managed...)
 		} else if cat := orchicon.CatalogModelsForProvider(providerID); len(cat) > 0 {

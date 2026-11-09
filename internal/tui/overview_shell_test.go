@@ -141,9 +141,7 @@ func TestOverviewChordSwitches(t *testing.T) {
 	}
 }
 
-// TestOverviewTabBarFitsAt80 pins the 7th-tab width maths: at 80 columns the bar drops the
-// inter-tab gaps and then the ordinal prefixes so all seven tabs stay inside the viewport AND
-// remain.
+// TestOverviewTabBarFitsAt80 pins the 7th-tab width maths.
 func TestOverviewTabBarFitsAt80(t *testing.T) {
 	app := newCenterTestApp(80, 24)
 	bar := app.tabBarView()

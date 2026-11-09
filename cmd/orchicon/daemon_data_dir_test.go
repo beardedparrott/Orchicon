@@ -1,24 +1,6 @@
 package main
 
 // daemon_data_dir_test.go — A LAZY CONFIG IS NOT A CONFIG AT STARTUP.
-//
-// The runtime daemon resolved its container binary and populated the refusal's data-dir field from
-// `daemonCfg.DataDir`. That variable is filled in by daemonPool's sync.Once — the first time the
-// database is opened — which has NOT happened when the daemon is constructed. So both reads saw the
-// zero value:
-//
-//   - ResolveContainerExe was handed "" as the data dir, so it searched beside the daemon's executable
-//     only, and never looked in <data dir>/bin at all;
-//   - ContainerExeDataDir was "", so the refusal printed the literal placeholder "<data dir>" where a
-//     real path belongs.
-//
-// Both were reported as "the search path moved but the file is still missing", with the placeholder
-// visible in the operator's quoted message. Neither was reachable by a test of the resolver alone,
-// because the resolver was given the right answer for an empty string.
-//
-// These assertions are SOURCE-LEVEL on purpose: the defect is the ORDER of two statements in a function
-// that needs a database, an engine and a socket to run. Pinning "this value is not read from the lazy
-// config" is the only check that bites without booting a daemon.
 
 import (
 	"os"

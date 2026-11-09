@@ -104,8 +104,7 @@ func TestStallRepetition(t *testing.T) {
 }
 
 // TestStallRepetitionNoFalsePositive verifies distinct tool_use calls (even to the same tool)
-// within the window do NOT trip repetition — different state.input args must yield distinct
-// signatures.
+// within the window do NOT trip repetition.
 func TestStallRepetitionNoFalsePositive(t *testing.T) {
 	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, repetitionN: 3, repetitionW: time.Minute}
 	m := newTestMonitor(w)
@@ -211,9 +210,7 @@ func TestStallRepetitionErroringTrips(t *testing.T) {
 func TestStallRepetitionBuildFixIterate(t *testing.T) {
 	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, repetitionN: 3, repetitionW: time.Minute}
 	m := newTestMonitor(w)
-	// A realistic loop: run tests (error), edit a file, run tests (error), edit a file, run tests
-	// (completed) — the edits and the success reset the counters so the erroring `go test` signature
-	// never.
+	// A realistic loop: run tests (error), edit a file, run tests (error).
 	for i := 0; i < 5; i++ {
 		m.observe("tool_use", map[string]any{
 			"tool":  "bash",
@@ -461,8 +458,7 @@ func TestStallWindowsFromManifestZeroDisables(t *testing.T) {
 	m.lastFileDiff = c.t
 	m.lastMeaningfulAction = c.t
 	// Advance 2 hours — far past what the built-in noFileDiff (15min) and textLoop (10min) defaults
-	// would have tolerated, isolating the test to those two dimensions by also advancing
-	// lastStepFinish.
+	// would have tolerated.
 	c.t = c.t.Add(2 * time.Hour)
 	m.lastStepFinish = c.t
 	if reason := m.check(); reason != "" {

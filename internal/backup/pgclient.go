@@ -1,24 +1,6 @@
 package backup
 
 // pgclient.go — HOW this process reaches Postgres with pg_dump/psql.
-//
-// Backups shell out to pg_dump/psql, and the plane is a HOST process that owns
-// its Postgres as a HOST process too (one shape: the plane and its services are
-// host processes, always). So the client is the LOCAL one, resolved in two steps:
-//
-//  1. the instance's OWN resolved record (<DataDir>/infra-binaries.json, written by
-//     cmd/orchicon/binaries.go), because the PostgreSQL distribution the supervisor
-//     runs is the one whose client version matches its server exactly, and on a
-//     downloaded install it is on no PATH at all;
-//  2. else the LOCAL pg_dump/psql on PATH, which is correct for a host install that
-//     has postgresql-client of its own.
-//
-// WHAT IS NOT HERE ANY MORE: the `docker exec` client. It existed for the retired
-// single-container deployment, where Postgres lived in a container the plane had to
-// reach through the engine CLI. That shape is gone, so a container client would have
-// been a path that can only fail — and it failed loudly: with a container name left
-// in the environment the plane reported `docker ... is required to run pg_dump
-// inside container ...` while a perfectly good client sat on the host.
 
 import (
 	"context"

@@ -262,9 +262,7 @@ func (s *Storage) CreateAccessToken(_ context.Context, req op.TokenRequest) (str
 	return t.ID, exp, nil
 }
 
-// CreateAccessAndRefreshTokens is required by the interface but never triggered in practice:
-// refresh tokens are only produced when a client registers the refresh_token grant AND the request
-// asks.
+// CreateAccessAndRefreshTokens is required by the interface but never triggered in practice.
 func (s *Storage) CreateAccessAndRefreshTokens(ctx context.Context, req op.TokenRequest, currentRefreshToken string) (accessTokenID, newRefreshToken string, expiration time.Time, err error) {
 	accessTokenID, expiration, err = s.CreateAccessToken(ctx, req)
 	if err != nil {

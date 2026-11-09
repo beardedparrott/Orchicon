@@ -45,9 +45,7 @@ func TestPTYSS3HomeEndReachesTheComposerAsRealKeys(t *testing.T) {
 			"bubbletea splits ESC O H into alt+O and the rune H, and the composer inserts both", got)
 	}
 
-	// (2) AND IT IS NOW A REAL KEY. Typing at the END and then pressing Home must put the
-	//     next character at the START — which only happens if the bytes became the Home
-	//     key. Without the fix the buffer would read "abcOHX"; with it, "Xabc".
+	// (2) AND IT IS NOW A REAL KEY.
 	_, _ = s.tty.WriteString("abc")
 	time.Sleep(600 * time.Millisecond)
 	_, _ = s.tty.WriteString("\x1bOH")
@@ -72,10 +70,7 @@ func TestPTYSS3HomeEndReachesTheComposerAsRealKeys(t *testing.T) {
 		t.Fatalf("after pressing SS3 End and typing \"Y\", the composer reads %q — want \"XabcY\"", got)
 	}
 
-	// (4) THE ARROWS STILL WORK, which is the negative control at the terminal level: the
-	//     application-cursor arrows are a DIFFERENT member of the same SS3 family and
-	//     bubbletea already decodes them, so the fix must have left them alone. Up must
-	//     move the textarea's caret to the line start without inserting anything.
+	// (4) THE ARROWS STILL WORK, which is the negative control at the terminal level.
 	_, _ = s.tty.WriteString("\x1bOA")
 	time.Sleep(600 * time.Millisecond)
 	_, _ = s.tty.WriteString("Z")

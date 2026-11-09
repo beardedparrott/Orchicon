@@ -44,9 +44,7 @@ const (
 	// bash and a modify — which is what makes every bucket of the counter legible in one turn.
 	Prompt = "E2EPROMPT inspect files and run the tests"
 
-	// StampOnPeriod is the heartbeat's server_time_unix_ms, chosen EXACTLY on a chat.VerbPeriodMS
-	// (15000 ms) boundary so that a client sampling within the next fifteen seconds derives the SAME
-	// word.
+	// StampOnPeriod is the heartbeat's server_time_unix_ms.
 	StampOnPeriod int64 = 1_699_999_995_000
 
 	// HeartbeatCadence is how often the live stream re-sends the heartbeat.

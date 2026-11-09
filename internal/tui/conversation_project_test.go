@@ -1,25 +1,6 @@
 package tui
 
 // conversation_project_test.go — PROJECTS ARE WORKSPACES: a scope you pick, and what it hides.
-//
-// The operator, correcting the first attempt:
-//
-//   "The implementation is wrong. You separated categories out as 'folders' and then you made them two
-//    completely different panes. I assume you did something similar to the TUI. I wanted a hierarchy. So a
-//    conversation would belong to a project and inside the project it would still have the normal categories we
-//    had before. ... Projects are WORKSPACES essentially. ... you would only see THAT PROJECT'S Conversations
-//    and Categories. ... In the TUI the equivalent would be /project to set the active project. A list should pop
-//    up to make it easier to pick the right one when you type /project slash command."
-//
-// The assertions below are the four things that make that true, plus the one that keeps it from regressing:
-//
-//  1. a scope hides every OTHER project's conversations (the promise of a workspace);
-//  2. the category folders are untouched INSIDE the scope — same folders, same collapse, same counts;
-//  3. EVERY project is offered, including ones with no conversations, because a workspace you cannot select is
-//     not a workspace;
-//  4. "All projects" is still the default and still shows everything, so nothing that predates the project
-//     column disappears on launch;
-//  5. /project opens a LIST (no argument) or moves the open chat (with one).
 
 import (
 	"strings"

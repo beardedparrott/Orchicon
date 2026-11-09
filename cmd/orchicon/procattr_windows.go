@@ -15,18 +15,7 @@ import (
 // documented Win32 constant.
 const detachedProcess = 0x00000008
 
-// setProcAttrBackground detaches the child from the caller's console. This is the setsid ANALOGUE, and the
-// previous comment here ("Windows does not support Setpgid. The child inherits the parent's console group, so
-// Ctrl-C in the parent will also reach the child. This is acceptable...") was wrong to call it acceptable:
-//
-//   - DETACHED_PROCESS gives the child NO inherited console at all, so a Ctrl-C (or console close) in the
-//     parent cannot reach the detached plane. That is exactly what `setsid` buys on Unix, and it is the whole
-//     point of `serve --detach`: the plane must outlive the terminal that started it.
-//   - CREATE_NEW_PROCESS_GROUP additionally makes the child the root of its own process group, which gives it
-//     a stable Ctrl-Break TARGET — the graceful-stop mechanism on this platform (signals_windows.go).
-//     Without it there is nothing to aim at and every stop is a force stop with no option to be gentler.
-//
-// Both flags together are what makes the detached-serve path work on Windows; either alone is not.
+// setProcAttrBackground detaches the child from the caller's console.
 func setProcAttrBackground(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | detachedProcess,

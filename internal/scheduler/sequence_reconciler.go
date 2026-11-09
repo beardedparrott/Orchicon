@@ -34,36 +34,8 @@ func sequenceBackoff(attempts int) time.Duration {
 	return d
 }
 
-// SequenceReconciler is the sequence engine for sequential multi-workflow
-// runs (architecture-notes/sequential-multi-workflow-runs.md §2).
-//
-// A parent work item with children and NO bound workflow IS a sequence
-// run (Option A — no sequence_runs table): the parent's status + its
-// children's statuses fully describe the state. "Who's next" is derived,
-// never stored: on every pass the engine recomputes the first direct
-// child in sort_order whose status is not terminal-success. Because it is
-// a pure function of (sort_order, statuses), a crash/restart mid-chain
-// resumes correctly (idempotent derived cursor — acceptance criterion
-// "Reconciliation stability").
-//
-//   - fire (scheduled / run-instant): parent → running, every NON-terminal
-//     descendant resets to pending (succeeded/skipped are always kept),
-//     the first non-succeeded child arms (flips straight to running,
-//     its OWN bound workflow starts — no ready/assigned dance, no config
-//     copy).
-//   - advance: child succeeds → next non-succeeded sibling arms.
-//   - completion: all children succeeded → parent → succeeded.
-//   - failure halts: child fails → that child failed, later siblings stay
-//     pending, parent (and each container up the chain) → failed; nothing
-//     after the failure ever arms on its own.
-//   - retry auto-resumes: fixing + retrying the failed child to success
-//     continues with the next sibling (the cursor is derived).
-//   - dependency gate: an on-deck child whose external blockers aren't
-//     satisfied PARKS the chain (parent stays running, child stays
-//     pending) until the blockers succeed — then it advances without
-//     human action. Only a human may fail a blocked child.
-//   - recursion: arming a container child starts its own nested sequence
-//     (its descendants reset to pending); failure propagates up the chain.
+// SequenceReconciler is the sequence engine for sequential multi-workflow runs
+// (architecture-notes/sequential-multi-workflow-runs.md §2).
 type SequenceReconciler struct {
 	pool  *db.Pool
 	log   *slog.Logger
@@ -409,20 +381,7 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 		depGoverned[d.ToID] = true
 	}
 
-	// Per-child arming loop over ALL children in sort_order. Each pending
-	// child arms independently when its gates pass, so unrelated siblings
-	// dispatch concurrently (parallelism) while strict chains keep their
-	// order:
-	//
-	//   - Dependency gate (every child): all incoming depends_on/blocks
-	//     edges satisfied (CheckDependenciesSatisfied). Unsatisfied → park
-	//     (stay pending, never fail — the existing gate semantics).
-	//   - Chain gate (strict children only): a strict child arms only when
-	//     its immediate predecessor in sort_order is terminal-success. The
-	//     loop's statuses are the pre-pass snapshot, so a just-armed
-	//     predecessor still shows pending (non-terminal) and blocks the
-	//     next strict child even within this same pass — strict chains stay
-	//     serialized by construction.
+	// Per-child arming loop over ALL children in sort_order.
 	var starts []leafStart
 	for i, c := range children {
 		switch c.Status {
@@ -665,26 +624,8 @@ func StartSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantI
 	return nil
 }
 
-// ResumeSequence resumes a sequence parent from its current state —
-// parent → running, and the engine derives the first non-succeeded child
-// and arms it (reusing reconcileParent). Unlike StartSequence it does NOT
-// reset the subtree: prior child successes are preserved, and the chain
-// continues from where it left off. This is the manual counterpart to the
-// auto-resume path (a failed parent whose children are no longer halted
-// revives on the next scan); it exists for the two cases the derived
-// cursor cannot act on alone:
-//
-//   - Parked: a parent parked by StopSequence (status pending) is never
-//     picked up by the scan, so Resume is how it re-enters the chain
-//     without destroying history.
-//   - Halted: a parent failed by failSequenceChain (first non-succeeded
-//     child failed/cancelled) would re-halt if handed to reconcileParent
-//     unchanged, so Resume first re-arms that child to pending — the same
-//     input change the manual "set failed child to pending" produces —
-//     which lets the auto-revive + arm path continue the chain.
-//
-// Validation of the subtree (workflows bound, no one-shots) is the
-// CALLER's responsibility and runs before this (mirrors StartSequence).
+// ResumeSequence resumes a sequence parent from its current state — parent → running, and the
+// engine derives the first non-succeeded child and arms it (reusing reconcileParent).
 func ResumeSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenantID, parentID string, start StartWorkflowFn) error {
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -705,8 +646,7 @@ func ResumeSequence(ctx context.Context, pool *db.Pool, log *slog.Logger, tenant
 	}
 
 	// Halted-chain resume: a parent whose first non-succeeded child is failed/cancelled has halted
-	// (failSequenceChain marked the parent failed, and reconcileParent's failed-child branch re-halts
-	// it).
+	// (failSequenceChain marked the parent failed.
 	if idx := deriveNextChild(children); idx >= 0 {
 		switch children[idx].Status {
 		case domain.WorkItemFailed, domain.WorkItemCancelled:

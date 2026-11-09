@@ -51,9 +51,7 @@ func TestRunWorktreeBaseResolvesRunWorktree(t *testing.T) {
 	}
 }
 
-// TestPoolEnvKeyServeConfigInvalidatesKey is covered by TestPoolEnvKeyStabilityAndInvalidation;
-// this is a focused regression for the stale-serve-config reuse class (a warm container baked
-// before.
+// TestPoolEnvKeyServeConfigInvalidatesKey is covered by TestPoolEnvKeyStabilityAndInvalidation.
 func TestPoolEnvKeyServeConfigInvalidatesKey(t *testing.T) {
 	req := CreateRequest{Image: "img:v1", Mounts: []MountSpec{{Source: "/p", Dest: "/p"}}}
 	kNoCfg := poolEnvKey(req, "fp")

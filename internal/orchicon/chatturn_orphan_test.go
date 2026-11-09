@@ -177,8 +177,7 @@ func TestSanitizeChatHistoryDropsOrphanedToolResult(t *testing.T) {
 }
 
 // TestSanitizeChatHistoryDropsLeadingOrphanedToolResult pins the shape the compaction tail
-// alignment clamps against: a history whose FIRST message is a tool result (nothing precedes it at
-// all.
+// alignment clamps against.
 func TestSanitizeChatHistoryDropsLeadingOrphanedToolResult(t *testing.T) {
 	history := []Message{
 		{Role: RoleTool, Content: []Content{{ToolResult: &ContentToolResult{ToolCallID: "call_gone", Content: "orphan"}}}},

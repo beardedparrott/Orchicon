@@ -23,26 +23,8 @@ const (
 	thinkSegInCloseTag
 )
 
-// thinkSegmenter scans a TEXT delta stream and splits it into plain text and
-// folded think-body fragments. Carry-over state makes it robust to tags split
-// across any number of deltas. It is REPLACED (not reused) at the completed-
-// text-part boundary, so state never leaks between a streamed text part and
-// the completed part that subsumes it.
-//
-// The state machine deliberately avoids whole-string equality on the delta
-// stream: an open tag that arrives split across three deltas (e.g. "|<t" then
-// "hink" then "ing>") is recognized enter/exit one rune at a time, buffering a
-// candidate prefix and only flushing it as plain text once it provably stops
-// being a prefix of any recognized marker.
-//
-// feed emits through three callbacks so the caller can both GROW the live
-// reasoning tail incrementally (so a re-attached client sees the thinking
-// bubble grow) and COMMIT a terminated body once:
-//
-//   - emitText(chunk): plain (non-folded) text the caller renders/mirrors.
-//   - growThink(chunk): think-body content as it streams (mirror tail growth).
-//   - commitThink(body): the FULL body, called exactly once per think block —
-//     at close-tag termination, or by flushBody for an unterminated block.
+// thinkSegmenter scans a TEXT delta stream and splits it into plain text and folded think-body
+// fragments.
 type thinkSegmenter struct {
 	state thinkSegState
 	// buf accumulates a partial think body (in-body accumulator).

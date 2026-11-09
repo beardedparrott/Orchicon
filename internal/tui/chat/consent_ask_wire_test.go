@@ -47,8 +47,7 @@ func TestPermissionAskFromProtoNamesThePathForAWrite(t *testing.T) {
 }
 
 // TestPermissionAskFromProtoCarriesTheDenyEntry: the card must be able to STATE the rule that
-// denies the target, so it can disable the session-grant row instead of offering a choice the
-// policy.
+// denies the target.
 func TestPermissionAskFromProtoCarriesTheDenyEntry(t *testing.T) {
 	got := PermissionAskFromProto(&apiv1.PermissionAsk{
 		AskId:            "ask-3",

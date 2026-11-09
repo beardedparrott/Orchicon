@@ -133,18 +133,6 @@ func (r *Result) Abstained() []Check {
 }
 
 // Conclude derives the verdict from the collected checks.
-//
-// THE PRECEDENCE IS THE DESIGN:
-//
-//  1. ANY FAIL → Unsubstantiated. A contradiction is a positive fact; it outranks every absence.
-//  2. NO FAIL, ANY ABSTAIN → Unverified. Something that should have been checked could not be, so
-//     the step is not demonstrated. This is where a project with no declared gate, or a run whose
-//     baseline could not be captured, lands — visibly, instead of as a silent success.
-//  3. NO FAIL, NO ABSTAIN → Verified. Every applicable check ran and passed.
-//
-// Note what is NOT a criterion: the number of checks. A plan-only step whose only applicable check
-// is "HEAD moved" can be verified by that alone. Adding checks raises confidence; it does not define
-// the verdict, and demanding a fixed count would make honest steps unverifiable.
 func (r *Result) Conclude() Result {
 	r.Verdict = VerdictVerified
 	r.Reason = ""

@@ -22,9 +22,7 @@ import (
 //	export ORCHICON_TEST_DSN='postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable'
 //	go test ./internal/askorchicon/ -run 'TestToolUpdateAutoStart' -v
 
-// toolRunsForItem counts the real workflow runs bound to a work item — the MCP path calls
-// StartWorkflowDirect directly (no injectable starter), so "nothing started" is asserted as zero
-// run rows.
+// toolRunsForItem counts the real workflow runs bound to a work item.
 func toolRunsForItem(t *testing.T, pool *db.Pool, itemID string) int {
 	t.Helper()
 	ctx := tenant.WithID(context.Background(), workItemKindTestTenant)

@@ -9,8 +9,7 @@ import (
 )
 
 // TestDiffToggleRequiresContentFocus: D / shift+D toggles the pane only when focus is on the
-// content (never while composing — `d` stays a literal character in the composer; Ctrl+D is never
-// bound).
+// content (never while composing.
 func TestDiffToggleRequiresContentFocus(t *testing.T) {
 	m := newTestApp()
 

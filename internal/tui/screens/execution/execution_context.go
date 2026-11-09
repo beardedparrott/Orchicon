@@ -1,30 +1,6 @@
 package execution
 
 // execution_context.go — the CONTEXT / token / cost section of the Executions detail.
-//
-// The operator: "there is no context, token, or cost information being shown."
-//
-// Why the row's own columns were not enough, and what this reads instead:
-//
-// `GetExecution` DOES enrich token/cost totals (internal/execution/service.go's enrichUsageTotals
-// sums usage_records into WorkerExecution.token_usage/cost_usd), so those two fields were correct.
-// They were being BLANKED, not missing — a live session repaint replaced the whole body with a
-// four-field stub, which is the composition defect in execution_detail.go. That is fixed; the
-// totals now survive.
-//
-// What genuinely had no source here is the GUI's "Context" panel, and the GUI is explicit about
-// where its numbers come from (frontend/src/components/executions/ExecutionContextSidebar.tsx):
-//
-//   - exec.tokenUsage/costUsd are "served from the usage-records sum (the row columns are
-//     write-never)" — so usage_records is the authority, not the row.
-//   - usage[] (useGetUsage({executionId})) carries the per-turn breakdown: prompt / completion /
-//     reasoning / cache read, plus provider+model.
-//   - The CONTEXT PERCENT is measured against the model's real window, and the numerator is the
-//     PEAK single-step FRESH token count (prompt+completion+reasoning, cache EXCLUDED) —
-//     "cache reads are re-sends of already-counted tokens".
-//
-// That is what this reproduces. The denominator comes from modelpick.ContextWindow, the same
-// resolver the model picker uses, so the TUI does not carry a second, drifting table of windows.
 
 import (
 	"context"

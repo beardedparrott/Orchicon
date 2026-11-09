@@ -20,26 +20,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// NativeBridge is the AdapterBridge for the native in-process session
-// engine (adapter kind "orchicon"). The Dispatcher treats it exactly
-// like the opencode bridge: Start is called by the TaskReconciler, which
-// blocks until the terminal OnResult. Sessions are per-execution;
-// identity isolation is by construction (one session per worker
-// execution, never shared per workflow run).
-//
-// NativeBridge implements the optional capabilities the control plane
-// probes for:
-//   - scheduler.MessageInjector  → mid-run human messages queue into the
-//     live session between tool rounds.
-//   - scheduler.SessionContinuer → resumes a cancelled/crashed session's
-//     transcript (replay + continue) for sequence-continuation chains
-//     (opt-in, default off).
-//   - scheduler.Aborter         → graceful cancellation (finish in-flight
-//     tool, no new provider call), transcript marked cancelled, session
-//     stays resumable.
-//   - scheduler.LivenessReporter → the bridge tracks live executions.
-//   - scheduler.ConfigurableBridge → usage recorder + session store
-//     injection.
+// NativeBridge is the AdapterBridge for the native in-process session engine (adapter kind
+// "orchicon").
 type NativeBridge struct {
 	mu sync.Mutex
 
@@ -82,8 +64,7 @@ type NativeBridge struct {
 	// message that DISAPPEARS is reported instead of passing silently.
 	askHistorySeen map[string]map[uint64]int
 	// askHistoryReduceReason marks a session whose NEXT persistence is an INTENTIONAL reduction
-	// (context reduction or compaction — both are lossy by design and both are announced to the
-	// operator).
+	// (context reduction or compaction.
 	askHistoryReduceReason map[string]string
 	// chatTurns tracks in-flight Ask turns per session (sessionID → cancel), so
 	// AbortConversationSession can context-cancel the running HTTP turn.
@@ -190,8 +171,7 @@ func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, m
 		return nil, nil, terr
 	}
 	// HOST tool suite: the core file/shell tools every native session needs
-	// (read/write/edit/glob/grep/list/bash/batch_*/todoread), scoped to the execution's working dir
-	// (worktree when provisioned.
+	// (read/write/edit/glob/grep/list/bash/batch_*/todoread).
 	workingDir := pd
 	if manifest.WorktreePath != "" {
 		workingDir = manifest.WorktreePath
@@ -309,9 +289,7 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 
 	// Wrap the callbacks so the terminal OnResult is observed.
 	terminal := &terminalOnResult{ExecutionCallbacks: callbacks}
-	// Durable transcript mirroring: the JSONL transcript is the crash-safe record; the
-	// sessionPartsRecorder mirrors it into the DB (execution_session_parts) in opencode part shapes so
-	// the session.
+	// Durable transcript mirroring: the JSONL transcript is the crash-safe record.
 	recorder := newSessionPartsRecorder(b.sessionStore, exec.ID, exec.TenantID)
 	sess.SetTranscriptObserver(recorder.observe)
 	recorder.start()
@@ -465,14 +443,10 @@ func (b *NativeBridge) ContinueSession(ctx context.Context, opts scheduler.Conti
 		detached := context.WithoutCancel(ctx)
 		ctxT, cancel := context.WithTimeout(detached, followUpReplyWindow())
 		defer cancel()
-		// Durable transcript mirroring (opencode part-shape parity): the follow-up question (source
-		// follow_up), reply, and tool calls land in execution_session_parts so the pane renders them
-		// exactly like.
+		// Durable transcript mirroring (opencode part-shape parity).
 		recorder := newSessionPartsRecorder(b.sessionStore, opts.ExecutionID, opts.TenantID)
 		recorder.logf = b.log.Info
-		// A follow-up whose prior JSONL transcript is missing/empty starts fresh at event seq 1, which
-		// would collide with the original run's stored DB parts (unique key ON CONFLICT DO NOTHING drops
-		// them).
+		// A follow-up whose prior JSONL transcript is missing/empty starts fresh at event seq 1.
 		if fi, serr := os.Stat(sess.TranscriptPath()); serr != nil || fi.Size() == 0 {
 			recorder.baseSeq = opts.StartSeq >> 8
 		}
@@ -644,9 +618,7 @@ func (c *combinedRegistry) Execute(ctx context.Context, name, argsJSON string) (
 	return c.secondary.Execute(ctx, name, argsJSON)
 }
 
-// mcpTools adapts the per-session MCP client manager to the loop's ToolRegistry (ADR-0008):
-// discovered tools surface as mcp__<server>__<tool> with their JSON schemas passed through
-// verbatim.
+// mcpTools adapts the per-session MCP client manager to the loop's ToolRegistry (ADR-0008).
 type mcpTools struct {
 	mgr   *mcpclient.Manager
 	close func() error

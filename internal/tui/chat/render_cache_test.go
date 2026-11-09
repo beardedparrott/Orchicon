@@ -1,23 +1,6 @@
 package chat
 
 // render_cache_test.go — THE CACHE MUST NEVER DRAW AN ITEM THAT IS NOT THERE.
-//
-// A remembered render is only safe if it is invalidated by EVERYTHING the render reads. Two
-// things can go wrong, and they need different tests:
-//
-//  1. renderSig misses a field → an item's rendered form is remembered from a state it is no
-//     longer in, and the transcript shows something stale. That is invisible in the rendered
-//     output (a cache that always missed would draw the same text), so it is pinned DIRECTLY:
-//     TestRenderSigCoversEveryFieldTheRenderReads mutates each field and requires the
-//     fingerprint to move.
-//  2. the key or the invalidation is wrong in a way the fingerprint cannot catch → the two
-//     renders diverge. That is pinned by comparison: TestCachedRenderMatchesUncachedRender
-//     drives every mutation through a WARM cache and requires the result to equal what the
-//     cacheless renderer produces for the same items.
-//
-// The conversation is deliberately one of every kind, because the invalidation has to hold for
-// the consent card's live state (the operator's highlight and their half-typed free text) and
-// for the ask card's, and those are the items that change while the operator is looking at them.
 
 import (
 	"reflect"

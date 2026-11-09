@@ -309,9 +309,7 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 		// Price this turn's LIVE usage for the budget cost gate through the session model's resolved
 		// catalog/probe pricing (shared pipeline.
 		usage.CostUSD = s.priceUsage(ctx, usage)
-		// Per-turn usage emission (D2, opencode step_finish parity): drain this turn's LIVE
-		// provider-reported usage to the per-record sink (the bridge wires it only when a usage recorder is
-		// configured).
+		// Per-turn usage emission (D2, opencode step_finish parity).
 		if s.usageSink != nil {
 			s.usageSink(ctx, usage)
 		}
@@ -575,21 +573,8 @@ func (s *Session) fireTerminalOnce(callbacks scheduler.ExecutionCallbacks, execI
 	return true
 }
 
-// nudgeObserved marks nudge-reply progress: any text/step activity after
-// a nudge clears the pending probe (the reply IS the liveness evidence).
-//
-// 2026-09-09 probe-loop fix (transcript 01M23C2MTF1ZYYHE8ACK17PMKV): the
-// old version reset completionProbesSent on ANY activity, so a model that
-// answered each probe with a bare status line ("I'll re-sync state…")
-// re-armed the probe forever — 15 probes in ~50s, ZERO tool calls, the
-// worker never started. Now:
-//   - completionProbeAwaiting clears only when the reply carries the
-//     decision marker or the WORKING token (completionProbeReply);
-//   - completionProbesSent NEVER resets — a status-line reply counts as
-//     unanswered, so after completionProbeMaxTurns (2) probes the session
-//     fails honestly with completion_probe_no_response (a model trapped
-//     replying-to-probes is burned budget, not a healthy worker);
-//   - the deferral counter still bounds empty-turn loops.
+// Now: - completionProbeAwaiting clears only when the reply carries the decision marker or the
+// WORKING token (completionProbeReply).
 func (s *Session) nudgeObserved() {
 	s.noteMu.Lock()
 	s.nudgePending = false
@@ -770,8 +755,7 @@ func (s *Session) stashMutableToolCall(calls []ToolCall) {
 func (s *Session) executeTools(ctx context.Context, callbacks scheduler.ExecutionCallbacks, calls []ToolCall) []toolResult {
 	results := make([]toolResult, len(calls))
 	// Mutable-zone state capture (ADR-0009 D2): the latest todowrite payload and memory notes are
-	// folded into the session BEFORE the calls execute, so the next turn's digest sees this turn's
-	// intent.
+	// folded into the session BEFORE the calls execute.
 	s.stashMutableToolCall(calls)
 	var pending []int // indices routed to the registry
 	for i, c := range calls {

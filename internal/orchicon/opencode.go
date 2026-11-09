@@ -8,25 +8,7 @@ import (
 	"sync"
 )
 
-// OpenCode routing (D2): OpenCode Zen and Go do NOT accept every model on
-// /chat/completions — each model lives on a specific wire endpoint, and
-// posting to the wrong route yields an opaque 500/400 (observed) instead of
-// a clean 404. The route tables below are re-verified against the CURRENT
-// public docs (Sep 2026):
-//
-//   - Zen  (https://opencode.ai/docs/zen/):  chat models → /v1/chat/completions
-//     (deepseek-v4-flash, minimax-m2.5, kimi-k2.5, big-pickle…);
-//     muse-spark-1.3-contributor-free + GPT models → /v1/responses;
-//     Claude → /v1/messages; Gemini → model-specific.
-//   - Go   (https://opencode.ai/docs/go/):  MiniMax/Qwen → /v1/messages
-//     (Anthropic SDK); Grok / GPT-5.6-Luna / Muse-Spark-Contributors →
-//     /v1/responses; everything else → /v1/chat/completions.
-//
-// The live /v1/models catalogs (https://opencode.ai/zen/v1/models,
-// https://opencode.ai/zen/go/v1/models) are machine-readable and drive
-// which model ids are valid; the route table maps a valid id to its wire.
-// A model the catalog does not list is a loud warning (sourcing-aware
-// feedback), never a silent guess.
+// OpenCode routing (D2): OpenCode Zen and Go do NOT accept every model on /chat/completions.
 
 // opencodeRoute is the wire endpoint a model lives on.
 type opencodeRoute string

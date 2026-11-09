@@ -269,9 +269,7 @@ func TestOpenCodeClientNoFailoverOnAuthRateTransient(t *testing.T) {
 	}
 }
 
-// A bare 400 (generic bad request — malformed history, context length, invalid params) must NOT
-// trigger a route retry: retrying it on the other wire masks the real error and pollutes the
-// sticky.
+// A bare 400 (generic bad request — malformed history.
 func TestOpenCodeClientNoFailoverOnBare400(t *testing.T) {
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

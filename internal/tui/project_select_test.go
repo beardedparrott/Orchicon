@@ -1,23 +1,7 @@
 package tui
 
-// project_select_test.go — THE TWO GAPS THE OPERATOR FOUND IN THE LAUNCH SCOPE, and the one that was never
-// implemented at all.
-//
-// Already working before this file: launching orch inside a directory covered by a project made that project
-// the workspace (railprojects.go applyLaunchDirScope), pinned by project_launch_scope_test.go. The operator's
-// "I thought this was supposed to already be implemented" was right about that half.
-//
-// What was NOT working:
-//
-//  1. CREATING a project from the launch prompt did not make it the workspace. The prompt exists because the
-//     operator wants to work in this directory; it created and activated the project, then dropped the scope
-//     back where it was, so the first conversation they sent landed unassigned.
-//  2. Nothing set the scope from a NAME, which is what both the launch directory and the create form have in
-//     hand before any project id exists — and what "/project <name> on launch" would have needed.
-//
-// And the Work screen never filtered its WORK ITEMS pane by project at all: ListWorkItemsRequest carries
-// project_id, the screen simply never set it. Those assertions live in the work package, where a plane exists
-// to record what the fetch actually asks for — see screens/work/projectfilter_test.go.
+// project_select_test.go — THE TWO GAPS THE OPERATOR FOUND IN THE LAUNCH SCOPE, and the one that
+// was never implemented at all.
 
 import "testing"
 

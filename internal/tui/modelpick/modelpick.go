@@ -1,30 +1,5 @@
-// Package modelpick holds the screen-independent plumbing for the three-tier
-// MODEL picker (kit2.ModelPicker): the per-adapter data sources, the ref-grammar
-// handoff, and the option projections.
-//
-// It exists so ONE cascade serves every screen that chooses a model_ref
-// (Control's tenant defaults, Execution's per-worker model) instead of each
-// screen re-deriving the RPC mapping and the grammar handoff.
-//
-// Data sources (ADR-0004 D1 — mirroring the GUI's ModelPicker per adapter):
-//   - adapter tier: AIGatewayService.ListAdapterKinds (registered kinds plus the
-//     Ask-capable subset).
-//   - provider tier: the NATIVE kind reads the merged Providers view
-//     (ProviderService.ListProviders — built-ins ⊕ stored overrides ⊕ tenant
-//     customs, ENABLED only, exactly what Settings → Adapters edits); every other
-//     kind reads its adapter-scoped gateway set (AIGatewayService.ListProviders).
-//   - model tier: a CATALOG-SOURCED kind (`orchicon`, `claude` — see
-//     UsesCatalogSourcing) reads the sourcing view
-//     (ProviderService.ListProviderModels — vendored catalog ⊕ probe ⊕ manual,
-//     plus the offline catalog seed); every other kind uses opencode-CLI
-//     discovery (AIGatewayService.ListOpenCodeModels).
-//
-// The two branches exist because the ref's own adapter segment decides which
-// registry can resolve a model list at all: the native bridge and the claude
-// adapter do not share the opencode-CLI provider namespace, and vice versa.
-// `claude` must NOT take the CLI branch: on a plane with no opencode binary
-// ListOpenCodeModels returns Unimplemented, which is exactly the plane this
-// product targets.
+// Package modelpick holds the screen-independent plumbing for the three-tier MODEL picker
+// (kit2.ModelPicker).
 package modelpick
 
 import (
@@ -236,28 +211,8 @@ func ModelOptionsDiscovery(models []*apiv1.OpenCodeModel) []kit2.PickerOption {
 	return out
 }
 
-// ContextWindow resolves a model ref's context-window size (in tokens),
-// reading the source the ref's OWN adapter specifies:
-//
-//   - a CATALOG-SOURCED kind (`orchicon`, `claude`) reads the providers sourcing
-//     view (ProviderService.ListProviderModels → the native registry/sourcing
-//     substrate, which shells out to nothing);
-//   - every other kind reads opencode-CLI discovery.
-//
-// The adapter segment is NEVER crossed. In particular an `orchicon` or `claude`
-// ref must NOT fall back to the opencode CLI: the whole point of those adapters
-// is that the product works WITHOUT opencode installed, so a cross-source
-// fallback here would make selecting them silently invoke the opencode binary
-// (ListOpenCodeModels returns Unimplemented when no discoverer is configured) —
-// the exact dependency the native adapter exists to remove. An adapter whose
-// model list legitimately IS the CLI (a legacy `opencode/...` ref) still reads
-// the CLI, because for THAT adapter the CLI is the authority.
-//
-// Returns 0 with a nil error when the window is genuinely unknown from that
-// source (a model with no context hint, a provider that cannot enumerate models,
-// or a ref with no resolvable segments): callers render the bare occupancy
-// rather than inventing a denominator, and must NOT cache the 0 as though it
-// were a resolved window.
+// ContextWindow resolves a model ref's context-window size (in tokens), reading the source the
+// ref's OWN adapter specifies: The adapter segment is NEVER crossed.
 func ContextWindow(ctx context.Context, cl *client.Clients, ref string) (int64, error) {
 	kind, provider, model := SplitRef(ref)
 	if provider == "" || model == "" {

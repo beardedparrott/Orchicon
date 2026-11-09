@@ -1690,9 +1690,7 @@ func (m *App) workerVersionSaver(workerID, versionID string, cl *client.Clients)
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 				defer cancel()
-				// PERMISSIONS AND SKILL FILES TOGETHER, in one update: they are both optional fields on the
-				// request, and writing one without the other would leave the version's two halves disagreeing about
-				// what.
+				// PERMISSIONS AND SKILL FILES TOGETHER, in one update.
 				if _, err := cl.Workers.UpdateWorkerVersion(ctx, connect.NewRequest(&apiv1.UpdateWorkerVersionRequest{
 					WorkerId:    workerID,
 					VersionId:   versionID,

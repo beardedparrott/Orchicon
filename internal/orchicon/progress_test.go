@@ -385,9 +385,7 @@ func TestLoopAdvisoryStallNudgesBeforeEscalation(t *testing.T) {
 	_ = scheduler.ExecutionManifest{} // keep the import if unused in future edits
 }
 
-// AC (fatal-stall parity): a fatal monitor stall delivers the terminal OnResult(false, reason) —
-// exactly ONE verdict, mirroring the opencode adapter's OnStall(fatal) + finish(false, reason)
-// shape.
+// AC (fatal-stall parity): a fatal monitor stall delivers the terminal OnResult(false.
 func TestLoopFatalStallFiresTerminalOnResult(t *testing.T) {
 	s, _ := newQATestSession(t, &mockProvider{turns: []scriptedTurn{
 		{events: []Event{TextDelta{Text: "thinking slowly…"}}, finish: StopStop, usage: Usage{InputTokens: 10, OutputTokens: 5}},

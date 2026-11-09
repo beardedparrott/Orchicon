@@ -1,20 +1,5 @@
-// Package workitem implements the WorkItemService Connect handler
-// (docs/07_API_Specification.md §3.2, docs/02_Domain_Model.md §2.2).
-//
-// It is the API-layer boundary between the generated Connect handlers
-// and the data-access layer. Responsibilities:
-//   - validate and sanitize all inputs (the security boundary),
-//   - resolve the tenant from the request context,
-//   - perform the mutation + outbox enqueue in one transaction,
-//   - enforce the work hierarchy (Epic → Feature → Task → Subtask,
-//     max 4 levels — docs/02 §2.2),
-//   - manage dependency edges with cycle rejection at admission
-//     (recursive CTE — docs/09 §11),
-//   - use optimistic concurrency (CAS) on the version column
-//     (docs/09 §5).
-//
-// No business logic lives here beyond input validation and lifecycle
-// transitions (AGENTS.md invariant #1).
+// Package workitem implements the WorkItemService Connect handler (docs/07_API_Specification.md
+// §3.2, docs/02_Domain_Model.md §2.2).
 package workitem
 
 import (
@@ -294,8 +279,7 @@ func ValidateWorkflowFirstTransition(title, newStatus string, workflowID *string
 }
 
 // AutoStartDeclinedWarning returns the user-facing explanation carried by
-// UpdateWorkItemResponse.warning and the Ask Orchicon update tool result when an EXPLICIT
-// auto_start_workflow=true.
+// UpdateWorkItemResponse.warning and the Ask Orchicon update tool result when an EXPLICIT.
 func AutoStartDeclinedWarning(status string) string {
 	return fmt.Sprintf("Auto-start was NOT applied: this item's status is %q. "+
 		"Start-immediately-on-save requires the item to be pending, scheduled, ready, or assigned. "+
@@ -356,25 +340,8 @@ func requireTenant(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-// ValidateSequenceSubtree performs the schedule-time / run-instant
-// validation for a parent work item with children (architecture-notes/
-// sequential-multi-workflow-runs.md §3). It walks the full subtree and
-// rejects outright — nothing starts when any offender is found:
-//
-//   - noWorkflow: every descendant that must actually execute — every
-//     LEAF — must have a non-empty workflow_id bound. Container children
-//     with their own children arm nested sequences and are exempt, but
-//     their descendants are validated recursively.
-//   - badWorkflow: a leaf's bound workflow must resolve to a published or
-//     deprecated workflow (the StartWorkflow precondition) so a fire-time
-//     failure can't occur — reject at schedule time instead. A bound
-//     workflow whose current version has an EMPTY step DAG is rejected too:
-//     a run started on it can never progress (the reconciler fails it at
-//     start), so arming the child would strand the chain at fire time.
-//
-// The walk is tenant-scoped and depth-bounded (max 4 levels). Shared by
-// the Connect UpdateWorkItem paths and the Ask Orchicon tools so the two
-// surfaces cannot drift (AGENTS.md Ask-Orchicon-sync rule).
+// ValidateSequenceSubtree performs the schedule-time / run-instant validation for a parent work
+// item with children (architecture-notes/ sequential-multi-workflow-runs.md §3).
 func ValidateSequenceSubtree(ctx context.Context, tx pgx.Tx, tenantID string, parent db.WorkItemRow) (noWorkflow, badWorkflow []string, err error) {
 	var walk func(id string) error
 	walk = func(id string) error {
@@ -574,9 +541,7 @@ func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 			}
 		}
 	}
-	// THE ZONE IS VALIDATED HERE, at the boundary, for the same reason every other field is: a typo
-	// must fail the write rather than produce a schedule that silently never fires (or fires in the
-	// wrong.
+	// THE ZONE IS VALIDATED HERE, at the boundary, for the same reason every other field is.
 	timezone := strings.TrimSpace(msg.Timezone)
 	if timezone != "" {
 		if _, err := RecurringZone(timezone); err != nil {

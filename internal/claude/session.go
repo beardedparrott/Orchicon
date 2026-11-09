@@ -130,11 +130,7 @@ func (s *session) run(ctx context.Context) error {
 	}
 	s.proc = p
 	defer func() { _ = p.Close() }()
-	// DRAIN STDERR FROM THE FIRST MOMENT. Two reasons, both measured in the reported failure:
-	//   1. the channel is buffered at 64 and the pump BLOCKS once it is full, so an undrained stderr eventually
-	//      stalls the child's own writes;
-	//   2. a diagnostic needs the LAST lines — a missing-credential error is printed at exit, not at start —
-	//      and draining on demand at the end loses them.
+	// DRAIN STDERR FROM THE FIRST MOMENT.
 	s.stderrRing = startStderrDrain(p.Stderr())
 	defer s.stderrRing.stop()
 
@@ -214,8 +210,7 @@ func (s *session) handleLine(ctx context.Context, line []byte) error {
 	}
 	if s.mapper.Handle(ctx, ev) {
 		// Turn boundary: charge the SHARED, cache-aware budget gate and evaluate the ladder BEFORE the
-		// boundary is applied, so a compact directive (or a terminal budget abort) is decided on this
-		// turn's.
+		// boundary is applied.
 		if reason := s.observeTurnBudget(ctx); reason != "" {
 			s.abort()
 			err := fmt.Errorf("%s", reason)
@@ -372,23 +367,8 @@ func (s *session) argv() []string {
 		argv = append(argv, "--model", s.model)
 	}
 	if rid := strings.TrimSpace(s.resumeID); rid != "" {
-		// ALWAYS RESUME, WITHOUT A DISK CHECK — deliberately, and this is NOT the
-		// same rule as the Ask path (ask.go), for two reasons:
-		//
-		//  1. CONTRACT. A worker continuation must re-attach the SAME session
-		//     identity. Three tests pin it ("must re-attach the SAME session
-		//     identity", "must carry --resume sess-1"), and a silent fresh start
-		//     would drop exactly the history the continuation exists to carry — a
-		//     worse outcome than a visible failure.
-		//  2. A LOST SESSION IS THE RECOVERY SYSTEM'S PROBLEM, not the adapter's.
-		//     capture → summarize → preserve → resume exists to carry context when
-		//     a session is gone. Working around it here would bypass that machinery
-		//     and quietly hand a worker a context-free run.
-		//
-		// It is also why the check cannot be trusted here even if it were wanted:
-		// a worker's child may run INSIDE A RUNTIME CONTAINER, where the adapter's
-		// host-side view of ~/.claude and the child's view can diverge. The Ask
-		// path is host-only, so there the check is exact.
+		// ALWAYS RESUME, WITHOUT A DISK CHECK — deliberately, and this is NOT the same rule as the Ask path
+		// (ask.go), for two reasons:
 		argv = append(argv, "--resume", rid)
 	}
 	// A policy LOAD failure is recorded, never silently dropped.
@@ -400,29 +380,7 @@ func (s *session) argv() []string {
 	return append(argv, s.mcpArgs()...)
 }
 
-// mcpArgs registers the Orchicon MCP servers a WORKER execution gets, mirroring
-// opencode's RuntimeServeConfig decisions (internal/opencode/adapter.go) so a
-// worker has the same orchicon_* surface whichever adapter it runs on.
-//
-// THE TRANSPORT DECIDES THE BINARY AND THE DATABASE:
-//
-//   - CONTAINER: the sidecar must run from the daemon's bind mount
-//     (MCPBinaryContainerPath) — a host path there is a server that cannot start —
-//     and it must be pointed at the IN-CONTAINER sandbox Postgres
-//     (runtime.SandboxPostgresDSN), because the DSN inherited from the plane's
-//     environment names the HOST's Postgres, which inside the container is
-//     nothing. Same pairing opencode's dev-image case uses.
-//   - HOST: this process's own executable and the inherited environment, which
-//     already carries the plane's DSN.
-//
-// A FAILED MCP SERVER DEGRADES RATHER THAN HANGING, which is what makes
-// registering it on every image safe: measured on the real binary, an
-// unreachable server reports status "failed" in the init line and the model is
-// told the tools are unavailable. (opencode had the opposite problem — a serve
-// eagerly connects at startup and an unresolvable MCP wedged its event loop,
-// which is why it gates on the image tag.) The image tag is not on the
-// ExecutionManifest, so this cannot mirror that gate; the graceful failure is
-// what stands in for it.
+// mcpArgs registers the Orchicon MCP servers a WORKER execution gets.
 func (s *session) mcpArgs() []string {
 	inContainer := s.inContainer()
 	builtin := OrchiconMCPServer(
@@ -495,20 +453,8 @@ func (s *session) inContainer() bool {
 // in-container bind mount when the child runs inside the run's container.
 func (s *session) hookBinary() string { return HookBinaryFor(s.inContainer()) }
 
-// childEnv builds the environment the claude child (and every process IT spawns)
-// inherits, and returns the cleanup that must run when the session ends.
-//
-// TWO transports, two owners of the OS-level guard, exactly mirroring the
-// opencode adapter:
-//
-//   - CONTAINER: the runtime supervisor's stdio path already builds the shim
-//     inside the container (guard.MakeGuard + prependGuard) and prepends it to
-//     the child's PATH. A host-built shim directory would point at a path that
-//     does not exist in the container, so nothing is added here.
-//   - LOCAL (host subprocess): the adapter owns it, exactly as opencode's
-//     in-process path does (internal/opencode/guard.go). The shim dir goes
-//     FIRST on PATH, so a destructive binary is intercepted however it is
-//     spawned — including from inside another process.
+// childEnv builds the environment the claude child (and every process IT spawns) inherits, and
+// returns the cleanup that must run when the session ends.
 func (s *session) childEnv() ([]string, func()) {
 	env := os.Environ()
 	env = setEnvVar(env, ProjectDirEnv, executionDir(s.manifest))

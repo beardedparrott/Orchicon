@@ -78,24 +78,6 @@ func TestLaunchDesktopIsNotFatalWhenTheAppIsAbsent(t *testing.T) {
 }
 
 // THE LAUNCH OPENS THE APP'S START PAGE, NOT /manage-server — the clean-install defect.
-//
-// Reported: "I just downloaded and re-installed Orchicon on Windows and the desktop app that first pops up
-// landed on the server management screen but the tab bar at the top was missing completely. I closed the
-// desktop app and then re-opened it and it went to the logon screen. I logged in and the tab bar was visible
-// again."
-//
-// THE MECHANISM, which makes the missing tab bar CORRECT-BY-DESIGN and the launch wrong:
-//   - /manage-server is in the frontend's PUBLIC_PATHS, because it has to render when no plane answers (it is
-//     how you start one). requireAuth returns EARLY for a public path, BEFORE ensureSession — so landing there
-//     never triggers the redirect to /login either.
-//   - with no session, __root.tsx renders a public path BARE (no AppShell): no nav, no tab bar, and no path to
-//     a sign-in screen. The operator is stuck.
-//
-// Re-opening worked because the app's start page is NOT public: the guard runs, resolves no session, and
-// redirects to /login — which is exactly what the operator then saw.
-//
-// These pin the two places a first run is launched from, because a fix in only one of them leaves the defect
-// for whichever install path the user happens to take.
 func TestFirstRunLaunchesTheStartPageNotTheServersPage(t *testing.T) {
 	// (1) the CLI install's launch.
 	src, err := os.ReadFile("install_desktop.go")

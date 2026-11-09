@@ -122,44 +122,8 @@ func (m *App) refreshActiveView() tea.Cmd {
 	// the transcript), which SETS the pane's body and erases the transcript onChatWake just painted. The
 	// operator: "the conversation pane is completely blank on every chat." See ask.Model.RefreshView.
 	if m.active == TabAsk {
-		// AND THE CONVERSATIONS THEMSELVES ARE RE-READ, which is what keeps a MODE change made in the OTHER
-		// client from being invisible here.
-		//
-		// The operator: "If someone sets the mode in the GUI or TUI, it should not matter. It should change for
-		// both." There is no conversation-changes stream to subscribe to (the Ask service has List/Get and the
-		// per-turn streams, and nothing that broadcasts a mode change), so a re-read on the tick is the
-		// mechanism that makes the two clients agree. Five seconds is the existing cadence for this window, and
-		// it is also what bounds the window in which the pill can disagree with the boundary the SERVER will
-		// actually enforce — the case that matters, because a stale pill turns a correct refusal into an
-		// inexplicable one.
-		//
-		// It is the LIST only, and it does not set convLoading: this is a background reconcile, not the first
-		// load, so it must not flash the rail's loading state every five seconds.
-		//
-		// AND IT ONLY RUNS WHEN THERE IS A LIST TO KEEP CURRENT — `convLoaded` is "a successful rail load has
-		// landed". That gate is both the right behaviour and a HANG FIX, and it is worth being precise about
-		// because the second half is not obvious:
-		//
-		//   - Behaviour: re-reading a list that was never loaded is pointless, and in a session whose first load
-		//     FAILED it would hammer a plane that is already unhappy. That case has an explicit retry (the rail's
-		//     "click to retry"), which is where recovery belongs.
-		//   - The hang: a ConversationsMsg arriving while no project list has landed sends onConversations down
-		//     its SELF-HEALING branch, which returns waitChat() — the blocking waiter that selects on two
-		//     channels nobody sends to outside a live session. On a TIMER that is a command chain that never
-		//     ends, and it hung this package the moment the reload was added here: the tick tests drive the
-		//     window directly against an app that has never loaded a list, so every tick produced a
-		//     ConversationsMsg and therefore a waitChat, and two of those drainers invoke commands INLINE.
-		//     (They are bounded now — see runCmdBounded — so the next such command cannot do this again, but the
-		//     gate is what stops it being asked for at all.)
-		//
-		// THE GATE USED TO BE A ONE-WAY LATCH, AND THAT WAS A REAL DEFECT (AC 16). `reloadConversations` set
-		// `convLoaded = false` (app.go), and only a SUCCESSFUL `onConversations` sets it back true — the error
-		// branch returns before reaching that line. So ONE failed reload (a blip, a 401) left the flag false for
-		// the rest of the session and this reload NEVER FIRED AGAIN, silently disabling the rolling refresh of
-		// the rail. The `ask.Model.RefreshView` candidate does NOT cover it: that reloads the SCREEN's screenkit
-		// list (the pane's own source), not the shell's `m.conversations`, which is what the rail and every
-		// turn-state read use. THE FIX IS THE ONE LINE: `reloadConversations` no longer clears the flag, because
-		// "a load is in flight" is `convLoading`'s job and a successful-load marker must survive a re-read.
+		// AND IT ONLY RUNS WHEN THERE IS A LIST TO KEEP CURRENT — `convLoaded` is "a successful rail load
+		// has landed".
 		var load tea.Cmd
 		if m.convLoaded {
 			load = m.chat.LoadConversations()

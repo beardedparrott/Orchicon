@@ -1,8 +1,6 @@
 package tui
 
-// conversation_scope.go — the CONVERSATION scope's WRITES: the RPCs behind the scope modal
-// (scope_modal.go), reachable exactly where the conversation's other per-conversation controls
-// live.
+// conversation_scope.go — the CONVERSATION scope's WRITES.
 
 import (
 	"context"

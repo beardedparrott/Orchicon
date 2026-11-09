@@ -116,8 +116,7 @@ func TestSumUsageForExecution(t *testing.T) {
 }
 
 // seedCostData inserts the minimal row set the run-cost query joins (projects → workflows →
-// work_items → workflow_runs → worker_executions → usage_records) for two bound runs and one
-// one-shot.
+// work_items → workflow_runs → worker_executions → usage_records) for two bound runs and one.
 func seedCostData(t *testing.T, pool *db.Pool, tenant, workflowID string) {
 	t.Helper()
 	ctx := context.Background()

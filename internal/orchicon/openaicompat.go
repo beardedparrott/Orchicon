@@ -75,9 +75,7 @@ type oaMsg struct {
 	ToolCalls  []oaToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string       `json:"tool_call_id,omitempty"`
 	Name       string       `json:"name,omitempty"`
-	// It is emitted ONLY when the provider's quirks ask for it (ReplayReasoning), because it is not
-	// part of the OpenAI chat schema and a provider that does not expect it may reject the unknown
-	// field.
+	// It is emitted ONLY when the provider's quirks ask for it (ReplayReasoning).
 	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 

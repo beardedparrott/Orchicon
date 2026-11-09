@@ -1,18 +1,7 @@
 package askorchicon
 
-// conversation_project_test.go — A CHAT KNOWS WHICH PROJECT FOLDER IT BELONGS TO, IN ALL THREE MODES.
-//
-// The operator: "Also we should add context to all three modes to know which chat belongs to which project
-// folder. We need better organization here."
-//
-// Two things had to be true for that, and each is asserted separately:
-//
-//  1. The conversation row carries the association, and the API reports it (conversationRowToProto).
-//  2. The turn's system prompt STATES it — in Brainstorm, Iteration and Quick Work alike, because the block is
-//     built from the conversation rather than inside any one persona.
-//
-// The prompt half is the one that could regress silently: a persona rewrite would not touch the block, but a
-// refactor of buildSystemPrompt's parameters could drop it, and nothing else would notice.
+// conversation_project_test.go — A CHAT KNOWS WHICH PROJECT FOLDER IT BELONGS TO, IN ALL THREE
+// MODES.
 
 import (
 	"strings"

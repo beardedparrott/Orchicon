@@ -13,43 +13,6 @@ import (
 )
 
 // The execution guard is the OS-level backstop for worker safety.
-//
-// The opencode permission rules (config.go permissionRules) only see the
-// exact command the Bash tool runs. A destructive command issued from
-// inside a subprocess — a python TUI calling subprocess.run(["rm","-rf",
-// "/"]), os.system("rm -rf /"), etc. — is invisible to them, because
-// opencode only ever sees "python tui.py". That is precisely how the
-// 2026-07-30 /home wipe got through.
-//
-// The guard closes that hole for EVERY worker execution by shimming
-// dangerous binaries ahead of the worker's PATH. Any process the worker
-// spawns — opencode's Bash tool, python, a TUI, anything — resolves
-// `rm`, `sudo`, `dd`, `mkfs`, etc. through PATH and hits the shim, which
-// refuses the command. This works regardless of how deep in a subprocess
-// tree the command is issued.
-//
-// Policy:
-//   - always-block binaries (sudo, dd, mkfs*, fdisk, parted, shred,
-//     wipefs, LVM tooling, mkswap): never legitimately needed inside a
-//     project directory and catastrophic on a host — refused unconditionally.
-//   - path-scoped binaries (rm, chmod, chown, mv, cp, ln): allowed only
-//     when every path argument resolves inside the worker's project
-//     directory; any target outside it (/, ~, $HOME, /home, ..) is refused.
-//
-// The guard is defense-in-depth, not a substitute for containers: a
-// determined worker could still call /bin/rm by absolute path or write
-// its own binary. That residual risk is what the containerized execution
-// option (internal/opencode/README) closes. See also AGENTS.md.
-//
-// THE INTERACTIVE (Ask) PROFILE. The same shim serves the Ask path, switched
-// into a GRANT-AWARE, FAIL-CLOSED profile by ORCHICON_GUARD_POLICY (see
-// InteractiveEnviron). There the path-scoped check consults the SAME policy
-// accessor the consent core reads (internal/permpolicy), plus the
-// conversation's project dir, its session grants and the operator-approved
-// once-targets — and it REFUSES the command when the policy cannot be read or
-// parsed, because a guard that silently stops guarding is the failure this
-// component was built after. The always-block class is unchanged: sudo/dd/
-// mkfs-level capability is not up for consent.
 
 // ScratchDir is the one writable scratch area outside the project directory (kept in sync with
 // opencode.ScratchDir).
@@ -57,9 +20,7 @@ const ScratchDir = "/tmp/orchicon"
 
 // The INTERACTIVE profile's environment contract.
 const (
-	// PolicyEnvVar non-empty switches the shim into the INTERACTIVE profile: grant-aware, and
-	// FAIL-CLOSED (an unreadable or unparsable policy REFUSES the path-scoped command rather than
-	// allowing it).
+	// PolicyEnvVar non-empty switches the shim into the INTERACTIVE profile.
 	PolicyEnvVar = "ORCHICON_GUARD_POLICY"
 	// ProjectEnvVar is the conversation's project directory — the default
 	// scope, where writes proceed without an ask.

@@ -11,9 +11,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// ledgerTestHistory builds a history whose ONLY copies of an entity id, a file path and a commit
-// live inside tool arguments and a tool result — the material the reduce stage replaces with
-// markers.
+// ledgerTestHistory builds a history whose ONLY copies of an entity id.
 func ledgerTestHistory(n int) ([]Message, string, string, string) {
 	const (
 		entityID = "01M33R5RDSENCVRFVZ588N9NRG"

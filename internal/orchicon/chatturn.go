@@ -355,35 +355,8 @@ func (b *NativeBridge) persistAskHistoryLocked(sessionID string) {
 	}
 }
 
-// marshalAskHistoryForStorage serializes a session history for persistence and
-// returns the bytes to write, or nil when nothing can be written (already
-// logged).
-//
-// FOUR SHAPES, IN ORDER OF FIDELITY, because the only wrong answer is writing
-// nothing:
-//
-//  1. PLAIN JSON while it fits under the cap. This is the format every earlier
-//     release wrote and can still read, so an ordinary conversation's file is
-//     unchanged and a rollback to an older binary keeps its history.
-//  2. GZIP when plain JSON would exceed the cap. The envelope is the same — only
-//     the framing differs, which is why loadAskHistoryLocked detects it by magic
-//     bytes rather than by the version field. gzip is very effective on this
-//     content (long JSON, repetitive tool payloads, base64 image data), so a
-//     history that would not fit uncompressed fits whole, and NOTHING is lost.
-//     An older binary cannot read this shape — but an older binary would have
-//     written nothing at this size anyway, so a rollback is no worse off.
-//  3. GZIP WITH IMAGE PAYLOADS DROPPED, as the last resort. Images were 46% of
-//     the bytes on the over-limit conversation that motivated the pressure gate,
-//     so dropping them is what brings a genuinely enormous history back under the
-//     cap — and every affected image is replaced by an explicit marker rather
-//     than vanishing, so the surviving transcript still says one was there.
-//  4. GZIP WITH TOOL PAYLOADS ELIDED, as the LAST resort. Step 3 is blind to the
-//     shape that actually overflowed a live session: a base64 screenshot inside a
-//     TOOL RESULT (obs-get-source-screenshot returns one), which is not an Image
-//     content part at all — so images_dropped was 0 and step 3 reclaimed nothing.
-//     Step 4 is the SAME pass the reactive path runs
-//     (ReduceConversationHistoryForContext), reused rather than reimplemented,
-//     so the two paths cannot disagree about what "too big" means.
+// marshalAskHistoryForStorage serializes a session history for persistence and returns the bytes to
+// write, or nil when nothing can be written (already logged).
 func (b *NativeBridge) marshalAskHistoryForStorage(sessionID string, history []Message) []byte {
 	raw, err := marshalAskHistory(history)
 	if err != nil {
@@ -595,8 +568,7 @@ func (b *NativeBridge) PurgeConversationHistory(_ context.Context, conversationI
 }
 
 // Subscribe implements scheduler.ChatTurnClient: it returns a fresh buffered SessionBus for the
-// conversation's next turn and registers it under the conversation's session so SendTurnMessage
-// feeds.
+// conversation's next turn and registers it under the conversation's session so SendTurnMessage.
 func (b *NativeBridge) Subscribe(ctx context.Context, conversationID string) (scheduler.SessionBus, error) {
 	bus := newChatBus()
 	b.mu.Lock()
@@ -918,34 +890,6 @@ func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *ch
 			}
 			emitTurnParts()
 			// AND COMMIT IT, so the SESSION agrees with the TRANSCRIPT.
-			//
-			// THIS IS THE SECOND HALF OF THE SAME DATA-LOSS BUG, and it is the one the operator kept
-			// reporting as the model "losing its brain": "The model is constantly losing its brain. It
-			// doesn't know it's already done things and then tries to do them again."
-			//
-			// The publish above fixed the VISIBLE half — an aborted turn hands over the work it produced,
-			// so the collector persists it and every client renders it. But this path then returned
-			// WITHOUT committing, deliberately ("the turn was cancelled — finalize without COMMITTING"),
-			// and that left the two views of the conversation PERMANENTLY DISAGREEING:
-			//
-			//   * the TRANSCRIPT (and therefore the operator, and the GUI, and the TUI) contains the
-			//     aborted reply — it is durable, it is on screen;
-			//   * the SESSION does not. The next turn re-sends b.chatHistory (SendTurnMessage: "the
-			//     accumulated history re-sent as full context"), which was never told about the reply, so
-			//     the model is handed a history in which its own last words were never spoken.
-			//
-			// A model that cannot see what it just said repeats it, re-asks what it just asked, and
-			// re-does work it already did — exactly the reported symptom, and the operator can watch it
-			// happen because they are reading the transcript the session is not.
-			//
-			// WHY ABORT IS THE COMMON CASE HERE, not an edge: the collector aborts on a STALL, on STOP, and
-			// on every SUPERSEDE. Interjecting is the operator's normal way to steer a running turn, and a
-			// prod log shows one interjection superseding a turn every few minutes while this was being
-			// diagnosed.
-			//
-			// Only THIS round's text is appended: earlier rounds are already in `working` via
-			// appendAssistantText on the tool-round path, and re-adding `reply` would duplicate them. A
-			// dangling tool call cannot leak in, because commitChatHistory sanitizes what it stores.
 			if rt := strings.TrimSpace(roundReply.String()); rt != "" {
 				b.appendAssistantText(&working, rt)
 			}
@@ -1416,33 +1360,7 @@ var ConsentMutatingTools = []string{
 
 // consentGatedTool reports whether a native Ask tool call must be APPROVED before it runs.
 func consentGatedTool(name string) bool {
-	// AN OPAQUE MCP TOOL IS NOT CONSENT-GATED. This used to gate one in EVERY mode, Iteration
-	// included, on the reasoning that a third-party tool's name reveals nothing about whether it
-	// acts — so the operator approved each call.
-	//
-	// THE OPERATOR OVERRULED THAT, and the product case is the stronger argument: "I didn't even
-	// think MCP was supposed to have a card. If it's added in scope it should just have access tbh.
-	// I don't want cards for that." An MCP server is in scope only because the operator attached it
-	// to this conversation or its project, so the approval ALREADY HAPPENED — at configuration time,
-	// deliberately. Re-asking per call is asking them to re-decide a standing decision, which is the
-	// same noise the policy deny list is exempt from above.
-	//
-	// WHAT STILL GOVERNS AN OPAQUE MCP TOOL, so this is a narrowing of consent and NOT an absence of
-	// governance:
-	//
-	//   - THE MODE BOUNDARY, which is a SEPARATE layer and is untouched here. askmode.MayExecute sends
-	//     an opaque MCP tool to its mode's MayAct, so Brainstorm and Quick Work still refuse it — and
-	//     the refusal is enforced at BOTH ends of the native path (native_tools.go filters what is
-	//     OFFERED, and refuses again at EXECUTE). That boundary never ran through consent, which is
-	//     why removing this arm cannot open it.
-	//   - the platform's own `mcp__orchicon__*` tools remain governed by the mode table alone, exactly
-	//     as before (they were already exempt here).
-	//
-	// The observed symptom this also removes: the operator has never seen an MCP card, while write and
-	// question cards render fine — and one of this session's own GitHub MCP calls came back
-	// "approval for mcp__…__list_pull_requests expired unanswered", i.e. the ask WAS raised and reached
-	// no card, so the call failed for a decision nobody was ever offered. Allowing the class removes
-	// that failure outright rather than leaving it to a rendering path I have not yet proven.
+	// AN OPAQUE MCP TOOL IS NOT CONSENT-GATED.
 	for _, n := range ConsentReadOnlyTools {
 		if n == name {
 			return false

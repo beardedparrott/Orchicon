@@ -150,9 +150,7 @@ func TestSendAfterLeavingAndReturningDispatchesOnce(t *testing.T) {
 	}
 	m = runCmd(t, m, cmd)
 
-	// THE RE-ISSUE ARRIVES FROM THE STREAM'S OWN GOROUTINE, exactly as the runtime delivers it: the
-	// controller posts it on the shell's chat-command channel and the shell runs it (chatCmdMsg →
-	// Update).
+	// THE RE-ISSUE ARRIVES FROM THE STREAM'S OWN GOROUTINE.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) && len(plane.deliveredMessages()) == 0 {
 		select {

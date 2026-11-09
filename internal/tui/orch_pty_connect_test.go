@@ -1,26 +1,5 @@
-// Package tui — orch_pty_connect_test.go — the Phase-2b REAL-PTY
-// verification of the in-place /connect overlay (operator finding #6).
-//
-// The Phase-2a smoke harness proves launch → takeover → composer focus;
-// this file extends the same single-reader harness to the /connect flow:
-//
-//  1. /connect opens the FULL first-run connection screen IN PLACE (the
-//     overlay renders inside the running shell — the process never exits).
-//  2. The auth-method toggle works (ctrl+a flips API key ↔ username +
-//     password; the credential prompt switches to "Password > ").
-//  3. Typing credentials works (URL + username + password land in the
-//     fields).
-//  4. Submit probes, saves the profile, and RECONNECTS the shell in place:
-//     the overlay closes and the full shell (composer, footer) returns —
-//     the process never exited (its PID is unchanged).
-//  5. esc cancels back to the live shell.
-//
-// HARNESS: identical to orch_pty_smoke_test.go's design — ONE reader
-// goroutine accumulating every painted byte; each phase snapshots. The
-// orch binary is pointed at a disposable local plane fixture (a real
-// HTTP server serving /versionz + the project-service RPC + local-login +
-// refresh) so the overlay's probes genuinely pass and the shell actually
-// reconnects on live streams.
+// Package tui — orch_pty_connect_test.go — the Phase-2b REAL-PTY verification of the in-place
+// /connect overlay (operator finding #6).
 package tui
 
 import (
@@ -41,9 +20,7 @@ import (
 	"github.com/creack/pty"
 )
 
-// connectPlaneFixture is a disposable Orchicon-shaped plane: versionz, ListProjects (the
-// authenticated probe), local-login (minting an access token in the body + the orchicon_refresh
-// HttpOnly.
+// connectPlaneFixture is a disposable Orchicon-shaped plane.
 func connectPlaneFixture(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()

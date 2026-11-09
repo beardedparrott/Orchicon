@@ -319,27 +319,8 @@ func askInstallPort(r *bufio.Reader, out io.Writer, label string, def int) int {
 	return def
 }
 
-// planInstallPorts is the whole port decision, with every host interaction
-// injected so it is deterministic under test: `probe` decides conflicts and `r`
-// is the prompt reader (nil = no terminal, take the defaults).
-//
-// PRECEDENCE, and the reason for each rung:
-//
-//  1. an explicit pin (pinned) always wins and is never prompted for, so
-//     automation stays non-interactive.
-//  2. the per-instance default — unchanged behaviour for anyone whose host is
-//     not already using the port.
-//  3. on a conflict, the next free port is OFFERED as the new default.
-//
-// A port taken by SOMETHING ELSE is never silently reassigned. The conflict is
-// reported and the next free port becomes the default, so the operator still
-// gets one-keystroke enumeration but can SEE that it happened — silent shifting
-// makes the install's shape depend on host state, which is not reproducible and
-// cannot be reviewed. ORCHICON_STRICT_PORTS=1 makes the conflict fatal instead,
-// for automated installs where a moved port would be worse than a failed one.
-//
-// EVERY bound port is probed, prompted or not: the telemetry-internal ports are
-// not worth a question, but they must not collide unhandled either.
+// planInstallPorts is the whole port decision, with every host interaction injected so it is
+// deterministic under test.
 func planInstallPorts(instance string, specs []installPort, pinned map[string]int, probe func(int) bool, r *bufio.Reader, out io.Writer) (map[string]int, error) {
 	ports := map[string]int{}
 	claimed := map[int]bool{}

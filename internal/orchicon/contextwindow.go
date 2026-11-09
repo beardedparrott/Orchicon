@@ -1,21 +1,7 @@
 package orchicon
 
-// contextwindow.go resolves the selected model's TRUE context window (and
-// pricing) for the native session — LIVE hints only (operator directive:
-// compaction must never guess a window). Resolution order mirrors
-// sourcing's probe-or-nothing stance:
-//
-//  1. The bound provider's ListModels result for this model — sourcing
-//     already merges probe-derived context (provider /models
-//     context_length / max_model_len), Ollama native /api/show true
-//     metadata, catalog-ENRICHED ModelInfo.Context (the catalog is
-//     metadata-enrichment, never a model-id source) and manual entries
-//     into ModelInfo.Context. Context == 0 everywhere means NO live hint.
-//
-// When no hint resolves, the resolver returns ok=false with a reason and
-// window-trigger compaction stays DISARMED (the budget gate remains).
-// Pricing resolves from the SAME live ListModels result (catalog/probe-
-// enriched ModelInfo.Pricing) and never synthesizes a figure.
+// contextwindow.go resolves the selected model's TRUE context window (and pricing) for the native
+// session — LIVE hints only (operator directive: compaction must never guess a window).
 
 import (
 	"context"

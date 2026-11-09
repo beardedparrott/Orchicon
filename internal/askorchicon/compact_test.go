@@ -88,9 +88,7 @@ func TestCompactListSetNextPage(t *testing.T) {
 }
 
 func TestCompactWorkItemDropsFatColumns(t *testing.T) {
-	// The compact row must carry only the identify-and-branch fields — the bloat (description,
-	// acceptance criteria, budgets, context files, worker refs, prompt context) never reaches the
-	// conversation.
+	// The compact row must carry only the identify-and-branch fields.
 	r := compactWorkItem(dbWorkItemRowFat())
 	if len(r) != 6 {
 		t.Fatalf("compact work item has %d fields, want 6: %v", len(r), r)

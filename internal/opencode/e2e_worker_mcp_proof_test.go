@@ -1,21 +1,6 @@
 package opencode
 
 // e2e_worker_mcp_proof_test.go — AC 3 (the OPENCODE worker leg).
-//
-// THE GRANULARITY IS THE POINT. opencode's MCP set is baked into the SERVE's
-// config ONCE (servehost.go serveConfig), because a shared serve is created per
-// resolved SET — never per execution (child 4). So the proof has two halves, and
-// criterion 3 allows the second:
-//
-//  1. OFFLINE (always runs): the project's definition, resolved from REAL
-//     mcp_servers rows, reaches the config opencode actually boots from
-//     (BuildConfigContent's RunMCP/RunSkills) and the pool keys serves by that
-//     set — so a session whose project owns a server gets a serve built for it.
-//  2. LIVE (gated): a real `opencode serve` + a real FREE model
-//     (opencode/longcat-2.5-preview-free) makes the call. When opencode is absent
-//     or the free model is unreachable, the leg RECORDS the actionable reason
-//     ("unavailable", naming the server it could not exercise) and skips — it
-//     never passes silently, which is what criterion 3 requires.
 
 import (
 	"context"

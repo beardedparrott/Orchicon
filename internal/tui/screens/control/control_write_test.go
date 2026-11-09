@@ -27,9 +27,7 @@ func newWriteModel(t *testing.T) (*Model, *fakeDock) {
 	return m, dock
 }
 
-// confirmAndRun resolves an action the way the shell's dialog path does: it opens the Confirm
-// dialog when the action needs one, resolves it with the given choice, and returns the dispatched
-// cmd.
+// confirmAndRun resolves an action the way the shell's dialog path does.
 func (m *Model) confirmAndRun(a kit2.Action, choice string) tea.Cmd {
 	cmd := m.openActionsDialog(a)
 	if !a.NeedsConfirm() {

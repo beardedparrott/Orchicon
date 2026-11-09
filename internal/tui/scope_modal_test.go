@@ -559,19 +559,8 @@ func TestScopeRefusesToWriteAProjectOwnedDefinition(t *testing.T) {
 	}
 }
 
-// `i` INSTALLS THE ROW'S ID (the explicit auto-install must not re-resolve a name), and `k` opens the
-// credential form for it.
-//
-// THE CREDENTIAL IS SELECTED, NOT TYPED — which this test now drives in both of its shapes. `k` offers the
-// keys the row declares or already carries, and the names the tenant store holds, and what it writes is a
-// ${NAME} REFERENCE into the row's own env. So:
-//
-//   - a secret the store ALREADY holds writes NO store row (the reference is the whole change), and
-//   - a NEW one writes the store FIRST, so the reference the row then carries actually resolves — the order
-//     the old typed-value form did not have to think about, because it stored nothing the row pointed at.
-//
-// The ORDER is pinned rather than assumed, and the only way to do that is from inside one of the two
-// writes, so both stubs expose a hook that runs inside them (see stubSecrets.onWrite / stubMCP.onUpdate).
+// `i` INSTALLS THE ROW'S ID (the explicit auto-install must not re-resolve a name), and `k` opens
+// the credential form for it.
 func TestScopeInstallAndCredentialAddressTheRow(t *testing.T) {
 	m, stub, sec := newScopeApp(t)
 	openScopeFrom(t, m, "/scope")
@@ -681,18 +670,7 @@ func readUpdates(s *stubMCP) []*apiv1.MCPServerUpdateRequest {
 	return append([]*apiv1.MCPServerUpdateRequest{}, s.updated...)
 }
 
-// THE PICKER IS DRIVEN BY THE STORE AND BY THE SERVER'S OWN DECLARATION — the TUI half of the operator's
-// rule ("everything should be driven from the credential store", with typing only to create a new one).
-//
-// The submit test above proves what a credential WRITES; this one proves what the form OFFERS, which is the
-// half the operator actually sees. The row declares SLACK_BOT_TOKEN (MCPServer.required_secrets, which the
-// plane resolves onto the row) and already carries LOG_LEVEL, so the assertions are:
-//
-//   - the KEY picker offers the DECLARED secret as its first option (the default, not a retype) and then the
-//     row's own keys;
-//   - the SECRET picker offers the tenant store's names;
-//   - both are PICKERS (a <select> cannot hold a value that does not exist — which is how "static" is
-//     enforced by the control's shape rather than by a validation message).
+// THE PICKER IS DRIVEN BY THE STORE AND BY THE SERVER'S OWN DECLARATION.
 func TestScopeCredentialFormOffersTheDeclaredKeyAndTheStoresNames(t *testing.T) {
 	m, stub, _ := newScopeApp(t)
 	stub.mu.Lock()

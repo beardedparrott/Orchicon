@@ -130,9 +130,7 @@ func NewObserver(baseDir string) *Observer {
 	return &Observer{baseDir: baseDir, cache: make(map[string]observed)}
 }
 
-// ObserveAfter snapshots the path's current on-disk state, diffs it against the last observed
-// content and returns a ledger entry (empty Entry{} when nothing changed / the file is outside
-// baseDir).
+// ObserveAfter snapshots the path's current on-disk state.
 func (o *Observer) ObserveAfter(rawPath, tool string) Entry {
 	rel := NormalizePath(rawPath)
 	if rel == "" || o.baseDir == "" {

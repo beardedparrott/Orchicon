@@ -66,8 +66,7 @@ func newCwdTestTask(projectID, runID, itemID string) (db.WorkItemRow, db.WorkerV
 }
 
 // TestWorktreeExecutionCwdReady verifies a provisioned worktree run dispatches with
-// manifest.WorktreePath = the worktree path and manifest.ProjectDir unchanged (the mount/guard
-// root).
+// manifest.WorktreePath = the worktree path and manifest.ProjectDir unchanged (the mount/guard.
 func TestWorktreeExecutionCwdReady(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()

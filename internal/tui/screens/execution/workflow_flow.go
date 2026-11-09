@@ -1,28 +1,4 @@
 // workflow_flow.go — the workflow DAG rendered as a VERTICAL FLOW.
-//
-// Design decisions, and why they are not the GUI's:
-//
-//  1. NO CANVAS, and not as a compromise. `Step.position_x/position_y` are
-//     PRESENTATION-ONLY: no reconciler or service reads them (grep finds only the
-//     seeder). They exist so the GUI's react-flow canvas remembers where a box was
-//     dragged. Measured across the live tenant's 229 published steps: 95 sit at
-//     exactly (0,0), 100 carry no position at all, and the ones that do drift
-//     diagonally (SDLC (Human) spans x −74→732, y −328→989) because they record a
-//     DRAG, not a layout. So we COMPUTE the flow from `depends_on` — the only
-//     field the machine actually reads — and never try to reproduce the canvas.
-//
-//  2. VERTICAL, on the operator's instruction. A long chain is the common case
-//     (Force Workflow is 48 steps with ZERO joins), and a chain reads as a list,
-//     which is what a vertical flow degenerates to naturally.
-//
-//  3. BRANCHES ARE NAMED, NOT DRAWN. The real graph-ness lives in the decision
-//     steps' config (`success_branch` / `loop_branch` name other steps), not in
-//     `depends_on`, which is linear. A back-edge drawn in ASCII either crosses
-//     nodes or needs a routing channel; naming the target costs one line and is
-//     unambiguous — the operator's own sketch: `[Retry? Yes] --> [Build 1]`.
-//
-//  4. Max fan-in across the live tenant is 2, so a fan-in is one extra line, not
-//     a merge diagram.
 package execution
 
 import (

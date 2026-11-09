@@ -15,21 +15,8 @@ const WorkerIdentityPreamble = "You are an autonomous worker running inside the 
 	"and report your result via the ORCHICON WORKER SUMMARY contract at the end of your output. " +
 	"Work autonomously to completion; do not wait for interactive approval for work that is within your assigned scope.\n\n"
 
-// efficiencyBlock is the shared "reduce token overhead" directive injected
-// into the stable prompt prefix of every worker (StablePromptPrefix). It has
-// two parts:
-//
-//   - Tool-output discipline: prefer compact command output (short git/gh
-//     forms) and bounded reads of `.orchicon/<run>/` files, because every
-//     output token the model consumes is context it must process on every
-//     later round-trip.
-//   - Tool-call batching: fewer, larger tool calls. Each tool call re-sends
-//     the whole accumulated conversation to the model, so the NUMBER of
-//     round-trips dominates local-model cost more than any single output.
-//
-// The guardrail is explicit: compact commands are still REAL commands — the
-// "Verify, don't assume" contract survives. Batching combines commands, never
-// results; a worker must not fabricate a combined output it did not observe.
+// efficiencyBlock is the shared "reduce token overhead" directive injected into the stable prompt
+// prefix of every worker (StablePromptPrefix).
 const efficiencyBlock = "\n## Efficiency — minimize tool output and tool calls\n" +
 	"- **Do not spawn subagents or delegate work.** Orchicon already splits your workflow into focused sibling steps (each with its own worker). A subagent re-prepends its system prompt and re-carries the parent's history, roughly doubling context cost. Do the work directly in this session.\n" +
 	"- **Minimize tool output.** Prefer compact formats: `git status --short`, `git log --oneline -5`, `git branch --list`, single-line `gh` queries. When reading `.orchicon/<run>/` files, read `summary`, `facts_learned`, and `issues` in full, but only `grep` `touched_files` for paths relevant to your task — do not read every touched file wholesale.\n" +
@@ -37,30 +24,8 @@ const efficiencyBlock = "\n## Efficiency — minimize tool output and tool calls
 	"- **Watch your working directory.** You operate inside your project directory (or an isolated worktree of it). In the runtime container `/tmp` is a private tmpfs: write scratch under `/tmp/orchicon/` (writable; see Runtime environment) and keep all real work + final artifacts inside the project. Do not fight a blocked path — choose a writable one.\n" +
 	"- Compact commands are still real commands: you MUST verify state with actual tool calls and never fabricate output. Batching combines commands, not results — never invent a combined result you did not observe.\n\n"
 
-// todoListBlock is the shared "## Todo list" guidance block injected into
-// the stable prompt prefix of every worker (StablePromptPrefix). It mirrors
-// opencode's todowrite tool guidance so workers proactively maintain a
-// structured task list that the execution UI surfaces live with an X/Y
-// progress counter. The `todowrite` tool ships with the opencode runtime's
-// built-in tool set; this block is what tells the worker to actually use it
-// (replacement semantics, one in_progress at a time, immediate completion).
-// stepDisciplineBlock is the shared "one pass, then deliver" directive
-// injected into the stable prompt prefix of every worker. It targets
-// turns-to-success rather than per-output size: each tool call re-sends the
-// whole accumulated conversation, so the NUMBER of turns dominates cost more
-// than any single output (see efficiencyBlock, which this complements). It has
-// three parts:
-//
-//   - One-pass context: gather everything you need in ONE batched tool
-//     round-trip before acting; re-read only on a real failure. Sequential
-//     single-purpose reads are the main turn-burner observed in practice.
-//   - Deliverable-not-journey: for design/review/decision steps the deliverable
-//     is the DECISION and the concrete DELTA (ADR + file/function change list),
-//     not the step-by-step verification narrative that produced it. Downstream
-//     steps inherit the facts, not the process.
-//   - Verify once, stop: establish each fact once from a real command, never
-//     re-derive what a prior step already recorded, and stop once the
-//     acceptance criteria are met — no gold-plating or re-verification.
+// todoListBlock is the shared "## Todo list" guidance block injected into the stable prompt prefix
+// of every worker (StablePromptPrefix).
 const stepOutputBlock = "\n## Step output — deliver the decision and the delta, not the journey\n" +
 	"- **Gather context in one pass.** Before the first action, batch ALL reads and probes into a single tool round-trip (one `bash` chained with `&&`, one `read` covering several paths, `grep`/`glob` instead of sequential reads). Then act. Re-read only when a call actually fails — do not meter context out one read per turn.\n" +
 	"- **Deliver the decision + delta, not the verification narrative.** For design, review, and decision steps, your deliverable is the DECISION and the concrete DELTA: the ADR (Context → Decision → Consequences), the exact file(s) and function(s) to change, and why. Do not narrate the sequence of reads that produced it. Later steps inherit the facts, not your process.\n" +
@@ -114,24 +79,8 @@ const deliverableBlock = "\n## Your work is checked against the repository\n" +
 	"**If the project declares no `.orchicon/verify`, nothing about your step can be confirmed** — the step is recorded UNVERIFIED. When you are the step that changes behaviour and no gate is declared, say so in your summary and, if the project has an obvious full check command, propose it explicitly so the operator can declare it. Do not invent a command and silently rely on it.\n\n" +
 	"**If you finish and the evidence contradicts your `success`, the step is recorded as a FAILURE.** Report what you actually did. Partial and honest beats complete and claimed: a `failure` that names what broke is recoverable, whereas a `success` the repository disproves costs a full extra cycle everywhere downstream.\n\n"
 
-// RuntimeEnvironmentBlock is the machine-generated "## Runtime environment"
-// section of the stable prompt prefix. It tells the worker the ground truth
-// about its execution sandbox so it does not waste cycles empirically probing
-// the container (and so it uses the rootless system-library escape hatch
-// instead of hitting a wall).
-//
-// mode selects the branch (always-container runtime):
-//   - "runtime" (default, "" legacy): the worker runs INSIDE the run's
-//     ephemeral container — the existing container text with the resolved
-//     image name.
-//   - "local": the worker runs IN-PROCESS on the host — no container, and
-//     127.0.0.1:5432/8080 is the LIVE plane. Only /tmp/orchicon scratch is
-//     safe; DB writes must use a disposable DSN (the dispatcher enforces
-//     the fence and fails closed).
-//
-// KV-cache note: the prefix is shared WITHIN a mode (byte-identical for
-// identical image+mode) and split ACROSS modes — the honest local text
-// must never share cache bytes with the container claim.
+// RuntimeEnvironmentBlock is the machine-generated "## Runtime environment" section of the stable
+// prompt prefix.
 func RuntimeEnvironmentBlock(image, mode string) string {
 	if mode == ExecutionModeLocal {
 		return localEnvironmentBlock()
@@ -193,34 +142,7 @@ func StablePromptPrefix(runtimeImage, mode string) string {
 	return sb.String()
 }
 
-// GitGuidanceBlock emits the per-run git/branch guidance section, keyed on
-// the run's worktree_status (the same signal that drives the execution cwd)
-// and the run's effective git strategy.
-//
-//   - none (ephemeral) → the ephemeral discipline block: the worktree is a
-//     detached HEAD, no branch is created, nothing is pushed to origin, and
-//     no remote branch is retained. This supersedes any canned "commit +
-//     push" text that a seeded AGENTS.md may still carry — the guardrail is
-//     the prompt that actually reaches the worker.
-//   - ready → the develop-first git discipline block: work on the branch
-//     recorded for this run (never push/PR/merge to main). PR/merge
-//     ownership is NOT asserted here — it belongs to the workflow's step
-//     contract and the worker's own prompt (e.g. the Quick Software
-//     Engineer is the all-in-one that opens + merges its own PR; the SDLC
-//     DevOps Engineer step owns PR + merge for that workflow). A shared
-//     block that hardcoded "the DevOps Engineer step creates the PR"
-//     contradicted every non-SDLC workflow (observed: the Quick Work run's
-//     DevOps-less composite instructed the DevOps Engineer worker that
-//     "the DevOps Engineer step creates the PR" while its own profile said
-//     the same, leaving the PR owner ambiguous and blocking real merges).
-//   - anything else (skipped/pending/failed/pruned, or no project) → an
-//     in-place block: this run works directly in project_dir, no branch or
-//     worktree, so the worker must not create branches/commit/push/PR.
-//
-// It is the single source of git guidance for a dispatch (replacing the old
-// unconditional prefix block + canned AGENTS.md blocks), so a non-repo run is
-// never instructed to work on a branch. Returns "" when the run is git-backed
-// but no branch is recorded yet (ready with empty branch is not expected).
+// GitGuidanceBlock emits the per-run git/branch guidance section.
 func GitGuidanceBlock(worktreeStatus, worktreeBranch, projectDir, gitStrategy string) string {
 	if gitStrategy == "none" {
 		return "\n## Git discipline\n" +

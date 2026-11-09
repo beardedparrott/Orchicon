@@ -1,15 +1,6 @@
 package askorchicon
 
 // Ask-capability guard + stub-kind pluggability tests (ADR-0004 D1).
-//
-// These prove the two halves of the "Ask chat on any adapter" contract:
-//  1. A NEW adapter kind needs only Dispatcher registration + the
-//     ChatTurnClient interface — zero chat.go changes. A stub kind registered
-//     on a Dispatcher resolves through the shared substrate and drives a turn
-//     via the adapter-neutral ChatTurnClient / SessionEvent / SessionBus shapes.
-//  2. A kind that registers but does NOT implement ChatTurnClient is rejected
-//     at conversation creation (and tenant-default save) BEFORE the first
-//     message send — the guard, not a dispatch-time surprise.
 
 import (
 	"context"

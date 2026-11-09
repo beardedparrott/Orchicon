@@ -604,8 +604,7 @@ func TestCompletionProbeSuppressedAfterCompact(t *testing.T) {
 }
 
 // TestStallNudgeFirstEscalation verifies the nudge-first routing core (the exact repro of the
-// blocked-write loop): an advisory stall (repetition / text_loop / no_file_progress) nudges the
-// live.
+// blocked-write loop).
 func TestStallNudgeFirstEscalation(t *testing.T) {
 	// The Abort / SendMessage HTTP calls land on a local test server.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))

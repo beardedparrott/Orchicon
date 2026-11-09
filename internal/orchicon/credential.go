@@ -11,13 +11,6 @@ import (
 )
 
 // CredentialResolver resolves provider credentials (D7), in order:
-//
-//  1. tenant secret (profile's AuthSecretRef secret NAME, looked up by name
-//     and KEK-decrypted),
-//  2. host environment (profile's AuthEnv var, e.g. ANTHROPIC_API_KEY),
-//  3. actionable failure naming the exact secret/env expected.
-//
-// No credential is ever baked into images, seed data, or defaults.
 type CredentialResolver struct {
 	pool *db.Pool
 	kek  []byte

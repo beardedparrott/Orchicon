@@ -1,18 +1,7 @@
 package db
 
-// telemetry_report_test.go — the duration / failure aggregation behind the
-// native Telemetry page's Reports view.
-//
-// Two things are pinned here because both were cheap to get wrong:
-//
-//  1. durations use EXTRACT(EPOCH FROM (ended_at - started_at)) * 1000 —
-//     EXTRACT(MILLISECOND …) returns only the milliseconds FIELD of the
-//     interval, so a 90 s execution reported 30000 ms.
-//  2. an execution that has not ended (ended_at IS NULL) counts toward the
-//     execution total but contributes no duration and is never "failed".
-//
-// Guarded by ORCHICON_TEST_DSN like the rest of the package's DB tests; it
-// deletes the rows it inserts.
+// telemetry_report_test.go — the duration / failure aggregation behind the native Telemetry page's
+// Reports view.
 
 import (
 	"context"

@@ -1,30 +1,6 @@
 package tui
 
 // plane_lifecycle.go — plane STATE and LIFECYCLE CONTROL inside the TUI.
-//
-// THE TUI IS A CONTROL SURFACE, NOT AN API CLIENT FOR ONE. `orch` is a separate binary that does not
-// depend on the plane serving it, which is exactly what lets it START a stopped plane; and there is no
-// lifecycle RPC to call — see internal/planecontrol's package doc (the API path existed for one
-// consumer, the web app, and is out of scope). So every verb here calls internal/planecontrol
-// DIRECTLY, the same package `orchicon plane` and the desktop app call. That package imports the
-// standard library and nothing else (an imports test asserts it), so this file adds NO api/client/http
-// dependency to the TUI — the "no API dependency" requirement holds by construction.
-//
-// AND THE MECHANISM RUNS THE PLANE BINARY, NOT THIS ONE. `orch` is a remote client that cannot serve, so
-// planecontrol re-execs the INSTALLED `orchicon` (`resolvePlaneBinary`) instead of itself — without that,
-// `serve --detach` was handed to `orch`, which ignores arguments it does not recognise and launches a
-// second TUI, so every verb here failed. Do not "simplify" these verbs to re-exec this binary.
-//
-// THREE THINGS THIS FILE EXISTS TO GET RIGHT:
-//
-//  1. DRIFTED IS NOT DOWN. A plane serving a superseded binary IS answering. Reporting it as "down"
-//     would tell the operator to start a plane that is already running — and the data they are not
-//     seeing is being served by old code, which is a different problem with a different remedy.
-//  2. THE REMEDY IS NAMED. "connection refused" on its own is the failure this feature was filed for.
-//     Every down/drifted/not-local path carries a command the operator can type and the log path
-//     (planecontrol already names the same path in its start-timeout error).
-//  3. EVERY CALL IS A tea.Cmd. Start waits up to 60s for /healthz; run from a key handler it would
-//     freeze the whole shell. Same discipline as connectTick/applyConnectResult (palette.go).
 
 import (
 	"bytes"
@@ -178,34 +154,6 @@ func planeLogPath(instance string) string {
 }
 
 // stateFromStatus maps a probe onto what the operator should SEE.
-//
-// A DRIFTED VERDICT ABOUT A DEAD PROCESS IS NOT DRIFTED: drift can only be observed through a live
-// PID file, but if the process is gone the problem is "down", and telling the operator to restart
-// something that is not running is the wrong instruction.
-//
-// A HEALTHY PLANE WITH NO PID FILE IS UP, and requiring the PID file was a real defect. The TUI is
-// CONNECTED to the plane — it is answering RPCs and loading data — and the footer said "plane down",
-// with `/plane start` as its remedy, which of course did nothing because the plane was already running.
-// The operator: "it is giving me an error saying the plane for this instance is down and to run /plane
-// start which didn't do anything. It still says 'plane down' even though I am connected."
-//
-// The cause is a plane started OUTSIDE `orchicon serve --detach` — in the field, by systemd as a user
-// service — so no PID file is ever written. StatusOf already probes /healthz INDEPENDENTLY of the PID
-// file (see its own comment: a PID file plus /proc/<pid>/exe says WHICH process, the health probe says
-// whether anything is serving), so the information was there and this function simply ignored it.
-//
-// THE ORDER MATTERS AND IS THE POINT:
-//
-//  1. health is the AUTHORITATIVE "is something serving this instance" signal, and it does not depend on
-//     how the plane was started. A plane that answers /healthz IS up, whoever launched it.
-//  2. drift is reported only for a LIVE PID we can identify — unchanged, because telling an operator to
-//     restart a process that is not running is still the wrong instruction.
-//  3. a live PID that is NOT answering is still DOWN: "the process exists but serves nothing" is a real
-//     failure and the health probe is what distinguishes it from a working plane.
-//
-// What is deliberately NOT claimed: a plane reachable by health but with no PID file cannot be STOPPED
-// by the lifecycle verbs (there is no PID to signal). That is a truthful limit of a plane started by
-// something else, and it is better than reporting a working plane as dead.
 func stateFromStatus(st planecontrol.Status) planeState {
 	if st.Healthy {
 		if st.Drift == planecontrol.Drifted && st.Alive {
@@ -467,12 +415,8 @@ func (m *App) applyPlaneState(info planeInfo) tea.Cmd {
 		// THE STRIP CARRIES THE REMEDY FOR AS LONG AS THE PLANE IS DOWN — it is STATE, not a one-shot
 		// notice.
 		remedy := planeRemedy(info)
-		// THREE CASES ASSERT IT, one does not:
-		//   - the strip is EMPTY (a slash command just cleared it)          → assert
-		//   - the strip carries OUR text (a repeat probe)                    → assert, idempotent
-		//   - this is a TRANSITION into down (no text asserted yet)          → assert, and it outranks
-		//     whatever was on the strip: a down plane is why nothing loads
-		//   - the strip carries SOMEONE ELSE'S error on a repeat probe       → leave it alone
+		// THREE CASES ASSERT IT, one does not: - the strip is EMPTY (a slash command just cleared it) →
+		// assert.
 		if m.planeDownErrText != remedy || m.dock.Err == "" || m.dock.Err == m.planeDownErrText {
 			m.dock.SetError(remedy)
 		}

@@ -61,8 +61,7 @@ func TestComputeUnifiedDiffVectors(t *testing.T) {
 }
 
 // TestIdenticalVectorsShareDiffText pins the AC that byte-identical repeated edits produce
-// identical diffs: the `modify` and `identical-repeat-edit` vectors carry the same before/after
-// pair under.
+// identical diffs.
 func TestIdenticalVectorsShareDiffText(t *testing.T) {
 	vecs, err := testfixtures.LoadFileEditVectors()
 	if err != nil {

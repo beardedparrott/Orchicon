@@ -112,9 +112,7 @@ func TestChatMessagesRenderFullWidthBands(t *testing.T) {
 		t.Fatalf("the operator's text must sit further right (user %d, model %d)\n%q", ui, mi, out)
 	}
 
-	// And the bands must be SEPARATED: blank rows between them, so the two speakers read as distinct
-	// blocks rather than one continuous fill (the operator's "there should be a visible gap between
-	// user.
+	// And the bands must be SEPARATED: blank rows between them.
 	var between int
 	seenUser := false
 	for _, l := range strings.Split(strings.TrimRight(out, "\n"), "\n") {

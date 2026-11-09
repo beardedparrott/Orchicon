@@ -36,8 +36,7 @@ func EnsureCorrelationID(ctx context.Context) string {
 }
 
 // WithCorrelationID returns a context carrying the correlation_id in baggage so it propagates
-// across process boundaries (OTel baggage is extracted/injected by the W3C propagator — docs/08
-// §6).
+// across process boundaries (OTel baggage is extracted/injected by the W3C propagator.
 func WithCorrelationID(ctx context.Context, id string) context.Context {
 	if id == "" {
 		return ctx

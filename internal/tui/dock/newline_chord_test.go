@@ -1,21 +1,6 @@
 package dock
 
 // newline_windows_test.go — THE CHORD THAT WORKS WHERE THE OBVIOUS TWO DO NOT.
-//
-// The operator, testing orch on Windows: "shift+enter is still not working, it's sending the message instead.
-// alt+enter hides the powershell tabs in the terminal so it's already being captured by something else."
-//
-// Both reports are correct and NEITHER is ours to fix:
-//
-//   - SHIFT+ENTER arrives as a bare Enter. Windows Terminal emits no distinct VT sequence for it by default,
-//     and the Windows console decoder (bubbletea's key_windows.go) maps VK_RETURN to KeyEnter reading only
-//     Alt — Shift is never consulted for Enter.
-//   - ALT+ENTER IS TAKEN BY THE TERMINAL. `alt+enter` is Windows Terminal's toggleFullscreen, so the tab bar
-//     disappearing IS the key being consumed before orch ever sees it.
-//
-// Ctrl+J arrives as 0x0A on both input paths and Windows Terminal leaves it unbound. These tests pin it as a
-// WORKING chord rather than a setting that only changes the hint — the failure mode this codebase keeps
-// producing, and the one an earlier "documented but dead" chord produced.
 
 import (
 	"strings"

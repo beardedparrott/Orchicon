@@ -8,8 +8,7 @@ import (
 )
 
 // parse_usage_test.go drives the claude USAGE path on canned stream-json fixtures ONLY (no live
-// session, no spend): the four Anthropic wire buckets must be recorded DISTINCTLY through the
-// SHARED.
+// session.
 
 const (
 	// Terminal `result` carrying the authoritative per-turn aggregate.

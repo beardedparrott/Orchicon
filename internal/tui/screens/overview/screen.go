@@ -356,9 +356,7 @@ func tsOf(t time.Time) *timestamppb.Timestamp { return timestamppb.New(t) }
 // costWindow is the lookback the Cost Explorer reports over.
 const costWindow = 30 * 24 * time.Hour
 
-// fetchCost rolls the usage up SERVER-SIDE at the GUI's drill-down levels, grouped into TOP-N
-// sections so the pane is scannable rather than a dump: the grand total, then the ten costliest
-// models.
+// fetchCost rolls the usage up SERVER-SIDE at the GUI's drill-down levels.
 func (m *Model) fetchCost(ctx context.Context, _ string) ([]kit2.Item, string, error) {
 	var items []kit2.Item
 

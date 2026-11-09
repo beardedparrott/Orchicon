@@ -1,23 +1,7 @@
 package db_test
 
-// telemetry_outcomes_test.go — the outcome counters behind the Reports view's
-// "what happened to the work" roll-up.
-//
-// Three things are pinned here, and each one is a mistake that would have
-// shipped silently because the numbers still look plausible when they are
-// wrong:
-//
-//  1. workflow_runs' success state is 'completed', NOT 'succeeded'. A counter
-//     written against 'succeeded' reads zero on a healthy instance.
-//  2. 'aborted' is terminal and distinct: folding it into failed reports
-//     cancelled work as a failure.
-//  3. work_open must not absorb archived items, the Idea Cloud ('idea') or
-//     recurring templates ('recurring'). All three live in work_items with
-//     non-terminal-looking statuses, so a naive NOT IN (terminal) denylist
-//     counts them as work in flight.
-//
-// Guarded by ORCHICON_TEST_DSN like the rest of the package's DB tests, and
-// rolled back so the instance is left exactly as found.
+// telemetry_outcomes_test.go — the outcome counters behind the Reports view's "what happened to the
+// work" roll-up.
 
 import (
 	"context"

@@ -1,29 +1,6 @@
 package orchicon
 
 // askpressure.go — the proactive context-pressure gate for native Ask turns.
-//
-// The reactive path (askreduce.go) rescues a turn that is ALREADY failing. This
-// is the path that avoids reaching that state: before dispatching a turn, compare
-// the conversation's measured prompt size against the model's REAL context
-// window and compact when it crosses a threshold.
-//
-// Both halves of that comparison are deliberately live, never guessed:
-//
-//   - The NUMERATOR is a real measurement. It comes from the provider's own
-//     reported usage on the previous turn (the Finish event's Usage, recorded
-//     per round by askUsageSink in chatturn.go). Nothing is estimated from
-//     character counts.
-//   - The DENOMINATOR is a live window hint, resolved the same way executions
-//     resolve theirs (orchicon/contextwindow.go): the bound provider's
-//     ListModels, which merges probe-derived context, Ollama native /api/show
-//     metadata and catalog enrichment.
-//
-// When EITHER half is missing the gate stays DISARMED and says so in the log.
-// That is the platform's existing rule for context-window triggers
-// (contextwindow.go: "compaction must never guess a window"), and it is why a
-// model with no live hint simply never auto-compacts — operator-visible, never a
-// silent wrong decision. Manual compaction is unaffected (the
-// CompactConversation RPC and /compact always work).
 
 import (
 	"context"

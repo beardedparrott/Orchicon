@@ -38,13 +38,7 @@ type diffE2EFile struct {
 	Tail string
 }
 
-// diffE2EBuildDiff builds a unified diff with hunkCount hunks, each adding
-// lineCount lines. Hunk 0 carries two witness lines NEAR THE TOP so a fit
-// assertion can read them off the initial frame without scrolling:
-//
-//   - diffE2EMarker: a short contiguous token (no wrap) proving the Diff body
-//     is showing this file's diff — the click-through witness;
-//   - the long (>100 column) tail line proving nothing is truncated.
+// diffE2EBuildDiff builds a unified diff with hunkCount hunks, each adding lineCount lines.
 func diffE2EBuildDiff(path, marker string, hunkCount, lineCount int) (string, string) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "--- a/%s\n+++ b/%s\n", path, path)

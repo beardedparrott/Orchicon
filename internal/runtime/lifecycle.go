@@ -373,40 +373,7 @@ func planeHTTPPort() int {
 	return 8080
 }
 
-// planePublicURL is the plane's API base URL as reachable from inside a
-// runtime container.
-//
-// Runtime containers share the docker bridge with the plane, so the plane
-// must advertise an address a bridge container can dial — NOT the host's
-// published port. A published port (e.g. prod's 0.0.0.0:8091->8080) is only
-// reachable from outside the bridge: a bridge container dialing the gateway
-// IP + published port is dropped by the docker hairpin NAT, which is why the
-// plane-channel MCP sidecar times out on every call. Hence the plane
-// advertises either its own container bridge IP (container residency) or the
-// docker bridge interface address it binds on the host (host residency).
-//
-// The port is always THIS instance's HTTP port (planeHTTPPort()) — never a
-// literal 8080.
-//
-// Resolution order:
-//  1. ORCHICON_PLANE_PUBLIC_URL, if set (operator override wins). The
-//     launcher sets it PER INSTANCE; a globally exported value would point
-//     one instance's workers at the other instance's plane.
-//  2. Container residency (ORCHICON_CONTAINER_MODE=1): the plane
-//     container's own bridge IP (containerIPAddress) + this instance's
-//     port. Identical to the pre-migration behavior — a containerized plane
-//     keeps working unchanged.
-//  3. Host residency with ORCHICON_HTTP_EXTRA_BIND: that bind's host (the
-//     docker bridge address the host plane listens on) + this instance's
-//     port.
-//  4. Host residency without it (a manual `orchicon serve`): the stable
-//     name host.docker.internal + this instance's port. Every runtime
-//     container is created with
-//     `--add-host=host.docker.internal:host-gateway` (daemon.go), so the
-//     name resolves to the host regardless of bridge subnet — the hardcoded
-//     172.17.0.1 no longer has to be right. NOTE: this fallback depends on
-//     that create arg; if it is ever dropped, the fallback must become the
-//     extra bind host only.
+// planePublicURL is the plane's API base URL as reachable from inside a runtime container.
 func planePublicURL() string {
 	if v := os.Getenv("ORCHICON_PLANE_PUBLIC_URL"); v != "" {
 		return strings.TrimRight(v, "/")

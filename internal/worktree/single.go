@@ -111,24 +111,7 @@ type TodoItem struct {
 // latest todo list (mirrors the durable transcript's latest todowrite payload for DB-backed.
 const todoSnapshotFile = ".orchicon/todos.json"
 
-// TodoSnapshotName is the RUN-STATE todo snapshot's file name, written under
-// <projectDir>/.orchicon/<runID>/ — the same run-state directory the plane
-// already writes `facts_learned`, `status` and `summary` into.
-//
-// WHY IT LIVES THERE AND NOT IN THE WORKTREE. Three independent reasons, each
-// of which on its own breaks a worktree-scoped file:
-//
-//  1. THE WORKTREE IS PRUNED. A snapshot inside it is deleted when the run
-//     ends, so the operator cannot look at the plan of a finished run — and the
-//     plane cannot read it to serve the todo panel.
-//  2. THE PLANE MUST READ IT, AND THE PLANE IS NOT THE TOOL. The tool runs in
-//     the MCP sidecar process; the panel is served by the control plane. A file
-//     only the sidecar can see is not a channel between them.
-//  3. THE TRANSCRIPT CANNOT SUBSTITUTE FOR IT ON 2.x. Our tools are MCP tools,
-//     and opencode 2.x only calls MCP tools from inside `execute` — so the
-//     transcript records the call as tool `execute`, never as `todowrite`, and
-//     any parser matching the tool NAME finds nothing. The file is the only
-//     record that survives however the tool was invoked.
+// THE PLANE MUST READ IT, AND THE PLANE IS NOT THE TOOL.
 const TodoSnapshotName = "todos.json"
 
 // RunStateDir returns the run-state directory for a run: <projectDir>/.orchicon/<runID>.

@@ -100,29 +100,8 @@ func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts)
 	return "", nil
 }
 
-// followUpSession resolves the client + session for a follow-up. The
-// transport is the OPENCODE ADAPTER'S OWN persistent host transport — a
-// follow-up belongs to the execution's ADAPTER, never to a per-execution
-// "execution serve". Returns (client, sessionID, reused, err).
-//
-// opts.AdapterKind is the identity recorded in the transcript's session_info
-// part and decides whether the recorded session is THIS adapter's to
-// re-attach:
-//
-//   - KindOpencode — the session ran here. Re-attach ONLY when the
-//     adapter's persistent transport still holds it (probed by session
-//     existence); otherwise seed a fresh session from the durable
-//     transcript. The recorded per-execution serve URL is display /
-//     diagnostic only: the host serve's port is dynamic per boot while its
-//     session store persists, so URL equality is not a usable proxy for
-//     "the session is still there".
-//   - "" — a legacy transcript written before the identity field existed
-//     (opencode-shaped fields only). Keep the historical best-effort
-//     continuity against the recorded serve URL, else seed fresh.
-//   - anything else — the execution ran on ANOTHER adapter: its recorded
-//     session identity means nothing here, so never re-attach; seed fresh.
-//
-// The fresh seed always lands on the adapter's persistent transport.
+// Re-attach ONLY when the adapter's persistent transport still holds it (probed by session
+// existence); otherwise seed a fresh session from the durable transcript.
 func (a *Adapter) followUpSession(ctx context.Context, opts ContinueSessionOpts) (*SessionClient, string, bool, error) {
 	switch opts.AdapterKind {
 	case adapter.KindOpencode:

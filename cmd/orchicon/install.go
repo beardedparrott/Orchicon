@@ -119,25 +119,7 @@ func installPhase(msg string) {
 func runInstall(args []string, log *slog.Logger) error {
 	// A NON-INTERACTIVE RUN NEVER RELAUNCHES FOR A CONSOLE.
 	interactiveAllowed := !hasNonInteractiveFlag(args)
-	//
-	// THE MSI'S INSTALL WAS DYING WITH THE WIZARD. Its custom action is
-	//     install --non-interactive --instance dev --launch-desktop
-	// with Return="asyncNoWait", so the wizard finishes and exits immediately while this install is still
-	// downloading host binaries — and the child dies with the console it was sharing. Reported, exactly:
-	// "it runs through the entire install and then closes out at the window at the end."
-	//
-	// --non-interactive used to imply NO console at all, which conflated two different needs: "never ask a
-	// question" and "do not open a window". The MSI run needs the second: an install with nobody asking still
-	// has minutes of work to do, and the console is what keeps it alive after the wizard goes. It also gives the
-	// operator something to watch instead of a wizard that vanishes.
-	//
-	// The two requirements are therefore separate flags, and neither implies the other:
-	//     --non-interactive   ask nothing (unchanged meaning)
-	//     --console           I am not attached to a console; give me my own and detach onto it
-	// A plain `orchicon install` in a terminal still relaunches into its own console as before.
-	// A LAUNCHER-ONLY RUN MUST NOT OPEN A WINDOW. It asks nothing and takes a second; relaunching it into a
-	// console would hand the operator a window that flashes and disappears, which is the exact failure class this
-	// whole path has been fighting. Peeked rather than parsed because this decision precedes the parse.
+	// THE MSI'S INSTALL WAS DYING WITH THE WIZARD. A LAUNCHER-ONLY RUN MUST NOT OPEN A WINDOW.
 	wantConsole := (!hasNonInteractiveFlag(args) || hasConsoleFlag(args)) && !hasLauncherOnlyFlag(args)
 	if wantConsole && ensureInteractiveConsole(interactiveAllowed) {
 		log.Info("orchicon install: relaunched in its own console")
@@ -698,9 +680,7 @@ func installOrchLauncherFrom(exe, installDir string) orchLauncher {
 		fmt.Printf("warning: sibling orch binary not found next to %s — skipping launcher install (build with `make build` to produce bin/orch)\n", exe)
 		return out
 	}
-	// THE LAUNCHER *IS* THE BINARY WHEN BOTH LIVE IN THE SAME DIRECTORY, and that is the ordinary
-	// release layout: the archive ships orchicon and orch side by side and scripts/install.sh moves
-	// both.
+	// THE LAUNCHER *IS* THE BINARY WHEN BOTH LIVE IN THE SAME DIRECTORY.
 	if filepath.Clean(link) == filepath.Clean(sibling) {
 		out.Installed, out.Method = true, "in place"
 		fmt.Printf("orch launcher already installed: %s\n", link)

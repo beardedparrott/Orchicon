@@ -118,9 +118,7 @@ func TestListPendingAsksIsScopedToTheConversation(t *testing.T) {
 	}
 }
 
-// AN EMPTY CONVERSATION ID IS REFUSED, never silently answered with an empty list — a client that
-// forgot the id would otherwise conclude "nothing is pending" and appear to work while losing
-// every.
+// AN EMPTY CONVERSATION ID IS REFUSED, never silently answered with an empty list.
 func TestListPendingAsksRefusesAnEmptyConversationID(t *testing.T) {
 	svc := testConsentService()
 	if _, err := svc.ListPendingAsks(tenantCtx(), connectReq(&apiv1.ListPendingAsksRequest{})); err == nil {

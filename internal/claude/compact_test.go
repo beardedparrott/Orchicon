@@ -182,8 +182,7 @@ func mustJSON(t *testing.T, v map[string]any) []byte {
 }
 
 // TestClaudeBudgetAbortIsTerminal proves the ladder ceiling ENDS the execution (opencode
-// budget_abort parity): the abort tier is not a compaction, it fails the run and hard-kills the
-// child.
+// budget_abort parity).
 func TestClaudeBudgetAbortIsTerminal(t *testing.T) {
 	fp := newFakeProc()
 	rec := &captureCallbacks{}
@@ -466,9 +465,7 @@ func TestClaudeBudgetSpendIsCacheAware(t *testing.T) {
 	}
 }
 
-// TestClaudePackageHoldsNoBudgetThresholdsOrLadderText is the "one source of truth" guard: no
-// production file in the claude package may restate a ladder threshold or the ladder's message
-// copy.
+// TestClaudePackageHoldsNoBudgetThresholdsOrLadderText is the "one source of truth" guard.
 func TestClaudePackageHoldsNoBudgetThresholdsOrLadderText(t *testing.T) {
 	banned := []string{
 		"You have used", "{pct}", "compact_max_turns", "compact_dims", "compact_tiers",

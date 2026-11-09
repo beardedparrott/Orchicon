@@ -451,8 +451,7 @@ func (r *sessionRun) nudgeCooldown() time.Duration {
 const decisionMarker = "ORCHICON WORKER SUMMARY:"
 
 // afterCompactReminderText is interjected into the session immediately after a mid-flight
-// compaction (compact.go maybeCompact) so the model that just had its context summarized is
-// reminded.
+// compaction (compact.go maybeCompact) so the model that just had its context summarized.
 const afterCompactReminderText = "Your conversation was just compacted to keep it within budget — your task and progress notes are preserved in the compacted summary. " +
 	"Continue working on your task exactly as before. " +
 	"Resume your `todowrite` list NOW: emit a fresh full replacement array (`pending | in_progress | completed | cancelled`) reflecting current progress, and keep emitting it after every turn while you work — never wait until the end. " +
@@ -773,9 +772,7 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		// tool is in flight (it waits for the result).
 		r.observeToolEnd()
 		if r.monitor != nil {
-			// observe("text") advances lastStepFinish — the no_progress signal — without touching
-			// lastMeaningfulAction, so the text_loop guard (an infinite single-step reasoning loop) is
-			// unchanged (D4).
+			// observe("text") advances lastStepFinish — the no_progress signal.
 			r.monitor.observe("text", nil)
 		}
 		return
@@ -797,17 +794,14 @@ func (r *sessionRun) handleEvent(evt BusEvent) {
 		// resolve the probe and revive without waiting for a full turn (the false-positive case.
 		r.resolveProbe()
 		r.noteSessionProgress()
-		// A resolved tool part (completed/error) disarms the hang window; any other legacy telemetry
-		// (text/step/reasoning) after a tool start is post-tool model generation — the in-flight call is
-		// done.
+		// A resolved tool part (completed/error) disarms the hang window.
 		if t, _ := legacy["type"].(string); t == evtToolUse {
 			r.observeToolEnd()
 		} else if t != "" {
 			r.observeToolEnd()
 		}
 		// Folded-think segmentation (think_demux.go): a completed text part carrying a GLM-style inline
-		// think block must not reach the output accumulator, the live UI, or the durable transcript
-		// verbatim.
+		// think block must not reach the output accumulator.
 		evtType, _ := legacy["type"].(string)
 		var thinkBodies []string
 		if evtType == evtText {
@@ -1447,16 +1441,7 @@ func (r *sessionRun) abortForLadder(d budgetDimension) {
 	_ = r.client.Abort(r.parentCtx, r.sessionID)
 }
 
-// onStall is the progress monitor's stall callback. Nudge-first routing:
-//
-//   - no_progress: FATAL — total silence, no responsive surface to nudge.
-//     Abort the session and fail the execution immediately.
-//   - text_loop / repetition / no_file_progress: ADVISORY-first. The
-//     worker is generating text / issuing tool calls, so a nudge can reach
-//     it. Send a liveness probe into the live session (context preserved);
-//     only after the nudge budget is spent (and the worker still hasn't
-//     broken the pattern) does the next trip escalate to a fatal kill +
-//     recovery.
+// onStall is the progress monitor's stall callback.
 func (r *sessionRun) onStall(reason string) {
 	fatal := isFatalStall(reason)
 	r.callbacks.OnStall(r.parentCtx, r.execRow.ID, reason, fatal)
@@ -1547,17 +1532,8 @@ func (r *sessionRun) maybeNudge(reason string) {
 	}()
 }
 
-// completionProbeDecision is the pure decision core of the completion-probe
-// logic (testable without a live session):
-//
-//   - output has the decision marker  → (false, false): settle normally.
-//   - marker missing, budget left     → (true,  false): send a probe.
-//   - marker missing, budget spent    → (false, true): fail — the worker
-//     never delivered its decision signal.
-//
-// nudgeMax and nudgeCooldown are the session's resolved tuning (manifest
-// value first, env fallback) so the completion probe shares the same
-// per-session budget as the advisory-stall nudge path.
+// completionProbeDecision is the pure decision core of the completion-probe logic (testable without
+// a live session):
 func completionProbeDecision(output string, nudgesSent int, lastNudgeAt, now time.Time, nudgeMax int, nudgeCooldown time.Duration) (probe bool, fail bool) {
 	if realDecisionMarkerIn(output) >= 0 {
 		return false, false

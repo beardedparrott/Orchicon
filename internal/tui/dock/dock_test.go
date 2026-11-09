@@ -331,9 +331,7 @@ func TestComposerHintShortStaysSingleRow(t *testing.T) {
 	}
 }
 
-// The caret must ANIMATE while the composer holds focus, so the operator can see where their
-// keystrokes will land: "the cursor should blink when in the composer and focus is active so people
-// know.
+// The caret must ANIMATE while the composer holds focus.
 func TestComposerStartsWithTheCaretBlink(t *testing.T) {
 	m := New()
 	m.Focus()

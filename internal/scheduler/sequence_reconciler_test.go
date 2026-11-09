@@ -484,8 +484,7 @@ func TestSequenceCompletion(t *testing.T) {
 }
 
 // TestSequenceRecurringCompletionReturnsToRecurring: when every child of a recurring sequence
-// parent succeeds, the parent returns to "recurring" (not "succeeded") so the
-// RecurringFireReconciler.
+// parent succeeds.
 func TestSequenceRecurringCompletionReturnsToRecurring(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1244,24 +1243,7 @@ func setField(t *testing.T, pool *db.Pool, id string, apply func(f *db.UpdateWor
 	}
 }
 
-// TestStopSequenceCascadesAndAborts is the regression test for the
-// "stop didn't stop" bug. StopSequence previously parked ONLY the node it
-// was called on: a sequence parent's descendant containers stayed
-// running/failed and kept arming children (and a FAILED parent auto-revived
-// on the next scan), so stopping an epic left the whole chain running.
-//
-// The fix: STOP is recursive. Stopping a parent parks the ENTIRE subtree —
-// every descendant → pending, scheduled starts cleared, stale run bindings
-// cleared, and any in-flight workflow run bound to a descendant is ABORTED
-// (run → aborted, step runs → failed, linked executions → terminated).
-//
-// The subtree is a nested sequence: parent(running) → container(running) →
-// leaf(running) whose leaf holds a REAL bound run. Stopping the parent
-// parks every level and aborts the leaf's in-flight run. This test asserts:
-//   - the leaf's bound run is aborted and its work item parked to pending,
-//   - the container and parent are also parked (recursion to depth 2),
-//   - no member of the subtree is running or failed (so the scan and the
-//     auto-revive path have nothing to pick up).
+// StopSequence previously parked ONLY the node it was called on.
 func TestStopSequenceCascadesAndAborts(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1902,9 +1884,7 @@ func TestSequenceWedge_RunningParentFivePendingSelfHeals(t *testing.T) {
 	// Regression: a sibling succeeded child must still be preserved (STOP/START contract).
 }
 
-// TestSequenceWedge_StalledParentNoProgressHalts verifies the liveness guard: a
-// `+"`"+'`running`+"`"+` parent with no in-flight / blocked children and no progress for
-// stallThreshold is halted.
+// TestSequenceWedge_StalledParentNoProgressHalts verifies the liveness guard.
 func TestSequenceWedge_StalledParentNoProgressHalts(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()

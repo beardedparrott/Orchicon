@@ -1,8 +1,7 @@
 package db
 
 // The dispatcher's candidate query treats NULL as FRESH (`last_heartbeat_at IS NULL OR
-// last_heartbeat_at >= now() - ttl`), so every test fixture that created an adapter with
-// `LastHeartbeatAt.
+// last_heartbeat_at >= now().
 
 import (
 	"context"

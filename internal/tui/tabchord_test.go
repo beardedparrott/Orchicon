@@ -156,8 +156,7 @@ func TestChordAndClickSelectATabTheSameWay(t *testing.T) {
 }
 
 // TestCtrlGDismissesTheSubmenuAndFocusesTheComposer: ctrl+g is the DOCUMENTED way back to typing
-// (the footer and the help overlay both name it), and it promises to "leave whatever holds the
-// keys".
+// (the footer and the help overlay both name it).
 func TestCtrlGDismissesTheSubmenuAndFocusesTheComposer(t *testing.T) {
 	m := chordApp(t)
 	nm, _ := m.Update(keyFor(tabChord(TabControl)))

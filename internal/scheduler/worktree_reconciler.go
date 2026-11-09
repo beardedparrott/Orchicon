@@ -70,9 +70,7 @@ const maxWorktreeCandidatePages = 4
 // before it is re-detected (a directory that becomes a git repo is picked up within a TTL even.
 const gitDetectionTTL = 24 * time.Hour
 
-// slowPassInterval gates the orphan-sweep slow pass of scan(): the fast pass (pending run +
-// branch-candidate provisioning AND terminal run/step-run prunes — all page-bounded) runs every
-// tick.
+// slowPassInterval gates the orphan-sweep slow pass of scan().
 const slowPassInterval = 60 * time.Second
 
 // slowPassBudget bounds the wall-clock git-subprocess cost of one slow pass.
@@ -308,22 +306,7 @@ func (r *WorktreeReconciler) isParallelBranchChildStepRun(ctx context.Context, t
 	return parallelBranchChildIDs(steps)[stepID]
 }
 
-// sweepOrphanBranches reclaims dead local branch refs left behind by the
-// prune path. It runs at the end of every scan, after the terminal-run and
-// terminal-step-run prune passes:
-//
-//   - Runs/step-runs with worktree_status='ready' are handled by the prune
-//     passes (which delete the branch for a COMPLETED run at prune time).
-//   - Runs/step-runs whose worktree was ALREADY pruned ('pruned' +
-//     recorded branch) are exactly the ones the prune passes skip — but their
-//     branch may still exist locally. That class leaks (observed: 30+ local
-//     refs, all merged into develop) because nothing revisits a pruned row.
-//
-// The sweep reuses the SAME proof-deletion gate as pruneOne (deleteBranch →
-// branchProvablyMerged → success-only), so it never deletes unmerged work,
-// never touches protected/current branches, and only reaps branches whose run
-// actually completed. A branch still attached to a live worktree is left to
-// the prune pass (never swept while in use).
+// sweepOrphanBranches reclaims dead local branch refs left behind by the prune path.
 func (r *WorktreeReconciler) sweepOrphanBranches(ctx context.Context, tenantID string, deadline time.Time) {
 	// Runs whose worktree was pruned but branch still recorded — inclusive window (completed always
 	// reclaimable; failed/aborted reclaimable only when the bound work item is terminal non-replayable.
@@ -645,21 +628,6 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 	}
 
 	// INTEGRATE BEFORE THE BASE IS RESOLVED, AND HOLD THE BRANCH UNTIL IT IS SAFE TO CUT.
-	//
-	// THIS IS THE PATH THAT CUTS THE RUN'S OWN BRANCH. The equivalent step in reconcileStepRunOne (added for
-	// the same reason) covers a BRANCH CHILD, which is not what a worker commits to — so the guarantee was
-	// documented and absent exactly where it mattered, and the run branch kept being cut from a stale tip.
-	// Measured on the reported run set: news started 18:45:06 and location integrated 18:45:40; theme started
-	// 19:01:24 and favourites integrated 19:02:21. Both misses branched 30-60s early, both were then divergent,
-	// and a divergent branch is not a small inefficiency — the merge needs a real conflict, so one missed
-	// integration makes every following run in the project un-mergeable cleanly.
-	//
-	// TWO STEPS, and the second is the real fix:
-	//   1. INTEGRATE this project's backlog now, project-scoped (a tenant-wide page can be filled by other
-	//      projects and leave this one untouched).
-	//   2. If anything is STILL un-integrated, WAIT. Waiting is what makes the guarantee independent of
-	//      timing: a run cannot branch over work that has not landed, whether the cause is a slow sweep, a
-	//      just-completed predecessor, or a conflict a human must resolve. It is a queue, not a failure.
 	if strategy == "local" {
 		// DRAIN THE QUEUE FIRST — this project's pending obligations, oldest first. A tenant-wide page can be
 		// filled entirely by other projects' older runs, which is why the drain is project-scoped.
@@ -717,47 +685,7 @@ func (r *WorktreeReconciler) reconcileOne(ctx context.Context, tenantID, runID s
 	} else if occupied, oerr := r.dirOccupied(path); oerr != nil {
 		return fmt.Errorf("worktree: inspect %s: %w", path, oerr)
 	} else if occupied {
-		// The path exists but is not a registered worktree. Three cases:
-		//  1. A partial git-worktree artifact of ours (a gitdir file inside
-		//     the run-namespaced dir while the row is 'pending') → prune it.
-		//  2. A run-namespaced CONTAINER holding only provably-ours nested
-		//     branch-worktree artifacts — a parallel-branch step run was
-		//     provisioned first, racing the run worktree, so <runID>/ is a
-		//     plain dir holding <runID>/<stepRunID> worktrees. Adopt it:
-		//     move the nested worktrees out of the way, create the run
-		//     worktree into the (now empty) <runID>, then move them back.
-		//     The run worktree and the branch worktrees coexist; the
-		//     container is never deleted (AC2).
-		//  3. Anything else → fail provisioning — never delete arbitrary
-		//     user directories (AC3).
-		// NOT GATED ON `pending`. The reclaim below used to require it, so a RETRIED run — which arrives here
-		// with worktree_status=failed and a path — fell straight through to "occupied by a non-worktree
-		// directory" and refused. That is the reported "why was it occupied": the directory was this run's OWN
-		// empty leftover, created before the branch was cut by the attempt that failed, and the retry
-		// classified it as foreign.
-		//
-		// Reclaiming is safe on the same terms it always was — the directory is EMPTY, or holds only a gitdir
-		// file proving it is a partial worktree of ours — so requiring a particular status bought nothing and
-		// cost a whole class of retry.
-		// A WORKTREE THE CONTAINER CREATED IS OURS, and the host must reclaim it even though it holds content.
-		//
-		// REPORTED, four runs running: "path … is occupied by a non-worktree directory" on a directory that was
-		// a COMPLETE worktree (.git, src/, package.json). The chain is worth stating because two of the three
-		// links are ours:
-		//
-		//  1. The container's worker may create the worktree itself (the arbitration gap — bug 2, still open).
-		//  2. #906 then rewrites that worktree's `.git` to the GUEST form so the container's git can follow it.
-		//     The file is BIND-MOUNTED, so the rewrite is visible to the host too: the host now reads
-		//     `/mnt/c/.../.git/worktrees/<run>`, a path it cannot resolve.
-		//  3. This branch's ownership test compared with `filepath.Separator`, so on Windows the forward-slash
-		//     pointer never matched, the directory was judged foreign, and provisioning refused.
-		//
-		// Reclaiming is safe because the WORK IS ON THE BRANCH, not in the working tree: a worktree is a
-		// checkout of a commit, and the commits this one carried are in the repository's own .git. Nothing is
-		// lost by removing the directory and cutting a fresh worktree from the same branch.
-		//
-		// Genuinely foreign content — a directory with no worktree pointer, or one naming somebody else's
-		// repository — is STILL refused below. That distinction is what keeps this from deleting user data.
+		// The path exists but is not a registered worktree.
 		reclaimForeign := r.isForeignWorktreeOfOurs(path, projectDir)
 		if reclaimForeign {
 			r.log.Warn("worktree: reclaiming a worktree this platform created but cannot resolve "+
@@ -1127,19 +1055,8 @@ func isTerminalStepRun(sr db.WorkflowStepRunRow) bool {
 	return false
 }
 
-// pruneOne reaps a terminal run's worktree: remove the working tree dir,
-// run `git worktree prune` in the main repo, and record the result
-// ('pruned') on the run row. Idempotent by construction — every step
-// treats "already gone" as success, so reconcile retries converge:
-//
-//   - Non-'ready' runs (pending/skipped/failed/pruned) have nothing to
-//     reap → no-op.
-//   - A recorded worktree that no longer exists on disk (already removed,
-//     or the repo plane is gone) is treated as already pruned → success.
-//   - On run SUCCESS the branch is deleted (gated on merged-into-base, never
-//     the current branch, never main/develop). On failure/cancellation the
-//     branch survives so a retry re-attaches to it (carry-over of partial
-//     work).
+// pruneOne reaps a terminal run's worktree: remove the working tree dir, run `git worktree prune`
+// in the main repo, and record the result ('pruned') on the run row.
 func (r *WorktreeReconciler) pruneOne(ctx context.Context, tenantID string, run db.WorkflowRunRow) error {
 	// REAP A 'ready' WORKTREE — and also a 'failed' one, which is the case this guard used to skip.
 	if (run.WorktreeStatus != domain.WorktreeReady && run.WorktreeStatus != domain.WorktreeFailed) || run.WorktreePath == "" {
@@ -2005,15 +1922,7 @@ func (r *WorktreeReconciler) addWorktree(ctx context.Context, projectDir, path, 
 
 // A BRANCH ALREADY CLAIMED BY A REGISTRATION THE HOST CANNOT SATISFY.
 func (r *WorktreeReconciler) addWorktreeOrFreeStale(ctx context.Context, projectDir string, args []string, branch, path string) error {
-	//
-	// (`<repo>/.git/worktrees/<n>/gitdir`) and finding this branch claimed there. When that recorded path
-	// cannot be resolved — a container path, a deleted directory, a worktree whose admin data outlived it —
-	// the registration is stale and `git worktree add` will refuse forever.
-	//
-	// PRUNE AND RETRY ONCE. `git worktree prune` removes registrations whose worktree is gone or whose
-	// back-pointer does not resolve; measured against a registry corrupted this exact way, it clears the
-	// claim and the next add succeeds. It is TARGETED — only this specific refusal triggers it, so a genuine
-	// concurrently-checked-out branch is not disturbed by an unrelated prune.
+	// (`<repo>/.git/worktrees/<n>/gitdir`) and finding this branch claimed there.
 	_, err := runGit(ctx, projectDir, args...)
 	if err == nil {
 		return nil
@@ -2165,24 +2074,7 @@ func (r *WorktreeReconciler) deleteBranch(ctx context.Context, projectDir, branc
 	return nil
 }
 
-// branchProvablyMerged reports whether a branch's tip provably landed in the
-// integration base, so a squash-merged PR (whose branch tip is never an
-// ancestor of the base) is still reclaimed on terminal success. This is a
-// tri-state proof, not a single ancestry boolean: uncertainty never deletes.
-//
-//   - P1 (ancestry): the branch tip is an ancestor of develop/origin/develop.
-//   - P2 (authoritative PR merged): the run row records pr_state == "merged"
-//     (worker-authored after a successful `gh pr merge --squash`) AND the
-//     branch tip is not newer than the base tip (nothing was committed after
-//     the merge). Preferred.
-//   - P3 (remote branch gone, fallback): only when the run row records no
-//     pr_state, the remote PR branch ref is provably gone (fail-closed — a
-//     network/lookup failure keeps the branch) AND the branch tip is not
-//     newer than the base tip (no proof the branch's unique commits were
-//     landed).
-//
-// reason names the proof that applied (or "uncertain"), and is logged so a
-// human can audit which gate authorized a prune.
+// branchProvablyMerged reports whether a branch's tip provably landed in the integration base.
 func (r *WorktreeReconciler) branchProvablyMerged(ctx context.Context, projectDir, branch, prState string) (bool, string) {
 	// P1 — fast path: the branch tip is an ancestor of the base.
 	if r.branchMergedIntoBase(ctx, projectDir, branch) {
@@ -2262,18 +2154,7 @@ func (r *WorktreeReconciler) remoteBranchRefGone(ctx context.Context, projectDir
 	return false
 }
 
-// branchRemoteExists reports whether a remote ref refs/heads/<branch>
-// exists on origin. It returns (exists, determined):
-//   - determined=false means the probe could NOT confirm (origin absent /
-//     network down) — the caller must SKIP the remote `--delete` but still
-//     allow a provably-merged LOCAL delete (the Design Approver's
-//     refinement: fail-closed for deletion, but never deadlock local
-//     cleanup on a missing origin).
-//   - determined=true means the probe spoke to origin and exists is
-//     authoritative.
-//
-// It is the L3 gate that decides whether `git push origin --delete` is even
-// attempted; it never deletes on doubt.
+// branchRemoteExists reports whether a remote ref refs/heads/<branch> exists on origin.
 func (r *WorktreeReconciler) branchRemoteExists(ctx context.Context, projectDir, branch string) (bool, bool) {
 	if branch == "" {
 		return false, true

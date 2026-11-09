@@ -17,23 +17,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 )
 
-// controller.go — the TUI port of the GUI's Ask Orchicon streaming
-// client (frontend/src/routes/ask-orchicon.tsx runStream/runWatch +
-// frontend/src/api/askOrchicon.ts). Semantics carried over:
-//
-//   - ChatStream acks with TurnStarted{assistant_message_id}; the reply
-//     is collected server-side on a request-independent context, so a
-//     dropped socket (network blip, server restart) must NOT tear down
-//     the turn: the slot goes reconnecting and WatchTurnStream re-dials
-//     the broadcast hub (no dispatch), while a ListMessages poll stays
-//     the completion authority.
-//   - InterjectConversationTurn ADDS a message to an in-flight turn (injection): the
-//     server persists it and hands it to the live session, then acks with the
-//     RUNNING turn's assistant message id. The reply the operator was already
-//     watching is the one that continues.,
-//   - The live stream oneof carries textChunk | reasoning | turnStarted
-//     | heartbeat | error (current impl emits TurnStarted + live chunks
-//     + heartbeat; ListMessages remains authoritative for final text).
+// controller.go — the TUI port of the GUI's Ask Orchicon streaming client
+// (frontend/src/routes/ask-orchicon.tsx runStream/runWatch + frontend/src/api/askOrchicon.ts).
 
 // IsAuthExpired reports whether err is a Connect UNAUTHENTICATED (401 — the re-auth prompt shape
 // every dock RPC failure funnels through).
@@ -390,8 +375,7 @@ func (c *Controller) SetConversationProject(id, projectID string) tea.Cmd {
 }
 
 // SetConversationSkillFiles REPLACES the conversation's skill_files path list
-// (SetConversationSkillFiles; an empty list clears it) — the conversation-level half of the skills
-// feature.
+// (SetConversationSkillFiles.
 func (c *Controller) SetConversationSkillFiles(id string, files []string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -438,8 +422,7 @@ func (c *Controller) CanCompact(convID string) string {
 func (c *Controller) CompactConversation(id string) tea.Cmd {
 	return func() tea.Msg {
 		// Compaction may run a summarize model turn, so the deadline is deliberately generous (the same
-		// 2-minute class as a summarize call) rather than the 20s used by the pure-CRUD conversation
-		// writes.
+		// 2-minute class as a summarize call) rather than the 20s used by the pure-CRUD conversation.
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		resp, err := c.cl.Ask.CompactConversation(ctx, connect.NewRequest(&apiv1.CompactConversationRequest{
@@ -492,9 +475,7 @@ func (c *Controller) DeleteMessage(conversationID, messageID string, mode apiv1.
 	}
 }
 
-// compactionDetail renders a CompactConversationResponse for the dock notice: the server's own
-// detail line, plus the measured context sizes when it reported them (0 means "unknown" and is
-// omitted.
+// compactionDetail renders a CompactConversationResponse for the dock notice.
 func compactionDetail(r *apiv1.CompactConversationResponse) string {
 	if r == nil {
 		return ""
@@ -965,8 +946,7 @@ func (c *Controller) SendWithAttachments(convID, text, contextPreamble string, f
 	if st := c.state[convID]; st != nil {
 		st.lastActivity = now()
 		// A NEW GENERATION FOR EVERY SEND: the stream this command is about to open owns the slot from
-		// here, so any stream already running belongs to the previous generation and its end must be
-		// ignored.
+		// here.
 		st.gen++
 	}
 	gen := c.state[convID].gen
@@ -1118,8 +1098,7 @@ func (c *Controller) DiscoverPendingAsks(convID string) tea.Cmd {
 			return nil
 		}
 		// Straight to the store, NOT the command channel: the store is an in-process sink whose delivery
-		// cannot fail, which is the lesson the wire arm learned (a 16-slot channel the turn poll also
-		// writes.
+		// cannot fail.
 		if store != nil {
 			// ONE STORE CALL, ONE REPAINT.
 			asks := make([]PermissionAsk, 0, len(resp.Msg.GetAsks()))
@@ -1153,24 +1132,7 @@ func (c *Controller) EndStream(convID string, gen uint64) bool {
 	return ended
 }
 
-// AbortTurn stops the in-flight turn on a conversation: the TUI's Stop control (the composer's ctrl+y),
-// the counterpart of the GUI's Ask-page Stop button, which calls this same RPC
-// (ask-orchicon.tsx: handleStopStreaming -> useAbortConversationTurn -> abortTurn).
-//
-// It does the two things the GUI's handler does, and both matter:
-//
-//  1. ABORT THE SERVER-SIDE TURN. AbortConversationTurn cancels the registered session; it is
-//     IDEMPOTENT on the server (a second call against an already-stopped turn succeeds — see the audit
-//     service's own test), so a double-press cannot raise a spurious error.
-//  2. CLEAR THE LOCAL TURN SLOT IMMEDIATELY. This is what makes Stop feel instant: the UI recovers at
-//     once instead of waiting for the socket to notice the cancellation. The live partial reply is not
-//     lost — the durable transcript is the completion authority, and the stream's own end drives the
-//     poll that reconciles it (onStreamDone), exactly as the GUI's conversations-list invalidate does.
-//
-// The optimistic user echo is deliberately NOT cleared (the GUI clears its copy because it drops the
-// whole local transcript). Here the echo is load-bearing: mergeHistory matches on it so the durable poll
-// cannot render the operator's own message twice — and the message WAS persisted, because the turn had
-// started.
+// AbortTurn stops the in-flight turn on a conversation.
 func (c *Controller) AbortTurn(convID string) tea.Cmd {
 	if convID == "" {
 		return nil
@@ -1293,9 +1255,7 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 	case *apiv1.ChatStreamResponse_PermissionAskResolved:
 		// THE OTHER CLIENT DECIDED.
 		if r := e.PermissionAskResolved; r != nil && r.GetAskId() != "" && c.store != nil {
-			// STRAIGHT TO THE STORE, not through the command channel: a dropped resolution leaves a
-			// live-looking, inert card on screen in whichever client did not answer (see
-			// EventStore.SettleConsentAsk).
+			// STRAIGHT TO THE STORE, not through the command channel.
 			c.store.SettleConsentAsk(convID, r.GetAskId(), r.GetOutcome(), r.GetAnswer())
 		}
 	case *apiv1.ChatStreamResponse_PermissionAsk:

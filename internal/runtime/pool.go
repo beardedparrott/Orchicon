@@ -273,9 +273,7 @@ func (p *daemonPool) resetAndPool(old *poolEntry) {
 		p.d.Log.Warn("pool reset failed — dropping container", "container", old.name, "error", err)
 		return
 	}
-	// The serve probe gates the entry into the pool (ADR-0013 §6): a reset container that is not
-	// actually serving would otherwise idle in the pool for a whole idle window and hand the next run a
-	// cold.
+	// The serve probe gates the entry into the pool (ADR-0013 §6).
 	if resp.ServeURL != "" && !serveUsableAt(resp.ServeURL, resp.ServePassword) {
 		p.d.Log.Warn("pool reset: serve not usable — dropping container", "container", name)
 		_ = p.d.removeContainer(name)

@@ -587,8 +587,7 @@ func TestCollectorDeclaresItsSelfMetricsListener(t *testing.T) {
 }
 
 // The token above must actually be RESOLVED, or the config ships the literal placeholder and the
-// collector fails to parse its own address — a strictly worse failure than the collision it
-// replaced.
+// collector fails to parse its own address.
 func TestCollectorSelfMetricsTokenIsResolved(t *testing.T) {
 	sup := &supervisor{log: testLogger(), dataDir: t.TempDir(), infra: testInfra(), ports: servicePortDefaults()}
 	tokens := sup.configTokens()

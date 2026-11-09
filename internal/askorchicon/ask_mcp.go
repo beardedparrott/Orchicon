@@ -40,9 +40,7 @@ type askMCPEntry struct {
 	provenance string
 	// projectID is the project the entry was resolved for.
 	projectID string
-	// fingerprint is what this entry WAS RESOLVED FOR: the project id and the resolved server ids,
-	// built by askMCPFingerprint — the SAME function the per-turn comparator uses, so the two cannot
-	// drift.
+	// fingerprint is what this entry WAS RESOLVED FOR: the project id and the resolved server ids.
 	fingerprint string
 }
 

@@ -91,19 +91,8 @@ func SaveGeometry(path string, g Geometry) error {
 	return os.Rename(tmp, path)
 }
 
-// ClampToMonitors returns geometry that is guaranteed usable on the monitors
-// that currently exist — the brief's "restored only onto a visible monitor".
-//
-// The rules, in order:
-//   - size is raised to the minimum window and, when a monitor is known,
-//     capped to that monitor's extent;
-//   - if the restored rect intersects NO monitor (the monitor it was placed on
-//     was unplugged, or the layout changed), the POSITION is dropped and the
-//     window is centred on the primary — the size the operator chose is kept;
-//   - with no monitor information at all, the position is kept (a headless or
-//     pre-webview call must not shuffle a perfectly good placement);
-//   - a zero position on a fresh profile means "not placed yet", which is also
-//     centred rather than pinned to the top-left corner.
+// ClampToMonitors returns geometry that is guaranteed usable on the monitors that currently exist —
+// the brief's "restored only onto a visible monitor".
 func ClampToMonitors(g Geometry, monitors []Rect) Geometry {
 	min := MinSize()
 	if g.W < min.W {

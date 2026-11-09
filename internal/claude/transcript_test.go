@@ -114,22 +114,6 @@ func TestAskArgvResumesAfterAChildDies(t *testing.T) {
 }
 
 // THE WORKER PATH DELIBERATELY DIFFERS FROM ASK, and this pins why.
-//
-// I first applied the Ask rule here too — drop `--resume` when no transcript
-// exists — and three existing tests failed ("must re-attach the SAME session
-// identity"). They were right:
-//
-//   - the CONTRACT is that a worker continuation re-attaches the same session, so
-//     a silent fresh start would drop the very history it exists to carry;
-//   - a LOST SESSION IS THE RECOVERY SYSTEM'S problem (capture → summarize →
-//     preserve → resume), and working around it here would bypass that and
-//     quietly hand a worker a context-free run;
-//   - the check could not be trusted anyway: a worker's child may run INSIDE A
-//     RUNTIME CONTAINER, where the adapter's host-side view of ~/.claude and the
-//     child's view can diverge. The Ask path is host-only, which is exactly why
-//     the check is sound there and not here.
-//
-// So: ALWAYS resume, with or without a local transcript.
 func TestWorkerAlwaysResumesTheRecordedSession(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

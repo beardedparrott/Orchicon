@@ -367,9 +367,7 @@ func (m *Model) grantsFieldValue() string {
 	return screenkit.FmtInt(len(grants)) + " dir(s) — /grants"
 }
 
-// setFieldValue replaces an existing field's value, appending when the key is absent — a header
-// built without meta (the pre-meta fallback) still reports the live values instead of carrying
-// only.
+// setFieldValue replaces an existing field's value, appending when the key is absent.
 func setFieldValue(fields []screenkit.Field, key, value string) []screenkit.Field {
 	for i := range fields {
 		if fields[i].Key == key {

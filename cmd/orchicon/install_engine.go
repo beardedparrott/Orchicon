@@ -254,9 +254,7 @@ func describeEngineStatus(st containerengine.Status) string {
 	if st.Reason != "" {
 		return "unavailable — " + st.Reason
 	}
-	// NO REASON RECORDED BUT NOT AVAILABLE is the silent case this summary exists to prevent: nothing
-	// decided anything, so the operator would read "install succeeded" and discover the gap as a
-	// socket.
+	// NO REASON RECORDED BUT NOT AVAILABLE is the silent case this summary exists to prevent.
 	return "unavailable — the container engine was not detected, so there are no runtime containers and no " +
 		"runtime daemon. Re-run `orchicon install` (containers are provisioned by default), or set " +
 		"ORCHICON_CONTAINER_ENGINE=podman to make a missing engine an error that names the cause"

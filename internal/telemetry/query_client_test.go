@@ -23,9 +23,7 @@ func vmHandler(t *testing.T, gotQuery *string, body string) *httptest.Server {
 	return srv
 }
 
-// TestQueryMetricsSumsTokenClassCounters guards the cache-aware counters ADR regression:
-// orchicon_tokens_consumed / orchicon_cost_usd now carry a token_class label (up to four series per
-// name).
+// TestQueryMetricsSumsTokenClassCounters guards the cache-aware counters ADR regression.
 func TestQueryMetricsSumsTokenClassCounters(t *testing.T) {
 	var gotQuery string
 	srv := vmHandler(t, &gotQuery, `{"status":"success","data":{"result":[{"metric":{"__name__":"orchicon_tokens_consumed"},"values":[[1000,"7"],[1010,"9"]]}]}}`)

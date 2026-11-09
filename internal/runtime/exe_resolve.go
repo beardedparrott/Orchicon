@@ -63,9 +63,7 @@ func ResolveContainerExe(goos, hostExe, override, dataDir string) (string, error
 		containerExeRemedy(dataDir))
 }
 
-// containerExeSearchDirs is where a linux build is looked for, in order: beside the INVOKING
-// executable (where install.ps1 puts it, and where an operator naturally drops one), then
-// <dataDir>/bin.
+// containerExeSearchDirs is where a linux build is looked for.
 func containerExeSearchDirs(hostExe, dataDir string) []string {
 	var dirs []string
 	seen := map[string]bool{}

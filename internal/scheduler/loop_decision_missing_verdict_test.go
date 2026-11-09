@@ -1,19 +1,6 @@
 package scheduler
 
 // loop_decision_missing_verdict_test.go — the on_missing_decision policy.
-//
-// A loop_decision routes on an upstream VERDICT. When no upstream supplies one the
-// engine used to decide what that meant by comparing the step's loop_branch and
-// success_branch against ONE tenant's step ids ("step-devops-pr" + "step-l32ezp4b"),
-// which matched only one of the two loops it was written for and left the other
-// permanently failing. These tests pin the replacement:
-//
-//   * an ABSENT key resolves to reask, so every workflow that predates the policy
-//     behaves exactly as it did — the change is additive;
-//   * success proceeds forward, which is what the hardcode did;
-//   * fail refuses;
-//   * an unrecognised value degrades to reask rather than to something new;
-//   * and the engine no longer mentions any tenant step id.
 
 import (
 	"os"

@@ -180,9 +180,7 @@ func TestClaudeParityMatrix(t *testing.T) {
 		}
 	})
 
-	// file diffs: write + edit both reach OnWrittenFiles exactly once, and the SHARED ledger hook is
-	// called with the canonical name + the filePath key it actually reads (the diff pipeline's
-	// ingestion.
+	// file diffs: write + edit both reach OnWrittenFiles exactly once.
 	t.Run("file_diffs", func(t *testing.T) {
 		fp := newFakeProc()
 		rec := &captureCallbacks{}

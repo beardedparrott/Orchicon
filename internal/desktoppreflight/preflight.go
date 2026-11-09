@@ -1,29 +1,5 @@
-// Package desktoppreflight answers ONE question before the desktop app creates a
-// window: can this host render a webview?
-//
-// It exists as a plain Go package (no Wails import) for two reasons:
-//
-//   - it must run BEFORE wails.Run, which is the only moment a check is useful —
-//     after that the framework has already tried to open a window and failed
-//     opaquely, which is exactly the symptom this package exists to prevent;
-//   - it must be unit-testable on a CI runner that has no webview installed, so
-//     every OS capability is injected through Probe and the decision is a pure
-//     function of (goos, probe results).
-//
-// The three platforms have three different shapes of risk, and the package
-// names each of them rather than pretending they are one problem:
-//
-//   - macOS: WKWebView is part of the OS, so the check always passes. The real
-//     macOS risk is signing/notarisation, which is a release-pipeline concern
-//     (deploy/desktop/macos/sign-and-notarize.sh), not a runtime probe.
-//   - Windows: WebView2 ships with Windows 11 but NOT every Windows 10 install,
-//     so the probe reads the Evergreen registry keys (and the filesystem as a
-//     fallback) and the remedy is the Evergreen bootstrapper URL.
-//   - Linux: WebKitGTK is a DYNAMIC-LINK dependency, so the dynamic loader fails
-//     before main() ever runs — no in-process check can help there. The real
-//     Linux detection therefore lives in the /usr/bin/orchicon-desktop launcher
-//     wrapper and the AppImage's AppRun (see deploy/desktop/). What this package
-//     adds on Linux is the check for a developer running a locally built binary.
+// Package desktoppreflight answers ONE question before the desktop app creates a window: can this
+// host render a webview?
 package desktoppreflight
 
 import (

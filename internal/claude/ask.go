@@ -1,67 +1,6 @@
 package claude
 
 // ask.go — the Ask (interactive) transport: ChatTurnClient on *Bridge.
-//
-// An Ask conversation is a DIFFERENT session shape from a worker execution, and
-// the difference is forced, not stylistic — the same reason opencode needs a
-// second serve process (internal/opencode/servehost.go: NewAskHostServe):
-//
-//   - the permission profile rides the launch (`--settings` + the hook's rule
-//     set), so one child cannot be both the worker sandbox and the interactive
-//     profile;
-//   - a worker session is anchored to a worktree and driven by a manifest; an Ask
-//     conversation has neither.
-//
-// So this is a separate, long-lived child per CONVERSATION, running in a stable
-// per-plane Ask directory (no project boundary; consent gates the action), with
-// the interactive profile installed.
-//
-// Two deliberate non-choices, both to keep the reference behaviour:
-//
-//  1. NO OS-level guard shim. The shim enforces a PROJECT BOUNDARY, and an
-//     interactive session deliberately has none — applying it would refuse, at
-//     the binary level and with no card, exactly the commands the Ask profile
-//     exists to ask about. The authority for this transport is the PreToolUse
-//     hook (allow/deny/ask) plus the settings document's `permissions.deny`,
-//     which is also what opencode's interactive profile relies on.
-//  2. `SendTurnMessageWithAttachments` IS implemented — the follow-up this note
-//     used to defer. The CLI's stream-json input takes Messages-API content
-//     blocks, so an attachment is an EXTRA BLOCK ON THE SAME FRAME rather than a
-//     different transport: an `image` block for the media types the CLI's schema
-//     accepts, a fenced text block for anything else that is valid UTF-8, and a
-//     LOUD error for a binary document this transport cannot carry. Never a
-//     silent drop to text-only — a turn that quietly loses an attachment and
-//     reports success is the AC routing landmine.
-//
-//     The MIME routing is deliberately stricter than the native transport's,
-//     which routes on the `image/` PREFIX: the CLI's image block accepts only
-//     image/jpeg, image/png, image/gif and image/webp, so an SVG (or bmp, tiff,
-//     avif) sent as an image block is a frame the CLI REFUSES — failing the whole
-//     turn to deliver nothing. Those take the text path instead.
-//
-// CORRECTION: claim 1 was WRONG and is fixed below. Both other adapters DO shim
-// the Ask path — opencode's host serve applies `guard.NewExecutionGuard("")`
-// (internal/opencode/servehost.go, in startOnce, so BOTH profiles get it), and
-// the native path builds the same shim in interactive mode
-// (internal/askorchicon/ask_guard.go). Skipping it made claude the only adapter
-// with no OS-level floor, which is LOOSER, not stricter — and it is the floor
-// that carries the never-allow class, the protected roots and the operator
-// policy against a subprocess ("a subprocess did it" is the hole the 2026-07-30
-// /home wipe went through). The PreToolUse hook never sees those; the shim does.
-//
-// A second correction, to the fix itself: this file first built the shim SCOPED
-// to the conversation's directory, reasoning that "one conversation, one
-// directory" made that more precise. It does not. The shim permits absolute
-// targets inside its project dir, so naming the ask dir WIDENED the sanctioned
-// set rather than narrowing it — the opposite of parity. The scope is empty,
-// as in both references. See ensureGuard()/childEnv().
-//
-// NEITHER LAYER CONTAINS THE SESSION, and nothing here should be read as
-// claiming otherwise. The shim judges SUBPROCESSES; the hook judges claude's own
-// tool calls. An absolute write is still an absolute write once the operator
-// approves the card, and reads outside the ask dir are allowed. The ask
-// directory is a cwd and a scope key, not a jail — see the profile table in
-// hook.go for exactly what is allowed, asked and refused.
 
 import (
 	"context"
@@ -717,28 +656,8 @@ func (s *askSession) childEnv() []string {
 	// WHERE THE HOOK ASKS FOR A DECISION (consent_hook.go).
 	env = setEnvVar(env, ConsentSockEnv, s.consentSockPath())
 
-	// The OS-level guard, exactly as opencode's Ask serve applies it: the shim on
-	// PATH, and NOTHING ELSE. No InteractiveEnviron, so the shim runs its default
-	// (worker) path-scoped profile.
-	//
-	// THAT OMISSION IS THE PARITY, and it is also the safe choice:
-	//
-	//   - Nothing can WIDEN the sanctioned set. The interactive profile consults
-	//     grants, once-targets, the operator policy and fullsend, all of which can
-	//     allow a path the default profile refuses. This session wires none of
-	//     them, so adding the profile would add only the ability to widen.
-	//   - It avoids a fail-closed trap. In the interactive profile a policy file
-	//     that is missing or unreadable makes the shim refuse EVERY path-scoped
-	//     command ("fail-closed ... refusing rather than running it unguarded"),
-	//     with no card and no way for the operator to see why. On a plane with no
-	//     policy at permpolicy.DefaultPath() that would refuse every `rm`, `mv`,
-	//     `cp` and `chmod` in every Ask conversation. The native path accepts that
-	//     because its bash env is a per-call factory that always has a live policy
-	//     to point at; a stdio child's environment is fixed at spawn.
-	//
-	// What remains in force is the part that matters and cannot be widened: the
-	// never-allow class (refused on the binary name, before any argument is read)
-	// and the protected roots (judged before every allow-set test).
+	// The OS-level guard, exactly as opencode's Ask serve applies it: the shim on PATH, and NOTHING
+	// ELSE.
 	if s.guard != nil {
 		env = s.guard.Apply(env)
 	}

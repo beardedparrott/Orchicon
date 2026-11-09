@@ -1,22 +1,6 @@
 package tui
 
 // projectpick.go — /project's PICKER, and the project SCOPE the conversations rail shows.
-//
-// The operator, after the first attempt rendered projects as a second list beside the categories:
-//
-//   "I wanted a hierarchy. So a conversation would belong to a project and inside the project it would still
-//    have the normal categories we had before. ... Projects are WORKSPACES essentially. ... In the TUI the
-//    equivalent would be /project to set the active project. A list should pop up to make it easier to pick the
-//    right one when you type /project slash command."
-//
-// So a project is a SCOPE the rail is filtered by, not a row in it. Choosing one narrows which conversations the
-// rail shows; the category folders are unchanged and simply hold fewer items. And it is picked from a LIST,
-// because a command that only accepts a name you have to already know is not an interface.
-//
-// WHY A BESPOKE MODAL RATHER THAN kit2.ModelPicker: that control walks the adapter/provider/model grammar in
-// three tiers and commits a ref. A project is one flat choice out of a handful, so reusing it would mean
-// pretending a project is a model. This is the same shape as the shell's other small modals (the rename box, the
-// bulk confirm): state on the App, a centred overlay, keys routed while it is open.
 
 import (
 	"fmt"
@@ -380,18 +364,6 @@ func (m *App) pickerOptions(moveConvID, filter string) []projectScopeOption {
 }
 
 // moveConversationTo is the WRITE behind every move gesture, guarded in one place.
-//
-// TWO GUARDS, both of them fixes for what the operator hit:
-//
-//   - ALL PROJECTS IS REFUSED as a target. The server rejects __all__ as a project id, so this would be a doomed
-//     write whose only outcome is "project move failed: ..." — which reads as a broken app rather than as a bad
-//     target. projectMoveOptions no longer OFFERS it; this refuses it if it arrives by any other route (the `m`
-//     key, whose picker is the SCOPE list and legitimately contains it).
-//   - A TARGET THAT CHANGES NOTHING SAYS SO. The move picker's cursor OPENS ON the conversation's current
-//     project, so Enter without moving the cursor is the most natural thing to press — and it used to write, tell
-//     the operator "moved to <the project it was already in>", and reload to a list where the chat was still
-//     sitting exactly where it was. That is the operator's "it is still just sitting there in the same list".
-//     Nothing was broken; nothing was REPORTED either. Now it says "already in X" and writes nothing.
 func (m *App) moveConversationTo(convID, target string) tea.Cmd {
 	if target == projectScopeAll {
 		m.dock.SetError("All projects is a view, not a destination — pick a project, or No project")
@@ -421,9 +393,7 @@ func (m *App) onRailProjectsApplied() {
 		return
 	}
 	keep := m.projectPick.sel
-	// REBUILD THROUGH THE SAME PURPOSE AND FILTER the picker was opened with, so a list that lands
-	// after the overlay opened can neither silently widen it past what the operator asked for NOR
-	// re-offer.
+	// REBUILD THROUGH THE SAME PURPOSE AND FILTER the picker was opened with.
 	m.projectPick.options = m.pickerOptions(m.projectPick.moveConvID, m.projectPick.filter)
 	if keep < len(m.projectPick.options) {
 		m.projectPick.sel = keep

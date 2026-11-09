@@ -84,9 +84,7 @@ func implements[T any](v any) bool {
 	return ok
 }
 
-// TestClaudeOmittedCapabilitiesFailActionablyNeverPanic pins the contract rule: a capability
-// requested for an execution the bridge cannot serve returns an actionable error (and never
-// nil-panics).
+// TestClaudeOmittedCapabilitiesFailActionablyNeverPanic pins the contract rule.
 func TestClaudeOmittedCapabilitiesFailActionablyNeverPanic(t *testing.T) {
 	b := New(quietLogger())
 	ctx := context.Background()
@@ -109,8 +107,7 @@ func TestClaudeOmittedCapabilitiesFailActionablyNeverPanic(t *testing.T) {
 }
 
 // TestContinueSessionReusesTheLiveSession proves a follow-up runs in the SAME conversation while
-// the session is live: the message goes onto the same live stdin and the SAME session identity
-// comes.
+// the session is live.
 func TestContinueSessionReusesTheLiveSession(t *testing.T) {
 	fp := newFakeProc()
 	rec := &captureCallbacks{}
@@ -184,8 +181,7 @@ func TestContinueSessionResumesTheRecordedIdentityAfterARestart(t *testing.T) {
 }
 
 // TestSessionSurvivesARestartResumingBySessionID proves the same identity re-attaches across a
-// control-plane restart: a SECOND Start carrying ContinueFromSessionID resumes the prior
-// transcript.
+// control-plane restart.
 func TestSessionSurvivesARestartResumingBySessionID(t *testing.T) {
 	rh := newResumeHarness(t)
 	rec := &captureCallbacks{}

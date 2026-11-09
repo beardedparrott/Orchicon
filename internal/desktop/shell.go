@@ -130,14 +130,7 @@ func (s *Shell) Start() error {
 	spa := s.spaHandler()
 	proxy := s.newProxy()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// ORDER IS THE CONTRACT, most specific first:
-		//   1. our own control endpoints — never forwarded to the plane, or a
-		//      plane route added later could shadow them;
-		//   2. plane paths (the prefix table in proxy.go);
-		//   3. the embedded SPA, which is the fallback everything else wants.
-		// ONE DISPATCHER, LONGEST PREFIX FIRST — see surfaces.go. Listing the two calls here in a chosen
-		// order is what produced the 404: controlPath is a PREFIX of serversPath, so the control surface
-		// claimed every servers request and answered 404 for a path it does not implement.
+		// ORDER IS THE CONTRACT, most specific first: 1.
 		if s.handleOwnEndpoint(w, r) {
 			return
 		}

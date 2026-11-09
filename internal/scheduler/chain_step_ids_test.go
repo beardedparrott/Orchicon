@@ -55,8 +55,7 @@ func TestChainStepIDsParallelGateInLoop(t *testing.T) {
 }
 
 // TestChainStepIDsLinearChain verifies the linear-chain behaviour still holds (the
-// previously-supported shape): a plain upstream→downstream chain yields every step between the loop
-// branch.
+// previously-supported shape).
 func TestChainStepIDsLinearChain(t *testing.T) {
 	steps := []workflow.StepWire{
 		{ID: "a", Kind: "task"},

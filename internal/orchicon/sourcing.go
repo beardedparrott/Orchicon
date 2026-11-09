@@ -15,17 +15,8 @@ import (
 	"time"
 )
 
-// SourcingService (D9): model sourcing per provider. LIVE TRUTH ONLY
-// (operator directive: no synthesized model lists — a failing connection
-// must show failure, never a list of models that "seemingly exist"):
-//  1. GET {baseURL}/models probe (per-wire URL derivation; TTL-cached;
-//     non-fatal — a failed probe yields NO models, visibly degraded),
-//  2. manual model entries (operator-added, always served).
-//
-// The vendored catalog is metadata enrichment only: probed entries are
-// enriched by id match (context/output/tools/pricing) — the catalog NEVER
-// contributes model ids. Probed ⊕ manual merge deduped (manual wins),
-// filtered by visibility.
+// LIVE TRUTH ONLY (operator directive: no synthesized model lists — a failing connection must show
+// failure, never a list of models that "seemingly exist"): 1.
 type SourcingService struct {
 	Log  *slog.Logger
 	HTTP *http.Client
@@ -219,19 +210,7 @@ func perProbeEntry(models []ModelInfo, ok bool, now time.Time) probeEntry {
 	return probeEntry{models: models, fetchedAt: now, failed: !ok}
 }
 
-// modelsURL derives the /models listing endpoint for a profile, per wire
-// type — each provider's chat client derives its paths from the base, and
-// the probe must derive its listing path the same way:
-//   - commandcode: base is the bare origin (chat derives
-//     /provider/v1/chat/completions and /provider/v1/messages) → probe
-//     /provider/v1/models (their documented models endpoint).
-//   - anthropic: base is the bare origin ("no /v1 — path adds it",
-//     anthropic.go) → probe /v1/models (their documented Models API).
-//   - ollama: base is the host root → probe /v1/models (the OpenAI-compat
-//     listing; native discovery rides /api/tags in the OllamaClient).
-//   - every other OpenAI-compatible profile: the base IS the version root
-//     (e.g. https://api.openai.com/v1, https://opencode.ai/zen/go/v1) →
-//     append /models directly.
+// modelsURL derives the /models listing endpoint for a profile.
 func modelsURL(p Profile) string {
 	base := strings.TrimRight(p.BaseURL, "/")
 	switch p.Kind {

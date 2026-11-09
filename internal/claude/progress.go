@@ -1,32 +1,7 @@
 package claude
 
-// progress.go is the claude stall/health monitor — the same progress
-// watchdog the opencode adapter and the native engine run (see
-// internal/opencode/progress.go and internal/orchicon/progress.go), reduced
-// to the signals the claude stream-json transport can actually observe.
-//
-// Claude Code emits NO step_finish event: a turn's boundary is the streamed
-// `result` message and everything in between is text deltas and tool
-// round-trips. So "progress" here is ANY stdout activity (text or a tool
-// call/result) rather than a token report, and the signals are:
-//
-//   - no_progress: no stdout activity AT ALL within the no-progress window
-//     (manifest StallNoProgressWindowSeconds, env fallback, default 300s).
-//     FATAL — a totally silent child has no surface to nudge, so the caller
-//     hard-kills it, raises OnStall(reason, fatal=true) and fails the
-//     execution.
-//   - no_file_progress: activity, but no file write within the no-file
-//     window (manifest StallNoFileDiffWindowSeconds, default 120s).
-//     ADVISORY: a non-terminal `stalled` health notice; the child keeps
-//     running and a later file write clears it through OnRecovered.
-//   - repetition: the same tool-call signature repeated past
-//     StallRepetitionCount times (default 5) within
-//     StallRepetitionWindowSeconds (default 300s). ADVISORY-first, exactly
-//     like opencode: a looping-but-responsive worker is told to change
-//     approach rather than killed. Reset-on-progress: a file write clears the
-//     history, and a completed non-error call clears the error tier.
-//
-// isFatalStall mirrors opencode exactly: ONLY no_progress is fatal.
+// progress.go is the claude stall/health monitor — the same progress watchdog the opencode adapter
+// and the native engine run (see internal/opencode/progress.go and internal/orchicon/progress.go).
 
 import (
 	"encoding/json"
@@ -56,9 +31,7 @@ const (
 	defaultStallRepetitionWindow = 300 * time.Second
 )
 
-// isFatalStall reports whether a stall reason terminates the session (opencode parity): ONLY
-// no_progress is fatal — a looping worker is responsive and holds full context, so it is nudged
-// instead.
+// isFatalStall reports whether a stall reason terminates the session (opencode parity).
 func isFatalStall(reason string) bool {
 	return strings.HasPrefix(reason, reasonNoProgress)
 }

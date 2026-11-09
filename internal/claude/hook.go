@@ -73,20 +73,7 @@ func denyVerdict(rule, reason string) HookVerdict {
 	return HookVerdict{Allow: false, Rule: rule, Reason: reason}
 }
 
-// DecideTool runs the whole worker rule set for one tool call. projectDir is the
-// worker's project boundary; policyPath is the operator's policy file (empty
-// disables the policy rung only).
-//
-// Order, and why:
-//  1. the built-in subagent tool — removed entirely (opencode denies `task`);
-//  2. a bash command — the shared deny class first (never-allow + project
-//     boundary through workerrestrict.MatchCommand), then the non-waivable
-//     protected paths, then the operator's policy;
-//  3. a path-carrying tool — protected paths, then policy (including its
-//     fail-closed load failure), then the project boundary;
-//  4. anything else — ALLOW, deferring to claude's own default. opencode's worker
-//     profile deliberately carries no catch-all either, so parity means the same
-//     verdict, not a stricter one.
+// DecideTool runs the whole worker rule set for one tool call.
 func DecideTool(h HookInput, projectDir, policyPath string) HookVerdict {
 	tool := strings.TrimSpace(h.ToolName)
 	if tool == "" {

@@ -71,8 +71,7 @@ type Adapter struct {
 	sessionStore SessionStoreFunc
 
 	// fileEdits is the diff-pipeline hook: on every mutating tool_use event it parses the tool's
-	// structured file_edits output (worktree engine tools) or takes a server-side after-snapshot
-	// (opencode.
+	// structured file_edits output (worktree engine tools) or takes a server-side after-snapshot.
 	fileEdits FileEditHookFunc
 	// askFileEdits is the Ask-population ledger hook (owner kind ask_conversation).
 	askFileEdits FileEditHookFunc
@@ -541,37 +540,8 @@ func New(log *slog.Logger) *Adapter {
 	}
 }
 
-// Start runs the given execution as a persistent opencode session on a
-// serve instance (the host serve for the in-process population, the
-// workflow's runtime container serve for workflow runs) and streams
-// telemetry back via the callbacks (docs/03 §4, docs/04 §6). The session
-// runs until completion or context cancellation.
-//
-// Per AGENTS.md verification standards: this adapter calls the REAL
-// `opencode` runtime. Simulation mode is an explicit opt-in via the
-// ORCHICON_SIMULATE_ADAPTER=1 env var (offline dev only) — it is NOT
-// a silent fallback. If `opencode` is absent from PATH and simulation
-// is not explicitly enabled, Start returns an error so the failure is
-// loud and visible (do not fall back to simulation and claim dispatch
-// works). Verification workers/executions must pin a free model in
-// model_ref (e.g. opencode/deepseek-v4-flash-free).
-//
-// The legacy one-shot `opencode run` subprocess path was REMOVED: when
-// no serve is available (or the session transport is disabled via
-// ORCHICON_OPCODE_SESSION_TRANSPORT=0), Start returns an error and the
-// execution fails (failed_to_start → workflow recovery) instead of
-// degrading to a second, inferior transport.
-//
-// Two recovery-relevant guardrails (docs/06 §2 triggers):
-//   - Stall detection: a progress monitor detects stuck-looping (no
-//     progress, no file changes, repeated tool calls) and raises
-//     OnStall → triggers recovery. Catches the loop a hard timeout
-//     can't (a worker making "progress" but spinning).
-//   - Wall-clock timeout: the worker's budget_overrides.wall_clock_seconds
-//     (default 3600) is enforced as a per-execution context deadline.
-//     When it hits, the session turn is aborted →
-//     OnResult(false) → recovery triggered with reason
-//     "wall_clock_timeout". This is the runaway-spend backstop.
+// Start runs the given execution as a persistent opencode session on a serve instance (the host
+// serve for the in-process population.
 func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, callbacks scheduler.ExecutionCallbacks) error {
 	// Simulation mode is opt-in ONLY (offline dev). Never a silent
 	// fallback (AGENTS.md verification standards).
@@ -693,8 +663,7 @@ func (a *Adapter) repairRuntimeContainer(ctx context.Context, workflowID string)
 }
 
 // execStreamState tracks per-execution opencode stream structure so a run that ends before its
-// final model step completes can be flagged as failed instead of reported as a clean, empty
-// success.
+// final model step completes can be flagged as failed instead of reported as a clean.
 type execStreamState struct {
 	stepStarts   int
 	stepFinishes int
@@ -802,27 +771,7 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		if stats != nil {
 			stats.toolUses++
 		}
-		// opencode v1.x: input + output both arrive in a single
-		// `tool_use` event. The previous dispatch only matched the
-		// legacy `tool_call` / `tool_result` pair — which v1.x never
-		// emits — so tool calls were silently dropped and the
-		// runtime session pane never saw any tool cards. The model's
-		// actual work (file writes, bash commands, web fetches) was
-		// invisible to the operator. Handle the v1.x shape:
-		//   {
-		//     "type": "tool_use",
-		//     "part": {
-		//       "tool": "bash",
-		//       "callID": "...",
-		//       "state": {
-		//         "status": "completed",
-		//         "input":  {...},
-		//         "output": "...",
-		//         "title":  "...",
-		//         "time":   {...}
-		//       }
-		//     }
-		//   }
+		// opencode v1.x: input + output both arrive in a single `tool_use` event.
 		toolName, _ := part["tool"].(string)
 		callID, _ := part["callID"].(string)
 		state, _ := part["state"].(map[string]any)
@@ -997,8 +946,7 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		}
 	case evtError:
 		// opencode's --format json emits an error event shaped like
-		// {"type":"error","error":{"name":"...","data":{"message":"..."}}} — the human-readable message
-		// lives at error.data.message.
+		// {"type":"error","error":{"name":"...","data":{"message":"..."}}}.
 		msg := extractErrorMessage(evt)
 		a.log.Warn("opencode error", "execution", execID, "message", msg)
 		if msg != "" {
@@ -1010,9 +958,7 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 	}
 }
 
-// emitTextChunked fans a single assistant-text payload out as a stream of smaller chunks, each
-// separated by a short delay, so the frontend RuntimeSessionPane can render a typing-style live
-// view.
+// emitTextChunked fans a single assistant-text payload out as a stream of smaller chunks.
 func (a *Adapter) emitTextChunked(ctx context.Context, callbacks scheduler.ExecutionCallbacks, execID, text string, seq *int) {
 	if text == "" {
 		return

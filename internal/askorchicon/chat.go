@@ -134,8 +134,7 @@ func (w *turnReplyWindow) Touch() { w.t.Reset(w.d) }
 func (w *turnReplyWindow) Stop() { w.t.Stop() }
 
 // defaultTurnMaxAge is how long a chat turn may sit in the registry WITHOUT PROGRESS before the
-// background sweeper evicts it (cancelling the collector with errTurnExpired and aborting the
-// serve.
+// background sweeper evicts it (cancelling the collector with errTurnExpired and aborting.
 const defaultTurnMaxAge = 31 * time.Minute
 
 func askTurnMaxAge() time.Duration {
@@ -220,18 +219,7 @@ type opencodeEvent struct {
 // streamCallback is called for each streaming event from opencode.
 type streamCallback func(evt opencodeEvent) error
 
-// Turn-cancellation causes. These are the distinct reasons a turn's
-// collector context is cancelled; the collector finalizes differently per
-// cause (ADR-ASK-3):
-//
-//   - errUserStop: the Stop button — persist "Turn stopped by the user."
-//   - errTurnSuperseded: an interjection took over the conversation — persist
-//     the partial content as a PLAIN message (no error bubble) or skip the
-//     write entirely when nothing arrived.
-//   - errTurnExpired: the TTL sweeper reaped the turn — persist an error.
-//
-// The collector returns context.Cause(subCtx) (never subCtx.Err()) so the
-// caller can distinguish them.
+// Turn-cancellation causes.
 var (
 	errUserStop       = errors.New("turn stopped by the user")
 	errTurnSuperseded = errors.New("turn superseded by an interjection")
@@ -270,26 +258,8 @@ type turnEntry struct {
 	injectedAt time.Time
 }
 
-// turnRegistry tracks in-flight Ask Orchicon turns (keyed by conversation
-// id) with their collector cancellation functions. It serves three purposes:
-//
-//   - the one-turn-per-conversation gate: a second send while a turn is
-//     pending is rejected with FailedPrecondition (the frontend also
-//     disables the input, but the gate is the server-side backstop);
-//   - the Stop path: AbortConversationTurn cancels the collector so it
-//     finalizes promptly and persists the user-initiated-stop error, rather
-//     than sitting idle waiting the full reply window for an idle the serve
-//     may not emit after abort;
-//   - the no-orphan guarantee: every entry carries a lastActivity timestamp
-//     and the background sweeper evicts (cancels + removes) entries that have
-//     been QUIET for longer than the TTL, so a wedged collector can never
-//     block a conversation forever — while a turn that is still producing
-//     output is never reaped for its age.
-//
-// Token-guarded removal (remove only when the token matches) eliminates the
-// stale-finalize race once supersede exists: the superseding turn's register
-// assigns a NEW token, so the superseded collector's deferred remove with its
-// own token is a no-op on the replacement entry.
+// turnRegistry tracks in-flight Ask Orchicon turns (keyed by conversation id) with their collector
+// cancellation functions.
 type turnRegistry struct {
 	mu      sync.Mutex
 	nextTok uint64
@@ -387,9 +357,7 @@ func (r *turnRegistry) injectionSeq(convID string, token uint64) int64 {
 	return 0
 }
 
-// markActivity records that a running turn last produced output at now, advancing the
-// server-confirmed turn_progressing signal the frontend reads to distinguish a genuinely-working
-// turn.
+// markActivity records that a running turn last produced output at now.
 func (r *turnRegistry) markActivity(convID string, token uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -485,38 +453,8 @@ func (s *Service) ChatStream(ctx context.Context, req *connect.Request[apiv1.Cha
 	return s.drainTurnStream(stream, req.Msg.ConversationId, assistantID, streamEventCh, st)
 }
 
-// InterjectConversationTurn adds the operator's message to the conversation WHILE the model is working,
-// without interrupting it.
-//
-// THE OPERATOR, in their own words: "I would much rather just do the injecting instead. It should still look
-// like a chat message in the stream to the user, and it should inject in the context that the model is
-// constantly pulling back in (if that is possible). I want it to 'interject' by adding it to the overall
-// context as a user message but NOT abort."
-//
-// THAT IS WHAT THIS DOES NOW. It used to SUPERSEDE: cancel the collector, abort the provider session
-// mid-generation, and answer on a fresh turn. The reported consequence was a model that had "lost track of
-// what it was already working on" and "seemed to think the current work may have been done by someone else"
-// — because an aborted turn leaves its tool results, file changes and transcript behind without the
-// assistant turn that produced them, so the model inherits finished work with no record of having done it.
-//
-// THREE CASES, and only one of them is new:
-//
-//   - A TURN IS RUNNING AND HEALTHY -> INJECT. The message is persisted exactly like a normal send (so it is
-//     a chat message in the transcript, in the history a recreated session replays, and in the audit trail),
-//     and handed to the live session with prompt_async — the documented mid-run primitive, which the
-//     adapter's own docs describe as "a message sent while a turn is in flight is queued and answered at the
-//     next turn boundary". Nothing is cancelled and nothing is aborted: the model keeps its session, its
-//     context and its task, and the message becomes part of the context it is already working from. The
-//     caller then ATTACHES to the running reply (like a re-dialling client) so the operator sees the work
-//     continue.
-//
-//   - NO TURN IS RUNNING -> behave exactly like ChatStream, which is the old idempotent behaviour and still
-//     the right one: there is nothing to join, so the message starts a turn.
-//
-//   - THE RUNNING TURN IS WEDGED (its session is blocked on a tool call that never resolved) -> SUPERSEDE, as
-//     before. This is the one case where injecting cannot work: the session is not going to reach a turn
-//     boundary, so a message handed to it would never be answered. Recycling to a fresh session is what makes
-//     the operator's message land at all, and it is rare enough to be worth an exception rather than the rule.
+// InterjectConversationTurn adds the operator's message to the conversation WHILE the model is
+// working, without interrupting it.
 func (s *Service) InterjectConversationTurn(ctx context.Context, req *connect.Request[apiv1.InterjectConversationTurnRequest], stream *connect.ServerStream[apiv1.ChatStreamResponse]) error {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -552,23 +490,7 @@ func (s *Service) InterjectConversationTurn(ctx context.Context, req *connect.Re
 	return s.drainTurnStream(stream, req.Msg.ConversationId, assistantID, streamEventCh, st)
 }
 
-// injectIntoRunningTurn adds msg to a RUNNING turn WITHOUT interrupting it, then attaches the caller to the
-// reply that message joins.
-//
-// IT NEVER REPORTS THE MESSAGE AS FAILED, and that is a correction of the previous behaviour. The operator:
-// "It gave an error message saying the message could not be sent and would be saved, then it left the text in
-// the composer… What should happen, is it should send it immediately into the chat, no error message, and then
-// fit it into the context when it is possible (a turn occurs)."
-//
-// The message is theirs and it IS saved the instant they send it, so there is nothing for them to fix and
-// nothing to retry — an error banner over a saved message is a lie about what happened, and restoring the
-// draft on top of it makes them send it twice. Delivery is now BEST-EFFORT AND INVISIBLE:
-//
-//   - an adapter that QUEUES (opencode) gets the message on the live session, where the serve answers it at
-//     the running turn's next boundary;
-//   - an adapter that does NOT queue (the native bridge — see scheduler.SessionQueuesPrompts) is not sent the
-//     message at all mid-turn, because a send there starts a competing provider turn and can be rejected
-//     outright; the message is held and answered by the next turn that occurs.
+// IT NEVER REPORTS THE MESSAGE AS FAILED, and that is a correction of the previous behaviour.
 func (s *Service) injectIntoRunningTurn(ctx context.Context, stream *connect.ServerStream[apiv1.ChatStreamResponse], tenantID, convID, msg string, attachments []*apiv1.AttachmentInput, entry turnEntry) error {
 	if err := s.deliverInjection(ctx, tenantID, convID, msg, attachments, entry); err != nil {
 		// A PERSISTENCE FAILURE IS THE ONLY THING THE OPERATOR SEES, because it is the only case where their
@@ -1048,8 +970,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// --- 1.
 	assistantID := db.NewID()
 	// D7 (session admission bound): reject dispatch beyond the concurrent-turn cap with a clear
-	// CodeResourceExhausted error instead of degrading under contention on the shared serve bus +
-	// connection.
+	// CodeResourceExhausted error instead of degrading under contention on the shared serve bus +.
 	if _, running := s.turns.get(convID); !running && s.turns.len() >= askMaxConcurrentTurns() {
 		return "", nil, nil, connect.NewError(connect.CodeResourceExhausted,
 			errors.New("too many Ask Orchicon conversations are processing right now — wait for a turn to finish and try again"))
@@ -1080,26 +1001,8 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// interaction — the reply is collected detached). ---
 	modelRef := s.modelRefOrFallback(ctx, tenantID, conv.ModelRef)
 	if modelRef == "" {
-		// NO MODEL IS CONFIGURED ANYWHERE, AND THERE IS NO HONEST DEFAULT TO INVENT.
-		//
-		// This used to fall back to `opencode/deepseek-v4-flash-free`, which was wrong in three
-		// compounding ways and produced the operator's report verbatim:
-		//
-		//  1. THE REF IS LEGACY 2-SEGMENT, so it INFERS the opencode adapter — the serve-backed kind a
-		//     fresh install has no binary for. The turn died in model discovery:
-		//         [unimplemented] model discovery is not configured (set ORCHICON_OPENCODE_BIN or
-		//         install opencode on PATH)
-		//  2. THE MODEL IS FREE-TIER-ONLY. opencode gates that tier on the request coming from inside
-		//     its own client, and the native adapter is not exempt — it calls the same zen endpoints
-		//     with the same key, so it gets the same refusal:
-		//         403 FreeTierError: "OpenCode's free tier can only be used from within OpenCode."
-		//     There is no way to serve it without the opencode binary (see adapter.FreeTierOnlySuffixes).
-		//  3. IT WAS SILENT. A warning in the plane log is invisible to the operator, who saw a turn
-		//     hang or fail with a provider error and no way to know a setting was missing.
-		//
-		// So the turn is REFUSED with an actionable message instead. "Ask Orchicon has no model
-		// configured" is a true, fixable statement; a doomed turn against a provider that will refuse
-		// is neither. It is FailedPrecondition — the caller must change a setting — not Internal.
+		// NO MODEL IS CONFIGURED ANYWHERE, AND THERE IS NO HONEST DEFAULT TO INVENT. THE MODEL IS
+		// FREE-TIER-ONLY.
 		releaseTurn()
 		return "", nil, nil, connect.NewError(connect.CodeFailedPrecondition, errors.New(
 			"no model is configured for Ask Orchicon\n"+
@@ -1242,17 +1145,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 			// The terminal ledger snapshot travels with the finalize: the collector owns the pointer, so read
 			// the final state from it (every finalize path below persists text + reasoning + tools atomically.
 			finalLedger := turnLedger
-			// Cause-aware finalize (ADR-ASK-3). The collector returns
-			// context.Cause on cancellation so Stop / supersede / expiry are
-			// distinguished:
-			//   - superseded: partial content persisted as a PLAIN assistant
-			//     message (the interjection is intentional — no error bubble),
-			//     skipped entirely when nothing arrived;
-			//   - user stop: the friendly "Turn stopped by the user." error;
-			//   - anything else: the error text (timeout, stall, expiry).
-			// Reasoning chunks that arrived before the turn ended are always
-			// persisted (partial reasoning is preserved, matching the
-			// "partial content is preserved" spirit).
+			// Cause-aware finalize (ADR-ASK-3).
 			if terr != nil {
 				switch {
 				case errors.Is(terr, errTurnSuperseded):
@@ -1304,8 +1197,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 }
 
 // AbortConversationTurn implements the Stop button: it cancels the detached collector for the
-// conversation's running turn (so it finalizes promptly and persists the user-initiated-stop
-// error).
+// conversation's running turn (so it finalizes promptly and persists the user-initiated-stop.
 func (s *Service) AbortConversationTurn(ctx context.Context, req *connect.Request[apiv1.AbortConversationTurnRequest]) (*connect.Response[apiv1.AbortConversationTurnResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1528,22 +1420,8 @@ func (s *Service) resolveClientForAbort(modelRef string) scheduler.ChatTurnClien
 	return nil
 }
 
-// adapterScopedSessionID enforces adapter-scoped conversation session
-// identity across a mid-conversation model/adapter switch (WI-3). The
-// persisted conversation session id belongs to the adapter that created it.
-// When the current model_ref resolves to a DIFFERENT adapter, the stored id
-// must not be dispatched to it: a session-ful adapter (opencode) rejects a
-// foreign/unknown id with an opaque 500. This returns the session id the
-// turn may actually use:
-//
-//   - an empty input stays empty (a fresh session is created by the collector);
-//   - the native ("orchicon") adapter owns ALL ids it accepts (it is
-//     deliberately sessionless) — so an opencode→native switch keeps the
-//     stored session id and keeps working;
-//   - any OTHER adapter (or a client that cannot report an owner kind) is
-//     treated as not owning a native-synthetic id ("orchicon-ask:" prefix),
-//     so that id is cleared and the collector creates a fresh session on the
-//     newly-resolved adapter instead of dispatching a foreign id to it.
+// adapterScopedSessionID enforces adapter-scoped conversation session identity across a
+// mid-conversation model/adapter switch (WI-3).
 func (s *Service) adapterScopedSessionID(client scheduler.ChatTurnClient, sid string) string {
 	if sid == "" {
 		return ""
@@ -1650,27 +1528,7 @@ type turnAttemptResult struct {
 	err       error
 }
 
-// collectConversationReply is the detached reply collector for one chat
-// turn. It mirrors the executions follow-up (ContinueSession / collectReply)
-// pattern: subscribe to the serve bus, ensure the user message is accepted,
-// drain for the reply (bounded by the reply window), and persist. It runs on
-// a request-independent context — a ChatStream disconnect / tab close never
-// cancels it — and re-attaches across serve loss:
-//
-//   - bus loss (serve died): re-subscribe after a backoff on the SAME
-//     session (the serve watchdog preserves the data dir, so the session id
-//     survives and the conversation continues with real continuity);
-//   - session gone (404 — data dir wiped): create a FRESH session seeded
-//     from the DB transcript (seedSystem), persist the new id, re-dispatch
-//     once;
-//   - retries stay inside the reply window; when exhausted the turn is
-//     persisted as an error by the caller.
-//
-// It returns the collected assistant text, the collected reasoning chunks
-// (partial on error/stop/timeout turns — whatever arrived is preserved), the
-// (possibly recreated) session id used for the final dispatch, and a terminal
-// error (reply timeout, session.error, serve loss exhausted, user stop via
-// the registry cancel).
+// collectConversationReply is the detached reply collector for one chat turn.
 func (s *Service) collectConversationReply(ctx context.Context, c turnCollectOpts) (text string, reasoning []string, sid string, err error) {
 	defer s.turns.remove(c.convID, c.token)
 	defer s.hubs.remove(c.convID)
@@ -2495,28 +2353,8 @@ func (s *Service) upsertPartialMessage(ctx context.Context, tenantID, convID, as
 	}
 }
 
-// runOpenCodeTurn drives one chat turn over a persistent opencode session
-// on the host serve (the session transport):
-//
-//   - first message (or a pre-migration conversation that never chatted):
-//     CreateSession (directory-less) + persist the id immediately;
-//   - follow-ups: prompt_async (SendMessage) on the SAME session — the goal
-//     is NOT reset, history lives in the session;
-//   - the send runs concurrently with the SSE drain so events arriving
-//     between subscribe and the serve accepting our message are observed
-//     while sent == false and ignored;
-//   - turn complete = the first session.idle AFTER our message was accepted
-//     (the `sent` guard ignores stale idle events from a prior turn);
-//   - a follow-up send that 404s (serve data dir wiped / session gone)
-//     recreates a fresh session, persists the new id, and re-seeds the DB
-//     history so the durable record saves the conversation;
-//   - timeout (askTimeout) and client disconnect both Abort the turn while
-//     keeping the session for the next message.
-//
-// seedSystem is the system prompt for a freshly created session (includes
-// the DB history block); reuseSystem is the steady-state follow-up system
-// (no history — it already lives in the session). Returns the assistant
-// message id, the (possibly recreated) session id, and the elapsed time.
+// runOpenCodeTurn drives one chat turn over a persistent opencode session on the host serve (the
+// session transport):
 func (s *Service) runOpenCodeTurn(ctx context.Context, client scheduler.ChatTurnClient, tenantID, convID, sessionID, modelRef, seedSystem, reuseSystem, userMsg string, cb streamCallback) (msgID, newSessionID string, elapsed time.Duration, err error) {
 	start := time.Now()
 	msgID = db.NewID()
@@ -2715,39 +2553,8 @@ func (s *Service) fetchProjectContext(ctx context.Context, tenantID string) stri
 	return b.String()
 }
 
-// conversationProjectContext names the project THIS conversation belongs to, and says what that means for the
-// turn about to run.
-//
-// The operator: "Also we should add context to all three modes to know which chat belongs to which project
-// folder. We need better organization here." The tenant-wide project list (fetchProjectContext) answers "what
-// exists"; this answers "where am I", which is the question the agent actually needs answered before it
-// touches a path. It is the SAME block for all three modes because it is built here, from the conversation,
-// rather than inside any one persona's prompt — a mode is a way of thinking, not a different filesystem.
-//
-// An ARCHIVED project is still named. The operator's rule for the association was "active or otherwise", so a
-// chat parked in an archived project should be told that, not silently stripped of its context — the status is
-// printed precisely so the agent can say "this project is archived" instead of guessing.
-//
-// Returns "" when the conversation is unassigned or the project cannot be read, and the caller prints the
-// unassigned text instead. A failure here must never fail the turn: the context is an aid, not a
-// precondition.
-// skillManifestSection renders this turn's `# Skills` section: the UNION of the conversation's skill_files and
-// its PROJECT's skill_files, rendered by the ONE shared renderer contextfiles.RenderManifest. It is the Ask
-// half of the single shared render path — the worker composite prompt renders the same manifest through the
-// same function — and it is deliberately the only place the Ask side knows about skills, so no persona and no
-// adapter carries skill-handling code.
-//
-// WHY THE UNION IS SORTED AND VALIDATED HERE:
-//
-//   - contextfiles.Union sorts and dedupes, so the rendered bytes are a function of the SELECTION and not of
-//     the two lists' arrival order. The section sits inside the prompt's cached static prefix, so an unstable
-//     order would invalidate the prefix cache on every turn.
-//   - contextfiles.ValidateWithin drops a selection that leaves the project directory. A skill outside it is
-//     invisible to a container-hosted worker, so rendering it would only produce a dead "could not read" note.
-//
-// Best-effort by construction: an unassigned conversation, an unreadable project row, or a corrupt
-// skill_files payload all yield "" and the turn proceeds without skills — a skills aid must never fail the
-// turn. DISTINCT from the free-text `skills` prompt section on the tenant agent config, which is prose.
+// conversationProjectContext names the project THIS conversation belongs to, and says what that
+// means for the turn about to run.
 func (s *Service) skillManifestSection(ctx context.Context, tenantID string, conv db.ConversationRow) string {
 	var convSkills []string
 	if len(conv.SkillFiles) > 0 {

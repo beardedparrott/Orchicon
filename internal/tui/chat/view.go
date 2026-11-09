@@ -534,14 +534,11 @@ func FailedTurnText(errText, modelRef string) string {
 		b.WriteString("\nmodel: " + ref)
 	}
 	// RAW, not markdown: errors stay unwrapped/unstyled, per the transcript's existing rule for
-	// KindError (renderBubble, which soft-wraps the raw text to the pane width so a long provider
-	// error.
+	// KindError (renderBubble.
 	return b.String()
 }
 
-// RetryAffordanceLine is the TUI's own retry affordance — the equivalent of the GUI's
-// always-present Retry button, phrased as the thing the operator actually does here (Enter on the
-// restored.
+// RetryAffordanceLine is the TUI's own retry affordance.
 const RetryAffordanceLine = "your message is back in the composer — press enter to send it again"
 
 // WithRetryAffordance appends the retry line to a failed-turn row's text. Idempotent — a re-stamp on a later

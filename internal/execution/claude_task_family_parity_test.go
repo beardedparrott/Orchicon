@@ -60,8 +60,7 @@ func taskFamilyMapperParts(t *testing.T) ([]db.SessionPart, []string) {
 }
 
 // TestClaudeTaskFamilyLifecycleReachesLatestTodos is the end-to-end acceptance check for
-// normalization (AC2), full parity through the single parse site (AC3) and the complete lifecycle
-// including.
+// normalization (AC2).
 func TestClaudeTaskFamilyLifecycleReachesLatestTodos(t *testing.T) {
 	parts, raw := taskFamilyMapperParts(t)
 	if len(parts) == 0 {

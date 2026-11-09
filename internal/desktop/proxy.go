@@ -7,18 +7,7 @@ import (
 	"strings"
 )
 
-// proxyPrefixes are the paths the shell forwards to the plane. Everything else
-// is served from the embedded SPA.
-//
-// THIS LIST IS THE ONE PLACE THAT CAN DRIFT, and it is kept honest by tests
-// rather than by care:
-//   - TestProxyPrefixesCoverPlanePassthrough reads the plane's own
-//     withFrontend passthrough list (cmd/orchicon/serve_state.go) and asserts
-//     every one of its paths is covered here;
-//   - TestProxyCoversEveryPlaneRoute reads the routes internal/api actually
-//     registers (mux.Handle* literals + the generated Connect procedure paths)
-//     and asserts the same. Adding a plane route without widening this list is
-//     therefore a failing test, not a blank page in the app.
+// proxyPrefixes are the paths the shell forwards to the plane.
 var proxyPrefixes = []string{
 	"/orchicon.api.v1", // every generated Connect-ES service
 	"/auth/",           // login / refresh / session — the cookie path auth needs
@@ -47,19 +36,6 @@ func isPlanePath(p string) bool {
 }
 
 // proxy builds the reverse proxy to the configured plane.
-//
-// THREE DETAILS ARE LOAD-BEARING:
-//   - FlushInterval: -1 flushes every write immediately. The SPA's execution
-//     view reads a Connect server-stream for the life of an execution
-//     (frontend/src/api/useStream.ts); a buffered proxy turns that into "the
-//     view silently stops updating", which is the specific failure this shell
-//     must not have.
-//   - The auth headers are NOT touched. This shell has no auth logic at all:
-//     Authorization, Cookie and Set-Cookie pass through verbatim, so the
-//     HttpOnly refresh cookie reaches the webview's cookie jar and the 401
-//     retry in frontend/src/api/clients.ts can work.
-//   - Rewrite (not Director) so X-Forwarded-* are not guess-populated; the
-//     plane sees its own host, exactly as it would from a browser on that host.
 func (s *Shell) newProxy() *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {

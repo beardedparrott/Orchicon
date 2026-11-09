@@ -1,17 +1,7 @@
 package orchicon
 
 // follow_up_test.go: regression tests for the real NativeBridge follow-up
-// (NativeBridge.ContinueSession). Pins the follow-up semantics:
-//   - The fire-and-forget contract: the RPC returns "" immediately (the
-//     reply flows via the durable transcript, never the RPC field) while
-//     the session runs asynchronously on a detached context.
-//   - The follow-up runs as a FULL worker session: the question (source
-//     "follow_up") and the reply are mirrored into the DB session parts by
-//     the session's transcript recorder.
-//   - Identity isolation: a cross-worker transcript is refused.
-//   - A missing session id / transcript falls back to a fresh session.
-//   - A failed session writes an error part — the RPC never fails after the
-//     session is built.
+// (NativeBridge.ContinueSession).
 
 import (
 	"context"
@@ -47,9 +37,7 @@ func (s *storesSessionParts) snapshot() []db.SessionPart {
 	return append([]db.SessionPart(nil), s.parts...)
 }
 
-// TestContinueSessionRecordsQuestionAndReplyPins the real follow-up: the question (source:
-// follow_up) and the assistant reply are mirrored into the DB session parts by the session's
-// transcript.
+// TestContinueSessionRecordsQuestionAndReplyPins the real follow-up.
 func TestContinueSessionRecordsQuestionAndReply(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".orchicon", "sessions", "exec_now.jsonl")

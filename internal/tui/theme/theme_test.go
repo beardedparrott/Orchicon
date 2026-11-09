@@ -111,19 +111,6 @@ func TestProfileDegradation(t *testing.T) {
 }
 
 // THE LAUNCH DEFAULT RESOLVES, AND IS A DARK PALETTE.
-//
-// The operator has moved this default more than once — ember, then forest, then slate, then teal, now
-// forest again — and
-// each request came with the same shape of risk. Two ways a change can go wrong SILENTLY, neither of
-// which reports an error at launch:
-//
-//  1. the name does not exist — Lookup returns nil and the client falls back to the base palette, so
-//     the operator sees the OLD default and concludes the change did not ship;
-//  2. the name resolves to a LIGHT palette — `forest-light` sits directly beside `forest`, and picking
-//     the wrong one is a one-word mistake that would look like a deliberate choice.
-//
-// Both are asserted here rather than trusted, because the failure is invisible: nothing errors, the
-// theme is simply not the one that was asked for.
 func TestTheLaunchDefaultIsForestAndDark(t *testing.T) {
 	th := Lookup(DefaultName)
 	if th == nil {

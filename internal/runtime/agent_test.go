@@ -53,8 +53,7 @@ func TestIsDevImageTag(t *testing.T) {
 }
 
 // TestSandboxPgBinDirConsistency is a consistency check for the sandbox self-gate's postgres
-// resolution: when a candidate bin dir under /usr/lib/postgresql actually contains all four
-// required.
+// resolution.
 func TestSandboxPgBinDirConsistency(t *testing.T) {
 	dir := sandboxPgBinDir()
 	if dir == "" {

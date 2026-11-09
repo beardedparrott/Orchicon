@@ -792,9 +792,7 @@ func (m *Model) treeBody() string {
 	w := m.bodyWidth()
 	rows := make([]string, 0, len(m.groups))
 	for _, g := range m.groups {
-		// A list ROW is an index entry, not diff content (D4): it is ellipsized to the body width rather
-		// than wrapped, so group<->row stays 1:1 and the viewport-aware click keeps resolving the row
-		// under.
+		// A list ROW is an index entry, not diff content (D4).
 		line := truncate(fmt.Sprintf(" %s +%d −%d", g.Path, g.Adds, g.Dels), w)
 		if g.Path == m.SelectedPath {
 			rows = append(rows, theme.DiffFileSel.Render(line))

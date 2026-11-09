@@ -125,8 +125,7 @@ func TestFormatAcceptanceReviewRecovery(t *testing.T) {
 }
 
 // TestFormatAcceptanceReviewEmptyFallback verifies a run whose steps carry no summaries still
-// produces a non-empty review recording the terminal outcome (never an indistinguishable empty
-// field).
+// produces a non-empty review recording the terminal outcome (never an indistinguishable empty.
 func TestFormatAcceptanceReviewEmptyFallback(t *testing.T) {
 	run := db.WorkflowRunRow{ID: db.NewID(), WorkflowID: db.NewID(), Status: domain.WorkflowRunCompleted, Version: 1}
 	out := formatAcceptanceReview(run, nil, nil, domain.WorkflowRunCompleted)

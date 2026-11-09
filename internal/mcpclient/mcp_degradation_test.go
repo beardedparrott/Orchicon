@@ -1,15 +1,7 @@
 package mcpclient
 
-// mcp_degradation_test.go — WHAT A FAILING SERVER COSTS, and what it tells you.
-//
-// Two reported properties, both about the same incident:
-//
-//  1. ONE UNSTARTABLE SERVER MUST NOT TAKE THE REST WITH IT. A conversation resolved 123 aseprite tools and
-//     166 unity tools; one server failed to start, the manager aborted the union, and the conversation got
-//     NEITHER. 289 working tools were lost to 1 broken one, and nothing said so.
-//  2. A FAILURE MUST EXPLAIN ITSELF. Every failure surfaced as the same "context deadline exceeded", so
-//     "the interpreter was not found", "the import blew up", and "it started but never answered" were
-//     indistinguishable — while the server answered `initialize` in 0.3s when spawned by hand.
+// mcp_degradation_test.go — WHAT A FAILING SERVER COSTS, and what it tells you. ONE UNSTARTABLE
+// SERVER MUST NOT TAKE THE REST WITH IT.
 
 import (
 	"context"

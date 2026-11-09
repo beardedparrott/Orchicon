@@ -1,27 +1,6 @@
 package adapter
 
 // adapterpath.go — WHERE AN ADAPTER CLI IS, ON EVERY PLATFORM, WITHOUT A CYCLE.
-//
-// WHY THIS IS NOT IN internal/opencode OR internal/claude. Both of those import internal/runtime (they drive
-// it), so internal/runtime cannot import them back to ask "where is your binary?". The mount code that needs
-// the answer therefore has no way to call either resolver — which is exactly how the container mounts ended up
-// HARDCODED to `~/.opencode/bin` and `~/.local/bin` while each adapter's own host resolver grew a proper
-// Windows candidate list beside it.
-//
-// So the resolution lives HERE: a package nobody depends on in the wrong direction, which:
-//   - internal/runtime reads, to derive its mounts and its PATH (it already imports adapter);
-//   - internal/opencode and internal/claude read, so the host-side resolution and the container-side mount
-//     are computed from the SAME candidate list and cannot disagree.
-//
-// THAT LAST POINT IS THE FIX. The reported symptom — "opencode is installed but the plane says it is not" —
-// was a host resolver that had learned about npm's `node_modules\opencode-ai\bin` while the mount still
-// pointed at `~/.opencode/bin`. Two lists, two answers.
-//
-// AND THE SECOND TRAP IS THE ONE THAT MAKES CONTAINERS FAIL SILENTLY. What resolves on Windows is a PE
-// executable. A Debian container cannot run it. Resolving "the adapter" and mounting it is therefore not
-// enough for a container: the binary must be executable BY THE CONTAINER'S KERNEL. That is why every entry
-// here is checked, and why an unusable one produces an ACTIONABLE error rather than a container that starts
-// and then cannot find its adapter.
 
 import (
 	"os"
@@ -340,26 +319,8 @@ func ContainerUsable(hostPath, containerGOOS string) (bool, string) {
 	return true, ""
 }
 
-// PreferHostAdapterInContainer reports whether a CONTAINER child should exec the operator's own install
-// rather than the one baked into the runtime image, and says why when it should not.
-//
-// THE HOST WINS WHENEVER IT CAN ACTUALLY RUN THERE. The host install is the one the operator authenticated
-// and the one whose version they chose, and preferring it means a container never depends on the image
-// carrying the CLI at all — so a stale, hand-built or adapter-less image degrades to the host instead of
-// dying with `exec: "claude": executable file not found in $PATH`.
-//
-// THE GATES HERE ARE THE ONLY PLACE THIS IS DECIDED, and every caller reads THEM rather than re-deriving
-// them: the claude adapter (its argv[0]) and the runtime daemon (the container's PATH prefix). That pairing
-// is the point — when the two answered separately they disagreed, and the container exec'd a name nothing on
-// its PATH provided.
-//
-// EACH GATE IS LOAD-BEARING, IN ORDER:
-//  1. no host binary -> nothing to prefer; the image's is the only route.
-//  2. the binary is not something a Linux kernel can exec -> the image's. ContainerUsable answers this, and
-//     it is a PATH-SHAPE check (a .exe suffix), not a header sniff.
-//  3. THE HOST IS NOT LINUX -> the image's. A Mach-O build has no ".exe" suffix, so gate 2 does NOT catch
-//     it; the host GOOS is the only reliable answer, and without it a macOS host would hand a Darwin binary
-//     to a Linux container.
+// THE GATES HERE ARE THE ONLY PLACE THIS IS DECIDED, and every caller reads THEM rather than
+// re-deriving them.
 func PreferHostAdapterInContainer(hostGOOS, hostBin string) (bool, string) {
 	if strings.TrimSpace(hostBin) == "" {
 		return false, "no host install was resolved, so the image's CLI is the only route"

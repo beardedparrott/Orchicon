@@ -144,9 +144,7 @@ func TestCompactConversationSessionTailAlignmentClampsAtZero(t *testing.T) {
 	}
 }
 
-// toolRoundHistory builds the shape that wedges compaction: a user goal, then n complete tool
-// rounds (assistant call + its result), and — when textTail is set — a final text-only assistant
-// reply.
+// toolRoundHistory builds the shape that wedges compaction.
 func toolRoundHistory(rounds int, textTail bool) []Message {
 	hist := []Message{{Role: RoleUser, Content: []Content{{Text: compactTestStr("do the work")}}}}
 	for i := 0; i < rounds; i++ {

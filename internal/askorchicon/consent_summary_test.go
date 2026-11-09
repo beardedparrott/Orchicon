@@ -5,14 +5,8 @@ import (
 	"testing"
 )
 
-// The permission card's text is what an operator decides on, so these pin the
-// two things the reported screenshot got wrong:
-//
-//  1. it dumped Go's own formatting of a nested argument —
-//     "batch_write writes=[map[mode:edit new:type chatBus struct {…]",
-//     truncated mid-struct at 80 chars — instead of saying what would happen;
-//  2. it described the call by its tool name ("batch_write"), which tells an
-//     operator nothing, rather than by its intent ("modify <path>").
+// The permission card's text is what an operator decides on, so these pin the two things the
+// reported screenshot got wrong:
 
 // The exact shape from the report: a batch write whose `writes` value is a []map[string]any,
 // carrying file contents.

@@ -12,8 +12,7 @@ import (
 )
 
 // newStdioTransport is the windows fallback: PDEATHSIG is a Linux/BSD mechanism (unavailable on
-// windows), so orphan prevention relies on the boot-time /proc sweep which does not apply on
-// windows.
+// windows).
 func newStdioTransport(spec ServerSpec) (*stdioSpawn, error) {
 	argv := spec.Command
 	if len(argv) == 0 {

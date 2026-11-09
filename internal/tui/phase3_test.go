@@ -126,9 +126,7 @@ func TestSubmenuOpensByKeyAndSelects(t *testing.T) {
 	}
 }
 
-// TestAskRailEnterSpaceSelectsConversation pins the Ask rail's key contract: while the
-// conversations rail is UP and the composer is empty, Enter/Space open the HIGHLIGHTED
-// conversation.
+// TestAskRailEnterSpaceSelectsConversation pins the Ask rail's key contract.
 func TestAskRailEnterSpaceSelectsConversation(t *testing.T) {
 	newRails := func() *App {
 		m := newRailsApp(120, 40)

@@ -78,9 +78,7 @@ func TestStaleVersionRetryConverges(t *testing.T) {
 	}
 }
 
-// TestStaleVersionRetryDoesNotRetryOtherErrors: a genuine failure must surface immediately —
-// retrying it would turn a fast error into a slow one and could mask a real problem behind the
-// backoff.
+// TestStaleVersionRetryDoesNotRetryOtherErrors: a genuine failure must surface immediately.
 func TestStaleVersionRetryDoesNotRetryOtherErrors(t *testing.T) {
 	t.Setenv("ORCHICON_STALE_VERSION_RETRY_DELAY", "0s")
 	nopLog := slog.New(slog.NewTextHandler(io.Discard, nil))

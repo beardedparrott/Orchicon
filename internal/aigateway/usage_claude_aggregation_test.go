@@ -87,10 +87,7 @@ func TestClaudeUsageAggregationFixtures(t *testing.T) {
 		t.Fatalf("Σ token_class = %v, want 7000 (lossless)", sum)
 	}
 
-	// 4. The COST split prices each class at its OWN catalog rate — the literal
-	//    "cache-read at the cache-read rate" acceptance. Each share equals
-	//    tokens*rate/1e6 because the split renormalizes to the catalog-priced
-	//    total, which IS the weighted sum.
+	// 4.
 	cost := all["orchicon_cost_usd"]
 	wantShares := map[string]float64{
 		tokenClassPrompt:     1000 * 3.0 / 1e6,

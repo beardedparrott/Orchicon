@@ -3,8 +3,7 @@
 package config
 
 // defaults_windows.go — the Windows defaults, and the reason this pair exists rather than one
-// string in config.go: `/var/lib/orchicon` and `/var/run/...` are not paths a Windows user can
-// reach.
+// string in config.go.
 
 import (
 	"os"

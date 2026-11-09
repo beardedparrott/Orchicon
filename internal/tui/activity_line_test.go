@@ -38,9 +38,7 @@ const activityTestServerTime int64 = 1_700_000_123_456
 // THE LINE ESCALATES WITH SILENCE, at the same bands regardless of the word.
 func TestActivityNoticeEscalatesWithSilence(t *testing.T) {
 	verb := "Orchicon is " + chat.VerbAt(activityTestServerTime) + "…"
-	// THE CALLS BELOW PASS (summary="", width=0), which is exactly the state these cases describe: a
-	// turn that counted no tool work (so the counter contributes nothing) and a pane wide enough to
-	// hold.
+	// THE CALLS BELOW PASS (summary="", width=0), which is exactly the state these cases describe.
 	cases := []struct {
 		silent time.Duration
 		want   string

@@ -115,27 +115,8 @@ func collectCatalogRollup(home string, kinds []string) catalogRollup {
 	return r
 }
 
-// catalogVacuityFailures is the PURE catalog-level anti-vacuity check (no
-// *testing.T) so its accept AND reject paths are demonstrable in-test
-// (TestAdapterConsumptionCheckerIsNotVacuous).
-//
-// It is deliberately NOT "every kind must be positive". AC2 explicitly
-// sanctions a kind whose classification is "an explicit declaration naming
-// what it does not do and why" — a documented NEGATIVE. Demanding
-// len(kinds) positives would FAIL a legitimate catalog that contains one,
-// i.e. exactly the future adapter the task anticipates, and the failure would
-// name no kind (violating AC3). So this asserts the axis is genuinely
-// EXERCISED instead:
-//
-//   - at least one kind positively declares perSessionBundle (the per-session
-//     axis is asserted by somebody), and
-//   - every serve-dependent kind carries a positive runUnionAtServe — the
-//     per-kind checker enforces this too, so a serve-dependent catalog with no
-//     run-union positive means the axis is not being asserted at all.
-//
-// Note: "witnessesExamined == 0" needs no separate fatal — conformanceFailures
-// already fails any positive axis with no witnesses, so a clean per-kind pass
-// implies at least one witness was examined.
+// catalogVacuityFailures is the PURE catalog-level anti-vacuity check (no *testing.T) so its accept
+// AND reject paths are demonstrable in-test (TestAdapterConsumptionCheckerIsNotVacuous).
 func catalogVacuityFailures(r catalogRollup) []string {
 	var out []string
 	if r.perSessionPositives < 1 {
@@ -148,8 +129,7 @@ func catalogVacuityFailures(r catalogRollup) []string {
 }
 
 // readSourceFile is the production witness reader: it reads a witness file path RELATIVE TO this
-// package dir (internal/runtime), so witnesses are "../opencode/adapter.go",
-// "../claude/session.go".
+// package dir (internal/runtime).
 func readSourceFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }

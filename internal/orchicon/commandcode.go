@@ -11,9 +11,7 @@ import (
 	"sync"
 )
 
-// CommandCodeClient is the dual-transport Command Code provider (D6): one Bearer key, transport
-// selected PER REQUEST by model id — `claude-*` → POST {base}/provider/v1/messages (Anthropic
-// wire).
+// CommandCodeClient is the dual-transport Command Code provider (D6).
 type CommandCodeClient struct {
 	BaseURL string // default https://api.commandcode.ai (env COMMANDCODE_API_BASE)
 	APIKey  string

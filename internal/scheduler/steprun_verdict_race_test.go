@@ -12,30 +12,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// stepRunVerdictRaceTest — a terminal step run must never be recorded WITHOUT
-// the verdict its execution produced.
-//
-// THE DEFECT (measured, not theorised). A step run's `_decision` is written by
-// the TaskReconciler (propagateStepRunResults, on the execution's completion)
-// while the WORKFLOW reconciler marks the step run terminal from the
-// execution's STATUS, in its own pass. Two reconcilers, two independent scan
-// loops, so there is a window in which the step run is `succeeded` and its
-// Result still carries only the dispatch-time keys.
-//
-// A loop_decision reading it in that window finds no verdict, falls through to
-// the missing-decision branch, and RE-ASKS the reviewer for a decision the
-// reviewer had already given. On run 01M522422MB39XNM0R6819JGXM (SDLC
-// non-human) every loop_decision iteration was created 47-108ms BEFORE the
-// reviewer step run received its `_decision` (loop1 10:32:33.873 vs rev1
-// 10:32:33.981; loop3 10:47:41.073 vs rev2 10:47:41.120). All three re-asks
-// fired on verdicts that already existed, consumed max_reask (default 3), and
-// FAILED the run — while every reviewer execution had itself succeeded and
-// signed off with `ORCHICON WORKER SUMMARY: success`.
-//
-// These tests pin the two halves of the fix:
-//  1. the helper folds the execution's verdict into the terminal mark, and
-//  2. an ALREADY-WRITTEN verdict is never clobbered (the merge is additive, so
-//     the two writers cannot disagree).
+// stepRunVerdictRaceTest — a terminal step run must never be recorded WITHOUT the verdict its
+// execution produced.
 func TestStepRunResultWithVerdictCarriesTheExecutionDecision(t *testing.T) {
 	pool, _, run, ticket := newReconcileRun(t, nil, nil, func(t *testing.T, ttx *db.TenantTx, run db.WorkflowRunRow, ticket db.WorkItemRow) {})
 	ctx := context.Background()

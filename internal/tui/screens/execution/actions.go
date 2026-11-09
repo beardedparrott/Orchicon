@@ -657,20 +657,7 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 		}
 	}
 	if kstr == keyFollowUpLegacy || kstr == keyInterjectLegacy {
-		// The two modals are GONE: one inline box at the bottom of the execution does both jobs, and
-		// WHICH job is decided by the execution's state rather than by which key was pressed
-		// (execution_blocks.go — the GUI's own composer, which has the same single control).
-		//
-		// They are kept as EXPLAINING stubs rather than deleted outright for two reasons, and both
-		// are about the operator rather than the code:
-		//   1. `f` WAS ALSO THE BASE'S PAGER (`kit2.Base.loadMore`, advertised in the pane title as
-		//      "more pages: press f"). One key, two meanings — and the meaning the operator was
-		//      reading was not the one that fired. The chord has to stop claiming `f`, and a stub
-		//      that says where the box went is the honest way to retire muscle memory.
-		//   2. An operator who learned `i` last week should not get silence.
-		//
-		// The stub also moves the cursor INTO the box, so the answer to "where did it go" is the
-		// thing itself rather than a description of it.
+		// The two modals are GONE: one inline box at the bottom of the execution does both jobs.
 		if m.ActiveSourceName() != srcExecutions {
 			return m.refuse("the message box is on the Executions pane — focus it first"), true
 		}
@@ -964,20 +951,6 @@ func (m *Model) rpcSendMessage(ctx context.Context, execID, message string) erro
 // --- helpers ---------------------------------------------------------------
 
 // isLiveExecution reports whether an execution list row is live (cancellable / interjectable).
-//
-// IT TAKES THE ROW'S `Meta`, WHICH IS "<status> · <worker>" — not a bare status. That is the bug this
-// comment exists for: the switch below compared the WHOLE string against a list of bare statuses, so
-// "running · Quick Software Engineer" matched nothing and the function returned false for every live
-// execution. Six call sites passed a row meta and ALL SIX were wrong in the same way:
-//
-//   - `c: cancel` was never offered on a running execution (the action was gated on this);
-//   - the transcript's composer always said "Ask a follow-up" instead of "Message the worker mid-run"
-//     and took the follow-up path for a run that was still executing.
-//
-// The status is the part BEFORE the separator (executionListMeta builds `meta` as the lowered status
-// plus " · " plus the worker name), so the status is read the same way workerStatusOf reads it — up to
-// the first space. A caller that hands a BARE status still works, which is deliberate: the two
-// conventions must not have to agree.
 func isLiveExecution(meta string) bool {
 	switch statusOfMeta(meta) {
 	case "running", "healthy", "stalled", "unhealthy", "dispatching", "queued", "starting", "terminating":

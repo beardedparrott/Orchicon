@@ -16,41 +16,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// Stall detection (docs/06 §2: "stalled health state | no progress within
-// stall window"; docs/03 §5: HealthMonitor recomputes from progress rate
-// + error rate). A worker stuck looping — repeating the same tool calls,
-// making no file changes, or making no token progress — must trigger
-// recovery, not run forever.
-//
-// v0.1 implements this in the OpenCode adapter bridge (the component that
-// parses opencode's stdout telemetry). A full control-plane HealthMonitor
-// that recomputes health from union signals (heartbeat freshness, progress
-// rate, error rate, context-window usage) arrives with Phase 8
-// (telemetry); this is the recovery-trigger floor.
-//
-// Three stall signals (configurable via env, docs/06 §2):
-//   - no_progress:   no step_finish / no new tokens within the window
-//     (ORCHICON_STALL_NO_PROGRESS_WINDOW, default 120s).
-//   - no_file_diff:  no file_diff event within the window
-//     (ORCHICON_STALL_NO_FILE_DIFF_WINDOW, default 180s). A worker that
-//     hasn't modified files in X is likely stuck (docs/06 §2 "stalled").
-//   - repetition:    the same tool_call signature (tool+args) repeated
-//     more than ORCHICON_STALL_REPETITION_COUNT times (default 5) within
-//     the window. Detects the "saying/doing the same things over and
-//     over" loop the user described.
-//
-// When any signal trips, the monitor calls OnStall(execID, reason) which
-// the TaskReconciler uses to trigger recovery (idempotent — docs/06 §9).
-//
-// Fatal signals (no_progress / text_loop / repetition) fire at most once
-// per execution — the hard-kill + recovery they trigger is the response.
-// The no_file_progress signal is ADVISORY: it never kills the subprocess,
-// puts the execution into a non-terminal `stalled` health notice instead
-// of failing it, and revives the execution back to `healthy` via
-// OnRecovered when file progress resumes (see checkRevival). A reviewer
-// or analyst that legitimately produces output for long stretches without
-// touching files must not be reaped mid-flight (observed: the SSE worker
-// was flagged no_file_progress yet completed successfully moments later).
+// Stall detection (docs/06 §2: "stalled health state | no progress within stall window"; docs/03
+// §5: HealthMonitor recomputes from progress rate + error rate).
 
 // stallWindows is the set of tunable stall thresholds. Loaded from env at
 // adapter construction so operators can tighten/loosen per environment.
@@ -91,28 +58,8 @@ func toolHangDefaultWindow() time.Duration {
 	return 600 * time.Second
 }
 
-// stallWindowsFromManifest builds stallWindows from ExecutionManifest
-// settings, with env-var fallback for dev overrides. Zero (unset) values in
-// the manifest fall through to env vars, which fall through to code
-// defaults.
-//
-// stallWindowsFromManifest builds stallWindows from ExecutionManifest settings,
-// with env-var fallback for dev overrides.
-//
-// EVERY field is a POINTER, and the two states are different instructions:
-//
-//   - nil — the tenant left this dimension BLANK in Settings, so it has no
-//     opinion and the env/code default below stands. A never-configured tenant
-//     therefore keeps REAL stall detection rather than silently losing it.
-//   - non-nil — an explicit value. A resolved duration <= 0 DISABLES that check,
-//     which is what an explicit 0 means; every consumer below gates on `> 0`, so
-//     0 needs no special case here. (A negative cannot arrive — the Settings API
-//     rejects it — but would also read as disabled.)
-//
-// This replaces the old overloaded zero, under which 0 meant BOTH "unset" and,
-// on most dimensions, nothing at all — while a negative was the only way to say
-// "off". That made "disabled" unreachable without a counter-intuitive value and
-// made a never-configured tenant indistinguishable from one that chose 0.
+// stallWindowsFromManifest builds stallWindows from ExecutionManifest settings, with env-var
+// fallback for dev overrides.
 func stallWindowsFromManifest(m scheduler.ExecutionManifest) stallWindows {
 	w := defaultStallWindows()
 	if m.StallNoProgressWindowSeconds != nil && os.Getenv("ORCHICON_STALL_NO_PROGRESS_WINDOW") == "" {
@@ -153,16 +100,6 @@ type progressMonitor struct {
 	lastTokenCt          int64     // cumulative tokens (for no-NEW-token detection)
 
 	// tool-call signature history for repetition detection.
-	// signature (tool+args hash) → timestamps within the window.
-	// Two-tier model (D5):
-	//   - sigsErr: ERROR-status tool calls only (result-aware, tier 1).
-	//     A completed call or file_diff resets it (progress resets the
-	//     counters).
-	//   - sigsAll: ANY-status identical signature (tier 2). Catches a
-	//     completed-call loop — e.g. repeatedly re-reading the same file
-	//     without erroring. Resets on genuine forward progress (a
-	//     file_diff / step_finish between identical calls resets the
-	//     count), so legitimate long steps never false-positive.
 	sigsErr map[string][]time.Time
 	sigsAll map[string][]time.Time
 
@@ -352,19 +289,8 @@ func toolUseSignature(part map[string]any) string {
 	return tool + "|" + string(argsJSON)
 }
 
-// normalizeErrorArgs strips volatile content from an ERRORING tool call's
-// args so identical retries collapse to one signature while distinct
-// commands stay distinct. Applied only to erroring calls (see
-// toolUseSignature). It never collapses distinct legitimate commands:
-//   - write -> key on path (drop the volatile content payload). opencode's
-//     write tool emits {filePath, content}.
-//   - edit  -> key on filePath + a stable fingerprint of oldString/newString
-//     so genuinely different edits remain distinct while identical retries
-//     to the same file collapse. opencode's edit tool emits {filePath,
-//     oldString, newString, replaceAll}.
-//   - bash  -> key on the scrubbed command: drop volatile args (timestamps,
-//     temp IDs, long hex/digit tokens), preserving distinct commands
-//     (git status != git log). opencode's shell tool emits {command, ...}.
+// normalizeErrorArgs strips volatile content from an ERRORING tool call's args so identical retries
+// collapse to one signature while distinct commands stay distinct.
 func normalizeErrorArgs(tool string, args any) any {
 	switch tool {
 	case "write":
@@ -497,8 +423,7 @@ func (m *progressMonitor) check() string {
 			}
 		}
 		// Tier 2 (D5): ANY-status identical signature — a completed-call loop (repeatedly re-reading the
-		// same file, re-issuing the same write) is invisible to tier 1 (only erroring calls count) but
-		// must.
+		// same file.
 		tier2N := m.w.repetitionN * 2
 		if tier2N < m.w.repetitionN+3 {
 			tier2N = m.w.repetitionN + 3
@@ -589,21 +514,8 @@ func envInt(key string, fallback int) int {
 // adapter's existing OnHealth path.
 var _ = domain.HealthStalled
 
-// isFatalStall reports whether a stall reason warrants terminating the
-// subprocess (hard kill → recovery) versus being advisory-only.
-//
-// Nudge-first routing (the core reframe): a LOOPING worker is responsive
-// (tokens flowing, tool calls happening) and holds full context — killing
-// it destroys that context and forces a cold recovery re-dispatch. So only
-// a signal with NO responsive surface to nudge stays fatal:
-//
-//   - no_progress: FATAL. Total silence — there is no live session surface
-//     to nudge, so the existing probe-then-escalate machinery handles it.
-//   - text_loop / repetition / no_file_progress: ADVISORY-first. The
-//     worker is generating text / issuing tool calls, so a nudge can reach
-//     it. The session's onStall nudges the live session; only after the
-//     nudge budget is spent (and the worker still hasn't broken the
-//     pattern) does it escalate to a fatal kill + recovery.
+// isFatalStall reports whether a stall reason warrants terminating the subprocess (hard kill →
+// recovery) versus being advisory-only.
 func isFatalStall(reason string) bool {
 	return strings.HasPrefix(reason, "stalled:no_progress")
 }

@@ -74,9 +74,7 @@ type Model struct {
 	// storedToken is the API KEY that a switch away from API-key mode parked, so toggling ctrl+a back
 	// restores it.
 	storedToken string
-	// embedded marks the model as the SHELL's in-place /connect overlay: ctrl+c does not quit the
-	// process (esc cancels), tea.Quit is never emitted on success — the shell polls Result() each
-	// Update.
+	// embedded marks the model as the SHELL's in-place /connect overlay.
 	embedded bool
 	width    int
 	height   int
@@ -370,8 +368,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.authAPI = !m.authAPI
 			m.applyCredentialMode()
 			// The visible field set changes with the mode, and the credential field is not always the same
-			// neighbour — re-seat focus on the first field so the caret is never left inside a field that is
-			// no.
+			// neighbour.
 			m.setFocus(fieldURL)
 			m.errMsg = ""
 			m.info = ""

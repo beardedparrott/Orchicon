@@ -1,17 +1,6 @@
 package claude
 
 // ask_mcp_scope_test.go — the claude Ask half of child 6.
-//
-// WHAT IT PROVES (AC 4, AC 5's claude leg, and the mode policy's claude carrier):
-//
-//   - an Ask conversation resolves the CONVERSATION scope with NON-EMPTY ids — the
-//     conversation's project AND the conversation itself — instead of the old
-//     `{Kind: ScopeProject}` with nothing in it (the defect this closes);
-//   - the resolved set reaches the `--mcp-config` claude is launched with;
-//   - the mode file carries `MayAct`, and an opaque MCP tool is REFUSED with the
-//     shared wording in a mode that may not act (read from the SAME table);
-//   - an operator's MCP tool is ASK-BY-DEFAULT in every mode (pinned, not implied),
-//     while the platform's own `mcp__orchicon__*` is allowed.
 
 import (
 	"context"

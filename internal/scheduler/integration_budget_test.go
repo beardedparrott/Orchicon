@@ -1,18 +1,6 @@
 package scheduler
 
 // integration_budget_test.go — LOCAL INTEGRATION MUST NOT BE STARVED.
-//
-// REPORTED: a green, committed local-strategy run was never integrated; develop's reflog never moved. Two
-// independent defects in the integration path, both mine:
-//
-//  1. STARVATION. integrateLocalRuns ran LAST in scanSlow, sharing the single 15s deadline that three
-//     git-heavy sweeps consume first. On a host where those sweeps are slow, the budget was spent before
-//     integration was reached, so it returned immediately on EVERY pass — forever, while the reconciler
-//     reported itself healthy.
-//  2. THE FILTER EXCLUDED THE CASE IT EXISTS FOR. The candidate query skipped rows with
-//     worktree_status='pruned' — but a completed run whose branch is NOT provably merged has its worktree
-//     pruned and its branch KEPT (markStepPruned runs unconditionally after a refused branch delete). So
-//     "pruned" is precisely the state of an un-integrated run.
 
 import (
 	"os"

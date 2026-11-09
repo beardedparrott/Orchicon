@@ -13,33 +13,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workerrestrict"
 )
 
-// permissions.go maps the PLATFORM's restrictions onto a claude worker session
-// through CLAUDE'S OWN permission mechanism — `--settings <json>` carrying a
-// `permissions` block plus a `hooks.PreToolUse` command — and NEVER through a
-// permission-bypass flag.
-//
-// WHY NOT `--dangerously-skip-permissions`. Every other task in this feature
-// runs a claude process inside a runtime container, and the platform promises
-// the operator that a worker cannot run destructive or out-of-project commands.
-// A bypass launch would silently discard the never-allow class, the protected
-// paths, the operator's policy AND the project boundary for every claude run —
-// a REGRESSION of that promise, worse than the adapter not existing. The
-// mechanism below is the only launch shape this adapter may use, and
-// TestNoBypassPermissionFlagIsEverEmitted fails if a bypass token appears in
-// either the argv or the settings JSON.
-//
-// TWO LAYERS:
-//   - `hooks.PreToolUse` -> `orchicon claude-hook` is the AUTHORITY. It sees the
-//     full tool input (the exact bash command string, the target path) and runs
-//     the SAME matchers internal/opencode's worker profile encodes, so it can
-//     express rules claude's own prefix matcher cannot (the shell-smuggling
-//     globs, the project boundary with its two carve-outs, the protected roots).
-//   - `permissions.deny` is BELT-AND-SUSPENDERS: `Bash(<binary>:*)` for the
-//     shared never-allow class and `Read(...)`/`Edit(...)` for the operator's
-//     policy entries, so a hook that fails to launch still cannot run `sudo` or
-//     read a denied path. Deliberately NOT a translation of the glob patterns —
-//     a second, lossy encoding of the list is exactly what
-//     internal/neverallow/share_test.go exists to prevent.
+// permissions.go maps the PLATFORM's restrictions onto a claude worker session through CLAUDE'S OWN
+// permission mechanism.
 
 // HookBinEnv is the operator/deployment override for the absolute path of the `orchicon` binary the
 // PreToolUse hook command invokes when the session runs as a HOST subprocess (the local.

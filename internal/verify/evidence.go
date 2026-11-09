@@ -1,31 +1,6 @@
 package verify
 
-// evidence.go — the COLLECTOR half. verify.go is the pure decision function; this file is where the
-// facts come from. Split deliberately: the rules in verify.go can be unit-tested against recorded
-// cases without a repository, and this file can be tested against a real one without re-deriving the
-// rules.
-//
-// EVERY CHECK HERE IS ONE OF THREE KINDS:
-//
-//  1. UNIVERSAL — works on any git repository, any language, no project cooperation. HEAD moved;
-//     the files the worker claimed are a subset of the files git recorded; the tree is clean. These
-//     cannot be defeated by a worker that lies, because they read the repository rather than the
-//     report.
-//  2. BASELINE-DIFFERENTIAL — the project's own declared gate, run at the base commit and again at
-//     the step's HEAD, compared as a SET of results. This is the check that removes the entire
-//     "is this failure pre-existing?" argument: the platform measures both ends, so a worker never
-//     has to guess and never has to be trusted about it.
-//  3. DECLARED — the project's `.orchicon/verify` command, which is opt-in because running a command
-//     the platform invented would be worse than running none.
-//
-// A NOTE ON WHAT IS NOT HERE. Claim-vs-telemetry verification (did the `go test` the worker says it
-// ran actually run?) would be the strongest check of the lot, and the opencode adapter does NOT
-// persist tool_use session parts (only text / reasoning / step boundaries — see
-// internal/opencode/session_run.go's recordPart call sites), so the tool-call stream is not
-// available for opencode-backed executions, which is what this platform runs. Rather than build a
-// check that silently abstains on the only adapter in use, the claim is cross-checked against GIT,
-// which every adapter writes to. When tool_use persistence lands for opencode, this is the natural
-// place to add it — the Result shape already accommodates it.
+// evidence.go — the COLLECTOR half.
 
 import (
 	"context"

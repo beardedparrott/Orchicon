@@ -327,9 +327,7 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		}
 	}
 
-	// Idempotency (docs/06 §9): one recovery per failing step run (per failed execution), not per
-	// ticket — two steps failing on the same shared ticket in the same window each get their own
-	// recovery.
+	// Idempotency (docs/06 §9): one recovery per failing step run (per failed execution).
 	if stepRun != nil {
 		if existing, err := db.GetLatestRecoveryForExecution(ctx, ttx.Tx, tenantID, taskID, failedExecID); err == nil {
 			e.log.Info("recovery already recorded for execution (idempotent)",
@@ -662,9 +660,7 @@ func (r *Reconciler) scanRecoveries(ctx context.Context, tenantID string) error 
 	for _, rec := range pending {
 		if err := r.progressRecovery(ctx, tenantID, rec.ID); err != nil {
 			r.log.Warn("recovery reconcile failed", "recovery", rec.ID, "error", err)
-			// RC3 — isolate a poisoned-tx recovery (SQLSTATE 25P01/25P02, or any "current transaction is
-			// aborted" error), which would otherwise be re-read + re-retried on the SAME static recovery id
-			// every.
+			// RC3 — isolate a poisoned-tx recovery (SQLSTATE 25P01/25P02.
 			if isPoisonedRecoveryTx(err) {
 				if merr := r.quarantineRecovery(ctx, tenantID, rec.ID, err); merr != nil {
 					r.log.Warn("recovery reconcile: quarantine failed", "recovery", rec.ID, "error", merr)
@@ -676,8 +672,7 @@ func (r *Reconciler) scanRecoveries(ctx context.Context, tenantID string) error 
 }
 
 // isPoisonedRecoveryTx reports whether a progressRecovery error is a PostgreSQL tx-abort /
-// failed-transaction-commit error that poisons the tx and will deterministically re-fail on the
-// same row.
+// failed-transaction-commit error that poisons the tx and will deterministically re-fail.
 func isPoisonedRecoveryTx(err error) bool {
 	if err == nil {
 		return false
@@ -719,9 +714,8 @@ func (r *Reconciler) quarantineRecovery(ctx context.Context, tenantID, recoveryI
 	return nil
 }
 
-// foldRecoverySummaryToFacts appends the recovery's summary into the run's
-// .orchicon/<run>/facts_learned as a step-attributed entry so ALL of a run's steps see the recovery
-// summary.
+// foldRecoverySummaryToFacts appends the recovery's summary into the run's .orchicon/<run>/facts_learned
+// as a step-attributed entry, so ALL of a run's steps see the recovery.
 func (r *Reconciler) foldRecoverySummaryToFacts(ctx context.Context, tenantID string, rec db.RecoveryExecutionRow) {
 	if rec.Summary == "" {
 		return
@@ -897,16 +891,7 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 			return fmt.Errorf("mark resumed: %w", err)
 		}
 		rec = updated
-		// Resume targets the failing unit:
-		//   - step-run recovery: append the recovery summary to the STEP
-		//     RUN's result (so the re-dispatched step's composite prompt
-		//     and downstream context see it) and leave the shared ticket
-		//     untouched — it stays "running"; the workflow reconciler
-		//     re-dispatches the recovering step run once no active
-		//     recovery remains.
-		//   - standalone recovery: transition the task recovering → ready
-		//     and append the summary to the work item's results
-		//     (docs/02 §2.2 context propagation).
+		// Resume targets the failing unit: - step-run recovery.
 		if stepRun := stepRunForFailedExecution(ctx, ttx.Tx, tenantID, rec.FailedExecutionID); stepRun != nil {
 			merged := map[string]any{}
 			if len(stepRun.Result) > 0 {
@@ -916,8 +901,7 @@ func (r *Reconciler) progressRecovery(ctx context.Context, tenantID, recoveryID 
 				merged["_recovery_summary"] = rec.Summary
 			}
 			// Publish the dead execution's identity + worker so the dispatch path can (a) gate the
-			// .orchicon/worker.recovery file on the SAME worker being re-dispatched and (b) read the dead
-			// session's.
+			// .orchicon/worker.recovery file on the SAME worker being re-dispatched and (b) read the dead.
 			merged["_recovery_execution_id"] = rec.FailedExecutionID
 			failedWorkerID := ""
 			failedWorkerVersion := 0

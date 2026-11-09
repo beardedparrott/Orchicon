@@ -18,9 +18,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/ask"
 )
 
-// ask_parity_test.go — assertions for the Ask Orchicon read-write parity work item: new chat,
-// rename/delete + rail reconcile, the ask-model picker (model_ref on the created conversation),
-// mode.
+// ask_parity_test.go — assertions for the Ask Orchicon read-write parity work item.
 
 type stubAskParity struct {
 	apiv1connect.UnimplementedAskOrchiconServiceHandler

@@ -64,9 +64,7 @@ func TestPoolEnvKeyStabilityAndInvalidation(t *testing.T) {
 		t.Fatalf("host fingerprint change must invalidate the key")
 	}
 
-	// A run whose serve config differs MUST NOT reuse a warm container baked with a stale config — a
-	// container created before the plane channel existed (or carrying a different run's worktree base
-	// /.
+	// A run whose serve config differs MUST NOT reuse a warm container baked with a stale config.
 	withCfg := CreateRequest{Image: "img:v1", Mounts: req.Mounts, ServeConfig: `{"mcp":{"orchicon-plane":{"enabled":true}}}`}
 	keyCfg := poolEnvKey(withCfg, "hostfp")
 	if keyCfg == key {

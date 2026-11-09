@@ -77,8 +77,7 @@ func TestSplitPersistedPathExpandsAndFilters(t *testing.T) {
 
 func TestSplitPersistedPathIsCaseInsensitiveOnVariableNames(t *testing.T) {
 	// WINDOWS ENVIRONMENT NAMES ARE CASE-INSENSITIVE, and the registry routinely disagrees with the
-	// process about spelling: a persisted Path says %SystemRoot% while the process exports
-	// "SYSTEMROOT".
+	// process about spelling.
 	got := SplitPersistedPath(`%SystemRoot%\system32;%windir%`, envList(map[string]string{
 		"SYSTEMROOT": `C:\Windows`,
 		"WinDir":     `C:\Windows`,

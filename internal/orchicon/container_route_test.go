@@ -8,8 +8,7 @@ import (
 )
 
 // TestNativeContainerRouteEnabled pins the always-container routing gate (acceptance C + the
-// local-mode contract): native `bash` routes into the run's container only when a daemon client is
-// wired.
+// local-mode contract).
 func TestNativeContainerRouteEnabled(t *testing.T) {
 	cases := []struct {
 		name      string

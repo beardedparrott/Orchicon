@@ -1,23 +1,6 @@
 package runtime
 
 // pool_reset_test.go — THE PRISTINE RESET AND THE LEASE CONTRACT (AC 1, 2, 5, 6).
-//
-// The warm pool is a SECURITY guarantee, not an optimisation: on release the
-// container is removed and recreated with the identical spec, so nothing from the
-// previous run (installed packages, /tmp, opencode sessions/data) crosses the
-// boundary. Two things make that real rather than aspirational, and both are
-// pinned here:
-//
-//  1. the predecessor is removed FIRST, and the removal WAITS until the engine
-//     has released the name — podman keeps the name reserved for a moment after
-//     `rm -f`, and a create that races it fails a reset into a dropped entry;
-//  2. the replacement re-enters the clean pool ONLY once its serve answers, so a
-//     dud cannot idle there and be handed to the next run.
-//
-// Everything is asserted through the engine seam (Daemon.engineFn / createFn), so
-// the file is hermetic and runs on a host with no container engine installed.
-// AC 1's REAL-engine proof lives in pool_pristine_engine_test.go and is gated on
-// ORCHICON_RUNTIME_TEST_ENGINE.
 
 import (
 	"context"
@@ -272,9 +255,7 @@ func TestResetRemovesBeforeCreatingFresh(t *testing.T) {
 	}
 }
 
-// TestResetWaitsForNameRelease pins D-4's bounded wait: podman can keep the name reserved for a
-// moment after `rm -f`, so the reset must poll until the engine reports the container gone BEFORE
-// it.
+// TestResetWaitsForNameRelease pins D-4's bounded wait.
 func TestResetWaitsForNameRelease(t *testing.T) {
 	h := newResetHarness(t)
 	h.pendingExists = 2 // the engine reports the name still present twice

@@ -1427,9 +1427,7 @@ func TestBlockedStatusMapping(t *testing.T) {
 	}
 }
 
-// TestSkippedStatusMapping pins the skip-status interplay round-trip: the proto→domain and
-// domain→proto maps accept the new SKIPPED enum value so a skipped work item round-trips through
-// the API.
+// TestSkippedStatusMapping pins the skip-status interplay round-trip.
 func TestSkippedStatusMapping(t *testing.T) {
 	if got := validateStatus(apiv1.WorkItemStatus_WORK_ITEM_STATUS_SKIPPED); got != domain.WorkItemSkipped {
 		t.Errorf("validateStatus(SKIPPED) = %q, want %q", got, domain.WorkItemSkipped)

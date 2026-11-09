@@ -1,36 +1,6 @@
 package desktop
 
 // control.go — PLANE CONTROL OVER THE SHELL'S OWN ORIGIN.
-//
-// # WHY THIS IS HTTP AND NOT A WAILS BINDING
-//
-// The SPA is served from the shell's loopback origin, not from Wails' own
-// document, and it has to be: the HttpOnly refresh cookie needs a real http
-// origin, and a Connect server-stream must not be buffered. Wails injects its
-// JS bindings into ITS document only, so on the loopback origin
-// `window.go.planebind` does not exist at all — which is exactly what the
-// operator saw: "Connecting / dev / port unknown / contacting the plane…", with
-// every control inert, because planeControl() resolved to null and the status
-// probe never ran.
-//
-// The two requirements are incompatible on one origin, so plane control moves to
-// the transport that already works: same-origin HTTP to this shell, which
-// delegates straight into internal/planebind — the same package, and therefore
-// the same planecontrol, the CLI and the TUI drive. No second mechanism.
-//
-// # THE THREAT THIS TOKEN ADDRESSES
-//
-// The shell's origin is loopback-only and otherwise unauthenticated. Exposing
-// Start/Stop on it means anything that can POST here can bounce a plane. Two
-// distinct risks, handled differently:
-//
-//   - A MALICIOUS WEB PAGE cannot: it cannot read our responses cross-origin, so
-//     it cannot learn the token, and without it every request is 403. This is the
-//     real reason the token exists.
-//   - A LOCAL PROCESS as the same user can (it can read the served HTML and
-//     scrape the token). That is NOT a privilege escalation and is not pretended
-//     to be blocked: the same user can already run `orchicon plane start dev`.
-//     The loopback bind is the boundary, and it is the same boundary the CLI has.
 
 import (
 	"context"

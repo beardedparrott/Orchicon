@@ -1,19 +1,6 @@
 package orchicon
 
-// Regression tests for the PR-Reviewer blockers on the session engine
-// (ADR-0007 implementation):
-//   - B2: a panic contained at the session boundary (Session.Run recovers
-//     and fires OnResult(false, ...) then returns ErrPanic) must NOT
-//     double-terminate the execution. NativeBridge.Start must return nil
-//     once the terminal OnResult fired, so the reconciler's
-//     startExecution does not also markFailedToStart + requeue.
-//   - B3: the transcript must live under manifest.ProjectDir (the
-//     authoritative project dir from the execution manifest, ADR-0007),
-//     not under the bridge's construction-time projectDir — a shared
-//     bridge must resolve each execution's transcripts per-execution.
-//   - The ContinueSession tenant check is a real cross-tenant refusal
-//     (the old check compared prior.TenantID against itself — a
-//     tautology that never refused anything).
+// Regression tests for the PR-Reviewer blockers on the session engine (ADR-0007 implementation).
 
 import (
 	"context"

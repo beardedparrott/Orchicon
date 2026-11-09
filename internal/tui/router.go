@@ -81,32 +81,6 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 		},
 		{
 			// STOP THE IN-FLIGHT REPLY — the GUI's Stop button, on a key.
-			//
-			// The operator: "I realized there is no stop button like in the GUI. We need a stop
-			// button/control key + hint in composer that can interrupt the agent mid flight."
-			//
-			// WHY ctrl+y. Every other candidate is taken or is an EDITING key, and stealing an
-			// editing key would break typing to add a feature:
-			//   - the textarea's own keymap claims ctrl+k (delete after cursor), ctrl+w (delete word
-			//     backward), ctrl+u (delete before cursor), ctrl+b/ctrl+f (character movement),
-			//     ctrl+n/ctrl+p (line movement), ctrl+a/ctrl+e (line start/end), ctrl+v (paste) and
-			//     ctrl+t (transpose) — see bubbles textarea's DefaultKeyMap;
-			//   - ctrl+i IS tab and ctrl+j IS enter (control bytes 0x09 / 0x0a, measured — the composer
-			//     treats ctrl+j as Enter for exactly this reason), and ctrl+q is what ctrl+1 arrives as
-			//     on many emulators (the tab-chord note in app.go);
-			//   - ctrl+x (rail bulk-delete), ctrl+n (rename), ctrl+t (categorize), ctrl+s (form save),
-			//     ctrl+z (escalate), ctrl+d (diff), ctrl+r (rail), ctrl+g (focus) and ctrl+c (quit) are
-			//     already bound here.
-			// ctrl+y is free, is not an editing key in this textarea, and reads as "yield" — hand
-			// control back to the operator.
-			//
-			// IT IS A GLOBAL ROUTE so it works from the content pane as well as from the composer (the
-			// GUI's Stop button is on screen whatever the operator is doing), and it sits BELOW the
-			// screen-claims gate on purpose: a screen with an open form claims every key, so ctrl+y can
-			// never silently stop a reply while the operator is filling in a form.
-			//
-			// A KeyRoute.Handle cannot return a Cmd, so the abort is STAGED and re-emitted by
-			// drainStaged — the same pattern the diff-pane and rail routes use.
 			Name: "stop the in-flight reply (interrupt the agent)", Keys: "ctrl+y", Scope: "global",
 			Match: keyMatcher("ctrl+y"),
 			Handle: func(m *App, _ tea.Msg) bool {
@@ -213,24 +187,8 @@ func GlobalKeyRoutes(tabs []Tab) []KeyRoute {
 			Match:  keyMatcher("ctrl+down"),
 			Handle: func(m *App, _ tea.Msg) bool { return m.splitWidthReset() },
 		},
-		// THE ASK TRANSCRIPT'S SEARCH + JUMP KEYS, registered here so the `?` overlay
-		// names them (help renders FROM this registry; app_test asserts the parity).
-		//
-		// THE GATE IS THE WHOLE DESIGN, AND IT IS NOT ONE GATE:
-		//
-		//   - n/N need a SEARCH to step and a keyboard that can spare a bare LETTER, so they
-		//     stay gated on Ask-transcript CONTENT focus. A letter in the composer is the
-		//     operator's message — the rule composerBypassKeys exists for — so a search key
-		//     must never reach it.
-		//   - home/end are NOT letters and have no other meaning on this pane, so they follow
-		//     transcriptJumpKeysActive: the transcript owns them from the content pane AND
-		//     while the COMPOSER is empty — where Home/End are no-ops in the textarea and
-		//     were being swallowed there. That is the operator's "the new home/end keys are
-		//     not jumping to the top or bottom of a conversation".
-		//
-		// Every one of them acts through the same helpers (jumpTranscriptKey /
-		// scrollTranscriptKey), so the chords, the find box and /find cannot drift. See
-		// transcript_search.go.
+		// THE ASK TRANSCRIPT'S SEARCH + JUMP KEYS, registered here so the `?` overlay names them (help
+		// renders FROM this registry; app_test asserts the parity).
 		{
 			Name: "Ask transcript: next search match", Keys: "n", Scope: "global",
 			Match: keyMatcher("n"),
@@ -661,9 +619,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 			return m.passToScreen(msg)
 		}
 	}
-	// Ask rail SELECTION: while the conversations rail is up and the composer is empty, Enter/Space
-	// open the highlighted conversation (the operator's "I should be able to move up/down with arrow
-	// keys.
+	// Ask rail SELECTION: while the conversations rail is up and the composer is empty.
 	if isKey && m.TabMenu() == nil && m.active == TabAsk && m.railVisible() &&
 		strings.TrimSpace(m.dock.Value()) == "" &&
 		k.String() == "enter" {
@@ -702,8 +658,7 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		return m, cmd
 	}
 	// Composer focus (the launch default): KEY messages go to the dock first (typing works
-	// immediately), EXCEPT the shell's structural chords — tab switches, ctrl+r rail toggle, q quit,
-	// ctrl+c.
+	// immediately).
 	if m.chatFocus == focusComposer {
 		if k, isKeyMsg := msg.(tea.KeyMsg); isKeyMsg {
 			// Empty composer: the vertical keys drive the conversation list when the conversations rail is up
@@ -1044,9 +999,7 @@ func (m *App) dispatchMouse(mo tea.MouseMsg) (*App, tea.Cmd) {
 	// must genuinely focus the input, not only rely on the launch default).
 	if mo.Action == tea.MouseActionPress && mo.Button == tea.MouseButtonLeft {
 		inDiffRail := m.diffOpen && mo.X < m.diffPaneWidth()
-		// The slide-out conversation strip owns its own rows: its header carries [minimize] and [continue
-		// in conversations], and clicking the body just keeps the composer focus (it is part of the
-		// compose.
+		// The slide-out conversation strip owns its own rows.
 		if !inDiffRail && m.panelVisible() {
 			if top := m.panelTopRow(); top >= 0 && mo.Y >= top && mo.Y < top+m.panelRows() {
 				if mo.Y == top {
@@ -1205,8 +1158,7 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 	case chat.StreamDoneMsg:
 		return tea.Batch(m.onStreamDone(msg), m.waitChat())
 	// NO ConsentAskMsg / ConsentResolvedMsg CASES: an ask and its resolution now reach the store
-	// DIRECTLY from the turn's goroutine (appEventStore.ShowConsentAsk / SettleConsentAsk) instead of
-	// riding.
+	// DIRECTLY from the turn's goroutine (appEventStore.ShowConsentAsk / SettleConsentAsk).
 	case chat.PermissionGrantsMsg:
 		// The SERVER's answer to a list or a revoke (see App.ConsentGrants / ConsentRevoke). It carries the
 		// refreshed list in BOTH cases, so this client never keeps its own copy to drift.
@@ -1266,9 +1218,8 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		m.refreshComposerHint()
 		// Load the durable transcript and the session metrics EXPLICITLY.
 		cmds = append(cmds, m.chat.OpenConversation(msg.convID), m.refreshMetrics())
-		// The new conversation has no detail open: without a RequestDetail the onChatWake
-		// DetailID()==chatConvID guard never passes and the fresh turn's chunks land in chatStore but never
-		// repaint (first.
+		// The new conversation has no detail open: without a RequestDetail the onChatWake DetailID()==chatConvID
+		// guard never passes, so the fresh turn's chunks land in chatStore and are never rendered.
 		if s := m.screens[TabAsk]; s != nil {
 			if rd, ok := s.(interface {
 				RequestDetail(src, id string) tea.Cmd

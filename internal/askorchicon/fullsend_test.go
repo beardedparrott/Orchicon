@@ -1,21 +1,6 @@
 package askorchicon
 
 // fullsend_test.go — FULLSEND at the CONSENT layer.
-//
-// The mode has two enforcement points (this decision path and the host-suite guard shim
-// a bash subprocess runs under; the shim's half is pinned in guard_fullsend_test.go).
-// What is pinned HERE is the boundary of the waiver at the point the operator experiences
-// it: which actions stop raising a card, and which keep refusing.
-//
-// The three properties these tests exist for:
-//
-//  1. A write that would have raised a card proceeds instead, and does so SILENTLY — the
-//     point of the mode is not to ask, so an implementation that proceeded but still
-//     emitted a card would be the worst of both.
-//  2. A DENY entry still refuses, for the reason the whole mode is safe: a deny is a
-//     policy DECISION, not a permission request, so there is no prompt to waive.
-//  3. The never-allow binary class still refuses, because it is refused before any
-//     permission decision is reached.
 
 import (
 	"context"

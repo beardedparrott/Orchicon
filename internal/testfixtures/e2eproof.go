@@ -286,9 +286,7 @@ type EvidenceRecord struct {
 
 var evidenceMu sync.Mutex
 
-// EvidencePath resolves the JSONL sink: ORCHICON_E2E_EVIDENCE when set, else
-// <repo>/.gotmp/e2eproof/evidence.jsonl (the repo root is found by walking up from the working
-// directory to go.mod.
+// EvidencePath resolves the JSONL sink: ORCHICON_E2E_EVIDENCE when set.
 func EvidencePath() string {
 	if p := strings.TrimSpace(os.Getenv("ORCHICON_E2E_EVIDENCE")); p != "" {
 		return p

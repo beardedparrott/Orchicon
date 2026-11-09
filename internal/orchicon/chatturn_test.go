@@ -571,9 +571,7 @@ func TestChatTurnClientToolRoundTrip(t *testing.T) {
 	}
 }
 
-// TestChatTurnClientToolFailureIsAResult pins the recovery contract: a failing tool call is
-// recorded as an error tool result and the turn continues (the model sees it) — never a turn
-// failure.
+// TestChatTurnClientToolFailureIsAResult pins the recovery contract.
 func TestChatTurnClientToolFailureIsAResult(t *testing.T) {
 	prov := &chatTestProvider{rounds: [][]Event{
 		{

@@ -10,24 +10,6 @@ import (
 )
 
 // Per-run container BOOT PROFILE.
-//
-// A runtime container's boot profile is the set of adapter kinds its step
-// workers resolve to (adapter.AdapterKind over each step worker's
-// model_ref, sorted + deduped). It rides the create request
-// (CreateRequest.AdapterKinds) from the plane to the daemon, which derives
-// from it:
-//
-//   - which adapter installs the container gets mounted (the conditional
-//     ~/.opencode config/auth/CLI mounts — a native-only run mounts none of
-//     them), and
-//   - which in-container serves it warms at create time (today exactly one:
-//     the opencode serve).
-//
-// The profile is the RUN-LEVEL half of the ONE shared demand-set primitive
-// (adapter.DemandSet / adapter.AdapterDemandSet, Task C): the run-start gate
-// and the host serve accumulate the same per-worker model refs into the same
-// primitive, so the run's boot profile and the host serve lifecycle can
-// never drift (AC 7 — no forked second computation).
 
 // nativeAdapterKind is the dispatcher-registered native bridge kind (ADR-0004): its sessions
 // execute INSIDE the run's container through the supervisor's one-shot exec path.
@@ -269,8 +251,7 @@ func AdapterHostMountRoots(home string, kinds ...string) []string {
 }
 
 // adapterHostMounts returns the daemon -v args for the adapter installs a demanded kind
-// contributes, emitting only installs whose probe exists with the required file/dir shape
-// (mirroring.
+// contributes.
 func adapterHostMounts(home string, kinds ...string) []string {
 	if home == "" {
 		return nil
@@ -465,25 +446,7 @@ func imageSuppliesAdapter(kind string) (imageAdapterKind, bool) {
 	return imageAdapterKind{}, false
 }
 
-// CheckAdaptersForContainer reports, for the run's demanded adapter kinds, any kind that CANNOT be served in
-// the container by ANY route — the image, or a mountable host install — and says why.
-//
-// IT USED TO REPORT "the host's adapter is a Windows executable", and that refusal was correct while the host
-// mount was the ONLY source: the container would start and the first session spawn would fail on an exec
-// format nothing pointed at. It became a hard stop for every container create once the image started shipping
-// the adapter, because the host's binary format stopped being the question.
-//
-// THE RULE NOW, in order:
-//
-//  1. THE IMAGE SUPPLIES IT -> fine, whatever the host has. The host may still contribute credentials; its
-//     binary being a PE is irrelevant, and on Windows that is the difference between container mode working
-//     and not working at all.
-//  2. NOT IN THE IMAGE, but the host has a runnable (Linux) binary -> fine, it is bind-mounted as before.
-//  3. NEITHER -> a real problem, reported per kind with the two remedies.
-//
-// A kind with NO host adapter at all is still not an error on its own: an absent adapter may simply be unused
-// by a workflow whose steps do not resolve to it, and "not installed" has a different remedy from "the wrong
-// kind of binary".
+// IT USED TO REPORT "the host's adapter is a Windows executable".
 func CheckAdaptersForContainerWith(home string, kinds ...string) []string {
 	if strings.TrimSpace(home) == "" {
 		// NO HOME CONFIGURED MEANS NO ADAPTER IS MOUNTED, so there is nothing to judge.

@@ -114,9 +114,7 @@ func TestOllamaNativeDoneChunkCarriesToolCalls(t *testing.T) {
 	}
 }
 
-// AC (decoder-level, 3/3): ollama batches MULTIPLE tool calls into one chunk — every one must
-// surface, in wire order, with unique indices and ids (the old first-only early return silently
-// lost.
+// AC (decoder-level, 3/3): ollama batches MULTIPLE tool calls into one chunk.
 func TestOllamaNativeMultiToolCallsInOneChunk(t *testing.T) {
 	_, ts := newNativeTestClient(t, ndjsonLines(
 		`{"message":{"tool_calls":[`+

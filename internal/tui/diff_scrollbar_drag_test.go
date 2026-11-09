@@ -1,21 +1,6 @@
 package tui
 
 // diff_scrollbar_drag_test.go — GRABBING THE DIFF RAIL'S SCROLLBAR.
-//
-// The operator: "the scroll only works in the TUI by using the scroll wheel. I can't grab onto the scroll bar
-// and drag it up and down like you can in the GUI."
-//
-// There were TWO defects behind that sentence, and this file pins both:
-//
-//   1. The bar occupied the pane's LAST cell, which is the shell's rail-RESIZE handle. A press there was
-//      claimed as a resize before the pane saw anything — so the bar could not be clicked either, and
-//      "grabbing" it resized the rail.
-//   2. Even with a column of its own, a drag cannot be handled inside the pane: a left press in the rail sets
-//      a SELECTION REGION and clipState consumes the motion that follows, so the pane would win the press and
-//      lose every step after it.
-//
-// So the gesture is the shell's, claimed above the clipboard layer — exactly like the divider's resize, whose
-// own comment documents the same trap.
 
 import (
 	"strings"

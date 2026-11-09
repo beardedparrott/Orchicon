@@ -38,9 +38,7 @@ func startOrchPtyPlaneGate(t *testing.T, bin, planeURL, home string) *ptySession
 	return s
 }
 
-// TestPTYPlaneStateCommand is the gate: the shell launches, the plane state is on screen with a
-// remedy naming the fix, and `/plane` typed into the composer actually runs (the "probing the
-// plane".
+// TestPTYPlaneStateCommand is the gate: the shell launches.
 func TestPTYPlaneStateCommand(t *testing.T) {
 	skipInteractivePTY(t)
 	if testing.Short() {

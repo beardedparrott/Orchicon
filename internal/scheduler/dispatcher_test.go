@@ -10,8 +10,7 @@ import (
 )
 
 // fakeBridge is a minimal AdapterBridge test double (Start only) used to prove that bridges
-// register, resolve by kind, and that capabilities are negotiated by type-assertion rather than
-// assumed.
+// register.
 type fakeBridge struct {
 	name string
 }

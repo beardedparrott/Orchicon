@@ -170,9 +170,7 @@ func TestFmtElapsedMatchesTheGUIsForms(t *testing.T) {
 	}
 }
 
-// A NEGATIVE SPAN IS CLAMPED, not printed as a minus sign: an end before its start is a clock
-// disagreement between this machine and the plane, and the operator needs to know the job is
-// running.
+// A NEGATIVE SPAN IS CLAMPED, not printed as a minus sign.
 func TestFmtElapsedClampsANegativeSpan(t *testing.T) {
 	if got := FmtElapsed(-30 * time.Second); got != "<1s" {
 		t.Errorf("FmtElapsed(-30s) = %q, want the clamp (\"<1s\")", got)

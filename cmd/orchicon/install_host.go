@@ -14,24 +14,6 @@ import (
 )
 
 // ensureHostDataDir prepares the HOST data dir before the plane starts, PRESERVING THE KEK.
-//
-// THE KEK LIVES AT <DataDir>/secrets/kek, so pointing an instance at a data dir without carrying it over
-// ORPHANS EVERY TENANT SECRET — the data is still there and simply stops decrypting. Two rules follow, and
-// both are kept here even though the docker-volume COPY this function used to perform is gone:
-//
-//   - An EXISTING <DataDir>/secrets/kek is never overwritten and never re-minted. It is the operator's key
-//     material and the difference between a working instance and a decryptable-looking one.
-//   - A data dir that ALREADY HOLDS INSTANCE STATE (blobs/, serve/, ports.json, a postgres cluster) with NO
-//     KEK is a FATAL error, not a warning: minting a fresh KEK there orphans every tenant secret, and a
-//     warning on stdout is exactly how that goes unnoticed.
-//   - AN OPERATOR-MANAGED KEK IS NOT A MISSING KEK. secretcrypto.ResolveKEK returns an ORCHICON_SECRETS_KEK
-//     override VERBATIM and never writes <DataDir>/secrets/kek, so a deployment that supplies one — a
-//     documented mode that planeEnv deliberately inherits — reaches the guard below with a populated data dir
-//     and no key FILE. The key is not lost, it is supplied from outside, and the guard must not fire.
-//
-// WHY THE VOLUME COPY IS GONE: the container shape that wrote a docker volume is being retired, so there is
-// no container-era volume to migrate FROM on a fresh install. What must survive is the FAIL-SAFE, and it is
-// strictly stronger now — the guard runs on every install, not just the first switch-over.
 func ensureHostDataDir(instance, hostDataDir string, out io.Writer) error {
 	kekPath := filepath.Join(hostDataDir, "secrets", "kek")
 	if _, err := os.Stat(kekPath); err == nil {

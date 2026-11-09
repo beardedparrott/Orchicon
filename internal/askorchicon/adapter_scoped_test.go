@@ -10,8 +10,7 @@ import (
 )
 
 // ownerKindClient is a minimal scheduler.ChatTurnClient stub whose only job is to report a
-// SessionOwnerKind (it is never driven — adapterScopedSessionID only type-asserts it for
-// SessionOwnerKind).
+// SessionOwnerKind (it is never driven.
 type ownerKindClient struct {
 	kind string
 }

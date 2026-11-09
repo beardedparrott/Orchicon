@@ -269,20 +269,7 @@ const (
 	WorkflowRunPaused    = "paused"
 )
 
-// WorktreeStatus — the WorktreeReconciler's per-run working-tree
-// provisioning states, shared between workflow_runs.worktree_status and
-// worker_executions.worktree_status:
-//   - pending: not yet provisioned (the default; self-healing for runs
-//     armed before the columns existed).
-//   - ready: the isolated working tree exists; worktree_path +
-//     worktree_branch are recorded.
-//   - skipped: the project is not a git work tree — the run proceeds in
-//     place (the non-repo fallback work item consumes this decision).
-//   - failed: provisioning errored; the run proceeds in place (today's
-//     behavior) and the DAG gate / cwd wiring is the execution-cwd
-//     companion's job.
-//   - pruned: the working tree was reaped after the run (set by the
-//     pruning task on worker_executions.worktree_status).
+// WorktreeStatus — the WorktreeReconciler's per-run working-tree provisioning states.
 const (
 	WorktreePending = "pending"
 	WorktreeReady   = "ready"
@@ -291,24 +278,8 @@ const (
 	WorktreePruned  = "pruned"
 )
 
-// StepKind — the five step types (docs/02 §2.4):
-// StepKind enumerates the step types a workflow author can place on the
-// canvas (docs/02 §2.4, docs/10 §5.1). Stored as a string in StepWire
-// (workflow_versions.steps JSON) so the wire format is stable across
-// proto renumbering.
-//
-//   - task: a worker node. Processes the work item(s) connected to its
-//     input edge and captures the output summary at its output edge.
-//   - decision: branches based on a prior step's result (reserved).
-//   - approval: blocks until a human approves (gate).
-//   - parallel: fans out to multiple sub-steps, joins on completion.
-//   - recover: invokes a recovery workflow.
-//   - work_item: a passive marker for a work item. Holds the work
-//     item's metadata as context for the downstream worker. Does not
-//     dispatch by itself.
-//   - project: a passive marker for the project that scopes the
-//     downstream work items. Sets the workflow's project_id on the
-//     first reconcile pass.
+// StepKind — the five step types (docs/02 §2.4): StepKind enumerates the step types a workflow
+// author can place on the canvas (docs/02 §2.4, docs/10 §5.1).
 const (
 	StepKindTask         = "task"
 	StepKindDecision     = "decision"

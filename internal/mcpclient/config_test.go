@@ -8,9 +8,7 @@ import (
 	"testing"
 )
 
-// ProvenanceString is order-stable, names the supplying scope per server, and NEVER touches
-// Env/Headers (which the caller replaces with resolved plaintext before the connection is
-// established).
+// ProvenanceString is order-stable, names the supplying scope per server.
 func TestProvenanceString(t *testing.T) {
 	got := ProvenanceString([]ScopedServer{
 		{

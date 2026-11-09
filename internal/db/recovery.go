@@ -173,8 +173,7 @@ func ListRecoveries(ctx context.Context, tx pgx.Tx, f ListRecoveriesFilter) ([]R
 	args := []any{f.TenantID}
 	if f.AfterID != "" {
 		// Keyset pagination on the (triggered_at, id) tuple — replaces the old bare `id < $2` cursor that
-		// only approximated the triggered_at DESC ordering (id and trigger time drift for
-		// backfilled/edited.
+		// only approximated the triggered_at DESC ordering (id and trigger time drift.
 		q += fmt.Sprintf(` AND (triggered_at, id) < (SELECT triggered_at, id FROM recovery_executions WHERE tenant_id = $1 AND id = $%d)`, len(args)+1)
 		args = append(args, f.AfterID)
 	}

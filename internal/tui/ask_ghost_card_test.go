@@ -1,26 +1,7 @@
 package tui
 
-// ask_ghost_card_test.go — THE GHOST PHASE: a card the SERVER still lists as open must never be settled
-// or dropped by a CLIENT-SIDE inference about the turn.
-//
-// The operator, verbatim: "Every once in awhile, a card will still be in this ghost phase where it shows
-// up and then goes away before I can answer the card repeatedly. It forces me to go into the GUI to accept
-// or deny the card or type my response."
-//
-// THE MECHANISM. settleStaleConsent used to fire on `!runningFor(convID)`, and runningFor is
-// IsStreaming || the POLLED turn_in_flight row. Neither half is real evidence about the ask:
-//
-//   - a WATCH RE-DIAL's passive close clears the local slot, so IsStreaming goes false on a turn that is
-//     still running;
-//   - the polled turn_in_flight row is stale by construction and ABSENT for a conversation off the current
-//     rail page (the rail is paginated).
-//
-// Together they made `runningFor` false for a LIVE turn, the sweep settled the still-open card,
-// `replace` dropped it (its retention rule was pending-only), and DiscoverPendingAsks re-added it
-// from the server on the next attach/poll: add → settle → drop → re-add. That is the flicker.
-//
-// THE FIX, pinned here: settle on EVIDENCE (the server's open-ask list, or a recorded outcome row), never
-// on an inferred turn state. A dead ask still settles; a live one never does.
+// ask_ghost_card_test.go — THE GHOST PHASE: a card the SERVER still lists as open must never be
+// settled or dropped by a CLIENT-SIDE inference about the turn.
 
 import (
 	"strings"
@@ -82,9 +63,7 @@ func TestAGhostCardSurvivesTheReportedSequenceWhileTheServerStillListsIt(t *test
 		t.Fatal("fixture: the slot must be armed before the close, or the reproduction measures nothing")
 	}
 
-	// 1. THE STREAM CLOSE. `ended` is true for the slot's own generation; EndStream clears the slot and
-	//    the conversation row is absent, so `runningFor` becomes FALSE — the exact input that used to make
-	//    settleStaleConsent settle a still-open card.
+	// 1.
 	gen := m.chat.CurrentGen("c1")
 	m.onStreamDone(chat.StreamDoneMsg{ConvID: "c1", Gen: gen})
 	if m.runningFor("c1") {
@@ -105,9 +84,7 @@ func TestAGhostCardSurvivesTheReportedSequenceWhileTheServerStillListsIt(t *test
 		t.Fatalf("a transcript load dropped/settled the still-open card, got (dec=%q present=%v)", dec, ok)
 	}
 
-	// 3. THE SERVER'S OWN ANSWER: discovery lists the ask as still open and re-draws it (idempotent).
-	//    It cannot settle the card — discovery only ADDS (see ShowDiscoveredAsks) — and there is still
-	//    exactly ONE.
+	// 3.
 	m.ShowConsentAsk(ask)
 	if dec, ok := consentCopy(m.chatStore, "c1", "ask-1"); !ok || dec != "" {
 		t.Fatalf("the server lists the ask as open, so the card must stay answerable, got (dec=%q present=%v)", dec, ok)

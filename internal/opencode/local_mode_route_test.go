@@ -55,8 +55,7 @@ func TestRuntimeModeStillRoutes(t *testing.T) {
 }
 
 // TestEmptyExecutionModeRoutesToAContainerAndThatIsTheTrap states the zero-value behaviour OUT
-// LOUD, because it is the mechanism of the defect and the reason startExecution must always
-// COMPUTE.
+// LOUD.
 func TestEmptyExecutionModeRoutesToAContainerAndThatIsTheTrap(t *testing.T) {
 	m := scheduler.ExecutionManifest{RuntimeWorkflowID: "run-1"} // ExecutionMode left empty
 	if !runtimeContainerRouteEnabled(true, m) {

@@ -89,8 +89,7 @@ func AdmitInPlaceRun(ctx context.Context, tx pgx.Tx, tenantID, projectID string,
 		return false, fmt.Errorf("db: admit in-place run: lock project: %w", err)
 	}
 	// Count currently-admitted in-place runs: non-terminal workflow runs of the project whose
-	// worktree_status='skipped' (the run-level token that says "this run executes in the shared
-	// project_dir").
+	// worktree_status='skipped' (the run-level token that says "this run executes in the shared.
 	var active int
 	err = tx.QueryRow(ctx,
 		`SELECT count(*) FROM workflow_runs

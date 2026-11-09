@@ -170,8 +170,7 @@ func openAskDiffPane(t *testing.T, s *ptySession, cols, rows int) *screen {
 	_, _ = s.tty.WriteString("\x04")
 	waitForFrame(t, s, cols, rows, 6*time.Second, "Timeline")
 	// Drop keyboard focus to the CONTENT so the pane owns j/k/G/h/l (the shell launched
-	// composer-focused; esc from an empty composer moves focus down, it does NOT close the still-empty
-	// pane).
+	// composer-focused.
 	_, _ = s.tty.WriteString("\x1b")
 	time.Sleep(500 * time.Millisecond)
 	return replay(t, s, cols, rows)

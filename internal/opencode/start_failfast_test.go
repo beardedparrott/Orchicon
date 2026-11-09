@@ -41,8 +41,7 @@ func hermeticBinaryResolver() (string, error) {
 }
 
 // stubBinaryEnv trims the session-setup retry loop: stubbed-binary runs fail with "no opencode
-// serve available" every attempt, and the default loop (4+3 attempts, growing backoff) would stall
-// CI.
+// serve available" every attempt.
 func stubBinaryEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("ORCHICON_SESSION_REPAIR_ATTEMPTS", "0")
@@ -74,9 +73,7 @@ func TestStartFailsFastWithoutServe(t *testing.T) {
 	}
 }
 
-// TestStartFailsFastWhenTransportDisabled verifies the kill-switch now means fail-fast: with
-// ORCHICON_OPCODE_SESSION_TRANSPORT=0 the session transport is disabled and Start returns an error
-// (no.
+// TestStartFailsFastWhenTransportDisabled verifies the kill-switch now means fail-fast.
 func TestStartFailsFastWhenTransportDisabled(t *testing.T) {
 	t.Setenv("ORCHICON_OPCODE_SESSION_TRANSPORT", "0")
 	stubBinaryEnv(t)

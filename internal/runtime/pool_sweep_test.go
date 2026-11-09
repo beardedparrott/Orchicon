@@ -159,8 +159,7 @@ func TestSweepRunsOncePerInstance(t *testing.T) {
 }
 
 // TestSweepRetriesAfterAFailedListing pins that a transient docker failure does not spend the one
-// claim: the cleanup is deferred to the next lease rather than lost for the daemon's whole
-// lifetime.
+// claim.
 func TestSweepRetriesAfterAFailedListing(t *testing.T) {
 	var mu sync.Mutex
 	fail := true

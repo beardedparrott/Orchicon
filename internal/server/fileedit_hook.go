@@ -9,36 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
 
-// newFileEditHook builds the adapter's file-edit ledger hook: the execution
-// population's ingestion point for the diff pipeline (file_edit_ledger).
-// Extracted as a named constructor (not an inline closure) so regression
-// tests can invoke the exact production wiring with a fake store.
-//
-// Ingestion rule per tool name:
-//   - "write" / "edit": since the composite-tools rollout these names denote
-//     BOTH the worktree engine's single-op wrappers (whose ground truth rides
-//     the structured `file_edits` output) AND the opencode built-in file tools
-//     (observed plane-side via an after-snapshot). The engine payload is tried
-//     FIRST — it is exact — and the observer fallback runs only when the
-//     output carries no file_edits payload (genuine built-in usage). Routing
-//     write/edit exclusively down the observer path silently dropped every
-//     successful single-op engine edit (the live-run gap).
-//   - "batch_write": engine tool, structured output only.
-//   - "file_diff": adapter fallback for paths no known mutating tool covered.
-//   - virtual tools (write_artifact, todowrite*): no file touched, ignored.
-//
-// Failed tool calls never reach Record: an error-state output carries no
-// file_edits payload (parsed 0 → observer fallback → empty Entry → dropped),
-// and the adapter gates non-completed statuses before invoking the hook.
-//
-// ownerKind is the ledger owner kind every row this hook writes carries, and
-// it is a PARAMETER rather than a constant because the SAME hook serves two
-// populations: worker executions (db.FileEditOwnerExecution, owner id = the
-// execution id) and native Ask conversations (db.FileEditOwnerAskConversation,
-// owner id = the conversation id). Both clients query the Ask pane by
-// (ask_conversation, <conversation id>), so the native Ask funnel must ledger
-// under that exact tuple or its live rows are unqueryable and only the
-// post-turn git sweep shows anything.
+// newFileEditHook builds the adapter's file-edit ledger hook: the execution population's ingestion
+// point for the diff pipeline (file_edit_ledger).
 func newFileEditHook(feSvc *fileedit.Service, log *slog.Logger, ownerKind string) opencode.FileEditHookFunc {
 	// Per-execution built-in tool observers: on the first opencode built-in write/edit for a run, an
 	// Observer is created rooted at the run's exec dir (worktree or project dir).

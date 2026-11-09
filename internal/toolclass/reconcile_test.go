@@ -51,9 +51,7 @@ func TestClassifierAgreesWithExistingMutatingDefinitions(t *testing.T) {
 	}
 }
 
-// TestClassifierReadBucketAgreesWithConsentReadOnly is the rest of AC9's "reconciled, not
-// duplicated": the read names are already defined by orchicon.ConsentReadOnlyTools
-// (chatturn.go:1589-1591).
+// TestClassifierReadBucketAgreesWithConsentReadOnly is the rest of AC9's "reconciled.
 func TestClassifierReadBucketAgreesWithConsentReadOnly(t *testing.T) {
 	if len(orchicon.ConsentReadOnlyTools) == 0 {
 		t.Fatal("orchicon.ConsentReadOnlyTools is empty — this test would pass vacuously")
@@ -74,8 +72,7 @@ func TestClassifierReadBucketAgreesWithConsentReadOnly(t *testing.T) {
 }
 
 // TestClassifierCoarserThanToolIntentVerbAndThatIsDeliberate documents the OTHER existing
-// definition, internal/askorchicon/consent.go's toolIntentVerb — which is a VERB for one call
-// ("modify".
+// definition.
 func TestClassifierCoarserThanToolIntentVerbAndThatIsDeliberate(t *testing.T) {
 	// The names toolIntentVerb maps onto "modify" because they contain write/edit/create...
 	// intersected with the host suite's real vocabulary (native_tools.go:54-58).

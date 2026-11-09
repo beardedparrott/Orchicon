@@ -1,21 +1,7 @@
 package orchicon
 
-// Live smoke suite — env-gated, operator-run, NEVER in default CI.
-//
-// Gate: ORCHICON_TEST_LIVE_ORCHICON=1 (single gate for the whole matrix),
-// mirroring the ORCHICON_TEST_DSN skip pattern used by the DB-backed tests
-// (skip in default CI, run explicitly with real keys). The operator runs:
-//
-//   ORCHICON_TEST_LIVE_ORCHICON=1 go test ./internal/orchicon/ -run TestLiveSmokeOrchicon
-//
-// Cost-capped by construction: one tiny prompt per provider, tiny
-// max_tokens, NO tools, no retries. Each provider asserts LIVE TRUTH ONLY:
-//  1. the models list is non-empty straight from the endpoint probe
-//     (no synthesized fallback — a probe failure/empty list is a FAILURE),
-//  2. one tiny streaming turn completes with real text + usage,
-//  3. usage is captured (OutputTokens > 0); cache buckets recorded where
-//     the wire reports them (a cold one-shot may be 0 — never assumed),
-//  4. a follow-up probe is non-empty again (no leaked/orphaned state).
+// Live smoke suite — env-gated, operator-run, NEVER in default CI. Each provider asserts LIVE TRUTH
+// ONLY: 1.
 
 import (
 	"context"
@@ -59,8 +45,7 @@ func TestLiveSmokeOrchicon(t *testing.T) {
 	}
 
 	// The base URL MUST include the version root (…/v1):
-	// ORCHICON_LIVE_CUSTOM_BASE_URL=http://<host>:<port>/v1 ORCHICON_LIVE_CUSTOM_API_KEY=…
-	// ORCHICON_LIVE_CUSTOM_MODEL=…
+	// ORCHICON_LIVE_CUSTOM_BASE_URL=http://<host>:<port>/v1 ORCHICON_LIVE_CUSTOM_API_KEY=….
 	t.Run("custom_openai_compat", func(t *testing.T) {
 		base := os.Getenv("ORCHICON_LIVE_CUSTOM_BASE_URL")
 		if base == "" || os.Getenv("ORCHICON_LIVE_CUSTOM_MODEL") == "" {

@@ -13,9 +13,7 @@ const (
 	Read
 	// Bash runs a shell command.
 	Bash
-	// Other is real work this package cannot place in one of the three named buckets: an Orchicon
-	// product tool (`list_projects`, `get_work_item`, …), an MCP tool (`mcp__*`), or any name added
-	// later.
+	// Other is real work this package cannot place in one of the three named buckets.
 	Other
 	// Ignore contributes nothing.
 	Ignore

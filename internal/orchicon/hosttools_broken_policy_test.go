@@ -9,9 +9,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
 )
 
-// brokenPolicySuite is policySuite with a MALFORMED policy file — the state the operator's live
-// config reached, which locked them out of every action including reading the file that would
-// explain.
+// brokenPolicySuite is policySuite with a MALFORMED policy file.
 func brokenPolicySuite(t *testing.T) (*HostTools, string) {
 	t.Helper()
 	dir := t.TempDir()

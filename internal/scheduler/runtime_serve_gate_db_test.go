@@ -1,8 +1,6 @@
 package scheduler
 
-// DB-backed regression test for the adapter-aware runtime-serve gate (the observed bug: an
-// orchicon-only run failed at start with "runtime opencode serve failed to become usable" and sat
-// "waiting.
+// DB-backed regression test for the adapter-aware runtime-serve gate (the observed bug.
 
 import (
 	"context"

@@ -1,39 +1,6 @@
 package work
 
 // edit_reference_seed_test.go — THE EDIT FORM'S REFERENCE PICKERS MUST BE SEEDED FROM THE ITEM.
-//
-// The operator: "when you edit a work item, it shows the workflow as none."
-//
-// It was not a display shortfall. Every other field in the detail editor is seeded from the item
-// (title, description, acceptance, kind, status, priority, budgets, context window, context files,
-// scheduled start, auto-start) and the two REFERENCE pickers were the only exceptions — no
-// `Initial:` on either spec. `Initial:` is the only thing that populates a form's value map
-// (kit2.NewForm writes f.Values[name] only when Initial != ""), and the only other writer is a
-// deliberate pick. So the pickers opened blank and, because the submit handler reads the value map
-// straight through, EVERY save sent workflow_id="" and runtime_image="" — the proto's spelling for
-// unbind/clear. An operator editing only the priority unbound the workflow driving the item and
-// cleared the image it runs in, with no error and nothing on screen to suggest it happened.
-//
-// pickerOptsWithCurrent is NOT the fix and was NOT changed: its guarantee (the item's value is
-// present in the option list) is sound, and its synthetic-option branch is what keeps a since-deleted
-// workflow from being dropped. It does not SELECT anything, so it cannot seed the form. The defect
-// was the missing seed.
-//
-// WHAT IS PINNED HERE. Both option-list branches (the primary assertion is (a), the normal case that
-// fails today), asserted on the RECORDED UpdateWorkItem REQUEST rather than on the rendering alone —
-// a field can render correctly and still submit empty. Plus the no-false-positive direction: an item
-// that genuinely has no reference must still open on "— none —" and still send empty.
-//
-// THE AUDIT (the class, not the instance). Every FieldSpec in the work screen's forms was checked for
-// the same omission. The two seeds added to editFormFor are the only instances:
-//   - newItemCreateForm (workitems.go): workflow Initial:"" and runtime_image/parent unseeded are
-//     CORRECT — a new item has no reference yet, and empty is what the create request should carry.
-//   - newItemStatusForm: status + priority both seeded.
-//   - projects.go: runtimeImageField seeds Initial: current; ProjectMCPDefinitionsField (the
-//     owned-definition SEED that replaced ProjectMCPField) is a create-only field with no
-//     Initial to seed; every other project field seeds. project_dir seeds.
-//   - images.go: the edit form seeds every field; the create form is legitimately empty.
-// None of these needed a change, so none was made.
 
 import (
 	"strings"

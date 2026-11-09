@@ -616,8 +616,7 @@ func TestRecurringFireLifecycle_CompletionReturnsToRecurring(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Flip the runtime-serve readiness gate (what the headless reconcileRun path does) so the
-	// reconciler doesn't bump the run's version mid-pass and leave the completion update with a stale
-	// version.
+	// reconciler doesn't bump the run's version mid-pass and leave the completion update with a stale.
 	if _, err := db.UpdateWorkflowRun(ctx, ttx2.Tx, approvalTestTenant, run.ID, run.Version, db.UpdateWorkflowRunFields{
 		RuntimeReady: boolPtr(true),
 	}); err != nil {

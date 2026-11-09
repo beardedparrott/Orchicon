@@ -1,24 +1,6 @@
 package workitem
 
 // local_clears_image_test.go — SETTING AN ITEM TO LOCAL MUST CLEAR ITS RUNTIME IMAGE.
-//
-// REPORTED: "I set the work item to runtime and then set it back to local and it did
-// not flip the runtime image field to nothing."
-//
-// The first implementation had the clear and then defeated it: "the request's own image
-// wins" kept any image sent alongside execution_mode=local, on the reasoning that an
-// operator might be pre-staging an image for a later switch. That reasoning is unsound
-// for the GUI, which is where the operator actually did this:
-//
-//   - the image input is PREFILLED from the item and is NOT cleared when the
-//     execution-mode select changes, and
-//   - the save sends `runtimeImage: editRuntimeImage || undefined`,
-//
-// so switching to local sent BOTH fields, the carve-out matched, and the image survived.
-//
-// "I deliberately picked this image and also chose local" and "the form round-tripped the
-// value it was seeded with" are indistinguishable on the wire. These tests therefore pin
-// the rule that resolves it: LOCAL WINS.
 
 import (
 	"context"

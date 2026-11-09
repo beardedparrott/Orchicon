@@ -2,19 +2,6 @@ package runtime
 
 // argv0_boundary_test.go — the CONTRACT between the plane and the container, pinned at the boundary
 // that broke.
-//
-// REPORTED: every claude container dispatch on Windows died in ~400ms with 0 tokens and "claude
-// session exited without a terminal result message (exit code 1); the CLI emitted no stderr at all
-// before exiting". The cause was argv[0]: internal/claude sent the operator's HOST install path
-// (C:\Users\...\claude.exe) into a Linux container, and this handler refused it by basename before
-// spawning anything — so no child existed to write stderr, and "the CLI was silent" was true and
-// misleading at once.
-//
-// TWO SIDES, both pinned here:
-//  1. a HOST path is refused, and the refusal says what it is (this is the operator's diagnostic now
-//     that internal/claude surfaces it verbatim);
-//  2. the name the claude adapter sends for a container (internal/claude.ClaudeBinaryName) is ACCEPTED,
-//     so the two halves cannot drift apart in silence.
 
 import (
 	"strings"

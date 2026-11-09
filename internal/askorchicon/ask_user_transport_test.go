@@ -9,18 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/mcp"
 )
 
-// TestAskUserReachesBothTransportsFromOneRegistration is the AC that no
-// transport-specific wiring is needed. The TWO enumerations that ARE the two Ask
-// transports must both carry ask_user, produced from the SINGLE allTools
-// registration:
-//
-//   - native  — nativeAskTools.AskToolDefs, which enumerates
-//     toolRegistry.List() and is injected into the native bridge;
-//   - opencode — mcp.NewAskOrchiconRegistry(toolReg).List(), the registry the
-//     `orchicon mcp` stdio sidecar serves to opencode as orchicon_<name>.
-//
-// An external test package (askorchicon_test) so it can import internal/mcp
-// without an import cycle.
+// TestAskUserReachesBothTransportsFromOneRegistration is the AC that no transport-specific wiring
+// is needed.
 func TestAskUserReachesBothTransportsFromOneRegistration(t *testing.T) {
 	reg := askorchicon.NewToolRegistry(nil, slog.Default(), nil)
 

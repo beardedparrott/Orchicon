@@ -16,9 +16,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// TestWrapByColumnsPreservesBytes pins the wrap primitive's contract: concatenating the wrapped
-// lines reproduces the source EXACTLY (no byte added or removed) and every line is within the
-// column.
+// TestWrapByColumnsPreservesBytes pins the wrap primitive's contract.
 func TestWrapByColumnsPreservesBytes(t *testing.T) {
 	cases := []string{
 		"",

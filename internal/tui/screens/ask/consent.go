@@ -82,40 +82,8 @@ func (m *Model) FormOpen() bool { return m.ov != nil && m.ov.kind == ovPolicyAdd
 // OwnsTab reports that TAB belongs to THIS screen while it claims the keyboard.
 func (m *Model) OwnsTab() bool { return m.ClaimsKeys() }
 
-// DropKeyClaim is the focus chord's release (ctrl+g).
-//
-// IT MUST NOT DECIDE ANYTHING, and it used to deny. The reasoning was that the claim is
-// a latch, ctrl+g is the chord that has to be able to leave it, and a decision is better
-// than a silent nothing — so it denied, "because denying is already Esc's outcome and it is
-// RECORDED, so the operator's decision is never silently dropped."
-//
-// THAT REASONING WAS WRONG, and the operator found it: "I hit ctrl+g to gain focus to the
-// composer in the TUI so I could do a fullsend test and it registered it as a deny." Three
-// things are true of ctrl+g, and none of them is a decision:
-//
-//   - IT IS THE ADVERTISED WAY TO TYPE. Every page's hint line leads with it ("ctrl+g: chat
-//     composer"), so it is pressed by operators who want to TYPE — including to answer this
-//     very card, or to reach /fullsend while it is up.
-//   - IT IS NOT A REFUSAL. A refuse is an act with intent; this is a focus chord. Recording
-//     deny means the transcript says the operator refused a call they never judged, which is
-//     the misattribution class this codebase has been corrected on before.
-//   - IT IS NOT RECOVERABLE. The refusal reaches the model, which then chooses a different
-//     approach on the strength of an answer nobody gave.
-//
-// So the chord now DEFERS the card instead of deciding it: the card stays pending and on
-// screen, and the claim is released so the composer takes the keys. Nothing is decided, nothing
-// is dropped, and no answer is invented.
-//
-// THE CLAIM IS WHAT HAD TO MOVE, not the shell's gate. The composer is the DEFAULT focus
-// ("Phase 2a — typing works immediately"), so a card only owns the keys because it CLAIMS them
-// against that default; letting a focused composer outrank the claim (which I tried first)
-// broke the card outright — every claimed key went to the composer and the card could not be
-// answered at all. Releasing the claim for THIS ask is the narrow version: the card yields the
-// keyboard here, and a NEW ask claims it again by construction.
-//
-// The card is still answerable: a click decides it (the click path does not consult the claim),
-// and a new ask re-arms the keys. The dock notice names that, so a deferred card is never a
-// card the operator has lost.
+// DropKeyClaim is the focus chord's release (ctrl+g). IT MUST NOT DECIDE ANYTHING, and it used to
+// deny.
 func (m *Model) DropKeyClaim() {
 	if m.consent != nil && m.consent.Pending() {
 		m.consentDeferred = m.consent.Ask.ID

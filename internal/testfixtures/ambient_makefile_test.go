@@ -1,23 +1,6 @@
 package testfixtures
 
 // ambient_makefile_test.go — THE GATE MUST UNSET THE SAME LIST THE PACKAGES DO.
-//
-// AmbientConfigEnv is the single source of truth for "what the host-plane launcher exports into the operator's
-// shell that a test would otherwise inherit". Two things consume it:
-//
-//   1. each affected package's isolate_test.go, via UnsetAmbientConfigEnv, so a bare `go test ./...` is safe;
-//   2. the Makefile's `test` target, which unsets the same variables so `make test` matches CI even in a package
-//      that has no isolate file yet.
-//
-// THE SECOND CONSUMER WAS A HAND-MAINTAINED COPY AND IT DRIFTED. ORCHICON_DATA_DIR was added here (four
-// packages resolve defaults from it, internal/orchicon's model registry among them) but never reached the
-// Makefile — while the Makefile's own comment claimed the list IS AmbientConfigEnv. The result is the failure
-// this file exists to prevent: on the operator's machine, where their shell exports ORCHICON_DATA_DIR pointing
-// at a live plane, `make test` left it set, and internal/orchicon's sourcing tests resolved that plane's
-// model-registry cache. In CI the variable is unset, so the same run was green.
-//
-// A gate that only names SOME of the variables is a gate with a hole in exactly the place nobody re-reads, so
-// this asserts the two lists are equal — not merely that they overlap.
 
 import (
 	"os"

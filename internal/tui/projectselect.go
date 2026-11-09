@@ -1,20 +1,6 @@
 package tui
 
 // projectselect.go — SET THE WORKSPACE WITHOUT OPENING THE PICKER.
-//
-// /project opens an interactive picker (projectpick.go), which is right for a person choosing and useless for a
-// program choosing on their behalf. Two cases need the non-interactive form:
-//
-//  1. LAUNCH. The operator: "when orch is launched, based on the directory, simply pass a /project [projectname]
-//     on launch to set it in the background". A launch has already decided — the directory names the project —
-//     so raising a picker to confirm it would be a modal in front of someone who has not asked for anything.
-//  2. JUST-CREATED. The launch prompt creates a project for the launch directory (launch.go), and until now the
-//     created project did not become the workspace: dismissLaunchPrompt left the scope where it was, so the
-//     operator's first conversation landed unassigned despite having just named the project they are in.
-//
-// WHY A MATCH RATHER THAN AN ID. The callers hold a NAME (the launch directory's basename, or a name the
-// operator just typed into the create form) before they hold an id — the project does not exist yet when the
-// create form opens. Matching by name keeps one path for both.
 
 import (
 	"strings"

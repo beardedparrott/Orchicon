@@ -350,30 +350,8 @@ func truncateRight(s string, w int) string {
 	return string(r[:w-1]) + "…"
 }
 
-// railSyncSelectionToOpenConversation points the rail's highlight at the conversation
-// CURRENTLY ON SCREEN.
-//
-// THE BUG THIS FIXES. convSel is the rail's own cursor — an INDEX into railRows() — and the
-// highlight is rendered purely as `i == convSel`. Nothing ever re-derived it from chatConvID,
-// the conversation the transcript is actually showing. So every route that opens a
-// conversation WITHOUT going through the rail left the two disagreeing:
-//
-//   - a conversation created by sending (chatConvCreatedMsg sets chatConvID directly),
-//   - opening one from a search hit, a mention, or /switch,
-//   - a conversation opened while the rail was on a different row and the list later reloaded
-//     (a rename or a new message reorders the rows, so the SAME index now points at a
-//     different conversation).
-//
-// The operator's report: "the highlighted bar on the conversation is not always in sync with
-// the current conversation on the screen and it's very confusing." Exactly that — the
-// highlight meant "where the cursor is", the screen meant "what I opened", and nothing kept
-// them together.
-//
-// IT IS A NO-OP WHEN THE RAIL ALREADY AGREES, and it never moves the highlight to a hidden
-// row: a conversation the rail cannot currently show (filtered out, or inside a collapsed
-// folder) leaves the cursor where it is rather than being silently relocated. That case is
-// genuinely ambiguous, and moving the highlight somewhere arbitrary would be a second
-// confusion in place of the first.
+// railSyncSelectionToOpenConversation points the rail's highlight at the conversation CURRENTLY ON
+// SCREEN.
 func (m *App) railSyncSelectionToOpenConversation() {
 	if m.chatConvID == "" {
 		return

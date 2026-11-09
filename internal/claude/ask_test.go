@@ -295,20 +295,7 @@ func TestAskAbortUnknownIsQuietButReplyIsLoud(t *testing.T) {
 	}
 }
 
-// THE PARITY PIN. Both other adapters put the OS-level execution shim on the Ask
-// path (opencode's host serve, the native bridge's bash environ). Claude briefly
-// did not, which made it the only Ask transport where `a subprocess did it` was
-// unguarded — the class that carries the never-allow binaries and the protected
-// roots, neither of which the PreToolUse hook can see.
-//
-// Two things are asserted, and both are load-bearing:
-//  1. the shim DIRECTORY is first on PATH, so any process the session spawns
-//     resolves `rm`/`sudo`/`dd` through it;
-//  2. the INTERACTIVE guard vars are ABSENT, matching opencode's Ask serve. The
-//     interactive profile can only WIDEN the sanctioned set (grants, once-targets,
-//     policy accepts, fullsend) and it fail-closes on a missing policy file,
-//     which would refuse every path-scoped command in every Ask conversation on a
-//     plane with no policy at permpolicy.DefaultPath().
+// THE PARITY PIN.
 func TestAskChildEnvCarriesTheDefaultProfileExecutionGuard(t *testing.T) {
 	s := newAskSession(New(quietLogger()), "conv-guard", filepath.Join(t.TempDir(), "ask"))
 	s.ensureGuard()
@@ -672,9 +659,7 @@ func TestAskBinaryDocumentIsRefusedLoudlyAndSendsNothing(t *testing.T) {
 	}
 }
 
-// The caps are the native Ask transport's numbers (internal/orchicon/chatturn.go) on purpose: two
-// different values would make "is this attachment accepted?" depend on which adapter a
-// conversation.
+// The caps are the native Ask transport's numbers (internal/orchicon/chatturn.go) on purpose.
 func TestAskAttachmentCapsMatchTheNativeTransport(t *testing.T) {
 	if claudeAskMaxAttachments != 5 || claudeAskMaxAttachmentBytes != 10*1024*1024 || claudeAskMaxAttachmentsTotalBytes != 20*1024*1024 {
 		t.Fatalf("the Ask attachment caps drifted from the native transport: %d / %d / %d",

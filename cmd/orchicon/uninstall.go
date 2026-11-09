@@ -146,9 +146,7 @@ func uninstallOne(instance string, purge bool, out io.Writer) error {
 		return nil
 	}
 
-	// 1. STOP EVERYTHING THIS INSTANCE HAS RUNNING. Not optional, and not best-effort: the deletion below
-	//    must not race a live postgres or supervisor, and an uninstall that leaves services running is the
-	//    reported defect this whole file exists to fix.
+	// 1.
 	ports, _ := servicesPortsFor(instance)
 	fmt.Fprintf(out, "stopping instance %q\n", instance)
 	if err := stopInstanceCompletely(instance, ports, out); err != nil {

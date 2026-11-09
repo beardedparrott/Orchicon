@@ -58,9 +58,7 @@ const (
 	v2Diff = `{"type":"session.diff","data":{"sessionID":"ses_a","diff":[{"path":"frontend/src/App.tsx","additions":12,"deletions":3}]}}`
 )
 
-// TestV2StepEndedFeedsTheUsageRecorder is the token/cost half: it is why every 2.x execution
-// recorded zero tokens, and it is the dimension the budget ladder and the compaction gate both
-// read.
+// TestV2StepEndedFeedsTheUsageRecorder is the token/cost half.
 func TestV2StepEndedFeedsTheUsageRecorder(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -280,8 +278,7 @@ func TestAV2WorkingStreamIsNotATextLoop(t *testing.T) {
 }
 
 // TestAV2StreamWithOnlyTextWouldHaveTripped is the CONTRAST that makes the test above mean
-// something: with the telemetry arms absent — the state of the world that killed the real
-// execution.
+// something.
 func TestAV2StreamWithOnlyTextWouldHaveTripped(t *testing.T) {
 	w := stallWindows{
 		noProgress:  400 * time.Second,

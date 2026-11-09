@@ -622,27 +622,6 @@ func OpaquePanel(s string, w int) string {
 }
 
 // resets are the SGR sequences that CLEAR a background, in every spelling a producer here emits.
-//
-// TWO SPELLINGS, because two producers and only one of them was being caught:
-//
-//   - "\x1b[0m" — lipgloss/termenv's own terminator, and the form the shell's own rows carry;
-//   - "\x1b[m"  — a reset with an OMITTED parameter, which is identical in effect. It is what the
-//     bubbles VIEWPORT writes when it pads a line out to the pane width.
-//
-// MISSING THE SECOND WAS A REAL BUG, and its symptom is the operator's "every theme has a weird color
-// in the whitespace in work items. It just doesn't look great. We shouldn't be filling in spaces with
-// colors like that."
-//
-// The mechanism, measured: a detail pane renders its body through a bubbles VIEWPORT, which pads every
-// short line by writing `\x1b[m` and THEN the spaces. The pane's tint is painted by the OUTER style, so
-// the inner `\x1b[m` clears it and the padding after it carries NO background at all — on a pane whose
-// tint differs from the terminal's own background, that whitespace renders in the TERMINAL's colour
-// instead of the pane's. Every markdown line shorter than the pane showed it (a heading, a bullet's last
-// wrap, a paragraph's tail), which is why it read as coloured bands and why it was never theme-specific:
-// the hole is punched in whatever the active palette is.
-//
-// `\x1b[m` and `\x1b[0m` differ at their third byte, so neither is a prefix of the other and the scan
-// below cannot mis-match one as the other.
 var resets = []string{"\x1b[0m", "\x1b[m"}
 
 // nextReset returns the offset of the EARLIEST reset in s and that reset's length, or (-1, 0) when the

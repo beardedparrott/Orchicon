@@ -9,14 +9,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
-// execsession.go — the converters from the two durable/live execution
-// sources into ChatItems, mirroring
-// frontend/src/components/executions/SessionChatPane.tsx:
-//   - HistoryItems: GetExecutionSession parts → items tagged phase
-//     `step-N` (N = opencode step counter, incremented on
-//     step_start/step_finish boundaries).
-//   - LiveItems: StreamExecutionEvents responses → items tagged phase
-//     `live-N` (N = synthetic counter bumped on tool/error boundaries).
+// execsession.go — the converters from the two durable/live execution sources into ChatItems.
 
 // msOf converts a protobuf timestamp to ms since epoch (0 when nil),
 // falling back to wall-clock like the TS `Date.now()` fallback.
@@ -195,8 +188,7 @@ func numOf(pl map[string]any, key string) int {
 }
 
 // LiveItems converts StreamExecutionEvents responses into ChatItems (SessionChatPane.tsx
-// liveItems): TELEMETRY text / reasoning-wrapped JSON chunks, TOOL_CALL rows, ERROR rows, ARTIFACT
-// rows.
+// liveItems).
 func LiveItems(events []*apiv1.StreamExecutionEventsResponse) []ChatItem {
 	out := []ChatItem{}
 	phase := 0

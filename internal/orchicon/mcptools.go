@@ -33,9 +33,7 @@ func (b *NativeBridge) resolveMCPSpecSecrets(ctx context.Context, tenantID strin
 	return nil
 }
 
-// ResolveExecutionMCP resolves the MCP set an execution gets, WITHOUT connecting to anything: the
-// scope-addressed union of the project's owned definitions and the executing VERSION's inline
-// specs.
+// ResolveExecutionMCP resolves the MCP set an execution gets.
 func (b *NativeBridge) ResolveExecutionMCP(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest) (mcpclient.Resolution, error) {
 	if b.mcpResolver == nil {
 		return mcpclient.Resolution{}, nil

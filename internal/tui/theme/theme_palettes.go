@@ -3,24 +3,6 @@ package theme
 import "github.com/charmbracelet/lipgloss"
 
 // theme_palettes.go — the TUI's extended palette set.
-//
-// The GUI ships ten light and ten dark themes that differ mainly by the HUE of
-// their background and accent, with consistent lightness/saturation patterns
-// per mode (frontend/src/lib/themes.ts + the [data-theme] blocks in
-// frontend/src/index.css). The TUI mirrors that character — forest, ocean,
-// violet, ember, amber, rose, teal, crimson, slate — but is NOT a copy:
-//
-//   - palettes are DERIVED from HSL specs, exactly the way the GUI builds its
-//     tokens, so a family stays internally consistent and a new one is a few
-//     numbers rather than 15 hand-picked hexes;
-//   - every derived palette is then clamped to TUI CONTRAST FLOORS. A browser
-//     can afford a 91%-lightness border because the DOM supplies structure
-//     through spacing, shadow and border-radius. A terminal has only the
-//     border — and it carries each panel's title — so borders are floored
-//     where a hairline would render the layout invisible.
-//
-// theme/contrast_test.go gates the whole registry, so a spec that produces an
-// unreadable palette fails the build instead of shipping.
 
 // paletteSpec is one palette in the same HSL terms the GUI uses, plus the
 // floors that make it a TERMINAL palette.

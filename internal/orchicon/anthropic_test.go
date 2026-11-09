@@ -132,9 +132,7 @@ func TestAnthropicStreamHappyPath(t *testing.T) {
 	}
 }
 
-// Accumulation, not summation: message_start assigns the input/cache buckets once, and each
-// message_delta ASSIGNS the running-total output tokens (and re-assigns cache buckets when >0)
-// rather.
+// Accumulation, not summation: message_start assigns the input/cache buckets once.
 func TestAnthropicCumulativeDeltaUsageAccumulatedNotSummed(t *testing.T) {
 	body := sseEvent("message_start", `{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}}`) +
 		sseEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":7}}`) +

@@ -23,20 +23,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Service implements the WorkflowService Connect handler
-// (apiv1connect.WorkflowServiceHandler). Each mutation writes an outbox
-// row in the same transaction as the state change (AGENTS.md invariant
-// #3); the relay publishes it to NATS asynchronously.
-//
-// The Workflow lifecycle (docs/02 §2.4) is enforced here:
-//   - CreateWorkflow creates a Workflow in draft state with its first
-//     draft version.
-//   - PublishWorkflow transitions a draft version to published
-//     (immutable) and the Workflow to published.
-//   - DeprecateWorkflow transitions a published Workflow to deprecated.
-//   - StartWorkflow creates a WorkflowRun from a published version,
-//     seeds a WorkflowStepRun for each step, and enqueues a run_started
-//     event. The WorkflowReconciler progresses the run.
+// Service implements the WorkflowService Connect handler (apiv1connect.WorkflowServiceHandler).
 type Service struct {
 	pool       *db.Pool
 	log        *slog.Logger

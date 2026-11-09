@@ -8,9 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// FileEditLedgerRow is one entry of the durable file-edit ledger (file_edit_ledger): a single
-// server-computed ground-truth diff for one path touched by one file-editing tool event of one
-// owner.
+// FileEditLedgerRow is one entry of the durable file-edit ledger (file_edit_ledger).
 type FileEditLedgerRow struct {
 	ID           string
 	TenantID     string

@@ -218,8 +218,7 @@ func TestOllamaNativeDisconnectFails(t *testing.T) {
 }
 
 // AC (final-chunk parity): a final native chunk carrying BOTH tail content AND done:true must
-// surface the tail text BEFORE the Finish — the old shape dropped the tail delta and truncated
-// output.
+// surface the tail text BEFORE the Finish.
 func TestOllamaNativeTailContentOnDoneChunk(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-ndjson")

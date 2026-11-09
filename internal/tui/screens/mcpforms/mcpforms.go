@@ -1,24 +1,5 @@
-// Package mcpforms is the ONE TUI surface for MCP definitions, serving all
-// three scopes exactly as the ONE GUI panel (MCPServersPanel.tsx) does:
-// project, conversation and worker version.
-//
-// It exists because the old tenant-level surface — the control screen's "mcp"
-// source and the launch form's select-from-tenant field — is GONE. Removing it
-// without this package would have left the TUI unable to DEFINE an MCP entry at
-// all, which is the exact asymmetry the epic forbids.
-//
-// TWO PERSISTENCE TARGETS, ONE UI (the same rule the GUI panel follows):
-//
-//   - OWNED ROWS (project, conversation): DefineForm builds a
-//     MCPServerCreateRequest with the Owner's id set, and the caller creates it
-//     through the MCP service. A definition is OWNER-SCOPED (mcp_servers.
-//     project_id / conversation_id) — the owner column IS the selection.
-//   - INLINE SPECS (worker version): InlineForm edits an InlineSpec and
-//     MarshalInline writes the array into the version's permissions JSON. No
-//     row is created, so a published version stays immutable.
-//
-// It depends only on kit2 + the generated api, so work, execution and chat can
-// all import it without a cycle.
+// Package mcpforms is the ONE TUI surface for MCP definitions, serving all three scopes exactly as
+// the ONE GUI panel (MCPServersPanel.tsx) does: project, conversation and worker version.
 package mcpforms
 
 import (

@@ -86,8 +86,7 @@ func NewSessionClient(profileToken, refreshToken, baseURL string, insecure bool)
 }
 
 // RefreshResponse mirrors the JSON body of POST /auth/refresh (internal/auth/handlers.go
-// tokenResponse — same shape as the login body; the refresh token itself is never rotated
-// server-side).
+// tokenResponse.
 type RefreshResponse struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`

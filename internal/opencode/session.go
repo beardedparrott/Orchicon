@@ -261,14 +261,6 @@ func (c *SessionClient) SetAgentsAvailable(v bool) { c.agentsAvailable = v }
 
 // AgentSelectionSupported reports whether this client can deliver a per-execution system prompt
 // through an AGENT rather than through the message — BOTH conditions, not either:
-//
-//   - the surface must HAVE the route (v2 does; v1 has no agent at all, and there the message is
-//     the only carrier), and
-//   - the serve must actually carry this execution's agent (see agentsAvailable).
-//
-// It is the gate for the message trim, so a false answer keeps the full prompt in place. That is
-// why the two conditions are combined rather than checked separately at the call site: trimming on
-// a serve that has no agent would DELETE the run-level prompt instead of moving it.
 func (c *SessionClient) AgentSelectionSupported() bool {
 	return c.shape.setAgentPath != nil && c.agentsAvailable
 }
@@ -279,22 +271,8 @@ func (c *SessionClient) SendMessage(ctx context.Context, sessionID, system, mode
 	return c.sendMessage(ctx, sessionID, system, modelRef, text, nil, false)
 }
 
-// SendMessageCarryingSystem sends a message that must DELIVER the session's system prompt on surfaces
-// whose prompt body has no `system` field.
-//
-// THIS IS THE ONE PLACE THE DISTINCTION LIVES, and it is a distinction the v2 surface forces. On v1
-// every send carries `system` and the serve applies it per turn, so all callers pass it and none of
-// them care. On v2 there is no such field, so the prompt has to travel as CONTENT — which means it
-// must go in exactly ONCE per session, not on every turn, or the context grows by a full prompt copy
-// per message.
-//
-// So callers that must deliver it say so, and every other caller keeps the old behaviour:
-//   - the GOAL (the first message of a freshly created session) — carries it;
-//   - the AFTER-COMPACT reminder — carries it again, because a compact summarizes the conversation
-//     away and would otherwise take the prompt with it;
-//   - follow-ups, redirects, retries, probes, compaction notes — do NOT, because the session already
-//     holds it. The follow-up path is the one that matters: it ATTACHES to an existing session, so
-//     re-sending there would add a second copy of the prompt to a conversation that already has one.
+// SendMessageCarryingSystem sends a message that must DELIVER the session's system prompt on
+// surfaces whose prompt body has no `system` field.
 func (c *SessionClient) SendMessageCarryingSystem(ctx context.Context, sessionID, system, modelRef, text string) error {
 	return c.sendMessage(ctx, sessionID, system, modelRef, text, nil, true)
 }
@@ -360,8 +338,7 @@ func (c *SessionClient) sendMessage(ctx context.Context, sessionID, system, mode
 	switch c.shape.promptStyle {
 	case "text":
 		// THE PROMPT TRAVELS AS CONTENT HERE, because this surface has no field for it (see
-		// apiShape.promptStyle). ONLY WHEN ASKED, and that is not an optimisation — it is the correctness
-		// condition.
+		// apiShape.promptStyle). ONLY WHEN ASKED.
 		bodyText := text
 		if carrySystem && strings.TrimSpace(system) != "" {
 			bodyText = system + "\n\n" + text
@@ -372,9 +349,7 @@ func (c *SessionClient) sendMessage(ctx context.Context, sessionID, system, mode
 		if len(files) > 0 {
 			body["files"] = files
 		}
-		// A caller that did NOT ask to carry the prompt is not losing it: on this surface the prompt
-		// reaches the model as the first message's content (SendMessageCarryingSystem) and again after a
-		// compact.
+		// A caller that did NOT ask to carry the prompt is not losing it.
 		if system != "" && !carrySystem {
 			c.noteOnce(&c.systemDroppedNoted, "opencode v2: this send does not carry the system "+
 				"prompt; it is delivered with the session's first message and re-stated after a compact "+
@@ -947,11 +922,7 @@ func TokenDeltaInfoFromBus(evt BusEvent) (deltaText, kind string, ok bool) {
 		}
 		return delta, "reasoning", true
 	case "session.text.delta":
-		// v2's streaming text. MEASURED shape:
-		//   {"type":"session.text.delta","data":{"sessionID":…,"assistantMessageID":…,
-		//                                         "ordinal":0,"delta":"Hi! …"}}
-		// The delta is a TOP-LEVEL `delta` string (v1 nested it in {field, delta}), and v2 does not
-		// distinguish text from reasoning on this event, so the kind is best-effort like v1's.
+		// v2's streaming text.
 		delta, _ := evt.Props()["delta"].(string)
 		if delta == "" {
 			return "", "", false

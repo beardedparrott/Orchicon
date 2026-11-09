@@ -12,9 +12,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// The gap is deliberate: the sweep CANNOT tell "abandoned" from "long-running", so the only safe
-// instrument it has is time, and it has to be generous enough that no legitimate job is ever near
-// it.
+// The gap is deliberate: the sweep CANNOT tell "abandoned" from "long-running".
 const DefaultTTL = 6 * time.Hour
 
 // SweepInterval is how often the sweep runs.

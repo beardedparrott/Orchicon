@@ -368,22 +368,8 @@ func TestClaudeCreatePreflightFailsActionably(t *testing.T) {
 	}
 }
 
-// TestStandardHostMountArgsClaudePrivateHomeAndConfig pins the claude arm, which had TWO silent drops.
-//
-// REPORTED: the claude adapter in a runtime container produced SIX executions, 0 tokens each, ~280ms apart,
-// every one dying with "claude session exited without a terminal result message (exit code 1)". The adapter
-// binary ran — it did not fail on exec format — so the CLI started and gave up immediately.
-//
-// TWO CAUSES, both in this mount set:
-//
-//  1. ~/.claude.json IS A FILE, and adapterPrivateHomes required st.IsDir(). A private install that is not a
-//     directory was SKIPPED WITHOUT A WORD, so a declaration in this very table never reached a container.
-//     The CLI found no config and exited.
-//  2. The credential was bound READ-ONLY. This CLI REWRITES .credentials.json when its OAuth token refreshes,
-//     so a refresh inside the container is EACCES and the session dies before its first API call.
-//
-// opencode's credential stays read-only — it only reads auth.json — which is why the write-back is a
-// per-adapter declaration (adapterInstall.authWritable) rather than a blanket relaxation.
+// TestStandardHostMountArgsClaudePrivateHomeAndConfig pins the claude arm, which had TWO silent
+// drops. The credential was bound READ-ONLY.
 func TestStandardHostMountArgsClaudePrivateHomeAndConfig(t *testing.T) {
 	home, d := bootProfileTestHome(t)
 	// The claude installs the table declares.

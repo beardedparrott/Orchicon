@@ -1,28 +1,7 @@
 package main
 
-// windows_msi_test.go — THE MSI MUST CARRY THE WHOLE PRODUCT, AND NOTHING CAN DRIFT.
-//
-// The MSI is the one artifact this project cannot build or install in its own test
-// environment: WiX is a .NET tool, this host has no dotnet, and the artifact only
-// exists on windows-latest. So the failure modes that matter are the ones a
-// BUILD would not catch but an INSTALL would:
-//
-//  1. A PARTIAL PRODUCT. The MSI's components are individual files, so a
-//     component quietly dropped from the .wxs produces an MSI that installs
-//     cleanly and is simply missing the TUI — or the plane itself. Nothing fails;
-//     the user runs `orch` and it is not there.
-//  2. ELEVATION. Orchicon's model is "the plane and its services are host
-//     processes of the user who installs them". A per-machine package would put
-//     the binaries under one identity and the services under another.
-//  3. A SETUP THAT CANNOT PROMPT. The wrapper must claim a human is present, or
-//     the port questions never appear — the hazard install.ps1 documents at
-//     length, and the reason the wizard's answer travels as an env var.
-//  4. A RELEASE THAT DOES NOT PUBLISH IT. Building the MSI and then leaving it in
-//     the run is the "artifact built and silently not published" failure the
-//     release ASSETS list exists to prevent.
-//
-// Asserted against the real files, because every one of these is a wiring
-// question and no Go code can be executed to answer it.
+// windows_msi_test.go — THE MSI MUST CARRY THE WHOLE PRODUCT, AND NOTHING CAN DRIFT. A SETUP THAT
+// CANNOT PROMPT.
 
 import (
 	"encoding/xml"
@@ -120,8 +99,7 @@ func TestMSICarriesTheContainerBinaryBesideTheExe(t *testing.T) {
 }
 
 // TestCIVerifiesTheInstalledContainerBinary — the MSI job INSTALLS the package and checks the
-// payload by name, which makes it the only place the whole change is proven end to end on real
-// Windows.
+// payload by name.
 func TestCIVerifiesTheInstalledContainerBinary(t *testing.T) {
 	src := readMSIFile(t, filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
 
@@ -345,12 +323,7 @@ func TestBurnBundleWrapsTheMSI(t *testing.T) {
 		src := readMSIFile(t, site.path)
 		for _, want := range []struct{ what, sub string }{
 			{"builds the bundle", "OrchiconSetup.wxs"},
-			// THE PACKAGE ID AND THE DLL NAME MUST MATCH. `wix extension add -g <id>/<ver>`
-			// resolves `-ext <id>` to <id>/<ver>/wixext5/<id>.dll, so an id whose DLL is named
-			// differently cannot be found — exactly how this failed first:
-			//   error WIX0144: The extension 'WixToolset.Bal.wixext' could not be found.
-			//          Checked paths: …\WixToolset.Bal.wixext\5.0.2\wixext5\WixToolset.Bal.wixext.dll
-			// …while that package ships WixToolset.BootstrapperApplications.wixext.dll.
+			// THE PACKAGE ID AND THE DLL NAME MUST MATCH.
 			{"names the bundle extension on the build", "-ext WixToolset.BootstrapperApplications.wixext"},
 			{"installs it first (or -ext cannot resolve it)", "WixToolset.BootstrapperApplications.wixext/"},
 		} {
@@ -551,13 +524,7 @@ func TestWiXBuildEnablesTheUIExtension(t *testing.T) {
 				"file well-formed and does not enable it. The build fails with WIX0200.",
 				filepath.Base(where.file))
 		}
-		// AND IT MUST BE INSTALLED FIRST. `-ext` resolves a package name through WiX's
-		// own extension store, NOT NuGet, so naming it is not enough:
-		//   error WIX0144: The extension 'WixToolset.UI.wixext' could not be found.
-		//                 Checked paths: WixToolset.UI.wixext
-		// KEYED ON THE SUBCOMMAND, not on how the binary is invoked: the Makefile calls
-		// $(WIX) rather than the literal name, so a "wix extension add" needle fails
-		// against a correctly-wired Makefile.
+		// AND IT MUST BE INSTALLED FIRST.
 		if !strings.Contains(body, "extension add -g WixToolset.UI.wixext") {
 			t.Errorf("%s never runs `wix extension add -g WixToolset.UI.wixext`.\n"+
 				"`-ext` does not restore from NuGet — it looks the package up in WiX's own\n"+
@@ -668,13 +635,8 @@ func TestCanaryPublishesTheWindowsDesktopApp(t *testing.T) {
 		count int
 	}{
 		{"the desktop job itself", "\n  desktop-windows:\n", 1},
-		// THE LINUX DESKTOP JOB, and each of these four lines is one of the ways it can be added
-		// and still not work:
-		//   the job            — it exists at all
-		//   ubuntu-22.04       — 24.04 dropped WebKitGTK 4.0, so build.sh's bundle loop finds
-		//                        nothing and fails its own guard; the AppImage cannot be built
-		//   the artifact name  — publish downloads `canary-*`, so anything else is built and lost
-		//   the assertion step — a misnamed AppImage builds, uploads, and is fetched by nobody
+		// THE LINUX DESKTOP JOB, and each of these four lines is one of the ways it can be added and still
+		// not work.
 		{"the Linux desktop job", "\n  desktop-linux:\n", 1},
 		{"the Linux job's pinned runner", "runs-on: ubuntu-22.04", 1},
 		{"the Linux AppImage artifact name the publish pattern collects",
@@ -917,34 +879,10 @@ func collapseSpace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// TestMSILicensePageCarriesOurLicenseText — the wizard's license page must show OUR terms
-// with OUR information on it.
-//
-// TWO DEFECTS, reported together from a real install:
-//
-//  1. THE PAGE SHOWED LOREM IPSUM. `WixUILicenseRtf` is a BUILD-TIME variable, not an MSI
-//     Property. Declaring <Property Id="WixUILicenseRtf" Value="..."/> looks right and does
-//     nothing, so the UI extension kept its built-in placeholder. Every build site must pass
-//     `-d WixUILicenseRtf=...`.
-//  2. THE RTF SAID APACHE 2.0. The repository is NOT Apache-licensed — LICENSE is a custom
-//     non-commercial grant. A wizard page that misstates the terms is worse than a placeholder,
-//     because it looks authoritative.
-//
-// So this asserts three things: the build sites wire the variable, the RTF carries no
-// foreign license, and every line of LICENSE actually appears on the page.
+// TestMSILicensePageCarriesOurLicenseText — the wizard's license page must show OUR terms with OUR
+// information on it.
 func TestMSILicensePageCarriesOurLicenseText(t *testing.T) {
 	// (1) EVERY SITE THAT BUILDS THE MSI MUST PASS IT AS A BIND VARIABLE.
-	//
-	// THREE WAYS TO GET THIS WRONG, and this fix went through all three:
-	//   <Property Id="WixUILicenseRtf" .../>   an MSI property — the UI extension never reads it
-	//   -d WixUILicenseRtf=...                 a PREPROCESSOR variable — also never read, because
-	//                                          the dialog declares !(wix.WixUILicenseRtf=...), a
-	//                                          BIND variable; the build succeeds, silently keeping
-	//                                          the placeholder. Measured: the MSI still contained
-	//                                          "Lorem ipsum" after the -d version shipped.
-	//   -bindvariable WixUILicenseRtf=...           correct — what WiX's own UI tests use
-	//                                          -bindvariable only, NOT -bindvar, and
-	//                                          WiX's own UI test uses -bv.
 	for _, site := range []struct{ what, sub string }{
 		{"the Makefile", "-bindvariable WixUILicenseRtf=$(abspath $(MSI_SRC_DIR))/LICENSE.rtf"},
 		{"release.yml", `-bindvariable "WixUILicenseRtf=$srcAbs\LICENSE.rtf"`},
@@ -1200,9 +1138,7 @@ func TestCIInstallsTheMSIPackage(t *testing.T) {
 	}
 }
 
-// workflowStep extracts one named step's text (from its `- name:` to the next step), so an
-// assertion lands on the step that does the work rather than on any other step that happens to
-// share.
+// workflowStep extracts one named step's text (from its `- name:` to the next step).
 func workflowStep(t *testing.T, workflow, namePrefix string) string {
 	t.Helper()
 	lines := strings.Split(workflow, "\n")

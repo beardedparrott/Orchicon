@@ -1538,9 +1538,7 @@ func (f *Form) View() string {
 					val = ansi.Truncate(val, avail, "…")
 				}
 			}
-			// A multi-line value on an UNFOCUSED row must not emit its newlines: the host pads this string to
-			// the pane width, so raw breaks split one field into several visual rows and shift everything
-			// below.
+			// A multi-line value on an UNFOCUSED row must not emit its newlines.
 			if f.expandable(s.Kind) {
 				if n := lineCount(f.Values[s.Name]); n > 1 {
 					val = oneLine(val)
@@ -1601,9 +1599,7 @@ func (f *Form) View() string {
 			f.writePickerList(&b, &f.Specs[i], width)
 		}
 	}
-	// The hint row wraps at its " · " boundaries so a KEY and its meaning stay together — the
-	// operator's "it is wrapping the tool title and shortcut on separate lines, it should keep those
-	// together".
+	// The hint row wraps at its " · " boundaries so a KEY and its meaning stay together.
 	footer := "↑/↓ or tab: field · ←/→: move · ctrl+u: clear · enter: next · ctrl+s: save · esc: cancel"
 	if s := f.current(); f.editing != "" {
 		footer = "editing text · ↑/↓: move · enter: newline · esc: leave field · ctrl+s: save"

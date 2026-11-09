@@ -53,16 +53,8 @@ type diagnosisInput struct {
 	errorKind    string
 }
 
-// isWaitingStepRun reports whether a step run is in a state that means "this
-// run cannot advance without something happening". Deliberately narrow:
-//
-//   - pending is NOT waiting — it is simply not armed yet (an earlier step
-//     still has to succeed), and calling that a blockage would make every
-//     healthy run report itself blocked.
-//   - succeeded/failed/skipped are terminal.
-//   - running WITH an execution is work in progress.
-//   - running WITHOUT an execution is the case this whole feature exists for:
-//     it was dispatched and produced nothing.
+// isWaitingStepRun reports whether a step run is in a state that means "this run cannot advance
+// without something happening".
 func isWaitingStepRun(sr db.WorkflowStepRunRow) bool {
 	switch sr.Status {
 	case domain.StepRunReady, domain.StepRunRecovering, domain.StepRunApprovalPending:

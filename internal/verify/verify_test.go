@@ -32,9 +32,7 @@ func TestNoCommitsIsUnsubstantiated(t *testing.T) {
 	}
 }
 
-// TestNoDeclaredGateIsUnverified pins the central design rule: a project that declares no gate
-// cannot have a step CERTIFIED, so it lands in the third state rather than being rounded up to
-// success.
+// TestNoDeclaredGateIsUnverified pins the central design rule.
 func TestNoDeclaredGateIsUnverified(t *testing.T) {
 	got := Collect(context.Background(), Evidence{
 		GitReadable:             true,

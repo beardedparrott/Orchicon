@@ -157,16 +157,6 @@ func (a PermissionAsk) DecisionForRow(i int) (ConsentDecision, bool) {
 }
 
 // RowDisabled reports whether a row cannot be selected.
-//
-// IT IS ONE QUESTION WITH TWO ANSWERS, and both of them are "offering this row would be a lie":
-//
-//   - a persistent DENY entry covers the target, so a session grant cannot widen it (the card names the
-//     pattern instead of offering a grant the policy will refuse — silent escalation is exactly what a
-//     permission system must not do);
-//   - the ask names NO directory a grant could cover, so a grant would silence nothing at all.
-//
-// See sessionRowSuppressed for the reason the card STATES, which is what the operator needs in order to
-// understand the row they cannot take.
 func (a PermissionAsk) RowDisabled(i int) bool {
 	return a.Kind == AskTool && i == 1 && a.sessionRowSuppressed() != ""
 }

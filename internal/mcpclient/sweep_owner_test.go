@@ -2,15 +2,8 @@
 
 package mcpclient
 
-// sweep_owner_test.go — the sweep's rule is OWNERSHIP, not ppid, and a failed start must not leak a child.
-//
-// THE REPORTED SHAPES, both measured on a real host:
-//
-//  1. An `aseprite_mcp` process alive 18 HOURS after its plane died, PGID from a plane that no longer
-//     existed, REPARENTED TO A LIVE PID (3450). The sweep only reaped children whose ppid was 1, so a
-//     child adopted by something live looked owned and was skipped on every pass.
-//  2. The same child existed at all because a FAILED START LEAKED IT: the go-sdk does not close the
-//     transport when the handshake fails, so the only handle on a live child was dropped.
+// sweep_owner_test.go — the sweep's rule is OWNERSHIP, not ppid, and a failed start must not leak a
+// child.
 
 import (
 	"context"

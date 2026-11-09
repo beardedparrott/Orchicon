@@ -1,30 +1,4 @@
-// worker_forms.go — the Execution screen's WORKER CRUD forms and their load
-// plumbing.
-//
-// Item 6 in full: the header lifecycle (create / edit / delete / publish /
-// deprecate / set-active) AND the version editor (the prompt + config surface the
-// GUI's workers_.$id.tsx exposes). actions.go owns the chords and the guards;
-// this file owns the typed input and the round trips that feed it.
-//
-// Discipline, mirroring actions.go:
-//   - no RPC runs from Update; every load and every write is a tea.Cmd, and the
-//     write goes through the ONE mutation executor (dock feedback + reconcile);
-//   - a form is seeded from the SERVER's current values (never from a guess), so
-//     a submit only sends what the operator changed;
-//   - an operation that cannot apply is REFUSED with the reason, never a silent
-//     no-op;
-//   - OPENING a form writes NOTHING. Every load is read-only, so esc is free:
-//     "edit then cancel" cannot leave a draft behind, which is the state the
-//     three-gesture client flow (revert → save → publish) produced — 20 workers
-//     on the dev tenant still carry that debris.
-//
-// THE SAVE IS ONE OPERATION. Editing an existing worker sends its version fields
-// with UpdateWorkerVersion{republish:true}, which the server performs in a single
-// transaction (revert if published → update → republish). The worker is published
-// before and after and the version number does NOT advance. Creating a version
-// sends CreateWorkerVersion{publish:true}, which creates and publishes atomically.
-// Neither path can strand a worker in draft, so this client never needs the
-// client-side compensate that the GUI's per-gesture flow requires.
+// worker_forms.go — the Execution screen's WORKER CRUD forms and their load plumbing.
 package execution
 
 import (
@@ -270,29 +244,10 @@ func (m *Model) editWorkerForm(w *apiv1.Worker, versions []*apiv1.WorkerVersion,
 		if err != nil {
 			return nil, err
 		}
-		// Three writes at most, and they stay SEPARATE operations because they are
-		// separate server-side facts:
-		//
-		//  1. the header TEXT — its own call, and deliberately WITHOUT role_ref.
-		//     The server refuses header text in the same request as the role
-		//     binding on a published worker (service.go:329-332), so combining them
-		//     would fail the whole save for a worker whose role the operator also
-		//     just changed;
-		//  2. the ROLE BINDING — its own call, because it is the one header field a
-		//     published worker accepts (db/worker.go:370), so it must not be
-		//     blocked by the draft-only rule that governs (1);
-		//  3. the VERSION — one atomic republish (revert → update → publish in a
-		//     single server transaction), leaving the worker published with the
-		//     version number unchanged.
-		//
-		// (1) and (2) are not part of (3)'s transaction: the header and the version
-		// live behind different RPCs, so there is no combined call to use. Ordering
-		// them before (3) means the version save — the one that matters — is not
-		// lost to a header failure, and vice versa.
+		// Three writes at most, and they stay SEPARATE operations because they are separate server-side
+		// facts:
 		reqs := make([]mutate.Request, 0, 2)
-		// The text is compared ONLY when the form OFFERED it: on a retired worker those fields are not
-		// drawn, so their values are the empty string and comparing them against the worker's real name
-		// would.
+		// The text is compared ONLY when the form OFFERED it.
 		var name, purpose, desc string
 		textChanged := false
 		if headerEditable {
@@ -647,9 +602,7 @@ func skillFilesJSON(text string) string {
 // in — the panel OWNS that one key.
 func mergedPermissions(v map[string]string) string {
 	mcp := strings.TrimSpace(v["mcp_servers"])
-	// An empty/absent MCP field AND a permissions blob that carries no mcp_servers key: nothing to
-	// merge, so pass the blob through byte-for-byte (a no-op write must not rewrite the operator's
-	// JSON).
+	// An empty/absent MCP field AND a permissions blob that carries no mcp_servers key.
 	if (mcp == "" || mcp == "[]") && !permissionsHasMCPServers(v["permissions"]) {
 		return v["permissions"]
 	}

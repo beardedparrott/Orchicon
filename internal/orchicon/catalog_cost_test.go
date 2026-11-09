@@ -3,8 +3,7 @@ package orchicon
 import "testing"
 
 // catalog_cost_test.go pins the SINGLE shared catalog-backed cost lookup (CatalogModelCost) that
-// closes Gap 4: the server's pricing resolver must be able to answer for an anthropic model with
-// NO.
+// closes Gap 4.
 
 // TestCatalogModelCostAnthropicSonnet4 pins the authored rates so a pricing
 // regression is caught at the source.

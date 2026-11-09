@@ -51,11 +51,7 @@ type ProjectRow struct {
 	ExecutionMode string
 }
 
-// Execution modes for ProjectRow.ExecutionMode:
-//   - ExecutionModeLocal (default): in-process execution allowed; the prompt
-//     renders an honest local block and the dispatcher enforces the DSN fence.
-//   - ExecutionModeRuntime (opt-in): executions run inside the run's
-//     container; runtime mode fails LOUD without a daemon.
+// Execution modes for ProjectRow.ExecutionMode: - ExecutionModeLocal (default).
 const (
 	ExecutionModeRuntime = "runtime"
 	ExecutionModeLocal   = "local"
@@ -295,9 +291,7 @@ func UpdateProject(ctx context.Context, tx pgx.Tx, tenantID, id string, expected
 		q += fmt.Sprintf(`, project_dir = $%d`, setIdx)
 		args = append(args, *f.ProjectDir)
 		setIdx++
-		// A project_dir change invalidates the cached git detection: reset the cache to "undetermined"
-		// (git_detected_at = NULL) so the WorktreeReconciler re-detects on its next pass instead of
-		// trusting.
+		// A project_dir change invalidates the cached git detection.
 		q += fmt.Sprintf(`, git_work_tree = false, git_detected_at = NULL`)
 	}
 	if f.ContextFiles != nil {
@@ -370,44 +364,6 @@ func UpdateProjectGitDetection(ctx context.Context, tx pgx.Tx, tenantID, id stri
 }
 
 // DeleteProject removes a project and EVERYTHING that belongs to it.
-//
-// THE CASCADE IS THE CONTRACT, and it used to be incomplete in a way that reached production and
-// stayed there. The work hierarchy was covered (step runs, runs, versions, workflows, dependencies,
-// work items) but the TELEMETRY tables were not — and none of them has an FK to projects, so nothing
-// blocked the delete and nothing pointed at the leftovers afterwards. Measured on the live dev
-// tenant after every project had been removed: 1264 orphaned worker_executions, 150 orphaned
-// recovery_executions, 9959 orphaned usage_records and 132 orphaned recurring_run_history rows, all
-// carrying a project_id that no longer existed. Deleting a project in the GUI left all of it behind;
-// the DB-backed tests, which create and drop projects constantly, left a large share of it.
-//
-// Nine tables carry a project_id and only ONE of them (mcp_servers) declares a foreign key,
-// which is exactly why this has to be explicit: a missing delete is silent rather than an error.
-//
-// ORDER MATTERS, leaves first, so nothing is left mid-cascade if a later statement fails and so the
-// row counts a caller observes step down rather than flicker:
-//
-//  1. execution_session_parts  — children of the executions (they DO cascade, but deleting them
-//     first keeps this function correct even if that FK is ever changed)
-//  2. usage_records            — reference executions AND the project
-//  3. worker_executions        — the project's executions
-//  4. continuation_plans       — children of the recoveries
-//  5. recovery_step_runs       — children of the recoveries
-//  6. recovery_executions      — the project's recoveries
-//  7. recurring_run_history    — references the runs (deleted below) and the work items
-//  8. workflow_step_runs       — children of the runs
-//  9. workflow_runs
-//
-// 10. workflow_versions        — children of the workflows
-// 11. workflows
-// 12. work_item_attachments    — children of the work items
-// 13. work_item_dependencies
-// 14. work_items
-// 15. mcp_servers             — the definitions this project OWNS (mcp_servers' project FK does
-//     cascade, but the explicit step keeps this function's ordered, leaf-first contract)
-// 16. the project
-//
-// Every statement is scoped by BOTH tenant_id and the project, so a cross-tenant id can never match
-// (defence in depth behind row-level security).
 func DeleteProject(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
 	// Each entry is one cascade step; the loop keeps the order auditable in one place rather than
 	// spread over 60 lines of near-identical statements, where a missing one is invisible.
