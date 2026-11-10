@@ -674,6 +674,29 @@ function AskOrchiconPage() {
   // model then answered. Done here, on the durable list, because every transcript consumer (the render, the
   // search blocks and the mirror selection below) reads this one value; reordering later would leave one of
   // them disagreeing.
+  // THE LIVE REPLY, AS BLOCKS, STAMPED WITH THE ANCHOR'S IDENTITY.
+  //
+  // These used to be drawn as a separate section after the whole transcript, which put streaming text BELOW a
+  // durable interjection after a refresh (see anchorLiveReply). They now carry the pending reply's id and are
+  // merged into the transcript at that anchor, so one ordering serves the render and the search.
+  //
+  // DECLARED HERE, ABOVE ITS FIRST CONSUMER: this file's own rule is that a `const` used above its declaration
+  // is a TDZ error the production build rejects — and `tsc -b` DOES reject it where `tsc --noEmit` does not,
+  // which is how this shipped green from a check that was not the one the build runs.
+  const liveBlocks: TranscriptBlock[] = hasLive
+    ? groupedStream
+        .filter((it) => it.kind === "text" || it.kind === "user")
+        .map((it) => ({
+          kind: "message" as const,
+          at: it.at,
+          message: {
+            id: `live-${it.key}`,
+            role: "assistant",
+            content: it.text,
+          } as ChatMessage,
+        }))
+    : [];
+
   const durableOrdered = orderInjectedBeforeReply(
     dropSupersededMirror(messages ?? [], pendingReplyId, isStreaming, liveItemsPresent),
   );
@@ -723,24 +746,6 @@ function AskOrchiconPage() {
   const inFlightMsg = durableMessages.find((m) => m.id === pendingReplyId);
   const liftedCard = hasLive && inFlightMsg ? askCardOf(activeConvId ?? "", inFlightMsg) : null;
 
-  // THE LIVE REPLY, AS BLOCKS, STAMPED WITH THE ANCHOR'S IDENTITY.
-  //
-  // These used to be drawn as a separate section after the whole transcript, which put streaming text BELOW a
-  // durable interjection after a refresh (see anchorLiveReply). They now carry the pending reply's id and are
-  // merged into the transcript at that anchor, so one ordering serves the render and the search.
-  const liveBlocks: TranscriptBlock[] = hasLive
-    ? groupedStream
-        .filter((it) => it.kind === "text" || it.kind === "user")
-        .map((it) => ({
-          kind: "message" as const,
-          at: it.at,
-          message: {
-            id: `live-${it.key}`,
-            role: "assistant",
-            content: it.text,
-          } as ChatMessage,
-        }))
-    : [];
   const transcriptBlocks: TranscriptBlock[] = [];
   for (const msg of durableMessages) {
     transcriptBlocks.push({
