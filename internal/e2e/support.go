@@ -28,6 +28,7 @@ type opts struct {
 	cleanup      bool
 	launch       bool
 	launchOnly   bool
+	cleanupOnly  bool
 	out          string
 	askTimeout   time.Duration
 	taskTimeout  time.Duration
@@ -379,7 +380,7 @@ func waitTask(ctx context.Context, cs *client.Clients, rep *report, t workItem, 
 // --- step 6 ----------------------------------------------------------------
 
 func removeEverything(ctx context.Context, cs *client.Clients, rep *report,
-	workers map[string]worker, projectID string, ownProject bool) {
+	workers map[string]worker, workflows map[string]string, projectID string, ownProject bool) {
 
 	for _, it := range rep.items {
 		if _, err := cs.WorkItems.DeleteWorkItem(ctx,
@@ -387,15 +388,31 @@ func removeEverything(ctx context.Context, cs *client.Clients, rep *report,
 			rep.cleanupFailures = append(rep.cleanupFailures, "work item "+it.id)
 		}
 	}
+	// THE WORKFLOWS ARE CREATED OUTSIDE THE PROJECT, so deleting the project does not reclaim them. Without
+	// this they accumulate one set per setup pass and every one of them is visible in the console.
+	cleanupWorkflows(ctx, cs, rep, workflows)
 	cleanupWorkers(ctx, cs, rep, workers)
 	if ownProject {
 		removeProject(ctx, cs, rep, projectID)
 	}
 	if len(rep.cleanupFailures) == 0 {
-		fmt.Printf("\ncleanup  : complete (work items, workers%s)\n", pick(ownProject, ", project", ""))
+		fmt.Printf("\ncleanup  : complete (work items, %d workflow(s), workers%s)\n",
+			len(workflows), pick(ownProject, ", project", ""))
 		return
 	}
 	fmt.Printf("\ncleanup  : INCOMPLETE — still present: %s\n", strings.Join(rep.cleanupFailures, ", "))
+}
+
+// cleanupWorkflows removes the per-adapter workflows. Each holds run history, so a delete that fails is
+// reported rather than retried blindly — it usually means a run is still in flight against it.
+func cleanupWorkflows(ctx context.Context, cs *client.Clients, rep *report, workflows map[string]string) {
+	for kind, id := range workflows {
+		if _, err := cs.Workflows.DeleteWorkflow(ctx,
+			connect.NewRequest(&apiv1.DeleteWorkflowRequest{Id: id})); err != nil {
+			rep.cleanupFailures = append(rep.cleanupFailures,
+				fmt.Sprintf("%s workflow %s (%v)", adapterWorkflowName(kind), id, err))
+		}
+	}
 }
 
 func cleanupWorkers(ctx context.Context, cs *client.Clients, rep *report, workers map[string]worker) {
@@ -546,4 +563,34 @@ func pick[T any](cond bool, ifTrue, ifFalse T) T {
 		return ifTrue
 	}
 	return ifFalse
+}
+
+// sweepHarnessWorkers deletes every worker this harness ever created, by NAME, rather than only the three the
+// current flags happen to name.
+//
+// The map-driven cleanup reclaims what THIS process made, which is right for a deferred cleanup but useless
+// after the fact: a setup run with different adapter flags — or an earlier interrupted run — leaves workers
+// whose kind no longer appears in the map, and they accumulate silently. The prefix is the harness's own
+// namespace, so a name sweep is the honest boundary.
+func sweepHarnessWorkers(ctx context.Context, cs *client.Clients, rep *report) {
+	resp, err := cs.Workers.ListWorkers(ctx, connect.NewRequest(&apiv1.ListWorkersRequest{}))
+	if err != nil {
+		rep.cleanupFailures = append(rep.cleanupFailures, "list workers ("+err.Error()+")")
+		return
+	}
+	removed := 0
+	for _, w := range resp.Msg.GetWorkers() {
+		if !strings.HasPrefix(w.GetName(), "e2e-") {
+			continue
+		}
+		if _, derr := cs.Workers.DeleteWorker(ctx,
+			connect.NewRequest(&apiv1.DeleteWorkerRequest{Id: w.GetId()})); derr != nil {
+			rep.cleanupFailures = append(rep.cleanupFailures, "worker "+w.GetName())
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		fmt.Printf("cleanup  : removed %d harness worker(s) by name\n", removed)
+	}
 }

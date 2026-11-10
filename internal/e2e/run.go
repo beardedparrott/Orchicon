@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
@@ -38,6 +39,8 @@ func Run(args []string) error {
 			"after setup, run the six tasks ONE AT A TIME, each with a different adapter")
 		launchOnly = fs.Bool("launch-only", false,
 			"skip setup and launch the tasks already in -project (re-pointing each at a different adapter)")
+		cleanupOnly = fs.Bool("cleanup-only", false,
+			"remove what an EARLIER run left in -project: its work items, the per-adapter workflows and its workers")
 		out         = fs.String("out", "", "results file (default orchicon-e2e-<stamp>.md in the cwd)")
 		askTimeout  = fs.Duration("ask-timeout", 4*time.Minute, "per-Ask timeout")
 		taskTimeout = fs.Duration("task-timeout", 20*time.Minute, "per-task dispatch timeout")
@@ -54,7 +57,7 @@ func Run(args []string) error {
 
 	c := opts{
 		projectID: *projectID, runtimeImage: *runtimeImg, localOnly: *localOnly, cleanup: *cleanupAfter,
-		launch: *launch, launchOnly: *launchOnly,
+		launch: *launch, launchOnly: *launchOnly, cleanupOnly: *cleanupOnly,
 		out: *out, askTimeout: *askTimeout, taskTimeout: *taskTimeout,
 		orchiconRef: *orchRef, claudeRef: *claudeRef, opencodeRef: *openRef,
 	}
@@ -103,6 +106,10 @@ func Run(args []string) error {
 		fmt.Printf("modes    : local only (-local-only)\n")
 	} else {
 		fmt.Printf("modes    : local + runtime (%s)\n", c.runtimeImage)
+	}
+
+	if c.cleanupOnly {
+		return runCleanupOnly(ctx, cs, c, adapters)
 	}
 
 	if c.launchOnly {
@@ -179,7 +186,7 @@ func Run(args []string) error {
 		if ctx.Err() != nil {
 			fmt.Printf("\ninterrupted — cleaning up what this run created\n")
 		}
-		removeEverything(context.Background(), cs, rep, workers, projectID2, ownProject)
+		removeEverything(context.Background(), cs, rep, workers, workflows, projectID2, ownProject)
 		if ownProject && c.projectDir != "" {
 			if rerr := os.RemoveAll(c.projectDir); rerr != nil {
 				fmt.Printf("cleanup  : could not remove %s: %v\n", c.projectDir, rerr)
@@ -300,5 +307,63 @@ func resolveConnection(c *opts, instance, profileName, urlFlag, tokenFlag string
 		return errors.New("no plane to talk to: sign in with `orch` once (which writes the profile), " +
 			"or pass -url/-token, or set ORCHICON_URL/ORCHICON_TOKEN")
 	}
+	return nil
+}
+
+// runCleanupOnly reclaims a setup an EARLIER process created. Cleanup normally runs from a deferred func that
+// knows what THIS run made; a setup left in place has no such record, so everything is rediscovered by
+// convention — the project's work items, the `e2e-quick-*` workflows and the `e2e-<adapter>-*` workers.
+func runCleanupOnly(ctx context.Context, cs *client.Clients, c opts, adapters []adapter) error {
+	if strings.TrimSpace(c.projectID) == "" {
+		return errors.New("-cleanup-only needs -project <id>")
+	}
+	rep := &report{baseURL: c.baseURL, started: time.Now(), projectID: c.projectID}
+
+	// WORK ITEMS: everything in the project, children first so a parent is never refused for having children.
+	items, err := cs.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
+		ProjectId: c.projectID, PageSize: 200,
+	}))
+	if err != nil {
+		return fmt.Errorf("list work items: %w", err)
+	}
+	var tasks, epics []string
+	for _, w := range items.Msg.GetWorkItems() {
+		if w.GetKind() == apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC {
+			epics = append(epics, w.GetId())
+		} else {
+			tasks = append(tasks, w.GetId())
+		}
+	}
+	for _, id := range append(tasks, epics...) {
+		if _, derr := cs.WorkItems.DeleteWorkItem(ctx,
+			connect.NewRequest(&apiv1.DeleteWorkItemRequest{Id: id})); derr != nil {
+			rep.cleanupFailures = append(rep.cleanupFailures, "work item "+id)
+		}
+	}
+
+	// WORKFLOWS: rediscovered by name, since no record of them survives a process.
+	if wfs, werr := findAdapterWorkflows(ctx, cs, adapters); werr == nil {
+		cleanupWorkflows(ctx, cs, rep, wfs)
+	}
+
+	// WORKERS: swept by NAME, not by the adapters these flags happen to name — otherwise a setup run that used
+	// different adapters leaves workers this cannot see.
+	sweepHarnessWorkers(ctx, cs, rep)
+
+	// THE PROJECT ITSELF, and the directory it was given.
+	removeProject(ctx, cs, rep, c.projectID)
+	if d := c.projectDir; d != "" {
+		_ = os.RemoveAll(d)
+	} else if p, perr := cs.Projects.GetProject(ctx, connect.NewRequest(
+		&apiv1.GetProjectRequest{Id: c.projectID})); perr == nil {
+		_ = os.RemoveAll(p.Msg.GetProject().GetProjectDir())
+	}
+
+	if len(rep.cleanupFailures) == 0 {
+		fmt.Printf("cleanup  : complete (project %s, its work items, the per-adapter workflows and workers)\n",
+			c.projectID)
+		return nil
+	}
+	fmt.Printf("cleanup  : INCOMPLETE — still present: %s\n", strings.Join(rep.cleanupFailures, ", "))
 	return nil
 }
