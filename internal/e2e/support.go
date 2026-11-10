@@ -110,6 +110,10 @@ func adapterNames(as []adapter) []string {
 // must be re-pointed at. Keyed by project id because -launch-only starts from one.
 var workerCache = map[string]map[string]worker{}
 
+// workflowCache is kind -> workflow id per project: the per-adapter Quick Work copies, which are what a
+// launch binds a task to.
+var workflowCache = map[string]map[string]string{}
+
 // findWorkersForProject resolves the setup pass's workers for an EXISTING project, by name.
 //
 // The setup pass names them `e2e-<adapter>-<stamp>`; rather than store that stamp, this picks the NEWEST
@@ -251,34 +255,6 @@ func createWorkItem(ctx context.Context, cs *client.Clients, projectID, parentID
 		return "", err
 	}
 	return resp.Msg.GetWorkItem().GetId(), nil
-}
-
-func pinTask(ctx context.Context, cs *client.Clients, t workItem, workflowID string,
-	mode apiv1.ExecutionMode, image string, w worker) error {
-
-	upd := &apiv1.UpdateWorkItemRequest{Id: t.id, WorkflowId: &workflowID, ExecutionMode: &mode}
-	if mode == apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME && image != "" {
-		upd.RuntimeImage = &image
-	}
-	if _, err := cs.WorkItems.UpdateWorkItem(ctx, connect.NewRequest(upd)); err != nil {
-		return err
-	}
-	ref := fmt.Sprintf(`{"worker_id":%q,"version":%d}`, w.id, w.version)
-	_, err := cs.WorkItems.AssignWorker(ctx, connect.NewRequest(&apiv1.AssignWorkerRequest{Id: t.id, WorkerRef: ref}))
-	return err
-}
-
-func findWorkflow(ctx context.Context, cs *client.Clients, name string) (string, error) {
-	resp, err := cs.Workflows.ListWorkflows(ctx, connect.NewRequest(&apiv1.ListWorkflowsRequest{}))
-	if err != nil {
-		return "", err
-	}
-	for _, w := range resp.Msg.GetWorkflows() {
-		if strings.EqualFold(w.GetName(), name) {
-			return w.GetId(), nil
-		}
-	}
-	return "", fmt.Errorf("no workflow named %q on this plane", name)
 }
 
 // --- steps 1 and 2 ---------------------------------------------------------

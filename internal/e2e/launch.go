@@ -85,7 +85,7 @@ func discoverLaunchPlan(ctx context.Context, cs *client.Clients, projectID strin
 // between runs is what makes the next run use a different adapter. The model_ref itself lives on the
 // WORKER (one per adapter, created by the setup pass), not on the item.
 func launchOne(ctx context.Context, cs *client.Clients, rep *report, p launchPlan,
-	workers map[string]worker, image string, timeout time.Duration) error {
+	workflows map[string]string, image string, timeout time.Duration) error {
 
 	if !launchable(p.task.status) {
 		st := shortStatus(p.task.status)
@@ -95,31 +95,24 @@ func launchOne(ctx context.Context, cs *client.Clients, rep *report, p launchPla
 		return nil
 	}
 
-	w, ok := workers[p.adapter.kind]
+	wfID, ok := workflows[p.adapter.kind]
 	if !ok {
-		return fmt.Errorf("no worker for the %s adapter — run the setup pass with -%s-model",
+		return fmt.Errorf("no workflow for the %s adapter — run the setup pass with -%s-model",
 			p.adapter.kind, p.adapter.kind)
 	}
 
-	// 1. Re-point the binding at THIS adapter's worker, keeping everything else the item already has.
-	ref := fmt.Sprintf(`{"worker_id":%q,"version":%d}`, w.id, w.version)
-	if _, err := cs.WorkItems.AssignWorker(ctx, connect.NewRequest(&apiv1.AssignWorkerRequest{
-		Id: p.task.id, WorkerRef: ref,
-	})); err != nil {
-		return fmt.Errorf("assign the %s worker: %w", p.adapter.kind, err)
+	// BIND THE TASK TO THIS ADAPTER'S WORKFLOW. That is the lever: the dispatcher reads the WORKFLOW STEP's
+	// worker ref, and that worker's published version carries the model_ref. Assigning a worker to the ITEM
+	// does not affect a workflow-bound run at all.
+	if err := bindTaskToWorkflow(ctx, cs, p.task.id, wfID, p.mode, image); err != nil {
+		return fmt.Errorf("bind the task to the %s workflow: %w", p.adapter.kind, err)
 	}
 
-	// 2. Start it. AutoStartWorkflow starts a bound item immediately; the item already carries its
-	//    workflow_id, execution_mode and runtime_image from the setup pass.
+	// Start it. AutoStartWorkflow starts a bound item immediately.
 	yes := true
-	upd := &apiv1.UpdateWorkItemRequest{Id: p.task.id, AutoStartWorkflow: &yes}
-	if p.mode == apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME && image != "" {
-		upd.RuntimeImage = &image
-	}
-	modeCopy := p.mode
-	upd.ExecutionMode = &modeCopy
-
-	resp, err := cs.WorkItems.UpdateWorkItem(ctx, connect.NewRequest(upd))
+	resp, err := cs.WorkItems.UpdateWorkItem(ctx, connect.NewRequest(&apiv1.UpdateWorkItemRequest{
+		Id: p.task.id, AutoStartWorkflow: &yes,
+	}))
 	if err != nil {
 		return fmt.Errorf("start the task: %w", err)
 	}
@@ -128,7 +121,7 @@ func launchOne(ctx context.Context, cs *client.Clients, rep *report, p launchPla
 		fmt.Printf("           (server warning: %s)\n", oneLine(warn))
 	}
 
-	fmt.Printf("launch %d/%d: %-8s %-9s %s\n", p.index, 6, p.adapter.kind, modeString(p.mode),
+	fmt.Printf("launch %d/6: %-8s %-9s %s\n", p.index, p.adapter.kind, modeString(p.mode),
 		truncate(p.task.title, 50))
 	waitTask(ctx, cs, rep, p.task, p.index, timeout)
 	return nil

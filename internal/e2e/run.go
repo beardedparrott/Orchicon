@@ -111,11 +111,13 @@ func Run(args []string) error {
 		if strings.TrimSpace(c.projectID) == "" {
 			return errors.New("-launch-only needs -project <id> (the project an earlier setup pass left behind)")
 		}
-		workers, ferr := findWorkersForProject(ctx, cs, adapters)
+		// THE WORKFLOWS ARE THE LEVER, so an existing setup is resolved by finding them. They are created by
+		// the setup pass and named per adapter, so this needs no stored state.
+		workflows, ferr := findAdapterWorkflows(ctx, cs, adapters)
 		if ferr != nil {
 			return ferr
 		}
-		workerCache[c.projectID] = workers
+		workflowCache[c.projectID] = workflows
 		rep.projectID = c.projectID
 		fmt.Printf("project  : %s (existing)\n\n", c.projectID)
 		return runLaunches(ctx, cs, rep, c.projectID, adapters, c)
@@ -140,6 +142,18 @@ func Run(args []string) error {
 	workers, err := createWorkers(ctx, cs, adapters)
 	workerCache[c.projectID] = workers
 	workerCache[projectID2] = workers
+
+	// THE ROTATION LIVES HERE: one Quick Work copy per adapter, whose step points at that adapter's worker.
+	workflows, err := ensureAdapterWorkflows(ctx, cs, projectID2, adapters, workers)
+	if err != nil {
+		return fmt.Errorf("create the per-adapter workflows: %w", err)
+	}
+	// A WRONG STEP REF IS SILENT: the matrix would look like three adapters and run one three times.
+	if err := verifyWorkflowPins(ctx, cs, workflows, workers); err != nil {
+		return err
+	}
+	workflowCache[c.projectID] = workflows
+	workflowCache[projectID2] = workflows
 	if err != nil {
 		// CLEANUP RUNS ON A LIVE CONTEXT: an interrupt cancels ctx, and a cancelled context would make
 		// every delete fail — the precise case where cleanup matters most.
@@ -190,18 +204,19 @@ func Run(args []string) error {
 		return err
 	}
 
-	// 3 + 4 — Quick Work, alternating local/runtime, adapter rotating every two tasks.
-	quickWork, err := findWorkflow(ctx, cs, "Quick Work")
-	if err != nil {
-		return err
-	}
+	// 3 + 4 — bind each task to ITS ADAPTER's Quick Work copy, alternating local/runtime.
+	//
+	// THE WORKFLOW IS THE LEVER. The dispatcher resolves the worker from the workflow STEP's ref, so binding
+	// the task to a per-adapter workflow is what makes this task run that adapter. An earlier version bound
+	// every task to Quick Work and re-assigned the ITEM's worker, which the bound-workflow path never reads —
+	// so all six ran one adapter and the matrix looked fine.
 	for i := range tasks {
 		a := adapters[(i/2)%len(adapters)]
 		mode := apiv1.ExecutionMode_EXECUTION_MODE_LOCAL
 		if !c.localOnly && i%2 == 1 {
 			mode = apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME
 		}
-		if err := pinTask(ctx, cs, tasks[i], quickWork, mode, c.runtimeImage, workers[a.kind]); err != nil {
+		if err := bindTaskToWorkflow(ctx, cs, tasks[i].id, workflows[a.kind], mode, c.runtimeImage); err != nil {
 			return fmt.Errorf("pin task %d: %w", i+1, err)
 		}
 		rep.plan = append(rep.plan, matrixRow{n: i + 1, adapter: a.kind, mode: modeString(mode), title: tasks[i].title})
@@ -220,17 +235,17 @@ func Run(args []string) error {
 func runLaunches(ctx context.Context, cs *client.Clients, rep *report, projectID string,
 	adapters []adapter, c opts) error {
 
-	workers, ok := workerCache[projectID]
-	if !ok || len(workers) == 0 {
-		return fmt.Errorf("no workers known for project %s — run the setup pass without -launch-only first",
-			projectID)
+	wf, ok := workflowCache[projectID]
+	if !ok || len(wf) == 0 {
+		return fmt.Errorf("no per-adapter workflows known for project %s — run the setup pass (which creates "+
+			"them) without -launch-only first", projectID)
 	}
 	plan, err := discoverLaunchPlan(ctx, cs, projectID, adapters, c.localOnly)
 	if err != nil {
 		return err
 	}
 	for _, p := range plan {
-		if err := launchOne(ctx, cs, rep, p, workers, c.runtimeImage, c.taskTimeout); err != nil {
+		if err := launchOne(ctx, cs, rep, p, wf, c.runtimeImage, c.taskTimeout); err != nil {
 			return err
 		}
 	}
