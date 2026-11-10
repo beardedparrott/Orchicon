@@ -82,6 +82,7 @@ import { MessageAction, modeForAction, restoresComposer, type MessageActionValue
 import { COMPACT_COMMAND, parseComposerCommand } from "@/lib/composer-command";
 import { bubbleKindFor } from "@/lib/ask-bubble";
 import {
+  anchorLiveReply,
   dropSupersededMirror,
   hasLiveTextItems,
   mirrorRowProseLifted,
@@ -673,9 +674,22 @@ function AskOrchiconPage() {
   // model then answered. Done here, on the durable list, because every transcript consumer (the render, the
   // search blocks and the mirror selection below) reads this one value; reordering later would leave one of
   // them disagreeing.
-  const durableMessages = orderInjectedBeforeReply(
+  const durableOrdered = orderInjectedBeforeReply(
     dropSupersededMirror(messages ?? [], pendingReplyId, isStreaming, liveItemsPresent),
   );
+
+  // THE LIVE REPLY TAKES ITS ANCHOR IN THE TRANSCRIPT, not a trailing section (§ anchorLiveReply).
+  //
+  // It is merged HERE, into the durable order, because every transcript consumer reads this one value — the
+  // render, the search blocks and the mirror selection — so merging later would leave one of them disagreeing
+  // about where the streaming text sits. The merged blocks carry the anchor row's own position, which is what
+  // keeps a streaming reply BELOW an interjection that a refresh made durable.
+  const anchored = anchorLiveReply(
+    durableOrdered,
+    liveBlocks.map((b) => (b as { kind: "message"; message: ChatMessage }).message),
+    pendingReplyId,
+  );
+  const durableMessages = anchored.messages;
 
   // A LIVE-ONLY TURN MUST STILL BE SEARCHABLE.
   //
@@ -709,13 +723,22 @@ function AskOrchiconPage() {
   const inFlightMsg = durableMessages.find((m) => m.id === pendingReplyId);
   const liftedCard = hasLive && inFlightMsg ? askCardOf(activeConvId ?? "", inFlightMsg) : null;
 
+  // THE LIVE REPLY, AS BLOCKS, STAMPED WITH THE ANCHOR'S IDENTITY.
+  //
+  // These used to be drawn as a separate section after the whole transcript, which put streaming text BELOW a
+  // durable interjection after a refresh (see anchorLiveReply). They now carry the pending reply's id and are
+  // merged into the transcript at that anchor, so one ordering serves the render and the search.
   const liveBlocks: TranscriptBlock[] = hasLive
     ? groupedStream
         .filter((it) => it.kind === "text" || it.kind === "user")
         .map((it) => ({
           kind: "message" as const,
           at: it.at,
-          message: { id: `live-${it.key}`, role: "assistant", content: it.text } as ChatMessage,
+          message: {
+            id: `live-${it.key}`,
+            role: "assistant",
+            content: it.text,
+          } as ChatMessage,
         }))
     : [];
   const transcriptBlocks: TranscriptBlock[] = [];
@@ -2484,10 +2507,15 @@ function AskOrchiconPage() {
                     );
                   })}
 
-                {/* Live streaming items (text + reasoning chunks) — hidden while a
-                    search filter is active, so the view shows only matches. */}
+                {/* THE TRAILING LIVE SECTION IS A FALLBACK, NOT THE NORM.
+                    Now that the live reply is anchored into the transcript (see durableMessages), drawing it
+                    here as well would show it twice — so this renders only when the anchor did NOT take,
+                    which happens when the pending row has not arrived from the poll yet. Reasoning and error
+                    chunks have no transcript block, so they still only appear here; that is why this is
+                    gated on `!anchored.inserted` rather than deleted outright. */}
                 {!searchActive &&
                   isStreaming &&
+                  !anchored.inserted &&
                   groupedStream.map((item) => {
                     switch (item.kind) {
                       case "text":
