@@ -25,8 +25,9 @@ type opts struct {
 	projectDir   string
 	runtimeImage string
 	localOnly    bool
-	keep         bool
-	dispatch     bool
+	cleanup      bool
+	launch       bool
+	launchOnly   bool
 	out          string
 	askTimeout   time.Duration
 	taskTimeout  time.Duration
@@ -43,8 +44,9 @@ type worker struct {
 }
 
 type workItem struct {
-	id    string
-	title string
+	id     string
+	title  string
+	status string
 }
 
 type askRow struct {
@@ -102,6 +104,39 @@ func adapterNames(as []adapter) []string {
 		out = append(out, a.kind)
 	}
 	return out
+}
+
+// workerCache holds the adapter->worker map for a project, so the launch pass can find the worker a task
+// must be re-pointed at. Keyed by project id because -launch-only starts from one.
+var workerCache = map[string]map[string]worker{}
+
+// findWorkersForProject resolves the setup pass's workers for an EXISTING project, by name.
+//
+// The setup pass names them `e2e-<adapter>-<stamp>`; rather than store that stamp, this picks the NEWEST
+// matching worker per adapter, so a later setup pass supersedes an earlier one without ambiguity.
+func findWorkersForProject(ctx context.Context, cs *client.Clients, adapters []adapter) (map[string]worker, error) {
+	resp, err := cs.Workers.ListWorkers(ctx, connect.NewRequest(&apiv1.ListWorkersRequest{}))
+	if err != nil {
+		return nil, fmt.Errorf("list workers: %w", err)
+	}
+	out := map[string]worker{}
+	for _, a := range adapters {
+		var best *apiv1.Worker
+		for _, w := range resp.Msg.GetWorkers() {
+			if !strings.HasPrefix(w.GetName(), "e2e-"+a.kind+"-") {
+				continue
+			}
+			if best == nil || w.GetCreatedAt().AsTime().After(best.GetCreatedAt().AsTime()) {
+				best = w
+			}
+		}
+		if best == nil {
+			return nil, fmt.Errorf("no %s harness worker found — run a setup pass with -%s-model first",
+				a.kind, a.kind)
+		}
+		out[a.kind] = worker{id: best.GetId(), version: best.GetCurrentVersion()}
+	}
+	return out, nil
 }
 
 // --- RPC -------------------------------------------------------------------
@@ -219,15 +254,11 @@ func createWorkItem(ctx context.Context, cs *client.Clients, projectID, parentID
 }
 
 func pinTask(ctx context.Context, cs *client.Clients, t workItem, workflowID string,
-	mode apiv1.ExecutionMode, image string, w worker, dispatch bool) error {
+	mode apiv1.ExecutionMode, image string, w worker) error {
 
 	upd := &apiv1.UpdateWorkItemRequest{Id: t.id, WorkflowId: &workflowID, ExecutionMode: &mode}
 	if mode == apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME && image != "" {
 		upd.RuntimeImage = &image
-	}
-	if dispatch {
-		yes := true
-		upd.AutoStartWorkflow = &yes
 	}
 	if _, err := cs.WorkItems.UpdateWorkItem(ctx, connect.NewRequest(upd)); err != nil {
 		return err
@@ -323,18 +354,40 @@ func createPlan(ctx context.Context, cs *client.Clients, rep *report, projectID 
 
 // --- step 5 ----------------------------------------------------------------
 
+// waitTask follows a launched task to a terminal state.
+//
+// TWO SIGNALS, AND THE SECOND IS THE ONE THAT MATTERS. A task bound to a workflow RUN reports `running`
+// while the run works, and only the RUN reaches completed/failed — so polling the item's own status saw
+// "running" for the whole window and reported a timeout on work that was progressing fine. The item is
+// still checked, because a task with no workflow run (or one whose run was never created) is finished when
+// the ITEM is terminal.
 func waitTask(ctx context.Context, cs *client.Clients, rep *report, t workItem, n int, timeout time.Duration) {
 	started := time.Now()
 	deadline := started.Add(timeout)
+
+	record := func(status string) {
+		rep.tasks = append(rep.tasks, taskRow{n: n, title: t.title, status: status, elapsed: time.Since(started)})
+		fmt.Printf("run %d/6    : %-12s %s (%s)\n", n, status, truncate(t.title, 50),
+			time.Since(started).Round(time.Second))
+	}
+
 	for time.Now().Before(deadline) {
-		resp, err := cs.WorkItems.GetWorkItem(ctx, connect.NewRequest(&apiv1.GetWorkItemRequest{Id: t.id}))
+		item, err := cs.WorkItems.GetWorkItem(ctx, connect.NewRequest(&apiv1.GetWorkItemRequest{Id: t.id}))
 		if err == nil {
-			raw := resp.Msg.GetWorkItem().GetStatus().String()
-			if terminalStatus(raw) {
-				st := shortStatus(raw)
-				rep.tasks = append(rep.tasks, taskRow{n: n, title: t.title, status: st, elapsed: time.Since(started)})
-				fmt.Printf("run %d/6    : %-12s %s (%s)\n", n, st, truncate(t.title, 50),
-					time.Since(started).Round(time.Second))
+			raw := item.Msg.GetWorkItem().GetStatus().String()
+			runID := item.Msg.GetWorkItem().GetWorkflowRunId()
+
+			// The RUN is authoritative once one exists.
+			if runID != "" {
+				if run, rerr := cs.Workflows.GetWorkflowRun(ctx, connect.NewRequest(
+					&apiv1.GetWorkflowRunRequest{Id: runID})); rerr == nil {
+					if st := run.Msg.GetRun().GetStatus().String(); terminalStatus(st) {
+						record(shortStatus(st) + " (run)")
+						return
+					}
+				}
+			} else if terminalStatus(raw) {
+				record(shortStatus(raw))
 				return
 			}
 		}
@@ -344,8 +397,7 @@ func waitTask(ctx context.Context, cs *client.Clients, rep *report, t workItem, 
 		case <-time.After(5 * time.Second):
 		}
 	}
-	rep.tasks = append(rep.tasks, taskRow{n: n, title: t.title, status: "timeout", elapsed: time.Since(started)})
-	fmt.Printf("run %d/6    : %-12s %s (timed out)\n", n, "timeout", truncate(t.title, 50))
+	record("timeout")
 }
 
 // --- step 6 ----------------------------------------------------------------
@@ -397,7 +449,8 @@ func (r *report) write(path string, c opts) {
 		r.started.Format(time.RFC3339), r.baseURL, r.projectID)
 	fmt.Fprintf(&b, "- adapters: %s\n", strings.Join(adapterNames(c.adapters()), ", "))
 	fmt.Fprintf(&b, "- modes: %s\n", pick(c.localOnly, "local only", "local + runtime ("+c.runtimeImage+")"))
-	fmt.Fprintf(&b, "- dispatched: %v\n- duration: %s\n\n", c.dispatch, time.Since(r.started).Round(time.Second))
+	fmt.Fprintf(&b, "- launched: %v\n- left in place: %v\n- duration: %s\n\n",
+		c.launch, !c.cleanup, time.Since(r.started).Round(time.Second))
 
 	b.WriteString("## 1. Ask, per mode per adapter\n\n| mode | adapter | result | elapsed |\n|---|---|---|---|\n")
 	for _, a := range r.asks {
@@ -422,8 +475,8 @@ func (r *report) write(path string, c opts) {
 		fmt.Fprintf(&b, "| %d | %s | %s | %s |\n", p.n, p.adapter, p.mode, p.title)
 	}
 
-	if c.dispatch {
-		b.WriteString("\n## 5. Dispatch results\n\n| # | status | elapsed | title |\n|---|---|---|---|\n")
+	if c.launch {
+		b.WriteString("\n## 5. Launch results\n\n| # | status | elapsed | title |\n|---|---|---|---|\n")
 		for _, t := range r.tasks {
 			fmt.Fprintf(&b, "| %d | %s | %s | %s |\n", t.n, t.status, t.elapsed.Round(time.Second), t.title)
 		}

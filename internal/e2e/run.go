@@ -32,8 +32,12 @@ func Run(args []string) error {
 		projectID   = fs.String("project", "", "reuse this project (default: create a throwaway one)")
 		runtimeImg  = fs.String("runtime-image", "orchicon-runtime:orchicon-dev", "image for runtime-mode tasks")
 		localOnly   = fs.Bool("local-only", false, "skip runtime-mode tasks (no container engine, e.g. a cloud Mac)")
-		keep        = fs.Bool("keep", false, "do not clean up anything this run created")
-		dispatch    = fs.Bool("dispatch", false, "actually dispatch the six tasks (default: set them up only)")
+		cleanupAfter = fs.Bool("cleanup", false,
+			"REMOVE everything this run created (default: leave the project, workers and tasks in place)")
+		launch = fs.Bool("launch", false,
+			"after setup, run the six tasks ONE AT A TIME, each with a different adapter")
+		launchOnly = fs.Bool("launch-only", false,
+			"skip setup and launch the tasks already in -project (re-pointing each at a different adapter)")
 		out         = fs.String("out", "", "results file (default orchicon-e2e-<stamp>.md in the cwd)")
 		askTimeout  = fs.Duration("ask-timeout", 4*time.Minute, "per-Ask timeout")
 		taskTimeout = fs.Duration("task-timeout", 20*time.Minute, "per-task dispatch timeout")
@@ -49,8 +53,9 @@ func Run(args []string) error {
 	}
 
 	c := opts{
-		projectID: *projectID, runtimeImage: *runtimeImg, localOnly: *localOnly, keep: *keep,
-		dispatch: *dispatch, out: *out, askTimeout: *askTimeout, taskTimeout: *taskTimeout,
+		projectID: *projectID, runtimeImage: *runtimeImg, localOnly: *localOnly, cleanup: *cleanupAfter,
+		launch: *launch, launchOnly: *launchOnly,
+		out: *out, askTimeout: *askTimeout, taskTimeout: *taskTimeout,
 		orchiconRef: *orchRef, claudeRef: *claudeRef, opencodeRef: *openRef,
 	}
 
@@ -100,6 +105,22 @@ func Run(args []string) error {
 		fmt.Printf("modes    : local + runtime (%s)\n", c.runtimeImage)
 	}
 
+	if c.launchOnly {
+		// LAUNCH AN EXISTING SETUP. This is the workflow the artifacts exist for: set up once, then run the
+		// matrix against a DIFFERENT set of adapters without recreating anything.
+		if strings.TrimSpace(c.projectID) == "" {
+			return errors.New("-launch-only needs -project <id> (the project an earlier setup pass left behind)")
+		}
+		workers, ferr := findWorkersForProject(ctx, cs, adapters)
+		if ferr != nil {
+			return ferr
+		}
+		workerCache[c.projectID] = workers
+		rep.projectID = c.projectID
+		fmt.Printf("project  : %s (existing)\n\n", c.projectID)
+		return runLaunches(ctx, cs, rep, c.projectID, adapters, c)
+	}
+
 	projectID2, ownProject := c.projectID, false
 	if projectID2 == "" {
 		dir := c.projectDir
@@ -117,6 +138,8 @@ func Run(args []string) error {
 	fmt.Printf("project  : %s\n\n", projectID2)
 
 	workers, err := createWorkers(ctx, cs, adapters)
+	workerCache[c.projectID] = workers
+	workerCache[projectID2] = workers
 	if err != nil {
 		// CLEANUP RUNS ON A LIVE CONTEXT: an interrupt cancels ctx, and a cancelled context would make
 		// every delete fail — the precise case where cleanup matters most.
@@ -127,13 +150,20 @@ func Run(args []string) error {
 		return fmt.Errorf("create workers: %w", err)
 	}
 	defer func() {
+		// LEFT IN PLACE BY DEFAULT. The artifacts are the POINT: the operator launches these tasks from the
+		// console, one at a time, pointing different adapters and models at them. Removing them by default
+		// destroyed exactly what the run existed to produce.
+		if !c.cleanup {
+			rep.kept = true
+			if ctx.Err() != nil {
+				fmt.Printf("\ninterrupted — everything created is LEFT IN PLACE (pass -cleanup to remove it)\n")
+			}
+			fmt.Printf("\nkept     : project %s, %d worker(s) and the six tasks are in place\n", projectID2, len(workers))
+			fmt.Printf("           launch them from the console, or chain them with: -launch-only -project %s\n", projectID2)
+			return
+		}
 		if ctx.Err() != nil {
 			fmt.Printf("\ninterrupted — cleaning up what this run created\n")
-		}
-		if c.keep {
-			fmt.Printf("\n-keep: left project %s and %d worker(s) in place\n", projectID2, len(workers))
-			rep.kept = true
-			return
 		}
 		removeEverything(context.Background(), cs, rep, workers, projectID2, ownProject)
 		if ownProject && c.projectDir != "" {
@@ -171,20 +201,38 @@ func Run(args []string) error {
 		if !c.localOnly && i%2 == 1 {
 			mode = apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME
 		}
-		if err := pinTask(ctx, cs, tasks[i], quickWork, mode, c.runtimeImage, workers[a.kind], c.dispatch); err != nil {
+		if err := pinTask(ctx, cs, tasks[i], quickWork, mode, c.runtimeImage, workers[a.kind]); err != nil {
 			return fmt.Errorf("pin task %d: %w", i+1, err)
 		}
 		rep.plan = append(rep.plan, matrixRow{n: i + 1, adapter: a.kind, mode: modeString(mode), title: tasks[i].title})
 		fmt.Printf("task %d/6  : %-8s %-9s %s\n", i+1, a.kind, modeString(mode), truncate(tasks[i].title, 60))
 	}
 
-	// 5 — dispatch and wait, unless this is a setup-only run.
-	if !c.dispatch {
-		fmt.Printf("\n(no -dispatch: the tasks are pinned but not started)\n")
-		return nil
+	// 5 — optionally launch them one at a time, each re-pointed at a different adapter.
+	if c.launch {
+		return runLaunches(ctx, cs, rep, projectID2, adapters, c)
 	}
-	for i := range tasks {
-		waitTask(ctx, cs, rep, tasks[i], i+1, c.taskTimeout)
+	fmt.Printf("\n(pinned but not started — add -launch to run them one at a time)\n")
+	return nil
+}
+
+// runLaunches drives the six tasks sequentially, re-binding each to its adapter's worker first.
+func runLaunches(ctx context.Context, cs *client.Clients, rep *report, projectID string,
+	adapters []adapter, c opts) error {
+
+	workers, ok := workerCache[projectID]
+	if !ok || len(workers) == 0 {
+		return fmt.Errorf("no workers known for project %s — run the setup pass without -launch-only first",
+			projectID)
+	}
+	plan, err := discoverLaunchPlan(ctx, cs, projectID, adapters, c.localOnly)
+	if err != nil {
+		return err
+	}
+	for _, p := range plan {
+		if err := launchOne(ctx, cs, rep, p, workers, c.runtimeImage, c.taskTimeout); err != nil {
+			return err
+		}
 	}
 	return nil
 }
