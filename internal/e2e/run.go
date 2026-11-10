@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -101,13 +102,18 @@ func Run(args []string) error {
 
 	projectID2, ownProject := c.projectID, false
 	if projectID2 == "" {
-		id, err := createProject(ctx, cs, "e2e-adapter-matrix")
+		dir := c.projectDir
+		if dir == "" {
+			dir = filepath.Join(os.TempDir(), fmt.Sprintf("orchicon-e2e-%d", time.Now().Unix()))
+		}
+		c.projectDir = dir
+		id, err := createProject(ctx, cs, "e2e-adapter-matrix", dir)
 		if err != nil {
 			return fmt.Errorf("create project: %w", err)
 		}
 		projectID2, ownProject = id, true
 	}
-	rep.projectID = projectID2
+	rep.projectID, rep.projectDir = projectID2, c.projectDir
 	fmt.Printf("project  : %s\n\n", projectID2)
 
 	workers, err := createWorkers(ctx, cs, adapters)
@@ -130,6 +136,11 @@ func Run(args []string) error {
 			return
 		}
 		removeEverything(context.Background(), cs, rep, workers, projectID2, ownProject)
+		if ownProject && c.projectDir != "" {
+			if rerr := os.RemoveAll(c.projectDir); rerr != nil {
+				fmt.Printf("cleanup  : could not remove %s: %v\n", c.projectDir, rerr)
+			}
+		}
 	}()
 
 	// 1 — Ask once per mode per adapter.
@@ -142,19 +153,12 @@ func Run(args []string) error {
 		}
 	}
 
-	// 2 — Brainstorm the epic, then read back what it actually created.
-	epicID, tasks := askEpic(ctx, cs, rep, projectID2, adapters[0], c.askTimeout)
-	if epicID == "" {
-		id, err := createWorkItem(ctx, cs, projectID2, "", apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
-			"Weather web app (harness fallback)", "Created because the Ask produced no epic.")
-		if err != nil {
-			return fmt.Errorf("create fallback epic: %w", err)
-		}
-		epicID = id
+	// 2 — the epic and its six tasks, created by us. The Ask is exercised in step 1; it does not own the
+	// plan, because a model that answers with a clarifying question leaves the matrix with nothing to run.
+	_, tasks, err := createPlan(ctx, cs, rep, projectID2)
+	if err != nil {
+		return err
 	}
-	tasks = topUp(ctx, cs, projectID2, epicID, tasks, 6)
-	rep.items = append(rep.items, workItem{id: epicID})
-	rep.items = append(rep.items, tasks...)
 
 	// 3 + 4 — Quick Work, alternating local/runtime, adapter rotating every two tasks.
 	quickWork, err := findWorkflow(ctx, cs, "Quick Work")

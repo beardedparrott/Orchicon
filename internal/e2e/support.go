@@ -22,6 +22,7 @@ type opts struct {
 	refreshToken string
 	insecureTLS  bool
 	projectID    string
+	projectDir   string
 	runtimeImage string
 	localOnly    bool
 	keep         bool
@@ -70,11 +71,8 @@ type report struct {
 	baseURL         string
 	started         time.Time
 	projectID       string
+	projectDir      string
 	epicTitle       string
-	epicProduced    int
-	epicReply       string
-	epicElapsed     time.Duration
-	epicErr         error
 	asks            []askRow
 	tasks           []taskRow
 	plan            []matrixRow
@@ -113,15 +111,35 @@ func probe(ctx context.Context, cs *client.Clients) error {
 	return err
 }
 
-func createProject(ctx context.Context, cs *client.Clients, prefix string) (string, error) {
+// createProject makes the throwaway project ACTIVE, giving it a real directory first.
+//
+// A project is created in `drafting` and NOTHING can be created inside one — the server refuses with
+// `project not active: project is "drafting", must be active`. So: create, set project_dir, activate. The
+// directory is set BEFORE activation, because an active project with no directory cannot run a task.
+func createProject(ctx context.Context, cs *client.Clients, prefix, dir string) (string, error) {
 	slug := fmt.Sprintf("%s-%d", prefix, time.Now().Unix())
+
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create project dir %s: %w", dir, err)
+	}
+
 	resp, err := cs.Projects.CreateProject(ctx, connect.NewRequest(&apiv1.CreateProjectRequest{
 		Name: slug, Slug: slug, GitStrategy: apiv1.GitStrategy_GIT_STRATEGY_NONE,
 	}))
 	if err != nil {
 		return "", err
 	}
-	return resp.Msg.GetProject().GetId(), nil
+	id := resp.Msg.GetProject().GetId()
+
+	if _, err := cs.Projects.UpdateProject(ctx, connect.NewRequest(&apiv1.UpdateProjectRequest{
+		Id: id, ProjectDir: &dir,
+	})); err != nil {
+		return id, fmt.Errorf("set the project directory: %w", err)
+	}
+	if _, err := cs.Projects.ActivateProject(ctx, connect.NewRequest(&apiv1.ActivateProjectRequest{Id: id})); err != nil {
+		return id, fmt.Errorf("activate the project: %w", err)
+	}
+	return id, nil
 }
 
 // createWorkers makes one worker per adapter: the adapter IS the worker's model_ref segment, and the
@@ -188,27 +206,6 @@ func awaitReply(ctx context.Context, cs *client.Clients, convID string, timeout 
 	return "", fmt.Errorf("no assistant reply within %s", timeout)
 }
 
-func findEpicAndTasks(ctx context.Context, cs *client.Clients, projectID string) (string, []workItem) {
-	resp, err := cs.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
-		ProjectId: projectID, PageSize: 200,
-	}))
-	if err != nil {
-		return "", nil
-	}
-	var epic string
-	children := map[string][]workItem{}
-	for _, w := range resp.Msg.GetWorkItems() {
-		if epic == "" && w.GetKind() == apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC {
-			epic = w.GetId()
-		}
-		children[w.GetParentId()] = append(children[w.GetParentId()], workItem{id: w.GetId(), title: w.GetTitle()})
-	}
-	if epic == "" {
-		return "", nil
-	}
-	return epic, children[epic]
-}
-
 func createWorkItem(ctx context.Context, cs *client.Clients, projectID, parentID string,
 	kind apiv1.WorkItemKind, title, desc string) (string, error) {
 
@@ -219,23 +216,6 @@ func createWorkItem(ctx context.Context, cs *client.Clients, projectID, parentID
 		return "", err
 	}
 	return resp.Msg.GetWorkItem().GetId(), nil
-}
-
-func topUp(ctx context.Context, cs *client.Clients, projectID, epicID string, tasks []workItem, want int) []workItem {
-	if len(tasks) > want {
-		return tasks[:want]
-	}
-	for i := len(tasks); i < want; i++ {
-		title := fmt.Sprintf("Requirement %d (harness-created)", i+1)
-		id, err := createWorkItem(ctx, cs, projectID, epicID, apiv1.WorkItemKind_WORK_ITEM_KIND_TASK, title,
-			"Added because the Ask produced fewer than six tasks.")
-		if err != nil {
-			fmt.Printf("top-up   : could not create task %d: %v\n", i+1, err)
-			break
-		}
-		tasks = append(tasks, workItem{id: id, title: title})
-	}
-	return tasks
 }
 
 func pinTask(ctx context.Context, cs *client.Clients, t workItem, workflowID string,
@@ -295,43 +275,50 @@ func askOne(ctx context.Context, cs *client.Clients, rep *report, projectID stri
 	fmt.Printf("ask %-10s %-8s %-8s %s\n", modeString2(mode), a.kind, status, time.Since(started).Round(time.Second))
 }
 
-func askEpic(ctx context.Context, cs *client.Clients, rep *report, projectID string,
-	a adapter, timeout time.Duration) (string, []workItem) {
+// planEpic is the epic and its six tasks, mirrored from the WorkerTesting project where this shape is
+// already proven. The DESCRIPTIONS are deliberately not copied: they are ~10 KB of prompt engineering
+// specific to that project, and this harness exercises adapters and execution modes rather than re-running
+// that epic.
+var planEpic = struct {
+	title string
+	tasks []string
+}{
+	title: "Weather web app on :9090 — keyless weather + news SPA (C/F, city resolution, compare, hourly/daily, news tabs)",
+	tasks: []string{
+		"Foundation: zero-dep Node 22 server on :9090, SPA shell, design tokens, test harness + .orchicon/verify gate",
+		"BFF data layer: /api/geocode + /api/weather, canonical °C, WMO→condition mapping, TTL cache, stale fallback, fixture tests",
+		"City resolution + compare slots: debounced combobox with ambiguous results and keyboard nav, geolocation, pure 1-or-2-city store",
+		"Conditions + forecast UI: current card, 24h strip in location timezone, 7-day list, C/F toggle bound to real conversion",
+		"News panel: Tech/Games/Business via server-side RSS proxy, per-source failure isolation, tabs, filter, refresh",
+		"End-to-end interaction contract: catalogue every button/search/filter, prove single+compare parity, keyboard and resize through localhost:9090",
+	},
+}
 
-	prompt := `Do not ask clarifying questions — create the work items now, then summarise.
-
-Create one epic with exactly six tasks for a basic weather web app on port 9090.
-
-Requirements:
-1. C/F readings, toggleable
-2. Location finding with real city resolution
-3. All searches, filters and buttons work fully
-4. Single city, or compare two
-5. Temperature, humidity, wind, high/low, and a storm/rain/sunny/cloudy description
-6. Hourly and daily
-7. News for Tech, Games and Business
-
-Create the epic, then its six tasks as children of it. Finish by stating how many you created.`
-
-	started := time.Now()
-	convID, err := createConversation(ctx, cs, projectID, a.ref,
-		apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM, prompt)
+// createPlan creates the epic and its six tasks. DETERMINISTIC BY CHOICE: an Ask asked to build a plan can
+// answer with a clarifying question or stall, and a matrix run that depends on a model behaving fails for
+// reasons unrelated to what it tests — measured, twice, as "produced epic <none> with 0 task(s)". The Ask is
+// still exercised by step 1; it just does not own the plan.
+func createPlan(ctx context.Context, cs *client.Clients, rep *report, projectID string) (string, []workItem, error) {
+	epicID, err := createWorkItem(ctx, cs, projectID, "", apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC,
+		planEpic.title, "Weather web app epic, mirrored from the WorkerTesting project.")
 	if err != nil {
-		rep.epicErr = err
-		fmt.Printf("\nepic ask : FAILED   %v\n", err)
-		return "", nil
+		return "", nil, fmt.Errorf("create the epic: %w", err)
 	}
-	reply, err := awaitReply(ctx, cs, convID, timeout)
-	rep.epicReply, rep.epicElapsed, rep.epicErr = firstLines(reply, 12), time.Since(started), err
+	rep.epicTitle = planEpic.title
+	rep.items = append(rep.items, workItem{id: epicID, title: planEpic.title})
 
-	epicID, tasks := findEpicAndTasks(ctx, cs, projectID)
-	rep.epicProduced, rep.epicTitle = len(tasks), titleOr(epicID)
-	fmt.Printf("\nepic ask : produced epic %q with %d task(s) in %s\n",
-		rep.epicTitle, len(tasks), time.Since(started).Round(time.Second))
-	if len(tasks) != 6 {
-		fmt.Printf("           (the harness will %s to six)\n", pick(len(tasks) < 6, "top up", "trim"))
+	tasks := make([]workItem, 0, len(planEpic.tasks))
+	for i, title := range planEpic.tasks {
+		id, cerr := createWorkItem(ctx, cs, projectID, epicID, apiv1.WorkItemKind_WORK_ITEM_KIND_TASK,
+			title, fmt.Sprintf("Task %d of 6 in the mirrored weather-web-app epic.", i+1))
+		if cerr != nil {
+			return epicID, tasks, fmt.Errorf("create task %q: %w", title, cerr)
+		}
+		rep.items = append(rep.items, workItem{id: id, title: title})
+		tasks = append(tasks, workItem{id: id, title: title})
 	}
-	return epicID, tasks
+	fmt.Printf("\nplan     : epic + %d task(s) created\n", len(tasks))
+	return epicID, tasks, nil
 }
 
 // --- step 5 ----------------------------------------------------------------
@@ -427,14 +414,8 @@ func (r *report) write(path string, c opts) {
 		}
 	}
 
-	fmt.Fprintf(&b, "\n## 2. Epic from Brainstorm\n\n- epic: %s\n- tasks produced by the Ask: **%d** (target 6)\n- elapsed: %s\n",
-		r.epicTitle, r.epicProduced, r.epicElapsed.Round(time.Second))
-	if r.epicErr != nil {
-		fmt.Fprintf(&b, "- error: %s\n", oneLine(r.epicErr.Error()))
-	}
-	if r.epicReply != "" {
-		fmt.Fprintf(&b, "\nReply (truncated):\n\n> %s\n", strings.ReplaceAll(r.epicReply, "\n", "\n> "))
-	}
+	fmt.Fprintf(&b, "\n## 2. Epic and tasks\n\n- epic: %s\n- tasks created: **%d** of 6\n",
+		r.epicTitle, len(r.items)-1)
 
 	b.WriteString("\n## 3+4. Task matrix\n\n| # | adapter | mode | title |\n|---|---|---|---|\n")
 	for _, p := range r.plan {

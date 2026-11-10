@@ -112,6 +112,10 @@ func main() {
 				}
 				os.Exit(exitOnErr(err))
 			}
+			// THE SUBCOMMAND MUST EXIT HERE. Falling through runs the control plane, and a harness that
+			// finishes successfully then tries to BIND :8091 — which fails with "address already in use"
+			// and reports a successful run as an error.
+			os.Exit(0)
 		case "--help", "-h":
 			printHelp()
 			return
