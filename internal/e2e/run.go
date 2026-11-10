@@ -108,7 +108,11 @@ func Run(args []string) error {
 		fmt.Printf("modes    : local + runtime (%s)\n", c.runtimeImage)
 	}
 
-	if c.cleanupOnly {
+	// -cleanup ON ITS OWN IS A CLEANUP PASS, NOT A SETUP THAT ENDS IN ONE.
+	// It used to run the whole setup first — creating a project, workflows and six asks — and only remove
+	// them in a deferred function, so asking for a cleanup looked like a hang while it built the very things
+	// it was about to delete.
+	if c.cleanupOnly || (c.cleanup && !c.launch && !c.launchOnly) {
 		return runCleanupOnly(ctx, cs, c, adapters)
 	}
 
@@ -314,17 +318,52 @@ func resolveConnection(c *opts, instance, profileName, urlFlag, tokenFlag string
 // knows what THIS run made; a setup left in place has no such record, so everything is rediscovered by
 // convention — the project's work items, the `e2e-quick-*` workflows and the `e2e-<adapter>-*` workers.
 func runCleanupOnly(ctx context.Context, cs *client.Clients, c opts, adapters []adapter) error {
-	if strings.TrimSpace(c.projectID) == "" {
-		return errors.New("-cleanup-only needs -project <id>")
-	}
+	// NO -project MEANS EVERY E2E PROJECT ON THIS PLANE. The command's job is to reclaim what previous test
+	// runs left behind, and requiring the operator to remember an id for that makes it useless for the case
+	// it exists for.
 	rep := &report{baseURL: c.baseURL, started: time.Now(), projectID: c.projectID}
+	projects := []string{c.projectID}
+	if strings.TrimSpace(c.projectID) == "" {
+		list, lerr := cs.Projects.ListProjects(ctx, connect.NewRequest(&apiv1.ListProjectsRequest{}))
+		if lerr != nil {
+			return fmt.Errorf("list projects: %w", lerr)
+		}
+		projects = nil
+		for _, pr := range list.Msg.GetProjects() {
+			if strings.HasPrefix(pr.GetSlug(), "e2e-adapter-matrix-") {
+				projects = append(projects, pr.GetId())
+			}
+		}
+		if len(projects) == 0 {
+			fmt.Printf("cleanup  : nothing to do — no e2e projects on this plane\n")
+			return nil
+		}
+		fmt.Printf("cleanup  : reclaiming %d e2e project(s)\n", len(projects))
+	}
+	for _, pid := range projects {
+		rep.projectID = pid
+		reclaimProject(ctx, cs, rep, pid, adapters)
+	}
+
+	if len(rep.cleanupFailures) == 0 {
+		fmt.Printf("cleanup  : complete — work items, ask conversations, per-adapter workflows, workers and projects\n")
+		return nil
+	}
+	fmt.Printf("cleanup  : INCOMPLETE — still present: %s\n", strings.Join(rep.cleanupFailures, ", "))
+	return nil
+}
+
+// reclaimProject removes every artifact attributable to one e2e project, in dependency order.
+func reclaimProject(ctx context.Context, cs *client.Clients, rep *report, projectID string, adapters []adapter) {
+	fmt.Printf("\nproject  : %s\n", projectID)
 
 	// WORK ITEMS: everything in the project, children first so a parent is never refused for having children.
 	items, err := cs.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
-		ProjectId: c.projectID, PageSize: 200,
+		ProjectId: projectID, PageSize: 200,
 	}))
 	if err != nil {
-		return fmt.Errorf("list work items: %w", err)
+		rep.cleanupFailures = append(rep.cleanupFailures, "list work items ("+err.Error()+")")
+		return
 	}
 	var tasks, epics []string
 	for _, w := range items.Msg.GetWorkItems() {
@@ -341,6 +380,9 @@ func runCleanupOnly(ctx context.Context, cs *client.Clients, c opts, adapters []
 		}
 	}
 
+	// CONVERSATIONS: the Ask chats are attributed to the project, and nothing else reclaims them.
+	cleanupConversations(ctx, cs, rep, projectID)
+
 	// WORKFLOWS: rediscovered by name, since no record of them survives a process.
 	if wfs, werr := findAdapterWorkflows(ctx, cs, adapters); werr == nil {
 		cleanupWorkflows(ctx, cs, rep, wfs)
@@ -350,20 +392,13 @@ func runCleanupOnly(ctx context.Context, cs *client.Clients, c opts, adapters []
 	// different adapters leaves workers this cannot see.
 	sweepHarnessWorkers(ctx, cs, rep)
 
-	// THE PROJECT ITSELF, and the directory it was given.
-	removeProject(ctx, cs, rep, c.projectID)
-	if d := c.projectDir; d != "" {
-		_ = os.RemoveAll(d)
-	} else if p, perr := cs.Projects.GetProject(ctx, connect.NewRequest(
-		&apiv1.GetProjectRequest{Id: c.projectID})); perr == nil {
-		_ = os.RemoveAll(p.Msg.GetProject().GetProjectDir())
+	// THE PROJECT ITSELF, and the directory it was given — read from the row, since a cleanup pass has no
+	// record of what an earlier process chose.
+	if p, perr := cs.Projects.GetProject(ctx, connect.NewRequest(
+		&apiv1.GetProjectRequest{Id: projectID})); perr == nil {
+		if d := strings.TrimSpace(p.Msg.GetProject().GetProjectDir()); d != "" {
+			_ = os.RemoveAll(d)
+		}
 	}
-
-	if len(rep.cleanupFailures) == 0 {
-		fmt.Printf("cleanup  : complete (project %s, its work items, the per-adapter workflows and workers)\n",
-			c.projectID)
-		return nil
-	}
-	fmt.Printf("cleanup  : INCOMPLETE — still present: %s\n", strings.Join(rep.cleanupFailures, ", "))
-	return nil
+	removeProject(ctx, cs, rep, projectID)
 }

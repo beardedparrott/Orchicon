@@ -13,6 +13,7 @@ import (
 
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 )
 
@@ -163,8 +164,18 @@ func createProject(ctx context.Context, cs *client.Clients, prefix, dir string) 
 		return "", fmt.Errorf("create project dir %s: %w", dir, err)
 	}
 
+	// THE PROJECT MUST BE GIT-BACKED, and this is not cosmetic: every workflow run provisions a WORKTREE, and
+	// `git worktree add` needs a HEAD to cut a branch from. With git_strategy=none the run's provisioning step
+	// fails before any worker is dispatched —
+	//   `worktree provisioning failed … step "Quick Software Engineer" cannot dispatch`
+	// — which presents as a run that fails in 5s with an EMPTY error and no execution, exactly like a broken
+	// adapter. EnsureGitState initialises the repository and makes the bootstrap commit that gives it a HEAD.
+	if gs := project.EnsureGitState(ctx, dir, "local"); gs.Err != nil {
+		return "", fmt.Errorf("prepare the project's git state (%s): %w", gs.Done, gs.Err)
+	}
+
 	resp, err := cs.Projects.CreateProject(ctx, connect.NewRequest(&apiv1.CreateProjectRequest{
-		Name: slug, Slug: slug, GitStrategy: apiv1.GitStrategy_GIT_STRATEGY_NONE,
+		Name: slug, Slug: slug, GitStrategy: apiv1.GitStrategy_GIT_STRATEGY_LOCAL,
 	}))
 	if err != nil {
 		return "", err
@@ -246,6 +257,37 @@ func awaitReply(ctx context.Context, cs *client.Clients, convID string, timeout 
 	return "", fmt.Errorf("no assistant reply within %s", timeout)
 }
 
+// numberedAC renders acceptance criteria as the numbered markdown list a worker's AC REPORT answers against.
+func numberedAC(ac []string) string {
+	if len(ac) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, c := range ac {
+		fmt.Fprintf(&b, "%d. %s\n", i+1, c)
+	}
+	return b.String()
+}
+
+// createWorkItemWithAC creates a work item carrying acceptance criteria.
+//
+// A TASK WITH NO CRITERIA CANNOT BE VERIFIED. The worker's AC REPORT answers the item's criteria; with none it
+// has nothing to answer, the report is absent, and the verdict abstains — so the step is recorded UNVERIFIED
+// with "the worker reported no acceptance-criteria outcomes". That is a property of the WORK ITEM, not of the
+// worker, and a harness that leaves them out tests the abstention path instead of the verification one.
+func createWorkItemWithAC(ctx context.Context, cs *client.Clients, projectID, parentID string,
+	kind apiv1.WorkItemKind, title, desc, ac string) (string, error) {
+
+	resp, err := cs.WorkItems.CreateWorkItem(ctx, connect.NewRequest(&apiv1.CreateWorkItemRequest{
+		ProjectId: projectID, ParentId: parentID, Kind: kind, Title: title,
+		Description: desc, AcceptanceCriteria: ac,
+	}))
+	if err != nil {
+		return "", err
+	}
+	return resp.Msg.GetWorkItem().GetId(), nil
+}
+
 func createWorkItem(ctx context.Context, cs *client.Clients, projectID, parentID string,
 	kind apiv1.WorkItemKind, title, desc string) (string, error) {
 
@@ -287,18 +329,72 @@ func askOne(ctx context.Context, cs *client.Clients, rep *report, projectID stri
 // already proven. The DESCRIPTIONS are deliberately not copied: they are ~10 KB of prompt engineering
 // specific to that project, and this harness exercises adapters and execution modes rather than re-running
 // that epic.
+// planTask is one task of the epic: its title plus the acceptance criteria it is measured against.
+//
+// THE ACCEPTANCE CRITERIA ARE NOT DECORATION. A work item with none produces a worker with nothing to report
+// against, so the run's AC REPORT is absent and the verification verdict ABSTAINS with
+// "the worker reported no acceptance-criteria outcomes" — which is exactly the notice that made a successful
+// quick-worker run look like a failure. Every real work item carries criteria; a harness task without them
+// exercises the abstention path instead of the verification path.
+type planTask struct {
+	title string
+	ac    []string
+}
+
 var planEpic = struct {
 	title string
-	tasks []string
+	tasks []planTask
 }{
 	title: "Weather web app on :9090 — keyless weather + news SPA (C/F, city resolution, compare, hourly/daily, news tabs)",
-	tasks: []string{
-		"Foundation: zero-dep Node 22 server on :9090, SPA shell, design tokens, test harness + .orchicon/verify gate",
-		"BFF data layer: /api/geocode + /api/weather, canonical °C, WMO→condition mapping, TTL cache, stale fallback, fixture tests",
-		"City resolution + compare slots: debounced combobox with ambiguous results and keyboard nav, geolocation, pure 1-or-2-city store",
-		"Conditions + forecast UI: current card, 24h strip in location timezone, 7-day list, C/F toggle bound to real conversion",
-		"News panel: Tech/Games/Business via server-side RSS proxy, per-source failure isolation, tabs, filter, refresh",
-		"End-to-end interaction contract: catalogue every button/search/filter, prove single+compare parity, keyboard and resize through localhost:9090",
+	tasks: []planTask{
+		{
+			title: "Foundation: zero-dep Node 22 server on :9090, SPA shell, design tokens, test harness + .orchicon/verify gate",
+			ac: []string{
+				"The server binds 127.0.0.1:9090 and `curl -si http://127.0.0.1:9090/` returns 200 with an HTML body",
+				"The gate is declared: `.orchicon/verify` exists, is tracked by git, and holds one command line",
+				"`node scripts/gate.mjs` prints named PASS lines, zero FAIL lines, and exits 0",
+			},
+		},
+		{
+			title: "BFF data layer: /api/geocode + /api/weather, canonical °C, WMO→condition mapping, TTL cache, stale fallback, fixture tests",
+			ac: []string{
+				"`GET /api/weather` returns the documented payload with temperatures in canonical °C",
+				"An upstream failure returns `{stale:true}` with the last known payload rather than an error",
+				"Fixture-based tests cover the WMO→condition mapping and pass offline",
+			},
+		},
+		{
+			title: "City resolution + compare slots: debounced combobox with ambiguous results and keyboard nav, geolocation, pure 1-or-2-city store",
+			ac: []string{
+				"Typing a city name shows a debounced list of real resolution matches",
+				"The combobox is keyboard navigable and commits the highlighted entry on Enter",
+				"Two slots render side by side in compare mode and the store holds exactly one or two cities",
+			},
+		},
+		{
+			title: "Conditions + forecast UI: current card, 24h strip in location timezone, 7-day list, C/F toggle bound to real conversion",
+			ac: []string{
+				"A current-conditions card renders values from `/api/weather` for the selected city",
+				"The hourly strip shows 24 entries labelled in the LOCATION's timezone, not the browser's",
+				"Toggling C/F reconverts every rendered temperature rather than relabelling it",
+			},
+		},
+		{
+			title: "News panel: Tech/Games/Business via server-side RSS proxy, per-source failure isolation, tabs, filter, refresh",
+			ac: []string{
+				"Three tabs fetch Tech, Games and Business through the server-side RSS proxy",
+				"One failing feed degrades only its own tab and names the failure",
+				"The refresh control re-issues the fetch without losing the selected tab",
+			},
+		},
+		{
+			title: "End-to-end interaction contract: catalogue every button/search/filter, prove single+compare parity, keyboard and resize through localhost:9090",
+			ac: []string{
+				"Every button, search and filter in the app is catalogued with the behaviour it must exhibit",
+				"Single-city and compare modes render the same component contract for each slot",
+				"Keyboard navigation and a narrow viewport behave correctly end to end against localhost:9090",
+			},
+		},
 	},
 }
 
@@ -316,14 +412,15 @@ func createPlan(ctx context.Context, cs *client.Clients, rep *report, projectID 
 	rep.items = append(rep.items, workItem{id: epicID, title: planEpic.title})
 
 	tasks := make([]workItem, 0, len(planEpic.tasks))
-	for i, title := range planEpic.tasks {
-		id, cerr := createWorkItem(ctx, cs, projectID, epicID, apiv1.WorkItemKind_WORK_ITEM_KIND_TASK,
-			title, fmt.Sprintf("Task %d of 6 in the mirrored weather-web-app epic.", i+1))
+	for i, t := range planEpic.tasks {
+		id, cerr := createWorkItemWithAC(ctx, cs, projectID, epicID, apiv1.WorkItemKind_WORK_ITEM_KIND_TASK,
+			t.title, fmt.Sprintf("Task %d of 6 in the mirrored weather-web-app epic.", i+1),
+			numberedAC(t.ac))
 		if cerr != nil {
-			return epicID, tasks, fmt.Errorf("create task %q: %w", title, cerr)
+			return epicID, tasks, fmt.Errorf("create task %q: %w", t.title, cerr)
 		}
-		rep.items = append(rep.items, workItem{id: id, title: title})
-		tasks = append(tasks, workItem{id: id, title: title})
+		rep.items = append(rep.items, workItem{id: id, title: t.title})
+		tasks = append(tasks, workItem{id: id, title: t.title})
 	}
 	fmt.Printf("\nplan     : epic + %d task(s) created\n", len(tasks))
 	return epicID, tasks, nil
@@ -514,8 +611,21 @@ func modeString(m apiv1.ExecutionMode) string {
 }
 
 // terminalStatus matches the enum's own name so a new status cannot silently look terminal.
+// terminalStatus reports whether a status string is a FINAL state.
+//
+// THE TWO ENUMS DO NOT AGREE ON THE WORD, which is what stalled the launch loop: a finished WORK ITEM is
+// SUCCEEDED, but a finished WORKFLOW RUN is COMPLETED (WorkflowRunStatus_WORKFLOW_RUN_STATUS_COMPLETED).
+// `COMPLETED` matched none of the item's words, so a run that had finished never looked terminal — the wait
+// spun to its deadline, and the six-task chain advanced only when that happened, which looked like "it never
+// moved on to the next task".
+//
+// ABORTED and REJECTED are here for the same reason: they are final for the types that use them, and a
+// status that is terminal but unrecognised is a hang, not a slow test.
 func terminalStatus(s string) bool {
-	for _, want := range []string{"SUCCEEDED", "FAILED", "CANCELLED", "SKIPPED", "ARCHIVED"} {
+	for _, want := range []string{
+		"SUCCEEDED", "FAILED", "CANCELLED", "SKIPPED", "ARCHIVED", // work items
+		"COMPLETED", "ABORTED", "REJECTED", "EXPIRED", // workflow runs and other terminal states
+	} {
 		if strings.Contains(s, want) {
 			return true
 		}
@@ -523,8 +633,13 @@ func terminalStatus(s string) bool {
 	return false
 }
 
+// shortStatus trims whichever enum prefix the status carries. There are TWO — WORK_ITEM_STATUS_ and
+// WORKFLOW_RUN_STATUS_ — and trimming only the item's left every run row reading
+// "workflow_run_status_failed" in the report.
 func shortStatus(s string) string {
-	return strings.ToLower(strings.TrimPrefix(s, "WORK_ITEM_STATUS_"))
+	s = strings.TrimPrefix(s, "WORK_ITEM_STATUS_")
+	s = strings.TrimPrefix(s, "WORKFLOW_RUN_STATUS_")
+	return strings.ToLower(s)
 }
 
 func redact(tok string) string {
@@ -592,5 +707,35 @@ func sweepHarnessWorkers(ctx context.Context, cs *client.Clients, rep *report) {
 	}
 	if removed > 0 {
 		fmt.Printf("cleanup  : removed %d harness worker(s) by name\n", removed)
+	}
+}
+
+// cleanupConversations deletes the Ask conversations this harness created in a project.
+//
+// THEY WERE NEVER RECLAIMED AT ALL, which is why a "cleaned" plane still listed nine e2e chats. Every ask the
+// harness makes — six matrix asks and the epic prompt — is a real conversation with real messages, attributed
+// to the throwaway project via Conversation.project_id, so it is unambiguously ours to remove.
+func cleanupConversations(ctx context.Context, cs *client.Clients, rep *report, projectID string) {
+	list, err := cs.Ask.ListConversations(ctx, connect.NewRequest(&apiv1.ListConversationsRequest{
+		PageSize: 200,
+	}))
+	if err != nil {
+		rep.cleanupFailures = append(rep.cleanupFailures, "list conversations ("+err.Error()+")")
+		return
+	}
+	removed := 0
+	for _, c := range list.Msg.GetConversations() {
+		if c.GetProjectId() != projectID {
+			continue
+		}
+		if _, derr := cs.Ask.DeleteConversation(ctx,
+			connect.NewRequest(&apiv1.DeleteConversationRequest{Id: c.GetId()})); derr != nil {
+			rep.cleanupFailures = append(rep.cleanupFailures, "conversation "+c.GetId())
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		fmt.Printf("cleanup  : removed %d ask conversation(s)\n", removed)
 	}
 }
