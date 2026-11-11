@@ -32,7 +32,7 @@ describe("useRailWidth", () => {
     // none (it compares one ref). What must not exist is an OBSERVER-BUILDING effect with no
     // deps — that is the shape that rebuilt it on every render.
     const effects =
-      src.match(/useLayoutEffect\(\(\) => \{[\s\S]*?\n  \}(?:, \[[^\]]*\])?\);/g) ?? [];
+      src.match(/useLayoutEffect\(\(\) => \{[\s\S]*?\n {2}\}(?:, \[[^\]]*\])?\);/g) ?? [];
     expect(effects).toHaveLength(2);
     const observerEffects = effects.filter((e) => e.includes("new ResizeObserver("));
     expect(observerEffects).toHaveLength(1);
