@@ -669,6 +669,58 @@ func (b *NativeBridge) takeOrphanInjections(sessionID string) []Message {
 	return pending
 }
 
+// defaultAskToolDeadline bounds ONE native tool call inside an Ask turn.
+//
+// WITHOUT IT A HUNG TOOL BLOCKS THE TURN FOREVER, and it does so invisibly: a tool call emits no
+// provider round and no bus event, so the turn looks exactly like a model that has gone silent, and is
+// eventually failed with a message blaming the provider for producing no output. MEASURED on prod
+// conversation 01M73XQ92VF8FHDAVD4S9FJS90: rounds flowed every ~12s until 06:38:02 and then stopped for
+// nine hours while other conversations on the same model were answered continuously, so the provider
+// was healthy and the turn was waiting on something the bus never reports.
+//
+// The bound makes that failure legible and survivable: the call returns a tool error the model can read
+// and work around, instead of taking the whole turn down with a false diagnosis.
+const defaultAskToolDeadline = 120 * time.Second
+
+func askToolDeadline() time.Duration {
+	if v := os.Getenv("ORCHICON_ASK_TOOL_DEADLINE"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return defaultAskToolDeadline
+}
+
+// runAskTool executes one native tool call under the deadline, so no tool can outlive the turn that is
+// waiting on it.
+func runAskTool(ctx context.Context, tools AskToolProvider, name, args string) (string, error) {
+	deadline := askToolDeadline()
+	tctx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+
+	type toolResult struct {
+		out string
+		err error
+	}
+	// Buffered: the goroutine must be able to finish and leave even after we stop waiting on it.
+	done := make(chan toolResult, 1)
+	go func() {
+		out, err := tools.ExecuteAskTool(tctx, name, args)
+		done <- toolResult{out: out, err: err}
+	}()
+
+	select {
+	case r := <-done:
+		return r.out, r.err
+	case <-tctx.Done():
+		if ctx.Err() != nil {
+			// The TURN was aborted or its deadline passed — that cause is the honest one to report.
+			return "", ctx.Err()
+		}
+		return "", fmt.Errorf("tool %s did not respond within %s and was abandoned. THIS IS A TOOL FAULT, NOT A MODEL FAULT: the call never returned, so the turn had nothing to continue from. Carry on without it, or use a different approach", name, deadline)
+	}
+}
+
 // SendTurnMessage implements scheduler.ChatTurnClient.
 func (b *NativeBridge) SendTurnMessage(ctx context.Context, conversationID, sessionID, system, modelRef, text string) error {
 	return b.dispatchTurnMessage(ctx, conversationID, sessionID, system, modelRef, text, nil)
@@ -1102,10 +1154,10 @@ func (b *NativeBridge) executeToolCalls(ctx context.Context, bus *chatBus, worki
 			if d := b.awaitConsentPermission(ctx, bus, c, args); d != "once" {
 				toolErr = consentDenialError(c.Name, d)
 			} else {
-				out, toolErr = tools.ExecuteAskTool(ctx, c.Name, args)
+				out, toolErr = runAskTool(ctx, tools, c.Name, args)
 			}
 		} else {
-			out, toolErr = tools.ExecuteAskTool(ctx, c.Name, args)
+			out, toolErr = runAskTool(ctx, tools, c.Name, args)
 		}
 		content := out
 		isErr := false
