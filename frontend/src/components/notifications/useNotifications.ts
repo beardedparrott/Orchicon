@@ -375,7 +375,9 @@ export function useNotifications(opts?: { enabled?: boolean }) {
   const workflowRunsQuery = useQuery({
     queryKey: ["notifications", "workflowRuns", session.tenant_id ?? "", session.identity_id ?? ""],
     queryFn: async () => {
-      const res = await workflowClient.listWorkflowRuns({ pageSize: 50, sortBy: "updated_at", sortOrder: "desc" });
+      // started_at, NOT updated_at: the server REJECTS anything outside id|started_at
+      // with InvalidArgument, so every poll was a 400 delivering nothing.
+      const res = await workflowClient.listWorkflowRuns({ pageSize: 50, sortBy: "started_at", sortOrder: "desc" });
       return (res.runs ?? []) as unknown[];
     },
     enabled,
@@ -427,7 +429,9 @@ export function useNotifications(opts?: { enabled?: boolean }) {
               projectId: p.id,
               recurringFilter: RecurringFilter.ONLY_RECURRING,
               pageSize: 20,
-              sortBy: "updated_at",
+              // created_at, NOT updated_at: ListWorkItems honours only
+              // title|priority|created_at and silently falls back to id order otherwise.
+              sortBy: "created_at",
               sortOrder: "desc",
             });
             all.push(...((res.workItems ?? []) as WorkItem[]));
