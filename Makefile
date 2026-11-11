@@ -33,7 +33,9 @@ GOPATH      ?= $(DEV_TOOLS)/gopath
 export GOPATH
 GOCACHE     ?= $(DEV_TOOLS)/gocache
 export GOCACHE
-GOTMPDIR    ?= $(DEV_TOOLS)/gotmp
+# OUTSIDE the repository, because t.TempDir() honours it and git discovers an enclosing repo from any
+# subdirectory: a temp dir inside the repo makes test fixtures register worktrees against the real one.
+GOTMPDIR    ?= $(shell scripts/dev/gotmpdir.sh "$(CURDIR)")
 export GOTMPDIR
 # go CREATES gocache and gopath but NOT gotmp, and reports the missing one as "creating work dir: stat …" —
 # which names a path, not a cause. Parse-time so no per-target prerequisite list can forget it.

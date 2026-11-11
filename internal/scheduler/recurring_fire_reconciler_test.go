@@ -53,6 +53,32 @@ func (f *recurringFireRecorder) sequenceFn() StartSequenceFn {
 	}
 }
 
+// parkDueRecurringItems makes the tenant's due window belong to THIS test.
+//
+// scanAndFire is tenant-wide by design (recurring_fire_reconciler.go:59-68, no project scope), so a
+// recurring item another test or a cancelled run left in the 5-minute window is fired by this test too
+// and the "exactly one start" assertions below count it. Pushing the residue out of the window is what
+// the assertion actually needs; deleting it would be the same overreach in the other direction.
+func parkDueRecurringItems(t *testing.T, pool *db.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("begin tenant tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	_, err = ttx.Exec(ctx, `UPDATE work_items SET next_run_at = now() + interval '1 day'
+		WHERE tenant_id = $1 AND status = 'recurring' AND recurring_enabled
+		  AND next_run_at IS NOT NULL
+		  AND next_run_at BETWEEN now() - interval '5 minutes' AND now()`, approvalTestTenant)
+	if err != nil {
+		t.Fatalf("park due recurring items: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit park: %v", err)
+	}
+}
+
 // createRecurringItem creates a work item with status='recurring' and a
 // due next_run_at (in the past, within the 5-minute scan window).
 func createRecurringItem(t *testing.T, pool *db.Pool, projID, kind, title string,
@@ -93,6 +119,7 @@ func createRecurringItem(t *testing.T, pool *db.Pool, projID, kind, title string
 // a due recurring leaf item is fired and its next_run_at advances.
 func TestRecurringFireFiresLeafAndAdvancesNextRunAt(t *testing.T) {
 	pool := approvalTestPool(t)
+	parkDueRecurringItems(t, pool)
 	ctx := context.Background()
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
@@ -154,6 +181,7 @@ func TestRecurringFireFiresLeafAndAdvancesNextRunAt(t *testing.T) {
 // no bound workflow) is routed through the sequence engine.
 func TestRecurringFireFiresSequenceParent(t *testing.T) {
 	pool := approvalTestPool(t)
+	parkDueRecurringItems(t, pool)
 	ctx := context.Background()
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
@@ -215,6 +243,7 @@ func TestRecurringFireFiresSequenceParent(t *testing.T) {
 // in the future or past the 5-minute window are not fired.
 func TestRecurringFireSkipsNonDueItems(t *testing.T) {
 	pool := approvalTestPool(t)
+	parkDueRecurringItems(t, pool)
 	ctx := context.Background()
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
@@ -302,6 +331,7 @@ func TestRecurringFireSkipsNonDueItems(t *testing.T) {
 // retry) does not double-fire thanks to the version lock on next_run_at advance.
 func TestRecurringFireIdempotency(t *testing.T) {
 	pool := approvalTestPool(t)
+	parkDueRecurringItems(t, pool)
 	ctx := context.Background()
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
@@ -357,6 +387,7 @@ func TestRecurringFireIdempotency(t *testing.T) {
 // bound workflow is skipped with a warning.
 func TestRecurringFireSkipsNoWorkflow(t *testing.T) {
 	pool := approvalTestPool(t)
+	parkDueRecurringItems(t, pool)
 	ctx := context.Background()
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
@@ -405,6 +436,7 @@ func TestRecurringFireSkipsNoWorkflow(t *testing.T) {
 // correctly computes and persists the next occurrence.
 func TestRecurringAdvanceNextRunAt(t *testing.T) {
 	pool := approvalTestPool(t)
+	parkDueRecurringItems(t, pool)
 	ctx := context.Background()
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
@@ -474,6 +506,7 @@ func TestRecurringAdvanceNextRunAt(t *testing.T) {
 // recurring leaf AND a co-due sequence parent both fire in the same pass.
 func TestRecurringFireBothLeafAndSequenceParent(t *testing.T) {
 	pool := approvalTestPool(t)
+	parkDueRecurringItems(t, pool)
 	ctx := context.Background()
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
@@ -538,6 +571,7 @@ func TestRecurringFireBothLeafAndSequenceParent(t *testing.T) {
 // recurring item → run completes → item returns to "recurring" status (not "succeeded").
 func TestRecurringFireLifecycle_CompletionReturnsToRecurring(t *testing.T) {
 	pool := approvalTestPool(t)
+	parkDueRecurringItems(t, pool)
 	ctx := context.Background()
 
 	// Setup: project + workflow with one step.
@@ -665,6 +699,7 @@ func TestRecurringFireLifecycle_CompletionReturnsToRecurring(t *testing.T) {
 // when the bound run FAILS.
 func TestRecurringRunFailureKeepsItemRecurring(t *testing.T) {
 	pool := approvalTestPool(t)
+	parkDueRecurringItems(t, pool)
 	ctx := context.Background()
 
 	// Setup: project + workflow with one real task step.
@@ -810,6 +845,7 @@ func TestRecurringRunFailureKeepsItemRecurring(t *testing.T) {
 // whose run can never progress (here.
 func TestRecurringRunFailureAtStartKeepsItemRecurring(t *testing.T) {
 	pool := approvalTestPool(t)
+	parkDueRecurringItems(t, pool)
 	ctx := context.Background()
 
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
@@ -933,6 +969,7 @@ func listLedger(t *testing.T, pool *db.Pool, itemID string) []db.RecurringRunHis
 // entry on the recurring item (4.2 AC: each fire records a run-history entry).
 func TestRecurringFireRecordsLedgerOnFire(t *testing.T) {
 	pool := approvalTestPool(t)
+	parkDueRecurringItems(t, pool)
 	ctx := context.Background()
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
@@ -988,6 +1025,7 @@ func TestRecurringFireRecordsLedgerOnFire(t *testing.T) {
 // fire whose dispatch fails writes a 'failed' ledger entry carrying the error.
 func TestRecurringFireFailedFireRecordsLedgerAndAdvances(t *testing.T) {
 	pool := approvalTestPool(t)
+	parkDueRecurringItems(t, pool)
 	ctx := context.Background()
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
@@ -1044,6 +1082,7 @@ func TestRecurringFireFailedFireRecordsLedgerAndAdvances(t *testing.T) {
 // item (recurring_enabled=false) keeps its schedule + next_run_at but is excluded from the due.
 func TestRecurringFireSkipsPausedItem(t *testing.T) {
 	pool := approvalTestPool(t)
+	parkDueRecurringItems(t, pool)
 	ctx := context.Background()
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
