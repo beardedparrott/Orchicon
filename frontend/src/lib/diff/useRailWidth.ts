@@ -16,28 +16,48 @@ import { useLayoutEffect, useState } from "react";
 export function useRailWidth(ref: React.RefObject<HTMLElement | null>): number {
   const [width, setWidth] = useState(0);
 
-  // NOTE: NO dependency array on purpose. The host renders this component while
-  // the rail is closed (it returns null), so the ref node appears only when
-  // `open` flips true. A stable RefObject never retriggers a deps-based effect,
-  // so deps here would read a null node forever. Re-running each render is
-  // correct and cheap: `observe`/`disconnect` on one node is idempotent, and
-  // setWidth is guarded so an unchanged width cannot re-render.
+  // TWO EFFECTS, and splitting them is the point.
+  //
+  // The ATTACH is keyed on the NODE, not on this render. The host renders its
+  // measurement target conditionally (DiffSidebar returns null while closed;
+  // ActivityLine only exists while a turn is in flight), so the node APPEARS and
+  // DISAPPEARS without the RefObject changing identity — which is why a deps
+  // array over `[ref]` could never see it.
+  //
+  // It used to have no deps at all, so every render tore down and rebuilt the
+  // observer for one node and forced a layout read to do it. Measured on the Ask
+  // page during a streaming turn: 64 new ResizeObservers and 114
+  // getBoundingClientRect calls in 20 seconds, from ONE node. At rest it was
+  // zero, because the activity line is not mounted — so the cost landed exactly
+  // when the pane was busiest.
+  //
+  // The ARRIVAL REPORT is a separate effect keyed on the observed node. The
+  // attach cannot report its own reading: it runs in the commit that MOUNTED the
+  // consumer, and setState there is a render-phase update React counts toward
+  // its nested-update limit. Deferring it to a second effect makes a mount cost
+  // two renders, once, and never again — the same reason `read()` below is
+  // called only from the observer's callback after mount.
+  const [node, setNode] = useState<HTMLElement | null>(null);
+
   useLayoutEffect(() => {
     const el = ref.current;
-    if (!el) return;
+    setNode((prev) => (prev === el ? prev : el));
+  });
 
+  // Reports whether the REMOUNTED node has a different width, without reading
+  // layout during the commit that mounted it.
+  useLayoutEffect(() => {
+    if (!node) return;
     const read = () => {
-      const w = el.getBoundingClientRect().width;
+      const w = node.getBoundingClientRect().width;
       setWidth((prev) => (prev === w ? prev : w));
     };
-    // Synchronous first read — before paint.
     read();
-
     if (typeof ResizeObserver === "undefined") return;
     const ro = new ResizeObserver(read);
-    ro.observe(el);
+    ro.observe(node);
     return () => ro.disconnect();
-  });
+  }, [node]);
 
   return width;
 }

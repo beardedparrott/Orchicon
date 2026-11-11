@@ -177,3 +177,74 @@ describe("orderInjectedBeforeReply", () => {
     expect(orderInjectedBeforeReply(rows).map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
   });
 });
+
+// --- anchorLiveReply: the streaming reply belongs BELOW the interjection that prompted it -------------
+//
+// REPORTED: "if I send an interjecting message and then refresh the browser, my last message sits at the
+// bottom and your text streams above it instead of below it". The live text was drawn as a trailing section
+// after the whole transcript, so a durable interjection took its place in the timeline and the streaming
+// reply was appended underneath it.
+import { anchorLiveReply } from "./ask-live-merge";
+
+type Row = { id: string };
+
+describe("anchorLiveReply", () => {
+  it("puts the live reply immediately after the row it belongs to", () => {
+    // The reported shape: the interjection is durable, and a reply is still streaming into the turn it joined.
+    const durable: Row[] = [
+      { id: "assistant-turn" },
+      { id: "user-interjection" },
+      { id: "earlier-history" },
+    ];
+    const live: Row[] = [{ id: "live-1" }, { id: "live-2" }];
+
+    const { messages, inserted } = anchorLiveReply(durable, live, "assistant-turn");
+
+    expect(inserted).toBe(true);
+    expect(messages.map((m) => m.id)).toEqual([
+      "assistant-turn",
+      "live-1",
+      "live-2",
+      "user-interjection",
+      "earlier-history",
+    ]);
+  });
+
+  it("keeps the interjection ABOVE nothing — it stays where the durable order put it", () => {
+    const { messages } = anchorLiveReply(
+      [{ id: "a" }, { id: "user" }],
+      [{ id: "live-1" }],
+      "a",
+    );
+    const userAt = messages.findIndex((m) => m.id === "user");
+    const liveAt = messages.findIndex((m) => m.id === "live-1");
+    expect(liveAt).toBeLessThan(userAt);
+  });
+
+  it("does not move anything when there is no anchor (no live turn)", () => {
+    const durable: Row[] = [{ id: "a" }, { id: "b" }];
+    const { messages, inserted } = anchorLiveReply(durable, [], "a");
+    expect(inserted).toBe(false);
+    expect(messages).toEqual(durable);
+  });
+
+  it("does not move anything when the anchor row has not arrived yet", () => {
+    const durable: Row[] = [{ id: "a" }, { id: "b" }];
+    const { messages, inserted } = anchorLiveReply(durable, [{ id: "live-1" }], "not-there");
+    expect(inserted).toBe(false);
+    expect(messages).toEqual(durable);
+  });
+
+  it("appends at the end when the anchor is the last row", () => {
+    const { messages } = anchorLiveReply([{ id: "a" }, { id: "turn" }], [{ id: "live-1" }], "turn");
+    expect(messages.map((m) => m.id)).toEqual(["a", "turn", "live-1"]);
+  });
+
+  it("is pure: the input arrays are untouched", () => {
+    const durable: Row[] = [{ id: "a" }, { id: "b" }];
+    const live: Row[] = [{ id: "live-1" }];
+    anchorLiveReply(durable, live, "a");
+    expect(durable.map((m) => m.id)).toEqual(["a", "b"]);
+    expect(live.map((m) => m.id)).toEqual(["live-1"]);
+  });
+});

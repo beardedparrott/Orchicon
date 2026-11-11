@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import {
   formatRelativeTime,
   auditEventToNotification,
@@ -259,5 +261,63 @@ describe("mergeNotifications", () => {
     const many = Array.from({ length: 60 }, (_, i) => mkEvent({ id: `id${i}`, action: "project.created", targetType: "project", targetId: `p${i}`, occurredAt: ts(i) }));
     const merged = mergeNotifications(many, [], [], [], null);
     expect(merged.length).toBe(50);
+  });
+});
+
+// THE WIRE SORT CONTRACT.
+//
+// Two of the three notification polls asked for `updated_at`. The workflow-run
+// list REJECTS it (internal/workflow/service.go allows only id|started_at), so
+// that poll was a hard 400 delivering nothing; the work-item list SILENTLY
+// IGNORES it (internal/db/work_item.go allows only title|priority|created_at and
+// falls back to id order), so it quietly fetched the wrong page. Neither is
+// expressible in mergeNotifications, which only ever saw empty or wrong input.
+describe("notification poll sort contract", () => {
+  // Source-level, because the hooks are unrenderable here (no jsdom) and the
+  // defect never throws. This proves the WIRING, not the server behaviour.
+  const src = fs.readFileSync(path.join(__dirname, "useNotifications.ts"), "utf8");
+
+  // Brace-balance the argument object instead of regexing to the first `}`:
+  // an object literal with a nested call would otherwise be truncated.
+  function sortKeysFor(call: string): string[] {
+    const keys: string[] = [];
+    let from = 0;
+    for (;;) {
+      const at = src.indexOf(call + "(", from);
+      if (at === -1) break;
+      let depth = 0;
+      let i = at + call.length;
+      for (; i < src.length; i++) {
+        if (src[i] === "(") depth++;
+        else if (src[i] === ")") {
+          depth--;
+          if (depth === 0) break;
+        }
+      }
+      const body = src.slice(at, i + 1);
+      const m = body.match(/sortBy:\s*"([^"]*)"/);
+      if (m) keys.push(m[1]);
+      from = i + 1;
+    }
+    return keys;
+  }
+
+  const ALLOWLISTS: Record<string, string[]> = {
+    listWorkflowRuns: ["id", "started_at"], // hard-rejects anything else
+    listWorkItems: ["", "title", "priority", "created_at"], // silently ignores
+    listExecutions: ["", "status", "worker_id", "created_at"], // silently ignores
+  };
+
+  it("only ever sends a sort key its server honours", () => {
+    let checked = 0;
+    for (const [call, allowed] of Object.entries(ALLOWLISTS)) {
+      const keys = sortKeysFor(call);
+      for (const k of keys) {
+        checked++;
+        expect(allowed, `${call} sent sortBy: "${k}"`).toContain(k);
+      }
+    }
+    // Guard the guard: a rename would silently make this suite vacuous.
+    expect(checked).toBeGreaterThanOrEqual(3);
   });
 });

@@ -464,25 +464,13 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// If an initial message was provided, create it too.
+	// AN INITIAL MESSAGE MUST ACTUALLY START A TURN, which is what this RPC documents: "optionally accepts an
+	// initial message to start the conversation immediately". It used to persist a user row and return, so no
+	// turn was ever dispatched — the message sat unanswered until a LATER ChatStream happened to dispatch it,
+	// and an operator who created a conversation from a harness (or any client that only sets InitialMessage)
+	// saw their first question ignored. The send is deferred until after commit because the turn opens its own
+	// transactions and would otherwise contend with this one.
 	msg := strings.TrimSpace(req.Msg.InitialMessage)
-	if msg != "" {
-		msgRow := db.MessageRow{
-			ID:             db.NewID(),
-			TenantID:       tenantID,
-			ConversationID: row.ID,
-			Role:           "user",
-			Content:        msg,
-			ToolCalls:      []byte("[]"),
-			ToolResults:    []byte("[]"),
-			Attachments:    []byte("[]"),
-			Metadata:       []byte("{}"),
-			Reasoning:      []string{},
-		}
-		if _, err := db.CreateMessage(ctx, ttx.Tx, msgRow); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, err)
-		}
-	}
 
 	if err := recordAudit(ctx, ttx.Tx, tenantID, "conversation.created", "conversation", row.ID,
 		nil, audit.Snapshot(map[string]any{"mode": mode, "model_ref": req.Msg.ModelRef, "project_id": convRow.ProjectID})); err != nil {
@@ -491,6 +479,23 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	// START THE TURN NOW THAT THE CONVERSATION AND ITS FIRST MESSAGE EXIST.
+	//
+	// startConversationTurn will not find an initial message already persisted by us — see below for why it
+	// is NOT pre-inserted — so it persists the user row itself, exactly as a normal send does. That keeps one
+	// code path for "a message is sent" rather than two that can drift.
+	if msg != "" {
+		if _, _, _, terr := s.startConversationTurn(context.WithoutCancel(ctx), tenantID, row.ID, msg, nil); terr != nil {
+			// THE CONVERSATION SURVIVES A FAILED FIRST SEND: it exists and is usable, so the operator can
+			// retry from the client rather than losing the conversation. The error is still returned so the
+			// caller knows the first message did not go.
+			s.log.Warn("ask: conversation created but its initial message could not be dispatched",
+				"conversation", row.ID, "error", terr)
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("conversation %s was created, but its initial message could not be sent: %w", row.ID, terr))
+		}
+	}
+
 	preview := ""
 	if req.Msg.InitialMessage != "" {
 		preview = req.Msg.InitialMessage
