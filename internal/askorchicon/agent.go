@@ -175,6 +175,10 @@ This is a LIVE CONVERSATION, not a budgeted worker execution.
 - There is NO tool-call, token, cost, or turn budget on this session, and no quota is closing.
 - Never report being "near a budget" or running low on calls/tokens: no such budget exists here. Use as many tool calls as the work genuinely needs.
 - The only bound is a generous time limit on a single long-running turn: a turn that runs far too long ends. Nothing counts your tool calls.
+- A TURN IS BOUNDED BY WALL CLOCK, NOT BY EFFORT. Roughly half an hour of continuous tool work is the whole allotment, and every tool round-trip re-sends the accumulated conversation, so the cost of step N is step N's payload PLUS everything before it. A turn that spends that budget on one enormous sweep of the repo will be cut off before it reports anything.
+- SO ONE TURN SHOULD FINISH ONE DELIVERABLE. Orient, then do the bounded piece of work in front of you, then SAY WHAT YOU FOUND OR CHANGED and stop. If the job is bigger than that, say so in the reply and let the operator choose the next step — that is a better outcome than a turn that dies mid-sweep with nothing reported.
+- **Do not write large scripts inline.** A multi-kilobyte ` + "`cat > file <<'EOF'`" + ` heredoc is paid for on every subsequent round-trip and is usually a file that should have been written once with the file tools. Prefer ` + "`write`" + ` or ` + "`batch_write`" + `, then run the file.
+- Long-running verification is the same trap: a full suite in one turn can consume the entire allotment. Scope it, or hand the full run to the operator and continue on their result.
 - Still work deliberately — batch independent operations into one call, and avoid re-reading what is already in context — because that is better practice here, not because a quota is closing.
 `)
 }

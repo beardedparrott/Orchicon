@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -1250,19 +1251,28 @@ func TestTurnRegistry(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("cancelling the turn did not fire the collector cancel")
 	}
-	// The entry stays until the collector removes it — a new send is still
-	// gated while the old turn finalizes.
-	if _, ok := r.register("conv_a", "tnt_dev", "msg_a3", c2); ok {
-		t.Fatal("register must still fail after cancel (entry removed on finalize)")
+	// A CANCELLED TURN MUST NOT HOLD THE CONVERSATION. Stop is the operator telling us they are done
+	// with this attempt; the entry stays so the stale collector can still finalize, but it no longer
+	// reserves the conversation. Gating the next send here is what left a stopped conversation unable
+	// to accept anything.
+	if entry, _ := r.get("conv_a"); !entry.idle {
+		t.Fatal("cancel must mark the entry idle so it stops reserving the conversation")
 	}
-
-	// Token-guarded removal: a STALE finalize (wrong token) must not remove
-	// the entry; the current token does.
-	r.remove("conv_a", tok1+999)
-	if _, ok := r.register("conv_a", "tnt_dev", "msg_a3", c2); ok {
-		t.Fatal("stale-token remove must not delete the entry")
+	tok3, ok := r.register("conv_a", "tnt_dev", "msg_a3", c2)
+	if !ok {
+		t.Fatal("register must succeed after cancel — the operator stopped the turn, so the conversation is free")
 	}
+	if tok3 <= tok1 {
+		t.Fatalf("a turn started over an idle entry must get a fresh token (got %d, previous %d)", tok3, tok1)
+	}
+	// AND THE STALE COLLECTOR MUST NOT DISTURB IT: the old turn's finalize runs with the OLD token and
+	// must be a no-op, or it would evict the live turn's registration.
 	r.remove("conv_a", tok1)
+	if entry, ok := r.get("conv_a"); !ok || entry.token != tok3 {
+		t.Fatal("a stale-token finalize must not delete the replacement turn's entry")
+	}
+	// Token-guarded removal still holds for the CURRENT token.
+	r.remove("conv_a", tok3)
 	tok2, ok := r.register("conv_a", "tnt_dev", "msg_a2", c2)
 	if !ok || tok2 <= tok1 {
 		t.Fatal("register must succeed after the collector removes its entry, with a fresh token")
@@ -1701,5 +1711,95 @@ func TestCollectConversationReplyReattachIsBounded(t *testing.T) {
 	if elapsed > 20*time.Second {
 		t.Errorf("the turn took %v to give up; the budget is 3 attempts at a 1ms backoff, so it must "+
 			"fail almost immediately — %v means the re-attach loop is still unbounded", elapsed, elapsed)
+	}
+}
+
+// A STOPPED TURN MUST NOT WEDGE THE CONVERSATION.
+//
+// The reported symptom: the operator pressed Stop (Ctrl+Y), the turn ended, and they still could not
+// send anything. The registry refused the next send with "a reply is still in progress", because
+// cancel() cancelled the collector but left the entry reserving the conversation until that collector
+// happened to finalize — and a collector parked on an open consent ask is never evicted, because sweep
+// skips parked conversations. Stop must free the conversation, not merely signal the collector.
+func TestAStoppedTurnStopsReservingItsConversation(t *testing.T) {
+	r := newTurnRegistry()
+	ctx1, c1 := context.WithCancelCause(context.Background())
+	tok1, ok := r.register("conv_stop", "tnt_dev", "msg_1", c1)
+	if !ok {
+		t.Fatal("first register failed")
+	}
+
+	// A message while the turn is genuinely running IS refused: one turn per conversation.
+	if _, ok := r.register("conv_stop", "tnt_dev", "msg_2", func(error) {}); ok {
+		t.Fatal("a second send must be refused while the turn is genuinely running")
+	}
+
+	r.cancel("conv_stop", errUserStop)
+	if cause := context.Cause(ctx1); cause != errUserStop {
+		t.Fatalf("cancel cause = %v, want errUserStop", cause)
+	}
+
+	// THE FIX: the conversation is free the moment Stop lands.
+	tok2, ok := r.register("conv_stop", "tnt_dev", "msg_3", func(error) {})
+	if !ok {
+		t.Fatal("after Stop the conversation must accept a new turn — this is the wedge the operator hit")
+	}
+	if tok2 <= tok1 {
+		t.Fatalf("the replacement turn must get a fresh token (got %d, previous %d)", tok2, tok1)
+	}
+
+	// And the OLD turn must not be able to reclaim the hub on its way out.
+	if r.ownsHub("conv_stop", tok1) {
+		t.Error("a replaced turn still claims the hub — its finalize would close the live turn's hub")
+	}
+	if !r.ownsHub("conv_stop", tok2) {
+		t.Error("the current turn must own the hub")
+	}
+}
+
+// AN IDLE ENTRY NOBODY RECLAIMED MUST STILL BE SWEPT.
+//
+// register() accepts an idle entry, so an idle entry is harmless while it sits there — except that it
+// hides a conversation from len(), which is the admission cap. A collector that never finalizes would
+// otherwise leave a registration nothing ever removes.
+func TestTheSweeperReclaimsAnAbandonedIdleEntry(t *testing.T) {
+	r := newTurnRegistry()
+	if _, ok := r.register("conv_abandoned", "tnt_dev", "msg_1", func(error) {}); !ok {
+		t.Fatal("register failed")
+	}
+	r.cancel("conv_abandoned", errUserStop)
+
+	// IMMEDIATELY swept, even though it is not old: idle means nothing is using it.
+	evicted := r.sweep(time.Now(), time.Hour, nil)
+	if len(evicted) != 1 || evicted[0].convID != "conv_abandoned" {
+		t.Fatalf("the sweeper must reclaim an idle entry regardless of age, evicted = %+v", evicted)
+	}
+	if _, ok := r.get("conv_abandoned"); ok {
+		t.Fatal("the idle entry survived the sweep")
+	}
+}
+
+// THE HUB GUARD MUST BE WIRED, NOT MERELY AVAILABLE.
+//
+// ownsHub is only useful if startConversationTurn consults it: a turn started over an idle
+// predecessor is legal, and the predecessor's collector calls hubs.remove on its way out. Source-level
+// on purpose — the interleaving needs two real turns racing a collector, which this package cannot
+// construct without the serve. This proves the WIRING; the guard's logic is covered above.
+func TestStartingATurnChecksItStillOwnsTheHub(t *testing.T) {
+	src, err := os.ReadFile("chat.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	guard := strings.Index(body, "s.turns.ownsHub(convID, token)")
+	create := strings.Index(body, "s.hubs.create(convID)")
+	if guard == -1 {
+		t.Fatal("startConversationTurn never consults ownsHub — a dying collector can close the live turn's hub")
+	}
+	if create == -1 {
+		t.Fatal("s.hubs.create is gone; this assertion is now vacuous and must be rewritten")
+	}
+	if guard > create {
+		t.Error("the ownsHub check must come BEFORE s.hubs.create, or the hub is already replaced when it runs")
 	}
 }

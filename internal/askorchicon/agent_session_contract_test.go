@@ -90,3 +90,39 @@ func TestWorkerCompositePromptKeepsItsIdentityAndEconomyDiscipline(t *testing.T)
 		t.Error("the conditional memory instruction must not return: it let the model skip the search")
 	}
 }
+
+// THE SESSION CONTRACT MUST STATE THE ONE BOUND THAT IS REAL.
+//
+// "No budget" is true and must stay — but it reads as "effort is free", and two live sessions took that
+// licence and died: one made 355 tool calls and produced 263KB of reasoning inside a single turn, which
+// was cut off by the reply window with nothing reported. The wall clock IS a bound, so the contract has
+// to say so, together with the turn shape that keeps a turn inside it.
+func TestAskPromptStatesTheRealWallClockBoundAndTurnShape(t *testing.T) {
+	reg := NewToolRegistry(nil, nil, nil)
+	p := BuildSystemPrompt(modeIteration, db.AgentConfigRow{}, reg, "")
+
+	for _, want := range []string{
+		"BOUNDED BY WALL CLOCK",
+		"ONE TURN SHOULD FINISH ONE DELIVERABLE",
+		"Do not write large scripts inline",
+		"hand the full run to the operator",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the session contract must state %q — without it the model treats effort as free "+
+				"and spends the whole turn on one sweep", want)
+		}
+	}
+
+	// AND IT MUST STILL NOT REINTRODUCE BUDGET FRAMING: the model must not start reporting a quota.
+	// (Note "running low on calls" is deliberately NOT banned: it appears inside the "never report"
+	// sentence, which forbids that framing rather than using it.)
+	for _, banned := range []string{
+		"tool-call budget",
+		"prefer the fewest tool calls",
+		"split calls are FORBIDDEN",
+	} {
+		if strings.Contains(p, banned) {
+			t.Errorf("the session contract reintroduced budget framing %q", banned)
+		}
+	}
+}
