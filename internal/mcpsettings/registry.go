@@ -38,7 +38,8 @@ func env(name, def, desc string, secret bool) CatalogEnvVar {
 	return CatalogEnvVar{Name: name, Default: def, Description: desc, Secret: secret}
 }
 
-// catalog is the curated registry (16 entries, matching the work item's "and similar").
+// catalog is the curated registry. EVERY ENTRY MUST RESOLVE SOMEWHERE — a package that does not
+// exist is worse than no entry, because the failure only shows up after an operator has configured it.
 var catalog = []CatalogEntry{
 	{
 		Slug: "filesystem", DisplayName: "Filesystem",
@@ -91,8 +92,8 @@ var catalog = []CatalogEntry{
 	{
 		Slug: "fetch", DisplayName: "Fetch",
 		Description: "Fetch web pages and convert them to readable markdown.",
-		Transport:   TransportStdio, InstallMechanism: MechanismNpx,
-		DefaultCommand: "npx", DefaultArgs: []string{"-y", "@modelcontextprotocol/server-fetch"},
+		Transport:   TransportStdio, InstallMechanism: MechanismUvx,
+		DefaultCommand: "uvx", DefaultArgs: []string{"--from", "mcp-server-fetch", "mcp-server-fetch"},
 		DocsURL: "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
 	},
 	{
@@ -124,8 +125,8 @@ var catalog = []CatalogEntry{
 	{
 		Slug: "slack", DisplayName: "Slack",
 		Description: "Slack workspace access: channels, messages, history.",
-		Transport:   TransportStdio, InstallMechanism: MechanismUvx,
-		DefaultCommand: "uvx", DefaultArgs: []string{"mcp-server-slack"},
+		Transport:   TransportStdio, InstallMechanism: MechanismNpx,
+		DefaultCommand: "npx", DefaultArgs: []string{"-y", "@modelcontextprotocol/server-slack"},
 		DefaultEnv: []CatalogEnvVar{
 			env("SLACK_BOT_TOKEN", "", "Slack bot token (xoxb-...)", true),
 		},
@@ -156,22 +157,15 @@ var catalog = []CatalogEntry{
 	{
 		Slug: "time", DisplayName: "Time",
 		Description: "Current date/time in any timezone; timezone conversion.",
-		Transport:   TransportStdio, InstallMechanism: MechanismNpx,
-		DefaultCommand: "npx", DefaultArgs: []string{"-y", "@modelcontextprotocol/server-time"},
+		Transport:   TransportStdio, InstallMechanism: MechanismUvx,
+		DefaultCommand: "uvx", DefaultArgs: []string{"mcp-server-time"},
 		DocsURL: "https://github.com/modelcontextprotocol/servers/tree/main/src/time",
-	},
-	{
-		Slug: "everart", DisplayName: "Everart",
-		Description: "Generate images with Everart models (API key required).",
-		Transport:   TransportStdio, InstallMechanism: MechanismNpx,
-		DefaultCommand: "npx", DefaultArgs: []string{"-y", "@everart/mcp-server"},
-		DocsURL: "https://github.com/everartai/everart-mcp-server",
 	},
 	{
 		Slug: "git", DisplayName: "Git (MCP)",
 		Description: "Git operations over MCP: status, diff, commit, log.",
-		Transport:   TransportStdio, InstallMechanism: MechanismNpx,
-		DefaultCommand: "npx", DefaultArgs: []string{"-y", "mcp-server-git"},
+		Transport:   TransportStdio, InstallMechanism: MechanismUvx,
+		DefaultCommand: "uvx", DefaultArgs: []string{"mcp-server-git"},
 		DocsURL: "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
 	},
 }
