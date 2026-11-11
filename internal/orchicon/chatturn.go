@@ -584,10 +584,47 @@ func (b *NativeBridge) Subscribe(ctx context.Context, conversationID string) (sc
 // bridge now HAS a prompt queue of its own (askInjections, bridge.go).
 func (b *NativeBridge) QueuesPrompts() bool { return true }
 
+// claimChatTurnLocked registers a turn as the session's CURRENT turn and returns the token that owns
+// it. Callers must hold b.mu.
+//
+// IT REFUSES ONCE THE SESSION IS STOPPING. That is the wedge this closes: a superseding turn used to
+// overwrite the dead turn's registration and then have it deleted by that turn's own finalizer, leaving
+// NOTHING registered — every later send then started a second turn whose bus and input stream had no
+// consumer.
+func (b *NativeBridge) claimChatTurnLocked(sessionID string, cancel context.CancelFunc) (uint64, error) {
+	if reason, stopping := b.chatTurnStopping[sessionID]; stopping {
+		if reason == nil {
+			reason = errors.New("the turn had already been aborted")
+		}
+		return 0, fmt.Errorf("orchicon bridge: cannot start a turn on this session: %w", reason)
+	}
+	if b.chatTurns == nil {
+		b.chatTurns = map[string]context.CancelFunc{}
+	}
+	if b.chatTurnTokens == nil {
+		b.chatTurnTokens = map[string]uint64{}
+	}
+	b.chatTurnSeq++
+	token := b.chatTurnSeq
+	b.chatTurnTokens[sessionID] = token
+	b.chatTurns[sessionID] = cancel
+	return token, nil
+}
+
 // enqueueInjection adds a mid-turn message to the session's prompt queue, reporting whether it did.
+//
+// "IT DID" MUST MEAN THE RUNNING TURN WILL READ IT. A turn is joinable only while it is live and NOT
+// stopping — a cancel does not stop the drain goroutine, which can sit in a provider read until its own
+// stall window expires, so joining on presence alone accepted messages nothing would ever drain.
 func (b *NativeBridge) enqueueInjection(sessionID, text string, attachments []scheduler.ChatAttachment) (bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if reason, stopping := b.chatTurnStopping[sessionID]; stopping {
+		if reason == nil {
+			reason = errors.New("the turn had already been aborted")
+		}
+		return false, reason
+	}
 	if b.chatTurns[sessionID] == nil {
 		return false, nil
 	}
@@ -698,10 +735,11 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 		return errors.New("orchicon bridge: send turn requires a session id (create the conversation session first)")
 	}
 	// A MESSAGE THAT ARRIVES WHILE A TURN IS LIVE JOINS THAT TURN — IT DOES NOT START A SECOND ONE.
-	if joined, jerr := b.enqueueInjection(sessionID, text, attachments); joined {
-		if jerr != nil {
-			return jerr
-		}
+	if joined, jerr := b.enqueueInjection(sessionID, text, attachments); jerr != nil && !joined {
+		// A live-but-STOPPING turn that refuses the message is the only other outcome: the operator's send
+		// must reach them as "this turn is over, send again" rather than as a hang.
+		return jerr
+	} else if joined {
 		b.log.Info("orchicon: interjection joined the running turn",
 			"session", sessionID, "conversation", conversationID)
 		return nil
@@ -780,10 +818,12 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 
 	// Drain the stream on a goroutine, mapping events onto the bus.
 	b.mu.Lock()
-	if b.chatTurns == nil {
-		b.chatTurns = map[string]context.CancelFunc{}
+	token, err := b.claimChatTurnLocked(sessionID, cancel)
+	if err != nil {
+		b.mu.Unlock()
+		cancel()
+		return err
 	}
-	b.chatTurns[sessionID] = cancel
 	bus := b.chatBuses[conversationID]
 	if bus == nil {
 		bus = newChatBus()
@@ -794,7 +834,7 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 	bus.adopt()
 	b.mu.Unlock()
 
-	go b.drainChatTurn(turnCtx, prov, bus, stream, req, conversationID, sessionID, history, b.askUsageSink(prov, tenantID, conversationID, sessionID, modelRef, providerID, model))
+	go b.drainChatTurn(turnCtx, prov, bus, stream, req, conversationID, sessionID, token, history, b.askUsageSink(prov, tenantID, conversationID, sessionID, modelRef, providerID, model))
 
 	// Return nil (accepted) BEFORE the drain goroutine emits, so the
 	// collector observes every event with sent == true (D4).
@@ -803,13 +843,17 @@ func (b *NativeBridge) dispatchTurnMessage(ctx context.Context, conversationID, 
 
 // drainChatTurn reads the provider's TurnStream(s) and maps events onto the SessionBus vocabulary
 // (D3): TextDelta → delta(text) + accumulate into the part buffer.
-func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *chatBus, stream TurnStream, req TurnRequest, conversationID, sessionID string, history []Message, usageSink func(context.Context, Usage)) {
+func (b *NativeBridge) drainChatTurn(ctx context.Context, prov Provider, bus *chatBus, stream TurnStream, req TurnRequest, conversationID, sessionID string, token uint64, history []Message, usageSink func(context.Context, Usage)) {
 	defer bus.release()
 	defer func() {
 		// THE TURN IS OVER, so it can no longer drain a note that arrived in the last microseconds.
 		orphans := b.takeOrphanInjections(sessionID)
 		b.mu.Lock()
-		delete(b.chatTurns, sessionID)
+		delete(b.chatTurnStopping, sessionID)
+		if b.chatTurnTokens[sessionID] == token {
+			delete(b.chatTurns, sessionID)
+			delete(b.chatTurnTokens, sessionID)
+		}
 		b.mu.Unlock()
 		if len(orphans) > 0 {
 			// NOT DELIVERED, AND SAID SO.
@@ -1565,6 +1609,12 @@ func turnContribution(history, working []Message) []Message {
 func (b *NativeBridge) AbortConversationSession(ctx context.Context, sessionID string) error {
 	b.mu.Lock()
 	cancel, ok := b.chatTurns[sessionID]
+	// MARK IT STOPPING UNDER THE SAME LOCK as the lookup, so no send can slip between the two and join a
+	// turn that is already doomed. The mark outlives the cancel on purpose: the entry is only cleared when
+	// the drain goroutine returns.
+	if ok {
+		b.chatTurnStopping[sessionID] = context.Cause(ctx)
+	}
 	b.mu.Unlock()
 	if !ok {
 		return nil // safe no-op for unknown/finished sessions

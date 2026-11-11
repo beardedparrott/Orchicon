@@ -72,6 +72,14 @@ type NativeBridge struct {
 	// chatBuses maps a conversation id to the SessionBus its current turn drains into (set by
 	// Subscribe, fed by SendTurnMessage's drain goroutine).
 	chatBuses map[string]*chatBus
+	// chatTurnStopping marks a session whose live turn was ABORTED (Stop, stall, supersede) but whose
+	// drain goroutine has not returned yet. Such a turn must never absorb a message: joining it returns
+	// success and delivers nothing, which is a hang with no error in it.
+	chatTurnStopping map[string]error
+	// chatTurnTokens says which registration OWNS a session, so a turn that was replaced cannot clear
+	// its successor's registration.
+	chatTurnTokens map[string]uint64
+	chatTurnSeq    uint64
 	// permWaits holds the tool calls an Ask turn has PARKED on a consent decision, keyed by the ask id
 	// the collector answers with.
 	permMu    sync.Mutex
@@ -121,6 +129,8 @@ func NewBridge(resolver ProviderResolver, projectDir string, log *slog.Logger) *
 		askHistoryReduceReason: map[string]string{},
 		chatTurns:              map[string]context.CancelFunc{},
 		chatBuses:              map[string]*chatBus{},
+		chatTurnStopping:       map[string]error{},
+		chatTurnTokens:         map[string]uint64{},
 		permWaits:              map[string]*permWait{},
 	}
 }
