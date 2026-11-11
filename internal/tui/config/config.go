@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sort"
 	"strings"
 	"time"
 
@@ -503,13 +504,30 @@ func ProfileForInstance(cfg *Config, instance string) *Profile {
 	if cfg == nil || instance == "" {
 		return nil
 	}
+	// DETERMINISTIC, AND THE ACTIVE PROFILE WINS. cfg.Profiles is a MAP, so with two profiles pointing at the
+	// same instance the iteration order decides which credential is returned — and a harness that resolved
+	// an expired one failed `unauthenticated` while the correct profile sat beside it in the same file. Two
+	// profiles on one port is the ordinary case: an operator who first connected to `localhost:8091` and
+	// later reconnected to `127.0.0.1:8091` has exactly that.
+	matches := make([]*Profile, 0, len(cfg.Profiles))
 	for _, p := range cfg.Profiles {
 		if p == nil {
 			continue
 		}
 		if got, ok := controlport.InstanceForURL(p.URL); ok && got == instance {
+			matches = append(matches, p)
+		}
+	}
+	if len(matches) == 0 {
+		return nil
+	}
+	// The ACTIVE profile is the one the operator is using right now, so it is the right credential.
+	for _, p := range matches {
+		if p.Name == cfg.Active {
 			return p
 		}
 	}
-	return nil
+	// Otherwise a stable choice rather than the map's: sort by name so a rerun picks the same one.
+	sort.Slice(matches, func(i, j int) bool { return matches[i].Name < matches[j].Name })
+	return matches[0]
 }

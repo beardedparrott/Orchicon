@@ -189,3 +189,41 @@ export function orderInjectedBeforeReply<
   }
   return out;
 }
+
+/**
+ * anchorLiveReply places the in-flight reply's live text at its ANCHOR — the assistant row it belongs to —
+ * instead of after every message.
+ *
+ * THE BUG. Live text was drawn as a separate section AFTER the whole interleaved transcript. While you are at
+ * the bottom of a streaming turn that looks right, because the live text is the newest thing on screen. After
+ * a REFRESH mid-turn it is wrong: the interjection you just sent is durable with a real created_at, so it
+ * takes its place in the transcript, and the streaming reply is painted BELOW it as an appendix — the
+ * operator's own message sits above text that is answering a question asked after it. Reported as "my last
+ * message sits at the bottom and your text streams above it instead of below it".
+ *
+ * WHY AN ANCHOR AND NOT A TIMESTAMP. The stream carries no timestamp at all (TextChunk is `{content}`), so the
+ * client stamps `Date.now()` on arrival. That clock and the server's created_at are different clocks, and the
+ * comparison is a race decided by which was written first. Ordering does not need a clock here: the mirror row
+ * is created when the turn STARTS, so it is identifiable by id, and the live text always belongs immediately
+ * after it. Identity gives a deterministic answer where a timestamp gives a coin toss.
+ *
+ * ORDER: live text is emitted immediately after the anchor row and before everything that follows it. A reply
+ * to an interjection is the newest thing in the turn, so it comes after the interjection that prompted it —
+ * which is exactly what a refresh used to break.
+ *
+ * An anchor id that is absent (no live turn, or the row has not arrived yet) leaves the list untouched and
+ * returns `inserted: false`, so the caller can fall back to the trailing section rather than lose the text.
+ */
+export function anchorLiveReply<T extends { id: string }>(
+  messages: readonly T[],
+  live: readonly T[],
+  anchorId: string | null | undefined,
+): { messages: T[]; inserted: boolean } {
+  if (!anchorId || live.length === 0) return { messages: [...messages], inserted: false };
+  const at = messages.findIndex((m) => m.id === anchorId);
+  if (at < 0) return { messages: [...messages], inserted: false };
+  return {
+    messages: [...messages.slice(0, at + 1), ...live, ...messages.slice(at + 1)],
+    inserted: true,
+  };
+}

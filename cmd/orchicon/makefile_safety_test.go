@@ -52,6 +52,23 @@ func runScript(t *testing.T, script string, args ...string) (string, int) {
 	return string(out), code
 }
 
+// runScriptEnv runs a scripts/dev helper with EXTRA environment entries, so a test can pin or clear a
+// variable the helper branches on ("GOTMPDIR=" clears it).
+func runScriptEnv(t *testing.T, env []string, script string, args ...string) (string, int) {
+	t.Helper()
+	path := filepath.Join(repoRoot(t), "scripts", "dev", script)
+	cmd := exec.Command(path, args...)
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	code := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+	} else if err != nil {
+		t.Fatalf("run %s: %v", script, err)
+	}
+	return string(out), code
+}
+
 // A LAUNCHER INSTALLED FROM A WORKTREE MUST POINT AT THE MAIN CHECKOUT.
 func TestLauncherFromAWorktreePointsAtTheMainCheckout(t *testing.T) {
 	base := t.TempDir()
@@ -420,4 +437,64 @@ func sameLogicalRecipeLine(lines []string, a, b string) bool {
 		return true
 	}
 	return false
+}
+
+// THE SUITES' TEMP DIRS MUST NOT BE INSIDE THE REPOSITORY.
+//
+// t.TempDir() honours GOTMPDIR, and `make test` used to export <repo>/.dev/tools/gotmp. git discovers an
+// enclosing repo from any subdirectory, so a test sandbox was inside the operator's checkout and the
+// fixtures' `git worktree add` registered scratch checkouts against the REAL repository. MEASURED: 5-6
+// failures per run in internal/scheduler with GOTMPDIR inside the repo, 0 outside, same commit.
+func TestGOTMPDIRLivesOutsideTheRepository(t *testing.T) {
+	root := repoRoot(t)
+	out, code := runScriptEnv(t, []string{"GOTMPDIR="}, "gotmpdir.sh", root)
+	if code != 0 {
+		t.Fatalf("gotmpdir.sh failed (%d):\n%s", code, out)
+	}
+	got := strings.TrimSpace(out)
+	if got == "" {
+		t.Fatal("gotmpdir.sh printed nothing, so GOTMPDIR would be empty")
+	}
+	if !filepath.IsAbs(got) {
+		t.Errorf("GOTMPDIR must be absolute, got %q", got)
+	}
+	// The property, not a spelling: the temp dir must not sit under the repo root.
+	if rel, err := filepath.Rel(root, got); err == nil && !strings.HasPrefix(rel, "..") {
+		t.Errorf("GOTMPDIR %q is inside the repository %q — git will discover the repo from every test "+
+			"sandbox and fixtures will register worktrees against the operator's checkout", got, root)
+	}
+}
+
+// AN EXPLICITLY EXPORTED GOTMPDIR WINS — the helper supplies a default, not a policy.
+func TestGOTMPDIRHonoursAnExplicitExport(t *testing.T) {
+	out, code := runScriptEnv(t, []string{"GOTMPDIR=/custom/tmp"}, "gotmpdir.sh", repoRoot(t))
+	if code != 0 {
+		t.Fatalf("gotmpdir.sh failed (%d):\n%s", code, out)
+	}
+	if got := strings.TrimSpace(out); got != "/custom/tmp" {
+		t.Errorf("an exported GOTMPDIR must win, got %q", got)
+	}
+}
+
+// THE MAKEFILE MUST ASK THE SCRIPT: fixing the helper and leaving a literal path beside it is how this
+// comes back. This asserts the wiring, not the behaviour.
+func TestTheMakefileDerivesGOTMPDIRFromTheScript(t *testing.T) {
+	mk, err := os.ReadFile(filepath.Join(repoRoot(t), "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var line string
+	for _, l := range strings.Split(string(mk), "\n") {
+		trimmed := strings.TrimSpace(l)
+		if strings.HasPrefix(trimmed, "GOTMPDIR") && strings.Contains(trimmed, "?=") {
+			line = trimmed
+			break
+		}
+	}
+	if line == "" {
+		t.Fatal("no `GOTMPDIR ?=` assignment found in the Makefile")
+	}
+	if !strings.Contains(line, "gotmpdir.sh") {
+		t.Errorf("the Makefile must derive GOTMPDIR from scripts/dev/gotmpdir.sh, got:\n%s", line)
+	}
 }

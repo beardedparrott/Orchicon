@@ -244,6 +244,10 @@ type turnEntry struct {
 	assistantMsgID string
 	// wedged records that this turn's session wedged on an unresolved tool call (MCP wedge, AC1).
 	wedged bool
+	// idle marks a turn that has been CANCELLED but whose collector has not yet finalized. Its entry
+	// must stop reserving the conversation: the operator stopped it, so the next send is a NEW turn
+	// rather than "a reply is still in progress".
+	idle bool
 	// lastActivity is when the running turn last produced output (token, reasoning, step, or tool
 	// activity).
 	lastActivity time.Time
@@ -274,7 +278,11 @@ func newTurnRegistry() *turnRegistry {
 func (r *turnRegistry) register(convID, tenant, assistantMsgID string, cancel context.CancelCauseFunc) (uint64, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.turns[convID]; ok {
+	// A CANCELLED TURN DOES NOT HOLD THE CONVERSATION. The operator pressed Stop, so the conversation
+	// is theirs again even though the old collector is still winding down: refusing here is what made
+	// a stopped turn unable to accept a new message. The stale collector stays token-guarded — its
+	// remove() and hub() calls are no-ops once replaced.
+	if e, ok := r.turns[convID]; ok && !e.idle {
 		return 0, false
 	}
 	r.nextTok++
@@ -375,8 +383,22 @@ func (r *turnRegistry) cancel(convID string, cause error) (uint64, bool) {
 	entry, ok := r.turns[convID]
 	if ok {
 		entry.cancel(cause)
+		// MARK IT IDLE, not removed: the collector still owns finalization (it persists the partial
+		// reply and clears the hub), but the conversation stops being reserved the moment it is
+		// cancelled — see register.
+		entry.idle = true
+		r.turns[convID] = entry
 	}
 	return entry.token, ok
+}
+
+// ownsHub reports whether token is still the conversation's current turn. A turn that has been
+// replaced by a newer one must not claim the hub.
+func (r *turnRegistry) ownsHub(convID string, token uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.turns[convID]
+	return ok && entry.token == token
 }
 
 // remove drops the registry entry for a conversation only when its token matches the caller's
@@ -406,7 +428,10 @@ func (r *turnRegistry) sweep(now time.Time, maxAge time.Duration, parked func(co
 	r.mu.Lock()
 	var cands []candidate
 	for id, entry := range r.turns {
-		if now.Sub(entry.lastActivity) > maxAge {
+		// AN IDLE ENTRY NO LONGER HOLDS THE CONVERSATION, so it must not be kept alive by the same rule
+		// that protects a working turn: its collector normally removes it on finalize, but a collector
+		// that never returns would otherwise leave a registration nobody ever reclaims.
+		if entry.idle || now.Sub(entry.lastActivity) > maxAge {
 			cands = append(cands, candidate{convID: id, tenant: entry.tenant, token: entry.token})
 		}
 	}
@@ -1046,6 +1071,15 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	s.turns.setTurnContext(convID, token, reuseSystem, modelRef)
 
 	// --- 4.
+	// ONLY THE CURRENT TURN MAY OWN THE CONVERSATION'S HUB. Starting a turn over a cancelled-but-not-
+	// yet-finalized predecessor is legal (see register), and the predecessor's collector will call
+	// hubs.remove on the way out — without this check that call would close the NEW turn's hub and
+	// leave its watchers with nothing but the poll.
+	if !s.turns.ownsHub(convID, token) {
+		releaseTurn()
+		return "", nil, nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("a reply is still in progress for this conversation — wait for it to complete or stop it first"))
+	}
 	s.hubs.create(convID)
 	streamEventCh := make(chan *apiv1.ChatStreamResponse, dispatchBufferSize)
 	st := &dispatchStreamState{}

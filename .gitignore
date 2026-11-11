@@ -174,3 +174,7 @@ frontend/wailsjs/
 # not repeating, with the evidence that makes them stick. Ignored because they are operator-local
 # context, not product source: the project's shipped documentation lives in docs/.
 skills/
+
+# Reports the e2e harness writes into the cwd. They are RUN OUTPUT, not source: one was swept into a commit
+# by a broad `git add` and had to be removed.
+orchicon-e2e-*.md
