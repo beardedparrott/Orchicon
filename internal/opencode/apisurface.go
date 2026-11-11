@@ -179,6 +179,20 @@ var shapeV1APIPrompt = func() apiShape {
 	sh.promptStyle = "nested"
 	sh.promptPathOverride = func(id string) string { return "/api/session/" + id + "/prompt" }
 	sh.setModelPath = func(id string) string { return "/api/session/" + id + "/model" }
+	// THE FIELD INSIDE model IS `id` HERE, NOT v1's `modelID`.
+	//
+	// This shape borrows v1's routes but v2's MODEL object, and the two disagree about the key's name. Sending
+	// v1's spelling to the /api/ route is rejected verbatim:
+	//
+	//	POST /api/session/{id}/model {"model":{"providerID":…,"modelID":…}}
+	//	  -> 400 {"_tag":"InvalidRequestError","message":"Missing key at [\"model\"][\"id\"]","kind":"Payload"}
+	//	POST /api/session/{id}/model {"model":{"providerID":…,"id":…}}          -> 204
+	//
+	// MEASURED on opencode 1.19.5 (a real serve, both bodies probed). It broke every 1.18+ session on a
+	// non-2.x serve: the model could never be set, so the turn failed before a token was sent. The v1
+	// prompt_async fallback keeps `modelID` (a different route with its own spelling), which is why only
+	// this one field moves.
+	sh.modelFieldName = "id"
 	return sh
 }()
 
