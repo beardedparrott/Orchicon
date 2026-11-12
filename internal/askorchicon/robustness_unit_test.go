@@ -11,7 +11,7 @@ import (
 // --- AC2 (refresh survival): server-confirmed progress signal ---
 
 // TestTurnStatusReportsAccurateProgress verifies the server-confirmed status the frontend
-// reconciles against after a refresh (ADR-0002 D3/AC2).
+// reconciles against after a refresh.
 func TestTurnStatusReportsAccurateProgress(t *testing.T) {
 	s := &Service{turns: newTurnRegistry(), log: slog.Default()}
 	cancel := func(error) {}

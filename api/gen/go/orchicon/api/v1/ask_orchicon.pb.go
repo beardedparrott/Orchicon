@@ -135,7 +135,7 @@ type Conversation struct {
 	// resolve the restored turn's completion.
 	PendingAssistantMessageId string `protobuf:"bytes,12,opt,name=pending_assistant_message_id,json=pendingAssistantMessageId,proto3" json:"pending_assistant_message_id,omitempty"`
 	// turn_progressing is the server-confirmed "the model is still genuinely
-	// working" signal (ADR-0002 D3). Computed at read time from the running
+	// working" signal. Computed at read time from the running
 	// turn's last activity: true when the turn has produced recent output and is
 	// not wedged on an unresolved tool. The frontend shows "still working…" only
 	// when this is true; when it is false but turn_in_flight is true, the UI can

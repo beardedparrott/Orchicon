@@ -7,7 +7,7 @@ package scheduler
 // (internal/contextfiles.RenderManifest) with NO adapter carrying skill-handling code. This file asserts the
 // worker half: the union of the project's skill_files and the VERSION's skill_files renders the `# Skills`
 // manifest, and two calls over the same selection are byte-identical (the section sits inside the prompt's
-// cached static prefix — ADR-0009 — so an unstable order is a permanent per-turn cache miss).
+// cached static prefix — so an unstable order is a permanent per-turn cache miss).
 //
 //	export ORCHICON_TEST_DSN='postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable'
 //	go test ./internal/scheduler/ -run 'SkillFiles' -v

@@ -145,7 +145,7 @@ func TestModelPickerListsThePreferredAdapterFirst(t *testing.T) {
 }
 
 // Switching adapter RESCOPES the lower tiers: a stale provider/model must never
-// carry into the new adapter's scope (ADR-0004 stale-selection guard).
+// carry into the new adapter's scope ( stale-selection guard).
 func TestModelPickerAdapterChangeResetsLowerTiers(t *testing.T) {
 	// No preference set, so the reported order is kept: [opencode, orchicon].
 	mp := NewModelPicker("x")
@@ -178,7 +178,7 @@ func TestModelPickerAdapterChangeResetsLowerTiers(t *testing.T) {
 }
 
 // The model segment is the VERBATIM remainder of the grammar, so a slashed model
-// id must survive the round trip (ADR-0003: opencode/commandcode/deepseek/deepseek-v4-flash).
+// id must survive the round trip (: opencode/commandcode/deepseek/deepseek-v4-flash).
 func TestModelPickerRefKeepsASlashedModelVerbatim(t *testing.T) {
 	mp := NewModelPicker("x")
 	mp.Open("orchicon", "commandcode", "deepseek/deepseek-v4-flash")

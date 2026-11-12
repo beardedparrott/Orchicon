@@ -192,7 +192,7 @@ func TestModelRefValidation(t *testing.T) {
 		"ollama/llama3",
 		// 3 segments: canonical adapter/provider/model.
 		"opencode/anthropic/claude-sonnet-4",
-		// 4 segments: the model segment is the VERBATIM remainder (ADR-0003).
+		// 4 segments: the model segment is the VERBATIM remainder.
 		"orchicon/commandcode/deepseek/deepseek-v4-flash",
 		// Empty means "leave unchanged".
 		"",

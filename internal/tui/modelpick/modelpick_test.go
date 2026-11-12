@@ -18,7 +18,7 @@ func TestSplitRefSeedsTheTiersFromTheGrammar(t *testing.T) {
 	}{
 		// Canonical 3-segment.
 		{"opencode/anthropic/claude-sonnet-4", "opencode", "anthropic", "claude-sonnet-4"},
-		// The model segment is the VERBATIM remainder (ADR-0003).
+		// The model segment is the VERBATIM remainder.
 		{"orchicon/commandcode/deepseek/deepseek-v4-flash", "orchicon", "commandcode", "deepseek/deepseek-v4-flash"},
 		// Legacy 2-segment: the adapter is inferred.
 		{"ollama/llama3", "opencode", "ollama", "llama3"},
@@ -81,7 +81,7 @@ func TestProviderOptionsGateway(t *testing.T) {
 }
 
 // The native model tier drops HIDDEN models and ANNOTATES a missing context hint
-// rather than dropping it (ADR-0006 D8).
+// rather than dropping it.
 func TestModelOptionsNativeDropsHiddenAndAnnotatesMissingContext(t *testing.T) {
 	opts := ModelOptionsNative([]*apiv1.ProviderModel{
 		{Id: "claude-sonnet-4", Context: 200000, Reasoning: true, Visible: true},

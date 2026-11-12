@@ -167,7 +167,7 @@ export function AskModelChip({
               </button>
             </div>
             {/* askMode flags adapters that are registered but cannot serve Ask
-                chat (ADR-0004 D1), so an unusable choice is flagged AT selection
+                chat, so an unusable choice is flagged AT selection
                 rather than failing on the first message.
                 `inline` renders the three tiers IN FLOW inside this panel. It is
                 REQUIRED here, not optional polish: the picker's default dropdown

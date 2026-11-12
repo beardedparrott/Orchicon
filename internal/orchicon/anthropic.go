@@ -226,7 +226,7 @@ func parseDataURL(u string) (anthImageSource, bool) {
 	return anthImageSource{Type: "base64", MediaType: media, Data: tail[len(b64):]}, true
 }
 
-// Breakpoint rule for the two-zone system layout (ADR-0009): when ANY system block carries an
+// Breakpoint rule for the two-zone system layout: when ANY system block carries an
 // explicit Cache flag, ONLY the flagged blocks get cache_control — never the last block by default.
 func buildAnthropicRequest(req TurnRequest, cacheTTL string) anthRequest {
 	policy := req.CacheControl
@@ -600,7 +600,7 @@ func mapAnthropicStop(reason string) StopReason {
 	}
 }
 
-// anthropicCacheTTLOptIn reads the ORCHICON_ANTHROPIC_CACHE_TTL tenant env (ADR-0009 D3,
+// anthropicCacheTTLOptIn reads the ORCHICON_ANTHROPIC_CACHE_TTL tenant env (,
 // revisitable default OFF): "1h" opts the session's cache breakpoints into the extended 1-hour TTL.
 func anthropicCacheTTLOptIn() string {
 	switch os.Getenv("ORCHICON_ANTHROPIC_CACHE_TTL") {

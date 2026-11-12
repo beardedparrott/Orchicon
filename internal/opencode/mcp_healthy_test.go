@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// TestMCPHealthyAndProbeUsable verifies ADR-0002 D1 — the MCP watchdog gate.
+// TestMCPHealthyAndProbeUsable verifies — the MCP watchdog gate.
 func TestMCPHealthyAndProbeUsable(t *testing.T) {
 	// Healthy: /global/health 200, /session 200 returns a probe id, /abort 204.
 	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +67,7 @@ func TestMCPHealthyAndProbeUsable(t *testing.T) {
 	}
 }
 
-// TestSubscriptionReadDropsWhenFull verifies ADR-0002 D6 — a slow consumer must not park the /event
+// TestSubscriptionReadDropsWhenFull verifies — a slow consumer must not park the /event
 // SSE reader on a full channel.
 func TestSubscriptionReadDropsWhenFull(t *testing.T) {
 	var b strings.Builder

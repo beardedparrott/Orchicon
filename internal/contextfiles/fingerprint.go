@@ -9,7 +9,7 @@ import (
 	"sort"
 )
 
-// FileStamp is the per-path change fingerprint recorded for a context path (ADR-0009 D5).
+// FileStamp is the per-path change fingerprint recorded for a context path.
 type FileStamp struct {
 	Path  string
 	Stamp string

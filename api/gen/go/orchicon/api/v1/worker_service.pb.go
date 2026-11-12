@@ -101,7 +101,7 @@ type CreateWorkerRequest struct {
 	Slug        string                 `protobuf:"bytes,3,opt,name=slug,proto3" json:"slug,omitempty"`
 	Description string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"` // Markdown
 	Purpose     string                 `protobuf:"bytes,5,opt,name=purpose,proto3" json:"purpose,omitempty"`
-	// model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+	// model_ref is the canonical adapter/provider/model ref; a
 	// legacy 1/2-segment ref is accepted and infers adapter "opencode".
 	ModelRef            string `protobuf:"bytes,7,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`
 	SystemPrompt        string `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`           // Markdown + template variables (docs/05 §11)
@@ -122,7 +122,7 @@ type CreateWorkerRequest struct {
 	Behavior string `protobuf:"bytes,21,opt,name=behavior,proto3" json:"behavior,omitempty"`
 	AgentsMd string `protobuf:"bytes,22,opt,name=agents_md,json=agentsMd,proto3" json:"agents_md,omitempty"`
 	RoleRef  string `protobuf:"bytes,23,opt,name=role_ref,json=roleRef,proto3" json:"role_ref,omitempty"` // optional RBAC role binding; empty = no plane access
-	// Optional explicit adapter selection (ADR-0005 D2): a validation and
+	// Optional explicit adapter selection: a validation and
 	// consistency affordance for API clients. Must be a Dispatcher-registered
 	// kind; when model_ref is also set the two must AGREE (the ref's parsed
 	// adapter segment == this value); a lone adapter with no model_ref is
@@ -1327,15 +1327,15 @@ type WorkerListItem struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Worker *Worker                `protobuf:"bytes,1,opt,name=worker,proto3" json:"worker,omitempty"`
 	// active_model_ref is the model_ref of the active version
-	// (worker_versions.model_ref) — canonical adapter/provider/model
-	// (ADR-0003), e.g. "orchicon/anthropic/claude-sonnet-4", reported
-	// VERBATIM as stored (a legacy ref keeps its legacy form until it is
-	// re-saved). Empty when the worker has no versions yet.
+	// (worker_versions.model_ref) — canonical adapter/provider/model,
+	// e.g. "orchicon/anthropic/claude-sonnet-4", reported VERBATIM as stored
+	// (a legacy ref keeps its legacy form until it is re-saved). Empty when the
+	// worker has no versions yet.
 	ActiveModelRef      string              `protobuf:"bytes,2,opt,name=active_model_ref,json=activeModelRef,proto3" json:"active_model_ref,omitempty"`
 	ActiveVersionStatus WorkerVersionStatus `protobuf:"varint,3,opt,name=active_version_status,json=activeVersionStatus,proto3,enum=orchicon.api.v1.WorkerVersionStatus" json:"active_version_status,omitempty"`
 	// active_adapter is the parsed adapter segment of active_model_ref
-	// (ADR-0005 D2, computed server-side). Legacy 2-segment refs report
-	// the inferred default kind ("opencode") — never a stored value.
+	// (computed server-side). Legacy 2-segment refs report the inferred default
+	// kind ("opencode") — never a stored value.
 	ActiveAdapter string `protobuf:"bytes,4,opt,name=active_adapter,json=activeAdapter,proto3" json:"active_adapter,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1657,7 +1657,7 @@ type UpdateWorkerVersionRequest struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	WorkerId  string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
 	VersionId string                 `protobuf:"bytes,2,opt,name=version_id,json=versionId,proto3" json:"version_id,omitempty"`
-	// model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+	// model_ref is the canonical adapter/provider/model ref; a
 	// legacy 1/2-segment ref is accepted and infers adapter "opencode".
 	ModelRef            *string `protobuf:"bytes,7,opt,name=model_ref,json=modelRef,proto3,oneof" json:"model_ref,omitempty"`
 	SystemPrompt        *string `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3,oneof" json:"system_prompt,omitempty"`
@@ -1676,7 +1676,7 @@ type UpdateWorkerVersionRequest struct {
 	Skills   *string `protobuf:"bytes,19,opt,name=skills,proto3,oneof" json:"skills,omitempty"`
 	Behavior *string `protobuf:"bytes,20,opt,name=behavior,proto3,oneof" json:"behavior,omitempty"`
 	AgentsMd *string `protobuf:"bytes,21,opt,name=agents_md,json=agentsMd,proto3,oneof" json:"agents_md,omitempty"`
-	// Optional explicit adapter selection (ADR-0005 D2/D4): validated
+	// Optional explicit adapter selection: validated
 	// against the Dispatcher's registered kinds; must agree with model_ref
 	// when both are set. When the resulting ref's adapter CHANGES, the new
 	// adapter/provider pair must be valid (provider known for the new
@@ -1933,7 +1933,7 @@ func (x *UpdateWorkerVersionResponse) GetVersion() *WorkerVersion {
 type CreateWorkerVersionRequest struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	WorkerId string                 `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
-	// model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+	// model_ref is the canonical adapter/provider/model ref; a
 	// legacy 1/2-segment ref is accepted and infers adapter "opencode".
 	ModelRef            *string `protobuf:"bytes,7,opt,name=model_ref,json=modelRef,proto3,oneof" json:"model_ref,omitempty"`
 	SystemPrompt        *string `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3,oneof" json:"system_prompt,omitempty"`
@@ -1952,7 +1952,7 @@ type CreateWorkerVersionRequest struct {
 	Skills   *string `protobuf:"bytes,19,opt,name=skills,proto3,oneof" json:"skills,omitempty"`
 	Behavior *string `protobuf:"bytes,20,opt,name=behavior,proto3,oneof" json:"behavior,omitempty"`
 	AgentsMd *string `protobuf:"bytes,21,opt,name=agents_md,json=agentsMd,proto3,oneof" json:"agents_md,omitempty"`
-	// Optional explicit adapter selection (ADR-0005 D2/D4) — same contract
+	// Optional explicit adapter selection — same contract
 	// as UpdateWorkerVersion.
 	Adapter *string `protobuf:"bytes,22,opt,name=adapter,proto3,oneof" json:"adapter,omitempty"`
 	// publish CREATES the new version and publishes it in the SAME

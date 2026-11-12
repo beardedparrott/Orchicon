@@ -1,5 +1,5 @@
 // model-ref.ts - TypeScript mirror of the Go model_ref grammar
-// (internal/adapter/modelref.go, ADR-0003).
+// (internal/adapter/modelref.go).
 //
 // The grammar is left-greedy over exactly three semantic fields:
 //
@@ -17,7 +17,7 @@ export const DEFAULT_ADAPTER_KIND = "opencode";
 
 /**
  * ORCHICON_ADAPTER_KIND is the decided product default for FRESH adapter
- * selections (ADR-0005 D5): the native adapter kind this feature delivers.
+ * selections: the native adapter kind this feature delivers.
  * The picker seeds its adapter tier with this kind when the stored ref is
  * empty AND the kind is Dispatcher-registered; otherwise it degrades to
  * DEFAULT_ADAPTER_KIND (opencode) — never a default that cannot dispatch.
@@ -90,7 +90,7 @@ export interface CatalogModelLike {
  * never matches; the adapter segment is inherently not part of the
  * catalog's identity (models are scoped per provider+id). A parsed ref is
  * REQUIRED: unknown shapes (null) deliberately never match, so callers
- * keep flagging them for review (ADR-0004 D5).
+ * keep flagging them for review.
  */
 export function catalogModelMatches(
   parsed: ParsedModelRef,

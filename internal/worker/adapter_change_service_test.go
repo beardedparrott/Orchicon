@@ -1,6 +1,6 @@
 package worker
 
-// Service-level regression tests for the ADR-0005 adapter-change contract (QA BUG-1): a
+// Service-level regression tests for the adapter-change contract (QA BUG-1): a
 // model_ref-ONLY adapter change — the picker's save path.
 
 import (

@@ -22,7 +22,7 @@ func TestCatalogSourcedAdapterKinds(t *testing.T) {
 }
 
 // The provider tier of the claude kind is already correct and must stay that
-// way: claude → ["anthropic"], from the registry (ADR-0003 D3).
+// way: claude → ["anthropic"], from the registry.
 func TestClaudeAdapterScopesToAnthropic(t *testing.T) {
 	c := NewBuiltinProviderCatalog()
 	if !c.IsKnownAdapter(KindClaude) {

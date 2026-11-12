@@ -195,7 +195,7 @@ check "ORCHICON_DOCKER_BRIDGE_IP overrides discovery" \
 # that is what broke a ROOTLESS PODMAN host: there is no docker0 and no
 # 172.17.0.1 there, so the plane refused to start over an address it does not
 # need. Every runtime container is created with
-# --add-host host.docker.internal:host-gateway (ADR-0013 D2.4), so the stable
+# --add-host host.docker.internal:host-gateway, so the stable
 # NAME reaches the plane on both engines. The fallback advertises that name.
 NOBRIDGE="$(bind_with dev none 2>/dev/null)"
 NOBRIDGE_RC=$?

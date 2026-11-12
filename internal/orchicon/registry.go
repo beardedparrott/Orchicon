@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Registry (ADR-0003 D10) resolves provider profiles into concrete clients: profile (built-in or
+// Registry resolves provider profiles into concrete clients: profile (built-in or
 // tenant custom) → credential resolution → client construction.
 type Registry struct {
 	creds *CredentialResolver

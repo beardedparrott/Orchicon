@@ -79,7 +79,7 @@ func TestPristineResetRealEngine(t *testing.T) {
 			if fatal {
 				t.Fatalf("run B could not be created after the removal primitive reported the name released "+
 					"(%s) — on %s this is the lingering-name failure the reset's bounded wait exists to "+
-					"prevent, i.e. a reset that silently fails (BF-3(b) / ADR-0013 D5.2): %v",
+					"prevent, i.e. a reset that silently fails (BF-3(b) /: %v",
 					strings.TrimSpace(out), eng.EngineNameForError(), err)
 			}
 			t.Skipf("could not start %q with /bin/sh + sleep on %s (%s) — set ORCHICON_RUNTIME_TEST_IMAGE "+
@@ -107,7 +107,7 @@ func TestPristineResetRealEngine(t *testing.T) {
 	}
 
 	// RELEASE: the pool's removal primitive — `rm -f` plus the bounded wait for
-	// the engine to release the name (ADR-0013 §6, D5.2).
+	// the engine to release the name (, D5.2).
 	if !d.removeContainer(name) {
 		t.Fatalf("%s did not release the container name %q — a lingering name is exactly what fails the "+
 			"recreate on podman", eng.EngineNameForError(), name)

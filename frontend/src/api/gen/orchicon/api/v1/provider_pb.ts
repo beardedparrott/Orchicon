@@ -7,7 +7,7 @@ import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialM
 import { Message, proto3, protoInt64 } from "@bufbuild/protobuf";
 
 /**
- * ProviderEntry is one merged provider row (ADR-0006 D4): built-ins render
+ * ProviderEntry is one merged provider row: built-ins render
  * read-only (is_custom=false); customs are operator-editable. Plaintext
  * tokens NEVER appear here — only has_token_stored + the secret name.
  *
@@ -278,7 +278,7 @@ export class ProviderUpdateSettingsRequest extends Message<ProviderUpdateSetting
 }
 
 /**
- * ProviderManualModel mirrors orchicon.ModelInfo hint fields (ADR-0006 D1).
+ * ProviderManualModel mirrors orchicon.ModelInfo hint fields.
  *
  * @generated from message orchicon.api.v1.ProviderManualModel
  */
@@ -827,7 +827,7 @@ export class ProviderClearTokenResponse extends Message<ProviderClearTokenRespon
 }
 
 /**
- * ProviderModel is one sourcing-view row (ADR-0006 D4): source
+ * ProviderModel is one sourcing-view row: source
  * distinguishes catalog|probe|manual; warn_no_context is the WARN
  * annotation for selectable models lacking a context hint.
  *

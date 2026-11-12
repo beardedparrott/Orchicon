@@ -451,7 +451,7 @@ export class SetConversationModelRequest extends Message<SetConversationModelReq
   id = "";
 
   /**
-   * model_ref is canonical adapter/provider/model (ADR-0003); a legacy
+   * model_ref is canonical adapter/provider/model; a legacy
    * 1/2-segment ref is accepted and infers adapter "opencode". Empty clears
    * the per-conversation override so the tenant default applies.
    *

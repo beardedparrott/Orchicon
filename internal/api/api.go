@@ -73,19 +73,19 @@ type Dependencies struct {
 	// DiscovererFactory re-resolves the pair above when boot could not.
 	DiscovererFactory aigateway.DiscovererFactory
 	// ModelRefRegistry is the per-adapter provider catalog (built-in ∪ tenant custom) for
-	// adapter-scoped model listing and legacy 2-segment inference (ADR-0003).
+	// adapter-scoped model listing and legacy 2-segment inference.
 	ModelRefRegistry adapter.ProviderRegistry
-	// AdapterKinds returns the adapter kinds registered with the Dispatcher (ADR-0004 D1) — the source
+	// AdapterKinds returns the adapter kinds registered with the Dispatcher — the source
 	// of the model picker's adapter bubble tier.
 	AdapterKinds func() []string
 	// AdapterChatKinds returns the adapter kinds whose bridge implements the ChatTurnClient (Ask chat)
-	// capability (ADR-0004 D1).
+	// capability.
 	AdapterChatKinds func() []string
-	// Dispatcher is the shared adapter routing substrate (ADR-0003).
+	// Dispatcher is the shared adapter routing substrate.
 	Dispatcher *scheduler.Dispatcher
 	// BlobStore is the object storage abstraction (local filesystem + S3).
 	BlobStore blobstore.Store
-	// ProvidersService is the providers settings core (ADR-0006).
+	// ProvidersService is the providers settings core.
 	ProvidersService *providers.Service
 	// PostgresDSN is the Postgres connection string for backup/restore.
 	PostgresDSN string
@@ -151,7 +151,7 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	catSvc := category.New(deps.Pool, deps.Log)
 	mux.Handle(apiv1connect.NewCategoryServiceHandler(catSvc, interceptorOpt))
 
-	// ProviderService (ADR-0006) — tenant-facing Providers management surface behind Settings →
+	// ProviderService — tenant-facing Providers management surface behind Settings →
 	// Adapters.
 	providerSvc := providers.NewHandler(deps.Pool, deps.SecretsKEK, deps.Log)
 	// Provider-landscape mutations invalidate the model discoverer's cache immediately (custom provider
@@ -169,10 +169,10 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	mux.Handle(apiv1connect.NewMCPServiceHandler(mcpSvc, interceptorOpt))
 
 	workerSvc := worker.New(deps.Pool, deps.Log)
-	// Explicit adapter selections validate against the Dispatcher's registered kinds (ADR-0005 D2) —
+	// Explicit adapter selections validate against the Dispatcher's registered kinds —
 	// the injected func avoids the api → scheduler import cycle.
 	workerSvc.SetAdapterKinds(deps.AdapterKinds)
-	// Tenant custom providers join model-ref validation (ADR-0006 D6): the global validation registry
+	// Tenant custom providers join model-ref validation: the global validation registry
 	// stays built-in-only; the worker service merges the requesting tenant's enabled custom ids.
 	if deps.ProvidersService != nil {
 		workerSvc.SetCustomProviderIDs(deps.ProvidersService.EnabledCustomProviderIDs)

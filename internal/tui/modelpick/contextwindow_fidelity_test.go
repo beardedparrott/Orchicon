@@ -75,7 +75,7 @@ func TestContextWindowNativeRefNeverTouchesCLIDiscovery(t *testing.T) {
 }
 
 // The recorded EXCEPTION: a legacy `opencode/...` ref MAY read the CLI, because for THAT adapter
-// the CLI is the authority on its own models (ADR-0004; the picker has always worked this way).
+// the CLI is the authority on its own models (; the picker has always worked this way).
 func TestContextWindowOpencodeRefReadsCLIDiscovery(t *testing.T) {
 	prov, gw := &fidelityProvider{}, &fidelityGateway{}
 	cl := fidelityClients(t, prov, gw)

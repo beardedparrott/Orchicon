@@ -176,10 +176,10 @@ export const runtimeImageClient = createClient(RuntimeImageService, connectTrans
 export const secretsClient = createClient(SecretsService, connectTransport);
 export const categoryClient = createClient(CategoryService, connectTransport);
 
-// Provider settings service (ADR-0006) — Settings → Adapters Providers tab.
+// Provider settings service — Settings → Adapters Providers tab.
 export const providerClient = createClient(ProviderService, connectTransport);
 
-// MCP server settings service (ADR-0008) — Settings → Adapters → MCP.
+// MCP server settings service — Settings → Adapters → MCP.
 export const mcpClient = createClient(MCPService, connectTransport);
 
 // File-edit ledger (diff pipeline, feature 3) — consumed by the GUI diff

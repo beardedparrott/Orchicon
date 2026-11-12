@@ -17,14 +17,14 @@ type ProviderRegistry interface {
 }
 
 // BuiltinProviderCatalog is the static built-in half of the registry: the adapter kinds and
-// provider profiles the platform ships (ADR-0003 D3).
+// provider profiles the platform ships.
 type BuiltinProviderCatalog struct {
 	adapterKinds map[string]struct{}
 	providers    map[string]map[string]struct{}
 }
 
 // NewBuiltinProviderCatalog returns a catalog pre-seeded with the platform's built-in adapter kinds
-// and their built-in provider profiles (the ADR-0003 pinned examples).
+// and their built-in provider profiles (the pinned examples).
 func NewBuiltinProviderCatalog() *BuiltinProviderCatalog {
 	c := &BuiltinProviderCatalog{
 		adapterKinds: make(map[string]struct{}),

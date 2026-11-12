@@ -37,7 +37,7 @@ func TestCreateContainerFlagsPodman(t *testing.T) {
 		t.Errorf("missing the instance label: %v", args)
 	}
 
-	// ADR-0013 D2.4: one host alias spelling, every engine, every platform.
+	//: one host alias spelling, every engine, every platform.
 	if !argValue(args, "--add-host", "host.docker.internal:host-gateway") {
 		t.Errorf("missing --add-host host.docker.internal:host-gateway: %v", args)
 	}
@@ -64,7 +64,7 @@ func TestCreateContainerFlagsPodman(t *testing.T) {
 		t.Errorf("missing --tmpfs /tmp:rw,size=2g,exec: %v", args)
 	}
 
-	// ADR-0013 D2.1: the serve and sandbox-plane ports are published on the host
+	//: the serve and sandbox-plane ports are published on the host
 	// loopback, because a rootless container IP is not host-routable.
 	for _, want := range []string{"127.0.0.1::4096", "127.0.0.1::8080"} {
 		if !argValue(args, "-p", want) {

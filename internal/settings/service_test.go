@@ -137,7 +137,7 @@ func TestValidateModelRef_CLIRegistry(t *testing.T) {
 
 // TEST-MERGE-OURS-END
 
-// --- validateModelRef (ADR-0003) ---
+// --- validateModelRef ---
 
 // settingsTestCLI mirrors the server's merged validation catalog: the builtin provider profiles, a
 // tenant-custom provider (local-models), and a CLI-discovered provider id (deepseek).

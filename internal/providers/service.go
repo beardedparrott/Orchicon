@@ -1,5 +1,5 @@
 // Package providers implements the tenant-facing Providers management surface behind Settings →
-// Adapters (ADR-0006).
+// Adapters.
 package providers
 
 import (
@@ -27,7 +27,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// refRE is the custom provider ref-id grammar (ADR-0006 D2):
+// refRE is the custom provider ref-id grammar:
 // slug-style, 2–64 chars. Segment 2 of the model_ref namespace.
 const refPattern = `^[a-z0-9][a-z0-9_-]{1,63}$`
 
@@ -58,7 +58,7 @@ func invalidf(format string, a ...any) error {
 	return fmt.Errorf("%w: %s", errInvalidArgument, fmt.Sprintf(format, a...))
 }
 
-// builtinSecretNames is the standard-name auto-write map (ADR-0006 D5).
+// builtinSecretNames is the standard-name auto-write map.
 var builtinSecretNames = map[string]string{
 	"anthropic":   "ANTHROPIC_API_KEY",
 	"openai":      "OPENAI_API_KEY",
@@ -69,7 +69,7 @@ var builtinSecretNames = map[string]string{
 	"ollama":      "OLLAMA_API_KEY",
 }
 
-// CustomSecretName derives the standard tenant-secret name for a custom provider ref (ADR-0006 D2):
+// CustomSecretName derives the standard tenant-secret name for a custom provider ref:
 // CUSTOM_<REF uppercased, - → _>_API_KEY.
 func CustomSecretName(ref string) string {
 	return "CUSTOM_" + strings.ToUpper(strings.ReplaceAll(ref, "-", "_")) + "_API_KEY"
@@ -116,7 +116,7 @@ func ValidateAuthMode(mode string) error {
 // validateAuthMode is the internal spelling kept for the existing call sites.
 func validateAuthMode(mode string) error { return ValidateAuthMode(mode) }
 
-// ManualModel is one operator-added model entry (ADR-0006 D1/D4): the
+// ManualModel is one operator-added model entry: the
 // storage shape of manual_models JSONB, mirroring orchicon.ModelInfo hints.
 type ManualModel struct {
 	ID        string `json:"id"`
@@ -227,7 +227,7 @@ func opencodeProviderNPM(kind string) string {
 	return ""
 }
 
-// Entry is one merged provider row (ADR-0006 D4). Built-ins carry
+// Entry is one merged provider row. Built-ins carry
 // ReadOnly=true; plaintext tokens never appear here.
 type Entry struct {
 	ID              string
@@ -303,7 +303,7 @@ func (s *Service) substrate() (*orchicon.Registry, *orchicon.SourcingService, *o
 			}
 		}
 		s.registry = orchicon.NewRegistry(resolver, src, nil, warn)
-		// BUILT-IN provider overrides (ADR-0006 D6 parity): registry.Get for a built-in id resolves
+		// BUILT-IN provider overrides ( parity): registry.Get for a built-in id resolves
 		// built-in default ⊕ tenant provider-settings overrides via EffectiveProfile.
 		s.registry.SetBuiltinOverridesLoader(s.EffectiveProfile)
 		s.sourcing = src
@@ -325,7 +325,7 @@ func (s *Service) CredentialResolver() *orchicon.CredentialResolver {
 }
 
 // RegisterSubstrateLoader installs this service as the orchicon custom-profile loader (the
-// substrate's designated hook, ADR-0006 D6).
+// substrate's designated hook
 func (s *Service) RegisterSubstrateLoader() {
 	orchicon.SetCustomProfileLoader(s.loadEnabledCustomProfiles)
 }
@@ -564,7 +564,7 @@ func (s *Service) entryFromRow(ctx context.Context, tx pgx.Tx, tenantID string, 
 }
 
 // UpdateSettingsInput is the partial-update merge for provider settings
-// (ADR-0006 D4): only set fields apply; valid for built-ins AND customs.
+// : only set fields apply; valid for built-ins AND customs.
 type UpdateSettingsInput struct {
 	ProviderID      string
 	Enabled         *bool
@@ -946,7 +946,7 @@ func (s *Service) scanModelRefs(ctx context.Context, tx pgx.Tx, tenantID, provid
 }
 
 // SetProviderToken auto-writes/updates the provider's tenant secret under the standard name
-// (ADR-0006 D5).
+// .
 func (s *Service) SetProviderToken(ctx context.Context, tenantID, providerID, token string) (string, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
@@ -1175,7 +1175,7 @@ func (s *Service) applyBaseURLRepair(ctx context.Context, tenantID, providerID, 
 }
 
 // EnabledCustomProviderIDs lists the tenant's ENABLED custom provider ids (the model-ref validation
-// merge source, ADR-0006 D6; also the substrate loader's filter).
+// merge source; also the substrate loader's filter).
 func (s *Service) EnabledCustomProviderIDs(ctx context.Context, tenantID string) ([]string, error) {
 	tx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -1196,7 +1196,7 @@ func (s *Service) EnabledCustomProviderIDs(ctx context.Context, tenantID string)
 	return out, nil
 }
 
-// ModelRow is one sourcing-view model (ADR-0006 D4): the merged catalog → probe → manual list
+// ModelRow is one sourcing-view model: the merged catalog → probe → manual list
 // (substrate SourcingService).
 type ModelRow struct {
 	ID            string

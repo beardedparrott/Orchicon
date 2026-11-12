@@ -9,7 +9,7 @@ func TestAgentModelForServeStripsTheAdapterSegment(t *testing.T) {
 		{"opencode/opencode/muse-spark-1.3-contributor-free", "opencode/muse-spark-1.3-contributor-free"},
 		{"opencode/ollama-cloud/deepseek-v4.1-flash", "ollama-cloud/deepseek-v4.1-flash"},
 		// A model id may itself contain slashes — provider/model/generation — and the
-		// remainder is preserved verbatim (ADR-0003).
+		// remainder is preserved verbatim.
 		{"opencode/commandcode/deepseek/deepseek-v4-flash-fast", "commandcode/deepseek/deepseek-v4-flash-fast"},
 		// A legacy 2-segment ref already IS provider/model.
 		{"opencode-go/deepseek-v4-flash", "opencode-go/deepseek-v4-flash"},

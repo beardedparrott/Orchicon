@@ -657,7 +657,7 @@ export class OpenCodeModel extends Message<OpenCodeModel> {
   status = "";
 
   /**
-   * LEGACY 2-segment "provider/id" projection (ADR-0003). The canonical dispatch identity is adapter/provider/model — consumers form it by combining this with an adapter segment; never treat this as the whole ref.
+   * LEGACY 2-segment "provider/id" projection. The canonical dispatch identity is adapter/provider/model — consumers form it by combining this with an adapter segment; never treat this as the whole ref.
    *
    * @generated from field: string model_ref = 6;
    */

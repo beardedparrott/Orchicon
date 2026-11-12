@@ -1,6 +1,6 @@
 package worker
 
-// Unit tests for the ADR-0005 adapter-selection helpers in validate.go: registered-kinds validation
+// Unit tests for the adapter-selection helpers in validate.go: registered-kinds validation
 // of the explicit adapter input, the adapter/ref agreement contract, the adapter-change contract.
 
 import (
@@ -80,7 +80,7 @@ func TestValidateAdapterChange(t *testing.T) {
 	modelRefRegistry = adapter.NewBuiltinProviderCatalog()
 
 	// Unchanged adapter re-save: even a catalog-known-but-deleted provider
-	// keeps the ADR-0004 D5 re-save semantics (no adapter-change gate).
+	// keeps the re-save semantics (no adapter-change gate).
 	if err := validateAdapterChange(context.Background(), "", "opencode/ghost/m", "opencode/ghost/m2"); err != nil {
 		t.Fatalf("unchanged-adapter re-save = %v; want nil (D5 preserved)", err)
 	}

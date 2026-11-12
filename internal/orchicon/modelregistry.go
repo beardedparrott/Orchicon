@@ -3,7 +3,7 @@ package orchicon
 // modelregistry.go — the LIVE model-metadata registry.
 //
 // Distinct from registry.go, which resolves provider PROFILES into clients
-// (ADR-0003 D10). This file resolves model METADATA (context/output/tools/pricing).
+//. This file resolves model METADATA (context/output/tools/pricing).
 //
 // The vendored catalog (catalog.json, the file that calls itself "a mini
 // models.dev") is an AUTHORED SNAPSHOT: it drifts, and a hand-typed number in it

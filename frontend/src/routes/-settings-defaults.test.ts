@@ -5,7 +5,7 @@ import path from "node:path";
 // The Settings → Defaults tab binds BOTH tenant defaults (worker + Ask
 // Orchicon) to the shared three-tier adapter/provider/searchable-model
 // ModelPicker bound to DefaultAskOrchiconModel — reuse, never a fork
-// (ADR-0003). These source-level pins guard against a future regression
+//. These source-level pins guard against a future regression
 // swapping the Ask picker for a text input or a local fork.
 describe("settings-defaults (Ask default uses the shared ModelPicker)", () => {
   const src = fs.readFileSync(path.join(__dirname, "settings.tsx"), "utf8");

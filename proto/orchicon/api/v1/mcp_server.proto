@@ -203,7 +203,7 @@ message MCPRuntimeDetectResponse {
   map<string, bool> available = 1;  // npx / uvx / docker
 }
 
-// Secrets (write-only credentials; provider-token pattern, ADR-0006 D5).
+// Secrets (write-only credentials; provider-token pattern
 message MCPServerSetSecretRequest {
   string id = 1;
   string name = 2;   // env/header key (or a required secret name)

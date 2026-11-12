@@ -41,7 +41,7 @@ var slugRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 // wrapped with the same CLI-aware live discovery the model picker uses.
 var modelRefRegistry adapter.ProviderRegistry = adapter.NewBuiltinProviderCatalog()
 
-// customProviderIDs returns the requesting tenant's ENABLED custom provider ids (ADR-0006 D6).
+// customProviderIDs returns the requesting tenant's ENABLED custom provider ids.
 var customProviderIDs func(ctx context.Context, tenantID string) ([]string, error)
 
 // SetCustomProviderIDs wires the tenant custom-provider source for model-ref validation (the
@@ -139,7 +139,7 @@ func MigrationKinds() map[string]struct{} {
 }
 
 // validateModelRef trims and bounds-checks a model_ref, then validates it against the
-// adapter/provider/model grammar (ADR-0003).
+// adapter/provider/model grammar.
 func validateModelRef(ctx context.Context, tenantID, ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -303,13 +303,13 @@ func requireTenant(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-// --- adapter selection (ADR-0005) ------------------------------------------
+// --- adapter selection ------------------------------------------
 
-// adapterKindsFn returns the adapter kinds currently REGISTERED with the Dispatcher (ADR-0005 D2).
+// adapterKindsFn returns the adapter kinds currently REGISTERED with the Dispatcher.
 var adapterKindsFn func() []string
 
 // SetAdapterKinds wires the Dispatcher's registered adapter kinds into the worker service's
-// adapter-input validation (ADR-0005 D2).
+// adapter-input validation.
 func SetAdapterKinds(fn func() []string) {
 	adapterKindsFn = fn
 }
@@ -331,7 +331,7 @@ func registeredAdapterKinds() []string {
 }
 
 // validateAdapterInput validates an explicit adapter selection against the Dispatcher's registered
-// kinds (ADR-0005 D2/D3).
+// kinds.
 func validateAdapterInput(kind string) (string, error) {
 	kind = strings.TrimSpace(kind)
 	if kind == "" {
@@ -348,7 +348,7 @@ func validateAdapterInput(kind string) (string, error) {
 	return "", fmt.Errorf("unknown or unregistered adapter %q — registered adapter kinds: %s", kind, strings.Join(registeredAdapterKinds(), ", "))
 }
 
-// validateAdapterRefAgreement enforces ADR-0005 D2 for the optional explicit adapter input: it must
+// validateAdapterRefAgreement enforces for the optional explicit adapter input: it must
 // travel WITH a model_ref (the ref is the only store.
 func validateAdapterRefAgreement(adapterSel, modelRef string) error {
 	if adapterSel == "" {
@@ -367,7 +367,7 @@ func validateAdapterRefAgreement(adapterSel, modelRef string) error {
 	return nil
 }
 
-// validateAdapterChange enforces the adapter-change contract (ADR-0005 D4).
+// validateAdapterChange enforces the adapter-change contract.
 func validateAdapterChange(ctx context.Context, tenantID, currentRef, newRef string) error {
 	// Identical re-save: a pure no-op (the new ref already parsed upstream).
 	if strings.TrimSpace(currentRef) == strings.TrimSpace(newRef) {
@@ -413,7 +413,7 @@ func isRegisteredKind(kind string) bool {
 	return modelRefRegistry.IsKnownAdapter(kind)
 }
 
-// adapterKindOf reports the worker-facing adapter selection for a model_ref (ADR-0005 D2,
+// adapterKindOf reports the worker-facing adapter selection for a model_ref (,
 // computed): the parsed adapter segment.
 func adapterKindOf(modelRef string) string {
 	ref := strings.TrimSpace(modelRef)

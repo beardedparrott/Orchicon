@@ -31,7 +31,7 @@ type Service struct {
 	// (permission_policy.go). Empty falls back to permpolicy.DefaultPath().
 	policyPath string
 
-	// validationRegistry is the model-ref validation catalog (ADR-0003).
+	// validationRegistry is the model-ref validation catalog.
 	validationRegistry adapter.ProviderRegistry
 	apiv1connect.UnimplementedSettingsServiceHandler
 }
@@ -77,7 +77,7 @@ func (s *Service) GetSettings(ctx context.Context, req *connect.Request[apiv1.Ge
 }
 
 // validateModelRef checks a tenant-default model ref against the adapter/provider/model grammar
-// (ADR-0003) via the injected registry (builtin ∪ CLI-discovered ∪ tenant-custom providers).
+// via the injected registry (builtin ∪ CLI-discovered ∪ tenant-custom providers).
 func (s *Service) validateModelRef(ref string) error {
 	if strings.TrimSpace(ref) == "" {
 		return nil

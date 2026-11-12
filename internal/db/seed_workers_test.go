@@ -935,7 +935,7 @@ func TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes(t *testing.T
 			tc.id).Scan(&agents, &modelRef); err != nil {
 			t.Fatalf("query version %s: %v", tc.slug, err)
 		}
-		// Worker-level runtime_ref is retired (ADR-0003): the trio seeds an empty model_ref (dispatch
+		// Worker-level runtime_ref is retired: the trio seeds an empty model_ref (dispatch
 		// derives the kind at run time).
 		if modelRef != "" {
 			t.Errorf("%s model_ref = %q, want empty (runtime_ref retired; dispatch kind derives at run time)", tc.slug, modelRef)

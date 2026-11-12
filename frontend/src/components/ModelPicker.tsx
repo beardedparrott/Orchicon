@@ -33,7 +33,7 @@ interface ModelPickerProps {
   // askMode flags this picker as the Ask Orchicon model picker: when true,
   // a selected adapter kind that is registered but does NOT implement Ask
   // chat (ChatTurnClient) is flagged for review with an amber banner
-  // (ADR-0004 D1) — the Ask-capability guard surfaces at selection time.
+  // — the Ask-capability guard surfaces at selection time.
   askMode?: boolean;
   // inline renders the tiers in NORMAL FLOW inside the caller's container
   // instead of as an absolutely-positioned dropdown below the input, and keeps
@@ -48,7 +48,7 @@ interface ModelPickerProps {
   inline?: boolean;
 }
 
-// Three-tier control (ADR-0004): adapter bubble list (registered kinds) →
+// Three-tier control: adapter bubble list (registered kinds) →
 // provider list (built-in ∪ tenant custom, adapter-scoped) → searchable model
 // list (provider-scoped). The stored model_ref seeds the selection
 // (legacy 2-segment refs infer adapter `opencode`); saving writes a
@@ -116,7 +116,7 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Two different questions, two different answers (ADR-0004 D1).
+  // Two different questions, two different answers.
   //
   //  - MODEL tier (usesCatalogSourcing): kinds whose models resolve from the
   //    providers SOURCING view (ProviderService.ListProviderModels — vendored
@@ -197,7 +197,7 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
     : usesCatalogSourcing
       ? adapterScopedError
       : legacyModelsQ.error;
-  // Model tier — per-adapter data source (ADR-0004): a CATALOG-SOURCED kind
+  // Model tier — per-adapter data source: a CATALOG-SOURCED kind
   // (orchicon, claude — from ListAdapterKinds.sourcing_kinds) resolves models
   // from the providers service (vendored catalog ⊕ probe ⊕ manual — the
   // Settings → Adapters sourcing view); every other kind keeps opencode-CLI
@@ -259,7 +259,7 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
   // freshly-loaded lists (unknown/stored refs), keep the flagged state rather
   // than resetting the stored value.
 
-  // ADR-0005 D5 (default adapter = "orchicon" for FRESH selections): when
+  // (default adapter = "orchicon" for FRESH selections): when
   // the stored ref is empty (no adapter chosen yet) and "orchicon" is a
   // Dispatcher-registered kind, seed the adapter tier with "orchicon".
   // Otherwise seed "opencode" (today's registry — the picker degrades to
@@ -324,8 +324,8 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
   }, []);
 
   // Adapter selection: rescope provider and reset the model tier (no stale
-  // selection leaks across adapters — ADR-0004 stale-selection guard;
-  // ADR-0005 D4 reset contract: switching adapters NEVER carries the
+  // selection leaks across adapters stale-selection guard;
+  // reset contract: switching adapters NEVER carries the
   // previous selection into the new scope and no ref is written until a
   // model under the new adapter is chosen). The panel STAYS OPEN — the
   // tiers live inside the box now, and closing it here would strand the
@@ -383,7 +383,7 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
       if (adapterKinds !== undefined && !storedAdapterKnown) {
         reviewReasons.push("adapter not registered");
       }
-      // Ask-capability guard (ADR-0004 D1): in Ask mode, a stored adapter
+      // Ask-capability guard: in Ask mode, a stored adapter
       // that is registered but does NOT implement Ask chat (ChatTurnClient)
       // is flagged at selection time — the picker surfaces the guard before
       // the conversation is created / the first message is sent.

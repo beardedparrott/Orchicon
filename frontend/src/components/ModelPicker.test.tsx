@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 
-describe("ModelPicker (three-tier, ADR-0004)", () => {
+describe("ModelPicker (three-tier)", => {
   const src = fs.readFileSync(path.join(__dirname, "ModelPicker.tsx"), "utf8");
 
   it("renders three tiers: adapter bubbles, provider list, searchable model list", () => {
@@ -13,11 +13,11 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
     expect(src).toMatch(/rounded-full border px-3 py-1/); // adapter pills (in-box)
     expect(src).toContain("Search models...");
     // Tier 2 — provider pills from the tenant-aware providers service
-    // (ADR-0006: built-ins ⊕ enabled tenant customs, auto-refresh on save).
+    // (: built-ins ⊕ enabled tenant customs, auto-refresh on save).
     expect(src).toContain("useProviderList()");
     expect(src).toMatch(/No providers for adapter/);
     // Tier 3 — searchable model list scoped to the selected provider.
-    // Per-adapter data source (ADR-0004): a CATALOG-SOURCED kind — the server's
+    // Per-adapter data source: a CATALOG-SOURCED kind — the server's
     // ListAdapterKinds.sourcing_kinds (orchicon, claude) — resolves models from
     // the providers service; every other kind uses opencode-CLI discovery.
     // (The superseded assumption was "native → providers service, legacy CLI

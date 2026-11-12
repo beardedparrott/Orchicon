@@ -1,4 +1,4 @@
-// MCP servers panel (ADR-0008, epic: platform model). ONE component serves
+// MCP servers panel (, epic: platform model). ONE component serves
 // every placement — project, Ask conversation and worker version — because a
 // capability that lands in one scope and not another is incomplete work.
 //

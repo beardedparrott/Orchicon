@@ -1417,7 +1417,7 @@ export class MCPRuntimeDetectResponse extends Message<MCPRuntimeDetectResponse> 
 }
 
 /**
- * Secrets (write-only credentials; provider-token pattern, ADR-0006 D5).
+ * Secrets (write-only credentials; provider-token pattern
  *
  * @generated from message orchicon.api.v1.MCPServerSetSecretRequest
  */

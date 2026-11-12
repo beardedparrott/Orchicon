@@ -358,7 +358,7 @@ func batchWrites(cmds []tea.Cmd) tea.Cmd {
 // the new-version form can never offer a different set for the same version.
 func (m *Model) versionFields(src *apiv1.WorkerVersion) []kit2.FieldSpec {
 	return []kit2.FieldSpec{
-		// The model is a VERSION field (ADR-0003: the ref is versioned state), so it is edited with the
+		// The model is a VERSION field (: the ref is versioned state), so it is edited with the
 		// rest of the version — the GUI keeps it on workers_.$id.tsx for the same reason.
 		{Name: "model_ref", Label: "Model", Kind: kit2.KModel, Initial: src.GetModelRef(),
 			Placeholder: "— none — (enter to choose a model)"},

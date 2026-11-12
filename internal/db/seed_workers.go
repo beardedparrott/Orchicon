@@ -119,7 +119,7 @@ type cannedWorker struct {
 	Behavior    string
 	AgentsMD    string
 	RoleRef     string // RBAC role binding (plane-channel entitlements); empty = none
-	// NOTE: worker-level RuntimeRef is retired (ADR-0003 single source of truth) — the model_ref's
+	// NOTE: worker-level RuntimeRef is retired ( single source of truth) — the model_ref's
 	// adapter segment alone governs dispatch.
 	BudgetOverrides []byte
 	// RecreateSlugOwner deletes any worker that owns the canned slug but is NOT the canned ID, then
@@ -557,7 +557,7 @@ var cannedWorkers = []cannedWorker{
 			"- **Classification rule**: feature-class = the kind of capability a competitor advertises as a headline feature; internal hardening = BUG-R, cap ONE per fire, never crowd out market-driven features. State this rule in the plan.\n\n" +
 			researchHygieneBlock,
 		RoleRef: automationResearchRoleID,
-		// Worker-level runtime_ref is retired (ADR-0003): the model_ref's adapter segment alone governs
+		// Worker-level runtime_ref is retired: the model_ref's adapter segment alone governs
 		// dispatch.
 		RollMarker:       researchEphemeralMarker,
 		ConcurrencyLimit: 0,

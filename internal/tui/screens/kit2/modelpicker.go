@@ -26,7 +26,7 @@ const (
 )
 
 // ModelPicker is a dedicated MODAL control for choosing a model_ref in the pinned
-// adapter/provider/model grammar (internal/adapter/modelref.go, ADR-0003).
+// adapter/provider/model grammar (internal/adapter/modelref.go).
 type ModelPicker struct {
 	title string
 
@@ -322,7 +322,7 @@ func (mp *ModelPicker) Retry() tea.Cmd {
 func (mp *ModelPicker) clearLoad() { mp.inFlight = ""; mp.loading = false; mp.err = "" }
 
 // IsAskCapable reports whether the adapter kind supports Ask chat (the picker
-// flags a non-Ask kind in Ask mode; ADR-0004 D1).
+// flags a non-Ask kind in Ask mode
 func (mp *ModelPicker) IsAskCapable(kind string) bool { return mp.askCapable[kind] }
 
 // --- navigation -------------------------------------------------------------
@@ -447,7 +447,7 @@ func (mp *ModelPicker) choose() tea.Cmd {
 			a := mp.adapters[i]
 			if a != mp.adapter {
 				// An adapter change RESCOPES the lower tiers: the previous provider/model is never carried into the
-				// new scope (ADR-0004 stale-selection guard).
+				// new scope ( stale-selection guard).
 				mp.adapter = a
 				mp.resetLower()
 			}

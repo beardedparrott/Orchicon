@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// hosttools_test.go: the host tool suite (ADR-0007's deferred tool-suite task).
+// hosttools_test.go: the host tool suite ('s deferred tool-suite task).
 
 func TestHostToolsDefsShape(t *testing.T) {
 	h := NewHostTools(t.TempDir(), "")

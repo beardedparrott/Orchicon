@@ -1,6 +1,6 @@
 package orchicon
 
-// Native prompt assembly (ADR-0009): the composite prompt built by the
+// Native prompt assembly: the composite prompt built by the
 // scheduler (stable prefix + worker identity + task/AC + project &
 // work-item context + instructions) is consumed VERBATIM as the cached
 // static prefix. The native layer adds only a thin authoritative block
@@ -72,13 +72,13 @@ type todoDigestArgs struct {
 }
 
 // fingerprintPrefix is the sha256 (first 16 hex chars) of the static prefix bytes — logged on
-// change so an operator can correlate a cache miss with a prefix edit (ADR-0009 D5).
+// change so an operator can correlate a cache miss with a prefix edit.
 func fingerprintPrefix(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:8])
 }
 
-// AssembleSystem returns the session's two-zone system block list for a turn request (ADR-0009 D2):
+// AssembleSystem returns the session's two-zone system block list for a turn request:
 // block 0 is the static prefix (composite + native layer + env facts) carrying the cache.
 func (s *Session) AssembleSystem() []SystemBlock {
 	blocks := make([]SystemBlock, 0, 2)

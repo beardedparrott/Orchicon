@@ -1,6 +1,6 @@
 package askorchicon
 
-// MCP server management tools (ADR-0008, adapter-settings MCP management): thin wrappers over
+// MCP server management tools (, adapter-settings MCP management): thin wrappers over
 // internal/mcpsettings so the Ask Orchicon / MCP surface mirrors the platform's MCPService.
 
 import (

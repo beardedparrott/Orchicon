@@ -251,7 +251,7 @@ func (m *chatStallMonitor) observe(etype string, part map[string]any) {
 	case "text", "reasoning", "step_finish":
 		m.lastActivity = now
 		// A completed text/reasoning/step boundary closes any open tool: the
-		// model moved past it, so it is not wedged (ADR-0002 D2).
+		// model moved past it, so it is not wedged.
 		m.openToolTime = time.Time{}
 		m.openToolName = ""
 	case "tool_use":

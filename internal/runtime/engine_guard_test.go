@@ -24,13 +24,13 @@ var engineGuardBanned = []string{
 }
 
 // engineGuardAllowed names the cmd/orchicon files whose docker literals are KNOWN and owned by
-// another slice of ADR-0013.
+// another slice of.
 var engineGuardAllowed = map[string]string{
-	"install.go":        "ADR-0013 §12 item 13: the host-install lifecycle still drives docker (containerEngineAvailable must learn podman there)",
-	"install_bridge.go": "ADR-0013 §12 item 13: docker bridge-IP discovery moves to the engine probe in the install slice",
-	"install_host.go":   "ADR-0013 §12 item 13: containerEngineAvailable still probes LookPath(\"docker\") and must learn podman there",
-	"install_ports.go":  "ADR-0013 §12 item 13: port-conflict inspection on the install path",
-	"restart.go":        "ADR-0013 §12 item 13: restarting the existing control-plane container",
+	"install.go":        " item 13: the host-install lifecycle still drives docker (containerEngineAvailable must learn podman there)",
+	"install_bridge.go": " item 13: docker bridge-IP discovery moves to the engine probe in the install slice",
+	"install_host.go":   " item 13: containerEngineAvailable still probes LookPath(\"docker\") and must learn podman there",
+	"install_ports.go":  " item 13: port-conflict inspection on the install path",
+	"restart.go":        " item 13: restarting the existing control-plane container",
 }
 
 // engineLiteralCalls returns every call in src that passes an engine binary NAME
