@@ -884,9 +884,13 @@ jobs:
     # `sign-macos` IS IN `needs` so the signed archives are the ones downloaded — but it is SKIPPED while
     # signing is off, and a skipped dependency skips its dependents. Hence the explicit `skipped` arm: the
     # release must go ahead on an unsigned build, which is the normal case today.
+    # `needs.sign-macos.result` is parsed as `needs.sign MINUS macos.result`, not as property
+    # access: a hyphenated job id has to be indexed, `needs['sign-macos']`. That mis-parse made
+    # this condition false on EVERY run, so Create Release never executed — v0.6.0, v0.6.2 and
+    # v0.6.4 all reached a fully green pipeline and published nothing.
     if: |
       needs.guard.outputs.proceed == 'true' &&
-      (needs.sign-macos.result == 'success' || needs.sign-macos.result == 'skipped')
+      (needs['sign-macos'].result == 'success' || needs['sign-macos'].result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -920,7 +924,7 @@ jobs:
       # installed binary are the signed ones. `if:` scopes it to a run where signing actually happened; when
       # the sign job is skipped (the normal case today) there is no such artifact and nothing to download.
       - name: Download the signed macOS archives last, so they are the ones that stay
-        if: needs.sign-macos.result == 'success'
+        if: needs['sign-macos'].result == 'success'
         uses: actions/download-artifact@v4
         with:
           path: artifacts
