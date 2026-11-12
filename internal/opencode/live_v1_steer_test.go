@@ -23,6 +23,11 @@ import (
 	"testing"
 )
 
+// TestLiveV1SteerIsAdmitted probes a REAL 1.x serve for the /api prompt route's admission.
+//
+// ADMISSION IS NOT GENERATION, and that distinction is why no version selects this shape any more: 1.19.5
+// admits the message and never runs the turn. This test therefore says nothing about a turn working — it only
+// checks the route's response shape.
 func TestLiveV1SteerIsAdmitted(t *testing.T) {
 	url := os.Getenv("ORCHICON_V1_SERVE_URL")
 	sid := os.Getenv("ORCHICON_V1_SESSION_ID")
@@ -30,7 +35,7 @@ func TestLiveV1SteerIsAdmitted(t *testing.T) {
 		t.Skip("set ORCHICON_V1_SERVE_URL and ORCHICON_V1_SESSION_ID to run this against a real 1.x serve")
 	}
 	c := NewSessionClient(url, "", "")
-	c.setAPIShape(shapeV1APIPrompt)
+	c.setAPIShape(nestedPromptShape())
 
 	// A plain send: the route must exist and admit it.
 	if err := c.SendMessage(context.Background(), sid, "", "", "live steer probe"); err != nil {

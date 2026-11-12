@@ -20,7 +20,9 @@ package opencode
 // the FIELD, so it sent v1's spelling to v2's route — a mismatch that no version comparison could catch, because
 // both halves were individually correct.
 //
-// Nothing on 2.x saw it: shapeV2 sets both from the same table entry. Only the borrowed shape could be wrong.
+// Nothing on 2.x saw it: shapeV2 sets both from the same table entry. Only the borrowed shape could be wrong —
+// and that shape is now gone entirely: its prompt route turned out not to start turns on 1.x at all (see the
+// tombstone in apisurface.go), so 1.x uses v1's prompt_async and never sets the model on a session.
 
 import "testing"
 
@@ -37,11 +39,6 @@ func TestTheModelFieldMatchesTheRouteThatCarriesIt(t *testing.T) {
 		{
 			shape: shapeV2, want: "id",
 			why: "v2 sets the model on /api/session/{id}/model, whose Model.Ref is {id, providerID}",
-		},
-		{
-			shape: shapeV1APIPrompt, want: "id",
-			why: "this shape borrows the SAME /api/.../model route to set the model — the measured 400 " +
-				"`Missing key at [\"model\"][\"id\"]` is what v1's `modelID` spelling earns there",
 		},
 		{
 			shape: shapeV1, want: "modelID",

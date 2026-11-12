@@ -222,6 +222,22 @@ func TestV2FilesUseTheUriShape(t *testing.T) {
 	}
 }
 
+// nestedPromptShape builds the shape that sends prompts to /api/session/{id}/prompt.
+//
+// NO VERSION RESOLVES TO THIS ANY MORE, and the reason is measured: on 1.19.5 that route ADMITS a message and
+// never runs it, so a turn never started. These tests are kept because they pin the WIRE (the nested body, the
+// delivery sibling, the model being set first) — the contract of a route that a future serve might make usable
+// for steering. Nothing in the shipped version table selects it.
+func nestedPromptShape() apiShape {
+	sh := shapeV1
+	sh.name = "v1+api-prompt"
+	sh.promptStyle = "nested"
+	sh.promptPathOverride = func(id string) string { return "/api/session/" + id + "/prompt" }
+	sh.setModelPath = func(id string) string { return "/api/session/" + id + "/model" }
+	sh.modelFieldName = "id"
+	return sh
+}
+
 // TestV1APIPromptSteersWithNestedBody pins the 1.x steer wire, measured against a real 1.19.4
 // serve: the content nests under `prompt`, `delivery` is its SIBLING.
 func TestV1APIPromptSteersWithNestedBody(t *testing.T) {
@@ -229,7 +245,7 @@ func TestV1APIPromptSteersWithNestedBody(t *testing.T) {
 	srv := captureServer(t, &seen)
 
 	c := NewSessionClient(srv.URL, "", "")
-	c.setAPIShape(shapeV1APIPrompt)
+	c.setAPIShape(nestedPromptShape())
 
 	if err := c.SendMessage(context.Background(), "ses_1", "", "opencode/opencode/big-pickle", "hi"); err != nil {
 		t.Fatalf("SendMessage: %v", err)
@@ -296,7 +312,7 @@ func TestV1APIPromptFallsBackToPromptAsyncWhenTheRouteIsAbsent(t *testing.T) {
 	srv := aWebAppServer(t, &seen)
 
 	c := NewSessionClient(srv.URL, "", "")
-	c.setAPIShape(shapeV1APIPrompt)
+	c.setAPIShape(nestedPromptShape())
 
 	if err := c.SendMessage(context.Background(), "ses_1", "be terse", "", "hi"); err != nil {
 		t.Fatalf("SendMessage: %v", err)

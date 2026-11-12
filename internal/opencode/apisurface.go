@@ -143,65 +143,25 @@ var shapeV1 = apiShape{
 	modelFieldName:        "modelID",
 }
 
-// shapeV1APIPrompt is opencode 1.18+ — the versions that serve the v2-shaped PROMPT route alongside
-// their v1 routes, which is the only way to steer on 1.x.
+// THERE IS NO "v1+api-prompt" SHAPE, AND ITS ABSENCE IS THE FIX.
 //
-// WHY IT EXISTS, measured (not inferred) on the 1.18.34 and 1.19.4 binaries from npm, each run as a
-// real serve and probed directly:
+// It existed for opencode 1.18+, which serves POST /api/session/{id}/prompt alongside its v1 routes, and it sent
+// every prompt there so an interjection could be steered into a running turn. Measured on 1.19.5, that route
+// ADMITS a message and never runs it:
 //
-//	POST /session/{id}/prompt_async   body keys = {model, agent, noReply, tools, format, system,
-//	                                               variant, parts}     ← NO delivery; cannot steer
-//	POST /api/session/{id}/prompt     body keys = {id, prompt, delivery, resume}
-//	    {"prompt":{"text":"…"},"delivery":"steer"}                -> 200, echoes "delivery":"steer"
-//	    {"prompt":{"text":"…"},"delivery":"nonsense"}             -> 400
-//	                                     'Expected "steer" | "queue", got "nonsense" at ["delivery"]'
-//	    {"prompt":{"text":"…","files":[{"uri":…,"name":…}]},…}    -> 200, files echoed back
-//	POST /api/session/{id}/model      {"model":{"providerID":…,"id":…}} -> 204, reads back set
+//	POST /api/session/{id}/prompt {"prompt":{"text":"Say pong"}}
+//	  -> 200 {"data":{"admittedSeq":2,"id":"msg_…","delivery":"steer"}}     (nothing ever generates)
+//	POST /session/{id}/prompt_async {"parts":[…],"model":{…}}
+//	  -> 204, and the assistant replies "pong" within ~5 seconds
 //
-// The 400 on an invalid value is the proof that matters: the field is real and validated, so "steer"
-// is a decision the serve honours rather than an unknown key it silently drops.
+// The same result with resume:true and with a session created via /api/session, so the route is not a start
+// path at all — it delivers a steer into a turn that is ALREADY running. With nothing running the message queued
+// forever: the client saw 200 + an id, called the send done, and the turn hung until
+// `stalled:no_progress (5m0s with no activity)`.
 //
-// THE MODEL IS SET ON THE SESSION, exactly as on shapeV2, because this body has no model field (the
-// echo comes back as {"prompt":{"text":…}} alone). Same reason, same route, verified above.
-//
-// EVERY OTHER ROUTE STAYS v1 — health /global/health, abort /session/{id}/abort, compact
-// /session/{id}/summarize, and the nested permission reply. Those were not re-verified for this change
-// and are the paths that work on 1.x today.
-//
-// ⚠ THE PROMPT ROUTE'S OWN 404 CANNOT BE TRUSTED AS A PROBE. A 1.x serve answers UNKNOWN routes with
-// the web app — HTTP 200 and text/html (measured: POST to a bogus /api path returned the SPA). So this
-// shape is chosen by VERSION (1.18+, the versions measured to carry the route), and the send path
-// additionally falls back to prompt_async when the reply is not the JSON admission shape. Choosing it
-// by probing for a 404 would have silently sent prompts into a catch-all.
-var shapeV1APIPrompt = func() apiShape {
-	sh := shapeV1
-	sh.name = "v1+api-prompt"
-	sh.promptStyle = "nested"
-	sh.promptPathOverride = func(id string) string { return "/api/session/" + id + "/prompt" }
-	sh.setModelPath = func(id string) string { return "/api/session/" + id + "/model" }
-	// THE FIELD INSIDE model IS `id` HERE, NOT v1's `modelID`.
-	//
-	// This shape borrows v1's routes but v2's MODEL object, and the two disagree about the key's name. Sending
-	// v1's spelling to the /api/ route is rejected verbatim:
-	//
-	//	POST /api/session/{id}/model {"model":{"providerID":…,"modelID":…}}
-	//	  -> 400 {"_tag":"InvalidRequestError","message":"Missing key at [\"model\"][\"id\"]","kind":"Payload"}
-	//	POST /api/session/{id}/model {"model":{"providerID":…,"id":…}}          -> 204
-	//
-	// MEASURED on opencode 1.19.5 (a real serve, both bodies probed). It broke every 1.18+ session on a
-	// non-2.x serve: the model could never be set, so the turn failed before a token was sent. The v1
-	// prompt_async fallback keeps `modelID` (a different route with its own spelling), which is why only
-	// this one field moves.
-	sh.modelFieldName = "id"
-	return sh
-}()
-
-// v1APIPromptMinMinor is the lowest 1.x MINOR measured to carry /api/session/{id}/prompt: 1.18.34
-// was run and probed, 1.19.4 was run and probed.
-const v1APIPromptMinMinor = 18
-
-// apiPromptUnsupportedVersion is the shape for 1.x versions below the measured floor.
-var apiPromptUnsupportedVersion = shapeV1
+// So 1.x uses v1's prompt_async, exactly as before the shape was added, and steering is back to the
+// queued-at-the-boundary behaviour the v1 path implements and warns about. A NICETY IS NOT WORTH TURNS THAT
+// NEVER START.
 
 // shapeV2 is opencode 2.x. Every path here is quoted from V2_HTTP_API_AUDIT.md's endpoint table:
 //
@@ -250,7 +210,7 @@ func (s apiShape) promptPath(sessionID string) string {
 }
 
 // plainPromptPath is the surface's OWN prompt route, ignoring any override — the fallback a 1.x client
-// uses when the v2-shaped prompt route turns out not to be served (see shapeV1APIPrompt).
+// uses when a serve answers the prompt route with its web app instead of admitting a message.
 func (s apiShape) plainPromptPath(sessionID string) string {
 	return s.prefix + "/session/" + sessionID + "/" + s.promptSuffix
 }
@@ -293,12 +253,26 @@ func apiShapeForVersion(version string) (apiShape, bool) {
 	if major >= 2 {
 		return shapeV2, true
 	}
-	// 1.x: above the measured floor the serve also carries the v2-shaped PROMPT route, which is the
-	// only way to steer an interjection into the running turn (see shapeV1APIPrompt).
-	if minor, ok := minorOf(v); ok && minor >= v1APIPromptMinMinor {
-		return shapeV1APIPrompt, true
-	}
-	_ = apiPromptUnsupportedVersion
+	// EVERY 1.x USES THE V1 PROMPT ROUTE, INCLUDING THE VERSIONS THAT ALSO SERVE /api/session/{id}/prompt.
+	//
+	// That route exists on 1.18+, and it was chosen here so an interjection could be STEERED into a running
+	// turn. Measured on 1.19.5, it cannot do the job it was chosen for — and worse, choosing it stopped turns
+	// from starting at all:
+	//
+	//	POST /api/session/{id}/prompt  {"prompt":{"text":"Say pong"}}              -> 200
+	//	  {"data":{"admittedSeq":2,"id":"msg_…","delivery":"steer"}}               <- ADMITTED, never run
+	//	  (also tried: resume:true, a session created via /api/session — no generation, 40s+, no reply,
+	//	   nothing in the serve's own log)
+	//	POST /session/{id}/prompt_async {"parts":[…],"model":{…}}                  -> 204, and the assistant
+	//	  replies "pong" within ~5s
+	//
+	// So this route QUEUES a message and only ever delivers it as a steer into a turn that is already running.
+	// With nothing running, the message sat in the queue forever: the client saw 200 + an id and considered the
+	// send done, and the turn hung until `stalled:no_progress (5m0s with no activity)`.
+	//
+	// CORRECT TURNS BEAT A NICETY. Steering on 1.x goes back to the queued-at-the-turn-boundary behaviour the
+	// v1 fallback already implements and warns about — which is what actually worked before the shape existed.
+	// Restoring steering needs a route that STARTS a turn and steers into it, and 1.x does not have one.
 	return shapeV1, true
 }
 
