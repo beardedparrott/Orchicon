@@ -892,13 +892,13 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
       <div class="cmds">
         <p class="cmds-title">Common commands — add them to the line above</p>
         <ul>
-          <li><code>--instance &lt;dev|test|prod&gt;</code> — which stack to act on: each has its own container, ports, data volume and host state. Every command that changes something asks unless you pass this.</li>
+          <li><code>--instance &lt;dev|test|prod&gt;</code> — which stack to act on: each has its own ports, data and host state. Every command that changes something asks unless you pass this.</li>
           <li><code>--version &lt;tag&gt;</code> — a specific released version instead of the latest.</li>
           <li><code>--dry-run</code> — show what would happen. Changes nothing.</li>
-          <li><code>--no-setup</code> — the binary only: no images, no daemon, no container.</li>
+          <li><code>--no-setup</code> — the binary only: no services, no daemon, no plane.</li>
           <li><code>--uninstall</code> — stop this instance and remove the binaries. Your data is kept.</li>
           <li><code>--purge</code> — uninstall and destroy this instance's data. Irreversible.</li>
-          <li><code>--remove-binary</code> — just the <code>orchicon</code> and <code>orch</code> executables; containers, volumes and state are untouched.</li>
+          <li><code>--remove-binary</code> — just the <code>orchicon</code> and <code>orch</code> executables; services, data and state are untouched.</li>
           <li><code>--clean</code> — upgrade: stop, remove the old binary, install the latest. Data kept.</li>
           <li><code>--force-clean</code> — rebuild from scratch for this instance. All of its data is lost.</li>
         </ul>
@@ -911,7 +911,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
         <li><span class="n">3</span><div><b>Create a project</b><span>Point it at a repository. Every Worker is scoped to that directory.</span></div></li>
         <li><span class="n">4</span><div><b>Ask, then dispatch</b><span>Brainstorm in Ask Orchicon, turn the result into a work item, bind a workflow and start it. Watch it in the browser or in <code>orch</code>.</span></div></li>
       </ol>
-      <p class="panel-note">Building Orchicon itself? <code>git clone</code>, then <code>make build</code> and <code>make dev-start</code>. Needs Go 1.26+, Node 22+ and Docker.</p>
+      <p class="panel-note">Building Orchicon itself? <code>git clone</code>, then <code>make build</code> and <code>make run</code>. Needs Go 1.26+ and Node 22+; a container engine (podman or Docker) is optional and only used for workflow runtime containers.</p>
     </div>
   </div>
 </section>
