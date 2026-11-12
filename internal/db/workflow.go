@@ -1667,6 +1667,25 @@ func ListTerminalStepRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID 
 
 // A run can hold a container ONLY if a container was ever created for it, and the durable evidence
 // of that is runtime_ready (the arm gate flips it for runtime-mode runs and for serve-less ones.
+// MarkRunRuntimeReaped records that a terminal run's container has been dealt with, so the reap sweep stops
+// returning it.
+//
+// THE MARKER IS THE TERMINALITY. Without it the candidate predicate was a condition that never became false:
+// runtime_image and runtime_ready are the run's record and a gate respectively, and the sweep must not clear
+// either — so it re-selected and re-reaped every historical run on every pass, once a second, while logging
+// "reaped a terminal run's container" about a container that had been gone for hours.
+//
+// Best-effort and version-guarded like every other run write: a concurrent reconciler pass may bump the row, and
+// failing to record a bookkeeping fact must never fail a run.
+func MarkRunRuntimeReaped(ctx context.Context, tx pgx.Tx, tenantID, runID string) error {
+	const q = `UPDATE workflow_runs SET runtime_reaped_at = now(), updated_at = now()
+		WHERE tenant_id = $1 AND id = $2 AND runtime_reaped_at IS NULL`
+	if _, err := tx.Exec(ctx, q, tenantID, runID); err != nil {
+		return fmt.Errorf("db: mark run runtime reaped: %w", err)
+	}
+	return nil
+}
+
 func ListTerminalRunsWithRuntimeEvidence(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
 	if limit <= 0 {
 		limit = 16
@@ -1679,6 +1698,10 @@ func ListTerminalRunsWithRuntimeEvidence(ctx context.Context, tx pgx.Tx, tenantI
 		WHERE tenant_id = $1
 		  AND status IN ('completed', 'failed', 'aborted')
 		  AND (runtime_ready = true OR runtime_image <> '')
+		  -- ALREADY DEALT WITH. The evidence above is never cleared (runtime_image is the run's history,
+		  -- runtime_ready is a gate), so without this a terminal run stayed a candidate on EVERY sweep pass and
+		  -- was re-reaped — and re-LOGGED as "reaped a terminal run's container" — once a second, forever.
+		  AND runtime_reaped_at IS NULL
 		ORDER BY ended_at ASC NULLS LAST, created_at ASC
 		LIMIT $2`
 	rows, err := tx.Query(ctx, q, tenantID, limit)

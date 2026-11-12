@@ -822,7 +822,10 @@ func (l *Lifecycle) ReapForRun(ctx context.Context, runID string) error {
 	l.planeCredMu.Lock()
 	delete(l.planeCredCache, runID)
 	l.planeCredMu.Unlock()
-	l.log.Info("workflow runtime reaped", "run", runID)
+	// DEBUG, NOT INFO. Reaping is routine bookkeeping that happens once per run — the SWEEP logs the
+	// operator-facing line, once, when it actually deals with a terminal run. Logging here as well doubled the
+	// volume for no extra information, and on the path where nothing was left to kill it was simply untrue.
+	l.log.Debug("workflow runtime reaped", "run", runID)
 	return nil
 }
 

@@ -1828,7 +1828,7 @@ func (r *WorktreeReconciler) removeWorktree(ctx context.Context, projectDir, pat
 			"path", path, "error", derr)
 		return nil
 	} else if dirty {
-		r.log.Warn("worktree: NOT removing a worktree that has UNCOMMITTED changes — it holds work that exists "+
+		r.warnDirtyOnce(path, "worktree: NOT removing a worktree that has UNCOMMITTED changes — it holds work that exists "+
 			"nowhere else. Commit or discard it, then the sweep will reclaim it",
 			"path", path, "remedy", "cd "+path+" && git status")
 		return nil
@@ -1836,10 +1836,37 @@ func (r *WorktreeReconciler) removeWorktree(ctx context.Context, projectDir, pat
 	if _, err := runGit(ctx, projectDir, "worktree", "remove", "--force", path); err != nil {
 		return err
 	}
+	// GONE, SO THE GUARD GOES WITH IT: a later run may reuse this path and should be able to warn about ITS dirt.
+	forgetDirtyWarn(path)
 	return nil
 }
 
-// worktreeIsDirty reports whether the worktree at path holds work that exists nowhere else: modified,
+// dirtyWarned is the set of worktree paths this process has already warned about, so a PERSISTENT condition is
+// reported once rather than once per sweep pass.
+//
+// THE PRUNE SWEEP RUNS CONTINUOUSLY. A worktree holding uncommitted work is skipped on every pass — correctly,
+// it must never be destroyed — but warning each time filled the log with the same line about the same path
+// forever, which is how an operator learns to ignore WARN. Saying it once is enough: nothing changed, and the
+// remedy is the operator's to act on.
+//
+// Keyed by path, which is stable for a run worktree (it is derived from the run id). A path that becomes clean
+// and then dirty again in the same process is NOT re-warned; that is a deliberate trade — the condition is the
+// same directory holding work that exists nowhere else, and repeating it would restore the noise.
+var dirtyWarned sync.Map // path → struct{}
+
+// warnDirtyOnce logs the dirty-worktree warning the first time it sees this path.
+func (r *WorktreeReconciler) warnDirtyOnce(path, msg string, kv ...any) {
+	if _, seen := dirtyWarned.LoadOrStore(path, struct{}{}); seen {
+		return
+	}
+	r.log.Warn(msg, kv...)
+}
+
+// forgetDirtyWarn clears the once-guard for a path that has since been reclaimed, so a LATER run reusing the
+// path can warn about its own dirt rather than inheriting the previous run's silence.
+func forgetDirtyWarn(path string) { dirtyWarned.Delete(path) }
+
+// worktreeIsDirty reports whether the worktree at path holds work that exists nowhere else: modified,// worktreeIsDirty reports whether the worktree at path holds work that exists nowhere else: modified,
 // staged, or untracked USER files.
 //
 // THE PLATFORM'S OWN ARTEFACTS ARE NOT DIRT. ensureRunWorktreeStepIgnore writes an untracked .gitignore at
