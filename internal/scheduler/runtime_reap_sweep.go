@@ -59,11 +59,38 @@ func (r *WorkflowReconciler) sweepTerminalRunContainers(ctx context.Context, ten
 	}
 	for _, run := range runs {
 		if err := r.runtime.ReapForRun(context.Background(), run.ID); err != nil {
+			// NOT MARKED: a failed reap must be retried, and the warning is the operator's evidence.
 			r.log.Warn("runtime reap sweep: reap failed",
 				"run", run.ID, "status", run.Status, "error", err)
 			continue
 		}
+		// AND THE RUN LEAVES THE SET, IN THE SAME PASS. The candidate predicate is a condition that never
+		// became false on its own — runtime_image and runtime_ready are the run's history and a gate, not
+		// something this sweep may clear — so every historical run was reaped and re-logged once a second,
+		// forever. Marking it is what makes "reaped a terminal run's container" a statement about something
+		// that HAPPENED: it is logged once per run, ever.
+		r.markReaped(ctx, tenantID, run.ID)
 		r.log.Info("runtime reap sweep: reaped a terminal run's container",
 			"run", run.ID, "status", run.Status)
+	}
+}
+
+// markReaped records that this run's container is dealt with, so the sweep never returns it again.
+//
+// A failure here costs a repeat (the next pass tries again), never correctness — so it is logged at Debug: the
+// operator does not need to know that a bookkeeping write needed a second attempt.
+func (r *WorkflowReconciler) markReaped(ctx context.Context, tenantID, runID string) {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		r.log.Debug("runtime reap sweep: could not mark reaped", "run", runID, "error", err)
+		return
+	}
+	defer ttx.Rollback(ctx)
+	if err := db.MarkRunRuntimeReaped(ctx, ttx.Tx, tenantID, runID); err != nil {
+		r.log.Debug("runtime reap sweep: could not mark reaped", "run", runID, "error", err)
+		return
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		r.log.Debug("runtime reap sweep: could not commit reap marker", "run", runID, "error", err)
 	}
 }
