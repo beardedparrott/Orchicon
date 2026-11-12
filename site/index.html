@@ -486,7 +486,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
         <a class="btn btn-primary" href="#install">Install Orchicon</a>
         <a class="btn btn-quiet" href="https://github.com/beardedparrott/Orchicon/blob/main/USERGUIDE.md">User Guide</a>
       </div>
-      <p class="meta">macOS, Linux and Windows (WSL2). Or one <code>docker run</code>.</p>
+      <p class="meta">macOS, Linux and Windows — native host install. Optional desktop app.</p>
       <p class="hero-tui">Two full clients, one product: work in the <a href="#web">web app</a> or run <code>orch</code> in <a href="#terminal">your terminal</a>.</p>
     </div>
   </div>
@@ -866,11 +866,11 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
   <div class="wrap two">
     <div>
       <h2 class="title">Install in one command</h2>
-      <p class="intro" style="margin-bottom:28px">The installer downloads the <code>orchicon</code> binary, pulls the images, starts the runtime daemon and launches a single-container instance. Re-run it to update.</p>
+      <p class="intro" style="margin-bottom:28px">The installer downloads the <code>orchicon</code> binary and brings this machine's plane up as a <strong>host process</strong>: Postgres, NATS and the telemetry backends included. Containers are provisioned for workflow runs, not for the plane. Re-run it to update — it converges an existing instance and refuses a downgrade.</p>
       <div class="tabs" role="tablist" aria-label="Install method" id="install-tabs">
         <button role="tab" aria-selected="true" aria-controls="p-unix" id="t-unix">macOS / Linux</button>
         <button role="tab" aria-selected="false" aria-controls="p-win" id="t-win" tabindex="-1">Windows</button>
-        <button role="tab" aria-selected="false" aria-controls="p-docker" id="t-docker" tabindex="-1">Docker</button>
+        <button role="tab" aria-selected="false" aria-controls="p-desktop" id="t-desktop" tabindex="-1">Desktop app</button>
       </div>
       <div class="panel" role="tabpanel" id="p-unix" aria-labelledby="t-unix">
         <pre><span class="p">$ </span><span id="c-unix">curl -fsSL https://orchicon.dev/install | bash</span></pre>
@@ -881,12 +881,12 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
         <pre><span class="p">PS&gt; </span><span id="c-win">irm https://orchicon.dev/install.ps1 | iex</span></pre>
         <button class="copy" data-copy="c-win">Copy</button>
       </div>
-      <div class="panel" role="tabpanel" id="p-docker" aria-labelledby="t-docker" hidden>
-        <pre><span class="p">$ </span><span id="c-docker">docker run --rm -p 8080:8080 -p 3002:3000 \
-    -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon</span></pre>
-        <button class="copy" data-copy="c-docker">Copy</button>
+      <div class="panel" role="tabpanel" id="p-desktop" aria-labelledby="t-desktop" hidden>
+        <pre><span class="p">$ </span><span id="c-desktop">curl -fsSL https://orchicon.dev/install | bash -s -- --desktop</span></pre>
+        <button class="copy" data-copy="c-desktop">Copy</button>
+        <p class="intro">A Wails shell around the same web app, packaged for all three platforms: a <code>.deb</code> or <code>.AppImage</code> for Linux, a signed and notarised <code>.app</code> for macOS, an NSIS installer or portable zip for Windows. It is a <strong>client</strong> — it connects to your plane over loopback and tells you the address it tried if none is running.</p>
       </div>
-      <p class="panel-note" id="install-note">Requires <code>curl</code>, <code>tar</code> and Docker.</p>
+      <p class="panel-note" id="install-note">Requires <code>curl</code> and <code>tar</code>. No Docker needed for the plane; a container engine is used only for workflow runs.</p>
       <div class="cmds">
         <p class="cmds-title">Common commands — add them to the line above</p>
         <ul>
@@ -1140,9 +1140,9 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
 
   // install tabs
   var notes = {
-    "t-unix":"Requires <code>curl</code>, <code>tar</code> and Docker.",
-    "t-win":"Runs the whole stack inside WSL2. Needs Windows 10 21H2+ or Windows 11 and Docker Desktop with WSL integration.",
-    "t-docker":"Web app on port 8080. Your data lives in the <code>orchicon-data</code> volume."
+    "t-unix":"Requires <code>curl</code> and <code>tar</code>. No Docker needed for the plane; a container engine is used only for workflow runs.",
+    "t-win":"A native Windows install — <code>orchicon.exe</code> runs as your user. Needs Windows 10 21H2+ or Windows 11. No WSL2 or Docker Desktop for the plane; WSL2 is only the substrate for workflow containers.",
+    "t-desktop":"Downloads the desktop app alongside the CLI. The plane still runs as a host process; the app is a client for it."
   };
   // SCOPED TO THIS TABLIST, and the scoping IS the fix.
   //
