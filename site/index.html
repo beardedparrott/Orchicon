@@ -279,6 +279,7 @@ table.fk tbody th{width:auto; min-width:0; white-space:nowrap; padding-right:24p
 .wshot{position:relative; aspect-ratio:1800/1162; background:#11231C}
 .wshot img{position:absolute; inset:0; width:100%; height:100%; object-fit:contain; object-position:top; opacity:0; transition:opacity .25s ease; cursor:zoom-in}
 .wshot img.on{opacity:1}
+.dcap{margin:0; padding:12px 16px 12px; color:var(--ink-2); font-size:15px; border-top:1px solid var(--rule)}
 .bcap{margin:0; padding:12px 16px 12px; color:var(--ink-2); font-size:15px; border-top:1px solid var(--rule)}
 .sub-note{margin:8px 0 0; color:var(--ink-2); font-size:15px}
 table.fk tbody th{vertical-align:top}
@@ -437,12 +438,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
       <!-- GROUPED, because nine flat links did not fit: the nav used to hide links by
            nth-child as the viewport narrowed (see the max-width rules). Grouping removes the
            cause instead of trimming the symptom, and keeps every section one click away. -->
-      <div class="navgroup">
-        <button type="button" aria-expanded="false" aria-haspopup="true">Product</button>
-        <div class="navmenu"><div class="navpanel">
-          <a href="#clients">Two clients</a>
-        </div></div>
-      </div>
+      <a href="#clients">Product</a>
       <div class="navgroup">
         <button type="button" aria-expanded="false" aria-haspopup="true">How it works</button>
         <div class="navmenu"><div class="navpanel">
@@ -490,7 +486,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
         <a class="btn btn-primary" href="#install">Install Orchicon</a>
         <a class="btn btn-quiet" href="https://github.com/beardedparrott/Orchicon/blob/main/USERGUIDE.md">User Guide</a>
       </div>
-      <p class="meta">macOS, Linux and Windows — native host install. Optional desktop app.</p>
+      <p class="meta">Desktop, terminal and web clients. Native on macOS, Windows and Linux.</p>
       <p class="hero-tui">Two full clients, one product: work in the <a href="#clients">web app</a> or run <code>orch</code> in <a href="#clients">your terminal</a>.</p>
     </div>
   </div>
@@ -500,10 +496,11 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
 <section class="block" id="clients">
   <div class="wrap">
     <div class="term-head">
-      <h2 class="title">One product, two full clients</h2>
-      <p class="intro">The web app ships inside the control plane binary, so there is nothing extra to host. <code>orch</code> is not a companion viewer — it is read/write at parity, over SSH or in a tmux pane. Same data, same permissions, same seven workspaces.</p>
+      <h2 class="title">One product, three full clients</h2>
+      <p class="intro">Desktop, terminal and web — every screen, every action, on macOS, Windows and Linux. The <strong>desktop app</strong> is a native shell that launches or connects to your plane; <code>orch</code> is read/write at parity over SSH or in a tmux pane; the <strong>web app</strong> ships inside the binary, so there is nothing else to host. Same data, same permissions, same seven workspaces.</p>
       <div class="client-switch" role="tablist" aria-label="Client">
         <button role="tab" aria-selected="true" id="cs-web" data-client="web" aria-controls="pp-web">Web app</button>
+        <button role="tab" aria-selected="false" id="cs-desktop" data-client="desktop" tabindex="-1" aria-controls="pp-desktop">Desktop</button>
         <button role="tab" aria-selected="false" id="cs-tui" data-client="tui" tabindex="-1" aria-controls="pp-tui">Terminal</button>
       </div>
     </div>
@@ -539,6 +536,38 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
     </div>
     </div>
 
+    <div class="client-panel" id="pp-desktop" role="tabpanel" aria-labelledby="cs-desktop" hidden>
+    <div class="showcase">
+    <div class="bframe">
+      <div class="bbar">
+        <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="addr" id="daddr">Orchicon · Ask Orchicon</span>
+      </div>
+      <div class="btabs" role="tablist" aria-label="Desktop app screens">
+        <button role="tab" aria-selected="true" data-dsk="ask">Ask Orchicon</button>
+        <button role="tab" aria-selected="false" data-dsk="work" tabindex="-1">Work items</button>
+        <button role="tab" aria-selected="false" data-dsk="flows" tabindex="-1">Workflows</button>
+        <button role="tab" aria-selected="false" data-dsk="sched" tabindex="-1">Schedules</button>
+        <button role="tab" aria-selected="false" data-dsk="ideas" tabindex="-1">Idea Cloud</button>
+      </div>
+      <div class="wshot" id="dshot">
+        <img data-dsk-img="ask" src="assets/web-ask.webp" alt="Ask Orchicon in the desktop app: the same conversation view the web app renders, inside the desktop shell." class="on">
+        <img data-dsk-img="work" src="assets/web-work.webp" alt="Work items in the desktop app: the same tree view, with sequence order, branches and merged PRs." loading="lazy">
+        <img data-dsk-img="flows" src="assets/web-workflows.webp" alt="The workflow editor in the desktop app." loading="lazy">
+        <img data-dsk-img="sched" src="assets/web-schedules.webp" alt="Schedule history in the desktop app." loading="lazy">
+        <img data-dsk-img="ideas" src="assets/web-ideacloud.webp" alt="The Idea Cloud in the desktop app." loading="lazy">
+      </div>
+      <p class="dcap" id="dcap" aria-live="polite"></p>
+    </div>
+      <div class="explain" aria-live="polite">
+        <h3 id="dx-title"></h3>
+        <p id="dx-body"></p>
+        <ul id="dx-list"></ul>
+        <p class="why" id="dx-why"></p>
+      </div>
+    </div>
+    </div>
+
     <div class="client-panel" id="pp-tui" role="tabpanel" aria-labelledby="cs-tui" hidden>
     <div class="showcase">
     <div class="tframe">
@@ -567,7 +596,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
 
     <div class="term-grid">
       <div>
-        <h3 class="spot-sub">Seven workspaces in both — one key each</h3>
+        <h3 class="spot-sub">Seven workspaces in all three — one key each</h3>
         <div class="table-scroll" style="margin-top:16px">
           <table class="fk">
             <tbody>
@@ -979,12 +1008,12 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
     flows:["Design the team that builds each task","Every workflow as a readable step list, with each gate and loop spelled out in order.",["<b>Loop decisions</b> with their limits, like max 3 or max 6.","<b>Human gates</b> marked where they wait for you.","<b>Edit, publish, deprecate</b> without leaving the keyboard."],"Review and publish a workflow over SSH on the machine it runs on, with no browser or port forwarding."],
     auto:["Work that keeps happening while you sleep","Recurring items fire on a schedule inside a work window, and can file ideas instead of tasks.",["<b>Interval schedules</b> with day toggles and time windows.","<b>Calendar picker</b> for the start date and time.","<b>Pause and resume</b> with a single flag."],"Set up or pause an automation from the same tmux session you already work in, then get back to your code."]
   };
-  function describe(pre, c){
+  function describe(pre, c, whyLabel){
     document.getElementById(pre+'-title').textContent = c[0];
     document.getElementById(pre+'-body').textContent = c[1];
     document.getElementById(pre+'-list').innerHTML = c[2].map(function(t){return '<li>'+t+'</li>';}).join('');
     var w = document.getElementById(pre+'-why');
-    if (w) w.innerHTML = c[3] ? '<b>Why the terminal:</b> ' + c[3] : '';
+    if (w) w.innerHTML = c[3] ? '<b>' + (whyLabel || 'Why the terminal') + ':</b> ' + c[3] : '';
   }
 
   // web tabs
@@ -1035,6 +1064,41 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
   });
   tsel(ttabs[0]);
   document.getElementById('tshot').addEventListener('click', function(){ var on=document.querySelector('#tshot img.on'); openLb(on.src,on.alt); });
+
+  // desktop panel — the SAME SPA in a native shell, so it reuses the web
+  // screenshots. Its tablist is separate ([data-dsk]) so the two never fight
+  // over which image is 'on'.
+  var dcs = {
+    ask:["Ask Orchicon","The same conversation view, in its own window, with no browser chrome and no port to remember."],
+    work:["Work › Work Items","The backlog tree, unchanged — what differs is that the app launched or found your plane for you."],
+    flows:["Execution › Workflows","The canvas editor, at full window size."],
+    sched:["Execution › Schedules","Run history, with the app's own window controls."],
+    ideas:["Automation › Idea Cloud","Triage, approve and dismiss without leaving the desktop."]
+  };
+  var dkpts = {
+    ask:["A window, not a tab","The desktop app is a Wails shell around the same frontend the browser gets. It talks to your plane over loopback and names the address it tried when none is running.",["<b>Native on all three:</b> a signed and notarised <code>.app</code> for macOS, an NSIS installer or portable zip for Windows, a <code>.deb</code> or <code>.AppImage</code> for Linux.","<b>Launches or connects</b> to the plane, and starts one if none is running.","<b>No webview, no window:</b> a missing runtime prints the one command that installs it instead of opening blank."],"nothing to host, nothing to tunnel — and the plane is still a normal host process you can reach from the CLI."],
+    work:["The backlog, in its own window","Every screen in the web app is here, because it is the same app. The difference is packaging, not features.",["<b>Signed and notarised</b> so Gatekeeper opens it offline, with no bypass.","<b>Everything the web UI does</b>, the desktop app does too — and so does <code>orch</code>.","<b>One installer</b> can place it beside the CLI with <code>--desktop</code>."],"you get a dockable app without giving up the surface you debug from."],
+    flows:["Draw without a browser","Same editor, same canvas, same locked versions.",["<b>Full-window canvas</b> for a wide workflow.","<b>Same versions and runs</b> as everywhere else.","<b>Live step transitions</b> while a run moves."],"a workflow is easier to read at window size than in a tab."],
+    sched:["History in the app","Schedules and recurring items, with their run history.",["<b>Every past run</b> with duration, workflow and run ID.","<b>The same data</b> the terminal shows, from the same plane.","<b>Pause and resume</b> without a reload."],"the thing you check in the morning is one click from your dock."],
+    ideas:["The Idea Cloud, in the app","Research Worker proposals with their cited evidence, ready to triage.",["<b>Approve into a work item</b> or dismiss for good.","<b>Provenance</b> on every idea: the item and run that spawned it.","<b>Evidence inline</b>, so you can check the claim before you commit."],"triage is the kind of reading you want in a real window, not a phone tab."]
+  };
+  var dtabs = document.querySelectorAll('[data-dsk]');
+  function dsel(t){
+    dtabs.forEach(function(x){ var on=x===t; x.setAttribute('aria-selected',on); x.tabIndex=on?0:-1; });
+    document.querySelectorAll('[data-dsk-img]').forEach(function(i){ i.classList.toggle('on', i.dataset.dskImg===t.dataset.dsk); });
+    var c = dcs[t.dataset.dsk];
+    document.getElementById('daddr').textContent = 'Orchicon · ' + c[0];
+    document.getElementById('dcap').textContent = c[1];
+    describe('dx', dkpts[t.dataset.dsk], 'Why the desktop app');
+  }
+  dtabs.forEach(function(t,i){
+    t.addEventListener('click', function(){ dsel(t); });
+    t.addEventListener('keydown', function(e){
+      if(e.key==='ArrowRight'||e.key==='ArrowLeft'){ var n=dtabs[(i+(e.key==='ArrowRight'?1:dtabs.length-1))%dtabs.length]; dsel(n); n.focus(); }
+    });
+  });
+  dsel(dtabs[0]);
+  document.getElementById('dshot').addEventListener('click', function(){ var on=document.querySelector('#dshot img.on'); openLb(on.src,on.alt); });
 
   // client switcher — one section, two clients. The web and terminal tablists
   // keep their own [data-web] / [data-tui] wiring; this only decides which
