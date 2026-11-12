@@ -9,7 +9,7 @@ import path from "node:path";
 // supersedes the former derivation tests (which pinned the
 // now-removed useEffect that copied the picker's adapter into runtimeRef).
 
-describe("workers/new (runtime_ref retired single source of truth)", => {
+describe("workers/new (runtime_ref retired single source of truth)", () => {
   const src = fs.readFileSync(path.join(__dirname, "workers_.new.tsx"), "utf8");
 
   it("no longer sends runtime_ref in the create payload", () => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 
-describe("ModelPicker (three-tier)", => {
+describe("ModelPicker (three-tier)", () => {
   const src = fs.readFileSync(path.join(__dirname, "ModelPicker.tsx"), "utf8");
 
   it("renders three tiers: adapter bubbles, provider list, searchable model list", () => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 
-describe("ModelPicker (per-worker adapter selection)", => {
+describe("ModelPicker (per-worker adapter selection)", () => {
   const src = fs.readFileSync(path.join(__dirname, "ModelPicker.tsx"), "utf8");
 
   it("seeds the orchicon default for fresh selections when registered (D5)", () => {
