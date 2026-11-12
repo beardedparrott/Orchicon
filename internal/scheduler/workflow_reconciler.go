@@ -1287,6 +1287,21 @@ func errorOrNone(err error) string {
 
 // failRunAtStart fails a workflow run before it can execute — a structural or configuration error
 // (unresolvable runtime image, empty step DAG, missing workflow version).
+// startFailureKind classifies a fail-at-start reason for the UI, which groups and phrases on it rather than
+// parsing prose. Deliberately a SMALL vocabulary with a catch-all: a new kind must not need a migration, and an
+// empty kind is reserved for "nothing recorded".
+func startFailureKind(reason string) string {
+	switch {
+	case strings.Contains(reason, "runtime container"), strings.Contains(reason, "container could not"),
+		strings.Contains(reason, "image"):
+		return "runtime"
+	case strings.Contains(reason, "workflow version"), strings.Contains(reason, "step"),
+		strings.Contains(reason, "DAG"):
+		return "preflight"
+	}
+	return "start"
+}
+
 func (r *WorkflowReconciler) failRunAtStart(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, reason string) error {
 	now := time.Now().UTC()
 
@@ -1313,9 +1328,23 @@ func (r *WorkflowReconciler) failRunAtStart(ctx context.Context, tx pgx.Tx, tena
 	r.log.Warn("workflow run failed at start", "run", run.ID, "tenant", tenantID,
 		"work_item", run.WorkItemID, "workflow", run.WorkflowID, "reason", reason)
 
+	// THE REASON GOES IN THE ROW, NOT ONLY IN THE LOG — and its absence was a reported defect in its own right.
+	//
+	// This wrote Status and EndedAt and NOTHING ELSE. The `reason` above reached a WARN line and stopped there,
+	// so every fail-at-start path produced a run page with no explanation at all: the operator's report was
+	// "runtimes fail with no errors in the UI", and MEASURED on the live plane, four consecutive failed runs
+	// carried error_message = '', error_kind = '', worktree_status = 'pending' and NO execution — indistinguishable
+	// from a run abandoned for no reason.
+	//
+	// error_message/error_kind exist for exactly this (they were added so a failure stops being invisible in
+	// run_context); this path was simply never updated to use them. One place fixes all five callers — the image
+	// resolve, an empty step DAG, a missing workflow version, the container-create failover and the serve gate
+	// all report through here.
 	if _, err := db.UpdateWorkflowRun(ctx, tx, tenantID, run.ID, run.Version, db.UpdateWorkflowRunFields{
-		Status:  strPtr(domain.WorkflowRunFailed),
-		EndedAt: &now,
+		Status:       strPtr(domain.WorkflowRunFailed),
+		EndedAt:      &now,
+		ErrorMessage: strPtr(reason),
+		ErrorKind:    strPtr(startFailureKind(reason)),
 	}); err != nil {
 		// The reason is carried in the error too, so a caller that propagates it (rather than logging its
 		// own line) still states what happened.

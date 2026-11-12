@@ -20,13 +20,39 @@ import { Badge } from "@/components/ui/badge";
 export function RunFailureCard({
   errorMessage,
   errorKind,
+  failed = false,
 }: {
   errorMessage?: string;
   errorKind?: string;
+  /**
+   * failed says the RUN is in a failed state, independent of whether a message was recorded.
+   *
+   * A FAILED RUN WITH NO MESSAGE MUST STILL SAY SO. Reported: "runtimes fail with no errors in the UI" — and on
+   * the live plane four consecutive failed runs carried no error_message, no error_kind, worktree_status
+   * 'pending' and no execution at all. They rendered as a run that simply stopped, which reads as "nothing
+   * happened" rather than "this failed". The server now records the reason (failRunAtStart), and this keeps the
+   * UI honest for rows written before that fix and for any future silent path.
+   */
+  failed?: boolean;
 }) {
-  // Nothing recorded is NOT the same as nothing wrong, but this card can only
-  // report what was recorded. Runs that failed before the field existed fall
-  // here, and rendering an empty card would be noise.
+  if (!errorMessage && failed) {
+    return (
+      <div role="alert" className="rounded-xl border border-red-500/40 bg-red-50 p-4 dark:bg-red-950/20">
+        <div className="flex gap-3">
+          <OctagonAlert className="h-5 w-5 shrink-0 text-red-600" aria-hidden="true" />
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="text-sm font-semibold text-red-900 dark:text-red-100">
+              This run failed before it could start
+            </p>
+            <p className="text-sm text-red-900/90 dark:text-red-100/90">
+              No reason was recorded on the run, so there is nothing to show here — check the plane&apos;s logs
+              for this run id. Runs that fail while setting up their runtime record the cause here from now on.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (!errorMessage) return null;
 
   // A NOTICE IS NOT A FAILURE, and this is the operator-visible half of a real report:

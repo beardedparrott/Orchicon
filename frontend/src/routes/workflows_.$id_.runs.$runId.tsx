@@ -476,7 +476,13 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
       {/* WHY IT ENDED, above the steps. The blockage card answers "why is it not moving" and is silent for a
           finished run — which is exactly the state a failed run is in, so nothing on this page ever said why
           one failed. Renders nothing when no error was recorded. */}
-      <RunFailureCard errorMessage={run.errorMessage} errorKind={run.errorKind} />
+      <RunFailureCard
+        errorMessage={run.errorMessage}
+        errorKind={run.errorKind}
+        failed={
+          run.status === WorkflowRunStatus.FAILED || String(run.status).endsWith("FAILED")
+        }
+      />
 
       {/* A run can be COMPLETE and NOT MERGED. Reported as indistinguishable from a landed run before this. */}
       <RunIntegrationNotice status={run.integrationStatus} />
