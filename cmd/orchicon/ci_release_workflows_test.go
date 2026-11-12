@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -1213,4 +1214,60 @@ func funcBody(t *testing.T, src, decl string) string {
 	}
 	t.Fatalf("could not find the end of %q", decl)
 	return ""
+}
+
+// TestNoWorkflowDotsAHyphenatedNeedsJob — GitHub Actions expressions parse `needs.foo-bar` as
+// `needs.foo MINUS bar`, NOT as property access. A hyphenated job id must be indexed:
+// `needs['foo-bar']`.
+//
+// This is not a style rule, it is a silent-correctness one, and it cost three releases.
+// `release.yml`'s `Create Release` gate read
+//
+//	(needs.sign-macos.result == 'success' || needs.sign-macos.result == 'skipped')
+//
+// which evaluates FALSE on every run — so `Create Release` was skipped at v0.6.0, v0.6.2 and
+// v0.6.4 even when every other job was green and the guard had output proceed=true. The pipeline
+// reported success and published nothing, three times, with no error anywhere to look at.
+//
+// Nothing caught it: the YAML parses, the jobs all succeed, and no test asserted the gate's
+// meaning. So the shape is asserted here instead — statically, across every workflow.
+func TestNoWorkflowDotsAHyphenatedNeedsJob(t *testing.T) {
+	paths, err := filepath.Glob("../../.github/workflows/*.yml")
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("glob ../../.github/workflows/*.yml: %v (found %d)", err, len(paths))
+	}
+
+	// `needs.<id>.<prop>` where <id> contains a hyphen — the broken form.
+	dotted := regexp.MustCompile(`needs\.[A-Za-z0-9_]+-[A-Za-z0-9_-]*\.`)
+	// A line that is a comment explaining the rule is not a violation.
+	isComment := func(line string) bool {
+		trimmed := strings.TrimSpace(line)
+		return strings.HasPrefix(trimmed, "#")
+	}
+
+	checked := 0
+	for _, p := range paths {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("read %s: %v", p, err)
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			if isComment(line) {
+				continue
+			}
+			if m := dotted.FindString(line); m != "" {
+				t.Errorf("%s:%d uses %q in an Actions expression.\n"+
+					"Actions parses `needs.a-b` as subtraction, so the condition is silently FALSE "+
+					"(or an error the runner swallows) instead of reading the job's result.\n"+
+					"Index it instead: needs['a-b'].result\n  line: %s",
+					p, i+1, strings.TrimSuffix(m, "."), strings.TrimSpace(line))
+			}
+		}
+		checked++
+	}
+
+	if checked < 2 {
+		t.Fatalf("only checked %d workflow(s) — expected at least release.yml and canary.yml, "+
+			"so this guard is not covering what it thinks it is", checked)
+	}
 }
