@@ -52,12 +52,12 @@ frontend/playwright-report/
 
 # --- Local working notes (NOT part of the product) ---
 # Maintainer scratch that describes how this project is built rather than what it does.
-# Note that AGENTS.md, developer.md and worker.md are deliberately NOT here: they are
-# operator notes the author maintains ON DISK, and ignoring them meant they could never be
-# versioned. The unrelated per-worker `agents_md` PROMPT FIELD (see
-# internal/worker/service.go) is database-backed and is not any of these files.
+# Note that AGENTS.md, developer.md, worker.md and CLOUDFLARE_SETUP.md are deliberately NOT
+# here: they are maintained alongside the code they describe, and ignoring them meant they
+# silently drifted two years out of date and were eventually untracked by mistake. The
+# unrelated per-worker `agents_md` PROMPT FIELD (see internal/worker/service.go) is
+# database-backed and is not any of these files.
 UPDATES.md
-CLOUDFLARE_SETUP.md
 
 # The scratch prefix `make docs-check` installs the Mermaid parser into, so a docs check needs no
 # dependency in the product or the frontend toolchain (CI uses $RUNNER_TEMP instead).
