@@ -567,16 +567,7 @@ jobs:
   desktop-macos:
     name: Desktop — macOS (.app, signed + notarised)
     needs: guard
-    # GATED ON THE SAME SWITCH AS `sign-macos`. This job ends by uploading a .zip with
-    # `if-no-files-found: error`, and the only thing that produces that .zip is
-    # sign-and-notarize.sh — which correctly REFUSES to run without a certificate
-    # ("MACOS_CERT_P12 is required — refusing to ship an unsigned .app"). Ungated, that
-    # refusal failed the job and took the whole release with it: v0.6.0 built every CLI
-    # binary and published nothing. While signing is off there is no signed .app to ship,
-    # so the job is skipped deliberately rather than failing.
-    if: |
-      needs.guard.outputs.proceed == 'true' &&
-      vars.MACOS_SIGNING_ENABLED == 'true'
+    if: needs.guard.outputs.proceed == 'true'
     # macos-26, not macos-14 — see the note at the sign-macos job: GitHub retires the macOS 14 runner images
     # on 2 November 2026 and browns them out beforehand, failing jobs that still use the label. Pinned rather
     # than -latest so a release host cannot change without a commit to this file.
@@ -613,10 +604,17 @@ jobs:
           cd cmd/orchicon-desktop
           wails build -clean -platform darwin/universal -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${ORCHICON_VERSION}"
 
-      # Sign → notarise (--wait) → staple → assert with spctl. The script reads
-      # every secret from the environment and fails on a missing one: shipping an
-      # unsigned .app is exactly the Gatekeeper block AC1 forbids.
-      - name: Sign, notarise and staple the .app
+      # SIGN WHEN A CERTIFICATE EXISTS, SHIP UNSIGNED OTHERWISE.
+      #
+      # This job used to run sign-and-notarize.sh unconditionally, and that script
+      # (correctly) refuses without a certificate — so with signing off the job failed
+      # and took the whole release with it: v0.6.0 built every CLI binary and published
+      # nothing. Requiring a certificate to ship ANY .app was the mistake. USERGUIDE
+      # §"macOS: Gatekeeper and verification" documents the unsigned path as the intended
+      # one — `curl` sets no quarantine bit, so the one-liner install never trips
+      # Gatekeeper — and canary already ships an UNSIGNED .app exactly this way.
+      - name: Sign, notarise and staple the .app (when signing is enabled)
+        if: vars.MACOS_SIGNING_ENABLED == 'true'
         env:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
@@ -628,6 +626,27 @@ jobs:
           set -euo pipefail
           bash deploy/desktop/macos/sign-and-notarize.sh
           ls -l dist/desktop
+
+      # The unsigned path: same bundle, same zip, same asset name install.sh resolves.
+      # `ditto` is the only archiver that preserves the bundle's resource forks and
+      # symlinks — the same reason canary uses it.
+      - name: Package the .app unsigned (no certificate configured)
+        if: vars.MACOS_SIGNING_ENABLED != 'true'
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${ORCHICON_VERSION#v}"
+          app="$(find cmd/orchicon-desktop/build/bin -maxdepth 1 -name '*.app' -type d | head -1)"
+          if [ -z "$app" ]; then echo "wails produced no .app"; exit 1; fi
+          mkdir -p dist/desktop
+          ditto -c -k --sequesterRsrc --keepParent "$app" \
+            "dist/desktop/orchicon_desktop_${VERSION}_darwin_universal.zip"
+          ls -lh dist/desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchicon-desktop-darwin
 
       - uses: actions/upload-artifact@v4
         with:
