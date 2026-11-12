@@ -7,11 +7,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/config"
 )
 
-// Reproduces the operator's Phase 3 connect-overlay trap: a password-mode
-// profile with a long (expired) access token opened the overlay with the
-// credential field PRE-FILLED — a ~300-char echo row the operator could
-// not reason about or replace. The overlay must start the credential
-// EMPTY (URL/username may stay pre-filled).
+// Reproduces the operator's Phase 3 connect-overlay trap: a password-mode profile with a long
+// (expired) access token opened the overlay with the credential field PRE-FILLED.
 func TestConnectOverlayCredentialStartsEmptyOnReauth(t *testing.T) {
 	stale := strings.Repeat("eyJhbGciOiJIUzI1NiJ9.x", 20) // ~460 chars
 	m := NewApp(nil, &config.Profile{

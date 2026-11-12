@@ -5,32 +5,28 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/planecontrol"
 )
 
-// serve_stop_test.go — THE STOP MUST BE VERIFIED, and this is the bug that made the operator believe they
-// were on new code while running a stale binary.
-//
-// The report: "I did that and the serve was still running and I had to do a kill -9 on the PIDs... I have
-// run into this problem a few times now where I thought I was on the newest code but was still running a
-// stale binary."
-//
-// The old implementation sent SIGTERM, deleted the PID file UNCONDITIONALLY, and printed "✓ serve stopped"
-// without ever checking. A plane that ignored SIGTERM therefore survived while the command reported success
-// AND destroyed the only handle on it — after which `--stop` and `--status` both resolve from that file and
-// answered "serve is not running" while the old process still owned the port and kept serving its old
-// binary. A rebuild would then start a second binary, lose the port race, and leave the OLD UI on screen.
-//
-// These tests drive the real serveStop against real child processes, so they assert the behaviour rather
-// than the shape of the code: it must WAIT, it must ESCALATE, and it must never claim a success it did not
-// verify.
+// serve_stop_test.go — THE STOP MUST BE VERIFIED, and this is the bug that made the operator
+// believe they were on new code while running a stale binary.
+
+// isolateServeState points the detached-serve state at dir, AND CLEARS ORCHICON_INSTANCE.
+func isolateServeState(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("ORCHICON_INSTANCE", "")
+	t.Setenv(serveStateDirEnv, dir)
+}
 
 // stopPlane writes a PID file naming a child process and runs serveStop against it.
 func stopPlane(t *testing.T, pid int) (rc int, pidFileKept bool) {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv(serveStateDirEnv, dir)
+	isolateServeState(t, dir)
 	if err := os.MkdirAll(filepath.Join(dir, "pids"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -69,11 +65,7 @@ func TestServeStopEscalatesToKillWhenSigtermIsIgnored(t *testing.T) {
 	if pidFileKept {
 		t.Error("the PID file survived a confirmed stop")
 	}
-	// AND IT IS ACTUALLY DEAD. This is the assertion the old code never made.
-	//
-	// IT USES pidAlive, NOT A BARE signal 0, for the same reason the implementation had to: the killed child
-	// is a ZOMBIE until this test reaps it, and signal 0 SUCCEEDS on a zombie. A raw probe here would assert
-	// "still alive" about a process that has demonstrably exited — the identical blind spot, in the test.
+	// AND IT IS ACTUALLY DEAD.
 	if pidAlive(pid) {
 		t.Error("serveStop reported success while the process is STILL ALIVE — this is the stale-binary bug")
 	}
@@ -110,19 +102,13 @@ func TestServeStopOnAStalePIDFileFailsAndClears(t *testing.T) {
 	}
 }
 
-// THE DANGEROUS SHAPE, pinned directly: a process that survives BOTH signals must leave its PID file
-// intact. Deleting it is what made the survivor unreachable-by-tool and invisible in --status.
-//
-// SIGKILL cannot be trapped, so an unkillable survivor cannot be manufactured portably — this test asserts
-// the PROPERTY the code must hold (state kept unless the exit was confirmed) using the case where the
-// confirmation genuinely never arrives: a PID that exists but is not signalable by us is not constructible
-// without root, so this exercises the same code path through the stale-PID case above and states the rule
-// for the survivor branch in the implementation.
+// THE DANGEROUS SHAPE, pinned directly: a process that survives BOTH signals must leave its PID
+// file intact.
 func TestServeStopKeepsStateWhenItCannotConfirm(t *testing.T) {
 	// A live process we are told about under the WRONG pid file contents (non-numeric) must not be
 	// silently treated as stopped.
 	dir := t.TempDir()
-	t.Setenv(serveStateDirEnv, dir)
+	isolateServeState(t, dir)
 	if err := os.MkdirAll(filepath.Join(dir, "pids"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -131,5 +117,48 @@ func TestServeStopKeepsStateWhenItCannotConfirm(t *testing.T) {
 	}
 	if rc := serveStop(); rc == 0 {
 		t.Error("serveStop() = 0 for an unparseable PID file — it cannot have stopped anything")
+	}
+}
+
+// THE ESCALATION LADDER IS NOW SEAM-DRIVEN, so a reader looking for where SIGTERM/SIGKILL went
+// should look at signals_unix.go / signals_windows.go (sendGracefulStop, sendForceStop.
+
+// THE GUARD THAT KEEPS THE FALLBACK FROM KILLING A LIVE PLANE.
+func TestServeStopFallbackOnlyForTheCanonicalStateDir(t *testing.T) {
+	t.Run("redirected state dir refuses to discover", func(t *testing.T) {
+		dir := t.TempDir()
+		isolateServeState(t, dir) // ORCHICON_INSTANCE cleared, so the temp dir wins
+		if serveStopMayDiscover() {
+			t.Error("the port-discovery fallback ran while the state dir was redirected — it would signal " +
+				"a plane that does not belong to this state root")
+		}
+	})
+
+	t.Run("the launcher path allows discovery", func(t *testing.T) {
+		// An instance named and NO override: serveStateDir() derives the state dir from that instance, so
+		// servePIDFile() and planecontrol's record are the same path by construction.
+		t.Setenv("ORCHICON_INSTANCE", "dev")
+		t.Setenv(serveStateDirEnv, "")
+		if !serveStopMayDiscover() {
+			t.Fatal("the fallback must run for an instance's canonical state dir")
+		}
+	})
+}
+
+// THE OTHER HALF, AND THE ONE THAT ACTUALLY CAUSED THE OUTAGE: a test must never resolve the PID
+// file to a live instance's real record.
+func TestServeStopTestIsolationKeepsTheRealRecordOutOfReach(t *testing.T) {
+	// The shape that bit us: ambient instance exported, override set. Both must be neutralized.
+	t.Setenv("ORCHICON_INSTANCE", "prod")
+	dir := t.TempDir()
+	isolateServeState(t, dir)
+
+	got := servePIDFile()
+	realRecord := planecontrol.ServePIDFile("prod")
+	if got == realRecord {
+		t.Fatalf("isolated test still resolves the LIVE prod record (%s) — a test would clobber it", realRecord)
+	}
+	if !strings.HasPrefix(got, dir) {
+		t.Fatalf("isolated PID file %q is not inside the temp dir %q", got, dir)
 	}
 }

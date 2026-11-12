@@ -127,9 +127,8 @@ func TestSegmenterUnterminatedFlush(t *testing.T) {
 	}
 }
 
-// Acceptance A (turn level): native reasoning part + folded think body in
-// the SAME turn coexist as two separate reasoning[] entries; content has
-// no tag remnant and no leaked body.
+// Acceptance A (turn level): native reasoning part + folded think body in the SAME turn coexist as
+// two separate reasoning[] entries; content has no tag remnant and no leaked body.
 func TestTurnNativeReasoningPlusFoldedBodyCoexist(t *testing.T) {
 	pool := chatDBTestPool(t)
 	client := &fakeSessionClient{}

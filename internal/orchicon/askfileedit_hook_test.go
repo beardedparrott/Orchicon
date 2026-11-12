@@ -1,18 +1,7 @@
 package orchicon
 
-// Regression pins for the NATIVE Ask file-edit attribution gap: the opencode
-// Ask path ledgers through the askorchicon collector hook (gated on a
-// `tool_use` part), but the native bridge emits no such part — its Ask turn
-// runs tools in-process via NativeBridge.executeToolCalls. The fix wires a
-// dedicated Ask ledger hook (SetAskFileEditHook) fired from that funnel,
-// attributed to (ask_conversation, <conversation id>) — the exact tuple both
-// clients' Ask diff panes query.
-//
-// These tests pin the TUPLE (not a row count — a row written under the wrong
-// owner is exactly the bug), the DELTA-PROOF ORDER (the live row is produced
-// BY THE HOOK, with the causing tool's name and NOT `reconcile:git`, before the
-// turn's terminal `idle`), and the NON-GIT case (the engine payload needs no
-// repo, so the post-turn git sweep cannot be faking the result).
+// Regression pins for the NATIVE Ask file-edit attribution gap: the opencode Ask path ledgers
+// through the askorchicon collector hook (gated on a `tool_use` part).
 
 import (
 	"context"
@@ -27,11 +16,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// askHookRecorder is the test-side Ask hook: it records owner id + tool + output
-// so the test can assert the ATTRIBUTION the production hook would receive, and
-// (optionally) ledgers the engine payload through a real fileedit.Service under
-// the Ask owner kind, exactly as the production `newFileEditHook(svc, log,
-// db.FileEditOwnerAskConversation)` does.
+// askHookRecorder is the test-side Ask hook: it records owner id + tool + output so the test can
+// assert the ATTRIBUTION the production hook would receive.
 type askHookCall struct {
 	ownerID string
 	tool    string
@@ -68,10 +54,8 @@ func (r *askHookRecorder) snapshot() []askHookCall {
 	return append([]askHookCall(nil), r.calls...)
 }
 
-// autoApproveConsent starts a goroutine that answers every parked consent ask
-// with "once" — the host-suite mutating tools (write/edit/batch_write/bash) are
-// consent-gated, so a test driving executeToolCalls must approve or the call
-// never runs. Returns a stop function.
+// autoApproveConsent starts a goroutine that answers every parked consent ask with "once" — the
+// host-suite mutating tools (write/edit/batch_write/bash) are consent-gated.
 func autoApproveConsent(t *testing.T, b *NativeBridge, ctx context.Context) func() {
 	t.Helper()
 	done := make(chan struct{})
@@ -94,12 +78,8 @@ func autoApproveConsent(t *testing.T, b *NativeBridge, ctx context.Context) func
 	return stop
 }
 
-// TestAskToolCallFiresFileEditHookWithConversationOwner pins the tuple: a
-// native Ask `write` fires the Ask hook once, with ownerID == the conversation
-// id and the causing tool's name, and the engine payload ledgers a row under
-// (ask_conversation, conv-1) tagged `write` — NOT `reconcile:git`. The tool
-// name is the delta-proof: only a LIVE hook row carries the tool that caused
-// it; the git sweep's rows are all `reconcile:git`.
+// TestAskToolCallFiresFileEditHookWithConversationOwner pins the tuple: a native Ask `write` fires
+// the Ask hook once, with ownerID == the conversation id and the causing tool's name.
 func TestAskToolCallFiresFileEditHookWithConversationOwner(t *testing.T) {
 	ctx := tenant.WithID(context.Background(), "tnt_test")
 	b := newChatBridge(t, &chatTestProvider{})
@@ -149,12 +129,8 @@ func TestAskToolCallFiresFileEditHookWithConversationOwner(t *testing.T) {
 	}
 }
 
-// TestAskLiveRowPrecedesTerminal is the DELTA-PROOF against the git sweep: the
-// ledger row is produced BY THE HOOK during the turn, BEFORE the turn's
-// terminal `idle`. The post-turn reconciler cannot satisfy this — it runs only
-// after the terminal transition (askorchicon/chat.go, api.go), and the native
-// path never invokes it at all. The recorded sequence shows the hook firing
-// before `idle`, and the row's tool is `write` (never `reconcile:git`).
+// TestAskLiveRowPrecedesTerminal is the DELTA-PROOF against the git sweep: the ledger row is
+// produced BY THE HOOK during the turn, BEFORE the turn's terminal `idle`.
 func TestAskLiveRowPrecedesTerminal(t *testing.T) {
 	ctx := tenant.WithID(context.Background(), "tnt_test")
 	prov := &chatTestProvider{rounds: [][]Event{
@@ -184,11 +160,8 @@ func TestAskLiveRowPrecedesTerminal(t *testing.T) {
 	sid, _ := b.CreateConversationSession(ctx, "conv-live", "ask-orchicon:conv-live")
 	bus, _ := b.Subscribe(ctx, "conv-live")
 
-	// Consume the bus on a goroutine, recording the event order in the SAME
-	// sequence the hook records into. The hook fires causally BEFORE the round's
-	// tool_result and idle are emitted, so a correct implementation places
-	// "hook:write" ahead of "idle"; the git sweep (which runs after the terminal)
-	// could only ever place its row behind it.
+	// Consume the bus on a goroutine, recording the event order in the SAME sequence the hook records
+	// into.
 	consumerDone := make(chan struct{})
 	go func() {
 		defer close(consumerDone)
@@ -278,11 +251,8 @@ func TestAskLiveRowPrecedesTerminal(t *testing.T) {
 	}
 }
 
-// TestAskLedgerWorksOutsideAGitRepo is the non-git AC: a native Ask session
-// whose project dir is NOT a git repository still ledgers its edit. The engine
-// payload is exact ground truth produced in-process, so it needs no repo and no
-// observer — the post-turn git reconciler would produce nothing here, which is
-// precisely why this case cannot be masked.
+// TestAskLedgerWorksOutsideAGitRepo is the non-git AC: a native Ask session whose project dir is
+// NOT a git repository still ledgers its edit.
 func TestAskLedgerWorksOutsideAGitRepo(t *testing.T) {
 	ctx := tenant.WithID(context.Background(), "tnt_test")
 	b := newChatBridge(t, &chatTestProvider{})
@@ -296,9 +266,8 @@ func TestAskLedgerWorksOutsideAGitRepo(t *testing.T) {
 	stop := autoApproveConsent(t, b, ctx)
 	defer stop()
 
-	// A t.TempDir() is not a git repo, and the hook is invoked with an empty
-	// exec dir (the native Ask path passes "" — the observer is inert), so no
-	// git state is involved anywhere in this path.
+	// A t.TempDir() is not a git repo, and the hook is invoked with an empty exec dir (the native Ask
+	// path passes "" — the observer is inert), so no git state is involved anywhere in this path.
 	nonRepoDir := t.TempDir()
 	bus := newChatBus()
 	defer bus.Close()
@@ -321,10 +290,8 @@ func TestAskLedgerWorksOutsideAGitRepo(t *testing.T) {
 	}
 }
 
-// TestAskHookFailedCallDoesNotLedger is the gating half: a FAILED mutating call
-// carries no ground truth, so it must not fire the Ask hook (parity with the
-// execution funnel in loop.go, which fires only after a nil error). A phantom
-// row for a failed edit is worse than no row.
+// TestAskHookFailedCallDoesNotLedger is the gating half: a FAILED mutating call carries no ground
+// truth, so it must not fire the Ask hook (parity with the execution funnel in loop.go.
 func TestAskHookFailedCallDoesNotLedger(t *testing.T) {
 	ctx := tenant.WithID(context.Background(), "tnt_test")
 	b := newChatBridge(t, &chatTestProvider{})
@@ -356,9 +323,8 @@ func TestAskHookFailedCallDoesNotLedger(t *testing.T) {
 	}
 }
 
-// TestAskHookNilIsANoop pins the nil-hook posture: with no Ask hook wired the
-// tool still runs and the turn is unaffected (the pre-fix behaviour, minus the
-// breakage).
+// TestAskHookNilIsANoop pins the nil-hook posture: with no Ask hook wired the tool still runs and
+// the turn is unaffected (the pre-fix behaviour, minus the breakage).
 func TestAskHookNilIsANoop(t *testing.T) {
 	ctx := tenant.WithID(context.Background(), "tnt_test")
 	b := newChatBridge(t, &chatTestProvider{})

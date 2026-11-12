@@ -21,9 +21,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// stubDispatchLimiter is a test DispatchLimiter with fixed per-project
-// limits, so the D2/D3 gates are exercised without depending on the real
-// tenant_settings/projects rows.
+// stubDispatchLimiter is a test DispatchLimiter with fixed per-project limits, so the D2/D3 gates
+// are exercised without depending on the real tenant_settings/projects rows.
 type stubDispatchLimiter struct {
 	effLimit   func(projectID string) int
 	inPlaceLim func(projectID string) int
@@ -88,10 +87,8 @@ func seedReadyAdapter(t *testing.T, pool *db.Pool) {
 	}
 }
 
-// TestDispatchLimitGateHoldsSecondUntilSlotFrees exercises the D2 gate:
-// with a project effective limit of 1, the first dispatch creates an
-// execution and the second is held (stays 'ready'). Once the first
-// execution reaches a terminal state, the held task dispatches.
+// TestDispatchLimitGateHoldsSecondUntilSlotFrees exercises the D2 gate: with a project effective
+// limit of 1, the first dispatch creates an execution and the second is held (stays 'ready').
 func TestDispatchLimitGateHoldsSecondUntilSlotFrees(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env := newSequenceTestEnv(t)
@@ -188,10 +185,8 @@ func TestDispatchLimitNoGateWithoutLimiter(t *testing.T) {
 	}
 }
 
-// TestWorktreeInPlaceSerialization exercises the D3 gate: a non-repo
-// project with in-place limit 1 admits its first run ('skipped' = the
-// in-place token) and holds a second run ('pending'), then admits it once
-// the first run reaches a terminal state.
+// TestWorktreeInPlaceSerialization exercises the D3 gate: a non-repo project with in-place limit 1
+// admits its first run ('skipped' = the in-place token) and holds a second run ('pending').
 func TestWorktreeInPlaceSerialization(t *testing.T) {
 	purgeScanTenant(t, approvalTestPool(t))
 	env := newWorktreeTestEnv(t)
@@ -206,7 +201,11 @@ func TestWorktreeInPlaceSerialization(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "In-Place Serialize Project", Slug: "inplace-" + strings.ToLower(db.NewID()),
 		Status: domain.ProjectActive, Goals: []byte("[]"),
-		ProjectDir: plain,
+		ProjectDir:    plain,
+		ExecutionMode: db.ExecutionModeRuntime,
+		// git_strategy=none: this test is about the IN-PLACE path (a run admitted with no isolated
+		// worktree), which is what the ephemeral strategy is for.
+		GitStrategy: "none",
 	})
 	if err != nil {
 		t.Fatalf("create non-repo project: %v", err)
@@ -290,9 +289,8 @@ func mustGetRun(t *testing.T, pool *db.Pool, id string) db.WorkflowRunRow {
 	return run
 }
 
-// TestEffectiveDispatchLimitFormula is a pure-formula check (no DB) for
-// the min(tenant, project) effective limit and the non-repo in-place
-// default.
+// TestEffectiveDispatchLimitFormula is a pure-formula check (no DB) for the min(tenant, project)
+// effective limit and the non-repo in-place default.
 func TestEffectiveDispatchLimitFormula(t *testing.T) {
 	cases := []struct {
 		name            string

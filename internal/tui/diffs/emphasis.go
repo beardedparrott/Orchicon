@@ -4,13 +4,7 @@ package diffs
 // changed middle is one span (the GUI's fallback). Must match sideBySide.ts.
 const MAX_EMPHASIS = 256
 
-// EmphasizeTokens computes byte-range emphasis spans for a changed line
-// pair. It trims the common prefix and suffix, then flags the changed
-// middle as a single span on each side. Mirrors sideBySide.ts
-// emphasizeTokens exactly (span start/end are byte offsets, and the "cheap"
-// path uses one span per side — no token-level LCS in the reference).
-//
-// Returns (oldSpans, newSpans) — an empty slice when a side is unchanged.
+// EmphasizeTokens computes byte-range emphasis spans for a changed line pair.
 func EmphasizeTokens(oldText, newText string) (oldSpans, newSpans []EmphasisSpan) {
 	oldTrimStart, newTrimStart := trimCommonPrefix(oldText, newText)
 	oldTrimEnd, newTrimEnd := trimCommonSuffix(oldText, newText, oldTrimStart, newTrimStart)
@@ -51,10 +45,8 @@ func trimCommonPrefix(a, b string) (oldIndex, newIndex int) {
 	return i, i
 }
 
-// trimCommonSuffix returns the byte index one past the last differing
-// character in both strings, given the common-prefix 0-based index.
-// Mirrors sideBySide.ts trimCommonSuffix (operates on bytes for ASCII
-// content; multi-byte content just yields larger spans, which is fine).
+// trimCommonSuffix returns the byte index one past the last differing character in both strings,
+// given the common-prefix 0-based index.
 func trimCommonSuffix(a, b string, prefixOld, prefixNew int) (oldEnd, newEnd int) {
 	i := len(a)
 	j := len(b)

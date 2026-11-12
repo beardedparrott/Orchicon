@@ -9,10 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// EditLockRow is the data-access shape of an edit_locks table row
-// (docs/07 §3.3). Prevents concurrent edits in the visual editor; other
-// users see "currently being edited by [user]" and can view read-only.
-// The lock expires automatically on TTL.
+// EditLockRow is the data-access shape of an edit_locks table row (docs/07 §3.3).
 type EditLockRow struct {
 	ResourceID   string
 	TenantID     string
@@ -22,16 +19,10 @@ type EditLockRow struct {
 	ExpiresAt    time.Time
 }
 
-// DefaultEditLockTTL is the duration after which an edit lock expires
-// automatically. The frontend is expected to heartbeat-renew before this
-// expires (docs/07 §3.3).
+// DefaultEditLockTTL is the duration after which an edit lock expires automatically.
 const DefaultEditLockTTL = 5 * time.Minute
 
-// AcquireEditLock attempts to acquire an exclusive edit lock on a
-// resource (e.g. a Worker). If an unexpired lock is held by another
-// actor, it returns the existing lock with acquired=false (via
-// ErrLockHeld). If the existing lock is expired, it is replaced. If the
-// same actor already holds the lock, it is renewed (TTL extended).
+// AcquireEditLock attempts to acquire an exclusive edit lock on a resource (e.g. a Worker).
 func AcquireEditLock(ctx context.Context, tx pgx.Tx, tenantID, resourceID, resourceType, actor string, ttl time.Duration) (EditLockRow, bool, error) {
 	// Delete expired locks first (housekeeping).
 	if _, err := tx.Exec(ctx,
@@ -42,10 +33,6 @@ func AcquireEditLock(ctx context.Context, tx pgx.Tx, tenantID, resourceID, resou
 	}
 
 	// Upsert: if no lock exists (or the same actor holds it), acquire.
-	// If a different actor holds an unexpired lock, the conflict on
-	// (resource_id, resource_type) means ON CONFLICT fires — we return
-	// the existing lock via the DO UPDATE that only succeeds if held_by
-	// matches the actor.
 	expires := time.Now().UTC().Add(ttl)
 	const q = `INSERT INTO edit_locks (resource_id, tenant_id, resource_type, held_by, expires_at)
 		VALUES ($1, $2, $3, $4, $5)
@@ -73,9 +60,7 @@ func AcquireEditLock(ctx context.Context, tx pgx.Tx, tenantID, resourceID, resou
 	return l, true, nil
 }
 
-// ReleaseEditLock releases a held edit lock. Only the actor that holds
-// the lock may release it. Returns ErrNotFound if no lock exists or the
-// actor does not match.
+// ReleaseEditLock releases a held edit lock.
 func ReleaseEditLock(ctx context.Context, tx pgx.Tx, tenantID, resourceID, resourceType, actor string) error {
 	tag, err := tx.Exec(ctx,
 		`DELETE FROM edit_locks WHERE resource_id = $1 AND resource_type = $2 AND tenant_id = $3 AND held_by = $4`,

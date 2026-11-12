@@ -49,9 +49,6 @@ func transcriptItems() []chat.ChatItem {
 
 // TOOL CALLS AND THINKING START COLLAPSED — the GUI's rule ("tool calls are compact collapsible
 // cards, reasoning is collapsed") and the operator's ask ("all blocks are auto collapsed").
-//
-// This is the whole point of the item: a transcript with a 60-line tool dump in it was unreadable,
-// and collapsing is what makes the line scannable.
 func TestToolAndReasoningBlocksStartCollapsed(t *testing.T) {
 	items := transcriptItems()
 	blocks := blocksFromItems(items, 100)
@@ -72,18 +69,14 @@ func TestToolAndReasoningBlocksStartCollapsed(t *testing.T) {
 		}
 	}
 	// And the collapsed block is ONE line: the summary states the tool and its first output, but the
-	// 60-line body is NOT drawn. (The summary deliberately includes the first line of output — that
-	// is what makes a collapsed tool call scannable — so the assertion is on the FULL dump, not on
-	// any occurrence of the text.)
+	// 60-line body is NOT drawn.
 	state := &blockState{}
 	body, _ := renderBlocks(blocks, state, 100, transcriptCursor{})
 	if got := strings.Count(body, "nested block handling"); got != 1 {
 		t.Errorf("the collapsed tool's output appears %d times, want ONCE (the summary line only — the body must not be drawn)", got)
 	}
 	// One row per block PLUS the gap row between them: the gap is blockGap rows per BOUNDARY, so n
-	// blocks occupy n + blockGap*(n-1) rows before slack. (Before the gap existed this was "roughly
-	// one line per block"; the gap is what makes the blocks readable, so the bound moves with it
-	// rather than the gap being dropped to keep a stale number.)
+	// blocks occupy n + blockGap*(n-1) rows before slack.
 	budget := len(blocks) + blockGap*(len(blocks)-1) + 3
 	if strings.Count(body, "\n")+1 > budget {
 		t.Errorf("a collapsed transcript should be roughly one line per block plus the gap; got %d lines for %d blocks (budget %d):\n%s",
@@ -94,16 +87,8 @@ func TestToolAndReasoningBlocksStartCollapsed(t *testing.T) {
 	}
 }
 
-// BLOCKS ARE SEPARATED BY A BLANK ROW — the operator's "the text in executions in the TUI are hard to
-// read. They are very scrunched up."
-//
-// The separator was written through the same closure that renders a block's rows, and that closure
-// SKIPS an empty string (which is how a collapsed block contributes nothing) — so the separator was
-// silently dropped and every block's last row ran straight into the next block's header. Measured
-// before the fix, the six-block fixture rendered as six consecutive non-blank rows.
-//
-// The assertion uses the offsets renderBlocks returns, because those are what the pane SCROLLS by:
-// pinning the gap through them covers the layout and the scroll math in one go.
+// BLOCKS ARE SEPARATED BY A BLANK ROW — the operator's "the text in executions in the TUI are hard
+// to read.
 func TestBlocksAreSeparatedByABlankRow(t *testing.T) {
 	blocks := blocksFromItems(transcriptItems(), 100)
 	body, offsets := renderBlocks(blocks, &blockState{}, 100, transcriptCursor{})
@@ -123,16 +108,13 @@ func TestBlocksAreSeparatedByABlankRow(t *testing.T) {
 		}
 	}
 	// And the gap is exactly blockGap rows: a run of blank rows would be dead space (a stray extra
-	// newline is how the gap would silently double if the writer were changed). A run of k blank rows
-	// is k+1 consecutive newlines, so ONE blank row — the expected gap — shows up as "\n\n".
+	// newline is how the gap would silently double if the writer were changed).
 	if strings.Contains(body, strings.Repeat("\n", blockGap+2)) {
 		t.Errorf("the transcript contains more than %d blank row(s) in a row; the gap is %d", blockGap, blockGap)
 	}
 }
 
-// AN ERROR'S TEXT IS PRINTED ONCE. An error block is never collapsible, so its summary is not a
-// preview — it is the header itself. Keeping the whole text in the body as well printed the same
-// sentence on two consecutive rows ("error boom: index out of range" / "boom: index out of range").
+// AN ERROR'S TEXT IS PRINTED ONCE.
 func TestErrorBlockPrintsItsTextOnce(t *testing.T) {
 	items := []chat.ChatItem{{Kind: chat.KindError, Text: "boom: index out of range", Key: "e1"}}
 	body, _ := renderBlocks(blocksFromItems(items, 100), &blockState{}, 100, transcriptCursor{})
@@ -253,8 +235,7 @@ func TestExpansionSurvivesARepaint(t *testing.T) {
 }
 
 // The per-block state is CLEARED when the pane shows a different execution: the keys are only
-// unique within one transcript, so carrying them over would apply one execution's expansion to
-// another's blocks.
+// unique within one transcript.
 func TestBlockStateResetsForADifferentExecution(t *testing.T) {
 	state := &blockState{}
 	state.reset("exec-1")
@@ -302,15 +283,6 @@ func TestDownWalksIntoTheComposerAndUpComesBack(t *testing.T) {
 }
 
 // TAB toggles between the TRANSCRIPT and the MESSAGE BOX — and works BOTH ways.
-//
-// The operator: "Once we have focus on an execution detail pane, we should allow tab to tab between
-// the Execution details and the chat prompt. Currently once you go into a chat in an execution you
-// are locked in it and can't get out."
-//
-// This REPLACES a test that pinned Tab as a second Down (walking the blocks). The operator named both
-// keys then; he has since asked for Tab to be the pane toggle, and up/down still walk the transcript
-// (down past the last block lands in the box, exactly as before) — so the old behaviour is not lost,
-// only Tab's meaning is.
 func TestTabTogglesBetweenTranscriptAndMessageBox(t *testing.T) {
 	m, blocks := modelWithTranscript(t)
 	if len(blocks) == 0 {
@@ -533,12 +505,8 @@ func TestLiveBodiesAreBoundedAndSaySo(t *testing.T) {
 	}
 }
 
-// THE COLLAPSE DECISION AND THE LAYOUT ARE THEME-INDEPENDENT. The operator narrowed the report to the
-// transparent themes ("I believe it may only be happening in the transparent themes. It looks like tools
-// and thought are not being collapsed"), and that is worth pinning either way: a transparent theme paints
-// no fills, so the ONLY thing separating one block from the next is the layout this renderer emits. If a
-// future change ever made collapsing theme-dependent, the transcript would read as one wall of text on a
-// transparent theme and this test would catch it.
+// It looks like tools and thought are not being collapsed"), and that is worth pinning either way:
+// a transparent theme paints no fills.
 func TestTranscriptLayoutIsThemeIndependent(t *testing.T) {
 	items := transcriptItems()
 	var first string

@@ -11,8 +11,7 @@ import { workItemClient } from "@/api/clients";
 import { projectKeys } from "@/api/projects";
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { DependencyGraph } from "@/api/gen/orchicon/api/v1/work_item_pb";
-import type { WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
-import { RecurringSchedule } from "@/api/gen/orchicon/api/v1/work_item_pb";
+import { WorkItemStatus, RecurringSchedule } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import type { CreateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import type { UpdateWorkItemRequest } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import type { RecurringRunHistoryEntry } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
@@ -330,20 +329,39 @@ export function useBatchRestoreWorkItems() {
   });
 }
 
-// useRemoveSchedule removes the schedule from a work item without
-// changing its status. It clears recurring_schedule, unbinds the
-// workflow_run_id, and disables auto_start_workflow using proto3 clear
-// semantics. auto_start_workflow must be set to false to prevent the
+// useRemoveSchedule removes the schedule from a work item without deleting
+// or cancelling it. It clears recurring_schedule AND scheduled_start_at,
+// unbinds the workflow_run_id, and disables auto_start_workflow using proto3
+// clear semantics. auto_start_workflow must be set to false to prevent the
 // backend from re-firing a new run after the workflow_run_id is cleared.
+//
+// scheduled_start_at IS PART OF THE SCHEDULE. A Schedules row is driven by
+// two clocks — next_run_at for a recurring item, scheduled_start_at for a
+// one-shot — so clearing only the recurring half left the row listed as
+// upcoming and the operator saw "deleting a schedule does nothing". An item
+// that is still SCHEDULED/RECURRING is also returned to PENDING, because a
+// cleared schedule must not stay in the scheduled query; an item that has
+// already run keeps its terminal status.
 export function useRemoveSchedule(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (id: string) => {
+    mutationFn: async ({
+      id,
+      status,
+    }: {
+      id: string;
+      status?: WorkItemStatus;
+    }) => {
+      const wasScheduled =
+        status === WorkItemStatus.SCHEDULED ||
+        status === WorkItemStatus.RECURRING;
       const res = await workItemClient.updateWorkItem({
         id,
         recurringSchedule: new RecurringSchedule(),
+        clearScheduledStartAt: true,
         workflowRunId: "",
         autoStartWorkflow: false,
+        ...(wasScheduled ? { status: WorkItemStatus.PENDING } : {}),
       });
       return res.workItem as WorkItem;
     },

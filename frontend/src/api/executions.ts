@@ -393,3 +393,31 @@ export function useContinueExecutionSession() {
     },
   });
 }
+
+// useReleaseStuckExecutions runs the execution-liveness reaper NOW, scoped to
+// one project, and reports what it released.
+//
+// It is the attended counterpart to the background reaper tick: a project
+// pinned at its dispatch cap by executions that are DEAD but unreaped cannot
+// dispatch anything — for any run — so waiting for the next tick stalls a whole
+// project while the operator watches.
+//
+// The reaper's own liveness probe decides which executions that means. This is
+// not "cancel N executions": an execution the probe reports alive is never
+// released, and an empty released_ids is a SUCCESS (every slot holder is
+// genuinely alive), not a failure.
+export function useReleaseStuckExecutions() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { projectId: string; reason?: string }) => {
+      const res = await executionClient.releaseStuckExecutions({
+        projectId: input.projectId,
+        reason: input.reason ?? "operator released stuck executions from the run view",
+      });
+      return { releasedIds: res.releasedIds, examined: res.examined };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: executionKeys.list() });
+    },
+  });
+}

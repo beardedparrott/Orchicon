@@ -35,10 +35,6 @@ import (
 )
 
 // openItemEditor opens the details editor for an item, optionally already scheduled.
-//
-// The `e` gesture is the path the scheduled start actually lives on: the field is on the INLINE
-// detail-pane editor, not on a modal form, which matters for the finish hook (see
-// finishDateTimePicker's note about ActiveForm).
 func openItemEditor(t *testing.T, start *time.Time) (*Model, *kit2.Form) {
 	t.Helper()
 	p := newPlane()
@@ -66,10 +62,6 @@ func openItemEditor(t *testing.T, start *time.Time) (*Model, *kit2.Form) {
 }
 
 // tap sends a key and dispatches any command it produced.
-//
-// UNLIKE run IT TOLERATES A NIL COMMAND, which several of these gestures produce: opening and closing the
-// calendar are pure STATE changes with nothing to await, and run's "expected a command, got nil" would
-// fail them for being correct.
 func tap(t *testing.T, m *Model, k tea.KeyMsg) {
 	t.Helper()
 	if _, cmd := m.Update(k); cmd != nil {
@@ -90,10 +82,6 @@ func dtSpec(t *testing.T, f *kit2.Form) kit2.FieldSpec {
 }
 
 // THE FIELD IS THE NEW KIND, AND CARRIES NO PRESET LIST.
-//
-// Asserting the ABSENCE of the options is the load-bearing half: a preset list reintroduced beside the
-// picker would rebuild the exact control the operator rejected, and the picker would still work — so
-// nothing else would notice.
 func TestScheduledStartIsADateTimeFieldWithNoPresets(t *testing.T) {
 	_, f := openItemEditor(t, nil)
 	s := dtSpec(t, f)
@@ -116,9 +104,6 @@ func TestScheduledStartIsADateTimeFieldWithNoPresets(t *testing.T) {
 }
 
 // ENTER OPENS THE CALENDAR, SEEDED FROM THE ITEM.
-//
-// The seed is the half that quietly breaks: without it the modal opens on NOW, so an operator editing a
-// scheduled item is shown a time they never chose and can easily save it back.
 func TestScheduledStartOpensTheCalendarSeededFromTheItem(t *testing.T) {
 	start := time.Now().Add(72 * time.Hour).Truncate(time.Minute)
 	m, f := openItemEditor(t, &start)
@@ -209,10 +194,6 @@ func TestCancellingTheCalendarLeavesTheScheduledStartAlone(t *testing.T) {
 }
 
 // THE FIELD READS BACK AS LOCAL TIME WITH ITS ZONE.
-//
-// Asserting that the string contains "UTC" is deliberate and machine-independent: the full form always
-// names the zone — the abbreviation plus an offset, or the bare word "UTC" when that is the whole story —
-// so this holds anywhere and fails the moment the display goes back to the raw wire value.
 func TestTheScheduledStartReadsBackInLocalTimeWithItsZone(t *testing.T) {
 	start := time.Now().Add(24 * time.Hour).Truncate(time.Minute)
 	_, f := openItemEditor(t, &start)
@@ -243,9 +224,7 @@ func TestTheScheduledStartReadsBackInLocalTimeWithItsZone(t *testing.T) {
 	}
 }
 
-// THE VALIDATOR ACCEPTS THE PICKER'S OWN OUTPUT. The form used to take a hand-typed value, so it required
-// strict RFC3339; the picker now produces RFC3339 WITH A LOCAL OFFSET, and a validator that only accepted
-// the trailing "Z" would reject every time the operator actually chose.
+// THE VALIDATOR ACCEPTS THE PICKER'S OWN OUTPUT.
 func TestScheduledStartValidatesRFC3339(t *testing.T) {
 	if err := validateOptionalRFC3339(""); err != nil {
 		t.Errorf("an unscheduled field must be valid: %v", err)
@@ -347,9 +326,7 @@ func TestCentralTimeFollowsDaylightSaving(t *testing.T) {
 	}
 }
 
-// THE CONVERTER WOULD DOUBLE SHIFT. This is the reason the proof is worth writing: reinterpreting a
-// wall clock as UTC is the natural-looking implementation of "convert system time to UTC", and it moves
-// the chosen time by the zone offset. An operator scheduling 09:00 would get 04:00.
+// THE CONVERTER WOULD DOUBLE SHIFT.
 func TestAHandRolledZoneConversionWouldDoubleShift(t *testing.T) {
 	loc := chicago(t)
 
@@ -380,9 +357,7 @@ func TestAHandRolledZoneConversionWouldDoubleShift(t *testing.T) {
 	}
 }
 
-// AND THE PICKED INSTANT IS THE ONE SENT. The field flows through the ordinary submit path, so this pins
-// the whole chain end to end rather than the two halves separately — and it uses a LOCAL OFFSET, which is
-// the new thing worth pinning: a non-"Z" value must survive as the correct instant.
+// AND THE PICKED INSTANT IS THE ONE SENT.
 func TestThePickedInstantIsTheOneSentOnSave(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")

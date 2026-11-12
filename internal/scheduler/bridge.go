@@ -10,38 +10,25 @@ import (
 )
 
 // ExecutionManifest is the StartExecution payload sent to the adapter
-// (docs/04_Runtime_Adapter_SDK.md §3.1). It contains everything the
-// adapter needs to begin a WorkerExecution: identity, prompts, model,
-// context sources, budgets, permissions.
+// (docs/04_Runtime_Adapter_SDK.md §3.1).
 type ExecutionManifest struct {
 	ExecutionID   string
 	TaskID        string
 	ProjectID     string
 	WorkerID      string
 	WorkerVersion int
-	// AgentPromptLen is the BYTE LENGTH of the run-level prefix of SystemPrompt — the
-	// shared stable prefix plus the worker's identity block (db.AgentSystemPrompt).
-	//
-	// On 2.x that prefix travels as the opencode agent's `system`, so the adapter
-	// trims it off the message it sends; on 1.x it is 0 and the whole composite rides
-	// the per-message `system` field as it always did. 0 therefore means "do not
-	// trim", which is also the safe default for a manifest built by an older plane.
+	// AgentPromptLen is the BYTE LENGTH of the run-level prefix of SystemPrompt — the shared stable
+	// prefix plus the worker's identity block (db.AgentSystemPrompt).
 	AgentPromptLen int
 	SystemPrompt   string
-	// PromptFingerprint is the sha256 over the project + work-item
-	// context-file stamps that produced this manifest's composite prompt
-	// (ADR-0009 D5). Unchanged fingerprint ⇒ the static prefix is
-	// byte-identical to the previous execution's ⇒ the provider prefix
-	// cache stays warm. Empty = not captured (legacy path).
+	// PromptFingerprint is the sha256 over the project + work-item context-file stamps that produced
+	// this manifest's composite prompt.
 	PromptFingerprint  string
 	Goal               string
 	AcceptanceCriteria string
 	ModelRef           string // human-defined; no auto-failover (docs/05 §11)
 	DefaultModelRef    string // tenant-level default from settings; fallback if ModelRef empty
 	// ContextWindow is the work item's declared context window (tokens).
-	// Adapters use it as a FALLBACK context-window hint when live provider
-	// metadata is unavailable (e.g. a custom local provider whose models
-	// report no context length) — never a replacement for a live hint.
 	ContextWindow  int
 	ContextSources []byte // jsonb
 	Budgets        []byte // jsonb
@@ -49,36 +36,18 @@ type ExecutionManifest struct {
 	// ProjectDir is the project root: the container bind-mount source and
 	// the daemon-level guard/serve boundary. Always the true project dir.
 	ProjectDir string
-	// WorktreePath is the execution's working directory when the run has a
-	// provisioned worktree (a subdir of ProjectDir: .orchicon-worktrees/
-	// <runID>, worker starts checked out on its branch). Empty = run in
-	// ProjectDir directly.
+	// WorktreePath is the execution's working directory when the run has a provisioned worktree (a
+	// subdir of ProjectDir: .orchicon-worktrees/ <runID>, worker starts checked out on its branch).
 	WorktreePath string
-	// RuntimeWorkflowID is the workflow run whose runtime container this
-	// execution should dispatch into. When non-empty AND a runtime
-	// daemon is configured, the adapter runs `opencode` inside the
-	// workflow's runtime container instead of as a local subprocess.
+	// RuntimeWorkflowID is the workflow run whose runtime container this execution should dispatch
+	// into.
 	RuntimeWorkflowID string
-	// RuntimeImage is the resolved runtime container image tag for the
-	// workflow run (captured at run start). Empty = the daemon's default
-	// base image.
+	// RuntimeImage is the resolved runtime container image tag for the workflow run (captured at run
+	// start).
 	RuntimeImage string
-	// ExecutionMode is the run's project execution_mode
-	// ("runtime" | "local"). It is the adapter-side routing gate: the
-	// reconciler skips EnsureForRun in "local" mode, so a local run has
-	// NO container lease — an adapter must stay in-process (never exec or
-	// Create a container) when this is "local", even with a reachable
-	// daemon. Defaults to "runtime" when empty (legacy/standalone rows).
+	// ExecutionMode is the run's project execution_mode ("runtime" | "local").
 	ExecutionMode string
-	// Stall detection thresholds from tenant settings. Each is a POINTER, and
-	// the two states are different instructions to the adapter:
-	//
-	//   - nil — the tenant left this dimension BLANK in Settings. The tenant has
-	//     no opinion, so the adapter's env-var / built-in default stands.
-	//   - non-nil — an explicit value; 0 means DISABLED.
-	//
-	// Resolving either state into a concrete int before dispatch would destroy
-	// the distinction, so the pointers travel intact.
+	// Stall detection thresholds from tenant settings.
 	StallNoProgressWindowSeconds *int64
 	StallNoFileDiffWindowSeconds *int64
 	StallTextLoopWindowSeconds   *int64
@@ -90,66 +59,30 @@ type ExecutionManifest struct {
 	StallNudgeReplyWindowSeconds *int64
 	StallNudgeCooldownSeconds    *int64
 
-	// StallToolHangSeconds is the in-flight tool-hang watchdog window (D6):
-	// a tool call with no events for longer than this is cancelled natively
-	// (synthesized `cancelled:` tool result + course-correcting redirect
-	// injected as the next user turn). nil = unset (env/code default 180s);
-	// an explicit 0 DISABLES the watchdog.
+	// StallToolHangSeconds is the in-flight tool-hang watchdog window (D6): a tool call with no events
+	// for longer than this is cancelled natively (synthesized `cancelled:` tool result +.
 	StallToolHangSeconds *int64
 
-	// SequenceContinue (opt-in, DEFAULT OFF) marks this execution as part
-	// of a sequence chain: consecutive same-worker tasks may resume the
-	// prior task's session transcript instead of starting a fresh session
-	// (tightly-coupled chains where retained context beats isolation).
-	// When true, ContinueFromSessionID names the prior session to resume.
+	// SequenceContinue (opt-in, DEFAULT OFF) marks this execution as part of a sequence chain.
 	SequenceContinue      bool
 	ContinueFromSessionID string
 }
 
-// ExecutionCallbacks are the status callbacks the adapter bridge uses to
-// inform the TaskReconciler of execution lifecycle transitions
-// (docs/03 §6). OnStall is the stall-detection trigger (docs/06 §2
-// "stalled health state | no progress within stall window"): the adapter
-// bridge's progress monitor raises it when a worker is stuck looping
-// (repeated tool calls, no file changes, no token progress), and the
-// TaskReconciler uses it to trigger recovery (idempotent — docs/06 §9).
+// ExecutionCallbacks are the status callbacks the adapter bridge uses to inform the TaskReconciler
+// of execution lifecycle transitions (docs/03 §6).
 type ExecutionCallbacks interface {
 	OnStarted(ctx context.Context, execID string)
-	// OnResult carries the worker's accumulated text output (PR B —
-	// context propagation). The TaskReconciler extracts the ORCHICON
-	// WORKER SUMMARY block from `output`, persists it as the work
-	// item's `_summary`, and copies it onto the linked workflow step
-	// run so downstream stages see it. `output` may be empty if the
-	// adapter didn't accumulate any text (e.g. the worker errored
-	// before producing output).
+	// OnResult carries the worker's accumulated text output (PR B — context propagation).
 	OnResult(ctx context.Context, execID string, succeeded bool, output string, errorMessage string)
-	// OnWrittenFiles carries the paths of files the worker's session
-	// actually wrote or edited during the run (opencode file_diff
-	// telemetry). More reliable than parsing diff markers out of the
-	// worker's text output: it includes files the model saved without
-	// echoing a diff (e.g. .orchicon/ review notes written via the Write
-	// tool). The receiver folds these into the step run's _touched_files
-	// so the next worker is told exactly what to read before it starts.
-	// Called before the terminal OnResult; may be called once with the
-	// full set, or incrementally.
+	// OnWrittenFiles carries the paths of files the worker's session actually wrote or edited during
+	// the run (opencode file_diff telemetry).
 	OnWrittenFiles(ctx context.Context, execID string, files []string)
 	OnHealth(ctx context.Context, execID, healthState string)
-	// OnStall signals a detected stall (the reason carries which signal
-	// tripped: stalled:no_progress | stalled:no_file_progress |
-	// stalled:repetition:<sig>). `fatal` distinguishes a genuine
-	// hang/loop (true — the adapter has already hard-killed the
-	// subprocess, so the receiver should fail the execution and trigger
-	// recovery) from the advisory no_file_progress signal (false — the
-	// subprocess keeps running; the receiver should surface a
-	// non-terminal stalled health notice and let OnRecovered / the
-	// terminal OnResult decide the outcome).
+	// OnStall signals a detected stall (the reason carries which signal tripped: stalled:no_progress |
+	// stalled:no_file_progress | stalled:repetition:<sig>).
 	OnStall(ctx context.Context, execID, reason string, fatal bool)
-	// OnRecovered is called when an advisory stall clears — the worker
-	// resumed the missing progress signal (a file_diff after a
-	// no_file_progress trip) before the execution terminated. The
-	// receiver flips the execution back to healthy and clears the stall
-	// notice; status stays running and the terminal OnResult still
-	// decides success/failure.
+	// OnRecovered is called when an advisory stall clears — the worker resumed the missing progress
+	// signal (a file_diff after a no_file_progress trip) before the execution terminated.
 	OnRecovered(ctx context.Context, execID, recovered string)
 	// OnToolCall notifies the runtime that the worker invoked a tool.
 	// Published as a tool_call execution event for the live session pane.
@@ -157,104 +90,64 @@ type ExecutionCallbacks interface {
 	// OnText notifies the runtime that the worker produced text output.
 	// Published as a telemetry execution event for the live session pane.
 	OnText(ctx context.Context, execID string, text string)
-	// OnArtifact notifies the runtime that the worker produced an output
-	// artifact (e.g. a file via the `write` tool). The name is the file
-	// path, artifactType is the MIME type or extension hint (e.g. "markdown",
-	// "json", "text"), and content is the full artifact body. Published as
-	// an EXECUTION_EVENT_TYPE_ARTIFACT event for inline display (docs/10 §11).
+	// OnArtifact notifies the runtime that the worker produced an output artifact (e.g. a file via the
+	// `write` tool).
 	OnArtifact(ctx context.Context, execID, name, artifactType, content string)
 }
 
-// AdapterBridge is the control-plane side of the adapter contract. It
-// starts an execution on a registered adapter and streams telemetry
-// back via the callbacks. The bridge abstracts whether the adapter is a
-// real gRPC sidecar (v0.2+) or an in-process CLI subprocess wrapper
-// (v0.1 — docs/04 §6.0).
-//
-// Start is the REQUIRED core capability every adapter implements. The
-// rest of the server-facing surface is OPTIONAL and capability-scoped:
-// MessageInjector, SessionContinuer, Aborter, LivenessReporter, and the
-// construction-time ConfigurableBridge. A bridge implements the subset
-// it supports; a caller that needs a capability the bridge lacks gets an
-// actionable error on the corresponding RPC path — never a panic (see
-// the per-interface docs and internal/server/server.go).
-//
-// The scheduler is the only component permitted to call Start
-// (docs/03 §8 invariant #1).
+// AdapterBridge is the control-plane side of the adapter contract. Start is the REQUIRED core
+// capability every adapter implements.
 type AdapterBridge interface {
 	Start(ctx context.Context, exec db.ExecutionRow, manifest ExecutionManifest, callbacks ExecutionCallbacks) error
 }
 
-// MessageInjector is the optional mid-run message capability: routes a
-// human message into a live session execution (execution RPC
-// SendExecutionMessage). Bridges that support mid-run injection
-// implement it; a bridge without it surfaces an actionable
-// "adapter kind X does not support message injection" error on the RPC
-// path (never a panic).
+// MessageInjector is the optional mid-run message capability: routes a human message into a live
+// session execution (execution RPC SendExecutionMessage).
 type MessageInjector interface {
 	SendExecutionMessage(ctx context.Context, execID, message string) error
 }
 
-// SessionContinuer is the optional follow-up capability: runs a one-shot
-// follow-up question against a worker's session in place (execution RPC
-// ContinueExecutionSession). Bridges that support follow-ups implement
-// it; a bridge without it surfaces an actionable error on the RPC path
-// (never a panic).
+// SessionContinuer is the optional follow-up capability: runs a one-shot follow-up question against
+// a worker's session in place (execution RPC ContinueExecutionSession).
 type SessionContinuer interface {
 	ContinueSession(ctx context.Context, opts ContinueSessionOpts) (string, error)
 }
 
-// ContextCompacter is the OPTIONAL context-compaction capability: asks a
-// live execution's session to compact its working context in place. It is
-// the adapter-neutral seam for a bridge-specific compact (there is no
-// execution compaction RPC today — Ask-chat's CompactConversation is a
-// different, conversation-scoped operation), declared here so a caller that
-// needs compaction resolves it by TYPE ASSERTION and surfaces an actionable
-// "does not support context compaction" error when a bridge omits it,
-// exactly like MessageInjector/Aborter — never a panic. remainingScope is
-// the goal/acceptance-criteria text that must survive the (soft, lossy)
-// compact.
+// ContextCompacter is the OPTIONAL context-compaction capability: asks a live execution's session
+// to compact its working context in place.
 type ContextCompacter interface {
 	CompactExecution(ctx context.Context, execID, provider, model, remainingScope string) error
 }
 
-// Aborter is the optional cancellation capability: stops a live
-// execution's session when a human cancels it, so the model stops
-// generating immediately (workflow/execution abort RPCs). Bridges that
-// support live abort implement it; a bridge without it surfaces an
-// actionable error on the abort path (never a panic).
-//
-// AbortExecution is a safe no-op for unknown/finished executions.
+// Aborter is the optional cancellation capability: stops a live execution's session when a human
+// cancels it, so the model stops generating immediately (workflow/execution abort RPCs).
 type Aborter interface {
 	AbortExecution(ctx context.Context, execID, reason string) error
 }
 
-// LivenessReporter is the optional liveness capability: reports whether
-// an execution is still tracked as live by the bridge. Used by the
-// execution reaper to detect executions orphaned by a control-plane
-// restart / lost runtime container. Bridges without it are treated as
-// fail-closed (not alive) by the reaper.
+// LivenessReporter is the optional liveness capability: reports whether an execution is still
+// tracked as live by the bridge.
 type LivenessReporter interface {
 	IsExecutionActive(execID string) bool
 }
 
-// ErrSessionNotFound marks that a conversation's persisted session id is
-// no longer known to the adapter's session transport (a serve/backend
-// restart wiped its store, or the session expired). The Ask collector
-// treats it as a recreate + re-seed trigger for the turn. It is the
-// adapter-neutral sentinel the opencode adapter maps its transport-specific
-// 404 onto, so the askorchicon service never depends on adapter types.
+// DiffLedgerSink is the OPTIONAL capability for a bridge that can report the file edits its
+// sessions make.
+type DiffLedgerSink interface {
+	// SetDiffLedger installs the ledger callback for worker executions (owner kind execution) and for
+	// Ask conversations (owner kind ask_conversation).
+	SetDiffLedger(execution, ask DiffLedgerFunc)
+}
+
+// DiffLedgerFunc is the ledger callback shape.
+type DiffLedgerFunc func(ctx context.Context, ownerID, tenantID, execDir, toolName string, input map[string]any, output string)
+
+// ErrSessionNotFound marks that a conversation's persisted session id is no longer known to the
+// adapter's session transport (a serve/backend restart wiped its store, or the session expired).
 var ErrSessionNotFound = errors.New("adapter session not found")
 
-// ChatTurnClient is the adapter-neutral persistent-session surface an Ask
-// Orchicon conversation turn drives. It is the generalization of the
-// historical askorchicon sessionTurnClient: an adapter that supports Ask
-// chat implements it as an OPTIONAL capability, resolved through the shared
-// Dispatcher by the conversation's model_ref adapter kind. The askorchicon
-// service type-asserts it off the Dispatcher-resolved bridge and surfaces
-// an actionable error when an adapter registers but does not implement it.
-// Semantically identical to sessionTurnClient (Subscribe / CreateSession /
-// SendMessage / Abort / ReplyPermission), scoped to a conversation.
+// ChatTurnClient is the adapter-neutral persistent-session surface an Ask Orchicon conversation
+// turn drives.
 type ChatTurnClient interface {
 	// Subscribe opens an adapter-event subscription for a conversation,
 	// yielding session-visible SessionEvents for the conversation's turns.
@@ -264,139 +157,84 @@ type ChatTurnClient interface {
 	CreateConversationSession(ctx context.Context, conversationID, title string) (string, error)
 	// SendTurnMessage appends a user message to a conversation session.
 	SendTurnMessage(ctx context.Context, conversationID, sessionID, system, modelRef, text string) error
-	// AbortConversationSession stops a live turn on a conversation session so
-	// the model stops generating now (Stop / supersede / TTL expiry). Safe
-	// no-op for unknown sessions.
+	// AbortConversationSession stops a live turn on a conversation session so the model stops
+	// generating now (Stop / supersede / TTL expiry).
 	AbortConversationSession(ctx context.Context, sessionID string) error
 	// ReplyPermission auto-approves a permission.asked signal.
 	ReplyPermission(ctx context.Context, sessionID, permissionID string) error
-	// ReplyPermissionDecision answers a permission.asked signal with an
-	// explicit serve response value ("once" | "reject"). The consent core
-	// uses it: "once" proceeds for the single call, "reject" turns the ask
-	// into a tool error the model sees. The SESSION decision lives in the
-	// caller's grant store, never in a serve-side response value.
+	// ReplyPermissionDecision answers a permission.asked signal with an explicit serve response value
+	// ("once" | "reject").
 	ReplyPermissionDecision(ctx context.Context, sessionID, permissionID, decision string) error
 }
 
-// SessionOwner is the OPTIONAL capability for an adapter that can identify
-// whether a session id belongs to it. Ask Orchicon uses it to enforce
-// adapter-scoped session identity across a mid-conversation model/adapter
-// switch: when the conversation's persisted session id belongs to a DIFFERENT
-// adapter than the one the current model_ref resolves to, the turn must
-// create a fresh session on the new adapter instead of dispatching a foreign
-// session id to it (which a session-ful adapter like opencode rejects with an
-// opaque 500). Adapters without this capability are treated as OWNS-ALL:
-// they accept any session id (the native orchicon bridge is deliberately
-// sessionless and accepts any id, so the reverse-direction opencode→native
-// switch keeps working).
+// SessionQueuesPrompts is implemented by chat adapters that can HOLD a message sent while a turn is
+// running and fold it into that SAME turn — rather than starting a competing one.
+type SessionQueuesPrompts interface {
+	// QueuesPrompts reports whether SendTurnMessage on a live session folds the message into the
+	// CURRENT turn (true) rather than starting its own (false).
+	QueuesPrompts() bool
+}
+
+// SessionOwner is the OPTIONAL capability for an adapter that can identify whether a session id
+// belongs to it.
 type SessionOwnerKind interface {
 	// SessionOwnerKind returns the adapter kind this client's sessions
 	// belong to (e.g. "orchicon", "opencode").
 	SessionOwnerKind() string
 }
 
-// InProcessToolRunner is the OPTIONAL capability for an adapter that EXECUTES the model's tool calls itself,
-// in this process, rather than handing them to a session serve.
-//
-// IT EXISTS BECAUSE A SIGNAL THAT IS HONEST FOR ONE TRANSPORT IS A GUESS FOR THE OTHER. Ask Orchicon's
-// tool-wedge detector infers "this tool call is wedged" from a call that has been issued and SILENT past a
-// window, and then heals it the heavy way: abort the session, create a fresh one, re-dispatch the same
-// message. That inference is the only thing available when the call went to a serve we cannot see into.
-//
-// A transport that runs the call ITSELF does not need the guess, and pays for it: the operator's prod plane
-// carried 13 "session wedged on a tool — recycling to a fresh session" entries in two days, EVERY one of
-// them tool="bash" on this bridge, each one destroying the session's context over a shell command that was
-// simply still running (the numbers are in askorchicon's stall monitor). The host suite's bash bounds itself
-// with its own hard deadline (bashTimeoutDefault 120s / bashTimeoutMax 600s), so a slow call is not a wedged
-// call — it resolves, and its tool result closes the question.
+// InProcessToolRunner is the OPTIONAL capability for an adapter that EXECUTES the model's tool
+// calls itself, in this process, rather than handing them to a session serve.
 type InProcessToolRunner interface {
-	// ToolsRunInProcess reports whether every tool call this transport emits is executed by the transport
-	// itself. False — or the interface being absent — means tools are dispatched to a session serve, where
-	// silence genuinely is the only signal available and the wedge inference must stay armed.
+	// ToolsRunInProcess reports whether every tool call this transport emits is executed by the
+	// transport itself.
 	ToolsRunInProcess() bool
 }
 
-// NativeSessionIDPrefix is the tag the native (orchicon) bridge prepends to
-// its synthetic session ids (internal/orchicon/chatturn.go). Any session id
-// carrying this prefix is owned by the native adapter; dispatching it to any
-// other adapter is always a cross-adapter leak that must recreate first.
+// NativeSessionIDPrefix is the tag the native (orchicon) bridge prepends to its synthetic session
+// ids (internal/orchicon/chatturn.go).
 const NativeSessionIDPrefix = "orchicon-ask:"
 
-// SendTurnMessageWithAttachments is the OPTIONAL mid-run capability for
-// conversation turns that carry file/image attachments. It mirrors the
-// MessageInjector capability pattern: an adapter that supports attachments
-// on Ask turns implements it; an Ask turn with attachments routed to an
-// adapter that lacks it FAILS LOUDLY (never silently degrading to
-// text-only). The turn attaches are server-authoritative (count/size caps).
+// SendTurnMessageWithAttachments is the OPTIONAL mid-run capability for conversation turns that
+// carry file/image attachments.
 type SendTurnMessageWithAttachments interface {
 	SendTurnMessageWithAttachments(ctx context.Context, conversationID, sessionID, system, modelRef, text string, attachments []ChatAttachment) error
 }
 
-// ConversationHistoryPurger is the OPTIONAL durable-history capability for the
-// Ask chat path, mirroring the SendTurnMessageWithAttachments pattern.
-//
-// A sessionless adapter (native / "orchicon") owns a persisted history
-// artifact per conversation that NOTHING else reclaims — the native bridge
-// writes one JSON file per session and the conversation row is its only other
-// trace — so deleting a conversation must purge it or the artifact accumulates
-// forever. A session-ful adapter (opencode) keeps its history inside its own
-// serve and has nothing to purge, so it simply does not implement this.
-//
-// The conversation-delete path type-asserts it and skips when absent: never a
-// panic, never a hard failure of the delete RPC. Implementations MUST be
-// idempotent — purging an unknown or never-created conversation is a
+// Implementations MUST be idempotent — purging an unknown or never-created conversation is a
 // successful no-op.
 type ConversationHistoryPurger interface {
-	// PurgeConversationHistory discards a conversation's durable session
-	// history (in-memory and persisted). sessionID may be empty: an adapter
-	// that keys history by conversation id must still resolve the artifact.
+	// PurgeConversationHistory discards a conversation's durable session history (in-memory and
+	// persisted).
 	PurgeConversationHistory(ctx context.Context, conversationID, sessionID string) error
 }
 
 // ChatCompaction is the outcome of compacting an Ask conversation's context.
 type ChatCompaction struct {
-	// Compacted is false when nothing was done — an empty history, or a
-	// history already small enough that a lossy collapse would cost detail for
-	// no benefit. Detail always says why.
+	// Compacted is false when nothing was done — an empty history, or a history already small enough
+	// that a lossy collapse would cost detail for no benefit.
 	Compacted bool
 	// Detail is a one-line, user-facing explanation of the outcome.
 	Detail string
 	// Summary is the summary text that replaced the collapsed history. Empty
 	// when Compacted is false.
 	Summary string
-	// TokensBefore / TokensAfter are the conversation's MEASURED prompt size
-	// around the compaction. 0 means unknown — never an estimate, so a caller
-	// may trust a non-zero value as real.
+	// TokensBefore / TokensAfter are the conversation's MEASURED prompt size around the compaction.
 	TokensBefore int64
 	TokensAfter  int64
-	// ArchivePath is where the PRE-collapse history was preserved, when the
-	// adapter keeps one. The native transport archives it because the summary is
-	// lossy by design, so the original stays recoverable by hand. Empty when the
-	// adapter archives nothing.
+	// ArchivePath is where the PRE-collapse history was preserved, when the adapter keeps one.
 	ArchivePath string
 }
 
-// AskCompactNotice describes a compaction that replaced a conversation's
-// accumulated context, reported by the adapter that performed it so the service
-// owning the transcript can record it durably.
-//
-// WHY THIS EXISTS. The proactive pressure gate compacts a conversation BEFORE its
-// next turn, from inside the adapter bridge — which has no database handle, so the
-// only trace a collapse left was a warning in the server log. A conversation that
-// turned 2,343 messages into a summary therefore did so SILENTLY, in the transcript
-// the operator was actually reading, and "long conversations lose context" was the
-// only place it surfaced. This carries the outcome up to the layer that can write
-// it down.
+// AskCompactNotice describes a compaction that replaced a conversation's accumulated context.
 type AskCompactNotice struct {
 	ConversationID string
 	SessionID      string
-	// Reason is why the compaction ran: "pressure" (the proactive
-	// context-pressure gate), "context_limit" (reactive recovery on an overflow),
-	// or "manual" (a client's /compact).
+	// Reason is why the compaction ran: "pressure" (the proactive context-pressure gate),
+	// "context_limit" (reactive recovery on an overflow), or "manual" (a client's /compact).
 	Reason string
-	// Detail is the adapter's one-line, user-facing outcome, e.g. "compacted 2343
-	// messages into 1 summary + 7 recent messages (transcript reduced from 9.3MB to
-	// 412.8KB before summarizing)".
+	// Detail is the adapter's one-line, user-facing outcome, e.g. "compacted 2343 messages into 1
+	// summary + 7 recent messages (transcript reduced from 9.3MB to 412.8KB before summarizing)".
 	Detail string
 	// ArchivePath is where the pre-collapse history was preserved, when it was.
 	ArchivePath string
@@ -406,9 +244,7 @@ type AskCompactNotice struct {
 	TokensAfter  int64
 }
 
-// AskCompactNoticeFunc records a completed compaction. It runs INSIDE a live turn,
-// so an implementation must not depend on the turn's context outliving the call —
-// see the native caller, which strips cancellation before invoking it.
+// AskCompactNoticeFunc records a completed compaction.
 type AskCompactNoticeFunc func(ctx context.Context, notice AskCompactNotice) error
 
 // CompactConversationOpts identifies the conversation to compact.
@@ -423,187 +259,80 @@ type CompactConversationOpts struct {
 	Reason string
 }
 
-// ChatCompactor is the OPTIONAL context-compaction capability for the Ask chat
-// path, mirroring the SendTurnMessageWithAttachments pattern.
-//
-// It exists because the two adapter shapes need fundamentally different work. A
-// session-FUL adapter (opencode) asks its own serve to summarize the session in
-// place — the same call the worker compaction gate makes. A SESSIONLESS adapter
-// (native) owns the history it re-sends every turn and must rewrite it itself,
-// and may be asked to do so when the history ALREADY exceeds the window.
-//
-// An adapter that cannot compact simply does not implement this; the RPC
-// returns an actionable error rather than silently declining.
+// ChatCompactor is the OPTIONAL context-compaction capability for the Ask chat path, mirroring the
+// SendTurnMessageWithAttachments pattern.
 type ChatCompactor interface {
 	CompactConversationSession(ctx context.Context, opts CompactConversationOpts) (ChatCompaction, error)
 }
 
-// ChatAttachment is one inline attachment on an Ask turn (name, mime type,
-// raw bytes) — the adapter-neutral shape of the chat attachment input
-// (count/size caps are validated server-side at dispatch).
+// ChatAttachment is one inline attachment on an Ask turn (name, mime type, raw bytes) — the
+// adapter-neutral shape of the chat attachment input (count/size caps are validated server-side.
 type ChatAttachment struct {
 	Name     string
 	MimeType string
 	Data     []byte
 }
 
-// ToolPolicy is the resolved tool restriction for ONE Ask turn: the mode it applies to, and the tool names that
-// mode may not run.
-//
-// It carries the RESOLVED list rather than the mode alone, so an adapter never needs the policy table — it is
-// handed the outcome. That is what keeps the boundary in one place (internal/askmode) while letting each adapter
-// apply it through whatever mechanism it has: a config block it rewrites, a flag on an invocation, an allow-list
-// it filters, or (for the native transport) its own tool layer, which needs nothing passed at all.
+// ToolPolicy is the resolved tool restriction for ONE Ask turn: the mode it applies to, and the
+// tool names that mode may not run.
 type ToolPolicy struct {
 	Mode   string
 	Denied []string
 }
 
-// ChatToolRestrictor is the OPTIONAL capability for an adapter that can ENFORCE a per-turn tool policy.
-//
-// ITS PURPOSE IS TWO THINGS, and the second is the one that matters most as adapters multiply:
-//
-//  1. The hook. An adapter that can restrict tools implements this and applies the policy its own way.
-//  2. THE HONEST ANSWER TO "IS THIS TURN ACTUALLY ENFORCED?". Not every adapter can restrict per turn — it
-//     depends on whether its mechanism is per-invocation or per-process, and that is not something the platform
-//     can assume. An adapter that does NOT implement this is dispatching a turn where the mode boundary is
-//     PROSE ONLY, and the caller can say so (askorchicon logs it) rather than believing the boundary holds
-//     everywhere and discovering otherwise only when a mode does something it should not have.
-//
-// It is OPTIONAL by design, mirroring ChatCompactor and SendTurnMessageWithAttachments: an adapter without the
-// capability is a known, reportable state rather than an error.
+// An adapter that does NOT implement this is dispatching a turn where the mode boundary is PROSE
+// ONLY.
 type ChatToolRestrictor interface {
 	RestrictChatTools(ctx context.Context, policy ToolPolicy) error
 }
 
-// SessionEvent is one turn-visible signal an Ask drain loop consumes,
-// adapter-neutral. Adapters map their own event/protocol vocabulary onto
-// these turn-visible kinds; the askorchicon service and scheduler see only
-// this shape, never the adapter's raw event type.
+// SessionEvent is one turn-visible signal an Ask drain loop consumes, adapter-neutral.
 type SessionEvent struct {
-	// Kind classifies the signal:
-	//   "idle"       — turn complete; drain ends the turn as collected
-	//   "error"      — turn failed (model/API level); Text is the message
-	//   "permission" — permission.asked; PermissionID drives auto-approve
-	//   "tool_part"  — a tool call issued but not yet resolved (Text = tool
-	//                  name); feeds the stall monitor's wedge signal
-	//   "delta"      — mid-generation token delta (Text); liveness + live mirror
-	//   "part"       — a completed text/reasoning/tool_use/step_finish part
-	//   "tool_result"— a tool call RESOLVED: its arguments and output. Typed
-	//                  fields (ToolName/ToolCallID/ArgsJSON/Output/IsError),
-	//                  not a transport-shaped Part map — see ToolName.
-	//   "question"   — the model asked a clarifying question and is WAITING for the
-	//                  answer (ask_user, blocking). Typed fields (Question/
-	//                  Options/AllowOther/InputJSON); the reply is an answer string,
-	//                  not a permission decision.
+	// Kind classifies the signal: "idle" — turn complete.
 	Kind string
 	// Type refines Kind for "delta" ("text"|"reasoning") and "part"
-	// ("text"|"reasoning"|"tool_use"|"step_finish") — the stall-monitor and
-	// session-event vocabulary.
+	// ("text"|"reasoning"|"tool_use"|"step_finish") — the stall-monitor and session-event vocabulary.
 	Type string
-	// Text is the delta text ("delta"), the completed part text ("part"
-	// text/reasoning), the error message ("error"), or the active tool name
-	// ("tool_part"). It carries the COMMITTED folded-think body for a
-	// reasoning delta produced by the adapter's think demux (see SessionBus).
+	// Text is the delta text ("delta"), the completed part text ("part" text/reasoning), the error
+	// message ("error"), or the active tool name ("tool_part").
 	Text         string
 	IsReasoning  bool
 	PermissionID string
-	// Detail carries the raw transport properties of a "permission" event
-	// (opencode emits id, sessionID, permission/title, patterns, metadata and
-	// callID), so the consent layer can answer the ask with the action's
-	// detail intact rather than only its id. An adapter that correlates the
-	// tool call an ask belongs to adds the call's ARGS under "toolInput" —
-	// an MCP-tool ask carries no path/command of its own (patterns ["*"],
-	// metadata {}), so without them such an ask has nothing to key or show.
-	// Nil for every other kind.
+	// Detail carries the raw transport properties of a "permission" event (opencode emits id,
+	// sessionID, permission/title, patterns, metadata and callID).
 	Detail map[string]any
-	// Part is the legacy part map for a completed "part" (a "tool_use" part
-	// carries tool + args for the stall monitor's repetition signature; the
-	// monitor path consumes it). Nil for other kinds.
+	// Part is the legacy part map for a completed "part" (a "tool_use" part carries tool + args for the
+	// stall monitor's repetition signature; the monitor path consumes it).
 	Part map[string]any
 	// --- Typed tool-resolution fields (Kind "tool_result") ---
-	//
-	// These exist so an adapter never has to shape its own tool lifecycle into
-	// ANOTHER adapter's private event encoding. "tool_result" used to be
-	// expressible only by hand-building the Part map that the opencode adapter
-	// happens to emit (part["tool"], part["state"]["input"], …), which made
-	// opencode the reference dialect every future adapter had to imitate.
-	//
-	// ToolCallID is the transport's own correlation id (empty when the adapter
-	// has none). ToolName is the tool that ran. ArgsJSON is the EXACT argument
-	// JSON the call carried, and Output its result text — together these are
-	// what a client needs to render a resolved call (an ask_user card reads its
-	// question and options straight out of ArgsJSON). IsError marks a failed
-	// call so its result is not shown as a success.
 	ToolCallID string
 	ToolName   string
 	ArgsJSON   string
 	Output     string
 	IsError    bool
 	// --- Typed consent fields (Kind "permission") ---
-	//
-	// An adapter that can name the action it is asking about supplies it HERE,
-	// rather than shaping it into the property vocabulary the opencode adapter
-	// happens to emit (Detail: permission/title, metadata.filepath, patterns,
-	// toolInput). Same rule as the tool-result fields above: the shared contract
-	// describes the action, and no adapter has to speak another's dialect.
-	//
-	// Tool is the tool being gated; Command its shell line for an execution;
-	// Targets the paths a write/edit touches; InputJSON the call's argument JSON
-	// (the only detail an MCP-style ask has). Directory, when set, is the
-	// grant/deny key the ask means — it is otherwise derived from the targets.
-	// extractAskAction prefers these fields when Tool is set and falls back to
-	// the Detail map, so both transports stay supported.
 	Tool      string
 	Command   string
 	Targets   []string
 	InputJSON string
 	Directory string
 	// --- Typed question fields (Kind "question") ---
-	//
-	// A clarifying question the model asked and the turn is PAUSED on (ask_user,
-	// made blocking). It carries no permission semantics — there is no grant and no
-	// allow/deny — so it rides its own kind rather than being special-cased inside
-	// the permission path, where the precedence chain would have to be taught to
-	// skip it.
-	//
-	// The answer comes back over the SAME reply RPC (ReplyPermissionAsk.answer) and
-	// becomes the ask_user TOOL RESULT, so the model continues the turn with the
-	// answer in hand instead of being told the question was recorded.
 	Question   string
 	Options    []string
 	AllowOther bool
-	// SessionID is the session the event belongs to. Adapters whose
-	// transport multiplexes sessions (e.g. a shared serve bus) set it so the
-	// drain loop can filter by the turn's current session id (which can
-	// change across a recreation). Empty = the adapter already scoped the
-	// subscription to a single session.
+	// SessionID is the session the event belongs to.
 	SessionID string
 }
 
-// SessionBus is the adapter-neutral per-turn event surface an Ask drain loop
-// consumes. It closes when the underlying transport ends or Close is called.
-// The adapter owns the per-session filter and folded-think demux; the
-// scheduler/askorchicon packages consume only SessionEvents.
+// SessionBus is the adapter-neutral per-turn event surface an Ask drain loop consumes.
 type SessionBus interface {
 	Events() <-chan SessionEvent
 	Done() <-chan struct{}
 	Close()
 }
 
-// ConfigurableBridge is the optional construction-time capability
-// surface: the setters that inject cross-cutting wiring every adapter
-// receives from the server (usage recorder, durable session transcript
-// store, runtime daemon client). Declared as a single interface so
-// construction stays adapter-neutral — concrete adapter types appear
-// only at construction/registration, never in dispatch or callback
-// paths. The server type-asserts each setter separately, so a bridge may
-// implement any subset (missing setters are simply skipped).
-//
-// SetHostServe is deliberately NOT part of this contract: the host serve
-// is opencode-specific transport plumbing (the scheduler must not import
-// opencode), so the server wires it directly on the concrete adapter at
-// construction — which is where concrete types are allowed.
+// ConfigurableBridge is the optional construction-time capability surface: the setters that inject
+// cross-cutting wiring every adapter receives from the server (usage recorder.
 type ConfigurableBridge interface {
 	// SetUsageRecorder injects the LLM usage recorder (step_finish
 	// token/cost telemetry).
@@ -615,11 +344,8 @@ type ConfigurableBridge interface {
 	SetRuntimeClient(rt RuntimeClient)
 }
 
-// ContinueSessionOpts carries everything needed to run a follow-up
-// question against a worker's session WITHOUT creating a new execution
-// or work item. It is the adapter-neutral contract shape for the
-// SessionContinuer capability — the opencode bridge implements it via
-// its session transport; any future bridge accepts the same shape.
+// ContinueSessionOpts carries everything needed to run a follow-up question against a worker's
+// session WITHOUT creating a new execution or work item.
 type ContinueSessionOpts struct {
 	ExecutionID  string
 	TenantID     string
@@ -631,38 +357,20 @@ type ContinueSessionOpts struct {
 	// session when the original serve/session is no longer reachable.
 	Context string
 	// Original session identity (from the transcript's session_info part).
-	// Re-attach is ADAPTER-SCOPED and best-effort: it happens inside the
-	// resolving adapter's OWN session store, never against a separate
-	// "execution serve" concept. ServeURL is the recorded serve address —
-	// display/diagnostic once the transcript carries an adapter identity,
-	// and only a legacy best-effort hint when AdapterKind is empty.
 	SessionID     string
 	ServeURL      string
 	ServePassword string
-	// AdapterKind is the adapter identity recorded in the transcript's
-	// session_info part (adapter.KindOpencode / adapter.KindOrchicon). It is
-	// INFORMATIONAL for routing — the dispatched adapter already follows from
-	// the execution's worker model_ref — and NORMATIVE for the adapter: it
-	// says whether the recorded SessionID/ServeURL are this adapter's own and
-	// may be re-attached. Empty means a legacy transcript written before the
-	// identity field existed (opencode-shaped fields only), so adapters keep
-	// their historical best-effort continuity path.
+	// AdapterKind is the adapter identity recorded in the transcript's session_info part
+	// (adapter.KindOpencode / adapter.KindOrchicon).
 	AdapterKind string
-	// WorkerID is the caller's execution worker. The bridge uses it to
-	// enforce identity isolation by comparing it against the prior
-	// transcript's identity block (a follow-up must belong to the same
-	// worker as the original run — no worker ever sees another worker's
-	// transcript). Empty (bridge-level tests) skips the worker check.
+	// WorkerID is the caller's execution worker.
 	WorkerID string
 	// StartSeq is the next transcript seq to use (the last existing part's
 	// seq + 1), so the follow-up entries append after the original run.
 	StartSeq int64
 
-	// The following reconstruct the worker session so a follow-up runs as a
-	// FULL live session (same MCP + host tools, same context, same agent
-	// loop) rather than a bare one-shot. The execution service populates
-	// them from the execution row + work item; the opencode adapter ignores
-	// them (its follow-up re-attaches to the serve).
+	// The following reconstruct the worker session so a follow-up runs as a FULL live session (same MCP
+	// + host tools, same context, same agent loop) rather than a bare one-shot.
 	WorktreePath       string
 	RuntimeImage       string
 	RuntimeWorkflowID  string
@@ -675,11 +383,8 @@ type ContinueSessionOpts struct {
 	ContextWindow      int64
 }
 
-// UsageRecord is the usage sample a bridge emits on step_finish (docs/04
-// §6.1 step_finish carries tokens + cost). It is the adapter-neutral
-// shape onto the canonical aigateway.UsageInput — the server copies it
-// field-for-field into the gateway's input so the gateway never branches
-// on adapter/provider.
+// UsageRecord is the usage sample a bridge emits on step_finish (docs/04 §6.1 step_finish carries
+// tokens + cost).
 type UsageRecord struct {
 	TenantID         string
 	ProjectID        string
@@ -697,34 +402,22 @@ type UsageRecord struct {
 	CorrelationID    string
 	TraceID          string
 	WorkflowRunID    string // immutable link to the workflow run; survives execution deletion
-	// AdapterKind tags the adapter that drove the model call (persisted as
-	// usage_records.adapter_kind). The native worker path sets "orchicon"; the
-	// Ask path sets the kind parsed from the conversation's model_ref, so a
-	// non-native ref attributes to the adapter that actually served it.
+	// AdapterKind tags the adapter that drove the model call (persisted as usage_records.adapter_kind).
 	AdapterKind string
-	// SessionID carries the Ask Orchicon conversation id for Ask attribution —
-	// a chat turn has no execution/task/project row to attribute through.
-	// Empty for worker executions (which use ExecutionID/TaskID). It is also
-	// the field the conversation delete path CLEARS rather than deletes:
-	// usage_records is the tenant's spend ledger, so de-linking keeps historical
-	// cost intact (db.ClearUsageSessionIDs).
+	// SessionID carries the Ask Orchicon conversation id for Ask attribution — a chat turn has no
+	// execution/task/project row to attribute through.
 	SessionID string
 }
 
-// UsageRecorderFunc records a usage sample. Decoupled from the
-// aigateway package via a function type so the scheduler and adapters
-// have no import dependency on the gateway.
+// UsageRecorderFunc records a usage sample.
 type UsageRecorderFunc func(ctx context.Context, in UsageRecord) error
 
 // SessionStoreFunc persists transcript entries for one execution. The
 // implementation owns the tenant transaction.
 type SessionStoreFunc func(ctx context.Context, execID, tenantID string, parts []db.SessionPart) error
 
-// RuntimeClient is the workflow runtime daemon client the server injects
-// into adapters via ConfigurableBridge. Satisfied by *runtime.Client
-// (internal/runtime imports neither scheduler nor opencode, so the
-// contract stays acyclic). A nil value means the daemon is absent
-// (headless serve) and the adapter stays in-process.
+// RuntimeClient is the workflow runtime daemon client the server injects into adapters via
+// ConfigurableBridge.
 type RuntimeClient interface {
 	// Create ensures the runtime container for a workflow run exists and
 	// returns its serve endpoint.
@@ -733,63 +426,37 @@ type RuntimeClient interface {
 	Ready(ctx context.Context) bool
 	// Kill tears down a workflow run's runtime container.
 	Kill(ctx context.Context, workflowID string) error
-	// Exec runs one shell command inside the run's leased runtime
-	// container (always-container native transport). A nil client means
-	// the daemon is absent (headless/local) and the adapter stays
-	// in-process.
+	// Exec runs one shell command inside the run's leased runtime container (always-container native
+	// transport).
 	Exec(ctx context.Context, workflowID string, req runtime.ExecRequest) (*runtime.ExecResult, error)
 	// Images lists the daemon's stock runtime images.
 	Images(ctx context.Context) (*runtime.ImageList, error)
 }
 
-// Compile-time proof that the production runtime daemon client satisfies
-// the contract shape (so a future adapter can rely on the interface
-// without importing runtime itself).
+// Compile-time proof that the production runtime daemon client satisfies the contract shape (so a
+// future adapter can rely on the interface without importing runtime itself).
 var _ RuntimeClient = (*runtime.Client)(nil)
 
 // TaskReconciler implements ExecutionCallbacks so the adapter bridge can
 // notify it of lifecycle transitions without import cycles.
 var _ ExecutionCallbacks = (*TaskReconciler)(nil)
 
-// RecoveryTrigger is the interface the TaskReconciler uses to trigger
-// recovery when an execution fails (docs/06 §2). Satisfied by the
-// recovery.Engine; declared here to avoid a scheduler→recovery import
-// (loose coupling).
-//
-// stepRunID is the workflow step run the failed execution belongs to
-// ("" for standalone, non-workflow failures). Recovery is scoped per
-// failing step run so every step that fails gets its own recovery cycle,
-// and the work item (the ticket) stays untouched during a run.
-//
-// auditEntry, when non-nil, is recorded atomically with the recovery
-// creation inside the engine's own transaction (the RPC path passes the
-// resolved actor; the reconciler system path passes nil).
+// RecoveryTrigger is the interface the TaskReconciler uses to trigger recovery when an execution
+// fails (docs/06 §2).
 type RecoveryTrigger interface {
 	TriggerOnFailure(ctx context.Context, tenantID, taskID, failedExecID, stepRunID, triggerReason string, auditEntry *audit.Entry) error
 }
 
-// PolicyEvaluator is the interface the WorkflowReconciler uses to
-// evaluate gate policies (docs/02 §2.5 Tier 1). Satisfied by the
-// policy.Engine; declared here to avoid a scheduler→policy import for
-// the reconciler (the engine is still constructed in the server and
-// injected).
+// PolicyEvaluator is the interface the WorkflowReconciler uses to evaluate gate policies (docs/02
+// §2.5 Tier 1).
 type PolicyEvaluator interface {
 	// EvaluateGate returns (allowed, error). allowed=false blocks the
 	// step transition (docs/02 §2.5: gate denied → blocked).
 	EvaluateGate(ctx context.Context, tenantID, gatePolicyRef, targetType, targetID string, input any) (bool, error)
 }
 
-// TaskDispatcher is the interface the WorkflowReconciler uses to
-// dispatch a ready work item to a WorkerExecution immediately after
-// creating it (docs/03 §8 invariant #1: only the TaskReconciler creates
-// WorkerExecutions). The WorkflowReconciler calls DispatchTask after
-// its own transaction commits so the work item is visible to the
-// TaskReconciler's dispatch transaction.
-//
-// stepRunID is the workflow step run this dispatch is for ("" for
-// standalone dispatch). Dispatch is scoped to the step run — the work
-// item is a shared input reference, so multiple steps bound to the same
-// item each get their own execution without mutating the item.
+// TaskDispatcher is the interface the WorkflowReconciler uses to dispatch a ready work item to a
+// WorkerExecution immediately after creating it (docs/03 §8 invariant #1.
 type TaskDispatcher interface {
 	DispatchTask(ctx context.Context, taskID, stepRunID string) error
 }

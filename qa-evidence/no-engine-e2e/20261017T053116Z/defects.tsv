@@ -1,0 +1,25 @@
+0	make fe-install (no frontend deps in this checkout)	Makefile:560
+1	make build succeeds with no container engine	Makefile:255 build: fetch-tags fe-build
+1	bin/orchicon is executable	
+1	bin/orch is executable	
+1	services status reports the services up (missing 'up (postgres' in qa-evidence/no-engine-e2e/20261017T053116Z/01-services-status.txt)	
+1	make run brings the plane up (GET /healthz -> 200)	Makefile:272-278
+1	/healthz body reports ok (missing '"status":"ok"' in qa-evidence/no-engine-e2e/20261017T053116Z/01-healthz.txt)	
+1	the plane's HTTP port is LISTENing	
+1	the plane's listening socket belongs to a real process (pid none)	
+2	make migrate applies to this instance's database	Makefile:431-433
+2	a second make migrate is a clean no-op (exit 0)	Makefile:431-433
+2	make rls-check passes with NO host psql (the downloaded-psql rung)	scripts/check-rls.sh:49-78
+2	the RLS gate really ran (not SKIPPED) (missing 'RLS gate OK' in qa-evidence/no-engine-e2e/20261017T053116Z/step-2.log)	
+4	the served bundle is fetchable (independent: HTTP GET of the asset)	internal/api (SPA serving)
+4	the documented rebuild path (make build) succeeds	Makefile:255
+4	the plane restarts after the rebuild (the bundle is go:embed-ed)	Makefile:272-278
+4	THE CHANGE IS LIVE: the SERVED bundle carries the new marker (missing 'NO-ENGINE-E2E-20261017T053116Z-22584' in qa-evidence/no-engine-e2e/20261017T053116Z/04-served-bundle-after.txt)	Makefile:569-581
+4	make build force-fe=1 (the engine-free escape hatch) succeeds	Makefile:573-581
+5	status makes no claim it cannot verify (no container-derived 'not created') (found 'not created' in qa-evidence/no-engine-e2e/20261017T053116Z/05-status-script.txt)	scripts/container.sh:1603-1630 status_instances (unguarded 'docker ps')
+5	status does not leak a container error (found 'docker: command not found' in qa-evidence/no-engine-e2e/20261017T053116Z/05-status-script.txt)	scripts/container.sh:1603-1630
+5	status names the plane's port (18080)	scripts/container.sh:plane_status
+5	status reports the SERVICES half (Postgres/NATS), not only the plane	scripts/container.sh:1603-1630
+6	scripts/orchicon.sh logs works with no container engine (exit 127)	scripts/orchicon.sh:101 (logs -> scripts/container.sh:1632 logs_instance -> 'docker logs -f')
+6	the plane writes its log to .local/share/orchicon-dev/serve/logs/orchicon.log (the path every other verb already knows)	Makefile:272-278 (make run is foreground and writes no log) + scripts/container.sh:478
+7	prod's plane answers /healthz	Makefile:272-278

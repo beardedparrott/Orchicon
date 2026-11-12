@@ -61,15 +61,8 @@ func TestWorkItemLabelHelpers(t *testing.T) {
 	}
 }
 
-// TestCompactPlaneWorkItemCreated regression-tests the two 2026-08-31
-// plane-channel defects: (1) the create relay sent a bare run ID where the
-// run_context JSONB belongs — ProvenanceFromRunContext unmarshal-fails on
-// it, stamping silently no-ops, and idea spawns land as plain pending
-// items invisible to the Idea Cloud; (2) the raw proto response showed
-// `status: 1` (PENDING) with no labels, which the worker misread as IDEA
-// confirmation. The compact envelope must carry labeled status + explicit
-// provenance/idea_state fields so a spawn's landing state is verifiable
-// from the tool response alone.
+// TestCompactPlaneWorkItemCreated regression-tests the two 2026-08-31 plane-channel defects: (1)
+// the create relay sent a bare run ID where the run_context JSONB belongs.
 func TestCompactPlaneWorkItemCreated(t *testing.T) {
 	t.Run("pending create is labeled plainly — never misreadable as idea", func(t *testing.T) {
 		raw, err := compactPlaneWorkItemCreated(&apiv1.CreateWorkItemResponse{
@@ -143,11 +136,8 @@ func TestCompactPlaneWorkItemCreated(t *testing.T) {
 	})
 }
 
-// TestRefuseIdeaSpawn pins the loud-no-op gate on orchicon_plane_create_idea_item:
-// the tool must REFUSE (not silently land plain-pending) when the run's
-// run_context carries no provenance block (the bare-run-ID relay bug class)
-// or when the recurrence's outputs_mode is not idea. Only a full idea block
-// passes.
+// TestRefuseIdeaSpawn pins the loud-no-op gate on orchicon_plane_create_idea_item: the tool must
+// REFUSE (not silently land plain-pending) when the run's run_context carries no provenance block.
 func TestRefuseIdeaSpawn(t *testing.T) {
 	t.Run("no provenance block refuses", func(t *testing.T) {
 		err := refuseIdeaSpawn(nil)
@@ -185,9 +175,8 @@ func TestRefuseIdeaSpawn(t *testing.T) {
 	})
 }
 
-// TestCompactIdeaEnvelopeError: a create whose landed state is NOT idea
-// (despite the gate passing) must return an error envelope — never a
-// success-shaped one — so a spawning worker cannot misread the landing.
+// TestCompactIdeaEnvelopeError: a create whose landed state is NOT idea (despite the gate passing)
+// must return an error envelope — never a success-shaped one.
 func TestCompactIdeaEnvelopeError(t *testing.T) {
 	raw, err := compactIdeaEnvelopeError(&apiv1.WorkItem{
 		Id:     "wi_3",

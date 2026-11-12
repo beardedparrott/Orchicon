@@ -8,11 +8,6 @@ import (
 )
 
 // The operator: "User messages are printing AFTER the model's messages."
-//
-// mergeHistory merged the durable transcript with the live buffer by
-// CONCATENATION (history then live), so any live row the dedupe did not drop
-// landed at the BOTTOM — below the model's reply. The combined list must be
-// interleaved by timestamp instead.
 func TestMergeHistoryKeepsChronologicalOrder(t *testing.T) {
 	s := &chatStore{items: map[string][]chat.ChatItem{}}
 	// A live user row the dedupe cannot match (its text differs from the
@@ -74,27 +69,8 @@ func mergeTexts(items []chat.ChatItem) []string {
 	return out
 }
 
-// The operator: "A lot of the permission/answer logs and even some actual commands ran stays at the bottom
-// of the screen and the conversation from the model continues above it. This made me think the conversation
-// wasn't going anywhere... We need to have those look and feel like actual conversation logs in the
-// conversation and move them up as new text streams in just like any other activity."
-//
-// The durable assistant row is timestamped when its ROW was created — the START of the turn — while a card
-// or command row raised DURING that turn is stamped when IT arrived. Sorted by those two clocks the reply
-// beats every item raised inside it for the whole turn, so it stayed pinned above them and they sat at the
-// bottom of the screen. A reply that is still growing must sort by its LAST ARRIVAL instead, so the items
-// raised while it was being written float above it.
-// THE RULE THIS PINS WAS REVERSED, deliberately, on the operator's report.
-//
-// It used to assert that a growing reply SINKS BELOW the card raised during it — so the card moved up as
-// text streamed in, which read as "the card moves out of the way of the reply". The operator's
-// screenshot killed that: with a 29,528-character reasoning block the card travelled off the TOP of the
-// pane, and the only part left on screen was the card's own hint row ("↑/↓ select · enter confirm · esc
-// denies") while the question it belonged to was nowhere visible. Their instruction: "The cards need to
-// be placed at the bottom of the screen so it is apparent what is asked of the user."
-//
-// So the assertion is inverted, and the inversion is the point: the card is the PROMPT, the reply is
-// HISTORY, and while the turn is blocked on an answer the prompt outranks it for the bottom of the pane.
+// The operator: "A lot of the permission/answer logs and even some actual commands ran stays at the
+// bottom of the screen and the conversation from the model continues above it.
 func TestAPendingCardStaysAtTheBottomWhileTheReplyGrows(t *testing.T) {
 	s := &chatStore{items: map[string][]chat.ChatItem{}}
 	// A permission card raised mid-turn (arrived at 2000ms) and the acked reply row as the server stores it
@@ -133,9 +109,7 @@ func TestAPendingCardStaysAtTheBottomWhileTheReplyGrows(t *testing.T) {
 	}
 }
 
-// THE REPORTED CASE, at its actual scale: a 29,528-character reasoning block and a pending card. The card
-// must be the last row — that is what keeps it inside the pane, because the transcript follows the bottom
-// (kit2.Stream.AtBottom) and no amount of growth above it can then push it off.
+// THE REPORTED CASE, at its actual scale: a 29,528-character reasoning block and a pending card.
 func TestAPendingCardSurvivesAHugeGrowingReply(t *testing.T) {
 	s := &chatStore{items: map[string][]chat.ChatItem{}}
 	s.items["c1"] = []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{ID: "a1"}, 2000)}
@@ -158,15 +132,8 @@ func TestAPendingCardSurvivesAHugeGrowingReply(t *testing.T) {
 	}
 }
 
-// A message's rows are one UNIT: its text, each reasoning part and its recorded ask card were written
-// together, so they move together and keep the order they were emitted in (which is what keeps a recorded
-// question card at the bottom of its own turn).
-//
-// THE CARD'S OWN POSITION IS NOT PART OF THAT UNIT, and the distinction is what this asserts after the
-// operator's reversal. A message's rows describe something that ALREADY HAPPENED, so their internal order
-// is fixed. A pending card is a PROMPT — it has not happened yet — so it is moved out of the message and
-// pinned to the bottom of the pane (see chat.PendingCardsLast), which is the reported fix. The message
-// keeps its order; the card leaves its slot for the bottom.
+// A message's rows are one UNIT: its text, each reasoning part and its recorded ask card were
+// written together.
 func TestAnchoredMessageKeepsItsInternalOrder(t *testing.T) {
 	s := &chatStore{items: map[string][]chat.ChatItem{}}
 	s.items["c1"] = []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{ID: "a1"}, 9000)}
@@ -221,12 +188,6 @@ func TestOpeningAnOldConversationIsNotAnchored(t *testing.T) {
 
 // The anchor survives the completion replace: the in-flight reply must not jump back up to its
 // row-creation time at the exact moment the operator starts reading the finished reply.
-//
-// THE GUARANTEE IS STABILITY, NOT A PARTICULAR POSITION, and it is asserted that way here: the order is
-// captured BEFORE the completion replace and required to be identical after it. Previously that order had
-// the pending card above the reply; now it has the card at the bottom — and because the rule is the same on
-// both sides of the boundary, the transition is still a non-event for the operator. What this test will not
-// tolerate is the card appearing to move as the turn ends.
 func TestCompletionReplaceKeepsTheAnchor(t *testing.T) {
 	s := &chatStore{items: map[string][]chat.ChatItem{}}
 	s.items["c1"] = []chat.ChatItem{chat.ConsentItem(chat.PermissionAsk{ID: "a1"}, 2000)}

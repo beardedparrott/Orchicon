@@ -3,32 +3,6 @@ package theme
 import "github.com/charmbracelet/lipgloss"
 
 // theme_named.go — hand-written ports of widely used COMMUNITY palettes.
-//
-// WHY THESE ARE WRITTEN OUT RATHER THAN DERIVED. theme_palettes.go generates its families from HSL specs,
-// which is right for a palette whose character IS a hue (forest is green, ocean is blue). It is wrong for
-// these: Dracula, Nord, Catppuccin and the rest are SPECIFIC published colours, and a generated
-// approximation of Dracula would be a different palette wearing its name. So the hexes here are the
-// upstream ones.
-//
-// PROVENANCE, STATED PLAINLY. The operator asked to "look to opencode and the themes they have
-// available". opencode's theme list is compiled into its binary and is not on this machine, so these are
-// NOT copies of its files: they are the well-known community palettes that family of themes is drawn from
-// — Dracula, Nord, Catppuccin (Mocha/Latte), Tokyo Night, One Dark, Everforest, Kanagawa, Solarized,
-// GitHub and Rosé Pine. Anyone who knows the upstream palette will recognise what is here.
-//
-// WHERE AN UPSTREAM COLOUR WAS CHANGED, AND WHY. Two floors bind, and both are the same adaptation the
-// Light theme already documents:
-//
-//   - STATUS on a LIGHT background is measured at 4.5:1 (see TestStructuralContrast), and several upstream
-//     accents are built for a browser where a colour only has to LOOK distinct. Catppuccin Latte's green
-//     `#40a02b` measures 2.96:1 and Rosé Pine Dawn's `#b4637a` 3.81:1, so each is darkened within its own
-//     family until it clears the floor. A status that cannot be read is not a status.
-//   - BORDERS are floored for the same reason the Light theme floors its own: an upstream hairline is
-//     designed to sit on a page with spacing and shadow around it, whereas here the border is the ONLY
-//     thing separating panes and it CARRIES THE PANEL TITLE.
-//
-// Status colours stay per-palette (not the shared darkStatus/lightStatus sets) because these palettes
-// define their own — that is part of their character — and every one of them is gated.
 
 var namedThemes = []*Theme{
 	// Dracula — draculatheme.com. Purple/cyan/pink over a near-black slate.

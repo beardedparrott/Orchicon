@@ -1,0 +1,81 @@
+# Loki — log backend for the Orchicon supervised service set.
+# @DATA_DIR@ and the @…_PORT@ tokens are replaced at startup from the
+# instance's resolved port table (see tempo.yaml's header).
+auth_enabled: false
+
+server:
+  http_listen_port: @LOKI_HTTP_PORT@
+  # EPHEMERAL ON PURPOSE — 0 asks the kernel for a free port.
+  #
+  # This listener is INTERNAL: nothing outside the process dials it (the
+  # collector ships logs to the HTTP port above; readiness probes that), so it
+  # needs a socket and no particular number. A fixed number was the bug: the
+  # literal 9096 was chosen to dodge the collector in the retired
+  # single-container namespace, and once every instance shared the real host,
+  # the second instance could never bind it — dev's Loki crash-looped on
+  # "listen tcp :9096: bind: address already in use" while prod held it, so the
+  # operator's Logs view said the backend was unreachable while it was fine on
+  # the other instance. Verified against the shipped Loki binary: port 0 binds
+  # an ephemeral socket and startup proceeds normally.
+  grpc_listen_port: 0
+
+common:
+  # SINGLE-QUOTED, and that is a correctness requirement rather than a style choice.
+  # @DATA_DIR@ is the INSTANCE'S DATA DIRECTORY, which on Windows is a path with
+  # backslashes in it (C:\Users\me\.local\share\orchicon-dev). A DOUBLE-quoted YAML
+  # scalar processes backslash escapes, so that path becomes the escape \U followed by
+  # "sers..." and the child refuses to parse its config at all:
+  #
+  #   yaml: line 23: did not find expected hexdecimal number
+  #
+  # which crash-looped Loki for ever and left the operator's Logs view dead. A
+  # single-quoted YAML scalar has one escape ('' for a literal ') and takes
+  # backslashes literally, so the same path survives on every platform.
+  # writeConfigs also escapes the substituted value (yamlSingleQuoted) — see its
+  # comment — but quoting the template is what makes the intent explicit.
+  path_prefix: '@DATA_DIR@/loki'
+  storage:
+    filesystem:
+      chunks_directory: '@DATA_DIR@/loki/chunks'
+      rules_directory: '@DATA_DIR@/loki/rules'
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # Retention: prune log data older than this window so the telemetry
+  # volume cannot grow unbounded (Loki's default is NO retention).
+  # 336h = 14 days, matching Tempo's trace retention.
+  retention_period: 336h
+  allow_structured_metadata: true
+  otlp_config:
+    resource_attributes:
+      attributes_config:
+        - action: index_label
+          regex: .*
+    scope_attributes:
+      - action: structured_metadata
+        regex: .*
+    log_attributes:
+      - action: structured_metadata
+        regex: .*
+
+# The compactor performs the actual retention deletion. Without this block
+# retention_period above is inert (Loki requires retention_enabled +
+# delete_request_store, and a working_directory for the compactor).
+compactor:
+  working_directory: '@DATA_DIR@/loki/compactor'
+  compaction_interval: 10m
+  retention_enabled: true
+  delete_request_store: filesystem

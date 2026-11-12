@@ -1,0 +1,2 @@
+services for dev: up (postgres 127.0.0.1:15432, nats 127.0.0.1:14222, supervisor running)
+  DSN: postgres://orchicon:orchicon@localhost:15432/orchicon?sslmode=disable

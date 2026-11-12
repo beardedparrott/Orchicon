@@ -52,12 +52,8 @@ func TestAdapterConsumesResolvedBundleOrDeclaresWhyNot(t *testing.T) {
 	}
 	sort.Strings(kinds)
 
-	// An undeclared kind MUST be reported unclassified: the gate's
-	// classification check must be able to FAIL, not vacuously pass. This is
-	// the exact non-vacuous-fail demonstration adapter_bake_guard_test.go:64-66
-	// uses for the mount axis — and (AC3) the message must NAME the kind so its
-	// reader (whoever adds the next adapter) knows exactly which kind and which
-	// behaviour is missing.
+	// An undeclared kind MUST be reported unclassified: the gate's classification check must be able to
+	// FAIL, not vacuously pass.
 	unclassified := conformanceFailures("codex-unclassified-probe", adapterClass{}, false, readSourceFile)
 	if len(unclassified) == 0 {
 		t.Fatal("an undeclared kind reported NO conformance failure — the classification check is vacuous")
@@ -76,9 +72,8 @@ func TestAdapterConsumesResolvedBundleOrDeclaresWhyNot(t *testing.T) {
 		}
 	}
 
-	// Catalog-level anti-vacuity (the axis is EXERCISED — see
-	// catalogVacuityFailures for why this is NOT "every kind must be
-	// positive").
+	// Catalog-level anti-vacuity (the axis is EXERCISED — see catalogVacuityFailures for why this is
+	// NOT "every kind must be positive").
 	rollup := collectCatalogRollup("", kinds)
 	if failures := catalogVacuityFailures(rollup); len(failures) > 0 {
 		t.Fatalf("%s", strings.Join(failures, "\n"))
@@ -96,10 +91,8 @@ type catalogRollup struct {
 	witnessesExamined   int
 }
 
-// collectCatalogRollup tallies a kind list through the ONE classification
-// (classifyAdapter), so the anti-vacuity check reads the same declaration the
-// per-kind checker and the daemon do. An undeclared kind is skipped here (the
-// per-kind checker has already failed the gate for it, naming the kind).
+// collectCatalogRollup tallies a kind list through the ONE classification (classifyAdapter), so the
+// anti-vacuity check reads the same declaration the per-kind checker and the daemon do.
 func collectCatalogRollup(home string, kinds []string) catalogRollup {
 	r := catalogRollup{kinds: len(kinds)}
 	for _, kind := range kinds {
@@ -122,27 +115,8 @@ func collectCatalogRollup(home string, kinds []string) catalogRollup {
 	return r
 }
 
-// catalogVacuityFailures is the PURE catalog-level anti-vacuity check (no
-// *testing.T) so its accept AND reject paths are demonstrable in-test
-// (TestAdapterConsumptionCheckerIsNotVacuous).
-//
-// It is deliberately NOT "every kind must be positive". AC2 explicitly
-// sanctions a kind whose classification is "an explicit declaration naming
-// what it does not do and why" — a documented NEGATIVE. Demanding
-// len(kinds) positives would FAIL a legitimate catalog that contains one,
-// i.e. exactly the future adapter the task anticipates, and the failure would
-// name no kind (violating AC3). So this asserts the axis is genuinely
-// EXERCISED instead:
-//
-//   - at least one kind positively declares perSessionBundle (the per-session
-//     axis is asserted by somebody), and
-//   - every serve-dependent kind carries a positive runUnionAtServe — the
-//     per-kind checker enforces this too, so a serve-dependent catalog with no
-//     run-union positive means the axis is not being asserted at all.
-//
-// Note: "witnessesExamined == 0" needs no separate fatal — conformanceFailures
-// already fails any positive axis with no witnesses, so a clean per-kind pass
-// implies at least one witness was examined.
+// catalogVacuityFailures is the PURE catalog-level anti-vacuity check (no *testing.T) so its accept
+// AND reject paths are demonstrable in-test (TestAdapterConsumptionCheckerIsNotVacuous).
 func catalogVacuityFailures(r catalogRollup) []string {
 	var out []string
 	if r.perSessionPositives < 1 {
@@ -154,19 +128,14 @@ func catalogVacuityFailures(r catalogRollup) []string {
 	return out
 }
 
-// readSourceFile is the production witness reader: it reads a witness file
-// path RELATIVE TO this package dir (internal/runtime), so witnesses are
-// "../opencode/adapter.go", "../claude/session.go", "../orchicon/mcptools.go",
-// "../opencode/servehost.go", and "lifecycle.go".
+// readSourceFile is the production witness reader: it reads a witness file path RELATIVE TO this
+// package dir (internal/runtime).
 func readSourceFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
-// conformanceFailures is the PURE checker (no *testing.T, injectable reader)
-// so its fail paths are demonstrable in-test
-// (TestAdapterConsumptionCheckerIsNotVacuous). It returns one human teaching
-// message per violation, each naming the kind and the precise missing
-// behaviour. An empty result means the kind is conformance-clean.
+// conformanceFailures is the PURE checker (no *testing.T, injectable reader) so its fail paths are
+// demonstrable in-test (TestAdapterConsumptionCheckerIsNotVacuous).
 func conformanceFailures(kind string, c adapterClass, declared bool, readFile func(string) ([]byte, error)) []string {
 	if !declared {
 		return []string{fmt.Sprintf(`adapter kind %q is declared by the builtin provider catalog (internal/adapter/providers.go) but is NOT classified in classifyAdapter (internal/runtime/bootprofile.go). Answer BOTH axes there:
@@ -210,10 +179,7 @@ func conformanceFailures(kind string, c adapterClass, declared bool, readFile fu
 	return out
 }
 
-// witnessFailure verifies ONE consumptionWitness against the real file. A
-// declared axis whose witness file cannot be read, or whose needle is absent,
-// FAILS: a stale declaration cannot survive (the file moved / the wiring was
-// removed).
+// witnessFailure verifies ONE consumptionWitness against the real file.
 func witnessFailure(kind, axis string, w consumptionWitness, readFile func(string) ([]byte, error)) string {
 	if strings.TrimSpace(w.file) == "" || strings.TrimSpace(w.needle) == "" {
 		return fmt.Sprintf("adapter kind %q axis %s carries an empty witness (file=%q needle=%q) — a witness must name both the file and the needle it proves.", kind, axis, w.file, w.needle)
@@ -232,11 +198,8 @@ func witnessFailure(kind, axis string, w consumptionWitness, readFile func(strin
 // stale-file fail path fires.
 func readNothing(string) ([]byte, error) { return nil, os.ErrNotExist }
 
-// TestAdapterConsumptionCheckerIsNotVacuous proves EVERY fail path of the
-// conformance checker actually FIRES — a guard that cannot fail is not a
-// guard. Each case below is a violation the gate exists to catch, and each
-// must yield a non-empty failure list; the final case proves the checker can
-// also PASS a correct real declaration (so it is not a rubber stamp).
+// TestAdapterConsumptionCheckerIsNotVacuous proves EVERY fail path of the conformance checker
+// actually FIRES — a guard that cannot fail is not a guard.
 func TestAdapterConsumptionCheckerIsNotVacuous(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -322,11 +285,8 @@ func TestAdapterConsumptionCheckerIsNotVacuous(t *testing.T) {
 		}
 	}
 
-	// The catalog-level anti-vacuity check must REJECT a catalog that asserts
-	// neither axis, and ACCEPT a catalog that contains a documented NEGATIVE
-	// kind (AC2 sanctions those) as long as the axis is exercised by somebody.
-	// This is the regression guard for "the rollup must not demand every kind
-	// be positive" — the exact shape the NEXT adapter will have.
+	// The catalog-level anti-vacuity check must REJECT a catalog that asserts neither axis, and ACCEPT
+	// a catalog that contains a documented NEGATIVE kind (AC2 sanctions those) as long as the axis.
 	rollupCases := []struct {
 		name       string
 		r          catalogRollup

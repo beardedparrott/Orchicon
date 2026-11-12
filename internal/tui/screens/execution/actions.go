@@ -38,34 +38,28 @@ const (
 	srcRuns       = "runs"
 	srcWorkers    = "workers"
 	srcWorkflows  = "workflows"
-	// srcSchedules is the Schedules pane: upcoming / running / finished, cycled with `v`. The
-	// operator: "I noticed I don't see any 'Schedules' section in the TUI under Executions. We
-	// need to implement this in the TUI."
+	// srcSchedules is the Schedules pane: upcoming / running / finished, cycled with `v`.
 	srcSchedules = "schedules"
 )
 
 // cancelReason is the audit reason recorded on a TUI-initiated cancel.
 const cancelReason = "cancelled from the orch TUI"
 
+// abortReason is the audit reason recorded on a TUI-initiated run abort, mirroring the
+// GUI's "user clicked Stop".
+const abortReason = "aborted from the orch TUI"
+
 // Write chords (matched by name in handleActionKey).
-//
-// The worker CRUD chords deliberately AVOID d/D: the shell's global routes run
-// BEFORE the screen sees a key, and d/D is the diff-pane toggle there — so a
-// "deprecate" on D could never fire while the content pane has focus. `u` (for
-// unpublish) carries it instead, and the pair is documented in HintLine.
 const (
 	keyCancel        = "c"
 	keyInterject     = "i"
 	keyRetryRun      = "t"
 	keyForceProgress = "p"
-	keySetModel      = "m"
+	// keyAbortRun aborts a LIVE run.
+	keyAbortRun = "S"
+	keySetModel = "m"
 	// keyBulkSetModel sets the model for EVERY marked worker at once — the TUI's counterpart to the
-	// GUI's BulkChangeWorkerModelDialog, and the one thing a per-worker form cannot do (you cannot edit
-	// ten forms at once).
-	//
-	// SHIFT+M, because lowercase `m` is the retired single-worker chord — retired on purpose, since the
-	// model is a FIELD on the Edit and Version forms now, and re-binding it here would quietly bring back
-	// the second way of doing the same thing that was removed.
+	// GUI's BulkChangeWorkerModelDialog.
 	keyBulkSetModel = "M"
 	// Worker CRUD (Item 6). Each opens a form or a confirm; none writes from
 	// Update directly.
@@ -75,61 +69,20 @@ const (
 	keyPublish     = "p"
 	keySetActive   = "a"
 	keyDeprecate   = "u"
-	// keyDelete is THE delete chord, for BOTH panes and for both single and bulk deletes. It is one
-	// constant with one value because the operator asked for exactly that: *"let's make those consistent
-	// across the board please with 'ctrl+x' for single and bulk on both"*, after finding Workers on `x`,
-	// Workflows on `shift+x`, and the bulk variants on whatever their pane happened to use.
-	//
-	// IT NOW DEFERS TO kit2.DeleteChord rather than repeating the literal. Two constants set to the same
-	// value is exactly how this drifted the first time — and it drifted AGAIN in the other direction: this
-	// screen was brought to ctrl+x and the WORK panes were left on a bare `x`, so the operator's own chord
-	// did nothing where they were deleting projects. One literal, in the package every screen imports.
-	//
-	// `ctrl+x` is also free of the STEP EDITOR's `x` (remove step), which the old `X`/`x` pair had to be
-	// arranged around; that collision is simply gone now.
+	// keyDelete is THE delete chord, for BOTH panes and for both single and bulk deletes.
 	keyDelete = kit2.DeleteChord
 	// keyCategorize ASSIGNS the selected item to a grouping (worker / workflow / conversation
-	// categories). A CAPITAL, following this screen's own convention that a capital is the OTHER act on
-	// the same pane (`E` renames a workflow header, `V` edits a version, `M` sets the model on a
-	// selection) — and because every lowercase letter with a mnemonic is taken here: `c` is cancel, `g`
-	// goes to the run, `t` retries.
-	//
-	// It opens the SHELL's assign-or-create modal (see tui/categories.go): the category list is the
-	// shell's cache and the modal is shell-hosted, so the screen hands the intent over rather than
-	// owning a second implementation of it.
+	// categories).
 	keyCategorize = "C"
-	// Workflow lifecycle. The SAME chords reuse handles the same verbs on a
-	// different pane (n/e/p/u/x), and both sets are scoped to their own source —
-	// `p` is ALSO force-progress on a run, which is only safe because the
-	// workflow and worker form-openers dispatch solely while their pane has focus.
-	//
-	// Workflow lifecycle. `e` is the WORKFLOW edit MODE — the operator: "when someone
-	// hits 'e' to edit a workflow, they are going to think they are editing the entire
-	// workflow and all its steps at once, not in pieces." Inside that mode `enter`
-	// edits the selected step, `a` adds and `x` removes, so the step chords are no
-	// longer separate top-level commands sitting outside a normal edit view. `E`
-	// renames the workflow header (a different act from editing its steps); delete is
-	// the shared `ctrl+x` (see keyDelete). Both sets are scoped to the Workflows
-	// pane, which is also what keeps `p` usable as force-progress on a run.
+	// Workflow lifecycle.
 	keyNewWorkflow  = "n"
 	keyEditWorkflow = "E"
 	keyPublishWf    = "p"
 	// keyNewVersionWf creates the workflow's NEXT version — a DRAFT seeded from the newest, which is
 	// what editing a step would create anyway once the target stopped being a draft.
-	//
-	// THE OPERATOR ASKED FOR THIS CHORD: "what key do you hit to make a new version? That shortcut
-	// isn't listed in the composer when you are on workflow view." The honest answer was that there
-	// was no chord at all — the only route was implicit (`rpcUpdateSteps` creates a draft when the
-	// target is published, so "edit a step and it makes one for you"), which is a mechanism nobody can
-	// discover from the surface. `V` is the same key the Workers pane already uses for exactly this
-	// (keyEditVersion), so the gesture is learned once.
 	keyNewVersionWf = "V"
 	keyDeprecateWf  = "u"
 	// Delete is keyDelete — ONE chord for both panes (see its declaration).
-	// WORKFLOW EDIT MODE. `e` opens it from the Workflows pane; inside it the step
-	// cursor and the step chords are live. `a` is the operator's suggested key for
-	// adding ("Not sure how we can handle adding a step in this mode, maybe we can
-	// keep it 'a'"); `-` stays bound because it was the previous chord.
 	keyFlowEdit       = "e"
 	keyFlowEditStep   = "enter"
 	keyFlowAddStep    = "a"
@@ -139,66 +92,36 @@ const (
 	// Retained so the flow cursor keys read the same as before.
 	keyStepUp   = "up"
 	keyStepDown = "down"
-	// SCHEDULES chords. `v` cycles the view, exactly as it does on the Work Items pane
-	// (tree/archive), so one pane has one way to change what it is showing. `g` is the
-	// operator's "key that takes you to the workflow run", and `x` is the delete — whose
-	// MEANING is per-view (cancel an upcoming/running schedule, or remove the schedule from a
-	// finished row's item), matching the GUI's two different buttons.
-	// keySchedView / keyGoToRun / keySchedDelete are the Schedules pane's chords: the lens cycle,
-	// the jump to the run, and the delete. (The Execution detail's message box needs NO chord — it
-	// is a POSITION in the transcript, reached by walking down past the last block:
-	// execution_blocks.go.)
+	// SCHEDULES chords.
 	keySchedView   = "v"
 	keyGoToRun     = "g"
 	keySchedDelete = "x"
 )
 
-// The RETIRED chords. `f` was the follow-up box AND the base's pager; `i` was the interject box.
-// Both are now positions in the transcript rather than keys (execution_blocks.go), and these
-// constants exist only so the screen can EXPLAIN where the box went instead of going silent on an
-// operator who learned them. See handleActionKey's stub.
+// The RETIRED chords.
 const (
 	keyFollowUpLegacy  = "f"
 	keyInterjectLegacy = "i"
 )
 
-// DropKeyClaim releases the screen's key claim so the focus chord can return the
-// operator to the composer (see kit2.Base.DropKeyClaim) — without it an open
-// form would swallow ctrl+g and the next letters would run actions instead of
-// being typed.
+// DropKeyClaim releases the screen's key claim so the focus chord can return the operator to the
+// composer (see kit2.Base.DropKeyClaim).
 func (m *Model) DropKeyClaim() { m.Base.DropKeyClaim() }
 
-// ClaimsKeys reports whether the screen owns every key right now (an open
-// interjection form, the confirm dialog, or the inline detail editor). The shell
-// consults it before its own routes so a typed character is never stolen.
+// ClaimsKeys reports whether the screen owns every key right now (an open interjection form, the
+// confirm dialog, or the inline detail editor).
 func (m *Model) ClaimsKeys() bool {
 	return m.form != nil || m.Open != nil || m.modelPicker != nil || m.Base.EditingDetail()
 }
 
-// FormOpen reports whether a FORM is open — modal OR inline details-pane editor,
-// plus the model picker (a modal layered over a form). While one is up, Tab moves
-// through the form's FIELDS rather than the tab ring.
+// FormOpen reports whether a FORM is open — modal OR inline details-pane editor, plus the model
+// picker (a modal layered over a form).
 func (m *Model) FormOpen() bool {
 	return m.form != nil || m.modelPicker != nil || m.Base.EditingDetail()
 }
 
-// OwnsTab reports that Tab is a move INSIDE this pane, not a move of the shell's
-// tab ring: on the Executions detail, Tab toggles between the TRANSCRIPT and the
-// MESSAGE BOX.
-//
-// The operator: "Once we have focus on an execution detail pane, we should allow
-// tab to tab between the Execution details and the chat prompt. Currently once you
-// go into a chat in an execution you are locked in it and can't get out."
-//
-// The lock-in was real and had two causes. The chat CLAIMED Tab and then did
-// nothing with it (this screen's composer treated "tab" as "nothing below me"), so
-// the key vanished; and when the shell won the race instead, it moved the TOP MENU
-// while the caret stayed in the chat — which reads as being stuck, because typing
-// still went into the chat. Esc and up always worked, but nothing advertised them
-// and Tab is the gesture the whole rest of the app uses to move between regions.
-//
-// Scoped to the DETAIL with an execution selected, so the list keeps the shell's
-// Tab (walking the ring) and this explains a toggle that is only real in the pane.
+// OwnsTab reports that Tab is a move INSIDE this pane, not a move of the shell's tab ring: on the
+// Executions detail, Tab toggles between the TRANSCRIPT and the MESSAGE BOX.
 func (m *Model) OwnsTab() bool {
 	return m.Base.ActiveSourceName() == srcExecutions && m.Base.DetailFocusedForTest() && m.Base.DetailID() != ""
 }
@@ -216,24 +139,19 @@ func (m *Model) Notice() string { return m.notice }
 // actionsForSelection builds the entity-bound actions for the focused row.
 // An action that does not apply to the row's state is simply absent.
 func (m *Model) actionsForSelection() []kit2.Action {
-	// The SHARED bulk rule comes first, for the source that offers bulk actions: more than one
-	// marked row means the operator is operating on a SELECTION, not on the row the cursor is
-	// on, so the single-row actions are replaced rather than mixed with it.
+	// The SHARED bulk rule comes first, for the source that offers bulk actions: more than one marked
+	// row means the operator is operating on a SELECTION, not on the row the cursor.
 	if m.ActiveSourceName() == srcSchedules {
 		if ids := m.Base.BulkIDs(); len(ids) > 0 {
 			return m.scheduleDeleteActions(ids)
 		}
 	}
-	// WORKERS and WORKFLOWS take the same rule: more than one marked row means the operator is operating on
-	// a SELECTION, so the single-row actions are replaced rather than mixed with it. Without this branch,
-	// marking rows on these panes highlighted them and did nothing else.
+	// WORKERS and WORKFLOWS take the same rule: more than one marked row means the operator is
+	// operating on a SELECTION, so the single-row actions are replaced rather than mixed with it.
 	if m.ActiveSourceName() == srcWorkers {
 		if ids := m.markableIDs(); len(ids) >= kit2.BulkThreshold {
 			acts := m.entityBulkActions(srcWorkers, keyDelete, "worker", ids, m.rpcDeleteWorker)
-			// The worker-only bulk act. It opens a MODAL rather than writing, so its Do refuses the way
-			// every other form-opening action on this screen does (see errNeedForm) — the key path
-			// intercepts `M` first and opens the picker, and a CLICK on the bar label gets the refusal
-			// instead of a silent nothing.
+			// The worker-only bulk act.
 			return append(acts, kit2.Action{
 				Label: fmt.Sprintf("set model %d selected", len(ids)), Key: keyBulkSetModel, Source: srcWorkers,
 				Do: func(context.Context) error {
@@ -247,14 +165,7 @@ func (m *Model) actionsForSelection() []kit2.Action {
 			return m.entityBulkActions(srcWorkflows, keyDelete, "workflow", ids, m.rpcDeleteWorkflow)
 		}
 	}
-	// EXECUTIONS take the same rule. The operator: "Executions and Workflow Runs do not have a delete
-	// operation (single and bulk)."
-	//
-	// WHY THE MESSAGE DIFFERS FROM WORKERS/WORKFLOWS. Their bulk text promises "each one AND every
-	// version of it", which is true there and WRONG here — an execution has a transcript, not
-	// versions, and the rows may be mid-flight. So executions pass their own wording; a shared
-	// confirm that describes the wrong thing is worse than no confirm, because the operator agrees to
-	// something and gets another.
+	// EXECUTIONS take the same rule.
 	if m.ActiveSourceName() == srcExecutions {
 		if ids := m.markableIDs(); len(ids) >= kit2.BulkThreshold {
 			return m.executionBulkDeleteActions(ids)
@@ -274,15 +185,8 @@ func (m *Model) actionsForSelection() []kit2.Action {
 	switch m.ActiveSourceName() {
 	case srcExecutions:
 		id := item.ID
-		// CANCEL is offered only for a LIVE execution — cancelling something already finished is
-		// not a thing. But the bar is not empty for a finished one, and the MESSAGE BOX is why:
-		// the composer works on a finished execution too (it asks a follow-up), which is the
-		// normal thing to open and exactly what the operator reported not finding.
-		//
-		// The box is a POSITION in the transcript rather than a chord (execution_blocks.go): walk
-		// down past the last block and you are in it. So the bar advertises it as an instruction
-		// rather than as a key — a key here would be a second way to reach a box the operator
-		// already reaches by pressing down, which is how the old `f`/`i` pair became unintuitive.
+		// CANCEL is offered only for a LIVE execution — cancelling something already finished is not a
+		// thing.
 		acts := []kit2.Action{}
 		if isLiveExecution(item.Meta) {
 			acts = append(acts, kit2.Action{
@@ -294,13 +198,7 @@ func (m *Model) actionsForSelection() []kit2.Action {
 			})
 		}
 		acts = append(acts,
-			// THE DELETE. Offered for EVERY execution, live or finished — the server cancels a
-			// running one before removing it, so "delete" is one gesture with one meaning rather
-			// than a cancel-then-delete the operator has to sequence by hand.
-			//
-			// It sits AFTER `cancel` in the bar (and so is reachable by its own chord) because
-			// the two differ in what they destroy: `cancel` stops the run and KEEPS the record,
-			// this removes the record too.
+			// THE DELETE.
 			kit2.Action{
 				Label: "delete", Key: keyDelete, Danger: true, Source: srcExecutions,
 				Confirm: "Delete execution " + id + "?\n" +
@@ -311,25 +209,14 @@ func (m *Model) actionsForSelection() []kit2.Action {
 				Do:       func(ctx context.Context) error { return m.rpcDeleteExecution(ctx, id) },
 			},
 			// The box, advertised as the gesture that reaches it.
-			//
-			// No Key either: the box is a POSITION in the transcript (down past the last block), so
-			// a key would be a second route to something the operator already reaches by pressing
-			// down — which is how the old `f`/`i` pair became unintuitive. The label IS the gesture.
 			kit2.Action{
 				Label: "↓ past the last block: message box", Source: srcExecutions,
 				Do: func(context.Context) error {
 					return errNeedForm("message box — walk down past the last block")
 				},
 			},
-			// The COLLAPSE gesture, on the same principle: the operator needs to know it exists before
-			// trying it on a 200-line tool dump.
-			//
-			// It carries NO Key: `enter` is handled by the transcript cursor itself
-			// (execution_blocks.go), and claiming it here as an ACTION would put it in the
-			// action-by-key table, where it would fire on ANY focused execution row — including
-			// while the cursor is on a prose block, which is exactly the "enter did nothing"
-			// experience this item exists to remove. The bar is a LABEL; the key belongs to the
-			// cursor.
+			// The COLLAPSE gesture, on the same principle: the operator needs to know it exists before trying
+			// it on a 200-line tool dump.
 			kit2.Action{
 				Label: "enter on a block: expand / collapse", Source: srcExecutions,
 				Do: func(context.Context) error {
@@ -364,12 +251,19 @@ func (m *Model) actionsForSelection() []kit2.Action {
 				Do: func(ctx context.Context) error { return m.rpcForceProgressRun(ctx, id) },
 			})
 		}
-		// THE DELETE. Offered for EVERY run, live or finished — the server aborts a running one through
-		// the same path AbortWorkflow uses before removing the row, so one gesture has one meaning
-		// rather than an abort-then-delete the operator has to sequence by hand.
-		//
-		// It is NOT the workflow's own delete: that cascades to the workflow's ENTIRE run history (see
-		// DeleteWorkflowRun's note in internal/workflow/service.go). This removes the ONE run.
+		// ABORT THE RUN — the TUI counterpart of the GUI's "Stop <run>" button
+		// (frontend/src/routes/workflows_.$id.tsx, shown only while `latestRunActive`).
+		if meta == "running" {
+			acts = append(acts, kit2.Action{
+				Label: "abort run", Key: keyAbortRun, Danger: true, Source: srcRuns,
+				Confirm: "Abort run " + id + "?\n" +
+					"The run goes to ABORTED, its in-flight step runs fail and any running worker " +
+					"executions are terminated. Unlike delete, the run and its history are KEPT; " +
+					"its runtime container is reaped on the next reconcile pass.",
+				Do: func(ctx context.Context) error { return m.rpcAbortRun(ctx, id) },
+			})
+		}
+		// THE DELETE.
 		acts = append(acts, kit2.Action{
 			Label: "delete", Key: keyDelete, Danger: true, Source: srcRuns,
 			Confirm: "Delete run " + id + "?\n" +
@@ -386,15 +280,7 @@ func (m *Model) actionsForSelection() []kit2.Action {
 		return m.scheduleDeleteActions([]string{item.ID})
 
 	case srcWorkers:
-		// Item 6: the full CRUD surface. Form-opening actions carry a Do that
-		// refuses by name (handleActionKey opens the form first, so it is never
-		// reached); only the direct writes appear in the footer as runnable.
-		//
-		// There is deliberately NO "set model" action. The operator: "the edit page
-		// of a worker should also have the model selector. No need to have a
-		// separate 'm' option to set models that way." The model is a field on the
-		// edit form (and on the version editor and the create form), so a separate
-		// chord was a second, competing path to the same field.
+		// Item 6: the full CRUD surface.
 		id, name := item.ID, item.Title
 		status := workerStatusOf(item.Meta)
 		acts := []kit2.Action{
@@ -406,9 +292,8 @@ func (m *Model) actionsForSelection() []kit2.Action {
 				Do: func(context.Context) error { return errNeedForm("new version") }},
 		}
 		if status != "retired" {
-			// publish names the version it will ship (handleActionKey loads the
-			// trail first and refuses when there is no draft), so the operator is
-			// never guessing what a publish does.
+			// publish names the version it will ship (handleActionKey loads the trail first and refuses when
+			// there is no draft), so the operator is never guessing what a publish does.
 			acts = append(acts,
 				kit2.Action{Label: "publish", Key: keyPublish, Source: srcWorkers,
 					Do: func(context.Context) error { return errNeedForm("publish") }},
@@ -437,9 +322,7 @@ func (m *Model) actionsForSelection() []kit2.Action {
 		}
 		return acts
 	case srcWorkflows:
-		// The workflow lifecycle. Same shape as the Workers pane: form-opening
-		// actions carry a Do that refuses by name (handleActionKey opens the form
-		// first); the direct writes are confirm-gated.
+		// The workflow lifecycle.
 		id, name := item.ID, item.Title
 		status := workflowStatusOf(item.Meta)
 		acts := []kit2.Action{
@@ -472,11 +355,6 @@ func (m *Model) actionsForSelection() []kit2.Action {
 }
 
 // onDetailWorkflow enters the STEP editor when a workflow's detail loads.
-//
-// The editor is pointed at the version the pane SHOWS (published, else newest), so
-// what you edit is what you see. When that version is not a draft, saving creates
-// one — published versions are immutable, so step editing implies a draft (the
-// server rejects anything else).
 func (m *Model) onDetailWorkflow(id string) tea.Cmd {
 	if m.rpcGetWorkflow == nil || m.rpcListWorkflowVersions == nil {
 		return nil
@@ -504,22 +382,8 @@ type workflowEditorMsg struct {
 	version *apiv1.WorkflowVersion
 }
 
-// handleFlowKeys drives the WORKFLOW EDIT MODE.
-//
-// The operator's model: "I want to hit 'e' and edit all steps and add steps, delete steps,
-// etc. IN THIS SCREEN. I want the FULL visual editing to occur ... I see you can move up
-// and down with the arrow keys to select a step. I think that was at least in the right
-// direction. Though I think 'e' should be edit workflow mode ... then you can move the
-// arrow keys down, then hit 'enter' on the specific step to edit a step."
-//
-// So the mode is EXPLICIT. Outside it the flow view is a READ-ONLY view and this handler
-// claims only the key that opens the mode — the previous shape claimed the step chords
-// whenever a flow was on screen, which is exactly what made "edit step", "add step" and
-// "remove step" read as top-level commands living outside any edit view. handled is false
-// when the key belongs to the navigation layer.
-//
-// It runs BEFORE handleActionKey because the mode owns `e`, `x` and now `enter`, all of
-// which mean something else to the pane and the shell.
+// Outside it the flow view is a READ-ONLY view and this handler claims only the key that opens the
+// mode — the previous shape claimed the step chords whenever a flow was on screen.
 func (m *Model) handleFlowKeys(kstr string) (tea.Cmd, bool) {
 	if m.stepWorkflowID == "" || m.Base.DetailID() == "" {
 		return nil, false
@@ -536,9 +400,7 @@ func (m *Model) handleFlowKeys(kstr string) (tea.Cmd, bool) {
 	case keyStepUp, "k":
 		return m.stepCursor(-1), true
 	case keyFlowEditStep, " ", "space":
-		// ENTER edits the step the cursor is on — the operator's explicit ask. It must be
-		// claimed here, ahead of kit2's own `enter: detail`, or the mode would reload the
-		// pane's detail instead of opening the step.
+		// ENTER edits the step the cursor is on — the operator's explicit ask.
 		s, ok := m.selectedFlowStep()
 		if !ok {
 			return m.refuse("no step selected — press a to add the first one"), true
@@ -599,15 +461,6 @@ func (m *Model) beginFlowEdit() tea.Cmd {
 
 // createWorkflowVersion creates the workflow's next VERSION as a draft, then re-reads the detail so
 // its steps and the VERSIONS trail reflect it.
-//
-// THE CHORD THE OPERATOR ASKED FOR: "what key do you hit to make a new version? That shortcut isn't
-// listed in the composer when you are on workflow view." There was no chord — the only way to get a
-// draft was implicit (`rpcUpdateSteps` creates one when the target is published, i.e. "edit a step and
-// it makes one for you"), which is a mechanism nothing on the surface could tell them about.
-//
-// A DRAFT IS ADDITIVE AND REVERSIBLE, which is why this does not confirm: published versions are
-// immutable and a draft is discarded or superseded, so there is nothing here to gate. The notice says
-// what happened, and the reloaded pane shows the new version in the trail.
 func (m *Model) createWorkflowVersion(id string) tea.Cmd {
 	create := m.rpcCreateWorkflowVersion
 	if create == nil {
@@ -631,10 +484,7 @@ func (m *Model) endFlowEdit() tea.Cmd {
 	}
 	m.flowEditing = false
 	m.notice = "finished editing " + m.stepWorkflowName
-	// THE PANE GOES BACK TO THE READ-ONLY DETAIL, not to the editor's own render. Repainting the flow
-	// here left the pane showing the editing layout with NO VERSION LIST — the state the operator kept
-	// landing in — because nothing else would paint over it until the next selection. Re-requesting the
-	// detail restores FLOW + VERSIONS, and it also picks up the steps just saved.
+	// THE PANE GOES BACK TO THE READ-ONLY DETAIL, not to the editor's own render.
 	if id := m.Base.DetailID(); id != "" {
 		return m.Base.RequestDetail(srcWorkflows, id)
 	}
@@ -696,28 +546,7 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 			return cmd, true
 		}
 	}
-	// THE RUNS STEP FLOW. The vertical keys walk the run's STEPS and `enter` jumps to the
-	// highlighted step's execution — the operator's "if you hit enter on a particular step
-	// (whether it's complete or still running), it should take you to the execution".
-	//
-	// ENTER IS A TWO-STAGE GESTURE, which is the operator's stated model and now the shipped one:
-	// "You should have to hit enter FIRST on the workflow run, THEN it moves to the detail pane and
-	// then from there enter should select steps."
-	//
-	//   list focused  + enter  →  move the keyboard into the DETAIL pane (the base does this)
-	//   detail focused + enter →  jump to the cursor step's execution
-	//
-	// A previous revision claimed enter unconditionally while a flow was drawn, on the reasoning
-	// that every row advertises "enter → execution". That reasoning was wrong about which enter the
-	// row was advertising: the rows describe what enter does ONCE THE DETAIL HAS THE FOCUS, and the
-	// first enter is what GIVES it the focus. Claiming the key from the list also broke the list,
-	// because enter on a run row is how you open the run at all.
-	//
-	// So the vertical keys and enter share one rule — the detail must hold the focus — because on
-	// this pane they are all "act on the step cursor" gestures, and the step cursor is the detail's.
-	// When there is NO flow to act on, enter falls through to the base even with the detail focused,
-	// so the generic "activate the selected row" gesture is untouched. The repaint is local — the
-	// rows are cached from the detail fetch — so moving the cursor costs no round trip.
+	// THE RUNS STEP FLOW.
 	if m.ActiveSourceName() == srcRuns && m.Base.DetailFocusedForTest() {
 		switch kstr {
 		case "up", "k":
@@ -732,18 +561,14 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 			}
 		}
 	}
-	// The SCHEDULES pane's own chords (view cycle, jump to the run) run first, scoped to its
-	// pane: `v` and `g` mean nothing elsewhere on this screen, and scoping keeps a future
-	// binding elsewhere from silently stealing them here.
+	// The SCHEDULES pane's own chords (view cycle, jump to the run) run first, scoped to its pane: `v`
+	// and `g` mean nothing elsewhere on this screen.
 	if m.ActiveSourceName() == srcSchedules {
 		if cmd, handled := m.handleSchedulesKeys(kstr); handled {
 			return cmd, true
 		}
 	}
-	// CATEGORY ROWS FIRST, for the two panes that group their rows. `e` and `x` are the panes' OWN item
-	// keys, and on a folder they must manage the GROUPING (rename / delete) rather than open a form
-	// against a synthetic id. It runs ahead of the flow editor too, so `x` on a folder cannot remove a
-	// workflow step.
+	// CATEGORY ROWS FIRST, for the two panes that group their rows.
 	if m.ActiveSourceName() == srcWorkers || m.ActiveSourceName() == srcWorkflows {
 		if cmd, handled := m.groupRowKey(kstr); handled {
 			return cmd, true
@@ -788,25 +613,12 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 			if screenkit.IsGroupRow(it.ID) {
 				return m.refuse("that is a category row — pick a workflow inside"), true
 			}
-			// NO FORM AND NO OP-CODES: creating a version is ONE RPC that produces a DRAFT seeded
-			// from the newest, which is a reversible, additive act — so it neither needs the
-			// load-then-open machinery the header/publish forms use, nor a confirm step.
-			//
-			// It is NOT routed through opNewVersion, which is a WORKER op meaning "create the next
-			// version AND PUBLISH it". Reusing it here would have looked wired and done nothing:
-			// openWorkflowOpForm switches on opEditHeader and opPublish only, so the message would
-			// have fallen through the switch and returned nil.
+			// NO FORM AND NO OP-CODES: creating a version is ONE RPC that produces a DRAFT seeded from the
+			// newest, which is a reversible, additive act.
 			return m.createWorkflowVersion(it.ID), true
 		case keyFlowEdit:
-			// `e` on the Workflows pane is the WORKFLOW EDIT MODE, not a step chord:
-			// "when someone hits 'e' to edit a workflow, they are going to think they are
-			// editing the entire workflow and all its steps at once, not in pieces". The
-			// per-step chords (enter/a/x) live inside the mode.
-			//
-			// This is only reached when the mode is OFF or when no flow is loaded — with the
-			// mode on, handleFlowKeys handles `e`... which it does not, so the mode's own
-			// keys are the ones listed in beginFlowEdit. Guarded here so pressing `e` inside
-			// the mode does not re-enter (a no-op) and does not fall through to a header form.
+			// `e` on the Workflows pane is the WORKFLOW EDIT MODE, not a step chord: "when someone hits 'e' to
+			// edit a workflow, they are going to think they are editing the entire workflow and all its steps.
 			if m.flowEditing {
 				return nil, true
 			}
@@ -816,33 +628,22 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 			return m.beginFlowEdit(), true
 		}
 	}
-	// Worker CRUD chords open FORMS (or start a load that opens one), so they are
-	// dispatched before the generic action lookup — but ONLY while the Workers
-	// pane is focused. That scoping matters: `p` is also force-progress on a run,
-	// and an unscoped switch would hijack it and refuse with a worker message.
+	// Worker CRUD chords open FORMS (or start a load that opens one), so they are dispatched before the
+	// generic action lookup — but ONLY while the Workers pane is focused.
 	if m.ActiveSourceName() == srcWorkers {
 		if kstr == keyCategorize {
 			return m.categorizeSelected(apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_WORKER), true
 		}
 		switch kstr {
 		case keyNewWorker:
-			// Item 3: worker editing happens IN THE DETAILS PANE, like work items —
-			// not in a modal. A modal covers the list and the detail it is editing;
-			// the pane keeps both visible and is the established pattern on Work.
-			//
-			// The form needs the tenant's ROLES (the plane-role picker is one of its
-			// fields), so creating is a LOAD-then-open like every other worker form
-			// rather than a synchronous open: the empty worker id is the create
-			// signal. Nothing is written until the operator saves.
+			// Item 3: worker editing happens IN THE DETAILS PANE, like work items — not in a modal.
 			return m.beginWorkerOp("", opCreateWorker), true
 		case keyEditWorker, keyEditVersion, keyPublish, keySetActive:
 			it, ok := m.ActiveItem()
 			if !ok {
 				return m.refuse("select a worker first"), true
 			}
-			// A CATEGORY ROW IS NOT A WORKER. These panes nest their rows under their grouping, and the
-			// parent row carries a synthetic id — so an op aimed at it would hit the server with an id it
-			// has never heard of and fail with something unrelated to what the operator did.
+			// A CATEGORY ROW IS NOT A WORKER.
 			if screenkit.IsGroupRow(it.ID) {
 				return m.refuse("that is a category row — enter expands or collapses it; pick a worker inside"), true
 			}
@@ -856,20 +657,7 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 		}
 	}
 	if kstr == keyFollowUpLegacy || kstr == keyInterjectLegacy {
-		// The two modals are GONE: one inline box at the bottom of the execution does both jobs, and
-		// WHICH job is decided by the execution's state rather than by which key was pressed
-		// (execution_blocks.go — the GUI's own composer, which has the same single control).
-		//
-		// They are kept as EXPLAINING stubs rather than deleted outright for two reasons, and both
-		// are about the operator rather than the code:
-		//   1. `f` WAS ALSO THE BASE'S PAGER (`kit2.Base.loadMore`, advertised in the pane title as
-		//      "more pages: press f"). One key, two meanings — and the meaning the operator was
-		//      reading was not the one that fired. The chord has to stop claiming `f`, and a stub
-		//      that says where the box went is the honest way to retire muscle memory.
-		//   2. An operator who learned `i` last week should not get silence.
-		//
-		// The stub also moves the cursor INTO the box, so the answer to "where did it go" is the
-		// thing itself rather than a description of it.
+		// The two modals are GONE: one inline box at the bottom of the execution does both jobs.
 		if m.ActiveSourceName() != srcExecutions {
 			return m.refuse("the message box is on the Executions pane — focus it first"), true
 		}
@@ -878,20 +666,11 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 		return m.repaintTranscript(), true
 	}
 	if kstr == keyBulkSetModel && m.ActiveSourceName() == srcWorkers {
-		// BULK SET MODEL. The mechanism is the same ONE the mark/delete path uses — a selection above the
-		// shared threshold replaces the single-row actions — and this is the act with no single-row
-		// equivalent to replace: a per-worker model edit is a FORM FIELD (e / V), which is why lowercase
-		// `m` was retired. Chaining ten forms is not a feature, so the bulk case is its own modal.
-		//
-		// SCOPED TO THE WORKERS PANE, exactly like every other worker chord here (n/e/V/p/a/u). The
-		// Workflows pane has its own model story (a ref per version, edited through V), and the
-		// executions and runs panes have none at all — so the key falls through there rather than
-		// opening a WORKER picker over a workflow.
+		// BULK SET MODEL.
 		ids := m.markableIDs()
 		if len(ids) < kit2.BulkThreshold {
-			// Refuse with the two REAL routes rather than a bare "no": an operator pressing M with
-			// nothing marked needs to know both that marking is the bulk gesture and that one worker's
-			// model lives on its form.
+			// Refuse with the two REAL routes rather than a bare "no": an operator pressing M with nothing
+			// marked needs to know both that marking is the bulk gesture and that one worker's model lives.
 			if len(ids) == 1 {
 				return m.refuse("one worker is not a bulk selection — press e to edit it, or mark two or more with space"), true
 			}
@@ -900,17 +679,7 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 		return m.beginBulkSetModel(ids), true
 	}
 	// `m` MANAGES the selected worker's MCP + skills in the ONE MODAL — the same surface a conversation
-	// gets from /scope and a project gets from the Work screen's `m`, and the same panel the GUI mounts on
-	// a worker page (MCPServersPanel with scope {kind:"workerVersion"}).
-	//
-	// A VERSION'S SPECS ARE INLINE, so there is no row to hand-edit and no create-only form to reach: the
-	// modal lists them, edits one, or removes one. Before this the TUI could only take the version's
-	// permissions as raw JSON (and its skill files as an absolute-path list).
-	//
-	// IT SITS ABOVE THE DEPRECATED SET-MODEL CHORD, which also claims `m` (keySetModel). That chord is
-	// gone — the model is an Edit-form field — and survives only as an EXPLANATION for muscle memory. The
-	// modal is the live surface for this key, so it is resolved first; when there is no host to open it,
-	// control falls THROUGH to that explanation rather than to silence.
+	// gets from /scope and a project gets from the Work screen's `m`.
 	if kstr == "m" && m.ActiveSourceName() == srcWorkers {
 		if it, ok := m.ActiveItem(); ok {
 			if h, ok := m.mcpModalHost(); ok {
@@ -923,26 +692,16 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 		// or a muscle memory — may still send it. Explain rather than no-op.
 		return m.refuse("the model is a field on the Edit form (e) and the version editor (V) — open one and choose it there, or press " + keyBulkSetModel + " to set it for several marked workers"), true
 	}
-	// A MARKED SELECTION THAT YIELDS NO BULK ACTION MUST REFUSE, NEVER RETARGET — AND THIS CHECK HAS
-	// TO RUN BEFORE actionByKey, WHICH IS THE WHOLE POINT.
-	//
-	// The operator: "If I bulk select items but then move the selector onto a single item and hit
-	// ctrl+x, it asks to delete the item you have currently selected versus the bulk items you
-	// selected."
-	//
-	// REPRODUCED: a category FOLDER row can be marked (it is a row), but markableIDs filters it out —
-	// so marking ONE real row plus a folder leaves TWO marks (and the hint read "2 marked") while only
-	// one is writable, below BulkThreshold. The bulk action therefore does not exist... except
-	// actionByKey still FINDS one: the list's single-row delete for the CURSOR row. So the operator
-	// marks two things, the chord opens a confirm, and the confirm names a third.
-	//
-	// Placing this after the lookup made it unreachable — the single-row action always matched first —
-	// which is why the check is here, ahead of it, and gated on the chord THE PANE ACTUALLY BINDS
-	// (schedules delete on `x`, every other pane on ctrl+x). Refusing any other key here would make the
-	// pane swallow a key it does not own, which is the failure mode the unavailableReason comment
-	// above warns about.
+	// A MARKED SELECTION THAT YIELDS NO BULK ACTION MUST REFUSE, NEVER RETARGET — AND THIS CHECK HAS TO
+	// RUN BEFORE actionByKey, WHICH IS THE WHOLE POINT.
 	if len(m.Base.MarkedIDs()) > 0 && kstr == m.paneDeleteChord() {
 		n, k := len(m.Base.MarkedIDs()), len(m.markableIDs())
+		// ONE MARK IS NOT A BULK SELECTION, BUT ON THE SCHEDULES PANE IT IS STILL A TARGET.
+		if m.ActiveSourceName() == srcSchedules && k == 1 {
+			if acts := m.scheduleDeleteActions(m.markableIDs()); len(acts) > 0 {
+				return m.openAction(acts[0]), true
+			}
+		}
 		if k < kit2.BulkThreshold {
 			if k < n {
 				return m.refuse(fmt.Sprintf("%d rows are marked but only %d can be deleted here — a "+
@@ -954,15 +713,7 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 		}
 	}
 	// `m` MANAGES the selected worker's MCP + skills in the ONE MODAL — the same surface a conversation
-	// gets from /scope and a project gets from the Work screen's `m`, and the same panel the GUI mounts on
-	// a worker page (MCPServersPanel with scope {kind:"workerVersion"}).
-	//
-	// A VERSION'S SPECS ARE INLINE, so there is no row to hand-edit and no create-only form to reach: the
-	// modal is the only surface that can LIST them, edit one, or remove one. Before this the TUI could
-	// only take the version's permissions JSON as raw text (and its skill files as an absolute-path list).
-	//
-	// Placed BEFORE actionByKey so it cannot be shadowed by a per-row action, and gated on the pane so it
-	// claims nothing anywhere else.
+	// gets from /scope and a project gets from the Work screen's `m`.
 	if a, ok := m.actionByKey(kstr); ok {
 		return m.openAction(a), true
 	}
@@ -973,9 +724,6 @@ func (m *Model) handleActionKey(kstr string) (tea.Cmd, bool) {
 }
 
 // paneDeleteChord is the delete chord the FOCUSED pane binds — not a fixed pair.
-//
-// The Schedules pane deletes on `x` (keySchedDelete) while every other pane uses ctrl+x, so a refusal
-// keyed on a hardcoded pair either misses schedules' chord or claims a key schedules does not own.
 func (m *Model) paneDeleteChord() string {
 	if m.ActiveSourceName() == srcSchedules {
 		return keySchedDelete
@@ -985,11 +733,6 @@ func (m *Model) paneDeleteChord() string {
 
 // markableCount is how many marked rows a bulk WRITE could actually act on — the number the hint
 // must show, because it is the number the confirm will name.
-//
-// It exists because the hint counted every MARK (MarkCount) while the actions counted only the
-// markable ones (markableIDs), so a selection containing a category folder read "2 marked · ctrl+x:
-// delete 2" and then deleted one thing — or, below the threshold, nothing but the cursor row. The
-// count the operator sees and the set the write touches are the same question and must have one answer.
 func (m *Model) markableCount() int { return len(m.markableIDs()) }
 
 // paneNoun names what a row on the focused pane IS, for refusal text.
@@ -1009,9 +752,8 @@ func (m *Model) paneNoun() string {
 	return "row"
 }
 
-// mcpModalHost is the shell surface that owns the MCP + skills modal — the panel the GUI imports into
-// the worker page. The modal is layered over every screen, so it belongs to the shell and a screen only
-// asks for it.
+// mcpModalHost is the shell surface that owns the MCP + skills modal — the panel the GUI imports
+// into the worker page.
 type mcpModalHost interface {
 	OpenWorkerMCPModal(workerID, name string) tea.Cmd
 }
@@ -1032,17 +774,8 @@ func (m *Model) actionByKey(key string) (kit2.Action, bool) {
 	return kit2.Action{}, false
 }
 
-// unavailableReason explains why a write chord has nothing to run on the focused
-// row — but ONLY for the chords that source actually binds.
-//
-// It used to answer for ANY key, and that made the pane UNUSABLE: handleActionKey
-// treats a non-empty reason as "handled", so on the Executions and Workers panes
-// every key was consumed and explained — including the arrow keys. That is the
-// operator's "Executions and Workers will not allow you to use up/down when you
-// select their submenu. They are locked."
-//
-// A source with no chord bound to the pressed key must return "", so the key
-// falls through to the screen (which is what moves the list).
+// unavailableReason explains why a write chord has nothing to run on the focused row — but ONLY for
+// the chords that source actually binds.
 func (m *Model) unavailableReason(key string) string {
 	switch m.ActiveSourceName() {
 	case srcRuns:
@@ -1072,9 +805,8 @@ func (m *Model) unavailableReason(key string) string {
 		return ""
 
 	case srcSchedules:
-		// The ONE write chord on this pane is the delete, and its applicability is
-		// view-dependent: a finished row may have no bound work item, so there is nothing to
-		// remove a schedule from.
+		// The ONE write chord on this pane is the delete, and its applicability is view-dependent: a
+		// finished row may have no bound work item, so there is nothing to remove a schedule from.
 		if key != keySchedDelete {
 			return ""
 		}
@@ -1168,12 +900,6 @@ func (m *Model) rpcCancelExecution(ctx context.Context, id string) error {
 }
 
 // defaultDeleteExecution is the plain wire form of the Executions pane's delete.
-//
-// DeleteExecution is offered for ANY execution, live or finished: the server cancels a still-running
-// one first (execution/service.go: it flips the status to TERMINATED, sets ended_at, and only then
-// removes the row), so the client does not have to sequence cancel-then-delete and cannot leave a
-// running execution orphaned by deleting it out from under its worker. A single implementation, so
-// the bulk path inherits the same semantics.
 func (m *Model) defaultDeleteExecution(ctx context.Context, id string) error {
 	if m.cl == nil || m.cl.Executions == nil {
 		return errors.New("no execution client")
@@ -1187,15 +913,25 @@ func (m *Model) rpcRetryFailedRun(ctx context.Context, runID string) error {
 	return err
 }
 
+// rpcAbortRun ends a LIVE run through AbortWorkflow — the same RPC the GUI's Stop button uses
+// (useAbortWorkflow -> workflowClient.abortWorkflow).
+func (m *Model) rpcAbortRun(ctx context.Context, runID string) error {
+	if m.cl == nil || m.cl.Workflows == nil {
+		return errors.New("no workflow client — cannot abort the run")
+	}
+	_, err := m.cl.Workflows.AbortWorkflow(ctx, connect.NewRequest(&apiv1.AbortWorkflowRequest{
+		RunId:  runID,
+		Reason: abortReason,
+	}))
+	return err
+}
+
 func (m *Model) rpcForceProgressRun(ctx context.Context, runID string) error {
 	_, err := m.cl.Workflows.ForceProgressWorkflowRun(ctx, connect.NewRequest(&apiv1.ForceProgressWorkflowRunRequest{RunId: runID}))
 	return err
 }
 
 // defaultDeleteRun is the plain wire form of the Runs pane's delete.
-//
-// DeleteWorkflowRun aborts a still-running run before removing it (see the service handler), so this is
-// one call with one meaning for a run in any state.
 func (m *Model) defaultDeleteRun(ctx context.Context, runID string) error {
 	if m.cl == nil || m.cl.Workflows == nil {
 		return errors.New("no workflow client")
@@ -1215,20 +951,6 @@ func (m *Model) rpcSendMessage(ctx context.Context, execID, message string) erro
 // --- helpers ---------------------------------------------------------------
 
 // isLiveExecution reports whether an execution list row is live (cancellable / interjectable).
-//
-// IT TAKES THE ROW'S `Meta`, WHICH IS "<status> · <worker>" — not a bare status. That is the bug this
-// comment exists for: the switch below compared the WHOLE string against a list of bare statuses, so
-// "running · Quick Software Engineer" matched nothing and the function returned false for every live
-// execution. Six call sites passed a row meta and ALL SIX were wrong in the same way:
-//
-//   - `c: cancel` was never offered on a running execution (the action was gated on this);
-//   - the transcript's composer always said "Ask a follow-up" instead of "Message the worker mid-run"
-//     and took the follow-up path for a run that was still executing.
-//
-// The status is the part BEFORE the separator (executionListMeta builds `meta` as the lowered status
-// plus " · " plus the worker name), so the status is read the same way workerStatusOf reads it — up to
-// the first space. A caller that hands a BARE status still works, which is deliberate: the two
-// conventions must not have to agree.
 func isLiveExecution(meta string) bool {
 	switch statusOfMeta(meta) {
 	case "running", "healthy", "stalled", "unhealthy", "dispatching", "queued", "starting", "terminating":
@@ -1257,9 +979,8 @@ func errNeedForm(what string) error {
 func (m *Model) HintLine() string {
 	switch m.ActiveSourceName() {
 	case srcExecutions:
-		// THE DELETE CHORD IS NAMED, and the mark state is stated when there is one — the same reason
-		// the Workers pane names it: a bulk delete that nothing advertises is invisible until it has
-		// already been selected. `space` is mentioned because marking is the bulk gesture.
+		// THE DELETE CHORD IS NAMED, and the mark state is stated when there is one — the same reason the
+		// Workers pane names it.
 		if n := m.markableCount(); n > 0 {
 			return theme.HintText.Render(keyDelete + ": delete " + fmt.Sprint(n) + " selected " +
 				theme.DetailKey.Render("·") + " esc: clear " + theme.DetailKey.Render("·") +
@@ -1275,6 +996,13 @@ func (m *Model) HintLine() string {
 				theme.DetailKey.Render("·") + " esc: clear " + theme.DetailKey.Render("·") +
 				" space: mark · ←/→: pane · r: refresh")
 		}
+		// THE ABORT CHORD IS ADVERTISED ON A LIVE RUN, AND ONLY THERE.
+		if m.runIsLive() {
+			return theme.HintText.Render(keyAbortRun + ": abort run (confirm) " + theme.DetailKey.Render("·") +
+				" t: retry failed run " + theme.DetailKey.Render("·") +
+				" p: force-progress (confirm) " + theme.DetailKey.Render("·") +
+				" " + keyDelete + ": delete (confirm) · space: mark for bulk · enter: step runs + diagnosis · r: refresh")
+		}
 		return theme.HintText.Render("t: retry failed run (confirm) " + theme.DetailKey.Render("·") +
 			" p: force-progress wedged run (confirm) " + theme.DetailKey.Render("·") +
 			" " + keyDelete + ": delete (confirm) · space: mark for bulk · enter: step runs + diagnosis · r: refresh")
@@ -1283,9 +1011,7 @@ func (m *Model) HintLine() string {
 
 	case srcWorkers:
 		// THE DELETE CHORD AND THE BULK SET-MODEL CHORD ARE NAMED HERE, and the mark state is stated,
-		// because the composer is the row the operator reads. It used to advertise `x: delete` — a chord
-		// that no longer exists anywhere — and said nothing about what marking rows does, so a bulk
-		// delete was invisible until it was already selected.
+		// because the composer is the row the operator reads.
 		if n := m.markableCount(); n > 0 {
 			return theme.HintText.Render(m.markHint(n) +
 				keyDelete + ": delete " + fmt.Sprint(n) + " " + theme.DetailKey.Render("·") +
@@ -1331,9 +1057,30 @@ func (m *Model) HintLine() string {
 	return theme.HintText.Render("enter: detail focus · ←/→ or h/l: pane · r: refresh")
 }
 
-// markHint states the selection, LEFT of the chords that act on it: the operator needs the count before
-// they need the keys, and the count is what tells them the delete is about to hit more than the row under
-// the cursor.
+// markHint states the selection, LEFT of the chords that act on it: the operator needs the count
+// before they need the keys.
 func (m *Model) markHint(n int) string {
 	return fmt.Sprintf("%d marked", n) + " " + theme.DetailKey.Render("·") + " "
+}
+
+// runIsLive reports whether the RUNS pane's focused row is a live run — the same meta the row draws
+// and the same test the action list uses.
+func (m *Model) runIsLive() bool {
+	it, ok := m.ActiveItem()
+	if !ok {
+		return false
+	}
+	return strings.ToLower(it.Meta) == "running"
+}
+
+// AbortRunHint is the composer's probe for the ABORT chord: the run-level gesture, named only while
+// the Runs pane holds a live run. IT ANSWERS FOR THE RUNS PANE ONLY.
+func (m *Model) AbortRunHint() string {
+	if m.ActiveSourceName() != srcRuns {
+		return ""
+	}
+	if m.runIsLive() {
+		return keyAbortRun + " abort run"
+	}
+	return ""
 }

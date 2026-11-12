@@ -53,10 +53,8 @@ func TestStallNoFileDiff(t *testing.T) {
 	}
 }
 
-// TestAdvisoryStallRevives verifies the advisory no_file_progress signal
-// is revivable: the monitor keeps running after the trip and reports a
-// recovery once a file_diff arrives again, and the cleared warning state
-// lets the window trip a second time if file progress stops again.
+// TestAdvisoryStallRevives verifies the advisory no_file_progress signal is revivable: the monitor
+// keeps running after the trip and reports a recovery once a file_diff arrives again.
 func TestAdvisoryStallRevives(t *testing.T) {
 	w := stallWindows{noProgress: time.Hour, noFileDiff: 10 * time.Second, repetitionN: 100, repetitionW: time.Minute}
 	m := newTestMonitor(w)
@@ -84,16 +82,8 @@ func TestAdvisoryStallRevives(t *testing.T) {
 	}
 }
 
-// TestStallRepetition verifies the repetition signal trips when the same
-// tool_use signature exceeds the threshold within the window. Parts are
-// shaped like LegacyEventFromBus emits them (tool_use with args under
-// state.input) — the exact repro of execution 01M0B5RWXN9ZH56FXME5MKWRT4
-// where 100 identical `bash` calls never tripped because the monitor only
-// listened for the dead `tool_call` type.
-//
-// Result-aware repetition (design B): only ERROR-status tool calls count
-// toward the threshold, so the fixture feeds `status: "error"` calls. A
-// completed call would reset the counters instead of tripping.
+// TestStallRepetition verifies the repetition signal trips when the same tool_use signature exceeds
+// the threshold within the window.
 func TestStallRepetition(t *testing.T) {
 	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, repetitionN: 3, repetitionW: time.Minute}
 	m := newTestMonitor(w)
@@ -113,13 +103,8 @@ func TestStallRepetition(t *testing.T) {
 	}
 }
 
-// TestStallRepetitionNoFalsePositive verifies distinct tool_use calls (even
-// to the same tool) within the window do NOT trip repetition — different
-// state.input args must yield distinct signatures. This is the control that
-// proves args are really read from state.input; if args collapsed to a
-// constant the varied calls would false-fire. Calls are ERROR-status so they
-// count toward the threshold (result-aware repetition); varied erroring
-// calls must still not trip.
+// TestStallRepetitionNoFalsePositive verifies distinct tool_use calls (even to the same tool)
+// within the window do NOT trip repetition.
 func TestStallRepetitionNoFalsePositive(t *testing.T) {
 	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, repetitionN: 3, repetitionW: time.Minute}
 	m := newTestMonitor(w)
@@ -141,14 +126,8 @@ func TestStallRepetitionNoFalsePositive(t *testing.T) {
 	}
 }
 
-// TestStallRepetitionCompletedResets verifies the two-tier repetition model
-// (D5): a COMPLETED tool call no longer resets the tier-2 signature history,
-// so repeated identical calls that SUCCEED DO trip tier-2 repetition — the
-// completed-call loop (repeatedly re-reading the same file) is the case the
-// work item wants caught. The tier-2 threshold is deliberately above
-// tier-1's so a normal build-iterate loop (identical bash calls with
-// different results) is not flagged at the same count. A file_diff between
-// identical calls resets the history (reset-on-progress).
+// TestStallRepetitionCompletedResets verifies the two-tier repetition model (D5): a COMPLETED tool
+// call no longer resets the tier-2 signature history.
 func TestStallRepetitionCompletedTrips(t *testing.T) {
 	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, repetitionN: 3, repetitionW: time.Minute}
 	m := newTestMonitor(w)
@@ -168,9 +147,8 @@ func TestStallRepetitionCompletedTrips(t *testing.T) {
 	}
 }
 
-// TestStallRepetitionCompletedResetsOnProgress verifies the reset-on-
-// progress guard: a file_diff between identical completed calls resets the
-// tier-2 history, so legitimate forward progress never false-positives.
+// TestStallRepetitionCompletedResetsOnProgress verifies the reset-on- progress guard: a file_diff
+// between identical completed calls resets the tier-2 history.
 func TestStallRepetitionCompletedResetsOnProgress(t *testing.T) {
 	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, repetitionN: 3, repetitionW: time.Minute}
 	m := newTestMonitor(w)
@@ -188,10 +166,8 @@ func TestStallRepetitionCompletedResetsOnProgress(t *testing.T) {
 	}
 }
 
-// TestStallRepetitionErroringTrips verifies that only ERROR-status calls
-// count toward the threshold: a completed call resets the counters, so
-// erroring calls must accumulate WITHOUT an intervening completed call to
-// trip.
+// TestStallRepetitionErroringTrips verifies that only ERROR-status calls count toward the
+// threshold: a completed call resets the counters.
 func TestStallRepetitionErroringTrips(t *testing.T) {
 	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, repetitionN: 3, repetitionW: time.Minute}
 	m := newTestMonitor(w)
@@ -229,16 +205,12 @@ func TestStallRepetitionErroringTrips(t *testing.T) {
 	}
 }
 
-// TestStallRepetitionBuildFixIterate verifies the build-fix-iterate
-// regression: repeated failing `go test` calls INTERRUPTED by edits /
-// successes must NOT trip repetition — progress (file_diff, completed
-// calls, step_finish) resets the counters.
+// TestStallRepetitionBuildFixIterate verifies the build-fix-iterate regression: repeated failing
+// `go test` calls INTERRUPTED by edits / successes must NOT trip repetition — progress (file_diff.
 func TestStallRepetitionBuildFixIterate(t *testing.T) {
 	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, repetitionN: 3, repetitionW: time.Minute}
 	m := newTestMonitor(w)
-	// A realistic loop: run tests (error), edit a file, run tests (error),
-	// edit a file, run tests (completed) — the edits and the success reset
-	// the counters so the erroring `go test` signature never accumulates.
+	// A realistic loop: run tests (error), edit a file, run tests (error).
 	for i := 0; i < 5; i++ {
 		m.observe("tool_use", map[string]any{
 			"tool":  "bash",
@@ -255,11 +227,8 @@ func TestStallRepetitionBuildFixIterate(t *testing.T) {
 	}
 }
 
-// TestStallRepetitionNormalizedWrite verifies conservative signature
-// normalization (design A, gated through B): a worker looping on a blocked
-// write to the same path — each retry carrying different volatile content —
-// collapses to one signature and trips, while the path is preserved. The
-// fixture uses the real opencode write-tool schema ({filePath, content}).
+// TestStallRepetitionNormalizedWrite verifies conservative signature normalization (design A, gated
+// through B): a worker looping on a blocked write to the same path.
 func TestStallRepetitionNormalizedWrite(t *testing.T) {
 	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, repetitionN: 3, repetitionW: time.Minute}
 	m := newTestMonitor(w)
@@ -280,10 +249,8 @@ func TestStallRepetitionNormalizedWrite(t *testing.T) {
 	}
 }
 
-// TestStallRepetitionNormalizedBash verifies bash command scrubbing: a
-// worker retrying the same command with different volatile args (timestamps,
-// temp IDs) collapses to one signature, while distinct commands stay
-// distinct.
+// TestStallRepetitionNormalizedBash verifies bash command scrubbing: a worker retrying the same
+// command with different volatile args (timestamps, temp IDs) collapses to one signature.
 func TestStallRepetitionNormalizedBash(t *testing.T) {
 	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, repetitionN: 3, repetitionW: time.Minute}
 	m := newTestMonitor(w)
@@ -300,9 +267,8 @@ func TestStallRepetitionNormalizedBash(t *testing.T) {
 	}
 }
 
-// TestStallRepetitionNormalizedDistinctCommands verifies scrubbing does NOT
-// collapse distinct legitimate commands: `git status` and `git log` must
-// stay distinct even when erroring.
+// TestStallRepetitionNormalizedDistinctCommands verifies scrubbing does NOT collapse distinct
+// legitimate commands: `git status` and `git log` must stay distinct even when erroring.
 func TestStallRepetitionNormalizedDistinctCommands(t *testing.T) {
 	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, repetitionN: 3, repetitionW: time.Minute}
 	m := newTestMonitor(w)
@@ -348,11 +314,8 @@ func TestStallNoTripWhenProgressing(t *testing.T) {
 	}
 }
 
-// TestTokenDeltasPreventNoProgressTrip verifies the no_progress window does
-// NOT trip while mid-generation token deltas are streaming: a slow local-model
-// generation that streams tokens but never completes a text part must count as
-// alive (the exact-300s Aborted root cause). The text_loop guard is
-// intentionally NOT reset by deltas — only lastStepFinish advances.
+// TestTokenDeltasPreventNoProgressTrip verifies the no_progress window does NOT trip while
+// mid-generation token deltas are streaming.
 func TestTokenDeltasPreventNoProgressTrip(t *testing.T) {
 	w := stallWindows{noProgress: 10 * time.Second, noFileDiff: time.Hour, textLoop: time.Hour, repetitionN: 100, repetitionW: time.Minute}
 	m := newTestMonitor(w)
@@ -376,10 +339,8 @@ func TestTokenDeltasPreventNoProgressTrip(t *testing.T) {
 	}
 }
 
-// TestTokenDeltasDoNotResetTextLoop verifies delta liveness advances ONLY the
-// no_progress signal: a pure-token generation that never takes a meaningful
-// action still trips text_loop once that window elapses (D4 — the guard
-// against an infinite single-step reasoning loop).
+// TestTokenDeltasDoNotResetTextLoop verifies delta liveness advances ONLY the no_progress signal: a
+// pure-token generation that never takes a meaningful action still trips text_loop once.
 func TestTokenDeltasDoNotResetTextLoop(t *testing.T) {
 	w := stallWindows{noProgress: time.Hour, noFileDiff: time.Hour, textLoop: 10 * time.Second, repetitionN: 100, repetitionW: time.Minute}
 	m := newTestMonitor(w)
@@ -405,14 +366,9 @@ func TestWallClockDeadline(t *testing.T) {
 	if want := time.Duration(30) * time.Second; time.Until(d) > want+time.Second || time.Until(d) < want-time.Second {
 		t.Fatalf("deadline = %v from now, want ~%v", time.Until(d), want)
 	}
-	// No budget → the documented default backstop (3600s) applies so every
-	// execution has a hard timeout even when the worker doesn't opt in.
-	d, ok = wallClockDeadline(nil, []byte(`{}`))
-	if !ok {
-		t.Fatal("expected the default deadline when wall_clock_seconds absent")
-	}
-	if want := defaultWallClockTimeout; time.Until(d) > want+time.Second || time.Until(d) < want-time.Second {
-		t.Fatalf("default deadline = %v from now, want ~%v", time.Until(d), want)
+	// No budget → NO DEADLINE.
+	if d, ok := wallClockDeadline(nil, []byte(`{}`)); ok {
+		t.Fatalf("expected NO deadline when wall_clock_seconds is absent, got %v", d)
 	}
 	// Zero disables the hard timeout.
 	if _, ok := wallClockDeadline(nil, []byte(`{"wall_clock_seconds":0}`)); ok {
@@ -422,13 +378,9 @@ func TestWallClockDeadline(t *testing.T) {
 	if _, ok := wallClockDeadline(nil, []byte(`{"wall_clock_seconds":-5}`)); ok {
 		t.Fatal("expected no deadline when wall_clock_seconds negative")
 	}
-	// Unparseable budgets → fall back to the default backstop (never hang).
-	d, ok = wallClockDeadline(nil, []byte(`not-json`))
-	if !ok {
-		t.Fatal("expected the default deadline on unparseable budgets")
-	}
-	if want := defaultWallClockTimeout; time.Until(d) > want+time.Second || time.Until(d) < want-time.Second {
-		t.Fatalf("unparseable fallback = %v from now, want ~%v", time.Until(d), want)
+	// Unparseable budgets → same as absent: no deadline (never a guessed one).
+	if d, ok := wallClockDeadline(nil, []byte(`not-json`)); ok {
+		t.Fatalf("expected no deadline on unparseable budgets, got %v", d)
 	}
 }
 
@@ -439,9 +391,8 @@ func TestIsFatalStall(t *testing.T) {
 	if !isFatalStall("stalled:no_progress") {
 		t.Error("isFatalStall(no_progress) = false, want true (fatal)")
 	}
-	// text_loop / repetition / no_file_progress are ADVISORY-first: the
-	// worker is generating text / issuing tool calls, so a nudge can reach
-	// it. They escalate to fatal only after the nudge budget is spent.
+	// text_loop / repetition / no_file_progress are ADVISORY-first: the worker is generating text /
+	// issuing tool calls, so a nudge can reach it.
 	advisory := []string{
 		"stalled:text_loop:you are talking in circles",
 		"stalled:repetition:bash|[\"ls\"]",
@@ -454,11 +405,8 @@ func TestIsFatalStall(t *testing.T) {
 	}
 }
 
-// TestStallWindowsFromManifestUnsetAppliesDefault verifies a fresh/
-// never-configured manifest (every Stall* field zero — the real state of a
-// tenant_settings row that's never been touched in Settings) yields the
-// real built-in defaults, not a disabled check. This is the safety case:
-// zero must never silently mean "off".
+// TestStallWindowsFromManifestUnsetAppliesDefault verifies a fresh/ never-configured manifest
+// (every Stall* field zero.
 func TestStallWindowsFromManifestUnsetAppliesDefault(t *testing.T) {
 	w := stallWindowsFromManifest(scheduler.ExecutionManifest{})
 	def := defaultStallWindows()
@@ -488,16 +436,8 @@ func TestStallWindowsFromManifestPositiveOverrides(t *testing.T) {
 	}
 }
 
-// TestStallWindowsFromManifestZeroDisables verifies that an explicit 0 disables
-// the check — the semantics Settings now documents and stores.
-//
-// This replaces the previous negative-disables convention, which only worked
-// because 0 was taken: 0 was the "unset" sentinel, so a negative was the ONLY
-// way to say "off", and a never-configured tenant was indistinguishable from one
-// that had chosen 0. Now blank (a nil pointer) means the built-in default and 0
-// means disabled, so the two can never be confused. newProgressMonitor + a full
-// stall check confirms it end-to-end: no trip even when the window has obviously
-// elapsed and no file diff / meaningful action occurred.
+// This replaces the previous negative-disables convention, which only worked because 0 was taken: 0
+// was the "unset" sentinel, so a negative was the ONLY way to say "off".
 func TestStallWindowsFromManifestZeroDisables(t *testing.T) {
 	w := stallWindowsFromManifest(scheduler.ExecutionManifest{
 		StallNoFileDiffWindowSeconds: i64Ptr(0),
@@ -517,10 +457,8 @@ func TestStallWindowsFromManifestZeroDisables(t *testing.T) {
 	m.lastStepFinish = c.t
 	m.lastFileDiff = c.t
 	m.lastMeaningfulAction = c.t
-	// Advance 2 hours — far past what the built-in noFileDiff (15min) and
-	// textLoop (10min) defaults would have tolerated, isolating the test to
-	// those two dimensions by also advancing lastStepFinish (so no_progress,
-	// which this manifest leaves live at its default, never trips).
+	// Advance 2 hours — far past what the built-in noFileDiff (15min) and textLoop (10min) defaults
+	// would have tolerated.
 	c.t = c.t.Add(2 * time.Hour)
 	m.lastStepFinish = c.t
 	if reason := m.check(); reason != "" {
@@ -528,11 +466,8 @@ func TestStallWindowsFromManifestZeroDisables(t *testing.T) {
 	}
 }
 
-// TestStallWindowsFromManifestZeroDisablesNoProgress pins the guard that makes an
-// explicit 0 SAFE on the fatal no-progress window. no_progress is the one check
-// whose trip test is a bare `now.Sub(last) > window`: at a window of 0 that holds
-// on EVERY tick, so without the `> 0` gate a disabled check would fire instantly
-// and kill every run.
+// TestStallWindowsFromManifestZeroDisablesNoProgress pins the guard that makes an explicit 0 SAFE
+// on the fatal no-progress window.
 func TestStallWindowsFromManifestZeroDisablesNoProgress(t *testing.T) {
 	w := stallWindowsFromManifest(scheduler.ExecutionManifest{
 		StallNoProgressWindowSeconds: i64Ptr(0),

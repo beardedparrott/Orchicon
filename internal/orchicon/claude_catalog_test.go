@@ -9,13 +9,7 @@ import (
 	"time"
 )
 
-// THE LIVE END-TO-END CHECK: fetch the real document and verify it with the real
-// pinned key. This is the only test that can prove the scheme, because producing
-// a valid signature requires Anthropic's private key — everything else here is a
-// negative test.
-//
-// Skips (rather than fails) when the network is unavailable, so CI is not brittle;
-// it runs wherever egress exists, which is where it matters.
+// THE LIVE END-TO-END CHECK: fetch the real document and verify it with the real pinned key.
 func TestClaudeCatalogLiveDocumentVerifies(t *testing.T) {
 	if os.Getenv("ORCHICON_SKIP_NETWORK_TESTS") != "" {
 		t.Skip("network tests disabled")
@@ -102,17 +96,15 @@ func TestClaudeCatalogRejectsTamperedDocument(t *testing.T) {
 	if err := VerifyClaudeCatalog(tampered, sig, sig.PublicKeySha256); err == nil {
 		t.Fatal("a tampered document VERIFIED — the signature is not being checked")
 	}
-	// The raw bytes ALONE must not verify either: the domain prefix is
-	// load-bearing, and a verifier that dropped it would reject every valid
-	// catalog (the inverse failure, which is just as broken).
+	// The raw bytes ALONE must not verify either: the domain prefix is load-bearing, and a verifier
+	// that dropped it would reject every valid catalog (the inverse failure, which is just as broken).
 	if err := verifyWithoutDomainPrefix(raw, sig); err == nil {
 		t.Log("note: raw-bytes-only also verified; the domain prefix is then not load-bearing")
 	}
 }
 
-// A sidecar naming a DIFFERENT key must be refused even though the signature
-// itself may be well formed — otherwise a swapped sidecar could point at an
-// attacker's key.
+// A sidecar naming a DIFFERENT key must be refused even though the signature itself may be well
+// formed — otherwise a swapped sidecar could point at an attacker's key.
 func TestClaudeCatalogRejectsSidecarForAnotherKey(t *testing.T) {
 	sig := claudeCatalogSig{
 		Algorithm:       "RSASSA-PKCS1-v1_5-SHA512",
@@ -136,9 +128,7 @@ func TestClaudeCatalogRejectsUnknownAlgorithm(t *testing.T) {
 	}
 }
 
-// The pinned key must be the one the release actually signs with. Pinned here as
-// a fingerprint so a change to the embedded PEM is a deliberate act with a
-// failing test, not a silent swap.
+// The pinned key must be the one the release actually signs with.
 func TestClaudeCatalogPinnedKeyFingerprint(t *testing.T) {
 	got, err := ClaudeCatalogKeyFingerprint()
 	if err != nil {
@@ -198,14 +188,7 @@ func TestParseClaudeCatalog(t *testing.T) {
 	}
 }
 
-// The managed catalog carries no pricing; the vendored one does. The merge
-// decides which AUTHORED rates the picker prefers.
-//
-// It is NOT what makes pricing work for claude: the CLI reports total_cost_usd
-// per turn and the usage recorder keeps it whenever this catalog declines
-// (pinned at the recorder level by
-// aigateway.TestRecordPricingFallback). A nil Pricing on a row is
-// a statement about this catalog, not a claim that the model is unpriced.
+// The managed catalog carries no pricing; the vendored one does.
 func TestMergeClaudePricing(t *testing.T) {
 	in := []ModelInfo{
 		{ID: "claude-sonnet-4", Context: 1000}, // vendored entry exists
@@ -261,9 +244,7 @@ func TestClaudeCatalogCacheTTLBounds(t *testing.T) {
 	claudeCatalogState.mu.Unlock()
 }
 
-// The fetch budget must leave room inside the picker's read budget. This is the
-// same bound the repair sweep needed: a network call on the picker path that can
-// outlive the caller is how the operator got a permanent spinner.
+// The fetch budget must leave room inside the picker's read budget.
 func TestClaudeCatalogFetchBudgetFitsThePicker(t *testing.T) {
 	const pickerBudget = 45 * time.Second
 	if claudeCatalogFetchTimeout >= pickerBudget/3 {
@@ -272,9 +253,8 @@ func TestClaudeCatalogFetchBudgetFitsThePicker(t *testing.T) {
 	}
 }
 
-// verifyWithoutDomainPrefix is the inverse check: it verifies over the raw bytes
-// WITHOUT the domain prefix, so a test can show that the prefix is load-bearing
-// rather than decorative.
+// verifyWithoutDomainPrefix is the inverse check: it verifies over the raw bytes WITHOUT the domain
+// prefix, so a test can show that the prefix is load-bearing rather than decorative.
 func verifyWithoutDomainPrefix(raw []byte, sig claudeCatalogSig) error {
 	return verifyClaudeCatalogWith(raw, sig, sig.PublicKeySha256, false)
 }

@@ -10,45 +10,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
+	"github.com/beardedparrott/orchicon/internal/procwin"
+	"github.com/beardedparrott/orchicon/internal/runtime"
 )
 
-// HostServe is the DEMAND-KEYED opencode serve for the in-process (local)
-// execution population: standalone task dispatches, follow-up executions,
-// and any execution that isn't bound to a workflow-run runtime container.
-// One serve per plane hosts a persistent session per execution; the
-// control plane supervises it (spawn on FIRST DEMAND, health watchdog,
-// restart with backoff) so the session host is never down once it exists.
-//
-// It is deliberately NOT started at plane boot: a plane whose adapter demand
-// set contains no opencode (the default for a fresh tenant — native-only
-// worker refs) is "opencode-free", and staying in that state must cost
-// nothing. EnsureStarted is the single demand-keyed entry point every
-// opencode consumer goes through.
-//
-// Isolation: the serve runs against a DEDICATED data dir
-// (~/.local/share/orchicon/opencode) seeded with the operator's model
-// auth, so it never shares an opencode.db with the operator's own
-// opencode instances. Sessions persist there across serve restarts, so a
-// restart is transparent to sessions (the client re-attaches by id).
-//
-// CROSS-PROJECT UNION IS FORBIDDEN ON A SHARED SERVE. This serve's config is
-// built ONCE (serveConfig) and lives for the plane, so unioning several
-// projects' MCP sets onto it would make one project's servers visible in
-// another project's session — a leak with no consent boundary. A session
-// whose set differs must run on a serve built for that set (HostServePool,
-// servepool.go), each with its OWN data dir; the pool is why this is safe to
-// state absolutely, and it is the strategy the runtime-container bake uses
-// too (one serve per run, config applied once).
-//
-// Safety: the serve process runs the agent's tools for every local
-// execution, so the OS-level execution guard is applied to its PATH in
-// the no-project mode (all absolute targets blocked; relative paths stay
-// within each session's own directory, scoped by opencode per session).
+// HostServe is the DEMAND-KEYED opencode serve for the in-process (local) execution population:
+// standalone task dispatches, follow-up executions.
 type HostServe struct {
 	log *slog.Logger
 
@@ -61,16 +35,14 @@ type HostServe struct {
 	dataDir  string
 	home     string
 	started  bool
-	// profile is the permission profile this serve is built with. The zero
-	// value ("") normalizes to ProfileWorker, so a serve built by
-	// NewHostServe carries the worker sandbox; NewAskHostServe opts into
-	// ProfileInteractive.
+	// startedAt is when the CURRENT process was spawned, used to notice that the operator's
+	// credential store has been written since — see recycleIfCredentialsChanged.
+	startedAt time.Time
+	// profile is the permission profile this serve is built with.
 	profile PermissionProfile
 
-	// startMu serializes LAZY start (EnsureStarted): without it two
-	// concurrent first-demands would each spawn a serve. It is held only
-	// across start + supervision arming, never by the serving paths
-	// themselves.
+	// startMu serializes LAZY start (EnsureStarted): without it two concurrent first-demands would each
+	// spawn a serve.
 	startMu sync.Mutex
 	// superviseCancel stops the supervision goroutine armed by
 	// EnsureStarted (Watch). Nil while the serve was never started lazily.
@@ -79,33 +51,17 @@ type HostServe struct {
 	// can surface the SAME loud reason the start produced (nil once up).
 	startErr error
 
-	// mcpSet is the RESOLVED MCP set this serve is built for, when it comes
-	// from a HostServePool entry. It is baked into the serve's config ONCE
-	// (serveConfig), so it must be the exact set the sessions landing on this
-	// serve are entitled to and nothing else — a cross-project UNION here
-	// would leak one project's servers into another project's session. The
-	// empty set (the default serve) means today's config, unchanged.
+	// mcpSet is the RESOLVED MCP set this serve is built for, when it comes from a HostServePool entry.
 	mcpSet mcpclient.Resolution
 }
 
-// NewHostServe constructs the host-serve manager. dataDir is the
-// dedicated opencode data directory (created + seeded with model auth on
-// Start). home overrides the operator home used to locate the real
-// opencode data dir whose auth.json is seeded (empty = os.UserHomeDir).
+// NewHostServe constructs the host-serve manager.
 func NewHostServe(log *slog.Logger, dataDir, home string) *HostServe {
 	return &HostServe{log: log, dataDir: dataDir, home: home}
 }
 
-// NewAskHostServe constructs the Ask Orchicon host serve: the same demand-keyed
-// serve manager, but built with the INTERACTIVE permission profile.
-//
-// It is a SEPARATE process because opencode's permission config is per-process
-// (it rides OPENCODE_CONFIG_CONTENT on the serve's environment), so one serve
-// cannot carry the worker sandbox for executions and the interactive profile
-// for Ask at the same time. Callers must give it its OWN data dir: sharing a
-// sqlite data dir between two serve processes is unsafe, and Ask keeps no
-// session continuity across the split anyway (a stale session id takes the
-// existing ErrSessionNotFound recreate-and-re-seed path).
+// NewAskHostServe constructs the Ask Orchicon host serve: the same demand-keyed serve manager, but
+// built with the INTERACTIVE permission profile.
 func NewAskHostServe(log *slog.Logger, dataDir, home string) *HostServe {
 	return &HostServe{log: log, dataDir: dataDir, home: home, profile: ProfileInteractive}
 }
@@ -115,10 +71,7 @@ func (h *HostServe) PermissionProfile() PermissionProfile {
 	return h.profile
 }
 
-// SetMCPSet binds the RESOLVED MCP set this serve is built for (used by
-// HostServePool). It must be called before the serve starts: the set is baked
-// into OPENCODE_CONFIG_CONTENT ONCE. The empty set is the default (today's
-// config).
+// SetMCPSet binds the RESOLVED MCP set this serve is built for (used by HostServePool).
 func (h *HostServe) SetMCPSet(set mcpclient.Resolution) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -126,9 +79,6 @@ func (h *HostServe) SetMCPSet(set mcpclient.Resolution) {
 }
 
 // Enabled reports whether the host serve is configured for this plane.
-// It is disabled when the operator set ORCHICON_OPCODE_SESSION_TRANSPORT=0
-// (global kill-switch) — with the one-shot path removed, a disabled
-// transport means local executions FAIL fast rather than degrading.
 func (h *HostServe) Enabled() bool {
 	return os.Getenv("ORCHICON_OPCODE_SESSION_TRANSPORT") != "0"
 }
@@ -154,10 +104,7 @@ func (h *HostServe) Client() *SessionClient {
 	return h.client
 }
 
-// Start spawns the serve, waits for it to answer /global/health, and
-// builds the session client. If the `opencode` binary is absent or the
-// serve cannot come up, it returns an error — with the one-shot path
-// removed, executions that need this serve fail fast instead.
+// Start spawns the serve, waits for it to answer /global/health, and builds the session client.
 func (h *HostServe) Start(ctx context.Context) error {
 	if !h.Enabled() {
 		return fmt.Errorf("host opencode serve disabled (ORCHICON_OPCODE_SESSION_TRANSPORT=0)")
@@ -177,16 +124,43 @@ func (h *HostServe) Start(ctx context.Context) error {
 	if err := h.startOnce(ctx); err != nil {
 		return err
 	}
+	// ARMED HERE, NOT ONLY IN EnsureStarted.
+	h.armSupervision()
 	h.log.Info("host opencode serve ready",
 		"url", h.URL(), "data_dir", h.dataDir, "pid", h.pid())
 	return nil
 }
 
-// Watch supervises the serve: it polls /global/health and restarts the
-// process with backoff when it dies, so the session host stays up. A
-// restart preserves the data dir, so sessions survive (the client
-// re-attaches by session id). Blocks until ctx is cancelled.
+// armSupervision starts a watchdog for this serve — and starts NONE if one is already running.
+func (h *HostServe) armSupervision() {
+	h.mu.Lock()
+	already := h.superviseCancel != nil
+	h.mu.Unlock()
+	if already {
+		return
+	}
+	sc, cancel := context.WithCancel(context.Background())
+	h.mu.Lock()
+	// RE-CHECK UNDER THE SAME LOCK that installs it: two concurrent Starts must not both arm.
+	if h.superviseCancel != nil {
+		h.mu.Unlock()
+		cancel()
+		return
+	}
+	h.superviseCancel = cancel
+	h.mu.Unlock()
+	go h.Watch(sc)
+}
+
+// Watch supervises the serve: it polls /global/health and restarts the process with backoff when it
+// dies, so the session host stays up.
+var watchLiveHook func(delta int)
+
 func (h *HostServe) Watch(ctx context.Context) {
+	if watchLiveHook != nil {
+		watchLiveHook(1)
+		defer watchLiveHook(-1)
+	}
 	backoff := 5 * time.Second
 	const maxBackoff = 60 * time.Second
 	for {
@@ -197,25 +171,8 @@ func (h *HostServe) Watch(ctx context.Context) {
 		case <-time.After(15 * time.Second):
 		}
 		client := h.Client()
-		// LIVENESS, NOT DISPATCH-READINESS. This asked MCPHealthy — which CREATES A REAL SESSION every
-		// 15 seconds — and that conflated two different questions with a measurable cost:
-		//
-		//   * creating a session on opencode 2.x can have to BOOT the managed service for the location
-		//     (the same eviction/re-boot race that makes `opencode models` intermittently empty), so a
-		//     probe that is merely SLOW reads as DEAD;
-		//   * the watchdog then restarts a serve that was healthy, which KILLS IN-FLIGHT TURNS and
-		//     leaves a refused-connection window until the replacement listens — reported as a turn
-		//     that spun on "thinking" without ever returning, followed by "connection refused" on the
-		//     retry;
-		//   * and it leaked a session into the store every 15 seconds (aborted, never deleted).
-		//
-		// Measured on the operator's prod plane: "host opencode serve ready" followed by "unhealthy —
-		// restarting" three times in one evening, on a serve that was answering the whole time.
-		//
-		// The watchdog's only question is "is the process still answering?" — Healthy answers that,
-		// cheaply and definitively, and a genuinely wedged or dead serve fails it. WHETHER a serve can
-		// accept work is asked where it matters, at dispatch, by ProbeUsable (the run-start gate).
-		if client == nil || client.Healthy(ctx) {
+		// LIVENESS, NOT DISPATCH-READINESS.
+		if serveAnswering(ctx, client) {
 			backoff = 5 * time.Second
 			continue
 		}
@@ -225,9 +182,20 @@ func (h *HostServe) Watch(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		}
+		// SERIALIZED AGAINST A CONCURRENT EnsureStarted.
+		h.startMu.Lock()
+		if h.ready() {
+			// Somebody else got there first. A DEAD serve no longer reports ready (its exit clears the
+			// state), so this can only be a live one.
+			h.startMu.Unlock()
+			backoff = 5 * time.Second
+			continue
+		}
 		h.kill()
-		if err := h.startOnce(ctx); err != nil {
-			h.log.Error("host opencode serve restart failed", "error", err)
+		startErr := h.startOnce(ctx)
+		h.startMu.Unlock()
+		if startErr != nil {
+			h.log.Error("host opencode serve restart failed", "error", startErr)
 			if backoff < maxBackoff {
 				backoff *= 2
 			}
@@ -238,28 +206,58 @@ func (h *HostServe) Watch(ctx context.Context) {
 	}
 }
 
-// EnsureStarted starts the host serve ON FIRST DEMAND and arms its
-// supervision, or returns immediately when it is already up. This is the
-// demand-keyed entry point that makes the plane lazy (AC 2): a plane whose
-// adapter demand set contains no opencode never calls it, so no serve is
-// spawned and no opencode binary is probed (AC 1).
-//
-// It is the operator kill-switch's fail-fast point too (AC 4): with
-// ORCHICON_OPCODE_SESSION_TRANSPORT=0 it returns the disabled error rather
-// than silently degrading, and the caller fails the dispatch with that
-// reason.
-//
-// Supervision is unchanged from the boot-spawned topology: Watch polls
-// /global/health and restarts the process with 5s→60s backoff, and the
-// dedicated data dir means sessions survive a restart (the client
-// re-attaches by session id).
-//
-// No idle shutdown ships (DC3): once started, the serve lives for the plane
-// lifetime under Watch. A demand-counted idle reap can be added later behind
-// this same seam without changing any caller.
+// recycleIfCredentialsChanged recycles a RUNNING serve when the operator has signed in to a
+// provider since it was spawned. THE CALLER MUST HOLD startMu.
+func (h *HostServe) recycleIfCredentialsChanged(ctx context.Context) {
+	if h.log == nil || h.home == "" {
+		return
+	}
+	h.mu.Lock()
+	started, ready := h.startedAt, h.started
+	h.mu.Unlock()
+	if !ready || started.IsZero() {
+		return
+	}
+	at, ok := credentialStoreWrittenAt(h.home)
+	if !ok || !credentialStoreIsNewer(at, started) {
+		return
+	}
+	h.log.Info("host opencode serve: the operator's credential store changed since this serve started — "+
+		"recycling it so the new credentials are delivered",
+		"store_written", at.UTC().Format(time.RFC3339), "serve_started", started.UTC().Format(time.RFC3339))
+	h.kill()
+}
+
+// credentialStoreIsNewer reports whether a store written at `written` postdates a serve started at
+// `started`, with a small allowance so a sign-in landing in the same second-ish as the spawn does.
+func credentialStoreIsNewer(written, started time.Time) bool {
+	return written.After(started.Add(2 * time.Second))
+}
+
+// credentialStoreWrittenAt is when the operator's opencode credential store was last written.
+func credentialStoreWrittenAt(home string) (time.Time, bool) {
+	dir := runtime.OpenCodeStoreDir(home)
+	if dir == "" {
+		return time.Time{}, false
+	}
+	var newest time.Time
+	found := false
+	for _, name := range []string{"opencode.db", "auth.json"} {
+		if st, err := os.Stat(filepath.Join(dir, name)); err == nil && !st.IsDir() {
+			if at := st.ModTime(); !found || at.After(newest) {
+				newest, found = at, true
+			}
+		}
+	}
+	return newest, found
+}
+
+// EnsureStarted starts the host serve ON FIRST DEMAND and arms its supervision, or returns
+// immediately when it is already up.
 func (h *HostServe) EnsureStarted(ctx context.Context) error {
 	h.startMu.Lock()
 	defer h.startMu.Unlock()
+	h.recycleIfCredentialsChanged(ctx)
 	if h.ready() {
 		return nil
 	}
@@ -275,12 +273,10 @@ func (h *HostServe) EnsureStarted(ctx context.Context) error {
 		h.log.Warn("host opencode serve lazy start failed", "error", err)
 		return err
 	}
-	sc, cancel := context.WithCancel(context.Background())
+	// NO WATCH ARMING HERE — Start armed it (armSupervision).
 	h.mu.Lock()
-	h.superviseCancel = cancel
 	h.startErr = nil
 	h.mu.Unlock()
-	go h.Watch(sc)
 	h.log.Info("host opencode serve started on demand", "url", h.URL())
 	return nil
 }
@@ -293,14 +289,7 @@ func (h *HostServe) StartError() error {
 	return h.startErr
 }
 
-// markStartFailed records a failed lazy start AND clears any PARTIAL start
-// state. A failed Start can leave startOnce having already armed `started`
-// and `client` for a process it then killed (a readiness timeout, or a
-// first-demand ctx cancelled during the readiness wait); if that survived,
-// ready() would report a DEAD serve as up, so the next demand would skip the
-// start entirely and no supervision would ever be armed. Resetting forces the
-// next demand to retry, and releases the execution guard the failed attempt
-// installed.
+// markStartFailed records a failed lazy start AND clears any PARTIAL start state.
 func (h *HostServe) markStartFailed(err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -318,6 +307,39 @@ func (h *HostServe) ready() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.started && h.client != nil
+}
+
+// reapAsync waits for a serve process and records its exit.
+func (h *HostServe) reapAsync(cmd *exec.Cmd) {
+	if cmd == nil {
+		return
+	}
+	go func() {
+		h.markExited(cmd, cmd.Wait())
+	}()
+}
+
+// markExited records that a serve process has EXITED, and is the only place that happens for a
+// serve that died on its own. IT CLEARS STATE ONLY WHEN cmd IS STILL THE CURRENT ONE.
+func (h *HostServe) markExited(cmd *exec.Cmd, err error) {
+	h.mu.Lock()
+	current := h.cmd == cmd
+	if current {
+		h.cmd = nil
+		h.client = nil
+		h.started = false
+		h.port = 0
+	}
+	h.mu.Unlock()
+	if current {
+		h.log.Warn("host opencode serve exited — supervision will restart it", "error", err)
+	}
+}
+
+// serveAnswering reports whether the serve is currently answering, which is the ONLY question the
+// watchdog asks.
+func serveAnswering(ctx context.Context, c *SessionClient) bool {
+	return c != nil && c.Healthy(ctx)
 }
 
 // Stop kills the serve process, stops its supervision, and releases the
@@ -354,23 +376,12 @@ func (h *HostServe) kill() {
 	h.mu.Unlock()
 	if cmd != nil && cmd.Process != nil {
 		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		// NOT cmd.Wait() — the goroutine armed by startOnce owns the reap.
 	}
 }
 
-// serveConfig returns the OPENCODE_CONFIG_CONTENT for the shared serve:
-// the operator's MCP servers, the hard permission deny rules, and the
-// Orchicon MCP (tenant-scoped). Agent prompts are NOT baked — the worker
-// system prompt is delivered per message via the prompt_async `system`
-// field (opencode applies it per turn).
-//
-// CROSS-PROJECT UNION IS FORBIDDEN ON A SHARED SERVE. This config is built
-// ONCE and lives for the plane, so unioning several projects' MCP sets onto
-// it would make one project's servers visible in another project's session —
-// a leak with no consent boundary. A session whose set differs must run on a
-// serve built for that set (HostServePool, servepool.go); the pool is why
-// this is safe to state absolutely. h.mcpSet is exactly ONE resolved set (the
-// empty set = today's config), never a union across projects.
+// serveConfig returns the OPENCODE_CONFIG_CONTENT for the shared serve: the operator's MCP servers,
+// the hard permission deny rules, and the Orchicon MCP (tenant-scoped).
 func (h *HostServe) serveConfig() string {
 	h.mu.Lock()
 	set := h.mcpSet
@@ -385,18 +396,13 @@ func (h *HostServe) serveConfig() string {
 		PermissionProfile: h.profile,
 		RunMCP:            set.Servers,
 		RunSkills:         set.Skills,
-		// Shape is deliberately NOT set: BuildConfigContent resolves it from the
-		// same version probe the session client uses (setAPIShape, in startOnce),
-		// so the routes and the injected config cannot disagree about which
-		// opencode this is.
+		// Shape is deliberately NOT set: BuildConfigContent resolves it from the same version probe the
+		// session client uses (setAPIShape, in startOnce).
 	})
 	return cfg
 }
 
-// startOnce spawns the serve and waits for readiness. Caller holds no
-// lock; mutates h.cmd under the lock. The port is stable across restarts
-// (first spawn picks it, watchdog restarts reuse it) so the session
-// client URL never changes.
+// startOnce spawns the serve and waits for readiness.
 func (h *HostServe) startOnce(ctx context.Context) error {
 	h.mu.Lock()
 	port := h.port
@@ -411,35 +417,56 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 	serveConfig := h.serveConfig()
 	password := h.Password()
 
-	// No-project execution guard on PATH: destructive commands are refused
-	// unconditionally and every absolute-path target is blocked; relative
-	// paths stay inside each session's directory.
+	// A GUARD PROBLEM MUST NOT DISABLE CHAT.
 	g, err := guard.NewExecutionGuard("")
 	if err != nil {
-		return fmt.Errorf("host serve guard: %w", err)
+		h.log.Warn("host opencode serve: OS execution guard NOT applied — bash commands run without "+
+			"the PATH shim (opencode's own permission rules still apply)", "error", err)
+	}
+	if g != nil && !g.Enabled() {
+		h.log.Warn("host opencode serve: OS execution guard unavailable on this platform — commands "+
+			"run without the PATH shim (opencode's own permission rules still apply)",
+			"reason", g.DisabledReason())
 	}
 
-	// The SAME resolver the adapter spawns through, so the host serve and the
-	// in-container spawn can never disagree about which opencode is 'the' one.
-	// This used to be a second copy of the probe that ignored ORCHICON_OPENCODE_BIN.
+	// The SAME resolver the adapter spawns through, so the host serve and the in-container spawn can
+	// never disagree about which opencode is 'the' one.
 	binary, err := resolveOpenCodeBinary()
 	if err != nil {
 		g.Close()
 		return fmt.Errorf("host serve disabled; executions fail fast — no one-shot fallback: %w", err)
 	}
 
+	// THE OPERATOR'S PROVIDER CREDENTIALS, DELIVERED BY ENVIRONMENT.
 	env := append(os.Environ(),
 		ServePasswordEnv+"="+password,
 		"OPENCODE_CONFIG_CONTENT="+serveConfig,
 		"OPENCODE_DISABLE_AUTOUPDATE=1",
 	)
+	// BEST-EFFORT AND NEVER FATAL: a host with no opencode credentials is the native-only case, and a
+	// serve that starts without them behaves exactly as it did before this.
+	if pairs, unusable := h.credentialEnv(); len(pairs) > 0 {
+		env = append(env, pairs...)
+		h.log.Info("host opencode serve: provider credentials delivered by environment",
+			"providers", len(pairs), "undeliverable", strings.Join(unusable, ","))
+	} else if len(unusable) > 0 {
+		h.log.Warn("host opencode serve: signed-in providers cannot be delivered through the environment — "+
+			"turns on them will fail to authenticate", "undeliverable", strings.Join(unusable, ","))
+	} else if credentialGapIsReportable(len(pairs), len(unusable), h.operatorHasCredentialStore()) {
+		// NOTHING DELIVERED, BUT THE OPERATOR HAS A STORE — that combination used to be completely silent,
+		// and the silence is what made the reported incident take weeks to find.
+		h.log.Warn("host opencode serve: the operator HAS an opencode credential store but NOTHING was resolved "+
+			"from it — the serve will authenticate with whatever its own fresh data dir contains, or with "+
+			"nothing at all. A path bug in the resolver looks exactly like this.",
+			"store", h.authSource())
+	}
 	env = g.Apply(env)
 	env = setEnvKV(env, "XDG_DATA_HOME", h.dataDir)
 	// Stamp the plane spawn marker: it is how the boot sweep tells a process
 	// this plane started (and left behind) from the operator's own opencode.
 	env = setEnvKV(env, PlaneSpawnEnv, "1")
 
-	cmd := exec.CommandContext(ctx, binary,
+	cmd := procwin.CommandContext(ctx, binary,
 		"serve", "--hostname", "127.0.0.1", "--port", fmt.Sprintf("%d", port))
 	cmd.Env = env
 	cmd.Stdout = os.Stderr // serve logs go to the plane's stderr/log file
@@ -455,12 +482,17 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 	h.port = port
 	h.guard = g
 	h.client = NewSessionClient(fmt.Sprintf("http://127.0.0.1:%d", port), password, "")
-	// WHICH API THIS SERVE SPEAKS, asked of the binary that IS the serve. opencode 2.x moved every
-	// session endpoint under /api (apisurface.go); a client that assumed v1 against a 2.x serve
-	// would fail every turn on a 404 and name no endpoint.
+	// WHICH API THIS SERVE SPEAKS, asked of the binary that IS the serve.
 	h.client.setAPIShape(shapeForBinary(ctx, h.log, binary))
 	h.started = true
+	// WHEN THIS PROCESS WAS SPAWNED. The environment (and so the provider credentials) is fixed at
+	// spawn, so this is the clock a later sign-in has to beat to be noticed.
+	h.startedAt = time.Now()
 	h.mu.Unlock()
+
+	// It clears them ONLY while `cmd` is still the current one, so a deliberate kill during a restart
+	// cannot null out the replacement's state.
+	h.reapAsync(cmd)
 
 	// Wait for readiness (cold start loads providers/models/MCP).
 	client := h.Client()
@@ -480,16 +512,93 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 	return fmt.Errorf("host serve did not become ready within 90s")
 }
 
-// seedAuth copies the operator's opencode auth.json into the dedicated
-// data dir so the serve can authenticate to the model providers without
-// sharing the real opencode data store.
+// credentialResolver resolves the operator's provider credentials for this serve. A package var so a test can
+// assert the DELIVERY without a real opencode install, and so the production wiring is one readable line.
+var credentialResolver = runtime.AdapterCredentialEnv
+
+// credentialEnv returns this serve's provider credentials as KEY=VALUE pairs, plus the provider ids that could
+// not be delivered that way.
+func (h *HostServe) credentialEnv() ([]string, []string) {
+	if h.dataDir == "" {
+		return nil, nil
+	}
+	// THE OPERATOR'S HOME DIRECTORY, NOT THEIR OPENCODE DATA DIRECTORY.
+	//
+	// REPORTED: "When using the opencode adapter and then using opencode-go as the provider, I get … This
+	// API key has expired … That same API key works just fine using the orchicon adapter. Something is not
+	// picking up the API key still."
+	//
+	// It was picking up nothing at all. The resolver takes HOME and appends `.local/share/opencode/…`
+	// itself (openCodeDBPath/openCodeAuthPath), and this call passed authSource() — which ALREADY IS
+	// `~/.local/share/opencode`. Every lookup therefore composed a path that cannot exist:
+	//
+	//	passed   ~/.local/share/opencode
+	//	looked   ~/.local/share/opencode/.local/share/opencode/opencode.db   ← never there
+	//
+	// Both stores missed, so no variables were emitted, no `unusable` ids were recorded either (nothing was
+	// read to judge), and the whole delivery was SILENT — which is why there is no "provider credentials
+	// delivered" line in the plane log and why this looked like the key was simply not being read.
+	//
+	// The serve then started with no credential in its environment and fell back to opencode's own store,
+	// where the operator's `opencode` integration still holds the key they expired weeks ago. Measured on
+	// that host: the `opencode` integration answers 401 api_key_expired while `opencode-go` — the one they
+	// rotated, and the one the most-recently-updated rule selects — answers 200 on both zen endpoints.
+	//
+	// So one wrong directory produced the entire reported symptom: the right key was in the store the whole
+	// time, and the resolver that knows how to choose it was never pointed at it.
+	return credentialResolver(h.operatorHome(), adapter.DefaultAdapterKind)
+}
+
+// credentialGapIsReportable answers whether "resolved nothing" must be REPORTED rather than passed
+// over.
+func credentialGapIsReportable(pairs, unusable int, storePresent bool) bool {
+	return pairs == 0 && unusable == 0 && storePresent
+}
+
+// operatorHasCredentialStore reports whether the operator's opencode keeps credentials ANYWHERE we
+// know how to read — the 2.x SQLite store or the 1.x auth.json.
+func (h *HostServe) operatorHasCredentialStore() bool {
+	if operatorUsesSQLiteStore(h.authSource()) {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(h.authSource(), "auth.json"))
+	return err == nil
+}
+
+// operatorHome is the operator's home directory — the base the credential resolver appends
+// `.local/share/opencode` to. Split out so credentialEnv and authSource cannot disagree about it again.
+func (h *HostServe) operatorHome() string {
+	if h.home != "" {
+		return h.home
+	}
+	home, _ := os.UserHomeDir()
+	return home
+}
+
+// seedAuth gives the serve a credential store it can read, on the versions that keep credentials in
+// a FILE. IT IS STILL REQUIRED ON 1.x, AND THAT IS WHY THIS IS A GATE RATHER THAN A DELETION.
 func (h *HostServe) seedAuth() error {
 	if h.dataDir == "" {
+		return nil
+	}
+	if operatorUsesSQLiteStore(h.authSource()) {
+		h.log.Info("host serve: operator's opencode keeps credentials in SQLite — not copying auth.json "+
+			"(2.x would import a stale copy once and prefer it); provider credentials are resolved from the "+
+			"live stores and delivered by environment instead", "data_dir", h.dataDir)
+		return nil
+	}
+	if h.authSource() == "" {
+		// NO KNOWN STORE: nothing to copy, and filepath.Join("", "auth.json") would be a
+		// RELATIVE path resolved against the plane's working directory.
 		return nil
 	}
 	src := filepath.Join(h.authSource(), "auth.json")
 	b, err := os.ReadFile(src)
 	if err != nil {
+		// ABSENT IS NOT A FAILURE.
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
 	dir := filepath.Join(h.dataDir, "opencode")
@@ -501,16 +610,18 @@ func (h *HostServe) seedAuth() error {
 
 // authSource is the operator's real opencode data dir.
 func (h *HostServe) authSource() string {
-	if h.home != "" {
-		return filepath.Join(h.home, ".local", "share", "opencode")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "opencode")
+	return runtime.OpenCodeStoreDir(h.operatorHome())
 }
 
-// serveTenantID returns the plane's tenant for the built-in Orchicon MCP
-// registered on the shared serve. Matches the plane's hardcoded default
-// tenant ("tnt_dev", see internal/server/server.go) unless overridden.
+// operatorUsesSQLiteStore reports whether the operator's opencode keeps credentials in the 2.x
+// SQLite store rather than in auth.json.
+func operatorUsesSQLiteStore(opencodeDataDir string) bool {
+	_, err := os.Stat(filepath.Join(opencodeDataDir, "opencode.db"))
+	return err == nil
+}
+
+// serveTenantID returns the plane's tenant for the built-in Orchicon MCP registered on the shared
+// serve.
 func serveTenantID() string {
 	if t := os.Getenv("ORCHICON_MCP_TENANT_ID"); t != "" {
 		return t

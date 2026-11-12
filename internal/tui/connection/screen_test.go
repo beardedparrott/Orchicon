@@ -61,14 +61,6 @@ func submit(t *testing.T, m Model) (Model, []tea.Msg) {
 }
 
 // apiKeyMode pins the connection screen to API-KEY auth.
-//
-// THE LANDING MODE IS USERNAME+PASSWORD, so a test about the API-key path has to SAY which
-// mode it drives instead of inheriting one. Inheriting is exactly how these tests changed
-// meaning when the default flipped: they set an `oc_…` value into what is now the PASSWORD
-// field, and the ones that submit then failed — correctly — because a password-mode form
-// with no username refuses to submit. This mirrors the password-mode tests further down,
-// which already pin the mode the other way with `m.authAPI = false`; the flag is what gates
-// validation and the visible field set.
 func apiKeyMode(m Model) Model {
 	m.authAPI = true
 	m.applyCredentialMode()
@@ -172,19 +164,11 @@ func TestSubmitFlowEmitsProbeMessages(t *testing.T) {
 	}
 }
 
-// TestCredentialFieldIsModeAware verifies the credential field's prompt +
-// placeholder derive from the active auth mode: API-key mode shows
-// "API key >" with the oc_… placeholder; username+password mode shows
-// "Password >" with a password placeholder — never "API key" in password
-// mode (regression for the bug where password mode rendered "API key >").
+// TestCredentialFieldIsModeAware verifies the credential field's prompt + placeholder derive from
+// the active auth mode: API-key mode shows "API key >" with the oc_… placeholder.
 func TestCredentialFieldIsModeAware(t *testing.T) {
 	m := New(nil, fakeProbes(nil, nil, nil, "v1"))
-	// THE LANDING MODE IS USERNAME+PASSWORD. This assertion used to read "default auth
-	// mode must be API key", and it was inverted deliberately rather than deleted: it is
-	// the pin on which mode the operator meets, so the pin has to name the current intent.
-	// A first-run operator has just created an account with a username and a password
-	// (USERGUIDE §2), and an API key cannot be obtained until they have logged in to the
-	// GUI to mint one — so asking for a key first is asking for something they cannot have.
+	// THE LANDING MODE IS USERNAME+PASSWORD.
 	if m.authAPI {
 		t.Fatal("default auth mode must be username+password")
 	}
@@ -219,12 +203,7 @@ func TestCredentialFieldIsModeAware(t *testing.T) {
 	}
 }
 
-// TestProfileAuthMethodSelectsTheLandingMode covers the branch that makes the new default
-// safe. With the landing mode now defaulting to password, deriving it from the profile has
-// to be explicit in BOTH directions: a profile that names an API key must still open in
-// API-key mode. A default-only change would have silently dropped every stored API-key
-// profile into password mode — where the operator's key is not shown and, if they did not
-// remember a password, they could not get in at all.
+// TestProfileAuthMethodSelectsTheLandingMode covers the branch that makes the new default safe.
 func TestProfileAuthMethodSelectsTheLandingMode(t *testing.T) {
 	cases := []struct {
 		name string
@@ -261,10 +240,8 @@ func TestProfileAuthMethodSelectsTheLandingMode(t *testing.T) {
 	}
 }
 
-// TestToggleClearsStaleError verifies that toggling the auth method (ctrl+a)
-// or the insecure flag (ctrl+s) clears any stale validation/probe error so
-// an "API key is required" message does not persist after switching to
-// username+password (regression from the operator screenshot).
+// TestToggleClearsStaleError verifies that toggling the auth method (ctrl+a) or the insecure flag
+// (ctrl+s) clears any stale validation/probe error so an "API key is required" message does not.
 func TestToggleClearsStaleError(t *testing.T) {
 	m := New(nil, fakeProbes(nil, nil, nil, "v1"))
 	// Raise a validation error in API-key mode (missing key).
@@ -297,10 +274,8 @@ func TestViewShowsAuthToggleHint(t *testing.T) {
 	}
 }
 
-// TestViewGuidanceNamesReadAndWrite verifies the API-key hint and the
-// rejection error name BOTH read and write scopes (browsing needs read;
-// sending chat messages / interjecting into live executions needs write),
-// pointing at Settings → API keys.
+// TestViewGuidanceNamesReadAndWrite verifies the API-key hint and the rejection error name BOTH
+// read and write scopes (browsing needs read.
 func TestViewGuidanceNamesReadAndWrite(t *testing.T) {
 	m := apiKeyMode(New(nil, fakeProbes(nil, nil, nil, "v1")))
 	view := m.View()
@@ -356,11 +331,8 @@ func TestSaveProfilePersists0600AndActivates(t *testing.T) {
 	}
 }
 
-// TestConnectedMsgCompletesFlow drives the full message cycle: submit →
-// probeStartMsg → probeDoneMsg → connectedMsg → tea.Quit with a non-nil
-// Result(). Guards the regression where connectedMsg had no handler and
-// the first-run flow could never complete (cmd/orch always exited with
-// "no connection established").
+// TestConnectedMsgCompletesFlow drives the full message cycle: submit → probeStartMsg →
+// probeDoneMsg → connectedMsg → tea.Quit with a non-nil Result().
 func TestConnectedMsgCompletesFlow(t *testing.T) {
 	m := New(nil, fakeProbes(nil, nil, nil, "v9.0.1"))
 	m = apiKeyMode(m)
@@ -415,10 +387,8 @@ func TestConnectedMsgCompletesFlow(t *testing.T) {
 
 // --- Phase 2b: the embedded (in-place /connect) overlay contract ---
 
-// TestEmbeddedOverlayNeverQuits pins the overlay contract: with
-// SetEmbedded, the FULL screen form (URL + auth-method toggle + credential
-// field) completes the whole submit→probe→connected cycle without ever
-// emitting tea.Quit, and the shell reads the result via Result()/Connected().
+// TestEmbeddedOverlayNeverQuits pins the overlay contract: with SetEmbedded, the FULL screen form
+// (URL + auth-method toggle + credential field) completes the whole submit→probe→connected cycle.
 func TestEmbeddedOverlayNeverQuits(t *testing.T) {
 	m := New(nil, fakeProbes(nil, nil, nil, "v9.0.1"))
 	m = apiKeyMode(m)
@@ -459,9 +429,8 @@ func TestEmbeddedOverlayNeverQuits(t *testing.T) {
 	}
 }
 
-// TestEmbeddedCtrlCDoesNotQuit pins ctrl+c inertness inside the shell's
-// overlay (the shell's global quit chord owns process exit; ctrl+c inside
-// the embedded form is swallowed).
+// TestEmbeddedCtrlCDoesNotQuit pins ctrl+c inertness inside the shell's overlay (the shell's global
+// quit chord owns process exit; ctrl+c inside the embedded form is swallowed).
 func TestEmbeddedCtrlCDoesNotQuit(t *testing.T) {
 	m := New(nil, fakeProbes(nil, nil, nil, "v1"))
 	m.SetEmbedded()
@@ -487,10 +456,7 @@ func TestEmbeddedCtrlCDoesNotQuit(t *testing.T) {
 	}
 }
 
-// TestPasswordModeStoresRefreshToken pins the auto-refresh plumbing on the
-// login path: the probe stores the login's refresh token (the HttpOnly
-// orchicon_refresh Set-Cookie value surfaced through LoginResponse) in the
-// profile so the client can refresh the 900s access token for 24h.
+// TestPasswordModeStoresRefreshToken pins the auto-refresh plumbing on the login path.
 func TestPasswordModeStoresRefreshToken(t *testing.T) {
 	m := New(nil, ProbeFuncs{
 		Versionz: func(ctx context.Context, baseURL string, insecure bool) (*client.VersionzResponse, error) {
@@ -532,9 +498,8 @@ func TestPasswordModeStoresRefreshToken(t *testing.T) {
 	}
 }
 
-// TestStoredRefreshCarriedThroughEdit pins: a re-connect of an existing
-// password profile (no re-login needed if fields unchanged) keeps the
-// stored refresh token; an API-key switch drops it.
+// TestStoredRefreshCarriedThroughEdit pins: a re-connect of an existing password profile (no
+// re-login needed if fields unchanged) keeps the stored refresh token; an API-key switch drops it.
 func TestStoredRefreshCarriedThroughEdit(t *testing.T) {
 	m := New(&config.Profile{Name: "default", URL: "https://orch.example.com", AuthMethod: config.AuthPassword, Token: "acc", RefreshToken: "r-24h"}, fakeProbes(nil, nil, nil, "v1"))
 	if m.storedRefresh != "r-24h" {
@@ -548,9 +513,8 @@ func TestStoredRefreshCarriedThroughEdit(t *testing.T) {
 	}
 }
 
-// TestViewNamesInPlaceContract pins the operator-facing wording: the
-// password-mode hint must promise the in-place auto-refresh (never
-// "exit and re-run orch").
+// TestViewNamesInPlaceContract pins the operator-facing wording: the password-mode hint must
+// promise the in-place auto-refresh (never "exit and re-run orch").
 func TestViewNamesInPlaceContract(t *testing.T) {
 	m := New(nil, fakeProbes(nil, nil, nil, "v1"))
 	m.authAPI = false // the password-mode hint carries the in-place promise
@@ -565,13 +529,8 @@ func TestViewNamesInPlaceContract(t *testing.T) {
 
 // ---------- the credential field must never be pre-filled with a non-password ----------
 
-// A password-mode profile whose Token is the previous session's ACCESS TOKEN must
-// open with an EMPTY password field.
-//
-// This is this screen's oldest bug, and it produced a loop with no exit: the token
-// was loaded into the field labelled "Password > ", so validate() saw a password,
-// submit sent the stale token, the plane answered HTTP 401, and the operator could
-// not type the real password over a value they had not entered.
+// A password-mode profile whose Token is the previous session's ACCESS TOKEN must open with an
+// EMPTY password field.
 func TestPasswordModeDoesNotPrefillTheCredentialField(t *testing.T) {
 	savedToken := strings.Repeat("eyJhbGciOi.", 40) // a JWT-shaped saved access token
 	p := &config.Profile{
@@ -648,12 +607,7 @@ func TestCredentialModeToggleParksAndClearsTheKey(t *testing.T) {
 
 // ---------- the tab cycle must follow the order the fields are DRAWN ----------
 
-// In password mode the screen draws URL, Username, Password — the credential field
-// THIRD. The constants are fieldURL, fieldCredential, fieldUsername (the original
-// two-field layout), so cycling by INDEX moved focus down to Password and then back
-// UP to Username: the highlight jumped around the form and backspace landed in a
-// field the operator was not looking at, which is why the password box seemed
-// impossible to clear.
+// In password mode the screen draws URL, Username, Password — the credential field THIRD.
 func TestTabCycleFollowsTheDrawnFieldOrder(t *testing.T) {
 	p := &config.Profile{Name: "default", URL: "http://localhost:8091",
 		AuthMethod: config.AuthPassword, Username: "orchicon"}

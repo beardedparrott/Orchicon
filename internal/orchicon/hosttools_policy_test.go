@@ -11,16 +11,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/permpolicy"
 )
 
-// hosttools_policy_test.go pins the persistent-permission-policy enforcement
-// at the REAL seam: HostTools.Execute, the one function every host-suite call
-// passes through. permpolicy's own tests prove Decide's precedence in
-// isolation; this file proves the suite actually consults that accessor, that
-// a refusal reaches the caller verbatim, and that the file is re-read per call
-// (so an edit needs no restart).
+// hosttools_policy_test.go pins the persistent-permission-policy enforcement at the REAL seam:
+// HostTools.Execute, the one function every host-suite call passes through.
 
-// policySuite builds a host suite scoped to dir with the preset policy
-// installed at a temp policy file, plus a HOME override so `~/.ssh/**`
-// expands into the test's temp tree and never touches the real home.
+// policySuite builds a host suite scoped to dir with the preset policy installed at a temp policy
+// file, plus a HOME override so `~/.ssh/**` expands into the test's temp tree and never touches.
 func policySuite(t *testing.T) (*HostTools, *permpolicy.Store, string, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -49,11 +44,8 @@ func writeCall(t *testing.T, target string) string {
 	return string(b)
 }
 
-// TestHostSuitePolicyDenyBlocksAWriteEvenAfterASessionGrant is AC1 at the
-// enforcement seam: the preset `~/.ssh/**` entry refuses a write, the refusal
-// NAMES the entry, and a session grant cannot open it (Decide reads the deny
-// list before the grant field, so the suite — which holds no grant of its own
-// — cannot be talked past the entry).
+// TestHostSuitePolicyDenyBlocksAWriteEvenAfterASessionGrant is AC1 at the enforcement seam: the
+// preset `~/.ssh/**` entry refuses a write, the refusal NAMES the entry.
 func TestHostSuitePolicyDenyBlocksAWriteEvenAfterASessionGrant(t *testing.T) {
 	h, store, _, target := policySuite(t)
 	ctx := context.Background()
@@ -88,9 +80,8 @@ func TestHostSuitePolicyDenyBlocksAWriteEvenAfterASessionGrant(t *testing.T) {
 	}
 }
 
-// TestHostSuitePolicyEditTakesEffectOnTheNextCall is AC2: deleting the entry
-// from the FILE — no restart, no reopen — makes the same call succeed on the
-// very next consult.
+// TestHostSuitePolicyEditTakesEffectOnTheNextCall is AC2: deleting the entry from the FILE — no
+// restart, no reopen — makes the same call succeed on the very next consult.
 func TestHostSuitePolicyEditTakesEffectOnTheNextCall(t *testing.T) {
 	h, store, _, target := policySuite(t)
 	ctx := context.Background()
@@ -113,9 +104,8 @@ func TestHostSuitePolicyEditTakesEffectOnTheNextCall(t *testing.T) {
 	}
 }
 
-// TestHostSuiteNoPolicyHookLeavesTheSuiteUnchanged pins that the worker path
-// (no hook installed) is untouched: with no policy accessor wired, a write to
-// a ~/.ssh-shaped path is not refused by this layer.
+// TestHostSuiteNoPolicyHookLeavesTheSuiteUnchanged pins that the worker path (no hook installed) is
+// untouched: with no policy accessor wired.
 func TestHostSuiteNoPolicyHookLeavesTheSuiteUnchanged(t *testing.T) {
 	dir := t.TempDir()
 	home := filepath.Join(dir, "home")

@@ -10,9 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ProviderSettingsRow is the data-access shape of a provider_settings row
-// (ADR-0006 D1). Built-in overrides and tenant custom providers share the
-// table, discriminated by IsCustom.
+// ProviderSettingsRow is the data-access shape of a provider_settings row.
 type ProviderSettingsRow struct {
 	ID              string
 	TenantID        string
@@ -118,10 +116,8 @@ func UpsertProviderSettings(ctx context.Context, tx pgx.Tx, r ProviderSettingsRo
 	return row, nil
 }
 
-// UpdateProviderSettingsBuiltIn applies a partial update to a built-in
-// override row, creating it on first change. Zero-value fields keep the
-// current column (COALESCE pattern); $4 disambiguates "enabled=false" from
-// "leave enabled alone" and $5 does the same for num_ctx_default.
+// UpdateProviderSettingsBuiltIn applies a partial update to a built-in override row, creating it on
+// first change.
 func UpdateProviderSettingsBuiltIn(ctx context.Context, tx pgx.Tx, tenantID, providerID string, enabled *bool, baseURL *string, numCtx *int64, hidden []string, replaceHidden bool) (ProviderSettingsRow, error) {
 	hiddenJSON := "null"
 	if replaceHidden {

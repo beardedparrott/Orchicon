@@ -1,16 +1,6 @@
 package main
 
 // wsltrucolor_test.go — the WSL true-colour default.
-//
-// THE CONTRACT IS AN OUTCOME, NOT A DECISION SHAPE. Each case states the terminal
-// it is describing, runs the app's own default, and then feeds the resulting
-// environment through the REAL termenv resolution — so a case asserts the profile
-// the operator ends up with, and a change that supplies the advertisement in the
-// wrong form (or in the wrong order relative to NO_COLOR) fails here.
-//
-// The reported symptom these come from: 'all of the TUI themes are off ... the
-// background is black instead of the dark teal color', on a Windows terminal,
-// under WSL.
 
 import (
 	"testing"
@@ -18,9 +8,8 @@ import (
 	"github.com/muesli/termenv"
 )
 
-// applyDefaultThenResolve is the whole chain: run the app's WSL default against
-// the described terminal, then resolve the profile from the resulting environment
-// exactly as main does.
+// applyDefaultThenResolve is the whole chain: run the app's WSL default against the described
+// terminal, then resolve the profile from the resulting environment exactly as main does.
 func applyDefaultThenResolve(tty bool, env envMap) termenv.Profile {
 	getenv := func(k string) string { return env[k] }
 	if v := wslTrueColorDefault(tty, getenv); v != "" {
@@ -114,11 +103,8 @@ func TestWSLTrueColorDefault(t *testing.T) {
 	}
 }
 
-// TestWithoutTheDefaultTheReportedCaseIsStillBroken is the NEGATIVE CONTROL, and
-// it is the reason to trust the case above. It resolves the SAME terminal the
-// operator reported with the default NOT applied, and asserts the broken outcome.
-// Without it, the passing case would only show that something in the chain returns
-// TrueColor — not that the default is what changed it.
+// TestWithoutTheDefaultTheReportedCaseIsStillBroken is the NEGATIVE CONTROL, and it is the reason
+// to trust the case above.
 func TestWithoutTheDefaultTheReportedCaseIsStillBroken(t *testing.T) {
 	reported := envMap{"TERM": "xterm-256color", "WSL_DISTRO_NAME": "Ubuntu"}
 
@@ -130,10 +116,8 @@ func TestWithoutTheDefaultTheReportedCaseIsStillBroken(t *testing.T) {
 	}
 }
 
-// TestWSLTrueColorDefaultDoesNotMutateANonTTYEnvironment pins the guard that the
-// profile table cannot see: on a piped run the environment is not touched at all,
-// rather than touched and then ignored by termenv. The difference is observable to
-// anything downstream that reads COLORTERM.
+// TestWSLTrueColorDefaultDoesNotMutateANonTTYEnvironment pins the guard that the profile table
+// cannot see: on a piped run the environment is not touched at all.
 func TestWSLTrueColorDefaultDoesNotMutateANonTTYEnvironment(t *testing.T) {
 	env := envMap{"TERM": "xterm-256color", "WSL_DISTRO_NAME": "Ubuntu"}
 	getenv := func(k string) string { return env[k] }
@@ -145,9 +129,8 @@ func TestWSLTrueColorDefaultDoesNotMutateANonTTYEnvironment(t *testing.T) {
 	}
 }
 
-// TestWSLTrueColorDefaultIsTheOnlySourceOfTheValue pins that the supplied value is
-// the one termenv recognises. '24bit' would also work; a typo or a capitalised
-// variant would silently do nothing, and the symptom would be the original bug.
+// TestWSLTrueColorDefaultIsTheOnlySourceOfTheValue pins that the supplied value is the one termenv
+// recognises.
 func TestWSLTrueColorDefaultIsTheOnlySourceOfTheValue(t *testing.T) {
 	env := envMap{"TERM": "xterm-256color", "WSL_DISTRO_NAME": "Ubuntu"}
 	got := wslTrueColorDefault(true, func(k string) string { return env[k] })

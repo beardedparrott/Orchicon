@@ -1,21 +1,6 @@
 package tui
 
 // diff_scrollbar_drag_test.go — GRABBING THE DIFF RAIL'S SCROLLBAR.
-//
-// The operator: "the scroll only works in the TUI by using the scroll wheel. I can't grab onto the scroll bar
-// and drag it up and down like you can in the GUI."
-//
-// There were TWO defects behind that sentence, and this file pins both:
-//
-//   1. The bar occupied the pane's LAST cell, which is the shell's rail-RESIZE handle. A press there was
-//      claimed as a resize before the pane saw anything — so the bar could not be clicked either, and
-//      "grabbing" it resized the rail.
-//   2. Even with a column of its own, a drag cannot be handled inside the pane: a left press in the rail sets
-//      a SELECTION REGION and clipState consumes the motion that follows, so the pane would win the press and
-//      lose every step after it.
-//
-// So the gesture is the shell's, claimed above the clipboard layer — exactly like the divider's resize, whose
-// own comment documents the same trap.
 
 import (
 	"strings"
@@ -70,9 +55,8 @@ func openRailWithContent(t *testing.T) (*App, int) {
 	return m, barX
 }
 
-// trackRow finds a terminal row on the bar's TRACK (outside the thumb), and thumbRow one ON the thumb, by
-// asking the pane rather than hard-coding rows: the thumb's position depends on the viewport and the content,
-// so a fixed row would make these tests silently change meaning as the fixture grows.
+// trackRow finds a terminal row on the bar's TRACK (outside the thumb), and thumbRow one ON the
+// thumb, by asking the pane rather than hard-coding rows.
 func trackRow(t *testing.T, m *App, barX int, from, to int) int {
 	t.Helper()
 	for y := from; y <= to; y++ {
@@ -125,9 +109,6 @@ func TestPressOnTheScrollbarTrackJumpsWithoutResizingTheRail(t *testing.T) {
 }
 
 // A press on the THUMB picks the content up where it is: the drag starts and NOTHING MOVES YET.
-//
-// This is the operator's "seems to jump a bit": the thumb is the obvious place to grab, and jumping on that
-// press yanked the content to the pointer before the drag had even begun.
 func TestPressOnTheScrollbarThumbDoesNotJump(t *testing.T) {
 	m, barX := openRailWithContent(t)
 	// Park the content mid-way so the thumb is away from the top and a thumb row exists below the grab.
@@ -154,12 +135,8 @@ func TestPressOnTheScrollbarThumbDoesNotJump(t *testing.T) {
 	}
 }
 
-// THE DRAG ITSELF: motion tracks the pointer, and it keeps tracking even when a diagonal hand movement takes
-// the pointer out of the rail's columns (the gesture was claimed at the press, so no X test applies to it).
-//
-// The pane opens at the TOP, so the drag goes DOWNWARD — the direction with somewhere to go. (Dragging up
-// from the top correctly does nothing, which is why the earlier version of this test, which started near the
-// bottom, had to be rewritten around the relative semantics rather than the old absolute jump.)
+// THE DRAG ITSELF: motion tracks the pointer, and it keeps tracking even when a diagonal hand
+// movement takes the pointer out of the rail's columns (the gesture was claimed at the press.
 func TestDraggingTheScrollbarFollowsThePointer(t *testing.T) {
 	m, barX := openRailWithContent(t)
 	opening := m.diffPane.View()
@@ -237,11 +214,6 @@ func TestTheResizeEdgeStillResizesNextToTheBar(t *testing.T) {
 }
 
 // THE GRIP IS VISIBLE IN THE COLUMN THE SHELL GRABS.
-//
-// This is the REGRESSION pin. The bar's own column moved one cell in from the pane's edge, and the edge
-// (where the shell's divider hit-test lives) was left blank — so the operator went to resize the rail, saw
-// nothing to grab, and reported that resizing had been broken by the scrollbar fix. The two facts have to
-// hold together: the column the shell resizes from, and the column the operator can SEE is a grip.
 func TestTheResizeGripIsVisibleWhereItCanBeGrabbed(t *testing.T) {
 	m, barX := openRailWithContent(t)
 	divX := m.diffPaneWidth() - 1
@@ -251,9 +223,6 @@ func TestTheResizeGripIsVisibleWhereItCanBeGrabbed(t *testing.T) {
 		t.Fatalf("the divider is not grabbable at x=%d", divX)
 	}
 	// …and the pane DRAWS a grip there, on the body rows.
-	//
-	// Read from the rendered pane (ANSI-stripped) rather than from the style table, so this asserts what an
-	// operator sees: the pane's row 0 is its tab bar, so row 1 is its first body row — terminal row 4.
 	rows := strings.Split(m.diffPane.View(), "\n")
 	if len(rows) < 2 {
 		t.Fatalf("the pane rendered %d rows", len(rows))

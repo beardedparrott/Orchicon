@@ -1,22 +1,6 @@
 package tui
 
 // activity_line_test.go — THE STREAM SAYS WHAT IT IS DOING, AND HOW FRESH IT IS.
-//
-// The operator: "I say we implement the watchdog and add the line at the bottom of the chat stream so a
-// user knows activity is happening" — and then, when the line vanished mid-reply: "After the initial
-// 'Orchicon is thinking...', streaming started and the 'Orchicon is thinking...' went away and never came
-// back."
-//
-// So the line runs for the WHOLE turn. Its verb ROTATES on the server's clock (chat/verbs.go), and its age
-// comes from the SAME clock the watchdog reads (chat.Controller.SilenceSince, over the lastActivity the
-// liveness check uses), so the line cannot claim a liveness the watchdog would contradict — that coupling is
-// what makes it a report rather than a decoration.
-//
-// THE EARLIER ASSERTIONS HERE WERE LITERAL STRINGS, and rotation deliberately retires them. "Orchicon is
-// thinking…" was the weaker form of a promise both clients have always been making; the stronger form is
-// "both clients draw the same word for the same server time", which is what internal/tui/chat/verbs_test.go
-// and frontend/src/lib/ask-verbs.test.ts now pin against one shared fixture. These tests are re-pointed at
-// that invariant — a list member for a fixed server time — rather than weakened.
 
 import (
 	"strings"
@@ -26,9 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
-// activityWordInList reports whether the WORD in an activity line is one of the rotation's entries — the
-// membership half of the re-pointed parity assertion, shared by the tests that assert on a painted frame
-// rather than on the notice function directly.
+// activityWordInList reports whether the WORD in an activity line is one of the rotation's entries
+// — the membership half of the re-pointed parity assertion.
 func activityWordInList(line string) bool {
 	const prefix = "Orchicon is "
 	i := strings.Index(line, prefix)
@@ -49,25 +32,13 @@ func activityWordInList(line string) bool {
 	return false
 }
 
-// activityTestServerTime is the fixed server stamp these tests index the rotation with. It is a real Unix
-// millisecond value (2023-11-14T22:13:20Z) and deliberately NOT a multiple of the period, so it lands
-// mid-period and a selector that ignored the stamp could not accidentally match.
+// activityTestServerTime is the fixed server stamp these tests index the rotation with.
 const activityTestServerTime int64 = 1_700_000_123_456
 
 // THE LINE ESCALATES WITH SILENCE, at the same bands regardless of the word.
-//
-// All the boundaries are asserted because the boundaries ARE the behaviour: a line that said "no output
-// for 2s" would twitch on every chunk, and one that never escalated would leave the operator waiting on a
-// dead stream with no warning at all. The verb is computed from the SAME fixed stamp as the selector, so
-// the age bands stay asserted exactly while the word is no longer a literal.
 func TestActivityNoticeEscalatesWithSilence(t *testing.T) {
 	verb := "Orchicon is " + chat.VerbAt(activityTestServerTime) + "…"
-	// THE CALLS BELOW PASS (summary="", width=0), which is exactly the state these cases describe: a turn
-	// that counted no tool work (so the counter contributes nothing) and a pane wide enough to hold the
-	// whole line (width 0 = unbounded in fitNotice). Every expected string is therefore UNCHANGED from
-	// before the counter landed — the invariant this test pins is still "the band boundaries are the
-	// behaviour", and the new arguments cannot mask a band regression: the counter cases live in
-	// activity_summary_test.go.
+	// THE CALLS BELOW PASS (summary="", width=0), which is exactly the state these cases describe.
 	cases := []struct {
 		silent time.Duration
 		want   string
@@ -92,10 +63,6 @@ func TestActivityNoticeEscalatesWithSilence(t *testing.T) {
 }
 
 // AND THE WORD IS A LIST MEMBER, THE SAME ONE THE SELECTOR NAMES FOR THAT SERVER TIME.
-//
-// This is the re-pointed form of the old "the verb follows the phase" assertion. What is asserted is no
-// longer two literals but the SHARED property: for one server time, one word — and it is one of the
-// rotation's own entries, so the line can never invent a claim outside the reviewed list.
 func TestActivityNoticeVerbFollowsTheServerClock(t *testing.T) {
 	want := "Orchicon is " + chat.VerbAt(activityTestServerTime)
 	for _, silent := range []time.Duration{0, 2 * time.Second, 30 * time.Second, time.Minute} {
@@ -121,9 +88,6 @@ func TestActivityNoticeVerbFollowsTheServerClock(t *testing.T) {
 
 // THE LINE IS PRESENT AT EVERY STAGE OF THE TURN — the operator's actual complaint, stated as the
 // property: there is no point during a streaming turn where the transcript shows no activity line.
-//
-// The PRE-HEARTBEAT case (stamp 0) is included deliberately: it is the first second after sending, before
-// any heartbeat has arrived, which is exactly the moment the operator is most likely to be looking.
 func TestThereIsAlwaysAnActivityLineDuringATurn(t *testing.T) {
 	for _, serverTime := range []int64{0, activityTestServerTime, activityTestServerTime + 9_000} {
 		for _, silent := range []time.Duration{0, time.Second, 5 * time.Second, 20 * time.Second, 40 * time.Second, time.Hour} {
@@ -143,10 +107,8 @@ func TestThereIsAlwaysAnActivityLineDuringATurn(t *testing.T) {
 	}
 }
 
-// AND THE LINE NEVER CLAIMS ACTIVITY IT CANNOT SEE: a growing gap says "no output", never that the stream
-// is receiving. A reassurance that cannot be true is worse than silence, because it hides the very failure
-// this work exists to expose. The verb is checked against the SAME ban as the list itself
-// (chat/verbs_test.go's TestAskVerbsNeverClaimLiveness), so a liveness word cannot enter the rotation at all.
+// AND THE LINE NEVER CLAIMS ACTIVITY IT CANNOT SEE: a growing gap says "no output", never that the
+// stream is receiving.
 func TestTheLineNeverClaimsActivityItCannotSee(t *testing.T) {
 	for _, serverTime := range []int64{0, activityTestServerTime} {
 		for _, silent := range []time.Duration{26 * time.Second, 40 * time.Second, time.Minute, time.Hour} {

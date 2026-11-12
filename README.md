@@ -21,35 +21,47 @@ The documentation lives at the project root:
   architecture, project structure, the data model, the Ask Orchicon permission
   model, operator setup, development, deployment, environment variables and
   troubleshooting.
+- **[`docs/troubleshooting-missing-pr-links.md`](./docs/troubleshooting-missing-pr-links.md)** —
+  why a work item can read `succeeded` with no branch or `PR merged` link
+  (deleted runs strip provenance; `local` git strategy never produced a PR;
+  a lost mirror write), and how to classify one item from the others.
 
 ## Technology Stack
 
 - **Control plane**: Go (single binary, k8s-style reconcilers)
-- **Single container**: `orchicon container` runs the whole stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana, control plane) as PID 1 — see [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md)
+- **One shape**: the plane and its services (Postgres, NATS, Tempo/Loki/VictoriaMetrics) are host processes of your user, one set per instance — see [ARCHITECTURE.md §One shape](ARCHITECTURE.md)
 - **API**: Protobuf + Connect (gRPC + REST + streaming from one schema)
 - **Database**: PostgreSQL 16 with RLS + transactional outbox
 - **Event bus**: NATS JetStream
-- **Telemetry**: OpenTelemetry → Grafana stack (Tempo + Loki + VictoriaMetrics) — fully separated infra
+- **Telemetry**: OpenTelemetry → the telemetry backends (Tempo + Loki + VictoriaMetrics), read by the native Telemetry panes — fully separated infra
 - **Policy**: Rego (Open Policy Agent)
 - **Runtime adapters**: pluggable gRPC sidecars — a **built-in native engine runs by default and needs nothing installed**, plus external adapters such as OpenCode. Adapters are optional and never bundled.
 - **Frontend**: TypeScript + React + Vite + Connect-ES
 
 ## Last Release Changes
 
-- **an installer you can trust with more than one stack**: The installer grew a real vocabulary and a measure of consent.
-- **a canary install path on `develop`**: The installer could only be tested after it shipped, which is how two releases carried a broken one.
-- **one profile per instance, and one instance per process**: `orch` is meant to run more than once at a time; it could not.
-- **in-transcript search, in both clients**: Find a phrase in a long conversation and step through the matches with `n`/`N` (TUI) or prev/next (GUI),
-- **the Ask pane is live as it is written**: A reply now streams into the transcript as the model writes it, instead of appearing only when the turn
-- **A payload-too-large refusal recovers instead of wedging.** A `413` from the gateway matched none of the
-- **A restart can no longer lose your conversation.** The history reducer knew about images and nothing else,
-- **Freeing `ctrl+f` for search.** It had been "attach a file by path" in the TUI and nothing in the GUI;
-- **A permission card settles on the server's answer**, not on a guess about whether a turn is still running.
-- **The release pruner had been a silent no-op its whole life** — the cap it exists to enforce was never
-- **The GUI's default theme is Teal Depths again**, three points lighter, and the app background is a solid
-- **A canary binary no longer ships without a frontend**, which had made a canary install serve an auth error
-- **The footer band stops jumping.** An empty card line was collapsing it, and the screen bounced.
-- **The installer's common commands are in the install docs**, rather than only in the README's flags.
+- **Orchicon runs on your machine, not inside itself**: The plane and its services — the API, Postgres, NATS, the telemetry backends — are now **host processes
+- **podman is a first-class engine, not a Docker-shaped hole**: Orchicon now treats the container engine as a seam with more than one implementation.
+- **Windows is native**: `install.ps1` no longer provisions a Linux distro so your control plane can live in it.
+- **a desktop app, for all three platforms**: The desktop app is a **Wails shell** around the same frontend the browser gets, and it ships signed and
+- **the installer is also the updater**: One command now covers install, update and repair, because they were never really different operations.
+- **Ask Orchicon can be edited, and interrupted properly**: A conversation is now something you can revise.
+- **no built-in cost ceilings**: Budgets were meant to be a constraint you set, and had quietly become defaults nobody chose.
+- **the Servers page, and a git strategy you actually choose**: A **Servers** page puts plane control in the UI — start, stop and restart, with all four connection states
+- **Containers work out of the box, with no flag to learn.** They are provisioned by default and an image is
+- **Adapters are discovered from your `PATH` — the CLI's real install locations, not a guessed path.**
+- **A project directory is always a mount root**, so a run outside the usual tree still sees its own work.
+- **A run that fails at start records why**, in the row the UI reads — instead of a failed run with nothing
+- **A worker's verdict routes to the workflow loop; it is not "recovered"** as though it were an execution
+- **OpenCode 1.x prompts go to the route that starts a turn**, and the session set-model call sends `id`.
+- **The MCP catalog lost its dead servers**, and a legacy server now completes its handshake with the
+- **Local integration is a recorded queue**, integration happens *before* branching, and a dirty worktree is
+- **A worktree pointer is recognised wherever it was written**, including on Windows — where the doubled
+- **Cleanup reclaims what it actually promised**: leaked baseline scratch checkouts, stale claims, failed
+- **The DB pool is sized above the plane's own pinned connections**, so a busy plane cannot starve itself.
+- **CI runs the DB-backed suites, and a silent skip is now impossible** — a test that skips without saying
+- **The desktop and canary paths are gated**: `appimagetool` is pinned and cached so a CDN 504 cannot fail a
+- **Comment hygiene across the tree**: explanatory blocks combed to the constraint that is not visible in the
 
 Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchicon/releases).
 
@@ -61,7 +73,15 @@ Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchic
 curl -fsSL https://orchicon.dev/install | bash
 ```
 
-The installer downloads the binary, then runs `orchicon install` to set up everything: pull the published images, start the runtime daemon, launch the single-container instance, and print how to connect / start / stop. (Pass `--no-setup` to install only the binary.)
+The installer downloads the binary, then runs `orchicon install` to set up everything: start the instance's services and plane on this host, register the runtime daemon, and print how to connect / start / stop. (Pass `--no-setup` to install only the binary.)
+
+> **macOS: no Gatekeeper override needed.** `curl` sets no quarantine bit, so a binary installed by the command above runs without a "cannot be opened because the developer cannot be verified" prompt. Orchicon's macOS binaries are **not** code-signed or notarised (a Developer ID costs USD 99/yr — see the `sign-macos` job in `.github/workflows/release.yml`), so one case does need one command: if you downloaded the `.tar.gz` in a **browser** rather than with the one-liner, macOS marked the archive, and the extracted binary inherits the mark. Clear it on that one file — this does not disable Gatekeeper:
+>
+> ```bash
+> xattr -d com.apple.quarantine /path/to/orchicon
+> ```
+>
+> Every release also publishes `SHA256SUMS`; both installers verify the download against it and refuse a mismatch before anything is installed. To check a manual download by hand: `shasum -a 256 orchicon_<version>_darwin_<arch>.tar.gz` and compare it with that file. See [USERGUIDE.md §1 — macOS: Gatekeeper and verification](USERGUIDE.md#macos-gatekeeper-and-verification).
 
 > **Adapters are optional — the native engine needs nothing installed.** Orchicon ships its own runtime engine and runs sessions inside the control plane, so a fresh install is complete on its own: no adapter CLI, no binary probe, no serve. Install an external adapter (OpenCode, and future ones like Claude Code / Codex) only if you want to run work on that runtime. Orchicon **never bundles or ships** an adapter CLI — your own host install is bind-mounted into the containers at runtime, which keeps the product redistributable regardless of an adapter's licence (Claude Code's terms prohibit bundling).
 >
@@ -71,40 +91,76 @@ The installer downloads the binary, then runs `orchicon install` to set up every
 > curl -fsSL https://opencode.ai/install | bash
 > ```
 >
-> That writes `~/.opencode/bin/opencode`, the one location both the plane and its runtime containers can use. `sudo npm i -g` writes to `/usr/local/bin`, which no container mounts — the binary works in your shell and every execution fails to find it. **On Windows, install it inside WSL**, not on the Windows side: the stack runs in a WSL2 distro and a Windows `opencode.exe` is reachable through interop but unusable by the plane. See [USERGUIDE.md §1](USERGUIDE.md#installing-an-adapter-cli) for the full rules.
+> That writes `~/.opencode/bin/opencode`, the one location both the plane and its runtime containers can use. `sudo npm i -g` writes to `/usr/local/bin`, which no container mounts — the binary works in your shell and every execution fails to find it. **On Windows, install it as your own user on Windows itself** — the plane is a native Windows process (see [USERGUIDE.md §1](USERGUIDE.md#installing-an-adapter-cli)). Runtime *containers* are provisioned by default, and a workflow that runs inside one also needs the CLI in the Linux substrate the container runs in; that case is covered in the same section. See [USERGUIDE.md §1](USERGUIDE.md#installing-an-adapter-cli) for the full rules.
 >
 > `orchicon install` no longer requires it. A plane whose model refs need no adapter never probes for the binary, never starts a serve, and never mounts it into a container — see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ```powershell
-# Windows (PowerShell) — runs the stack inside WSL2
+# Windows (PowerShell) — NATIVE: installs orchicon.exe + orch.exe, no WSL2 or Docker required
 irm https://orchicon.dev/install.ps1 | iex
+
+# ...and only on a host that must stay engine-free (containers are provisioned by default):
+& ([scriptblock]::Create((irm https://orchicon.dev/install.ps1))) -NoContainers
 ```
 
-### Single container (Docker)
-
-The whole Orchicon stack (Postgres, NATS, Tempo/Loki/VictoriaMetrics/Grafana, control plane) runs in one container:
-
-```bash
-docker run --rm -p 8080:8080 -p 3002:3000 -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon
-```
-
-The `orchicon` binary is the PID-1 supervisor (`orchicon container`). See [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md) for the lifecycle script, env vars, and data-preservation notes.
-
-### Windows (WSL2)
+### Windows
 
 ```powershell
 irm https://orchicon.dev/install.ps1 | iex
 ```
 
-Orchicon's runtime layer (runtime daemon, unix socket, container mounts) is POSIX-only, so on Windows the **whole stack runs inside WSL2**. The installer provisions/detects WSL2, installs the **Linux** binary inside the distro, and runs the one-command setup there. WSL2 forwards `localhost`, so the UIs open from Windows at the same URLs as on Linux: `http://localhost:8080` (control plane) and `http://localhost:3002` (Grafana).
+Orchicon runs on Windows as **native processes of the user who installs it**: `install.ps1` places `orchicon.exe` and `orch.exe` in `%LOCALAPPDATA%\Programs\Orchicon`, adds that directory to your **user** `PATH`, and runs the one-command setup there. **Container support is installed by default and ready to use** — the installer provisions podman and the Linux substrate it runs in, so switching a project or work item to container mode simply works. No image is downloaded until you choose one (the install offers them, defaulting to none; the Runtime Images page fetches them later). Pass `-NoContainers` on a host that must stay engine-free.
 
-The installer never closes your PowerShell window: a failure prints what failed and the next steps, then returns to the prompt with your session intact. The long steps (image pull, stack setup) stream their output as they run, the setup step asks about host ports (ENTER accepts each default), and the full log lands in `%TEMP%`. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation).
+The installer never closes your PowerShell window: a failure prints what failed and the next steps, then returns to the prompt with your session intact. The long steps (binary acquisition, stack setup) stream their output as they run, the setup step asks about host ports (ENTER accepts each default), and the full log lands in `%TEMP%`. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation).
+
+> **Windows SmartScreen.** The installer downloads `orchicon.exe` itself, so the binary it installs carries no mark-of-the-web and runs without a prompt. If you instead downloaded the **zip in a browser**, Windows marks that archive and SmartScreen warns *"Windows protected your PC"* the first time you run the extracted `orchicon.exe`: click **More info → Run anyway**, or clear the mark on the archive **before extracting it** with `Unblock-File -LiteralPath .\orchicon_<version>_windows_amd64.zip`. Neither step changes a Windows security setting — every other unsigned download on the machine stays blocked. A **saved** `install.ps1` (right-click → "Save link as") can be marked the same way: `Unblock-File -LiteralPath .\install.ps1`. The documented `irm https://orchicon.dev/install.ps1 | iex` writes no file at all and trips nothing.
 
 Prerequisites:
-- **Windows 10 21H2+ / Windows 11**, with WSL2 and a Linux distro (first-time users: run `wsl --install` in an admin shell, then reboot — the installer will guide you).
-- **Docker Desktop** with WSL2 integration enabled for your distro (or Docker Engine installed inside it).
+- **Windows 10 21H2+ / Windows 11.** A native install needs no WSL2 distro and no Docker Desktop for the plane itself. Runtime **containers** are provisioned by default and need WSL2 with a Linux distro as podman's substrate (first-time users: run `wsl --install` in an admin shell, then reboot — the installer will guide you); `-NoContainers` skips all of it.
+- A **container engine is optional**: the plane and its services run as host processes, so nothing needs Docker. An engine is only used for a workflow's *runtime container*, and only if you opt in.
 
-Project directories are entered in the UI as their **WSL path** — a Windows project `C:\Users\you\projects\Foo` is `/mnt/c/Users/you/projects/Foo` inside WSL. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation) for details.
+Project directories are entered in the UI as **host paths** — with a native install that stays the Windows path (`C:\Users\you\projects\Foo`), not a `/mnt/c/…` translation. See [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation) for details.
+
+### Desktop app (optional)
+
+The desktop app is a **client**. It does not replace the plane: it talks to a running
+Orchicon instance over loopback (`http://127.0.0.1:8080` by default) and **does not start
+one** — the plane is started by setup at install time, and by `orchicon start` after a
+reboot. If no plane is reachable the app says so and names the address it tried, rather
+than opening on an unexplained error. The **CLI is still the canonical entry point**
+(`orchicon install`, `orchicon start`, `orchicon status`), but once the app is installed
+you do not need it to use Orchicon. The app is optional: everything the app does, the web
+UI at the same URL does too.
+
+```bash
+# Linux / macOS — install it alongside the CLI
+curl -fsSL https://orchicon.dev/install | bash -s -- --desktop
+```
+
+```powershell
+# Windows — the same, from PowerShell
+irm https://orchicon.dev/install.ps1 | iex   # with -Desktop, see USERGUIDE
+```
+
+Or download the package for your platform from
+[GitHub Releases](https://github.com/beardedparrott/Orchicon/releases): a `.deb` and an
+`.AppImage` for Linux, a signed **and notarised** `.app` for macOS, and an NSIS installer
+(or portable zip) for Windows. Each platform's gap, stated plainly:
+
+- **macOS** — the `.app` is signed, notarised and **stapled**, so Gatekeeper opens it with
+  no bypass, online or off. If you see "cannot be opened", the copy you have is a local
+  `make` build rather than the release artifact.
+- **Windows 11** — WebView2 ships with the OS, so it installs and launches with no extra
+  step. **Windows 10** may not have it: the installer provisions it during setup, and the
+  portable zip shows a dialog naming the WebView2 Evergreen bootstrapper
+  (<https://go.microsoft.com/fwlink/p/?LinkId=2124703>) rather than opening a blank window.
+- **Linux** — the `.deb` declares `libwebkit2gtk-4.0-37`. If it is somehow missing,
+  `orchicon-desktop` prints the missing library and the one command that installs it. On a
+  distro that dropped WebKitGTK 4.0 (Ubuntu 24.04+), use the AppImage, which bundles it.
+
+The installer never uses `sudo` and never writes to `/Applications` or `/usr`: on Linux the
+AppImage lands in the install directory, on macOS the `.app` goes to `~/Applications`. The
+full walkthrough is in [USERGUIDE.md §3 — The two clients](USERGUIDE.md#3-the-two-clients).
 
 ### Options
 
@@ -113,28 +169,38 @@ Project directories are entered in the UI as their **WSL path** — a Windows pr
 | `--version <tag>` | Install a specific version (e.g. `v0.4.5`). Default: latest. |
 | `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). On Windows this is a **WSL path** (the binary installs inside the distro). |
 | `--no-setup` | Install the binary only — do not pull images / start the runtime daemon / launch the container. |
+| `--desktop` | Also install the desktop app (a GUI client for the same plane). Linux: the AppImage; macOS: the signed `.app` into `~/Applications`. Never uses `sudo`. Without it, the install prints where to get the app. |
+| `--install-dir <dir>` | Installation directory (default: `~/.local/bin`). The PowerShell installer's `-InstallDir` defaults to `%LOCALAPPDATA%\Programs\Orchicon` and needs no administrator rights. |
+| `--no-setup` | Install the binary only — do not start the host services, the runtime daemon or the plane. |
+| `--no-verify` | Skip the `SHA256SUMS` check on the downloaded archive. The check is what proves the archive is the one the release published; only skip it against a mirror you control. |
 | `--uninstall` | Remove Orchicon from the install directory. |
 | `--dry-run` | Print what would happen without making changes. |
-| `--clean` | Stop dev containers, remove old binary, then install latest. All user data preserved. |
-| `--force-clean` / `--nuke` | Wipe everything: destroy Docker volumes, remove blob store data and runtime state, then install latest. **All data lost.** |
+| `--clean` | Stop this instance's plane and host services, remove old binary, then install latest. All user data preserved. |
+| `--force-clean` / `--nuke` | Wipe everything for this instance: destroy its data directory (database, blob store, runtime state), then install latest. **All data lost.** |
 
 ```bash
 # Install a specific version
 curl -fsSL https://orchicon.dev/install | bash -s -- --version v0.4.5
 
+# Upgrade — the same command as installing
+curl -fsSL https://orchicon.dev/install | bash
+
 # Uninstall
 curl -fsSL https://orchicon.dev/install | bash -s -- --uninstall
-
-# Clean upgrade (preserves data)
-curl -fsSL https://orchicon.dev/install | bash -s -- --clean
 
 # Force clean and reinstall (destroys all data)
 curl -fsSL https://orchicon.dev/install | bash -s -- --force-clean
 ```
 
+**Upgrading is just the install command re-run.** It detects what it is doing — install,
+upgrade, or nothing to do — and an upgrade preserves your data while waiting for the plane
+to come back healthy. It will **not** downgrade: migrations are forward-only, so installing
+an older release than the one you have is refused by name. Back up first if you want to
+(`orchicon db backup`) — that is deliberately your call, not an automatic multi-GB artifact
+on every upgrade. See [USERGUIDE.md §Upgrading](USERGUIDE.md#1a-upgrading).
+
 After installation, verify with `orchicon version`. The full stack runs
-as a single container — see [Single container](#single-container-docker)
-and [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md).
+on this host — see [ARCHITECTURE.md §One shape](ARCHITECTURE.md).
 
 > **Note:** Pre-built binaries are published to [GitHub
 > Releases](https://github.com/beardedparrott/Orchicon/releases). If no
@@ -153,13 +219,13 @@ and [ARCHITECTURE.md §Single-Container Deployment](ARCHITECTURE.md).
 |---|---|
 | `orchicon serve` | Run the control plane with embedded frontend (headless) |
 | `orchicon serve --detach` / `--stop` | Fork/stop a background server |
-| `orchicon container` | Run the whole stack as PID 1 (container image) |
-| `orchicon install` | One-command setup: pull images, start the runtime daemon, launch the container, print connection info |
+| `orchicon install` | One-command setup: acquire the infrastructure binaries (Postgres, NATS), start the runtime daemon, start this instance's services and plane, print connection info. Offers the optional runtime images (default: none) |
 | `orchicon runtime-daemon` | Host process owning the Docker socket; owns the warm pool of per-workflow runtime containers |
 | `orchicon runtime-supervisor` | Runtime container PID 1 (hosts the container's adapter serve, when the run needs one) |
 | `orchicon runtime-client` | Forwards daemon requests (serve handshake / ping) into the runtime container |
-| `scripts/container.sh up dev\|prod` | Start a single-container instance |
-| `scripts/container.sh runtime-daemon` / `runtime-stop` | Start / stop the runtime daemon |
+| `make instance-up` / `instance-down` / `instance-status` | Start / stop / inspect an instance on the host (no image, no instance container) |
+| `make runtime-build` | Build the workflow runtime images with podman (version-gated) |
+| `make runtime-daemon` / `runtime-stop` | Start / stop the host-side runtime daemon |
 | `orchicon version` | Print the installed version |
 
 ```bash
@@ -178,22 +244,28 @@ tasks are in the `Makefile` (`make help`).
 
 - Go 1.26+
 - Node 22+
-- Docker (the single-container deployment needs only Docker)
+- Docker or podman — needed ONLY for the workflow runtime (the runtime images and the
+  per-run containers). The instance itself runs on the host: Postgres/NATS are
+  started by `cmd/orchicon services`, and no image is built for it.
 - [`buf`](https://buf.build) and [`atlas`](https://atlasgo.io) — install
   with `make tools`
 
 ### Quick start
 
 ```bash
-make container-build          # build bin/orchicon + the container image
-make container-up             # start the dev instance on :8080 (:3002 Grafana)
-# or: scripts/container.sh up dev
+make instance-build           # build bin/orchicon + bin/orch (binaries only — no image)
+make instance-up              # start the dev instance on :8080 (host plane + services)
+# or: scripts/orchicon.sh start dev
 curl http://localhost:8080/healthz   # {"status":"ok"}
 ```
 
 Frontend development against a running instance: `make fe-install` (first
 time) then `make fe-dev` — the Vite dev server on :5173 proxies the API to
 :8080. Migrations run automatically on container boot (embedded runner).
+
+Plane start/stop lives in the desktop app's **Manage Server** page (Control nav, desktop shell only)
+and in `orchicon plane <status|start|stop|restart> [instance]`. The web app has no lifecycle control by
+design: a browser cannot spawn a process, so no lifecycle RPC exists.
 
 ### Authentication
 
@@ -229,16 +301,181 @@ Generated code is committed (see ARCHITECTURE.md §Code Generation).
 | `proto/` | Protobuf schema (`orchicon.api.v1`, `orchicon.adapter.v1`) |
 | `api/gen/` | Generated Go code |
 | `db/` | Atlas declarative schema + versioned migrations |
-| `deploy/container/` | Single-container image (Dockerfile + embedded runtime configs) |
 | `frontend/` | Vite + React + Connect-ES + TanStack Router + shadcn/ui |
 | `site/` | Static landing page (`orchicon.dev`) |
 | `scripts/` | Installers, CI gates, dev controller |
+
+### Testing — ALWAYS THE DEV INSTANCE, NEVER PROD
+
+**This is a hard rule, not a preference.** Tests that open a database CREATE REAL ROWS. The DB-backed
+suites (~130 files reading `ORCHICON_TEST_DSN`) create projects, work items, workers and executions by
+design, and they clean up only their own tenants.
+
+#### The rule
+
+> **Point `ORCHICON_TEST_DSN` at the DEV instance's database. Never at prod.**
+>
+> If you are in a shell that is running or has exported a PROD plane, do not run `go test` in it against
+> a remote DSN. Check before you run:
+
+```bash
+echo "instance=$ORCHICON_INSTANCE  plane=$ORCHICON_POSTGRES_DSN  tests=$ORCHICON_TEST_DSN"
+```
+
+#### Why this is written down
+
+It was learned the expensive way. A full `go test ./...` was run from a shell that had a live prod plane
+in it — the launcher had exported that plane's `ORCHICON_INSTANCE=prod` and `ORCHICON_POSTGRES_DSN` — and
+`ORCHICON_TEST_DSN` was set to *that same prod database* so the suites could run. They ran. Result: **~125
+test projects in the deployment tenant and 281 throwaway test tenants in a live instance**, plus a
+saturated plane whose in-flight executions failed with `execution lost: control plane restarted or runtime
+container gone`.
+
+The mistake was one variable assignment. It was *possible* because nothing in the code distinguished "a
+database" from "THIS database", and every existing guard is about isolation **between tests**, not
+protection **from the live one**.
+
+#### The guard (in the code, so it cannot be forgotten)
+
+`db.Open` now **refuses to open a production database from a test binary**. Every database handle in the
+tree goes through it. You will get a failing test that names the variable to change, rather than silent
+writes to production:
+
+```
+db: REFUSING to open a production database from a test binary — the DSN being opened IS the ambient
+ORCHICON_POSTGRES_DSN — the database the running plane uses.
+  opening: postgres://orchicon:***@localhost:5433/orchicon?sslmode=disable
+  ORCHICON_INSTANCE="prod"  ORCHICON_POSTGRES_DSN="postgres://orchicon:***@..."
+  Point ORCHICON_TEST_DSN at the DEV instance's database instead ...
+```
+
+It fires only for a **test binary** (a running server is never refused — the plane opening its own
+production database is the product), and only when the DSN being opened is the ambient plane's own
+database, or the shell is prod-labelled and the target is not a loopback test database.
+
+`ORCHICON_TEST_ALLOW_PROD=1` is the deliberate opt-out, for a scratch clone that happens to be
+prod-labelled. **Reaching production is a decision with a name, never an accident of which shell you
+happened to be in.**
+
+#### Which DSN to use
+
+DB-backed tests **skip** when `ORCHICON_TEST_DSN` is unset, so the default `make test` is safe by
+omission. To actually exercise them, point the variable at a database **no plane is serving**.
+
+> **Do not point it at the dev instance's own database while the dev plane is running.** That used to be
+> this document's advice, and it was wrong: the plane's reconcilers scan the same pending/running rows the
+> tests create, so the two converge on one row and `db: version conflict` fails 3–5 tests per run, varying
+> run to run. It also accumulates real test rows in your dev instance — measured at **1,576 project rows**
+> in one session. CI never sees this because its database has no plane attached.
+
+Two ways to get a usable target, both deliberate:
+
+```bash
+# 1. A SEPARATE DATABASE on the dev cluster — nothing else serves it, so nothing races you.
+createdb -h localhost -p 5432 -U orchicon orchicon_test
+export ORCHICON_TEST_DSN="postgres://orchicon:orchicon@localhost:5432/orchicon_test?sslmode=disable"
+make test
+
+# 2. Or stop the dev plane for the duration of the run.
+orchicon stop dev
+export ORCHICON_TEST_DSN="postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable"
+make test
+```
+
+**And `db.Open` now refuses the live case mechanically**, from a test binary only, with the remedy in the
+message:
+
+```
+db: REFUSING to open a database a RUNNING plane is serving, from a test binary.
+  instance "dev" is live on that database (answered /healthz), so its reconcilers and this test are
+  converging on the same rows — which is the `db: version conflict` flakiness, not a bug in the test.
+```
+
+The comparison is `host:port/database` with loopback spellings normalised, so a **separate database on the
+same cluster is allowed** (`orchicon_test`), and a genuinely remote database is never guessed at.
+`ORCHICON_TEST_ALLOW_SHARED_DB=1` is the deliberate opt-out.
+
+Note the dev plane publishes on **5432** and production runs as a host process on **5433**. They are one
+port apart and both are "localhost" — which is exactly how the incident above was able to happen.
+
+### Build and test speed
+
+Measured on a developer host (warm CPU, warm `GOCACHE`). Run `time make <target>` after a change to
+re-measure — these are the numbers the choices below were made from, not guesses.
+
+| Step | Time | Note |
+|---|---|---|
+| `go build ./...` (99 packages) | **5.4 s** | warm |
+| `go vet ./...` | **3.8 s** | warm |
+| `go test ./...` | **28 s** | `-count=1`, DB tests included |
+| `make gen-check` | **3.0 s** | |
+| `make install-ps1-test` | **27 s** | pwsh harness |
+| `make install-path-test` | **23 s** | real installer against a real artifact |
+| **`make cross-compile`** | **139 s** | 6 platforms, cold Go cache **every run** |
+
+**The Go test suite is not the slow part.** Cross-compile alone was ~60% of the Go gate, and it was cold on
+every single run — see below.
+
+#### `cross-compile`: the one big lever
+
+The target keeps its build cache in a **throwaway** directory (`mktemp` + `trap … EXIT`), deliberately: it
+writes ~1.1 GB per platform, and letting that into `GOCACHE` was an unbounded-growth problem. The cost is that
+every run recompiles from scratch.
+
+`CROSS_CACHE_DIR` makes that cache persistent while keeping it outside `GOCACHE` (so the isolation the
+throwaway rule protects is preserved):
+
+```bash
+make cross-compile CROSS_CACHE_DIR=.cross-compile/cache   # first run: ~133 s (populates)
+make cross-compile CROSS_CACHE_DIR=.cross-compile/cache   # later runs: ~13 s
+make cross-cache-clean                                    # remove it
+```
+
+**139 s → 12.7 s, a 10.5× saving on repeat runs.** It is opt-in because the cache is 6.8 GB and a default
+that size is a surprise; set it in your shell if you run the gate often:
+
+```bash
+export CROSS_CACHE_DIR="$PWD/.cross-compile/cache"
+```
+
+Caching a Go build cache across runs is safe: entries are content-keyed, so a restored entry can only be a
+*miss*, never a wrong answer.
+
+#### For a fast inner loop, skip the platform compile
+
+`cross-compile` catches *platform-specific* build breaks — it does not change when you are editing logic and
+running one package. The quick path:
+
+```bash
+go test ./internal/db/          # one package
+make test                       # whole suite (DB tests skip unless ORCHICON_TEST_DSN is set)
+make ci-go-base                 # the gate WITHOUT cross-compile
+make ci-go                      # the complete gate, cross-compile included
+```
+
+`make test` reuses Go's test-result cache, so a repeat run with no changes is nearly instant. That caching is
+why a local "it's fast" can disagree with a fresh CI run — use `go test -count=1 ./...` when you want the
+honest number.
+
+#### In CI
+
+`cross-compile` used to run **serially at the end of `go-ci`**, which is the worst place for the slowest
+target. It is now its **own job, in parallel** with `go-ci` (`make ci-go-base` in that job). It carries **no
+cache** on the runner: the 6.8 GB cache costs more to upload and download than the ~130 s it would save, so
+the runner pays the cold cost and the win comes from the parallelism.
 
 ### CI gate
 
 ```bash
 make ci          # buf lint + codegen + go vet/test + RLS gate
 ```
+
+> **Note on DB-backed tests in CI.** CI sets `DB_URL` but **not** `ORCHICON_TEST_DSN`, so the ~130 test files
+> that need a live database **skip there** — locally, with `ORCHICON_TEST_DSN` set, they run. Measured cost of
+> running them against a migrated local database: **~0 s of the 28 s suite**, so enabling them in CI
+> (`ORCHICON_TEST_DSN=$DB_URL`, after the migration step) would close that coverage gap almost for free.
+> It is not enabled here because it changes what gates a merge, and connection-pool pressure on a CI Postgres
+> service is worth watching on the first runs rather than assumed.
 
 The RLS gate (see ARCHITECTURE.md §Key Architecture Invariants) fails if any `tenant_id`-bearing table
 lacks the `tenant_isolation` policy.

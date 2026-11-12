@@ -2,10 +2,6 @@ package control
 
 // themes_project_bind_test.go — BINDING IS A DELIBERATE ACTION, NEVER A SIDE EFFECT OF THE CURSOR
 // PREVIEW (criterion 2).
-//
-// Driven through the screen's REAL actionsForSelection and the cursor's real preview, against a fake
-// shell that stands in for App's project-binding surface (projecttheme.go) — so a regression that wires
-// "bind" to the same hook as "preview" shows up here, not just as a passing unit test on the App side.
 
 import (
 	"context"
@@ -17,8 +13,7 @@ import (
 )
 
 // fakeProjectShell stands in for the App: it answers CurrentProjectTheme from its own map, and
-// Bind/UnbindProjectTheme mutate it — exactly the split projecttheme.go makes, so a test against this
-// fake proves the SAME thing a test against the real App would.
+// Bind/UnbindProjectTheme mutate it — exactly the split projecttheme.go makes.
 type fakeProjectShell struct {
 	notices []string
 	bound   map[string]string // project id -> palette

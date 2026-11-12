@@ -1,16 +1,7 @@
 package claude
 
-// parity_worker_scope_test.go — AC 5: for ONE scope, native and claude resolve
-// the IDENTICAL set (order and provenance included).
-//
-// Both adapters consume mcpclient.ScopeResolver and nothing else, so they cannot
-// disagree about WHICH servers apply — only about how each renders them into its
-// own config format. This test gives that claim teeth: ONE stub resolver, ONE
-// scope ref, and a triple-by-triple comparison of what each adapter observed.
-//
-// It lives in package claude because claude → orchicon is the only acyclic
-// import direction (orchicon does not import claude), so this is the one place
-// both adapters can be driven together.
+// parity_worker_scope_test.go — AC 5: for ONE scope, native and claude resolve the IDENTICAL set
+// (order and provenance included).
 
 import (
 	"context"
@@ -22,9 +13,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// parityScopeResolver records the ref both adapters ask for and answers with one
-// ordered resolution whose provenance mixes the two scopes — the shape a worker
-// execution actually gets (project rows first, then the version's own set).
+// parityScopeResolver records the ref both adapters ask for and answers with one ordered resolution
+// whose provenance mixes the two scopes.
 type parityScopeResolver struct {
 	res mcpclient.Resolution
 	got []mcpclient.ScopeRef

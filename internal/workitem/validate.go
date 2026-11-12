@@ -1,20 +1,5 @@
-// Package workitem implements the WorkItemService Connect handler
-// (docs/07_API_Specification.md §3.2, docs/02_Domain_Model.md §2.2).
-//
-// It is the API-layer boundary between the generated Connect handlers
-// and the data-access layer. Responsibilities:
-//   - validate and sanitize all inputs (the security boundary),
-//   - resolve the tenant from the request context,
-//   - perform the mutation + outbox enqueue in one transaction,
-//   - enforce the work hierarchy (Epic → Feature → Task → Subtask,
-//     max 4 levels — docs/02 §2.2),
-//   - manage dependency edges with cycle rejection at admission
-//     (recursive CTE — docs/09 §11),
-//   - use optimistic concurrency (CAS) on the version column
-//     (docs/09 §5).
-//
-// No business logic lives here beyond input validation and lifecycle
-// transitions (AGENTS.md invariant #1).
+// Package workitem implements the WorkItemService Connect handler (docs/07_API_Specification.md
+// §3.2, docs/02_Domain_Model.md §2.2).
 package workitem
 
 import (
@@ -60,11 +45,8 @@ func validateTopLevelKind(kind string) error {
 	return nil
 }
 
-// validateKindDepth rejects a parent whose depth is not strictly smaller
-// than the child's (a child must be *deeper* than its parent). Because
-// depth increases monotonically down the tree, this check alone makes
-// reparenting cycle-safe: every ancestor has strictly smaller depth, so a
-// node can never be moved under itself or one of its descendants.
+// validateKindDepth rejects a parent whose depth is not strictly smaller than the child's (a child
+// must be *deeper* than its parent).
 func validateKindDepth(childKind, parentKind string) error {
 	parentDepth := kindOrder[parentKind]
 	childDepth := kindOrder[childKind]
@@ -104,28 +86,11 @@ func validateKindDepth(childKind, parentKind string) error {
 func ValidateParent(ctx context.Context, tx pgx.Tx, tenantID, parentID, childKind, projectID string, topLevelExemptions ...bool) error {
 	if parentID == "" {
 		// Flat-recurring items are top-level tasks (kind=task, no parent).
-		// They are exempt from the "only epics are top-level" rule; the flat
-		// shape (task kind, no parent) is enforced separately by
-		// ValidateRecurringFlatness (D1).
 		if len(topLevelExemptions) > 0 && topLevelExemptions[0] {
 			return nil
 		}
-		// An EPHEMERAL item is exempt for the same shape of reason. The
-		// "only epics are top-level" rule exists to keep the PLANNING
-		// hierarchy coherent: a top-level task would be an orphan in a tree
-		// people navigate, plan, sequence and hang children off. An ephemeral
-		// item is in no tree at all — it is a transient, machine-managed
-		// record created for one job, never planned, never sequenced, never
-		// given children, and hard-deleted when the job ends. The invariant
-		// this rule protects was never applicable to it.
-		//
-		// Without the exemption the two rules collide: ephemeral items are
-		// top-level ONLY (a child would be invisible in the list yet rendered
-		// inside its real parent's tree — see
-		// askorchicon.validateEphemeralPlacement), so EVERY ephemeral item
-		// would have to be created as an epic. A Quick Work dispatch is a
-		// transient unit of work, not a planning container; mislabelling it
-		// was the contradiction this exemption removes.
+		// Without the exemption the two rules collide: ephemeral items are top-level ONLY (a child would be
+		// invisible in the list yet rendered inside its real parent's tree.
 		if len(topLevelExemptions) > 1 && topLevelExemptions[1] {
 			return nil
 		}
@@ -141,9 +106,7 @@ func ValidateParent(ctx context.Context, tx pgx.Tx, tenantID, parentID, childKin
 	return validateKindDepth(childKind, parent.Kind)
 }
 
-// ValidateTitle trims and bounds-checks a work item title. Exported so the
-// Ask Orchicon MCP tools share the API's boundary validation (AGENTS.md: the
-// tool and the service cannot drift).
+// ValidateTitle trims and bounds-checks a work item title.
 func ValidateTitle(title string) (string, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
@@ -173,12 +136,8 @@ func ValidateAcceptanceCriteria(s string) (string, error) {
 	return s, nil
 }
 
-// ValidateAcceptanceReview trims and bounds-checks the acceptance review
-// field (empty ok — a work item without a completed run has no review).
-// Mirrors ValidateAcceptanceCriteria exactly so the human-written field
-// and the reconciler-generated review share one boundary. Exported so the
-// Ask Orchicon MCP tools reuse it (AGENTS.md: the tool and the service
-// cannot drift).
+// ValidateAcceptanceReview trims and bounds-checks the acceptance review field (empty ok — a work
+// item without a completed run has no review).
 func ValidateAcceptanceReview(s string) (string, error) {
 	s = strings.TrimSpace(s)
 	if utf8.RuneCountInString(s) > maxDescLen {
@@ -242,22 +201,8 @@ func validateStatus(status apiv1.WorkItemStatus) string {
 	}
 }
 
-// ValidateStatus normalizes a domain status string (lowercased, trimmed)
-// against the canonical work item statuses. Exported so the Ask Orchicon
-// MCP tools validate status the way the Connect path validates its proto
-// enum (the tool's status arrives as a raw string, not a proto enum).
-//
-// "blocked" is DELIBERATELY not accepted: it is a system-managed status set
-// only by the reconcilers when an upstream dependency is unsatisfied, so
-// user/operator input must never set it directly (mirrors the transition
-// matrix in the frontend — blocked items are not manually movable).
-// "skipped" IS user-assignable through this same generic update path —
-// exactly like succeeded/cancelled: an operator sets it to tell the
-// sequence engine "do not run this child". The sequence engine consumes a
-// skipped item as terminal-success (domain.WorkItemIsTerminalSuccess) and
-// passes over it when deriving the next child to arm. "skipped" is ALSO
-// produced by the reconciler when a bound run completes with at least one
-// skipped step — both origins land on the same status.
+// ValidateStatus normalizes a domain status string (lowercased, trimmed) against the canonical work
+// item statuses.
 func ValidateStatus(status string) (string, error) {
 	status = strings.ToLower(strings.TrimSpace(status))
 	switch status {
@@ -271,13 +216,8 @@ func ValidateStatus(status string) (string, error) {
 	}
 }
 
-// IsActiveRunStatus reports whether a work item is currently bound to an
-// in-flight workflow run (running / checkpointing / recovering). These are
-// the statuses ScheduledRunReconciler must never re-arm against, and the
-// statuses the Schedules "Running" view shows (ADR-001/002 in
-// architecture-notes/running-workflows-not-showing-in-schedules.md).
-// Exported so the Ask Orchicon MCP tools apply the same scheduled-status
-// flip guard as the Connect Update handler.
+// IsActiveRunStatus reports whether a work item is currently bound to an in-flight workflow run
+// (running / checkpointing / recovering).
 func IsActiveRunStatus(status string) bool {
 	switch status {
 	case domain.WorkItemRunning, domain.WorkItemCheckpointing, domain.WorkItemRecovering:
@@ -287,40 +227,20 @@ func IsActiveRunStatus(status string) bool {
 	}
 }
 
-// IsIdeaStatus reports whether a work item status is the system-managed
-// idea state (feature 4.1/5.1). An idea is an automation-produced item
-// awaiting triage; it is excluded from every normal work-item view and may
-// only leave idea state via PromoteIdea (→ pending) or DismissIdea
-// (→ cancelled). Exported so the Ask Orchicon MCP tools apply the identical
-// not-idea gate as the Connect handlers (AGENTS.md: the tool and the
-// service cannot drift).
+// IsIdeaStatus reports whether a work item status is the system-managed idea state (feature
+// 4.1/5.1).
 func IsIdeaStatus(status string) bool {
 	return status == domain.WorkItemIdea
 }
 
-// ErrWorkItemIsIdea is the shared guidance returned when a generic
-// mutation path (UpdateWorkItem / DeleteWorkItem / HardDeleteWorkItem /
-// ArchiveWorkItem, or the corresponding Ask Orchicon tools) targets an
-// idea-state work item. Exported so the service handlers wrap it in a
-// FailedPrecondition error and the MCP tools surface the same message.
+// ErrWorkItemIsIdea is the shared guidance returned when a generic mutation path (UpdateWorkItem /
+// DeleteWorkItem / HardDeleteWorkItem / ArchiveWorkItem.
 func ErrWorkItemIsIdea() error {
 	return errors.New("idea is a system-managed status scoped to the Idea Cloud; act on an idea only via PromoteIdea (approve) or DismissIdea (discard)")
 }
 
-// IsStartableForAutoStart reports whether UPDATE-path auto-start may fire
-// for a work item in this status. Only pre-run statuses may be armed by an
-// edit: pending, scheduled, ready, assigned. Every other status (running,
-// checkpointing, recovering, succeeded, failed, cancelled, skipped,
-// recurring, blocked, archived) is declined — an edit must never resurrect
-// or duplicate work, no matter what stored auto_start_workflow flag says.
-//
-// This is the primary fix for stale legacy rows carrying
-// auto_start_workflow=true (created before migration
-// 20260807120000_work_item_auto_start_default_false.sql): with this gate,
-// such a row is behaviorally inert on the update path even when the edit
-// touches workflow_id. Exported so the Ask Orchicon MCP update tool applies
-// the identical precondition (AGENTS.md: the tool and the service cannot
-// drift). The CREATE path needs no gate — new items always start pending.
+// IsStartableForAutoStart reports whether UPDATE-path auto-start may fire for a work item in this
+// status.
 func IsStartableForAutoStart(status string) bool {
 	switch status {
 	case domain.WorkItemPending, domain.WorkItemScheduled,
@@ -331,10 +251,7 @@ func IsStartableForAutoStart(status string) bool {
 	}
 }
 
-// runnableWorkflowStatuses are the statuses in which a work item is
-// expected to execute. Reaching one of them without a workflow binding
-// means there is nothing to run: the standalone (v0.1) dispatch path that
-// used to execute workflow-less items is retired.
+// runnableWorkflowStatuses are the statuses in which a work item is expected to execute.
 var runnableWorkflowStatuses = map[string]bool{
 	domain.WorkItemReady:     true,
 	domain.WorkItemAssigned:  true,
@@ -342,21 +259,12 @@ var runnableWorkflowStatuses = map[string]bool{
 	domain.WorkItemRunning:   true,
 }
 
-// IsRunnableStatus reports whether status is a pre-run/run status (ready,
-// assigned, scheduled, running) — the statuses ValidateWorkflowFirstTransition
-// gates on a workflow binding.
+// IsRunnableStatus reports whether status is a pre-run/run status (ready, assigned, scheduled,
+// running) — the statuses ValidateWorkflowFirstTransition gates on a workflow binding.
 func IsRunnableStatus(status string) bool { return runnableWorkflowStatuses[status] }
 
-// ValidateWorkflowFirstTransition enforces workflow-first execution: an item
-// may not enter a runnable status (ready / assigned / scheduled / running)
-// without a workflow binding, because nothing would execute it — standalone
-// dispatch is retired. A sequence PARENT with children is exempt: it is a
-// container that contributes ordering only and never executes itself (its
-// children each carry their own binding). hasChildren must be computed by the
-// caller in the same transaction.
-//
-// Exported so the Connect Update handler and the Ask Orchicon update tool
-// apply the identical precondition (AGENTS.md: the two surfaces cannot drift).
+// ValidateWorkflowFirstTransition enforces workflow-first execution: an item may not enter a
+// runnable status (ready / assigned / scheduled / running) without a workflow binding.
 func ValidateWorkflowFirstTransition(title, newStatus string, workflowID *string, hasChildren bool) error {
 	if !runnableWorkflowStatuses[newStatus] {
 		return nil
@@ -371,10 +279,7 @@ func ValidateWorkflowFirstTransition(title, newStatus string, workflowID *string
 }
 
 // AutoStartDeclinedWarning returns the user-facing explanation carried by
-// UpdateWorkItemResponse.warning and the Ask Orchicon update tool result
-// when an EXPLICIT auto_start_workflow=true was declined because the
-// item's status is not startable. Shared verbatim so the two surfaces
-// never drift.
+// UpdateWorkItemResponse.warning and the Ask Orchicon update tool result when an EXPLICIT.
 func AutoStartDeclinedWarning(status string) string {
 	return fmt.Sprintf("Auto-start was NOT applied: this item's status is %q. "+
 		"Start-immediately-on-save requires the item to be pending, scheduled, ready, or assigned. "+
@@ -435,25 +340,8 @@ func requireTenant(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-// ValidateSequenceSubtree performs the schedule-time / run-instant
-// validation for a parent work item with children (architecture-notes/
-// sequential-multi-workflow-runs.md §3). It walks the full subtree and
-// rejects outright — nothing starts when any offender is found:
-//
-//   - noWorkflow: every descendant that must actually execute — every
-//     LEAF — must have a non-empty workflow_id bound. Container children
-//     with their own children arm nested sequences and are exempt, but
-//     their descendants are validated recursively.
-//   - badWorkflow: a leaf's bound workflow must resolve to a published or
-//     deprecated workflow (the StartWorkflow precondition) so a fire-time
-//     failure can't occur — reject at schedule time instead. A bound
-//     workflow whose current version has an EMPTY step DAG is rejected too:
-//     a run started on it can never progress (the reconciler fails it at
-//     start), so arming the child would strand the chain at fire time.
-//
-// The walk is tenant-scoped and depth-bounded (max 4 levels). Shared by
-// the Connect UpdateWorkItem paths and the Ask Orchicon tools so the two
-// surfaces cannot drift (AGENTS.md Ask-Orchicon-sync rule).
+// ValidateSequenceSubtree performs the schedule-time / run-instant validation for a parent work
+// item with children (architecture-notes/ sequential-multi-workflow-runs.md §3).
 func ValidateSequenceSubtree(ctx context.Context, tx pgx.Tx, tenantID string, parent db.WorkItemRow) (noWorkflow, badWorkflow []string, err error) {
 	var walk func(id string) error
 	walk = func(id string) error {
@@ -527,11 +415,7 @@ func quoteTitles(titles []string) string {
 	return strings.Join(quoted, ", ")
 }
 
-// workflowHasSteps reports whether the workflow's current version carries
-// at least one step. A workflow whose published version has an EMPTY step
-// DAG produces a run that can never progress — the reconciler fails such a
-// run at start — so a sequence leaf bound to one would strand its parent's
-// chain at fire time. Schedule-time validation rejects it up front.
+// workflowHasSteps reports whether the workflow's current version carries at least one step.
 func workflowHasSteps(ctx context.Context, tx pgx.Tx, tenantID string, wf db.WorkflowRow) bool {
 	version, err := db.GetWorkflowVersion(ctx, tx, tenantID, wf.ID, wf.CurrentVersion)
 	if err != nil {
@@ -572,13 +456,7 @@ type recurringScheduleJSON struct {
 	OutputsMode string   `json:"outputs_mode"`
 	WindowStart string   `json:"window_start,omitempty"`
 	WindowEnd   string   `json:"window_end,omitempty"`
-	// Timezone is the IANA zone the wall-clock fields above are expressed in. The JSON key matches the
-	// proto field name, which is what makes the round trip work: the fire path unmarshals this same blob
-	// straight into apiv1.RecurringSchedule (workitem/recurring.go), so a key here with no proto field — or
-	// the reverse — would silently drop the zone.
-	//
-	// omitempty, so an existing (zone-less) schedule marshals byte-identically to before: nothing rewrites
-	// an empty timezone into the rows that predate the field.
+	// Timezone is the IANA zone the wall-clock fields above are expressed in.
 	Timezone string `json:"timezone,omitempty"`
 }
 
@@ -597,10 +475,8 @@ func IsRecurringScheduleEmpty(msg *apiv1.RecurringSchedule) bool {
 		strings.TrimSpace(msg.WindowEnd) == ""
 }
 
-// ValidateRecurringSchedule validates a proto RecurringSchedule message and
-// returns its JSONB representation. Returns nil, nil when the input is nil
-// (not recurring). Exported so the Ask Orchicon MCP tools share the API's
-// boundary validation (AGENTS.md Ask-Orchicon-sync rule).
+// ValidateRecurringSchedule validates a proto RecurringSchedule message and returns its JSONB
+// representation.
 func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 	if msg == nil {
 		return nil, nil
@@ -665,10 +541,7 @@ func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 			}
 		}
 	}
-	// THE ZONE IS VALIDATED HERE, at the boundary, for the same reason every other field is: a typo must
-	// fail the write rather than produce a schedule that silently never fires (or fires in the wrong
-	// zone). RecurringZone rejects the pseudo-zone Local as well as unknown names — see its own note for
-	// why a name that VALIDATES can still be wrong.
+	// THE ZONE IS VALIDATED HERE, at the boundary, for the same reason every other field is.
 	timezone := strings.TrimSpace(msg.Timezone)
 	if timezone != "" {
 		if _, err := RecurringZone(timezone); err != nil {
@@ -693,11 +566,8 @@ func ValidateRecurringSchedule(msg *apiv1.RecurringSchedule) ([]byte, error) {
 	return b, nil
 }
 
-// ValidateRecurringFlatness enforces the flat-recurring invariant (D1): a
-// recurring item is a flat top-level task with no parent and no hierarchy
-// participation. kind is only "task" and parent_id is empty. Returns nil
-// when the item is NOT recurring. Exported so the Ask Orchicon tools share
-// the API's boundary validation (AGENTS.md Ask-Orchicon-sync rule).
+// ValidateRecurringFlatness enforces the flat-recurring invariant (D1): a recurring item is a flat
+// top-level task with no parent and no hierarchy participation.
 func ValidateRecurringFlatness(recurring bool, kind, parentID string) error {
 	if !recurring {
 		return nil
@@ -711,15 +581,8 @@ func ValidateRecurringFlatness(recurring bool, kind, parentID string) error {
 	return nil
 }
 
-// ValidateRecurringWorkflowBinding enforces D7: a schedulable recurring
-// LEAF must be bound to a workflow to be schedulable (the recurring fire has
-// nothing to start for a workflow-less leaf). A recurring item WITH children
-// is a sequence parent — it needs no workflow binding (the sequence
-// reconciler fires its children). The rejection is result-state based: it
-// applies to the resulting state (recurring && no children && no workflow)
-// only, so a legacy recurring leaf can still be edited to bind a workflow,
-// and a sequence parent remains valid without one. Exported so the Ask
-// Orchicon tools share the API's boundary validation.
+// ValidateRecurringWorkflowBinding enforces D7: a schedulable recurring LEAF must be bound to a
+// workflow to be schedulable (the recurring fire has nothing to start for a workflow-less leaf).
 func ValidateRecurringWorkflowBinding(recurring, hasChildren bool, workflowID string) error {
 	if recurring && !hasChildren && workflowID == "" {
 		return errors.New("a recurring work item must be bound to a workflow to be schedulable; bind a workflow to this item")
@@ -728,9 +591,6 @@ func ValidateRecurringWorkflowBinding(recurring, hasChildren bool, workflowID st
 }
 
 // parseWindow parses the optional daily window from a schedule.
-// Returns hasWindow=false when both fields are empty. When exactly one is
-// set or the format is invalid it returns an error; ComputeNextRunAt treats
-// parse errors as no window (defensive, since Validate should have rejected).
 func parseWindow(schedule *apiv1.RecurringSchedule) (bool, int, int) {
 	ws := strings.TrimSpace(schedule.WindowStart)
 	we := strings.TrimSpace(schedule.WindowEnd)
@@ -763,10 +623,7 @@ func isInWindow(t time.Time, startMin, endMin int) bool {
 
 func nextWindowStart(t time.Time, startMin int) time.Time {
 	m := t.Hour()*60 + t.Minute()
-	// THE INSTANT'S OWN LOCATION, not time.UTC. These construct the moment the window next opens, and
-	// building it in UTC would move it by the zone offset — a Central schedule with a 09:00-17:00 window
-	// would resume from 03:00 local. t carries the schedule's zone (the anchor is built in it), so its
-	// location is the right one to construct the next window opening in.
+	// THE INSTANT'S OWN LOCATION, not time.UTC.
 	if m < startMin {
 		// Later today at window start.
 		h, mm := startMin/60, startMin%60
@@ -778,10 +635,7 @@ func nextWindowStart(t time.Time, startMin int) time.Time {
 	return time.Date(next.Year(), next.Month(), next.Day(), h, mm, 0, 0, t.Location())
 }
 
-// alignToGrid returns the smallest grid-aligned time >= target for the given
-// anchor cadence. Grid is anchor + k*step where step depends on frequency.
-// Anchored-grid-truncated-by-window semantic (A): fires stay on the anchor
-// grid, truncated to the window.
+// alignToGrid returns the smallest grid-aligned time >= target for the given anchor cadence.
 func alignToGrid(target, anchor time.Time, freq string, interval int) time.Time {
 	switch freq {
 	case "minute":
@@ -820,20 +674,8 @@ func alignToGrid(target, anchor time.Time, freq string, interval int) time.Time 
 	}
 }
 
-// RecurringZone resolves a schedule's timezone to a location, and is the ONE definition of what a valid
-// zone is — shared by the write-side validation and the fire path so the two cannot disagree about a
-// schedule one accepted and the other rejects.
-//
-// EMPTY IS UTC, and that is the legacy semantic rather than a fallback: a schedule written before the
-// timezone field existed carries an empty value, and it must keep firing at exactly the instant it fires
-// at today. Nothing backfills it. New schedules always arrive with a zone stamped by the creating client.
-//
-// THE PSEUDO-ZONE Local IS REJECTED, and this is the subtle half. time.LoadLocation("Local") RETURNS NO
-// ERROR — it resolves to whatever machine is reading it, so asking whether a name is loadable says
-// nothing about whether it is a zone. A schedule stamped Local by a Central-time client would PASS
-// validation and then fire at the SERVER's local time, which in a container is UTC: the operator's 09:00
-// becomes 03:00, wearing a name that looked valid at every checkpoint. A zone that only means something
-// relative to its reader is not a zone, so it is refused by name.
+// RecurringZone resolves a schedule's timezone to a location, and is the ONE definition of what a
+// valid zone is — shared by the write-side validation and the fire path so the two cannot disagree.
 func RecurringZone(name string) (*time.Location, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -851,26 +693,15 @@ func RecurringZone(name string) (*time.Location, error) {
 	return loc, nil
 }
 
-// ComputeNextRunAt computes the first occurrence of a recurring schedule
-// that is >= the given "now" time. The start_date + start_time define the
-// anchor; the frequency/interval/days define the cadence. When a daily
-// window is set (window_start/window_end), only fires inside [window_start,
-// window_end) are returned; the anchor grid is truncated by the window
-// (semantic A). Returns nil when the schedule is nil (not recurring).
+// ComputeNextRunAt computes the first occurrence of a recurring schedule that is >= the given "now"
+// time.
 func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Time {
 	if schedule == nil {
 		return nil
 	}
 	startDate := strings.TrimSpace(schedule.StartDate)
 	startTime := strings.TrimSpace(schedule.StartTime)
-	// THE ANCHOR IS BUILT IN THE SCHEDULE'S OWN ZONE. ParseInLocation (not Parse) is the whole point:
-	// the digits of start_time plus a zone denote an instant, and Parse would have read those digits as
-	// UTC regardless of the zone stored beside them — which is the defect this field exists to fix.
-	//
-	// An unresolvable zone falls back to UTC rather than returning nil. That is deliberate: this function
-	// cannot report an error, and a schedule that has already been accepted must not silently STOP FIRING
-	// because a zone name became unavailable (a tzdata build without that region, say). Firing in the
-	// legacy zone is the safer failure; RecurringZone on the write path is what keeps bad names out.
+	// THE ANCHOR IS BUILT IN THE SCHEDULE'S OWN ZONE.
 	loc, err := RecurringZone(schedule.Timezone)
 	if err != nil {
 		loc = time.UTC
@@ -886,9 +717,7 @@ func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Ti
 	}
 	hasWindow, wsMin, weMin := parseWindow(schedule)
 
-	// For weekly frequency, walk day-by-day so we hit every selected
-	// weekday within each cadence week. Empty days means "every day"
-	// (all 7 weekdays are valid). Window gating is applied per candidate.
+	// For weekly frequency, walk day-by-day so we hit every selected weekday within each cadence week.
 	if freq == "weekly" {
 		cadenceDays := 7 * interval
 		anchorWeekday := int(anchor.Weekday())
@@ -906,13 +735,16 @@ func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Ti
 		}
 		candidate := anchor
 		// daysSinceAnchor COUNTS CALENDAR-DAY STEPS, rather than dividing elapsed hours by 24.
-		//
-		// The hours/24 division is wrong the moment the anchor carries a ZONE: across a DST transition a
-		// local day is 23 or 25 hours, so after two days the elapsed total is 47 or 49 hours and the
-		// integer division lands on the WRONG day index — a weekly pattern would skip or repeat a
-		// weekday twice a year. Counting the AddDate steps directly is exact, and in UTC (the legacy,
-		// zone-less case, where every day really is 24 hours) it is arithmetic-identical to the old form.
+		// WHOLE CADENCE CYCLES ARE SKIPPED FIRST for the same reason as the non-weekly path: the walk is
+		// bounded, and a month-multiplied cadence still shifts the offsets by exactly one period.
 		daysSinceAnchor := 0
+		if anchor.Before(now) {
+			if elapsed := int(now.Sub(anchor).Hours() / 24); elapsed >= cadenceDays {
+				cycles := elapsed / cadenceDays
+				candidate = anchor.AddDate(0, 0, cycles*cadenceDays)
+				daysSinceAnchor = cycles * cadenceDays
+			}
+		}
 		for i := 0; i < 1000; i++ {
 			if !candidate.Before(now) {
 				if validOffsets[daysSinceAnchor%cadenceDays] {
@@ -927,8 +759,14 @@ func ComputeNextRunAt(schedule *apiv1.RecurringSchedule, now time.Time) *time.Ti
 		return &anchor
 	}
 
-	// Non-weekly: walk from anchor, gating by window.
-	candidate := anchor
+	// Non-weekly: fast-forward whole steps FIRST, then walk the remainder.
+	//
+	// THE WALK IS BOUNDED (1000 steps) as a runaway guard, and it used to start AT THE ANCHOR — so a
+	// schedule whose anchor was far enough in the past exhausted the guard and returned the ANCHOR: a
+	// next_run_at in the PAST. The item then fires, re-arms in the past, and hot-loops. Skipping whole
+	// cadence steps arithmetically makes the distance irrelevant and leaves the walk only the last few
+	// steps, where the window gating actually needs to look.
+	candidate := fastForwardToNearNow(anchor, now, freq, interval)
 	for i := 0; i < 1000; i++ {
 		if candidate.Before(now) {
 			candidate = advanceTime(candidate, freq, interval)
@@ -955,9 +793,8 @@ func dayMatches(t time.Time, days []string) bool {
 	return false
 }
 
-// weekdayOffset returns Go's native weekday number (0=Sun, 1=Mon, … 6=Sat)
-// for a three-letter day name. This matches time.Weekday so offset
-// calculations against anchor.Weekday() are consistent.
+// weekdayOffset returns Go's native weekday number (0=Sun, 1=Mon, … 6=Sat) for a three-letter day
+// name.
 func weekdayOffset(day string) int {
 	switch day {
 	case "Sun":
@@ -980,6 +817,39 @@ func weekdayOffset(day string) int {
 }
 
 // advanceTime moves the candidate forward by one step of the given frequency.
+// fastForwardToNearNow skips whole cadence steps from an anchor that is already in the past, returning the
+// last occurrence at or before now (never after it) so the bounded walk that follows has only a few steps
+// left. It never moves the candidate past `now`, which is what keeps the walk's first guard meaningful.
+func fastForwardToNearNow(anchor, now time.Time, freq string, interval int) time.Time {
+	if interval < 1 {
+		interval = 1
+	}
+	if !anchor.Before(now) {
+		return anchor
+	}
+	switch freq {
+	case "minute", "hourly":
+		step := time.Minute
+		if freq == "hourly" {
+			step = time.Hour
+		}
+		step *= time.Duration(interval)
+		if steps := now.Sub(anchor) / step; steps > 0 {
+			return anchor.Add(steps * step)
+		}
+	case "monthly":
+		months := (now.Year()-anchor.Year())*12 + int(now.Month()) - int(anchor.Month())
+		if steps := months / interval; steps > 0 {
+			return anchor.AddDate(0, steps*interval, 0)
+		}
+	default: // daily, and anything the default advanceTime treats as day-stepping
+		if days := int(now.Sub(anchor).Hours() / 24); days >= interval {
+			return anchor.AddDate(0, 0, (days/interval)*interval)
+		}
+	}
+	return anchor
+}
+
 func advanceTime(t time.Time, freq string, interval int) time.Time {
 	switch freq {
 	case "minute":
@@ -1013,4 +883,55 @@ func ValidateSecretIDs(ids []string) error {
 		seen[id] = true
 	}
 	return nil
+}
+
+// executionModeFromProto maps the wire enum onto the stored override: EXECUTION_MODE_UNSPECIFIED
+// means "inherit from the project" and is therefore nil (the ONLY inherit representation.
+func executionModeFromProto(m apiv1.ExecutionMode) *string {
+	var v string
+	switch m {
+	case apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME:
+		v = db.ExecutionModeRuntime
+	case apiv1.ExecutionMode_EXECUTION_MODE_LOCAL:
+		v = db.ExecutionModeLocal
+	default:
+		return nil
+	}
+	return &v
+}
+
+// executionModeToProto maps a stored override back to the wire enum.
+func executionModeToProto(m *string) (apiv1.ExecutionMode, bool) {
+	if m == nil {
+		return apiv1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED, false
+	}
+	switch strings.TrimSpace(*m) {
+	case db.ExecutionModeRuntime:
+		return apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME, true
+	case db.ExecutionModeLocal:
+		return apiv1.ExecutionMode_EXECUTION_MODE_LOCAL, true
+	default:
+		return apiv1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED, false
+	}
+}
+
+// ValidateExecutionMode normalizes and validates a caller-supplied execution mode string ("" =
+// inherit, "runtime", "local").
+func ValidateExecutionMode(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	switch v {
+	case "", db.ExecutionModeRuntime, db.ExecutionModeLocal:
+		return v, nil
+	default:
+		return "", fmt.Errorf("execution_mode must be runtime or local")
+	}
+}
+
+// executionModeEnumFor maps a RESOLVED mode string (never empty — see db.EffectiveExecutionMode)
+// onto the wire enum for the read-only effective_execution_mode field.
+func executionModeEnumFor(mode string) apiv1.ExecutionMode {
+	if strings.TrimSpace(mode) == db.ExecutionModeLocal {
+		return apiv1.ExecutionMode_EXECUTION_MODE_LOCAL
+	}
+	return apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME
 }

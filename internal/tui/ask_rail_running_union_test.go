@@ -131,9 +131,7 @@ func TestTheRailRowKeepsItsOtherStates(t *testing.T) {
 	m.convMarked = map[string]bool{}
 }
 
-// AC 14: a send is reflected AT ONCE, not within the 5s tick. The mechanism is an immediate rail reload on the
-// turn ack (the router's TurnAckedMsg arm). Asserted as "at once": the dispatch itself must return the list
-// reload, so the row is refreshed by the time the ack is handled — no timer involved.
+// AC 14: a send is reflected AT ONCE, not within the 5s tick.
 func TestTheTurnAckRefreshesTheRailAtOnce(t *testing.T) {
 	m, _ := askWithTranscript(t, "c1")
 	m.conversations = []chat.Conversation{{ID: "c1", Title: "a chat", TurnInFly: false, MessageN: 12}}
@@ -152,9 +150,8 @@ func TestTheTurnAckRefreshesTheRailAtOnce(t *testing.T) {
 	}
 }
 
-// batchCarriesConversationsReload drains a tea.Batch (or a single cmd) and reports whether any produced
-// message is the conversations list arriving — i.e. a rail reload was dispatched. It is bounded: the
-// load runs against the stub plane, so it resolves without a live session.
+// batchCarriesConversationsReload drains a tea.Batch (or a single cmd) and reports whether any
+// produced message is the conversations list arriving — i.e. a rail reload was dispatched.
 func batchCarriesConversationsReload(t *testing.T, msg tea.Msg) bool {
 	t.Helper()
 	if msg == nil {

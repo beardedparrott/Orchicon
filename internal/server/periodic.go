@@ -1,10 +1,6 @@
 package server
 
 // periodic.go — the ONE way this package runs a recurring sweep.
-//
-// It exists because the obvious way to write "do this at boot, then every N" is
-// wrong in a way that survives review, tests and a running plane without ever
-// announcing itself.
 
 import (
 	"context"

@@ -46,9 +46,7 @@ func nextEvent(t *testing.T, bus scheduler.SessionBus) scheduler.SessionEvent {
 	return scheduler.SessionEvent{}
 }
 
-// The three-tier picker reads Dispatcher.ChatKinds(), which type-asserts the
-// bridge. This is the assertion the whole Ask path hinges on, so it is pinned
-// rather than left to a compile-time var that a refactor could delete quietly.
+// The three-tier picker reads Dispatcher.ChatKinds(), which type-asserts the bridge.
 func TestBridgeImplementsAskChatCapability(t *testing.T) {
 	var b any = New(quietLogger())
 	if _, ok := b.(scheduler.ChatTurnClient); !ok {
@@ -63,9 +61,6 @@ func TestBridgeImplementsAskChatCapability(t *testing.T) {
 }
 
 // The launch must pin the session identity and install the interactive profile.
-// Without `--session-id` the adapter cannot name the session it created; without
-// `--permission-prompts host` the CLI auto-denies anything that would prompt and
-// no consent card is ever raised.
 func TestAskLaunchPinsSessionAndTheInteractiveProfile(t *testing.T) {
 	h, _ := askHarness(t)
 	ctx := context.Background()
@@ -105,15 +100,7 @@ func TestAskLaunchPinsSessionAndTheInteractiveProfile(t *testing.T) {
 	}
 }
 
-// The env the child inherits is what selects the HOOK's rule set. If the profile
-// var is missing the session silently runs the WORKER rule set, where nothing is
-// ever asked.
-//
-// TWO PROFILES, NAMED APART ON PURPOSE. This one is the HOOK's (a PreToolUse rule
-// set: allow / deny / ask) and it IS interactive. The GUARD's profile is a
-// different thing entirely and is deliberately NOT interactive (see
-// TestAskChildEnvCarriesTheDefaultProfileExecutionGuard). Conflating the two is
-// the mistake that produced a shim which could only widen the sanctioned set.
+// The env the child inherits is what selects the HOOK's rule set.
 func TestAskChildEnvSelectsTheInteractiveHookProfile(t *testing.T) {
 	s := newAskSession(New(quietLogger()), "conv-env", "/tmp/orchicon-ask/conv-env")
 	env := strings.Join(s.childEnv(), "\n")
@@ -127,9 +114,8 @@ func TestAskChildEnvSelectsTheInteractiveHookProfile(t *testing.T) {
 	}
 }
 
-// THE CONSENT PATH, end to end at this adapter's seam: a can_use_tool line becomes
-// a typed permission event whose PermissionID is the id a reply must echo, and
-// the reply lands on the child's stdin as the exact control_response frame.
+// THE CONSENT PATH, end to end at this adapter's seam: a can_use_tool line becomes a typed
+// permission event whose PermissionID is the id a reply must echo.
 func TestAskRaisesATypedPermissionEventAndAnswersIt(t *testing.T) {
 	h, slot := askHarness(t)
 	ctx := context.Background()
@@ -296,9 +282,8 @@ func TestAskAbortSettlesAPendingAsk(t *testing.T) {
 	}
 }
 
-// An unknown session is a safe no-op for abort (idempotent) but a LOUD failure
-// for a reply: answering an ask that has no live session cannot be silently
-// dropped, or the card would look answered while the CLI stayed parked.
+// An unknown session is a safe no-op for abort (idempotent) but a LOUD failure for a reply:
+// answering an ask that has no live session cannot be silently dropped.
 func TestAskAbortUnknownIsQuietButReplyIsLoud(t *testing.T) {
 	b := New(quietLogger())
 	ctx := context.Background()
@@ -310,20 +295,7 @@ func TestAskAbortUnknownIsQuietButReplyIsLoud(t *testing.T) {
 	}
 }
 
-// THE PARITY PIN. Both other adapters put the OS-level execution shim on the Ask
-// path (opencode's host serve, the native bridge's bash environ). Claude briefly
-// did not, which made it the only Ask transport where `a subprocess did it` was
-// unguarded — the class that carries the never-allow binaries and the protected
-// roots, neither of which the PreToolUse hook can see.
-//
-// Two things are asserted, and both are load-bearing:
-//  1. the shim DIRECTORY is first on PATH, so any process the session spawns
-//     resolves `rm`/`sudo`/`dd` through it;
-//  2. the INTERACTIVE guard vars are ABSENT, matching opencode's Ask serve. The
-//     interactive profile can only WIDEN the sanctioned set (grants, once-targets,
-//     policy accepts, fullsend) and it fail-closes on a missing policy file,
-//     which would refuse every path-scoped command in every Ask conversation on a
-//     plane with no policy at permpolicy.DefaultPath().
+// THE PARITY PIN.
 func TestAskChildEnvCarriesTheDefaultProfileExecutionGuard(t *testing.T) {
 	s := newAskSession(New(quietLogger()), "conv-guard", filepath.Join(t.TempDir(), "ask"))
 	s.ensureGuard()
@@ -356,20 +328,7 @@ func TestAskChildEnvCarriesTheDefaultProfileExecutionGuard(t *testing.T) {
 	}
 }
 
-// THE SCOPE PIN. An empty project dir is not "no guard" — it is the mode where
-// blocked_path refuses EVERY absolute target outside the Orchicon scratch dir and
-// the operator's accept list. That is what opencode's host serve and the native
-// bridge run, and it is what this must match.
-//
-// The bug this pins: the shim allows an absolute target INSIDE its project dir,
-// so scoping the guard to the conversation's directory made `rm -rf
-// <abs path in the ask dir>` legitimate — a WIDER sanctioned set than both
-// references, justified by a claim ("one conversation, one directory") that
-// describes the session's shape rather than containing it.
-//
-// Asserted BEHAVIOURALLY: run the shim's own `rm` against an absolute path inside
-// the ask directory and require a refusal. A future change that re-scopes the
-// guard turns this red.
+// THE SCOPE PIN.
 func TestAskGuardRefusesAnAbsolutePathInTheAskDir(t *testing.T) {
 	askDir := filepath.Join(t.TempDir(), "ask")
 	if err := os.MkdirAll(filepath.Join(askDir, "scratch"), 0o755); err != nil {
@@ -459,11 +418,7 @@ func TestAskDoesNotReuseAnExitedChild(t *testing.T) {
 	first.push(`{"type":"result","subtype":"success","is_error":true,"result":"Failed to authenticate"}`)
 	_ = nextEvent(t, bus) // the error event the dead child produced
 
-	// THE ACTUAL BUG, forced deterministically. The real sequence was the
-	// read loop exiting via ctx.Done() — a cancelled turn — BEFORE it observed
-	// the closed stdout, which the old code did without clearing the live flag.
-	// Cancelling the loop's own context exercises exactly that path; the
-	// channel-close path alone was already handled and would not regress.
+	// THE ACTUAL BUG, forced deterministically.
 	sess := h.b.ensureAskSession("conv-respawn")
 	sess.mu.Lock()
 	cancelLoop := sess.liveCancel
@@ -494,10 +449,7 @@ func TestAskDoesNotReuseAnExitedChild(t *testing.T) {
 	}
 }
 
-// The child's lifetime is the SESSION's, not the turn's. Cancelling the turn's
-// context (which the collector does when a turn completes or is aborted) must
-// NOT kill the child — otherwise every turn pays a respawn and an aborted turn
-// leaves a corpse behind, which is the same failure by another route.
+// The child's lifetime is the SESSION's, not the turn's.
 func TestAskChildSurvivesTheTurnContextBeingCancelled(t *testing.T) {
 	spawns := 0
 	h := newHarness(t, func() *fakeProc {
@@ -578,9 +530,6 @@ func TestAskRecreateRetiresThePreviousChild(t *testing.T) {
 }
 
 // An Ask turn's attachments must reach the child as Messages-API content blocks.
-// The assertion is on the FRAME that goes to the child's stdin, not on a helper's
-// return value: the wire is the contract, and a helper that built the right block
-// only to have it dropped on the way out would still be broken.
 func TestAskTurnCarriesAnImageAttachmentAsAnImageBlock(t *testing.T) {
 	h, slot := askHarness(t)
 	ctx := context.Background()
@@ -644,9 +593,6 @@ func TestAskTurnCarriesAnImageAttachmentAsAnImageBlock(t *testing.T) {
 }
 
 // The system prompt rides the FIRST turn by folding into its leading text block.
-// That is the pre-existing seeding contract, and a text-only turn must stay
-// byte-identical: splitting it into a second block would be a silent wire change
-// on every conversation that carries no attachment at all.
 func TestAskTextTurnIsUnchangedByTheAttachmentPath(t *testing.T) {
 	h, slot := askHarness(t)
 	ctx := context.Background()
@@ -675,11 +621,7 @@ func TestAskTextTurnIsUnchangedByTheAttachmentPath(t *testing.T) {
 	}
 }
 
-// An image/* media type the CLI does NOT accept must not be sent as an image
-// block. The native transport routes on the `image/` prefix, but the CLI's schema
-// allow-lists jpeg/png/gif/webp and REFUSES anything else — so an SVG emitted as
-// an image block fails the whole turn to deliver nothing. It takes the text path
-// instead, which is also the more useful answer: SVG is markup the model reads.
+// An image/* media type the CLI does NOT accept must not be sent as an image block.
 func TestAskUnsupportedImageTypeTakesTheTextPath(t *testing.T) {
 	content, err := askUserContent("see", []scheduler.ChatAttachment{
 		{Name: "icon.svg", MimeType: "image/svg+xml", Data: []byte("<svg><rect/></svg>")},
@@ -699,9 +641,7 @@ func TestAskUnsupportedImageTypeTakesTheTextPath(t *testing.T) {
 	}
 }
 
-// A binary document this transport cannot carry is a LOUD error, and the turn must
-// not be sent. The refusal happens BEFORE the session is touched, so no child is
-// spawned and no mode file is rewritten either.
+// A binary document this transport cannot carry is a LOUD error, and the turn must not be sent.
 func TestAskBinaryDocumentIsRefusedLoudlyAndSendsNothing(t *testing.T) {
 	h, slot := askHarness(t)
 	ctx := context.Background()
@@ -719,9 +659,7 @@ func TestAskBinaryDocumentIsRefusedLoudlyAndSendsNothing(t *testing.T) {
 	}
 }
 
-// The caps are the native Ask transport's numbers (internal/orchicon/chatturn.go)
-// on purpose: two different values would make "is this attachment accepted?"
-// depend on which adapter a conversation happens to be pinned to.
+// The caps are the native Ask transport's numbers (internal/orchicon/chatturn.go) on purpose.
 func TestAskAttachmentCapsMatchTheNativeTransport(t *testing.T) {
 	if claudeAskMaxAttachments != 5 || claudeAskMaxAttachmentBytes != 10*1024*1024 || claudeAskMaxAttachmentsTotalBytes != 20*1024*1024 {
 		t.Fatalf("the Ask attachment caps drifted from the native transport: %d / %d / %d",
@@ -741,9 +679,8 @@ func TestAskAttachmentCapsMatchTheNativeTransport(t *testing.T) {
 	}
 }
 
-// The block list is a wire shape, so its edges are part of the contract: a media
-// type carrying parameters still has to match the accepted set, and `content`
-// must never be an empty array (which is not a well-formed turn).
+// The block list is a wire shape, so its edges are part of the contract: a media type carrying
+// parameters still has to match the accepted set.
 func TestAskAttachmentBlocksAreWellFormed(t *testing.T) {
 	// Parameters are stripped before matching, or `image/png; charset=binary`
 	// would silently take the text path.

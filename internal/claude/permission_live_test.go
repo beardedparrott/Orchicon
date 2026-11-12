@@ -1,17 +1,6 @@
 package claude
 
 // permission_live_test.go — T8: the ONE env-gated live smoke test.
-//
-// A real claude session costs money, so this is NOT part of the default suite: it
-// skips unless ORCHICON_TEST_LIVE_CLAUDE=1 is set, it sends exactly ONE prompt to
-// the CHEAPEST model, it captures the reported cost (the JSON result the CLI
-// prints carries it, and the log line keeps it for the operator), and it targets
-// a temp directory this test owns so a bad verdict cannot damage anything real.
-//
-// Everything the acceptance criteria require is proven by the fixture-driven
-// tests (permissions_test.go, hook_test.go, parity_test.go, guard_env_test.go);
-// this file exists only to let a human confirm the installed CLI honours the
-// settings/hook shape end to end.
 
 import (
 	"os"

@@ -58,8 +58,27 @@ export function applyAskChunk(
 ): AskItem[] {
   const key = ask.askId;
   if (!key) return items;
-  if (items.some((i) => i.key === key)) return items;
-  return [...items, { key, ask, outcome: null, resolvedAt: null, at }];
+  const idx = items.findIndex((i) => i.key === key);
+  if (idx < 0) return [...items, { key, ask, outcome: null, resolvedAt: null, at }];
+  // A HELD ID IS NOT ALWAYS A HELD CHOICE — the parity half of the TUI's rearmSettledConsent.
+  //
+  // This used to return `items` for ANY held id, so a card settled even once was settled FOREVER: the
+  // server could keep listing the ask as open, the discovery poll could keep delivering it, and the GUI
+  // would keep refusing to draw it. The operator's answer could then only be given in the TUI — the
+  // reported "permission cards don't work", and the mirror image of the TUI bug where a wrong settle was
+  // permanent until rearmSettledConsent existed.
+  //
+  // ONLY a SETTLED card is re-armed. An already-PENDING one returns the same reference, which keeps this
+  // silent: it runs from an effect on every discovery poll, so allocating here would schedule a state
+  // update forever (the same reason settleFromLedger compares before returning).
+  //
+  // Re-arming is safe because the ask reaching this function came from the SERVER — the live arm only
+  // replays open asks, and ListPendingAsks filters to isOpen() — so "settled locally, still open on the
+  // server" means the local settle was wrong and the operator must be able to answer.
+  if (items[idx].outcome === null) return items;
+  const next = items.slice();
+  next[idx] = { ...items[idx], outcome: null, resolvedAt: null };
+  return next;
 }
 
 /**

@@ -28,10 +28,7 @@ func featTaskPlane(t *testing.T) *Model {
 	return m
 }
 
-// FEATURES AND TASKS ARE PARENTS TOO. The server rule is "a child must be
-// strictly deeper than its parent" (internal/workitem/validate.go), which makes
-// feature -> task|subtask and task -> subtask legal. The form must accept them,
-// and must only CORRECT a genuinely illegal pairing.
+// FEATURES AND TASKS ARE PARENTS TOO.
 func TestFeaturesAndTasksCanBeParents(t *testing.T) {
 	m := featTaskPlane(t)
 	f := m.ActiveForm()

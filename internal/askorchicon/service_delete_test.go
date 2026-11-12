@@ -20,10 +20,7 @@ import (
 )
 
 // purgingFakeClient is a fakeSessionClient that ALSO satisfies the optional
-// scheduler.ConversationHistoryPurger capability, recording every purge. It
-// proves the delete path type-asserts the capability off the RESOLVED client
-// (the same client it aborts), rather than reaching for the native bridge
-// directly — which would break on any other adapter kind.
+// scheduler.ConversationHistoryPurger capability, recording every purge.
 type purgingFakeClient struct {
 	*fakeSessionClient
 
@@ -148,9 +145,7 @@ func TestDeleteConversationPurgesHistoryAndDelinksUsage(t *testing.T) {
 }
 
 func TestDeleteConversationWithoutPurgerStillSucceeds(t *testing.T) {
-	// An adapter that holds no durable history (opencode) does not implement
-	// the purger. The delete must still succeed — the capability is optional
-	// and its absence must never fail the RPC.
+	// An adapter that holds no durable history (opencode) does not implement the purger.
 	pool := chatDBTestPool(t)
 	s := newChatService(t, pool, &fakeSessionClient{})
 

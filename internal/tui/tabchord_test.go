@@ -49,9 +49,8 @@ func TestTabChordDropsSubmenuAndTakesFocus(t *testing.T) {
 		if tm := got.TabMenu(); tm == nil || tm.Sel != 0 {
 			t.Fatalf("%s: the new submenu must start on its first entry, got %+v", tab.Chord, tm)
 		}
-		// ENTER BELONGS TO THE MENU: it SELECTS the highlighted entry and hands the keyboard to the
-		// content — it does not fall through to whatever the screen underneath wanted, which is the
-		// failure the operator described.
+		// ENTER BELONGS TO THE MENU: it SELECTS the highlighted entry and hands the keyboard to the content
+		// — it does not fall through to whatever the screen underneath wanted.
 		nm, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		got = nm.(*App)
 		if got.MenuOpenID() != "" {
@@ -64,10 +63,6 @@ func TestTabChordDropsSubmenuAndTakesFocus(t *testing.T) {
 }
 
 // TestChordEnterBeatsAKeyClaimingScreen is the "on CERTAIN screens" half of the report.
-//
-// The chord used to leave the menu shut, so Enter went to the screen — and a screen with an open form
-// or a latched search box claims EVERY key, so the submenu could never drop. With the menu open the
-// shell's menu handling runs ahead of that claim, so Enter is the menu's on every screen.
 func TestChordEnterBeatsAKeyClaimingScreen(t *testing.T) {
 	m := chordApp(t)
 	claim := &claimStub{id: TabWork, claim: true}
@@ -91,9 +86,7 @@ func TestChordEnterBeatsAKeyClaimingScreen(t *testing.T) {
 }
 
 // TestChordEnterBeatsTheAskRailSelection is the concrete "certain screen" the operator hit: on Ask,
-// with the conversations rail up, an empty composer's Enter opens the HIGHLIGHTED CONVERSATION — which
-// is delivered behaviour, and which is precisely why Enter could not drop the submenu there. With a
-// submenu open the rail must not get the key at all (its branch requires the menu to be shut).
+// with the conversations rail up, an empty composer's Enter opens the HIGHLIGHTED CONVERSATION.
 func TestChordEnterBeatsTheAskRailSelection(t *testing.T) {
 	m := chordApp(t)
 	m.askMode = askConversations
@@ -110,9 +103,7 @@ func TestChordEnterBeatsTheAskRailSelection(t *testing.T) {
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(*App)
 	// DECISIVE, and it does not depend on which entry the Ask menu happens to highlight: the rail's
-	// Enter leaves the menu OPEN (its branch is skipped, not served), so a closed menu proves the MENU
-	// took the key. Asserting on the conversation instead would be ambiguous — the Ask menu's own
-	// first entry is "New chat", which legitimately clears it.
+	// Enter leaves the menu OPEN (its branch is skipped, not served).
 	if m.MenuOpenID() != "" {
 		t.Fatalf("enter must operate the open submenu, menuOpen=%q (the rail's Enter leaves it open)", m.MenuOpenID())
 	}
@@ -122,8 +113,6 @@ func TestChordEnterBeatsTheAskRailSelection(t *testing.T) {
 }
 
 // TestRepeatedChordTogglesTheSubmenu: re-selecting the tab whose submenu is already down CLOSES it.
-// The click route, SwitchTo's same-tab path and menuHandleKey all already honoured this, so the chord
-// must too — otherwise the same key would close the menu in one route and reopen it in another.
 func TestRepeatedChordTogglesTheSubmenu(t *testing.T) {
 	m := chordApp(t)
 	nm, _ := m.Update(keyFor(tabChord(TabWork)))
@@ -142,8 +131,7 @@ func TestRepeatedChordTogglesTheSubmenu(t *testing.T) {
 }
 
 // TestChordAndClickSelectATabTheSameWay pins the reason the chord was wrong: this behaviour existed
-// THREE times (the chord route, menuHandleKey, and the tab click) and the chord route was the copy
-// that had drifted. One gesture must not depend on the input device.
+// THREE times (the chord route, menuHandleKey.
 func TestChordAndClickSelectATabTheSameWay(t *testing.T) {
 	byKey := chordApp(t)
 	nm, _ := byKey.Update(keyFor(tabChord(TabExecution)))
@@ -167,10 +155,8 @@ func TestChordAndClickSelectATabTheSameWay(t *testing.T) {
 	}
 }
 
-// TestCtrlGDismissesTheSubmenuAndFocusesTheComposer: ctrl+g is the DOCUMENTED way back to typing (the
-// footer and the help overlay both name it), and it promises to "leave whatever holds the keys". A
-// dropdown holds the keys — it outranks every screen claim — so leaving it up made ctrl+g a
-// half-escape: the caret was in the composer while Enter and the arrows still belonged to the menu.
+// TestCtrlGDismissesTheSubmenuAndFocusesTheComposer: ctrl+g is the DOCUMENTED way back to typing
+// (the footer and the help overlay both name it).
 func TestCtrlGDismissesTheSubmenuAndFocusesTheComposer(t *testing.T) {
 	m := chordApp(t)
 	nm, _ := m.Update(keyFor(tabChord(TabControl)))
@@ -195,10 +181,7 @@ func TestCtrlGDismissesTheSubmenuAndFocusesTheComposer(t *testing.T) {
 }
 
 // TestFooterFocusHintFollowsTheKeyboard: the footer's composer indicator is the ONLY on-screen
-// evidence of where the keyboard is, so a stale value is worse than none. It was maintained in three
-// places in the MOUSE handler and recomputed on the pass-to-screen path — neither covers the keyboard,
-// so Tab or a chord left the footer claiming "composer" while the composer was blurred and typing went
-// nowhere. It is derived in setFocus now, and this asserts the derivation, not the call sites.
+// evidence of where the keyboard is, so a stale value is worse than none.
 func TestFooterFocusHintFollowsTheKeyboard(t *testing.T) {
 	m := chordApp(t)
 	if !m.footer.ComposerFocus {
@@ -223,9 +206,7 @@ func TestFooterFocusHintFollowsTheKeyboard(t *testing.T) {
 }
 
 // TestEscapeFromTheBarDisengagesIntoContent: with a chord now landing on the bar with the submenu
-// down, its first esc closes the menu (standard) and the SECOND must not be dead — it disengages into
-// the content, exactly where esc from the composer goes, so the operator is never parked in a state
-// where typing is silently discarded.
+// down, its first esc closes the menu (standard) and the SECOND must not be dead.
 func TestEscapeFromTheBarDisengagesIntoContent(t *testing.T) {
 	m := chordApp(t)
 	nm, _ := m.Update(keyFor(tabChord(TabAutomation)))

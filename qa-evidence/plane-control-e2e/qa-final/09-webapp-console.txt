@@ -1,0 +1,26 @@
+PHASE 1 healthy body text:
+Sign in to Orchicon
+Authenticate to access the control plane.
+Username
+Password
+Sign in
+New here? Create an account
+
+PHASE 2 offline body text:
+Sign in to Orchicon
+Authenticate to access the control plane.
+
+TypeError: Failed to fetch
+
+--- console/network ---
+[console.error] Failed to load resource: the server responded with a status of 400 (Bad Request)
+[phase1] title=Orchicon
+[phase2] aborting every fetch/xhr — the browser-visible effect of a plane that stopped
+[requestfailed] POST http://localhost:8080/auth/refresh — net::ERR_CONNECTION_REFUSED
+[console.error] Failed to load resource: net::ERR_CONNECTION_REFUSED
+[requestfailed] GET http://localhost:8080/auth/config — net::ERR_CONNECTION_REFUSED
+[console.error] Failed to load resource: net::ERR_CONNECTION_REFUSED
+[requestfailed] POST http://localhost:8080/auth/refresh — net::ERR_CONNECTION_REFUSED
+[console.error] Failed to load resource: net::ERR_CONNECTION_REFUSED
+[requestfailed] POST http://localhost:8080/auth/refresh — net::ERR_CONNECTION_REFUSED
+[console.error] Failed to load resource: net::ERR_CONNECTION_REFUSED

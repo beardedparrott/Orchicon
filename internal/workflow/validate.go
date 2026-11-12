@@ -1,19 +1,5 @@
-// Package workflow implements the WorkflowService Connect handler
-// (docs/07_API_Specification.md §3.4, docs/02_Domain_Model.md §2.4).
-//
-// It is the API-layer boundary between the generated Connect handlers
-// and the data-access layer. Responsibilities:
-//   - validate and sanitize all inputs (the security boundary),
-//   - resolve the tenant from the request context,
-//   - perform the mutation + outbox enqueue in one transaction,
-//   - enforce the Workflow lifecycle (draft → published → deprecated)
-//     and versioning model (docs/02 §2.4),
-//   - manage edit locks for the visual Workflow editor (docs/07 §3.3),
-//   - start/abort workflow runs (handed to the WorkflowReconciler).
-//
-// No business logic lives here beyond input validation and lifecycle
-// transitions; the WorkflowReconciler governs step DAG progression and
-// gate evaluation (AGENTS.md invariant #1).
+// Package workflow implements the WorkflowService Connect handler (docs/07_API_Specification.md
+// §3.4, docs/02_Domain_Model.md §2.4).
 package workflow
 
 import (
@@ -60,10 +46,8 @@ func validateTextField(s string, max int, field string) (string, error) {
 	return s, nil
 }
 
-// validateJSONField validates a JSON-encoded string field: trims, checks
-// size, and verifies valid JSON. Returns the canonical empty value for
-// empty input so the DB always stores well-formed JSON (AGENTS.md
-// security standards: JSON fields are validated).
+// validateJSONField validates a JSON-encoded string field: trims, checks size, and verifies valid
+// JSON.
 func validateJSONField(s, empty, field string, max int) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -78,10 +62,8 @@ func validateJSONField(s, empty, field string, max int) ([]byte, error) {
 	return []byte(s), nil
 }
 
-// validateStepsField validates the steps JSON: it must be a JSON array
-// (or empty for a fresh draft). Each element is a Step object; the
-// shape of each Step is validated by the editor, but here we ensure the
-// array is well-formed and bounded (AGENTS.md security standards).
+// validateStepsField validates the steps JSON: it must be a JSON array (or empty for a fresh
+// draft).
 func validateStepsField(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {

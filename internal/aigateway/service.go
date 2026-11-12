@@ -1,15 +1,5 @@
-// Package aigateway implements the AIGatewayService Connect handler
-// (docs/07_API_Specification.md §3.10, docs/01 §2: AI Gateway embedded
-// in the control plane binary for v0.1) and the usage recording path.
-//
-// Usage is dual-written (docs/08 §1, §5.2):
-//   - Postgres usage_records table is the source of truth.
-//   - OTel metrics (orchicon_tokens_consumed, orchicon_cost_usd) flow
-//     from the producer to the OTel collector to the Grafana stack for
-//     fast telemetry queries.
-//
-// Cost attribution rolls up Tenant → Project → Task → Execution
-// (docs/10 §11 cost explorer).
+// Package aigateway implements the AIGatewayService Connect handler (docs/07_API_Specification.md
+// §3.10.
 package aigateway
 
 import (
@@ -42,28 +32,23 @@ type Service struct {
 	registry      adapter.ProviderRegistry
 	discoverer    *ModelDiscoverer
 	mcpDiscoverer *MCPDiscoverer
-	// adapterKinds returns the adapter kinds registered with the
-	// Dispatcher (ADR-0004 D1). nil falls back to the default adapter
-	// kind so the picker never blanks.
+	// discovererMu guards the lazy re-resolution of the pair above (discoverer_lazy.go). It is held
+	// across the factory call so two concurrent model-tier requests cannot both probe.
+	discovererMu sync.Mutex
+	// discovererFactory resolves the pair on first need, when boot could not. nil means "no late
+	// resolution available", which is the headless/test case.
+	discovererFactory DiscovererFactory
+	// adapterKinds returns the adapter kinds registered with the Dispatcher.
 	adapterKinds func() []string
-	// chatKinds returns the adapter kinds whose bridge implements the
-	// ChatTurnClient (Ask chat) capability (ADR-0004 D1). nil falls back
-	// to the default adapter kind so the Ask picker never blanks.
+	// chatKinds returns the adapter kinds whose bridge implements the ChatTurnClient (Ask chat)
+	// capability.
 	chatKinds func() []string
 	apiv1connect.UnimplementedAIGatewayServiceHandler
 }
 
 var _ apiv1connect.AIGatewayServiceHandler = (*Service)(nil)
 
-// NewService constructs an AIGatewayService handler. The providers list
-// reflects the LLM providers known to the gateway (docs/01 §2). In v0.1
-// the OpenCode runtime executes the actual LLM calls; the gateway
-// records usage + cost from adapter telemetry.
-// If discoverer is nil, ListOpenCodeModels returns Unimplemented.
-// If mcpDiscoverer is nil, ListOpenCodeMCPs returns Unimplemented.
-// registry supplies the per-adapter provider catalog (built-in profiles ∪
-// tenant custom providers) for adapter-scoped filtering; nil falls back to
-// the built-in catalog.
+// NewService constructs an AIGatewayService handler.
 func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discoverer *ModelDiscoverer, mcpDiscoverer *MCPDiscoverer, registry adapter.ProviderRegistry, adapterKinds func() []string, chatKinds func() []string) *Service {
 	if registry == nil {
 		registry = adapter.NewBuiltinProviderCatalog()
@@ -82,17 +67,14 @@ func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discov
 	}
 }
 
-// SetChatKinds wires the Dispatcher's Ask-capable adapter kinds (ADR-0004
+// SetChatKinds wires the Dispatcher's Ask-capable adapter kinds
 // D1) into ListAdapterKinds. Nil falls back to the default adapter kind.
 func (s *Service) SetChatKinds(fn func() []string) {
 	s.chatKinds = fn
 }
 
-// ListAdapterKinds returns the adapter kinds currently registered with
-// the Dispatcher (ADR-0004 D1). The model picker's adapter bubble tier
-// derives from this, so a new adapter appears automatically once
-// registered. When no kinds function is injected (headless/test) it
-// falls back to the default adapter kind so the picker never blanks.
+// ListAdapterKinds returns the adapter kinds currently registered with the Dispatcher
+// D1).
 func (s *Service) ListAdapterKinds(ctx context.Context, req *connect.Request[apiv1.ListAdapterKindsRequest]) (*connect.Response[apiv1.ListAdapterKindsResponse], error) {
 	kinds := []string{adapter.DefaultAdapterKind}
 	if s.adapterKinds != nil {
@@ -106,14 +88,8 @@ func (s *Service) ListAdapterKinds(ctx context.Context, req *connect.Request[api
 			chatKinds = k
 		}
 	}
-	// Sourcing kinds: the adapter kinds whose MODEL tier resolves from the
-	// providers-sourcing path rather than opencode-CLI discovery (ADR-0004
-	// D1). Published so BOTH pickers read one answer instead of mirroring a
-	// constant — the GUI's ModelPicker consumes this field verbatim.
-	//
-	// NOTE: this is the model tier only. AskCapableKinds below is UNCHANGED:
-	// `claude` is catalog-sourced but implements no ChatTurnClient, so it is
-	// still excluded from Ask.
+	// Sourcing kinds: the adapter kinds whose MODEL tier resolves from the providers-sourcing path
+	// rather than opencode-CLI discovery.
 	sourcing := adapter.CatalogSourcedAdapterKinds()
 	return connect.NewResponse(&apiv1.ListAdapterKindsResponse{
 		AdapterKinds:    kinds,
@@ -122,14 +98,7 @@ func (s *Service) ListAdapterKinds(ctx context.Context, req *connect.Request[api
 	}), nil
 }
 
-// ListProviders returns the LLM providers known to the gateway
-// (docs/07 §3.10). Providers are not tenant-scoped in v0.1.
-// The optional adapter filter scopes the result to one adapter kind's
-// provider set: its built-in profiles (registry.Providers, enriched with
-// display info from the gateway provider table where the id matches) ∪
-// tenant-created custom providers (provider-layer task — contract-only
-// today). An unknown adapter kind yields an empty list (never an error)
-// so the picker renders the unknown state flagged for review.
+// ListProviders returns the LLM providers known to the gateway (docs/07 §3.10).
 func (s *Service) ListProviders(ctx context.Context, req *connect.Request[apiv1.ListProvidersRequest]) (*connect.Response[apiv1.ListProvidersResponse], error) {
 	if req.Msg.Adapter != nil && *req.Msg.Adapter != "" {
 		return connect.NewResponse(&apiv1.ListProvidersResponse{Providers: s.providersForAdapter(*req.Msg.Adapter)}), nil
@@ -137,11 +106,8 @@ func (s *Service) ListProviders(ctx context.Context, req *connect.Request[apiv1.
 	return connect.NewResponse(&apiv1.ListProvidersResponse{Providers: s.providers}), nil
 }
 
-// providersForAdapter builds the adapter-scoped provider list from the
-// registry's per-adapter provider names, enriching each with the gateway
-// provider table's display info where the id matches (falling back to a
-// bare id provider otherwise). Tenant custom providers (custom: true)
-// merge in here once the provider-layer task lands.
+// providersForAdapter builds the adapter-scoped provider list from the registry's per-adapter
+// provider names.
 func (s *Service) providersForAdapter(adapterKind string) []*apiv1.AIProvider {
 	names := s.registry.Providers(adapterKind)
 	byID := make(map[string]*apiv1.AIProvider, len(s.providers))
@@ -159,14 +125,12 @@ func (s *Service) providersForAdapter(adapterKind string) []*apiv1.AIProvider {
 	return out
 }
 
-// ListOpenCodeModels enumerates all models available via the `opencode`
-// CLI by shelling out to `opencode models --verbose` (docs/04 §6).
-// The optional adapter filter narrows the result to one adapter kind's
-// provider set (built-in profiles ∪ tenant custom providers — ADR-0003
-// D3). A legacy 2-segment ref (no adapter) resolves to the default
-// adapter kind.
+// ListOpenCodeModels enumerates all models available via the `opencode` CLI by shelling out to
+// `opencode models --verbose` (docs/04 §6).
 func (s *Service) ListOpenCodeModels(ctx context.Context, req *connect.Request[apiv1.ListOpenCodeModelsRequest]) (*connect.Response[apiv1.ListOpenCodeModelsResponse], error) {
-	if s.discoverer == nil {
+	// RESOLVE ON DEMAND, which is the whole of "selecting the opencode adapter finds opencode".
+	discoverer, _ := s.ensureDiscoverers()
+	if discoverer == nil {
 		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("model discovery is not configured (set ORCHICON_OPENCODE_BIN or install opencode on PATH)"))
 	}
 	provider := ""
@@ -177,7 +141,7 @@ func (s *Service) ListOpenCodeModels(ctx context.Context, req *connect.Request[a
 	if req.Msg.Adapter != nil {
 		adapterKind = *req.Msg.Adapter
 	}
-	models, err := s.discoverer.ListModels(ctx, provider)
+	models, err := discoverer.ListModels(ctx, provider)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list opencode models: %w", err))
 	}
@@ -206,27 +170,18 @@ func (s *Service) ListOpenCodeModels(ctx context.Context, req *connect.Request[a
 // ListOpenCodeMCPs enumerates MCP servers configured in opencode
 // by shelling out to `opencode mcp list`.
 func (s *Service) ListOpenCodeMCPs(ctx context.Context, req *connect.Request[apiv1.ListOpenCodeMCPsRequest]) (*connect.Response[apiv1.ListOpenCodeMCPsResponse], error) {
-	if s.mcpDiscoverer == nil {
+	_, mcpDiscoverer := s.ensureDiscoverers()
+	if mcpDiscoverer == nil {
 		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("MCP discovery is not configured"))
 	}
-	servers, err := s.mcpDiscoverer.ListMCPs(ctx)
+	servers, err := mcpDiscoverer.ListMCPs(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list opencode MCPs: %w", err))
 	}
 	return connect.NewResponse(&apiv1.ListOpenCodeMCPsResponse{Servers: servers}), nil
 }
 
-// GetUsage returns usage records matching the tenant-scoped filter. The
-// tenant_id is injected from the request context (AGENTS.md tenant
-// isolation); a client-supplied tenant_id hint is ignored.
-//
-// Cursor pagination: page_token is the cursor (the usage_records id of
-// the last row of the previous request) and a full page returns
-// next_page_token for the client to send back as page_token — resolved
-// by the DB layer's (occurred_at, id) keyset predicate
-// (ListUsageRecordsFilter.AfterID). Clients that never page are
-// unaffected; the Credits panel drives the loop to termination for
-// exact lifetime totals.
+// GetUsage returns usage records matching the tenant-scoped filter.
 func (s *Service) GetUsage(ctx context.Context, req *connect.Request[apiv1.GetUsageRequest]) (*connect.Response[apiv1.GetUsageResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -262,10 +217,7 @@ func (s *Service) GetUsage(ctx context.Context, req *connect.Request[apiv1.GetUs
 		out = append(out, usageRowToProto(&records[i]))
 	}
 	resp := &apiv1.GetUsageResponse{Records: out}
-	// A FULL page might have a successor — hand back the cursor for the
-	// client to probe. If the page was the last one, the next request
-	// returns an empty page with no token and the loop terminates. A
-	// partial page is provably the end and returns none.
+	// A FULL page might have a successor — hand back the cursor for the client to probe.
 	if len(records) == int(pageSize) && len(records) > 0 {
 		resp.NextPageToken = records[len(records)-1].ID
 	}
@@ -344,7 +296,7 @@ func (s *Service) GetWorkflowCosts(ctx context.Context, req *connect.Request[api
 	start, end := tsToTime(req.Msg.Start), tsToTime(req.Msg.End)
 
 	// Top level: cost grouped by workflow (all runs aggregated).
-	aggregates, err := db.GetWorkflowAggregateCosts(ctx, ttx.Tx, tenantID, start, end)
+	aggregates, err := db.GetWorkflowAggregateCosts(ctx, ttx.Tx, tenantID, "", "", "", start, end)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
@@ -455,9 +407,7 @@ func (s *Service) StreamUsageEvents(ctx context.Context, req *connect.Request[ap
 	}
 }
 
-// requireTenant resolves the tenant from the request context. The
-// middleware stores it; the data-access layer sets app.tenant_id per
-// transaction (RLS backstop — docs/09 §8.5).
+// requireTenant resolves the tenant from the request context.
 func requireTenant(ctx context.Context) (string, error) {
 	id := tenant.FromContext(ctx)
 	if id == "" {
@@ -483,16 +433,15 @@ func rollupToLevel(r apiv1.UsageRollup) db.CostRollupLevel {
 	}
 }
 
-// usageMetrics holds the OTel instruments for the dual-write: token and
-// cost counters that mirror each usage_records Postgres row to
-// VictoriaMetrics via the OTel collector (docs/08 §5.2).
+// usageMetrics holds the OTel instruments for the dual-write: token and cost counters that mirror
+// each usage_records Postgres row to VictoriaMetrics via the OTel collector (docs/08 §5.2).
 type usageMetrics struct {
 	log        *slog.Logger
 	tokens     otelmetric.Int64Counter
 	cost       otelmetric.Float64Counter
 	executions otelmetric.Int64Counter
 
-	// prefix-cache session metrics (D3, ADR-0009 D6): emitted once at
+	// prefix-cache session metrics (D3: emitted once at
 	// session terminal from live per-turn usage.
 	prefixHit  otelmetric.Int64Counter
 	prefixMiss otelmetric.Int64Counter
@@ -507,10 +456,8 @@ func newUsageMetrics(log *slog.Logger) *usageMetrics {
 
 func (m *usageMetrics) ensure() {
 	m.initOnce.Do(func() {
-		// NOTE: no units on these instruments — the Prometheus exporter
-		// appends "_<unit>" to metric names (orchicon_tokens_consumed →
-		// orchicon_tokens_consumed_tokens), which would break the
-		// canonical names the frontend and TelemetryService query.
+		// NOTE: no units on these instruments — the Prometheus exporter appends "_<unit>" to metric names
+		// (orchicon_tokens_consumed → orchicon_tokens_consumed_tokens).
 		if t, err := telemetry.Meter().Int64Counter(
 			"orchicon_tokens_consumed",
 			otelmetric.WithDescription("Total tokens consumed per LLM call, split by token_class (prompt/cache_read/cache_write/completion) (docs/08 §5.2)"),
@@ -531,41 +478,27 @@ func (m *usageMetrics) ensure() {
 		}
 		if ph, err := telemetry.Meter().Int64Counter(
 			"orchicon_prefix_cache_hit_total",
-			otelmetric.WithDescription("Total prefix-cache hits per session (ADR-0009 D6)"),
+			otelmetric.WithDescription("Total prefix-cache hits per session "),
 		); err == nil {
 			m.prefixHit = ph
 		}
 		if pm, err := telemetry.Meter().Int64Counter(
 			"orchicon_prefix_cache_miss_total",
-			otelmetric.WithDescription("Total prefix-cache miss-writes per session (ADR-0009 D6)"),
+			otelmetric.WithDescription("Total prefix-cache miss-writes per session "),
 		); err == nil {
 			m.prefixMiss = pm
 		}
 		if pr, err := telemetry.Meter().Float64Gauge(
 			"orchicon_prefix_cache_hit_rate",
-			otelmetric.WithDescription("Session prefix-cache hit rate (hits / turns) (ADR-0009 D6)"),
+			otelmetric.WithDescription("Session prefix-cache hit rate (hits / turns) "),
 		); err == nil {
 			m.prefixRate = pr
 		}
 	})
 }
 
-// emit records a usage sample to the OTel metrics pipeline (the
-// VictoriaMetrics half of the dual-write). Best-effort: a metric error is
-// logged and never blocks the control flow (docs/08 §8 invariant #5).
-//
-// Since the cache-aware counters ADR (Option A), a sample is split into up
-// to four `token_class` buckets rather than one total:
-//   - orchicon_tokens_consumed{token_class=...} += per-bucket tokens, one
-//     Add per non-zero bucket. The four buckets partition TotalTokens, so
-//     sum by (token_class) reproduces the pre-split total exactly.
-//   - orchicon_cost_usd{token_class=...} += a pricing-weighted share of the
-//     single provider-reported CostUSD, one Add per non-zero share. Shares
-//     are renormalized to sum to CostUSD, so total cost is unchanged.
-//
-// modelCost, when provided, supplies real catalog pricing (USD per 1M
-// tokens) for the cost split; when omitted, documented default multipliers
-// are used as the fallback. ReasoningTokens is never its own class.
+// emit records a usage sample to the OTel metrics pipeline (the VictoriaMetrics half of the
+// dual-write).
 func (m *usageMetrics) emit(ctx context.Context, r *db.UsageRecordRow, modelCost ...*apiv1.ModelCost) {
 	if m == nil {
 		return
@@ -578,10 +511,8 @@ func (m *usageMetrics) emit(ctx context.Context, r *db.UsageRecordRow, modelCost
 		attribute.String("provider", r.Provider),
 		attribute.String("model", r.Model),
 	}
-	// Adapter parity attributes: identify the adapter kind that drove the
-	// model call and (for Ask sessions) the conversation. Both are emitted
-	// only when populated so worker records / legacy rows without them never
-	// produce a blank attribute.
+	// Adapter parity attributes: identify the adapter kind that drove the model call and (for Ask
+	// sessions) the conversation.
 	if r.AdapterKind != "" {
 		attrs = append(attrs, attribute.String("adapter_kind", r.AdapterKind))
 	}

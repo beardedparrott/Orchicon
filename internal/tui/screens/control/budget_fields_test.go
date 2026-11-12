@@ -1,11 +1,6 @@
 package control
 
 // budget_fields_test.go — the budget blob expanded into individual fields.
-//
-// The important property is that the two directions are INVERSES: the form seeds
-// its fields from the transport blob and composes the blob back on submit, so a
-// save that changes nothing must produce the same document. A one-way conversion
-// would silently drop gates whenever the operator pressed save.
 
 import (
 	"encoding/json"
@@ -72,9 +67,8 @@ func TestBudgetFieldsBlobRoundTrip(t *testing.T) {
 	}
 }
 
-// An EMPTY field must be OMITTED, not written as zero: the server reads an absent
-// gate as "built-in default" and an explicit 0 as "disable this gate", so blanking
-// a field would turn gates OFF on an untouched save.
+// An EMPTY field must be OMITTED, not written as zero: the server reads an absent gate as "built-in
+// default" and an explicit 0 as "disable this gate".
 func TestBlankBudgetFieldsAreOmittedNotZeroed(t *testing.T) {
 	out := buildBudgetJSON(map[string]string{})
 	var got map[string]any

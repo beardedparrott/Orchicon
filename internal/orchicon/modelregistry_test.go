@@ -12,14 +12,8 @@ import (
 	"time"
 )
 
-// mdFixture is a models.dev-shaped body mirroring the VERIFIED real structure:
-// a provider block keys its models by the ids ITS OWN api reports. The deepseek
-// provider (api https://api.deepseek.com) keys the flash model as
-// "deepseek-flash" while DISPLAYING it as "DeepSeek V4.1 Flash" — which is
-// exactly the case that looked like it needed an alias and does not. It also
-// includes an unknown top-level key (to prove a non-provider block is skipped)
-// and a gateway provider whose keys are NAMESPACED (to prove one provider's
-// spelling never answers for another).
+// mdFixture is a models.dev-shaped body mirroring the VERIFIED real structure: a provider block
+// keys its models by the ids ITS OWN api reports.
 func mdFixture() string {
 	return `{
   "_meta": {"description": "not a provider"},
@@ -82,12 +76,7 @@ func TestParseRegistryMapsTheModelsDevShape(t *testing.T) {
 	}
 }
 
-// The provider's own id spelling resolves by EXACT match — no alias, no
-// heuristics. DeepSeek's `deepseek-flash` is a real models.dev key (displayed as
-// "DeepSeek V4.1 Flash"); naming it explicitly here pins that the resolution is
-// the registry's own, and that an id the registry does not list stays unresolved
-// rather than matching by family or prefix (a family holds several versions, so
-// picking one would be a guess wearing a citation).
+// The provider's own id spelling resolves by EXACT match — no alias, no heuristics.
 func TestRegistryLookupIsExactMatchOnly(t *testing.T) {
 	models := parseRegistry([]byte(mdFixture()), "registry:models.dev")
 
@@ -146,9 +135,8 @@ func TestApplyRegistryMetaNeverOverwritesTheProbe(t *testing.T) {
 	}
 }
 
-// A 200 fetch is cached to disk; the next load revalidates with If-None-Match and
-// a 304 keeps the cached body. This is what keeps a 4.6 MB registry from being
-// re-downloaded on every control-plane start.
+// A 200 fetch is cached to disk; the next load revalidates with If-None-Match and a 304 keeps the
+// cached body.
 func TestRegistryRevalidatesWithIfNoneMatch(t *testing.T) {
 	var hits, notModified int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -195,9 +183,8 @@ func TestRegistryRevalidatesWithIfNoneMatch(t *testing.T) {
 	}
 }
 
-// Fail SOFT: an unreachable registry with no cache resolves nothing, so the
-// vendored catalog stands exactly as it did before the registry existed. A plane
-// with no internet must behave identically to today.
+// Fail SOFT: an unreachable registry with no cache resolves nothing, so the vendored catalog stands
+// exactly as it did before the registry existed.
 func TestRegistryFailureFallsBackWithoutBreaking(t *testing.T) {
 	s := NewSourcingService(nil, &http.Client{Timeout: time.Second})
 	s.RegistryURL = "http://127.0.0.1:1/unreachable.json"

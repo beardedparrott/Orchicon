@@ -1,22 +1,7 @@
 package testfixtures
 
-// e2eproof.go — shared DB seeding + the evidence sink for the end-to-end proof
-// child ("a real worker per adapter and a live Ask turn use the project's server
-// + skill file").
-//
-// WHY HERE. internal/testfixtures is already the cross-package test-support home
-// (cmd/orchicon, internal/claude, internal/guard, internal/runtime, internal/tui
-// all import it). Five proof packages need the SAME seed — one project, one work
-// item, one worker version, one PROJECT-OWNED mcp_servers row, one skill file
-// inside the project dir, one conversation — and five copies of that seed is
-// exactly how the five legs start disagreeing about what "the project's server"
-// means.
-//
-// WHAT MAKES IT EVIDENCE AND NOT A FIXTURE. Every leg appends one
-// EvidenceRecord per observation to a JSONL file (ORCHICON_E2E_EVIDENCE, else
-// <repo>/.gotmp/e2eproof/evidence.jsonl). Criterion 7 asks for "execution ids,
-// what was called, what the model saw — real observations", so the artifact is
-// the deliverable and the test output is not.
+// e2eproof.go — shared DB seeding + the evidence sink for the end-to-end proof child ("a real
+// worker per adapter and a live Ask turn use the project's server + skill file").
 
 import (
 	"context"
@@ -39,8 +24,6 @@ import (
 const E2ETenant = "tnt_dev"
 
 // Pool opens the disposable test database and applies migrations + dev workers.
-// It SKIPS (never fails) when ORCHICON_TEST_DSN is unset — the repo-wide
-// convention for a DB-backed test.
 func Pool(t *testing.T) *db.Pool {
 	t.Helper()
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
@@ -56,14 +39,8 @@ func Pool(t *testing.T) *db.Pool {
 	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
-	// The tenant ROOT row MUST exist before any tenant-scoped write: mcp_servers
-	// carries a `(tenant_id) REFERENCES tenants(id)` FK, so on a freshly-migrated
-	// database (CI, or any database the sandbox daemon has not already booted
-	// against) an UpsertMCPServer for E2ETenant fails with SQLSTATE 23503 unless
-	// the tenant is seeded first. SeedDevWorkers does NOT create the tenant (it
-	// writes tenant-scoped rows, which is exactly what would then violate the
-	// FK), so the seed belongs here rather than relying on the daemon's boot path
-	// having run — which is what made this harness pass locally and fail on CI.
+	// The tenant ROOT row MUST exist before any tenant-scoped write: mcp_servers carries a `(tenant_id)
+	// REFERENCES tenants(id)` FK, so on a freshly-migrated database (CI.
 	if err := db.SeedDevTenant(ctx, pool, E2ETenant); err != nil {
 		t.Fatalf("seed tenant: %v", err)
 	}
@@ -81,9 +58,8 @@ type Seed struct {
 	WorkItemID    string
 	WorkerID      string
 	WorkerVersion int
-	// VersionPermissions is the worker version's permissions jsonb as STORED:
-	// what a dispatch carries on ExecutionManifest.Permissions, and the only
-	// source of the version-owned inline servers/skills.
+	// VersionPermissions is the worker version's permissions jsonb as STORED: what a dispatch carries
+	// on ExecutionManifest.Permissions, and the only source of the version-owned inline servers/skills.
 	VersionPermissions []byte
 	ConversationID     string
 	// HTTPServerID is the PROJECT-OWNED streamable-HTTP server's row id — also
@@ -120,15 +96,8 @@ type SeedOpts struct {
 	ConvSkill bool
 }
 
-// SeedProjectWithServerAndSkill creates, in ONE tenant transaction: a project
-// (with a real project_dir and a real skill FILE selected on it), a work item,
-// a worker + published version, a PROJECT-OWNED mcp_servers row (HTTP, plus an
-// optional stdio one), an optional VERSION-OWNED inline server, and a
-// conversation in that project.
-//
-// This is the child-1 owner column, child-2 skill selection, child-6 Ask scope
-// and child-3/4 dispatch scope, all in one place — which is what makes each leg
-// end-to-end rather than a unit assertion over a hand-built struct.
+// SeedProjectWithServerAndSkill creates, in ONE tenant transaction: a project (with a real
+// project_dir and a real skill FILE selected on it), a work item, a worker + published version.
 func SeedProjectWithServerAndSkill(t *testing.T, pool *db.Pool, httpURL string, opts SeedOpts) Seed {
 	t.Helper()
 	ctx := context.Background()
@@ -153,10 +122,8 @@ func SeedProjectWithServerAndSkill(t *testing.T, pool *db.Pool, httpURL string, 
 	defer func() { _ = ttx.Rollback(ctx) }()
 
 	suffix := strings.ToLower(db.NewID())
-	// The LAST 8 chars, not the first: a ULID leads with a 48-bit millisecond
-	// timestamp, so two ids minted in the same millisecond share their first
-	// chars (this collided on the unique (tenant, slug) index). The tail carries
-	// the randomness.
+	// The LAST 8 chars, not the first: a ULID leads with a 48-bit millisecond timestamp, so two ids
+	// minted in the same millisecond share their first chars (this collided on the unique (tenant.
 	if len(suffix) > 8 {
 		suffix = suffix[len(suffix)-8:]
 	}
@@ -262,9 +229,8 @@ func SeedProjectWithServerAndSkill(t *testing.T, pool *db.Pool, httpURL string, 
 	}
 }
 
-// versionPermissions builds the worker version's permissions jsonb: the inline
-// (version-owned) MCP server — the WORKER scope's own half — plus the version's
-// own skill file entry.
+// versionPermissions builds the worker version's permissions jsonb: the inline (version-owned) MCP
+// server — the WORKER scope's own half — plus the version's own skill file entry.
 func versionPermissions(inlineID, inlineURL, skillPath, skillBody string) []byte {
 	servers := "[]"
 	if inlineID != "" {
@@ -284,10 +250,7 @@ var nonceSeq struct {
 	n int64
 }
 
-// Nonce returns a per-call unique, human-readable nonce. A probe result that
-// echoes it proves the answer was produced by THIS call, not memoised from an
-// earlier one — which is what makes criterion 5 ("removing the definition
-// removes it from the NEXT session") falsifiable rather than decorative.
+// Nonce returns a per-call unique, human-readable nonce.
 func Nonce(t interface{ Name() string }) string {
 	nonceSeq.Lock()
 	nonceSeq.n++
@@ -296,9 +259,7 @@ func Nonce(t interface{ Name() string }) string {
 	return fmt.Sprintf("e2e-%s-%d-%d", t.Name(), n, time.Now().UnixNano())
 }
 
-// EvidenceRecord is ONE observation. Every field is something a leg actually
-// saw: an id from a real row, a tool name from a real offered list, a result
-// from a real tool call, the system prompt the provider received.
+// EvidenceRecord is ONE observation.
 type EvidenceRecord struct {
 	Time      string   `json:"time"`
 	Leg       string   `json:"leg"`
@@ -312,10 +273,8 @@ type EvidenceRecord struct {
 	Args      string   `json:"args,omitempty"`
 	Result    string   `json:"result,omitempty"`
 	Offered   []string `json:"offered_tools,omitempty"`
-	// Model / ModelAccess record the ONE thing this child cannot manufacture
-	// (no permitted model exists in the runtime container): "scripted",
-	// "free-ref" or "live-cli", and available|unavailable. A leg that skips for
-	// model access is a recorded DISTINCTION, never a red.
+	// Model / ModelAccess record the ONE thing this child cannot manufacture (no permitted model exists
+	// in the runtime container): "scripted", "free-ref" or "live-cli", and available|unavailable.
 	Model       string `json:"model,omitempty"`
 	ModelAccess string `json:"model_access,omitempty"`
 	// SkillPath + SkillInPrompt are the skill-file half of every leg.
@@ -327,10 +286,7 @@ type EvidenceRecord struct {
 
 var evidenceMu sync.Mutex
 
-// EvidencePath resolves the JSONL sink: ORCHICON_E2E_EVIDENCE when set, else
-// <repo>/.gotmp/e2eproof/evidence.jsonl (the repo root is found by walking up
-// from the working directory to go.mod, so the artifact always lands inside the
-// project and never in the container's scratch tmpfs).
+// EvidencePath resolves the JSONL sink: ORCHICON_E2E_EVIDENCE when set.
 func EvidencePath() string {
 	if p := strings.TrimSpace(os.Getenv("ORCHICON_E2E_EVIDENCE")); p != "" {
 		return p
@@ -352,10 +308,7 @@ func EvidencePath() string {
 	return filepath.Join(os.TempDir(), "orchicon-e2e-evidence.jsonl")
 }
 
-// WriteEvidence appends one observation as a JSON line. It never fails a test:
-// the evidence sink is a record, and a record that could fail the thing it
-// records would be worse than a missing line — so a write error is reported with
-// t.Errorf (visible, non-fatal).
+// WriteEvidence appends one observation as a JSON line.
 func WriteEvidence(t *testing.T, rec EvidenceRecord) {
 	t.Helper()
 	if rec.Time == "" {

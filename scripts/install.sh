@@ -28,12 +28,12 @@ GITHUB_REPO="Orchicon"
 # The default is the published release, which is what an operator gets. The override is what makes the
 # install path TESTABLE: scripts/tests/install-path serves a locally-built artifact and runs this very
 # script against it, end to end — download, extract, install, verify — with no release, no network and no
-# Docker involved. It is also the hook for a mirror, or for pointing an install at a pre-release channel
-# (`--version edge`, whose assets the default base already serves).
+# container engine involved. It is also the hook for a mirror, or for pointing an install at a
+# pre-release channel (`--version edge`, whose assets the default base already serves).
 ASSET_BASE_URL="${ORCHICON_INSTALL_BASE_URL:-https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/download}"
 INSTALL_DIR="${ORCHICON_INSTALL_DIR:-${HOME}/.local/bin}"
 # WHICH STACK THIS ACTS ON. dev / test / prod are three INSTANCES of the same product on one host:
-# separate container, separate ports, separate data volume, separate host state. Every instance-scoped
+# separate plane, separate ports, separate host services and separate host state. Every instance-scoped
 # action below — install, clean, force-clean, uninstall — is scoped to THIS one, and nothing else.
 #
 # IT IS A FLAG AND NOT ONLY THE ENV VAR, which is not sugar: the documented invocation is
@@ -49,9 +49,45 @@ INSTANCE_EXPLICIT=false  # set when --instance was passed, which SKIPS the insta
 BINARY_HELD_ELSEWHERE=false  # set when a kill declined to touch another instance's process
 CLEAN=false
 FORCE_CLEAN=false
+# SKIP_SWAP is set by the upgrade decision when the installed binary is already the release
+# being installed: nothing is downloaded or replaced, but the setup step still converges the
+# instance (see the `current` case in main).
+SKIP_SWAP=false
 DRY_RUN=false
 SETUP=true
 INSTALL_ORCH=true  # orch = the thin remote TUI client (skippable via --no-orch)
+# THE DESKTOP APP, ON BY DEFAULT WHERE IT CAN ACTUALLY RUN.
+#
+# It is a CLIENT (it talks to this plane over loopback and starts one if none is running), so
+# installing it never changes the stack. Windows has shipped it in the MSI from the start —
+# one package, all three binaries, nothing to know — and Linux/macOS required a flag, which is
+# the difference this default removes: "as easy as possible" cannot mean "find the flag".
+#
+# AUTO RATHER THAN ALWAYS, because the install target is just as often a server. A GUI app on
+# a headless VPS is bytes nobody can launch, and a `curl | bash` that quietly drops one into
+# $INSTALL_DIR is noise the operator has to discover and undo. So: a graphical session gets it,
+# a headless box is told why it did not, and both --desktop and --no-desktop override either.
+DESKTOP=auto
+# WHAT ACTUALLY HAPPENED TO THE DESKTOP APP, reported once at the end as a result rather than
+# left in a warning that scrolls past.
+#
+# REPORTED: "Shouldn't the canary download/install also install the desktop automatically
+# somewhere? I did run that." It should, and on Linux it could not: `canary` published no
+# Linux AppImage, so install_desktop's download 404'd, warned, and `return 0`ed — the install
+# exited SUCCESS with a CLI and no GUI, and the only evidence was one warning lost in the
+# output. "Everything you asked for is installed" and "the binary is installed and the app
+# you also asked for is not" must never look the same at the end of a run.
+#
+# installed   — it is on disk, at DESKTOP_RESULT_WHY
+# unavailable — this release genuinely does not carry one for this platform
+# skipped     — this host declined it (headless, --no-desktop) or it was a dry run
+DESKTOP_RESULT=""
+DESKTOP_RESULT_WHY=""
+# CONTAINER_BIN_RESULT — the linux/amd64 binary a runtime container runs. Linux needs none (the
+# daemon's own executable IS it); macOS does, because a Mach-O cannot run inside a Linux container.
+CONTAINER_BIN_RESULT=""
+CONTAINER_BIN_WHY=""
+VERIFY_CHECKSUM=true  # verify the download against the release's SHA256SUMS (disable with --no-verify)
 
 # --- Colors -----------------------------------------------------------------
 if [ -t 1 ]; then
@@ -62,7 +98,7 @@ fi
 
 # ok_dry "<done>" "<would>": report what HAPPENED, or what WOULD have happened under --dry-run.
 #
-# A dry run that says "container removed" is worse than no dry run: the whole point is to be told what
+# A dry run that says "plane stopped" is worse than no dry run: the whole point is to be told what
 # would change, and a destructive command reporting completed work it did not do is the message an
 # operator is most likely to act on. Found by running it.
 ok_dry() { if [ "$DRY_RUN" = true ]; then ok "would $2"; else ok "$1"; fi }
@@ -86,7 +122,15 @@ while [ $# -gt 0 ]; do
     --force-clean|--nuke|-f) FORCE_CLEAN=true; shift ;;
     --dry-run)         DRY_RUN=true; shift ;;
     --no-setup)        SETUP=false; shift ;;
+    # CONTAINERS ARE PROVISIONED BY DEFAULT; this opts a host out. Mirrors install.ps1's
+    # -NoContainers / ORCHICON_INSTALL_CONTAINERS=0 so the two installers cannot disagree about
+    # what a default install does. It matters most where podman needs root: there, provisioning
+    # still PRINTS the command and declines rather than escalating on its own.
+    --no-containers)   export ORCHICON_INSTALL_CONTAINERS=0; shift ;;
     --no-orch)         INSTALL_ORCH=false; shift ;;
+    --desktop)         DESKTOP=yes; shift ;;
+    --no-desktop)      DESKTOP=no; shift ;;
+    --no-verify)       VERIFY_CHECKSUM=false; shift ;;
     --help|-h)
       # QUOTED DELIMITER: this is a usage TEXT, so nothing in it may be expanded or EXECUTED. It was
       # `<<EOF`, and the backticked phrases in it were therefore COMMAND SUBSTITUTIONS — so
@@ -98,36 +142,68 @@ Orchicon installer
 Usage: install.sh [options]
 
 Options:
-  --version <tag>      Install a specific version (e.g. v0.2.0). Default: latest.
-  --install-dir <dir>  Installation directory (default: ~/.local/bin).
-  --instance <name>    Which instance to act on: dev (default), test, or prod. Each has
-                       its own container, ports, data volume and host state, so
+  --version <tag>, -v  Install a specific version (e.g. v0.2.0). Default: latest.
+  --install-dir <dir>, -d
+                       Installation directory (default: ~/.local/bin).
+  --instance <name>, -i
+                       Which instance to act on: dev (default), test, or prod. Each has
+                       its own plane, ports, host services and host state, so
                        `--instance test` cannot disturb dev or prod. Applies to install AND
                        to --clean/--force-clean/--uninstall.
-    --uninstall          Stop everything THIS instance runs - its plane and its container. The
-                         executables are removed ONLY when no other instance still needs them,
-                         because one install directory serves every instance. DATA PRESERVED.
-                         ASKS WHICH INSTANCE unless --instance is given.
-    --purge              The same, and ALSO destroy this instance's data: its Docker volume and
-                         its host state directory. Irreversible. ASKS WHICH INSTANCE.
-    --remove-binary      Just the orchicon and orch executables. Every container, volume and
-                         instance's state is left alone. If something is running off them it
-                         ASKS before stopping it, and declining changes nothing. ASKS WHICH
-                         INSTANCE.
-    --yes, -y            Answer the prompts affirmatively, for non-interactive use.
-    --clean              Stop THIS instance's container, remove the old Orchicon
+    --uninstall          Stop everything THIS instance runs - its plane and its host services.
+                         The executables are removed ONLY when no other instance still needs
+                         them, because one install directory serves every instance. DATA
+                         PRESERVED. ASKS WHICH INSTANCE unless --instance is given.
+    --purge              The same, and ALSO destroy this instance's data: its host data
+                         directory (database, blob store, runtime state). Irreversible.
+                         ASKS WHICH INSTANCE.
+    --remove-binary      Just the orchicon and orch executables. Every instance's state is
+                         left alone. If something is running off them it ASKS before stopping
+                         it, and declining changes nothing. ASKS WHICH INSTANCE.
+    --no-containers      Install NO container engine. Containers are provisioned BY DEFAULT
+                         (podman plus the Linux substrate it runs in), so a project or work
+                         item can switch to container mode and just work. Pass this only on a
+                         host that must stay engine-free. Runtime IMAGES are never downloaded
+                         by default either way.
+    --yes, -y            Answer the prompts affirmatively, for non-interactive use. That
+                         includes the optional runtime images (it answers: all of them).
+    --clean              Stop THIS instance's plane and host services, remove the old Orchicon
                          binary, then install the latest version — one-shot upgrade. Data is
-                         preserved (Docker volume, BlobStore files, runtime state).
-    --force-clean, --nuke
-                         Wipe and start fresh for THIS instance: stop it, destroy its Docker
-                         volume (database, NATS, Tempo, Loki, VictoriaMetrics, Grafana), remove
-                         blob store data and runtime state, then install the latest version.
-                         WARNING: all data for THIS instance is lost.
+                         preserved (database, blob store, runtime state).
+    --force-clean, --nuke, -f
+                         Wipe and start fresh for THIS instance: stop it, destroy its data
+                         directory (database, NATS, Tempo, Loki, VictoriaMetrics),
+                         remove blob store data and runtime state, then install the latest
+                         version. WARNING: all data for THIS instance is lost.
    --dry-run            Print what would happen without making changes.
-   --no-setup           Install the binary only — do NOT pull images, start the
-                        runtime daemon, or launch the container (default: full
+   --no-setup           Install the binary only — do NOT start the host services, the
+                        runtime daemon, or the plane (default: full
                         one-command setup runs `orchicon install`).
+    --desktop            Install the desktop app (a GUI client for this plane) even
+                         when no graphical session is detected:
+                         Linux  -> the AppImage into the install directory, which
+                                   bundles WebKitGTK so no system package is needed
+                         macOS  -> the signed, notarised .app into ~/Applications
+                         Never uses sudo, never writes to /Applications. Linux arm64
+                         has no prebuilt app yet, and says so.
+                         DEFAULT: installed when a graphical session is present (macOS
+                         always, Linux when DISPLAY or WAYLAND_DISPLAY is set) and
+                         skipped on a headless host, which then says why.
+    --no-desktop         Do not install the desktop app. The install still prints where
+                         to get it.
+  --no-verify          Skip the SHA256SUMS check on the downloaded archive. The
+                       check is what proves the archive is the one the release
+                       published; only skip it against a mirror you control.
   -h, --help           Show this help.
+
+Runtime images:
+  The setup step OFFERS the optional runtime images and pulls only what you choose:
+  runtime base ~1 GB, GUI +150 MB, dev +1.5-2.5 GB. It is a multi-select that defaults
+  to NONE — pressing ENTER pulls no image, and that is a complete install: the plane
+  runs, and a project in local mode needs no image at all. A piped install can still
+  answer it (the prompt reads /dev/tty), --yes selects all of them, and a
+  non-interactive run with no answer selects none. A missing image can be fetched later
+  from the Runtime Images page.
 EOF
       exit 0 ;;
     *) die "unknown option: $1" ;;
@@ -137,16 +213,13 @@ done
 # --- Instance scoping -------------------------------------------------------
 #
 # ONE INSTANCE, NAMED ONCE, USED EVERYWHERE. The instance was already honoured by the Go installer
-# and by stop_installed_plane, but three cleanup sites spelled the names out as
-# `orchicon-cnt-dev orchicon-cnt-prod` — so `--clean` removed BOTH containers and `--force-clean`
-# destroyed BOTH data volumes. The help text already said those flags were about "dev containers" and
-# "the dev stack"; the code was the part that was wrong, and on a host with prod data that is a
-# data-loss bug rather than an inconvenience.
+# and by stop_installed_plane, but three cleanup sites spelled the names out per instance — so `--clean`
+# took BOTH stacks down and `--force-clean` destroyed BOTH data sets. The help text already said those
+# flags were about one instance and "the dev stack"; the code was the part that was wrong, and on a host
+# with prod data that is a data-loss bug rather than an inconvenience.
 #
-# So the names are DERIVED here, once, and nothing below spells them out again.
-cnt_name() { echo "orchicon-cnt-${INSTANCE}"; }
-vol_name() { echo "orchicon-cnt-${INSTANCE}-data"; }
-# The host-side state dir for this instance (secrets KEK, blob store, plane PID and logs).
+# So the path is DERIVED here, once, and nothing below spells an instance out again.
+# The host-side state dir for this instance (secrets KEK, blob store, database, plane PID and logs).
 inst_state_dir() { echo "${XDG_DATA_HOME:-${HOME}/.local/share}/orchicon-${INSTANCE}"; }
 
 # AN UNKNOWN INSTANCE IS REFUSED RATHER THAN DEFAULTED, because the alternative is acting on the wrong
@@ -162,6 +235,48 @@ validate_instance() {
 # of defaulting to dev. This is the coupling that makes `--instance test` mean one thing end to end.
 validate_instance
 export ORCHICON_INSTANCE="$INSTANCE"
+# AND THE SAME FOR THE INSTALL DIR, which was the missing half of that coupling. `--install-dir` moved the
+# binaries but was never published, so `orchicon install` — run below with no flags — fell back to its own
+# default: the launcher and the PATH entry went to ~/.local/bin while the binaries went wherever the flag
+# said. Publishing it makes the flag mean one thing end to end.
+export ORCHICON_INSTALL_DIR="$INSTALL_DIR"
+
+# login_profile names the file a NEW LOGIN shell reads for $SHELL — the only file a PATH entry belongs in.
+#
+# LOGIN, NOT INTERACTIVE: a login shell reads ~/.zprofile, or the first of ~/.bash_profile, ~/.bash_login,
+# ~/.profile — never ~/.zshrc or ~/.bashrc. It does NOT guess: an unknown shell returns empty and the caller
+# prints guidance naming no file, because naming the wrong one is exactly what the old hint did.
+login_profile() {
+  local shell="${SHELL##*/}"
+  shell="${shell#-}"          # a login shell reports itself as -zsh
+  case "$shell" in
+    zsh) echo "${HOME}/.zprofile" ;;
+    bash)
+      local c
+      for c in .bash_profile .bash_login .profile; do
+        [ -f "${HOME}/${c}" ] && { echo "${HOME}/${c}"; return; }
+      done
+      echo "${HOME}/.bash_profile"
+      ;;
+    *) echo "" ;;
+  esac
+}
+# --yes REACHES THE GO INSTALLER'S OWN PROMPTS THE SAME WAY THE INSTANCE DOES, through the environment:
+# the setup step runs `orchicon install` with no flags, so an exported answer channel is the only one that
+# arrives. Without it --yes answered the shell's questions and then left the Go runtime-image prompt
+# waiting for a terminal in exactly the non-interactive runs --yes exists for.
+if [ "$ASSUME_YES" = true ]; then export ORCHICON_ASSUME_YES=1; fi
+# CONTAINER SUPPORT IS PART OF A DEFAULT INSTALL, so the engine is provisioned here rather than
+# left to a prompt the documented `curl … | bash` invocation cannot answer (bash's stdin is the
+# script). Explicit refusals still win: ORCHICON_INSTALL_CONTAINERS=0 (--no-containers) sets
+# ORCHICON_PROVISION_ENGINE=0, and an operator's own ORCHICON_PROVISION_ENGINE is never
+# overridden — this only fills in the DEFAULT.
+if [ "${ORCHICON_INSTALL_CONTAINERS:-1}" = "0" ]; then
+  : "${ORCHICON_PROVISION_ENGINE:=0}"
+else
+  : "${ORCHICON_PROVISION_ENGINE:=1}"
+fi
+export ORCHICON_PROVISION_ENGINE
 
 # --- Prompts, and what each instance currently has --------------------------
 #
@@ -204,14 +319,19 @@ ask_yes_no() {   # ask_yes_no "<question>" -> 0 yes, 1 no
   case "$a" in [yY]|[yY][eE][sS]) return 0 ;; *) return 1 ;; esac
 }
 
-# WHAT AN INSTANCE CURRENTLY HAS, so the choice below is informed rather than blind.
+# WHAT AN INSTANCE CURRENTLY HAS, so the choice below is informed rather than blind. It reads that
+# instance's state dir and NOTHING ELSE: there is no container to inspect any more, and the label here must
+# agree with the decision instance_exists makes — including the ports.json rule, because a label calling a
+# bare ports record "state" beside a function that does not would be two answers to one question.
 instance_state() {
-  local inst="$1" out=""
-  if command -v docker >/dev/null 2>&1 && docker inspect "orchicon-cnt-$inst" >/dev/null 2>&1; then
-    out="container"
+  local inst="$1" dir
+  dir="${XDG_DATA_HOME:-${HOME}/.local/share}/orchicon-$inst"
+  [ -d "$dir" ] || { printf 'nothing'; return 0; }
+  if [ -n "$(find "$dir" -mindepth 1 -maxdepth 1 ! -name ports.json -print -quit 2>/dev/null)" ]; then
+    printf 'state'
+  else
+    printf 'ports only'
   fi
-  if [ -d "${XDG_DATA_HOME:-${HOME}/.local/share}/orchicon-$inst" ]; then out="${out:+$out + }state"; fi
-  printf '%s' "${out:-nothing}"
 }
 
 # ASK WHICH INSTANCE, AT THE MOMENT OF THE DESTRUCTIVE ACTION.
@@ -240,7 +360,7 @@ ask_instance() {
   fi
   echo "" >&2
   echo -e "  ${B}Which instance?${X}" >&2
-  echo -e "  ${D}An instance is a whole stack: its own container, ports, data volume and host state.${X}" >&2
+  echo -e "  ${D}An instance is a whole stack: its own plane, ports, host services and host state.${X}" >&2
   local n=1 inst
   for inst in dev test prod; do
     echo -e "    ${C}${n}${X}) ${B}${inst}${X}  ${D}($(instance_state "$inst"))${X}" >&2
@@ -276,13 +396,50 @@ binary_paths() {
   printf '%s\n%s\n' "$INSTALL_DIR/orchicon" "$INSTALL_DIR/orch"
 }
 
+# file_holders <path> prints the pids of the processes holding <path> — executing it, or with it open.
+#
+# PORTABILITY IS THE POINT, and it is the lesson scripts/install-local.sh learned for the same step:
+# `fuser` is Linux-only (psmisc) and ABSENT ON macOS BY DEFAULT, and it is missing from minimal Linux
+# images too. The old single-tool check returned "nobody holds it" when the TOOL was missing — which is
+# exactly how a live binary gets removed out from under a running plane, the failure this exists to
+# prevent. So the order is fuser -> lsof (macOS + most Linux) -> /proc (Linux with neither), and a
+# missing tool now means "ask the next one", never "nobody".
+file_holders() {
+  local bin="$1" target fd link pid
+  [ -e "$bin" ] || return 0
+  if command -v fuser >/dev/null 2>&1; then
+    fuser "$bin" 2>/dev/null || true
+    return 0
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -t -- "$bin" 2>/dev/null || true
+    return 0
+  fi
+  [ -d /proc ] || return 0
+  target="$(readlink -f "$bin" 2>/dev/null || printf '%s' "$bin")"
+  for pid in /proc/[0-9]*; do
+    pid="${pid#/proc/}"
+    if [ "$pid" = "$$" ]; then continue; fi
+    if [ "$(readlink "/proc/$pid/exe" 2>/dev/null || true)" = "$target" ]; then
+      printf '%s\n' "$pid"
+      continue
+    fi
+    for fd in "/proc/$pid/fd/"*; do
+      link="$(readlink "$fd" 2>/dev/null || true)"
+      if [ -n "$link" ] && [ "$link" = "$target" ]; then
+        printf '%s\n' "$pid"
+        break
+      fi
+    done
+  done
+}
+
 # binary_users <bin> prints "pid:instance" for every process holding it. The instance field is EMPTY for
 # a process that carries none, which is the case for the shared runtime daemon.
 binary_users() {
   local bin="$1" pid inst
-  command -v fuser >/dev/null 2>&1 || return 0
   [ -e "$bin" ] || return 0
-  for pid in $(fuser "$bin" 2>/dev/null); do
+  for pid in $(file_holders "$bin"); do
     inst="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^ORCHICON_INSTANCE=//p' | head -1)"
     printf '%s:%s\n' "$pid" "$inst"
   done
@@ -297,10 +454,9 @@ all_binary_users() {
   printf '%s' "$out" | sed '/^$/d' | sort -u
 }
 
-# instance_exists <name> — a container or host state means the instance is real.
+# instance_exists <name> — host state means the instance is real.
 instance_exists() {
   local inst="$1" dir
-  if command -v docker >/dev/null 2>&1 && docker inspect "orchicon-cnt-$inst" >/dev/null 2>&1; then return 0; fi
   dir="${XDG_DATA_HOME:-${HOME}/.local/share}/orchicon-$inst"
   [ -d "$dir" ] || return 1
   # A STATE DIR CONTAINING ONLY `ports.json` IS NOT AN INSTANCE. The installer records the ports it bound
@@ -320,26 +476,46 @@ other_instances_remain() {
   return 1
 }
 
-# stop_service_for <instance> stops ONE instance's plane and container. Used only after the operator has
-# explicitly agreed to stop services.
+# stop_service_for <instance> stops ONE instance's plane AND its host services. Used only after the
+# operator has explicitly agreed to stop services.
+#
+# `orchicon stop` rather than `serve --stop`, and the difference is load-bearing: stop takes the plane down
+# and THEN the instance's host services (postgres, nats). `serve --stop` alone leaves the database listening
+# for an instance that was just uninstalled, which is how "uninstalled" comes to mean "still holding 8092".
 stop_service_for() {
   local inst="$1" bin="$INSTALL_DIR/orchicon"
-  local sd="${XDG_DATA_HOME:-${HOME}/.local/share}/orchicon-$inst/serve"
-  if [ -f "$bin" ]; then
-    if [ "$DRY_RUN" = false ]; then ORCHICON_SERVE_STATE_DIR="$sd" "$bin" serve --stop >/dev/null 2>&1 || true; else printf '  (would stop the %s plane)\n' "$inst"; fi
-  fi
-  if command -v docker >/dev/null 2>&1; then
-    if [ "$DRY_RUN" = false ]; then
-      docker rm -f "orchicon-cnt-$inst" >/dev/null 2>&1 && printf 'removed container orchicon-cnt-%s\n' "$inst" || true
-    else
-      printf '  (would remove container orchicon-cnt-%s)\n' "$inst"
-    fi
+  [ -f "$bin" ] || return 0
+  if [ "$DRY_RUN" = false ]; then
+    ORCHICON_INSTANCE="$inst" "$bin" stop >/dev/null 2>&1 || true
+  else
+    printf '  (would stop the %s plane and its host services)\n' "$inst"
   fi
 }
 
 # remove_binaries removes both executables. It does NOT stop anything: the caller must have settled who
 # is using them first, because that is the part that can break a running system.
+# remove_desktop_app removes the desktop app this script may have installed.
+#
+# SEPARATE FROM remove_binaries because on macOS it is a .app BUNDLE (a directory), not a
+# file, and because it lives outside the install directory: ~/Applications on macOS, so an
+# uninstall that forgot it would leave a window that starts with no plane behind it.
+remove_desktop_app() {
+  local app_linux="$INSTALL_DIR/orchicon-desktop"
+  local app_mac="${HOME}/Applications/Orchicon.app"
+  if [ -f "$app_linux" ]; then
+    info "removing the desktop app: $app_linux"
+    $DRY_RUN || rm -f "$app_linux"
+    ok_dry "desktop app removed" "desktop app be removed"
+  fi
+  if [ -d "$app_mac" ]; then
+    info "removing the desktop app: $app_mac"
+    $DRY_RUN || rm -rf "$app_mac"
+    ok_dry "desktop app removed" "desktop app be removed"
+  fi
+}
+
 remove_binaries() {
+  remove_desktop_app
   local bin
   for bin in $(binary_paths); do
     if [ -f "$bin" ]; then
@@ -371,6 +547,208 @@ detect_arch() {
   esac
 }
 
+# --- Desktop app (optional) ---------------------------------------------------
+#
+# THE APP IS A CLIENT. It talks to the plane over loopback (http://127.0.0.1:8080) and
+# starts one if none is running, so installing it changes nothing about the stack — which
+# is why it is opt-in rather than part of the default install.
+#
+# NO sudo, and never /Applications: the app lands where this script already writes
+# ($INSTALL_DIR on Linux, ~/Applications on macOS). A .deb exists for anyone who wants apt
+# to own it — the docs name the command — but installing a package needs root, and an
+# installer that silently escalates is not one to pipe into bash.
+#
+# AND NO QUARANTINE STRIPPING. If spctl rejects the .app, this says so and points at the
+# issue tracker rather than running `xattr -dr com.apple.quarantine`, because a released
+# .app that Gatekeeper blocks is a bug in the release, not in the user's machine.
+# desktop_wanted answers whether to install the desktop app, given the flag value, and says
+# WHY when it declines. Split out from the install so the decision is one function with one
+# rule, and so --dry-run can report the same answer the real run would act on.
+#
+# THE RULE. `--desktop` forces yes and `--no-desktop` forces no (an explicit flag always wins).
+# Otherwise the app is installed when the host could plausibly run it:
+#   macOS  — yes. It is a GUI OS; ~/Applications is where a client belongs, and a headless Mac
+#            still has a window server for the logged-in user.
+#   Linux  — yes when DISPLAY or WAYLAND_DISPLAY is set, i.e. a graphical session is present.
+#            Unset means SSH, a container, CI or a server: an AppImage there is unrunnable.
+#   other  — no.
+# Returns 0 (install), 1 (skip, reason already printed to DESKTOP_SKIP_WHY).
+DESKTOP_SKIP_WHY=""
+desktop_wanted() {
+  local os="$1"
+  DESKTOP_SKIP_WHY=""
+  case "$DESKTOP" in
+    yes) return 0 ;;
+    no)  return 1 ;;
+  esac
+  case "$os" in
+    darwin) return 0 ;;
+    linux)
+      if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        return 0
+      fi
+      DESKTOP_SKIP_WHY="no graphical session (DISPLAY/WAYLAND_DISPLAY unset), so the desktop app was skipped; pass --desktop to install it anyway"
+      return 1
+      ;;
+    *)
+      DESKTOP_SKIP_WHY="no desktop app is published for ${os}"
+      return 1
+      ;;
+  esac
+}
+
+desktop_url() {
+  local os="$1" asset
+  case "$os" in
+    linux)  asset="orchicon_desktop_${VERSION#v}_linux_amd64.AppImage" ;;
+    darwin) asset="orchicon_desktop_${VERSION#v}_darwin_universal.zip" ;;
+    *) return 1 ;;
+  esac
+  printf '%s/%s/%s' "$ASSET_BASE_URL" "$VERSION" "$asset"
+}
+
+install_desktop() {
+  local os arch url tmp pkg
+  os="$(detect_os)"
+  arch="$(detect_arch)"
+  if ! url="$(desktop_url "$os")"; then
+    DESKTOP_RESULT="unavailable"
+    DESKTOP_RESULT_WHY="no desktop app is published for ${os}"
+    return 0
+  fi
+  if [ "$os" = "linux" ] && [ "$arch" != "amd64" ]; then
+    DESKTOP_RESULT="unavailable"
+    DESKTOP_RESULT_WHY="no prebuilt desktop app for linux/${arch} yet"
+    return 0
+  fi
+  if [ "$DRY_RUN" = true ]; then
+    DESKTOP_RESULT="skipped"
+    DESKTOP_RESULT_WHY="dry run — it would be downloaded from ${url}"
+    ok "would download the desktop app from ${url}"
+    return 0
+  fi
+
+  tmp="$(mktemp -d)"
+  pkg="${tmp}/$(basename "$url")"
+  info "downloading the desktop app…"
+  if ! curl -fsSL --retry 2 -o "$pkg" "$url"; then
+    DESKTOP_RESULT="unavailable"
+    DESKTOP_RESULT_WHY="release ${VERSION} does not carry $(basename "$url")"
+    rm -rf "$tmp"
+    return 0
+  fi
+
+  case "$os" in
+    linux)
+      install -m 0755 "$pkg" "${INSTALL_DIR}/orchicon-desktop"
+      DESKTOP_RESULT="installed"
+      DESKTOP_RESULT_WHY="${INSTALL_DIR}/orchicon-desktop"
+      ok "desktop app installed: ${INSTALL_DIR}/orchicon-desktop"
+      if command -v ldconfig >/dev/null 2>&1 && ! ldconfig -p 2>/dev/null | grep -q 'libwebkit2gtk-4\.[01]\.so\.37'; then
+        warn "this system has no WebKitGTK: sudo apt install libwebkit2gtk-4.0-37"
+        warn "  (the AppImage normally bundles it — if the app still refuses to start, that is the fix)"
+      fi
+      ;;
+    darwin)
+      local dest="${HOME}/Applications"
+      mkdir -p "$dest"
+      if ! ditto -x -k "$pkg" "$dest" 2>/dev/null; then
+        if command -v unzip >/dev/null 2>&1; then
+          unzip -q -o "$pkg" -d "$dest"
+        else
+          DESKTOP_RESULT="unavailable"
+          DESKTOP_RESULT_WHY="cannot unpack $(basename "$pkg") — neither ditto nor unzip is available"
+          rm -rf "$tmp"
+          return 0
+        fi
+      fi
+      local app
+      app="$(find "$dest" -maxdepth 1 -name '*.app' -type d 2>/dev/null | head -1)"
+      if [ -z "$app" ]; then
+        DESKTOP_RESULT="unavailable"
+        DESKTOP_RESULT_WHY="no .app was found in the downloaded archive"
+        rm -rf "$tmp"
+        return 0
+      fi
+      DESKTOP_RESULT="installed"
+      DESKTOP_RESULT_WHY="${app}"
+      ok "desktop app installed: ${app}"
+      if spctl -a -t exec "$app" >/dev/null 2>&1; then
+        ok "Gatekeeper accepts it (signed, notarised and stapled): it opens with no warning"
+      else
+        warn "Gatekeeper did not accept ${app}"
+        warn "  that is expected ONLY for a locally built, unsigned .app. If yours came from the"
+        warn "  release, please report it here rather than stripping the quarantine flag:"
+        warn "  https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/issues"
+      fi
+      ;;
+  esac
+  rm -rf "$tmp"
+}
+
+# --- Checksum verification ---------------------------------------------------
+# sha256_of prints the SHA-256 of a file, or fails when no hashing tool exists.
+#
+# `sha256sum` DOES NOT EXIST ON macOS by default; `shasum -a 256` does. Returning non-zero rather
+# than dying is what keeps a host with neither tool from failing an install that is otherwise fine —
+# absence of the tool is not evidence that the download is bad.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+# verify_checksum <asset-name> <downloaded-file>
+#
+# THE POLICY, and it is the same policy install.ps1 applies inside WSL:
+#   * no SHA256SUMS published for this version (or no hashing tool here) → WARN and continue, because
+#     older releases predate the file and a host without sha256sum is not a corrupt download;
+#   * a hash MISMATCH → die. A mismatch means the archive is not the one the release published, and
+#     installing from it is exactly the failure this check exists to prevent. It runs BEFORE extraction
+#     and before anything is moved into place, so a refused download leaves the machine untouched.
+verify_checksum() {
+  local asset="$1" file="$2" dir="${3:-${TMPDIR:-/tmp}}"
+  if [ "$VERIFY_CHECKSUM" != true ]; then
+    info "skipping the SHA256SUMS check (--no-verify)"
+    return 0
+  fi
+  # Written into the install's own temp dir rather than a file of its own: main() already traps that
+  # directory for removal, so the checksum file has exactly the archive's lifetime and no cleanup path
+  # of its own to get wrong.
+  local sums_file="${dir}/SHA256SUMS"
+  if ! curl -fsSL -o "$sums_file" "${ASSET_BASE_URL}/${VERSION}/SHA256SUMS" 2>/dev/null; then
+    info "no SHA256SUMS published for ${VERSION} — skipping checksum verification"
+    return 0
+  fi
+  local expected
+  # The published format is `<hash>  <asset>`; accept the `./asset` spelling too rather than failing a
+  # correct download over a path prefix.
+  expected="$(awk -v a="$asset" '$2 == a || $2 == "./" a { print $1; exit }' "$sums_file")"
+  if [ -z "$expected" ]; then
+    warn "SHA256SUMS for ${VERSION} does not list ${asset} — skipping checksum verification"
+    return 0
+  fi
+  local actual
+  if ! actual="$(sha256_of "$file")"; then
+    warn "neither sha256sum nor shasum is available — skipping checksum verification"
+    return 0
+  fi
+  if [ "$actual" != "$expected" ]; then
+    die "checksum mismatch for ${asset}
+  expected ${expected}
+  got      ${actual}
+  The download is corrupt or is not the archive this release published. NOTHING WAS INSTALLED.
+  Re-run this installer; if it happens again, download ${asset} by hand and compare it with
+  'shasum -a 256 ${asset}' (macOS) or 'sha256sum ${asset}' (Linux) against the SHA256SUMS file on
+  the release page."
+  fi
+  ok "checksum verified against the published SHA256SUMS"
+}
+
 check_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
@@ -388,27 +766,27 @@ check_cmd() {
 #
 # The job is narrower than "stop Orchicon": it is "release THIS file". An old
 # process holding the binary's mmap is what makes the mv/rm fail with "Text file
-# busy". `fuser` targets the FILE, so a plane running from any other path is
-# unreachable by CONSTRUCTION rather than by naming convention — this is the same
-# technique scripts/install-local.sh already uses for exactly this step.
+# busy". The check targets the FILE (file_holders), so a plane running from any
+# other path is unreachable by CONSTRUCTION rather than by naming convention —
+# this is the same technique scripts/install-local.sh already uses for exactly
+# this step.
 #
-# When fuser is unavailable it declines to act and says so, rather than falling
-# back to a name match: killing the wrong process is worse than a warning.
+# It never degrades to a name match: killing the wrong process is worse than a
+# warning. Where not even a file-level check is possible (no fuser, no lsof, no
+# /proc) it declines to act and says so.
 stop_installed_plane() {
   local bin="$INSTALL_DIR/orchicon"
   [ -f "$bin" ] || return 0
 
-  # Best effort, and only when the instance's own state dir can be derived: the
-  # PID file is PER INSTANCE (scripts/container.sh passes the state dir as
-  # ORCHICON_SERVE_STATE_DIR), so a bare `serve --stop` would look in the
-  # cwd-relative default `.dev` and miss a host-resident plane.
+  # Best effort, and scoped to the instance through the environment the Go side reads: `orchicon stop`
+  # resolves that instance's own plane and its host services, so an uninstall that stops the plane must
+  # also stop the database rather than leave it listening for an instance that no longer exists.
   local inst="${ORCHICON_INSTANCE:-dev}"
-  local state_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/orchicon-${inst}/serve"
   if [ "$DRY_RUN" = false ]; then
-    ORCHICON_SERVE_STATE_DIR="$state_dir" "$bin" serve --stop 2>/dev/null \
-      || warn "serve --stop found no running plane for instance '${inst}' (ignoring)"
+    ORCHICON_INSTANCE="$inst" "$bin" stop 2>/dev/null \
+      || warn "stop found no running plane for instance '${inst}' (ignoring)"
   else
-    echo -e "  ${D}(would run: ORCHICON_SERVE_STATE_DIR=${state_dir} ${bin} serve --stop)${X}"
+    echo -e "  ${D}(would run: ORCHICON_INSTANCE=${inst} ${bin} stop)${X}"
   fi
 
   # KILL ONLY THIS INSTANCE'S PROCESSES, NEVER THE FILE'S OTHER USERS.
@@ -454,28 +832,22 @@ do_uninstall() {
 
   local bin="$INSTALL_DIR/orchicon"
 
-  # 1. THIS INSTANCE'S PLANE, through its own state dir (and only its own processes — see
-  #    stop_installed_plane).
+  # 1. THIS INSTANCE'S PLANE AND ITS HOST SERVICES, through its own state dir and only its own processes —
+  #    see stop_installed_plane. `orchicon stop` takes the plane down and THEN the instance's host services:
+  #    stopping the plane alone leaves the database listening for an instance that no longer exists.
   stop_installed_plane
 
-  # 2. THIS INSTANCE'S CONTAINER. The old uninstall never touched it, so the services stack kept running
-  #    after an "uninstall".
-  if command -v docker >/dev/null 2>&1; then
-    info "removing the ${INSTANCE} container…"
-    $DRY_RUN || docker rm -f "$(cnt_name)" >/dev/null 2>&1 || true
-    ok_dry "${INSTANCE} container removed ($(cnt_name))" "remove the ${INSTANCE} container ($(cnt_name))"
-  fi
-
-  # 3. DATA, only when asked. Destroying a database is not something "remove the software" may imply, so
-  #    the destructive half is --purge and it says so plainly.
+  # 2. DATA, only when asked. Destroying a database is not something "remove the software" may imply, so
+  #    the destructive half is --purge and it says so plainly — BEFORE it acts, not in a summary after.
   if [ "$PURGE" = true ]; then
-    if command -v docker >/dev/null 2>&1; then
-      info "removing the ${INSTANCE} data volume…"
-      $DRY_RUN || docker volume rm "$(vol_name)" >/dev/null 2>&1 || true
-      ok_dry "data volume removed ($(vol_name))" "remove the data volume ($(vol_name))"
-    fi
     local sd; sd="$(inst_state_dir)"
     if [ -d "$sd" ]; then
+      if [ "$DRY_RUN" = true ]; then
+        echo -e "  ${D}(would destroy ${sd}: the ${INSTANCE} database, blob store and runtime state)${X}"
+      else
+        warn "destroying ${sd}"
+        warn "  the ${INSTANCE} database, blob store and runtime state — this cannot be undone"
+      fi
       info "removing host state ${sd}…"
       $DRY_RUN || rm -rf "$sd"
       ok_dry "host state removed ($sd)" "remove the host state ($sd)"
@@ -483,19 +855,19 @@ do_uninstall() {
   else
     echo ""
     echo -e "  ${D}Data preserved:${X}"
-    echo -e "  ${D}• instance volume:  $(vol_name)${X}"
     echo -e "  ${D}• instance state:   $(inst_state_dir)${X}"
-    echo -e "  ${D}Re-run with --purge to remove both (irreversible).${X}"
+    echo -e "  ${D}  (the ${INSTANCE} database, blob store and runtime state)${X}"
+    echo -e "  ${D}Re-run with --purge to remove it (irreversible).${X}"
   fi
 
-  # 4. THE BINARIES LAST, AND ONLY IF NOTHING ELSE NEEDS THEM. They are machine-wide: one install serves
+  # 3. THE BINARIES LAST, AND ONLY IF NOTHING ELSE NEEDS THEM. They are machine-wide: one install serves
   #    every instance, so removing them while dev or prod still runs from them would leave those planes
   #    on a deleted inode — the very bug this command exists to stop causing.
   if [ "$BINARY_HELD_ELSEWHERE" = true ] || other_instances_remain; then
     warn "leaving the binaries in place: other instances still use them"
     warn "  orchicon: $INSTALL_DIR/orchicon"
-    [ "$PURGE" = true ] || warn "  every container, volume and state for '${INSTANCE}' is gone, so uninstalling it"
-    warn "  the executables is a machine-wide action — use --remove-binary once no instance needs them."
+    [ "$PURGE" = true ] || warn "  never mind: the executables are machine-wide, and another instance needs them."
+    warn "  use --remove-binary once no instance needs them."
   else
     info "no other instance remains — removing the binaries"
     remove_binaries
@@ -505,7 +877,7 @@ do_uninstall() {
 
 # --- Remove the binaries only ------------------------------------------------
 #
-# THE EXPLICIT MACHINE-WIDE ACTION. It touches no container, volume or instance state — only the two
+# THE EXPLICIT MACHINE-WIDE ACTION. It touches no instance's state and no host service — only the two
 # executables — and it ASKS before taking anything down, because removing a binary that a plane or the
 # shared runtime daemon is running from is what produces a server that answers and cannot work.
 do_remove_binary() {
@@ -530,8 +902,8 @@ do_remove_binary() {
     exit 0
   fi
 
-  # Stop each instance that appears in the user list (plane + container), then anything still holding the
-  # file — which is how the shared runtime daemon is reached, since it carries no instance.
+  # Stop each instance that appears in the user list (its plane and its host services), then anything still
+  # holding the file — which is how the shared runtime daemon is reached, since it carries no instance.
   local seen="" inst
   for inst in $(printf '%s\n' "$users" | cut -d: -f2 | sort -u); do
     [ -n "$inst" ] && seen="$seen $inst"
@@ -552,9 +924,9 @@ do_remove_binary() {
 
 # --- Force-clean then install -----------------------------------------------
 #
-# Wipe everything and start fresh: stop the dev stack, destroy Docker
-# volumes (database, NATS, Tempo, Loki, VictoriaMetrics, Grafana),
-# runtime state, then install the latest version.
+# Wipe everything and start fresh: stop this instance's plane and host services, destroy
+# its data directory (database, NATS, Tempo, Loki, VictoriaMetrics, blob store,
+# runtime state), then install the latest version.
 #
 do_force_clean() {
   echo ""
@@ -576,23 +948,7 @@ do_force_clean() {
   # NOT be a process-name match.
   stop_installed_plane
 
-  # 2. Remove the single-container instances and their data volumes
-  # (postgres, nats, tempo, loki, victoriametrics, grafana live under
-  # /var/lib/orchicon in the instance volumes).
-  if command -v docker >/dev/null 2>&1; then
-      info "removing the ${INSTANCE} instance and its data volume…"
-    if [ "$DRY_RUN" = false ]; then
-        docker rm -f "$(cnt_name)" 2>/dev/null || true
-        docker volume rm "$(vol_name)" 2>/dev/null || true
-        ok "${INSTANCE} instance + volume removed ($(cnt_name), $(vol_name))"
-    else
-        echo -e "  ${D}(would run: docker rm -f $(cnt_name); docker volume rm $(vol_name))${X}"
-    fi
-  else
-    warn "docker not found — skipping container cleanup"
-  fi
-
-  # 3. Clean up local state — ANCHORED TO THE STATE DIRECTORY, never the caller's cwd.
+  # 2. Clean up local state — ANCHORED TO THE STATE DIRECTORY, never the caller's cwd.
   #
   # THESE WERE BARE RELATIVE NAMES and that was a data-loss bug for anyone who ran the
   # installer from a project directory. `rm -rf "data" ".dev" "bin"` resolves against the
@@ -618,19 +974,17 @@ do_force_clean() {
     fi
   done
 
-  # 4. Remove the old binary.
+  # 3. Remove the old binary.
   if [ -f "$bin" ]; then
     info "removing $bin"
     $DRY_RUN || rm -f "$bin"
     ok "old binary removed"
   fi
 
-  # 5. Summary.
+  # 4. Summary.
   echo ""
   echo -e "${G}All data wiped — ready for a fresh start${X}"
-echo -e "  ${D}• The ${INSTANCE} data volume destroyed ($(vol_name))${X}"
-  echo -e "  ${D}• BlobStore files removed${X}"
-echo -e "  ${D}• Host state removed ($(inst_state_dir))${X}"
+  echo -e "  ${D}• The ${INSTANCE} database, blob store and runtime state destroyed ($(inst_state_dir))${X}"
   echo -e "  ${D}• Old binary removed${X}"
   echo ""
   echo -e "${B}Now installing latest version…${X}"
@@ -639,9 +993,9 @@ echo -e "  ${D}• Host state removed ($(inst_state_dir))${X}"
 
 # --- Clean then install -----------------------------------------------------
 #
-# Stop dev containers, remove the old binary, then install the latest
-# version — one-shot upgrade. All user data is preserved (Docker volumes,
-# BlobStore files, runtime state).
+# Stop this instance's plane and host services, remove the old binary, then install the
+# latest version — one-shot upgrade. All user data is preserved (database, blob store,
+# runtime state) in the instance's own state dir.
 #
 do_clean() {
   echo ""
@@ -662,12 +1016,9 @@ do_clean() {
   # stop_installed_plane for why this must not be a process-name match.
   stop_installed_plane
 
-  # 1b. If the binary is already gone, the only thing still holding this
-  # instance's ports is its container — fall back to stopping that.
-  if [ ! -f "$bin" ] && command -v docker >/dev/null 2>&1; then
-    info "stopping orchicon container instances…"
-      $DRY_RUN || docker rm -f "$(cnt_name)" 2>/dev/null || true
-  fi
+  # 1b. Nothing else needs stopping: there is no container to fall back to. Every
+  # process of this instance is reached through stop_installed_plane, by file and
+  # by instance — and if the binary is gone there is nothing left of ours to stop.
 
   # 2. Remove the old binary.
   if [ -f "$bin" ]; then
@@ -683,14 +1034,99 @@ do_clean() {
   echo -e "${G}Infrastructure cleaned — all user data preserved${X}"
   echo ""
   echo -e "${B}Data preserved:${X}"
-  echo -e "  ${D}• Postgres database (Docker volume)${X}"
-  echo -e "  ${D}• NATS JetStream messages (Docker volume)${X}"
-  echo -e "  ${D}• Telemetry stack (Docker volumes)${X}"
-  echo -e "  ${D}• BlobStore files (./data/blobs)${X}"
-  echo -e "  ${D}• Runtime state (.dev/)${X}"
+  echo -e "  ${D}• Postgres database and NATS JetStream messages (host services)${X}"
+  echo -e "  ${D}• Telemetry stack (Tempo, Loki, VictoriaMetrics)${X}"
+  echo -e "  ${D}• BlobStore files${X}"
+  echo -e "  ${D}• Runtime state${X}"
+  echo -e "  ${D}  all under $(inst_state_dir)${X}"
   echo ""
   echo -e "${B}Now installing latest version…${X}"
   echo ""
+}
+
+# --- The container binary (macOS only) --------------------------------------
+
+# install_container_binary places the linux/amd64 build a runtime container runs.
+#
+# A runtime container is a LINUX container running `orchicon runtime-supervisor`, and the daemon
+# bind-mounts the binary in rather than baking it into the image. On Linux the daemon's own file IS
+# that binary, so there is nothing to do. On macOS it is a Mach-O, which the container cannot exec
+# (internal/runtime/exe_resolve.go), so it has to be fetched.
+#
+# NON-FATAL, mirroring install.ps1: a host with no container binary still has a working plane, and a
+# failed download must not fail an install. The outcome is recorded and stated in the summary.
+install_container_binary() {
+  if [ "$os" != "darwin" ]; then
+    CONTAINER_BIN_RESULT="not-needed"
+    CONTAINER_BIN_WHY="this host's own binary is the container binary"
+    return 0
+  fi
+  if [ "${ORCHICON_INSTALL_CONTAINERS:-1}" = "0" ]; then
+    CONTAINER_BIN_RESULT="skipped"
+    CONTAINER_BIN_WHY="declined (--no-containers)"
+    return 0
+  fi
+  # ORCHICON_DATA_DIR WINS, because the daemon reads it too — writing to a different directory than
+  # the daemon searches would be the same failure with a different path in it.
+  local data_root="${ORCHICON_DATA_DIR:-${INSTALL_DIR}}"
+  local dest="${data_root}/bin/orchicon-linux-amd64"
+  mkdir -p "${data_root}/bin" 2>/dev/null || true
+  if [ "$DRY_RUN" = true ]; then
+    CONTAINER_BIN_RESULT="skipped"
+    CONTAINER_BIN_WHY="dry run — it would come from the release archive"
+    return 0
+  fi
+
+  # IT IS IN THE ARCHIVE WE ALREADY EXTRACTED. Fetching it as a second asset was the design that kept
+  # failing — silent, and free to drift from the daemon's version. The archive carries it from the
+  # same commit, so there is nothing extra to download and nothing to mismatch.
+  local found=""
+  local entry
+  entry="$(find "$tmpdir" -type f -name orchicon-linux-amd64 2>/dev/null | head -1)"
+  if [ -n "$entry" ]; then
+    found="$entry"
+  fi
+
+  local work=""
+  local why=""
+  if [ -z "$found" ]; then
+    # NOT IN THE ARCHIVE: the separately published asset, which is how earlier releases shipped it.
+    local asset="orchicon_${VERSION#v}_linux_amd64.tar.gz"
+    local url="${ASSET_BASE_URL}/${VERSION}/${asset}"
+    work="$(mktemp -d)"
+    local archive="${work}/${asset}"
+    if ! curl -fsSL -o "$archive" "$url" 2>/dev/null; then
+      why="could not download ${url}"
+    elif ! tar -xzf "$archive" -C "$work" 2>/dev/null; then
+      why="could not unpack ${asset}"
+    else
+      found="$(find "$work" -type f -name orchicon 2>/dev/null | head -1)"
+      [ -n "$found" ] || why="${asset} did not contain an orchicon binary"
+    fi
+  fi
+
+  # THE FORMAT CHECK IS THE POINT: the daemon refuses a non-ELF entrypoint, so a truncated download or
+  # an HTML error page must be caught here rather than at the first container create.
+  if [ -z "$why" ]; then
+    local magic
+    magic="$(od -An -tx1 -N4 "$found" 2>/dev/null | tr -d ' \n')"
+    [ "$magic" = "7f454c46" ] || why="the runtime binary is not a linux/amd64 executable"
+  fi
+  if [ -z "$why" ]; then
+    if cp "$found" "$dest" 2>/dev/null; then
+      chmod +x "$dest" 2>/dev/null || true
+    else
+      why="could not write ${dest}"
+    fi
+  fi
+  [ -n "$work" ] && rm -rf "$work"
+  if [ -n "$why" ]; then
+    CONTAINER_BIN_RESULT="unavailable"
+    CONTAINER_BIN_WHY="$why"
+    return 0
+  fi
+  CONTAINER_BIN_RESULT="installed"
+  CONTAINER_BIN_WHY="$dest"
 }
 
 # --- Main install -----------------------------------------------------------
@@ -713,7 +1149,62 @@ main() {
       | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')"
     [ -n "$VERSION" ] || die "could not determine latest version"
   fi
-  info "installing Orchicon ${B}${VERSION}${X} for ${os}/${arch}"
+  # WHAT IS THIS RUN? DECIDED BEFORE ANYTHING IS DOWNLOADED OR STOPPED.
+  #
+  # The installer is also the updater, so it must say which of the four things it is doing
+  # rather than silently re-downloading. Ordering matters: the decision needs $VERSION, which
+  # is resolved above, and it must come BEFORE the swap so "current" and "downgrade" can exit
+  # without touching the installed binary.
+  local decision; decision="$(upgrade_decision)"
+  case "$decision" in
+    current)
+      # ALREADY CURRENT: skip the download and the swap, but still run the setup step.
+      #
+      # IT MUST NOT `return` EARLY. `orchicon install` is what converges an instance — it
+      # starts missing host services and the plane — so short-circuiting here would turn a
+      # re-run into a no-op that leaves a stopped instance stopped. The point of skipping is
+      # "do not re-download and do not restart a healthy plane", not "do nothing at all".
+      ok "Orchicon ${B}${VERSION}${X} is already installed — skipping the download and the binary swap."
+      echo -e "  ${D}binary: ${INSTALL_DIR}/orchicon${X}"
+      SKIP_SWAP=true
+      ;;
+    downgrade)
+      local have; have="$(installed_version)"
+      err "the installed Orchicon (${B}${have}${X}) is NEWER than ${B}${VERSION}${X}."
+      echo -e "  ${D}Downgrades are not supported: database migrations are forward-only, so an older" >&2
+      echo -e "  binary can meet a schema it cannot read. Re-run without --version to install the" >&2
+      echo -e "  latest, or use --force-clean to wipe this instance's data and start again.${X}" >&2
+      exit 1
+      ;;
+    upgrade)
+      local have; have="$(installed_version)"
+      echo ""
+      echo -e "${B}Upgrading Orchicon${X} ${have} ${D}→${X} ${VERSION}"
+      # A PAUSE, NOT AN AUTOMATIC BACKUP. Backing up here would leave a multi-GB artifact on
+      # every machine at every upgrade — measured on a dev host, four backups of 0.3-3GB each,
+      # ~9GB total — and almost none of them would ever be used. The operator is told the exact
+      # command instead, so the decision to keep a copy is theirs.
+      echo -e "  ${D}Your data (database, blob store, runtime state) is preserved across an upgrade.${X}"
+      echo -e "  ${D}To keep a restorable copy first:  ${B}orchicon db backup${X}"
+      echo ""
+      if [ "$DRY_RUN" = true ]; then
+        info "would upgrade ${have} → ${VERSION} and restart this instance"
+        return 0
+      fi
+      # STOP THE RUNNING INSTANCE BEFORE ITS BINARY IS REPLACED.
+      if [ "$ASSUME_YES" != true ] && [ -t 0 ]; then
+        printf '  Continue with the upgrade? [Y/n] '
+        local answer; read -r answer || answer=""
+        case "$answer" in
+          [nN]*) warn "upgrade cancelled — nothing changed"; return 0 ;;
+        esac
+      fi
+      stop_before_swap
+      ;;
+    fresh)
+      info "installing Orchicon ${B}${VERSION}${X} for ${os}/${arch}"
+      ;;
+  esac
 
   # Build download URL. Release assets follow the naming convention:
   #   orchicon_<version>_<os>_<arch>.tar.gz
@@ -728,12 +1219,29 @@ main() {
   trap "rm -rf '${tmpdir}'" EXIT
   local archive="$tmpdir/$asset"
 
-  info "downloading ${D}${url}${X}"
-  curl -fsSL -o "$archive" "$url" || die "download failed"
-
-  # Extract
-  info "extracting…"
-  tar -xzf "$archive" -C "$tmpdir"
+  # A DRY RUN DOES NOT DOWNLOAD. It used to: the archive was fetched and unpacked before any of the
+  # DRY_RUN guards below were reached, so `--dry-run --version v9.9.9` made a network request and then
+  # died with "download failed" — a report of what WOULD happen that could not be produced for a version
+  # that would not install, and a network side effect in a flag whose whole contract is "change nothing".
+  # Found by running it.
+  if [ "$SKIP_SWAP" = true ]; then
+    # ALREADY CURRENT: no download, no extract, no move. The setup step below still runs, so a
+    # re-run converges an instance instead of being inert.
+    :
+  elif [ "$DRY_RUN" = true ]; then
+    info "would download ${D}${url}${X}"
+    info "would extract it and install ${B}${INSTALL_DIR}/orchicon${X}"
+  else
+    info "downloading ${D}${url}${X}"
+    curl -fsSL -o "$archive" "$url" || die "download failed"
+    # VERIFY THE ARCHIVE, THEN EXTRACT IT — INSIDE this branch, so the check and the dry-run contract
+    # both hold. This ordering is the whole point: a mismatched download must be refused before
+    # anything is unpacked, because at this moment nothing on the machine has changed.
+    verify_checksum "$asset" "$archive" "$tmpdir"
+    # Extract
+    info "extracting…"
+    tar -xzf "$archive" -C "$tmpdir"
+  fi
 
   # Create install dir
   if [ "$DRY_RUN" = false ]; then
@@ -741,7 +1249,15 @@ main() {
   fi
 
   # Move binary
+  #
+  # THE SWAP IS THE SWAP: extract+move is exactly what SKIP_SWAP suppresses. Gating only the
+  # DOWNLOAD left this block running against an empty temp dir and dying with "could not find
+  # orchicon binary in archive" — the binary it looked for was never fetched because we already
+  # had it. One guard, both halves.
   local bin="$INSTALL_DIR/orchicon"
+  if [ "$SKIP_SWAP" = true ]; then
+    :
+  else
   info "installing to ${B}${bin}${X}"
   if [ "$DRY_RUN" = false ]; then
     # The release archives may wrap the binary in a top-level
@@ -753,7 +1269,19 @@ main() {
     [ -n "$extracted_binary" ] || die "could not find orchicon binary in archive"
     mv "$extracted_binary" "$bin"
     chmod +x "$bin"
+
+    # macOS: CLEAR THE QUARANTINE BIT IF THIS FILE CARRIES ONE.
+    #
+    # curl sets no quarantine bit, so the documented one-liner install never trips Gatekeeper — this is
+    # for the case where the archive came from a BROWSER download (or a mirrored tree) and macOS marked it.
+    # It removes the mark from THIS ONE FILE; it does not disable Gatekeeper. A no-op on Linux.
+    if [ "$os" = darwin ] && command -v xattr >/dev/null 2>&1 \
+       && xattr -p com.apple.quarantine "$bin" >/dev/null 2>&1; then
+      xattr -d com.apple.quarantine "$bin" 2>/dev/null || true
+      ok "cleared the macOS quarantine bit on ${bin}"
+    fi
   fi
+  fi  # end SKIP_SWAP guard
 
   # Companion install: orch (the thin remote TUI client) rides in the
   # same archive. Optional via --no-orch; failure is a warning, not fatal
@@ -771,6 +1299,23 @@ main() {
     fi
   fi
 
+  install_container_binary
+
+  # THE DESKTOP APP. Installed whenever the host could run it (see desktop_wanted). Every path
+  # that does NOT install it records WHY in DESKTOP_RESULT/DESKTOP_RESULT_WHY, and the summary at
+  # the end of the run states the outcome — the app is one of the three things this installer
+  # puts on the machine, so "it is not there" belongs in the result, not in a warning.
+  if desktop_wanted "$os"; then
+    install_desktop
+  else
+    DESKTOP_RESULT="skipped"
+    if [ -n "${DESKTOP_SKIP_WHY}" ]; then
+      DESKTOP_RESULT_WHY="${DESKTOP_SKIP_WHY}"
+    else
+      DESKTOP_RESULT_WHY="not installed (--no-desktop)"
+    fi
+  fi
+
   # Verify
   if [ "$DRY_RUN" = false ]; then
     if "$bin" version 2>/dev/null | head -1; then
@@ -782,21 +1327,151 @@ main() {
     ok "dry-run complete — no changes made"
   fi
 
-  # PATH hint
+  # macOS GATEKEEPER, NAMED PRECISELY. macOS quarantines a binary downloaded by an unsigned bundle and then
+  # refuses to exec it with "cannot be opened because the developer cannot be verified" — which reads as a
+  # corrupt download, so the operator downloads again and gets the same refusal. So the STATE the machine is
+  # actually in is inspected and named: signed (nothing to say), quarantined (the two remedies), or neither.
+  if [ "$os" = darwin ] && [ "$DRY_RUN" = false ] && [ -f "$bin" ]; then
+    local quarantine="" signed=false
+    if command -v xattr >/dev/null 2>&1; then
+      quarantine="$(xattr -p com.apple.quarantine "$bin" 2>/dev/null || true)"
+    fi
+    if command -v codesign >/dev/null 2>&1 && codesign -dv "$bin" >/dev/null 2>&1; then signed=true; fi
+    if [ "$signed" = true ]; then
+      : # signed: a note on every install would be noise, and there is nothing to fix
+    elif [ -n "$quarantine" ]; then
+      warn "macOS has quarantined ${bin} (com.apple.quarantine: ${quarantine})"
+      echo -e "  macOS refuses to run a quarantined binary until the flag is cleared. Either: "
+      echo -e "  ${D}xattr -d com.apple.quarantine \"${bin}\"${X}"
+      echo -e "  ${D}or open System Settings → Privacy & Security and choose \"Open Anyway\" for orchicon.${X}"
+    fi
+  fi
+
+  # VERIFICATION GUIDANCE — printed on EVERY platform and in both installers, byte-identical, because
+  # the verification story must not depend on which installer the user ran. The markers are part of the
+  # printed block and are also the extraction anchors TestInstallersPrintTheSameVerificationGuidance
+  # uses to compare this text with the same block in scripts/install.ps1.
+  echo ""
+  cat <<'GUIDANCE'
+# >>> verification-guidance
+Verifying a manual download:
+  orchicon version                  # must print the version you installed
+  releases publish SHA256SUMS       # both installers check it; to check by hand:
+                                    #   shasum -a 256 <asset>.tar.gz    (macOS)
+                                    #   sha256sum <asset>.tar.gz        (Linux)
+                                    #   Get-FileHash <asset>.zip        (Windows PowerShell)
+                                    # compare the result with SHA256SUMS on the release page
+If macOS blocked the binary after a BROWSER download, clear the quarantine bit on that ONE file:
+  xattr -d com.apple.quarantine /path/to/orchicon
+  This removes the mark from one file. It does not disable Gatekeeper, and it is NOT needed when
+  you install with the curl one-liner (curl sets no quarantine bit).
+Windows SmartScreen, if you downloaded the zip in a BROWSER instead of running this installer:
+  Unblock-File -LiteralPath .\orchicon_<version>_windows_amd64.zip   # BEFORE extracting it
+  If orchicon.exe still trips "Windows protected your PC", choose More info, then Run anyway.
+  This clears the mark on one archive; it does not change a Windows security setting, and it is NOT
+  needed when you install with the irm one-liner, which downloads the archive itself.
+# <<< verification-guidance
+GUIDANCE
+
+  # PATH — DONE, NOT HINTED AT.
+  #
+  # ~/.local/bin is not on Apple's default PATH, and the hint this block used to print named ~/.zshrc — a file
+  # a login shell never reads — so a correct install produced an unrunnable `orch` plus a note that would not
+  # have fixed it. The entry is now WRITTEN to the login profile by `orchicon install` below
+  # (cmd/orchicon/install_path.go), which reports it as done.
+  #
+  # SO THIS BLOCK IS SILENT WHEN THAT COMMAND RUNS, and covers only the cases where it does not, rather than
+  # stating the same fact twice in two different ways.
   case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;
     *)
-      echo ""
-      warn "Orchicon was installed to ${INSTALL_DIR} which is not on your PATH."
-      echo -e "  Add this to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
-      echo -e "  ${D}export PATH=\"\$PATH:${INSTALL_DIR}\"${X}"
+      if [ "$DRY_RUN" = true ]; then
+        echo ""
+        info "(a real install would add ${INSTALL_DIR} to your PATH if it is not already on it)"
+      elif [ "$SETUP" = true ]; then
+        : # `orchicon install` adds the entry and reports it
+      else
+        # --no-setup DOES NOT RUN `orchicon install`, so nothing above has put the entry anywhere. WRITE IT
+        # HERE rather than print the same advice: the binary-only install is the one most likely to run on a
+        # minimal host, and it is the mode CI exercises end to end.
+        echo ""
+        local profile; profile="$(login_profile)"
+        # THE EXACT LINE, matched exactly (`-x`), so a commented-out export or a sibling path such as
+        # ~/.local/bin-old cannot suppress the entry — and so this agrees with the Go writer, which
+        # appends the identical line.
+        local entry="export PATH=\"${INSTALL_DIR}:\$PATH\""
+        if [ -n "$profile" ] && [ -f "$profile" ] && grep -qxF "$entry" "$profile" 2>/dev/null; then
+          ok "${INSTALL_DIR} is already on your PATH via ${B}${profile}${X}"
+        elif [ -n "$profile" ] && { printf '\n# Orchicon: so `orchicon` and `orch` resolve in a new terminal (added by the installer).\n%s\n' "$entry" >>"$profile"; } 2>/dev/null; then
+          ok "Added ${INSTALL_DIR} to PATH in ${B}${profile}${X}"
+          echo -e "  ${D}Open a NEW terminal for \`orchicon\` and \`orch\` to resolve there — this one kept the PATH it started with.${X}"
+        else
+          info "Orchicon was installed to ${INSTALL_DIR}, which is not on your PATH."
+          if [ -n "$profile" ]; then
+            echo -e "  Could not write ${B}${profile}${X}; add this line to it by hand, then open a new terminal:"
+          else
+            echo -e "  Add it to your shell's login profile (not ~/.zshrc or ~/.bashrc), then open a new terminal:"
+          fi
+          echo -e "  ${D}${entry}${X}"
+        fi
+      fi
       ;;
   esac
 
-  # One-command setup: pull the published images, start the runtime
-  # daemon, and launch the single-container instance, then print how to
-  # connect / manage it. Skip with --no-setup (headless / CI installs
-  # that only want the binary).
+  # WHAT HAPPENED TO THE DESKTOP APP — SAID AS A RESULT, where the operator is already reading
+  # outcomes, rather than as a warning thirty lines up.
+  #
+  # The three states are genuinely different and only one of them is good news:
+  #   installed   → say where it is
+  #   skipped     → the host declined it; name the flag that overrides
+  #   unavailable → THIS RELEASE does not carry one for this platform, so no flag would have
+  #                 helped. That is the case the operator hit (canary had no Linux AppImage) and
+  #                 it is the one that must not read like a successful install.
+  case "$DESKTOP_RESULT" in
+    installed)
+      echo ""
+      ok "Desktop app: ${DESKTOP_RESULT_WHY}"
+      ;;
+    skipped|unavailable)
+      echo ""
+      if [ "$DESKTOP_RESULT" = "unavailable" ]; then
+        warn "Desktop app: NOT INSTALLED — ${DESKTOP_RESULT_WHY}"
+        warn "  Everything else is installed and works; the GUI client is the only missing piece."
+      else
+        info "Desktop app: not installed — ${DESKTOP_RESULT_WHY}"
+      fi
+      # NOBODY IS LEFT TO FIND IT, and this is the half a refactor is most likely to drop: the
+      # "where to get it" pointer used to live in the skip branch alone. It is printed for BOTH
+      # states because "this release carries none" is the case that needs it MOST — and because
+      # an operator who ran the documented one-liner and did not get a GUI must not be left
+      # guessing whether that was their fault. (scripts/tests/install-path asserts this URL in
+      # both cases; dropping it from the skip path is what failed CI first time round.)
+      if [ "$os" = "linux" ] && [ "$DESKTOP_RESULT" = "unavailable" ]; then
+        echo -e "  ${D}Build it from this tree: make desktop-build   (then ./bin/orchicon-desktop)${X}"
+      fi
+      echo -e "  ${D}Desktop app: https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/tag/${VERSION}${X}"
+      ;;
+  esac
+
+  # SAY WHETHER CONTAINER EXECUTION CAN WORK HERE. A missing container binary is not a footnote: it
+  # decides whether a runtime-mode run can start at all, and it used to be discovered only when a
+  # container create failed.
+  case "$CONTAINER_BIN_RESULT" in
+    installed)
+      info "Container runtime binary: ${CONTAINER_BIN_WHY}"
+      ;;
+    unavailable)
+      echo ""
+      warn "Container runtime binary: NOT INSTALLED — ${CONTAINER_BIN_WHY}"
+      warn "  Everything else is installed and works. Runtime containers cannot start until a"
+      warn "  linux/amd64 build is available; place one at ${INSTALL_DIR}/orchicon-linux-amd64"
+      warn "  or point ORCHICON_RUNTIME_CONTAINER_EXE at one, then restart the runtime daemon."
+      ;;
+  esac
+
+  # One-command setup: start this instance's host services (Postgres and NATS, from binaries
+  # acquired on this host), the runtime daemon and the plane, then print how to connect /
+  # manage it. Skip with --no-setup (headless / CI installs that only want the binary).
   if [ "$SETUP" = true ] && [ "$DRY_RUN" = false ]; then
     # Orchicon ships its own runtime engine, so NO adapter CLI is required:
     # a fresh install is complete on its own. External adapters (opencode and
@@ -814,18 +1489,14 @@ main() {
     # operator who does not expect a question sits at a still screen while it waits.
     # Windows had the same omission in a worse form: the prompt was CAPTURED there, so
     # the question was never visible AND the install blocked on it — see install.ps1.
-    echo -e "  ${D}it asks about host ports — press ENTER to accept each default${X}"
-    # THE CONTAINER IMAGE FOLLOWS THE VERSION BEING INSTALLED, so an install of X runs X. Without this the
-    # stack came from whatever `:latest` happened to be on the host — which is how a canary install ended
-    # up with a canary binary over the last RELEASED image, and how a host that already had `:latest` could
-    # never be brought forward (the installer skipped the pull: see ensureImage in cmd/orchicon).
-    #
-    # ONLY THE INSTANCE IMAGE IS NAMED. The runtime base and its variants keep following IMAGE_TAG,
-    # because a version has one instance image and the runtime engine is not versioned with it — naming a
-    # tag here would send those refs looking for `orchicon-runtime:<version>`, which no release publishes.
-    local image_ref="ghcr.io/$(printf %s "${GITHUB_OWNER}" | tr "[:upper:]" "[:lower:]")/$(printf %s "${GITHUB_REPO}" | tr "[:upper:]" "[:lower:]"):${VERSION}"
-    # A version with no image of its own falls back to the floating ref, loudly, inside the installer.
-    if ORCHICON_CONTAINER_IMAGE="$image_ref" "$bin" install; then
+    echo -e "  ${D}it asks about host ports — press ENTER to accept each default — and which optional${X}"
+    echo -e "  ${D}runtime images to download now (default: none — the plane runs without any)${X}"
+    # NO CONTAINER IMAGE IS NAMED HERE, because there is no instance image any more: the plane and its
+    # services are HOST processes, and their binaries are acquired by `orchicon install` itself. What remains
+    # is the per-workflow runtime container's image, which the same command offers as an opt-in choice above
+    # (default none) and fetches only when one is chosen — or later, on demand, from the Runtime Images page.
+    # So there is nothing for this script to name, pin or pull.
+    if "$bin" install; then
       echo ""
       ok "Install complete — Orchicon is running."
     else
@@ -834,12 +1505,94 @@ main() {
     fi
   else
     echo ""
-    echo -e "${B}Installed. Next step:${X}"
-    echo -e "  ${D}orchicon install    Pull images, start the runtime daemon + container${X}"
+    # A DRY RUN THAT SAYS "Installed" IS THE SAME LIE AS A DRY RUN THAT SAYS "plane stopped": it names a
+    # state the machine is not in. Same rule as ok_dry.
+    if [ "$DRY_RUN" = true ]; then
+      echo -e "${B}Dry run — nothing was installed, nothing was started.${X}"
+      echo -e "  ${D}A real install would finish by starting the host services, the runtime daemon and this instance (Postgres and NATS from host binaries; no container engine needed)${X}"
+    else
+      echo -e "${B}Installed. Next step:${X}"
+      echo -e "  ${D}orchicon install    Start the host services, the runtime daemon and this instance (Postgres and NATS from host binaries; no container engine needed)${X}"
+    fi
   fi
 
   echo ""
   echo -e "${B}Documentation:${X} ${D}https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}#readme${X}"
+}
+
+
+# --- upgrade detection -------------------------------------------------------
+#
+# ONE COMMAND, THREE OUTCOMES. Re-running the installer is how Orchicon is updated, and it
+# must decide for itself whether this is a fresh install, an upgrade, or nothing to do —
+# the operator should not have to remember a flag. `--clean`/`--force-clean` remain the
+# explicit verbs for "replace anyway" and "replace and destroy", and are unchanged.
+#
+# THERE IS NO DOWNGRADE. `--version vOLD` can still pin an older release deliberately, but
+# when the INSTALLED binary is NEWER than the release being installed we refuse: migrations
+# are forward-only (cmd/orchicon/serve.go runs them on boot), so moving the binary backwards
+# can leave a schema it cannot read. Failing loudly with the two versions named is the honest
+# answer; silently "upgrading" to something older is not.
+
+# installed_version prints the version of the binary at $INSTALL_DIR/orchicon, or "" when
+# there is none. `version` is the only subcommand guaranteed cheap and side-effect free.
+installed_version() {
+  local bin="$INSTALL_DIR/orchicon"
+  [ -x "$bin" ] || { printf ''; return 0; }
+  # A binary that cannot run (wrong arch, corrupted) is treated as NOT installed: the caller
+  # then does a fresh install, which is the recovery an operator wants anyway.
+  "$bin" version 2>/dev/null | sed -nE 's/.*([vV][0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*).*/\1/p' | head -1
+}
+
+# version_gt returns 0 when $1 is a HIGHER semver than $2, else 1. Deliberately small: it
+# compares the numeric triple and ignores any pre-release/build suffix, which is enough to
+# distinguish "newer release" from "older release" and never mis-orders on a suffix.
+version_gt() {
+  # NO ARRAYS AND NO HERE-STRINGS, deliberately. macOS ships bash 3.2, where `local -a` is
+  # unreliable and `<<<` is absent in /bin/sh. This parses with plain parameter expansion, so
+  # it behaves identically on the bash 5 a Linux host has and the bash 3.2 macOS does — and the
+  # cross-platform suite runs it under the shell it finds, not the one this host happens to have.
+  local a b
+  a="$(printf '%s' "${1#v}" | sed 's/-.*$//')"
+  b="$(printf '%s' "${2#v}" | sed 's/-.*$//')"
+  [ -n "$a" ] && [ -n "$b" ] || return 1
+  local i x y
+  i=1
+  while [ "$i" -le 3 ]; do
+    x="$(printf '%s' "$a" | cut -d. -f"$i")"
+    y="$(printf '%s' "$b" | cut -d. -f"$i")"
+    [ -n "$x" ] || x=0
+    [ -n "$y" ] || y=0
+    case "$x$y" in *[!0-9]*) return 1 ;; esac
+    if [ "$x" -gt "$y" ]; then return 0; fi
+    if [ "$x" -lt "$y" ]; then return 1; fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# upgrade_decision prints one of: fresh | current | downgrade | upgrade
+upgrade_decision() {
+  local have; have="$(installed_version)"
+  if [ -z "$have" ]; then printf 'fresh'; return 0; fi
+  if version_gt "$have" "$VERSION"; then printf 'downgrade'; return 0; fi
+  if [ "$have" = "$VERSION" ]; then printf 'current'; return 0; fi
+  printf 'upgrade'
+}
+
+# stop_before_swap takes down the plane that runs the INSTALLED binary, so replacing that
+# file cannot leave a process serving from a deleted inode.
+#
+# THIS IS THE UPGRADE-SPECIFIC HAZARD and it is not theoretical: the codebase has a
+# documented case of a daemon running 8d19h from a deleted inode while the plane beside it
+# had been rebuilt. On a FRESH install there is nothing running from that path, so this is a
+# no-op; on an upgrade it is the difference between a clean swap and a confusing one.
+stop_before_swap() {
+  if ! command -v "$INSTALL_DIR/orchicon" >/dev/null 2>&1 && [ ! -x "$INSTALL_DIR/orchicon" ]; then
+    return 0
+  fi
+  info "stopping the running instance before replacing its binary…"
+  stop_installed_plane
 }
 
 # --- Run --------------------------------------------------------------------

@@ -33,11 +33,8 @@ func (s *stubAsk) ListConversations(context.Context, *connect.Request[apiv1.List
 	}), nil
 }
 
-// ListMessages mirrors the REAL server contract: db.ListMessages orders by
-// created_at DESC, so a page arrives NEWEST-FIRST (m2 before m1). An earlier
-// version of this stub returned them oldest-first, which hid the TUI's missing
-// reversal — the transcript rendered inverted in the real client while the stub
-// test passed.
+// ListMessages mirrors the REAL server contract: db.ListMessages orders by created_at DESC, so a
+// page arrives NEWEST-FIRST (m2 before m1).
 func (s *stubAsk) ListMessages(context.Context, *connect.Request[apiv1.ListMessagesRequest]) (*connect.Response[apiv1.ListMessagesResponse], error) {
 	base := time.Unix(1_700_000_000, 0)
 	return connect.NewResponse(&apiv1.ListMessagesResponse{
@@ -86,9 +83,12 @@ func (r *recorder) SettleConsentAsk(convID, askID, outcome, answer string) {
 	r.mu.Unlock()
 }
 
-func (r *recorder) ReconcilePendingAsks(convID string, openIDs []string) {
+// ShowDiscoveredAsks records the cards a discovery poll delivered. There is no settle half to mirror any
+// more: absence is not a settle authority (see the EventStore contract), so discovery can only add.
+func (r *recorder) ShowDiscoveredAsks(convID string, asks []PermissionAsk) {
 	r.mu.Lock()
-	r.reconcile = append(r.reconcile, convID+"|"+strings.Join(openIDs, ","))
+	r.reconcile = append(r.reconcile, convID)
+	r.asks = append(r.asks, asks...)
 	r.mu.Unlock()
 }
 

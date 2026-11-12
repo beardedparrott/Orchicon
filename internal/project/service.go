@@ -22,10 +22,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Service implements the ProjectService Connect handler
-// (apiv1connect.ProjectServiceHandler). Each mutation writes an outbox
-// row in the same transaction as the state change (AGENTS.md invariant
-// #3); the relay publishes it to NATS asynchronously.
+// Service implements the ProjectService Connect handler (apiv1connect.ProjectServiceHandler).
 type Service struct {
 	pool       *db.Pool
 	log        *slog.Logger
@@ -58,6 +55,12 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	goals, err := convertGoalsToJSON(msg.Goals)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	// execution_mode defaults to local when the caller sends no mode; an
+	// unknown value is rejected at this boundary rather than coerced.
+	executionMode, err := executionModeFromProto(msg.GetExecutionMode(), db.DefaultExecutionMode)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -100,14 +103,7 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 			}
 			return nil
 		}(),
-		ExecutionMode: func() string {
-			switch msg.GetExecutionMode() {
-			case apiv1.ExecutionMode_EXECUTION_MODE_LOCAL:
-				return db.ExecutionModeLocal
-			default:
-				return db.ExecutionModeRuntime
-			}
-		}(),
+		ExecutionMode: executionMode,
 	}
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
@@ -129,6 +125,7 @@ func (s *Service) CreateProject(ctx context.Context, req *connect.Request[apiv1.
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
+	s.ensureProjectGitState(ctx, created)
 	s.log.Info("project created", "id", created.ID, "tenant", tenantID, "slug", slug)
 	return connect.NewResponse(&apiv1.CreateProjectResponse{Project: rowToProto(created)}), nil
 }
@@ -154,9 +151,8 @@ func (s *Service) GetProject(ctx context.Context, req *connect.Request[apiv1.Get
 	return connect.NewResponse(&apiv1.GetProjectResponse{Project: rowToProto(p)}), nil
 }
 
-// ListProjects returns a page of projects for the tenant with optional
-// search, status filter, and sort. Deleted projects are excluded by
-// default. Pagination is cursor-based on ULID id ordering (docs/07 §5.2).
+// ListProjects returns a page of projects for the tenant with optional search, status filter, and
+// sort.
 func (s *Service) ListProjects(ctx context.Context, req *connect.Request[apiv1.ListProjectsRequest]) (*connect.Response[apiv1.ListProjectsResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -264,21 +260,30 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 		}
 		fields.MaxConcurrentRuns = &limit
 	}
-	if msg.DefaultRuntimeImage != nil {
+	// SETTING A PROJECT TO LOCAL CLEARS ITS DEFAULT RUNTIME IMAGE — the same rule the work item
+	// follows, and for the same reason: a local run executes on the host.
+	clearImageForLocal := false
+	if msg.ExecutionMode != nil {
+		if m, merr := executionModeFromProto(*msg.ExecutionMode, ""); merr == nil && m == db.ExecutionModeLocal {
+			clearImageForLocal = true
+		}
+	}
+	if clearImageForLocal {
+		empty := ""
+		fields.DefaultRuntimeImage = &empty
+	}
+	if msg.DefaultRuntimeImage != nil && !clearImageForLocal {
 		v := strings.TrimSpace(*msg.DefaultRuntimeImage)
 		fields.DefaultRuntimeImage = &v
 	}
 	if msg.ExecutionMode != nil {
-		switch *msg.ExecutionMode {
-		case apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME:
-			m := db.ExecutionModeRuntime
-			fields.ExecutionMode = &m
-		case apiv1.ExecutionMode_EXECUTION_MODE_LOCAL:
-			m := db.ExecutionModeLocal
-			fields.ExecutionMode = &m
-		default:
-			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("execution_mode must be runtime or local"))
+		// A present mode is explicit: UNSPECIFIED or an unknown enum value is a client bug, rejected with
+		// the shared message.
+		m, err := executionModeFromProto(*msg.ExecutionMode, "")
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
+		fields.ExecutionMode = &m
 	}
 	if fd := msg.ProtoReflect().Descriptor().Fields().ByName("git_strategy"); fd != nil && msg.ProtoReflect().Has(fd) {
 		enumVal := msg.ProtoReflect().Get(fd).Enum()
@@ -328,10 +333,8 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	// Context files must live inside the (effective) project directory — the
-	// only path guaranteed to be mounted where workers run. A path outside it
-	// is invisible to the worker, so reject it. Uses the NEW project_dir when
-	// this request changes it, else the current one.
+	// Context files must live inside the (effective) project directory — the only path guaranteed to be
+	// mounted where workers run.
 	if msg.ContextFiles != nil {
 		effDir := current.ProjectDir
 		if fields.ProjectDir != nil {
@@ -341,11 +344,8 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 	}
-	// Skill files are held to the SAME boundary as context files, and for the
-	// same reason: the project directory is the only directory mounted into a
-	// worker's container, so a skill path outside it is invisible to the worker.
-	// Rejecting it at save time (with the project dir NAMED in the error) beats
-	// letting it render as a dead "could not read" note in every prompt.
+	// Skill files are held to the SAME boundary as context files, and for the same reason: the project
+	// directory is the only directory mounted into a worker's container.
 	if msg.SkillFiles != nil {
 		effDir := current.ProjectDir
 		if fields.ProjectDir != nil {
@@ -369,6 +369,8 @@ func (s *Service) UpdateProject(ctx context.Context, req *connect.Request[apiv1.
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
+	// A SAVED PROJECT IS RE-CHECKED, not only a new one.
+	s.ensureProjectGitState(ctx, updated)
 	s.log.Info("project updated", "id", updated.ID, "version", updated.Version)
 	// Project dir / context files changed → refresh the container mount
 	// manifest immediately (the periodic writer is a safety net).
@@ -448,9 +450,7 @@ func (s *Service) DeleteProject(ctx context.Context, req *connect.Request[apiv1.
 	return connect.NewResponse(&apiv1.DeleteProjectResponse{}), nil
 }
 
-// PauseProject is a lifecycle transition. It reuses the update path to
-// set status=paused. (Full lifecycle handling arrives with the
-// reconciler framework in Phase 3.)
+// PauseProject is a lifecycle transition.
 func (s *Service) PauseProject(ctx context.Context, req *connect.Request[apiv1.PauseProjectRequest]) (*connect.Response[apiv1.PauseProjectResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -553,25 +553,14 @@ func (s *Service) ActivateProject(ctx context.Context, req *connect.Request[apiv
 	return connect.NewResponse(&apiv1.ActivateProjectResponse{Project: rowToProto(p)}), nil
 }
 
-// StreamProjectEvents is the server-stream RPC that fans out project
-// events from NATS to connected clients (docs/07 §4, docs/10 §4). It
-// subscribes to the orchicon.events.project.* subject filter and streams
-// each event as a StreamProjectEventsResponse. If from_sequence is
-// provided, the consumer resumes from that JetStream sequence
-// (docs/07 §4: resume after reconnect).
-//
-// The stream stays open until the client disconnects (context
-// cancelled) or the subscriber is unavailable. When NATS is down, the
-// RPC returns Unavailable (docs/08 §8: "frontend realtime degrades —
-// reconnect on recovery").
+// StreamProjectEvents is the server-stream RPC that fans out project events from NATS to connected
+// clients (docs/07 §4, docs/10 §4).
 func (s *Service) StreamProjectEvents(ctx context.Context, req *connect.Request[apiv1.StreamProjectEventsRequest], stream *connect.ServerStream[apiv1.StreamProjectEventsResponse]) error {
 	if s.subscriber == nil {
 		return connect.NewError(connect.CodeUnavailable, errors.New("event streaming is unavailable (NATS subscriber not connected)"))
 	}
 
-	// Subject filter: project events only. If project_id is specified,
-	// the client filters further on its side (the NATS subject does
-	// not encode project_id in v0.1 — events carry it in the payload).
+	// Subject filter: project events only.
 	filter := "orchicon.events.project.>"
 
 	var fromSeq uint64
@@ -611,8 +600,6 @@ func (s *Service) StreamProjectEvents(ctx context.Context, req *connect.Request[
 }
 
 // ListProjectFiles returns the immediate children of a directory.
-// When dir_path is set, lists that directory directly (filesystem
-// browsing mode). Otherwise uses the project's project_dir + subpath.
 func (s *Service) ListProjectFiles(ctx context.Context, req *connect.Request[apiv1.ListProjectFilesRequest]) (*connect.Response[apiv1.ListProjectFilesResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -661,9 +648,8 @@ func (s *Service) ListProjectFiles(ctx context.Context, req *connect.Request[api
 	}), nil
 }
 
-// parseProjectEvent decodes the JSON event payload from the outbox/NATS
-// into a ProjectEvent proto message. The payload is the envelope written
-// by buildEventPayload.
+// parseProjectEvent decodes the JSON event payload from the outbox/NATS into a ProjectEvent proto
+// message.
 func parseProjectEvent(data []byte) (*apiv1.ProjectEvent, error) {
 	var env struct {
 		EventType    string `json:"event_type"`
@@ -691,9 +677,8 @@ func parseProjectEvent(data []byte) (*apiv1.ProjectEvent, error) {
 	return evt, nil
 }
 
-// enqueueProjectEvent builds a ProjectEvent envelope, encodes it as JSON,
-// and enqueues it in the outbox within the current transaction. The
-// relay publishes it to NATS asynchronously.
+// enqueueProjectEvent builds a ProjectEvent envelope, encodes it as JSON, and enqueues it in the
+// outbox within the current transaction.
 func enqueueProjectEvent(ctx context.Context, tx pgx.Tx, eventType string, p db.ProjectRow) error {
 	payload, err := buildEventPayload(eventType, p)
 	if err != nil {
@@ -733,9 +718,8 @@ func buildEventPayload(eventType string, p db.ProjectRow) ([]byte, error) {
 	return b, nil
 }
 
-// recordAudit writes an actor-based audit row in the caller's tx,
-// resolving the actor from the request context. Must be called in the
-// same transaction as the mutation so the row commits atomically.
+// recordAudit writes an actor-based audit row in the caller's tx, resolving the actor from the
+// request context.
 func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
 	if e.TenantID == "" {
@@ -749,9 +733,7 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 	return audit.Record(ctx, tx, e)
 }
 
-// projectAuditSnapshot is the non-secret projection of a project row
-// for the audit trail. Goals and context_files can embed secrets;
-// excluded here (keep the trail compact and credential-free).
+// projectAuditSnapshot is the non-secret projection of a project row for the audit trail.
 func projectAuditSnapshot(p db.ProjectRow) map[string]any {
 	return map[string]any{
 		"id":                    p.ID,
@@ -773,12 +755,120 @@ func stringOrEmptyAudit(s *string) string {
 }
 
 // mapDBError translates a data-access error into a Connect error code.
-// ErrNotFound → NotFound; everything else is Internal (the data-access
-// layer does not surface business-logic errors — those are caught at the
-// service layer before the query runs).
 func mapDBError(err error) error {
 	if errors.Is(err, db.ErrNotFound) {
 		return connect.NewError(connect.CodeNotFound, errors.New("project not found"))
 	}
 	return connect.NewError(connect.CodeInternal, err)
+}
+
+// executionModeFromProto maps a wire execution mode to the stored string.
+func executionModeFromProto(v apiv1.ExecutionMode, unset string) (string, error) {
+	switch v {
+	case apiv1.ExecutionMode_EXECUTION_MODE_LOCAL:
+		return db.ExecutionModeLocal, nil
+	case apiv1.ExecutionMode_EXECUTION_MODE_RUNTIME:
+		return db.ExecutionModeRuntime, nil
+	case apiv1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED:
+		if unset != "" {
+			return unset, nil
+		}
+	}
+	return "", errors.New(db.ExecutionModeInvalidMsg)
+}
+
+// ensureProjectGitState runs the git-state setup for a saved project and REPORTS what it did.
+func (s *Service) ensureProjectGitState(ctx context.Context, proj db.ProjectRow) {
+	rep := EnsureGitState(ctx, proj.ProjectDir, proj.GitStrategy)
+
+	// THE LOG ALWAYS GETS THE DETAIL. It is the durable diagnostic — the transcript notice below is capped to a
+	// sentence so it stays readable in a conversation.
+	switch {
+	case rep.GitMissing:
+		s.log.Error("project: git is not installed on the control-plane host — nothing about this project's "+
+			"repository could be checked, and its git-backed runs cannot start",
+			"id", proj.ID, "project_dir", proj.ProjectDir, "strategy", proj.GitStrategy, "error", rep.Err)
+	case rep.Err != nil:
+		s.log.Warn("project: git setup could not complete — the project was saved, and its git-backed runs "+
+			"will fail until the repository is usable",
+			"id", proj.ID, "project_dir", proj.ProjectDir, "strategy", proj.GitStrategy, "error", rep.Err)
+	case rep.Warning != "":
+		s.log.Warn("project: git setup left a condition that breaks what this strategy promises",
+			"id", proj.ID, "project_dir", proj.ProjectDir, "strategy", proj.GitStrategy,
+			"warning", rep.Warning, "done", rep.Done)
+	case rep.Needed:
+		s.log.Info("project: git state set up for git-backed runs",
+			"id", proj.ID, "project_dir", proj.ProjectDir, "strategy", proj.GitStrategy, "done", rep.Done)
+	default:
+		s.log.Debug("project: git state already usable", "id", proj.ID, "detail", rep.Skipped)
+		return
+	}
+
+	// AND THE OPERATOR IS TOLD, IN THE TRANSCRIPT, WHENEVER IT MATTERS.
+	if rep.Loud() {
+		msg := "Git setup for this project could not finish, and its git-backed runs will not work as chosen: " +
+			rep.Summary()
+		if err := s.enqueueProjectNotice(ctx, proj, msg); err != nil {
+			s.log.Warn("project: git setup notice was not recorded — the outcome stands, but the project's event "+
+				"stream will not show it", "id", proj.ID, "error", err)
+		}
+		return
+	}
+	if !rep.Needed {
+		return
+	}
+	// A successful setup is reported too — but as the ordinary, informational record it is.
+	msg := "Git setup for this project: " + rep.Summary()
+	if err := s.enqueueProjectNotice(ctx, proj, msg); err != nil {
+		s.log.Warn("project: git setup notice was not recorded — the setup stands, but the project's event "+
+			"stream will not show it", "id", proj.ID, "error", err)
+	}
+}
+
+// enqueueProjectNotice writes one project-scoped event carrying a notice, in its own transaction.
+func (s *Service) enqueueProjectNotice(ctx context.Context, proj db.ProjectRow, msg string) error {
+	tenantID := proj.TenantID
+	if tenantID == "" || proj.ID == "" {
+		return nil
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	defer ttx.Rollback(ctx)
+	if err := enqueueProjectEventWithNotice(ctx, ttx.Tx, "project.git_setup", proj, msg); err != nil {
+		return err
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "project.git_setup", "project", proj.ID, nil,
+		audit.Snapshot(map[string]any{"detail": msg})); err != nil {
+		return err
+	}
+	return ttx.Commit(ctx)
+}
+
+// enqueueProjectEventWithNotice is enqueueProjectEvent with an extra top-level "notice" field in the payload,
+// for events whose whole content is something the operator needs to read.
+func enqueueProjectEventWithNotice(ctx context.Context, tx pgx.Tx, eventType string, p db.ProjectRow, notice string) error {
+	payload, err := buildEventPayload(eventType, p)
+	if err != nil {
+		return err
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return err
+	}
+	envelope["notice"] = notice
+	payload, err = json.Marshal(envelope)
+	if err != nil {
+		return err
+	}
+	return db.EnqueueOutbox(ctx, tx, db.OutboxRow{
+		TenantID:      p.TenantID,
+		EventType:     eventType,
+		AggregateType: "project",
+		AggregateID:   p.ID,
+		AggregateVer:  p.Version,
+		Payload:       payload,
+		OccurredAt:    time.Now().UTC(),
+	})
 }

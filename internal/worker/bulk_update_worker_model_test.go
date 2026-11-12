@@ -63,22 +63,7 @@ func seedBulkIdentity(t *testing.T, pool *db.Pool, tenantID, subject string) db.
 	return ident
 }
 
-// bulkEnv opens a migration-applied pool, seeds an identity, and returns
-// the service + ctx. Each test gets its own tenant so audit rows from
-// sibling tests never bleed across.
-//
-// IT INSERTS THE TENANT ROW TOO. It did not, and that is not a tidiness point:
-// GetOrCreateIdentity writes an `identities` row and NOT a `tenants` row, so a
-// synthetic tenant id was enough to commit workers under a tenant that never
-// existed. There is no FK from workers.tenant_id to tenants (only 5 of the 44
-// tenant-scoped tables carry one — isolation is RLS-only), so nothing refused
-// it. Measured on the dev database before this fix: 314 orphaned worker rows
-// across 238 tenant ids that have no tenant row, created 2026-08-25 through
-// 2026-09-12 by runs of THESE tests pointed at a real database. They are
-// unreachable from any client (RLS scopes every read to app.tenant_id, which
-// no session ever sets to a dead id), which is exactly why the operator could
-// not see them to clean them up. The internal/db DB-backed tests already
-// inserted a tenant row; this brings the internal/worker suite in line.
+// bulkEnv opens a migration-applied pool, seeds an identity, and returns the service + ctx.
 func bulkEnv(t *testing.T) (*db.Pool, *Service, context.Context, string) {
 	t.Helper()
 	pool := bulkTestPool(t)
@@ -97,34 +82,8 @@ func bulkEnv(t *testing.T) (*db.Pool, *Service, context.Context, string) {
 	return pool, s, ctx, tenantID
 }
 
-// ensureTestTenant inserts the tenant row a test's synthetic tenant id refers
-// to, so everything the suite commits belongs to a tenant that actually exists.
-//
-// WHY THIS EXISTS. GetOrCreateIdentity writes an `identities` row and NOT a
-// `tenants` row, so a synthetic tenant id was enough to commit workers under a
-// tenant that never existed. There is no FK from workers.tenant_id to tenants —
-// only 4 of the 43 tenant-scoped tables carry one (categories, mcp_servers,
-// provider_settings, tenant_secrets); isolation is RLS-only — so nothing
-// refused it. Measured on the dev database before this
-// fix: 314 orphaned worker rows across 238 tenant ids with no tenant row,
-// created 2026-08-25 through 2026-09-12 by runs of THIS SUITE pointed at a real
-// database. They are unreachable from any client (RLS scopes every read to
-// app.tenant_id, which no session ever sets to a dead id) — which is precisely
-// why the operator could not see them to clean up.
-//
-// IDEMPOTENT (ON CONFLICT (id) DO NOTHING) because tenant ids here are of two
-// kinds: unique per test, and caller-chosen constants that a rerun reuses. A
-// plain INSERT would error on the second run of the constant ones.
-//
-// THE SLUG IS THE FULL ULID, not a prefix of one. tenants_slug_idx is
-// UNIQUE (slug) — GLOBAL, unlike the worker index (workers_tenant_slug_idx is
-// UNIQUE (tenant_id, slug)) — and a ULID's leading characters are its
-// TIMESTAMP, so a truncated `NewID()[:8]` is identical for every id minted in
-// the same ~256ms window. Every test in this file runs inside that window, so a
-// prefix slug collides on the second test with `duplicate key value violates
-// unique constraint "tenants_slug_idx"`. The internal/db fixtures get away with
-// `NewID()[:8]` for a different reason: they insert their tenant inside a
-// transaction they never commit, so the unique index never sees two of them.
+// ensureTestTenant inserts the tenant row a test's synthetic tenant id refers to, so everything the
+// suite commits belongs to a tenant that actually exists.
 func ensureTestTenant(t *testing.T, pool *db.Pool, tenantID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -239,9 +198,8 @@ func workerCurrentVersion(t *testing.T, pool *db.Pool, tenantID, workerID string
 	return cv
 }
 
-// forceWorkerStatus mutates a worker into the given lifecycle state for
-// the tests that need to bypass the lifecycle (deprecated/retired
-// transitions can't be reached from CreateWorker → PublishWorkerVersion).
+// forceWorkerStatus mutates a worker into the given lifecycle state for the tests that need to
+// bypass the lifecycle (deprecated/retired transitions can't be reached from CreateWorker →.
 func forceWorkerStatus(t *testing.T, pool *db.Pool, tenantID, workerID, status string) {
 	t.Helper()
 	ctx := context.Background()
@@ -320,9 +278,8 @@ func TestBulkUpdateValidation(t *testing.T) {
 	})
 }
 
-// TestBulkUpdateDraftInPlace: a worker with only a draft version has its
-// model_ref updated in place and the version is published. Version number
-// is unchanged.
+// TestBulkUpdateDraftInPlace: a worker with only a draft version has its model_ref updated in place
+// and the version is published.
 func TestBulkUpdateDraftInPlace(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createDraftWorker(t, ctx, s, "bulk-draft-in-place")
@@ -357,9 +314,8 @@ func TestBulkUpdateDraftInPlace(t *testing.T) {
 	}
 }
 
-// TestBulkUpdateRevertAndRepublish: a worker that is published with no
-// draft has its latest published version reverted to draft, updated, and
-// republished — same version number, current_version unchanged.
+// TestBulkUpdateRevertAndRepublish: a worker that is published with no draft has its latest
+// published version reverted to draft, updated, and republished — same version number.
 func TestBulkUpdateRevertAndRepublish(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createPublishedWorker(t, ctx, s, "bulk-revert-republish")
@@ -394,10 +350,8 @@ func TestBulkUpdateRevertAndRepublish(t *testing.T) {
 	}
 }
 
-// TestBulkUpdatePublishedWithDraft: a worker that has both a published v1
-// and a draft v2 stacked on top has the LATEST version (v2, draft)
-// edited in place and published — matching the manual edit flow. Version
-// 2 is the affected version (not v1).
+// TestBulkUpdatePublishedWithDraft: a worker that has both a published v1 and a draft v2 stacked on
+// top has the LATEST version (v2, draft) edited in place and published.
 func TestBulkUpdatePublishedWithDraft(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createPublishedWithDraft(t, ctx, s, "bulk-published-with-draft")
@@ -428,9 +382,8 @@ func TestBulkUpdatePublishedWithDraft(t *testing.T) {
 	}
 }
 
-// TestBulkUpdateSkipReasons: a single batch with deprecated / retired /
-// not-found / draft workers produces one updated + multiple skipped
-// outcomes; ordering preserved; per-worker tx commits independently.
+// TestBulkUpdateSkipReasons: a single batch with deprecated / retired / not-found / draft workers
+// produces one updated + multiple skipped outcomes; ordering preserved.
 func TestBulkUpdateSkipReasons(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 
@@ -441,9 +394,7 @@ func TestBulkUpdateSkipReasons(t *testing.T) {
 	// worker C: deprecated → skipped (DEPRECATED).
 	deprecatedID := createPublishedWorker(t, ctx, s, "bulk-skip-deprecated")
 	forceWorkerStatus(t, pool, tenantID, deprecatedID, domain.WorkerDeprecated)
-	// worker D: retired → skipped (RETIRED). To retire a worker it must
-	// pass through deprecated first; the force path short-circuits the
-	// lifecycle for the test.
+	// worker D: retired → skipped (RETIRED).
 	retiredID := createPublishedWorker(t, ctx, s, "bulk-skip-retired")
 	forceWorkerStatus(t, pool, tenantID, retiredID, domain.WorkerRetired)
 	// worker E: nonexistent → skipped (NOT_FOUND).
@@ -514,9 +465,8 @@ func TestBulkUpdateSkipReasons(t *testing.T) {
 	}
 }
 
-// TestBulkUpdatePartialSuccessIsolation: a partial-success batch leaves
-// the successful workers' state committed even when one worker id is
-// unknown.
+// TestBulkUpdatePartialSuccessIsolation: a partial-success batch leaves the successful workers'
+// state committed even when one worker id is unknown.
 func TestBulkUpdatePartialSuccessIsolation(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	live := createDraftWorker(t, ctx, s, "bulk-isolation-live")
@@ -536,10 +486,8 @@ func TestBulkUpdatePartialSuccessIsolation(t *testing.T) {
 	}
 }
 
-// TestBulkUpdateAuditAndOutbox: each successful mutation writes a
-// worker.published outbox row and a worker.bulk_model_updated audit row;
-// the batch as a whole writes exactly one worker.bulk_model_updated_batch
-// audit row; skipped workers write nothing.
+// TestBulkUpdateAuditAndOutbox: each successful mutation writes a worker.published outbox row and a
+// worker.bulk_model_updated audit row.
 func TestBulkUpdateAuditAndOutbox(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 
@@ -548,11 +496,8 @@ func TestBulkUpdateAuditAndOutbox(t *testing.T) {
 	deprecatedID := createPublishedWorker(t, ctx, s, "bulk-audit-deprecated")
 	forceWorkerStatus(t, pool, tenantID, deprecatedID, domain.WorkerDeprecated)
 
-	// Capture the outbox state BEFORE the bulk call so the post-assertion
-	// can pin down exactly the rows the bulk operation added. The bulk
-	// path re-uses the existing worker.published event type (same as
-	// PublishWorkerVersion), so a plain post-count would conflate setup
-	// events with bulk-emitted ones.
+	// Capture the outbox state BEFORE the bulk call so the post-assertion can pin down exactly the rows
+	// the bulk operation added.
 	beforePublished := len(listOutboxRows(t, pool, tenantID, "worker.published"))
 
 	_, err := s.BulkUpdateWorkerModel(ctx, connect.NewRequest(&apiv1.BulkUpdateWorkerModelRequest{
@@ -563,29 +508,19 @@ func TestBulkUpdateAuditAndOutbox(t *testing.T) {
 		t.Fatalf("BulkUpdateWorkerModel: %v", err)
 	}
 
-	// Per-mutation audit: exactly 2 worker.bulk_model_updated rows (one
-	// per successful mutation). This action name is unique to the bulk
-	// path so the count is exact.
+	// Per-mutation audit: exactly 2 worker.bulk_model_updated rows (one per successful mutation).
 	rows := listAuditRows(t, pool, tenantID, "worker.bulk_model_updated", "worker", "")
 	if len(rows) != 2 {
 		t.Errorf("worker.bulk_model_updated rows = %d, want 2", len(rows))
 	}
-	// Each successful mutation also fires a worker.published outbox event
-	// (same envelope PublishWorkerVersion emits). Assert the delta rather
-	// than the total so we don't conflate setup events with bulk events.
+	// Each successful mutation also fires a worker.published outbox event (same envelope
+	// PublishWorkerVersion emits).
 	afterPublished := listOutboxRows(t, pool, tenantID, "worker.published")
 	if got := len(afterPublished) - beforePublished; got != 2 {
 		t.Errorf("worker.published outbox delta = %d, want 2", got)
 	}
-	// Skipped workers must NOT appear in the bulk-emitted rows: the
-	// bulk-only audit list above is already exact, so for the outbox
-	// assert no deprecatedID row was *added* during the bulk call by
-	// checking that the post-list for the deprecated worker has not
-	// grown. The simplest way is to verify deprecatedID is absent from
-	// the post-call list — which can only be true if setup did not
-	// publish it AND bulk did not write to it. Setup does publish it,
-	// so instead we confirm the deprecated worker's id never appears in
-	// the bulk-only audit rows.
+	// Skipped workers must NOT appear in the bulk-emitted rows: the bulk-only audit list above is
+	// already exact, so for the outbox assert no deprecatedID row was *added* during the bulk call.
 	for _, r := range rows {
 		if r == deprecatedID {
 			t.Errorf("deprecated worker should not appear in bulk audit rows")
@@ -593,10 +528,8 @@ func TestBulkUpdateAuditAndOutbox(t *testing.T) {
 	}
 	for _, id := range afterPublished {
 		if id == deprecatedID {
-			// Only acceptable if this row is one of the 2 setup
-			// publishes (createPublishedWorker for deprecatedID).
-			// We can't tell from here, so tighten by checking the
-			// bulk-emitted audit rows only — already done above.
+			// Only acceptable if this row is one of the 2 setup publishes (createPublishedWorker for
+			// deprecatedID).
 			_ = id
 		}
 	}

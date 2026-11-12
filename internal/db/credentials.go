@@ -20,8 +20,6 @@ import (
 // boundary, and only as one-way hashes).
 
 // LocalCredentialRow is the data-access shape of a local_credentials row.
-// PasswordHash is a self-describing PHC string (argon2id or bcrypt); it is
-// never returned to a client or logged.
 type LocalCredentialRow struct {
 	ID           string
 	TenantID     string
@@ -29,10 +27,8 @@ type LocalCredentialRow struct {
 	Username     string
 	PasswordHash string
 	Status       string
-	// ForcePasswordChange marks a credential that must have its password
-	// changed before the operator may proceed (the bootstrap admin seeded
-	// with the built-in default). The flag rides on the login/session
-	// responses and is cleared by a successful SetLocalCredential.
+	// ForcePasswordChange marks a credential that must have its password changed before the operator
+	// may proceed (the bootstrap admin seeded with the built-in default).
 	ForcePasswordChange bool
 	Version             int
 	CreatedAt           time.Time
@@ -55,16 +51,8 @@ func scanLocalCredential(row pgx.Row) (LocalCredentialRow, error) {
 	return r, nil
 }
 
-// UpsertLocalCredential inserts or replaces the local credential bound to
-// an identity within a tenant. It is the single write primitive for the
-// identity-provider boundary: the caller passes the already-hashed PHC
-// string, never a plaintext password. The row is keyed on
-// (tenant_id, identity_id); a conflicting username on another identity
-// surfaces as a unique-constraint error the caller maps to already-exists.
-// forcePasswordChange is carried through the ON CONFLICT DO UPDATE so the
-// flag is written on insert AND replace (the bootstrap seed sets it for the
-// built-in default; SetLocalCredential and signup pass false — setting a
-// credential is an explicit choice that clears the forced-change state).
+// UpsertLocalCredential inserts or replaces the local credential bound to an identity within a
+// tenant.
 func UpsertLocalCredential(ctx context.Context, tx pgx.Tx, tenantID, identityID, username, passwordHash string, forcePasswordChange bool) (LocalCredentialRow, error) {
 	const q = `INSERT INTO local_credentials (id, tenant_id, identity_id, username, password_hash, status, force_password_change)
 		VALUES ($1, $2, $3, $4, $5, 'active', $6)
@@ -79,9 +67,7 @@ func UpsertLocalCredential(ctx context.Context, tx pgx.Tx, tenantID, identityID,
 	return scanLocalCredential(tx.QueryRow(ctx, q, NewID(), tenantID, identityID, username, passwordHash, forcePasswordChange))
 }
 
-// GetLocalCredentialByUsername finds the active local credential for a
-// username within a tenant. Used by the local-login path; the returned row
-// carries the stored hash for constant-time verification.
+// GetLocalCredentialByUsername finds the active local credential for a username within a tenant.
 func GetLocalCredentialByUsername(ctx context.Context, tx pgx.Tx, tenantID, username string) (LocalCredentialRow, error) {
 	const q = `SELECT ` + localCredentialCols + `
 		FROM local_credentials WHERE tenant_id = $1 AND username = $2`
@@ -96,9 +82,8 @@ func GetLocalCredentialByIdentity(ctx context.Context, tx pgx.Tx, tenantID, iden
 	return scanLocalCredential(tx.QueryRow(ctx, q, tenantID, identityID))
 }
 
-// DeleteLocalCredential removes the local credential for an identity within
-// a tenant (the identity row itself is untouched — disabling an account
-// without deleting the identity is a status update, not this).
+// DeleteLocalCredential removes the local credential for an identity within a tenant (the identity
+// row itself is untouched — disabling an account without deleting the identity is a status update.
 func DeleteLocalCredential(ctx context.Context, tx pgx.Tx, tenantID, identityID string) error {
 	const q = `DELETE FROM local_credentials WHERE tenant_id = $1 AND identity_id = $2`
 	ct, err := tx.Exec(ctx, q, tenantID, identityID)

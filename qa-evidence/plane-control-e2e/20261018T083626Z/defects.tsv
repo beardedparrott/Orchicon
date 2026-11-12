@@ -1,0 +1,2 @@
+0	A0.5 a TUI lifecycle surface exists (internal/tui or cmd/orch calls internal/planecontrol) [BLOCKED: grep 'internal/planecontrol' over internal/tui and cmd/orch matches nothing; cmd/orch/main.go:3 says the TUI carries zero control-plane]	TUI task
+0	A0.6 a Wails desktop app exists [BLOCKED: no *.go file in the tree references wails: there is no desktop/ package, no wails.json and no packaged app to launch]	Wails desktop app task

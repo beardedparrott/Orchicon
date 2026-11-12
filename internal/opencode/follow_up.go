@@ -11,48 +11,31 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// ContinueSessionOpts carries everything needed to run a follow-up
-// question against a worker's session WITHOUT creating a new
-// execution or work item. It is the opencode alias for the scheduler
-// contract type (scheduler.ContinueSessionOpts) so the shared shape
-// lives at contract level and any bridge can accept it.
+// ContinueSessionOpts carries everything needed to run a follow-up question against a worker's
+// session WITHOUT creating a new execution or work item.
 type ContinueSessionOpts = scheduler.ContinueSessionOpts
 
-// ContinueSession runs the follow-up. The user's question is recorded into
-// the durable transcript synchronously (so the session chat shows it
-// immediately) and the message is handed to the serve; the reply is then
-// collected ASYNCHRONOUSLY on a request-independent context and appended to
-// the transcript when it lands. The RPC therefore returns immediately — a
-// long model turn can never block the browser connection (which caused
-// "NetworkError when attempting to fetch resource" on browsers with a
-// response timeout, e.g. Firefox's default ~115s) nor discard the reply
-// when the client disconnects mid-turn. No new execution/work item is ever
-// created.
+// ContinueSession runs the follow-up.
 func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts) (string, error) {
 	client, sessionID, reuse, err := a.followUpSession(ctx, opts)
 	if err != nil {
-		// Fail-fast and LOUD (AC 4): the serve could not be started (operator
-		// kill-switch, missing binary, never ready) — surface the reason
-		// verbatim rather than degrading or waiting.
+		// Fail-fast and LOUD (AC 4): the serve could not be started (operator kill-switch, missing binary,
+		// never ready) — surface the reason verbatim rather than degrading or waiting.
 		return "", err
 	}
 	if client == nil {
 		return "", fmt.Errorf("no opencode serve available for the follow-up")
 	}
 
-	// Re-attached session: send only the question (the session already
-	// carries the worker identity + full context). Fresh session: seed the
-	// transcript context + the question as the goal.
+	// Re-attached session: send only the question (the session already carries the worker identity +
+	// full context).
 	msg := opts.Message
 	if !reuse {
 		msg = opts.Context + "\n\n# Follow-up question\n\n" + opts.Message
 	}
 
-	// Record the user's question into the durable transcript UP FRONT so the
-	// session chat shows the bubble immediately while the model works — the
-	// reply is written separately once it lands. seq = StartSeq; a fresh
-	// session also records its session_info right after, so the reply still
-	// appends AFTER both.
+	// Record the user's question into the durable transcript UP FRONT so the session chat shows the
+	// bubble immediately while the model works — the reply is written separately once it lands.
 	seq := opts.StartSeq
 	if seq <= 0 {
 		seq = 1
@@ -87,16 +70,10 @@ func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts)
 		}
 	}
 
-	// Fire-and-forget the reply collection. collectReply subscribes to the
-	// serve's event bus, sends the message, and waits for the reply — all on
-	// a context that is deliberately DETACHED from the HTTP request, so a
-	// browser disconnect or the RPC returning can neither cancel the
-	// collection nor lose the reply. The collected text is written to the
-	// durable transcript in the same goroutine.
+	// Fire-and-forget the reply collection.
 	go func() {
-		// WithoutCancel strips the request's cancellation/deadline while
-		// preserving its values; the reply wait itself is still bounded by
-		// collectReply's internal timeout.
+		// WithoutCancel strips the request's cancellation/deadline while preserving its values; the reply
+		// wait itself is still bounded by collectReply's internal timeout.
 		detached := context.WithoutCancel(ctx)
 		reply, err := collectReply(detached, client, sessionID, opts.SystemPrompt, opts.ModelRef, msg)
 		if err != nil {
@@ -123,29 +100,8 @@ func (a *Adapter) ContinueSession(ctx context.Context, opts ContinueSessionOpts)
 	return "", nil
 }
 
-// followUpSession resolves the client + session for a follow-up. The
-// transport is the OPENCODE ADAPTER'S OWN persistent host transport — a
-// follow-up belongs to the execution's ADAPTER, never to a per-execution
-// "execution serve". Returns (client, sessionID, reused, err).
-//
-// opts.AdapterKind is the identity recorded in the transcript's session_info
-// part and decides whether the recorded session is THIS adapter's to
-// re-attach:
-//
-//   - KindOpencode — the session ran here. Re-attach ONLY when the
-//     adapter's persistent transport still holds it (probed by session
-//     existence); otherwise seed a fresh session from the durable
-//     transcript. The recorded per-execution serve URL is display /
-//     diagnostic only: the host serve's port is dynamic per boot while its
-//     session store persists, so URL equality is not a usable proxy for
-//     "the session is still there".
-//   - "" — a legacy transcript written before the identity field existed
-//     (opencode-shaped fields only). Keep the historical best-effort
-//     continuity against the recorded serve URL, else seed fresh.
-//   - anything else — the execution ran on ANOTHER adapter: its recorded
-//     session identity means nothing here, so never re-attach; seed fresh.
-//
-// The fresh seed always lands on the adapter's persistent transport.
+// Re-attach ONLY when the adapter's persistent transport still holds it (probed by session
+// existence); otherwise seed a fresh session from the durable transcript.
 func (a *Adapter) followUpSession(ctx context.Context, opts ContinueSessionOpts) (*SessionClient, string, bool, error) {
 	switch opts.AdapterKind {
 	case adapter.KindOpencode:
@@ -155,9 +111,8 @@ func (a *Adapter) followUpSession(ctx context.Context, opts ContinueSessionOpts)
 			}
 		}
 	case "":
-		// Legacy transcript: best-effort continuity on the recorded serve
-		// URL (the pre-adapter-identity behaviour), which keeps old rows
-		// resolving without pretending the URL identifies the transport.
+		// Legacy transcript: best-effort continuity on the recorded serve URL (the pre-adapter-identity
+		// behaviour), which keeps old rows resolving without pretending the URL identifies the transport.
 		if opts.ServeURL != "" && opts.SessionID != "" {
 			orig := NewSessionClient(opts.ServeURL, opts.ServePassword, opts.ProjectDir)
 			// This client reaches a serve that recorded only a URL, but it is still THIS plane's
@@ -180,11 +135,8 @@ func (a *Adapter) followUpSession(ctx context.Context, opts ContinueSessionOpts)
 		return nil, "", false, nil
 	}
 	if a.host != nil {
-		// Lazy host serve (AC 2): a follow-up continuation that cannot reuse
-		// its session IS opencode demand, so the host serve starts HERE on
-		// first demand rather than at plane boot. EnsureStarted's error is the
-		// loud reason (kill-switch / missing binary / never ready) and is
-		// returned verbatim — no silent degradation (AC 4).
+		// Lazy host serve (AC 2): a follow-up continuation that cannot reuse its session IS opencode
+		// demand, so the host serve starts HERE on first demand rather than at plane boot.
 		if err := a.host.EnsureStarted(ctx); err != nil {
 			return nil, "", false, fmt.Errorf("host opencode serve unavailable for the follow-up: %w", err)
 		}
@@ -208,20 +160,13 @@ func (a *Adapter) hostClient() *SessionClient {
 	return a.host.Client()
 }
 
-// followUpReplyWindow bounds how long a follow-up waits for the model's
-// reply. The follow-up now runs asynchronously (the RPC returns at once, so
-// no browser connection is held open), which means the window can be
-// generous enough to cover a long multi-tool answer / E2E without ever
-// blocking the UI. Env-overridable via ORCHICON_FOLLOWUP_REPLY_WINDOW.
+// followUpReplyWindow bounds how long a follow-up waits for the model's reply.
 func followUpReplyWindow() time.Duration {
 	return envDuration("ORCHICON_FOLLOWUP_REPLY_WINDOW", 30*time.Minute)
 }
 
-// collectReply subscribes to a session, sends a message, and waits for the
-// reply (bounded by followUpReplyWindow). It returns the assistant's
-// accumulated text. Used by the async follow-up flow — the serve is warm, so
-// the reply window covers even a long multi-tool answer without blocking the
-// browser (the RPC already returned).
+// collectReply subscribes to a session, sends a message, and waits for the reply (bounded by
+// followUpReplyWindow).
 func collectReply(ctx context.Context, client *SessionClient, sessionID, system, modelRef, message string) (string, error) {
 	if client == nil {
 		return "", fmt.Errorf("no opencode serve available for the follow-up")

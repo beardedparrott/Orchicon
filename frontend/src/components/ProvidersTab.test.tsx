@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 
-describe("ProvidersTab (ADR-0006)", () => {
+describe("ProvidersTab ", () => {
   const src = fs.readFileSync(path.join(__dirname, "ProvidersTab.tsx"), "utf8");
   const api = fs.readFileSync(path.join(__dirname, "../api/providers.ts"), "utf8");
 

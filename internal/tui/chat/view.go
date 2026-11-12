@@ -14,16 +14,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// view.go renders grouped ChatItems as themed terminal rows — the TUI
-// ToolCard/ArtifactCard equivalents: one row per tool call / artifact,
-// wrapped bubble rows for user/assistant/reasoning/error text.
+// view.go renders grouped ChatItems as themed terminal rows — the TUI ToolCard/ArtifactCard
+// equivalents: one row per tool call / artifact.
 
-// SessionIdentity renders a KindSession item's transport identity for display:
-// the adapter the execution ran on plus the session id, and the serve it ran on
-// when there is one. A native (in-process) run has NO serve to point at, so it
-// reads `native · in-process` instead of trailing a blank URL. Both TUI panes
-// (and the follow-up surface) share this so the identity shown is the SAME one
-// the follow-up resolves its transport from.
+// SessionIdentity renders a KindSession item's transport identity for display: the adapter the
+// execution ran on plus the session id, and the serve it ran on when there is one.
 func SessionIdentity(it ChatItem) string {
 	kind := it.AdapterKind
 	if kind == "" {
@@ -45,47 +40,24 @@ func SessionIdentity(it ChatItem) string {
 	return meta
 }
 
-// RenderItems renders the items into lines clamped to maxWidth (0 =
-// unlimited). Grouping is the caller's concern (GroupByPhase /
-// MergeSessionItems); this renders what it is given.
-//
-// The two speakers are separated by a FULL-WIDTH background band: the
-// operator's messages are right-aligned as a BLOCK on the lighter fill (one left
-// edge shared by every row; flush right when the message is short), the model's
-// left-aligned on the darker one. The fills are derived per palette and gated
-// by TestBubbleContrast (separation + legibility on every palette).
-// ItemSpan records where one rendered item's lines landed in the transcript body.
-//
-// It is the CLICK GEOMETRY for the transcript: a body line resolves to the item that produced it, so a
-// click on the operator's own message can copy that message. Lines rather than rows because the caller
-// knows its own wrapping — see kit2.Stream.LineAtRow, which answers the row half.
+// RenderItems renders the items into lines clamped to maxWidth (0 = unlimited).
 type ItemSpan struct {
-	Kind  ItemKind
-	Key   string
-	Text  string // the item's copyable text ("" when there is nothing worth copying)
-	Line  int    // 0-based first line of this item in the body
-	Lines int    // how many body lines it occupies
-	// Options is where an ask card's OPTION ROWS landed, in lines RELATIVE to Line, each with the label a
-	// click on it sends back as the next user message. It is the click geometry for the clarifying-question
-	// card, exactly as Code is for a block — the two exist for the same reason: the alternative (parsing the
-	// rendered text back out of the transcript) would be a second thing to keep in step with the render.
+	Kind ItemKind
+	Key  string
+	// MessageID is the durable message this item came from, empty when it is not a persisted message.
+	MessageID string
+	Text      string // the item's copyable text ("" when there is nothing worth copying)
+	Line      int    // 0-based first line of this item in the body
+	Lines     int    // how many body lines it occupies
+	// Options is where an ask card's OPTION ROWS landed, in lines RELATIVE to Line, each with the label
+	// a click on it sends back as the next user message.
 	Options []AskOptionSpan
-	// Code is where this item's CODE BLOCKS landed, in lines RELATIVE to Line, each with the fence's source.
-	//
-	// It exists because copying a block by SELECTING it cannot be made clean. The operator: "You can't copy just
-	// the block itself with no added." The rendered band indents every line by one cell, and unlike trailing
-	// padding that leading space cannot be trimmed — it is indistinguishable from a real code indent, and
-	// trimming it would silently destroy the meaning of Python and Makefile bodies. So a click copies the
-	// SOURCE instead, which has no indent, no pane border and no fill padding to strip, because it never went
-	// through the renderer at all.
+	// Code is where this item's CODE BLOCKS landed, in lines RELATIVE to Line, each with the fence's
+	// source.
 	Code []CodeSpan
 }
 
 // AskOptionSpan is one option row of a clarifying-question card within its item, and its label.
-//
-// THE LABEL IS WHAT A CLICK SENDS. Answering a recorded question is not a new channel: the label goes out as
-// an ordinary user message (Controller.AnswerQuestion → Send), which is what makes the answer land in the
-// transcript like anything else the operator types.
 type AskOptionSpan struct {
 	Line  int // 0-based line of the option's first row, relative to the item
 	Lines int // how many rows the option occupies (its label, plus its description when it has one)
@@ -106,11 +78,6 @@ func (s ItemSpan) Contains(line int) bool {
 }
 
 // OptionAt returns the LABEL of the ask card's option at a body line, when one is there.
-//
-// An option's DESCRIPTION row belongs to the option, not to the space around it: a dead row inside a choice
-// reads as a broken affordance (the same reason a code block's language label resolves to its block). What it
-// is STRICT about is everything else — clicking the question text or the card's header is not a choice, because
-// a click that sent something the operator did not point at would be worse than a click that does nothing.
 func (s ItemSpan) OptionAt(line int) (string, bool) {
 	rel := line - s.Line
 	for _, o := range s.Options {
@@ -122,9 +89,6 @@ func (s ItemSpan) OptionAt(line int) (string, bool) {
 }
 
 // CodeAt returns the SOURCE of the code block containing a body line, when one does.
-//
-// The lookup offsets by the item's own start, so a click anywhere on the block — its label row included —
-// resolves to the same code.
 func (s ItemSpan) CodeAt(line int) (string, bool) {
 	rel := line - s.Line
 	for _, c := range s.Code {
@@ -136,18 +100,13 @@ func (s ItemSpan) CodeAt(line int) (string, bool) {
 }
 
 // copyTextFor is what a click on this item should put on the clipboard.
-//
-// THE RAW TEXT, not the rendered form: the rendered band carries the speaker label, the attachment
-// markers and whatever padding and styling the theme applied, so pasting it back would paste the
-// transcript's furniture along with the words.
 func copyTextFor(it ChatItem) string {
 	switch it.Kind {
 	case KindUser, KindText, KindReasoning, KindError:
 		return it.Text
 	case KindConsent:
-		// A SETTLED ask is worth copying (it is the record of a decision); a
-		// PENDING one is not — copying a question that has not been answered
-		// would paste the card's own furniture back into a message.
+		// A SETTLED ask is worth copying (it is the record of a decision); a PENDING one is not — copying a
+		// question that has not been answered would paste the card's own furniture back into a message.
 		if it.Consent != nil && !it.Consent.Pending() {
 			return consentRecord(it.Consent)
 		}
@@ -156,11 +115,6 @@ func copyTextFor(it ChatItem) string {
 }
 
 // RenderItemsSpans renders the transcript AND reports where each item's lines landed.
-//
-// The caller that wants to resolve a click needs both; the caller that only paints wants the string, so
-// RenderItems delegates and discards the spans. ONE implementation rather than two, because a second
-// render pass for the geometry would be a second thing to keep in step with the first — and the failure
-// mode of drift here is a click that copies the WRONG message.
 func RenderItemsSpans(items []ChatItem, maxWidth int, collapse ...func(key string) bool) (string, []ItemSpan) {
 	folded := func(string) bool { return false }
 	if len(collapse) > 0 && collapse[0] != nil {
@@ -170,23 +124,10 @@ func RenderItemsSpans(items []ChatItem, maxWidth int, collapse ...func(key strin
 }
 
 // CopyGlyph marks what the operator can CLICK TO COPY in the transcript.
-//
-// The operator: "We should put a little icon on user messages and code blocks in conversations in the TUI
-// indicating to people that they can be copied." A gesture nobody can see is a gesture nobody has, and both
-// of these are clicks rather than drags — drag-select exists everywhere, so the things that are specially
-// clickable are precisely the things worth marking.
-//
-// Two joined squares: the copy glyph terminals and TUI editors already use, drawn dim so it reads as an
-// affordance rather than as content.
 const CopyGlyph = "⧉"
 
-// RenderItemsSpansWithCopy is RenderItemsSpans drawn for a surface where clicking a message or a code block
-// copies it, so both say so.
-//
-// IT IS A SEPARATE ENTRY POINT RATHER THAN PACKAGE STATE because the transcript is rendered by more than one
-// caller and only the Ask pane wires the click: the slide-out strip on the other screens is a view of the
-// same conversation but a click there does nothing, and marking it copyable would be a lie. Passing the glyph
-// is what keeps the affordance where the gesture is.
+// RenderItemsSpansWithCopy is RenderItemsSpans drawn for a surface where clicking a message or a
+// code block copies it, so both say so.
 func RenderItemsSpansWithCopy(items []ChatItem, maxWidth int, copyGlyph string, collapse func(key string) bool) (string, []ItemSpan) {
 	return renderItems(items, maxWidth, collapse, copyGlyph, nil, "", "")
 }
@@ -199,15 +140,11 @@ func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, c
 	for _, it := range items {
 		// ONE ITEM AT A TIME, so a frame that changes one message costs one message. See renderOne.
 		seg, code, askOpts := renderOne(it, maxWidth, folded, copyGlyph, cache, scope, searchQ)
-		// THE ITEM'S OWN LINES. This used to be `strings.Count(b.String()[before:], "\n")` — a scan to
-		// the END of the accumulated body, once per item, i.e. O(n^2) over a conversation. Counting the
-		// segment this item just produced is the same number in O(1), and it is what lets the segment be
-		// remembered: a body-relative scan could not be memoized, because it was a function of everything
-		// that came before the item as well as the item itself.
+		// THE ITEM'S OWN LINES.
 		lines := strings.Count(seg, "\n")
 		spans = append(spans, ItemSpan{
 			Kind: it.Kind, Key: it.Key, Text: copyTextFor(it), Line: lineIdx, Lines: lines,
-			Options: askOpts, Code: code,
+			Options: askOpts, Code: code, MessageID: it.MessageID,
 		})
 		lineIdx += lines
 		b.WriteString(seg)
@@ -216,12 +153,6 @@ func renderItems(items []ChatItem, maxWidth int, folded func(key string) bool, c
 }
 
 // renderOne renders ONE item's segment, through the cache when there is one.
-//
-// THE SEGMENT IS A PURE FUNCTION OF (item, width, copy glyph, fold), which is exactly what makes it
-// rememberable — see RenderCache. Everything that varies per pass is a parameter here, so two surfaces
-// rendering the same conversation at different widths cannot share an entry by accident (the width and
-// the glyph are part of the key) and neither can it draw a stale form of an item that has changed (the
-// fingerprint is too).
 func renderOne(it ChatItem, maxWidth int, folded func(key string) bool, copyGlyph string, cache *RenderCache, scope, searchQ string) (string, []CodeSpan, []AskOptionSpan) {
 	fold := false
 	if folded != nil {
@@ -239,13 +170,8 @@ func renderOne(it ChatItem, maxWidth int, folded func(key string) bool, copyGlyp
 	return seg, code, askOpts
 }
 
-// renderItem renders ONE item to its own segment, plus the line geometry that segment carries: the code
-// blocks and the ask card's option rows, in lines RELATIVE to this item.
-//
-// IT IS THE SAME SWITCH THAT USED TO LIVE INSIDE renderItems, moved out whole rather than rewritten.
-// Keeping the geometry and the drawing in one place is the invariant this file already rests on (see
-// ItemSpan.Options): a second implementation that measured what the first one drew would drift, and the
-// failure mode of that drift is a click that answers with the wrong option.
+// renderItem renders ONE item to its own segment, plus the line geometry that segment carries: the
+// code blocks and the ask card's option rows, in lines RELATIVE to this item.
 func renderItem(it ChatItem, maxWidth int, fold bool, copyGlyph string, searchQ string) (string, []CodeSpan, []AskOptionSpan) {
 	var b strings.Builder
 	var code []CodeSpan
@@ -256,11 +182,7 @@ func renderItem(it ChatItem, maxWidth int, fold bool, copyGlyph string, searchQ 
 		// click to get back, so the marker belongs beside the label that already says whose it is.
 		label := userBandLabel
 		if copyGlyph != "" {
-			// THE GLYPH IS BOLD, the same weight change the code block's affordance got. The operator: "that
-			// little symbol ... is too tiny". Bold is the only weight a terminal has, and this pair is the
-			// whole of what marks the band as clickable. (The WORD lives on the code block's label row rather
-			// than here: a band label is on every single message, and "You ⧉ copyable" on all of them would be
-			// noise — the composer's hint row already says "click your message to copy".)
+			// THE GLYPH IS BOLD, the same weight change the code block's affordance got.
 			label = label + " \x1b[1m" + copyGlyph + "\x1b[22m"
 		}
 		body, cs := renderChatMessageSpansOpts(userTextWithMarkers(it), theme.BubbleUser, maxWidth, true, label, copyGlyph, true, searchQ)
@@ -272,22 +194,6 @@ func renderItem(it ChatItem, maxWidth int, fold bool, copyGlyph string, searchQ 
 		code = cs
 	case KindReasoning:
 		// A REASONING BLOCK, not a dim paragraph — the GUI's own shape, and COLLAPSIBLE.
-		//
-		// The GUI renders reasoning as a card whose header reads "reasoning · thinking…" while the
-		// model is still reasoning and "reasoning · 60,909 chars" once it has stopped, with an arrow
-		// that hides the body. The TUI drew the same content as
-		// `renderMarkdownBubble("thinking", …, theme.HintText, …)` — one dim word, in the same style as
-		// every hint line in the app — so a 60,909-character stream was indistinguishable from a
-		// footnote, and the operator's report was exactly that: "No reasoning block."
-		//
-		// THE ARROW IS THE OPERATOR'S OWN ASK: "reasoning should look similar but have a arrow on the
-		// left to expand and collapse". The transcript KEEPS ITS BUBBLES — the user and model bands and
-		// this block are all the bubble shape they have always been — rather than adopting the
-		// execution pane's card layout.
-		//
-		// collapse is a PARAMETER rather than package state because this is a pure function of its
-		// input and two panes render the same items at different widths; a package-level map would make
-		// one pane's folds apply to the other.
 		b.WriteString(renderReasoningBlock(it, maxWidth, fold))
 	case KindError:
 		b.WriteString(renderBubble("error", it.Text, theme.ErrorText, maxWidth))
@@ -305,12 +211,8 @@ func renderItem(it ChatItem, maxWidth int, fold bool, copyGlyph string, searchQ 
 		meta := SessionIdentity(it)
 		b.WriteString(theme.HintText.Render(truncateRow(meta, maxWidth)) + "\n")
 	case KindConsent:
-		// THE CARD RIDES THE TRANSCRIPT: a pending ask draws its box here, and
-		// the settled ask leaves a one-line record. See consent_render.go — the
-		// box itself is a kit2 widget, so padding/border/selection are shared.
-		//
-		// Its OPTION ROWS are reported too, so the card is CLICKABLE like the
-		// clarifying-question card rather than keyboard-only.
+		// THE CARD RIDES THE TRANSCRIPT: a pending ask draws its box here, and the settled ask leaves a
+		// one-line record.
 		card, opts := consentLineSpans(it, maxWidth)
 		b.WriteString(card)
 		askOpts = opts
@@ -324,20 +226,11 @@ func RenderItems(items []ChatItem, maxWidth int, collapse ...func(key string) bo
 	return body
 }
 
-// chatBandGap is the number of BLANK rows emitted after each message band, so
-// the two speakers read as separate blocks of text rather than one continuous
-// fill (the operator's "there should be a visible gap between user messages and
-// model messages ... just enough to really show a gap"). Tune here.
+// chatBandGap is the number of BLANK rows emitted after each message band, so the two speakers read
+// as separate blocks of text rather than one continuous fill (the operator's "there should.
 const chatBandGap = 3
 
 // userBandLabel names the operator's own messages at the band's left edge.
-//
-// It is not decoration. The operator's bands are right-aligned on a full-width
-// fill, and when one appeared to be missing there was no way to tell "the
-// message was never rendered" from "it rendered and was overlooked" — which is
-// exactly the ambiguity that kept this open. Naming the speaker makes the band
-// unmistakable, and the label's presence or absence now answers the question
-// directly.
 const userBandLabel = "You"
 
 // renderChatMessage renders one message as a FULL-WIDTH background band: every
@@ -377,31 +270,12 @@ func renderChatMessage(text string, style lipgloss.Style, maxWidth int, right bo
 }
 
 // renderChatMessageSpans is renderChatMessage PLUS where its code blocks landed.
-//
-// The mapping needs NO adjustment: this function writes exactly one band row per markdown line — the label and
-// the padding change a row's CONTENT, never how many rows there are — so a markdown row index is already an
-// item-relative line number. That equality is what chat.CodeSpan rests on, and it is why the geometry is
-// lifted from the same render rather than recomputed from the painted text.
-//
-// THIS IS THE MODEL'S SIDE of the transcript, so it keeps CommonMark's soft break: the model's prose is
-// machine-wrapped and joining its lines is what lets it reflow to the pane. See renderUserChatMessageSpans for
-// the operator's, which does not.
 func renderChatMessageSpans(text string, style lipgloss.Style, maxWidth int, right bool, label, copyGlyph string) (string, []CodeSpan) {
 	return renderChatMessageSpansOpts(text, style, maxWidth, right, label, copyGlyph, false, "")
 }
 
-// renderUserChatMessageSpans is renderChatMessageSpans for the OPERATOR'S OWN band: A NEWLINE THEY TYPED IS A
-// LINE BREAK.
-//
-// The operator, on their own messages: "Right now it's all just a bunch of text bunched up. It should respect
-// the format that it was typed in, including newlines, bullets, numbered lists, etc." Bullets and lists already
-// rendered; a typed newline did not, because CommonMark makes one inside a paragraph a SPACE and the band then
-// re-wrapped the result to the pane width. Every line the operator broke was flattened into a flowing block.
-//
-// THE SPLIT IS BY AUTHOR, NOT BY SURFACE. Both bands run through this file, so the alternative — keeping the
-// soft break everywhere and letting the operator's line breaks go — is what shipped. Splitting here rather
-// than at md's entry point would be the same thing; the option lives in md because the collapse happens in the
-// parser, and md is where the parser is.
+// renderUserChatMessageSpans is renderChatMessageSpans for the OPERATOR'S OWN band: A NEWLINE THEY
+// TYPED IS A LINE BREAK.
 func renderUserChatMessageSpans(text string, style lipgloss.Style, maxWidth int, right bool, label, copyGlyph string) (string, []CodeSpan) {
 	return renderChatMessageSpansOpts(text, style, maxWidth, right, label, copyGlyph, true, "")
 }
@@ -421,39 +295,8 @@ func renderChatMessageSpansOpts(text string, style lipgloss.Style, maxWidth int,
 	if inner < 8 {
 		inner = pane
 	}
-	// THE BODY IS MARKDOWN — the same text the GUI renders through react-markdown in
-	// AssistantBubble and in the operator's own bubble. The operator saw the raw source instead:
-	// "The thing that concerned me was those greater than signs. What are those representing? It
-	// seemed kind of ugly." Those were BLOCKQUOTE markers doing real work (marking quoted wording),
-	// and printed literally they read as punctuation soup.
-	//
-	// This is safe INSIDE a band because the renderer emits attributes only, each closed with a
-	// TARGETED off-code (`\x1b[22m`) rather than a full reset (`\x1b[0m`) — so the band's own
-	// foreground and background survive every styled span. A markdown renderer that coloured its
-	// text would punch a hole in this fill at the first bold word.
-	//
-	// The width is the band's INNER width, so a markdown line can never exceed the pane: there is no
-	// horizontal scroll in the band to fall back on.
-	//
-	// THE RENDERER IS CHOSEN BY WHO WROTE THE TEXT — see renderUserChatMessageSpans: the operator's own band
-	// keeps the newlines they typed, the model's collapses them so its prose reflows.
-	// THE OPERATOR'S BAND IS RIGHT-ALIGNED AS A BLOCK, AND THE LABEL IS PAID FOR OUT OF THE SAME BUDGET.
-	//
-	// The operator: "See how when it drops a line it starts from the right and not the left? It leaves a large
-	// whitespace in front of the subsequent lines." Right-aligning each row INDIVIDUALLY is what did that: a
-	// wrapped message came out flush right on every line, so line 2 onwards each began at a different column —
-	// the last line of a block could start half-way across the pane.
-	//
-	// The corrected shape is a right-aligned BLOCK with ONE left edge, exactly as the GUI's bubble is (its text
-	// is left-aligned inside a box that sits on the right). The edge is the flush-right position of the WIDEST
-	// row, so a message that fits on one line is still flush right — the shape the operator asked for and
-	// TestUserBubbleRightAlignedModelLeftAligned pins — while a wrapped one gets a single consistent margin.
-	//
-	// AND THE BODY IS WRAPPED TO A WIDTH THAT ALREADY EXCLUDES THE LABEL. Rendering at the full inner width and
-	// then CUTTING the first row to make room for the label silently dropped the tail of the first line of every
-	// long message — up to the label's own width in characters, gone, which is the same class of invisible data
-	// loss the overflow guard below was added for. Reserving the label's cells BEFORE the wrap removes the cut,
-	// and it is also what guarantees the block can never run into the label.
+	// THE BODY IS MARKDOWN — the same text the GUI renders through react-markdown in AssistantBubble
+	// and in the operator's own bubble.
 	labelW := 0
 	bodyWidth := inner
 	if label != "" {
@@ -464,9 +307,7 @@ func renderChatMessageSpansOpts(text string, style lipgloss.Style, maxWidth int,
 			bodyWidth = 8
 		}
 	}
-	// THE SEARCH-AWARE ENTRY POINT WHEN A QUERY IS ARMED. The query travels with the render rather than as
-	// package state, exactly as the chip surface does, so a transcript rendered for a surface that is not
-	// searched cannot inherit marks from one that is.
+	// THE SEARCH-AWARE ENTRY POINT WHEN A QUERY IS ARMED.
 	renderMD := md.RenderOnSpans
 	if userBreaks {
 		renderMD = md.RenderUserOnSpans
@@ -509,10 +350,7 @@ func renderChatMessageSpansOpts(text string, style lipgloss.Style, maxWidth int,
 		switch {
 		case i == 0 && label != "":
 			// The label sits at the band's left edge and the text aligns to the BLOCK, so a one-line message
-			// still reads as the operator's side (flush right) while a wrapped one hangs beneath the label
-			// with every line sharing this column. A right-aligned band with no label is genuinely easy to
-			// miss — and when a message looked absent, the label's presence is what told "not rendered" from
-			// "rendered and overlooked".
+			// still reads as the operator's side (flush right) while a wrapped one hangs beneath the label.
 			gap := blockLeft - 1 - labelW
 			if gap < 1 {
 				gap = 1
@@ -528,14 +366,12 @@ func renderChatMessageSpansOpts(text string, style lipgloss.Style, maxWidth int,
 			row = " " + l
 		}
 		// EVERY ROW IS PADDED TO THE PANE, so the fill runs edge to edge and consecutive rows are the same
-		// width. The padding is INSIDE the style, which is what makes the band a block rather than "text with
-		// a background".
+		// width.
 		if pad := pane - lipgloss.Width(row); pad > 0 {
 			row += strings.Repeat(" ", pad)
 		}
 		// AND THE ROW IS CLAMPED TO THE PANE ON EVERY PATH, so no band can hand the stream a line it would
-		// have to truncate. The arithmetic above holds (see blockLeft), so this is the invariant's guard
-		// rather than a load-bearing cut.
+		// have to truncate.
 		row = truncateCells(row, pane)
 		out.WriteString(style.Render(row))
 		out.WriteString("\n")
@@ -568,10 +404,6 @@ func truncateCells(s string, w int) string {
 	return ansi.Truncate(s, w, "")
 }
 
-// renderMarkdownBubble is renderBubble for content the GUI renders as MARKDOWN (its ReasoningBubble
-// defaults to the rendered view, with a Raw toggle beside it). The label keeps its own styling; the
-// body goes through the markdown renderer at the width left after the label.
-//
 // The markdown output carries ONLY targeted attribute codes, so it nests inside the theme style
 // without clearing it — which is what makes this safe over a labelled, styled row.
 func renderMarkdownBubble(label, text string, style lipgloss.Style, maxWidth int) string {
@@ -600,44 +432,16 @@ func renderMarkdownBubble(label, text string, style lipgloss.Style, maxWidth int
 }
 
 // reasoningBodyMaxRows bounds how much of a reasoning block is drawn.
-//
-// MEASURED, and the reason this constant exists: a 62,000-character reasoning stream renders to ~860
-// transcript LINES on its own. The operator's conversation showed "reasoning · 60,909 chars", so their
-// transcript was carrying several hundred lines of reasoning per turn — and that is what makes the pane
-// pathological: the newest window is almost entirely reasoning, so the visible rows are a dense wall of
-// text that repaints constantly, and the conversation's real content (the messages) is pushed far up out
-// of view.
-//
-// THE OTHER LONG RENDERERS ALREADY DO THIS, which is what makes the omission a bug rather than a choice:
-// a tool call with 62,000 characters of output renders to ONE line, and an artifact to TWO — both draw a
-// one-line summary and leave the body to a place built for it. Reasoning was the one long body drawn in
-// full, because before the block existed it was a dim single-line footnote and the question could not
-// arise. Giving it a visible body made it visible at full length, which is the regression being seen.
-//
-// The cap is a RENDERING limit, not a data limit: the full text is still on the ChatItem, the header's
-// char count reports the true total, and a collapsible expansion (when the block model lands) reveals the
-// rest.
 const reasoningBodyMaxRows = 12
 
-// renderReasoningBlock renders a reasoning ("thinking") item the way the GUI does: a labelled header
-// carrying its own state, then the body beneath it.
-//
-// THE HEADER IS THE WHOLE POINT OF THE CHANGE. The GUI's header says "reasoning · thinking…" while the
-// model is still reasoning and "reasoning · 60,909 chars" when it has finished, so the operator can tell
-// at a glance (a) that this is reasoning rather than the reply, (b) that it is STILL COMING, and (c) how
-// much of it there is. The TUI had none of the three: the body was drawn under a dim "thinking" word in
-// the hint style.
-//
-// The char count is formatted with thousands separators, matching the GUI's `toLocaleString` — 60,909
-// rather than 60909 — because that is what the operator is comparing against when they glance between
-// the two clients.
+// renderReasoningBlock renders a reasoning ("thinking") item the way the GUI does: a labelled
+// header carrying its own state, then the body beneath it.
 func renderReasoningBlock(it ChatItem, maxWidth int, folded bool) string {
 	if strings.TrimSpace(it.Text) == "" {
 		return ""
 	}
-	// THE ARROW IS TEXT, not colour, so it reads on a monochrome terminal — and it is on the LEFT, where
-	// the operator asked for it. It points DOWN when the body is showing and RIGHT when it is hidden,
-	// which is the convention every tree in this TUI already uses.
+	// THE ARROW IS TEXT, not colour, so it reads on a monochrome terminal — and it is on the LEFT,
+	// where the operator asked for it.
 	arrow := "▾"
 	if folded {
 		arrow = "▸"
@@ -684,9 +488,6 @@ func renderReasoningBlock(it ChatItem, maxWidth int, folded bool) string {
 }
 
 // groupDigits inserts thousands separators: 60909 -> "60,909".
-//
-// Hand-rolled rather than localised, because the count must not change its meaning with the machine's
-// locale — the GUI prints a plain comma-separated number and these two must read the same.
 func groupDigits(n int) string {
 	s := strconv.Itoa(n)
 	if len(s) <= 3 {
@@ -726,52 +527,18 @@ func renderBubble(label, text string, style lipgloss.Style, maxWidth int) string
 }
 
 // FailedTurnText composes the transcript row for a FAILED turn.
-//
-// THE ROW EXISTS BECAUSE A FAILED TURN IS A MESSAGE, and the TUI never drew it. Two failed sends left the
-// operator's words stacked with NOTHING between them (their report, with the screenshot to match: "The GUI
-// has an actual error message in the conversation that tells you why you couldn't connect or if there was a
-// problem. The TUI just drops with no indication as to why.").
-//
-// IT NAMES THE MODEL, because that is the ACTIONABLE half: the GUI's error bubble names the ref and adds
-// "if this repeats, check Settings → Default models", and the operator's own screenshot shows the model as
-// the thing they needed. The ref is already on the row's metadata (internal/askorchicon/service.go parses
-// model_ref out of the stored JSON), so carrying it here costs no new state and no round trip.
-//
-// THE REASON IS THE ROW'S; THE RETRY CLAIM IS THE SHELL'S — see RetryAffordanceLine. This function composes
-// only what is TRUE OF THE ROW ITSELF: the failure and the model that refused. It deliberately does NOT say
-// the message is back in the composer, because that is a claim about the SHELL's composer and is true only
-// when the shell actually restored the draft — which it does for a turn THIS client sent, and does NOT do for
-// a durable failed turn carried over from another session or the other client (App.restoreDraftForFailedTurn
-// scopes the restore to this client's own send). Composing the line here unconditionally made a HISTORICAL
-// failure assert a composer state that did not exist (measured: an old failed turn's row read "your message
-// is back in the composer" while the composer was empty) — the same class of misreport this change exists to
-// fix, so the reason is claim-free and the shell appends the affordance through WithRetryAffordance.
-//
-// IT TAKES NO PARTIAL REPLY, AND THAT IS THE POINT. An earlier signature accepted one and prefixed it to the
-// failure, so a mid-reply drop produced ONE KindError row whose text began with the model's prose — and the
-// row's `error` label then labelled the prose, with the whole thing painted in the error's red. The operator:
-// "It is showing thinking text after that is also red and on the same line as the error." The prose is the
-// MODEL's words and belongs on the model's band; the caller emits it as its own KindText row (see
-// conversationItems) and this function composes only what its own label claims.
 func FailedTurnText(errText, modelRef string) string {
 	var b strings.Builder
 	b.WriteString("turn failed: " + strings.TrimSpace(errText))
 	if ref := strings.TrimSpace(modelRef); ref != "" {
 		b.WriteString("\nmodel: " + ref)
 	}
-	// RAW, not markdown: errors stay unwrapped/unstyled, per the transcript's existing rule for KindError
-	// (renderBubble, which soft-wraps the raw text to the pane width so a long provider error degrades by
-	// wrapping rather than clipping the footer).
+	// RAW, not markdown: errors stay unwrapped/unstyled, per the transcript's existing rule for
+	// KindError (renderBubble.
 	return b.String()
 }
 
-// RetryAffordanceLine is the TUI's own retry affordance — the equivalent of the GUI's always-present Retry
-// button, phrased as the thing the operator actually does here (Enter on the restored draft).
-//
-// IT IS APPENDED BY THE SHELL (WithRetryAffordance), NOT baked into FailedTurnText, because the statement is
-// about the SHELL's composer: the message is back only when the shell put it back. The GUI's Retry button can
-// ride any error bubble because it re-sends the preceding user message from the transcript; the TUI's
-// equivalent acts on the composer, so it is honest only where the composer was actually restored.
+// RetryAffordanceLine is the TUI's own retry affordance.
 const RetryAffordanceLine = "your message is back in the composer — press enter to send it again"
 
 // WithRetryAffordance appends the retry line to a failed-turn row's text. Idempotent — a re-stamp on a later
@@ -783,21 +550,11 @@ func WithRetryAffordance(text string) string {
 	return text + "\n" + RetryAffordanceLine
 }
 
-// noticeLabel is the band label a platform notice carries. It is deliberately the
-// neutral word rather than "context compacted": the notice's own first sentence says
-// what happened, and a label that repeated it would stutter.
+// noticeLabel is the band label a platform notice carries.
 const noticeLabel = "notice"
 
-// renderNotice draws a platform notice — a `system` row, i.e. a record ABOUT the
-// conversation rather than something either party said in it.
-//
-// IT LOOKS DIFFERENT ON PURPOSE. Before KindNotice existed this row reached the
-// KindText branch, so it drew in the assistant's own band and read as though Orchicon
-// had claimed it — which for a compaction record is the wrong attribution on the one
-// event where attribution matters most. Here it is dim, labelled, and
-// paragraph-preserving: the notices are written in short paragraphs (what was lost,
-// why it ran, where the original went) and collapsing them into one wrapped block
-// would make the archive path hardest to find.
+// renderNotice draws a platform notice — a `system` row, i.e. a record ABOUT the conversation
+// rather than something either party said in it.
 func renderNotice(text string, maxWidth int) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
@@ -834,52 +591,20 @@ func renderToolRow(t *ParsedTool, maxWidth int) string {
 	return truncateLine(b.String(), maxWidth)
 }
 
-// renderAskCard paints a recorded clarifying question as the terminal card: the
-// question and its numbered options. The operator answers it by sending the
-// option's label as the next message (Controller.AnswerQuestion), so the card is
-// a RECORD the turn already completed — never a live prompt the turn is waiting on.
+// renderAskCard paints a recorded clarifying question as the terminal card: the question and its
+// numbered options.
 func renderAskCard(a *ParsedAsk, maxWidth int) string {
 	body, _ := renderAskCardSpans(a, maxWidth)
 	return body
 }
 
-// renderAskCardSpans draws a recorded clarifying question as an INTERACTIVE CARD,
-// and reports where each option row landed so a click resolves to the option
-// under it.
-//
-// IT IS A kit2 CARD, NOT A LIST OF LINES, and that is the whole point of this
-// function's shape. It used to hand-build plain text — a "? Orchicon asks" line
-// and numbered rows — which rendered as an ordinary list: no border, no accent,
-// nothing to say "this is a question you answer" rather than "this is prose you
-// read". The operator's report: "it didn't really do a good job at making it seem
-// like it was a clickable card … it just looked like a regular normal list."
-//
-// The card now comes from the SAME widget the permission card uses
-// (kit2.CardLinesSpans), so it inherits the rounded border, the accent colour, the
-// panel tint and the padding the rest of the app uses — and the two cards in this
-// transcript look like the same KIND of thing, because they are.
-//
-// THE OFFSETS COME FROM THE WIDGET, not from a counter here. The card's own
-// layout decides how many lines the title, the body and each wrapped option take,
-// so the only place that can measure them is the code that drew them; a counter
-// maintained in this function would drift the first time the card gained a row,
-// and a drifted offset means a click answers with the option the operator did
-// not choose.
+// renderAskCardSpans draws a recorded clarifying question as an INTERACTIVE CARD, and reports where
+// each option row landed so a click resolves to the option under it.
 func renderAskCardSpans(a *ParsedAsk, maxWidth int) (string, []AskOptionSpan) {
 	if a == nil {
 		return "", nil
 	}
-	// AN ANSWERED QUESTION IS A RECORD, NOT A CARD — the same split the permission
-	// card makes. Once answered there is nothing to click, so drawing the options
-	// again would offer a choice that has already been made (and, before this, the
-	// card simply sat there forever: the operator's "the Orchicon asks card does not go
-	// away when you select something").
-	// A REFUSED QUESTION IS A RECORD TOO, and it must not say "answered".
-	//
-	// The operator's own transcript carried `answered · ask_user could not be asked: ask_user: \`question\` is
-	// required and must not be empty` — a question that was refused, drawn as a decision they made and never
-	// were asked for. The call resolved (so it is a record, not a card) but nothing was shown and nothing was
-	// answered, and the record now says so.
+	// AN ANSWERED QUESTION IS A RECORD, NOT A CARD — the same split the permission card makes.
 	if a.Refused {
 		refusal := a.RefusalText
 		if refusal == "" {
@@ -894,16 +619,12 @@ func renderAskCardSpans(a *ParsedAsk, maxWidth int) (string, []AskOptionSpan) {
 		}
 		return theme.ListMeta.Render(truncateRow("answered · "+answered, maxWidth)) + "\n", nil
 	}
-	// THE FOOTER PROMISES ONLY WHAT WORKS. The clarifying question is answerable
-	// by CLICK (transcriptAskOptionFrameRow → AnswerQuestion → Send); it has no
-	// keyboard cursor, unlike the permission card, whose footer advertises
-	// up/down + enter. Telling the operator to press keys that do nothing is
-	// worse than saying nothing.
-	footer := "click an option to answer"
+	// THE FOOTER PROMISES ONLY WHAT WORKS.
+	footer := "↑/↓ select · enter answer · click also answers · esc hands back the keyboard"
 	if a.AllowOther {
 		// The free-text row is a ROW now, so the footer names it as one. It keeps the words "reply in
 		// your own words" because that is still exactly what the row is for.
-		footer = "click an option · or click Other to reply in your own words"
+		footer = "↑/↓ select · enter answer · Other: reply in your own words · esc hands back the keyboard"
 	}
 	spec := kit2.CardSpec{
 		Title:  "Orchicon asks",
@@ -913,32 +634,25 @@ func renderAskCardSpans(a *ParsedAsk, maxWidth int) (string, []AskOptionSpan) {
 	for i, o := range a.Options {
 		text := itoa(int64(i+1)) + ". " + o.Label
 		if o.Description != "" {
-			// One row per option rather than a stray indented sentence: the
-			// description belongs to the option and must move, wrap and highlight
-			// WITH it, not sit beside it as unrelated prose.
+			// One row per option rather than a stray indented sentence: the description belongs to the option
+			// and must move, wrap and highlight WITH it, not sit beside it as unrelated prose.
 			text += " — " + o.Description
 		}
-		spec.Lines = append(spec.Lines, kit2.CardLine{Text: text})
+		// THE ▸ BAR IS THE CARD'S CURSOR, drawn from the item's Sel exactly as the consent card draws its
+		// own.
+		spec.Lines = append(spec.Lines, kit2.CardLine{Text: text, Selected: i == a.Sel})
 	}
 
 	// THE FREE-TEXT ROW, WHICH THIS CARD USED TO NOT HAVE AT ALL.
-	//
-	// The operator: "In the GUI, it lets you type in your own response. In the TUI clicking on it
-	// does nothing. You should be able to click on other and type in a response there." The GUI's
-	// card (frontend AskCard.tsx) draws an "Other…" action on BOTH of its uses — the recorded
-	// question and the consent question — and clicking it opens an inline input whose Enter sends
-	// what was typed as the next message. This card instead said only "or reply in your own
-	// words", which is a DIFFERENT promise: it pointed at the composer. The row is here now, and
-	// it opens the same input the consent card does.
-	//
-	// IT IS NOT NUMBERED, unlike the options above: the numbers are the model's canned answers,
-	// and "5. Other" would read as one more of them.
 	labels := make([]string, 0, len(a.Options)+1)
 	for _, o := range a.Options {
 		labels = append(labels, o.Label)
 	}
 	if a.AllowOther {
-		spec.Lines = append(spec.Lines, kit2.CardLine{Text: ConsentOther, Selected: a.Drafting})
+		spec.Lines = append(spec.Lines, kit2.CardLine{
+			Text:     ConsentOther,
+			Selected: a.Drafting || a.Sel == len(a.Options),
+		})
 		spec.ShowInput = a.Drafting
 		spec.Input = a.Draft
 		labels = append(labels, ConsentOther)
@@ -950,9 +664,8 @@ func renderAskCardSpans(a *ParsedAsk, maxWidth int) (string, []AskOptionSpan) {
 		b.WriteString(l)
 		b.WriteString("\n")
 	}
-	// ONE SPAN PER DRAWABLE ROW, from the labels the rows were built from — the options and, when
-	// it is offered, the free-text row. kit2's ShowInput row is drawn AFTER these and carries no
-	// span of its own, so a click on the input row resolves to nothing rather than to a choice.
+	// ONE SPAN PER DRAWABLE ROW, from the labels the rows were built from — the options and, when it is
+	// offered, the free-text row.
 	opts := make([]AskOptionSpan, 0, len(rows))
 	for i, r := range rows {
 		if i >= len(labels) {

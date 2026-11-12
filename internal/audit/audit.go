@@ -1,15 +1,4 @@
 // Package audit records actor-based audit entries for user actions.
-//
-// Every mutating RPC and auth action writes an audit_events row in the
-// same transaction as the mutation (the transactional-outbox pattern this
-// repo applies to cross-service events, AGENTS.md invariant #3): the
-// caller owns the pgx.Tx via db.BeginTenantTx, calls audit.Record
-// immediately before commit, and the audit row commits atomically with
-// the state change — an audit row exists iff the mutation committed.
-//
-// Actor resolution lives in internal/auth (auth.ActorFromContext) so this
-// package stays a leaf over internal/db; secrets never enter before/after
-// snapshots (D7 in architecture-notes/audit-entries-mutating-rpcs.md).
 package audit
 
 import (
@@ -47,11 +36,7 @@ type Entry struct {
 	After json.RawMessage
 }
 
-// Record writes an audit row into the caller's transaction. It must be
-// called in the same transaction as the mutation so the audit row commits
-// atomically with it. An Entry with no tenant is an error (the RLS
-// backstop requires the session variable); a Record failure must fail the
-// mutation (atomicity is the point).
+// Record writes an audit row into the caller's transaction.
 func Record(ctx context.Context, tx pgx.Tx, e Entry) error {
 	if e.TenantID == "" {
 		return errors.New("audit: tenant required")
@@ -73,9 +58,8 @@ func Record(ctx context.Context, tx pgx.Tx, e Entry) error {
 	})
 }
 
-// TraceIDFromContext returns the OTel trace id from the request's span
-// context, or "" when there is no active span (safe under the no-op
-// tracer when telemetry is off).
+// TraceIDFromContext returns the OTel trace id from the request's span context, or "" when there is
+// no active span (safe under the no-op tracer when telemetry is off).
 func TraceIDFromContext(ctx context.Context) string {
 	sc := trace.SpanFromContext(ctx).SpanContext()
 	if !sc.IsValid() {
@@ -84,10 +68,7 @@ func TraceIDFromContext(ctx context.Context) string {
 	return sc.TraceID().String()
 }
 
-// Snapshot marshals v into a JSON snapshot for before/after. A marshal
-// failure is non-fatal: it logs and returns "{}" so a bad JSON field can
-// never abort a commit (atomicity of the mutation outranks completeness
-// of a snapshot).
+// Snapshot marshals v into a JSON snapshot for before/after.
 func Snapshot(v any) json.RawMessage {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -97,9 +78,8 @@ func Snapshot(v any) json.RawMessage {
 	return b
 }
 
-// SnapshotStatus is a tiny helper for status-only transitions
-// (publish/deprecate/assign/revoke) — before/after of just the changed
-// status field, keeping the trail compact.
+// SnapshotStatus is a tiny helper for status-only transitions (publish/deprecate/assign/revoke) —
+// before/after of just the changed status field, keeping the trail compact.
 func SnapshotStatus(status string) json.RawMessage {
 	return Snapshot(struct {
 		Status string `json:"status"`

@@ -1,10 +1,4 @@
-// Package webhook implements the WebhookService (docs/07 §3.11) and the
-// delivery dispatcher. The dispatcher is a NATS consumer that receives
-// events from the ORCHICON_EVENTS stream, matches them to active
-// subscriptions, POSTs the payload to the registered endpoint with HMAC
-// signing + exponential backoff retries, and records delivery attempts.
-// Events that exceed the retry budget are dead-lettered and queryable;
-// they can be replayed via the ReplayDelivery RPC.
+// Package webhook implements the WebhookService (docs/07 §3.11) and the delivery dispatcher.
 package webhook
 
 import (
@@ -25,10 +19,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/eventbus"
 )
 
-// Dispatcher consumes events from NATS and delivers them to registered
-// webhook subscriptions with retries + dead-letter. It is the NATS
-// consumer counterpart to the outbox relay: the relay publishes events
-// to the stream, the dispatcher fans them out to HTTP endpoints.
+// Dispatcher consumes events from NATS and delivers them to registered webhook subscriptions with
+// retries + dead-letter.
 type Dispatcher struct {
 	pool   *db.Pool
 	sub    eventbus.Subscriber
@@ -49,9 +41,7 @@ func NewDispatcher(pool *db.Pool, sub eventbus.Subscriber, log *slog.Logger) *Di
 	}
 }
 
-// Run starts the dispatcher. It subscribes to all orchicon.events.* and
-// delivers matching events to active subscriptions. Blocks until ctx is
-// cancelled.
+// Run starts the dispatcher.
 func (d *Dispatcher) Run(ctx context.Context) error {
 	if d.sub == nil {
 		d.log.Warn("webhook dispatcher: NATS subscriber unavailable (webhooks disabled)")
@@ -213,15 +203,7 @@ func (d *Dispatcher) postOnce(ctx context.Context, sub db.EventSubscriptionRow, 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Orchicon-Event", sub.EventFilter)
 	req.Header.Set("X-Orchicon-Delivery", deliveryID)
-	// HMAC-SHA256 signature using the subscription secret (the hash
-	// column stores the plaintext? No — we store only the hash. For
-	// v0.1 the secret is passed at create and re-derived here via the
-	// stored hash... but we cannot re-derive HMAC from a hash. We store
-	// the secret hash only for identification; the actual signing secret
-	// is NOT recoverable. For v0.1 we sign with a per-subscription nonce
-	// derived from the subscription id (the receiver verifies via the
-	// signature header presence; a future v0.2 stores the secret in a
-	// secret store for true HMAC verification).
+	// HMAC-SHA256 signature using the subscription secret (the hash column stores the plaintext?
 	if sub.SecretHint != "" {
 		sig := hmacSign(sub.ID, payload)
 		req.Header.Set("X-Orchicon-Signature", sig)

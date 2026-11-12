@@ -26,25 +26,17 @@ import (
 // and history persisted to the DB, is ALWAYS well-formed — every assistant
 // tool_call_id has a matching tool result.
 const (
-	// abortedToolResultOutput is the explicit result attached in place of a
-	// tool result that never arrived: the turn is repaired rather than
-	// silently losing that the call happened.
+	// abortedToolResultOutput is the explicit result attached in place of a tool result that never
+	// arrived: the turn is repaired rather than silently losing that the call happened.
 	abortedToolResultOutput = "tool call aborted — the turn ended before this tool returned a result"
 
-	// The provider rejection shapes from the operator reports, matched as
-	// substrings of a provider error body.
-	//
-	// The first two are the ORIGINAL bug — an assistant tool_calls message
-	// replayed without its results ("BUG: Ask Orchicon model switch fails").
+	// The provider rejection shapes from the operator reports, matched as substrings of a provider
+	// error body.
 	danglingToolCallNoOutputMarker   = "no tool output found for function call"
 	danglingToolCallUnansweredMarker = "must be followed by tool messages responding to each"
 
 	// The MIRROR shape, from the compact-button regression on Ask conversation
-	// 01M2C8VXFQY5ZE26PYBSNKA2CA: an ORPHANED tool result — a `tool` message
-	// whose preceding assistant `tool_calls` message was cropped away when
-	// compaction cut a tool round in half. It must classify here too, or the
-	// poisoned session is never dropped and the conversation stays wedged on
-	// every send.
+	// 01M2C8VXFQY5ZE26PYBSNKA2CA: an ORPHANED tool result.
 	danglingToolCallOrphanedResultMarker = "must be a response to a preceding message with"
 )
 
@@ -55,11 +47,8 @@ type askToolCallJSON struct {
 	Type         string `json:"type"`
 	FunctionName string `json:"function_name"`
 	Arguments    string `json:"arguments"`
-	// IssuedAtUnixMs must be carried here even though the repair neither reads
-	// nor writes it: this struct is RE-MARSHALLED (not passed through), so any
-	// field absent from it is silently and permanently stripped from every
-	// tool_calls document that goes through the terminal write or the per-turn
-	// history window.
+	// IssuedAtUnixMs must be carried here even though the repair neither reads nor writes it: this
+	// struct is RE-MARSHALLED (not passed through).
 	IssuedAtUnixMs int64 `json:"issued_at_unix_ms"`
 }
 
@@ -69,12 +58,8 @@ type askToolResultJSON struct {
 	IsError    bool   `json:"is_error"`
 }
 
-// sanitizeAssistantToolLedger returns the (tool_calls, tool_results) pair for
-// one assistant message such that every call id has at least one result. A
-// call with no id cannot be paired with a result at all (replaying it is the
-// bare-tool_calls shape providers reject), so it is dropped; a call whose
-// result never arrived gets an explicit aborted result. Both documents always
-// encode as "[]" (never nil) so the NOT NULL jsonb columns stay valid.
+// sanitizeAssistantToolLedger returns the (tool_calls, tool_results) pair for one assistant message
+// such that every call id has at least one result.
 func sanitizeAssistantToolLedger(callsJSON, resultsJSON []byte) (callsOut, resultsOut []byte) {
 	callsOut, resultsOut = []byte("[]"), []byte("[]")
 
@@ -129,16 +114,13 @@ func sanitizeAssistantToolLedger(callsJSON, resultsJSON []byte) (callsOut, resul
 	return callsOut, resultsOut
 }
 
-// sanitizeHistoryRows returns the DB-history window with every assistant row's
-// tool ledger repaired: no row keeps a tool_call_id without a matching tool
-// result. Rows that are already well-formed (the overwhelming majority) are
-// returned untouched, so the caller can compare identity cheaply.
+// sanitizeHistoryRows returns the DB-history window with every assistant row's tool ledger
+// repaired: no row keeps a tool_call_id without a matching tool result.
 func sanitizeHistoryRows(history []db.MessageRow) []db.MessageRow {
 	if len(history) == 0 {
 		return history
 	}
-	out := make([]db.MessageRow, len(history))
-	copy(out, history)
+	out := repairLeadingAssistant(history)
 	for i := range out {
 		if out[i].Role != "assistant" || len(out[i].ToolCalls) == 0 {
 			continue
@@ -150,11 +132,34 @@ func sanitizeHistoryRows(history []db.MessageRow) []db.MessageRow {
 	return out
 }
 
-// isDanglingToolCallProviderError reports whether a provider error text is a
-// rejected tool-pairing shape — any of the three the operators have hit: an
-// unanswered call, and its mirror, an orphaned result. It drives the repair
-// path: the poisoned session is dropped so the next send dispatches on a fresh,
-// sanitized session instead of replaying it forever.
+// repairLeadingAssistant drops the assistant run that precedes the first user message.
+func repairLeadingAssistant(history []db.MessageRow) []db.MessageRow {
+	if len(history) == 0 {
+		return history
+	}
+	ascending := true
+	if first, last := history[0], history[len(history)-1]; !first.CreatedAt.Equal(last.CreatedAt) {
+		ascending = first.CreatedAt.Before(last.CreatedAt)
+	}
+	dropped := 0
+	if ascending {
+		for dropped < len(history) && history[dropped].Role == "assistant" {
+			dropped++
+		}
+		out := make([]db.MessageRow, len(history)-dropped)
+		copy(out, history[dropped:])
+		return out
+	}
+	for dropped < len(history) && history[len(history)-1-dropped].Role == "assistant" {
+		dropped++
+	}
+	out := make([]db.MessageRow, len(history)-dropped)
+	copy(out, history[:len(history)-dropped])
+	return out
+}
+
+// isDanglingToolCallProviderError reports whether a provider error text is a rejected tool-pairing
+// shape — any of the three the operators have hit: an unanswered call, and its mirror.
 func isDanglingToolCallProviderError(text string) bool {
 	if text == "" {
 		return false
@@ -165,13 +170,8 @@ func isDanglingToolCallProviderError(text string) bool {
 		strings.Contains(lower, danglingToolCallOrphanedResultMarker)
 }
 
-// sessionCreatedUnderDifferentModel reports whether the conversation's stored
-// session was created under a model other than the one this turn dispatches
-// on. Assistant rows record `model_ref` (and `session_id`) in their metadata,
-// so the newest assistant row that names the stored session identifies the
-// model that owns it. A session created under a different model must never be
-// reused: the new provider re-validates the replayed session history and 400s
-// on it. history is the DESC (newest-first) DB window.
+// sessionCreatedUnderDifferentModel reports whether the conversation's stored session was created
+// under a model other than the one this turn dispatches on.
 func sessionCreatedUnderDifferentModel(sessionID, modelRef string, history []db.MessageRow) bool {
 	if modelRef == "" {
 		return false
@@ -196,16 +196,13 @@ func sessionCreatedUnderDifferentModel(sessionID, modelRef string, history []db.
 			newestModel = meta.ModelRef
 		}
 	}
-	// No row names the stored session (legacy rows written before the
-	// session id was mirrored into metadata): fall back to the newest model
-	// the conversation ran on.
+	// No row names the stored session (legacy rows written before the session id was mirrored into
+	// metadata): fall back to the newest model the conversation ran on.
 	return newestModel != "" && newestModel != modelRef
 }
 
-// emitTurnError surfaces a turn failure verbatim on the live stream so the
-// operator sees the provider's own words (the TUI dock notice + the error row
-// the poll renders) instead of a silent spinner. Nil-safe (a turn dispatched
-// without a stream, e.g. from a test, is a no-op).
+// emitTurnError surfaces a turn failure verbatim on the live stream so the operator sees the
+// provider's own words (the TUI dock notice + the error row the poll renders) instead of a silent.
 func emitTurnError(cb func(*apiv1.ChatStreamResponse), text string) {
 	if cb == nil || text == "" {
 		return

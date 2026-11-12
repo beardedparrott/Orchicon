@@ -12,12 +12,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// THE DISPATCH BUG, pinned. The daemon leases runtime containers by RUN id
-// (daemonPool.containerForRun), so the stdio transport must name the RUN. Passing
-// the EXECUTION id finds no container — and because the daemon could not answer
-// while the client streamed a body that never ends, the call blocked FOREVER:
-// observed live as an execution stuck in `dispatching` with zero tokens, no
-// container child, and not one log line.
+// THE DISPATCH BUG, pinned.
 func TestWorkerSpawnSpecNamesTheRunNotTheExecution(t *testing.T) {
 	var got procSpec
 	h := newHarness(t, func() *fakeProc { return newFakeProc() })
@@ -67,9 +62,8 @@ func TestWorkerSpawnSpecNamesTheRunNotTheExecution(t *testing.T) {
 	}
 }
 
-// recordingOpener captures the id the container transport NAMES, and returns a
-// session that immediately ends — so the argument is what is under test, not the
-// proxy.
+// recordingOpener captures the id the container transport NAMES, and returns a session that
+// immediately ends — so the argument is what is under test, not the proxy.
 type recordingOpener struct {
 	gotWorkflowID string
 	gotRequest    runtime.StdioRequest
@@ -85,10 +79,7 @@ func (r *recordingOpener) Stdio(_ context.Context, workflowID string, req runtim
 	return nil, errors.New("stop here: the argument is the assertion")
 }
 
-// THE ARGUMENT PIN. A spec can be right while the CALL names the wrong field, and
-// that is precisely what shipped: the spec carried the execution id and so did the
-// request, so the daemon found no leased container and the dispatch hung forever.
-// This asserts the id handed to Stdio is the RUN.
+// THE ARGUMENT PIN.
 func TestContainerSpawnNamesTheRunIDToStdio(t *testing.T) {
 	op := &recordingOpener{}
 	_, err := newContainerProc(context.Background(), op, procSpec{
@@ -113,10 +104,8 @@ func TestContainerSpawnNamesTheRunIDToStdio(t *testing.T) {
 	}
 }
 
-// A container spawn with no run id must FAIL LOUDLY rather than send a request
-// that cannot resolve a container. The local transport legitimately has no run id
-// (it spawns on the host), which is why the check lives at the container call and
-// not in the shared spec builder.
+// A container spawn with no run id must FAIL LOUDLY rather than send a request that cannot resolve
+// a container.
 func TestContainerSpawnRequiresARunID(t *testing.T) {
 	_, err := newContainerProc(context.Background(), &recordingOpener{}, procSpec{
 		ExecID:        "exec-no-run",

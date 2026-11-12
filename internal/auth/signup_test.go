@@ -22,11 +22,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/migrate"
 )
 
-// TestSignupFirstAccountIsAdmin creates the FIRST account on a fresh plane
-// through POST /auth/signup and asserts the full session contract: identity
-// + credential rows exist, the stored hash verifies, the token pair is
-// issued, the refresh cookie is HttpOnly, and the account is the tenant
-// admin (is_admin true, admin role bound atomically with account creation).
+// TestSignupFirstAccountIsAdmin creates the FIRST account on a fresh plane through POST
+// /auth/signup and asserts the full session contract: identity + credential rows exist.
 func TestSignupFirstAccountIsAdmin(t *testing.T) {
 	srv, pool, _ := testLocalLoginEnv(t)
 	const tenantID = "tnt_dev"
@@ -85,9 +82,8 @@ func TestSignupFirstAccountIsAdmin(t *testing.T) {
 	}
 }
 
-// TestSignupSecondAccountIsUser seeds an admin first, then signs up a second
-// account: it must be a plain user with NO admin grant, and the existing
-// admin must never be demoted or clobbered.
+// TestSignupSecondAccountIsUser seeds an admin first, then signs up a second account: it must be a
+// plain user with NO admin grant, and the existing admin must never be demoted or clobbered.
 func TestSignupSecondAccountIsUser(t *testing.T) {
 	srv, pool, _ := testLocalLoginEnv(t)
 	const tenantID = "tnt_dev"
@@ -208,9 +204,8 @@ func TestSignupDuplicateUsername(t *testing.T) {
 	}
 }
 
-// TestSignupIdentitySquattingRejected seeds an identity (no credential) —
-// e.g. a BYO-IdP first-login provisioning — and signs up with the same
-// subject. The existing identity must NOT get a local password bound to it.
+// TestSignupIdentitySquattingRejected seeds an identity (no credential) — e.g. a BYO-IdP
+// first-login provisioning — and signs up with the same subject.
 func TestSignupIdentitySquattingRejected(t *testing.T) {
 	srv, pool, _ := testLocalLoginEnv(t)
 	const tenantID = "tnt_dev"
@@ -245,9 +240,8 @@ func TestSignupIdentitySquattingRejected(t *testing.T) {
 	}
 }
 
-// TestSignupValidation pins the boundary validation mirroring the admin
-// SetLocalCredential path: bad username charset, empty fields, over-long
-// password → 400.
+// TestSignupValidation pins the boundary validation mirroring the admin SetLocalCredential path:
+// bad username charset, empty fields, over-long password → 400.
 func TestSignupValidation(t *testing.T) {
 	srv, _, _ := testLocalLoginEnv(t)
 	cases := []string{
@@ -308,11 +302,8 @@ func TestSignupDisabledWithoutOP(t *testing.T) {
 	}
 }
 
-// TestSignupCompletesOPFlow drives the full OIDC authorization-code flow for
-// a sign-up that happens mid-OP-flow: /authorize → login bridge → signup
-// (username+password) → authorize callback → PKCE token exchange. This
-// proves sign-up completes the pending authorize request exactly like
-// local-login does.
+// TestSignupCompletesOPFlow drives the full OIDC authorization-code flow for a sign-up that happens
+// mid-OP-flow: /authorize → login bridge → signup (username+password) → authorize callback → PKCE.
 func TestSignupCompletesOPFlow(t *testing.T) {
 	srv, pool, _ := testLocalLoginEnv(t)
 	username := "signup_flow_user"
@@ -403,9 +394,8 @@ func TestSignupCompletesOPFlow(t *testing.T) {
 	}
 }
 
-// TestSignupConcurrentSameUsername fires N concurrent signups for one
-// username; exactly one succeeds and every other gets 409. This pins both
-// insert races (identity insert + credential upsert) mapping to 409.
+// TestSignupConcurrentSameUsername fires N concurrent signups for one username; exactly one
+// succeeds and every other gets 409.
 func TestSignupConcurrentSameUsername(t *testing.T) {
 	srv, pool, _ := testLocalLoginEnv(t)
 	username := "signup_race"
@@ -462,10 +452,8 @@ func TestSignupConcurrentSameUsername(t *testing.T) {
 	cleanupSignupIdentity(t, pool, "tnt_dev", cred.IdentityID)
 }
 
-// TestSignupConcurrentFirstSignupExactlyOneAdmin fires N concurrent FIRST
-// sign-ups on a fresh plane (no admin yet). The tenant-scoped advisory lock
-// serializes the admin-exists check + grant, so exactly ONE of them becomes
-// the tenant admin and the rest are plain users.
+// TestSignupConcurrentFirstSignupExactlyOneAdmin fires N concurrent FIRST sign-ups on a fresh plane
+// (no admin yet).
 func TestSignupConcurrentFirstSignupExactlyOneAdmin(t *testing.T) {
 	srv, pool, _ := testLocalLoginEnv(t)
 	const tenantID = "tnt_dev"
@@ -517,9 +505,8 @@ func TestSignupConcurrentFirstSignupExactlyOneAdmin(t *testing.T) {
 
 // --- helpers ---------------------------------------------------------------
 
-// clearAdminBindings removes every admin role binding and the admin role
-// itself, so a test can start from a genuinely fresh plane (the test DB is
-// shared across tests in the package).
+// clearAdminBindings removes every admin role binding and the admin role itself, so a test can
+// start from a genuinely fresh plane (the test DB is shared across tests in the package).
 func clearAdminBindings(t *testing.T, pool *db.Pool, tenantID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -539,9 +526,8 @@ func clearAdminBindings(t *testing.T, pool *db.Pool, tenantID string) {
 	}
 }
 
-// seedAdmin provisions a tenant admin the way a human would (identity +
-// admin role binding), so a subsequent sign-up is a plain user. It is the
-// "an admin already exists" precondition for the second-signup tests.
+// seedAdmin provisions a tenant admin the way a human would (identity + admin role binding), so a
+// subsequent sign-up is a plain user.
 func seedAdmin(t *testing.T, pool *db.Pool, tenantID, subject string) {
 	t.Helper()
 	ctx := context.Background()
@@ -593,10 +579,8 @@ func cleanupSignupIdentity(t *testing.T, pool *db.Pool, tenantID, identityID str
 	if err != nil {
 		return
 	}
-	// role_bindings has no FK on identity_id, so the binding must be
-	// removed explicitly before the identity (the local_credentials row
-	// cascades via its identity_id FK). A first sign-up may have been
-	// granted the admin role, so this also clears that binding.
+	// role_bindings has no FK on identity_id, so the binding must be removed explicitly before the
+	// identity (the local_credentials row cascades via its identity_id FK).
 	_, _ = dtx.Exec(ctx, `DELETE FROM role_bindings WHERE identity_id = $1`, identityID)
 	_, _ = dtx.Exec(ctx, `DELETE FROM identities WHERE id = $1`, identityID)
 	_ = dtx.Commit(ctx)

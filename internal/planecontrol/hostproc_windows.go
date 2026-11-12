@@ -1,0 +1,400 @@
+//go:build windows
+
+package planecontrol
+
+// hostproc_windows.go — the Windows half of the host plane's PROCESS IDENTITY probe. WHAT WINDOWS
+// LOSES, STATED SO NOBODY HAS TO DISCOVER IT LATER: - `Drift` NEVER reports `Drifted` here.
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+	"unsafe"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
+)
+
+// The three Windows facts stdlib syscall does not spell out. See the file header.
+const (
+	// processQueryLimitedInformation (PROCESS_QUERY_LIMITED_INFORMATION) is the smallest access right
+	// that can read an exit code and an image path.
+	processQueryLimitedInformation = 0x1000
+	// stillActive is STILL_ACTIVE: GetExitCodeProcess reports it while the process has not terminated.
+	stillActive = 259
+	// maxImagePath is the buffer QueryFullProcessImageNameW wants; Windows paths are capped at 32767 UTF-16
+	// units, which is what the API's own MAX_LONG_PATH is.
+	maxImagePath = 32767
+)
+
+var (
+	modkernel32                    = syscall.NewLazyDLL("kernel32.dll")
+	procQueryFullProcessImageNameW = modkernel32.NewProc("QueryFullProcessImageNameW")
+)
+
+// processAlive is the Windows liveness probe: open the process, ask for its exit code, and treat
+// STILL_ACTIVE as running. An unopenable PID (gone, or not ours to open at all) is not alive.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	h, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = syscall.CloseHandle(h) }()
+	var code uint32
+	if err := syscall.GetExitCodeProcess(h, &code); err != nil {
+		return false
+	}
+	return code == stillActive
+}
+
+// procStateChar reports nothing: Windows has no POSIX process state, and in particular no zombie
+// state that a live PID could linger in.
+func procStateChar(pid int) (byte, bool) { return 0, false }
+
+// procExe resolves the IMAGE PATH of a running process — the Windows equivalent of reading
+// /proc/<pid>/exe, and what makes "is the serving plane the binary in hand" answerable here.
+func procExe(pid int) (string, error) {
+	if pid <= 0 {
+		return "", os.ErrNotExist
+	}
+	h, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = syscall.CloseHandle(h) }()
+	buf := make([]uint16, maxImagePath)
+	n := uint32(len(buf))
+	r, _, callErr := procQueryFullProcessImageNameW.Call(uintptr(h), 0,
+		uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&n)))
+	if r == 0 {
+		return "", callErr
+	}
+	if n == 0 || int(n) > len(buf) {
+		return "", os.ErrNotExist
+	}
+	return syscall.UTF16ToString(buf[:n]), nil
+}
+
+// IT RETURNS `Current` OR `Unknown`, NEVER `Drifted` — see the file header for why the Unix drift
+// fingerprint cannot arise on Windows, which makes that arm unreachable rather than unimplemented.
+func Drift(instance string, out io.Writer) DriftState {
+	self, err := executable()
+	if err != nil {
+		return Unknown
+	}
+	self, err = filepath.EvalSymlinks(self)
+	if err != nil {
+		return Unknown
+	}
+	pid, ok := ServingPlanePID(instance)
+	if !ok {
+		return Unknown
+	}
+	exe, err := procExe(pid)
+	if err != nil {
+		return Unknown
+	}
+	if strings.EqualFold(filepath.Clean(exe), filepath.Clean(self)) {
+		return Current
+	}
+	// Serving from a DIFFERENT path than the binary in hand. It may be a dev checkout serving deliberately;
+	// only a plane the INSTALLER started is ours to restart, so leave it and say where it runs from.
+	fmt.Fprintf(out, "  (plane runs from %s, not %s — leaving it)\n", exe, self)
+	return Unknown
+}
+
+// UnrecordedPlanePID is the Unix discovery seam, and on Windows it is deliberately always false.
+func UnrecordedPlanePID(string) (int, bool) { return 0, false }
+
+// ServingPlanePID reads the instance's detached-plane PID file and reports whether that process is alive.
+func ServingPlanePID(instance string) (int, bool) {
+	b, err := os.ReadFile(ServePIDFile(instance))
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	// The PID file outlives the process: the handle/exit-code test is what says whether it is still that
+	// process.
+	if !processAlive(pid) {
+		return 0, false
+	}
+	return pid, true
+}
+
+// ServingPlaneAlive reports whether the instance's PID-file process is still running.
+func ServingPlaneAlive(instance string) bool {
+	pid, ok := ServingPlanePID(instance)
+	if !ok {
+		return false
+	}
+	return processAlive(pid)
+}
+
+// TerminateProcess force-stops a host process.
+func TerminateProcess(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("refusing to terminate pid %d", pid)
+	}
+	if pid == os.Getpid() {
+		return fmt.Errorf("refusing to terminate this process (pid %d)", pid)
+	}
+	h, err := syscall.OpenProcess(syscall.PROCESS_TERMINATE, false, uint32(pid))
+	if err != nil {
+		return fmt.Errorf("open process %d for termination: %w", pid, err)
+	}
+	defer func() { _ = syscall.CloseHandle(h) }()
+	if err := syscall.TerminateProcess(h, 1); err != nil {
+		return fmt.Errorf("terminate process %d: %w", pid, err)
+	}
+	return nil
+}
+
+// TerminateProcessTree terminates a process AND EVERYTHING IT SPAWNED.
+//
+// WHY THIS EXISTS ALONGSIDE TerminateProcess. TerminateProcess ends ONE process. The services
+// supervisor's children — postgres, nats, the telemetry backends — are separate processes, so
+// stopping the supervisor left them RUNNING: postgres kept the data directory's postmaster.pid
+// lock and its port, and the next install's postgres refused to start against it.
+//
+//	started component=postgres pid=1604
+//	FATAL:  lock file "postmaster.pid" already exists
+//	HINT:  Is another postmaster (PID 26376) running in data directory "…/orchicon-dev/postgres"?
+//
+// taskkill /T is the documented way to terminate a process tree on Windows. It is a child
+// process rather than a syscall, so it can fail where TerminateProcess would not — which is
+// why the caller still gets a useful error and the lock sweep covers the residue.
+func TerminateProcessTree(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("refusing to terminate pid %d", pid)
+	}
+	if pid == os.Getpid() {
+		return fmt.Errorf("refusing to terminate this process (pid %d)", pid)
+	}
+	// The tree first: it reaps the children.
+	if out, err := procwin.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").CombinedOutput(); err == nil {
+		return nil
+	} else {
+		// FALL BACK to terminating the supervisor itself.
+		_ = out
+	}
+	return TerminateProcess(pid)
+}
+
+// ----- instance-scoped process identity -----
+
+// procsUnder is the set of processes whose IMAGE lives inside a directory tree, with their parents.
+type ProcInfo struct {
+	PID     int
+	PPID    int
+	Exe     string
+	Created time.Time
+}
+
+// ProcessesUnder returns every process whose executable path is inside root, using the Toolhelp32
+// snapshot API.
+func ProcessesUnder(root string) ([]ProcInfo, error) {
+	if strings.TrimSpace(root) == "" {
+		return nil, nil
+	}
+	normRoot := normalisePath(root)
+	procs, err := snapshotProcesses()
+	if err != nil {
+		return nil, err
+	}
+	var out []ProcInfo
+	for _, p := range procs {
+		if p.Exe == "" {
+			continue
+		}
+		exe := normalisePath(p.Exe)
+		if exe == normRoot || strings.HasPrefix(exe, normRoot+string(os.PathSeparator)) ||
+			strings.HasPrefix(exe, normRoot+"/") {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// normalisePath folds separators and case so two spellings of one Windows path compare equal.
+func normalisePath(p string) string {
+	p = strings.ReplaceAll(p, "/", string(os.PathSeparator))
+	return strings.ToLower(filepath.Clean(p))
+}
+
+// processEntry is the Toolhelp32 shape, sized for the platform's PROCESSENTRY32W.
+type processEntry struct {
+	dwSize              uint32
+	cntUsage            uint32
+	th32ProcessID       uint32
+	th32DefaultHeapID   uintptr
+	th32ModuleID        uint32
+	cntThreads          uint32
+	th32ParentProcessID uint32
+	pcPriClassBase      int32
+	dwFlags             uint32
+	szExeFile           [260]uint16
+}
+
+var (
+	procProcess32FirstW          = modkernel32.NewProc("Process32FirstW")
+	procProcess32NextW           = modkernel32.NewProc("Process32NextW")
+	procCreateToolhelp32Snapshot = modkernel32.NewProc("CreateToolhelp32Snapshot")
+)
+
+const (
+	th32csSnapProcess = 0x00000002
+	invalidHandle     = ^uintptr(0)
+)
+
+// snapshotProcesses enumerates every process's PID, parent PID and image path.
+func snapshotProcesses() ([]ProcInfo, error) {
+	h, _, err := procCreateToolhelp32Snapshot.Call(th32csSnapProcess, 0)
+	if uintptr(h) == invalidHandle {
+		return nil, fmt.Errorf("toolhelp snapshot: %w", err)
+	}
+	defer func() { _ = syscall.CloseHandle(syscall.Handle(h)) }()
+
+	var e processEntry
+	e.dwSize = uint32(unsafe.Sizeof(e))
+	r, _, _ := procProcess32FirstW.Call(uintptr(h), uintptr(unsafe.Pointer(&e)))
+	if r == 0 {
+		return nil, nil
+	}
+	var out []ProcInfo
+	for {
+		pid := int(e.th32ProcessID)
+		if pid > 0 && pid != os.Getpid() {
+			exe, _ := procExe(pid) // unreadable for a process we may not inspect; keep it anyway
+			out = append(out, ProcInfo{PID: pid, PPID: int(e.th32ParentProcessID), Exe: exe,
+				Created: processCreated(pid)})
+		}
+		e.dwSize = uint32(unsafe.Sizeof(e))
+		r, _, _ = procProcess32NextW.Call(uintptr(h), uintptr(unsafe.Pointer(&e)))
+		if r == 0 {
+			break
+		}
+	}
+	return out, nil
+}
+
+// TerminateSubtree terminates every process in procs that is part of the tree rooted at root. TWO
+// SHAPES MUST GO, AND THE SECOND ONE IS WHY THIS EXISTS: 1.
+func TerminateSubtree(root int, procs []ProcInfo, eligible func(ProcInfo) bool) []int {
+	if root <= 0 {
+		return nil
+	}
+	// Breadth-first over the parent links, so a child of an eligible process is eligible even if its own
+	// image were replaced mid-flight.
+	children := map[int][]int{}
+	for _, p := range procs {
+		children[p.PPID] = append(children[p.PPID], p.PID)
+	}
+	byPID := map[int]ProcInfo{}
+	for _, p := range procs {
+		byPID[p.PID] = p
+	}
+
+	var order []int
+	seen := map[int]bool{}
+	queue := []int{root}
+	seen[root] = true
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		order = append(order, cur)
+		for _, c := range children[cur] {
+			if !seen[c] {
+				seen[c] = true
+				queue = append(queue, c)
+			}
+		}
+	}
+	// Everything in the caller's ownership set goes too, parent-linked or not: that is the orphan case.
+	for _, p := range procs {
+		if !seen[p.PID] && eligible(p) {
+			seen[p.PID] = true
+			order = append(order, p.PID)
+		}
+	}
+
+	var killed []int
+	for _, pid := range order {
+		if pid == root {
+			continue // the caller terminates the root itself, so it controls the ordering and the error
+		}
+		if err := TerminateProcess(pid); err == nil {
+			killed = append(killed, pid)
+		}
+	}
+	return killed
+}
+
+// processCreated reads a process's creation time via GetProcessTimes.
+var procGetProcessTimes = modkernel32.NewProc("GetProcessTimes")
+
+func processCreated(pid int) time.Time {
+	if pid <= 0 {
+		return time.Time{}
+	}
+	h, err := syscall.OpenProcess(processQueryLimitedInformation, false, uint32(pid))
+	if err != nil {
+		return time.Time{}
+	}
+	defer func() { _ = syscall.CloseHandle(h) }()
+	var creation, exit, kernel, user syscall.Filetime
+	r, _, _ := procGetProcessTimes.Call(uintptr(h),
+		uintptr(unsafe.Pointer(&creation)), uintptr(unsafe.Pointer(&exit)),
+		uintptr(unsafe.Pointer(&kernel)), uintptr(unsafe.Pointer(&user)))
+	if r == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, creation.Nanoseconds())
+}
+
+// WaitGone blocks until none of pids is alive, up to timeout, and reports what survived.
+func WaitGone(pids []int, timeout time.Duration) []int {
+	deadline := time.Now().Add(timeout)
+	for {
+		var alive []int
+		for _, pid := range pids {
+			if processAlive(pid) {
+				alive = append(alive, pid)
+			}
+		}
+		if len(alive) == 0 || time.Now().After(deadline) {
+			return alive
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// ───────────────────────── the plane that outlived its PID file ─────────────────────────
+//
+// THE SAME STATE EXISTS ON WINDOWS and this half cannot recover it, deliberately rather than by omission.
+// Recovering it needs two verified readings — the pid listening on the instance's control port, and PROOF
+// that the process is this instance's own (its environment, or its image path) — and this file has neither:
+// there is no /proc, tasklist reports an image NAME without a path, and a process's environment is not
+// readable without a syscall this package does not make. Guessing from the port alone would be the "control a
+// plane you cannot identify" failure the fail-safe exists to prevent, so `effectivePlanePID` answers with the
+// PID file only and its callers report "not identifiable" — which is the truthful answer there, and the one
+// that leads an operator to `ss`/`tasklist` instead of to a wrong kill.
+//
+// The Windows-specific half of this problem is handled where it can be: `cmd/orchicon` identifies a leftover
+// by the instance directory its image lives in (reclaim_proc_windows.go), and uninstall/install clear
+// containers and host services through the recorded supervisor PID.
+
+// effectivePlanePID is the PID file's process. See the note above for why there is no port fallback here.
+func effectivePlanePID(instance string) (int, bool) { return ServingPlanePID(instance) }
+
+// unrecordedPlanePID cannot identify a plane on Windows: see the note above.
+func unrecordedPlanePID(string) (int, bool) { return 0, false }

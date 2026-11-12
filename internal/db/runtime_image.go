@@ -23,6 +23,9 @@ type RuntimeImageRow struct {
 	Env                []byte // jsonb
 	DockerfileOverride string
 	Tag                string
+	// IncludeAdapters installs the runtime CLI adapters (opencode, Claude Code) into a GENERATED image.
+	// Default true: an image nobody can run work with is not what "create a runtime image" means.
+	IncludeAdapters    bool
 	Status             string
 	BuildLog           string
 	Error              string
@@ -46,14 +49,14 @@ type RuntimeImageFilter struct {
 }
 
 const runtimeImageCols = `id, tenant_id, name, slug, description, base_image_ref,
-	apt_packages, toolchains, env, dockerfile_override, tag, status, build_log, error,
+	apt_packages, toolchains, env, include_adapters, dockerfile_override, tag, status, build_log, error,
 	failure_reason, failed_step, log_tail, failure_category,
 	version, built_version, source, created_at, updated_at`
 
 func scanRuntimeImage(row pgx.Row) (RuntimeImageRow, error) {
 	var r RuntimeImageRow
 	err := row.Scan(&r.ID, &r.TenantID, &r.Name, &r.Slug, &r.Description, &r.BaseImageRef,
-		&r.AptPackages, &r.Toolchains, &r.Env, &r.DockerfileOverride, &r.Tag, &r.Status,
+		&r.AptPackages, &r.Toolchains, &r.Env, &r.IncludeAdapters, &r.DockerfileOverride, &r.Tag, &r.Status,
 		&r.BuildLog, &r.Error, &r.FailureReason, &r.FailedStep, &r.LogTail, &r.FailureCategory,
 		&r.Version, &r.BuiltVersion, &r.Source, &r.CreatedAt, &r.UpdatedAt)
 	return r, err
@@ -68,12 +71,12 @@ func CreateRuntimeImage(ctx context.Context, tx pgx.Tx, r RuntimeImageRow) (Runt
 	}
 	q := `INSERT INTO runtime_images
 		(id, tenant_id, name, slug, description, base_image_ref,
-		 apt_packages, toolchains, env, dockerfile_override, tag, status,
+		 apt_packages, toolchains, env, include_adapters, dockerfile_override, tag, status,
 		 build_log, error, version, source)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,1,$15)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,1,$16)
 		RETURNING ` + runtimeImageCols
 	return scanRuntimeImage(tx.QueryRow(ctx, q, r.ID, r.TenantID, r.Name, r.Slug, r.Description,
-		r.BaseImageRef, r.AptPackages, r.Toolchains, r.Env, r.DockerfileOverride, r.Tag,
+		r.BaseImageRef, r.AptPackages, r.Toolchains, r.Env, r.IncludeAdapters, r.DockerfileOverride, r.Tag,
 		r.Status, r.BuildLog, r.Error, r.Source))
 }
 
@@ -98,15 +101,8 @@ func GetRuntimeImageByTag(ctx context.Context, tx pgx.Tx, tenantID, tag string) 
 	return r, err
 }
 
-// GetRuntimeImageForUpdate loads one image spec by id (tenant-scoped) and
-// locks the row for the rest of the transaction (SELECT ... FOR UPDATE).
-// marking transition is StatusOnly (it must NOT bump `version`, the "spec
-// changed" signal), so the version-based OCC check alone cannot serialize
-// two simultaneous Deploys — both would pass it and run `docker build` on
-// the same tag. The row lock closes that gap: the first caller marks the
-// row 'building' and commits; a concurrent caller blocks on the lock and
-// then re-reads the committed row (READ COMMITTED re-evaluates after the
-// lock wait), sees status 'building', and fails fast.
+// GetRuntimeImageForUpdate loads one image spec by id (tenant-scoped) and locks the row for the
+// rest of the transaction (SELECT ...
 func GetRuntimeImageForUpdate(ctx context.Context, tx pgx.Tx, tenantID, id string) (RuntimeImageRow, error) {
 	q := `SELECT ` + runtimeImageCols + ` FROM runtime_images WHERE id = $1 AND tenant_id = $2 FOR UPDATE`
 	r, err := scanRuntimeImage(tx.QueryRow(ctx, q, id, tenantID))
@@ -153,19 +149,13 @@ func ListRuntimeImages(ctx context.Context, tx pgx.Tx, f RuntimeImageFilter) ([]
 }
 
 // UpdateRuntimeImage applies a partial update with optimistic concurrency.
-// Field pointers match UpdateRuntimeImageFields; nil = unchanged.
-//
-// StatusOnly marks a build-flow transition (draft→building→ready/failed)
-// that must NOT bump `version`: the version is the "spec changed" signal
-// (docs/09 §5) and the rebuild gate compares it to `built_version`, so a
-// mere status flip must leave it untouched. Spec edits and every other
-// caller leave StatusOnly false (version bumps, OCC preserved).
 type UpdateRuntimeImageFields struct {
 	Name               *string
 	Slug               *string
 	Description        *string
 	AptPackages        *[]byte
 	Toolchains         *[]byte
+	IncludeAdapters    *bool
 	Env                *[]byte
 	DockerfileOverride *string
 	Tag                *string
@@ -201,6 +191,9 @@ func UpdateRuntimeImage(ctx context.Context, tx pgx.Tx, tenantID, id string, ver
 	}
 	if f.AptPackages != nil {
 		add("apt_packages", *f.AptPackages)
+	}
+	if f.IncludeAdapters != nil {
+		add("include_adapters", *f.IncludeAdapters)
 	}
 	if f.Toolchains != nil {
 		add("toolchains", *f.Toolchains)
@@ -241,10 +234,7 @@ func UpdateRuntimeImage(ctx context.Context, tx pgx.Tx, tenantID, id string, ver
 	if len(sets) == 0 {
 		return GetRuntimeImage(ctx, tx, tenantID, id)
 	}
-	// The spec version only advances on a real spec edit. Build-flow
-	// transitions (StatusOnly) keep it — that is what makes `version` a
-	// faithful "did the spec change" signal for the rebuild gate. The OCC
-	// WHERE clause still checks the caller-supplied version either way.
+	// The spec version only advances on a real spec edit.
 	if !f.StatusOnly {
 		add("version", version+1)
 	}
@@ -273,9 +263,8 @@ func DeleteRuntimeImage(ctx context.Context, tx pgx.Tx, tenantID, id string) err
 	return nil
 }
 
-// ReadyRuntimeImageTags returns the tags of all ready custom images for a
-// tenant — the list merged with the daemon's stock images for the
-// work-item runtime_image dropdown.
+// ReadyRuntimeImageTags returns the tags of all ready custom images for a tenant — the list merged
+// with the daemon's stock images for the work-item runtime_image dropdown.
 func ReadyRuntimeImageTags(ctx context.Context, tx pgx.Tx, tenantID string) ([]string, error) {
 	rows, err := tx.Query(ctx,
 		`SELECT tag FROM runtime_images WHERE tenant_id = $1 AND status = 'ready' AND tag <> '' ORDER BY name`,

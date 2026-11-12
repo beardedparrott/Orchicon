@@ -70,6 +70,7 @@ func newSequenceTestEnv(t *testing.T) *sequenceTestEnv {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "seq-env",
 		Slug: "seq-env-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -77,10 +78,7 @@ func newSequenceTestEnv(t *testing.T) *sequenceTestEnv {
 	if err := ttx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// Each test tears down its own project so the shared tnt_dev DB never
-	// accumulates seq-env residue. The blocked-scan tests are sensitive to
-	// the total count of blocked/ready tasks in the tenant (the reconciler
-	// scan processes a bounded window), so hermetic cleanup is required.
+	// Each test tears down its own project so the shared tnt_dev DB never accumulates seq-env residue.
 	t.Cleanup(func() { deleteTestProject(t, pool, proj.ID) })
 	return &sequenceTestEnv{pool: pool, proj: proj}
 }
@@ -232,11 +230,8 @@ func TestDeriveNextChild(t *testing.T) {
 	}
 }
 
-// TestStartSequencePreservesSucceededChildren verifies the new contract
-// (AC2): parent → running, every NON-terminal descendant reset to pending,
-// succeeded/skipped children ALWAYS kept, and only the first NON-succeeded
-// child in sort_order arms with its OWN workflow. Prior successes are never
-// reset.
+// TestStartSequencePreservesSucceededChildren verifies the new contract (AC2): parent → running,
+// every NON-terminal descendant reset to pending, succeeded/skipped children ALWAYS kept.
 func TestStartSequencePreservesSucceededChildren(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -281,10 +276,8 @@ func TestStartSequencePreservesSucceededChildren(t *testing.T) {
 	}
 }
 
-// TestStartSequenceAllTerminalSuccessCompletes: START on a chain whose
-// children are ALL terminal-success (succeeded/skipped) completes the
-// sequence — the parent transitions to succeeded (nothing armed, nothing
-// reset) rather than re-firing completed work.
+// TestStartSequenceAllTerminalSuccessCompletes: START on a chain whose children are ALL
+// terminal-success (succeeded/skipped) completes the sequence.
 func TestStartSequenceAllTerminalSuccessCompletes(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -313,9 +306,8 @@ func TestStartSequenceAllTerminalSuccessCompletes(t *testing.T) {
 	}
 }
 
-// TestStopSequencePreservesSucceededSibling (AC1, ADR #3): STOP parks a
-// non-terminal sibling to pending but leaves a succeeded sibling untouched —
-// a succeeded child is never re-armed by STOP.
+// TestStopSequencePreservesSucceededSibling (AC1, ADR #3): STOP parks a non-terminal sibling to
+// pending but leaves a succeeded sibling untouched — a succeeded child is never re-armed by STOP.
 func TestStopSequencePreservesSucceededSibling(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -350,9 +342,8 @@ func TestStopSequencePreservesSucceededSibling(t *testing.T) {
 	}
 }
 
-// TestOneOffSucceededChildNeverReKicked (AC3, ADR #4): a one-off
-// manually-fired succeeded child is never re-kicked by a subsequent START
-// or STOP of its parent — it stays succeeded through both.
+// TestOneOffSucceededChildNeverReKicked (AC3, ADR #4): a one-off manually-fired succeeded child is
+// never re-kicked by a subsequent START or STOP of its parent — it stays succeeded through both.
 func TestOneOffSucceededChildNeverReKicked(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -388,11 +379,8 @@ func TestOneOffSucceededChildNeverReKicked(t *testing.T) {
 	}
 }
 
-// TestSequenceRecurringParentKeepsCadenceWithSucceededChild (AC5, ADR #5):
-// a recurring sequence parent whose cycle contains a succeeded child keeps
-// its cadence — a refire preserves the succeeded child, arms the next
-// non-succeeded child, and the completing cycle returns the parent to
-// "recurring" (not "succeeded") with next_run_at intact.
+// TestSequenceRecurringParentKeepsCadenceWithSucceededChild (AC5, ADR #5): a recurring sequence
+// parent whose cycle contains a succeeded child keeps its cadence.
 func TestSequenceRecurringParentKeepsCadenceWithSucceededChild(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -495,9 +483,8 @@ func TestSequenceCompletion(t *testing.T) {
 	}
 }
 
-// TestSequenceRecurringCompletionReturnsToRecurring: when every child of a
-// recurring sequence parent succeeds, the parent returns to "recurring"
-// (not "succeeded") so the RecurringFireReconciler fires the next cycle.
+// TestSequenceRecurringCompletionReturnsToRecurring: when every child of a recurring sequence
+// parent succeeds.
 func TestSequenceRecurringCompletionReturnsToRecurring(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -530,10 +517,8 @@ func TestSequenceRecurringCompletionReturnsToRecurring(t *testing.T) {
 	}
 }
 
-// TestSequenceRecurringFailureKeepsSchedule: a failed child in a recurring
-// sequence parent's cycle halts the CURRENT chain (later siblings never
-// arm) but does NOT kill the schedule — the parent stays "recurring" with
-// next_run_at intact, so the next occurrence re-fires the chain fresh.
+// TestSequenceRecurringFailureKeepsSchedule: a failed child in a recurring sequence parent's cycle
+// halts the CURRENT chain (later siblings never arm) but does NOT kill the schedule.
 func TestSequenceRecurringFailureKeepsSchedule(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -654,10 +639,8 @@ func TestRetryResume(t *testing.T) {
 	}
 }
 
-// TestSequenceDependencyPark: an on-deck child with an unsatisfied
-// external blocker parks the chain (parent running, child BLOCKED, no
-// arm) — the stall is surfaced, not a silent gray pending. When the
-// blocker succeeds the chain advances automatically.
+// TestSequenceDependencyPark: an on-deck child with an unsatisfied external blocker parks the chain
+// (parent running, child BLOCKED, no arm) — the stall is surfaced, not a silent gray pending.
 func TestSequenceDependencyPark(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -707,9 +690,8 @@ func TestSequenceDependencyPark(t *testing.T) {
 	}
 }
 
-// TestSequenceBlockedStaysBlockedWhileBlockerNonTerminal: a dependency-
-// gated child whose blocker is still pending/failed stays BLOCKED (never
-// armed, never silently parked). Only a terminal-success blocker clears it.
+// TestSequenceBlockedStaysBlockedWhileBlockerNonTerminal: a dependency- gated child whose blocker
+// is still pending/failed stays BLOCKED (never armed, never silently parked).
 func TestSequenceBlockedStaysBlockedWhileBlockerNonTerminal(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -748,10 +730,8 @@ func TestSequenceBlockedStaysBlockedWhileBlockerNonTerminal(t *testing.T) {
 	}
 }
 
-// TestSequenceCancelledBlockerKeepsDependentBlocked: a cancelled blocker
-// keeps the dependent blocked (terminal-failure, exactly like failed) —
-// recoverable only via the existing recovery flow once the blocker is
-// resolved to a terminal-success state.
+// TestSequenceCancelledBlockerKeepsDependentBlocked: a cancelled blocker keeps the dependent
+// blocked (terminal-failure, exactly like failed).
 func TestSequenceCancelledBlockerKeepsDependentBlocked(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -779,10 +759,8 @@ func TestSequenceCancelledBlockerKeepsDependentBlocked(t *testing.T) {
 	}
 }
 
-// TestSequenceSkippedBlockerSatisfiesDependencyGate: a skipped external
-// blocker satisfies the dependency gate (AC1) — the dependent clears
-// blocked and arms in the same pass, exactly as if the blocker had
-// succeeded. A skipped dependency never blocks its dependents.
+// TestSequenceSkippedBlockerSatisfiesDependencyGate: a skipped external blocker satisfies the
+// dependency gate (AC1) — the dependent clears blocked and arms in the same pass.
 func TestSequenceSkippedBlockerSatisfiesDependencyGate(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -812,9 +790,8 @@ func TestSequenceSkippedBlockerSatisfiesDependencyGate(t *testing.T) {
 	}
 }
 
-// TestSequenceAdvanceOnSkippedPredecessor: a skipped in-order predecessor
-// releases the next strict child — the chain gate treats skipped as
-// terminal-success exactly like succeeded.
+// TestSequenceAdvanceOnSkippedPredecessor: a skipped in-order predecessor releases the next strict
+// child — the chain gate treats skipped as terminal-success exactly like succeeded.
 func TestSequenceAdvanceOnSkippedPredecessor(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -827,9 +804,8 @@ func TestSequenceAdvanceOnSkippedPredecessor(t *testing.T) {
 	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
 		t.Fatal(err)
 	}
-	// C1 is skipped (as the WorkflowReconciler would mark a bound child
-	// whose run completed with a skipped step). The strict chain gate must
-	// treat it as terminal-success: C2's position is reached.
+	// C1 is skipped (as the WorkflowReconciler would mark a bound child whose run completed with a
+	// skipped step).
 	setStatus(t, env.pool, c1.ID, domain.WorkItemSkipped)
 	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
 	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
@@ -843,15 +819,8 @@ func TestSequenceAdvanceOnSkippedPredecessor(t *testing.T) {
 	}
 }
 
-// TestSequenceManuallySkippedChildPassedOver drives the skip through the
-// user-set path (AC9/AC10) — a direct status write BEFORE the sequence ever
-// starts, not through a completing run (that path is already covered by
-// TestSequenceAdvanceOnSkippedPredecessor). With children C1, C2, C3 in
-// that sort order and C1 manually set to skipped, StartSequence must NOT
-// arm C1 at all: no leaf start recorded for it, armedWorkItems() contains
-// only C2, and C1 stays "skipped". Re-firing the sequence (the reset path)
-// must preserve the manual skip: resetSubtree never resets a skipped child
-// to pending, so the cursor passes over C1 again on every re-fire.
+// TestSequenceManuallySkippedChildPassedOver drives the skip through the user-set path (AC9/AC10) —
+// a direct status write BEFORE the sequence ever starts.
 func TestSequenceManuallySkippedChildPassedOver(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -883,10 +852,7 @@ func TestSequenceManuallySkippedChildPassedOver(t *testing.T) {
 		t.Fatalf("armed work items = %v, want [c2] (C1 never armed)", armed)
 	}
 
-	// Re-fire the sequence (the reset path). The manual skip on C1 must
-	// survive resetSubtree, and the cursor must pass over it again (C2 is
-	// still in-flight/running, so the arming loop waits on it rather than
-	// re-starting it — no new leaf start is expected here).
+	// Re-fire the sequence (the reset path).
 	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
 		t.Fatalf("StartSequence (re-fire): %v", err)
 	}
@@ -901,9 +867,8 @@ func TestSequenceManuallySkippedChildPassedOver(t *testing.T) {
 	}
 }
 
-// TestSequenceCompletionWithSkippedChild: a sequence whose children are all
-// succeeded or skipped is complete — the parent transitions to succeeded
-// and a skipped child never wedges the chain on itself.
+// TestSequenceCompletionWithSkippedChild: a sequence whose children are all succeeded or skipped is
+// complete — the parent transitions to succeeded and a skipped child never wedges the chain.
 func TestSequenceCompletionWithSkippedChild(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -927,9 +892,8 @@ func TestSequenceCompletionWithSkippedChild(t *testing.T) {
 	}
 }
 
-// TestSequenceParallelDispatchOnSharedDependency: two dependency-governed
-// siblings gated by the same external blocker arm CONCURRENTLY in a single
-// pass once the blocker succeeds — the core parallelism this fix enables.
+// TestSequenceParallelDispatchOnSharedDependency: two dependency-governed siblings gated by the
+// same external blocker arm CONCURRENTLY in a single pass once the blocker succeeds.
 func TestSequenceParallelDispatchOnSharedDependency(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -942,9 +906,8 @@ func TestSequenceParallelDispatchOnSharedDependency(t *testing.T) {
 	addDependency(t, env.pool, env.proj.ID, x.ID, b.ID, domain.DependencyBlocks)
 	reorder(t, env.pool, env.proj.ID, parent.ID, []string{a.ID, b.ID})
 
-	// Both children are dependency-governed by X; X is not done yet, so
-	// the chain parks with nothing armed and both children surfaced as
-	// blocked.
+	// Both children are dependency-governed by X; X is not done yet, so the chain parks with nothing
+	// armed and both children surfaced as blocked.
 	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
 		t.Fatal(err)
 	}
@@ -980,10 +943,8 @@ func TestSequenceParallelDispatchOnSharedDependency(t *testing.T) {
 	}
 }
 
-// TestSequenceStrictChainSinglePassArmsOnlyFirst: over [P, P] a single
-// reconcileParent pass arms only the first child — the just-armed
-// predecessor is non-terminal, so the next strict child's chain gate
-// blocks. Full serialization is preserved by construction.
+// TestSequenceStrictChainSinglePassArmsOnlyFirst: over [P, P] a single reconcileParent pass arms
+// only the first child — the just-armed predecessor is non-terminal.
 func TestSequenceStrictChainSinglePassArmsOnlyFirst(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1009,9 +970,8 @@ func TestSequenceStrictChainSinglePassArmsOnlyFirst(t *testing.T) {
 	}
 }
 
-// TestSequenceChainPositionNotReached: over [running, pending] strict
-// children the pending sibling's chain position is not reached while its
-// predecessor runs; it arms only after the predecessor succeeds.
+// TestSequenceChainPositionNotReached: over [running, pending] strict children the pending
+// sibling's chain position is not reached while its predecessor runs.
 func TestSequenceChainPositionNotReached(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1044,10 +1004,8 @@ func TestSequenceChainPositionNotReached(t *testing.T) {
 	}
 }
 
-// TestSequenceDependencyGovernedChildIgnoresChainPosition: a
-// dependency-governed child's ordering is its edges, not its chain
-// position — it arms alongside a still-running strict predecessor once its
-// dependency succeeds.
+// TestSequenceDependencyGovernedChildIgnoresChainPosition: a dependency-governed child's ordering
+// is its edges, not its chain position.
 func TestSequenceDependencyGovernedChildIgnoresChainPosition(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1089,10 +1047,8 @@ func TestSequenceDependencyGovernedChildIgnoresChainPosition(t *testing.T) {
 	}
 }
 
-// TestSequenceFailureHaltsAllIncludingDependencyGoverned: a failed child
-// ANYWHERE halts the whole chain — a dependency-governed sibling whose
-// edges are otherwise satisfied must NOT arm in a pass containing a
-// failure, and stays parked even after its blocker succeeds.
+// TestSequenceFailureHaltsAllIncludingDependencyGoverned: a failed child ANYWHERE halts the whole
+// chain — a dependency-governed sibling whose edges are otherwise satisfied must NOT arm in a pass.
 func TestSequenceFailureHaltsAllIncludingDependencyGoverned(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1132,10 +1088,8 @@ func TestSequenceFailureHaltsAllIncludingDependencyGoverned(t *testing.T) {
 	}
 }
 
-// TestSequenceStrictChildBehindDepParkedSiblingStaysParked: the chain gate
-// sees a dep-parked predecessor as non-terminal, so a strict child behind
-// it stays parked even though the child itself has no blockers — it arms
-// only once the parked predecessor reaches success.
+// TestSequenceStrictChildBehindDepParkedSiblingStaysParked: the chain gate sees a dep-parked
+// predecessor as non-terminal.
 func TestSequenceStrictChildBehindDepParkedSiblingStaysParked(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1147,9 +1101,7 @@ func TestSequenceStrictChildBehindDepParkedSiblingStaysParked(t *testing.T) {
 	addDependency(t, env.pool, env.proj.ID, x.ID, a.ID, domain.DependencyBlocks)
 	reorder(t, env.pool, env.proj.ID, parent.ID, []string{a.ID, b.ID})
 
-	// A is dependency-governed and parked on X; B is strict and sits behind
-	// A. B's chain position is not reached while A is non-terminal, so B
-	// stays parked even though B itself has no blockers.
+	// A is dependency-governed and parked on X; B is strict and sits behind A.
 	if err := StartSequence(ctx, env.pool, nil, approvalTestTenant, parent.ID, env.startFn()); err != nil {
 		t.Fatal(err)
 	}
@@ -1228,10 +1180,8 @@ func TestSequenceNestedDepthFirst(t *testing.T) {
 	}
 }
 
-// TestStartSequenceStartsRealRun verifies the engine hands the armed leaf
-// to the REAL workflow service: a workflow run is created and the child's
-// workflow_run_id is stamped (no config copy — the child's own bound
-// workflow is used).
+// TestStartSequenceStartsRealRun verifies the engine hands the armed leaf to the REAL workflow
+// service: a workflow run is created and the child's workflow_run_id is stamped (no config copy.
 func TestStartSequenceStartsRealRun(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1293,24 +1243,7 @@ func setField(t *testing.T, pool *db.Pool, id string, apply func(f *db.UpdateWor
 	}
 }
 
-// TestStopSequenceCascadesAndAborts is the regression test for the
-// "stop didn't stop" bug. StopSequence previously parked ONLY the node it
-// was called on: a sequence parent's descendant containers stayed
-// running/failed and kept arming children (and a FAILED parent auto-revived
-// on the next scan), so stopping an epic left the whole chain running.
-//
-// The fix: STOP is recursive. Stopping a parent parks the ENTIRE subtree —
-// every descendant → pending, scheduled starts cleared, stale run bindings
-// cleared, and any in-flight workflow run bound to a descendant is ABORTED
-// (run → aborted, step runs → failed, linked executions → terminated).
-//
-// The subtree is a nested sequence: parent(running) → container(running) →
-// leaf(running) whose leaf holds a REAL bound run. Stopping the parent
-// parks every level and aborts the leaf's in-flight run. This test asserts:
-//   - the leaf's bound run is aborted and its work item parked to pending,
-//   - the container and parent are also parked (recursion to depth 2),
-//   - no member of the subtree is running or failed (so the scan and the
-//     auto-revive path have nothing to pick up).
+// StopSequence previously parked ONLY the node it was called on.
 func TestStopSequenceCascadesAndAborts(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1322,9 +1255,8 @@ func TestStopSequenceCascadesAndAborts(t *testing.T) {
 	reorder(t, env.pool, env.proj.ID, parent.ID, []string{container.ID})
 	reorder(t, env.pool, env.proj.ID, container.ID, []string{leaf.ID})
 
-	// Arm the leaf's REAL workflow so it holds an in-flight bound run, and
-	// arm the container + parent as sequence runs so the subtree is a live
-	// nested chain: parent(running) → container(running) → leaf(running).
+	// Arm the leaf's REAL workflow so it holds an in-flight bound run, and arm the container + parent
+	// as sequence runs so the subtree is a live nested chain.
 	realStart := func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
 		return workflow.StartWorkflowDirect(ctx, env.pool, slog.New(slog.NewTextHandler(os.Stderr, nil)), tenantID, workflowID, projectID, workItemID)
 	}
@@ -1380,9 +1312,8 @@ func TestStopSequenceCascadesAndAborts(t *testing.T) {
 		t.Errorf("leaf run status = %s after stop, want aborted", leafRun.Status)
 	}
 
-	// A stopped chain must NOT auto-revive on a reconcile pass: the scan
-	// only picks up running/failed parents, and the auto-revive path only
-	// resurrects a FAILED parent. Assert a fresh reconcile pass does nothing.
+	// A stopped chain must NOT auto-revive on a reconcile pass: the scan only picks up running/failed
+	// parents, and the auto-revive path only resurrects a FAILED parent.
 	rec := NewSequenceReconciler(env.pool, logger, env.startFn())
 	if res := rec.Reconcile(ctx, parent.ID); res.Error != nil {
 		t.Fatalf("reconcile after stop: %v", res.Error)
@@ -1428,15 +1359,8 @@ func TestStopLeafIsIndividual(t *testing.T) {
 	}
 }
 
-// TestReconcileParentNoOpForNonSequenceParents is the regression test for
-// the notifier-path guard: reconcileParent must only advance a work item
-// that IS a sequence run (status running/failed, no bound workflow run,
-// has children). The WorkflowReconciler notifier fires for the parent of
-// ANY terminal bound work item — a parent that is a bound-run ticket, a
-// never-fired pending parent, or a terminal parent must be a no-op. Before
-// the guard, a never-scheduled parent's pending child flipped to running
-// and its workflow started, and a bound-run parent with all children
-// succeeded was spuriously marked succeeded.
+// TestReconcileParentNoOpForNonSequenceParents is the regression test for the notifier-path guard:
+// reconcileParent must only advance a work item that IS a sequence run (status running/failed.
 func TestReconcileParentNoOpForNonSequenceParents(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1516,9 +1440,8 @@ func TestReconcileParentNoOpForNonSequenceParents(t *testing.T) {
 	})
 }
 
-// TestStartSequenceFailedStartResetsChild: a leaf whose workflow start
-// fails must not be stranded running-with-no-run — it resets to pending
-// so the next pass re-arms.
+// TestStartSequenceFailedStartResetsChild: a leaf whose workflow start fails must not be stranded
+// running-with-no-run — it resets to pending so the next pass re-arms.
 func TestStartSequenceFailedStartResetsChild(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1540,15 +1463,8 @@ func TestStartSequenceFailedStartResetsChild(t *testing.T) {
 	}
 }
 
-// TestMidRunReorderArmsNewChainHeadNotBehindInFlightPredecessor is the
-// reordered-chain regression test under the parallel-arm semantics. A
-// ReorderWorkItems call while a child is running drags a pending sibling
-// to the front: the new chain head (no in-flight predecessor) IS armable
-// even while a later sibling is in flight — arming is gated per-child by
-// the child's OWN chain position and dependency edges, not by every
-// sibling. The chain-position protection still applies to a strict child
-// sitting BEHIND the in-flight child: it stays parked until its immediate
-// predecessor is succeeded.
+// TestMidRunReorderArmsNewChainHeadNotBehindInFlightPredecessor is the reordered-chain regression
+// test under the parallel-arm semantics.
 func TestMidRunReorderArmsNewChainHeadNotBehindInFlightPredecessor(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1610,9 +1526,8 @@ func TestMidRunReorderArmsNewChainHeadNotBehindInFlightPredecessor(t *testing.T)
 	}
 }
 
-// TestResumeSequenceParksThenResumes: a chain parked by StopSequence
-// (parent → pending) is picked up by ResumeSequence and continues from the
-// first non-succeeded child, keeping prior successes.
+// TestResumeSequenceParksThenResumes: a chain parked by StopSequence (parent → pending) is picked
+// up by ResumeSequence and continues from the first non-succeeded child, keeping prior successes.
 func TestResumeSequenceParksThenResumes(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1666,13 +1581,8 @@ func TestResumeSequenceParksThenResumes(t *testing.T) {
 	}
 }
 
-// TestResumeSequenceHaltedChainReArmsFailedChild is the regression test
-// for the "Resume button on a sequence parent does not resume the
-// sequence" bug. A chain halted on a failed child (parent failed) resumes
-// through ResumeSequence: the failed child is re-armed to running — re-run,
-// not skipped — and prior sibling state is kept. Before the fix,
-// ResumeSequence handed the still-failed child to reconcileParent, whose
-// failed-child branch re-halted the chain (a resume no-op).
+// TestResumeSequenceHaltedChainReArmsFailedChild is the regression test for the "Resume button on a
+// sequence parent does not resume the sequence" bug.
 func TestResumeSequenceHaltedChainReArmsFailedChild(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1714,10 +1624,8 @@ func TestResumeSequenceHaltedChainReArmsFailedChild(t *testing.T) {
 	}
 }
 
-// TestResumeSequenceHaltedCancelledChild: a chain halted on a CANCELLED
-// first non-succeeded child resumes exactly like a failed one — the
-// cancelled child is reset to pending and re-armed (cancellation is the
-// same halt semantics as failure).
+// TestResumeSequenceHaltedCancelledChild: a chain halted on a CANCELLED first non-succeeded child
+// resumes exactly like a failed one.
 func TestResumeSequenceHaltedCancelledChild(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1754,10 +1662,8 @@ func TestResumeSequenceHaltedCancelledChild(t *testing.T) {
 	}
 }
 
-// TestResumeSequenceHaltedContainerChild: resuming a chain halted on a
-// FAILED container child re-arms the container, which resets its subtree —
-// the nested chain re-runs from its own first non-succeeded child through
-// the existing container arm path (no recursion added).
+// TestResumeSequenceHaltedContainerChild: resuming a chain halted on a FAILED container child
+// re-arms the container, which resets its subtree.
 func TestResumeSequenceHaltedContainerChild(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1803,10 +1709,8 @@ func TestResumeSequenceHaltedContainerChild(t *testing.T) {
 	}
 }
 
-// TestResumeSequenceNoChildren: resume on a leaf (no children) is
-// rejected — only a sequence parent can be resumed. (STOP on a leaf is a
-// valid individual halt — see TestStopLeafIsIndividual — so it is not
-// rejected here.)
+// TestResumeSequenceNoChildren: resume on a leaf (no children) is rejected — only a sequence parent
+// can be resumed.
 func TestResumeSequenceNoChildren(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1818,10 +1722,8 @@ func TestResumeSequenceNoChildren(t *testing.T) {
 	}
 }
 
-// TestStopSequenceInFlightChildInert: STOP parks the parent while an
-// in-flight child keeps running; the child's later success does NOT revive
-// the parked parent (completion is inert because the engine only advances
-// running/failed parents).
+// TestStopSequenceInFlightChildInert: STOP parks the parent while an in-flight child keeps running;
+// the child's later success does NOT revive the parked parent (completion is inert because.
 func TestStopSequenceInFlightChildInert(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1842,9 +1744,8 @@ func TestStopSequenceInFlightChildInert(t *testing.T) {
 	if got := mustGet(t, env.pool, parent.ID); got.Status != domain.WorkItemPending {
 		t.Fatalf("parent status after stop = %q, want pending", got.Status)
 	}
-	// The in-flight child finishes; its completion must NOT revive the
-	// parked parent (reconcileOne's sequence-parent guard is inert on a
-	// pending parent).
+	// The in-flight child finishes; its completion must NOT revive the parked parent (reconcileOne's
+	// sequence-parent guard is inert on a pending parent).
 	setStatus(t, env.pool, c1.ID, domain.WorkItemSucceeded)
 	rec := NewSequenceReconciler(env.pool, nil, env.startFn())
 	if err := rec.reconcileOne(ctx, approvalTestTenant, parent.ID); err != nil {
@@ -1858,10 +1759,8 @@ func TestStopSequenceInFlightChildInert(t *testing.T) {
 	}
 }
 
-// TestStopSequenceRecurringParentKeepsCadence: STOP on a RECURRING sequence
-// parent parks it "recurring" (not "pending"), so the cadence stays armed and
-// the RecurringFireReconciler re-fires the next occurrence on schedule — a
-// pending parent with a schedule would be a dead state nothing ever re-fires.
+// TestStopSequenceRecurringParentKeepsCadence: STOP on a RECURRING sequence parent parks it
+// "recurring" (not "pending").
 func TestStopSequenceRecurringParentKeepsCadence(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1894,18 +1793,8 @@ func TestStopSequenceRecurringParentKeepsCadence(t *testing.T) {
 // reorder sets sort_order on the given sibling ids in order, mirroring
 // ReorderWorkItems' 1..N numbering (test helper).
 
-// TestSequenceWedge_RunningParentFivePendingSelfHeals (AC1 + AC4 regression):
-// Reproduces the field-observed wedge 01M0JV64PQY499KWAZA8W9FZ2J — a feature
-// left `+"`"+'`running`+"`"+` with 5 direct children `+"`"+'`pending`+"`"+` and a frozen
-// `+"`"+'`updated_at`+"`"+` (no progress). With a persistently failing leaf
-// `+"`"+'`StartWorkflowDirect`+"`"+`, the child ping-pongs running→pending every
-// 200ms via `+"`"+'`resetArmedChild`+"`"+` with no backoff surface, wedging the parent
-// silently. After the fix the wedge self-heals: the child is gated by
-// exponential backoff (5s*2^(n-1) cap 5m) and after 5 attempts is marked
-// `+"`"+'`failed`+"`"+` with `+"`"+'`sequence_failure_reason`+"`"+`, halting the parent
-// to an operator-visible state within a bounded window, without waiting
-// an extra backoff interval (cap checked before gate). The test manipulates
-// `+"`"+'`sequence_last_attempt_at`+"`"+` to bypass wall-clock waits.
+// TestSequenceWedge_RunningParentFivePendingSelfHeals (AC1 + AC4 regression): Reproduces the
+// field-observed wedge 01M0JV64PQY499KWAZA8W9FZ2J.
 func TestSequenceWedge_RunningParentFivePendingSelfHeals(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -1995,9 +1884,7 @@ func TestSequenceWedge_RunningParentFivePendingSelfHeals(t *testing.T) {
 	// Regression: a sibling succeeded child must still be preserved (STOP/START contract).
 }
 
-// TestSequenceWedge_StalledParentNoProgressHalts verifies the liveness guard:
-// a `+"`"+'`running`+"`"+` parent with no in-flight / blocked children and no progress
-// for stallThreshold is halted to failed with a reason instead of wedging silently.
+// TestSequenceWedge_StalledParentNoProgressHalts verifies the liveness guard.
 func TestSequenceWedge_StalledParentNoProgressHalts(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -2048,9 +1935,8 @@ func TestSequenceWedge_StalledParentNoProgressHalts(t *testing.T) {
 	}
 }
 
-// TestSequenceWedge_SuccessConvergesNotStalls ensures the regression branch:
-// when leaf start succeeds the parent converges to the first non-succeeded
-// child instead of wedging.
+// TestSequenceWedge_SuccessConvergesNotStalls ensures the regression branch: when leaf start
+// succeeds the parent converges to the first non-succeeded child instead of wedging.
 func TestSequenceWedge_SuccessConvergesNotStalls(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -2098,11 +1984,8 @@ func reorder(t *testing.T, pool *db.Pool, projectID, parentID string, ordered []
 	}
 }
 
-// createRecurringParent creates a sequence parent with a recurring schedule
-// and a FUTURE next_run_at — mirroring the RecurringFireReconciler, which
-// pre-advances the cursor before it fires an occurrence. A future cursor
-// also keeps tests isolated: no test leaves a still-due recurring item in
-// the shared test DB that a later fire-reconciler invocation would pick up.
+// createRecurringParent creates a sequence parent with a recurring schedule and a FUTURE
+// next_run_at — mirroring the RecurringFireReconciler.
 func createRecurringParent(t *testing.T, pool *db.Pool, projID, title string) db.WorkItemRow {
 	t.Helper()
 	ctx := context.Background()
@@ -2135,10 +2018,8 @@ func createRecurringParent(t *testing.T, pool *db.Pool, projID, title string) db
 	return w
 }
 
-// TestSequenceStopParksBlockedChild: StopSequence on a parent whose first
-// child is blocked must park EVERY descendant to pending — a blocked child
-// falls into haltWorkItem's default branch (it is not in-flight), so the
-// stopped chain is fully at rest and re-runnable.
+// TestSequenceStopParksBlockedChild: StopSequence on a parent whose first child is blocked must
+// park EVERY descendant to pending.
 func TestSequenceStopParksBlockedChild(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -2167,9 +2048,8 @@ func TestSequenceStopParksBlockedChild(t *testing.T) {
 	}
 }
 
-// TestSequenceResumeClearsBlockedFirstChild: ResumeSequence routes the
-// first blocked child through reconcileParent, which clears it back to
-// pending (and arms it once its blocker is terminal-success).
+// TestSequenceResumeClearsBlockedFirstChild: ResumeSequence routes the first blocked child through
+// reconcileParent, which clears it back to pending (and arms it once its blocker.
 func TestSequenceResumeClearsBlockedFirstChild(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()
@@ -2208,9 +2088,8 @@ func TestSequenceResumeClearsBlockedFirstChild(t *testing.T) {
 	}
 }
 
-// TestSequenceStartResetsBlockedSubtree: a recurring fire (StartSequence)
-// resets every descendant to pending — a previously blocked child must be
-// re-armed fresh for the new cycle, not left blocked.
+// TestSequenceStartResetsBlockedSubtree: a recurring fire (StartSequence) resets every descendant
+// to pending — a previously blocked child must be re-armed fresh for the new cycle.
 func TestSequenceStartResetsBlockedSubtree(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()

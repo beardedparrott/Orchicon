@@ -1,20 +1,7 @@
 package orchicon
 
-// Parity matrix (consolidated) — one subtest per acceptance-criterion
-// surface of the native adapter session engine, run entirely against the
-// scripted mock provider (no live API). It mirrors the individual
-// qa_loop_test cases but asserts every AC surface in one named matrix so
-// the reviewer / QA can point at a single place. Every subtest reuses the
-// shared mock provider + recording callbacks from qa_harness_test.go.
-//
-// NOTE on the recovery surface: the plan's "drive bridge Start with a
-// RecoveryTrigger mock" seam does not exist on NativeBridge — recovery is
-// the platform-level internal/recovery.Engine.TriggerOnFailure, invoked by
-// the recovery service when an execution fails, not by the session loop or
-// the bridge. The parity assertion here therefore exercises the session's
-// crash-safe resume path: a fatal stall surfaces OnStall(fatal) + OnResult
-// failure, and a recovered execution (new session over the SAME durably
-// persisted transcript) replays history and continues to success.
+// Parity matrix (consolidated) — one subtest per acceptance-criterion surface of the native adapter
+// session engine, run entirely against the scripted mock provider (no live API).
 
 import (
 	"context"
@@ -195,9 +182,8 @@ func TestParityMatrix(t *testing.T) {
 		}
 	})
 
-	// recovery round trip: a TERMINAL budget abort surfaces OnResult
-	// failure with no stall; a recovered execution (new session over the
-	// same durable transcript) replays history and continues to success.
+	// recovery round trip: a TERMINAL budget abort surfaces OnResult failure with no stall; a recovered
+	// execution (new session over the same durable transcript) replays history and continues.
 	t.Run("recovery_round_trip", func(t *testing.T) {
 		dir := t.TempDir()
 
@@ -240,10 +226,8 @@ func TestParityMatrix(t *testing.T) {
 			t.Errorf("phase1 provider turns = %d, want 3 (abort on the 3rd tool call)", provA.requestCount())
 		}
 
-		// Phase 2 — recovery resume: a new execution over the SAME durable
-		// transcript (reuse ProjectDir + execution id) replays the prior
-		// session and continues to success. This is the crash-safe recovery
-		// round trip the platform's recovery engine re-dispatches.
+		// Phase 2 — recovery resume: a new execution over the SAME durable transcript (reuse ProjectDir +
+		// execution id) replays the prior session and continues to success.
 		provB := &mockProvider{turns: []scriptedTurn{
 			{events: []Event{TextDelta{Text: "recovered"}}, finish: StopStop, usage: Usage{InputTokens: 50, OutputTokens: 12}},
 		}}

@@ -29,7 +29,9 @@
 
 Orchicon is an open-core platform for orchestrating autonomous AI agents. It provides a **control plane** (single Go binary) that manages the full lifecycle of AI work: defining workers (agent personas with permissions and budgets), organizing work into projects and work-item DAGs, scheduling tasks to available runtime adapters, monitoring execution with OpenTelemetry, enforcing governance policies via OPA/Rego, and recovering from failures with a built-in workflow engine.
 
-The frontend is a TypeScript/React SPA with a visual React Flow workflow editor, real-time execution streaming, and an embedded Grafana telemetry dashboard (Tempo + Loki + VictoriaMetrics). The entire stack — PostgreSQL, NATS JetStream, OpenTelemetry, Grafana — runs in a single container (`orchicon container` PID-1 supervisor), managed by `scripts/container.sh` or launched directly from the GHCR image `ghcr.io/beardedparrott/orchicon`.
+The frontend is a TypeScript/React SPA with a visual React Flow workflow editor, real-time execution streaming, and native telemetry panes that read Tempo + Loki + VictoriaMetrics through the plane's authenticated Connect client. (A Grafana UI embedding and its `/grafana` reverse proxy were REMOVED — see the auth-bypass note in the telemetry section.) The plane and its services — PostgreSQL, NATS JetStream, the OTel collector and the
+telemetry backends — are **host processes** of your user, one set per instance; the plane itself is
+`orchicon serve` (§One shape).
 
 > **Orchicon orchestrates. Runtimes execute.**
 
@@ -82,7 +84,7 @@ The frontend is a TypeScript/React SPA with a visual React Flow workflow editor,
 |---|---|---|
 | Database | PostgreSQL 16 (Alpine) | Primary data store |
 | Message Broker | NATS 2.10 (JetStream) | Event bus, at-least-once delivery |
-| Observability | Grafana (Tempo + Loki + VictoriaMetrics) | Traces, metrics, logs dashboard |
+| Observability | Native telemetry panes (Tempo + Loki + VictoriaMetrics) | Traces, metrics, logs — read by the plane's own query client |
 | Trace Backend | Grafana Tempo 2.7 | Local-disk trace storage (OTLP ingest) |
 | Log Backend | Grafana Loki 3.4 | Log aggregation (OTLP ingest, filesystem storage) |
 | Metric Backend | VictoriaMetrics | PromQL-compatible metrics (remote-write ingest) |
@@ -90,7 +92,7 @@ The frontend is a TypeScript/React SPA with a visual React Flow workflow editor,
 | Object Storage | Local filesystem or S3 | Blob store abstraction |
 | Policy Engine | OPA v1 (Rego) | Governance policy evaluation |
 | Runtime Adapter | **Built-in native engine (default)**, plus external adapters (OpenCode, …) | Sessions run inside the control plane by default, so **no adapter CLI is required**. External adapters are pluggable over gRPC and mounted from the operator's host install when a run asks for one — never bundled |
-| Deployment | Single container (`deploy/container/`) | `orchicon container` PID-1 supervisor runs the whole stack in one image (GHCR `ghcr.io/beardedparrott/orchicon`); `scripts/container.sh` manages dev (`orchicon-cnt-dev`, :8080/:3002) and prod (`orchicon-cnt-prod`, :8091/:3003) instances |
+| Deployment | Host processes (`orchicon install`) | One shape: the plane (`orchicon serve`) and its services (postgres, nats, tempo, loki, VictoriaMetrics, the OTel collector) are HOST processes the supervisor owns; a container exists only as a per-project **workflow runtime container** |
 
 ---
 
@@ -127,7 +129,7 @@ graph TB
 
     subgraph "Observability Stack"
         OTel[OTel Collector]
-        Grafana[Grafana UI]
+        QueryTier[Plane telemetry query client]
     end
 
     subgraph "Runtime"
@@ -141,7 +143,7 @@ graph TB
     subgraph "Frontend (Browser)"
         SPA[React SPA :5173<br/>Vite / TanStack Router]
         ReactFlow[React Flow<br/>Workflow Editor]
-        GrafanaIFrame[Embedded Grafana]
+        TelemetryPage[Telemetry page]
     end
 
     HTTP --> Connect
@@ -168,10 +170,10 @@ graph TB
     OTel --> Tempo
     OTel --> Loki
     OTel --> VM
-    Grafana --> Tempo
-    Grafana --> Loki
-    Grafana --> VM
-    Grafana -.-> GrafanaIFrame
+    QueryTier --> Tempo
+    QueryTier --> Loki
+    QueryTier --> VM
+    QueryTier -.-> TelemetryPage
     SPA -.-> HTTP
     ReactFlow --> SPA
 ```
@@ -223,7 +225,7 @@ sequenceDiagram
 
 2. **Transactional Outbox** — Every mutation writes an outbox row in the same database transaction as the state change. A background relay polls unpublished rows every 500ms and publishes to NATS JetStream for at-least-once delivery.
 
-3. **Single Binary** — The Go binary embeds the single-container runtime configs (`deploy/container/configs/`), SQL migrations, and the built frontend SPA via `go:embed`. No external dependencies at runtime beyond Docker. The **single container** (`orchicon container` runs the whole stack as PID-1 — §Single-Container Deployment) is the only full-stack deployment; the same binary also runs headless via `orchicon serve`.
+3. **Single Binary** — The Go binary embeds the supervised services' runtime configs (`deploy/configs/` — Tempo/Loki/OTel-collector, with `@DATA_DIR@` and `@…_PORT@` placeholders the supervisor substitutes), SQL migrations, and the built frontend SPA via `go:embed`. No external dependencies at runtime beyond the engine a workflow's runtime container needs. The plane and its services are host processes: `orchicon install` starts them, `orchicon serve` runs the plane.
 
 4. **Non-blocking OTel** — The OpenTelemetry pipeline uses `grpc.NewClient` (non-blocking dial), so the control plane boots in <2 seconds even when the OTel collector is not yet healthy.
 
@@ -233,9 +235,9 @@ sequenceDiagram
 
 7. **Adapter Bridge Pattern** — Runtimes are pluggable gRPC sidecars. The built-in adapter drives the OpenCode CLI — locally as a subprocess (headless `orchicon serve`) or, for workflow-run executions, inside the per-workflow runtime container via `orchicon runtime-daemon` — parsing its JSON telemetry output. Future runtimes implement the `orchicon.adapter.v1` gRPC contract.
 
-8. **Worker Sandboxing (layered defense)** — Every worker execution is contained by three layers, all applied to **every** worker automatically and enforced even under `--auto`:
+8. **Worker Sandboxing (defense-in-depth — NOT containment in local mode)** — Every worker execution is fenced by three layers, all applied to **every** worker automatically and enforced even under `--auto`. None of the three is a containment boundary — the OS-guard bullet below states what that means in each mode:
     - **opencode permission deny rules** (`permissionRules()` in `internal/opencode/config.go`) injected via `OPENCODE_CONFIG_CONTENT`. `external_directory` is `deny` by default with a **single precise carve-out**: `/tmp/orchicon/**` is `allow`, so workers can use `/tmp/orchicon` as a scratch directory (screenshots, logs, downloaded artifacts) but every other path outside the project's `--dir` is blocked — the carve-out deliberately does not match the supervisor socket, the execution-guard shims, or the `/tmp/opencode-data-*` dirs that hold the seeded model auth.json copies. An extensive `bash` deny list blocks `rm`/`sudo`/`dd`/`mkfs*`/`fdisk`/`parted`/`shred`/`wipefs`/LVM tools, root-wide `chmod -R`/`chown -R`, `/dev/sd*` redirection, shell-construct smuggling variants (`(rm -rf /) &`, `{ rm -rf /; }`, chained `;`/`&&`/`&`/`|`), and download-and-execute. No catch-all `*` allow rule is emitted. There are now **two permission profiles**, selected by `ConfigOptions.PermissionProfile` (the zero value `""` means **worker**): the **worker** profile above, carried byte-identically by every dispatched execution and by the shared worker serve, and an **interactive** profile carried by the Ask Orchicon serve (`NewAskHostServe` — its own `opencode serve`, because the permission config is per-process) — `external_directory` **allowed** (an interactive session reaches the operator's own filesystem; the tool-layer boundary and the consent layer decide scope and action), writes and commands raising opencode's own `ask` (which is what makes the `permission.asked` events we relay real asks rather than an artifact of deny-by-default; the ask's detail now rides `scheduler.SessionEvent.Detail` to the consent layer), and the never-allow class still hard-denied. The interactive profile deliberately does **not** inherit the composite-tools `read`/`grep` deny — that exists to force workers onto `batch_read`/`batch_grep` and is worker-only. The never-allow class itself is declared once in `internal/neverallow` and consumed by BOTH the config builder and the OS-level execution guard (`internal/guard`, which renders its shim set and its `case` arm from it), so the two layers cannot drift apart.
-    - **OS-level execution guard** (`internal/guard/guard.go`) — shims dangerous binaries (`rm`, `sudo`, `dd`, `mkfs*`, `fdisk`, `parted`, `shred`, `wipefs`, LVM, `chmod`, `chown`, `mv`, `cp`, `ln`) ahead of the worker's PATH. Any process the worker spawns — including a python TUI, `os.system`, or `subprocess.run` issuing `rm -rf /` — resolves the command through the shim and is refused when it targets `/`, `~`, `$HOME`, `/home`, or any path outside the project directory. This closes the subprocess hole that opencode's rules cannot see (a destructive command issued inside a python TUI only ever looks like `python tui.py` to opencode). This is defense-in-depth, not a container: a worker that resolves the real binary by absolute path or writes its own tool still escapes. The containment layer for those cases is the workflow runtime container (§Workflow Runtime Containers) — every execution runs inside a short-lived, root-free container, so even a fully compromised worker cannot touch the host.
+    - **OS-level execution guard** (`internal/guard/guard.go`) — shims dangerous binaries (`rm`, `sudo`, `dd`, `mkfs*`, `fdisk`, `parted`, `shred`, `wipefs`, LVM, `chmod`, `chown`, `mv`, `cp`, `ln`) ahead of the worker's PATH. Any process the worker spawns — including a python TUI, `os.system`, or `subprocess.run` issuing `rm -rf /` — resolves the command through the shim and is refused when it targets `/`, `~`, `$HOME`, `/home`, or any path outside the project directory. This closes the subprocess hole that opencode's rules cannot see (a destructive command issued inside a python TUI only ever looks like `python tui.py` to opencode). This is defense-in-depth, not containment: a worker that resolves the real binary by absolute path or writes its own tool still escapes. In **runtime** mode the containment layer for those cases is the workflow runtime container (§Workflow Runtime Containers) — every execution runs inside a short-lived, root-free container, so even a fully compromised worker cannot touch the host. In **local** mode there is no such layer: the worker *is* a host process with the user's own filesystem access, and the two layers above are all that stand between it and the host. If isolation matters, enable **runtime containers for the project** (project **Execution mode** → `runtime`); the UI states this consequence where the mode is chosen.
     - **Worker prompt context** — every canned worker's AGENTS.md carries a "Safety rules" block (see `internal/db/seed_workers.go`) forbidding destructive commands, destructive "security testing", and scope creep. Review/QA workers additionally run the **safety lint** — Semgrep (a cross-platform Python CLI, works on Linux/macOS/Windows) with Orchicon's destructive-command ruleset — by running `semgrep scan --config .orchicon/semgrep_orchicon.yml --error .` from the project root. The ruleset and a `.semgrepignore` are written into every project by the control plane (`internal/opencode/lint.go`).
 
 ### Domain Model
@@ -327,15 +329,16 @@ Orchicon/
 ├── ARCHITECTURE.md              # ← This file: architecture, development, deployment, ops
 ├── USERGUIDE.md                 # Operator's guide: install + every screen in the GUI and TUI
 ├── LICENSE                      # Custom license (non-commercial)
-├── Makefile                     # All targets: build, test, gen, container-*, ci
+├── Makefile                     # All targets: build, test, gen, instance-*, ci
 ├── opencode.jsonc               # Opencode tool configuration
 ├── README.md                    # Project introduction & quick start
 ├── wrangler.toml                # Cloudflare Pages project config
 │
 ├── cmd/
 │   └── orchicon/                # Go binary entry point
-│       ├── main.go              # Subcommand dispatch (serve, container, runtime-*, db, version, etc.)
-│       ├── container.go         # `orchicon container` PID-1 supervisor
+│       ├── main.go              # Subcommand dispatch (serve, host-services, runtime-*, db, version, etc.)
+│       ├── host_services.go     # Host services supervisor (postgres, nats, telemetry backends)
+│       ├── install_host.go      # `orchicon install`: the host plane + its host services
 │       ├── serve.go             # `orchicon serve` headless control plane
 │       ├── serve_state.go       # Detached serve state (PID file, logs)
 │       ├── runtime.go           # `runtime-daemon` / `runtime-supervisor` / `runtime-client`
@@ -343,7 +346,6 @@ Orchicon/
 │       └── procattr_windows.go  # Windows process attributes
 │
 ├── deploy/
-│   ├── container/               # Single-container image (Dockerfile + embedded configs)
 │   └── runtime/                 # Workflow runtime container image (toolchain base + :gui variant)
 │       ├── Dockerfile           #   base image (baked toolchain, no-root model)
 │       └── Dockerfile.gui       #   :gui variant (headless GUI libs) + custom-image template
@@ -351,7 +353,7 @@ Orchicon/
 ├── internal/
 │   ├── adapter/                 # RuntimeAdapterService (list adapters, capabilities)
 │   ├── aigateway/               # AI Gateway: model/MCP discovery, usage recording
-│   ├── api/                     # Connect handler mounting, Grafana reverse proxy
+│   ├── api/                     # Connect handler mounting
 │   ├── auth/                    # OIDC, API keys, JWT tokens, identity resolution
 │   ├── blobstore/               # Blob abstraction: local filesystem + S3
 │   ├── config/                  # Environment-driven configuration
@@ -373,7 +375,7 @@ Orchicon/
 │   ├── recovery/                # Recovery engine + RecoveryService
 │   ├── scheduler/               # TaskReconciler, WorkflowReconciler, ScheduledRunReconciler, SequenceReconciler, RecurringFireReconciler
 │   ├── server/                  # Composition root (wires all dependencies)
-│   ├── telemetry/               # OTel setup, Grafana-stack query client, telemetry service
+│   ├── telemetry/               # OTel setup, telemetry-backend query client, telemetry service
 │   ├── tenant/                  # Tenant context plumbing
 │   ├── version/                 # Build-time version metadata
 │   ├── webhook/                 # Webhook dispatcher + WebhookService
@@ -410,14 +412,12 @@ Orchicon/
 │
 ├── deploy/
 │   └── container/
-│       ├── Dockerfile                    # Single-container image (PID-1 supervisor entrypoint)
 │       ├── .dockerignore                 # Build-context excludes
 │       └── configs/                      # Embedded runtime configs (@DATA_DIR@ placeholders):
 │           ├── tempo.yaml                #   Tempo (OTLP ingest on 14317/14318)
 │           ├── loki.yaml                 #   Loki (gRPC on 9096)
-│           ├── otel-collector.yaml       #   Collector fan-out to localhost backends
-│           ├── grafana.ini               #   Grafana (sub-path + anonymous)
-│           └── grafana-provisioning/     #   Grafana datasources + Orchicon dashboard
+│           └── otel-collector.yaml       #   Collector fan-out to localhost backends
+│                                          #   (grafana.ini + grafana-provisioning/ REMOVED with Grafana)
 │
 ├── frontend/
 │   ├── index.html                # Vite entry HTML
@@ -476,7 +476,7 @@ Orchicon/
 │   ├── install.sh               # Linux/macOS one-liner installer
 │   ├── install.ps1              # Windows PowerShell installer (provisions WSL2, runs the stack inside it)
 │   ├── install-local.sh         # Build & install from local source to ~/.local/bin
-│   ├── container.sh             # Dev/prod single-container instances (build/up/down/status/logs)
+│   ├── instance-ports.sh       # Per-instance ports + DSN for the inner loop (the shell port table)
 │   ├── orchicon.sh              # Host-resident plane: start/stop/restart/status/logs/rebuild (dev|prod)
 │   ├── build-site.sh            # Cloudflare Pages build step
 │   ├── check-rls.sh             # RLS CI gate (tenant isolation verification)
@@ -492,7 +492,7 @@ Orchicon/
     ├── CODEOWNERS               # @beardedparrott owns everything
     └── workflows/
         ├── auto-release.yml     # Auto-bumps version when release-labeled PR merges
-        └── release.yml          # Builds binaries for 4 platforms, creates GitHub Release
+        └── release.yml          # Builds binaries for 5 platforms, creates GitHub Release
 ```
 
 ### Where to Find Key Things
@@ -520,16 +520,16 @@ Orchicon/
 | **Outbox relay** | `internal/outbox/relay.go` |
 | **Telemetry setup** (OTel) | `internal/telemetry/telemetry.go` |
 | **Config** (env vars) | `internal/config/config.go` |
-| **Single container** (PID-1 supervisor) | `cmd/orchicon/container.go` + `deploy/container/` |
+| **Host services** (supervisor ownership) | `cmd/orchicon/host_services.go` + `cmd/orchicon/install_host.go` |
 | **Frontend entry point** | `frontend/index.html` + `frontend/src/main.tsx` |
 | **User guide** (install + every GUI/TUI screen) | `USERGUIDE.md` |
 | **Frontend API clients** | `frontend/src/api/clients.ts` |
 | **Frontend routes** | `frontend/src/routes/` |
 | **Workflow canvas editor** | `frontend/src/components/workflow-editor/` |
 | **Landing page** | `site/index.html` |
-| **Install scripts** | `scripts/install.sh` (Linux/macOS), `scripts/install.ps1` (Windows → provisions WSL2, installs the Linux binary inside the distro) |
-| **Container instance controller** | `scripts/container.sh` |
-| **Host plane controller** | `scripts/orchicon.sh` |
+| **Install scripts** | `scripts/install.sh` (Linux/macOS), `scripts/install.ps1` (Windows → the NATIVE Windows plane: installs `orchicon.exe` and `orch.exe` as user processes, with WSL2 needed only as the substrate for workflow containers) |
+| **Plane lifecycle controller** | `scripts/orchicon.sh` — host plane, host services and the dev loop (no instance container) |
+| **Instance ports** (per-instance port table) | `scripts/lib/instances.sh` + `scripts/instance-ports.sh` |
 | **CI/CD workflows** | `.github/workflows/` |
 | **Operator's working notes** | `AGENTS.md`, `UPDATES.md`, `worker.md`, `developer.md`, `CLOUDFLARE_SETUP.md` — the maintainer's own files. **Gitignored and not in the repository**: they describe how this project is built rather than what it does, and nothing in the build, the tests or the runtime reads them from disk. (References to an "AGENTS.md" elsewhere in these docs are the per-worker *prompt field* — a database-backed section of the composed worker prompt — which is a different thing.) |
 
@@ -548,7 +548,13 @@ Both clients drive the **same** server, the same conversations, and the same con
 | | |
 |---|---|
 | **GUI** | the `/ask-orchicon` route; composer with the model chip, the stat strip, a **Fullsend** dropdown, and the mode dropdown |
-| **TUI** | `bin/orch`, `F1 · Ask Orchicon`; composer with the mode pill and the `FULLSEND` badge, slash commands (`/fullsend`, `/mode`, `/grants`, `/permissions`) |
+| **TUI** | `bin/orch`, `F1 · Ask Orchicon`; composer with the mode pill and the `FULLSEND` badge, slash commands (`/fullsend`, `/mode`, `/grants`, `/permissions`, `/plane`, `/plane-start`, `/plane-stop`, `/plane-restart`) |
+
+The TUI is also a **plane lifecycle control surface** (`/plane`, `/plane-start`, `/plane-stop`,
+`/plane-restart` plus a footer state chip: up / down / drifted / not local). It calls
+`internal/planecontrol` **directly** — no API, no lifecycle RPC — which is what lets it START a plane
+that is not serving, since `orch` is a separate binary. The web app carries no lifecycle control by
+design (a browser cannot spawn a process); see `docs/tui-parity.md`.
 
 A conversation is per-project, carries its own model, and is reachable from either client. Consent
 state is server-side, so a decision made in one client settles the card in the other — including a
@@ -861,82 +867,88 @@ Agent-memory session storage is configured per tenant; the memory tools (`orchic
 
 ### Compaction controls
 
-Set under **Settings → Defaults → Execution budget** (per-worker `budget_overrides`): the budget gates (`tokens`, `cost_usd`, `wall_clock_seconds`, `tool_call_count`) and the `compact_max_turns`/`compact_tiers` ladder drive the native engine's context management (see [USERGUIDE.md §11.3](USERGUIDE.md#113-settings) for the exact semantics). Compaction only fires on a **LIVE context-hint source** (never guessed context): a model that reports real metadata (Ollama `/api/show` true metadata) or a probed/catalog context window; when no hint exists the picker shows a `WARN` and compaction never guesses the window.
+Set under **Settings → Defaults → Execution budget** (per-worker `budget_overrides`): the budget gates (`tokens`, `cost_usd`, `wall_clock_seconds`, `tool_call_count`) and the `compact_max_turns`/`compact_tiers` ladder drive the native engine's context management. **Every gate defaults to NO GATE** (an unset key is no limit; an explicit `0` also disables it) — a ceiling exists only because an operator set one (see [USERGUIDE.md §11.3](USERGUIDE.md#113-settings) for the exact semantics). Compaction only fires on a **LIVE context-hint source** (never guessed context): a model that reports real metadata (Ollama `/api/show` true metadata) or a probed/catalog context window; when no hint exists the picker shows a `WARN` and compaction never guesses the window.
 
 ## Development Guide
 
 ### Local Development Loop
 
-The fastest local development cycle — stop the dev instance, rebuild the binary + image, start it again:
+The fastest local development cycle — stop the dev instance, rebuild the binary, start it again. The instance is a **host** process: no image is built and no container is created (only the workflow runtime images come from a container engine, and those are `make runtime-build`).
 
 ```bash
-make container-rebuild instance=dev     # stop dev container → build bin/orchicon + image → start dev container
-make container-rebuild instance=prod    # same for the prod instance
+make instance-rebuild instance=dev      # stop dev instance → build bin/orchicon → start dev instance
+make instance-rebuild instance=prod     # same for the prod instance
 ```
 
-`container-rebuild` **always forces a fresh frontend build** (`force-fe=1`), so a rebuilt instance is guaranteed to reflect the current source — the `fe-build` stamp check that normally skips an unchanged frontend is bypassed. This avoids the trap where a stale `frontend/dist` silently ships the previous UI after a rebuild (the repeated "my frontend fix went invisible" failure): the one-command rebuild is a trustworthy "rebuild dev / rebuild prod and test recent changes" flow.
+The old names still work — `make container-rebuild` prints what it became and delegates to `instance-rebuild`.
+
+`instance-rebuild` **always forces a fresh frontend build** (`force-fe=1`), so a rebuilt instance is guaranteed to reflect the current source — the `fe-build` stamp check that normally skips an unchanged frontend is bypassed. This avoids the trap where a stale `frontend/dist` silently ships the previous UI after a rebuild (the repeated "my frontend fix went invisible" failure): the one-command rebuild is a trustworthy "rebuild dev / rebuild prod and test recent changes" flow.
 
 Or run the individual steps:
 
 ```bash
 make build                              # bin/orchicon (frontend + container configs embedded)
-scripts/container.sh down dev           # stop the dev instance
-scripts/container.sh up dev             # start it again with the new image
+make instance-down dev           # stop the dev instance
+make instance-up dev             # start it again with the new image
 ```
 
 For a fast Go-only iteration (no frontend change), `make build` alone uses the stamp-checked `fe-build` and skips the frontend rebuild; pass `force-fe=1` (`make build force-fe=1`) to force it.
 
-### Dual-Instance (dev + prod containers)
+### Dual-Instance (dev + prod on one host)
 
-Orchicon can run two isolated single-container instances side by side: a **dev** instance (`orchicon-cnt-dev`, http://localhost:8080, Grafana http://localhost:3002) for daily development and a **prod** instance (`orchicon-cnt-prod`, http://localhost:8091, Grafana http://localhost:3003) for the production pipeline. They share no ports, databases, or state — restarts to one never affect the other. `scripts/container.sh up dev|prod` manages each, reusing the compose-era Postgres volumes so data carries over. See §Single-Container Deployment.
+Orchicon can run two isolated instances side by side: a **dev** instance (http://localhost:8080) for daily development and a **prod** instance (http://localhost:8091) for the production pipeline. Each is a host plane plus its own host services on its OWN ports, data dir and database — they share no ports, databases, or state, so a restart of one never affects the other. They differ only in the per-instance table (`scripts/lib/instances.sh`, `instanceOrder` in `cmd/orchicon/install_ports.go`); pick one with `instance=dev|prod|test`, and read its ports with `scripts/instance-ports.sh`.
 
-### Single-Container Deployment
+### Infrastructure Binaries (Postgres + NATS)
 
-The entire Orchicon stack — Postgres, NATS, the Grafana telemetry plane (Tempo, Loki, VictoriaMetrics, OTel collector, Grafana), and the control plane — can run in **one container**. The `orchicon` binary is the PID-1 supervisor (`orchicon container`, `cmd/orchicon/container.go`):
+There is no container image carrying the infrastructure binaries any more, so they
+come from the host: **detected if present, otherwise downloaded on first run**
+(`cmd/orchicon/binaries.go`, the one resolver for every one of them).
 
-- spawns children in dependency order (postgres → nats → telemetry → control plane), gating on readiness probes
-- runs the **services only** when `ORCHICON_CONTAINER_SERVICES_ONLY=1` (the plane then runs on the HOST — §Host residency below), logging the decision explicitly
-- prefixes each child's stdout/stderr with its component name
-- restarts crashed children with exponential backoff; forwards SIGTERM/SIGINT and waits for graceful exit
-- writes the embedded Tempo/Loki/collector/Grafana configs into the data dir (`@DATA_DIR@` substituted)
+- **Detected** on `PATH` *and* the platform's conventional install locations — for
+  PostgreSQL that includes `/usr/lib/postgresql/*/bin` (Debian/Ubuntu put the
+  **server** there and only the client tools on `PATH`, so a `PATH`-only probe would
+  miss a perfectly good server and download a second one). A **partial** install
+  (e.g. `postgres` present, `initdb` missing — the client-only package shape) is
+  **rejected with a message naming the missing binaries**, never silently downloaded
+  over.
+- **Downloaded** when genuinely absent: a pinned, checksum-verified build unpacked
+  into `<DataDir>/bin`, **with no root or admin** — the build lands in the instance
+  state dir the operator already owns. A **checksum mismatch is a hard failure**; the
+  download is deleted and there is no fallback to an unverified binary. Progress is
+  streamed and a failure reports *why* with a bounded tail (the same posture as
+  `docker pull`).
+- **Recorded once** at `<DataDir>/infra-binaries.json`: the resolved absolute paths
+  plus the version each binary reports. **Every** service process execs the path in
+  that record instead of a bare name, so a downloaded binary is visible to them and
+  no component re-derives the answer independently.
+- **Version checked** for a *detected* PostgreSQL: a server older than the minimum is
+  reported and refused, not attempted. **Minimum supported PostgreSQL: 14.**
+- The **telemetry backends** take the same path — Tempo, Loki, VictoriaMetrics and
+  the OTel collector are each a **single static Go binary** with no initialisation
+  step, so they are detected-else-downloaded exactly like Postgres and NATS. They
+  are acquired **only when telemetry is embedded** (`ORCHICON_TELEMETRY=embedded`):
+  a `none`/`remote` boot must not fetch ~300 MB of backends it will never start.
+- **Flat archives.** The four telemetry publishers put the binary at the archive
+  **root** (no top-level directory), unlike the PostgreSQL and NATS tarballs which
+  wrap everything in one. The extractor distinguishes the two (`infraArtifact.Nested`)
+  and installs each under its **canonical** name, so a member like Loki's
+  `loki-linux-amd64` lands as `loki`. Loki's zips carry no exec bit on their members,
+  so a download is chmod'ed 0755 on unix.
+- Pinned versions: **PostgreSQL 16.4**, **NATS server 2.10.29**, **Tempo 2.7.1**,
+  **Loki 3.4.2**, **VictoriaMetrics 1.111.0**, **otelcol-contrib 0.119.0** — the
+  binaries the supervisor runs are the same ones a runtime image would carry,
+  with one resolved version per instance. Overridable per §Environment Variables (`ORCHICON_INFRA_URL_<NAME>`
+  / `ORCHICON_INFRA_SHA256_<NAME>`).
+- The telemetry children's listen ports live in their **config files**, which are
+  templated from the same resolved port table the readiness probes read
+  (`servicePorts`), so a host install can move a port without breaking its gate.
+  **Tempo's OTLP receivers stay offset** from the collector's own (14317/14318 vs
+  4317/4318), pinned by `TestCollectorPointsAtTempoOffset`: the two shared one
+  network namespace in the image, and the collector's config points at Tempo's ports.
 
-**Build the image** (the binary must embed the built frontend — `make fe-build` first):
-
-```bash
-make build                                   # bin/orchicon (frontend embedded)
-cp bin/orchicon deploy/container/
-docker build -f deploy/container/Dockerfile -t orchicon:local deploy/container
-```
-
-**Run:**
-
-```bash
-docker run --rm -p 8080:8080 -p 3002:3000 \
-  -v orchicon-data:/var/lib/orchicon \
-  orchicon:local
-```
-
-Or use the lifecycle script (dev + prod dual-instance, data preserved):
-
-```bash
-scripts/container.sh build            # build the image (requires bin/orchicon)
-scripts/container.sh up dev           # start the dev instance container
-scripts/container.sh up prod          # start the prod instance container
-scripts/container.sh status           # show both instances
-scripts/container.sh logs dev         # tail the dev supervisor log
-scripts/container.sh down dev         # stop + remove the dev instance
-```
-
-- **Data preservation**: the dev/prod instances reuse the compose-era Postgres volumes (`orchicon_postgres-data` / `orchicon-prod_postgres-data`) from the old Docker Compose workflow, so your existing data survives the switch to the single container. The container's postgres runs as the data dir's owner (uid 70 for the alpine-era volumes). The script refuses to start while the matching compose-era postgres is running (two postgres processes on one data dir corrupt it); start with an empty DB via `ORCHICON_PG_VOLUME=fresh`.
-- Control plane: `http://localhost:8080` (API + UI + `/grafana`)
-- Grafana: `http://localhost:3002` (embedded in the Telemetry page)
-- **Worker executions**: the container ships the `opencode` runtime. **Mounts are scoped**:
-  - **project roots** (`ORCHICON_PROJECT_ROOTS`, default `$HOME`): each root is bind-mounted at its **identical host path**, so **every `project_dir` under a root works the moment it is created** — no restart, no extra command. This is what makes "create a project for the directory I'm standing in" immediate: declare a root once, then create projects freely beneath it. Narrow it when you want a smaller blast radius: `ORCHICON_PROJECT_ROOTS="/home/me/projects:/srv/work"`, or `none` to mount no roots. Roots are mounted **before** the read-only scoped mounts below, and that order is load-bearing: where mounts nest, the more specific destination wins, so opencode's config stays `:ro` inside a writable `$HOME`.
-  - `~/.config/opencode` (read-only) + `~/.local/share/opencode` (rw) so workers use your real model providers.
-  - **project dirs/files from a manifest**: the control plane writes `/var/lib/orchicon/project-mounts` (every `project_dir` + `context_files` from the projects table **and every work item's `context_files`**, refreshed every 30s). `container.sh up`/`rebuild` mounts each listed path at its host location. **Only needed for paths OUTSIDE every root** — a path under a root is already visible. For one that is not, run `scripts/container.sh sync-mounts [dev|prod]` to apply; Docker can't add bind mounts to a running container, so `sync-mounts` compares the manifest to the live container's mounts and recreates it when any are missing (a path already covered by a root counts as present, so roots do not trigger needless re-creates).
-  - Extra paths: `ORCHICON_PROJECT_MOUNTS` (space-separated host paths).
-  - **Container DNS**: `up` pins the container's resolvers at **create** time, because Docker copies the host's `/etc/resolv.conf` only when the container is created. On a guest network (hotel, hotspot, in-flight) the host's nameserver is the access-point gateway, which usually refuses or blackholes UDP/53 until the portal is authenticated — so a container created there keeps a dead resolver forever: raw-IP egress is healthy, but every provider hostname fails to resolve, and `docker start` cannot rewrite `resolv.conf`. `up` therefore probes the host's nameservers and pins a working set: loopback/stub addresses (systemd-resolved's `127.0.0.53`) are dropped because they are dead *inside* the container even though they answer on the host; the host's remaining nameservers are kept when one of them answers (preserving corporate/VPN split-horizon DNS); public resolvers (`1.1.1.1 8.8.8.8`) are used when none does. When **neither `dig` nor `nslookup` is installed** it cannot tell a dead gateway from a healthy-but-unverifiable resolver, so it keeps the host's own resolvers — Docker's old behaviour — rather than guessing and silently breaking internal names; install `bind` (Arch/CachyOS) or `bind-tools` (Debian/Ubuntu) to let the captive-portal fallback engage automatically. Recreating is implied: `up` recreates the container when the desired resolver set differs from the running one's, exactly as it already does for changed mounts. Override the whole decision with `ORCHICON_CONTAINER_DNS="1.1.1.1 8.8.8.8"`. Portal sign-in itself stays the **host's** concern, not the container's.
-  - **Ownership**: the control plane and its worker subprocesses run as **your host user** (`id -u`/`id -g` passed via `ORCHICON_HOST_UID/GID/HOME`), so files workers create in mounted project dirs are owned by you, not root. Infra processes keep their own users (postgres uid 70, telemetry root).
+The `:dev` runtime image's own sandbox plane uses the same detection rule for its
+self-gate (all four server binaries from one directory, or the plane is skipped), so
+a host that satisfies one satisfies the other.
 
 #### Who can see what: the trust model
 
@@ -960,27 +972,53 @@ When a `project_dir` sits outside every root the control plane cannot see it, an
 |---|---|---|
 | `ORCHICON_TELEMETRY` | `embedded` | `none` skips the telemetry processes (≈96 MiB); `remote` skips them and exports OTLP to your own collector |
 | `ORCHICON_DATA_DIR` | `/var/lib/orchicon` | Persistent state root (postgres, nats, telemetry data, configs) |
-| `ORCHICON_GRAFANA_PUBLIC_URL` | `http://localhost:8080/grafana` | Grafana's public root_url (change when publishing on other ports) |
+| `ORCHICON_GRAFANA_PUBLIC_URL` | ~~`http://localhost:8080/grafana`~~ | **REMOVED with the Grafana child process** — no consumer remains |
 | `ORCHICON_*` | — | Any control-plane env var (DSNs, ports) overrides the container defaults |
 
-#### Host residency: the plane on the host, the services containerized
+#### One shape: the plane and its services on the host
 
-The control plane runs as a **host process** by default, while the same instance's Postgres, NATS and telemetry plane keep running inside its container. Residency is a **per-instance** setting read by `scripts/container.sh`, by `orchicon install`, and by the Makefile's rebuild targets — so one instance can use either shape while the others stay exactly as they are:
+**There is one residency.** The control plane and its infrastructure (Postgres, NATS, the telemetry
+children) are **host processes of the invoking user**, always, one set per instance. `orchicon install`,
+`orchicon start`, `make instance-up` and the `scripts/orchicon.sh` launcher all produce that shape; there
+is no second one to select and no setting that could select it.
 
-| Setting | Where | Default | Effect |
-|---|---|---|---|
-| `ORCHICON_PLANE_RESIDENCY` | launcher env (`up`/`down`/`rebuild`), `orchicon install` | `host` | `host` starts the container in **services-only mode** and the plane as a host process; `container` puts the plane back inside the container. This row read `container` while the prose below it (and the code) defaulted to `host` — a self-contradiction, corrected here |
-| `ORCHICON_CONTAINER_SERVICES_ONLY` | set by the launcher *into the container* | unset | `1` ⇒ `cmd/orchicon/container.go` skips the plane child |
-| `ORCHICON_SERVE_STATE_DIR` | host plane env | `.dev` | per-instance PID/log root for `serve --detach`/`--stop`, so two host planes never share one PID file |
+This used to be a per-instance *choice*. The container shape is deleted (`orchicon container`, the
+`.sh` launcher that drove it, its image and its release job), and `ORCHICON_PLANE_RESIDENCY=container` is
+**refused outright** rather than silently reinterpreted — a knob that can only have one value is a knob
+that lies. `ORCHICON_CONTAINER_SERVICES_ONLY` and `ORCHICON_SERVICE_RESIDENCY` are gone with it.
 
-**Host is the default through both entry points that rebuild an instance, and the two differ deliberately.** `scripts/container.sh up|down|rebuild <inst>` resolves `${ORCHICON_PLANE_RESIDENCY:-host}`; `make rebuild-dev` / `make rebuild-prod` pin `residency=host` as a target-specific override; `make container-rebuild <inst>` keeps the Makefile's own `residency = container` variable. So `scripts/orchicon.sh start dev` and `make rebuild-dev` both give a host plane with no setting at all. The rollback is one word — `make rebuild-prod residency=container` puts prod's plane back inside its container — and each instance's shape is independent, so one can migrate while the other does not.
+What a container is still for is **exactly one thing**: a workflow's runtime container, opt-in per
+project (§Workflow Runtime Containers). The plane is not in it and does not manage it.
 
-**`orchicon install` resolves the same question, and it can PROMPT.** The one-command installer asks for
-residency before it pulls anything (a pull can take minutes, and no operator should be asked a question
-after waiting for it), then resolves every published port. `ORCHICON_PLANE_RESIDENCY` and
-`ORCHICON_INSTANCE` both apply. The installer and the launcher agree by construction — the port table is
-shared and a test asserts the two agree (`TestInstallPortDefaultsMatchContainerScript`), so an instance's
-ports do not depend on which entry point created it.
+| Setting | Where | Effect |
+|---|---|---|
+| `ORCHICON_SERVE_STATE_DIR` | host plane env | per-instance PID/log root for `serve --detach`/`--stop`, so two host planes never share one PID file |
+
+**`orchicon install` resolves the ports, and the launcher agrees by construction.** The port table has
+ONE home per side, `scripts/lib/instances.sh` (shell: `ORCHICON_INSTANCES` + `instance_info`) and
+`instanceOrder`/`installerPorts()` in `cmd/orchicon/install_ports.go` (Go), and the cross-language gate
+`TestInstallPortDefaultsMatchShellInstanceTable` asserts the two define the SAME SET of instances in both
+directions — so an instance's ports do not depend on which entry point created it.
+
+#### The inner loop with no container: `make services`
+
+The host-residency work above makes the *plane* run on the host while the services stay in the container. This subsection is the other half: running **the services themselves** on the host, with **no container engine and no Postgres installed** — so `make run`, `make migrate` and `make rls-check` work from a plain source checkout.
+
+| Command | What it does |
+|---|---|
+| `make services` | Start this instance's Postgres + NATS as processes of your user (telemetry off). Idempotent — starting what is already running is a no-op that says so. |
+| `make services-status` | Report the state and the derived DSN. Exit 0 when up, 1 when down. |
+| `make services-down` | Stop them and **verify the ports came free** — an orphaned Postgres still holding 5432 is named, not silently left behind. |
+| `make run` | Starts the local services first (a `services` prerequisite), then the plane, with the instance's DSN + NATS URL exported into its environment. |
+| `make migrate instance=prod` | Applies migrations to THAT instance's database. |
+| `scripts/no-engine-e2e.sh` | The acceptance procedure for the WHOLE engine-free session (cold start → migrate/RLS → connect → change-and-rebuild → status → logs → two instances → cleanup → stop), asserting each step against independent evidence. Not part of `make ci`: it downloads Postgres+NATS and takes minutes. Runbook: `docs/no-engine-e2e-acceptance.md`. |
+
+- **One implementation, not two.** `orchicon services up` reuses `startHostServices` (`cmd/orchicon/install_host.go`), which re-execs the binary as `orchicon host-services`. That supervisor already runs postgres/nats/telemetry as the invoking user and **downloads the pinned Postgres + NATS on first use** when the host has none (`cmd/orchicon/binaries.go`, detect-else-download, SHA256-verified), so a host with no Postgres installed still gets one.
+- **`DB_URL` is DERIVED, never a literal.** `instance ?= dev` picks the instance and `DB_URL ?= $(shell scripts/instance-ports.sh db-url $(instance) …)` resolves it through the SAME per-instance port table the launcher and `orchicon install` use (dev 5432, prod 5433, test 5434; NATS 4222/4223/4224). An explicit `DB_URL` still wins, and `ORCHICON_*_PORT` overrides move the port and the DSN together.
+- **`services` is a prerequisite of `run` ALONE.** `migrate`, `rls-check` and `test` keep consuming `$(DB_URL)` without starting anything — CI runs them after `container up` against the container DB, so a `services` prerequisite there would double-bind 5432. The `make test` isolation contract (the ambient config/plane unset list, `ORCHICON_CONFIG_DIR`, the `ORCHICON_TEST_DSN` opt-in) is unchanged.
+- **The RLS gate reaches a de-containerized host.** `scripts/check-rls.sh` gained a rung between "psql on PATH" and "docker exec" that uses the instance's OWN downloaded psql (`scripts/instance-ports.sh pg-psql`, read from `<DataDir>/infra-binaries.json`).
+- **Verified offline** by `make local-services-test` (`scripts/tests/local-services/run.sh`) plus the Go tests in `cmd/orchicon` (`services_test.go`, `help_test.go`).
+- **The session is proven as a session, not as a pile of passing scripts.** Each piece above can pass its own test while the *combination* leaves the developer blind — a `make run` nothing can talk to, a rebuild that serves the previous UI, a `status` that cannot say what is up. `scripts/no-engine-e2e.sh` walks the ten steps a developer actually takes and pins every assertion to independent evidence (`/healthz`, the **served** bundle bytes, `/proc` process+port state, the plane log), so no script's own report is ever the proof; a frontend change is proven live from the bytes the browser would execute, including the adversarial stale-`dist` control. It refuses to run when a container engine is installed (a passing run would prove nothing) and it FILES each failure against the `file:line` that owns it rather than patching a sibling's code. Deliberately outside `make ci` — it binds real ports and downloads the pinned Postgres/NATS. The typed-by-hand form of the same procedure is `docs/no-engine-e2e-acceptance.md`.
 
 **`orchicon restart` is the other half of the install question, and it exists because of a property of the
 shape rather than a missing convenience.** A plane **inherits its environment when it STARTS** (`startHostPlane`
@@ -998,7 +1036,7 @@ old shape fell anything that was not literally `prod` into dev's column, which c
 | Port (`Env` pins it) | What | dev | prod | test |
 |---|---|---|---|---|
 | `ORCHICON_CONTROL_PORT` | Control plane (web UI + API) | 8080 | 8091 | 8092 |
-| `ORCHICON_GRAFANA_PORT` | Grafana | 3002 | 3003 | 3004 |
+| ~~`ORCHICON_GRAFANA_PORT`~~ | ~~Grafana~~ | ~~3002~~ | ~~3003~~ | ~~3004~~ |
 | `ORCHICON_POSTGRES_PORT` | PostgreSQL | 5432 | 5433 | 5434 |
 | `ORCHICON_NATS_PORT` | NATS event bus | 4222 | 4223 | 4224 |
 | `ORCHICON_NATS_MONITOR_PORT` | NATS monitoring | 8222 | 8223 | 8224 |
@@ -1007,6 +1045,11 @@ old shape fell anything that was not literally `prod` into dev's column, which c
 | `ORCHICON_TEMPO_PORT` | Tempo (traces) | 3200 | 3201 | 3202 |
 | `ORCHICON_LOKI_PORT` | Loki (logs) | 3100 | 3101 | 3102 |
 | `ORCHICON_VM_PORT` | VictoriaMetrics (metrics) | 8428 | 8429 | 8430 |
+
+**3002 / 3003 / 3004 are RETIRED and RESERVED.** They were Grafana's dev/prod/test columns. No row claims
+them: operator firewall rules and notes reference them as Grafana's, so handing one to a new service
+silently would point a stale rule or bookmark at a different component. Claiming one requires a deliberate
+edit to `cmd/orchicon/install_ports.go` plus these tables and `scripts/lib/instances.sh` in one change.
 
 **Setting any of those variables PINS that port and skips its prompt** — the knobs are the non-interactive
 path, which is what a scripted or headless install needs. Left unset, a port already in use raises a
@@ -1026,34 +1069,63 @@ only what that shape actually binds.
 | Tempo | 3200 | 3201 |
 | Loki | 3100 | 3101 |
 | VictoriaMetrics | 8428 | 8429 |
-| Grafana | 3002 → 3000 | 3003 → 3000 |
+| ~~Grafana~~ | ~~3002 → 3000~~ | ~~3003 → 3000~~ |
 | Plane HTTP | 8080 | 8091 |
 
-In services-only mode `postgres` is started with `listen_addresses=0.0.0.0` (default mode keeps `localhost`), and the supervisor idempotently appends a `host all all <gateway>/32 trust` rule to `<data-dir>/postgres/pg_hba.conf` on every boot, where `<gateway>` is the container's default-route gateway: the connection arrives through the published port, so postgres sees that gateway as its peer, never loopback. The rule names that single address on purpose — every other container on the same bridge shares it, and a wildcard rule would hand them password-less superuser access to this instance's database. Only when no gateway can be detected does it fall back to the wide `0.0.0.0/0` + `::/0` rules. Exposure stays bounded by the loopback-only publish, which is the security boundary.
+`postgres` listens on `localhost` only and the supervisor appends a `host all all 127.0.0.1/32 trust` rule to `<data-dir>/postgres/pg_hba.conf`, because the plane, the launcher and every adapter reach it over loopback as the invoking user. Nothing is published: the database and the internal event bus are never reachable from another machine, and there is no container bridge for a wildcard rule to hand superuser access to.
 
-**The host plane's profile** is printable with `scripts/container.sh shape <inst>`, and every value comes from the instance table (never a shell profile or a shared env file):
+**The host plane's profile** is printable with `orchicon plane status <inst>`, and every value comes from the instance table (never a shell profile or a shared env file):
 
-- `ORCHICON_HTTP_ADDR=:<PLANE_HTTP_PORT>` and `ORCHICON_HTTP_EXTRA_BIND=<docker-bridge-ip>:<PLANE_HTTP_PORT>` — the plane binds **both**: its loopback address (host clients: `orch`, the GUI) and the docker bridge at **this instance's** port, so the run containers on that bridge can dial it. The bridge address is resolved from the host (docker's own IPAM config, else `docker0`; pin it with `ORCHICON_DOCKER_BRIDGE_IP`), never hardcoded to `172.17.0.1` and never a wildcard — the plane must not be reachable from another machine. `scripts/container.sh plane-bind <inst>` prints the same two values;
+- `ORCHICON_HTTP_ADDR=:<PLANE_HTTP_PORT>` and `ORCHICON_HTTP_EXTRA_BIND=<docker-bridge-ip>:<PLANE_HTTP_PORT>` — the plane binds **both**: its loopback address (host clients: `orch`, the GUI) and the docker bridge at **this instance's** port, so the run containers on that bridge can dial it. The bridge address is resolved from the host (docker's own IPAM config, else `docker0`; pin it with `ORCHICON_DOCKER_BRIDGE_IP`), never hardcoded to `172.17.0.1` and never a wildcard — the plane must not be reachable from another machine. `bridge_bind_env <inst>` (`scripts/lib/instances.sh`) is the one place both values are computed, and `orchicon plane status <inst>` reports the result;
 - `ORCHICON_PLANE_PUBLIC_URL=http://<docker-bridge-ip>:<PLANE_HTTP_PORT>` — DERIVED per instance from that bind (`bridge_bind_env` is the one place either value is computed) and it is what the plane hands each run container it creates (`ORCHICON_PLANE_URL`), so an instance can only ever hand out its own address: dev and prod listen on different ports, and a shared `8080` literal would make one instance's workers dial the other's plane. Setting `ORCHICON_PLANE_PUBLIC_URL` per instance overrides the derivation; **never** export it from a shared shell profile. Every runtime container is created with `--add-host=host.docker.internal:host-gateway`, so a manually started host plane (no bind at all) is still reachable by that name;
-- `ORCHICON_POSTGRES_DSN` / `ORCHICON_NATS_URL` / `ORCHICON_OTEL_ENDPOINT` (+ Tempo/Loki/VictoriaMetrics/Grafana URLs) point at the published loopback ports;
+- `ORCHICON_POSTGRES_DSN` / `ORCHICON_NATS_URL` / `ORCHICON_OTEL_ENDPOINT` (+ Tempo/Loki/VictoriaMetrics URLs) point at the published loopback ports;
 - `ORCHICON_DATA_DIR=$HOME/.local/share/orchicon-<inst>` and `ORCHICON_BLOB_DIR=<data-dir>/blobs` — the KEK (`<data-dir>/secrets/kek`) and ask-history move with it. The **first** switch-over copies the existing container volume (including `secrets/kek`) into the host dir, so existing tenant secrets keep decrypting; an existing host KEK is never overwritten;
 - `ORCHICON_RUNTIME_SOCKET` points at the host runtime daemon's real socket;
 - `ORCHICON_CONTAINER_MODE` is explicitly **unset** for the host plane — a stray export must not flip it into container semantics (custom providers stored as `http://localhost:…` must keep that URL on a host plane, §Providers).
 
-`orchicon container` logs the services-only decision plainly at boot (`services-only mode: postgres, nats and telemetry run in this container; the control plane runs on the HOST`), because a container silently running without a plane looks like a failed boot. The image's plane `/healthz` healthcheck is replaced with a services probe in that mode.
+`orchicon host-services` logs the service set it is about to run plainly at boot, because a supervisor that starts quietly is indistinguishable from one that started nothing.
 
 **Steady-state commands:**
 
 ```bash
-scripts/container.sh shape dev        # what the launcher WOULD do (no side effects)
-scripts/container.sh verify dev       # what the instance ACTUALLY runs (ports, env, supervisor log)
-scripts/container.sh plane-stop dev   # stop the HOST plane; the services container keeps running
-scripts/container.sh plane-start dev  # start it again — no container restart
+orchicon plane status dev        # what the launcher WOULD do (no side effects)
+scripts/orchicon.sh verify dev       # what the instance ACTUALLY runs (ports, env, supervisor log)
+orchicon plane stop dev          # stop the HOST plane; this instance's services keep running
+orchicon plane start dev         # start it again — nothing restarts but the plane
 ```
 
-**Migration rule:** dev and prod migrate independently and coexist in different shapes; a rebuild of one instance must never alter the other's. `scripts/container.sh verify <inst>` is the check.
+**Instance lifecycle verbs** (the CLI's own surface; `scripts/orchicon.sh` delegates to these):
 
-**Measured footprint** (single container, this stack): full telemetry ≈ **384 MiB** resident; `ORCHICON_TELEMETRY=none` ≈ **96 MiB** — vs ~2.7 GB for the ClickHouse-era compose stack.
+```bash
+orchicon start   [instance]   # services, then the plane — after a reboot, this is the one
+orchicon stop    [instance]   # plane, then services; idempotent
+orchicon restart [instance]   # re-read the environment (PATH, a newly installed adapter CLI)
+orchicon plane   status|start|stop|restart [instance]   # the plane only
+orchicon services up|down|status [instance]             # postgres + NATS only
+orchicon plane status <instance>   # instance, residency, PID, serving binary, drift, health
+```
+
+There is **no `serve --start`**: `serve` runs a plane in the foreground and manages the *detached* one
+(`--detach` / `--stop` / `--status`); starting an instance is `orchicon start`. `serve --status` reports
+exactly what `orchicon plane status` reports — the same `planecontrol.StatusOf` call, so the two cannot
+disagree — and keeps its machine-read exit code (`0` only when the PID file names a live process), which
+is what `scripts/orchicon.sh` relies on.
+
+**Migration rule:** dev and prod migrate independently and coexist in different shapes; a rebuild of one instance must never alter the other's. `scripts/orchicon.sh verify <inst>` is the check.
+
+**Teardown is an instance-scoped verb, and it is destructive-and-confirmed.** `scripts/orchicon.sh
+uninstall <dev|prod|test> --yes` (or `ORCHICON_CONFIRM_DESTROY=1`) removes ONE instance — its host plane,
+its container, its data volume, its host data dir and its labelled runtime containers — and nothing else:
+a dev teardown never reaches prod's or test's row of the instance table. It prints exactly what it will
+remove BEFORE asking, refuses without confirmation, clears the root-owned remainder through a helper
+container (a bare `rm -rf` fails on it and, under `set -e`, aborted the teardown AFTER the container and
+volume were gone — leaving the job half-done and the operator wrongly told it failed), and deliberately
+does NOT remove dev/prod's `PG_VOLUME`: that is a legacy compose volume predating the host-services
+layout and may hold data this instance never owned. The body lives in `scripts/lib/teardown.sh`, and it
+drives whichever engine `scripts/lib/engine.sh` resolves (docker or podman). `make rebuild-test`'s
+throwaway instance is torn down with exactly this command.
+
+**Measured footprint** (host processes, this stack): full telemetry ≈ **384 MiB** resident; `ORCHICON_TELEMETRY=none` ≈ **96 MiB** — vs ~2.7 GB for the ClickHouse-era compose stack.
 
 Dual-instance (dev + prod) is two containers with offset published ports (`-p 8080:8080 -p 3002:3000` and `-p 8091:8080 -p 3003:3000`), separate data volumes. An instance may instead be **host-resident** (its container runs the services only, its plane runs on the host) — see §Host residency above; the two instances may be in different shapes at the same time.
 
@@ -1061,13 +1133,13 @@ Dual-instance (dev + prod) is two containers with offset published ports (`-p 80
 
 Worker executions run inside **one short-lived container per active workflow run** (Azure Pipelines self-hosted agent model). It is created when a run leaves `pending`, every execution for that workflow is dispatched into it, and it is killed when the run reaches a terminal state (`completed` / `failed` / `aborted`). Everything inside is ephemeral — installed tools, caches, and sessions are wiped on teardown, so each workflow starts from a pristine, fully-armed environment.
 
-> **Platform note (Windows):** the entire runtime layer — the daemon, its POSIX unix socket, and the container mounts — is Linux/POSIX-only and is **not ported to native Windows**. On Windows the stack runs inside **WSL2** (see [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation)): the WSL2 kernel is real Linux, so the runtime containers, the daemon, and the single-container stack work exactly as on Linux. The Windows installer (`scripts/install.ps1`) only provisions WSL2 and installs the Linux binary into the distro.
+> **Platform note (Windows):** the entire runtime layer — the daemon, its POSIX unix socket, and the container mounts — is Linux/POSIX-only and is **not ported to native Windows**. On Windows the stack runs inside **WSL2** (see [USERGUIDE.md §1 — Installation](USERGUIDE.md#1-installation)): the WSL2 kernel is real Linux, so the runtime containers, the daemon and the host plane work exactly as on Linux. The Windows installer (`scripts/install.ps1`) only provisions WSL2 and installs the Linux binary into the distro.
 >
 > **Orchicon MCP availability:** the built-in Orchicon MCP server is registered by default for **in-process** executions and Ask Orchicon chat. Inside runtime containers the **sandbox-scoped** Orchicon MCP is **NOT** registered on base/`:gui` images — the sandbox has no route to the plane's Postgres and is deliberately kept DB-credential-free (§MCP & the Orchicon MCP Server). On **`:orchicon-dev`** images the container's serve registers it against the **in-sandbox plane's** Postgres instead (§Sandbox plane below) — workers get `orchicon_*` tools against their own disposable DB, never the host plane's. Separately, the **plane-channel** Orchicon MCP (`orchicon-plane`, the `orchicon_plane_*` tools) is registered on **every** runtime image — base, `:gui`, web-research, `:orchicon-dev` — whenever the run's worker role grants it: plane access is role-gated, never image-gated (§MCP & the Orchicon MCP Server). Idea spawning on the plane channel is **explicit and dedicated**: `orchicon_plane_list_idea_items` reads the Idea Cloud (state="active" for pending triage — the dedupe gate's primary read — and state="rejected" for previously dismissed spawns, the rejection memory that must be checked first so a human's rejection is never re-proposed) and `orchicon_plane_create_idea_item` forces an IDEA landing server-side from the run's trusted context (loud refusal on a missing/non-idea provenance block, and the create envelope self-verifies with `landed_status`/`idea_state`), so a spawn can never silently land as a plain pending item.
 
 **Components:**
 
-- **`orchicon runtime-daemon`** (host process): the only process with access to the Docker socket. Serves a narrow HTTP API over a unix socket (default `/tmp/orchicon-runtime/runtime.sock`, bind-mounted as a **directory** into the supervisor container at `/var/run/orchicon-runtime`): lease/release warm runtime containers (`POST`/`DELETE /v1/runtimes`), build/remove runtime images (`/v1/images`). Every request is validated — image allowlist (the base + `ORCHICON_RUNTIME_IMAGES` stock images + any locally-present image carrying the inherited `org.orchicon.runtime-base` label), mount sources restricted to the projects root — so the control plane can never create an arbitrary container. The daemon owns the **warm pool** (§below): leases are daemon-resident, the pool is reset wholesale at daemon start (which also reaps plane-down leaks), and clean containers are idle-reaped. Started by `scripts/container.sh up`; manage with `scripts/container.sh runtime-daemon` / `runtime-stop`. **Freshness-gated**: `container.sh up` (and therefore every `make container-rebuild` / `make rebuild-dev` / `rebuild-prod`) byte-compares the daemon's stable binary copy (the file bind-mounted into every runtime container) against `bin/orchicon` and restarts a stale daemon — a rebuild thus picks up new runtime-side code (MCP toolset, supervisor) without a manual daemon restart; the restart also reaps every pooled container from the pre-rebuild binary.
+- **`orchicon runtime-daemon`** (host process): the only process with access to the Docker socket. Serves a narrow HTTP API over a unix socket (default `/tmp/orchicon-runtime/runtime.sock`, bind-mounted as a **directory** into the supervisor container at `/var/run/orchicon-runtime`): lease/release warm runtime containers (`POST`/`DELETE /v1/runtimes`), build/remove runtime images (`/v1/images`). Every request is validated — image allowlist (the base + `ORCHICON_RUNTIME_IMAGES` stock images + any locally-present image carrying the inherited `org.orchicon.runtime-base` label), mount sources restricted to the projects root — so the control plane can never create an arbitrary container. The daemon owns the **warm pool** (§below): leases are daemon-resident, the pool is reset wholesale at daemon start (which also reaps plane-down leaks), and clean containers are idle-reaped. Started by `make instance-up`; manage with `make runtime-daemon` / `make runtime-stop` (or `scripts/runtime.sh daemon-start|daemon-stop|daemon-status`). **Freshness-gated**: `scripts/runtime.sh daemon-start` (and therefore every `make runtime-daemon` / `make rebuild-dev` / `rebuild-prod`) byte-compares the daemon's stable binary copy (the file bind-mounted into every runtime container) against `bin/orchicon` and restarts a stale daemon — a rebuild thus picks up new runtime-side code (MCP toolset, supervisor) without a manual daemon restart; the restart also reaps every pooled container from the pre-rebuild binary.
 - **`orchicon runtime-supervisor`** (PID 1 inside each runtime container): listens on a unix socket (`/tmp/orchicon-agent.sock`) and answers the daemon's two requests — a `ping` (container readiness) and the `serve` handshake. Hosts the container's **opencode serve** (detached child, `Cmd:"serve"`, 0.0.0.0:4096, guard + **stable** XDG data dir `/tmp/orchicon-serve-data` so sessions survive restarts), answers idempotent serve handshakes (owning the serve password, liveness-gated — a wedged serve is restarted, not reported as up), and runs a **serve watchdog** that polls `/global/health` and restarts the serve in place (same port + password) when it stops answering. On images that bake the pieces (currently `:orchicon-dev`) it also boots the **sandbox plane** (§Sandbox plane below) in the background. Builds the execution-guard shim in-container so workers run under the same `rm`/`sudo`/`dd`/`mkfs` path-scoped safety guard as the in-process path. (The one-shot exec/stream/reconnect machinery was removed with the transport it served.)
 - **`orchicon runtime-client`** (in-container): forwards a request from the daemon (via `docker exec`) to the supervisor socket and relays the answer back, so the daemon never needs shell-level access to the container.
 
@@ -1079,7 +1151,7 @@ Worker executions run inside **one short-lived container per active workflow run
 
 **Stuck-run detection (no leaked containers):** a container is only reaped when its run reaches a terminal state, so any run that can never progress would hold one forever (the adopt sweep treats every running run as active and keeps the container alive). The reconciler therefore fails a run **at start** — reaping the container and, for a sequence child, halting the parent's chain — when the published version has an **empty step DAG** (`steps=[]`), when its workflow **version row is gone** (workflow deleted / raw-seeded run), or when the runtime image can't be resolved (this failure is now committed, not rolled back by the deferred rollback). It also un-wedges **orphaned step references**: `pollTaskStep` fails a running task step terminal when its work item was hard-deleted mid-run, and falls through to the recovery block (after the dispatch-link grace) when its execution row is gone — instead of waiting forever, which previously left the run `running` and its container up indefinitely.
 
-**Runtime adapter CLIs are mounted, never baked:** the images contain **no adapter binary**. When a run's boot profile demands OpenCode — decided **per run** from the model refs that run will dispatch — the daemon mounts the operator's host `~/.opencode` install (read-only) into that runtime container and puts its `bin/` on PATH, so the supervisor can exec `opencode`. A run on the built-in engine mounts nothing at all, and `container.sh`/`orchicon install` add the same mount to the main container, conditionally, for in-process dispatch. The supervisor's `argv[0]` allowlist (`runtimeBinAllowlist` in `internal/runtime/agent.go`) lists the adapter binaries Orchicon may exec — `opencode` today; the `claude` adapter's bridge adds its entry when it execs the CLI through the supervisor, and `codex` gets one when that adapter lands. This is the licensing-safe pattern for all future adapters: **the product mounts the operator's own install; it never ships, downloads, or redistributes the CLI.**
+**Runtime adapter CLIs are mounted, never baked:** the images contain **no adapter binary**. When a run's boot profile demands OpenCode — decided **per run** from the model refs that run will dispatch — the daemon mounts the operator's host `~/.opencode` install (read-only) into that runtime container and puts its `bin/` on PATH, so the supervisor can exec `opencode`. A run on the built-in engine mounts nothing at all, and `scripts/orchicon.sh`/`orchicon install` add the same mount to the main container, conditionally, for in-process dispatch. The supervisor's `argv[0]` allowlist (`runtimeBinAllowlist` in `internal/runtime/agent.go`) lists the adapter binaries Orchicon may exec — `opencode` today; the `claude` adapter's bridge adds its entry when it execs the CLI through the supervisor, and `codex` gets one when that adapter lands. This is the licensing-safe pattern for all future adapters: **the product mounts the operator's own install; it never ships, downloads, or redistributes the CLI.**
 
 **Claude adapter — host-account auth provisioning:** the Claude adapter (adapter kind `claude`, provider `anthropic`) authenticates with the **operator's own host account**. The default is *bring your own authenticated host*: the operator signs in on the host with the `claude` CLI (first-run browser login, `/login`, or `claude auth login`), or sets `ANTHROPIC_API_KEY` in the host environment. Orchicon **never** presents a claude.ai login, never stores, bakes, or redistributes an Anthropic credential, and never caps or resells Anthropic rate limits — **no Orchicon UI or API is an Anthropic auth surface**. When a run's boot profile demands `claude`, the daemon bind-mounts the operator's host `~/.claude` and `~/.claude.json` **read-write** — the `claude` config home is the **only read-write adapter install**: a session writes its transcript tree under `~/.claude/projects/` and the CLI rewrites `~/.claude.json`, while every other adapter install stays read-only. Alongside them it mounts, read-only, the CLI launcher `~/.local/bin/claude` and its install root `~/.local/share/claude`. The launcher is a **symlink** into the install root (the native-installer layout — the structural analogue of opencode's `~/.local/share/opencode`); the daemon mounts at identical absolute host paths, so **both** must be declared or the link dangles inside the container. `~/.local/bin` is prepended to the container PATH *and* to the supervisor's child-process PATH. Sessions launch **non-bare** so the persisted `~/.claude/.credentials.json` login (mode 0600) is honored — bare mode reads no OAuth/keychain, so it is deliberately never used for this adapter. The adapter CLI install roots also feed the warm-pool host-input fingerprint, so a CLI upgrade or reinstall invalidates a warm pooled container instead of serving a stale CLI. If the host has **no** Claude credential at all, a `claude`-demanding container create fails fast with *"Claude is not authenticated on the host — run `claude` and sign in on the host, or set ANTHROPIC_API_KEY on the host, then re-run"* — never a silent hang and never a misleading generic error (`adapter.ClaudeAuthFailure` classifies an execution-time auth failure to this same canonical text; `adapter.ClaudeAuthRequiredMessage` is its single source). The adapter is named **Claude** (provider `anthropic`), not "Claude Code", per Anthropic's branding guidance for products embedding it.
 
@@ -1090,13 +1162,13 @@ Worker executions run inside **one short-lived container per active workflow run
 - The daemon mounts `~/.config/opencode` and `~/.local/share/opencode` **read-only**; the supervisor redirects each worker's opencode state to an ephemeral `XDG_DATA_HOME` under `/tmp` (seeded with `auth.json`), so sessions/keys never touch the host's real opencode data. Git identity + credential store are mounted read-only (PR/merge workers need them). The `claude` adapter's config home (`~/.claude` + `~/.claude.json`) is the **one read-write** adapter mount — a claude session must write its transcript tree — while that adapter's CLI launcher and install root stay read-only.
 - Per-runtime resource limits: 4 CPU / 4 GB memory / 2 GB tmpfs `/tmp` (configurable via `ORCHICON_RUNTIME_CPUS` / `_MEMORY` / `_TMPFS` on the daemon).
 
-**Runtime images (self-service builds):** the image a workflow run's container uses is chosen **per work item** (`work_items.runtime_image`, backend-stamped to the base image when empty). The **Runtime Images** page (sidebar) lets you define and **build** custom images on the host runtime daemon: a structured form (apt packages, toolchain lines, env) with a **live Dockerfile preview** that doubles as an advanced raw-Dockerfile editor, plus a **Deploy** button that streams the `docker build` log. Editing a ready image reverts it to draft so it must be rebuilt; delete removes the spec row (custom images also remove the local Docker image — gated on no active run using it; canned rows and the daemon's base image are never `docker rmi`'d). Every build is guaranteed to derive from the base image — the daemon rewrites the Dockerfile's `FROM` line to the base and injects the `org.orchicon.runtime-base=true` label (plus `org.orchicon.runtime.spec-version=<n>`, the spec version the image was built from), which is also the container-create gate (a locally-present image carrying that inherited label is accepted without a separate registration). **Deploy is idempotent**: the image's `version` is the "spec changed" signal (spec edits bump it; build-flow status transitions do not), and the row records `built_version` — the version the current `ready` image was actually built from. Re-deploying an unchanged ready spec short-circuits (`built_version == version` → instant "up to date", no `docker build`, no prune); editing the spec bumps `version`, so the next Deploy rebuilds. The workflow-run start resolves the image (template → bound work item; one-shot → the WORK_ITEM markers' items, all must agree or the run fails at start) and stores it on the run, so a self-healed container is recreated with the identical image.
+**Runtime images (self-service builds):** the image a workflow run's container uses is chosen **per work item** (`work_items.runtime_image`, backend-stamped to the base image when empty). The **Runtime Images** page (sidebar) lets you define and **build** custom images on the host runtime daemon: a structured form (apt packages, toolchain lines, env) with a **live Dockerfile preview** that doubles as an advanced raw-Dockerfile editor, plus a **Deploy** button that streams the `podman build` log (Docker is still supported — the daemon resolves the engine once, `ORCHICON_CONTAINER_BIN` → podman → docker). A stock image that is **not downloaded** shows as *not downloaded*, with a separate **Fetch** action that streams `podman pull`: **Deploy builds** a spec from a Dockerfile, **Fetch downloads** a published image, and both are idempotent and stream their progress. Editing a ready image reverts it to draft so it must be rebuilt; delete removes the spec row (custom images also remove the local Docker image — gated on no active run using it; canned rows and the daemon's base image are never `docker rmi`'d). Every build is guaranteed to derive from the base image — the daemon rewrites the Dockerfile's `FROM` line to the base and injects the `org.orchicon.runtime-base=true` label (plus `org.orchicon.runtime.spec-version=<n>`, the spec version the image was built from), which is also the container-create gate (a locally-present image carrying that inherited label is accepted without a separate registration). **Deploy is idempotent**: the image's `version` is the "spec changed" signal (spec edits bump it; build-flow status transitions do not), and the row records `built_version` — the version the current `ready` image was actually built from. Re-deploying an unchanged ready spec short-circuits (`built_version == version` → instant "up to date", no `docker build`, no prune); editing the spec bumps `version`, so the next Deploy rebuilds. The workflow-run start resolves the image (template → bound work item; one-shot → the WORK_ITEM markers' items, all must agree or the run fails at start) and stores it on the run, so a self-healed container is recreated with the identical image.
 
-**Canned (stock) runtime images:** the shipped images — the **base**, **`:gui`** (`deploy/runtime/Dockerfile.gui`, headless Qt/tkinter/X11 libs) and **`:dev`** (`deploy/runtime/Dockerfile.dev`, the dev image — Go/Node/buf/atlas plus a baked PostgreSQL 15 for in-sandbox DB testing) — are **seeded as normal, editable `runtime_images` rows (`source='stock'`) on every boot**, exactly like canned workers. They appear in the main Runtime Images list (with a **stock** badge + spec version/built_version), are editable in the advanced Dockerfile editor, deployable, and deletable (a deleted canned row is re-seeded next boot). The seeder writes the shipped Dockerfile template plus a versioned seed marker (`# orchicon.seed=<sha12>`); a row that is still an intact seed is reconciled in place, a stale seed (template changed) is rolled forward — `version` bumps, `built_version` lags, and the row is **auto-built** asynchronously, which prunes the previous version of the tag — while any row whose body no longer matches its marker is a user edit and is **never touched**. When the local docker image is already current (container.sh / the installer built it before the plane booted) the seeder records `built_version = version` instead of rebuilding. The daemon's `GET /v1/images` now reports each image's `org.orchicon.runtime.version` / `spec-version` labels so the seeder can reconcile. Instances are independent: dev and prod each seed their own canned rows in their own DB.
+**Canned (stock) runtime images:** the shipped images — the **base**, **`:gui`** (`deploy/runtime/Dockerfile.gui`, headless Qt/tkinter/X11 libs) and **`:dev`** (`deploy/runtime/Dockerfile.dev`, the dev image — Go/Node/buf/atlas plus a baked PostgreSQL 15 for in-sandbox DB testing) — are **seeded as normal, editable `runtime_images` rows (`source='stock'`) on every boot**, exactly like canned workers. They appear in the main Runtime Images list (with a **stock** badge + spec version/built_version), are editable in the advanced Dockerfile editor, deployable, and deletable (a deleted canned row is re-seeded next boot). The seeder writes the shipped Dockerfile template plus a versioned seed marker (`# orchicon.seed=<sha12>`); a row that is still an intact seed is reconciled in place, a stale seed (template changed) is rolled forward — `version` bumps, `built_version` lags, and the row is **auto-built** asynchronously, which prunes the previous version of the tag — while any row whose body no longer matches its marker is a user edit and is **never touched**. When the local image is already current the seeder records `built_version = version` instead of rebuilding. **A row whose image is not downloaded at all is left ALONE** — it is marked `absent` (a third state beside draft/ready/failed) and **no build is started**: building base/gui/dev/web-research locally is far slower and heavier than fetching them, so the image is fetched at opt-in time and the row is reconciled the next time an image is present. The daemon's `GET /v1/images` now reports each image's `org.orchicon.runtime.version` / `spec-version` labels so the seeder can reconcile. Instances are independent: dev and prod each seed their own canned rows in their own DB.
 
-**Building & testing Orchicon itself (the `:dev` image):** to have a worker build and test the Orchicon repo itself, set the project's `project_dir` to your Orchicon checkout on the host and give its work items the `:dev` runtime image. The per-workflow runtime container mounts `project_dir` automatically at container-create time (`Lifecycle.EnsureForRun` reads it from the projects table — no `sync-mounts` needed for runtime containers; that script only applies to the long-lived single-container instance, where Docker can't add bind mounts to a running container). The checkout must be under the daemon's `AllowedRoots` (default `$HOME/projects`). Inside the sandbox the supervisor has **already booted the full Orchicon control plane** (§Sandbox plane below) — Postgres, NATS and `orchicon serve` — so a worker can `curl http://localhost:8080/healthz`, run `go build`/`go vet`/`make gen`/`make fe-build`, the full `make ci` DB path against `localhost:5432`, and use the `orchicon_*` MCP tools against the sandbox DB, with no ad-hoc booting. The whole plane dies with the container and never touches the plane's Postgres, preserving the no-DB-route sandbox invariant.
+**Building & testing Orchicon itself (the `:dev` image):** to have a worker build and test the Orchicon repo itself, set the project's `project_dir` to your Orchicon checkout on the host and give its work items the `:dev` runtime image. The per-workflow runtime container mounts `project_dir` automatically at container-create time (`Lifecycle.EnsureForRun` reads it from the projects table — no `sync-mounts` needed — the mounts are applied at container-create time). The checkout must be under the daemon's `AllowedRoots` (default `$HOME/projects`). Inside the sandbox the supervisor has **already booted the full Orchicon control plane** (§Sandbox plane below) — Postgres, NATS and `orchicon serve` — so a worker can `curl http://localhost:8080/healthz`, run `go build`/`go vet`/`make gen`/`make fe-build`, the full `make ci` DB path against `localhost:5432`, and use the `orchicon_*` MCP tools against the sandbox DB, with no ad-hoc booting. The whole plane dies with the container and never touches the plane's Postgres, preserving the no-DB-route sandbox invariant.
 
-**Sandbox plane (full Orchicon environment in-container):** the `:orchicon-dev` runtime image bakes PostgreSQL 15 + `nats-server` (v2.10, matching the single-container image's line), and the runtime supervisor boots a **disposable, self-contained Orchicon control plane** at container start — `initdb` (once, into the stable data dir `/var/lib/orchicon-sandbox/postgres`) → `pg_ctl -w start` (trust auth, `listen_addresses=localhost`, socket dir under the sandbox data dir) → `createdb orchicon` → `nats-server -js` → `orchicon serve` with sandbox env (`ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable`, `ORCHICON_NATS_URL=nats://localhost:4222`, `ORCHICON_HTTP_ADDR=:8080`, `ORCHICON_GRPC_ADDR=:9090`, `ORCHICON_TELEMETRY=none` — no Grafana stack, `ORCHICON_OPCODE_SESSION_TRANSPORT=0` — the plane is an API/DB/MCP surface, never a second execution plane, `ORCHICON_SANDBOX_PLANE=1` — suppress the serve's kill-orphans pgrep so the supervisor's live serve is never SIGTERMed, `ORCHICON_INSTANCE=sandbox`, `ORCHICON_BLOB_DIR` + `ORCHICON_INDEX_CHECK_INTERVAL=0` under the sandbox data dir). The plane runs migrations + tenant/worker seeding on boot against the sandbox DB.
+**Sandbox plane (full Orchicon environment in-container):** the `:orchicon-dev` runtime image bakes PostgreSQL 15 + `nats-server` (v2.10), and the runtime supervisor boots a **disposable, self-contained Orchicon control plane** at container start — `initdb` (once, into the stable data dir `/var/lib/orchicon-sandbox/postgres`) → `pg_ctl -w start` (trust auth, `listen_addresses=localhost`, socket dir under the sandbox data dir) → `createdb orchicon` → `nats-server -js` → `orchicon serve` with sandbox env (`ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable`, `ORCHICON_NATS_URL=nats://localhost:4222`, `ORCHICON_HTTP_ADDR=:8080`, `ORCHICON_GRPC_ADDR=:9090`, `ORCHICON_TELEMETRY=none` — no telemetry stack, `ORCHICON_OPCODE_SESSION_TRANSPORT=0` — the plane is an API/DB/MCP surface, never a second execution plane, `ORCHICON_SANDBOX_PLANE=1` — suppress the serve's kill-orphans pgrep so the supervisor's live serve is never SIGTERMed, `ORCHICON_INSTANCE=sandbox`, `ORCHICON_BLOB_DIR` + `ORCHICON_INDEX_CHECK_INTERVAL=0` under the sandbox data dir). The plane runs migrations + tenant/worker seeding on boot against the sandbox DB.
 
   **Self-gating:** the supervisor probes for a Postgres server bin dir (`/usr/lib/postgresql/<ver>/bin` containing `initdb`/`pg_ctl`/`pg_isready`/`postgres` — ALL four, a partial dir is rejected) plus `nats-server` on PATH, cached once per container lifetime. Base/`:gui` images skip the plane entirely — behavior identical to today. A **watchdog** (`watchSandboxPlane`, 15s interval) re-boots the stack via the idempotent `bootSandboxPlane` when `/healthz` stops answering; Postgres is restarted in place (pg_ctl reuses the stable cluster — no re-initdb), and a best-effort `pg_ctl stop` runs on supervisor exit (container teardown is the real guarantee). The **serve handshake** reports `plane_enabled`, the daemon publishes `CreateResponse.PlaneURL = http://<container-ip>:8080` on dev images (empty otherwise), and the **run-start gate** probes the plane's `/healthz` on the bridge IP alongside the serve L1 check — a half-initialized plane can't pass.
 
@@ -1104,7 +1176,8 @@ Worker executions run inside **one short-lived container per active workflow run
 
   **No-DB-route invariant preserved:** the sandbox plane's DSN is container-local trust auth — it never learns the host plane's DSN, and the MCP sidecar is pointed at the sandbox DSN. The plane dies with the container (pool reset recreates pristine).
 
-**Build:** `make container-build` also builds `orchicon-runtime:local` (plus `orchicon-runtime:local-gui` and `orchicon-runtime:orchicon-dev`) — **version-gated, not unconditional**. Each stock runtime image is tagged with an `org.orchicon.runtime.version` label derived from the app version + the SHA-256 of its Dockerfile (`<version>-<sha12>`; the `:gui`/`:dev` versions embed the base's version so a base change cascades to them). On every `container-build` the script inspects the existing image's label and **skips the build when it matches** — the base image no longer bakes the orchicon binary (the daemon mounts its own at container-create time), so its content is a pure function of the Dockerfiles and a normal dev rebuild (binary changed, Dockerfiles unchanged) skips all three. The script also skips any image carrying `org.orchicon.runtime.spec-version` (a daemon-built image from an edited+redeployed canned row) — container.sh never clobbers a tenant-owned build. Touch a Dockerfile (or bump the app version) and the affected variants rebuild. Escape hatch: `FORCE_RUNTIME=1 make container-build` (or `ORCHICON_FORCE_RUNTIME_REBUILD=1 scripts/container.sh build`) rebuilds regardless. The release workflow ships the runtime image to GHCR (`ghcr.io/beardedparrott/orchicon-runtime:<version>` + `:latest`, plus the `:gui` and `:dev` variants) — the one-command install pulls it, and the runtime daemon defaults to that image (`ORCHICON_RUNTIME_IMAGE` overrides; local dev pins the locally-built tag). `ORCHICON_RUNTIME_IMAGES` adds extra allowlisted stock images (base always included). **Model note:** executions dispatch with the worker's pinned `model_ref`; verification workers should pin a free model (e.g. `opencode/deepseek-v4-flash-free`).
+**Build:** `make runtime-build` (scripts/runtime.sh, `${ORCHICON_ENGINE:-podman}`) builds `orchicon-runtime:local` (plus `orchicon-runtime:local-gui` and `orchicon-runtime:orchicon-dev`) — **version-gated, not unconditional**. Each stock runtime image is tagged with an `org.orchicon.runtime.version` label derived from the app version + the SHA-256 of its Dockerfile (`<version>-<sha12>`; the `:gui`/`:dev` versions embed the base's version so a base change cascades to them). On every `runtime-build` the script inspects the existing image's label and **skips the build when it matches** — the base image no longer bakes the orchicon binary (the daemon mounts its own at container-create time), so its content is a pure function of the Dockerfiles and a normal dev rebuild (binary changed, Dockerfiles unchanged) skips all three. The script also skips any image carrying `org.orchicon.runtime.spec-version` (a daemon-built image from an edited+redeployed canned row) — runtime.sh never clobbers a tenant-owned build. Touch a Dockerfile (or bump the app version) and the affected variants rebuild. Escape hatch: `FORCE_RUNTIME=1 make runtime-build` (or `ORCHICON_FORCE_RUNTIME_REBUILD=1 scripts/runtime.sh build`) rebuilds regardless. The release workflow ships the runtime image to GHCR (`ghcr.io/beardedparrott/orchicon-runtime:<version>` + `:latest`, plus the `:gui` and `:dev` variants) — the one-command install does **not** pull it (runtime images are fetched on demand: the install offers a multi-select of the variants, default **none**, and declining all leaves a fully working plane in `local` mode), and the runtime daemon defaults to that image (`ORCHICON_RUNTIME_IMAGE` overrides; local dev pins the locally-built tag). `ORCHICON_RUNTIME_IMAGES` adds extra allowlisted stock images (base always included). **Model note:** executions dispatch with the worker's pinned `model_ref`; verification workers should pin a free model (e.g. `opencode/deepseek-v4-flash-free`).
+
 
 ### Native (orchicon-kind) session engine
 
@@ -1152,7 +1225,8 @@ Worker executions run through a **persistent opencode session** — the ONLY exe
 ### Manual Development Setup
 
 ```bash
-# Terminal 1: Full stack (single container)scripts/container.sh up dev           # Postgres, NATS, OTel, Tempo, Loki, VM, Grafana + control plane
+# Terminal 1: this instance — its services, then its host plane
+make instance-up dev           # Postgres, NATS, OTel, Tempo, Loki, VM + the host plane
 
 # Terminal 2: Migrations
 make migrate                          # Apply database migrations
@@ -1184,14 +1258,20 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | `migrate-diff` | Generate new migration from `db/schema.hcl` |
 | `migrate-hash` | Recompute Atlas migration directory hash |
 | `rls-check` | Verify every `tenant_id` table has RLS policy |
-| **Container** | |
-| `container-build` | Build `bin/orchicon` + the container image |
-| `container-rebuild` | Stop an instance, rebuild the image (frontend always forced), start it (usage: `make container-rebuild instance=dev\|prod`) |
-| `container-up` | Start the dev single-container instance |
-| `container-down` | Stop the dev single-container instance |
-| `container-status` | Show single-container instance status |
-| `container-logs` | Tail the dev container instance logs |
-| `container-ps` | List orchicon container instances |
+| **Instance** (host-resident; no image, no instance container) | |
+| `instance-build` | Build `bin/orchicon` + `bin/orch` (binaries only — there is no image) |
+| `instance-up` | Start this instance on the host (services + plane; `instance=dev` default) |
+| `instance-down` | Stop this instance (plane and the services it started) |
+| `instance-restart` | Restart this instance without rebuilding anything |
+| `instance-status` | Show whether this instance's plane and services are up and healthy |
+| `instance-logs` | Tail this instance's plane log |
+| `instance-ps` | List the ORCHICON instances on this host and their state |
+| `instance-rebuild` | Stop this instance, rebuild the binaries (frontend always forced), start it (usage: `make instance-rebuild instance=dev\|prod\|test`) |
+| **Runtime** (podman; `scripts/runtime.sh`) | |
+| `runtime-build` | Build the stock workflow runtime images, version-gated (skipped when unchanged) |
+| `runtime-daemon` | Start the host-side workflow runtime daemon (restarted when its binary is stale) |
+| `runtime-stop` | Stop the runtime daemon |
+| `runtime-status` | Show whether the runtime daemon answers, and on which socket |
 | **Frontend** | |
 | `fe-install` | Install frontend dependencies |
 | `fe-dev` | Start Vite dev server |
@@ -1205,14 +1285,14 @@ For source-level iteration on the control plane itself, rebuild the image and re
 | `cache-trim` | Bound the Go build cache by **size**, evicting coldest-first, keeping the entries the next build wants. A no-op under the cap (`CACHE_CAP_MB`, default 20 GiB). Preview with `cache-trim cache_dry=1`. Runs automatically at the end of `full-rebuild`. See *The Go build cache* below |
 | `cache-check` | Report the Go build cache size **against the cap**, and whether a trim is due |
 | `cache-trim-test` | CI gate: assert the cache trim's eviction semantics (order, grace window, stop-at-cap, `--dry-run`) and that it refuses to run against a non-cache directory |
-| `disk-report` | Report how much of the filesystem is held by **btrfs snapshots** rather than live files — the number `df` stays silent about. Subtracts `du` of every live file from the filesystem's data in use; on a **compressing** filesystem that second term is apparent size, so the result is a **lower bound** and is labelled one. Host diagnostic, never called from CI. See *Snapshots, and the space files no longer occupy* below |
-| `disk-report-test` | CI gate: assert disk-report's subtraction (metadata excluded, profiles summed), that partial coverage is labelled an upper bound, and that it degrades rather than dies |
-| `host-residency-test` | CI gate: the instance **launch shape** — that a plain `up` produces the default residency, that every per-instance value (ports, plane URL, data dir) is its OWN rather than shared with another instance, and that the host plane's two listeners are concrete addresses that cannot collide. Docker-free: it resolves shapes through `container.sh`'s own functions |
+| `host-residency-test` | CI gate: the instance **launch shape** — that a plain `up` produces the default residency, that every per-instance value (ports, plane URL, data dir) is its OWN rather than shared with another instance, and that the host plane's two listeners are concrete addresses that cannot collide. Docker-free: it resolves shapes through `scripts/orchicon.sh`'s own functions |
 | `clean-docker` | Prune Orchicon's dangling images + its own stopped containers (`--filter label=orchicon-instance`). **Never volumes**: it used to run `docker volume prune -f` host-wide, which removes other projects' data on any machine with more than Orchicon on it |
 | **CI** | |
 | `cross-compile` | Compile both shipped binaries for every release platform (linux/darwin/windows × amd64/arm64, `CGO_ENABLED=0`). Catches platform-specific breaks — see *Continuous integration* below. Builds into a **throwaway `GOCACHE`**: its six-platform output is worthless to a dev host and would otherwise be unreclaimable, so it must never land in the shared cache (see *The Go build cache*) |
-| `ci-go` | The Go control-plane gate: lint → gen-check → vet → test → synth-data → rls-check → adapter-bake-guard → **install-ps1-test** → **install-path-test** → **host-residency-test** → **cache-trim-test** → **disk-report-test** → **cross-compile**. This is exactly what the `go-ci` workflow job runs. The four `*-test` harnesses in the middle are the SHELL gates — they guard the installers, the launch shape and the host diagnostics, none of which Go tests can reach |
+| `ci-go` | The Go control-plane gate: lint → gen-check → vet → test → synth-data → rls-check → adapter-bake-guard → **install-ps1-test** → **install-path-test** → **host-residency-test** → **cache-trim-test** → **cross-compile**. This is exactly what the `go-ci` workflow job runs. The `*-test` harnesses in the middle are the SHELL gates — they guard the installers, the launch shape and the Go cache trim, none of which Go tests can reach |
 | `ci` | `ci-go` + `fe-lint` + `fe-test` — the full gate |
+
+The deprecated `container-*` names are real targets that still work: each prints what it became and delegates (`container-up` → `instance-up`, `container-build` → `instance-build`, `container-rebuild` → `instance-rebuild`, …). They carry no `##` comment on purpose, so `make help` lists only the canonical names.
 
 ### Code Generation
 
@@ -1248,8 +1328,9 @@ all-or-nothing, and throws away the hot entries with the cold.
 by every `full-rebuild`) builds both shipped binaries for every release platform. The per-platform
 package archives are ~130 MB each, and all of them landed in the shared cache: measured while the
 matrix still carried SIX platforms, **31.6 GB, 44% of it, was non-native** — artifacts nothing on an
-amd64 dev host ever links. (The matrix is four platforms now; Windows was dropped because no Windows
-artifact ships. The mechanism and the fix below are unchanged.) It is now built into a **throwaway
+amd64 dev host ever links. (The gate is six platforms and the SHIP list is five — `windows/amd64` ships
+as `orchicon_<version>_windows_amd64.zip`, `windows/arm64` is compile-only; see `cross-compile` below.
+The mechanism and the fix below are unchanged.) It is now built into a **throwaway
 `GOCACHE`**, removed by an `EXIT` trap. Measured: the shared cache is
 **byte-identical** across a full `make cross-compile`, at a cost of ~2m16s of CPU per gate run
 (one platform cold-compiles in ~21s / ~1.1 GB from a clean cache).
@@ -1302,14 +1383,11 @@ that churns build caches, container layers and `node_modules` makes seventeen sn
 hundreds of gigabytes. The `root` config is *not* a factor: it sets `TIMELINE_CREATE="no"` and
 only fires on package operations. **One config, one subvolume, 343 GiB.**
 
-**Seeing it.** `make disk-report` performs the subtraction and prints the pinned figure, with the
-places it can mislead stated in the output rather than buried: filesystem **metadata** is excluded
-from both sides (`du` cannot see it, and folding it in would overstate the result by ~10 GiB);
-**partial coverage** (`--paths`) undercounts live data and so overstates the result; anything
-**unreadable** does the same, and is listed. The live side must walk **every** mount of the
-device with `du -x` — each btrfs subvolume has its own `st_dev`, so `-x` stops at the subvolume
-boundary, which is what makes a per-mount sum correct rather than a double count. One mount
-measured 42 GiB against a real total of 172 GiB.
+**Seeing it.** The figures above came from subtracting `du` of every live file from the filesystem's
+data in use, which was a one-off host measurement and is no longer a command in this repo. What
+remains is the machine-readable half: the per-snapshot exclusive-bytes figure and `df` deltas at the
+bottom of this section. **Treat every estimate as a bound and the `df` DELTA as the measurement** —
+delete one snapshot and watch `df`.
 
 **Compression is the subtlety that bites.** `/home` mounts `compress=zstd:3`, and btrfs reports
 `st_blocks` as a file's **apparent** size — so `du`, `ls -ls` **and** `btrfs filesystem du` all
@@ -1329,10 +1407,10 @@ unprivileged way to measure live physical bytes (`compsize` is the exact tool an
 "exclusive bytes" figure you can get without root is an upper bound for the same reason.
 
 ```bash
-make disk-report                              # the pinned figure for the current filesystem
-make disk-report DISK_REPORT_TARGET=/mnt/data # some other filesystem
-scripts/disk-report.sh --paths ~/projects     # scoped check (upper bound; labelled as one)
-scripts/disk-report.sh --raw                  # one key=value line, for scripting
+# The operator's own numbers above came from a one-off subtraction; these need root and are the
+# reproducible half.
+sudo snapper -c home list                       # the snapshots
+sudo snapper -c home delete <N>                 # then re-check df — the delta is the truth
 ```
 
 **Two levers, and the second is the structural one.**
@@ -1438,6 +1516,7 @@ the failure arrived *after* the version existed.
 amount of running them on one platform would have found it. `make cross-compile` compiles the exact
 release matrix — linux/darwin/windows on amd64 and arm64, `CGO_ENABLED=0`, both binaries — and it is
 part of `make ci-go`, so the gate and the release cannot disagree about which platforms must build.
+(the release ships five of those six — see *GitHub Releases*)
 
 **`release.yml` guards itself: only tags reachable from `main` are released.** A develop version-bump
 tag is skipped with a warning, so the per-merge tagging in `develop-bump.yml` can never publish a
@@ -1451,7 +1530,7 @@ that tag before anything else.
 Before marking any change complete:
 
 1. **`make ci` passes** — buf lint, codegen, go vet/test, RLS gate
-2. **Container instance starts healthy** — `make container-build && scripts/container.sh up dev`, then `scripts/container.sh status` shows the dev instance `running (healthy)`; `curl http://localhost:8080/healthz` returns `{"status":"ok"}`
+2. **Instance starts healthy** — `make instance-build && make instance-up instance=dev`, then `make instance-status` shows the dev instance running and healthy; `curl http://localhost:8080/healthz` returns `{"status":"ok"}`
 3. **Migrations apply cleanly** — on a fresh container data volume (`ORCHICON_PG_VOLUME=fresh`); `make rls-check` passes
 4. **Control plane boots** — `make build && make run`, then `curl http://localhost:8080/healthz` returns `{"status":"ok"}` in <2s
 5. **Frontend renders** — `make fe-dev`, then `curl http://localhost:5173/` returns HTTP 200
@@ -1506,10 +1585,46 @@ therefore kept out of it.
 ### GitHub Releases (Binary Distribution)
 
 1. Tag push matching `v*.*.*` triggers `release.yml`
-2. Builds binaries for 4 platforms: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64
-   (no Windows target: the stack runs inside WSL2 there, so the Linux binary is what an install uses)
+2. Builds binaries for 5 platforms: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64,
+   windows/amd64 (packaged as `orchicon_<version>_windows_amd64.zip` holding `orchicon.exe` and
+   `orch.exe`)
+   (Windows ships because the plane and the host services are HOST processes there, so `install` and
+   `serve` run a native `orchicon.exe`; WSL2 is left with only the runtime containers. `windows/arm64`
+   is compile-gated by `make cross-compile` but not published: Windows on ARM runs the amd64 zip under
+   emulation.)
 3. Creates a GitHub Release with platform-specific archives
 4. The install scripts download from the latest release
+
+### Desktop App Packaging (macOS .app, Windows WebView2, Linux WebKitGTK)
+
+The desktop app is a **Wails shell** (`cmd/orchicon-desktop/`) around the same frontend the browser
+gets, and it is a *client*: it talks to a plane over loopback and starts one if none is
+running. Packaging it is a separate concern from building it, and it lives in three places:
+
+- **`internal/desktoppreflight/`** — the webview check, run before `wails.Run` so a missing
+  runtime produces a sentence instead of a blank window. It is a plain Go package with every
+  OS capability injected through `Probe`, so `Evaluate(goos, probe)` is unit-tested on any
+  runner. Linux is the exception that proves the rule: WebKitGTK is a **dynamic-link**
+  dependency, so the loader fails before `main()` — the real Linux check is a POSIX-sh
+  launcher (`deploy/desktop/linux/orchicon-desktop`, installed at `/usr/bin/orchicon-desktop`,
+  exec'ing the binary from `/usr/lib/orchicon/`) and the AppImage's `AppRun`.
+- **`deploy/desktop/`** — the packaging descriptors: `nfpm.yaml` (the `.deb`, whose
+  `depends:` is where the WebKitGTK requirement is *declared*), `appimage/` (bundles webkit
+  for distros that dropped 4.0), `macos/` (`entitlements.plist` plus
+  `sign-and-notarize.sh`: codesign → `notarytool submit --wait` → `stapler staple` →
+  `spctl -a` **assertion**, so an unsigned or unstapled `.app` fails the job), and
+  `windows/README-WINDOWS.txt` for the portable zip.
+- **`.github/workflows/release.yml`** — three single-OS desktop jobs (`desktop-linux` on
+  `ubuntu-22.04`, `desktop-macos` on `macos-14`, `desktop-windows` on `windows-latest`).
+  They are single-OS rather than a matrix on purpose: each platform needs a different runner
+  (notarisation cannot happen on Linux), and the release matrix scanner in
+  `cmd/orchicon/ci_release_workflows_test.go` reads every `- os:` line as a CLI platform.
+  None of them is in `release:`'s `needs:` — desktop artifacts join the release through an
+  optional `pattern: 'orchicon-desktop-*'` download with `continue-on-error: true`, so a
+  webkit or notarisation failure can never stop the CLI binaries from publishing.
+
+Runner strategy and the local `make desktop-*` targets are documented in
+`deploy/desktop/README.md`; the user-facing side is in USERGUIDE §3.
 
 ### Release Workflow
 
@@ -1524,12 +1639,12 @@ therefore kept out of it.
 | Variable | Default | Purpose |
 |---|---|---|
 | `ORCHICON_HTTP_ADDR` | `:8080` | HTTP listen address (frontend + API) |
-| `ORCHICON_HTTP_EXTRA_BIND` | *(empty)* | Second HTTP bind: a concrete docker-bridge `host:port` (e.g. `172.17.0.1:8091`), so runtime containers reach a host-resident plane across the bridge. Loopback-only when empty. Never a wildcard — the plane must not be reachable from another machine. Set per instance by `scripts/container.sh plane-bind <dev\|prod>`. |
+| `ORCHICON_HTTP_EXTRA_BIND` | *(empty)* | Second HTTP bind: a concrete docker-bridge `host:port` (e.g. `172.17.0.1:8091`), so runtime containers reach a host-resident plane across the bridge. Loopback-only when empty. Never a wildcard — the plane must not be reachable from another machine. Set per instance by `bridge_bind_env <dev\|prod>` (`scripts/lib/instances.sh`) and reported by `orchicon plane status`. |
 | `ORCHICON_GRPC_ADDR` | `:9090` | gRPC listen address |
 | `ORCHICON_POSTGRES_DSN` | `postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable` | PostgreSQL connection string |
 | `ORCHICON_NATS_URL` | `nats://localhost:4222` | NATS server URL |
 | `ORCHICON_OTEL_ENDPOINT` | `localhost:4317` | OTel collector gRPC endpoint |
-| `ORCHICON_GRAFANA_URL` | `http://localhost:3002` | Grafana UI URL (proxied same-origin under /grafana) |
+| ~~`ORCHICON_GRAFANA_URL`~~ | ~~`http://localhost:3002`~~ | **REMOVED** — the config knob, its default and the `/grafana` proxy are gone |
 | `ORCHICON_TEMPO_URL` | `http://localhost:3200` | Tempo query API URL |
 | `ORCHICON_LOKI_URL` | `http://localhost:3100` | Loki query API URL |
 | `ORCHICON_VM_URL` | `http://localhost:8428` | VictoriaMetrics query API URL |
@@ -1591,6 +1706,9 @@ therefore kept out of it.
 | `ORCHICON_RUNTIME_POOL_IDLE` | `10m` | Warm pool: how long a clean container may sit unused before it is idle-reaped. |
 | `ORCHICON_RUNTIME_LEASE_MAX` | `30m` | Warm pool: how long a LEASED container's lease may stay unrenewed before it is reaped with its container (the aborted-run leak class — a live run renews every ≤30s via the adopt sweep). |
 | `ORCHICON_INDEX_CHECK_INTERVAL` | `6h` | Control plane: how often the amcheck index-integrity sweep runs (0 = boot check only). A corrupted btree index silently hides rows from `=` lookups; the sweep validates every user btree index and rebuilds corrupt ones with `REINDEX INDEX CONCURRENTLY` |
+| `ORCHICON_SKIP_DOWNLOAD` | *(unset)* | `1` forbids the infrastructure-binary download: a missing `postgres`/`nats-server` then fails the install with a message naming it, instead of reaching the network. For a host that blocks outbound access at install time |
+| `ORCHICON_INFRA_URL_<NAME>` | *(pinned)* | Override the download URL for one infrastructure artifact — `POSTGRES` or `NATS_SERVER` (the artifact name upper-cased, `-`→`_`). For a mirror or an internal artifact store |
+| `ORCHICON_INFRA_SHA256_<NAME>` | *(pinned)* | The SHA256 the download is verified against, for the same artifact set. A mirror serving the pinned artifact needs only the URL override; this exists so a mirror serving a *rebuild* can still be verified. **A download with no pinned or overridden checksum is refused outright** |
 
 ---
 
@@ -1617,18 +1735,18 @@ Configuration precedence (per field):
 3. **Built-in defaults** — 100 MB max size, 24h roll, 7 days retention,
    7 files.
 
-In the single-container deployment the control plane's stdout goes to
+When the plane runs under `make instance-up`/`orchicon start`, its stdout goes to
 Docker's `json-file` log driver, which is bounded by the
 `--log-opt max-size=100m` / `max-file=7` flags set on the instance
-containers (`scripts/container.sh` and `orchicon install`).
+containers (`scripts/orchicon.sh` and `orchicon install`).
 
 ## Container Image Hygiene
 
-Repeated local builds of the four tagged images (`orchicon:local`,
-`orchicon-runtime:local`, `:local-gui`, `:orchicon-dev`) and custom
+Repeated local builds of the three tagged runtime images
+(`orchicon-runtime:local`, `:local-gui`, `:orchicon-dev`) and custom
 runtime-image builds orphan the previous image as a dangling layer.
-Both `scripts/container.sh build` and the runtime daemon's image-build
-path prune dangling images after each build. To reclaim space from
+`scripts/runtime.sh build` and the runtime daemon's image-build path
+prune dangling images after each build. To reclaim space from
 pre-existing orphans or the Go build cache:
 
 ```bash
@@ -1640,9 +1758,8 @@ make cache-check                                    # report the current Go buil
 `make clean` only touches the Go build cache and `bin/`; it never
 touches the database, container images, or runtime data.
 `make clean-docker` prunes dangling images, stopped containers, and
-volumes referenced by no container — the live instance containers
-(dev/prod), their data volumes, and the Postgres volumes that preserve
-instance data are always kept.
+volumes referenced by no container — the live instances' volumes and the
+Postgres volumes that preserve instance data are always kept.
 
 ### Telemetry data retention
 
@@ -1651,9 +1768,11 @@ volume cannot grow unbounded:
 
 | Backend | Retention | Config |
 |---|---|---|
-| Loki (logs) | 14 days | `retention_period: 336h` + compactor (`retention_enabled`, `delete_request_store: filesystem`) in `deploy/container/configs/loki.yaml` |
-| Tempo (traces) | 14 days | `compactor.compaction.block_retention: 336h` in `deploy/container/configs/tempo.yaml` |
-| VictoriaMetrics (metrics) | 30 days | `-retentionPeriod=720h` flag in `cmd/orchicon/container.go` |
+| Loki (logs) | 14 days | `retention_period: 336h` + compactor (`retention_enabled`, `delete_request_store: filesystem`) in `deploy/configs/loki.yaml` |
+| Tempo (traces) | 14 days | `compactor.compaction.block_retention: 336h` in `deploy/configs/tempo.yaml` |
+| VictoriaMetrics (metrics) | 30 days | `-retentionPeriod=720h` flag in `cmd/orchicon/host_services.go` |
+
+The three values are **asserted** by `TestRetentionPreserved` (`cmd/orchicon/host_services_test.go`), not merely documented: a silently lost retention setting is invisible until the disk fills, which is the opposite of what it is for.
 
 ---
 
@@ -1663,9 +1782,9 @@ volume cannot grow unbounded:
 
 | Symptom | Likely Cause | Fix |
 |---|---|---|
-| Instance stays `unhealthy` | Corrupt/stale state | `scripts/container.sh down dev && scripts/container.sh up dev`, or start fresh with `ORCHICON_PG_VOLUME=fresh` |
-| Grafana datasources missing | Embedded configs stale | Re-build the image so `deploy/container/configs/grafana-provisioning/` is re-embedded (`make container-build`) |
-| Control plane won't connect to DB | Postgres not healthy yet | Wait for the PID-1 supervisor to bring postgres up; check `scripts/container.sh logs dev` and `ORCHICON_POSTGRES_DSN` |
+| Instance stays `unhealthy` | Corrupt/stale state | `make instance-down dev && make instance-up dev`, or start fresh with `ORCHICON_PG_VOLUME=fresh` |
+| ~~Grafana datasources missing~~ | — | **Removed with Grafana.** There are no provisioned datasources to be stale; the Telemetry panes query Tempo/Loki/VictoriaMetrics directly through the plane |
+| Control plane won't connect to DB | Postgres not healthy yet | Wait for the host services supervisor to bring postgres up; check `scripts/orchicon.sh logs dev` and `ORCHICON_POSTGRES_DSN` |
 | Postgres data-corruption guard blocks start | Compose-era postgres still owns the volume | Stop the old compose-era postgres container first, or use `ORCHICON_PG_VOLUME=fresh` |
 
 ### Control Plane Issues
@@ -1698,7 +1817,7 @@ tenant admin (via the embedded IdP). The local-mode bootstrap is **opt-in**
 | Symptom | Likely Cause | Fix |
 |---|---|---|
 | Blank page / no API responses | Vite proxy not configured | `vite.config.ts` must proxy `/orchicon.api.v1*` to `:8080` |
-| Grafana iframe blank | Sub-path config missing | Grafana must run with `GF_SERVER_SERVE_FROM_SUB_PATH=true` and `root_url=<plane>/grafana` — the control-plane `/grafana` proxy only strips the prefix (see `internal/api/api.go`) |
+| ~~Grafana iframe blank~~ | — | **Removed with Grafana.** For the record: the `/grafana` reverse proxy was mounted OUTSIDE `ResolveAuth` because a browser iframe cannot attach an Authorization header, so under `ResolveAuth` every pane 401'd. That was a real constraint met with the wrong remedy — an unauthenticated route. The replacement UI fetches through the authenticated Connect client and renders the data, and no UI surface may be mounted outside `ResolveAuth` (pinned by `TestGrafanaRouteFallsThroughToAuth` and `TestAPIHasNoOuterMux`) |
 | React Error #310 (hook mismatch) | Conditional hook call | Ensure hooks are called unconditionally — check for early returns before hooks |
 | Workflow canvas not loading | Missing `reactflow/dist/style.css` | Import React Flow CSS in the route component |
 
@@ -1715,8 +1834,8 @@ tenant admin (via the embedded IdP). The local-mode bootstrap is **opt-in**
 | Workflow run failed and you want to resume it | A step hit its terminal failure | Use the **Retry failed step** button on the failed run's view (`RetryFailedWorkflowRun` RPC). It resets the run to `pending` (clearing its ended timestamp), re-arms every active failed/skipped/blocked step run as `pending` (clearing result, worker execution ref, attempt, and ended timestamp so the reconciler re-dispatches it), flips the bound work item back to `running`, and the reconciler re-creates the runtime container and resumes the DAG from where it left off. Steps that already succeeded are kept. |
 | Control plane CPU pegged (~150%) with no DB activity | Work-queue `dequeue` busy-loop | Fixed in v0.1.186 — dequeue is bounded to one rotation pass. Restart the control plane to clear a wedged reconcile goroutine (its advisory lock never renews while stuck). |
 | Stale decisions leaking across runs | Previous `_decision` file | Clear `.orchicon/<run_id>/` files between steps |
-| Worker cannot delete or run destructive commands | Sandbox layers | Workers are intentionally sandboxed (see Architectural Pattern 8). Direct bash is blocked by opencode permission deny rules; subprocess/TUI-issued commands (e.g. `rm -rf /` inside a python TUI) are blocked by the OS-level execution guard (`internal/guard/guard.go`, built inside the workflow runtime container); and all canned workers' prompts carry the "Safety rules" block. Review/QA workers run `semgrep scan --config .orchicon/semgrep_orchicon.yml --error .` (Semgrep + Orchicon ruleset) to catch dangerous patterns before merge. |
-| Worker wiped files outside the project | Execution guard bypassed via absolute path | The guard is defense-in-depth, not containment. A worker that invokes `/bin/rm` by absolute path or writes its own binary escapes it. Run Orchicon as the single-container deployment (§Single-Container Deployment) for a real process-isolation boundary. |
+| Worker cannot delete or run destructive commands | Layer behavior | Workers run behind layered defenses (see Architectural Pattern 8). These are defense-in-depth, **not** containment. Direct bash is blocked by opencode permission deny rules; subprocess/TUI-issued commands (e.g. `rm -rf /` inside a python TUI) are blocked by the OS-level execution guard (`internal/guard/guard.go`, applied in both modes); and all canned workers' prompts carry the "Safety rules" block. Review/QA workers run `semgrep scan --config .orchicon/semgrep_orchicon.yml --error .` (Semgrep + Orchicon ruleset) to catch dangerous patterns before merge. |
+| Worker wiped files outside the project | Execution guard bypassed via absolute path or a self-written binary | The guard is defense-in-depth, **not** containment — a worker that invokes `/bin/rm` by absolute path, or writes its own binary and runs it, gets past it. The real boundary is the **workflow runtime container**: enable **runtime containers for the project** (project **Execution mode** → `runtime`), and each execution then runs in a short-lived, root-free container with no host filesystem access (§Workflow Runtime Containers). In `local` mode there is no mitigation — the worker has your own filesystem access, which is why the UI states that where the mode is chosen. |
 
 ---
 

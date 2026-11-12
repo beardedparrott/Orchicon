@@ -26,8 +26,7 @@ func blocksVisible(t *testing.T, items []chat.ChatItem, width int) string {
 }
 
 // TestProseBlockRendersMarkdown: the execution transcript is where the volume is (1,786 executions
-// carry bold markers, 85 carry tables), and its prose is the model's own markdown. The operator saw
-// the SOURCE — "> " markers included — which is what this pins.
+// carry bold markers, 85 carry tables), and its prose is the model's own markdown.
 func TestProseBlockRendersMarkdown(t *testing.T) {
 	items := []chat.ChatItem{{
 		Kind: chat.KindText,
@@ -76,9 +75,8 @@ func TestErrorBlocksStayRaw(t *testing.T) {
 	}
 }
 
-// TestArtifactMarkdownFollowsTheGUIRule: the GUI's ArtifactCard renders markdown ONLY when the type is
-// "markdown" or the file name ends in .md (its isMarkdown). Mirroring the rule exactly is the point —
-// rendering every artifact would reformat code, JSON and diffs.
+// TestArtifactMarkdownFollowsTheGUIRule: the GUI's ArtifactCard renders markdown ONLY when the type
+// is "markdown" or the file name ends in .md (its isMarkdown).
 func TestArtifactMarkdownFollowsTheGUIRule(t *testing.T) {
 	mdArtifact := chat.ChatItem{Kind: chat.KindArtifact, Key: "a1", Name: "report.md", Type: "text",
 		Content: "> quoted in an artifact"}
@@ -95,9 +93,8 @@ func TestArtifactMarkdownFollowsTheGUIRule(t *testing.T) {
 	}
 }
 
-// TestReasoningSummaryIsTheRenderedFirstLine: a collapsed block's preview must show what the operator
-// would READ, not the source. A preview reading "## Findings" or an opening fence is the same defect
-// one level up.
+// TestReasoningSummaryIsTheRenderedFirstLine: a collapsed block's preview must show what the
+// operator would READ, not the source.
 func TestReasoningSummaryIsTheRenderedFirstLine(t *testing.T) {
 	blks := blocksFromItems([]chat.ChatItem{{
 		Kind: chat.KindReasoning, Key: "r1",

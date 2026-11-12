@@ -16,16 +16,8 @@ import (
 // The DB-backed tests further down pin the two paths it feeds; they need
 // ORCHICON_TEST_DSN like the rest of this package's DB tests.
 
-// TestResolveStepRecoveryConfigAppliesEphemeralDefault pins the ephemeral
-// default: when a step declares NO strategy of its own, an ephemeral run must
-// resolve to the recovery engine and never to the blind "retry" fallback.
-//
-// Retry is not the recovery flow. It clones the ticket and re-dispatches it
-// without ever creating a RecoveryExecution, so when its attempts run out the
-// step fails with RecoveryID null: nothing captured, nothing summarized,
-// nothing to resume from, and no recovery record for a human to review.
-// That is the whole reason a machine-managed run — with no human watching the
-// step between attempts — must not inherit it as a default.
+// TestResolveStepRecoveryConfigAppliesEphemeralDefault pins the ephemeral default: when a step
+// declares NO strategy of its own.
 func TestResolveStepRecoveryConfigAppliesEphemeralDefault(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -49,10 +41,8 @@ func TestResolveStepRecoveryConfigAppliesEphemeralDefault(t *testing.T) {
 	}
 }
 
-// TestResolveStepRecoveryConfigExplicitStrategyWins pins the other half of the
-// contract: the default is a DEFAULT. A step that names a strategy keeps it —
-// including an explicit "retry", because an operator who wrote that down is
-// not second-guessed by the ephemeral rule.
+// TestResolveStepRecoveryConfigExplicitStrategyWins pins the other half of the contract: the
+// default is a DEFAULT.
 func TestResolveStepRecoveryConfigExplicitStrategyWins(t *testing.T) {
 	for _, want := range []string{strategyRetry, "stop", "human_escalation", strategySummarizeRestart} {
 		t.Run(want, func(t *testing.T) {
@@ -65,9 +55,8 @@ func TestResolveStepRecoveryConfigExplicitStrategyWins(t *testing.T) {
 	}
 }
 
-// TestResolveStepRecoveryConfigNonEphemeralIsUnchanged pins that the change is
-// scoped: every non-ephemeral run resolves exactly as readStepRecoveryConfig
-// always did. A human-driven SDLC run must not silently change behaviour.
+// TestResolveStepRecoveryConfigNonEphemeralIsUnchanged pins that the change is scoped: every
+// non-ephemeral run resolves exactly as readStepRecoveryConfig always did.
 func TestResolveStepRecoveryConfigNonEphemeralIsUnchanged(t *testing.T) {
 	configs := []string{
 		"",
@@ -89,10 +78,8 @@ func TestResolveStepRecoveryConfigNonEphemeralIsUnchanged(t *testing.T) {
 	}
 }
 
-// TestResolveStepRecoveryConfigKeepsMaxAttempts pins that the ephemeral
-// default swaps the STRATEGY only. The attempt bound is a separate knob with
-// its own explicit value on every seeded step, and quietly rewriting it here
-// would change how many times a step may re-enter recovery.
+// TestResolveStepRecoveryConfigKeepsMaxAttempts pins that the ephemeral default swaps the STRATEGY
+// only.
 func TestResolveStepRecoveryConfigKeepsMaxAttempts(t *testing.T) {
 	if got := resolveStepRecoveryConfig("", true); got.MaxAttempts != 3 {
 		t.Fatalf("ephemeral default changed the generic attempt bound: got %d, want 3", got.MaxAttempts)
@@ -102,11 +89,8 @@ func TestResolveStepRecoveryConfigKeepsMaxAttempts(t *testing.T) {
 	}
 }
 
-// TestReadStepRecoveryConfigReportsExplicitness pins the mechanism the default
-// rests on: the reader must distinguish "the step asked for retry" from "the
-// step asked for nothing, so retry is the fallback". If that distinction ever
-// collapses, the ephemeral default silently starts overriding explicit
-// choices — which is the failure this test exists to catch.
+// TestReadStepRecoveryConfigReportsExplicitness pins the mechanism the default rests on: the reader
+// must distinguish "the step asked for retry" from "the step asked for nothing.
 func TestReadStepRecoveryConfigReportsExplicitness(t *testing.T) {
 	if got := readStepRecoveryConfig(`{"recovery":{"strategy":"retry"}}`); !got.strategySet {
 		t.Fatal("an explicit strategy must report as set")
@@ -121,17 +105,12 @@ func TestReadStepRecoveryConfigReportsExplicitness(t *testing.T) {
 
 // --- the paths (DB-backed) -------------------------------------------------
 
-// TestEphemeralStepFailureUsesTheRecoveryEngine is the acceptance criterion
-// for the ephemeral default, driven through the real reconciler: an EPHEMERAL
-// run whose task step carries NO recovery config must, on failure, enter the
-// recovery flow — the step goes `recovering`, records the recovery strategy,
-// and stages a recovery trigger — and must NOT leave a cloned work item
-// behind.
+// TestEphemeralStepFailureUsesTheRecoveryEngine is the acceptance criterion for the ephemeral
+// default, driven through the real reconciler.
 func TestEphemeralStepFailureUsesTheRecoveryEngine(t *testing.T) {
 	trigger := &recordingRecoveryTrigger{}
-	// The step config is a bare "{}" — exactly what the Quick Work agent
-	// created when it copied the seeded step SHAPE but dropped the recovery
-	// block, the regression this change exists to absorb.
+	// The step config is a bare "{}" — exactly what the Quick Work agent created when it copied the
+	// seeded step SHAPE but dropped the recovery block, the regression this change exists to absorb.
 	steps := []workflow.StepWire{
 		{ID: "st", Name: "Task Step", Kind: domain.StepKindTask, Config: "{}", Ref: "w_se_devops_engineer"},
 	}
@@ -169,12 +148,7 @@ func TestEphemeralStepFailureUsesTheRecoveryEngine(t *testing.T) {
 	}
 }
 
-// TestEphemeralRetryCloneKeepsTheJobIdentity pins the retry-clone fix. An
-// ephemeral run MAY still be configured for an explicit blind retry, and that
-// path clones the ticket — so the clone must be the same job: still ephemeral
-// (or a machine dispatch leaks into every human work-item view), still on the
-// original runtime image, and still carrying the context files and secrets the
-// original was dispatched with.
+// TestEphemeralRetryCloneKeepsTheJobIdentity pins the retry-clone fix.
 func TestEphemeralRetryCloneKeepsTheJobIdentity(t *testing.T) {
 	const (
 		wantImage = "orchicon-runtime:ephemeral-test"

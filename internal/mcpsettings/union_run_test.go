@@ -1,12 +1,6 @@
 package mcpsettings_test
 
 // union_run_test.go — THE RUN-LEVEL UNION (AC 1, AC 2, AC 3).
-//
-// The RUN scope is the one to get right BY CONSTRUCTION: its result is applied
-// ONCE per container (child 4), so it must be derived from the RUN, never from
-// an executing worker. The test seeds a TWO-STEP run whose steps use DIFFERENT
-// worker versions with DIFFERENT inline own-sets — the result must contain
-// BOTH, which a per-execution resolution cannot produce.
 
 import (
 	"context"
@@ -102,9 +96,8 @@ func TestResolveRunUnionTwoStepsTwoWorkers(t *testing.T) {
 		t.Fatalf("create project-owned definition: %v", err)
 	}
 
-	// The run's published version: TWO TASK steps, one per worker, with NO
-	// pinned version (so dispatch resolves the latest published — the same
-	// resolution the demand set sees).
+	// The run's published version: TWO TASK steps, one per worker, with NO pinned version (so dispatch
+	// resolves the latest published — the same resolution the demand set sees).
 	wtx, err := pool.BeginTenantTx(ctx, tenant)
 	if err != nil {
 		t.Fatalf("begin run tx: %v", err)
@@ -224,13 +217,8 @@ func withTenant(ctx context.Context, tenantID string) context.Context {
 	return tenant.WithID(ctx, tenantID)
 }
 
-// TestResolveRunUnionDedupesASharedInlineID pins the union's DEDUP contract
-// for inline (worker-owned) definitions: an inline definition has no
-// mcp_servers row, so its ScopedServer.EntryID is "" — a seen-set seeded from
-// EntryID alone is empty on every call and two steps declaring the SAME inline
-// id would each resolve it. The run scope is exactly where that arises (two
-// worker versions can declare one shared server name), and a duplicate would
-// open the same MCP connection twice under one namespace.
+// TestResolveRunUnionDedupesASharedInlineID pins the union's DEDUP contract for inline
+// (worker-owned) definitions.
 func TestResolveRunUnionDedupesASharedInlineID(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {

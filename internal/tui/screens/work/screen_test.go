@@ -1,11 +1,7 @@
 package work
 
-// screen_test.go — the Work screen is asserted against a REAL Connect client
-// talking to fake ProjectService / WorkItemService / RuntimeImageService
-// handlers over httptest: the requests the screen actually sends are
-// recorded, and the fakes hold the model so "the list reconciles", "the
-// order persisted" and "the build status transitioned" are asserted against
-// real state, not against the UI.
+// screen_test.go — the Work screen is asserted against a REAL Connect client talking to fake
+// ProjectService / WorkItemService / RuntimeImageService handlers over httptest.
 
 import (
 	"context"
@@ -36,9 +32,8 @@ import (
 type fakePlane struct {
 	apiv1connect.UnimplementedWorkItemServiceHandler
 	apiv1connect.UnimplementedProjectServiceHandler
-	// The MCP service is embedded so the fake satisfies the handler interface while
-	// implementing only the three calls the project forms make (list, get-selection,
-	// set-selection).
+	// The MCP service is embedded so the fake satisfies the handler interface while implementing only
+	// the three calls the project forms make (list, get-selection, set-selection).
 	apiv1connect.UnimplementedMCPServiceHandler
 	apiv1connect.UnimplementedRuntimeImageServiceHandler
 	apiv1connect.UnimplementedWorkflowServiceHandler
@@ -56,18 +51,18 @@ type fakePlane struct {
 	imgOrder  []string
 	nextID    int
 
-	created     []*apiv1.CreateWorkItemRequest
-	updated     []*apiv1.UpdateWorkItemRequest
-	deleted     []string
-	// hardDeleted records HardDeleteWorkItem calls. It is separate from `deleted`
-	// because the two are DIFFERENT gestures — `deleted` is the soft delete (status →
-	// cancelled), `hardDeleted` is the GUI's permanent Delete, which is what the TUI's
-	// ctrl+x performs. A test that conflated them could not tell which one ran.
+	created []*apiv1.CreateWorkItemRequest
+	updated []*apiv1.UpdateWorkItemRequest
+	deleted []string
+	// hardDeleted records HardDeleteWorkItem calls.
 	hardDeleted []string
 	archived    []string
 	restored    []string
 	reorders    []*apiv1.ReorderWorkItemsRequest
 	assigned    []*apiv1.AssignWorkerRequest
+	// cancelled records CancelExecution ids, so a test can prove "stop the run"
+	// reaches the EXECUTION and not merely the work item's status.
+	cancelled []string
 	unassigned  []string
 	projCreated []*apiv1.CreateProjectRequest
 	projUpdated []*apiv1.UpdateProjectRequest
@@ -78,16 +73,14 @@ type fakePlane struct {
 	// which is how a test exercises the "the MCP data did not load" path.
 	mcpServers []*apiv1.MCPServer
 	mcpError   error
-	// mcpCreated records the OWNED create requests the project forms issue (the
-	// define path), so a test can prove the definition reaches the API with the
-	// project id set rather than a tenant selection.
+	// mcpCreated records the OWNED create requests the project forms issue (the define path), so a test
+	// can prove the definition reaches the API with the project id set rather than a tenant selection.
 	mcpCreated []*apiv1.MCPServerCreateRequest
 	// mcpListFilter records the scope filter each ListMCPServers call carried, so a
 	// test can prove the detail asks for ONE owner's rows.
 	mcpListFilter []*apiv1.MCPServerListRequest
-	// updateErr, when set, makes UpdateWorkItem fail the way a SERVER-SIDE
-	// rejection does (Task A's workflow-first gate is the reason it exists): the
-	// write never lands, so nothing is recorded and nothing is mutated.
+	// updateErr, when set, makes UpdateWorkItem fail the way a SERVER-SIDE rejection does (Task A's
+	// workflow-first gate is the reason it exists): the write never lands.
 	updateErr error
 	// listCalls counts the LIST RPCs a detail render could reach for if it resolved
 	// names by fetching. Resolving a work item's detail must add NONE of them.
@@ -130,9 +123,7 @@ func (p *fakePlane) addExec(e *apiv1.WorkerExecution) {
 	p.execs = append(p.execs, e)
 }
 
-// ListExecutions serves the work-item PR surface. It honors the task_id and project_id filters the RPC
-// defines — the real request path is what the screen uses, so the fake must answer the same questions the
-// server would rather than always returning everything.
+// ListExecutions serves the work-item PR surface.
 func (p *fakePlane) ListExecutions(_ context.Context, req *connect.Request[apiv1.ListExecutionsRequest]) (*connect.Response[apiv1.ListExecutionsResponse], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -201,7 +192,29 @@ func (p *fakePlane) CreateWorkItem(_ context.Context, req *connect.Request[apiv1
 		AutoStartWorkflow:  boolPtr(req.Msg.GetAutoStartWorkflow()),
 		CreatedAt:          timestamppb.Now(),
 	})
+	// The EXECUTION-MODE OVERRIDE is stored the way the column stores it: a present enum is an
+	// override, EXECUTION_MODE_UNSPECIFIED (the create field's "inherit") is NULL.
+	if mode := req.Msg.GetExecutionMode(); mode != apiv1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED {
+		w.ExecutionMode = mode.Enum()
+	}
+	p.resolveEffectiveMode(w)
 	return connect.NewResponse(&apiv1.CreateWorkItemResponse{WorkItem: w}), nil
+}
+
+// resolveEffectiveMode mirrors db.EffectiveExecutionMode: item override -> project mode -> tenant
+// default (local).
+func (p *fakePlane) resolveEffectiveMode(w *apiv1.WorkItem) {
+	if mode := w.GetExecutionMode(); mode != apiv1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED {
+		w.EffectiveExecutionMode = mode
+		return
+	}
+	if pr, ok := p.projects[w.GetProjectId()]; ok {
+		if mode := pr.GetExecutionMode(); mode != apiv1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED {
+			w.EffectiveExecutionMode = mode
+			return
+		}
+	}
+	w.EffectiveExecutionMode = apiv1.ExecutionMode_EXECUTION_MODE_LOCAL
 }
 
 func (p *fakePlane) GetWorkItem(_ context.Context, req *connect.Request[apiv1.GetWorkItemRequest]) (*connect.Response[apiv1.GetWorkItemResponse], error) {
@@ -211,6 +224,8 @@ func (p *fakePlane) GetWorkItem(_ context.Context, req *connect.Request[apiv1.Ge
 	if !ok {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
 	}
+	// A SINGLE-ITEM read carries the RESOLVED mode (work_item.pb.go.
+	p.resolveEffectiveMode(w)
 	return connect.NewResponse(&apiv1.GetWorkItemResponse{WorkItem: w}), nil
 }
 
@@ -239,9 +254,7 @@ func (p *fakePlane) UpdateWorkItem(_ context.Context, req *connect.Request[apiv1
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	// A server-side rejection lands BEFORE anything is recorded or mutated, the same shape
-	// ActivateProject's drafting precondition has: a fake that recorded and applied the write
-	// anyway would let a test prove the dock is wired while hiding that the write never
-	// happened.
+	// ActivateProject's drafting precondition has.
 	if p.updateErr != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, p.updateErr)
 	}
@@ -290,6 +303,14 @@ func (p *fakePlane) UpdateWorkItem(_ context.Context, req *connect.Request[apiv1
 	if m.ScheduledStartAt != nil {
 		w.ScheduledStartAt = m.GetScheduledStartAt()
 	}
+	// THE EXECUTION-MODE OVERRIDE, BOTH HALVES, WITH CLEAR WINS — the server's rule
+	// (work_item_service.proto:295-300), not a shortcut.
+	if m.GetClearExecutionMode() {
+		w.ExecutionMode = nil
+	} else if m.ExecutionMode != nil {
+		w.ExecutionMode = m.GetExecutionMode().Enum()
+	}
+	p.resolveEffectiveMode(w)
 	return connect.NewResponse(&apiv1.UpdateWorkItemResponse{WorkItem: w}), nil
 }
 
@@ -306,11 +327,8 @@ func (p *fakePlane) DeleteWorkItem(_ context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(&apiv1.DeleteWorkItemResponse{WorkItem: w}), nil
 }
 
-// HardDeleteWorkItem permanently removes the item, mirroring the server's two
-// REFUSALS (internal/workitem/service.go): an item with children is not cascaded,
-// and an idea must be dismissed rather than deleted. A fake that cascaded anyway
-// would let a test pass against behaviour the plane does not have — and the
-// refusal is exactly what the operator needs to see reported.
+// HardDeleteWorkItem permanently removes the item, mirroring the server's two REFUSALS
+// (internal/workitem/service.go): an item with children is not cascaded.
 func (p *fakePlane) HardDeleteWorkItem(_ context.Context, req *connect.Request[apiv1.HardDeleteWorkItemRequest]) (*connect.Response[apiv1.HardDeleteWorkItemResponse], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -326,7 +344,7 @@ func (p *fakePlane) HardDeleteWorkItem(_ context.Context, req *connect.Request[a
 	}
 	if w.GetStatus() == apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
-				errors.New("an idea must be dismissed, not deleted"))
+			errors.New("an idea must be dismissed, not deleted"))
 	}
 	p.hardDeleted = append(p.hardDeleted, req.Msg.GetId())
 	delete(p.items, req.Msg.GetId())
@@ -415,6 +433,26 @@ func (p *fakePlane) UnassignWorker(_ context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(&apiv1.UnassignWorkerResponse{WorkItem: w}), nil
 }
 
+// CancelExecution records the cancellation. It mirrors the server's refusal for an
+// unknown id, so a test cannot pass by cancelling an execution that does not exist.
+func (p *fakePlane) CancelExecution(_ context.Context, req *connect.Request[apiv1.CancelExecutionRequest]) (*connect.Response[apiv1.CancelExecutionResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	found := false
+	for _, e := range p.execs {
+		if e.GetId() == req.Msg.GetId() {
+			found = true
+			e.Status = apiv1.ExecutionStatus_EXECUTION_STATUS_TERMINATED
+			break
+		}
+	}
+	if !found {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("execution not found"))
+	}
+	p.cancelled = append(p.cancelled, req.Msg.GetId())
+	return connect.NewResponse(&apiv1.CancelExecutionResponse{}), nil
+}
+
 // ---------- ProjectService ----------
 
 func (p *fakePlane) seedProject(id, name string) *apiv1.Project {
@@ -475,9 +513,7 @@ func (p *fakePlane) DeleteProject(_ context.Context, req *connect.Request[apiv1.
 	return connect.NewResponse(&apiv1.DeleteProjectResponse{}), nil
 }
 
-// ListMCPServers returns the seeded entries, or the seeded error. The ERROR path is the
-// point: it is how a test proves that a failed MCP load leaves the form without the field
-// rather than with an empty one.
+// ListMCPServers returns the seeded entries, or the seeded error.
 func (p *fakePlane) ListMCPServers(_ context.Context, req *connect.Request[apiv1.MCPServerListRequest]) (*connect.Response[apiv1.MCPServerListResponse], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -500,9 +536,8 @@ func (p *fakePlane) ListMCPServers(_ context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(&apiv1.MCPServerListResponse{Servers: out}), nil
 }
 
-// CreateMCPServer records the OWNED definition create the project forms issue —
-// the define path (AC 9). It mirrors the server's owner-XOR precondition so a test
-// cannot pass with an ownerless (tenant-level) request.
+// CreateMCPServer records the OWNED definition create the project forms issue — the define path (AC
+// 9).
 func (p *fakePlane) CreateMCPServer(_ context.Context, req *connect.Request[apiv1.MCPServerCreateRequest]) (*connect.Response[apiv1.MCPServerCreateResponse], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -517,14 +552,8 @@ func (p *fakePlane) CreateMCPServer(_ context.Context, req *connect.Request[apiv
 // NOTE: Get/SetProjectMCPServers are gone with the reference model — a
 // definition is OWNER-SCOPED now, so there is no selection RPC to fake.
 
-// ActivateProject mirrors the SERVER'S PRECONDITION rather than accepting anything:
-// the real UPDATE carries `AND status = 'drafting'`, so activating a non-drafting
-// project fails there. A fake that always succeeded would let a test prove the action
-// is wired while hiding that it is offered in states where it cannot work.
-//
-// SEEDED PROJECTS ARE ACTIVE (seedProject), so a test that wants the drafting path
-// must set the status itself — which is the honest fixture, because the real server
-// creates projects drafting and this fake does not model CreateProject's status.
+// ActivateProject mirrors the SERVER'S PRECONDITION rather than accepting anything: the real UPDATE
+// carries `AND status = 'drafting'`, so activating a non-drafting project fails there.
 func (p *fakePlane) ActivateProject(_ context.Context, req *connect.Request[apiv1.ActivateProjectRequest]) (*connect.Response[apiv1.ActivateProjectResponse], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -745,9 +774,8 @@ func newModel(t *testing.T, p *fakePlane) *Model {
 	mux.Handle(apiv1connect.NewMCPServiceHandler(p))
 	mux.Handle(apiv1connect.NewRuntimeImageServiceHandler(p))
 	mux.Handle(apiv1connect.NewWorkflowServiceHandler(p))
-	// The ExecutionService backs the work-item PR surface (the list's `PR merged` mark and the details pane's
-	// `pr url`): the PR lives on the RUN, and the join to the item is execution.task_id. Unseeded, it returns
-	// an empty page, which is exactly the "no PRs anywhere" case the screen must survive.
+	// The ExecutionService backs the work-item PR surface (the list's `PR merged` mark and the details
+	// pane's `pr url`): the PR lives on the RUN, and the join to the item is execution.task_id.
 	mux.Handle(apiv1connect.NewExecutionServiceHandler(p))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -757,9 +785,6 @@ func newModel(t *testing.T, p *fakePlane) *Model {
 }
 
 // metaFor reads one rendered LIST row's meta by id ("" when the id is not on screen).
-//
-// It reads through SourcesForTest — the same hook the other tests use to see what the pane draws — so the
-// assertion is on the RENDERED row rather than on the row builder's inputs.
 func metaFor(t *testing.T, m *Model, id string) string {
 	t.Helper()
 	for _, s := range m.Base.SourcesForTest() {
@@ -788,13 +813,7 @@ func kmsg(s string) tea.KeyMsg {
 	case "space":
 		return tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")}
 	case "ctrl+x":
-		// A REAL control key, not the literal runes "ctrl+x". The terminal sends one
-		// control byte (CAN, 0x18) and bubbletea reports KeyCtrlX; KeyMsg.String() then
-		// returns "ctrl+x", which is what the router matches on. The literal-runes form
-		// would ALSO match — String() just returns the runes — so this is about fidelity
-		// rather than necessity: the test should drive the key the terminal actually
-		// sends, since a helper that quietly accepts a shape the real input never takes
-		// can pass while the binding is broken.
+		// A REAL control key, not the literal runes "ctrl+x".
 		return tea.KeyMsg{Type: tea.KeyCtrlX}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
@@ -954,8 +973,6 @@ func TestWorkItemCreateFromForm(t *testing.T) {
 		t.Fatalf("create request lost mutable fields: %+v", req)
 	}
 	// The new item reconciles into the tree, nested one level under its parent.
-	// The nesting is the row's DEPTH now (the pane draws the indent), not
-	// whitespace baked into the title.
 	load(t, m, srcWorkItems)
 	rows := itemsOf(m, srcWorkItems)
 	depth := -1
@@ -1073,9 +1090,8 @@ func TestTreeViewRendersRealHierarchy(t *testing.T) {
 	load(t, m, srcWorkItems)
 
 	got := titles(itemsOf(m, srcWorkItems))
-	// The titles are FLUSH (no baked-in indent): the hierarchy now travels on
-	// the row itself, and the list pane draws the indent so it cannot be
-	// applied twice.
+	// The titles are FLUSH (no baked-in indent): the hierarchy now travels on the row itself, and the
+	// list pane draws the indent so it cannot be applied twice.
 	want := []string{
 		"[epic] Epic E",
 		"[feature] Feature F",
@@ -1119,15 +1135,8 @@ func TestTreeViewRendersRealHierarchy(t *testing.T) {
 	}
 }
 
-// The Board view was REMOVED: a status-grouped Kanban does not read as a list
-// in a single-column terminal pane. The cycle is now tree -> archive.
-//
-// A RETIRED VIEW CHORD MUST BE GONE, NOT MERELY SILENT. 'B' (board) and 'T'/'Z'
-// (direct tree/archive jumps, retired in favour of 'v' alone) must neither change
-// the view NOR answer with an explaining notice: the operator's "I don't want T/Z
-// there at all since we removed it". An explaining stub was the first cut and it
-// was wrong for these keys — they are chords to a VIEW, and 'v' plus the mode
-// label beside the search box already say where you are and how to move.
+// The Board view was REMOVED: a status-grouped Kanban does not read as a list in a single-column
+// terminal pane. A RETIRED VIEW CHORD MUST BE GONE, NOT MERELY SILENT.
 func TestBoardViewIsGone(t *testing.T) {
 	p := newPlane()
 	seedHierarchy(p)
@@ -1161,9 +1170,7 @@ func TestBoardViewIsGone(t *testing.T) {
 		t.Fatalf("v must cycle back to tree, got %q", m.ViewMode())
 	}
 
-	// 'T' and 'Z' are GONE, not stubbed and not silent: neither switches the view
-	// nor says anything. Checked in BOTH modes, because the archive view is where a
-	// 'T' press would be most tempting (and where a stub would have been loudest).
+	// 'T' and 'Z' are GONE, not stubbed and not silent: neither switches the view nor says anything.
 	for _, mode := range []viewMode{viewTree, viewArchive} {
 		m.switchView(mode)
 		load(t, m, srcWorkItems)
@@ -1179,9 +1186,8 @@ func TestBoardViewIsGone(t *testing.T) {
 		}
 	}
 
-	// The composer's cheat-sheet advertises 'v' alone, which is the half the
-	// operator asked for explicitly ("the shortcut helper in the composer should be
-	// updated") — and it must not name the retired chords at all.
+	// The composer's cheat-sheet advertises 'v' alone, which is the half the operator asked for
+	// explicitly ("the shortcut helper in the composer should be updated").
 	m.switchView(viewTree)
 	load(t, m, srcWorkItems)
 	hint := ansi.Strip(m.HintLine())
@@ -1276,11 +1282,8 @@ func TestReorderChildrenPersists(t *testing.T) {
 	if strings.Join(req.GetChildIds(), ",") != "wi-b,wi-a,wi-c" {
 		t.Fatalf("reorder child_ids = %v, want wi-b,wi-a,wi-c", req.GetChildIds())
 	}
-	// The new sequence persisted: the tree now renders it IN THE NEW ORDER, and
-	// each step is NUMBERED by its position in the stored sequence. Titles are
-	// flush and the nesting is the row's Depth, so every child of the epic sits
-	// at depth 1. The epic itself is unnumbered because it is an only child at
-	// the top level (a group of one has no order to show).
+	// The new sequence persisted: the tree now renders it IN THE NEW ORDER, and each step is NUMBERED
+	// by its position in the stored sequence.
 	load(t, m, srcWorkItems)
 	rows := itemsOf(m, srcWorkItems)
 	got := titles(rows)
@@ -1301,12 +1304,6 @@ func TestReorderChildrenPersists(t *testing.T) {
 // ------------- destructive actions -------------
 
 // ctrl+x IS THE GUI'S DELETE: PERMANENT, and the row LEAVES THE LIST.
-//
-// The operator's report was "Deleting work items in the TUI is no longer working", and the
-// reason was that this gesture was the GUI's OTHER one — a soft delete (status → cancelled)
-// that no TUI view filters out, so the row stayed on screen and the delete looked dead. The
-// assertions below are what make the difference observable: the RPC is HardDeleteWorkItem
-// (not DeleteWorkItem), and the row is GONE after the write rather than merely re-pilled.
 func TestDeleteRequiresConfirmThenReconciles(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")
@@ -1353,9 +1350,7 @@ func TestDeleteRequiresConfirmThenReconciles(t *testing.T) {
 	}
 }
 
-// THE SERVER'S REFUSAL IS SURFACED. A parent with children cannot be permanently deleted (the
-// plane refuses rather than cascading), and that refusal must land in the operator's face — not
-// as a row that quietly stays put, which is exactly the failure this whole fix is about.
+// THE SERVER'S REFUSAL IS SURFACED.
 func TestDeletingAParentWithChildrenReportsTheRefusal(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")
@@ -1520,10 +1515,8 @@ func TestProjectCreateEditAndDirectory(t *testing.T) {
 	m := newModel(t, p)
 	m.SelectSource(srcProjects)
 
-	// create
-	// The create form is opened through the PREP now (the MCP options are a round trip),
-	// so the returned command must be driven before the form exists — same as every other
-	// async form in this suite.
+	// create The create form is opened through the PREP now (the MCP options are a round trip), so the
+	// returned command must be driven before the form exists.
 	run(t, m, press(t, m, "n"))
 	f := m.ActiveForm()
 	if f == nil {

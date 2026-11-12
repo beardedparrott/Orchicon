@@ -1,11 +1,6 @@
 package tui
 
 // work_sequence_probe_test.go — the operator's EXACT sequence, step by step.
-//
-// Their model: Tab reaches the top menu → up/down moves the submenu → Enter selects an
-// entry → arrows move the pane → Tab breaks back to the submenu. This drives that
-// literally against the real Work screen and logs each stop, so a failure names the step
-// that breaks rather than a guess.
 
 import (
 	"testing"

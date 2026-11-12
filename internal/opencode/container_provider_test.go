@@ -1,12 +1,7 @@
 package opencode
 
-// container_provider_test.go — the config a container's opencode serve BOOTS with
-// must carry the tenant's providers at addresses the container can dial.
-//
-// This is the outermost consumer of the transposition: a provider block that is
-// absent (the pre-fix state) leaves the container reading a mounted opencode.jsonc
-// that no user is required to hand-edit, and one with a loopback base URL points the
-// worker at its own container.
+// container_provider_test.go — the config a container's opencode serve BOOTS with must carry the
+// tenant's providers at addresses the container can dial.
 import (
 	"encoding/json"
 	"testing"

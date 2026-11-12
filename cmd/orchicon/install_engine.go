@@ -1,0 +1,273 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"github.com/beardedparrott/orchicon/internal/containerengine"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
+)
+
+// engineCLI is the binary the INSTALL PATH drives for image and container operations, set once by
+// resolveContainerEngine when the ladder reached "ready".
+var engineCLI string
+
+// engineResolved / engineMu memoise the LAZY resolution below (see engineBinary).
+var (
+	engineMu       sync.Mutex
+	engineResolved string
+)
+
+// engineBinary is the engine binary to invoke.
+func engineBinary() string {
+	if engineCLI != "" {
+		return engineCLI
+	}
+	engineMu.Lock()
+	defer engineMu.Unlock()
+	if engineResolved != "" {
+		return engineResolved
+	}
+	engineResolved = "docker"
+	if e, err := containerengine.Detect(containerengine.DefaultProbe()); err == nil && e.Bin != "" {
+		engineResolved = e.Bin
+	}
+	return engineResolved
+}
+
+// engineCommandTimeout bounds every engine invocation the INSTALL makes.
+//
+// WHY A TIMEOUT IS NOT OPTIONAL HERE. `exec.Command` has no deadline, and on Windows a Docker
+// Desktop / podman pipe that EXISTS but whose daemon is wedged does not fail — it BLOCKS. An
+// operator hit exactly that: the install printed
+//
+//	== resolving the plane residency and host ports
+//
+// and then simply stopped. That phase's first act is rung 0, which asks the engine whether this
+// instance is already running (`docker inspect`) — an unbounded call against a dead pipe. The
+// install had no way to recover and no way to say what it was waiting for.
+//
+// Bounded at 20s: generous for a healthy daemon (tens of milliseconds), short enough that a
+// broken one degrades to "no container is running" instead of hanging the install for ever.
+// The probe that decides AVAILABILITY is separate and already bounded (internal/containerengine),
+// so a timeout here can only move the install onto the host path — which is the supported shape.
+const engineCommandTimeout = 20 * time.Second
+
+// engineCommand is an engine invocation through the resolved binary, with a deadline.
+func engineCommand(args ...string) *exec.Cmd {
+	ctx, cancel := context.WithTimeout(context.Background(), engineCommandTimeout)
+	// Cancel when the process is waited on; exec.Cmd does not expose a completion hook, so the timer is
+	// released by the deadline expiring at worst.
+	_ = cancel
+	// quietCommandContext, because the install makes MANY engine calls and runs with no console
+	// of its own (instancectl spawns it detached). Each bare one was another window.
+	return procwin.CommandContext(ctx, engineBinary(), args...)
+}
+
+// engineStatus is the availability decision the install MADE, cached for the summary.
+var engineStatus containerengine.Status
+
+// resolveContainerEngine is the whole engine decision, as SIX RUNGS whose every failure is a
+// warning that falls through to the local shape (AC6).
+func resolveContainerEngine() (bool, error) {
+	p := containerengine.DefaultProbe()
+	pin := strings.ToLower(strings.TrimSpace(os.Getenv(containerengine.EnginePinEnv)))
+	pinned := pin != "" && pin != string(containerengine.EngineNone) && pin != "0" && pin != "off"
+
+	st := containerengine.Status{
+		Engine:  containerengine.EngineNone,
+		Minimum: containerengine.MinimumFor(p),
+		State:   containerengine.StateUnavailable,
+	}
+
+	// unavailable records WHY containers are off, prints it, and returns the install's answer.
+	// A pinned engine turns the same reason into the install's error.
+	unavailable := func(format string, args ...any) (bool, error) {
+		msg := fmt.Sprintf(format, args...)
+		st.Available, st.State, st.Reason = false, containerengine.StateUnavailable, msg
+		engineStatus = st
+		if pinned {
+			return false, errors.New(msg)
+		}
+		fmt.Printf("orchicon: %s\n", msg)
+		fmt.Println("orchicon: runtime containers are unavailable — the services run as HOST processes and work runs in-process")
+		return false, nil
+	}
+
+	// 1. DETECT (AC1).
+	installPhase("checking the container engine")
+	e, err := containerengine.Detect(p)
+	if err != nil {
+		return unavailable("no container engine: %v", err)
+	}
+	// A BRAND-NEW ENGINE INSTALL IS NOT ON THIS PROCESS'S PATH YET.
+	if e.Name == containerengine.EngineNone {
+		if re, ok := e.WaitForBinary(p); ok {
+			e = re
+			installPhase("container engine found after install")
+		}
+	}
+
+	// 2.
+	provisionPodman := func(why string) (containerengine.Engine, error) {
+		installPhase(why)
+		// THERE IS NO PROMPT ANY MORE, AND THAT IS THE FIX.
+		prov, perr := containerengine.ProvisionEngineUnattended(context.Background(), p, os.Stdout, containerengine.EnginePodman)
+		if perr != nil {
+			return containerengine.Engine{Name: containerengine.EngineNone}, perr
+		}
+		return prov, nil
+	}
+	if e.Name == containerengine.EngineNone {
+		prov, perr := provisionPodman("no container engine found — podman can be installed for you")
+		if perr != nil {
+			if errors.Is(perr, containerengine.ErrDeclined) {
+				return unavailable("podman is not installed: %s", declinedReason(perr))
+			}
+			return unavailable("podman could not be installed: %v", perr)
+		}
+		e = prov
+	}
+	// The version is a separate client call (Detect stays execution-free), and the minimum
+	// check needs it — so this is the one place the installer asks.
+	if v, verr := containerengine.Version(p, e); verr == nil {
+		e = v
+	}
+	st.Engine, st.Bin, st.Version = e.Name, e.Bin, e.Version
+
+	// 3. MINIMUM VERSION (AC1) — reported, never attempted.
+	if err := containerengine.CheckMinimum(p, e); err != nil {
+		return unavailable("%v", err)
+	}
+
+	// 4. `podman machine` on macOS/Windows (AC3): absent → init, stopped → start, running →
+	// nothing, failed → the engine's own reason plus two remedies.
+	installPhase("checking the podman machine")
+	ms, merr := containerengine.EnsureMachine(context.Background(), p, e, os.Stdout)
+	st.Machine = ms
+	if merr != nil {
+		return unavailable("%v", merr)
+	}
+
+	// 5. VERIFY (AC4): "installed" is not "working". A trivial container has to exit 0 before
+	// this install is allowed to claim runtime containers.
+	installPhase("verifying the container engine — running a trivial container")
+	verifyImage := strings.TrimSpace(os.Getenv("ORCHICON_ENGINE_VERIFY_IMAGE"))
+	if verr := containerengine.Verify(context.Background(), p, e, verifyImage, 0); verr != nil {
+		// AN ENGINE THAT WAS DETECTED BUT CANNOT RUN A CONTAINER IS NOT AN ENGINE THIS INSTALL CAN
+		// USE — AND IT MUST NOT STOP PODMAN BEING INSTALLED.
+		//
+		// Detect returns the FIRST engine it finds, podman then docker, and a docker CLI whose
+		// daemon is dead is still "found". So this rung was a dead end on the commonest Windows
+		// machine there is: Docker Desktop installed, its service not running. MEASURED on the
+		// operator's host, verbatim:
+		//
+		//	== checking the container engine
+		//	== checking the podman machine                       <- "not applicable": not podman
+		//	== verifying the container engine — running a trivial container
+		//	orchicon: the container engine is installed but cannot run a container: failed to
+		//	          connect to the docker API at npipe:////./pipe/dockerDesktopLinuxEngine
+		//
+		// …and podman was NEVER OFFERED, because provisioning is gated on "nothing detected". The
+		// install then had no usable engine, so it started no runtime daemon, and every container
+		// fetch failed on a socket that would never exist. Reinstalling changed nothing, because
+		// the same dead docker was detected every time.
+		//
+		// SO A FAILED VERIFY FALLS THROUGH TO PROVISIONING, once. Only for a non-podman engine:
+		// podman failing to verify is podman being broken, which provisioning cannot repair (it
+		// would install what is already installed), and the original error is the honest report.
+		if e.Name != containerengine.EnginePodman {
+			fmt.Fprintf(os.Stdout, "orchicon: %s is installed but cannot run a container\n", e.Name)
+			prov, perr := provisionPodman("installing podman instead — it needs no pre-existing daemon")
+			// PROVISIONING RETURNING IS NOT PODMAN BEING USABLE.
+			if perr == nil && prov.Name != containerengine.EnginePodman {
+				perr = fmt.Errorf("provisioning did not produce podman (got %q)", prov.Name)
+			}
+			if perr == nil {
+				if re, ok := (containerengine.Engine{Name: containerengine.EngineNone}).WaitForBinary(p); ok {
+					prov = re
+				} else if re, ok := prov.WaitForBinary(p); ok {
+					prov = re
+				}
+				e = prov
+				if v, verr2 := containerengine.Version(p, e); verr2 == nil {
+					e = v
+				}
+				st.Engine, st.Bin, st.Version = e.Name, e.Bin, e.Version
+				if err := containerengine.CheckMinimum(p, e); err != nil {
+					return unavailable("%v", err)
+				}
+				installPhase("checking the podman machine")
+				ms, merr := containerengine.EnsureMachine(context.Background(), p, e, os.Stdout)
+				st.Machine = ms
+				if merr != nil {
+					return unavailable("%v", merr)
+				}
+				installPhase("verifying podman — running a trivial container")
+				if perr2 := containerengine.Verify(context.Background(), p, e, verifyImage, 0); perr2 != nil {
+					return unavailable("%v", perr2)
+				}
+			} else {
+				// PROVISIONING DID NOT RESCUE IT. Report the ORIGINAL failure, which names the
+				// engine the operator actually has, and add why podman was not the answer.
+				return unavailable("%v (podman could not be installed instead: %s)", verr, provisionDecline(perr))
+			}
+		} else {
+			return unavailable("%v", verr)
+		}
+	}
+
+	// 6. READY.
+	engineCLI = e.Bin
+	st.Available, st.State, st.Reason = true, containerengine.StateReady, ""
+	engineStatus = st
+	fmt.Fprintf(os.Stdout, "orchicon: container engine ready: %s %s (%s)\n", e.Name, e.Version, e.Bin)
+	return true, nil
+}
+
+// declinedReason strips the ErrDeclined prefix so the warn line reads as a sentence.
+func declinedReason(err error) string {
+	msg := err.Error()
+	msg = strings.TrimPrefix(msg, containerengine.ErrDeclined.Error()+": ")
+	return msg
+}
+
+// describeEngineStatus renders the availability decision as ONE line for the install summary: ready
+// (with the version and the machine state), provisioning, or unavailable WITH the reason.
+func describeEngineStatus(st containerengine.Status) string {
+	if st.Available {
+		machine := ""
+		if st.Machine != "" && st.Machine != containerengine.MachineNotApplicable {
+			machine = fmt.Sprintf(", machine %s", st.Machine)
+		}
+		return fmt.Sprintf("%s %s%s — runtime containers available", st.Engine, st.Version, machine)
+	}
+	if st.State == containerengine.StateProvisioning {
+		return "provisioning (podman is being installed)"
+	}
+	if st.Reason != "" {
+		return "unavailable — " + st.Reason
+	}
+	// NO REASON RECORDED BUT NOT AVAILABLE is the silent case this summary exists to prevent.
+	return "unavailable — the container engine was not detected, so there are no runtime containers and no " +
+		"runtime daemon. Re-run `orchicon install` (containers are provisioned by default), or set " +
+		"ORCHICON_CONTAINER_ENGINE=podman to make a missing engine an error that names the cause"
+}
+
+// provisionDecline renders a provisioning failure for appending to another message, keeping the
+// operator-facing sentence and dropping the sentinel prefix.
+func provisionDecline(err error) string {
+	if err == nil {
+		return "unknown reason"
+	}
+	if errors.Is(err, containerengine.ErrDeclined) {
+		return declinedReason(err)
+	}
+	return err.Error()
+}

@@ -7,11 +7,8 @@ import (
 	"testing"
 )
 
-// TestUnion pins the union helper's contract: SORTED, deduped, trimmed, and
-// safe on nil/empty input. The sort is the load-bearing part (see Union's doc
-// comment): the skills/context section lands inside the prompt's cached static
-// prefix, so the union's order must be a property of its CONTENTS, never of how
-// the two lists arrived.
+// TestUnion pins the union helper's contract: SORTED, deduped, trimmed, and safe on nil/empty
+// input.
 func TestUnion(t *testing.T) {
 	cases := []struct {
 		name string
@@ -61,10 +58,8 @@ func TestUnion(t *testing.T) {
 	}
 }
 
-// TestUnionIsSortedRegardlessOfInputOrder is the determinism assertion on input
-// order alone: two callers that pass the SAME selection in different orders must
-// get the same union (and therefore the same rendered bytes, and therefore the
-// same cached prefix).
+// TestUnionIsSortedRegardlessOfInputOrder is the determinism assertion on input order alone: two
+// callers that pass the SAME selection in different orders must get the same union (and therefore.
 func TestUnionIsSortedRegardlessOfInputOrder(t *testing.T) {
 	a1 := []string{"/z", "/a"}
 	b1 := []string{"/m"}
@@ -75,11 +70,8 @@ func TestUnionIsSortedRegardlessOfInputOrder(t *testing.T) {
 	}
 }
 
-// TestRenderManifestByteStable is the AC4 assertion: two renders of the SAME
-// selection are BYTE-IDENTICAL, including a directory-backed selection (whose
-// entry order comes from a filesystem walk). This is what keeps the skills /
-// context section from invalidating the prompt's cached static prefix
-// (ADR-0009 D5) on every turn.
+// TestRenderManifestByteStable is the AC4 assertion: two renders of the SAME selection are
+// BYTE-IDENTICAL.
 func TestRenderManifestByteStable(t *testing.T) {
 	root := t.TempDir()
 	// A directory with enough entries that a filesystem-dependent walk order
@@ -111,9 +103,8 @@ func TestRenderManifestByteStable(t *testing.T) {
 	}
 }
 
-// TestRenderManifestDirectorySorted is the other half of AC4: a directory-backed
-// skill renders a SORTED `path (N bytes)` manifest rather than inlining every
-// file, so the section stays context-by-reference AND byte-stable.
+// TestRenderManifestDirectorySorted is the other half of AC4: a directory-backed skill renders a
+// SORTED `path (N bytes)` manifest rather than inlining every file.
 func TestRenderManifestDirectorySorted(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "skills")
@@ -145,10 +136,8 @@ func TestRenderManifestDirectorySorted(t *testing.T) {
 	}
 }
 
-// TestValidateWithinNamesProjectDir is the AC5 assertion: a skill path outside
-// the project directory is rejected with the project dir NAMED in the error, so
-// an operator is told which boundary they crossed rather than getting a bare
-// "invalid path".
+// TestValidateWithinNamesProjectDir is the AC5 assertion: a skill path outside the project
+// directory is rejected with the project dir NAMED in the error.
 func TestValidateWithinNamesProjectDir(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "proj")
 	if err := os.MkdirAll(root, 0o755); err != nil {

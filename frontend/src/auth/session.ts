@@ -433,9 +433,45 @@ export type AuthConfig = {
 export async function fetchAuthConfig(): Promise<AuthConfig> {
   const res = await fetch("/auth/config", { credentials: "include" });
   if (!res.ok) {
-    throw new Error(`auth/config failed: ${res.status}`);
+    // THE BODY, NOT JUST THE STATUS. The desktop shell's proxy answers 502 with a
+    // sentence naming the reason — "the plane at http://127.0.0.1:8080 is unreachable —
+    // is it running?" — and this used to discard it, so the sign-in card said only
+    // "auth/config failed: 502". Reported from a real install: "The web server is not up.
+    // The desktop server has an error." The status alone cannot tell an operator whether
+    // the plane is down, the proxy is misrouted, or the request was refused; the body can.
+    throw new Error(await authConfigError(res));
   }
   return (await res.json()) as AuthConfig;
+}
+
+/**
+ * authConfigError turns a failed /auth/config response into the message the operator sees.
+ *
+ * Split out and exported so the mapping is unit-tested rather than inferred from a failed
+ * install: the caller only renders a string, and the interesting decisions are all here.
+ *
+ * A 502/503 FROM THE DESKTOP SHELL IS THE PLANE, NOT THE LOGIN. Those two means the request
+ * reached a proxy that could not reach the control plane — in the desktop app that is
+ * always the plane being down, and the fix is to start it, so the message says so instead of
+ * offering a sign-in form that cannot possibly work.
+ */
+export async function authConfigError(res: Response): Promise<string> {
+  let body = "";
+  try {
+    body = (await res.text()).trim();
+  } catch {
+    body = ""; // a body that cannot be read is not itself an error worth reporting
+  }
+  const cause = body.split("\n")[0].trim();
+  const gateway = res.status === 502 || res.status === 503;
+  if (gateway) {
+    return (
+      `the control plane is not reachable (${res.status})` +
+      (cause ? ` — ${cause}` : "") +
+      ". Start it, then reload: run `orchicon install` if this is a fresh install, or `orchicon start`."
+    );
+  }
+  return `auth/config failed: ${res.status}` + (cause ? ` — ${cause}` : "");
 }
 
 // useSessionStore is a thin Zustand store for UI-only session state

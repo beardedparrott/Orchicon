@@ -1,21 +1,7 @@
 package client
 
-// refresh.go — the TUI's refresh-token auto-refresh (Phase 2b): password
-// mode's access token expires (server settings carry
-// SessionAccessTokenTtlSeconds=900) while the login also issues a 24h
-// refresh token (SessionRefreshTokenTtlSeconds=86400). The server hands
-// the refresh token ONLY as the HttpOnly `orchicon_refresh` Set-Cookie —
-// the JSON body carries the access token alone — so a non-browser client
-// stores the cookie value and replays it on POST /auth/refresh
-// (refreshRequest body: {"refresh_token": …}; readRefreshToken accepts
-// cookie OR body).
-//
-// refreshingInterceptor (installed FIRST, so it wraps the bearer
-// interceptor) classifies a UNAUTHENTICATED (401) response, mints a new
-// access token via /auth/refresh, updates the token in place, and RETRIES
-// the original request once with the fresh credential. Only when refresh
-// itself fails does the auth-expired error surface (driving the /connect
-// overlay). Unary + streaming paths both covered.
+// The server hands the refresh token ONLY as the HttpOnly `orchicon_refresh` Set-Cookie — the JSON
+// body carries the access token alone.
 
 import (
 	"bytes"
@@ -35,10 +21,7 @@ import (
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 )
 
-// SessionClient carries refreshable password-mode state. The bearer
-// interceptor reads its current token on every request, so an in-place
-// refresh updates the credential for every subsequent RPC without
-// rebuilding the client set (live streams included).
+// SessionClient carries refreshable password-mode state.
 type SessionClient struct {
 	// Token returns the CURRENT credential (api-key mode: a fixed key that
 	// never refreshes; password mode: the live access token).
@@ -46,25 +29,13 @@ type SessionClient struct {
 	// SetToken installs a freshly refreshed access token (password mode).
 	// Called only from the refresh interceptor; nil for api-key mode.
 	SetToken func(string)
-	// Refresh performs POST /auth/refresh with the stored refresh token and
-	// returns the new access token (nil = no refresh token stored: api-key
-	// mode → never refresh, the 401 surfaces as-is).
+	// Refresh performs POST /auth/refresh with the stored refresh token and returns the new access
+	// token (nil = no refresh token stored: api-key mode → never refresh, the 401 surfaces as-is).
 	Refresh func(ctx context.Context) (string, error)
 	// OnRefreshed fires after a successful refresh (nil-safe).
-	//
-	// IT IS WIRED BY THE SHELL (App.NewApp), not by whoever builds the client. It was
-	// nil for every real client because nothing ever assigned it — the field's own doc
-	// promised "the shell uses it to redial live streams with the fresh credential",
-	// and the shell did not. See wireSessionRecovery for the consequence and the fix.
 	OnRefreshed func()
-	// reDial re-opens a stream spec with the current credential, for a stream whose
-	// OPEN surfaced UNAUTHENTICATED.
-	//
-	// WIRED BY THE CLIENT SET ITSELF, in NewWithHTTPClient: it needs the generated
-	// stream clients, which only exist there. It used to be nil for every real client
-	// — read at refresh.go's stream path and assigned NOWHERE — so a live stream's 401
-	// reached `if reDial == nil { return err }` and could never recover. See
-	// wireStreamReDial for why a fresh dial is the right recovery.
+	// reDial re-opens a stream spec with the current credential, for a stream whose OPEN surfaced
+	// UNAUTHENTICATED.
 	reDial func(ctx context.Context, spec connect.Spec) (connect.StreamingClientConn, error)
 	// cell is the live token cell (tests read the refreshed token through
 	// Holder()); Token/SetToken close over it.
@@ -75,9 +46,8 @@ type SessionClient struct {
 // mutates) so tests can assert the refresh landed. Test-only seam.
 func (sc *SessionClient) Holder() *tokenHolder { return sc.cell }
 
-// tokenHolder is the in-memory mutable credential cell the client set
-// reads through SessionClient.Token. Refreshes mutate it in place; the
-// caller keeps the same value inside its profile for persistence.
+// tokenHolder is the in-memory mutable credential cell the client set reads through
+// SessionClient.Token.
 type tokenHolder struct {
 	mu    sync.RWMutex
 	token string
@@ -95,9 +65,7 @@ func (h *tokenHolder) set(t string) {
 	h.mu.Unlock()
 }
 
-// NewSessionClient builds the SessionClient plumbing for a profile. For
-// API-key mode (empty refresh token) both hooks reduce to the static key
-// and the refresh interceptor is inert.
+// NewSessionClient builds the SessionClient plumbing for a profile.
 func NewSessionClient(profileToken, refreshToken, baseURL string, insecure bool) (*SessionClient, *tokenHolder) {
 	h := &tokenHolder{token: profileToken}
 	sc := &SessionClient{
@@ -117,9 +85,8 @@ func NewSessionClient(profileToken, refreshToken, baseURL string, insecure bool)
 	return sc, h
 }
 
-// RefreshResponse mirrors the JSON body of POST /auth/refresh
-// (internal/auth/handlers.go tokenResponse — same shape as the login
-// body; the refresh token itself is never rotated server-side).
+// RefreshResponse mirrors the JSON body of POST /auth/refresh (internal/auth/handlers.go
+// tokenResponse.
 type RefreshResponse struct {
 	AccessToken string `json:"access_token"`
 	TokenType   string `json:"token_type"`
@@ -133,9 +100,31 @@ func tlsConfig(insecure bool) *tls.Config {
 	return &tls.Config{InsecureSkipVerify: insecure}
 }
 
-// RefreshToken performs POST /auth/refresh with the stored refresh token
-// in the JSON body (the server's readRefreshToken accepts cookie OR body;
-// a non-browser client has no cookie jar, so the body carries it).
+// refreshTransports holds ONE transport per TLS mode, shared by every refresh attempt.
+var (
+	refreshTransportMu sync.Mutex
+	refreshTransports  = map[bool]*http.Transport{}
+)
+
+func refreshTransportFor(insecure bool) *http.Transport {
+	refreshTransportMu.Lock()
+	defer refreshTransportMu.Unlock()
+	if tr, ok := refreshTransports[insecure]; ok {
+		return tr
+	}
+	tr := &http.Transport{
+		TLSClientConfig: tlsConfig(insecure),
+		// BOUNDED, because this client is long-lived.
+		MaxIdleConns:        4,
+		MaxIdleConnsPerHost: 2,
+		IdleConnTimeout:     90 * time.Second,
+	}
+	refreshTransports[insecure] = tr
+	return tr
+}
+
+// RefreshToken performs POST /auth/refresh with the stored refresh token in the JSON body (the
+// server's readRefreshToken accepts cookie OR body; a non-browser client has no cookie jar.
 func RefreshToken(ctx context.Context, baseURL string, insecure bool, refreshToken string) (*RefreshResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -143,7 +132,8 @@ func RefreshToken(ctx context.Context, baseURL string, insecure bool, refreshTok
 	if err != nil {
 		return nil, err
 	}
-	tr := &http.Transport{TLSClientConfig: tlsConfig(insecure)}
+	// THE SHARED TRANSPORT, never a fresh one per call — see refreshTransportFor for the incident.
+	tr := refreshTransportFor(insecure)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/auth/refresh", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("refresh request: %w", err)
@@ -169,8 +159,6 @@ func RefreshToken(ctx context.Context, baseURL string, insecure bool, refreshTok
 }
 
 // refreshingInterceptor retries once with a fresh access token on 401.
-// Single-flight: concurrent 401s park behind the in-flight refresh instead
-// of stampeding /auth/refresh; losers re-read the (fresh) token and retry.
 type refreshingInterceptor struct {
 	sc *SessionClient
 
@@ -224,9 +212,7 @@ func (r *refreshingInterceptor) refreshOnce(ctx context.Context) error {
 	return nil
 }
 
-// retryable reports whether err is a 401 the interceptor should absorb by
-// refreshing. API-key mode never refreshes (Refresh nil) — its 401s are
-// genuine authorization failures and surface as-is.
+// retryable reports whether err is a 401 the interceptor should absorb by refreshing.
 func (r *refreshingInterceptor) retryable(err error) bool {
 	if err == nil || r.sc == nil || r.sc.Refresh == nil {
 		return false
@@ -262,24 +248,8 @@ func (r *refreshingInterceptor) WrapStreamingHandler(next connect.StreamingHandl
 	return next // client-side only
 }
 
-// wireStreamReDial installs the streaming 401 recovery: open a NEW stream connection
-// for the SAME spec with the CURRENT token.
-//
-// WHY A FRESH DIAL AND NOT A RE-DIAL OF THE SAME CONNECTION. The wrapper's contract is
-// "the stream is being opened, and if the open is rejected we swap in a working
-// connection" — and connect surfaces a rejected OPEN as an error from the first
-// Receive, so there is no connection left to reuse. s.conn is also the only handle the
-// wrapper holds (it implements StreamingClientConn, not a re-open). So the recovery is
-// a new dial, which is exactly what the streaming client would have produced: the
-// interceptors run again (the bearer reads the LIVE token, so the refreshed credential
-// is picked up) and the request headers are rebuilt, so the Authorization header the
-// wrapper had already set is replaced rather than duplicated.
-//
-// It is wired HERE rather than by a caller because it needs the generated stream
-// clients, and this is the one place that constructs the whole set. The spec's
-// Procedure is the only thing needed to pick the right client, so the mapping is
-// explicit rather than reflective: a new stream RPC must be added here, and
-// TestEveryStreamSpecHasAReDial fails loudly until it is.
+// wireStreamReDial installs the streaming 401 recovery: open a NEW stream connection for the SAME
+// spec with the CURRENT token.
 func (c *Clients) wireStreamReDial() {
 	c.Session.reDial = func(ctx context.Context, spec connect.Spec) (connect.StreamingClientConn, error) {
 		switch spec.Procedure {
@@ -324,11 +294,8 @@ func (c *Clients) wireStreamReDial() {
 	}
 }
 
-// refreshingStreamConn re-dials the stream once with a refreshed credential
-// when the initial request surfaces UNAUTHENTICATED. Connect surfaces a
-// rejected stream OPEN as an error from the first Receive; the wrapper
-// swaps in the re-dialed connection transparently (the receive contract —
-// false + stream.Err() — is preserved on real failures).
+// refreshingStreamConn re-dials the stream once with a refreshed credential when the initial
+// request surfaces UNAUTHENTICATED.
 type refreshingStreamConn struct {
 	conn        connect.StreamingClientConn
 	interceptor *refreshingInterceptor

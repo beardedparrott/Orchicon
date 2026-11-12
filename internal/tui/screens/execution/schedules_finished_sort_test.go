@@ -1,22 +1,6 @@
 package execution
 
 // schedules_finished_sort_test.go — the finished lens asks for the GUI's sort.
-//
-// The GUI's History view orders workflow runs by each run's REAL started_at
-// (frontend/src/routes/schedules.tsx:1058 — `sortBy: "started_at"`), and the server supports exactly
-// that sort with keyset pagination on the (started_at, id) tuple (internal/db/workflow.go,
-// ListWorkflowRuns). This lens used to take the server default — `id DESC` — which is newest-first
-// for ULID ids and therefore NEAR-identical rather than identical to the GUI's order. "Near" is the
-// defect: a run whose started_at order disagrees with its id order (a long run that began before a
-// shorter one created later, or a row re-created out of id order by a recovery) sorted differently
-// in the two clients, so the same history read in a different order depending on which client the
-// operator happened to have open.
-//
-// WHAT IS WORTH ASSERTING HERE, and what is not: the FAKE serves whatever `runs` slice it was
-// given, so the ordering itself is the server's business and is already covered where the keyset
-// lives. What this CLIENT controls is the REQUEST — and that is the whole fix — so the assertion is
-// on the sort it asks for. That is also the assertion that can actually fail: reverting the SortBy
-// field leaves the rows identical and only this expectation red.
 
 import (
 	"context"
@@ -42,9 +26,8 @@ func TestSchedulesFinishedAsksForTheGuiSort(t *testing.T) {
 			"id DESC default, which only agrees with the GUI while a run's start order happens to "+
 			"match its id order.", got)
 	}
-	// sort_order is deliberately NOT asserted: this client leaves it to the server default
-	// ("desc" = newest first), which is also the GUI History view's default, so pinning a value
-	// here would claim ownership of a decision this lens does not make.
+	// sort_order is deliberately NOT asserted: this client leaves it to the server default ("desc" =
+	// newest first), which is also the GUI History view's default.
 }
 
 // The other two lenses read different sources and must not have acquired a run sort by accident —

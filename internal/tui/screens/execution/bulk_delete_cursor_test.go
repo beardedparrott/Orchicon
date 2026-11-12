@@ -114,10 +114,6 @@ func TestBulkDeleteNamesTheMarkedSetNotTheCursor(t *testing.T) {
 // ── 2. the bug's case: marks that yield no bulk action must refuse ───────────────────────────────
 
 // A SELECTION CONTAINING A CATEGORY FOLDER MUST NOT RETARGET ONTO THE CURSOR.
-//
-// This is the reproduction. One writable row plus a folder is TWO marks — enough that the operator
-// expects a bulk operation — but only one is writable, so there is no bulk action. Before the fix the
-// chord opened the confirm for whatever the cursor was on.
 func TestAFolderInTheMarksRefusesInsteadOfRetargeting(t *testing.T) {
 	for _, src := range []string{srcWorkers, srcWorkflows} {
 		t.Run(src, func(t *testing.T) {

@@ -1,18 +1,6 @@
 package askorchicon
 
-// tool_ephemeral_test.go — the ephemeral (Quick Work) layer at the TOOL
-// boundary.
-//
-// The operator's requirement for Quick Work: "a flag is fine, but hard-delete
-// the work item once complete (no invisible records)". So a transient item is
-// marked `ephemeral`, kept out of every human view while it lives, and really
-// removed when its job ends. The hard delete itself is pinned in
-// hard_delete_tool_test.go; this file pins the flag: that it is advertised,
-// that it defaults to hidden on the read side, and that the one placement it
-// cannot honour (a child) is refused before any work happens.
-//
-// These tests are pure — no pool, no database — because the guard runs before
-// the transaction opens. That ordering is itself part of what is asserted.
+// tool_ephemeral_test.go — the ephemeral (Quick Work) layer at the TOOL boundary.
 
 import (
 	"context"
@@ -21,14 +9,7 @@ import (
 	"testing"
 )
 
-// THE GUARD REFUSES THE ONE SHAPE THE HIDING CONTRACT CANNOT HONOUR, and
-// permits every other shape.
-//
-// A child is refused because it would sit in a contradiction: invisible in the
-// list (which filters ephemeral) yet rendered inside its parent's tree (where
-// ListDirectChildren deliberately does not filter, because the sequence engine
-// needs every child). Hard-deleting it would then remove a row from a tree
-// that is still displaying it.
+// THE GUARD REFUSES THE ONE SHAPE THE HIDING CONTRACT CANNOT HONOUR, and permits every other shape.
 func TestEphemeralPlacementRefusesAChildAndPermitsTopLevel(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -67,11 +48,6 @@ func TestEphemeralPlacementRefusesAChildAndPermitsTopLevel(t *testing.T) {
 }
 
 // THE CHECK RUNS BEFORE THE TRANSACTION.
-//
-// This is asserted by passing a NIL POOL: if the guard had been placed after
-// `pool.BeginTenantTx`, this call would panic rather than return an error.
-// Ordering matters beyond tidiness — a rejected request should not have opened
-// a tenant transaction first.
 func TestCreateWorkItemRefusesAnEphemeralChildBeforeTouchingThePool(t *testing.T) {
 	args := json.RawMessage(`{"title":"Ephemeral child","project_id":"01PROJ","parent_id":"01PARENT","ephemeral":true}`)
 	_, err := toolCreateWorkItem(context.Background(), nil, args)

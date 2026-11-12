@@ -33,39 +33,13 @@ const (
 	// runCtxTotalBudget bounds the WALL CLOCK of one drain. It is needed because the per-command budget is only
 	// paid by commands that DO NOT ANSWER, so a chain of several long-lived waiters adds up rather than ending.
 	runCtxTotalBudget = 30 * time.Second
-	// runCtxCmdBudget is how long ONE command may take before the drain calls it a long-lived waiter and moves on.
-	//
-	// THE VALUE BARELY MATTERS, WHICH IS THE POINT. Every command a drain needs an answer from is a pure function
-	// or an in-process loopback RPC — microseconds against an httptest server on 127.0.0.1 — and every command it
-	// does NOT need an answer from (waitChat: `select` on two channels nobody sends to) blocks FOREVER. Nothing
-	// sits in between, so 250ms, 3s and 30s all draw the same line; the number only decides how much dead time the
-	// suite pays for the waiters.
-	//
-	// IT WAS 3s, and that is where ~60 seconds of `make rebuild-dev` went: eight drains, roughly twenty blocking
-	// commands, three seconds each. The operator felt it ("I don't want a 72 second test") and was right to.
-	//
-	// The failure mode of being too MEAN is a visible one: a load that genuinely took longer gets skipped and the
-	// test's own assertion then fails, loudly, rather than the suite passing on an untested path. That is the
-	// acceptable direction to be wrong in, and it is why this is short rather than generous.
+	// runCtxCmdBudget is how long ONE command may take before the drain calls it a long-lived waiter
+	// and moves on.
 	runCtxCmdBudget = 250 * time.Millisecond
 )
 
-// runCmdBounded invokes ONE command and returns the message it produced, or nil when it did not answer within
-// the budget.
-//
-// IT EXISTS BECAUSE AN UNBOUNDED COMMAND IS AN UNBOUNDED TEST. runCtx bounds the commands it drains, but several
-// other helpers in this package invoke a command INLINE — `msg := cmd()` — protected only by a DEPTH cap, and a
-// depth cap is no defence against a command that BLOCKS: the depth stays low and the wait never ends.
-//
-// That is not hypothetical. Adding a conversations reload to the Ask refresh tick put waitChat — which selects on
-// two channels nobody sends to outside a live session — into a tick's command tree, and the tick tests sat there
-// until the package timeout. The reload is now gated so it is not requested in those tests, but the lesson is the
-// general one this helper enforces: any command may be a waiter, so nothing in a test may call one unbounded.
-//
-// The budget is runCtxCmdBudget, shared with the drainer: a command either answers in microseconds (a pure
-// function, an in-process loopback RPC) or it never answers at all, so the exact value does not matter — it only
-// decides how long a waiter costs. A command that times out leaves its goroutine parked; that is the same trade
-// runCtx makes, and it is bounded by the test process.
+// runCmdBounded invokes ONE command and returns the message it produced, or nil when it did not
+// answer within the budget.
 func runCmdBounded(cmd tea.Cmd, budget time.Duration) tea.Msg {
 	if cmd == nil {
 		return nil
@@ -80,29 +54,7 @@ func runCmdBounded(cmd tea.Cmd, budget time.Duration) tea.Msg {
 	}
 }
 
-// runCtx drains a command the way bubbletea's runtime does — flattening batches, feeding each result back into
-// Update so follow-on commands are produced — but BOUNDED, so a command graph that never terminates cannot hang
-// the suite.
-//
-// IT IS BOUNDED THREE WAYS, and the first two each exist because of a way this kind of helper has ALREADY hung a
-// full `make rebuild-dev`:
-//
-//   - THE RE-ARMED REFRESH TICK ENDS THE DRAIN. Init batches refreshCmd(), which is a tea.Tick, and
-//     handleRefreshTick re-arms itself UNCONDITIONALLY — "Re-arm unconditionally, even when the refresh did
-//     nothing". At the default 5s period the per-command budget expires first and the chain is never followed,
-//     but that margin is an accident rather than a guarantee: liverefresh_probe_test.go and refresh_test.go each
-//     set refreshPeriod to 1ms for their own tests, and a tick that cheap would loop here forever. So the tick is
-//     TERMINAL by construction. This helper drains the STARTUP LOADS; the rolling window is not a load.
-//   - A COMMAND THAT DOES NOT ANSWER IS SKIPPED, because that is what a long-lived waiter is: waitChat blocks on
-//     `select { case <-wake: …; case c := <-cmds: … }` until the next poke. Calling one INLINE, with no budget,
-//     is the other way this hung — see TestAConversationsLoadAlsoFetchesProjects.
-//   - maxSteps and the total deadline are the general backstop, so a graph that fans out without a timer cannot
-//     spin the loop either.
-//
-// The per-command budget is runCtxCmdBudget, and its doc comment says why the exact value does not matter: the
-// commands drained here are pure functions, in-process loopback RPCs (microseconds), or infinite waiters. Being
-// wrong in the generous direction costs wall clock — which is exactly what a 3s budget cost, sixty seconds of
-// it; being wrong in the mean direction skips a real load and the test's own assertion then fails VISIBLY.
+// runCtx drains a command the way bubbletea's runtime does.
 func runCtx(t *testing.T, m *App, cmd tea.Cmd, budget time.Duration) {
 	t.Helper()
 	if cmd == nil {
@@ -147,13 +99,8 @@ func runCtx(t *testing.T, m *App, cmd tea.Cmd, budget time.Duration) {
 	}
 }
 
-// A FRESH SHELL OPENS ON ALL PROJECTS, so nothing that predates the project column is hidden on launch.
-//
-// THIS WAS A REAL BUG, not a test adjustment. projectScopeAll is "__all__" and NOTHING ever assigned it, so the
-// zero value ("") stood — and "" is unassignedScope, the picker's "No project". A fresh shell therefore filtered
-// the rail to unassigned chats only: on this instance that is an EMPTY rail, because every conversation now
-// belongs to Orchicon. It also silently disabled the launch-directory default, whose guard is "only while the
-// scope is untouched", because it compared the untouched value against projectScopeAll and found "".
+// A FRESH SHELL OPENS ON ALL PROJECTS, so nothing that predates the project column is hidden on
+// launch.
 func TestAFreshShellOpensOnAllProjects(t *testing.T) {
 	m := appWithProjectService(t, &stubProjectList{})
 	if m.projectScope != projectScopeAll {

@@ -7,13 +7,7 @@ import (
 	"testing"
 )
 
-// TestIsInfraSessionError pins the infra-failure classifier that feeds the
-// dispatch repair loop. The observed field class: a runtime session backend
-// that process-died (dial connection refused) or stayed up but poisoned
-// (POST /session returning 5xx on a corrupt session store — the
-// "Failed to execute statement" incident) must be classified infra so the
-// dispatch repairs the container instead of burning the step's retries.
-// A 4xx or a mid-run model/send error is NOT infra.
+// TestIsInfraSessionError pins the infra-failure classifier that feeds the dispatch repair loop.
 func TestIsInfraSessionError(t *testing.T) {
 	cases := []struct {
 		name string
@@ -61,10 +55,8 @@ func TestSessionRepairBudgetEnv(t *testing.T) {
 	}
 }
 
-// TestInfraRepairThresholdEnv pins the consecutive-infra gate: default 2
-// (first infra failure retried on the same container so a healthy parallel
-// step isn't torn down), env override, and < 2 disables the container
-// repair trigger.
+// TestInfraRepairThresholdEnv pins the consecutive-infra gate: default 2 (first infra failure
+// retried on the same container so a healthy parallel step isn't torn down), env override.
 func TestInfraRepairThresholdEnv(t *testing.T) {
 	_ = os.Unsetenv("ORCHICON_SESSION_INFRA_THRESHOLD")
 	if got := infraRepairThreshold(); got != 2 {
@@ -84,10 +76,8 @@ func TestInfraRepairThresholdEnv(t *testing.T) {
 	}
 }
 
-// TestCapToolOutput pins the tool-output cap that keeps giant build/test
-// logs and listings from re-entering the model context on every later turn:
-// output under the cap passes through, output over it keeps the head + a
-// truncation marker, and a disabled cap (< 1) passes everything through.
+// TestCapToolOutput pins the tool-output cap that keeps giant build/test logs and listings from
+// re-entering the model context on every later turn: output under the cap passes through.
 func TestCapToolOutput(t *testing.T) {
 	// Force a small cap so the test doesn't need to synthesize 128k.
 	if err := os.Setenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES", "1024"); err != nil {
@@ -115,9 +105,8 @@ func TestCapToolOutput(t *testing.T) {
 	}
 }
 
-// TestCapPartOutput pins the transcript-side cap: a tool_use part's
-// state.output is capped in a copy (the live event is untouched); a part
-// without tool output passes through unchanged.
+// TestCapPartOutput pins the transcript-side cap: a tool_use part's state.output is capped in a
+// copy (the live event is untouched); a part without tool output passes through unchanged.
 func TestCapPartOutput(t *testing.T) {
 	a := &Adapter{}
 	if err := os.Setenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES", "1024"); err != nil {

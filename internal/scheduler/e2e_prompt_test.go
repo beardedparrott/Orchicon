@@ -10,9 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// E2E: a project whose context_files contains a DIRECTORY renders the
-// directory as a read-on-demand manifest in the workflow composite prompt
-// (AC: workers can view/scan directories in executions).
+// E2E: a project whose context_files contains a DIRECTORY renders the directory as a read-on-demand
+// manifest in the workflow composite prompt (AC: workers can view/scan directories in executions).
 func TestE2EDirectoryInProjectContextPrompt(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -34,6 +33,7 @@ func TestE2EDirectoryInProjectContextPrompt(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "E2E Dir",
 		Slug: "e2e-dir-" + strings.ToLower(db.NewID()), Status: "active",
 		Goals: []byte("[]"), ProjectDir: root,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -72,9 +72,8 @@ func TestE2EDirectoryInProjectContextPrompt(t *testing.T) {
 	}
 }
 
-// E2E: a work item whose OWN context_files include a directory AND a file
-// renders them as a "# Work item context" section in the composite prompt
-// (AC: work item context "just like projects").
+// E2E: a work item whose OWN context_files include a directory AND a file renders them as a "# Work
+// item context" section in the composite prompt (AC: work item context "just like projects").
 func TestE2EWorkItemContextFilesInPrompt(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -97,6 +96,7 @@ func TestE2EWorkItemContextFilesInPrompt(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "E2E WI",
 		Slug: "e2e-wi-" + strings.ToLower(db.NewID()), Status: "active",
 		Goals: []byte("[]"), ProjectDir: root,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)

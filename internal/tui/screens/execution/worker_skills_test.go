@@ -1,12 +1,7 @@
 package execution
 
-// worker_skills_test.go — the WORKER-VERSION scope's skill files and inline MCP specs
-// (child 7, AC 8c + AC 10).
-//
-// A worker version's MCP definitions are INLINE: no mcp_servers row is created, so a
-// published version stays immutable and the version is what a dispatch pins to. The
-// skills are a typed PATH LIST (the TUI's established idiom, the same treatment
-// context_files gets) — the deliberate, documented asymmetry with the GUI's file browser.
+// worker_skills_test.go — the WORKER-VERSION scope's skill files and inline MCP specs (child 7, AC
+// 8c + AC 10).
 
 import (
 	"encoding/json"
@@ -129,11 +124,7 @@ func TestCreateVersionCarriesSkillFilesAndMCP(t *testing.T) {
 	}
 }
 
-// A LEGACY REFERENCE STILL DECODES THROUGH THE SAME FIELD THE OPERATOR SEES. The mcp_servers
-// KJSON field is fed by inlineJSONFromPermissions and read back by mcpforms.ParseInline, so
-// the two must agree on the shape; they did NOT before (the field emits a BARE array, and
-// ParseInline only accepted the wrapped object), which silently dropped a definition typed
-// exactly as the field's own placeholder demonstrates.
+// A LEGACY REFERENCE STILL DECODES THROUGH THE SAME FIELD THE OPERATOR SEES.
 func TestInlineJSONFromPermissionsRoundTripsThroughParseInline(t *testing.T) {
 	perms := `{"mcp_servers":[{"id":"a","type":"stdio","command":["npx"]}]}`
 	field := inlineJSONFromPermissions(perms)

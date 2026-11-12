@@ -11,26 +11,8 @@ import (
 	"syscall"
 )
 
-// SweepStaleChildren reaps MCP stdio server processes whose controlling
-// execution no longer exists. It scans /proc/*/environ for children
-// launched with the ORCHICON_MCP_STDIO=1 marker and, for any whose parent
-// (PPID) is 1 (i.e. the control plane that spawned them has died and the
-// kernel reparented them — PDEATHSIG normally prevents this, this is the
-// belt-and-suspenders sweep for children that survived by other means)
-// kills the whole process group.
-//
-// Children whose parent is still alive are untouched: they belong to a
-// live plane (or a session in progress). No disk registry is needed — the
-// environment marker is written by newStdioTransport on every launch.
-//
-// Only works on Linux/BSD where /proc and process groups exist — and the build tag above says
-// so, which it did NOT before. The runtime guard below (`procAvailable`) has always been here,
-// and for a while it was the ONLY guard: the file carried no build tag, so it compiled
-// everywhere and this package failed to build for Windows on `syscall.Kill` / `syscall.ESRCH`,
-// which do not exist there. That is not a runtime-degradation issue — it is a compile error in
-// the release matrix, so a runtime check can never cover it. Callers hook this into the
-// boot/periodic adopt sweep of Server.Run (ADR-0008: stdio children cannot outlive a dead
-// control plane); see sweep_windows.go for the no-op the other platforms get.
+// The runtime guard below (`procAvailable`) has always been here, and for a while it was the ONLY
+// guard: the file carried no build tag.
 func SweepStaleChildren(ctx context.Context, log *slog.Logger) {
 	if !procAvailable() {
 		return
@@ -40,6 +22,9 @@ func SweepStaleChildren(ctx context.Context, log *slog.Logger) {
 		log.Debug("mcp sweep: cannot read /proc", "err", err)
 		return
 	}
+	// Read ONCE: every child is judged against the same boot generation, and a reboot mid-sweep must not
+	// produce a half-converted set of verdicts.
+	nowBoot := bootID()
 	swept := 0
 	for _, e := range entries {
 		if ctx.Err() != nil {
@@ -62,22 +47,37 @@ func SweepStaleChildren(ctx context.Context, log *slog.Logger) {
 		if !envHasMarker(data) {
 			continue
 		}
-		stat, err := os.ReadFile("/proc/" + e.Name() + "/stat")
-		if err != nil {
-			continue
+		owner := ownerFromEnviron(data)
+		var reason string
+		if owner.marked {
+			if owner.alive(nowBoot) {
+				continue // its plane is alive — not ours to touch
+			}
+			reason = "owning plane is gone"
+		} else {
+			// UNMARKED: a child from a build that predates the owner markers. Fall back to the rule this
+			// sweep shipped with, so an upgrade reclaims what the old build leaked rather than ignoring it.
+			stat, serr := os.ReadFile("/proc/" + e.Name() + "/stat")
+			if serr != nil {
+				continue
+			}
+			ppid, ok := parsePPID(stat)
+			if !ok || ppid != 1 {
+				continue // adopted by something live; identity unknown, so leave it
+			}
+			reason = "legacy child reparented to init"
 		}
-		ppid, ok := parsePPID(stat)
-		if !ok || ppid != 1 {
-			continue // parent alive — live plane or running session
-		}
-		// Reaped child: its controlling execution no longer exists. Kill
-		// the whole process group (children were Setpgid'd at launch).
-		if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && err != syscall.ESRCH {
-			log.Debug("mcp sweep: kill stale child", "pid", pid, "err", err)
+		// Its controlling execution no longer exists.
+		groupErr := syscall.Kill(-pid, syscall.SIGKILL)
+		pidErr := syscall.Kill(pid, syscall.SIGKILL)
+		if notGone(groupErr) && notGone(pidErr) {
+			log.Debug("mcp sweep: kill stale child", "pid", pid, "group_err", groupErr, "pid_err", pidErr)
 			continue
 		}
 		swept++
-		log.Info("mcp sweep: reaped stale MCP child", "pid", pid, "server_id", envServerID(data))
+		log.Info("mcp sweep: reaped stale MCP child",
+			"pid", pid, "server_id", envServerID(data), "reason", reason,
+			"owner_pid", owner.pid)
 	}
 	if swept > 0 {
 		log.Info("mcp sweep: reaped stale MCP children", "count", swept)
@@ -100,8 +100,6 @@ func envServerID(environ []byte) string {
 }
 
 // parsePPID extracts the parent pid (4th field) from /proc/<pid>/stat.
-// Format: pid (comm) state ppid ... — comm may contain spaces and
-// parens, so find the LAST ')' and parse after it.
 func parsePPID(stat []byte) (int, bool) {
 	idx := lastIndexByte(stat, ')')
 	if idx < 0 {
@@ -139,4 +137,18 @@ func lastIndexByte(b []byte, c byte) int {
 var procAvailable = func() bool {
 	_, err := os.Stat("/proc")
 	return err == nil
+}
+
+// processAlive reports whether pid names a live process we may signal.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
+}
+
+// notGone reports whether a kill attempt genuinely failed to reach anything.
+func notGone(err error) bool {
+	return err != nil && err != syscall.ESRCH
 }

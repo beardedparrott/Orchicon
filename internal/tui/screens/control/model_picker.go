@@ -1,11 +1,4 @@
 // model_picker.go — the Control screen's MODEL picker wiring.
-//
-// Every model field on this screen is a kit2.KModel that opens the three-tier
-// ModelPicker (adapter → provider → model, with search): a model_ref is a
-// reference no operator can be expected to type. The shared cascade — the
-// per-adapter data sources, the grammar handoff and the option projections —
-// lives in internal/tui/modelpick; this file owns only the screen's modal state,
-// the form-field write-back, and the thin load thunks.
 package control
 
 import (
@@ -25,10 +18,8 @@ type (
 	modelModelsMsg    = modelpick.ModelsMsg
 )
 
-// openModelPicker installs the modal picker for one form field and seeds it from
-// the field's current ref. Committing writes the ref back into that field, so the
-// field then DISPLAYS adapter/provider/model — the operator's "the text it
-// displays after the model is selected is the adapter/provider/model name".
+// openModelPicker installs the modal picker for one form field and seeds it from the field's
+// current ref.
 func (m *Model) openModelPicker(field, current string) tea.Cmd {
 	mp := kit2.NewModelPicker("Select model")
 	mp.PreferredAdapter = modelpick.NativeAdapterKind
@@ -38,10 +29,8 @@ func (m *Model) openModelPicker(field, current string) tea.Cmd {
 	mp.LoadModels = m.loadModelModels
 	m.modelPicker = mp
 	m.modelField = field
-	// No Commit/Cancel callbacks: the SCREEN closes the modal in its own Update
-	// once the picker reports Done (finishModelPicker). A callback capturing `m`
-	// would mutate the copy bubbletea has already replaced, so the modal could
-	// never close from enter or esc.
+	// No Commit/Cancel callbacks: the SCREEN closes the modal in its own Update once the picker reports
+	// Done (finishModelPicker).
 	kind, provider, model := modelpick.SplitRef(current)
 	return mp.Open(kind, provider, model)
 }
@@ -57,12 +46,8 @@ func (m *Model) finishModelPicker(mp *kit2.ModelPicker) tea.Cmd {
 	if !committed {
 		return nil
 	}
-	// Write the ref back into the field that opened the picker, so it then
-	// DISPLAYS adapter/provider/model — the operator's "the text it displays
-	// after the model is selected is the adapter/provider/model name".
-	//
-	// Whichever host holds the form: the picker can be layered over a modal or over
-	// the inline details-pane editor, and both must receive the choice.
+	// Write the ref back into the field that opened the picker, so it then DISPLAYS
+	// adapter/provider/model — the operator's "the text it displays after the model is selected.
 	if f := m.activeForm(); f != nil {
 		f.Set(m.modelField, ref)
 	}

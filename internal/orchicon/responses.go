@@ -8,20 +8,18 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 )
 
-// ResponsesClient is the OpenAI Responses wire client (D2): SSE streaming,
-// output_text/reasoning deltas, function_call accumulation, and usage from
-// response.completed. OpenCode Zen/Go serve their GPT / muse-spark models on
-// this wire (https://opencode.ai/docs/zen/). Hand-written against the public
-// API — no SDK.
+// ResponsesClient is the OpenAI Responses wire client (D2): SSE streaming, output_text/reasoning
+// deltas, function_call accumulation, and usage from response.completed.
 type ResponsesClient struct {
 	BaseURL string // e.g. https://opencode.ai/zen/v1 (path appends /responses)
 	APIKey  string
 
 	HTTP  *http.Client
 	Retry RetryPolicy
+	// Logf, when set, reports repair and retry decisions. Nil = silent (tests, and any caller with no logger).
+	Logf func(format string, args ...any)
 
 	// ModelsFn supplies ListModels (registry wires the sourcing service).
 	ModelsFn func(ctx context.Context) ([]ModelInfo, error)
@@ -64,10 +62,8 @@ type respContentPart struct {
 	ImageURL  string `json:"image_url,omitempty"`
 }
 
-// respInputItem is one Responses input item: a message item (role +
-// content) or a function item (function_call / function_call_output as
-// top-level items — the wire rejects function payloads nested inside a
-// message's content array).
+// respInputItem is one Responses input item: a message item (role + content) or a function item
+// (function_call / function_call_output as top-level items.
 type respInputItem struct {
 	Type      string `json:"type,omitempty"`
 	Role      string `json:"role,omitempty"`
@@ -76,13 +72,8 @@ type respInputItem struct {
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments,omitempty"`
-	// Output is a REQUIRED field on function_call_output items (the
-	// Responses provider rejects a call without it as "missing required
-	// field `output`" — observed on a mid-session provider switch onto a
-	// muse-spark model where a prior tool round returned empty content).
-	// Never omitempty: an empty output must still be sent, and we default
-	// an empty string to a neutral placeholder so the field is always
-	// present.
+	// Output is a REQUIRED field on function_call_output items (the Responses provider rejects a call
+	// without it as "missing required field `output`".
 	Output string `json:"output"`
 }
 
@@ -102,9 +93,7 @@ type respRequest struct {
 	Stream          bool            `json:"stream"`
 }
 
-// buildResponsesRequest shapes the Responses wire request from a normalized
-// TurnRequest: system blocks + history → input[] items, max_output_tokens,
-// temperature, tools when present, stream:true.
+// buildResponsesRequest shapes the Responses wire request from a normalized TurnRequest.
 func buildResponsesRequest(req TurnRequest) respRequest {
 	rr := respRequest{
 		Model: req.Model, Stream: true,
@@ -116,13 +105,7 @@ func buildResponsesRequest(req TurnRequest) respRequest {
 	for _, m := range req.Messages {
 		switch m.Role {
 		case RoleTool:
-			// Tool results are top-level function_call_output items —
-			// never nested in a message content array. The `output` field
-			// is REQUIRED by the Responses provider; an empty tool result
-			// (a call that returned no text, or a cross-provider replayed
-			// history where a prior wire produced an empty result) must
-			// still carry a present output or the provider rejects the
-			// turn with `missing required field "output"`.
+			// The `output` field is REQUIRED by the Responses provider.
 			for _, c := range m.Content {
 				if c.ToolResult != nil {
 					out := c.ToolResult.Content
@@ -138,9 +121,8 @@ func buildResponsesRequest(req TurnRequest) respRequest {
 				}
 			}
 		case RoleAssistant:
-			// Assistant text rides a message item; each tool use rides
-			// its own top-level function_call item (in order). Plain
-			// single-text messages stay the compact string form.
+			// Assistant text rides a message item; each tool use rides its own top-level function_call item (in
+			// order).
 			var text strings.Builder
 			flushText := func() {
 				if text.Len() == 0 {
@@ -214,12 +196,8 @@ func buildResponsesRequest(req TurnRequest) respRequest {
 // retry per the policy; mid-stream failures surface as StreamError + error.
 func (c *ResponsesClient) StreamTurn(ctx context.Context, req TurnRequest) (TurnStream, error) {
 	rr := buildResponsesRequest(req)
-	// Wire diagnostic (2026-09-09 follow-up no-tools repro): log the
-	// EXACT outgoing request shape (model, input item count, tools count,
-	// last input item type) so a text-only reply can be attributed to the
-	// provider vs the request builder. Emitted through the standard logger
-	// (stdout → docker logs / container.sh logs) at Info level — one line
-	// per Responses turn, negligible in prod, essential for the repro.
+	// Wire diagnostic (2026-09-09 follow-up no-tools repro): log the EXACT outgoing request shape
+	// (model, input item count, tools count.
 	{
 		var lastT, lastRole string
 		if n := len(rr.Input); n > 0 {
@@ -241,26 +219,17 @@ func (c *ResponsesClient) StreamTurn(ctx context.Context, req TurnRequest) (Turn
 	url := strings.TrimRight(c.BaseURL, "/") + "/responses"
 
 	var resp *http.Response
-	err = doWithRetries(ctx, c.Retry, func(attempt int) (bool, error, time.Duration) {
-		r, err2 := postJSON(ctx, httpc, url, c.requestHeaders(req.SessionID), body)
-		if err2 != nil {
-			return isConnectionErr(err2), err2, 0
-		}
-		if r.StatusCode >= 200 && r.StatusCode < 300 {
-			resp = r
-			return false, nil, 0
-		}
-		b, _ := io.ReadAll(io.LimitReader(r.Body, 8192))
-		_ = r.Body.Close()
-		e := httpStatusError(r.StatusCode, r.Status, b)
-		if retryableStatus(r.StatusCode) {
-			ra, _ := RetryAfter(r.Header.Get("Retry-After"), time.Now())
-			return true, e, ra
-		}
-		return false, e, 0
-	})
-	if err != nil {
-		return nil, err
+	// Shared send loop (requestrepair.go): transient failures are retried, request-shape 400s are
+	// repaired and resent, everything else surfaces.
+	resp, serr := sendWithRepair(ctx, c.Retry, c.Logf,
+		func(ctx context.Context, b []byte) (*http.Response, error) {
+			return postJSON(ctx, httpc, url, c.requestHeaders(req.SessionID), b)
+		},
+		func() ([]byte, error) { return body, nil },
+		&req,
+		func(kind RepairKind) bool { return repairRequest(kind, &req) })
+	if serr != nil {
+		return nil, serr
 	}
 	return newResponsesStream(resp.Body), nil
 }
@@ -323,11 +292,7 @@ type respEvent struct {
 }
 
 // respDelta tolerates both delta wire shapes: the compact string form
-// ({"type":"response.output_text.delta","delta":"Hi"}) and the object form
-// some gateways emit ({"delta":{"text":"Hi"}} or {"delta":{"content":"Hi"}}.
-// Without this, an object-shaped delta fails to unmarshal into a string,
-// the whole frame errors as "bad sse payload", and the turn fails while
-// the first turn (deltas only) may have looked fine.
+// ({"type":"response.output_text.delta","delta":"Hi"}) and the object form some gateways emit.
 type respDelta string
 
 func (d *respDelta) UnmarshalJSON(b []byte) error {
@@ -374,18 +339,13 @@ type responsesStream struct {
 	toolOrd []string
 	queue   []Event
 
-	// sawTextDelta / sawReasoningDelta record, per output index, whether
-	// the streaming deltas already delivered that output. The Responses
-	// wire emits the COMPLETE text again on the output_text.done /
-	// reasoning_text.done frame — feeding it too duplicates the whole
-	// reply (and re-splits inline reasoning into text). Done frames are
-	// only used for gateways that emit done WITHOUT deltas.
+	// sawTextDelta / sawReasoningDelta record, per output index, whether the streaming deltas already
+	// delivered that output.
 	sawTextDelta      map[int]bool
 	sawReasoningDelta map[int]bool
 
-	// think splits INLINE reasoning (the "think" tag pair inside a
-	// output_text delta) into ReasoningDelta events (thinksplit.go), the
-	// same global routing every provider wire applies.
+	// think splits INLINE reasoning (the "think" tag pair inside a output_text delta) into
+	// ReasoningDelta events (thinksplit.go), the same global routing every provider wire applies.
 	think *thinkSplitter
 }
 
@@ -406,10 +366,7 @@ func (s *responsesStream) Close() error {
 	return nil
 }
 
-// Next yields normalized events. Tool-call event order is ToolCallStart →
-// ToolCallDelta* → (at drain) ToolCall → Finish. The Finish event is HELD
-// until the body is fully drained (parity with openaiStream.flush): usage
-// arrives on response.completed, which may precede the stream's end.
+// Next yields normalized events.
 func (s *responsesStream) Next(ctx context.Context) (Event, bool, error) {
 	_ = ctx
 	for {
@@ -452,12 +409,8 @@ func (s *responsesStream) Next(ctx context.Context) (Event, bool, error) {
 				s.queue = append(s.queue, ReasoningDelta{Text: ev.Text})
 			}
 		case "response.output_text.done", "response.reasoning_text.done":
-			// The done frame carries the COMPLETE output text. It is
-			// authoritative ONLY when the deltas did not already deliver
-			// it — some gateways stream deltas then echo the full text on
-			// done, and feeding it too duplicates the reply (and re-splits
-			// inline reasoning into text). Skip when deltas were seen for
-			// this output index.
+			// It is authoritative ONLY when the deltas did not already deliver it — some gateways stream deltas
+			// then echo the full text on done.
 			if ev.Type == "response.reasoning_text.done" {
 				if s.sawReasoningDelta[ev.OutputIndex] {
 					break
@@ -481,10 +434,8 @@ func (s *responsesStream) Next(ctx context.Context) (Event, bool, error) {
 		case "response.output_item.added":
 			if ev.Item != nil && ev.Item.Type == "function_call" {
 				if _, dup := s.tools[ev.ItemID]; dup {
-					// Replayed added frame (SSE replays happen) — the
-					// call is already tracked; re-appending the order
-					// would emit a second ToolCall for one call and the
-					// wire rejects the duplicate outputs.
+					// Replayed added frame (SSE replays happen) — the call is already tracked; re-appending the order
+					// would emit a second ToolCall for one call and the wire rejects the duplicate outputs.
 					break
 				}
 				callID := ev.Item.CallID
@@ -504,11 +455,8 @@ func (s *responsesStream) Next(ctx context.Context) (Event, bool, error) {
 					callID = ev.Item.ID
 				}
 				if acc := s.tools[ev.ItemID]; acc != nil {
-					// The done item carries the COMPLETE arguments —
-					// authoritative over any streamed fragments (which
-					// some gateways also send). Replace, never append:
-					// appending yields "{...}{...}", which fails JSON
-					// validation and silently blanks the call's args.
+					// The done item carries the COMPLETE arguments — authoritative over any streamed fragments (which
+					// some gateways also send).
 					if ev.Item.Arguments != "" {
 						acc.Args.Reset()
 						acc.Args.WriteString(ev.Item.Arguments)
@@ -564,9 +512,7 @@ func (s *responsesStream) recordUsage(ev respEvent) {
 	if u.InputTokensDetails != nil {
 		cached = u.InputTokensDetails.CachedTokens
 	}
-	// input_tokens is cache-INCLUSIVE (like OpenAI prompt_tokens) — normalize
-	// to the FRESH bucket per oaNoCache parity so cache tokens are never
-	// double-counted in the window-pressure basis or CostFor pricing.
+	// input_tokens is cache-INCLUSIVE (like OpenAI prompt_tokens).
 	s.usage.InputTokens = oaNoCache(u.InputTokens, cached)
 	s.usage.OutputTokens = u.OutputTokens
 	s.usage.CacheReadTokens = cached
@@ -581,9 +527,7 @@ func (s *responsesStream) pop() Event {
 	return ev
 }
 
-// flush emits accumulated complete tool calls (in first-appearance order),
-// then the held Finish. Any think-splitter holdback is drained first so a
-// truncated final tag cannot swallow the response tail.
+// flush emits accumulated complete tool calls (in first-appearance order), then the held Finish.
 func (s *responsesStream) flush() {
 	s.think.drain(&s.queue)
 	nTools := 0
@@ -603,16 +547,8 @@ func (s *responsesStream) flush() {
 		// (a truncated/aborted generation). StopOther is the honest terminal.
 		s.stop = StopOther
 	}
-	// A response that CARRIED tool calls after the completion marker must
-	// finish StopToolUse, never StopStop (2026-09-09 tool-swallow fix,
-	// exec 01M23EVJV4RGGH8EHTWMG8Q21P): the leader loop dispatches +
-	// persists + feeds back tool results ONLY on StopToolUse. Under Stop the
-	// tool calls were counted toward the tool_call_count budget but never
-	// executed or their results returned — the model re-emitted the same
-	// "I'll start by…" preamble each turn (45 text parts, 0 tool parts), the
-	// budget aborted at 100 calls, and the work never happened. Parity with
-	// the anthropic/legacy/openai-compat providers, all of which finish
-	// StopToolUse when tools are pending.
+	// A response that CARRIED tool calls after the completion marker must finish StopToolUse, never
+	// StopStop (2026-09-09 tool-swallow fix, exec 01M23EVJV4RGGH8EHTWMG8Q21P).
 	if nTools > 0 && s.stop == StopStop {
 		s.stop = StopToolUse
 	}

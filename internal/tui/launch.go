@@ -1,30 +1,6 @@
 package tui
 
 // launch.go — THE LAUNCH-TIME PROJECT PROMPT.
-//
-// WHY IT EXISTS. `orch` opens on the Ask "New" page — nav.go calls it "the launch
-// page, exactly what orch shows on start" — which is right for someone already
-// working inside a project and wrong for someone who has just cd'd into a
-// directory that no project points at. They land on a blank composer with nothing
-// saying that the directory they are sitting in is unattached, and the first
-// symptom is a worker that cannot find their files. The operator hit exactly this:
-// "I then launched orch in a different directory and it went straight to the 'new'
-// screen. I never got a pop-up to create a new project."
-//
-// SCOPE (operator decision): "Whenever someone launches orch, if the cwd is not
-// tied to any current projects created." Not first-run-only — every launch, in any
-// directory no project covers.
-//
-// DECLINING IS FREE AND IS NOT REMEMBERED (operator decision): "No it just goes
-// into orch then and performs normally." So there is no state, no ledger, no
-// don't-ask-again flag. The next launch in the same directory asks again, because a
-// client that silently remembered a "no" would be hiding the question from the one
-// person who might now want a different answer.
-//
-// THE TWO STEPS ARE ORDERED (operator decision): a blank screen carrying the
-// QUESTION on its own first, then a CENTRED MODAL reusing the project-create form.
-// The question is deliberately not a modal, because it is not interrupting
-// anything — it is the entire first screen.
 
 import (
 	"context"
@@ -64,47 +40,29 @@ type launchPrompt struct {
 	// Form is the create form, built when the operator says yes — built once, so
 	// their typing survives every repaint.
 	Form *kit2.Form
-	// Visible is whether the CONTROL PLANE could see the directory when the check
-	// ran. False is not a refusal: the operator may be about to add the path to a
-	// project root, or may simply not care yet. It only changes what the question
-	// SAYS.
+	// Visible is whether the CONTROL PLANE could see the directory when the check ran.
 	Visible bool
-	// MCPServers was REMOVED with the tenant selection: the launch form now DEFINES
-	// project-owned MCP entries (work.ProjectMCPDefinitionsField) rather than selecting
-	// from the tenant list. See openLaunchForm / launchSubmit.
-	// Images is the runtime-image list, carried so the create form's image field can be a
-	// picker. Empty means the list did not load, and the field falls back to free text.
+	// MCPServers was REMOVED with the tenant selection: the launch form now DEFINES project-owned MCP
+	// entries (work.ProjectMCPDefinitionsField) rather than selecting from the tenant list.
 	Images []kit2.Option
 }
 
 // launchPromptMsg is the launch check's result.
-//
-// need=false means "say nothing", and it covers TWO cases on purpose: the
-// directory is already covered by a project, and the check could not be completed.
-// The second is silent by design — a plane we cannot reach must never become a
-// question the operator cannot answer, or a network blip turns into a modal
-// standing between them and their work.
 type launchPromptMsg struct {
 	dir  string
 	need bool
-	// visible is whether the CONTROL PLANE can see the directory — a different
-	// question from whether the operator's shell can. A project_dir outside the
-	// container's mounts is recorded happily and then silently useless: the plane
-	// cannot "git -C" it for worktrees (internal/scheduler/worktree_reconciler.go),
-	// and in container mode validateProjectDir deliberately SKIPS the existence
-	// check, so nothing else would ever say so. The prompt is the one place the
-	// operator is deciding, which makes it the right place to be told.
+	// visible is whether the CONTROL PLANE can see the directory — a different question from whether
+	// the operator's shell can.
 	visible bool
 	// mcpServers was REMOVED: the launch form no longer selects from a tenant list.
-	// Under ownership it DEFINES project-owned entries, via the same
-	// work.ProjectMCPDefinitionsField the Work screen's create uses. See openLaunchForm.
-	// images are the runtime images, loaded for the same reason: the launch form's image
-	// field is a picker, so its options must exist before the form is built.
 	images []kit2.Option
 }
 
 // launchCreatedMsg reports a successful create-and-attach.
-type launchCreatedMsg struct{ projectID string }
+type launchCreatedMsg struct {
+	projectID string
+	name      string
+}
 
 // launchFailedMsg reports a create that did not go through, carrying the reason to
 // show in the form.
@@ -124,30 +82,21 @@ func (m *App) checkLaunchProject() tea.Cmd {
 			PageSize: 200,
 		}))
 		if err != nil {
-			// A FAILED CHECK IS NOT A REASON TO ASK. The prompt answers a question
-			// about the world; if we cannot see the world, stay quiet and let the
-			// operator work.
+			// A FAILED CHECK IS NOT A REASON TO ASK.
 			return launchPromptMsg{}
 		}
 		if dirTiedToProject(resp.Msg.GetProjects(), dir) {
 			return launchPromptMsg{}
 		}
-		// ASK THE PLANE WHAT IT CAN SEE, before offering to create anything for this
-		// directory. ListProjectFiles with dir_path browses a raw path on the PLANE's
-		// filesystem (the frontend uses the same call to browse before a project
-		// exists), so an error here means the plane cannot reach this path — and that
-		// is worth saying at the moment of the decision rather than discovering it
-		// when a worker cannot find the files.
+		// ASK THE PLANE WHAT IT CAN SEE, before offering to create anything for this directory.
 		visible := true
 		if _, err := cl.Projects.ListProjectFiles(ctx, connect.NewRequest(&apiv1.ListProjectFilesRequest{
 			DirPath: dir,
 		})); err != nil {
 			visible = false
 		}
-		// The MCP selection AND the runtime-image options ride along on this same round trip
-		// rather than a second one: the launch form offers the same fields as the Work screen's
-		// create, and both need a list. A failure here just means the image field falls back to
-		// free text — it must not block a prompt whose purpose is to let the operator work.
+		// The MCP selection AND the runtime-image options ride along on this same round trip rather than a
+		// second one: the launch form offers the same fields as the Work screen's create.
 		var images []kit2.Option
 		if cl.Images != nil {
 			if lr, err := cl.Images.ListRuntimeImages(ctx, connect.NewRequest(&apiv1.ListRuntimeImagesRequest{PageSize: 100})); err == nil {
@@ -161,15 +110,6 @@ func (m *App) checkLaunchProject() tea.Cmd {
 }
 
 // dirTiedToProject reports whether dir is covered by any project's project_dir.
-//
-// BOTH an exact match AND CONTAINMENT count, because "tied to" is not "equal to":
-// launching from inside your project — a monorepo package, a docs/ subdirectory —
-// is the ordinary case, and prompting there would be wrong. The directory IS tied
-// to a project; it is just not its root.
-//
-// The containment boundary is a PATH SEPARATOR, not a string prefix:
-// /home/me/project-notes is NOT inside /home/me/project, and a bare HasPrefix test
-// says it is.
 func dirTiedToProject(projects []*apiv1.Project, dir string) bool {
 	for _, p := range projects {
 		if dirInsideProject(p.GetProjectDir(), dir) {
@@ -180,11 +120,6 @@ func dirTiedToProject(projects []*apiv1.Project, dir string) bool {
 }
 
 // dirInsideProject reports whether dir is the project directory itself or lives under it.
-//
-// ONE IMPLEMENTATION, TWO CALLERS: the launch prompt's "is this directory unattached?" and the rail's "which
-// project is the workspace I was launched in?". They are the same question about the same paths, and a second
-// copy of the boundary rule is how the two would come to disagree — the launch prompt declaring a directory
-// attached while the rail could not name its project, or the reverse.
 func dirInsideProject(projectDir, dir string) bool {
 	want := filepath.Clean(dir)
 	pd := strings.TrimSpace(projectDir)
@@ -204,11 +139,8 @@ func launchProjectName(dir string) string {
 	return base
 }
 
-// launchProjectSlug derives a slug from a name: lowercase, with runs of anything
-// that is not alphanumeric collapsed to a single dash.
-//
-// It is only a PREFILL — the plane normalizes the slug it is given
-// (project.normalizeSlug) and remains the authority.
+// launchProjectSlug derives a slug from a name: lowercase, with runs of anything that is not
+// alphanumeric collapsed to a single dash.
 func launchProjectSlug(name string) string {
 	var b strings.Builder
 	dashed := false
@@ -231,27 +163,15 @@ func (m *App) beginLaunchPrompt(dir string, visible bool, images []kit2.Option) 
 	m.launch = &launchPrompt{Dir: dir, Phase: launchAsking, Visible: visible, Images: images}
 }
 
-// dismissLaunchPrompt closes the prompt and continues into the app normally — the
-// single exit for every way of answering no (the n key, esc on the question, and
-// esc inside the form).
-//
-// It deliberately does NOT "remember" the refusal anywhere; see the header.
+// dismissLaunchPrompt closes the prompt and continues into the app normally — the single exit for
+// every way of answering no (the n key, esc on the question, and esc inside the form).
 func (m *App) dismissLaunchPrompt() {
 	m.launch = nil
 	m.ensureLoaded(m.active)
 }
 
-// launchQuestion is the first screen: the question, alone, with the directory it
-// is about and the two answers.
-//
-// WHEN THE PLANE CANNOT SEE THE DIRECTORY, THE QUESTION SAYS SO — here, where the
-// operator is deciding, rather than after a worker has failed to find their files.
-// It is a WARNING and not a refusal: the path may be about to become visible (add
-// it to a project root and re-create the container), or the operator may be
-// creating the project now and mounting it later. Saying nothing would make the
-// create look like it worked, because it does — the project is real, its directory
-// is recorded, and nothing else in the system can tell that the plane cannot reach
-// it.
+// WHEN THE PLANE CANNOT SEE THE DIRECTORY, THE QUESTION SAYS SO — here, where the operator is
+// deciding, rather than after a worker has failed to find their files.
 func (m *App) launchQuestion() string {
 	dir := ""
 	visible := true
@@ -286,11 +206,6 @@ func (m *App) launchQuestion() string {
 }
 
 // launchView paints the prompt.
-//
-// It REPLACES the whole frame rather than layering over the shell, so nothing
-// behind it can read as "the app already started" — the operator's first screen is
-// the question and nothing else. The form step keeps that same blank backing and
-// centres the create modal on it.
 func (m App) launchView(w, h int) string {
 	lp := m.launch
 	base := fillView("", w, h)
@@ -303,24 +218,13 @@ func (m App) launchView(w, h int) string {
 	if lp.Form == nil {
 		return base
 	}
-	// The form lays itself out in the PANEL'S INTERIOR, exactly as the rename and
-	// category modals do: a form told it has the panel's OUTER width overflows the
-	// border by its two cells, and the panel then truncates the field's right edge.
+	// The form lays itself out in the PANEL'S INTERIOR, exactly as the rename and category modals do: a
+	// form told it has the panel's OUTER width overflows the border by its two cells.
 	lp.Form.Width = m.modalInnerWidth()
 	return fillView(m.overlayCentered(base, m.modalPanel(lp.Form.View(), m.modalWidth())), w, h)
 }
 
 // openLaunchForm builds the create form, prefilled from the launch directory.
-//
-// IT REUSES THE WORK SCREEN'S FIELD LIST (work.ProjectCreateFields) rather than
-// copying it, so the two create forms cannot drift apart — the operator's ask was
-// to reuse "the project-create form + RPC".
-//
-// IT APPENDS A DIRECTORY FIELD, which the shared list does not have, because
-// CreateProject takes no project_dir. The directory is therefore attached by the
-// UpdateProject that follows the create, the same two-call shape the Work screen
-// uses (work/projects.go). The field is editable and prefilled with the launch
-// directory, per the operator's decision: "Yes prefill from cwd."
 func (m *App) openLaunchForm() {
 	if m.launch == nil {
 		return
@@ -333,50 +237,20 @@ func (m *App) openLaunchForm() {
 		Initial:     m.launch.Dir,
 		Placeholder: "/home/me/projects/orchicon",
 	})
-	// The MCP definitions the operator seeds are appended the same way — an OWNED
-	// definition seed, not a selection: under ownership the launch form DEFINES
-	// project-owned entries (work.ProjectMCPDefinitionsField), the same control the Work
-	// screen's create uses.
+	// The MCP definitions the operator seeds are appended the same way — an OWNED definition seed, not
+	// a selection: under ownership the launch form DEFINES project-owned entries.
 	specs = append(specs, work.ProjectMCPDefinitionsField())
 	f := kit2.NewForm("New project for this directory", specs...)
 	f.Set("name", name)
 	f.Set("slug", launchProjectSlug(name))
 	f.OnSubmit = m.launchSubmit
-	// FOCUSED, OR IT DOES NOT LOOK EDITABLE. `Focused` is render-only (kit2.Form
-	// draws the ▸ cursor marker and the placeholder only when it is true), so a form
-	// that omits it renders every field as a plain "Label: value" line — which reads
-	// as a read-only summary of the defaults, not as something to type into. The
-	// operator hit exactly that: "didn't actually give me the option to edit any of
-	// the fields, just simply ctrl+s to save defaults". Typing worked the whole time;
-	// there was nothing on screen to say so.
-	//
-	// NewForm now defaults this to true (the class fix — the three other call sites
-	// had each remembered it by hand), and this assignment is kept as the local
-	// statement of intent.
+	// FOCUSED, OR IT DOES NOT LOOK EDITABLE.
 	f.Focused = true
 	m.launch.Phase = launchForm
 	m.launch.Form = f
 }
 
 // launchSubmit creates the project, attaches the directory, and ACTIVATES it.
-//
-// THREE CALLS, IN THIS ORDER, and the order is forced rather than chosen: the create
-// API carries no project_dir, so the project has to exist before its directory can be
-// set; and activation is a separate transition (its UPDATE requires status='drafting').
-// That the launch path is three calls while the Work screen's create is two reflects a
-// deliberate difference downstream, not sloppiness here.
-//
-// ACTIVATION IS THE OPERATOR'S DECISION for this path specifically: "Yes it should
-// activate it by default upon saving." It is the right default HERE because the
-// prompt's entire premise is "I want to work in this directory" — leaving a project
-// that cannot host a single work item would recreate the exact friction the prompt was
-// built to remove. The Work screen's create does NOT activate, matching the GUI, where a
-// project is configured before it is made active; see the note in projects.go.
-//
-// A FAILED ACTIVATION IS REPORTED AS SUCH, and says the project exists: the create and
-// the directory have already succeeded, so a bare failure would send the operator
-// hunting for a project that is really there — and the activate action is available on
-// the project row if they want to retry.
 func (m *App) launchSubmit(values map[string]string, multi map[string][]string) (tea.Cmd, error) {
 	cl := m.clients
 	name := strings.TrimSpace(values["name"])
@@ -384,10 +258,8 @@ func (m *App) launchSubmit(values map[string]string, multi map[string][]string) 
 	image := strings.TrimSpace(values["default_runtime_image"])
 	dir := strings.TrimSpace(values["project_dir"])
 	goals := work.ParseGoals(values["goals"])
-	// The MCP definitions the operator seeded are OWNED rows, created after the
-	// project exists (CreateProject carries no MCP field). This INVERTS the old
-	// select-from-tenant field: the request is a project-owned create, never a
-	// reference selection.
+	// The MCP definitions the operator seeded are OWNED rows, created after the project exists
+	// (CreateProject carries no MCP field).
 	mcpDefs := mcpforms.ParseInline(values["mcp_servers"])
 	_ = multi
 	return func() tea.Msg {
@@ -420,9 +292,7 @@ func (m *App) launchSubmit(values map[string]string, multi map[string][]string) 
 				"the project %q was created with its directory, but could not be activated: %w — activate it from "+
 					"the Work screen (select it, press a)", name, err)}
 		}
-		// The operator's MCP definitions become project-owned rows. A failure here
-		// leaves the project created and activated — so it is reported as such, not
-		// as a bare failure that would send them hunting for a project that exists.
+		// The operator's MCP definitions become project-owned rows.
 		if len(mcpDefs) > 0 {
 			if cl.MCP == nil {
 				return launchFailedMsg{err: fmt.Errorf(
@@ -436,15 +306,11 @@ func (m *App) launchSubmit(values map[string]string, multi map[string][]string) 
 				}
 			}
 		}
-		return launchCreatedMsg{projectID: id}
+		return launchCreatedMsg{projectID: id, name: name}
 	}, nil
 }
 
 // launchKey routes a keystroke while the prompt is up.
-//
-// The prompt owns EVERY key (see router.go) so no chord can reach the shell or a
-// screen behind it — a keystroke answering the question must not also have done
-// something else.
 func (m *App) launchKey(k tea.KeyMsg) (*App, tea.Cmd) {
 	lp := m.launch
 	if lp == nil {

@@ -63,8 +63,7 @@ func (p *fakePlane) seedRecurring(id, title string, enabled bool) *apiv1.WorkIte
 		Status:    apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECURRING,
 		ProjectId: "proj-1",
 		// A LEGACY schedule: written before the timezone field existed, so it carries NONE — which the
-		// server reads as UTC so the fire time is unchanged. That is the case the form has to label rather
-		// than silently re-zone, so it is the case worth seeding by default.
+		// server reads as UTC so the fire time is unchanged.
 		RecurringEnabled:  enabled,
 		RecurringSchedule: &apiv1.RecurringSchedule{Frequency: "daily", Interval: 1, StartDate: "2026-08-01", StartTime: "09:00", OutputsMode: "standard"},
 		NextRunAt:         timestamppb.Now(),
@@ -500,10 +499,7 @@ func TestRecurringItemsCreateFromForm(t *testing.T) {
 	f.Set("frequency", "weekly")
 	f.Set("interval", "2")
 	f.Set("days", "Mon,Wed")
-	// The start is now ONE combined date+time field holding an instant. Seeded the way the FORM seeds it
-	// — a wall clock read in the form's zone — so the assertion does not depend on which zone the test
-	// machine is in. A fixed offset here would be a lie on any machine but one, and the derived pair
-	// would legitimately come back different.
+	// The start is now ONE combined date+time field holding an instant.
 	f.Set("start_date", scheduleSeedInitial(m.formZone, time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC), "07:30"))
 	f.Set("outputs", "idea")
 
@@ -816,12 +812,8 @@ func TestDismissIdeaLeavesActiveViews(t *testing.T) {
 // ---------- empty states + validation ----------
 
 func TestAutomationEmptyStates(t *testing.T) {
-	// The screen renders TWO panes (the focused source + detail), so each
-	// source's empty state is asserted by focusing it — the same way an
-	// operator reaches it (left/right).
-	//
-	// Workflows are NOT here any more: they moved to the Execution tab, which
-	// owns the Execution domain (executions, runs, workflows, workers).
+	// The screen renders TWO panes (the focused source + detail), so each source's empty state is
+	// asserted by focusing it — the same way an operator reaches it (left/right).
 	m := newModelWith(t, newPlane(), nil)
 	for _, src := range []string{"recurring-items", "ideas", "rejected"} {
 		load(t, m, src)
@@ -880,9 +872,7 @@ func TestCreateFormValidationBlocksSubmit(t *testing.T) {
 
 // ---------- the calendar modal (KDate) ----------
 
-// A date field opens the CALENDAR, and the chosen date is written back into the
-// field. Typing "YYYY-MM-DD" was the old gesture; the GUI has a date control
-// (`type="date"`) and this is its TUI equivalent.
+// A date field opens the CALENDAR, and the chosen date is written back into the field.
 func TestRecurringStartDateOpensTheCalendar(t *testing.T) {
 	p := newPlane()
 	m := newModel(t, p)
@@ -980,15 +970,6 @@ func TestRecurringCalendarEscLeavesTheFieldAlone(t *testing.T) {
 }
 
 // THE START IS ONE FIELD, CHOSEN FROM ONE MODAL.
-//
-// The operator: "I wonder if we should combine start date and time in the same type of calendar picker
-// you made for work item schedules. That would be nice."
-//
-// Previously the form made the operator visit a calendar for the date and a bare text box for the time —
-// two controls describing one moment, and the text box was the one that demanded HH:MM exactly. The
-// assertions below pin BOTH halves of the replacement, because either alone would look right and be
-// useless: a single field that no modal opens is a dead field, and a modal whose value never reaches the
-// wire leaves the schedule unscheduled.
 func TestRecurringStartIsOneCombinedField(t *testing.T) {
 	m := newModel(t, newPlane())
 	m.SelectSource("recurring-items")
@@ -1041,11 +1022,6 @@ func TestRecurringStartIsOneCombinedField(t *testing.T) {
 }
 
 // THE MODAL'S CHOICE REACHES THE WIRE AS THE DATE+TIME PAIR THE SCHEDULE STORES.
-//
-// This is the half that fails silently: the schedule's wire shape is two strings (start_date "YYYY-MM-DD",
-// start_time "HH:MM") while the form holds one instant, so the split is what makes a combined control
-// usable at all. Deriving it in scheduleFromValues rather than only in the modal's write-back is
-// deliberate — the common path submits WITHOUT opening the modal, and that path never fires a write-back.
 func TestRecurringStartPairIsDerivedFromTheCombinedField(t *testing.T) {
 	m := newModel(t, newPlane())
 	m.SelectSource("recurring-items")
@@ -1117,9 +1093,8 @@ func TestRecurringDaysTogglesIndependently(t *testing.T) {
 // opened with nothing ticked and saving silently cleared the schedule.
 func TestRecurringEditPrefillsSelectedDays(t *testing.T) {
 	p := newPlane()
-	// The shared fixture seeds a DAILY schedule with NO weekday selection, which is
-	// legitimate (empty days = every day) and therefore proves nothing about
-	// pre-fill. Give this one explicit days so the assertion is about the seeding.
+	// The shared fixture seeds a DAILY schedule with NO weekday selection, which is legitimate (empty
+	// days = every day) and therefore proves nothing about pre-fill.
 	w := p.seedRecurring("rec-1", "Nightly sweep", true)
 	w.RecurringSchedule.Days = []string{"Mon", "Wed"}
 	m := newModel(t, p)
@@ -1144,9 +1119,7 @@ func TestRecurringEditPrefillsSelectedDays(t *testing.T) {
 
 // ---------- bulk idea triage ----------
 
-// 'A' accepts EVERY idea the list is showing. Triage is the reason the cloud
-// exists, and a run that spawned eight ideas should not ask for eight keystrokes
-// and eight confirmations.
+// 'A' accepts EVERY idea the list is showing.
 func TestAcceptAllIdeasPromotesEveryListed(t *testing.T) {
 	p := newPlane()
 	p.seedRecurring("rec-1", "Nightly sweep", true)
@@ -1182,9 +1155,8 @@ func TestAcceptAllIdeasPromotesEveryListed(t *testing.T) {
 	}
 }
 
-// 'R' rejects every listed idea, but it is CONFIRMED: a dismissal is durable
-// rejection history that the automation's dedupe gate reads, so it is not done by
-// accident.
+// 'R' rejects every listed idea, but it is CONFIRMED: a dismissal is durable rejection history that
+// the automation's dedupe gate reads, so it is not done by accident.
 func TestRejectAllIdeasIsConfirmed(t *testing.T) {
 	p := newPlane()
 	p.seedRecurring("rec-1", "Nightly sweep", true)
@@ -1249,9 +1221,7 @@ func TestRejectAllIdeasCancelledChangesNothing(t *testing.T) {
 	}
 }
 
-// A PARTIAL failure is reported per-idea. This is the case a single batched RPC
-// would hide, and the one that matters: the operator has to know WHICH ideas are
-// still awaiting a decision.
+// A PARTIAL failure is reported per-idea.
 func TestBulkAcceptReportsPerIdeaFailure(t *testing.T) {
 	p := newPlane()
 	p.seedRecurring("rec-1", "Nightly sweep", true)
@@ -1261,9 +1231,7 @@ func TestBulkAcceptReportsPerIdeaFailure(t *testing.T) {
 	m.SelectSource("ideas")
 	load(t, m, "ideas")
 
-	// Make ONE of them fail, the way a server-side refusal would. The others go
-	// through the PLANE, so the test exercises a real partial success rather than a
-	// no-op that silently leaves every idea where it was.
+	// Make ONE of them fail, the way a server-side refusal would.
 	m.rpcPromote = func(ctx context.Context, id string) error {
 		if id == "idea-2" {
 			return errors.New("refused")

@@ -1,17 +1,7 @@
 package work
 
-// skipped_status_test.go — "skipped" is a user-settable status in the TUI,
-// sanctioned rather than accidental (this item's AC8/17).
-//
-// statusOptions() already listed "skipped" and the form specs already wired
-// it through statusForEdit/statusFromName — both pre-dating this item. What
-// this pins is the OBSERVABLE behaviour that makes the offer real: a
-// work item that is ALREADY skipped must open its status form SEEDED to
-// "skipped" (not silently fall back to the "pending" default statusForEdit
-// uses for a non-user-assignable status), and submitting that form must
-// send WORK_ITEM_STATUS_SKIPPED on the wire — proving the "s" quick-status
-// gesture and the full detail editor both reach the same status the
-// sequence engine consumes as terminal-success.
+// skipped_status_test.go — "skipped" is a user-settable status in the TUI, sanctioned rather than
+// accidental (this item's AC8/17).
 
 import (
 	"testing"

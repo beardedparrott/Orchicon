@@ -7,9 +7,8 @@ import (
 	"testing"
 )
 
-// A `thinking_delta` carries its text in `delta.thinking`, NOT `delta.text` —
-// the same asymmetry the native anthropic path handles. Reading `text` here
-// yields EMPTY reasoning on every delta, silently, so the field is pinned.
+// A `thinking_delta` carries its text in `delta.thinking`, NOT `delta.text` — the same asymmetry
+// the native anthropic path handles.
 func TestParseLineDecodesThinkingDelta(t *testing.T) {
 	ev, err := ParseLine([]byte(`{"type":"stream_event","event":{"type":"content_block_delta",` +
 		`"index":0,"delta":{"type":"thinking_delta","thinking":"Let me consider: 1.10 - 1.00 = 0.10"}}}`))
@@ -48,9 +47,8 @@ func TestParseLineIgnoresSignatureDelta(t *testing.T) {
 	}
 }
 
-// A whole `thinking` block on an assistant message (no partial-delta stream)
-// must also be recognised — and `redacted_thinking`, which carries no text by
-// design, must contribute nothing rather than appearing as an empty bubble.
+// A whole `thinking` block on an assistant message (no partial-delta stream) must also be
+// recognised — and `redacted_thinking`, which carries no text by design.
 func TestParseLineDecodesWholeThinkingBlocks(t *testing.T) {
 	ev, _ := ParseLine([]byte(`{"type":"assistant","message":{"content":[` +
 		`{"type":"thinking","thinking":"step one. "},` +
@@ -69,9 +67,8 @@ func TestParseLineDecodesWholeThinkingBlocks(t *testing.T) {
 	}
 }
 
-// THE MAPPED CONSEQUENCE: reasoning becomes its OWN durable part
-// (db.SessionPartReasoning), and — the part that matters — it never reaches
-// OnText, which is the worker's prose and feeds its ORCHICON WORKER SUMMARY.
+// THE MAPPED CONSEQUENCE: reasoning becomes its OWN durable part (db.SessionPartReasoning), and —
+// the part that matters — it never reaches OnText.
 func TestReasoningBecomesItsOwnPartAndNeverTheWorkersOutput(t *testing.T) {
 	rec := &recordingCallbacks{}
 	ctx := t.Context()
@@ -134,10 +131,7 @@ func mustParse(t *testing.T, line string) StreamEvent {
 	return ev
 }
 
-// THE ASK PATH, same contract. opencode emits reasoning as
-// `Type:"reasoning"` + `IsReasoning:true` (chatsession.go), and the askorchicon
-// drain opens a THINK segment on exactly that shape — so claude must match it or
-// an Ask conversation shows the model's thinking as ordinary prose, or not at all.
+// THE ASK PATH, same contract.
 func TestAskMapsReasoningOntoTheBus(t *testing.T) {
 	h, slot := askHarness(t)
 	ctx := t.Context()

@@ -1,15 +1,6 @@
 package tui
 
 // composer_sending_ack_test.go — THE SEND ACK MAY NOT OUTLIVE THE SEND.
-//
-// The operator: "I also notice a 'sending ...' underneath the composer even when the model is done. We
-// need to investigate that."
-//
-// The mechanism, reproduced before the fix. The dock writes "sending …" the instant Enter fires (which is
-// deliberate: a send that produces no visible reaction is indistinguishable from a dead key), and exactly
-// TWO outcomes replaced it: a FAILURE (setChatError) and a NEW conversation landing (chatConvCreatedMsg).
-// A SECOND message in an EXISTING conversation went through neither, so the ack stayed on screen for the
-// rest of the session. The first test drives that path and asserts the frame, not the field.
 
 import (
 	"strings"
@@ -93,9 +84,7 @@ func TestTheEndOfTheTurnSettlesTheSendAck(t *testing.T) {
 	}
 }
 
-// THE SETTLE IS GUARDED: it may clear the ACK and nothing else. A connection banner is written when a turn
-// loses its socket, and a late settle erasing it would hide a dead connection behind a blank strip — the
-// failure this guard exists to prevent.
+// THE SETTLE IS GUARDED: it may clear the ACK and nothing else.
 func TestSettlingTheAckNeverErasesAnotherNotice(t *testing.T) {
 	m := askRelaunched(t, "c1")
 	healthyPlane(m)

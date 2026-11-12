@@ -23,10 +23,8 @@ import (
 // root), while a run without a provisioned worktree keeps an empty
 // WorktreePath (execution cwd = project_dir).
 
-// manifestCaptureBridge is a test double for AdapterBridge that records the
-// manifests passed to Start. It is safe for concurrent use: parallel dispatch
-// fans out startExecution across goroutines, so Start may be invoked from
-// several of them at once.
+// manifestCaptureBridge is a test double for AdapterBridge that records the manifests passed to
+// Start.
 type manifestCaptureBridge struct {
 	mu        sync.Mutex
 	manifests []ExecutionManifest
@@ -39,10 +37,8 @@ func (b *manifestCaptureBridge) Start(_ context.Context, _ db.ExecutionRow, mani
 	return nil
 }
 
-// testDispatcher builds a Dispatcher with the bridge registered under the
-// opencode default kind, so the reconciler's model_ref → kind resolution
-// (AdapterKind) routes to it. Tests that need an unknown-kind path build
-// their own dispatcher.
+// testDispatcher builds a Dispatcher with the bridge registered under the opencode default kind, so
+// the reconciler's model_ref → kind resolution (AdapterKind) routes to it.
 func testDispatcher(bridge AdapterBridge) *Dispatcher {
 	d := NewDispatcher()
 	d.Register(adapter.DefaultAdapterKind, bridge)
@@ -69,9 +65,8 @@ func newCwdTestTask(projectID, runID, itemID string) (db.WorkItemRow, db.WorkerV
 	return task, version, exec
 }
 
-// TestWorktreeExecutionCwdReady verifies a provisioned worktree run
-// dispatches with manifest.WorktreePath = the worktree path and
-// manifest.ProjectDir unchanged (the mount/guard root).
+// TestWorktreeExecutionCwdReady verifies a provisioned worktree run dispatches with
+// manifest.WorktreePath = the worktree path and manifest.ProjectDir unchanged (the mount/guard.
 func TestWorktreeExecutionCwdReady(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
@@ -101,19 +96,13 @@ func TestWorktreeExecutionCwdReady(t *testing.T) {
 	}
 }
 
-// TestWorktreeExecutionCwdFallback verifies the hold-then-fallback dispatch
-// contract for runs without a provisioned worktree: a run whose worktree is
-// still pending is HELD (0 manifests — the re-provision path owns it, never
-// a silent project-dir fallback), while a run admitted in-place (skipped,
-// the non-repo decision) dispatches with an empty WorktreePath (execution
-// cwd = project_dir).
+// TestWorktreeExecutionCwdFallback verifies the hold-then-fallback dispatch contract for runs
+// without a provisioned worktree: a run whose worktree is still pending is HELD (0 manifests.
 func TestWorktreeExecutionCwdFallback(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
 
-	// The run stays 'pending' — no worktree provisioned (the reconciler was
-	// never run for it). Dispatch must HOLD: 0 manifests, never a silent
-	// project-dir fallback for a pending run.
+	// The run stays 'pending' — no worktree provisioned (the reconciler was never run for it).
 	task, version, exec := newCwdTestTask(env.proj.ID, env.run.ID, env.itemID)
 	bridge := &manifestCaptureBridge{}
 	rec := NewTaskReconciler(env.pool, slog.Default(), testDispatcher(bridge))
@@ -123,9 +112,8 @@ func TestWorktreeExecutionCwdFallback(t *testing.T) {
 		t.Fatalf("startExecution dispatched %d manifests for a pending run, want 0 (held for re-provision)", len(bridge.manifests))
 	}
 
-	// Admit the run in-place (skipped — the non-repo decision): now the
-	// fallback applies — exactly 1 manifest, empty WorktreePath, and
-	// ProjectDir unchanged as the mount/guard root.
+	// Admit the run in-place (skipped — the non-repo decision): now the fallback applies — exactly 1
+	// manifest, empty WorktreePath, and ProjectDir unchanged as the mount/guard root.
 	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)

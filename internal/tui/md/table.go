@@ -12,21 +12,8 @@ import (
 // tableMinCol is the narrowest a column may be squeezed to before the table gives up on the grid.
 const tableMinCol = 4
 
-// table renders a GFM table as an aligned grid.
-//
-// TABLES ARE THE ONE CONSTRUCT THAT CANNOT SIMPLY REFLOW, which is why the operator called them out
-// separately. A grid has a minimum viable width (one cell per column plus separators); below that,
-// aligning columns stops being possible at all. So there are two shapes:
-//
-//  1. THE GRID, when the columns fit. Cell contents are WRAPPED (never truncated) into their column,
-//     because a clipped cell is exactly the silent data loss this package exists to remove.
-//  2. A VERTICAL RECORD, when even the minimum grid would not fit — each row becomes "column: value"
-//     lines. It loses the grid but keeps every value, and it ALWAYS fits, which is the operator's
-//     hard requirement ("as long as it only takes up the width of the pane it is currently in").
-//
-// Every function here takes the renderer (and therefore the source bytes) rather than reading a
-// package-level copy: the TUI can render from more than one goroutine, so shared mutable parse state
-// would be a data race waiting for a busy tenant.
+// table renders a GFM table as an aligned grid. TABLES ARE THE ONE CONSTRUCT THAT CANNOT SIMPLY
+// REFLOW, which is why the operator called them out separately.
 func (r *renderer) table(n *east.Table, in indent) {
 	cols, align := r.tableShape(n)
 	if cols == 0 {
@@ -158,10 +145,6 @@ type tableRow struct {
 }
 
 // tableShape returns the column count, the headers and the alignments.
-//
-// The alignments and the headers are not always on the same node — GFM records alignments per row as
-// well as on the header — so the widest source wins, and the column count is the MAXIMUM over the
-// header, the alignments and every row (a row with more cells than the header still renders).
 func (r *renderer) tableShape(n *east.Table) (int, tableAlign) {
 	var t tableAlign
 	cols := 0

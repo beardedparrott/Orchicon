@@ -11,22 +11,18 @@ import (
 	"time"
 )
 
-// StdioRequest opens a long-lived duplex streaming child inside the run's
-// leased container (the claude adapter's transport). Unlike Exec (one-shot
-// shell, collected output), stdio keeps the child alive across many stdin
-// frames and streams its stdout/stderr events back live, so a session can
-// span multiple turns on ONE subprocess.
+// StdioRequest opens a long-lived duplex streaming child inside the run's leased container (the
+// claude adapter's transport).
 type StdioRequest struct {
-	Argv       []string `json:"argv"`
-	Env        []string `json:"env,omitempty"`
-	Cwd        string   `json:"cwd,omitempty"`
-	ProjectDir string   `json:"project_dir,omitempty"`
-	ExecID     string   `json:"exec_id,omitempty"`
+	Argv []string `json:"argv"`
+	Env  []string `json:"env,omitempty"`
+	// HOST paths; converted at the one boundary (hostpaths.go).
+	Cwd        string `json:"cwd,omitempty" orchicon:"hostpath"`
+	ProjectDir string `json:"project_dir,omitempty" orchicon:"hostpath"`
+	ExecID     string `json:"exec_id,omitempty"`
 }
 
-// StdioSession is one live duplex streaming child. Events() yields the
-// supervisor's AgentEvents (started/stdout/stderr/exit/error) until the
-// child exits or the stream drops.
+// StdioSession is one live duplex streaming child.
 type StdioSession struct {
 	execID string
 
@@ -43,15 +39,10 @@ type StdioSession struct {
 	once sync.Once
 }
 
-// stdioHandshakeTimeout bounds how long Stdio waits for the daemon to accept the
-// stream. Generous (a cold container may still be starting) but finite, because
-// the transport cannot bound it — see the handshake note in Stdio.
+// stdioHandshakeTimeout bounds how long Stdio waits for the daemon to accept the stream.
 const stdioHandshakeTimeout = 45 * time.Second
 
-// Stdio opens the duplex streaming child. The initial frame is sent through
-// an io.Pipe so the constructor can block on the response HEADERS (which the
-// daemon writes only after it decodes that first frame) without the caller
-// having to sequence the write itself.
+// Stdio opens the duplex streaming child.
 func (c *Client) Stdio(ctx context.Context, workflowID string, req StdioRequest) (*StdioSession, error) {
 	if len(req.Argv) == 0 {
 		return nil, fmt.Errorf("runtime stdio: argv required")
@@ -93,9 +84,8 @@ func (c *Client) Stdio(ctx context.Context, workflowID string, req StdioRequest)
 		ready <- nil
 		s.relay(resp.Body)
 	}()
-	// Send the opening frame: it must reach the server for the handler to
-	// write response headers, so it rides its own goroutine (a synchronous
-	// write would deadlock until Do returns, and Do waits on headers).
+	// Send the opening frame: it must reach the server for the handler to write response headers, so it
+	// rides its own goroutine (a synchronous write would deadlock until Do returns.
 	initial := map[string]any{
 		"cmd":         "stdio",
 		"argv":        req.Argv,
@@ -106,19 +96,8 @@ func (c *Client) Stdio(ctx context.Context, workflowID string, req StdioRequest)
 	}
 	go func() { _ = s.writeFrame(initial) }()
 
-	// THE HANDSHAKE IS BOUNDED, and the bound cannot be left to the transport.
-	//
-	// A stdio request streams a body that NEVER ENDS (stdin frames continue for
-	// the session's life), and http.Transport.ResponseHeaderTimeout only starts
-	// once the request body is FULLY written — which never happens here.
-	// Client.Timeout is 0 for the same reason. So a daemon that never answers
-	// hangs the caller INDEFINITELY, which is exactly what happened: a dispatch
-	// naming the wrong container id sat in `dispatching` forever with zero tokens
-	// and no log line, and nothing in the client could time it out.
-	//
-	// Bounding it here converts any wedged handshake — a mismatch, a daemon that
-	// cannot answer, a wedged relay — into an actionable error the caller can log
-	// and fail the execution on.
+	// A stdio request streams a body that NEVER ENDS (stdin frames continue for the session's life),
+	// and http.Transport.ResponseHeaderTimeout only starts once the request body is FULLY written.
 	select {
 	case err := <-ready:
 		if err != nil {
@@ -218,9 +197,7 @@ func (s *StdioSession) emit(ev AgentEvent) {
 	}
 }
 
-// finish marks the session terminal. It closes done but NOT events: the
-// consumer learns of termination from the terminal exit/error event, so
-// closing the channel here would race a concurrent emit (send-on-closed).
+// finish marks the session terminal.
 func (s *StdioSession) finish(_ int, _ error) {
 	s.once.Do(func() { close(s.done) })
 }

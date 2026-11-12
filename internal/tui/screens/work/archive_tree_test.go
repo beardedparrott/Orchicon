@@ -94,10 +94,7 @@ func TestArchiveViewIsATree(t *testing.T) {
 			t.Fatalf("archive title %q must not pre-indent", r.Cells[0])
 		}
 	}
-	// THE ARCHIVE OPENS EXPANDED, unlike the Tree — and that is deliberate. Its roots
-	// are usually GHOST ANCHORS (active parents), so collapsing them would hide the
-	// archived items behind a row that says "not archived": the operator would open the
-	// archive and see nothing to restore. That is the bug this asserts against.
+	// THE ARCHIVE OPENS EXPANDED, unlike the Tree — and that is deliberate.
 	v := ansi.Strip(m.View())
 	if !strings.Contains(v, "[epic] ae") || !strings.Contains(v, "[task] at") {
 		t.Fatalf("the archive frame must draw every level on open:\n%s", v)
@@ -107,10 +104,8 @@ func TestArchiveViewIsATree(t *testing.T) {
 	}
 }
 
-// TestArchiveViewAnchorsAnActiveAncestor: an archived item whose parent is still
-// ACTIVE has no parent row in the archived page, so without an anchor it would
-// float to the top level — the flat list by another route. The active ancestor is
-// rendered as a marked, NON-restorable row instead.
+// TestArchiveViewAnchorsAnActiveAncestor: an archived item whose parent is still ACTIVE has no
+// parent row in the archived page, so without an anchor it would float to the top level.
 func TestArchiveViewAnchorsAnActiveAncestor(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")
@@ -150,9 +145,8 @@ func TestArchiveViewAnchorsAnActiveAncestor(t *testing.T) {
 	}
 }
 
-// TestArchiveAnchorIsNotRestorable: offering "restore" on an ACTIVE row would send
-// the plane a request it refuses, and the operator would read the failure as an
-// archived item that would not come back.
+// TestArchiveAnchorIsNotRestorable: offering "restore" on an ACTIVE row would send the plane a
+// request it refuses.
 func TestArchiveAnchorIsNotRestorable(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")
@@ -185,9 +179,8 @@ func TestArchiveAnchorIsNotRestorable(t *testing.T) {
 	}
 }
 
-// archiveActionLabels lists the actions offered for the currently focused row in
-// the ARCHIVE view — the row-bound set, not the pane's top-row controls (those are
-// ActiveTableActions).
+// archiveActionLabels lists the actions offered for the currently focused row in the ARCHIVE view —
+// the row-bound set, not the pane's top-row controls (those are ActiveTableActions).
 func archiveActionLabels(m *Model) []string {
 	var out []string
 	for _, a := range m.itemActions() {
@@ -238,9 +231,8 @@ func TestThePaneSaysWhichModeItIsIn(t *testing.T) {
 	}
 }
 
-// TestTheModeLabelNeverCrowdsOutTheControls: the caption is fitted, and the row
-// NEVER draws a partially-clipped control — a clipped control leaves a hit-box the
-// operator cannot read. The mode label is the thing that gives way.
+// TestTheModeLabelNeverCrowdsOutTheControls: the caption is fitted, and the row NEVER draws a
+// partially-clipped control — a clipped control leaves a hit-box the operator cannot read.
 func TestTheModeLabelNeverCrowdsOutTheControls(t *testing.T) {
 	m := treePlane(t)
 	for _, sz := range [][2]int{{200, 40}, {120, 40}, {100, 32}, {80, 24}} {
@@ -261,9 +253,8 @@ func TestTheModeLabelNeverCrowdsOutTheControls(t *testing.T) {
 					sz[0], sz[1], a.Label(), v)
 			}
 		}
-		// The SORT control is the one the operator always needs (it is the pane's only
-		// ordering control), so it must survive every width; the collapse control may be
-		// dropped on a pane too narrow to draw it.
+		// The SORT control is the one the operator always needs (it is the pane's only ordering control),
+		// so it must survive every width.
 		if !strings.Contains(v, "sort:") {
 			t.Fatalf("at %dx%d the sort control must always be drawn:\n%s", sz[0], sz[1], v)
 		}
@@ -275,18 +266,8 @@ func TestTheModeLabelNeverCrowdsOutTheControls(t *testing.T) {
 	}
 }
 
-// TestTreeOpensCollapsed — item 1: the work-items tree (BOTH views) opens with its
-// parents collapsed, so a four-level hierarchy is readable on arrival.
-//
-// The operator: "I think the default for work items (both normal and archive) view
-// should be 'collapsed all'." The TUI started fully expanded while the GUI's tree has
-// always defaulted to collapsed (work-items-tree.tsx "default collapsed"), so the two
-// clients showed the same data in different shapes on open.
-//
-// THE SCOPE MATTERS AS MUCH AS THE DEFAULT: kit2.Table has a SECOND tree — the category
-// folder grouping on the workers/workflows panes — and a folder that opened collapsed
-// would hide the rows the operator came for. That is why this is per-source
-// (Table.CollapsedByDefault) rather than a change to the table's default.
+// TestTreeOpensCollapsed — item 1: the work-items tree (BOTH views) opens with its parents
+// collapsed, so a four-level hierarchy is readable on arrival.
 func TestTreeOpensCollapsed(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")
@@ -330,9 +311,8 @@ func TestTreeOpensCollapsed(t *testing.T) {
 		t.Fatalf("the archived child must stay nested under its parent: %+v", rows["af"])
 	}
 
-	// And the operator's own choice still SURVIVES a reload — the rolling refresh
-	// re-reads every few seconds, and a collapse that undid itself on the next tick
-	// would be unusable.
+	// And the operator's own choice still SURVIVES a reload — the rolling refresh re-reads every few
+	// seconds, and a collapse that undid itself on the next tick would be unusable.
 	m.toggleAllTreeNodes() // collapse
 	load(t, m, srcWorkItems)
 	if n := len(m.Base.ActiveTable().VisibleRows()); n != 1 {
@@ -340,9 +320,7 @@ func TestTreeOpensCollapsed(t *testing.T) {
 	}
 }
 
-// The category-folder tree is NOT collapsed by this: its members are the point of the
-// group. Asserted on the table default rather than on a live pane, because it is the
-// DEFAULT that this change touched (and briefly broke).
+// The category-folder tree is NOT collapsed by this: its members are the point of the group.
 func TestFolderGroupingStillOpensExpanded(t *testing.T) {
 	var tbl kit2.Table
 	tbl.SetItems([]kit2.Item{
@@ -357,25 +335,8 @@ func TestFolderGroupingStillOpensExpanded(t *testing.T) {
 	}
 }
 
-// TestArchiveRestoreIsReachableAndNamed — the operator: "It doesn't look like there is a
-// way to restore a work item from the archive in the TUI but you can in the GUI."
-//
-// The chord (`R`) existed and worked; it was UNDISCOVERABLE, and reaching it was blocked,
-// for three separate reasons that together made the feature invisible:
-//
-//  1. The archive view opened COLLAPSED, and its root is usually a GHOST ANCHOR — an
-//     active parent rendered only to keep the hierarchy connected. So the first screen of
-//     the archive showed a single row reading "active ancestor — not archived", with the
-//     archived items folded underneath and nothing to say they were there.
-//  2. The ghost anchor is not restorable (correctly — the plane would refuse), so the
-//     focused row offered NO actions at all. The operator's first impression was a view
-//     where nothing could be restored.
-//  3. The composer's hint line advertised `a: archive`, which is a NO-OP in this view
-//     (itemActions offers restore INSTEAD of archive), and never mentioned `R`. The one
-//     chord that works was the one chord not written down.
-//
-// This asserts the whole path: the archived rows are on screen on arrival, the row offers
-// the action, the hint names it, and confirming it calls RestoreWorkItem.
+// TestArchiveRestoreIsReachableAndNamed — the operator: "It doesn't look like there is a way to
+// restore a work item from the archive in the TUI but you can in the GUI."
 func TestArchiveRestoreIsReachableAndNamed(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")
@@ -459,15 +420,8 @@ func TestTheTreeStillOpensCollapsedAfterTheArchiveException(t *testing.T) {
 	}
 }
 
-// TestBulkRestoreFromTheArchive — the operator: "I noticed there is no option to restore
-// on bulk items."
-//
-// RIGHT, and the reason was structural: bulkItemActions offered ARCHIVE and DELETE and
-// knew nothing about the view. In the archive view both are wrong — `a: archive` is a
-// no-op on an item that is already archived, and `x: delete` CANCELS it, which is a
-// different outcome from the restore the operator is in that view to perform. So a marked
-// selection had no restore path at all, while the GUI has had "Restore selected" from the
-// start.
+// TestBulkRestoreFromTheArchive — the operator: "I noticed there is no option to restore on bulk
+// items."
 func TestBulkRestoreFromTheArchive(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")

@@ -1,13 +1,7 @@
 package opencode
 
-// binary_test.go pins the ONE resolver's contract: the env override, PATH, the
-// container-visible $HOME candidates, and the visibility check that pairs with
-// 'present'.
-//
-// The cases are chosen from real reports rather than invented: the sudo/npm
-// install that the plane can see but its containers cannot, the override the
-// error message advertises but two of three call sites ignored, and the empty
-// $HOME that must fail loudly rather than resolve to something unusable.
+// binary_test.go pins the ONE resolver's contract: the env override, PATH, the container-visible
+// $HOME candidates, and the visibility check that pairs with 'present'.
 
 import (
 	"os"
@@ -43,9 +37,8 @@ func writeFakeOpenCode(t *testing.T, home, rel string) string {
 	return p
 }
 
-// TestResolveOpenCodeBinaryProbesTheContainerVisibleHomeLocations is the core
-// contract: every $HOME candidate a runtime container can reach is probed, and
-// the FIRST one wins.
+// TestResolveOpenCodeBinaryProbesTheContainerVisibleHomeLocations is the core contract: every $HOME
+// candidate a runtime container can reach is probed, and the FIRST one wins.
 func TestResolveOpenCodeBinaryProbesTheContainerVisibleHomeLocations(t *testing.T) {
 	for _, rel := range openCodeRelCandidates {
 		t.Run(rel, func(t *testing.T) {
@@ -63,10 +56,8 @@ func TestResolveOpenCodeBinaryProbesTheContainerVisibleHomeLocations(t *testing.
 	}
 }
 
-// TestResolveOpenCodeBinaryPrefersTheEnvOverride pins the escape hatch the
-// plane's error message advertises. Before this resolver existed, only the
-// discovery call site honoured it, so the operator who followed that advice got
-// working discovery and a broken spawn path.
+// TestResolveOpenCodeBinaryPrefersTheEnvOverride pins the escape hatch the plane's error message
+// advertises.
 func TestResolveOpenCodeBinaryPrefersTheEnvOverride(t *testing.T) {
 	home := emptyPathPointingHome(t)
 	// A perfectly good install that must LOSE to the explicit override.
@@ -83,11 +74,8 @@ func TestResolveOpenCodeBinaryPrefersTheEnvOverride(t *testing.T) {
 	}
 }
 
-// TestResolveOpenCodeBinaryRejectsADeadOverride: an override that names nothing
-// is an explicit instruction that is wrong, and must fail with the override
-// named rather than being silently ignored in favour of a fallback. The silent
-// version is what the discovery wiring did, and it reports 'not found' — sending
-// the operator to install something they already have.
+// TestResolveOpenCodeBinaryRejectsADeadOverride: an override that names nothing is an explicit
+// instruction that is wrong.
 func TestResolveOpenCodeBinaryRejectsADeadOverride(t *testing.T) {
 	home := emptyPathPointingHome(t)
 	writeFakeOpenCode(t, home, filepath.Join(".opencode", "bin", "opencode"))
@@ -102,9 +90,8 @@ func TestResolveOpenCodeBinaryRejectsADeadOverride(t *testing.T) {
 	}
 }
 
-// TestResolveOpenCodeBinaryFailsLoudlyWhenNothingIsUsable keeps the original
-// contract (the adapter's fail-fast guard keys on (”, err) containing 'opencode
-// binary not found') while adding the hint that names a system-wide install.
+// TestResolveOpenCodeBinaryFailsLoudlyWhenNothingIsUsable keeps the original contract (the
+// adapter's fail-fast guard keys on (”.
 func TestResolveOpenCodeBinaryFailsLoudlyWhenNothingIsUsable(t *testing.T) {
 	emptyPathPointingHome(t)
 
@@ -122,9 +109,8 @@ func TestResolveOpenCodeBinaryFailsLoudlyWhenNothingIsUsable(t *testing.T) {
 	}
 }
 
-// TestContainerVisibleFollowsTheRuntimeDeclaration is the half that was missing:
-// a binary the plane can execute but its runtime containers cannot is the
-// green-and-broken case, and it must be DETECTABLE rather than assumed fine.
+// TestContainerVisibleFollowsTheRuntimeDeclaration is the half that was missing: a binary the plane
+// can execute but its runtime containers cannot is the green-and-broken case.
 func TestContainerVisibleFollowsTheRuntimeDeclaration(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -146,10 +132,8 @@ func TestContainerVisibleFollowsTheRuntimeDeclaration(t *testing.T) {
 	}
 }
 
-// TestOpenCodeBinDirsMatchesTheProbedCandidates pins the one-list rule: the
-// directories handed to the plane's PATH augmentation are derived from the
-// resolver's candidate list, so a prefix can never point somewhere the resolver
-// does not look.
+// TestOpenCodeBinDirsMatchesTheProbedCandidates pins the one-list rule: the directories handed to
+// the plane's PATH augmentation are derived from the resolver's candidate list.
 func TestOpenCodeBinDirsMatchesTheProbedCandidates(t *testing.T) {
 	home := "/home/example"
 	dirs := OpenCodeBinDirs(home)

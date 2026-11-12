@@ -1,9 +1,7 @@
 package askorchicon
 
-// MCP server management tools (ADR-0008, adapter-settings MCP management):
-// thin wrappers over internal/mcpsettings so the Ask Orchicon / MCP surface
-// mirrors the platform's MCPService. Credentials are write-only via the
-// tenant secrets store (${SECRET_NAME} refs, never plaintext values).
+// MCP server management tools (, adapter-settings MCP management): thin wrappers over
+// internal/mcpsettings so the Ask Orchicon / MCP surface mirrors the platform's MCPService.
 
 import (
 	"context"
@@ -21,23 +19,25 @@ func mcpSvc(pool *db.Pool, kek []byte) *mcpsettings.Service {
 }
 
 // compactMCPServer is the value-less, compact row returned by the list tool.
-// Plaintext credentials never appear — env/header values may be ${SECRET_NAME}
-// references and has_secret_stored reports whether any required secret exists.
 type compactMCPServer struct {
-	ID              string                     `json:"id"`
-	Name            string                     `json:"name"`
-	Transport       string                     `json:"transport"`
-	Command         string                     `json:"command,omitempty"`
-	Args            []string                   `json:"args,omitempty"`
-	Env             map[string]string          `json:"env,omitempty"`
-	URL             string                     `json:"url,omitempty"`
-	Headers         map[string]string          `json:"headers,omitempty"`
-	Enabled         bool                       `json:"enabled"`
-	CatalogSlug     string                     `json:"catalog_slug,omitempty"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Transport   string            `json:"transport"`
+	Command     string            `json:"command,omitempty"`
+	Args        []string          `json:"args,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	URL         string            `json:"url,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	Enabled     bool              `json:"enabled"`
+	CatalogSlug string            `json:"catalog_slug,omitempty"`
+	// ProtocolVersion is the operator's pin, "" meaning negotiate.
+	ProtocolVersion string                     `json:"protocol_version,omitempty"`
 	InstallStatus   string                     `json:"install_status"`
 	InstallResult   *mcpsettings.InstallResult `json:"install_result,omitempty"`
 	RequiredSecrets []string                   `json:"required_secrets,omitempty"`
 	HasSecretStored bool                       `json:"has_secret_stored"`
+	// OwnedBy says WHICH SCOPE supplies this definition — "conversation" or "project".
+	OwnedBy string `json:"owned_by"`
 }
 
 func compactServer(e mcpsettings.Entry) compactMCPServer {
@@ -56,20 +56,30 @@ func compactServer(e mcpsettings.Entry) compactMCPServer {
 		Headers:         e.Headers,
 		Enabled:         e.Enabled,
 		CatalogSlug:     e.CatalogSlug,
+		ProtocolVersion: e.ProtocolVersion,
 		InstallStatus:   e.InstallStatus,
 		InstallResult:   &res,
 		RequiredSecrets: e.RequiredSecrets,
 		HasSecretStored: e.HasSecretStored,
+		OwnedBy:         ownerOf(e),
 	}
 }
 
+// ownerOf names the scope that supplies an entry. Entry's owner columns are mutually exclusive by construction
+// (exactly one is set), so this is a total function rather than a guess.
+func ownerOf(e mcpsettings.Entry) string {
+	if strings.TrimSpace(e.ConversationID) != "" {
+		return "conversation"
+	}
+	if strings.TrimSpace(e.ProjectID) != "" {
+		return "project"
+	}
+	return "tenant"
+}
+
 func toolListMCPServers(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
-	// SCOPE-ADDRESSED, mirroring the MCPService RPC (MCPServerListRequest's
-	// project_id / conversation_id → Service.ListForScope): pass an owner to
-	// list that owner's definitions (project ∪ conversation), or neither to
-	// list every definition in the tenant. Before this the tool called
-	// ListForTenant unconditionally, so the Ask surface listed every owner's
-	// definitions — a drift from the platform surface it mirrors.
+	// SCOPE-ADDRESSED, mirroring the MCPService RPC (MCPServerListRequest's project_id /
+	// conversation_id → Service.ListForScope).
 	var params struct {
 		ProjectID      string `json:"project_id"`
 		ConversationID string `json:"conversation_id"`
@@ -79,7 +89,18 @@ func toolListMCPServers(ctx context.Context, pool *db.Pool, args json.RawMessage
 	}
 	svc := mcpSvc(pool, nil)
 	tenantID := tenant.FromContext(ctx)
-	list, err := svc.ListForScope(ctx, tenantID, params.ProjectID, params.ConversationID)
+
+	// A CONVERSATION'S SCOPE INCLUDES ITS PROJECT, AND LEAVING THAT OUT MADE THIS TOOL LIE.
+	projectID := strings.TrimSpace(params.ProjectID)
+	conversationID := strings.TrimSpace(params.ConversationID)
+	if conversationID != "" && projectID == "" {
+		if resolved, rerr := conversationProject(ctx, pool, tenantID, conversationID); rerr == nil {
+			projectID = resolved
+		}
+		// A failed lookup is NOT fatal: the conversation's own rows are still the right answer for the part of
+		// the scope that does not depend on the project.
+	}
+	list, err := svc.ListForScope(ctx, tenantID, projectID, conversationID)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +109,21 @@ func toolListMCPServers(ctx context.Context, pool *db.Pool, args json.RawMessage
 		out = append(out, compactServer(e))
 	}
 	return json.Marshal(newCompactList(out, "get_mcp_server"))
+}
+
+// conversationProject reads a conversation's project id, or "" when it has none. Best-effort by design: the
+// caller reports the conversation's own servers regardless.
+func conversationProject(ctx context.Context, pool *db.Pool, tenantID, conversationID string) (string, error) {
+	tx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	conv, err := db.GetConversation(ctx, tx.Tx, tenantID, conversationID)
+	if err != nil {
+		return "", err
+	}
+	return conv.ProjectID, nil
 }
 
 func toolGetMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
@@ -111,17 +147,18 @@ func toolGetMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 
 func toolCreateMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		Name           string            `json:"name"`
-		Transport      string            `json:"transport"`
-		Command        string            `json:"command"`
-		Args           []string          `json:"args"`
-		Env            map[string]string `json:"env"`
-		URL            string            `json:"url"`
-		Headers        map[string]string `json:"headers"`
-		Enabled        bool              `json:"enabled"`
-		CatalogSlug    string            `json:"catalog_slug"`
-		ProjectID      string            `json:"project_id"`
-		ConversationID string            `json:"conversation_id"`
+		Name            string            `json:"name"`
+		Transport       string            `json:"transport"`
+		Command         string            `json:"command"`
+		Args            []string          `json:"args"`
+		Env             map[string]string `json:"env"`
+		URL             string            `json:"url"`
+		Headers         map[string]string `json:"headers"`
+		Enabled         bool              `json:"enabled"`
+		CatalogSlug     string            `json:"catalog_slug"`
+		ProtocolVersion string            `json:"protocol_version"`
+		ProjectID       string            `json:"project_id"`
+		ConversationID  string            `json:"conversation_id"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -129,17 +166,18 @@ func toolCreateMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessag
 	svc := mcpSvc(pool, nil)
 	tenantID := tenant.FromContext(ctx)
 	e, err := svc.Create(ctx, tenantID, mcpsettings.CreateInput{
-		Name:           params.Name,
-		ProjectID:      params.ProjectID,
-		ConversationID: params.ConversationID,
-		Transport:      params.Transport,
-		Command:        params.Command,
-		Args:           params.Args,
-		Env:            params.Env,
-		URL:            params.URL,
-		Headers:        params.Headers,
-		Enabled:        params.Enabled,
-		CatalogSlug:    params.CatalogSlug,
+		Name:            params.Name,
+		ProjectID:       params.ProjectID,
+		ConversationID:  params.ConversationID,
+		Transport:       params.Transport,
+		Command:         params.Command,
+		Args:            params.Args,
+		Env:             params.Env,
+		URL:             params.URL,
+		Headers:         params.Headers,
+		Enabled:         params.Enabled,
+		CatalogSlug:     params.CatalogSlug,
+		ProtocolVersion: params.ProtocolVersion,
 	})
 	if err != nil {
 		return nil, err
@@ -149,18 +187,19 @@ func toolCreateMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessag
 
 func toolUpdateMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		ID             string            `json:"id"`
-		Transport      *string           `json:"transport"`
-		Command        *string           `json:"command"`
-		Args           []string          `json:"args"`
-		ReplaceArgs    *bool             `json:"replace_args"`
-		Env            map[string]string `json:"env"`
-		ReplaceEnv     *bool             `json:"replace_env"`
-		URL            *string           `json:"url"`
-		Headers        map[string]string `json:"headers"`
-		ReplaceHeaders *bool             `json:"replace_headers"`
-		Enabled        *bool             `json:"enabled"`
-		CatalogSlug    *string           `json:"catalog_slug"`
+		ID              string            `json:"id"`
+		Transport       *string           `json:"transport"`
+		Command         *string           `json:"command"`
+		Args            []string          `json:"args"`
+		ReplaceArgs     *bool             `json:"replace_args"`
+		Env             map[string]string `json:"env"`
+		ReplaceEnv      *bool             `json:"replace_env"`
+		URL             *string           `json:"url"`
+		Headers         map[string]string `json:"headers"`
+		ReplaceHeaders  *bool             `json:"replace_headers"`
+		Enabled         *bool             `json:"enabled"`
+		CatalogSlug     *string           `json:"catalog_slug"`
+		ProtocolVersion *string           `json:"protocol_version"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -189,6 +228,7 @@ func toolUpdateMCPServer(ctx context.Context, pool *db.Pool, args json.RawMessag
 	}
 	in.Enabled = params.Enabled
 	in.CatalogSlug = params.CatalogSlug
+	in.ProtocolVersion = params.ProtocolVersion
 	e, err := svc.Update(ctx, tenantID, in)
 	if err != nil {
 		return nil, err

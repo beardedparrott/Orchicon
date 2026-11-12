@@ -1,13 +1,6 @@
 package runtime
 
 // lifecycle_union_test.go — AC 1 / AC 2 at the WIRING level.
-//
-// Child 1's union_run_test.go proves the RESOLVER half (ResolveRunUnion walks
-// the run and unions every step version's own-set). This proves the SERVE
-// CONFIG half: buildCreateRequest — the single place the container's serve
-// config is built — resolves the RUN union through the same ScopeResolver and
-// hands it to the config builder. A per-execution resolution cannot produce
-// the union asserted here, which is the whole point of precomputing it.
 
 import (
 	"context"
@@ -26,11 +19,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
-// TestBuildCreateRequestBakesRunUnionForTwoSteps is the DB-gated proof that
-// the container's serve config is built from the RUN union: a 2-step run whose
-// steps pin DIFFERENT worker versions with DIFFERENT inline MCP own-sets must
-// yield a serve config carrying BOTH (AC 1), so a step-A execution receives a
-// server only step B defined (AC 2).
+// TestBuildCreateRequestBakesRunUnionForTwoSteps is the DB-gated proof that the container's serve
+// config is built from the RUN union.
 func TestBuildCreateRequestBakesRunUnionForTwoSteps(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {
@@ -145,11 +135,8 @@ func TestBuildCreateRequestBakesRunUnionForTwoSteps(t *testing.T) {
 		t.Fatalf("commit run: %v", err)
 	}
 
-	// THE ONE CONFIG BUILDER is captured here: the test asserts on the union
-	// the PLANE hands it, which is exactly what the real
-	// opencode.RuntimeServeConfig consumes. (A test file in package runtime
-	// cannot import internal/opencode — opencode imports runtime — so the
-	// seam is captured instead of the builder being called.)
+	// THE ONE CONFIG BUILDER is captured here: the test asserts on the union the PLANE hands it, which
+	// is exactly what the real opencode.RuntimeServeConfig consumes.
 	var got mcpclient.Resolution
 	var called bool
 	lc := NewLifecycle(nil, pool, slog.Default(),
@@ -205,10 +192,8 @@ func TestBuildCreateRequestBakesRunUnionForTwoSteps(t *testing.T) {
 	}
 }
 
-// TestRunServeConfigProviderIsDeterministicForARun proves AC 3 at the wiring
-// level: the provider takes ONLY a run id, and two calls for the same run
-// return the SAME config — the self-heal path can therefore never disagree
-// with the run-start one.
+// TestRunServeConfigProviderIsDeterministicForARun proves AC 3 at the wiring level: the provider
+// takes ONLY a run id, and two calls for the same run return the SAME config.
 func TestRunServeConfigProviderIsDeterministicForARun(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {

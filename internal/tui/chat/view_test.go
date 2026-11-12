@@ -16,12 +16,8 @@ func TestRenderItemsShapes(t *testing.T) {
 		{Kind: KindSession, SessionID: "ses_1", ServeURL: "http://x", Key: "s1"},
 	}
 	out := RenderItems(items, 80)
-	// Chat bubbles are shaded and aligned (user right, model left) rather than
-	// label-prefixed, so assert the BODY text plus the structural shapes.
-	//
-	// The reasoning entry asserts "reasoning" rather than the old "thinking": the block is now labelled
-	// for what it IS (the GUI's own word) instead of for the activity, which read as a status line. See
-	// reasoning_block_test.go for the states that header has to carry.
+	// Chat bubbles are shaded and aligned (user right, model left) rather than label-prefixed, so
+	// assert the BODY text plus the structural shapes.
 	for _, want := range []string{"hello there friend", "hi! doing the thing", "reasoning", "⚙ bash", "⬒ main.go", "error", "boom", "session ses_1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("render missing %q:\n%s", want, out)
@@ -48,9 +44,8 @@ func TestUserBubbleRightAlignedModelLeftAligned(t *testing.T) {
 	if user == "" || model == "" {
 		t.Fatalf("both bubbles must render:\n%s", out)
 	}
-	// Measure the TEXT's position, not the line's first glyph: the operator's
-	// band now carries a left-edge speaker label, so the first non-space column
-	// is the label rather than the message.
+	// Measure the TEXT's position, not the line's first glyph: the operator's band now carries a
+	// left-edge speaker label, so the first non-space column is the label rather than the message.
 	userAt, modelAt := strings.Index(user, "mine"), strings.Index(model, "theirs")
 	if userAt <= modelAt {
 		t.Fatalf("the operator's text must sit further right than the model's (user %d, model %d):\n%s", userAt, modelAt, out)
@@ -83,10 +78,8 @@ func TestRenderEmptyItems(t *testing.T) {
 	}
 }
 
-// The operator's ask: each message is a FULL-WIDTH background band (user
-// lighter, model darker) that runs from the left edge of the pane to its right
-// edge — not a tint on the glyphs. Every rendered line of a message must
-// therefore fill the whole pane.
+// The operator's ask: each message is a FULL-WIDTH background band (user lighter, model darker)
+// that runs from the left edge of the pane to its right edge — not a tint on the glyphs.
 func TestChatMessagesRenderFullWidthBands(t *testing.T) {
 	const pane = 60
 	out := RenderItems([]ChatItem{
@@ -113,18 +106,13 @@ func TestChatMessagesRenderFullWidthBands(t *testing.T) {
 		}
 	}
 	// The operator's TEXT sits at the right of its band, the model's at the left.
-	// Measured on the text itself: the operator's band carries a left-edge speaker
-	// label, so the line's first non-space column is the label, not the message.
 	ui := strings.Index(userLine, "mine")
 	mi := strings.Index(modelLine, "theirs")
 	if ui <= mi {
 		t.Fatalf("the operator's text must sit further right (user %d, model %d)\n%q", ui, mi, out)
 	}
 
-	// And the bands must be SEPARATED: blank rows between them, so the two
-	// speakers read as distinct blocks rather than one continuous fill
-	// (the operator's "there should be a visible gap between user messages and
-	// model messages").
+	// And the bands must be SEPARATED: blank rows between them.
 	var between int
 	seenUser := false
 	for _, l := range strings.Split(strings.TrimRight(out, "\n"), "\n") {

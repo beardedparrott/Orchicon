@@ -14,10 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
-// recordingRecoveryTrigger is a RecoveryTrigger stub that records the
-// deferred post-commit triggers reconcileRun fires instead of invoking the
-// real recovery engine. It lets us assert that a failure-then-loop_decision
-// pass actually staged a trigger (the AC#9 "not rolled back" property).
+// recordingRecoveryTrigger is a RecoveryTrigger stub that records the deferred post-commit triggers
+// reconcileRun fires instead of invoking the real recovery engine.
 type recordingRecoveryTrigger struct {
 	calls []recoveryTriggerCall
 }
@@ -89,10 +87,8 @@ func getActiveStepRunStatus(t *testing.T, pool *db.Pool, tenantID, runID, stepID
 	return status
 }
 
-// newReconcileRun seeds a project, workflow steps, a running work item, and
-// one workflow run, then returns the pool, reconciler, run, and ticket. The
-// provided seedStepRuns callback creates the per-step step runs inside the
-// same transaction as the run.
+// newReconcileRun seeds a project, workflow steps, a running work item, and one workflow run, then
+// returns the pool, reconciler, run, and ticket.
 func newReconcileRun(t *testing.T, trigger *recordingRecoveryTrigger, steps []workflow.StepWire, seedStepRuns func(t *testing.T, ttx *db.TenantTx, run db.WorkflowRunRow, ticket db.WorkItemRow)) (*db.Pool, *WorkflowReconciler, db.WorkflowRunRow, db.WorkItemRow) {
 	t.Helper()
 	pool := approvalTestPool(t)
@@ -131,21 +127,8 @@ func newReconcileRun(t *testing.T, trigger *recordingRecoveryTrigger, steps []wo
 	if err != nil {
 		t.Fatal(err)
 	}
-	// CreateWorkflowRun does not persist runtime_ready (DB-default false), so
-	// the mid-pass runtime-gate flip (workflow_reconciler.go:455) would bump
-	// run.Version without refreshing `run`, leaving the later terminal-fail
-	// update (line 1154) on a stale version → "db: not found". Headless tests
-	// are always-serve-ready, so set the flag and move one version ahead.
-	//
-	// worktree_status must ALSO be admitted here. CreateWorkflowRun leaves it
-	// at the DB default 'pending', and the in-place serialization guard
-	// (holdInPlaceDispatch, reconciler.go:470) holds EVERY step of a pending
-	// non-repo run until the WorktreeReconciler admits it — which this fixture
-	// never runs, so nothing would dispatch and the pass would end with the
-	// step still 'ready'. The sibling fixture (loop_iteration_wedge_test.go:95)
-	// documents exactly this. 'skipped' is the admission for a non-repo
-	// project (the fixture's project is not a git work tree), mirroring what
-	// the WorktreeReconciler writes for one.
+	// CreateWorkflowRun does not persist runtime_ready (DB-default false), so the mid-pass runtime-gate
+	// flip (workflow_reconciler.go:455) would bump run.Version without refreshing `run`.
 	run, err = db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, run.ID, run.Version, db.UpdateWorkflowRunFields{
 		RuntimeReady:   boolPtr(true),
 		WorktreeStatus: strPtr(domain.WorktreeSkipped),
@@ -163,9 +146,8 @@ func newReconcileRun(t *testing.T, trigger *recordingRecoveryTrigger, steps []wo
 	return pool, rc, run, ticket
 }
 
-// createRunningFailedStepRun seeds a running task step run whose linked
-// execution is terminal-failed (the poll-failure recovery path) with a
-// summarize_restart recovery config. Returns the failed execution id.
+// createRunningFailedStepRun seeds a running task step run whose linked execution is
+// terminal-failed (the poll-failure recovery path) with a summarize_restart recovery config.
 func createRunningFailedStepRun(t *testing.T, ttx *db.TenantTx, run db.WorkflowRunRow, ticket db.WorkItemRow, stepID string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -182,13 +164,8 @@ func createRunningFailedStepRun(t *testing.T, ttx *db.TenantTx, run db.WorkflowR
 	resB, _ := json.Marshal(map[string]any{
 		"_work_item_id": ticket.ID,
 		"_worker_id":    "w_se_devops_engineer",
-		// A NUMBER, not a string: the dispatch path writes
-		// step.WorkerVersion (an int), and the recovery-dispatch gate
-		// unmarshals this key into float64. A string here makes the WHOLE
-		// unmarshal fail, so the gate reads "no ticket recorded" and
-		// dispatches the recovering step COLD instead of holding it for the
-		// deferred recovery trigger — silently defeating the gate this
-		// fixture exists to exercise.
+		// A NUMBER, not a string: the dispatch path writes step.WorkerVersion (an int), and the
+		// recovery-dispatch gate unmarshals this key into float64.
 		"_worker_version": 1,
 	})
 	if _, err := db.CreateWorkflowStepRun(ctx, ttx.Tx, db.WorkflowStepRunRow{
@@ -222,11 +199,8 @@ func createPendingStepRun(t *testing.T, ttx *db.TenantTx, run db.WorkflowRunRow,
 	}
 }
 
-// TestFailureThenLoopDecisionRecoveryTriggerRace is AC#9 (a): a running
-// summarize_restart step whose execution fails must transition to
-// `recovering` with `_failed_execution_id` persisted, and stage a
-// post-commit `step_recovery` trigger within one reconcile pass — even when
-// a loop_decision sits downstream — and must NOT flood a loop iteration.
+// TestFailureThenLoopDecisionRecoveryTriggerRace is AC#9 (a): a running summarize_restart step
+// whose execution fails must transition to `recovering` with `_failed_execution_id` persisted.
 func TestFailureThenLoopDecisionRecoveryTriggerRace(t *testing.T) {
 	trigger := &recordingRecoveryTrigger{}
 	steps := []workflow.StepWire{
@@ -276,10 +250,7 @@ func TestFailureThenLoopDecisionRecoveryTriggerRace(t *testing.T) {
 	}
 }
 
-// TestMaxDAGPassesCommitsRecoveryNotRollback is AC#9 (b): at maxDAGPasses
-// the reconciler must COMMIT the pass's accumulated progress (the
-// `recovering` transition + staged recovery trigger) rather than silently
-// roll it back with a DAG-pass-limit error.
+// TestMaxDAGPassesCommitsRecoveryNotRollback is AC#9 (b).
 func TestMaxDAGPassesCommitsRecoveryNotRollback(t *testing.T) {
 	t.Setenv("ORCHICON_MAX_DAG_PASSES", "1")
 	trigger := &recordingRecoveryTrigger{}
@@ -296,9 +267,8 @@ func TestMaxDAGPassesCommitsRecoveryNotRollback(t *testing.T) {
 		createPendingStepRun(t, ttx, run, "qa", "QA", domain.StepKindTask, "")
 	})
 
-	// A maxDAGPasses abort must NOT return an error that rolls back the
-	// recovering write — the whole acceptance criterion is that reconcileRun
-	// cleanly commits the pass's progress.
+	// A maxDAGPasses abort must NOT return an error that rolls back the recovering write — the whole
+	// acceptance criterion is that reconcileRun cleanly commits the pass's progress.
 	if err := rc.reconcileRun(context.Background(), approvalTestTenant, run.ID); err != nil {
 		t.Fatalf("reconcileRun must not error on DAG pass limit (that would roll back recovery writes), got: %v", err)
 	}
@@ -314,9 +284,8 @@ func TestMaxDAGPassesCommitsRecoveryNotRollback(t *testing.T) {
 	}
 }
 
-// TestLoopDecisionUpstreamFailedNoIterationFlood is AC#9 (c): an
-// upstream-failed loop_decision creates at most one recovering/loop
-// iteration per failed-upstream reconcile scan and no cycles across scans.
+// TestLoopDecisionUpstreamFailedNoIterationFlood is AC#9 (c): an upstream-failed loop_decision
+// creates at most one recovering/loop iteration per failed-upstream reconcile scan and no cycles.
 func TestLoopDecisionUpstreamFailedNoIterationFlood(t *testing.T) {
 	trigger := &recordingRecoveryTrigger{}
 	steps := []workflow.StepWire{
@@ -338,14 +307,11 @@ func TestLoopDecisionUpstreamFailedNoIterationFlood(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		// Upstream PR reviewer terminal-failed with a bound ticket: this is
-		// what drives the loop_decision "upstream failed" branch. It must
-		// carry a WorkerExecutionID + _work_item_id so the branch can bind
-		// the recovery trigger to the failed execution.
+		// Upstream PR reviewer terminal-failed with a bound ticket: this is what drives the loop_decision
+		// "upstream failed" branch.
 		resB, _ := json.Marshal(map[string]any{
-			// See createRunningFailedStepRun: a NUMBER, matching what the
-			// dispatch path writes (step.WorkerVersion) and what the
-			// recovery-dispatch gate's float64 unmarshal requires.
+			// See createRunningFailedStepRun: a NUMBER, matching what the dispatch path writes
+			// (step.WorkerVersion) and what the recovery-dispatch gate's float64 unmarshal requires.
 			"_work_item_id": ticket.ID, "_worker_id": "w_se_devops_engineer", "_worker_version": 1,
 		})
 		if _, err := db.CreateWorkflowStepRun(ctx, ttx.Tx, db.WorkflowStepRunRow{

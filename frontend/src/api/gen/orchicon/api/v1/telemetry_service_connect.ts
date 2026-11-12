@@ -3,7 +3,7 @@
 //
 // Proxies tenant-scoped queries to Tempo/Loki/VictoriaMetrics so users explore
 // traces/metrics/logs without leaving the Orchicon shell (docs/10 §11:
-// seamless Grafana embedding — same origin, same visual language, inside
+// native telemetry panes — same origin, same visual language, inside
 // the Orchicon shell). The proxy enforces tenant isolation: the
 // tenant_id filter is injected from the request context, never trusted
 // from the client (AGENTS.md tenant isolation).
@@ -16,7 +16,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { GetDashboardRequest, GetDashboardResponse, QueryLogsRequest, QueryLogsResponse, QueryMetricsRequest, QueryMetricsResponse, QueryTracesRequest, QueryTracesResponse, StreamTelemetryRequest, StreamTelemetryResponse } from "./telemetry_service_pb.js";
+import { GetDashboardRequest, GetDashboardResponse, GetTelemetryReportRequest, GetTelemetryReportResponse, QueryLogsRequest, QueryLogsResponse, QueryMetricsRequest, QueryMetricsResponse, QueryTracesRequest, QueryTracesResponse, StreamTelemetryRequest, StreamTelemetryResponse } from "./telemetry_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -79,8 +79,8 @@ export const TelemetryService = {
      * GetDashboard returns an Orchicon-specific telemetry dashboard: a
      * curated set of metrics + summaries built custom on the Orchicon
      * domain model (docs/10 §11). Custom dashboards are domain-specific
-     * (cost, executions, recovery) — raw exploration uses the embedded
-     * Grafana UI.
+     * (cost, executions, recovery) — raw exploration uses the Telemetry
+     * page panes.
      *
      * @generated from rpc orchicon.api.v1.TelemetryService.GetDashboard
      */
@@ -88,6 +88,21 @@ export const TelemetryService = {
       name: "GetDashboard",
       I: GetDashboardRequest,
       O: GetDashboardResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetTelemetryReport returns a summarised window over the Orchicon
+     * domain model: token usage, cost, duration and failure rate per project
+     * or per workflow. Backed by Postgres (usage_records,
+     * worker_executions, workflow_runs) — the source of truth — so it keeps
+     * working when a telemetry store is down.
+     *
+     * @generated from rpc orchicon.api.v1.TelemetryService.GetTelemetryReport
+     */
+    getTelemetryReport: {
+      name: "GetTelemetryReport",
+      I: GetTelemetryReportRequest,
+      O: GetTelemetryReportResponse,
       kind: MethodKind.Unary,
     },
   }

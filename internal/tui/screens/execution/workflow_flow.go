@@ -1,28 +1,4 @@
 // workflow_flow.go — the workflow DAG rendered as a VERTICAL FLOW.
-//
-// Design decisions, and why they are not the GUI's:
-//
-//  1. NO CANVAS, and not as a compromise. `Step.position_x/position_y` are
-//     PRESENTATION-ONLY: no reconciler or service reads them (grep finds only the
-//     seeder). They exist so the GUI's react-flow canvas remembers where a box was
-//     dragged. Measured across the live tenant's 229 published steps: 95 sit at
-//     exactly (0,0), 100 carry no position at all, and the ones that do drift
-//     diagonally (SDLC (Human) spans x −74→732, y −328→989) because they record a
-//     DRAG, not a layout. So we COMPUTE the flow from `depends_on` — the only
-//     field the machine actually reads — and never try to reproduce the canvas.
-//
-//  2. VERTICAL, on the operator's instruction. A long chain is the common case
-//     (Force Workflow is 48 steps with ZERO joins), and a chain reads as a list,
-//     which is what a vertical flow degenerates to naturally.
-//
-//  3. BRANCHES ARE NAMED, NOT DRAWN. The real graph-ness lives in the decision
-//     steps' config (`success_branch` / `loop_branch` name other steps), not in
-//     `depends_on`, which is linear. A back-edge drawn in ASCII either crosses
-//     nodes or needs a routing channel; naming the target costs one line and is
-//     unambiguous — the operator's own sketch: `[Retry? Yes] --> [Build 1]`.
-//
-//  4. Max fan-in across the live tenant is 2, so a fan-in is one extra line, not
-//     a merge diagram.
 package execution
 
 import (
@@ -45,19 +21,14 @@ type flowStep struct {
 	WorkerVer int32  `json:"worker_version"`
 	GateRef   string `json:"gate_policy_ref"`
 	Config    string `json:"config"`
-	// DependsOn is decoded separately: the column is NOT type-consistent across
-	// rows (207 arrays, 12 nulls, 10 of something else in the live tenant), so a
-	// plain []string would fail the WHOLE unmarshal on one bad row.
+	// DependsOn is decoded separately: the column is NOT type-consistent across rows (207 arrays, 12
+	// nulls, 10 of something else in the live tenant).
 	DependsOn json.RawMessage `json:"depends_on"`
 
 	deps []string // parsed
 }
 
 // flowBranches are the named jumps a decision carries in its config JSON.
-//
-// They are read from the step's `config` because that is where they LIVE: the
-// real graph-ness of a workflow is not in depends_on (which is linear) but in a
-// decision naming the step it jumps to — including BACKWARDS, for a retry loop.
 type flowBranches struct {
 	Success  string `json:"success_branch"`
 	Loop     string `json:"loop_branch"`
@@ -132,10 +103,8 @@ func flowBranchOf(s flowStep) *flowBranches {
 	return &b
 }
 
-// flowOrder topologically orders the steps (Kahn), keeping the AUTHORED order
-// among steps that are simultaneously ready. A cycle (which the data should never
-// contain) appends the remainder rather than dropping it: a renderer must not
-// silently hide a node.
+// flowOrder topologically orders the steps (Kahn), keeping the AUTHORED order among steps that are
+// simultaneously ready.
 func flowOrder(steps []flowStep) []flowStep {
 	byID := make(map[string]flowStep, len(steps))
 	for _, s := range steps {
@@ -216,12 +185,8 @@ func renderWorkflowFlow(stepsJSON string, width int) string {
 	return body
 }
 
-// renderWorkflowFlowView renders the flow with a CURSOR marker on the selected
-// step, and returns the step→line map so an editor can keep that step on screen.
-//
-// The map is why the marker is part of the RENDERED text rather than an overlay:
-// the pane's viewport scrolls by line, so the offsets have to describe exactly
-// what was drawn. A cursor drawn outside the text could not be tracked.
+// renderWorkflowFlowView renders the flow with a CURSOR marker on the selected step, and returns
+// the step→line map so an editor can keep that step on screen.
 func renderWorkflowFlowView(stepsJSON string, width int, sel string) (string, map[string]int) {
 	steps := parseFlowSteps(stepsJSON)
 	if len(steps) == 0 {
@@ -240,9 +205,7 @@ func renderWorkflowFlowView(stepsJSON string, width int, sel string) (string, ma
 		}
 	}
 
-	// The cursor/selection marker: the step the operator is on. Passing it in
-	// keeps the marker in the RENDERED text, so the pane's line offsets (used for
-	// cursor-follow scrolling) stay correct.
+	// The cursor/selection marker: the step the operator is on.
 	cursorAt := -1
 	if sel != "" {
 		for i, s := range ordered {
@@ -281,9 +244,8 @@ func renderWorkflowFlowView(stepsJSON string, width int, sel string) (string, ma
 
 		// The dim meta line: kind, the worker/gate it names, and any fan-in.
 		meta := []string{strings.ToLower(s.Kind)}
-		// An approval's REVIEWER is operationally load-bearing — a human gate blocks
-		// the run until someone acts; an automated one does not — so it earns a
-		// place on the meta line when the config carries it.
+		// An approval's REVIEWER is operationally load-bearing — a human gate blocks the run until someone
+		// acts; an automated one does not.
 		if br := flowBranchOf(s); br != nil && br.Reviewer != "" {
 			meta = append(meta, "reviewer: "+br.Reviewer)
 		}
@@ -344,9 +306,8 @@ func branchTarget(nameOf map[string]string, id string) string {
 // flowStepCount is the parse count for the detail fields.
 func flowStepCount(stepsJSON string) int { return len(parseFlowSteps(stepsJSON)) }
 
-// pickFlowVersion chooses the version whose flow to show: the PUBLISHED one (what
-// a run would execute), else the newest by version number (a workflow that has
-// only ever been drafted).
+// pickFlowVersion chooses the version whose flow to show: the PUBLISHED one (what a run would
+// execute), else the newest by version number (a workflow that has only ever been drafted).
 func pickFlowVersion(versions []*apiv1.WorkflowVersion) *apiv1.WorkflowVersion {
 	var newest *apiv1.WorkflowVersion
 	for _, v := range versions {

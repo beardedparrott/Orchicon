@@ -1,25 +1,6 @@
 package tui
 
 // project_scope_reconnect_test.go — THE /connect RECONNECT SHAPE, end to end.
-//
-// The defect: opening `orch` in a directory covered by a project sets that project as the workspace, and
-// after a /connect reconnect it does not, for the rest of the session. The launch DIRECTORY was computed once
-// and then passed as "" on every shell after the first, so the reconnect's fresh App had launchDir == "" and
-// its rail default could never fire (railprojects.go applyLaunchDirScope returns immediately on an empty dir).
-//
-// THE FIX SEPARATES TWO CONCEPTS that were collapsed into one decision:
-//
-//   - THE LAUNCH DIRECTORY — a fact about the process (os.Getwd). Needed on EVERY shell, because the rail
-//     derives its workspace from it (applyLaunchDirScope). WithLaunchDir.
-//   - PROMPT ARMING — a first-shell-only rule, so a /connect continuation does not re-ask the project
-//     question (the nagging the prompt exists to avoid). WithLaunchPrompt.
-//
-// cmd/orch drives both through shellLaunchOptions(firstShell, launchDir): the directory always, the prompt
-// only when firstShell. Two shells IN SEQUENCE is exactly that: the first armed with the directory, the
-// second a continuation carrying the same directory with the prompt disarmed.
-//
-// The tests below pin that the second shell STILL applies the launch-directory scope — and that it still
-// does NOT nag.
 
 import (
 	"testing"
@@ -27,10 +8,6 @@ import (
 
 // THE REGRESSION (criterion 7): the second, continuation shell still scopes the rail to the launch
 // directory's project.
-//
-// THIS TEST FAILS WITHOUT THE FIX: on a build that passes "" as the directory on a continuation, the second
-// shell's projectScope is projectScopeAll (All projects) because launchDir is empty and the default is
-// unreachable.
 func TestAReconnectShellStillScopesToTheLaunchDirectory(t *testing.T) {
 	projects := &stubProjectList{
 		names:  []string{"Orchicon", "ai-tools"},
@@ -52,9 +29,7 @@ func TestAReconnectShellStillScopesToTheLaunchDirectory(t *testing.T) {
 			"fire when checkLaunchProject reports no need")
 	}
 
-	// SHELL 2 — the CONTINUATION a /connect reconnect produces: SAME directory, prompt NOT armed. A fresh App
-	// is exactly what runShell builds on the second pass round main's loop, and it starts at projectScopeAll
-	// with nothing remembered.
+	// SHELL 2 — the CONTINUATION a /connect reconnect produces: SAME directory, prompt NOT armed.
 	second := appWithProjectServiceOpts(t, projects,
 		WithLaunchDir("/home/me/projects/Orchicon"),
 	)

@@ -137,3 +137,36 @@ describe("requireAuth", () => {
     expect(useSessionStore.getState().session.authenticated).toBe(true);
   });
 });
+
+// The Manage Server allowlist entry (Manage Server feature, AC5 precondition).
+//
+// It is public BY NECESSITY: with no plane running there is no session to resolve, and
+// that is exactly when the page must render. Two things keep it from widening the
+// surface: the route redirects to /dashboard in a browser before it renders, and the
+// SERVER still enforces auth on every RPC.
+describe("the /manage-server allowlist entry", () => {
+  it("admits /manage-server so the offline state can render at all", async () => {
+    const fetchMock = vi.fn(async () => {
+      throw new Error("no session resolve on the manage-server page");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(requireAuth(ctx("/manage-server"))).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("did not widen: the allowlist is exactly the four known public paths", () => {
+    expect([...PUBLIC_PATHS].sort()).toEqual(["/auth/callback", "/login", "/manage-server", "/signup"]);
+  });
+
+  it("leaves a protected route protected", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 401 })));
+    let thrown: unknown;
+    try {
+      await requireAuth(ctx("/dashboard"));
+    } catch (e) {
+      thrown = e;
+    }
+    expect(isRedirect(thrown as Response)).toBe(true);
+  });
+});

@@ -1,13 +1,7 @@
 package db
 
-// ephemeral_scope.go — the ONE definition of the ephemeral visibility gate,
-// shared by every table that can hold a machine-managed transient record
-// (Ask Orchicon Quick Work): work_items, workers, workflows.
-//
-// The operator, on Quick Work: "I don't want these showing up inside the
-// console." Quick Work creates a worker, a workflow and a work item per job
-// and removes them when the job ends; while they exist they must be invisible
-// to humans. This file is the read half of that guarantee.
+// ephemeral_scope.go — the ONE definition of the ephemeral visibility gate, shared by every table
+// that can hold a machine-managed transient record (Ask Orchicon Quick Work): work_items, workers.
 
 // ephemeralPredicate returns the SQL predicate for an ephemeral scope,
 // unqualified — for queries over a single table with no alias.
@@ -34,13 +28,8 @@ func ephemeralPredicate(scope string) string {
 	return ephemeralPredicateOn("", scope)
 }
 
-// ephemeralPredicateOn is ephemeralPredicate for a query that joins and must
-// qualify the column, e.g. ephemeralPredicateOn("w", scope) → " AND NOT w.ephemeral".
-//
-// The qualifier is passed rather than inferred because "ephemeral" is a real
-// column on three tables: an unqualified predicate in a join over workers and
-// worker_versions would be ambiguous, and Postgres would reject it — but only
-// when the query runs, which is the expensive time to find out.
+// ephemeralPredicateOn is ephemeralPredicate for a query that joins and must qualify the column,
+// e.g. ephemeralPredicateOn("w", scope) → " AND NOT w.ephemeral".
 func ephemeralPredicateOn(qualifier, scope string) string {
 	col := "ephemeral"
 	if qualifier != "" {

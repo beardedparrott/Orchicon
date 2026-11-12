@@ -16,10 +16,7 @@ type hintScreen struct {
 	hint string
 }
 
-// The operator: "The shortcut guidance should be context driven ... Depending
-// on what page you are on, the text below in the text box should show a list of
-// all shortcut commands depending on what page you are on. Also it is NOT
-// showing the ctrl+g shortcut advice that should be on every page."
+// The operator: "The shortcut guidance should be context driven ...
 func TestComposerHintFollowsTheActiveScreen(t *testing.T) {
 	m := newTestApp()
 	m.RegisterScreen(TabWork, &hintScreen{stubScreen: stubScreen{id: "work"}, hint: "n new · e edit · O collapse all"})

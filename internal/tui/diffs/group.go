@@ -4,11 +4,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
-// GroupByFile flattens a chronologically-ordered edit list into per-file
-// groups. Adds/Dels are tallies of "+"/"-" lines across the file's LATEST
-// unified_diff; lastTool/lastAt come from the newest edit. `Kind` is the
-// newest edit's kind (create/modify/delete). Mirrors sideBySide.ts
-// groupByFile.
+// GroupByFile flattens a chronologically-ordered edit list into per-file groups.
 func GroupByFile(edits []*apiv1.FileEdit) []FileGroup {
 	order := []string{}
 	byPath := map[string]*FileGroup{}

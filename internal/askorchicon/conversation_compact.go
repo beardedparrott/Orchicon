@@ -1,13 +1,7 @@
 package askorchicon
 
-// conversation_compact.go — the CompactConversation RPC: the escape hatch for a
-// conversation whose accumulated context has outgrown its model's window.
-//
-// Scope note: this is the SERVER half only. It resolves the conversation's
-// adapter, delegates to that adapter's scheduler.ChatCompactor capability, and
-// audits the outcome. It deliberately does not decide WHEN to compact — the
-// proactive pressure gate and the reactive context-limit recovery are separate
-// callers of this same path, and the manual trigger is /compact in the clients.
+// conversation_compact.go — the CompactConversation RPC: the escape hatch for a conversation whose
+// accumulated context has outgrown its model's window.
 
 import (
 	"context"
@@ -35,68 +29,59 @@ func (s *Service) CompactConversation(ctx context.Context, req *connect.Request[
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("conversation_id must not be empty"))
 	}
 
-	// Refuse while a turn is in flight. Compaction REWRITES the history the
-	// running turn reads from and persists to, so doing it underneath a live
-	// turn would race the collector (the native path would clobber its append).
-	// Callers that want to compact mid-turn interject first — abort, then
-	// compact — rather than compacting under a live turn.
+	// Refuse while a turn is in flight.
 	if _, running := s.turns.get(req.Msg.ConversationId); running {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("a turn is in flight — stop it or wait for it to finish before compacting"))
 	}
 
-	conv, err := s.loadConversationRow(ctx, tenantID, req.Msg.ConversationId)
+	return s.compactConversationForTurn(ctx, tenantID, req.Msg.ConversationId, req.Msg.Reason)
+}
+
+// compactConversationForTurn is the shared compaction core: the manual RPC above and the reactive
+// context-limit recovery (chatlimit.go) both run THROUGH it.
+func (s *Service) compactConversationForTurn(ctx context.Context, tenantID, convID, reason string) (*connect.Response[apiv1.CompactConversationResponse], error) {
+	conv, err := s.loadConversationRow(ctx, tenantID, convID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Resolve the model the SAME way a TURN does, via modelRefOrFallback: a
-	// conversation created without its own model_ref runs on the tenant's
-	// DefaultAskOrchiconModel, and compaction must resolve the SAME adapter that
-	// answered the turns. Reading conv.ModelRef raw was an inconsistent chain:
-	// the turn fell back, compaction did not, so compacting any conversation with
-	// an empty model_ref failed outright with "no adapter kind specified (empty
-	// model_ref adapter segment) — cannot resolve a bridge" — precisely when the
-	// operator needs compaction most (a long conversation about to overflow).
+	// Resolve the model the SAME way a TURN does, via modelRefOrFallback: a conversation created
+	// without its own model_ref runs on the tenant's DefaultAskOrchiconModel.
 	modelRef := s.modelRefOrFallback(ctx, tenantID, conv.ModelRef)
 	kind := adapter.AdapterKind(modelRef)
-	client, err := s.resolveChatClient(req.Msg.ConversationId, modelRef)
+	client, err := s.resolveChatClient(convID, modelRef)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	}
 	compactor, ok := client.(scheduler.ChatCompactor)
 	if !ok {
-		// The capability is OPTIONAL by design (mirroring
-		// SendTurnMessageWithAttachments): an adapter that cannot compact says
-		// so, actionably, instead of appearing to succeed.
+		// The capability is OPTIONAL by design (mirroring SendTurnMessageWithAttachments): an adapter that
+		// cannot compact says so, actionably, instead of appearing to succeed.
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			fmt.Errorf("adapter kind %q does not support conversation compaction", kind))
 	}
 
 	res, err := compactor.CompactConversationSession(ctx, scheduler.CompactConversationOpts{
-		ConversationID: req.Msg.ConversationId,
+		ConversationID: convID,
 		SessionID:      conv.SessionID,
 		ModelRef:       modelRef,
-		Reason:         req.Msg.Reason,
+		Reason:         reason,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	s.auditCompaction(ctx, tenantID, req.Msg.ConversationId, req.Msg.Reason, res)
+	s.auditCompaction(ctx, tenantID, convID, reason, res)
 
-	// AND LEAVE A MARK IN THE TRANSCRIPT. The audit trail answers "what ran"; this
-	// answers the operator's actual question — "why does the assistant no longer
-	// remember what we said earlier" — in the place they are looking when they ask
-	// it. Advisory: the compaction has already happened, so a failure to record it is
-	// logged and never fails the RPC.
-	reason := req.Msg.Reason
-	if strings.TrimSpace(reason) == "" {
+	// AND LEAVE A MARK IN THE TRANSCRIPT.
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
 		reason = "manual"
 	}
 	if res.Compacted {
 		if err := s.RecordCompactionNotice(ctx, scheduler.AskCompactNotice{
-			ConversationID: req.Msg.ConversationId,
+			ConversationID: convID,
 			SessionID:      conv.SessionID,
 			Reason:         reason,
 			Detail:         res.Detail,
@@ -105,14 +90,14 @@ func (s *Service) CompactConversation(ctx context.Context, req *connect.Request[
 			TokensAfter:    res.TokensAfter,
 		}); err != nil {
 			s.log.Warn("ask orchicon: compaction notice was not recorded — the compaction stands, but the transcript will not show it",
-				"conversation", req.Msg.ConversationId, "error", err)
+				"conversation", convID, "error", err)
 		}
 	}
 
 	s.log.Info("ask orchicon: conversation compaction",
-		"conversation", req.Msg.ConversationId,
+		"conversation", convID,
 		"adapter", kind,
-		"reason", req.Msg.Reason,
+		"reason", reason,
 		"compacted", res.Compacted,
 		"detail", res.Detail)
 
@@ -142,20 +127,8 @@ func (s *Service) loadConversationRow(ctx context.Context, tenantID, convID stri
 	return conv, nil
 }
 
-// RecordCompactionNotice persists a durable, in-transcript record that this
-// conversation's context was collapsed — so a loss that removes most of what was
-// said is VISIBLE where the work is, rather than only in a server log.
-//
-// It is exported because the native adapter reports its AUTOMATIC compactions
-// through it (SetAskCompactNotice). The proactive pressure gate runs inside the
-// bridge, which has no database handle, so before this a conversation that turned
-// 2,343 messages into a summary left no trace the operator would ever see — and
-// "long conversations lose context" was the only place it surfaced.
-//
-// ADVISORY BY CONTRACT. The compaction has already happened and cannot be undone, so
-// callers log a failure and carry on: a notice that could not be written must never
-// fail a turn. The row is written in its own transaction for the same reason — it
-// must not be able to roll back anything real.
+// RecordCompactionNotice persists a durable, in-transcript record that this conversation's context
+// was collapsed — so a loss that removes most of what was said is VISIBLE where the work.
 func (s *Service) RecordCompactionNotice(ctx context.Context, n scheduler.AskCompactNotice) error {
 	if s.pool == nil || n.ConversationID == "" {
 		return nil
@@ -172,10 +145,8 @@ func (s *Service) RecordCompactionNotice(ctx context.Context, n scheduler.AskCom
 		ID:             db.NewID(),
 		TenantID:       tenantID,
 		ConversationID: n.ConversationID,
-		// The schema's `system` role, which is exactly what this is: something the
-		// PLATFORM said about the conversation, not something either party said.
-		// Both clients render it as a notice rather than as the model's words, and
-		// the seed digest skips it (see buildSystemPrompt).
+		// The schema's `system` role, which is exactly what this is: something the PLATFORM said about the
+		// conversation, not something either party said.
 		Role:        "system",
 		Content:     compactionNoticeContent(n),
 		ToolCalls:   []byte("[]"),
@@ -199,11 +170,6 @@ func (s *Service) RecordCompactionNotice(ctx context.Context, n scheduler.AskCom
 }
 
 // compactionNoticeContent is the durable, operator-facing text of the marker.
-//
-// It deliberately says WHAT WAS LOST and WHERE THE ORIGINAL WENT. A marker reading
-// only "context compacted" would leave the operator exactly where they already
-// were — unable to tell whether the thing they need is still there — which is the
-// silence this whole path exists to end.
 func compactionNoticeContent(n scheduler.AskCompactNotice) string {
 	var b strings.Builder
 	b.WriteString("Context compacted to keep this conversation inside the model's window. ")
@@ -235,11 +201,7 @@ func compactionNoticeContent(n scheduler.AskCompactNotice) string {
 	return b.String()
 }
 
-// auditCompaction records the compaction in the actor-based trail. Best-effort
-// and in its OWN transaction: the compaction has already been applied by the
-// time this runs (it rewrites adapter state, not DB rows), so an audit failure
-// must not report the -- possibly successful -- compaction as failed. It is
-// logged loudly instead.
+// auditCompaction records the compaction in the actor-based trail.
 func (s *Service) auditCompaction(ctx context.Context, tenantID, convID, reason string, res scheduler.ChatCompaction) {
 	if s.pool == nil {
 		return

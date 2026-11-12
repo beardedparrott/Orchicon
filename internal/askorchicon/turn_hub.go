@@ -7,23 +7,6 @@ import (
 )
 
 // turn_hub.go — per-conversation live-turn broadcast hub for Ask Orchicon.
-//
-// The dispatch stream (ChatStream / InterjectConversationTurn) owns a
-// private streamEventCh fed by the detached collector's onStreamEvent. When
-// that socket drops mid-reply, the collector keeps running server-side but
-// nothing re-dials the live stream — bubbles freeze until the ListMessages
-// poll resolves. The hub fixes the liveness half: every response published
-// to the dispatch channel is ALSO published to the conversation's hub, and
-// WatchTurnStream attaches a NEW subscriber to the in-flight turn's hub
-// without dispatching — live TextChunk/ReasoningChunk/Heartbeat chunks
-// resume appending to the SAME bubbles.
-//
-// Lifecycle: startConversationTurn creates (or replaces, on supersede) the
-// hub entry alongside the turn registry entry; the collector removes it on
-// finalize (success or error) so a watch on a finished turn gets NotFound
-// and falls back to the poll. Buffering is bounded (64, matching the
-// dispatch channel); a slow watcher drops events rather than parking the
-// collector — completion still resolves via the poll.
 
 // turnHub is one conversation's broadcast point.
 type turnHub struct {
@@ -42,11 +25,8 @@ func newTurnHubRegistry() *turnHubRegistry {
 	return &turnHubRegistry{hubs: make(map[string]*turnHub)}
 }
 
-// create replaces any existing hub for convID with a fresh one (a supersede
-// owns the conversation now — stale watchers drain on the closed channel
-// and fall back to the poll) and returns it. Nil-receiver safe: Services
-// built without New() (unit tests) get no hub rather than a panic — the
-// poll remains the completion path.
+// create replaces any existing hub for convID with a fresh one (a supersede owns the conversation
+// now — stale watchers drain on the closed channel and fall back to the poll) and returns it.
 func (r *turnHubRegistry) create(convID string) *turnHub {
 	if r == nil {
 		return nil
@@ -104,9 +84,8 @@ func (h *turnHub) publish(resp *apiv1.ChatStreamResponse) {
 	}
 }
 
-// subscribe attaches a watcher; the returned channel closes when the hub
-// does (turn finalized or superseded). The caller MUST call unsubscribe
-// (or rely on close) to avoid leaking the entry.
+// subscribe attaches a watcher; the returned channel closes when the hub does (turn finalized or
+// superseded). The caller MUST call unsubscribe (or rely on close) to avoid leaking the entry.
 func (h *turnHub) subscribe() (uint64, <-chan *apiv1.ChatStreamResponse) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

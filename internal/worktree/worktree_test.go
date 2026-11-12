@@ -75,9 +75,8 @@ func TestBatchReadRejectsTraversal(t *testing.T) {
 
 func TestBatchReadAllowsTempDir(t *testing.T) {
 	base := t.TempDir()
-	// The sanctioned scratch dir /tmp/orchicon (guard.ScratchDir /
-	// opencode.ScratchDir) is the one writable area outside the worktree the
-	// tools may read AND write; this replaces the old broad os.TempDir() allow.
+	// The sanctioned scratch dir /tmp/orchicon (guard.ScratchDir / opencode.ScratchDir) is the one
+	// writable area outside the worktree the tools may read AND write.
 	if err := os.MkdirAll(DefaultScratchDir, 0o755); err != nil {
 		t.Skipf("cannot create scratch dir %s: %v", DefaultScratchDir, err)
 	}
@@ -117,11 +116,8 @@ func TestBatchGrepRejectsTraversal(t *testing.T) {
 	}
 }
 
-// TestBatchGrepRecursesIntoSubtree pins the root-cause fix for
-// "batch_grep: no files to search (no matching files for paths: internal)" —
-// a directory path must search its WHOLE subtree, not just its immediate
-// files (internal/ and proto/ contain only subdirectories, so the old
-// immediate-files-only expansion found nothing).
+// TestBatchGrepRecursesIntoSubtree pins the root-cause fix for "batch_grep: no files to search (no
+// matching files for paths: internal)" — a directory path must search its WHOLE subtree.
 func TestBatchGrepRecursesIntoSubtree(t *testing.T) {
 	base := t.TempDir()
 	writeFile(t, base, "internal/x/a.go", "package x\n")
@@ -151,9 +147,8 @@ func TestBatchReadRecursesIntoSubtree(t *testing.T) {
 	}
 }
 
-// TestBatchGrepPrunesNoiseDirs verifies the recursive walk skips VCS
-// metadata and vendored/build output — a whole-tree search must never
-// return matches from .git or node_modules.
+// TestBatchGrepPrunesNoiseDirs verifies the recursive walk skips VCS metadata and vendored/build
+// output — a whole-tree search must never return matches from .git or node_modules.
 func TestBatchGrepPrunesNoiseDirs(t *testing.T) {
 	base := t.TempDir()
 	writeFile(t, base, ".git/config", "needle in git\n")
@@ -291,10 +286,8 @@ func TestBatchReadParallelismOneIsSerial(t *testing.T) {
 	}
 }
 
-// TestBatchReadProjectRootRunFile verifies AC1: a read may resolve the
-// project root (run-state .orchicon/<run>/ files and architecture-notes),
-// which live at the project root — a sibling of the run worktree. Both a
-// `..`-relative path and an absolute project-root path must work.
+// TestBatchReadProjectRootRunFile verifies AC1: a read may resolve the project root (run-state
+// .orchicon/<run>/ files and architecture-notes), which live at the project root.
 func TestBatchReadProjectRootRunFile(t *testing.T) {
 	proj := t.TempDir()
 	run := "run-123"
@@ -355,9 +348,8 @@ func TestBatchWriteScratchDir(t *testing.T) {
 	}
 }
 
-// TestBatchWriteProjectRootStillBlocked verifies AC2's counter: a WRITE never
-// gets the ProjectRoot scope, so `..` that escapes toward the project root is
-// still rejected (batch_write must not land in the main checkout).
+// TestBatchWriteProjectRootStillBlocked verifies AC2's counter: a WRITE never gets the ProjectRoot
+// scope, so `..` that escapes toward the project root is still rejected (batch_write must not land.
 func TestBatchWriteProjectRootStillBlocked(t *testing.T) {
 	proj := t.TempDir()
 	wt := filepath.Join(proj, ".orchicon-worktrees", "run")
@@ -370,9 +362,8 @@ func TestBatchWriteProjectRootStillBlocked(t *testing.T) {
 	}
 }
 
-// TestBatchWriteLargePayload verifies AC5: a single batch_write whose content
-// is well over 64 KiB succeeds and persists (the bufio.Scanner token cap
-// previously made the whole MCP server exit).
+// TestBatchWriteLargePayload verifies AC5: a single batch_write whose content is well over 64 KiB
+// succeeds and persists (the bufio.Scanner token cap previously made the whole MCP server exit).
 func TestBatchWriteLargePayload(t *testing.T) {
 	base := t.TempDir()
 	b := BaseFor(base)

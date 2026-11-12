@@ -6,19 +6,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/orchicon"
 )
 
-// TestConsentClassificationPartitionsTheHostSuite is the guard that makes the
-// native consent gate FAIL-CLOSED across a package boundary.
-//
-// The gate used to be a denylist — write/edit/batch_write/bash — so a mutating
-// host-suite tool added later would have run with NO consent at all, silently.
-// It is now derived from an explicit classification in the adapter (which cannot
-// import this package: the arrow points the other way), and this test is what
-// closes the loop: every host-suite tool must be classified as read-only or
-// mutating, deliberately.
-//
-// A new tool in hostSuiteToolNames therefore BREAKS this test until someone
-// decides which it is — which is the whole point. Silently ungated is the failure
-// this exists to prevent.
+// TestConsentClassificationPartitionsTheHostSuite is the guard that makes the native consent gate
+// FAIL-CLOSED across a package boundary.
 func TestConsentClassificationPartitionsTheHostSuite(t *testing.T) {
 	readOnly := map[string]bool{}
 	for _, n := range orchicon.ConsentReadOnlyTools {

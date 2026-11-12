@@ -1,31 +1,5 @@
-// Package tui — orch_pty_smoke_test.go — the REAL-PTY smoke harness
-// (Phase 2a foundation for the Phase-2c verification gate).
-//
-// Rendered-string tests (shell_acceptance_test.go and friends) prove the
-// layout MATH, but they can never prove what an operator's terminal
-// actually shows: this harness launches the REAL `bin/orch` binary inside
-// a real pty at two sizes (80×24, 120×40) and asserts, from the live
-// process's byte stream:
-//
-//  1. LAUNCH — the program starts and paints (alt-screen enter + frames).
-//  2. FULL-SCREEN TAKEOVER — the live binary enters alt-screen and paints
-//     full-viewport frames (the shell's fillView/normalizeBlock cover the
-//     viewport; the render tests assert every row/col is covered, this
-//     test asserts the live process actually does it).
-//  3. COMPOSER FOCUSED — the composer prompt (❯) and its placeholder are
-//     on screen; typing characters shows them in the composer line
-//     immediately (no ctrl+g needed — operator finding 3).
-//
-// HARNESS DESIGN (recovered-session bug fix): the pty has exactly ONE
-// reader goroutine for the whole session lifetime. The prior design spun
-// up a NEW reader per wait phase; pty reads BLOCK (deadlines don't apply
-// to tty fds on all kernels), so dead readers kept racing live ones for
-// bytes — later phases saw 0-byte reads (the echo assertion starved) or
-// had bytes stolen mid-assertion. All reads now accumulate into one
-// mutex-guarded buffer; a wait phase just sleeps and snapshots it. The
-// reader also answers termenv's startup capability queries (OSC 11
-// background color + DSR 6n cursor position) — a real terminal would
-// reply; without a reply orch blocks before bubbletea ever paints.
+// Package tui — orch_pty_smoke_test.go — the REAL-PTY smoke harness (Phase 2a foundation for the
+// Phase-2c verification gate).
 package tui
 
 import (
@@ -40,14 +14,8 @@ import (
 	"github.com/creack/pty"
 )
 
-// skipInteractivePTY skips real-pty tests when running under a human's
-// interactive terminal: `go test` inherits make's terminal there, and a
-// real-pty spawn of the live TUI binary (alt-screen + mouse-cell-motion
-// reporting) hijacks the operator's terminal for the test's lifetime —
-// mouse capture, scrollback trashing, orphaned full-screen frames on a
-// crash. CI is unaffected (no controlling terminal → the gate stays on);
-// ORCH_PTY_SMOKE=1 opts a human back in when they actually want the
-// live-pty verification.
+// skipInteractivePTY skips real-pty tests when running under a human's interactive terminal: `go
+// test` inherits make's terminal there.
 func skipInteractivePTY(t *testing.T) {
 	t.Helper()
 	if os.Getenv("ORCH_PTY_SMOKE") == "1" {
@@ -59,13 +27,6 @@ func skipInteractivePTY(t *testing.T) {
 }
 
 // orchBinPath resolves (building if needed) the real bin/orch binary.
-// Freshness guard: a pre-existing bin/orch is only reused when it is NOT
-// older than the current HEAD commit — a stale build (old footer text,
-// old features) otherwise makes the live assertions fail against the
-// WRONG binary and blocks `make full-rebuild` (which builds artifacts
-// only AFTER `make test`) with phantom regressions. The check is cheap
-// (one git call); when HEAD is unresolvable (no git, shallow CI) the
-// existing binary is trusted rather than rebuilding every run.
 func orchBinPath(t *testing.T) string {
 	t.Helper()
 	// The test runs from internal/tui; the module root is two levels up.
@@ -116,9 +77,8 @@ type ptySession struct {
 	cprAnswered bool // DSR 6n cursor-position query answered
 }
 
-// startOrchPty launches orch at the given size, env-isolated (a config in
-// HOME is pointed at the test's own dir; no live plane is contacted at
-// launch — Ping failures degrade the footer, never block the TUI).
+// startOrchPty launches orch at the given size, env-isolated (a config in HOME is pointed at the
+// test's own dir; no live plane is contacted at launch — Ping failures degrade the footer.
 func startOrchPty(t *testing.T, bin string, cols, rows int) *ptySession {
 	t.Helper()
 	cmd := exec.Command(bin)
@@ -137,9 +97,8 @@ func startOrchPty(t *testing.T, bin string, cols, rows int) *ptySession {
 	return s
 }
 
-// readLoop is the session's SINGLE reader: it accumulates every painted
-// byte into buf and answers terminal capability queries as they appear.
-// It exits only when the pty is closed (Read errors).
+// readLoop is the session's SINGLE reader: it accumulates every painted byte into buf and answers
+// terminal capability queries as they appear.
 func (s *ptySession) readLoop() {
 	buf := make([]byte, 65536)
 	for {
@@ -189,9 +148,8 @@ func (s *ptySession) close() {
 	_ = s.tty.Close()
 }
 
-// assertPTYTakeover runs the shared assertions for one terminal size:
-// launch → full-screen takeover (alt-screen + painted frames) → composer
-// focused (prompt visible, typed chars land without ctrl+g).
+// assertPTYTakeover runs the shared assertions for one terminal size: launch → full-screen takeover
+// (alt-screen + painted frames) → composer focused (prompt visible.
 func assertPTYTakeover(t *testing.T, cols, rows int) {
 	t.Helper()
 	bin := orchBinPath(t)
@@ -210,30 +168,18 @@ func assertPTYTakeover(t *testing.T, cols, rows int) {
 	if !strings.Contains(out, "❯") {
 		t.Fatalf("%dx%d: composer prompt (❯) never painted (%d bytes)", cols, rows, len(out))
 	}
-	// The footer paints on every screen: the focus hint chip proves the
-	// one-line footer rendered at the bottom of the budgeted viewport
-	// ("— esc/ctrl+g content" = composer is the launch focus). The hint
-	// may be ANSI-truncated on a narrow terminal ("esc/ctrl+g con" at
-	// 80×24) — the chip itself must never drop below the connection state
-	// in the footer's priority order.
+	// The footer paints on every screen: the focus hint chip proves the one-line footer rendered at the
+	// bottom of the budgeted viewport ("— esc/ctrl+g content" = composer is the launch focus).
 	if !strings.Contains(out, "esc/ctrl+g content") && !strings.Contains(out, "esc/ctrl+g con") && !strings.Contains(out, "ctrl+g composer") {
 		t.Fatalf("%dx%d: footer focus hint never painted (%d bytes)", cols, rows, len(out))
 	}
 
-	// 2. FULL-SCREEN TAKEOVER on the live process: bubbletea's alt-screen
-	// renderer repaints the whole viewport; the shell's fillView pads every
-	// row to the terminal width through ScreenBg. A wide run of styled
-	// spaces (the opaque background fill) is the takeover's signature; the
-	// dock sits flush above the footer only when the viewport is budgeted.
+	// 2.
 	if !strings.Contains(out, "\x1b[?1002h") && !strings.Contains(out, "\x1b[?1006h") {
 		t.Logf("%dx%d: mouse-motion reporting not on (mouse mode bytes missing)", cols, rows)
 	}
 
-	// 3. COMPOSER FOCUSED: typing characters shows them immediately — no
-	// ctrl+g first (operator finding 3). Send "xy"; the composer renders
-	// the value in the input line (the placeholder is replaced), so "xy"
-	// appearing in the painted stream proves the keystrokes landed in a
-	// focused composer.
+	// 3.
 	_, _ = s.tty.WriteString("xy")
 	joined := s.readFor(3 * time.Second)
 	if !strings.Contains(joined, "xy") {
@@ -241,16 +187,8 @@ func assertPTYTakeover(t *testing.T, cols, rows int) {
 	}
 }
 
-// TestPTYSmokeLaunchFullTakeoverComposerFocused is the standing smoke
-// gate: bin/orch in a real pty at 80×24 and 120×40 — launch, full-screen
-// takeover, composer focused by default.
-//
-// The gate is OPT-IN for humans: a real pty spawn of the live binary
-// inside `go test` hijacks the developer's own terminal (alt-screen +
-// mouse-cell-motion capture) when `make test` runs from an interactive
-// shell — stdin is a TTY there, so the skip guard fires and the pty
-// never launches. CI runs non-interactively (no TTY) and keeps the gate;
-// set ORCH_PTY_SMOKE=1 to run it by hand from a terminal.
+// TestPTYSmokeLaunchFullTakeoverComposerFocused is the standing smoke gate: bin/orch in a real pty
+// at 80×24 and 120×40 — launch, full-screen takeover, composer focused by default.
 func TestPTYSmokeLaunchFullTakeoverComposerFocused(t *testing.T) {
 	skipInteractivePTY(t)
 	if testing.Short() {
@@ -264,13 +202,8 @@ func TestPTYSmokeLaunchFullTakeoverComposerFocused(t *testing.T) {
 	}
 }
 
-// countUnpaintedGaps scans a painted stream for cells the shell left
-// UNPAINTED after a style reset: `\x1b[0m` followed by printable content
-// or spaces that are not immediately re-opened by a background SGR. Every
-// such cell renders with the TERMINAL's own background — the bleed-through
-// the operator's screenshots show (matrix scrollback visible through the
-// "opaque" shell). This is the live-binary regression test for the
-// padScreenLine fix (bgOpaque re-asserts the background after resets).
+// countUnpaintedGaps scans a painted stream for cells the shell left UNPAINTED after a style reset:
+// `\x1b[0m` followed by printable content or spaces that are not immediately re-opened.
 func countUnpaintedGaps(painted string) int {
 	gaps := 0
 	rest := painted
@@ -280,10 +213,7 @@ func countUnpaintedGaps(painted string) int {
 			return gaps
 		}
 		rest = rest[i+len("\x1b[0m"):]
-		// Walk cells after the reset. A gap = printable/space cells that
-		// appear before any SGR re-paints (or the next reset). Escapes
-		// that are NOT SGR (cursor moves, alt-screen switches) don't
-		// repaint and don't count as cells.
+		// Walk cells after the reset.
 		j := 0
 		gapHere := 0
 		for j < len(rest) {
@@ -317,14 +247,8 @@ func countUnpaintedGaps(painted string) int {
 	}
 }
 
-// TestPTYNoUnpaintedGaps is the live-binary opacity gate: bin/orch in a
-// real pty paints its first frames and the stream must contain ZERO
-// unpainted cell runs after any style reset. This is the regression test
-// for the operator's "terminal bleeds through the shell" screenshots
-// (2026-09-10): inner styles' \x1b[0m resets killed the background for
-// everything after them — including fillView's padding — so the frame was
-// riddled with terminal-background holes. padScreenLine now re-asserts
-// the background after every reset (bgOpaque).
+// TestPTYNoUnpaintedGaps is the live-binary opacity gate: bin/orch in a real pty paints its first
+// frames and the stream must contain ZERO unpainted cell runs after any style reset.
 func TestPTYNoUnpaintedGaps(t *testing.T) {
 	skipInteractivePTY(t)
 	if testing.Short() {
@@ -333,9 +257,8 @@ func TestPTYNoUnpaintedGaps(t *testing.T) {
 	bin := orchBinPath(t)
 	s := startOrchPty(t, bin, 120, 40)
 	defer s.close()
-	// Let several frames paint (initial + capability handshake + first
-	// live repaint) and the composer receive typing (an inner-styled input
-	// row — exactly the shape that used to leak).
+	// Let several frames paint (initial + capability handshake + first live repaint) and the composer
+	// receive typing (an inner-styled input row — exactly the shape that used to leak).
 	time.Sleep(2 * time.Second)
 	_, _ = s.tty.WriteString("orch opacity probe")
 	out := s.readFor(4 * time.Second)
@@ -347,14 +270,8 @@ func TestPTYNoUnpaintedGaps(t *testing.T) {
 	}
 }
 
-// TestPTYBottomRowPainted closes the operator's Phase-3.5 finding 1: a
-// one-row sliver of the terminal peeking through at the BOTTOM of the
-// frame. Root cause: the last View row ended in an SGR reset (styled
-// footer text) with no trailing background re-assert — bubbletea's
-// renderer pads the final row with terminal-background cells. The fix
-// (bgOpaque in padScreenLine) re-asserts the background on every row,
-// including the last. This test asserts the LIVE binary's final painted
-// row carries a trailing background SGR after its last reset.
+// TestPTYBottomRowPainted closes the operator's Phase-3.5 finding 1: a one-row sliver of the
+// terminal peeking through at the BOTTOM of the frame.
 func TestPTYBottomRowPainted(t *testing.T) {
 	skipInteractivePTY(t)
 	if testing.Short() {
@@ -368,12 +285,8 @@ func TestPTYBottomRowPainted(t *testing.T) {
 	if !strings.Contains(out, "\x1b[?1049h") {
 		t.Fatalf("orch never entered alt-screen (%d bytes)", len(out))
 	}
-	// The footer row (last visible row) ends with styled text; after the
-	// fix every such reset is followed by a background re-assert before
-	// any further printable/space content. Scan the tail of the stream:
-	// every \x1b[0m not immediately followed by another escape must be
-	// re-painted (countUnpaintedGaps covers exactly this; assert zero
-	// gaps across the whole session INCLUDING the final frames).
+	// The footer row (last visible row) ends with styled text; after the fix every such reset is
+	// followed by a background re-assert before any further printable/space content.
 	if gaps := countUnpaintedGaps(out); gaps > 0 {
 		t.Fatalf("LIVE BINARY left %d unpainted cells (bottom sliver regression)", gaps)
 	}

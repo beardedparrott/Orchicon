@@ -1,10 +1,5 @@
-// Package orchicon is the native provider substrate: hand-written wire
-// clients (no third-party SDKs), the provider registry, credential
-// resolution, the vendored model catalog, and the model sourcing service.
-//
-// This is substrate only — no RPC, no UI. Consumers: the native adapter,
-// the settings Providers tab (sibling task), the model pickers, and the
-// context-management compaction triggers.
+// Package orchicon is the native provider substrate: hand-written wire clients (no third-party
+// SDKs), the provider registry, credential resolution, the vendored model catalog.
 package orchicon
 
 import (
@@ -15,11 +10,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/version"
 )
 
-// userAgent is the first-party user-agent every native provider request
-// sends. OpenCode Zen/Go explicitly reject generic SDK/HTTP-library names
-// (e.g. Go-http-client) — see https://opencode.ai/docs/go/#where-can-i-use-it
-// — so every native client (turns, probes, metadata) identifies as
-// orchicon/<version>.
+// userAgent is the first-party user-agent every native provider request sends.
 func userAgent() string {
 	return "orchicon/" + version.Current().Tag
 }
@@ -34,10 +25,8 @@ var (
 	// ErrRateLimited means the provider returned a rate-limit response that
 	// exhausted retries.
 	ErrRateLimited = errors.New("rate limited")
-	// ErrUpgradeRequired is the Command Code documented 403 upgrade_required
-	// shape (plan lacks Provider-route access — e.g. the Go plan). The
-	// commandcode transport flip consumes it; callers may also see it when
-	// the legacy route itself rejects.
+	// ErrUpgradeRequired is the Command Code documented 403 upgrade_required shape (plan lacks
+	// Provider-route access — e.g. the Go plan).
 	ErrUpgradeRequired = errors.New("plan upgrade required")
 	// ErrProviderUnavailable means the provider endpoint could not be
 	// reached or failed transiently beyond retries.
@@ -66,10 +55,8 @@ func httpStatusError(statusCode int, status string, body []byte) *StatusError {
 	return &StatusError{StatusCode: statusCode, Status: status, Body: string(b)}
 }
 
-// isUpgradeRequired403 reports whether the response is the documented
-// Command Code 403 upgrade_required shape (any JSON body carrying
-// "upgrade_required", or a bare 403 — plans without Provider-route access
-// return exactly that status on /provider/v1/*).
+// isUpgradeRequired403 reports whether the response is the documented Command Code 403
+// upgrade_required shape (any JSON body carrying "upgrade_required", or a bare 403.
 func isUpgradeRequired403(statusCode int, body []byte) bool {
 	if statusCode != 403 {
 		return false

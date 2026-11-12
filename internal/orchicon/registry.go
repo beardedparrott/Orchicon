@@ -9,22 +9,15 @@ import (
 	"time"
 )
 
-// Registry (ADR-0003 D10) resolves provider profiles into concrete clients:
-// profile (built-in or tenant custom) → credential resolution → client
-// construction. Per-tenant instances are cached and invalidated on settings
-// change. No RPC/proto here — Go APIs consumed by the settings-UI task, the
-// native-adapter task, and the pickers.
+// Registry resolves provider profiles into concrete clients: profile (built-in or
+// tenant custom) → credential resolution → client construction.
 type Registry struct {
 	creds *CredentialResolver
 	src   *SourcingService
 	httpc *http.Client
 
-	// builtinOverrides loads the tenant's provider-settings overrides for a
-	// BUILT-IN provider id (the settings-UI service registers it). Without
-	// it a built-in id always resolves to the built-in default profile and
-	// tenant overrides (base URL, num_ctx, hidden models) are silently
-	// ignored at chat time (observed: an ollama CLOUD override in Settings
-	// → Adapters → Providers while chat kept dialing localhost:11434).
+	// builtinOverrides loads the tenant's provider-settings overrides for a BUILT-IN provider id (the
+	// settings-UI service registers it).
 	builtinOverrides func(ctx context.Context, tenantID, providerID string) (Profile, bool, error)
 
 	mu      sync.Mutex
@@ -40,13 +33,8 @@ func NewRegistry(creds *CredentialResolver, src *SourcingService, httpc *http.Cl
 	return &Registry{creds: creds, src: src, httpc: httpc, cache: map[string]Provider{}, warnLog: warn}
 }
 
-// SetBuiltinOverridesLoader installs the tenant built-in provider override
-// loader (the providers settings service). Once registered, Get resolves a
-// BUILT-IN provider as built-in default ⊕ stored tenant overrides via the
-// service's EffectiveProfile (same mapping the RPC views use) — falling
-// back to the pure built-in table when no row is stored. Before this hook
-// existed, every built-in chat client used the built-in defaults regardless
-// of operator overrides.
+// SetBuiltinOverridesLoader installs the tenant built-in provider override loader (the providers
+// settings service).
 func (r *Registry) SetBuiltinOverridesLoader(fn func(ctx context.Context, tenantID, providerID string) (Profile, bool, error)) {
 	r.mu.Lock()
 	r.builtinOverrides = fn
@@ -67,9 +55,7 @@ func (r *Registry) Invalidate(tenantID, providerID string) {
 	}
 }
 
-// Get resolves one provider for a tenant. Built-in ids resolve through the
-// built-in profile table; custom ids load through the custom-profile loader
-// (registered by the settings-UI task via SetCustomProfileLoader).
+// Get resolves one provider for a tenant.
 func (r *Registry) Get(ctx context.Context, tenantID, providerID string) (Provider, error) {
 	key := tenantID + "|" + providerID
 	r.mu.Lock()
@@ -97,24 +83,15 @@ func (r *Registry) Get(ctx context.Context, tenantID, providerID string) (Provid
 	return prov, nil
 }
 
-// profile resolves the Profile row for a provider id: built-in ids resolve
-// through the built-in table ⊕ the tenant override loader (when the
-// settings service has registered one), custom ids load through the
-// custom-profile loader (registered by the settings-UI task via
-// SetCustomProfileLoader).
+// profile resolves the Profile row for a provider id: built-in ids resolve through the built-in
+// table ⊕ the tenant override loader (when the settings service has registered one).
 func (r *Registry) profile(ctx context.Context, tenantID, providerID string) (Profile, error) {
 	if _, builtin := BuiltinProfile(providerID); builtin {
 		r.mu.Lock()
 		loader := r.builtinOverrides
 		r.mu.Unlock()
 		if loader != nil {
-			// Resolve the tenant-effective profile for the built-in id. The
-			// loader returns (profile, found, err): found=false covers both
-			// "no stored row" (pure built-in default) and "provider
-			// disabled/deleted" (also fall back to the built-in default —
-			// dispatch gates decide enabled-ness upstream, not the registry;
-			// disabling mid-flight must not break in-flight sessions that
-			// already resolved a client).
+			// Resolve the tenant-effective profile for the built-in id.
 			if p, found, err := loader(ctx, tenantID, providerID); err == nil && found {
 				return p, nil
 			} else if err != nil && r.warnLog != nil {
@@ -141,23 +118,13 @@ func (r *Registry) profile(ctx context.Context, tenantID, providerID string) (Pr
 // build constructs the concrete client for a resolved profile.
 func (r *Registry) build(ctx context.Context, tenantID string, p Profile) (Provider, error) {
 	modelsFn := func(ctx context.Context) ([]ModelInfo, error) {
-		// The runtime probe carries the resolved credential (secret →
-		// env) — the sourcing probe must authenticate exactly like the
-		// chat calls (live truth only; an unauthenticated probe would
-		// 401 and serve an empty list). Auth-optional profiles resolve
-		// to "" (Ollama, local servers).
+		// The runtime probe carries the resolved credential (secret → env) — the sourcing probe must
+		// authenticate exactly like the chat calls (live truth only.
 		bearer, _ := r.creds.Resolve(ctx, tenantID, p) //nolint:errcheck // probe stays non-fatal without a credential
 		res := r.src.ListModels(ctx, p, bearer)
 		if res.Degraded {
-			// Runtime model metadata stays NON-FATAL: chat never needs the
-			// models list, and compaction "must not guess" already handles
-			// missing hints — failing a worker turn because /models
-			// hiccuped would be worse than an empty list. The honest
-			// "works or it doesn't" signal lives at the UI surface
-			// (settings eyeball + picker: empty list + degraded state).
-			// NO synthesized fallback is served either way (operator
-			// directive). warnLog is nil-safe: registries built without a
-			// logger (tests) must not panic.
+			// Runtime model metadata stays NON-FATAL: chat never needs the models list, and compaction "must
+			// not guess" already handles missing hints.
 			if r.warnLog != nil {
 				r.warnLog("sourcing: probe failed for provider %q — no models available to runtime clients (check endpoint/token)", p.ID)
 			}
@@ -181,9 +148,8 @@ func (r *Registry) build(ctx context.Context, tenantID string, p Profile) (Provi
 		if err != nil {
 			return nil, err
 		}
-		// OpenCode Zen/Go are model-aware (D2): chat-route models stream via
-		// the compat client; responses/messages models fail loudly naming the
-		// model + required route. The opencodeClient owns that routing.
+		// OpenCode Zen/Go are model-aware (D2): chat-route models stream via the compat client;
+		// responses/messages models fail loudly naming the model + required route.
 		if p.ID == "opencode" || p.ID == "opencode-go" {
 			return &opencodeClient{
 				provider: p.ID, baseURL: p.BaseURL, apiKey: key,
@@ -201,10 +167,7 @@ func (r *Registry) build(ctx context.Context, tenantID string, p Profile) (Provi
 		}, nil
 
 	case ProfileKindOllama:
-		// Ollama Cloud needs a Bearer token on every transport; local needs
-		// none. The profile is AuthOptional, so Resolve returns "" (no
-		// error) when nothing is stored — the client sends Bearer only when
-		// a token resolves (https://docs.ollama.com/cloud).
+		// Ollama Cloud needs a Bearer token on every transport; local needs none.
 		key, err := r.creds.Resolve(ctx, tenantID, p)
 		if err != nil {
 			return nil, err
@@ -229,15 +192,6 @@ func (r *Registry) build(ctx context.Context, tenantID string, p Profile) (Provi
 }
 
 // defaultHTTPClient applies the per-provider transport timeouts (D11).
-//
-// NO http.Client.Timeout: it is a TOTAL deadline covering the entire
-// request INCLUDING the streamed body, and a long prefill (observed: 48k
-// prompt tokens on a local llama-server) is silent longer than any cap
-// that still tolerates slow local hardware — the healthy generation died
-// mid-stream with "stream read: context deadline exceeded". Connect /
-// TLS / response-header phases are bounded at the Transport instead; the
-// body carries the idle-read watchdog (newIdleWatchBody in postJSON) and
-// the per-execution wall-clock budget remains the outer bound.
 func defaultHTTPClient() *http.Client {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.DialContext = limitedDial(30 * time.Second)

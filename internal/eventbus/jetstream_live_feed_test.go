@@ -11,22 +11,8 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// TestDirectPublishLiveFeedDeliversEveryChunk is the end-to-end guard for the
-// user-visible surface of the de-outboxed per-token execution.text path: with
-// the outbox row gone, the ONLY delivery path for live streaming text is the
-// direct publish consumed by StreamExecutionEvents (internal/execution
-// Service.StreamExecutionEvents -> Subscriber.Subscribe). This test drives the
-// real production publisher (NewNATSPublisher) and the real production
-// subscriber (NewNATSSubscriber) against a real nats-server with the production
-// stream config, and asserts that every streamed chunk published with the
-// TaskReconciler's new unique MsgID (`direct:<exec>:<type>:<seq>`) reaches the
-// consumer on a distinct JetStream sequence — i.e. the GUI's live feed renders
-// every chunk, exactly as it did when the outbox relay was the live path.
-//
-// It also pins the failure mode the fix removed: the old constant MsgID
-// (`direct:<exec>:<type>`) is silently deduplicated by the stream's
-// Duplicates: 5m window, so without the unique suffix live streaming would
-// collapse to one chunk per execution per 5 minutes.
+// TestDirectPublishLiveFeedDeliversEveryChunk is the end-to-end guard for the user-visible surface
+// of the de-outboxed per-token execution.text path: with the outbox row gone.
 func TestDirectPublishLiveFeedDeliversEveryChunk(t *testing.T) {
 	bin, err := exec.LookPath("nats-server")
 	if err != nil {
@@ -88,9 +74,8 @@ func TestDirectPublishLiveFeedDeliversEveryChunk(t *testing.T) {
 		}
 	}
 
-	// Every chunk must land on its own JetStream sequence — the frontend's
-	// stream dedup key is <eventType>-<sequence>, so a shared sequence would
-	// mean the GUI dropped all but one chunk.
+	// Every chunk must land on its own JetStream sequence — the frontend's stream dedup key is
+	// <eventType>-<sequence>, so a shared sequence would mean the GUI dropped all but one chunk.
 	seqs := map[uint64]bool{}
 	var joined string
 	for i, m := range got {

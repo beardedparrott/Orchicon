@@ -11,9 +11,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// dedupRecordingPublisher records the MsgID of every direct publish. No other
-// eventbus.Publisher fake exists in the tree; this one is local to the
-// direct-publish dedup regression guard.
+// dedupRecordingPublisher records the MsgID of every direct publish.
 type dedupRecordingPublisher struct {
 	mu       sync.Mutex
 	subjects []string
@@ -40,12 +38,8 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
-// TestPublishExecEventMsgIDUnique is the regression guard for the blocking
-// finding behind this work item: the direct publish used a CONSTANT MsgID
-// ("direct:<exec>:<type>"), so JetStream's Duplicates: 5m window silently
-// dropped every direct publish after the first per execution per 5 minutes —
-// which made the outbox relay the real live-text path and made cutting the
-// per-token outbox write unsafe. The MsgID must be unique per publish.
+// TestPublishExecEventMsgIDUnique is the regression guard for the blocking finding behind this work
+// item: the direct publish used a CONSTANT MsgID ("direct:<exec>:<type>").
 func TestPublishExecEventMsgIDUnique(t *testing.T) {
 	pub := &dedupRecordingPublisher{}
 	r := &TaskReconciler{log: discardLogger(), eventPub: pub}

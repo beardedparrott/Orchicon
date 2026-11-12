@@ -1,18 +1,12 @@
 package askorchicon
 
-// consent_service.go — the ReplyPermissionAsk RPC: the client's answer to a
-// PermissionAsk the turn is waiting on.
-//
-// The RPC does NOT talk to the serve. It records the decision where the
-// decision path reads it (the in-memory grant store for ALLOW_SESSION) and
-// hands the ask's owner — the turn's drain loop — a wake-up. The drain loop
-// then answers the serve with `once` or `reject`. That split is the settled
-// decision: the SESSION decision lives in OUR store, the value on the wire is
-// never a session-scoped serve value.
+// consent_service.go — the ReplyPermissionAsk RPC: the client's answer to a PermissionAsk the turn
+// is waiting on.
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -39,9 +33,6 @@ func (s *Service) ReplyPermissionAsk(ctx context.Context, req *connect.Request[a
 			errors.New("choice must be ALLOW_ONCE, ALLOW_SESSION or DENY (UNSPECIFIED is only for a question answer)"))
 	}
 	// Tenant ownership: the conversation must exist in the caller's tenant.
-	// Skipped when the service has no pool (a unit test drives the registry
-	// directly) — the registry itself is keyed by conversation id, which is
-	// tenant-scoped, so a cross-tenant ask can never be addressed.
 	if s.pool != nil {
 		if _, err := s.loadConversationRow(ctx, tenantID, convID); err != nil {
 			return nil, err
@@ -49,6 +40,26 @@ func (s *Service) ReplyPermissionAsk(ctx context.Context, req *connect.Request[a
 	}
 	ask, ok := s.pending.get(convID, askID)
 	if !ok {
+		// A PROMOTED ASK IS ANSWERED BY CONTINUING THE CONVERSATION.
+		if msgID, awaiting, found := s.findPromotedAsk(ctx, tenantID, convID, askID); found && awaiting {
+			answer := strings.TrimSpace(req.Msg.Answer)
+			if answer == "" {
+				return nil, connect.NewError(connect.CodeInvalidArgument,
+					errors.New("answer must not be empty for a clarifying question"))
+			}
+			// SETTLE THE CARD FIRST, so the transcript records the answer even if the turn fails.
+			if rerr := s.recordPromotedAnswer(ctx, tenantID, msgID, askID, answer); rerr != nil {
+				s.log.Warn("ask orchicon: could not record the answer against its card", "ask", askID, "error", rerr)
+			}
+			if _, _, _, terr := s.startConversationTurn(ctx, tenantID, convID, answer, nil); terr != nil {
+				return nil, connect.NewError(connect.CodeInternal,
+					fmt.Errorf("deliver the answer to the asked question: %w", terr))
+			}
+			return connect.NewResponse(&apiv1.ReplyPermissionAskResponse{
+				Applied: true,
+				Detail:  "answer sent as your next message",
+			}), nil
+		}
 		return connect.NewResponse(&apiv1.ReplyPermissionAskResponse{
 			Applied: false,
 			Expired: true,
@@ -56,13 +67,6 @@ func (s *Service) ReplyPermissionAsk(ctx context.Context, req *connect.Request[a
 		}), nil
 	}
 	// A QUESTION IS ANSWERED WITH CONTENT, NOT A CHOICE.
-	//
-	// The two are deliberately not conflated: a permission's outcome is a grant
-	// decision (ALLOW_ONCE / ALLOW_SESSION / DENY), a question's is the operator's
-	// words, which BECOME the ask_user tool result so the model resumes the turn
-	// holding them. The question path is checked FIRST because a question ask has no
-	// permission semantics at all — running it through the allow/deny/grant
-	// machinery would record a grant for something that grants nothing.
 	if ask.isQuestion() {
 		ans := strings.TrimSpace(req.Msg.Answer)
 		if ans == "" {
@@ -81,13 +85,7 @@ func (s *Service) ReplyPermissionAsk(ctx context.Context, req *connect.Request[a
 			Detail:  "answer recorded for ask " + askID,
 		}), nil
 	}
-	// The transitions are ordered so that nothing is applied unless the reply
-	// actually WINS the ask. ALLOW_SESSION records the directory grant only
-	// after clientReply accepts the decision: granting first would leave an
-	// in-memory session grant behind for an already-answered or expired ask we
-	// are about to report as `expired`/`applied: false` — a decision that
-	// reports itself as NOT applied must not partially apply itself. The grant
-	// is in-memory and conversation-scoped.
+	// The transitions are ordered so that nothing is applied unless the reply actually WINS the ask.
 	if !ask.clientReply(req.Msg.Choice) {
 		return connect.NewResponse(&apiv1.ReplyPermissionAskResponse{
 			Applied: false,
@@ -98,10 +96,8 @@ func (s *Service) ReplyPermissionAsk(ctx context.Context, req *connect.Request[a
 	if req.Msg.Choice == apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_SESSION {
 		s.grants.Grant(convID, ask.Key)
 	}
-	// ALLOW_ONCE arms the exact absolute paths the decision covered for the
-	// execution guard's shim (which cannot ask): without this, the command the
-	// operator just approved would be refused by the shim. A sibling path is not
-	// armed and stays refused.
+	// ALLOW_ONCE arms the exact absolute paths the decision covered for the execution guard's shim
+	// (which cannot ask): without this.
 	if req.Msg.Choice == apiv1.PermissionChoice_PERMISSION_CHOICE_ALLOW_ONCE {
 		s.once.Record(convID, ask.AbsTargets...)
 	}

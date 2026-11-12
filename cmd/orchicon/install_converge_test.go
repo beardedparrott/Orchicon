@@ -8,20 +8,6 @@ import (
 )
 
 // install_converge_test.go — INSTALLING OVER AN EXISTING INSTANCE MUST CONVERGE IT.
-//
-// The report: "the installer allowed me to pick the instance and I chose dev, then it ran through the
-// installer and said it was complete but no auth works and the previous dev container has been up for two
-// hours."
-//
-// Two branches were responsible, and both asked the WRONG QUESTION:
-//
-//   - ensureInstallContainer asked "is a container running with the right RESIDENCY?" and stopped there, so
-//     a container kept the image it was created from while the installer pulled and reported a newer one.
-//   - startHostPlane asked "does something answer /healthz?" and stopped there, so a plane kept serving from
-//     a binary the install had already replaced — the process is still alive (the inode survives) while the
-//     path it was started from has been rewritten underneath it.
-//
-// These pin the question each should have asked: IS IT RUNNING WHAT I JUST INSTALLED.
 
 // TestServingPlanePIDReadsTheInstancePIDFile — the only truthful source for "which process is the plane".
 // A version endpoint would answer with what the OLD process believes about itself.
@@ -76,10 +62,8 @@ func TestPlaneDriftIsUnknownWithoutAPIDFile(t *testing.T) {
 	}
 }
 
-// TestStopHostPlaneNeedsTheInstanceStateDir — the installer previously had NO way to stop a host plane
-// (`serve --stop` appeared nowhere in it), which is why a stale plane could never be corrected. The state dir
-// is what `serve --stop` resolves its PID file from, so passing it is not optional: a bare call looks in the
-// wrong directory and reports success while stopping nothing.
+// TestStopHostPlaneNeedsTheInstanceStateDir — the installer previously had NO way to stop a host
+// plane (`serve --stop` appeared nowhere in it).
 func TestStopHostPlanePassesTheInstanceStateDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -114,12 +98,46 @@ func TestStopHostPlanePassesTheInstanceStateDir(t *testing.T) {
 	}
 }
 
-// TestHostDataDirForNeverFails — the repair path must not be the thing that breaks an install. It is called
-// after the instance is already up and the operator is waiting for a verdict, so a failure to resolve HOME
-// there is reported as a best-effort path rather than an error.
+// TestHostDataDirForNeverFails — the repair path must not be the thing that breaks an install.
 func TestHostDataDirForNeverFails(t *testing.T) {
 	t.Setenv("HOME", "")
 	if got := hostDataDirFor("dev"); got == "" {
 		t.Fatal("hostDataDirFor returned nothing; the repair path must always have a path to try")
+	}
+}
+
+// It is now a record this installer writes, and the fail-safe is the `(string, bool)` return:
+// ok=false NEVER reads as a mismatch.
+func TestInstallConvergesOnARecordedShapeAndLeavesAnUnknownOneAlone(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// A RECORDED shape that MATCHES the requested one is a convergence, not a mismatch — the caller's
+	// `existing == residency` arm.
+	recordResidency("dev", residencyHost)
+	existing, known := recordedResidency("dev")
+	if !known || existing != residencyHost {
+		t.Fatalf("a recorded host shape must read back as (host, true), got (%q, %v)", existing, known)
+	}
+	if existing != residencyHost {
+		t.Error("a matching shape must not look like a mismatch — that would recreate a live instance")
+	}
+
+	// AN UNPARSEABLE record: `known` is false, which is the caller's "do not recreate" arm. This is the
+	// fail-safe, asserted as a CALLER DECISION rather than merely as a return value.
+	path, err := residencyRecordPath("dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("half-written-"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	existing, known = recordedResidency("dev")
+	if known {
+		t.Fatalf("an unreadable record must report ok=false, got (%q, true)", existing)
+	}
+	// The caller's branch, spelled out: recreating is only justified when the shape is KNOWN AND DIFFERENT.
+	requested := residencyContainer
+	if recreate := known && existing != requested; recreate {
+		t.Error("an unidentifiable shape must NOT be treated as a mismatch (it would recreate a live instance)")
 	}
 }

@@ -116,9 +116,7 @@ func TestPressureGateDisarmedWithoutMeasurement(t *testing.T) {
 	}
 }
 
-// DISARMED without a live window hint — the platform's no-guess rule. This is
-// the case that matters most: a model with no window metadata must NOT be
-// compacted on a guessed denominator.
+// DISARMED without a live window hint — the platform's no-guess rule.
 func TestPressureGateDisarmedWithoutLiveWindow(t *testing.T) {
 	b := &NativeBridge{log: testLogger(), chatHistory: map[string][]Message{"s1": wedgeHistory()}}
 	b.recordAskPromptTokens("s1", 1_000_000)
@@ -151,9 +149,8 @@ func TestPressureGateBelowThresholdDoesNothing(t *testing.T) {
 	}
 }
 
-// OVER threshold with no resolver: the compaction cannot summarize, so the FAILURE
-// must be swallowed (best-effort) and the history left intact — a turn must never
-// be blocked or damaged by a failed compaction.
+// OVER threshold with no resolver: the compaction cannot summarize, so the FAILURE must be
+// swallowed (best-effort) and the history left intact.
 func TestPressureGateOverThresholdCompactionFailureIsBestEffort(t *testing.T) {
 	b := &NativeBridge{log: testLogger(), chatHistory: map[string][]Message{"s1": wedgeHistory()}}
 	before := conversationBytes(b.chatHistory["s1"])
@@ -216,7 +213,7 @@ func TestAskUsageSinkRecordsPromptTokensForGate(t *testing.T) {
 		n++
 		return nil
 	}}
-	sink := b.askUsageSink("t", "conv-1", "orchicon-ask:conv-1", "orchicon/x/m", "p", "m")
+	sink := b.askUsageSink(nil, "t", "conv-1", "orchicon-ask:conv-1", "orchicon/x/m", "p", "m")
 	sink(context.Background(), Usage{InputTokens: 1_016_584, OutputTokens: 10})
 
 	if got := b.askLastPromptTokens("orchicon-ask:conv-1"); got != 1_016_584 {

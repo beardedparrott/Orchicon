@@ -69,9 +69,7 @@ func TestAMessageContainingQCanBeTypedInFull(t *testing.T) {
 	}
 }
 
-// EVERY PRINTABLE LETTER IS TEXT. Asserted across the alphabet rather than for q alone, because the bug
-// was a bypass-map entry and the map is edited by hand: a future entry that happens to be a letter
-// should fail here rather than in the operator's session.
+// EVERY PRINTABLE LETTER IS TEXT.
 func TestNoPrintableLetterQuitsTheComposer(t *testing.T) {
 	for _, r := range "abcdefghijklmnopqrstuvwxyz" {
 		m := newTestApp()
@@ -112,13 +110,6 @@ func TestCtrlCStillQuitsFromTheComposer(t *testing.T) {
 }
 
 // Q DOES NOT QUIT ANYWHERE — not in the composer, not outside it.
-//
-// The operator: "So 'q' doesn't quit inside the composer anymore but if you hit it outside of the composer
-// then it still quits. We should remove that completely." The half-binding was worse than either extreme:
-// the same key ends the program or types a letter depending on a focus state the operator cannot see.
-//
-// Asserted from EVERY focus level, because "we removed it" has to mean the binding is gone rather than
-// moved.
 func TestQDoesNotQuitFromAnyFocus(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

@@ -3,6 +3,7 @@ package claude
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,19 +13,11 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/runtime"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// ProcSession is one live claude subprocess. Stdout is line-framed JSONL
-// (one stream-json document per line). Two impls exist:
-//
-//   - localProc — a host os/exec child (local execution mode + the
-//     env-gated live smoke test).
-//   - containerProc — a duplex streaming child inside the run's runtime
-//     container, driven over runtime.Client.Stdio.
-//
-// The session loop speaks only to this interface, so the core acceptance is
-// proven against a fake ProcSession with canned fixtures and zero real
-// Anthropic spend.
+// ProcSession is one live claude subprocess.
 type ProcSession interface {
 	// WriteTurn appends one JSON object + "\n" onto the child's stdin. The
 	// process stays alive across calls (long-lived session).
@@ -41,6 +34,19 @@ type ProcSession interface {
 	Close() error
 }
 
+// exitCause renders a TRANSPORT-level failure so it reaches the operator.
+func exitCause(err error) string {
+	if err == nil {
+		return ""
+	}
+	// A non-zero exit IS the child running. Its code is in the message; "exit status 1" adds nothing.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return ""
+	}
+	return "; transport: " + err.Error()
+}
+
 // procSpec is the spawn request the bridge hands to its proc factory.
 type procSpec struct {
 	ExecID string
@@ -49,17 +55,7 @@ type procSpec struct {
 	// ProjectDir is the project root (the guard/hook boundary).
 	ProjectDir string
 	Env        []string
-	// WorkflowRunID is the RUN whose runtime container this execution dispatches
-	// into. It is NOT the execution id, and the difference is load-bearing: the
-	// daemon resolves the container from a LEASE TABLE keyed by RUN id
-	// (daemonPool.containerForRun), so a request naming the execution id finds no
-	// container.
-	//
-	// Passing the wrong one does not fail fast, which is why it cost a dispatch:
-	// the daemon's not-found path could not deliver a response while the client
-	// streamed a body that never ends, and ResponseHeaderTimeout never starts for
-	// an unfinished body — so the call blocked INDEFINITELY. Observed live as an
-	// execution stuck in `dispatching` with zero tokens and no log line.
+	// WorkflowRunID is the RUN whose runtime container this execution dispatches into.
 	WorkflowRunID string
 }
 
@@ -68,13 +64,6 @@ type procSpec struct {
 type procFactory func(ctx context.Context, spec procSpec) (ProcSession, error)
 
 // stdioOpener is the slice of *runtime.Client this file needs.
-//
-// IT EXISTS SO THE WORKFLOW ID CAN BE PINNED BY A TEST. The container is leased
-// by RUN id, and naming the execution id instead made a live dispatch hang
-// forever — invisibly, because the daemon could not answer while the client
-// streamed a body that never ends and the transport cannot bound that. A test on
-// the SPEC alone does not catch it (the spec can be right while the call names the
-// wrong field), so the seam lets a fake record exactly which id was named.
 type stdioOpener interface {
 	Stdio(ctx context.Context, workflowID string, req runtime.StdioRequest) (*runtime.StdioSession, error)
 }
@@ -98,7 +87,7 @@ func newLocalProc(ctx context.Context, spec procSpec) (*localProc, error) {
 	if len(spec.Argv) == 0 {
 		return nil, fmt.Errorf("claude: empty argv")
 	}
-	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
+	cmd := procwin.Command(spec.Argv[0], spec.Argv[1:]...)
 	if spec.Cwd != "" {
 		cmd.Dir = spec.Cwd
 	}

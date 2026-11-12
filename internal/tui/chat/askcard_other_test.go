@@ -1,16 +1,6 @@
 package chat
 
 // askcard_other_test.go — the RECORDED ask card's free-text row.
-//
-// The operator: "In the GUI, it lets you type in your own response. In the TUI clicking on it does
-// nothing. You should be able to click on other and type in a response there."
-//
-// They were looking at the CONSENT card (whose Other row was a separate bug, fixed in
-// App.consentDecideFromRow), but the divergence they described was one row wide on BOTH cards: this
-// one had no Other row AT ALL, and its footer said "or reply in your own words" — a different
-// promise, pointing at the composer, where the GUI opens an input on the card itself.
-//
-// These tests read the RENDERED card back, because the row's whole job is to be on it.
 
 import (
 	"strings"
@@ -58,9 +48,10 @@ func TestTheRecordedCardOffersAFreeTextRow(t *testing.T) {
 	if got, ok := sp.OptionAt(sp.Line + last.Line); !ok || got != ConsentOther {
 		t.Fatalf("OptionAt(the free-text row) = (%q, %v), want %q", got, ok, ConsentOther)
 	}
-	// THE FOOTER NAMES IT AS A ROW, since it is one now: it used to send the operator to the
-	// composer to type what the card can take itself.
-	if !strings.Contains(out, "click Other") {
+	// THE FOOTER NAMES IT AS A ROW, since it is one now: it used to send the operator to the composer
+	// to type what the card can take itself.
+	flat := strings.Join(strings.Fields(out), " ")
+	if !strings.Contains(flat, "Other: reply in your own words") {
 		t.Errorf("the card's hint must say the row exists, got:\n%s", out)
 	}
 }

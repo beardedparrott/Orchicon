@@ -19,12 +19,8 @@ func TestWorktreePruneLeavesCheckoutClean(t *testing.T) {
 	if res := env.rec.Reconcile(ctx, env.run.ID); res.Error != nil {
 		t.Fatalf("provision: %v", res.Error)
 	}
-	// Simulate the worker leaving an untracked stray file and a modified tracked file
-	// inside the MAIN checkout (not the worktree) — the observed pollution vector
-	// for in-place fallback runs. For git-backed runs the prune path should leave the
-	// main checkout clean. Here we verify the main repo stays clean after a full
-	// provision+prune cycle (no in-place pollution).
-	// Write a stray untracked file in the main repo
+	// Simulate the worker leaving an untracked stray file and a modified tracked file inside the MAIN
+	// checkout (not the worktree) — the observed pollution vector for in-place fallback runs.
 	stray := filepath.Join(env.repo, "_batch_test2.go")
 	if err := os.WriteFile(stray, []byte("package foo\n"), 0o644); err != nil {
 		t.Fatalf("write stray: %v", err)
@@ -35,17 +31,13 @@ func TestWorktreePruneLeavesCheckoutClean(t *testing.T) {
 	if err := os.WriteFile(readme, []byte("dirty\n"), 0o644); err != nil {
 		t.Fatalf("dirty tracked file: %v", err)
 	}
-	// The run's worktree itself should be dirty-free, but the main checkout we dirtied
-	// must be restored by the orphan/restore sweeps if this were a skipped run. For a
-	// ready worktree the main checkout dirt is outside the reconciler's scope — but
-	// git status on the main repo should be dirty now.
+	// The run's worktree itself should be dirty-free, but the main checkout we dirtied must be restored
+	// by the orphan/restore sweeps if this were a skipped run.
 	if !env.rec.isDirtyWorkTree(ctx, env.repo) {
 		t.Fatalf("expected main checkout to be dirty after stray+modify")
 	}
-	// Prune the run FIRST: the provisioned nested worktree makes
-	// `git clean -fd` skip `.orchicon-worktrees/` (git never deletes nested
-	// worktrees without -ff), so restoreWorkTree can only converge once the
-	// worktree is reaped. Mark completed + prune, then restore the stray.
+	// Prune the run FIRST: the provisioned nested worktree makes `git clean -fd` skip
+	// `.orchicon-worktrees/` (git never deletes nested worktrees without -ff).
 	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
@@ -117,10 +109,8 @@ func TestInPlaceRestoreCleansStrayFile(t *testing.T) {
 func TestSkippedRefusedWhenDirty(t *testing.T) {
 	env := newWorktreeTestEnv(t)
 	ctx := context.Background()
-	// Create a non-repo project that points at the git repo dir (so it IS a git work tree)
-	// but force it through the skipped path by using a non-repo dir that we then make dirty?
-	// Instead test the helper: isDirtyWorkTree returns true when dirty, and mark's dirty
-	// gate would refuse skipped. We test the helper directly and the mark path via a second env.
+	// Create a non-repo project that points at the git repo dir (so it IS a git work tree) but force it
+	// through the skipped path by using a non-repo dir that we then make dirty?
 	plain := env.repo // git-backed
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	rec := NewWorktreeReconciler(env.pool, logger)
@@ -132,29 +122,24 @@ func TestSkippedRefusedWhenDirty(t *testing.T) {
 	if !rec.isDirtyWorkTree(ctx, plain) {
 		t.Fatalf("expected dirty")
 	}
-	// Create a project/run that would be marked skipped if not git-backed; but since
-	// plain IS git-backed, reconcile should provision not skip. To test the dirty gate,
-	// we create a non-repo project pointing at a plain dir outside git, dirty it, and
-	// verify isDirty detection. The actual mark gate is exercised by the integration
-	// below with a git repo that is dirty and a run forced to skipped via direct DB.
+	// Create a project/run that would be marked skipped if not git-backed; but since plain IS
+	// git-backed, reconcile should provision not skip.
 	tt := context.Background()
 	ttx, err := env.pool.BeginTenantTx(tt, approvalTestTenant)
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	// Release the tenant connection on EVERY exit path: an early t.Fatalf must
-	// not leak the tx, or the package-level pool.Close blocks forever and the
-	// whole scheduler suite times out (a failure that used to masquerade as a
-	// hang). Rollback after Commit is a no-op.
+	// Release the tenant connection on EVERY exit path: an early t.Fatalf must not leak the tx, or the
+	// package-level pool.Close blocks forever and the whole scheduler suite times out (a failure.
 	defer ttx.Rollback(ctx)
-	// UNIQUE slug: a fixed slug collides with residue in the SHARED tnt_dev
-	// tenant on any second run (CreateProject fails, the test aborts). The
-	// sibling fixture (newWorktreeTestEnv) already derives its slug this way.
+	// UNIQUE slug: a fixed slug collides with residue in the SHARED tnt_dev tenant on any second run
+	// (CreateProject fails, the test aborts).
 	proj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "Dirty Gate Project", Slug: "dirty-gate-" + strings.ToLower(db.NewID()),
 		Status: "active", Goals: []byte("[]"),
-		ProjectDir: plain,
+		ProjectDir:    plain,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -174,10 +159,8 @@ func TestSkippedRefusedWhenDirty(t *testing.T) {
 	// Self-cleaning: see db.CleanupProject — the fixture tears its project down
 	// through the same cascade the product uses, so it cannot leave residue behind.
 	db.CleanupProject(t, env.pool, approvalTestTenant, proj.ID)
-	// Reconcile should provision (git-backed) and not be refused — dirty in main
-	// repo does not block provisioning of an isolated worktree (only in-place skipped
-	// runs are refused). So this should succeed and leave the main repo dirty (worktree
-	// isolates).
+	// Reconcile should provision (git-backed) and not be refused — dirty in main repo does not block
+	// provisioning of an isolated worktree (only in-place skipped runs are refused).
 	if res := rec.Reconcile(ctx, run.ID); res.Error != nil {
 		t.Fatalf("reconcile git-backed dirty main repo: %v", res.Error)
 	}

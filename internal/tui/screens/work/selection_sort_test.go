@@ -10,11 +10,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
-// The operator: "+/- moves it properly but then jumps your focus up to the
-// parent. It should keep selection/focus on the work item you just moved."
-//
-// The cause was general: LoadItems → SetItems reseated the cursor at the top on
-// EVERY refresh, so any mutation threw the selection away.
+// The operator: "+/- moves it properly but then jumps your focus up to the parent.
 func TestSelectionSurvivesAReload(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")
@@ -47,11 +43,8 @@ func TestSelectionSurvivesAReload(t *testing.T) {
 	}
 }
 
-// The operator: "Sort is there and it goes through the different orderings but
-// it doesn't actually apply the sort. Nothing currently changes."
-//
-// Root cause: RowAction.Do returned nothing, so the control's Refresh command
-// was dropped — the label changed and the list never did.
+// The operator: "Sort is there and it goes through the different orderings but it doesn't actually
+// apply the sort.
 func TestSortControlActuallyApplies(t *testing.T) {
 	m, _ := seqPlane(t)
 	// The tree opens collapsed; this test is about sibling ORDER, so the children

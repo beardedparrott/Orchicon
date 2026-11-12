@@ -10,21 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
-// policy.go is the Ask screen's two list surfaces, both driven by the ONE
-// storage owner (the policy file, whose storage the sibling task owns):
-//
-//   - /grants      the SESSION roll-up  — what has been allowed for this
-//                  conversation's directories, revocable.
-//   - /permissions the PERSISTENT list  — allow/deny entries, listable,
-//                  addable and removable.
-//
-// The persistent list is deliberately NOT called /policy: the GUI's /policies
-// route is the Rego policy ENGINE, a different concept, and reusing the word
-// would be a parity lie.
-//
-// IT IS A MODAL THE SCREEN OWNS (the enforcement screen's overlay shape): the
-// screen claims keys while one is open, so a Rego body or a path containing "q"
-// can never reach a shell chord.
+// policy.go is the Ask screen's two list surfaces, both driven by the ONE storage owner (the policy
+// file, whose storage the sibling task owns):
 
 type ovKind int
 
@@ -44,14 +31,8 @@ type askOverlay struct {
 	hint string
 }
 
-// overlayTableHeight is the row budget a LIST overlay gives its table: the pane
-// region minus the block's own furniture (the table's title and header rows, its
-// cursor line and the hint under it), so the centered block still fits the frame.
-//
-// IT MUST BE SET, and leaving it at the zero value was a real defect: kit2.Table
-// windows its body to Height-3 with a floor of ONE row, so `/permissions` and
-// `/grants` drew a single row however much room the pane had — a two-rule list
-// showed "1-1/2" and one rule, which is not a list the operator can read.
+// IT MUST BE SET, and leaving it at the zero value was a real defect: kit2.Table windows its body
+// to Height-3 with a floor of ONE row.
 func (m *Model) overlayTableHeight() int {
 	h := m.h - 4
 	if h < 8 {
@@ -62,9 +43,7 @@ func (m *Model) overlayTableHeight() int {
 
 // openGrants builds the session-grant roll-up.
 func (m *Model) openGrants() tea.Cmd {
-	// THE COLUMNS ARE THE SERVER's FIELDS, because the rows now ARE the server's answer. It used to show a
-	// "tool" and a "count" per directory, both accrued locally from the cards this client happened to answer —
-	// a second record of grants the server owns, and the reason a revoke from here revoked nothing.
+	// THE COLUMNS ARE THE SERVER's FIELDS, because the rows now ARE the server's answer.
 	ov := &askOverlay{kind: ovGrants, tbl: kit2.NewTable("Session grants",
 		kit2.Column{Title: "directory"}, kit2.Column{Title: "granted", Right: true}),
 		hint: "enter revokes on the server · esc closes · grants are per session, in memory, and lost on a plane restart"}
@@ -78,10 +57,6 @@ func (m *Model) openGrants() tea.Cmd {
 }
 
 // RefreshGrants re-reads the session-grant rows into the OPEN grants overlay.
-//
-// The shell calls it when a fetch or a revoke lands: the rows came from its cache of the server's answer, so
-// without this the overlay would show the list as it was when it was opened (and a revoked row would appear to
-// survive the revoke).
 func (m *Model) RefreshGrants() {
 	m.reloadGrants()
 	m.repaint()

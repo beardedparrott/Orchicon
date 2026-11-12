@@ -8,6 +8,7 @@ syntax = "proto3";
 package orchicon.api.v1;
 
 import "google/protobuf/timestamp.proto";
+import "orchicon/api/v1/project.proto";
 
 // WorkItemKind enumerates the work hierarchy kinds (docs/02_Domain_Model.md
 // §2.2) plus the typed recovery strategies (PR C — recovery as work
@@ -142,6 +143,22 @@ message WorkItem {
   // Stored as JSONB array of secret IDs in work_items.secret_ids.
   // Max 10 per item; dangling refs fail dispatch.
   repeated string secret_ids = 39;
+  // execution_mode overrides the PROJECT's execution mode for THIS item's
+  // executions. Absent (unset) = inherit from the project; present with an
+  // explicit value = override. "absent" and "runtime" are therefore different
+  // statements, which is why the field is optional rather than a plain enum
+  // with an UNSPECIFIED sentinel: the row itself distinguishes NULL (inherit)
+  // from a stored value, and the wire must too.
+  //
+  // Resolution order, implemented ONCE in db.EffectiveExecutionMode:
+  //   item -> project -> tenant default (db.DefaultExecutionMode).
+  optional ExecutionMode execution_mode = 40;
+  // effective_execution_mode is the RESOLVED mode - never unset - i.e. what
+  // dispatch will actually do for this item. Populated on single-item reads
+  // (Get/Create/Update); ListWorkItems leaves it unspecified and the client
+  // derives it from the item override plus its project, so the hot list path
+  // takes no per-row project read.
+  ExecutionMode effective_execution_mode = 41;
 }
 
 // WorkItemBlocker is one upstream dependency edge that keeps its dependent

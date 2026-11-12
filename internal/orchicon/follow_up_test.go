@@ -1,17 +1,7 @@
 package orchicon
 
 // follow_up_test.go: regression tests for the real NativeBridge follow-up
-// (NativeBridge.ContinueSession). Pins the follow-up semantics:
-//   - The fire-and-forget contract: the RPC returns "" immediately (the
-//     reply flows via the durable transcript, never the RPC field) while
-//     the session runs asynchronously on a detached context.
-//   - The follow-up runs as a FULL worker session: the question (source
-//     "follow_up") and the reply are mirrored into the DB session parts by
-//     the session's transcript recorder.
-//   - Identity isolation: a cross-worker transcript is refused.
-//   - A missing session id / transcript falls back to a fresh session.
-//   - A failed session writes an error part — the RPC never fails after the
-//     session is built.
+// (NativeBridge.ContinueSession).
 
 import (
 	"context"
@@ -47,9 +37,7 @@ func (s *storesSessionParts) snapshot() []db.SessionPart {
 	return append([]db.SessionPart(nil), s.parts...)
 }
 
-// TestContinueSessionRecordsQuestionAndReplyPins the real follow-up: the
-// question (source: follow_up) and the assistant reply are mirrored into
-// the DB session parts by the session's transcript recorder.
+// TestContinueSessionRecordsQuestionAndReplyPins the real follow-up.
 func TestContinueSessionRecordsQuestionAndReply(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".orchicon", "sessions", "exec_now.jsonl")
@@ -138,9 +126,8 @@ func TestContinueSessionRecordsQuestionAndReply(t *testing.T) {
 	}
 }
 
-// TestContinueSessionRefusesCrossWorker pins identity isolation: a
-// follow-up against a transcript whose identity belongs to a DIFFERENT
-// worker is refused.
+// TestContinueSessionRefusesCrossWorker pins identity isolation: a follow-up against a transcript
+// whose identity belongs to a DIFFERENT worker is refused.
 func TestContinueSessionRefusesCrossWorker(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".orchicon", "sessions", "exec_prior.jsonl")
@@ -168,10 +155,8 @@ func TestContinueSessionRefusesCrossWorker(t *testing.T) {
 	}
 }
 
-// TestContinueSessionMissingSessionIDFallsBack pins the context fallback:
-// with no prior session id there is no transcript file to verify against,
-// so the follow-up proceeds as a context one-shot instead of refusing —
-// old runs without a session_info part stay answerable.
+// TestContinueSessionMissingSessionIDFallsBack pins the context fallback: with no prior session id
+// there is no transcript file to verify against.
 func TestContinueSessionMissingSessionIDFallsBack(t *testing.T) {
 	prov := &mockProvider{turns: []scriptedTurn{
 		{events: []Event{TextDelta{Text: "Context-only reply."}}, finish: StopStop, bare: true},
@@ -249,10 +234,8 @@ func TestContinueSessionNoModelRefErrors(t *testing.T) {
 	}
 }
 
-// TestContinueSessionFailedReplyWritesError pins the failure contract:
-// a session whose provider stream fails is written back as an `error` part
-// (via the recorder) so the UI never hangs on "responding" — the RPC
-// (already returned "") never fails after the session is built.
+// TestContinueSessionFailedReplyWritesError pins the failure contract: a session whose provider
+// stream fails is written back as an `error` part (via the recorder) so the UI never hangs.
 func TestContinueSessionFailedReplyWritesError(t *testing.T) {
 	dir := t.TempDir()
 	prov := &mockProvider{preStreamErrOnCall: 1}
@@ -290,10 +273,8 @@ func TestContinueSessionFailedReplyWritesError(t *testing.T) {
 	}
 }
 
-// TestContinueSessionMissingTranscriptFallsBack pins the container-run
-// case: the JSONL is not on the host project dir, so identity cannot be
-// verified from the file — the follow-up still proceeds from the durable
-// DB context instead of refusing.
+// TestContinueSessionMissingTranscriptFallsBack pins the container-run case: the JSONL is not on
+// the host project dir, so identity cannot be verified from the file.
 func TestContinueSessionMissingTranscriptFallsBack(t *testing.T) {
 	dir := t.TempDir() // no transcript file written
 	prov := &mockProvider{turns: []scriptedTurn{
@@ -333,10 +314,8 @@ func TestContinueSessionMissingTranscriptFallsBack(t *testing.T) {
 	}
 }
 
-// TestContinueSessionToolLoop pins the follow-up as a FULL worker session:
-// the model's tool call is executed through the session's tool registry
-// (the worker's host tools) and the turn continues to a final answer — a
-// text-only one-shot would hang on the un-executed tool call.
+// TestContinueSessionToolLoop pins the follow-up as a FULL worker session: the model's tool call is
+// executed through the session's tool registry (the worker's host tools) and the turn continues.
 func TestContinueSessionToolLoop(t *testing.T) {
 	dir := t.TempDir()
 	prov := &mockProvider{turns: []scriptedTurn{
@@ -397,10 +376,8 @@ func (s *blockingTurnStream) Next(ctx context.Context) (Event, bool, error) {
 }
 func (s *blockingTurnStream) Close() error { return nil }
 
-// TestContinueSessionHangingStreamIsTornDown pins the ctx-aware teardown: a
-// provider stream that never emits a terminal event must not hang the
-// collection — when ctx is done the stream is closed and the turn surfaces
-// an error part instead of waiting forever.
+// TestContinueSessionHangingStreamIsTornDown pins the ctx-aware teardown: a provider stream that
+// never emits a terminal event must not hang the collection.
 func TestContinueSessionHangingStreamIsTornDown(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".orchicon", "sessions", "exec_prior.jsonl")
@@ -462,14 +439,8 @@ func (b *blockingProvider) StreamTurn(ctx context.Context, req TurnRequest) (Tur
 func (b *blockingProvider) ListModels(ctx context.Context) ([]ModelInfo, error) { return nil, nil }
 func (b *blockingProvider) Capabilities() Capabilities                          { return Capabilities{Streaming: true} }
 
-// TestContinueSessionForeignAdapterSkipsIdentityLookup pins AC 1's guard on the
-// NATIVE side: a follow-up whose prior transcript identity was recorded by
-// ANOTHER adapter (opencode) has nothing to verify here — that session id
-// belongs to the other adapter, not to the native in-process engine — so the
-// native follow-up continues from the durable context instead of refusing on an
-// identity mismatch it has no business checking. The skip is SCOPED: the same
-// cross-worker transcript under the NATIVE kind (or a legacy row with no kind)
-// is still refused by identity isolation.
+// TestContinueSessionForeignAdapterSkipsIdentityLookup pins AC 1's guard on the NATIVE side: a
+// follow-up whose prior transcript identity was recorded by ANOTHER adapter (opencode) has nothing.
 func TestContinueSessionForeignAdapterSkipsIdentityLookup(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".orchicon", "sessions", "exec_prior.jsonl")
@@ -480,9 +451,8 @@ func TestContinueSessionForeignAdapterSkipsIdentityLookup(t *testing.T) {
 		TenantID:    "tnt_test",
 	})
 
-	// (1) Foreign adapter kind: the prior identity is never looked up here, so
-	// a follow-up whose prior session belonged to ANOTHER worker (and adapter)
-	// proceeds rather than being refused.
+	// (1) Foreign adapter kind: the prior identity is never looked up here, so a follow-up whose prior
+	// session belonged to ANOTHER worker (and adapter) proceeds rather than being refused.
 	prov := &mockProvider{turns: []scriptedTurn{
 		{events: []Event{TextDelta{Text: "Continued from context."}}, finish: StopStop, bare: true},
 	}}
@@ -513,9 +483,8 @@ func TestContinueSessionForeignAdapterSkipsIdentityLookup(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// (2) The SAME transcript under the native kind (or a legacy row with no
-	// kind at all) still runs the lookup and is refused — the skip is scoped
-	// to foreign kinds only.
+	// (2) The SAME transcript under the native kind (or a legacy row with no kind at all) still runs
+	// the lookup and is refused — the skip is scoped to foreign kinds only.
 	for _, kind := range []string{adapter.KindOrchicon, ""} {
 		nb := NewBridge(nil, dir, nil)
 		_, err := nb.ContinueSession(context.Background(), scheduler.ContinueSessionOpts{

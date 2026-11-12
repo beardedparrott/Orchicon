@@ -1,0 +1,18 @@
+-- Per-server MCP protocol version pin.
+--
+-- WHY A COLUMN. The MCP client defaults to the modern protocol, which sends a
+-- `server/discover` probe before `initialize`. A server built against the older
+-- spec does not know that method: a Python one fails validation and EXITS, so the
+-- connect reports a timeout against a dead child. The client now degrades
+-- automatically (retries once with the legacy handshake), which fixes the case
+-- for every server without operator action.
+--
+-- This column is therefore an OPTIMISATION and an escape hatch, not the fix:
+-- pinning it skips the wasted first attempt for a known-old server, and gives an
+-- operator a way to force a version for a server whose failure mode merely LOOKS
+-- like a protocol mismatch.
+--
+-- Empty string (the default) means "auto" — negotiate. It is NOT NULL with a
+-- default so existing rows need no backfill and the read path never has to
+-- distinguish NULL from "auto".
+ALTER TABLE mcp_servers ADD COLUMN IF NOT EXISTS protocol_version TEXT NOT NULL DEFAULT '';

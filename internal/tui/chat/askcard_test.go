@@ -9,10 +9,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// TestConversationItemsEmitsAskCard proves the TUI renders a recorded ask_user
-// call as a clarifying-question card: conversationItems emits a KindAsk item
-// carrying the question and options parsed out of the message's tool_calls, with
-// a stable per-message key.
+// TestConversationItemsEmitsAskCard proves the TUI renders a recorded ask_user call as a
+// clarifying-question card.
 func TestConversationItemsEmitsAskCard(t *testing.T) {
 	msgs := []*apiv1.ChatMessage{{
 		Id:   "m1",
@@ -62,15 +60,8 @@ func TestConversationItemsEmitsAskCard(t *testing.T) {
 	}
 }
 
-// TestParseAskUserCallToleratesMalformedArguments: an unreadable payload must never panic, and
-// what it SHOULD produce depends on whether the call has resolved.
-//
-// THIS TEST USED TO ASSERT THE BUG. It required a card for malformed arguments with NO result —
-// which is the PLACEHOLDER state, not a corrupt one: the transcript records a tool call when it is
-// ISSUED with `{}` for its arguments, and `ask_user` does not complete while the question is open
-// (it BLOCKS; that is the pause). So the placeholder was drawn as a "could not be read" card beside
-// the live question — TWO cards for ONE question, for as long as the operator was deciding. The
-// operator hit exactly that in the GUI, in those words.
+// TestParseAskUserCallToleratesMalformedArguments: an unreadable payload must never panic, and what
+// it SHOULD produce depends on whether the call has resolved.
 func TestParseAskUserCallToleratesMalformedArguments(t *testing.T) {
 	call := &apiv1.ToolCall{Id: "tc-1", FunctionName: "ask_user", Arguments: "{not json"}
 
@@ -98,5 +89,48 @@ func TestParseAskUserCallToleratesMalformedArguments(t *testing.T) {
 	// A non-ask tool call is ignored entirely.
 	if parseAskUserCall([]*apiv1.ToolCall{{FunctionName: "list_projects"}}, nil) != nil {
 		t.Error("a non-ask tool call must not produce a card")
+	}
+}
+
+// TestTheAwaitingMarkerKeepsTheCardOpen — the TUI half of the "card goes away / card never goes
+// away" pair.
+func TestTheAwaitingMarkerKeepsTheCardOpen(t *testing.T) {
+	args := `{"question":"Pick a colour","options":[{"label":"Blue"}],"allow_other":true}`
+	call := &apiv1.ToolCall{Id: "tc-2", FunctionName: "orchicon_ask_user", Arguments: args}
+
+	open := parseAskUserCall([]*apiv1.ToolCall{call}, []*apiv1.ToolResult{{
+		ToolCallId: "tc-2", Output: "__orchicon_ask_awaiting_answer__",
+	}})
+	if open == nil {
+		t.Fatal("the awaiting marker produced no card at all")
+	}
+	if open.Answered {
+		t.Error("the awaiting marker settled the card — the operator never replied, and a settled card " +
+			"is one they cannot click")
+	}
+
+	answered := parseAskUserCall([]*apiv1.ToolCall{call}, []*apiv1.ToolResult{{
+		ToolCallId: "tc-2", Output: "Blue",
+	}})
+	if answered == nil || !answered.Answered || answered.AnswerText != "Blue" {
+		t.Errorf("a real answer did not settle the card: %+v", answered)
+	}
+}
+
+// TestTheMCPQualifiedSpellingIsRecognised — the claude half of the report.
+func TestTheMCPQualifiedSpellingIsRecognised(t *testing.T) {
+	args := `{"question":"Pick a colour","options":[{"label":"Blue"}]}`
+	for _, name := range []string{"ask_user", "orchicon_ask_user", "mcp__orchicon__ask_user", "mcp__other__ask_user"} {
+		got := parseAskUserCall([]*apiv1.ToolCall{{
+			Id: "tc-9", FunctionName: name, Arguments: args,
+		}}, nil)
+		if got == nil {
+			t.Errorf("function name %q produced no card — an MCP-served ask is recorded under its "+
+				"qualified name, so the card never renders for that adapter", name)
+		}
+	}
+	// An ordinary tool must not be mistaken for an ask.
+	if got := parseAskUserCall([]*apiv1.ToolCall{{Id: "tc-9", FunctionName: "execute", Arguments: args}}, nil); got != nil {
+		t.Errorf("an `execute` call was treated as an ask (%q)", got.Question)
 	}
 }

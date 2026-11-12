@@ -1,12 +1,6 @@
 package adapter_test
 
 // runsteps_test.go — THE ONE WALK (AC 2, AC 3).
-//
-// adapter.ResolveRunSteps is the single traversal over a run's steps that BOTH
-// consumers read: the adapter demand set (scheduler.runNeedsServe) and the
-// MCP/skills union (mcpsettings' run-scope resolver). The properties pinned
-// here are the ones runNeedsServe now INHERITS, so a behaviour change breaks
-// this test rather than silently changing the serve gate.
 
 import (
 	"context"
@@ -103,9 +97,7 @@ func TestResolveRunSteps(t *testing.T) {
 	if res[1].ModelRef != "anthropic/claude-sonnet-4" {
 		t.Errorf("approval step model ref = %q", res[1].ModelRef)
 	}
-	// An UNRESOLVABLE worker folds to the zero value: empty ModelRef, no
-	// version. The demand set reads that as the CONSERVATIVE default, which is
-	// exactly the pre-existing gate's rule.
+	// An UNRESOLVABLE worker folds to the zero value: empty ModelRef, no version.
 	if res[2].ModelRef != "" || res[2].Version.ID != "" {
 		t.Errorf("unresolvable worker did not fold to the zero value: %+v", res[2])
 	}

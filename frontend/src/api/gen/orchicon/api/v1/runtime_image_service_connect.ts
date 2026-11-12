@@ -12,7 +12,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { BuildRuntimeImageRequest, BuildRuntimeImageResponse, CancelRuntimeImageBuildRequest, CancelRuntimeImageBuildResponse, CreateRuntimeImageRequest, CreateRuntimeImageResponse, DeleteRuntimeImageRequest, DeleteRuntimeImageResponse, GetRuntimeImageRequest, GetRuntimeImageResponse, GetStockImageTemplateRequest, GetStockImageTemplateResponse, ListAvailableRuntimeImagesRequest, ListAvailableRuntimeImagesResponse, ListRuntimeImagesRequest, ListRuntimeImagesResponse, ResetRuntimeImageRequest, ResetRuntimeImageResponse, UpdateRuntimeImageRequest, UpdateRuntimeImageResponse } from "./runtime_image_service_pb.js";
+import { BuildRuntimeImageRequest, BuildRuntimeImageResponse, CancelRuntimeImageBuildRequest, CancelRuntimeImageBuildResponse, CreateRuntimeImageRequest, CreateRuntimeImageResponse, DeleteRuntimeImageRequest, DeleteRuntimeImageResponse, FetchRuntimeImageRequest, FetchRuntimeImageResponse, GetRuntimeImageRequest, GetRuntimeImageResponse, GetStockImageTemplateRequest, GetStockImageTemplateResponse, ListAvailableRuntimeImagesRequest, ListAvailableRuntimeImagesResponse, ListRuntimeImagesRequest, ListRuntimeImagesResponse, ResetRuntimeImageRequest, ResetRuntimeImageResponse, UpdateRuntimeImageRequest, UpdateRuntimeImageResponse } from "./runtime_image_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -88,6 +88,22 @@ export const RuntimeImageService = {
       name: "BuildRuntimeImage",
       I: BuildRuntimeImageRequest,
       O: BuildRuntimeImageResponse,
+      kind: MethodKind.ServerStreaming,
+    },
+    /**
+     * FetchRuntimeImage downloads (podman/docker pull) the row's published
+     * image, streaming the pull output. This is the on-demand FETCH and it is
+     * DISTINCT from BuildRuntimeImage, which BUILDS a spec from a Dockerfile.
+     * Images are never pulled at install time: the fetch happens when an
+     * operator opts into runtime containers. Idempotent — an image already
+     * present locally is reported skipped with no download.
+     *
+     * @generated from rpc orchicon.api.v1.RuntimeImageService.FetchRuntimeImage
+     */
+    fetchRuntimeImage: {
+      name: "FetchRuntimeImage",
+      I: FetchRuntimeImageRequest,
+      O: FetchRuntimeImageResponse,
       kind: MethodKind.ServerStreaming,
     },
     /**

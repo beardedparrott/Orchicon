@@ -1,30 +1,6 @@
 package work
 
 // bulk_set.go — the BULK counterpart of the single-item workflow/runtime-image form.
-//
-// WHY THIS EXISTS. A work item with no workflow binding cannot run: the reconciler backstops and
-// the status transitions refuse. That turns "bind a workflow" from a convenience into the only way
-// to unblock an item — and it can strand a whole backlog that is bound to nothing. Binding a
-// selection one modal at a time is the tedium this removes.
-//
-// WHY `workflow_id` AND `runtime_image` TOGETHER. A step's container and the workflow that drives
-// it are a pair: they are chosen together when building sequential work items. Offering one without
-// the other would leave the operator doing half the job per item.
-//
-// WHY A SCALAR FIELD IS DIFFERENT FROM STATUS/REASSIGNMENT. bulkItemActions' comment explains why
-// bulk STATUS change and WORKER ASSIGNMENT are withheld: each carries its own acceptance review and
-// worker binding, so they would need a form per item. That reasoning does NOT reach a scalar field:
-// a workflow binding is ONE picker, ONE value, identical for every selected item — exactly the
-// shape BulkUpdateWorkerModel already proved out for the Workers pane.
-//
-// NO PROTO CHANGE AND NO NEW RPC. `UpdateWorkItemRequest.workflow_id` (field 15) and
-// `.runtime_image` (field 19) are both `optional`: an UNSET field is left unchanged and `empty` is
-// the documented unbind/base-image value. So the write is N sequential UpdateWorkItem calls, exactly
-// like the existing bulk archive/delete, and clearing needs no extra mechanism.
-//
-// THE INDEPENDENCE GUARANTEE (AC2) IS STRUCTURAL, NOT HOPED FOR: an untouched field is left as a nil
-// pointer, so it is OMITTED from the request entirely. Sending a zero value for an untouched field
-// would silently unbind it — that is the one mistake this file must never make.
 
 import (
 	"context"
@@ -49,9 +25,7 @@ const (
 	// keyBulkSet is the action-bar key + chord for the bulk set. `W` is unused on this screen
 	// (see handleKey's case list: n e d s b v T Z O / + - y a R x ctrl+x esc).
 	keyBulkSet = "W"
-	// bulkSetSkip is the "leave unchanged" sentinel. It is deliberately a value no real workflow
-	// id or runtime-image tag can equal, so the field can be OMITTED from the request (nil
-	// pointer) rather than sent as a zero value.
+	// bulkSetSkip is the "leave unchanged" sentinel.
 	bulkSetSkip = "\x00skip"
 	// bulkSetClear is the documented clearing value: empty workflow_id = unbind; empty
 	// runtime_image = base image. Per the proto, that is the whole clearing mechanism.
@@ -75,12 +49,7 @@ func workflowStepsNonEmpty(steps string) bool {
 }
 
 // workflowIsRunnable is the predicate the SERVER applies — but only at SCHEDULE time
-// (ValidateSequenceSubtree, internal/workitem/validate.go: status PUBLISHED|DEPRECATED AND the
-// leaf's workflow has >= 1 step).
-//
-// UpdateWorkItem performs NO bind-time validation of workflow_id, so a bulk bind of a non-runnable
-// template would land silently and fail later, when the item is scheduled. This picker therefore
-// applies the schedule-time predicate client-side and EXCLUDES non-runnable templates.
+// (ValidateSequenceSubtree, internal/workitem/validate.go.
 func workflowIsRunnable(w *apiv1.Workflow, v *apiv1.WorkflowVersion) bool {
 	switch w.GetStatus() {
 	case apiv1.WorkflowStatus_WORKFLOW_STATUS_PUBLISHED,
@@ -91,11 +60,8 @@ func workflowIsRunnable(w *apiv1.Workflow, v *apiv1.WorkflowVersion) bool {
 	return workflowStepsNonEmpty(v.GetSteps())
 }
 
-// loadRunnableWorkflows lists the tenant's workflow TEMPLATES and keeps only the runnable ones
-// (see workflowIsRunnable), counting the dropped ones so the picker can say how many it hid.
-//
-// The runnable predicate needs the steps, and the `Workflow` message carries none — so each
-// candidate costs one GetWorkflow for its latest_version.
+// loadRunnableWorkflows lists the tenant's workflow TEMPLATES and keeps only the runnable ones (see
+// workflowIsRunnable), counting the dropped ones so the picker can say how many it hid.
 func loadRunnableWorkflows(ctx context.Context, cl *client.Clients) (opts []workflowOpt, hidden int, err error) {
 	resp, err := cl.Workflows.ListWorkflows(ctx, connect.NewRequest(&apiv1.ListWorkflowsRequest{
 		Type:     "template",
@@ -134,9 +100,8 @@ func (m *Model) prepBulkSet() tea.Cmd {
 		return nil
 	}
 	m.formLoading = true
-	// Snapshot the selection NOW: the modal owns the keys while it is up, but the mark set could
-	// still be cleared by a background reconciliation, and the write must target what the operator
-	// confirmed.
+	// Snapshot the selection NOW: the modal owns the keys while it is up, but the mark set could still
+	// be cleared by a background reconciliation, and the write must target what the operator confirmed.
 	m.bulkSetIDs = m.Base.BulkIDs()
 	cl := m.cl
 	return func() tea.Msg {
@@ -150,10 +115,8 @@ func (m *Model) prepBulkSet() tea.Cmd {
 		}
 		msg.workflows = wfs
 		msg.hiddenWorkflows = hidden
-		// The runtime-image list is the SAME source the create/edit forms use: value = the tag the
-		// request carries. A client without the image service still gets a usable picker (a
-		// workflow-only set), but it must not be DEREFERENCED — the guard at the top of this function
-		// promises this path never panics on a missing client, and `Images` is one of those clients.
+		// The runtime-image list is the SAME source the create/edit forms use: value = the tag the request
+		// carries.
 		if cl.Images != nil {
 			if lr, err := cl.Images.ListRuntimeImages(ctx, connect.NewRequest(&apiv1.ListRuntimeImagesRequest{PageSize: 100})); err == nil {
 				for _, img := range lr.Msg.GetRuntimeImages() {
@@ -168,9 +131,7 @@ func (m *Model) prepBulkSet() tea.Cmd {
 	}
 }
 
-// newBulkSetForm builds the bulk picker: ONE workflow picker and ONE runtime-image picker, each
-// defaulting to "leave unchanged" so a workflow-only set cannot touch runtime images (and vice
-// versa). Both option lists are the same sources the single-item forms already use.
+// newBulkSetForm builds the bulk picker: ONE workflow picker and ONE runtime-image picker.
 func (m *Model) newBulkSetForm(wfs []workflowOpt, imgs []kit2.Option) *kit2.Form {
 	wfOpts := []kit2.Option{
 		{Value: bulkSetSkip, Label: "— leave workflow unchanged —"},
@@ -204,11 +165,6 @@ func (m *Model) newBulkSetForm(wfs []workflowOpt, imgs []kit2.Option) *kit2.Form
 
 // wireBulkSetForm installs the submit handler: it turns the chosen pair into ONE action and hands
 // it to openAction, which raises the confirm that names the count and the value(s).
-//
-// THE CONFIRM IS RAISED HERE, AFTER THE PICKER, and not in bulkItemActions. A confirm raised before
-// the values are known could only name the count; raising it after is what lets it name the values
-// too. It is also why the action carries no `Confirm` of its own in the action list — the picker
-// has to be opened first.
 func (m *Model) wireBulkSetForm(f *kit2.Form, ids []string, wfNames map[string]string) *kit2.Form {
 	f.Focused = true
 	f.Width = 70
@@ -240,16 +196,13 @@ func (m *Model) bulkSetAction(ids []string, wfVal, imgVal, wfLabel string) kit2.
 			if m.cl == nil || m.cl.WorkItems == nil {
 				return fmt.Errorf("no work-item client")
 			}
-			// EVERY id is attempted and the failures are COUNTED: a partial bulk operation must say
-			// what it did rather than stop at the first rejection and claim a clean sweep (the house
-			// style bulk archive/delete already use).
+			// EVERY id is attempted and the failures are COUNTED: a partial bulk operation must say what it did
+			// rather than stop at the first rejection and claim a clean sweep (the house style bulk.
 			failed := 0
 			reasons := make([]string, 0, 3)
 			for _, id := range ids {
 				req := &apiv1.UpdateWorkItemRequest{Id: id}
-				// ONLY the chosen fields are set. An untouched field stays a nil pointer, i.e. it is
-				// OMITTED from the request — which is exactly the proto's `optional` semantic that
-				// makes a workflow-only write unable to clobber a runtime image (and vice versa).
+				// ONLY the chosen fields are set.
 				if wfVal != bulkSetSkip {
 					wf := wfVal
 					req.WorkflowId = &wf
@@ -276,12 +229,6 @@ func (m *Model) bulkSetAction(ids []string, wfVal, imgVal, wfLabel string) kit2.
 
 // bulkSetConfirmText names the count and the VALUE(S) being applied, and calls out that a sequence
 // parent's own binding is INERT.
-//
-// The parent note is not decoration: a parent-with-children is a sequence container, so even a
-// parent carrying a fresh binding gets a sequence badge and is routed to the sequence engine at
-// fire time — its children each run their own workflows. Setting it is still allowed (the
-// single-item form permits it too, and refusing here would invent a carve-out the single path does
-// not have), but the operator must not believe they ROUTED the parent.
 func (m *Model) bulkSetConfirmText(ids []string, wfVal, imgVal, wfLabel string) string {
 	var values []string
 	switch wfVal {

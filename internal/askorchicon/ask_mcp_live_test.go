@@ -1,25 +1,6 @@
 package askorchicon
 
-// ask_mcp_live_test.go — the REAL-TURN end-to-end proof for child 6, the one the
-// acceptance criteria actually demand ("observed on a real turn, not asserted only
-// in a unit test"; "a call to one succeeds"; "verified per mode with a real turn").
-//
-// WHAT MAKES IT REAL, and why the other file is not enough. ask_mcp_test.go drives
-// AskToolDefs/ExecuteAskTool with a FAKE resolver and a FAKE client. This file
-// replaces every seam with the production one:
-//
-//   - a REAL `mcp_servers` row (project-owned AND conversation-owned) written to
-//     Postgres, read back by the REAL mcpsettings.Resolver (mcpsettings.NewResolver);
-//   - a REAL MCP server process (an in-process streamable-HTTP server built with the
-//     same go-sdk the manager speaks to), so discovery and an actual tool call cross
-//     a real JSON-RPC transport;
-//   - the REAL native Ask turn: `NativeBridge.SendTurnMessage` with the injected
-//     askorchicon AskToolProvider, over a scripted provider whose FIRST round asks
-//     the model to call `mcp__<server>__<tool>` and whose SECOND round consumes the
-//     tool result — so the call is executed by the bridge's own tool loop
-//     (chatturn.go executeToolCalls), exactly as a live conversation would.
-//
-// Gate: ORCHICON_TEST_DSN (a disposable database), the repo-wide convention.
+// ask_mcp_live_test.go — the REAL-TURN end-to-end proof for child 6.
 
 import (
 	"context"
@@ -73,9 +54,8 @@ func newLiveMCPFixture(t *testing.T) string {
 
 // --- a REAL scope: project-owned + conversation-owned mcp_servers rows ----------
 
-// seedLiveMCPRows writes one project-owned server and one conversation-owned server
-// into the given tenant and returns their ids (used as the `mcp__<id>__<tool>`
-// server prefix).
+// seedLiveMCPRows writes one project-owned server and one conversation-owned server into the given
+// tenant and returns their ids (used as the `mcp__<id>__<tool>` server prefix).
 func seedLiveMCPRows(t *testing.T, pool *db.Pool, url string) (convID, projectID, convServerID, projServerID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -123,9 +103,8 @@ func seedLiveMCPRows(t *testing.T, pool *db.Pool, url string) (convID, projectID
 
 // --- a scripted provider: round 1 calls the MCP tool, round 2 speaks -------------
 
-// liveTurnProvider streams round 1 (a tool call for `tool`) then round 2 (a reply
-// that quotes the tool result), and records the tool defs it was OFFERED so the test
-// can assert on the offered surface too.
+// liveTurnProvider streams round 1 (a tool call for `tool`) then round 2 (a reply that quotes the
+// tool result), and records the tool defs it was OFFERED so the test can assert on the offered.
 type liveTurnProvider struct {
 	tool string
 	// seenTools is the def-name set offered on the round-1 request.
@@ -187,10 +166,8 @@ func (s *liveStream) Close() error { return nil }
 
 // --- the tests -------------------------------------------------------------------
 
-// AC 2 (native leg) + AC 3, ON A REAL TURN: a conversation in a project receives the
-// project's server AND its own, both discovered over a real transport, offered in the
-// mode that may act, and a call to one is executed by the bridge's tool loop and its
-// REAL output returned to the model.
+// AC 2 (native leg) + AC 3, ON A REAL TURN: a conversation in a project receives the project's
+// server AND its own, both discovered over a real transport, offered in the mode that may act.
 func TestLiveAskTurnReceivesProjectAndConversationMCPInEveryMode(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	url := newLiveMCPFixture(t)
@@ -199,10 +176,8 @@ func TestLiveAskTurnReceivesProjectAndConversationMCPInEveryMode(t *testing.T) {
 	svc := New(pool, slog.Default(), nil, nil, nil)
 	svc.SetScopeResolver(mcpsettings.NewResolver(pool))
 
-	// AC 2 "in EVERY mode": the SKILLS half and the scope stamping are mode-independent;
-	// for MCP the mode decides OFFER vs REFUSE. Assert the OFFERED surface per mode for
-	// an Iteration turn here (act), and prove the refusal path per mode in the sibling
-	// test below.
+	// AC 2 "in EVERY mode": the SKILLS half and the scope stamping are mode-independent; for MCP the
+	// mode decides OFFER vs REFUSE.
 	prov := &liveTurnProvider{tool: mcpclient.ToolName(convServerID, liveMCPServerTool)}
 	b := orchicon.NewBridge(orchicon.ProviderResolverFunc(func(context.Context, string, string) (orchicon.Provider, error) {
 		return prov, nil
@@ -256,9 +231,8 @@ func TestLiveAskTurnReceivesProjectAndConversationMCPInEveryMode(t *testing.T) {
 	}
 }
 
-// AC 5, ON A REAL TURN: in a mode that may not act, the opaque MCP tool is NEITHER
-// offered NOR executed, and the refusal names the mode and says the assistant cannot
-// switch itself. Verified PER MODE (brainstorm + quick_work).
+// AC 5, ON A REAL TURN: in a mode that may not act, the opaque MCP tool is NEITHER offered NOR
+// executed, and the refusal names the mode and says the assistant cannot switch itself.
 func TestLiveAskTurnRefusesOpaqueMCPPerMode(t *testing.T) {
 	pool := workItemKindTestPool(t)
 	url := newLiveMCPFixture(t)
@@ -282,9 +256,7 @@ func TestLiveAskTurnRefusesOpaqueMCPPerMode(t *testing.T) {
 
 			sid, _ := b.CreateConversationSession(ctx, convID+"-"+mode, "live")
 			bus, _ := b.Subscribe(ctx, convID+"-"+mode)
-			// The call is asked for, but the mode must refuse it. Consent is answered
-			// "once" below so the FIRST gate (consent) is not what stops it — the MODE
-			// guard is, which is exactly the boundary under test.
+			// The call is asked for, but the mode must refuse it.
 			if err := b.SendTurnMessage(ctx, convID+"-"+mode, sid, "system", "orchicon/test", "open an issue"); err != nil {
 				t.Fatalf("SendTurnMessage: %v", err)
 			}
@@ -319,15 +291,6 @@ func TestLiveAskTurnRefusesOpaqueMCPPerMode(t *testing.T) {
 }
 
 // drainLive collects a turn's events until the bus closes (bounded).
-//
-// ONE READER, deliberately. It also answers a consent card inline: an opaque MCP
-// tool is consent-gated in EVERY mode (consentGatedTool), so a test that never
-// answers would stall on consent's fail-closed window instead of reaching the MODE
-// guard under test. A second goroutine reading bus.Events() would SPLIT the event
-// stream with this one, so the answering happens HERE rather than beside it.
-//
-// `consent` selects the answer: "once" approves (so the mode guard is the thing
-// that decides), "" leaves every ask unanswered (the fail-closed path).
 func drainLive(t *testing.T, b *orchicon.NativeBridge, bus scheduler.SessionBus, consent string) []scheduler.SessionEvent {
 	t.Helper()
 	var out []scheduler.SessionEvent

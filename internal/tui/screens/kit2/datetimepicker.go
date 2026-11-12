@@ -72,9 +72,7 @@ const (
 
 const (
 	// dateTimePickerBoxW fits the widest thing drawn — the resolved instant, which can run to a long
-	// zone name — AND the hint lines, because Pad() TRUNCATES and a truncated hint loses its TAIL, where
-	// the chords live. Measured before the first fix: at 44 wide, "esc: cancel" was painted as "esc: ca"
-	// and "t today" as "t t". datetimepicker_test asserts every painted line fits.
+	// zone name — AND the hint lines, because Pad() TRUNCATES and a truncated hint loses its TAIL.
 	dateTimePickerBoxW = 46
 	// inner rows: month header, weekday header, up to 6 week rows, blank, the time row, the resolved
 	// instant, blank, then five hint rows.
@@ -96,16 +94,10 @@ type DateTimePicker struct {
 
 	screenW, screenH int
 
-	// zone is the location the wall clock is read AND written in. It is set by the constructor rather
-	// than read from the machine at commit time because a schedule stores its OWN zone: a legacy UTC
-	// schedule's 09:00 means 09:00 UTC whatever the operator's clock says, so the modal has to edit and
-	// commit in the SCHEDULE's zone — otherwise merely opening and closing it would shift the stored
-	// time by the operator's offset, with nobody asking for it.
+	// zone is the location the wall clock is read AND written in.
 	zone *time.Location
 
-	// done/committed record the OUTCOME; the HOST closes the modal, for the reason ModelPicker.Done
-	// documents (a callback capturing the host model would mutate a copy bubbletea has already
-	// replaced).
+	// done/committed record the OUTCOME; the HOST closes the modal.
 	done      bool
 	committed bool
 }
@@ -116,12 +108,6 @@ func NewDateTimePicker(title string, initial time.Time) *DateTimePicker {
 }
 
 // NewDateTimePickerIn builds a picker that edits and commits in a SPECIFIC zone.
-//
-// A picker with no zone of its own is right for a one-shot time (the operator chooses a moment and the
-// wire takes an instant). A RECURRENCE is different: its wall clock belongs to the schedule's zone, so a
-// host editing a recurring definition has to hand the modal that zone — otherwise a legacy UTC schedule
-// would be displayed and re-committed in local time, and merely opening and closing the modal would move
-// its fire time by the operator's offset without anyone asking for it.
 func NewDateTimePickerIn(title string, initial time.Time, zone *time.Location) *DateTimePicker {
 	if zone == nil {
 		zone = time.Local
@@ -131,17 +117,13 @@ func NewDateTimePickerIn(title string, initial time.Time, zone *time.Location) *
 	}
 	p := &DateTimePicker{title: title, zone: zone}
 	p.setFrom(initial)
-	// MINUTES FIRST. dtUnit's zero value is dtHour, and for a schedule the FINE end is the one the
-	// arrows are reached for: an operator choosing a start time is almost always nudging by a minute or
-	// a few. The hour is then one keystroke away (←) rather than the other way round. Set explicitly,
-	// so the default never silently depends on the enum's declaration order.
+	// MINUTES FIRST.
 	p.unit = dtMinute
 	return p
 }
 
-// setFrom adopts the LOCAL components of an instant — the one entry point for every mutation, so the
-// six fields can never be left disagreeing about which instant they describe. "Local" here means the
-// picker's own ZONE (see zone), not the machine's.
+// setFrom adopts the LOCAL components of an instant — the one entry point for every mutation, so
+// the six fields can never be left disagreeing about which instant they describe.
 func (p *DateTimePicker) setFrom(t time.Time) {
 	l := t.In(p.loc())
 	p.year, p.month, p.day = l.Year(), l.Month(), l.Day()
@@ -172,13 +154,8 @@ func (p *DateTimePicker) Time() time.Time {
 	return time.Date(p.year, p.month, p.day, p.hour, p.minute, 0, 0, p.loc())
 }
 
-// Value is the chosen instant as RFC3339 carrying the LOCAL OFFSET ("2026-09-18T14:30:00-04:00"), not
-// a UTC "Z".
-//
-// Both spellings are valid RFC3339 and both denote the same moment once parsed, so this is not about
-// correctness on the wire — it is about what a person reads later. The offset states the zone the
-// operator chose in, which is the one fact a bare "Z" throws away, and a stored scheduled start is
-// something an operator does read back.
+// Value is the chosen instant as RFC3339 carrying the LOCAL OFFSET ("2026-09-18T14:30:00-04:00"),
+// not a UTC "Z".
 func (p *DateTimePicker) Value() string { return p.Time().Format(time.RFC3339) }
 
 // Label is the chosen instant rendered for a human, in the picker's own zone.
@@ -210,8 +187,7 @@ func (p *DateTimePicker) boxSize() (int, int) {
 func (p *DateTimePicker) shiftDays(n int) { p.setFrom(p.Time().AddDate(0, 0, n)) }
 
 // shiftMonths moves a whole month, CLAMPING the day: the 31st of a 30-day month does not exist, and
-// silently landing on "the 31st of September" (which time.Date would roll into October) would commit a
-// date the operator never saw highlighted.
+// silently landing on "the 31st of September" (which time.Date would roll into October) would.
 func (p *DateTimePicker) shiftMonths(n int) {
 	t := time.Date(p.year, p.month, 1, p.hour, p.minute, 0, 0, p.loc()).AddDate(0, n, 0)
 	last := daysIn(t.Year(), t.Month())
@@ -264,8 +240,7 @@ func (p *DateTimePicker) HandleKey(k keyMsg) (bool, tea.Cmd) {
 }
 
 // dateKey navigates the calendar: a day at a time, a week with the vertical arrows, a month with
-// PgUp/PgDn — the same vocabulary kit2.DatePicker established, so the two calendars in the TUI are not
-// two things to learn.
+// PgUp/PgDn — the same vocabulary kit2.DatePicker established.
 func (p *DateTimePicker) dateKey(k keyMsg) (bool, tea.Cmd) {
 	switch k.String() {
 	case "left", "h":
@@ -294,12 +269,6 @@ func (p *DateTimePicker) dateKey(k keyMsg) (bool, tea.Cmd) {
 }
 
 // timeKey edits the clock.
-//
-// THE STEPS ARE THE POINT, and they are a ladder rather than one rate. The old control offered only
-// 15-minute-ish jumps, which is why "very specific time jumps like 15 minutes" is in the report: an
-// operator who wanted 18:07 had no way to say so. Here ↑/↓ move ONE minute, shift+↑/↓ move five, and
-// PgUp/PgDn move a quarter hour — so both ends of that complaint are addressable, and accuracy never
-// costs a typing test.
 func (p *DateTimePicker) timeKey(k keyMsg) (bool, tea.Cmd) {
 	unit := time.Minute
 	if p.unit == dtHour {
@@ -368,9 +337,8 @@ func (p *DateTimePicker) Calendar() []string {
 			case day < 1 || day > last:
 				b.WriteString("    ")
 			case day == p.day:
-				// The CHOSEN day is always marked, whichever region has the keys: it is the selection,
-				// and hiding it while the clock is being edited would make the modal look like it had
-				// forgotten the date.
+				// The CHOSEN day is always marked, whichever region has the keys: it is the selection, and hiding
+				// it while the clock is being edited would make the modal look like it had forgotten the date.
 				b.WriteString(theme.ListItemSelected.Render(fmt.Sprintf("%3d ", day)))
 			case isThisMonth && day == now.Day():
 				b.WriteString(theme.StatusOK.Render(fmt.Sprintf("%3d ", day)))
@@ -424,9 +392,7 @@ func (p *DateTimePicker) View() string {
 	active := lipgloss.NewStyle().Foreground(theme.AccentIndigo)
 	dim := theme.DetailKey
 
-	// THE HINTS ARE SHORT DELIBERATELY. Pad() truncates, so a hint wider than the box loses its TAIL —
-	// and the tail is where the chords are. They are split across lines rather than trimmed, and the
-	// fitted-width assertion in datetimepicker_test keeps them honest.
+	// THE HINTS ARE SHORT DELIBERATELY.
 	dateHint := "  ←→ day · ↑↓ week · PgUp/Dn month"
 	timeHint := "  ←→ hour/min · ↑↓ step · shift+↑↓ ×5"
 	if p.region == dtTime {
@@ -436,8 +402,7 @@ func (p *DateTimePicker) View() string {
 	}
 
 	// The time row NAMES the region — TAB is discoverable from the modal itself rather than only from a
-	// hint underneath — and carries the ▸ marker when the clock holds the keys, so where the arrows act
-	// is legible without colour.
+	// hint underneath — and carries the ▸ marker when the clock holds the keys.
 	timeRow := "  " + dim.Render("  time  ") + p.clock()
 	if p.region == dtTime {
 		timeRow = "  " + active.Render("▸ time  ") + p.clock()

@@ -1,20 +1,7 @@
 package askorchicon
 
-// ask_mcp_test.go — the NATIVE Ask MCP surface, end to end through the REAL tool
-// choke point (AskToolDefs / ExecuteAskTool), with a fake scope resolver and a fake
-// client. No server is spawned: the production connect seam (askMCPConnect) is
-// substituted, the same test-seam pattern ask_file_root uses.
-//
-// WHAT IT PROVES (the work item's AC 2 native leg, AC 3, and AC 5's native half):
-//
-//   - a conversation in a project resolves the CONVERSATION scope (project ∪
-//     conversation) and its discovered `mcp__<server>__<tool>` names are OFFERED in
-//     a mode that may act;
-//   - a call to one ROUTES to the client and returns its result;
-//   - in Brainstorm / Quick Work the tool is neither offered NOR executed, and the
-//     refusal names the mode and says the model cannot switch itself — from the SAME
-//     table;
-//   - the client is closed at conversation teardown, never per turn.
+// ask_mcp_test.go — the NATIVE Ask MCP surface, end to end through the REAL tool choke point
+// (AskToolDefs / ExecuteAskTool), with a fake scope resolver and a fake client.
 
 import (
 	"context"
@@ -68,8 +55,9 @@ func (c *askMCPFakeClient) Close() error { c.closed = true; return nil }
 // stubAskMCPConnect installs fn as the client-construction seam for one test.
 func stubAskMCPConnect(fn func(ctx context.Context, specs []mcpclient.ServerSpec) (askMCPClient, error)) func() {
 	old := askMCPConnect
-	askMCPConnect = func(ctx context.Context, _ *slog.Logger, specs []mcpclient.ServerSpec) (askMCPClient, error) {
-		return fn(ctx, specs)
+	askMCPConnect = func(ctx context.Context, _ *slog.Logger, specs []mcpclient.ServerSpec) (askMCPClient, []mcpclient.ServerFailure, error) {
+		c, err := fn(ctx, specs)
+		return c, nil, err
 	}
 	return func() { askMCPConnect = old }
 }
@@ -154,9 +142,8 @@ func TestNativeAskOffersAndExecutesTheConversationsMCPTools(t *testing.T) {
 	}
 }
 
-// AC 5 (native half): in a mode that may not act, the opaque MCP tool is NEITHER
-// offered NOR executed, and the refusal names the mode and says the model cannot
-// switch itself. Same table for offer and call.
+// AC 5 (native half): in a mode that may not act, the opaque MCP tool is NEITHER offered NOR
+// executed, and the refusal names the mode and says the model cannot switch itself.
 func TestNativeAskRefusesOpaqueMCPOutsideAModeThatActs(t *testing.T) {
 	fake := &askMCPFakeClient{defs: mcpDefsFor(), execOut: "should never be reached"}
 	restore := stubAskMCPConnect(func(context.Context, []mcpclient.ServerSpec) (askMCPClient, error) {
@@ -314,10 +301,8 @@ func TestNativeAskRestartsTheClientWhenTheProjectChanges(t *testing.T) {
 	}
 }
 
-// AC 2 (native leg), THE CASE THE PROJECT CHECK ALONE MISSES: a conversation that
-// started with NO project resolves nothing (a cached "none"), then GAINS a project.
-// Without the per-turn reconciliation the cached empty answer would persist for the
-// life of the conversation and the new project's servers would never be offered.
+// AC 2 (native leg), THE CASE THE PROJECT CHECK ALONE MISSES: a conversation that started with NO
+// project resolves nothing (a cached "none"), then GAINS a project.
 func TestNativeAskResolvesWhenAConversationGainsAProject(t *testing.T) {
 	fake := &askMCPFakeClient{defs: mcpDefsFor(), execOut: "ok"}
 	// The resolver answers by the project asked for: none ⇒ nothing.
@@ -355,10 +340,8 @@ func TestNativeAskResolvesWhenAConversationGainsAProject(t *testing.T) {
 	}
 }
 
-// AC 2 (native leg), THE OTHER CASE: the conversation's OWN server is added between
-// two turns while its project is unchanged. The project check cannot see this, so the
-// client would keep serving the set resolved before the write. The fingerprint compare
-// catches it and the new tool becomes offerable.
+// AC 2 (native leg), THE OTHER CASE: the conversation's OWN server is added between two turns while
+// its project is unchanged.
 func TestNativeAskPicksUpAServerAddedMidConversation(t *testing.T) {
 	fake := &askMCPFakeClient{defs: mcpDefsFor(), execOut: "ok"}
 	resolver := &askMCPProjectResolver{byProject: map[string]mcpclient.Resolution{
@@ -399,10 +382,8 @@ func TestNativeAskPicksUpAServerAddedMidConversation(t *testing.T) {
 	}
 }
 
-// askMCPProjectResolver answers per-project, so a test can change what a project
-// resolves BETWEEN turns (a server added, a conversation assigned a project).
-// askMCPFakeResolver cannot: its answer is fixed.
-// The write below is not concurrently raced in these tests (single goroutine).
+// askMCPProjectResolver answers per-project, so a test can change what a project resolves BETWEEN
+// turns (a server added, a conversation assigned a project).
 type askMCPProjectResolver struct {
 	byProject map[string]mcpclient.Resolution
 	got       []mcpclient.ScopeRef

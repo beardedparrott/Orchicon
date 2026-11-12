@@ -1,0 +1,6 @@
+  command -v grafana*: ''
+  pgrep control pattern matched: 'orchicon'
+  pgrep -af grafana: ''
+  grafana files under deploy/: 'grafana-provisioning
+grafana.ini'
+  container engine: none; grafana images: ''

@@ -11,15 +11,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/transcript"
 )
 
-// TestClaudeBudgetAndCompactPartsRenderInTheSharedTranscript is the surface
-// guard for the DISPLAYED half of this change. The shared ladder's budget
-// warning and the Claude-native compact directive are durable user_message
-// parts; internal/transcript is the ONE per-part renderer the session pane,
-// the follow-up seed and the recovery seed all share (it is deliberately a
-// leaf package for exactly that reason). Both the warning and the directive
-// must therefore be visible in the rendered transcript. A payload-shape drift
-// that silently dropped them from every pane would still pass every
-// callback-level assertion in this suite.
+// TestClaudeBudgetAndCompactPartsRenderInTheSharedTranscript is the surface guard for the DISPLAYED
+// half of this change.
 func TestClaudeBudgetAndCompactPartsRenderInTheSharedTranscript(t *testing.T) {
 	fp := newFakeProc()
 	rec := &captureCallbacks{}

@@ -18,11 +18,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/ask"
 )
 
-// ask_parity_test.go — assertions for the Ask Orchicon read-write parity
-// work item: new chat, rename/delete + rail reconcile, the ask-model picker
-// (model_ref on the created conversation), mode, the kit2 Stream transcript
-// (append preserves the scroll offset; tail followed only at the bottom),
-// and the explicit attachment refusal.
+// ask_parity_test.go — assertions for the Ask Orchicon read-write parity work item.
 
 type stubAskParity struct {
 	apiv1connect.UnimplementedAskOrchiconServiceHandler
@@ -58,25 +54,16 @@ type stubAskParity struct {
 	// button calls the same RPC).
 	abortedID string
 
-	// listMessagesCalls counts the ListMessages RPCs this plane served. It exists so a test can assert
-	// that the activity line's rolling tool counter adds NO fetch of its own: the counter must render
-	// from the page the transcript poll already carried (AC10). The field is additive — every other
-	// assertion in this file is untouched by it.
+	// listMessagesCalls counts the ListMessages RPCs this plane served.
 	listMessagesCalls int
 
-	// projectMoveFor records the conversation whose project was changed, and the target — the pair a test needs
-	// to tell "the write happened" from "the rail merely reloaded".
-	//
-	// THIS RPC HAD NO STUB AT ALL, and that is why the move shipped broken: with no implementation, the embedded
-	// Unimplemented handler answers every call, so NO test could move a conversation and the reload path could
-	// not be exercised end to end. The missing fixture was the missing coverage.
+	// projectMoveFor records the conversation whose project was changed, and the target — the pair a
+	// test needs to tell "the write happened" from "the rail merely reloaded".
 	projectMoveFor  string
 	projectMoveDest string
 
-	// skillFilesFor + skillFilesSet record the conversation-skills write — the pair a test needs
-	// to tell "the write reached the API carrying the list the operator typed" from "the dock said
-	// something". An EMPTY slice is a legitimate write (it CLEARS the list), so the recorder
-	// carries the slice rather than only the id.
+	// skillFilesFor + skillFilesSet record the conversation-skills write — the pair a test needs to
+	// tell "the write reached the API carrying the list the operator typed" from "the dock said.
 	skillFilesFor string
 	skillFilesSet []string
 }
@@ -84,9 +71,7 @@ type stubAskParity struct {
 func (s *stubAskParity) SetConversationProject(_ context.Context, req *connect.Request[apiv1.SetConversationProjectRequest]) (*connect.Response[apiv1.SetConversationProjectResponse], error) {
 	s.projectMoveFor = req.Msg.GetId()
 	s.projectMoveDest = req.Msg.GetProjectId()
-	// THE STUB PERSISTS THE MOVE, because ListConversations reads this same slice. A stub that only recorded the
-	// call would reload the OLD project ids and every "did it leave the rail?" assertion would fail for a reason
-	// that has nothing to do with the shell.
+	// THE STUB PERSISTS THE MOVE, because ListConversations reads this same slice.
 	for _, c := range s.convs {
 		if c.GetId() == req.Msg.GetId() {
 			c.ProjectId = req.Msg.GetProjectId()
@@ -158,9 +143,8 @@ func (s *stubAskParity) SetConversationMode(_ context.Context, req *connect.Requ
 
 func (s *stubAskParity) SetConversationFullsend(_ context.Context, req *connect.Request[apiv1.SetConversationFullsendRequest]) (*connect.Response[apiv1.SetConversationFullsendResponse], error) {
 	s.fullsendID, s.fullsendSet = req.Msg.GetId(), req.Msg.GetEnabled()
-	// The stub ECHOES the value back on the conversation, because that is what the real
-	// service does (Conversation.fullsend is computed from the store the write just set) and
-	// the shell reads the indicator from the reloaded row.
+	// The stub ECHOES the value back on the conversation, because that is what the real service does
+	// (Conversation.fullsend is computed from the store the write just set) and the shell reads.
 	return connect.NewResponse(&apiv1.SetConversationFullsendResponse{
 		Conversation: &apiv1.Conversation{Id: req.Msg.GetId(), Fullsend: req.Msg.GetEnabled()},
 	}), nil
@@ -173,10 +157,8 @@ func (s *stubAskParity) ListMessages(context.Context, *connect.Request[apiv1.Lis
 
 func (s *stubAskParity) SetConversationSkillFiles(_ context.Context, req *connect.Request[apiv1.SetConversationSkillFilesRequest]) (*connect.Response[apiv1.SetConversationSkillFilesResponse], error) {
 	s.skillFilesFor, s.skillFilesSet = req.Msg.GetId(), req.Msg.GetFiles()
-	// The stub PERSISTS the list, because ListConversations reads this same slice — a stub that
-	// only recorded the call would reload the OLD list and every "did the report see it?"
-	// assertion would fail for a reason unrelated to the shell (the same reasoning as
-	// SetConversationProject above).
+	// The stub PERSISTS the list, because ListConversations reads this same slice — a stub that only
+	// recorded the call would reload the OLD list and every "did the report see it?" assertion would.
 	for _, c := range s.convs {
 		if c.GetId() == req.Msg.GetId() {
 			c.SkillFiles = req.Msg.GetFiles()
@@ -290,9 +272,8 @@ func TestRenameAndDeleteRPCAndRailReconcile(t *testing.T) {
 	}
 }
 
-// /compact issues CompactConversation with reason "manual" for the open
-// conversation, and surfaces the server's own detail line (including WHY it
-// declined) rather than inventing one.
+// /compact issues CompactConversation with reason "manual" for the open conversation, and surfaces
+// the server's own detail line (including WHY it declined) rather than inventing one.
 func TestCompactCommandIssuesManualRPC(t *testing.T) {
 	m, stub := newAskApp(t)
 	m.chatConvID = "c1"
@@ -337,9 +318,8 @@ func TestCompactCommandIssuesManualRPC(t *testing.T) {
 	}
 }
 
-// A DECLINED compaction is not an error: the server's reason must reach the
-// operator verbatim, because "nothing to compact" and "I compacted it" look
-// identical otherwise.
+// A DECLINED compaction is not an error: the server's reason must reach the operator verbatim,
+// because "nothing to compact" and "I compacted it" look identical otherwise.
 func TestCompactCommandReportsDecline(t *testing.T) {
 	m, stub := newAskApp(t)
 	m.chatConvID = "c1"
@@ -360,11 +340,8 @@ func TestCompactCommandReportsDecline(t *testing.T) {
 	}
 }
 
-// NOTE: the mid-turn refusal is asserted in the chat package
-// (TestCanCompactRefusesWhileStreaming), where a live turn slot can be created
-// through the controller's own send path. From this package the slot's state is
-// not settable, and testing it here would mean asserting the guard's absence
-// rather than its behaviour.
+// NOTE: the mid-turn refusal is asserted in the chat package (TestCanCompactRefusesWhileStreaming),
+// where a live turn slot can be created through the controller's own send path.
 
 // Commands that need an open conversation refuse loudly instead of guessing.
 func TestConversationCommandsRefuseWithoutOpenConversation(t *testing.T) {
@@ -403,9 +380,7 @@ func TestModeSetRPC(t *testing.T) {
 	}
 }
 
-// Attachments: /attach ATTEMPTS a real attach instead of refusing. The full success
-// path — the pending strip and the next-message contract — is pinned in
-// attachments_test.go's TestSlashAttachAttachesTheFile.
+// Attachments: /attach ATTEMPTS a real attach instead of refusing.
 func TestAttachmentInputIsNoLongerRefused(t *testing.T) {
 	m, _ := newAskApp(t)
 	handled, cmd := m.dispatchSlash("/attach /tmp/report.pdf")
@@ -423,9 +398,8 @@ func TestAttachmentInputIsNoLongerRefused(t *testing.T) {
 	}
 }
 
-// The live transcript renders through the kit2 Stream widget: streaming
-// chunks append, the operator's scroll offset survives the append, and the
-// tail is followed only when the view was already at the bottom.
+// The live transcript renders through the kit2 Stream widget: streaming chunks append, the
+// operator's scroll offset survives the append.
 func TestTranscriptStreamAppendPreservesOffsetAndFollowsAtBottom(t *testing.T) {
 	m, _ := newAskApp(t)
 	m.chatConvID = "c1"
@@ -488,19 +462,6 @@ func TestScrollActiveDetailScrollsTranscript(t *testing.T) {
 }
 
 // A USER MESSAGE APPEARS THE MOMENT IT IS SENT — driven through the REAL path.
-//
-// The operator: "User messages don't appear until AFTER the model responds."
-//
-// THE CAUSE was a click-vs-keyboard asymmetry, the same shape as the Enter bug on this rail. The rail's
-// CLICK path calls RequestDetail, which writes the screen's detail id as a side effect; the KEYBOARD
-// path (OpenAskConversation) did not. The shell's chat repaint is guarded on that id, so with it empty
-// the repaint was a NO-OP — the transcript stream was never even created, and the operator's text stayed
-// invisible until something incidental painted the pane.
-//
-// This test drives OpenAskConversation and then the composer's send, and asserts the transcript exists
-// and carries the operator's text. It deliberately does NOT call syncTranscript directly: the two
-// existing tests in this file do, which is why neither could see a bug in the guard that decides whether
-// to call it at all.
 func TestUserMessageIsVisibleImmediatelyOnOpenConversation(t *testing.T) {
 	m, _ := newAskApp(t)
 	// The REAL Ask screen: the repaint needs RenderTranscript, and the guard needs DetailID.
@@ -532,14 +493,7 @@ func TestUserMessageIsVisibleImmediatelyOnOpenConversation(t *testing.T) {
 	if joined := strings.Join(str.Lines, "\n"); !strings.Contains(joined, "hello there") {
 		t.Errorf("the operator's message is not in the transcript: %q", joined)
 	}
-	// And nothing has replied yet, so the activity line is showing. It is the pane's FOOTER (see
-	// App.transcriptStatusLine), so it is read from the surface that draws it. No heartbeat has arrived in
-	// this fixture, so the server stamp is 0 and the line carries the list's FIRST word — which is the
-	// fallback the operator sees in the first second after sending.
-	//
-	// The assertion is the SHARED property, not the old literal: for a server time, the selector's word.
-	// internal/tui/chat/verbs_test.go and frontend/src/lib/ask-verbs.test.ts pin both lists to one fixture,
-	// so "both clients draw the same word for the same server time" is the promise this now rests on.
+	// And nothing has replied yet, so the activity line is showing.
 	wantStatus := "Orchicon is " + chat.VerbAt(0) + "…"
 	if got := m.askStatusLine(); got != wantStatus {
 		t.Errorf("status line = %q, want %q — the line must name the word the rotation selects for the "+
@@ -549,8 +503,7 @@ func TestUserMessageIsVisibleImmediatelyOnOpenConversation(t *testing.T) {
 }
 
 // THE THINKING INDICATOR CLEARS when the model's prose arrives, and does not appear when there is
-// nothing to wait for. The decision is a pure function so both halves are testable without driving the
-// controller's stream.
+// nothing to wait for.
 func TestAwaitingReplyTracksTheModelFirstContent(t *testing.T) {
 	user := chat.ChatItem{Kind: chat.KindUser, Text: "hi", Key: "draft-1"}
 	reply := chat.ChatItem{Kind: chat.KindText, Text: "hello"}
@@ -576,15 +529,8 @@ func TestAwaitingReplyTracksTheModelFirstContent(t *testing.T) {
 	}
 }
 
-// AC 9 (client freshness): the composer's mode pill is re-pushed by the SAME
-// reload that updates the conversation list it reads.
-//
-// The pill reads currentModeLabel(), which reads m.conversations. Before the
-// fix the strip was written ONLY from a COMPLETED METRICS READ, so `/mode` —
-// which reloads the list but completes no turn — left the pill on the previous
-// mode until an unrelated turn finished or the conversation was reopened. That
-// is the operator's report, verbatim: "when you switch a mode, it doesn't update
-// in the composer unless you move away from the chat and then move back".
+// Before the fix the strip was written ONLY from a COMPLETED METRICS READ, so `/mode` — which
+// reloads the list but completes no turn.
 func TestConversationReloadRePushesTheComposerModePill(t *testing.T) {
 	m, _ := newAskApp(t)
 	m.railProjectsLoaded = true // exercise the main onConversations branch
@@ -598,9 +544,8 @@ func TestConversationReloadRePushesTheComposerModePill(t *testing.T) {
 		t.Fatalf("a reload must push the row's mode into the pill, got %q", m.dock.Mode)
 	}
 
-	// The server moves the mode on (this process's /mode, or the other client's)
-	// and a reload follows: the pill must follow IMMEDIATELY — no metrics read, no
-	// re-open required.
+	// The server moves the mode on (this process's /mode, or the other client's) and a reload follows:
+	// the pill must follow IMMEDIATELY — no metrics read, no re-open required.
 	m.onConversations(chat.ConversationsMsg{Convs: []chat.Conversation{
 		{ID: "c1", Mode: apiv1.ConversationMode_CONVERSATION_MODE_QUICK_WORK},
 	}})
@@ -609,11 +554,8 @@ func TestConversationReloadRePushesTheComposerModePill(t *testing.T) {
 	}
 }
 
-// AC 9 (the strip's OTHER fields — same class): the model and stat fields derive
-// from m.metrics, which a list reload does not touch. When the open
-// conversation's row now names a DIFFERENT model (a `/model` set in the other
-// client), the reload must re-read the metrics so those fields follow it too —
-// and must NOT re-read when nothing moved (no metrics RPC per list poll).
+// AC 9 (the strip's OTHER fields — same class): the model and stat fields derive from m.metrics,
+// which a list reload does not touch.
 func TestRailModelChangeTriggersAStripMetricsRefresh(t *testing.T) {
 	m, _ := newAskApp(t)
 	m.railProjectsLoaded = true
@@ -637,17 +579,8 @@ func TestRailModelChangeTriggersAStripMetricsRefresh(t *testing.T) {
 	}
 }
 
-// AC 9, the strip's MODEL field — the SAME class as the mode pill, and the one
-// the divergence guard depends on. The composer reports the model from
-// currentAskModel(), whose documented first source is "the open conversation's
-// model_ref". It read that from the chat controller's Conversations() slice,
-// which NOTHING ever writes (see currentModeLabel for the same bug) — so the
-// lookup always missed and the field reported the pending selection / tenant
-// default forever, never following the conversation the server actually has.
-// The consequence is not only a wrong label: composerModelDiverged() compares
-// that never-fresh value against the rail row, so it could NEVER converge and
-// every conversations reload bought a metrics RPC — the opposite of the guard's
-// stated purpose.
+// The consequence is not only a wrong label: composerModelDiverged() compares that never-fresh
+// value against the rail row.
 func TestComposerModelFieldReadsTheServersConversationRow(t *testing.T) {
 	m, _ := newAskApp(t)
 	m.railProjectsLoaded = true
@@ -670,9 +603,8 @@ func TestComposerModelFieldReadsTheServersConversationRow(t *testing.T) {
 		t.Fatalf("the strip must show the conversation's server-side ref, got %q", m.dock.Model)
 	}
 
-	// …and the divergence guard then CONVERGES: a further reload must not
-	// re-read the metrics (before the fix it could never converge, so every list
-	// poll bought a GetUsage RPC).
+	// …and the divergence guard then CONVERGES: a further reload must not re-read the metrics (before
+	// the fix it could never converge, so every list poll bought a GetUsage RPC).
 	if m.composerModelDiverged() {
 		t.Fatal("the strip must converge on the row's ref — otherwise every list poll buys a metrics RPC")
 	}

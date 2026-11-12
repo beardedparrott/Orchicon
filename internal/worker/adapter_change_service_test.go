@@ -1,13 +1,7 @@
 package worker
 
-// Service-level regression tests for the ADR-0005 adapter-change contract
-// (QA BUG-1): a model_ref-ONLY adapter change — the picker's save path,
-// which never sends the explicit adapter input (ADR-0005 D2) — must be
-// accepted when the new provider/model pair is valid for the new adapter
-// and rejected (InvalidArgument) when it is not. The explicit adapter
-// input, when sent, must still agree with the resulting ref. Skipped
-// unless ORCHICON_TEST_DSN points at a disposable database (repo
-// convention, mirrors bulk_update_worker_model_test.go).
+// Service-level regression tests for the adapter-change contract (QA BUG-1): a
+// model_ref-ONLY adapter change — the picker's save path.
 
 import (
 	"context"
@@ -43,9 +37,8 @@ func draftVersionID(t *testing.T, pool *db.Pool, tenantID, workerID string) stri
 	return id
 }
 
-// TestUpdateWorkerVersionRefOnlyAdapterChange: flipping the adapter by
-// sending only model_ref (no explicit adapter input) succeeds when the new
-// provider/model pair is valid for the new adapter — BUG-1 regression.
+// TestUpdateWorkerVersionRefOnlyAdapterChange: flipping the adapter by sending only model_ref (no
+// explicit adapter input) succeeds when the new provider/model pair is valid for the new adapter.
 func TestUpdateWorkerVersionRefOnlyAdapterChange(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createPublishedWithDraft(t, ctx, s, "adp-refonly-ok")
@@ -67,9 +60,8 @@ func TestUpdateWorkerVersionRefOnlyAdapterChange(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkerVersionRefOnlyAdapterChangeInvalidPair: a ref-only
-// adapter change landing on a provider unknown for the new adapter is
-// rejected InvalidArgument with an actionable error (ADR-0005 D4).
+// TestUpdateWorkerVersionRefOnlyAdapterChangeInvalidPair: a ref-only adapter change landing on a
+// provider unknown for the new adapter is rejected InvalidArgument with an actionable error.
 func TestUpdateWorkerVersionRefOnlyAdapterChangeInvalidPair(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createPublishedWithDraft(t, ctx, s, "adp-refonly-bad")
@@ -88,9 +80,8 @@ func TestUpdateWorkerVersionRefOnlyAdapterChangeInvalidPair(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkerVersionAdapterInputContract: the explicit adapter input,
-// when sent, must agree with the resulting ref (D2); a matching pair
-// succeeds and a mismatching pair is rejected InvalidArgument.
+// TestUpdateWorkerVersionAdapterInputContract: the explicit adapter input, when sent, must agree
+// with the resulting ref (D2).
 func TestUpdateWorkerVersionAdapterInputContract(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createPublishedWithDraft(t, ctx, s, "adp-input-mismatch")
@@ -123,9 +114,8 @@ func TestUpdateWorkerVersionAdapterInputContract(t *testing.T) {
 	}
 }
 
-// TestCreateWorkerVersionRefOnlyAdapterChange: a new draft version may
-// change the adapter via model_ref alone (BUG-1 regression, Create path);
-// an invalid pair for the new adapter is rejected.
+// TestCreateWorkerVersionRefOnlyAdapterChange: a new draft version may change the adapter via
+// model_ref alone (BUG-1 regression, Create path); an invalid pair for the new adapter is rejected.
 func TestCreateWorkerVersionRefOnlyAdapterChange(t *testing.T) {
 	s, ctx := func() (*Service, context.Context) {
 		_, s, ctx, _ := bulkEnv(t)

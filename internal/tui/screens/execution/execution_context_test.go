@@ -36,10 +36,6 @@ const sdlcStepsJSON = `[
 ]`
 
 // The steps come back in the AUTHORED order, not alphabetical by id.
-//
-// The report: "It is showing the PR Reviewer and QA Engineer as first in the list." Sorting ids
-// gives branch-a, branch-b, loop, parallel, sse — PR Reviewer, QA Engineer, Loop Decision, Parallel,
-// Senior Software Engineer — which IS the report, and is not an order in which the steps run.
 func TestRunStepsFollowTheWorkflowDefinitionOrder(t *testing.T) {
 	// The rows as the server returns them: created_at ASC, id ASC, which for one shared
 	// created_at is id order — the same defect, so the test cannot pass by accident.
@@ -151,8 +147,6 @@ func TestUsagePercentIsThePeakWorkingSetNotTheSum(t *testing.T) {
 		t.Errorf("percent = %d, want 50 (64000/128000) — the sum must NOT be the numerator", got)
 	}
 	// Cache reads are re-sends of already-counted tokens, so they are excluded from the numerator.
-	// Built through summarizeUsage, because the working set is what THAT computes — asserting on a
-	// hand-built struct would test a field assignment rather than the rule.
 	withCache := summarizeUsage([]*apiv1.UsageRecord{
 		{Provider: "p", Model: "m", PromptTokens: 64000, CacheReadTokens: 900000, TotalTokens: 964000},
 	})
@@ -272,11 +266,6 @@ func TestUsageFetchIsGatedOnStaleness(t *testing.T) {
 
 // The message box is offered in the action bar, because the bar is the ONE place the pane states
 // what it can do — and the operator's report was precisely that they could not find it.
-//
-// It is advertised as the GESTURE that reaches it (walk down past the last block) rather than as a
-// key: the box is a position in the transcript, so a key would be a second way to reach something
-// the operator already reaches by pressing down — which is how the old `f`/`i` pair became
-// unintuitive in the first place.
 func TestMessageBoxIsOfferedInTheActionBar(t *testing.T) {
 	m := newModel(t, execPlane())
 	m.Base.SelectSource(srcExecutions)

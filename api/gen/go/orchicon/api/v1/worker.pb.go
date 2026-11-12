@@ -295,7 +295,7 @@ type WorkerVersion struct {
 	Version             int32                  `protobuf:"varint,3,opt,name=version,proto3" json:"version,omitempty"` // monotonic integer
 	VersionNote         string                 `protobuf:"bytes,4,opt,name=version_note,json=versionNote,proto3" json:"version_note,omitempty"`
 	Status              WorkerVersionStatus    `protobuf:"varint,5,opt,name=status,proto3,enum=orchicon.api.v1.WorkerVersionStatus" json:"status,omitempty"`
-	ModelRef            string                 `protobuf:"bytes,7,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`                       // canonical adapter/provider/model (ADR-0003): segment 1 = the dispatch adapter, segment 2 = the provider, and the remainder is the model id VERBATIM (internal slashes preserved). A legacy 1/2-segment ref is still readable and infers adapter "opencode". No failover (docs/05 §11).
+	ModelRef            string                 `protobuf:"bytes,7,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`                       // canonical adapter/provider/model: segment 1 = the dispatch adapter, segment 2 = the provider, and the remainder is the model id VERBATIM (internal slashes preserved). A legacy 1/2-segment ref is still readable and infers adapter "opencode". No failover (docs/05 §11).
 	SystemPrompt        string                 `protobuf:"bytes,8,opt,name=system_prompt,json=systemPrompt,proto3" json:"system_prompt,omitempty"`           // Markdown + template variables (docs/05 §11); rendered inline in the composite prompt
 	ContextSources      string                 `protobuf:"bytes,9,opt,name=context_sources,json=contextSources,proto3" json:"context_sources,omitempty"`     // JSON: ordered list of context source refs
 	Permissions         string                 `protobuf:"bytes,10,opt,name=permissions,proto3" json:"permissions,omitempty"`                                // JSON: capability allowlist (docs/05 §7)
@@ -325,7 +325,7 @@ type WorkerVersion struct {
 	// into `# Skills`; these are real on-disk paths. The names stay distinct on
 	// purpose.
 	SkillFiles []string `protobuf:"bytes,24,rep,name=skill_files,json=skillFiles,proto3" json:"skill_files,omitempty"`
-	// adapter is the COMPUTED per-worker adapter selection (ADR-0005 D2):
+	// adapter is the COMPUTED per-worker adapter selection:
 	// the parsed adapter segment of model_ref (server-side, read-only —
 	// never stored separately; the ref is the only store). Legacy 1/2-segment
 	// refs report the inferred default kind ("opencode"); an empty ref

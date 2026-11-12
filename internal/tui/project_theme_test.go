@@ -1,13 +1,7 @@
 package tui
 
-// project_theme_test.go — THE PALETTE FOLLOWS THE ACTIVE PROJECT (see projecttheme.go for the design).
-//
-// The operator: "It would be nice to have different colors to distinguish different sessions." These pin
-// the contract the acceptance criteria state: binding is deliberate (never a preview side effect), the
-// scope change is the one place that applies it (and reaches the composer, not just the frame), a project
-// with no binding or no project at all falls back to the persisted default, an unknown palette degrades
-// once, an explicit /theme pins the session until the next workspace change, and the new config writer
-// never escapes the test sandbox.
+// project_theme_test.go — THE PALETTE FOLLOWS THE ACTIVE PROJECT (see projecttheme.go for the
+// design).
 
 import (
 	"os"
@@ -35,11 +29,6 @@ func themePlane() *App {
 }
 
 // THE LIVE PREVIEW NEVER COMMITS ANYTHING — the second half of the operator's report.
-//
-// The Themes pane's OnHighlight calls the shell's PreviewTheme as the cursor moves; that path applies the
-// palette and touches nothing else. Before the split, the preview went through SetTheme, so merely arrowing
-// through the list PERSISTED on every cursor move — leaving the config on whatever row the cursor happened to
-// stop at, which the next launch in any unbound project then inherited.
 func TestCursorPreviewNeverCommitsATheme(t *testing.T) {
 	t.Cleanup(func() { theme.Use(theme.DefaultName) })
 	m := themePlane()
@@ -157,15 +146,6 @@ func TestUnknownBoundPaletteDegradesOnce(t *testing.T) {
 }
 
 // A COMMIT WHILE A PROJECT IS ACTIVE IS KEPT FOR THAT PROJECT — the fixed precedence.
-//
-// The old rule pinned an explicit /theme for the session and let the project's ORIGINAL palette return on the
-// next workspace switch, with the choice surviving only in the SHARED default — which is exactly what carried
-// it into every other project. Committing now records the project's palette, so the choice outlives the scope
-// switch (strictly more than the old pin promised) and touches nothing outside that project.
-//
-// The pin itself is unchanged: it still holds the palette for the rest of the CURRENT scope, and its release
-// at a workspace change is still reported, because a silent release is indistinguishable from a pin that
-// never existed.
 func TestACommitInAProjectIsKeptForThatProject(t *testing.T) {
 	t.Cleanup(func() { theme.Use(theme.DefaultName) })
 	m := themePlane()
@@ -211,10 +191,8 @@ func TestACommitInAProjectIsKeptForThatProject(t *testing.T) {
 	}
 }
 
-// THE NEW WRITER NEVER ESCAPES THE TEST SANDBOX (criterion 9) — the documented bug was a config writer
-// reaching the DEVELOPER's real ~/.orchicon/config through go test. collapsePrefsDisabled is true by
-// default for this whole test binary (isolate_test.go), so BindProjectTheme must be a no-op write under
-// that default, the same as every other preference writer in prefs.go.
+// THE NEW WRITER NEVER ESCAPES THE TEST SANDBOX (criterion 9) — the documented bug was a config
+// writer reaching the DEVELOPER's real ~/.orchicon/config through go test.
 func TestProjectThemeWriterIsSandboxed(t *testing.T) {
 	if !collapsePrefsDisabled {
 		t.Fatal("fixture: expected collapsePrefsDisabled by default under go test (see isolate_test.go)")
@@ -232,9 +210,7 @@ func TestProjectThemeWriterIsSandboxed(t *testing.T) {
 }
 
 // BINDING PERSISTS ACROSS A RELAUNCH (criterion 3's wiring half; config.go's own tests pin the file
-// format). A NEW App over the SAME sandboxed config dir restores the binding, and the launch-directory
-// default applies it without any operator action — criterion 1's "each renders in its bound palette on a
-// subsequent launch".
+// format).
 func TestProjectThemeBindingSurvivesARelaunch(t *testing.T) {
 	path := useTempConfigDir(t)
 	t.Cleanup(func() { theme.Use(theme.DefaultName) })

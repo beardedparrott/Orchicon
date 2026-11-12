@@ -2,18 +2,8 @@ package runtime
 
 import "testing"
 
-// TestPoolEnvKeyStabilityAndInvalidation is the pool env-key contract: the
-// key is a stable function of (image, sorted mounts, host fingerprint) — the
-// same environment always produces the same key (warm reuse) and a change to
-// ANY input produces a different key (fresh create). Mount order must not
-// matter (the key hashes a sorted mount set).
-// TestPoolEnvKeyGitStrategyIsolation is the L1 pool gate: a `none`
-// (ephemeral) container is created WITHOUT a push-capable GH_TOKEN and
-// WITHOUT the git credential mounts, while a `local`/`pr` container carries
-// them. The two must never pool — a `none` run reusing a warm token-bearing
-// container is exactly the pre-fix credential-leak class (a stale container
-// would serve a push-capable token to an ephemeral run). Same strategy must
-// still hit the warm pool.
+// TestPoolEnvKeyStabilityAndInvalidation is the pool env-key contract: the key is a stable function
+// of (image, sorted mounts, host fingerprint).
 func TestPoolEnvKeyGitStrategyIsolation(t *testing.T) {
 	base := CreateRequest{Image: "img:v1", Mounts: []MountSpec{{Source: "/a", Dest: "/b"}}}
 
@@ -74,14 +64,7 @@ func TestPoolEnvKeyStabilityAndInvalidation(t *testing.T) {
 		t.Fatalf("host fingerprint change must invalidate the key")
 	}
 
-	// The serve config (OPENCODE_CONFIG_CONTENT: worktree MCP base dir,
-	// plane channel env, permission rules) is baked into the container at
-	// create time and can never change on a live container. A run whose
-	// serve config differs MUST NOT reuse a warm container baked with a
-	// stale config — a container created before the plane channel existed
-	// (or carrying a different run's worktree base / plane token) would
-	// serve stale, wrong-scope tools and credentials. Empty configs fold
-	// away (identical for non-serve requests).
+	// A run whose serve config differs MUST NOT reuse a warm container baked with a stale config.
 	withCfg := CreateRequest{Image: "img:v1", Mounts: req.Mounts, ServeConfig: `{"mcp":{"orchicon-plane":{"enabled":true}}}`}
 	keyCfg := poolEnvKey(withCfg, "hostfp")
 	if keyCfg == key {
@@ -102,13 +85,8 @@ func TestPoolEnvKeyStabilityAndInvalidation(t *testing.T) {
 	}
 }
 
-// TestPoolEnvKeyBootProfileInvalidation is AC 4: the boot profile (the set of
-// adapter kinds the run's step workers need) colors the pool key, so a
-// container warmed for opencode is NEVER reused for a native-only run and vice
-// versa. It also pins that the reset-shaped reconstruction (resetAndPool
-// rebuilds the CreateRequest from the entry's own fields) re-keys identically
-// — dropping the profile there would silently re-key the container under the
-// wrong environment.
+// TestPoolEnvKeyBootProfileInvalidation is AC 4: the boot profile (the set of adapter kinds the
+// run's step workers need) colors the pool key.
 func TestPoolEnvKeyBootProfileInvalidation(t *testing.T) {
 	base := CreateRequest{Image: "img:v1", Mounts: []MountSpec{{Source: "/a", Dest: "/b"}}}
 

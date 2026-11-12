@@ -35,10 +35,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
 )
 
-// landedExecution builds the shell, opens execID in the detail pane and lands its record, so the pane is
-// in the state a live poke finds it in: PAINTED with a known execution, and describable
-// (composeExecutionBody refuses until the record has been fetched, so RenderSession would silently no-op
-// on an unlanded pane and this test would measure nothing).
+// landedExecution builds the shell, opens execID in the detail pane and lands its record, so the
+// pane is in the state a live poke finds it in: PAINTED with a known execution.
 func landedExecution(t *testing.T, execID string) (*App, *execution.Model) {
 	t.Helper()
 	m, scr, _ := newExecListApp(t)
@@ -56,10 +54,8 @@ func landedExecution(t *testing.T, execID string) (*App, *execution.Model) {
 	return m, scr
 }
 
-// landDetail fetches a row's detail and DELIVERS the result to the screen, the way the bubbletea runtime
-// does: cmd → msg → Update. A command whose result is discarded (see execCmdTree) can only tell us which
-// RPC ran; the pane is written by the base's detailMsg handler, so anything asserted ABOUT THE PANE has
-// to deliver.
+// landDetail fetches a row's detail and DELIVERS the result to the screen, the way the bubbletea
+// runtime does: cmd → msg → Update.
 func landDetail(t *testing.T, scr *execution.Model, src, id string) {
 	t.Helper()
 	cmd := scr.RequestDetail(src, id)
@@ -97,9 +93,7 @@ func TestALivePokeRepaintsTheOpenExecutionTranscript(t *testing.T) {
 	}
 }
 
-// AND THE GUARD HOLDS: a poke for an execution the pane is NOT showing must not repaint it. This is the
-// silent half of the hop, and asserting it is what keeps the guard from being "fixed" into a repaint of
-// whatever happens to be open.
+// AND THE GUARD HOLDS: a poke for an execution the pane is NOT showing must not repaint it.
 func TestAPokeForAnotherExecutionDoesNotRepaintThePane(t *testing.T) {
 	const other = "another execution's reply, which must not appear here"
 	m, scr := landedExecution(t, "exec-1")
@@ -118,15 +112,7 @@ func TestAPokeForAnotherExecutionDoesNotRepaintThePane(t *testing.T) {
 	}
 }
 
-// THE SOURCE GUARD IS THE SCREEN'S — the other half of "does a poke reach the pane". The execution
-// transcript belongs to the Executions SOURCE, so a poke that arrives while the operator is reading
-// another source's detail must not be acted on at all.
-//
-// This is asserted through the REAL CHAIN (poke → the screen's handler), not by calling the shell
-// directly, because that is where this guard lives: the shell's own guard is the ID, and it is right for
-// it not to know about sources. A test that called RefreshExecutionSession here would be asserting an
-// invariant the shell was never given, and would fail for a correct program — which is what its first
-// version did.
+// THE SOURCE GUARD IS THE SCREEN'S — the other half of "does a poke reach the pane".
 func TestAPokeIsIgnoredWhileAnotherSourceIsSelected(t *testing.T) {
 	const reply = "an execution reply that must not be painted over another source's detail"
 	m, scr := landedExecution(t, "exec-1")

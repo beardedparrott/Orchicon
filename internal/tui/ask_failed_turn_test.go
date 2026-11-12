@@ -1,18 +1,6 @@
 package tui
 
 // ask_failed_turn_test.go — A FAILED TURN MUST SAY WHY, ON THE TRANSCRIPT.
-//
-// The operator: "The GUI has an actual error message in the conversation that tells you why you couldn't
-// connect or if there was a problem. The TUI just drops with no indication as to why." The screenshot is the
-// whole report: the operator's message TWICE with NOTHING between them — two failed sends that left no row
-// at all.
-//
-// THE MESSAGE-TO-ITEM DECISION (conversationItems: role first, then metadata.error, then the assistant
-// default) is asserted in package chat, where that function lives — see
-// internal/tui/chat/failed_turn_items_test.go. THIS file asserts the layer the operator actually reads: the
-// PAINTED FRAME, after the real repaint path. ask_render_stop_test.go already records why: the widget's own
-// fields can be right while the pane clips them away, and m.View() is the only layer at which "The TUI just
-// drops with no indication as to why" is true or false.
 
 import (
 	"strings"
@@ -101,10 +89,8 @@ func TestALongProviderErrorWrapsWithoutClippingTheFooter(t *testing.T) {
 	}
 }
 
-// AC 4 (the operator's OWN case, POST-ack): a durable failed turn puts the draft back in the composer, so the
-// error row's "your message is back" line is TRUE — not just on the pre-ack path. This is the case the report
-// was: `… start Ask turn: provider status 401 …` is the post-ack collector's wrapped error, so no ErrMsg was
-// ever emitted and the draft had no restore until this.
+// AC 4 (the operator's OWN case, POST-ack): a durable failed turn puts the draft back in the
+// composer, so the error row's "your message is back" line is TRUE — not just on the pre-ack path.
 func TestADurableFailedTurnPutsTheDraftBackInTheComposer(t *testing.T) {
 	m, _ := askWithTranscript(t, "c1")
 	m.conversations = []chat.Conversation{{ID: "c1", Title: "a chat", ModelRef: operatorFailedModel}}
@@ -130,9 +116,7 @@ func TestADurableFailedTurnPutsTheDraftBackInTheComposer(t *testing.T) {
 
 // surfaceTurnFailure puts a PRE-ACK send/turn failure on the TRANSCRIPT, not only on the composer strip.
 
-// AC 5: THE PRE-ACK CASE. A send that fails BEFORE the turn is acked writes NO durable row, so the
-// row-rendering fix has nothing to find — the failure must be surfaced LOCALLY. This drives the real path:
-// the controller's ErrMsg case in the router, then the painted frame.
+// AC 5: THE PRE-ACK CASE.
 func TestAPreAckFailureIsSurfacedOnTheTranscript(t *testing.T) {
 	m, _ := askWithTranscript(t, "c1")
 	m.conversations = []chat.Conversation{{ID: "c1", Title: "a chat", ModelRef: operatorFailedModel}}
@@ -141,20 +125,6 @@ func TestAPreAckFailureIsSurfacedOnTheTranscript(t *testing.T) {
 	m.onChatWake()
 
 	// GUARD ON THE FAILURE, NOT ON A BARE NUMBER.
-	//
-	// This used to be `strings.Contains(m.View(), "401")`, and the view renders the plane's address
-	// in the status row (`http://127.0.0.1:<port>`). `newAskApp` builds its stub with
-	// httptest.NewServer, which picks a RANDOM ephemeral port — so whenever that port happened to
-	// contain "401" (:40123, :14019, :34011, :24010, …), the guard fired on a URL and failed the
-	// test with "the failure is already on screen" when nothing was on screen at all.
-	//
-	// Measured: ~1.25% of runs (5 failures / 400), and the same rate on `main`, so it is a
-	// pre-existing flake rather than anything a change introduced. It is worth pinning because a
-	// rare, self-explaining-as-a-fixture-error failure is expensive to diagnose: the message blames
-	// the fixture, and the real cause is a port number.
-	//
-	// "401 Unauthorized" is the whole failure signature the assertions below look for, and unlike a
-	// bare "401" it cannot be forged by an address.
 	if strings.Contains(m.View(), "401 Unauthorized") {
 		t.Fatal("fixture: the failure is already on screen, so this test would measure nothing")
 	}
@@ -172,9 +142,8 @@ func TestAPreAckFailureIsSurfacedOnTheTranscript(t *testing.T) {
 	}
 }
 
-// AC 5, the other half: a failure for a conversation that is NOT open must not be painted on the OPEN one's
-// transcript. (The composer strip is global and DOES carry it — that is the existing failed-send surface;
-// what must not happen is the open conversation's TRANSCRIPT claiming a failure that belongs to another.)
+// AC 5, the other half: a failure for a conversation that is NOT open must not be painted on the
+// OPEN one's transcript.
 func TestAPreAckFailureForAnotherConversationDoesNotPaintThisOne(t *testing.T) {
 	m, _ := askWithTranscript(t, "c1")
 	m.conversations = []chat.Conversation{{ID: "c2", Title: "other", ModelRef: "m"}}
@@ -240,9 +209,8 @@ func TestTheScopedRestoreSurvivesAPrependedContextPreamble(t *testing.T) {
 	}
 }
 
-// AC 3 (reviewer): a PRE-ACK failure is named for the FAILING conversation's model, not the open one's — the
-// store keeps a failure for a chat that is not on screen, and naming the open chat's ref there is a claim
-// about the wrong model.
+// AC 3 (reviewer): a PRE-ACK failure is named for the FAILING conversation's model, not the open
+// one's — the store keeps a failure for a chat that is not on screen.
 func TestAPreAckFailureNamesTheFailingConversationsModel(t *testing.T) {
 	m, _ := askWithTranscript(t, "c1")
 	// c1 is open; the failure belongs to c2, whose row names a DIFFERENT model.
@@ -266,13 +234,8 @@ func TestAPreAckFailureNamesTheFailingConversationsModel(t *testing.T) {
 	}
 }
 
-// REGRESSION: the retry claim is TRUE only where the draft was actually restored.
-//
-// The claim is about the SHELL's composer, and the shell restores the draft ONLY for a turn THIS client sent
-// (restoreDraftForFailedTurn is scoped to the dock's lastSent). A durable failed turn carried over from
-// another session or the other client is DRAWN (its reason and model) but must NOT tell the operator their
-// message is back, because it is not. Measured against the pre-fix code: a historical row's frame contained
-// "back in the composer" while the composer was empty — the same class of misreport this change exists to fix.
+// The claim is about the SHELL's composer, and the shell restores the draft ONLY for a turn THIS
+// client sent (restoreDraftForFailedTurn is scoped to the dock's lastSent).
 func TestAHistoricalFailedTurnMakesNoComposerClaim(t *testing.T) {
 	m, _ := askWithTranscript(t, "c1")
 	// This session sent elsewhere; the transcript ends in an OLD failed turn that is not ours.

@@ -377,9 +377,26 @@ type WorkItem struct {
 	// secret_ids are selected tenant secrets to inject into the runtime container at dispatch.
 	// Stored as JSONB array of secret IDs in work_items.secret_ids.
 	// Max 10 per item; dangling refs fail dispatch.
-	SecretIds     []string `protobuf:"bytes,39,rep,name=secret_ids,json=secretIds,proto3" json:"secret_ids,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SecretIds []string `protobuf:"bytes,39,rep,name=secret_ids,json=secretIds,proto3" json:"secret_ids,omitempty"`
+	// execution_mode overrides the PROJECT's execution mode for THIS item's
+	// executions. Absent (unset) = inherit from the project; present with an
+	// explicit value = override. "absent" and "runtime" are therefore different
+	// statements, which is why the field is optional rather than a plain enum
+	// with an UNSPECIFIED sentinel: the row itself distinguishes NULL (inherit)
+	// from a stored value, and the wire must too.
+	//
+	// Resolution order, implemented ONCE in db.EffectiveExecutionMode:
+	//
+	//	item -> project -> tenant default (db.DefaultExecutionMode).
+	ExecutionMode *ExecutionMode `protobuf:"varint,40,opt,name=execution_mode,json=executionMode,proto3,enum=orchicon.api.v1.ExecutionMode,oneof" json:"execution_mode,omitempty"`
+	// effective_execution_mode is the RESOLVED mode - never unset - i.e. what
+	// dispatch will actually do for this item. Populated on single-item reads
+	// (Get/Create/Update); ListWorkItems leaves it unspecified and the client
+	// derives it from the item override plus its project, so the hot list path
+	// takes no per-row project read.
+	EffectiveExecutionMode ExecutionMode `protobuf:"varint,41,opt,name=effective_execution_mode,json=effectiveExecutionMode,proto3,enum=orchicon.api.v1.ExecutionMode" json:"effective_execution_mode,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *WorkItem) Reset() {
@@ -676,6 +693,20 @@ func (x *WorkItem) GetSecretIds() []string {
 		return x.SecretIds
 	}
 	return nil
+}
+
+func (x *WorkItem) GetExecutionMode() ExecutionMode {
+	if x != nil && x.ExecutionMode != nil {
+		return *x.ExecutionMode
+	}
+	return ExecutionMode_EXECUTION_MODE_UNSPECIFIED
+}
+
+func (x *WorkItem) GetEffectiveExecutionMode() ExecutionMode {
+	if x != nil {
+		return x.EffectiveExecutionMode
+	}
+	return ExecutionMode_EXECUTION_MODE_UNSPECIFIED
 }
 
 // WorkItemBlocker is one upstream dependency edge that keeps its dependent
@@ -1046,7 +1077,7 @@ var File_orchicon_api_v1_work_item_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\n" +
-	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x80\r\n" +
+	"\x1forchicon/api/v1/work_item.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1dorchicon/api/v1/project.proto\"\xb9\x0e\n" +
 	"\bWorkItem\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -1096,9 +1127,12 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\x11recurring_enabled\x18% \x01(\bR\x10recurringEnabled\x12(\n" +
 	"\x10spawned_by_title\x18& \x01(\tR\x0espawnedByTitle\x12\x1d\n" +
 	"\n" +
-	"secret_ids\x18' \x03(\tR\tsecretIdsB\x16\n" +
+	"secret_ids\x18' \x03(\tR\tsecretIds\x12J\n" +
+	"\x0eexecution_mode\x18( \x01(\x0e2\x1e.orchicon.api.v1.ExecutionModeH\x02R\rexecutionMode\x88\x01\x01\x12X\n" +
+	"\x18effective_execution_mode\x18) \x01(\x0e2\x1e.orchicon.api.v1.ExecutionModeR\x16effectiveExecutionModeB\x16\n" +
 	"\x14_auto_start_workflowB\x15\n" +
-	"\x13_recurring_schedule\"O\n" +
+	"\x13_recurring_scheduleB\x11\n" +
+	"\x0f_execution_mode\"O\n" +
 	"\x0fWorkItemBlocker\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x16\n" +
@@ -1188,6 +1222,7 @@ var file_orchicon_api_v1_work_item_proto_goTypes = []any{
 	(*WorkItemDependency)(nil),    // 6: orchicon.api.v1.WorkItemDependency
 	(*DependencyGraph)(nil),       // 7: orchicon.api.v1.DependencyGraph
 	(*timestamppb.Timestamp)(nil), // 8: google.protobuf.Timestamp
+	(ExecutionMode)(0),            // 9: orchicon.api.v1.ExecutionMode
 }
 var file_orchicon_api_v1_work_item_proto_depIdxs = []int32{
 	0,  // 0: orchicon.api.v1.WorkItem.kind:type_name -> orchicon.api.v1.WorkItemKind
@@ -1199,15 +1234,17 @@ var file_orchicon_api_v1_work_item_proto_depIdxs = []int32{
 	8,  // 6: orchicon.api.v1.WorkItem.next_run_at:type_name -> google.protobuf.Timestamp
 	4,  // 7: orchicon.api.v1.WorkItem.blocked_by:type_name -> orchicon.api.v1.WorkItemBlocker
 	8,  // 8: orchicon.api.v1.WorkItem.archived_at:type_name -> google.protobuf.Timestamp
-	2,  // 9: orchicon.api.v1.WorkItemDependency.type:type_name -> orchicon.api.v1.DependencyType
-	8,  // 10: orchicon.api.v1.WorkItemDependency.created_at:type_name -> google.protobuf.Timestamp
-	3,  // 11: orchicon.api.v1.DependencyGraph.nodes:type_name -> orchicon.api.v1.WorkItem
-	6,  // 12: orchicon.api.v1.DependencyGraph.edges:type_name -> orchicon.api.v1.WorkItemDependency
-	13, // [13:13] is the sub-list for method output_type
-	13, // [13:13] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	9,  // 9: orchicon.api.v1.WorkItem.execution_mode:type_name -> orchicon.api.v1.ExecutionMode
+	9,  // 10: orchicon.api.v1.WorkItem.effective_execution_mode:type_name -> orchicon.api.v1.ExecutionMode
+	2,  // 11: orchicon.api.v1.WorkItemDependency.type:type_name -> orchicon.api.v1.DependencyType
+	8,  // 12: orchicon.api.v1.WorkItemDependency.created_at:type_name -> google.protobuf.Timestamp
+	3,  // 13: orchicon.api.v1.DependencyGraph.nodes:type_name -> orchicon.api.v1.WorkItem
+	6,  // 14: orchicon.api.v1.DependencyGraph.edges:type_name -> orchicon.api.v1.WorkItemDependency
+	15, // [15:15] is the sub-list for method output_type
+	15, // [15:15] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_orchicon_api_v1_work_item_proto_init() }
@@ -1215,6 +1252,7 @@ func file_orchicon_api_v1_work_item_proto_init() {
 	if File_orchicon_api_v1_work_item_proto != nil {
 		return
 	}
+	file_orchicon_api_v1_project_proto_init()
 	file_orchicon_api_v1_work_item_proto_msgTypes[0].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

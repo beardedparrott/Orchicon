@@ -1,30 +1,5 @@
-// Package modelpick holds the screen-independent plumbing for the three-tier
-// MODEL picker (kit2.ModelPicker): the per-adapter data sources, the ref-grammar
-// handoff, and the option projections.
-//
-// It exists so ONE cascade serves every screen that chooses a model_ref
-// (Control's tenant defaults, Execution's per-worker model) instead of each
-// screen re-deriving the RPC mapping and the grammar handoff.
-//
-// Data sources (ADR-0004 D1 — mirroring the GUI's ModelPicker per adapter):
-//   - adapter tier: AIGatewayService.ListAdapterKinds (registered kinds plus the
-//     Ask-capable subset).
-//   - provider tier: the NATIVE kind reads the merged Providers view
-//     (ProviderService.ListProviders — built-ins ⊕ stored overrides ⊕ tenant
-//     customs, ENABLED only, exactly what Settings → Adapters edits); every other
-//     kind reads its adapter-scoped gateway set (AIGatewayService.ListProviders).
-//   - model tier: a CATALOG-SOURCED kind (`orchicon`, `claude` — see
-//     UsesCatalogSourcing) reads the sourcing view
-//     (ProviderService.ListProviderModels — vendored catalog ⊕ probe ⊕ manual,
-//     plus the offline catalog seed); every other kind uses opencode-CLI
-//     discovery (AIGatewayService.ListOpenCodeModels).
-//
-// The two branches exist because the ref's own adapter segment decides which
-// registry can resolve a model list at all: the native bridge and the claude
-// adapter do not share the opencode-CLI provider namespace, and vice versa.
-// `claude` must NOT take the CLI branch: on a plane with no opencode binary
-// ListOpenCodeModels returns Unimplemented, which is exactly the plane this
-// product targets.
+// Package modelpick holds the screen-independent plumbing for the three-tier MODEL picker
+// (kit2.ModelPicker).
 package modelpick
 
 import (
@@ -41,20 +16,12 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
-// NativeAdapterKind is the adapter kind whose models resolve from the providers
-// service rather than CLI discovery (ADR-0004 D1). The picker lists it FIRST and
-// defaults a fresh selection to it (ADR-0005 D5) — the operator's "select
-// orchicon (first in the list) or opencode".
+// NativeAdapterKind is the adapter kind whose models resolve from the providers service rather than
+// CLI discovery.
 const NativeAdapterKind = "orchicon"
 
-// catalogSourcedKinds is the set of adapter kinds whose MODEL tier resolves
-// from the providers SOURCING view instead of opencode-CLI discovery.
-//
-// It is built from internal/adapter.CatalogSourcedAdapterKinds() — the SAME
-// predicate the server publishes to the GUI (ListAdapterKindsResponse.
-// sourcing_kinds) — so the TUI cannot drift from the plane's own answer. The
-// GUI reads the wire field; the TUI derives from the predicate; a parity test
-// (TestCatalogSourcedParity) pins them together.
+// catalogSourcedKinds is the set of adapter kinds whose MODEL tier resolves from the providers
+// SOURCING view instead of opencode-CLI discovery.
 var catalogSourcedKinds = func() map[string]bool {
 	set := make(map[string]bool)
 	for _, k := range adapter.CatalogSourcedAdapterKinds() {
@@ -63,10 +30,8 @@ var catalogSourcedKinds = func() map[string]bool {
 	return set
 }()
 
-// UsesCatalogSourcing reports whether an adapter kind's model tier comes from
-// the providers sourcing view (vendored catalog ⊕ probe ⊕ manual) rather than
-// opencode-CLI discovery. Provider tier is a SEPARATE question: only the native
-// kind uses the merged Providers view (see FetchProviders).
+// UsesCatalogSourcing reports whether an adapter kind's model tier comes from the providers
+// sourcing view (vendored catalog ⊕ probe ⊕ manual) rather than opencode-CLI discovery.
 func UsesCatalogSourcing(kind string) bool { return catalogSourcedKinds[kind] }
 
 // KindsMsg carries the registered adapter kinds.
@@ -92,14 +57,8 @@ type ModelsMsg struct {
 	Err      error
 }
 
-// SplitRef parses a stored ref into the picker's three segments using the SAME
-// grammar authority the server validates with (internal/adapter), so the picker
-// can never disagree with what the plane accepts.
-//
-// A nil registry is deliberate: this is a structural read of an ALREADY-STORED
-// value, and the registry's known-provider checks would reject a legacy ref the
-// plane still legitimately holds. An empty or malformed ref seeds an empty
-// selection, so the operator re-chooses instead of being handed a guess.
+// SplitRef parses a stored ref into the picker's three segments using the SAME grammar authority
+// the server validates with (internal/adapter).
 func SplitRef(ref string) (kind, provider, model string) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -152,9 +111,7 @@ func FetchProviders(ctx context.Context, cl *client.Clients, kind string) ([]kit
 	return ProviderOptionsGateway(resp.Msg.GetProviders()), nil
 }
 
-// FetchModels loads one provider's model list for the chosen adapter. The model
-// VALUE is always the bare model id — never the legacy 2-segment model_ref — so
-// the picker's join produces exactly adapter/provider/model.
+// FetchModels loads one provider's model list for the chosen adapter.
 func FetchModels(ctx context.Context, cl *client.Clients, kind, provider string) ([]kit2.PickerOption, bool, error) {
 	if UsesCatalogSourcing(kind) {
 		if cl == nil || cl.Providers == nil {
@@ -220,9 +177,7 @@ func ProviderOptionsGateway(provs []*apiv1.AIProvider) []kit2.PickerOption {
 	return out
 }
 
-// ModelOptionsNative projects the providers SOURCING view. A HIDDEN model is
-// dropped (the operator re-enables it in Settings → Adapters), and a model with
-// no context hint is ANNOTATED rather than dropped.
+// ModelOptionsNative projects the providers SOURCING view.
 func ModelOptionsNative(models []*apiv1.ProviderModel) []kit2.PickerOption {
 	out := make([]kit2.PickerOption, 0, len(models))
 	for _, mo := range models {
@@ -238,9 +193,7 @@ func ModelOptionsNative(models []*apiv1.ProviderModel) []kit2.PickerOption {
 	return out
 }
 
-// ModelOptionsDiscovery projects opencode-CLI discovery models. The VALUE is the
-// bare model id — never the legacy 2-segment model_ref, which would produce a
-// bogus 4-segment ref when the picker joins the segments.
+// ModelOptionsDiscovery projects opencode-CLI discovery models.
 func ModelOptionsDiscovery(models []*apiv1.OpenCodeModel) []kit2.PickerOption {
 	out := make([]kit2.PickerOption, 0, len(models))
 	for _, mo := range models {
@@ -258,28 +211,8 @@ func ModelOptionsDiscovery(models []*apiv1.OpenCodeModel) []kit2.PickerOption {
 	return out
 }
 
-// ContextWindow resolves a model ref's context-window size (in tokens),
-// reading the source the ref's OWN adapter specifies:
-//
-//   - a CATALOG-SOURCED kind (`orchicon`, `claude`) reads the providers sourcing
-//     view (ProviderService.ListProviderModels → the native registry/sourcing
-//     substrate, which shells out to nothing);
-//   - every other kind reads opencode-CLI discovery.
-//
-// The adapter segment is NEVER crossed. In particular an `orchicon` or `claude`
-// ref must NOT fall back to the opencode CLI: the whole point of those adapters
-// is that the product works WITHOUT opencode installed, so a cross-source
-// fallback here would make selecting them silently invoke the opencode binary
-// (ListOpenCodeModels returns Unimplemented when no discoverer is configured) —
-// the exact dependency the native adapter exists to remove. An adapter whose
-// model list legitimately IS the CLI (a legacy `opencode/...` ref) still reads
-// the CLI, because for THAT adapter the CLI is the authority.
-//
-// Returns 0 with a nil error when the window is genuinely unknown from that
-// source (a model with no context hint, a provider that cannot enumerate models,
-// or a ref with no resolvable segments): callers render the bare occupancy
-// rather than inventing a denominator, and must NOT cache the 0 as though it
-// were a resolved window.
+// ContextWindow resolves a model ref's context-window size (in tokens), reading the source the
+// ref's OWN adapter specifies: The adapter segment is NEVER crossed.
 func ContextWindow(ctx context.Context, cl *client.Clients, ref string) (int64, error) {
 	kind, provider, model := SplitRef(ref)
 	if provider == "" || model == "" {
@@ -332,15 +265,8 @@ func cliModelContext(ctx context.Context, cl *client.Clients, kind, provider, mo
 
 // --- display helpers --------------------------------------------------------
 
-// ModelMeta is a model row's dim right-hand context: the context window the
-// compaction math depends on, the reasoning flag, the missing-context warning
-// (ADR-0006 D8: a model without a context hint stays SELECTABLE but is
-// annotated, never silently dropped), and the ORIGIN of those numbers.
-//
-// Naming the origin is the point. A hand-authored snapshot and a maintained
-// registry both render as "1.0M ctx", which is exactly how a wrong value goes
-// unnoticed — the operator cannot tell a verified number from a typed one. With
-// the source shown, the claim is checkable.
+// ModelMeta is a model row's dim right-hand context: the context window the compaction math depends
+// on, the reasoning flag, the missing-context warning
 func ModelMeta(contextTokens int64, reasoning, warnNoContext bool, source string) string {
 	parts := make([]string, 0, 4)
 	switch {
@@ -358,9 +284,7 @@ func ModelMeta(contextTokens int64, reasoning, warnNoContext bool, source string
 	return strings.Join(parts, " · ")
 }
 
-// shortSource renders a provenance for a picker row. The provider's own probe is
-// the unremarkable default (the provider answering for its own model) and gets no
-// annotation, so the row only grows when the number came from somewhere else.
+// shortSource renders a provenance for a picker row.
 func shortSource(source string) string {
 	switch {
 	case source == "", source == "probe":
@@ -393,28 +317,17 @@ func FriendlyErr(err error) string {
 	low := strings.ToLower(txt)
 	if strings.Contains(low, "unimplemented") || strings.Contains(low, "not configured") {
 		// THE PLANE'S OWN HINT IS THE ACTIONABLE PART, and this used to THROW IT AWAY.
-		//
-		// The plane answers with the remedy in a parenthetical: `model discovery is not configured (set
-		// ORCHICON_OPENCODE_BIN or install opencode on PATH)`. This returned "model discovery is not
-		// configured on this plane" instead, which is a DEAD END — reported verbatim by the operator
-		// selecting the opencode adapter: "it says 'model discovery is not configured on this plane'".
-		//
-		// THE RESTART IS PART OF THE ANSWER, not padding. The discoverer is built at BOOT from what the plane
-		// could find (see internal/server), so installing opencode while the plane runs does not enable
-		// discovery until it restarts. Without that sentence the operator installs opencode, retries, sees the
-		// same message, and concludes the message is wrong.
 		hint := planeHint(txt)
 		if hint == "" {
 			hint = "install opencode on the plane's PATH, or set ORCHICON_OPENCODE_BIN"
 		}
-		return "model discovery is not configured on this plane — " + hint + " — then restart the plane"
+		return "model discovery is not configured on this plane — " + hint + " — then try again"
 	}
 	return txt
 }
 
-// planeHint extracts the trailing parenthetical from a plane error, which is where every not-configured
-// message this client shows puts its remedy. The parentheses are stripped so the result reads as a sentence.
-// Returns "" when the message carries no hint.
+// planeHint extracts the trailing parenthetical from a plane error, which is where every
+// not-configured message this client shows puts its remedy.
 func planeHint(txt string) string {
 	i := strings.LastIndex(txt, "(")
 	j := strings.LastIndex(txt, ")")

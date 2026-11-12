@@ -18,7 +18,7 @@ func TestSplitRefSeedsTheTiersFromTheGrammar(t *testing.T) {
 	}{
 		// Canonical 3-segment.
 		{"opencode/anthropic/claude-sonnet-4", "opencode", "anthropic", "claude-sonnet-4"},
-		// The model segment is the VERBATIM remainder (ADR-0003).
+		// The model segment is the VERBATIM remainder.
 		{"orchicon/commandcode/deepseek/deepseek-v4-flash", "orchicon", "commandcode", "deepseek/deepseek-v4-flash"},
 		// Legacy 2-segment: the adapter is inferred.
 		{"ollama/llama3", "opencode", "ollama", "llama3"},
@@ -81,7 +81,7 @@ func TestProviderOptionsGateway(t *testing.T) {
 }
 
 // The native model tier drops HIDDEN models and ANNOTATES a missing context hint
-// rather than dropping it (ADR-0006 D8).
+// rather than dropping it.
 func TestModelOptionsNativeDropsHiddenAndAnnotatesMissingContext(t *testing.T) {
 	opts := ModelOptionsNative([]*apiv1.ProviderModel{
 		{Id: "claude-sonnet-4", Context: 200000, Reasoning: true, Visible: true},
@@ -160,10 +160,8 @@ func TestModelMetaAndFmtTokens(t *testing.T) {
 	}
 }
 
-// The ORIGIN of a number must be visible, because "1.0M ctx" looks identical
-// whether it came from the provider, a maintained registry, or a hand-authored
-// snapshot — and being unable to tell those apart is exactly how a wrong value
-// goes unnoticed (the operator's "Do NOT hardcode values I tell you").
+// The ORIGIN of a number must be visible, because "1.0M ctx" looks identical whether it came from
+// the provider, a maintained registry, or a hand-authored snapshot.
 func TestModelMetaNamesTheOriginOfTheNumber(t *testing.T) {
 	// The provider answering for its own model is the unremarkable default: no
 	// extra noise on the row.
@@ -197,18 +195,23 @@ func TestFriendlyErrExplainsAnUnconfiguredDiscoverer(t *testing.T) {
 	if got := FriendlyErr(errText("rpc error: code = Unimplemented desc = boom")); !strings.Contains(got, "not configured") {
 		t.Errorf("FriendlyErr(unimplemented) = %q, want a configuration hint", got)
 	}
-	// THE PLANE'S OWN REMEDY MUST SURVIVE. The plane names the fix in a parenthetical, and this client used to
-	// replace the whole message with a dead end — reported verbatim by the operator selecting the opencode
-	// adapter: "it says 'model discovery is not configured on this plane'". The hint and the restart are both
-	// part of the answer: the discoverer is built at BOOT, so installing opencode while the plane runs changes
-	// nothing until it restarts, and without that sentence the operator concludes the message is wrong.
+	// THE PLANE'S OWN REMEDY MUST SURVIVE.
 	plane := errText("rpc error: code = Unimplemented desc = model discovery is not configured (set ORCHICON_OPENCODE_BIN or install opencode on PATH)")
 	got := FriendlyErr(plane)
 	if !strings.Contains(got, "ORCHICON_OPENCODE_BIN") || !strings.Contains(got, "install opencode on PATH") {
 		t.Errorf("FriendlyErr dropped the plane's remedy (got %q) — that parenthetical is the only actionable part", got)
 	}
-	if !strings.Contains(got, "restart") {
-		t.Errorf("FriendlyErr does not say the plane must restart (got %q) — the discoverer is built at boot, so that is the step the operator cannot guess", got)
+	// RETRY, NOT RESTART — and the assertion is INVERTED on purpose, which is worth reading before
+	// "fixing" it back.
+	if strings.Contains(got, "restart") {
+		t.Errorf("FriendlyErr still tells the operator to restart the plane (got %q). Discovery is "+
+			"re-resolved on the next request, so the instruction is stale: it sends them to restart, "+
+			"see the same message if the binary really is absent, and conclude the message is wrong.",
+			got)
+	}
+	if !strings.Contains(got, "try again") {
+		t.Errorf("FriendlyErr does not invite a retry (got %q) — a retry is what re-probes for the "+
+			"binary now, so it is the action that fixes the common case", got)
 	}
 	if strings.Contains(got, "not configured (") {
 		t.Errorf("the plane's parentheses leaked through unfinished (got %q)", got)
@@ -227,11 +230,8 @@ type errText string
 
 func (e errText) Error() string { return string(e) }
 
-// The MODEL-tier classification: `claude` must resolve from the providers
-// SOURCING view, because on a plane with no opencode binary the CLI branch
-// (AIGatewayService.ListOpenCodeModels) returns Unimplemented — claude would be
-// selectable but UNLISTABLE. `orchicon` shares the classification; `opencode`
-// must NOT (its models ARE the CLI's discovery).
+// The MODEL-tier classification: `claude` must resolve from the providers SOURCING view, because on
+// a plane with no opencode binary the CLI branch (AIGatewayService.ListOpenCodeModels) returns.
 func TestUsesCatalogSourcing(t *testing.T) {
 	for _, kind := range []string{NativeAdapterKind, adapter.KindClaude} {
 		if !UsesCatalogSourcing(kind) {
@@ -245,10 +245,8 @@ func TestUsesCatalogSourcing(t *testing.T) {
 	}
 }
 
-// PARITY GUARD: the TUI's set must equal the predicate the server publishes to
-// the GUI (adapter.CatalogSourcedAdapterKinds → ListAdapterKindsResponse.
-// sourcing_kinds). Without this, claude could be catalog-sourced in one picker
-// and CLI-discovered in the other — the divergence this item exists to close.
+// PARITY GUARD: the TUI's set must equal the predicate the server publishes to the GUI
+// (adapter.CatalogSourcedAdapterKinds → ListAdapterKindsResponse.
 func TestCatalogSourcedParity(t *testing.T) {
 	want := map[string]bool{}
 	for _, k := range adapter.CatalogSourcedAdapterKinds() {
@@ -267,10 +265,8 @@ func TestCatalogSourcedParity(t *testing.T) {
 	}
 }
 
-// The claude path, end to end at the seam the TUI owns: the sourcing view's
-// anthropic list projects to a NON-EMPTY option list on an opencode-free plane,
-// the model VALUE stays the bare id, and the picker's join commits exactly
-// `claude/anthropic/<model>` — the ref the grammar (and the plane) accepts.
+// The claude path, end to end at the seam the TUI owns: the sourcing view's anthropic list projects
+// to a NON-EMPTY option list on an opencode-free plane, the model VALUE stays the bare id.
 func TestClaudeKindListsCatalogModelsAndCommitsAThreeSegmentRef(t *testing.T) {
 	if !UsesCatalogSourcing(adapter.KindClaude) {
 		t.Fatal("claude must take the providers-sourcing branch (the CLI branch returns Unimplemented with no opencode binary)")

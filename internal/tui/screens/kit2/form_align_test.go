@@ -17,10 +17,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// modelRow extracts the single rendered line that carries the model field, so an
-// assertion about that row cannot be satisfied by the footer or a neighbour. An
-// earlier version of these tests asserted against the WHOLE form and passed on
-// unfixed code because "enter" also appears in the footer's "enter: next".
+// modelRow extracts the single rendered line that carries the model field, so an assertion about
+// that row cannot be satisfied by the footer or a neighbour.
 func modelRow(t *testing.T, view string) string {
 	t.Helper()
 	var found string
@@ -39,16 +37,6 @@ func modelRow(t *testing.T, view string) string {
 }
 
 // TEST 1: A WRAPPED ROW KEEPS ITS OWN INDENT.
-//
-// This is the cause of "it's not inline with the other fields". wrapFormLine
-// returned a fitting row VERBATIM (prefix intact) but rebuilt a wrapping row out of
-// `strings.Fields`, which discards leading whitespace — so the wrapped row landed at
-// column 0 while its neighbours sat at column 2. Measured on the worker edit form:
-// `Purpose:` rendered at 0 and `Plane role:` at 2, in the same list.
-//
-// The two cases are asserted together on purpose: the bug was not "the indent is
-// wrong", it was "the same form indents differently depending on whether a value
-// happened to fit", and a test that checks one case cannot see that.
 func TestWrapFormLinePreservesTheRowsOwnIndent(t *testing.T) {
 	const width = 40
 	// Long enough to wrap, short enough to fit: same field, two values.
@@ -98,16 +86,6 @@ func TestWrapFormLineFallsBackWithoutLosingTheIndent(t *testing.T) {
 }
 
 // TEST 2: A REFERENCE FIELD NAMES ITS GESTURE FROM ANYWHERE.
-//
-// The model row read as inert text because the `enter: choose model` hint was drawn
-// only while that field held the cursor, and the form's footer said "enter: next" —
-// which is WRONG on a reference field, where enter opens a picker rather than
-// advancing. The operator was on the Name field, so nothing on screen said the model
-// row could be opened.
-//
-// The convention already existed: a multi-line field names its chords unconditionally
-// (label row: "· enter: edit · ctrl+e: expand"). This asserts the reference family
-// does the same.
 func TestReferenceFieldsNameTheirGestureWithoutFocus(t *testing.T) {
 	f := NewForm("Worker",
 		FieldSpec{Name: "name", Label: "Name", Kind: KText, Initial: "writer"},
@@ -121,9 +99,7 @@ func TestReferenceFieldsNameTheirGestureWithoutFocus(t *testing.T) {
 	f.FocusName("name")
 
 	row := modelRow(t, f.View())
-	// The model ROW states its gesture while the cursor is elsewhere. Asserted on the
-	// row itself: the footer also says "enter", so a form-wide check would pass on
-	// unfixed code (it did, in this file's first version).
+	// The model ROW states its gesture while the cursor is elsewhere.
 	if !strings.Contains(row, "claude/anthropic/claude-sonnet-5") {
 		t.Fatalf("the model row must show its value, got %q", row)
 	}
@@ -143,12 +119,8 @@ func TestReferenceFieldsNameTheirGestureWithoutFocus(t *testing.T) {
 	}
 }
 
-// An UNSET reference field names its gesture too — and it is the SAME affordance the
-// set row uses, so the row does not change character as the operator fills it in.
-//
-// NO PLACEHOLDER IS SUPPLIED. The first version of this test passed the placeholder in
-// itself, which made it tautological: it asserted that a string it had just written
-// appeared on screen. The gesture must come from the form's own renderer.
+// An UNSET reference field names its gesture too — and it is the SAME affordance the set row uses,
+// so the row does not change character as the operator fills it in.
 func TestUnsetReferenceFieldsNameTheirGesture(t *testing.T) {
 	f := NewForm("Worker",
 		FieldSpec{Name: "name", Label: "Name", Kind: KText, Initial: "writer"},
@@ -167,9 +139,8 @@ func TestUnsetReferenceFieldsNameTheirGesture(t *testing.T) {
 	}
 }
 
-// The footer must not claim enter merely advances when it can also OPEN something:
-// on a reference field the field-specific gesture wins, and the footer is the line
-// that can say so generically.
+// The footer must not claim enter merely advances when it can also OPEN something: on a reference
+// field the field-specific gesture wins, and the footer is the line that can say so generically.
 func TestTheFormFooterDoesNotLieAboutEnter(t *testing.T) {
 	f := NewForm("Worker",
 		FieldSpec{Name: "model_ref", Label: "Model", Kind: KModel, Initial: "claude/anthropic/x"},
@@ -184,12 +155,6 @@ func TestTheFormFooterDoesNotLieAboutEnter(t *testing.T) {
 }
 
 // A SET reference row must still fit on ONE line at the operator's pane width.
-//
-// This is the constraint that decided the affordance's wording, and it is worth
-// pinning because a longer hint is the obvious "improvement" a later reader would
-// make. A model ref is ~32 cells on its own, and a hint that pushes the row over the
-// pane width wraps it — which drops every field BELOW it down a row, so one verbose
-// label re-flows the whole form.
 func TestASetModelRowFitsOnOneLine(t *testing.T) {
 	f := NewForm("Edit worker",
 		FieldSpec{Name: "name", Label: "Name", Kind: KText, Initial: "Quick Software Engineer"},

@@ -57,15 +57,7 @@ func TestTabOrderMirrorsGUINav(t *testing.T) {
 			t.Fatalf("tab %d = %q, want %q", i, Tabs[i].Title, title)
 		}
 	}
-	// THE CHORD IS THE KEY THE BAR PRINTS. Asserted from each tab's own key label rather than a literal
-	// list, because that is the invariant asked for when the ctrl+letter chords were replaced — "make
-	// them ctrl+number and use the numbers that we have assigned each tab menu" — and a literal list
-	// here is one of the four places those old chords were spelled out, which is how they could drift
-	// from the bar.
-	//
-	// It also checks the chord is EXPRESSIBLE as a key event, which is the part that is easy to get
-	// wrong: ctrl+<digit> looks fine in a string and is undeliverable (ctrl+3 arrives as esc), and
-	// alt+<digit> is deliverable but claimed by the emulator before the program sees it.
+	// THE CHORD IS THE KEY THE BAR PRINTS.
 	for i, tab := range Tabs {
 		want := strings.ToLower(tab.Ordinal)
 		if tab.Chord != want {
@@ -93,8 +85,7 @@ func TestChordSwitching(t *testing.T) {
 }
 
 // tabChordKeys maps each tab's function-key chord to its key event, explicitly: bubbletea's KeyType
-// values do not run in source order between families (KeyF1 + 1 lands on ctrl+shift+end), so a family
-// built by incrementing its first member silently produces the wrong key for six of the seven tabs.
+// values do not run in source order between families (KeyF1 + 1 lands on ctrl+shift+end).
 var tabChordKeys = map[string]tea.KeyMsg{
 	"f1": {Type: tea.KeyF1},
 	"f2": {Type: tea.KeyF2},
@@ -112,10 +103,7 @@ func keyFor(s string) tea.KeyMsg {
 	if rest, ok := strings.CutPrefix(s, "alt+"); ok {
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(rest), Alt: true}
 	}
-	// The tab chords are function keys: f1 … f7. Listed EXPLICITLY rather than computed from KeyF1,
-	// because bubbletea's KeyType values do not run in source order — KeyF1 + 1 is ctrl+shift+end, not
-	// f2 (found by this very helper, when the chord assertion rejected the key it built). A computed
-	// family would look like a broken feature rather than a broken helper.
+	// The tab chords are function keys: f1 … f7.
 	if k, ok := tabChordKeys[s]; ok {
 		return k
 	}
@@ -141,12 +129,6 @@ func keyFor(s string) tea.KeyMsg {
 }
 
 // LEFT/RIGHT must NOT rotate the tab bar.
-//
-// They used to (a global route, which ran before the screen), which made it
-// impossible to move focus between the two panes below the tab bar — the
-// operator's "left+right should not be moving the tab menu at the top nor should
-// it be rotating through the different screens ... it should move between the two
-// panes below the menus". The tab bar keeps Tab/Shift+Tab and the ctrl chords.
 func TestArrowsDoNotCycleTabs(t *testing.T) {
 	m := newTestApp()
 	m.RegisterScreen(TabWork, &stubScreen{id: "work"})
@@ -173,16 +155,6 @@ func TestArrowsDoNotCycleTabs(t *testing.T) {
 }
 
 // The BAR-focused case, which is the one the first fix missed.
-//
-// Removing only the GLOBAL left/right routes (27ad7c71) left the focusTabs branch in
-// dispatch still calling tabRingPrev/tabRingNext — and the bar is exactly where Tab
-// and a tab click land. So the arrows still rotated the screens whenever the bar held
-// the keyboard: "left+right should not be moving the tab menu at the top nor should it
-// be rotating through the different screens".
-//
-// They now hand the keyboard DOWN to the panes, which is the other half of the
-// operator's ask ("move between the two panes below the menus so you can grab focus on
-// those"). The ring stays reachable on Tab/Shift+Tab.
 func TestArrowsDoNotCycleTabsEvenFromTheBar(t *testing.T) {
 	m := newTestApp()
 	m.RegisterScreen(TabWork, &stubScreen{id: "work"})
@@ -203,10 +175,7 @@ func TestArrowsDoNotCycleTabsEvenFromTheBar(t *testing.T) {
 		}
 		got.setFocus(focusTabs) // back to the bar for the next case
 	}
-	// The ring is still walkable from the bar. The exact stop order is the ring's own
-	// business (from the bar each Tab is one advance, so the first stop is the NEXT
-	// tab); the invariant this test is actually about is that Tab is not dead, since
-	// arrows no longer rotate anything.
+	// The ring is still walkable from the bar.
 	nm := tea.Model(m)
 	seen := map[string]bool{}
 	for i := 0; i < 6; i++ {
@@ -270,9 +239,7 @@ func TestHelpOverlayMatchesKeymap(t *testing.T) {
 func TestHelpOverlayToggle(t *testing.T) {
 	m := newTestApp()
 	m.RegisterScreen(TabWork, &stubScreen{id: "work"})
-	// The help overlay opens from CONTENT focus (? is a literal character
-	// while composing — typing "how?" into the composer must never open
-	// an overlay). Esc also hands focus back: toggle content → composer.
+	// The help overlay opens from CONTENT focus (?
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc}) // composer → content
 	m2 := nm.(*App)
 	if m2.chatFocus != focusContent {
@@ -293,10 +260,8 @@ func TestHelpOverlayToggle(t *testing.T) {
 	}
 }
 
-// Inside a text input (composer concern later), chords must fall through
-// to editing: the router consumes ctrl-chords first, but plain keys and
-// shift+letters reach the screen. The composer owns plain keys at launch
-// (Phase 2a) — after esc (content focus) they reach the screen.
+// Inside a text input (composer concern later), chords must fall through to editing: the router
+// consumes ctrl-chords first, but plain keys and shift+letters reach the screen.
 func TestRouterDefersPlainKeysToScreen(t *testing.T) {
 	m := newTestApp()
 	s := &stubScreen{id: "ask"}
@@ -350,9 +315,8 @@ func TestFooterDisconnectedRetrying(t *testing.T) {
 	}
 }
 
-// Tab chords must drive the active screen's live streams: the chord
-// doubles as the stream re-arm, and the opening tab starts live on the
-// first WindowSizeMsg (the shell's EnsureSubscriptions contract).
+// Tab chords must drive the active screen's live streams: the chord doubles as the stream re-arm,
+// and the opening tab starts live on the first WindowSizeMsg (the shell's EnsureSubscriptions.
 func TestChordEnsuresSubscriptions(t *testing.T) {
 	m := newTestApp()
 	s := &stubScreen{id: "work"}
@@ -381,8 +345,7 @@ func TestWorseStatusWins(t *testing.T) {
 }
 
 // tabChord resolves a tab's chord from Tabs, so a test FOLLOWS the bindings instead of restating
-// them. Restating is how the old ctrl+letter chords ended up spelled out in four places and drifted
-// from the bar the operator reads.
+// them.
 func tabChord(id TabID) string {
 	for _, t := range Tabs {
 		if t.ID == id {
@@ -419,10 +382,7 @@ func TestEveryCellCarriesTheThemeBackground(t *testing.T) {
 			unpainted.total, unpainted.firstCol, unpainted.firstLine)
 	}
 	// AND THE SAME FOR THE FOREGROUND, which is the other half of the operator's report: "There is
-	// still 'terminal' font color coming through in various areas ... Can we just make sure ALL text
-	// is being affected by our theming engine and not relying on terminal bleed through?" A markdown
-	// renderer emits attributes only and relies on its host for colour, so a host that supplies none
-	// (the detail pane's viewport) left every body in the terminal's own foreground.
+	// still 'terminal' font color coming through in various areas ...
 	if unpainted.fg != 0 {
 		t.Errorf("%d cells have no foreground, so the terminal's own font colour shows through "+
 			"(first offender: col %d of line %d) — every cell must carry a theme colour",
@@ -430,9 +390,7 @@ func TestEveryCellCarriesTheThemeBackground(t *testing.T) {
 	}
 }
 
-// unpaintedCells counts the cells of a rendered frame with no background in effect. It walks the
-// escape sequences rather than pattern-matching, because "is there a background here" depends on the
-// whole sequence history of the row: a reset clears it, a 48;… sets it, and a 38;… leaves it alone.
+// unpaintedCells counts the cells of a rendered frame with no background in effect.
 type unpaintedReport struct {
 	total, firstCol, firstLine int
 	// fg is the same count for cells with no FOREGROUND, which is the operator's "terminal font
@@ -499,20 +457,6 @@ func unpaintedCells(view string) unpaintedReport {
 }
 
 // A LIGHT SESSION MUST CONTAIN NO DARK-THEME COLOURS.
-//
-// The strongest statement of the operator's remaining reports: "The 'connected' text in the bottom left
-// corner still has a black text behind it", "a weird black box around the composer box", and "black
-// boxes bleeding through inside executions. Work items have it as well." All three looked like separate
-// bugs and were one — `screenBase` was a package-level `var`, so it evaluated theme.Text/theme.Bg once
-// at package INITIALISATION, when the active theme is the dark default, and wrapped every row of every
-// frame in the dark palette for the life of the process.
-//
-// IT SURVIVED THE EARLIER PER-CELL AUDIT because those cells were PAINTED — just painted wrong.
-// "Is there a background here" and "is it the RIGHT background" are different questions, which is why
-// this test asserts on the COLOURS rather than on paint coverage.
-//
-// The palette check is a plain containment test on the SGR fragments, so it needs no colour parsing: a
-// dark palette colour simply must not appear anywhere in the frame.
 func TestLightSessionUsesNoDarkPaletteColours(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { theme.Use(theme.DefaultName) })

@@ -10,34 +10,13 @@ import (
 )
 
 // Per-run container BOOT PROFILE.
-//
-// A runtime container's boot profile is the set of adapter kinds its step
-// workers resolve to (adapter.AdapterKind over each step worker's
-// model_ref, sorted + deduped). It rides the create request
-// (CreateRequest.AdapterKinds) from the plane to the daemon, which derives
-// from it:
-//
-//   - which adapter installs the container gets mounted (the conditional
-//     ~/.opencode config/auth/CLI mounts — a native-only run mounts none of
-//     them), and
-//   - which in-container serves it warms at create time (today exactly one:
-//     the opencode serve).
-//
-// The profile is the RUN-LEVEL half of the ONE shared demand-set primitive
-// (adapter.DemandSet / adapter.AdapterDemandSet, Task C): the run-start gate
-// and the host serve accumulate the same per-worker model refs into the same
-// primitive, so the run's boot profile and the host serve lifecycle can
-// never drift (AC 7 — no forked second computation).
 
-// nativeAdapterKind is the dispatcher-registered native bridge kind
-// (ADR-0004): its sessions execute INSIDE the run's container through the
-// supervisor's one-shot exec path. It needs no in-container serve and no
-// adapter-CLI install mount.
+// nativeAdapterKind is the dispatcher-registered native bridge kind: its sessions
+// execute INSIDE the run's container through the supervisor's one-shot exec path.
 const nativeAdapterKind = "orchicon"
 
-// normalizedKind maps an empty/whitespace kind to the default adapter kind
-// (opencode), mirroring adapter.AdapterDemandSet's conservative rule for an
-// empty/unresolvable ref.
+// normalizedKind maps an empty/whitespace kind to the default adapter kind (opencode), mirroring
+// adapter.AdapterDemandSet's conservative rule for an empty/unresolvable ref.
 func normalizedKind(kind string) string {
 	if k := strings.TrimSpace(kind); k != "" {
 		return k
@@ -45,26 +24,12 @@ func normalizedKind(kind string) string {
 	return adapter.DefaultAdapterKind
 }
 
-// serveDependentKind reports whether an adapter kind needs an IN-CONTAINER
-// serve. It delegates to Lifecycle.ServeDependent — THE serve-dependency
-// predicate the scheduler's run-start gate hands to
-// adapter.DemandSet.NeedsServe — called on a zero Lifecycle (the method
-// reads only its argument), so this is the same evaluation and never a
-// forked second copy of the rule.
+// serveDependentKind reports whether an adapter kind needs an IN-CONTAINER serve.
 func serveDependentKind(kind string) bool {
 	return (&Lifecycle{}).ServeDependent(kind)
 }
 
-// requestedKinds returns the effective boot profile for a create request,
-// sorted and deduped.
-//
-// A NIL profile is the legacy/unspecified case — a pre-change plane (which
-// does not know the field) or a plane that could not resolve a demand at
-// all. It means opencode is demanded, i.e. today's unconditional adapter
-// mounts + serve: a mixed-version rollout must never silently strip model
-// auth from an opencode run. A NON-NIL profile is honored verbatim, so an
-// explicitly empty profile ("this run demands no adapter kind") mounts
-// nothing.
+// requestedKinds returns the effective boot profile for a create request, sorted and deduped.
 func requestedKinds(req CreateRequest) []string {
 	if req.AdapterKinds == nil {
 		return []string{adapter.DefaultAdapterKind}
@@ -94,10 +59,8 @@ func demandsKind(req CreateRequest, kind string) bool {
 	return false
 }
 
-// serveKindsFor filters a boot profile down to the kinds whose dispatch
-// path needs an in-container serve (today: opencode only). The supervisor
-// multiplexes one serve per returned kind (AC 2) while native steps keep
-// executing through the one-shot exec path.
+// serveKindsFor filters a boot profile down to the kinds whose dispatch path needs an in-container
+// serve (today: opencode only).
 func serveKindsFor(kinds []string) []string {
 	out := make([]string, 0, len(kinds))
 	for _, k := range kinds {
@@ -116,49 +79,24 @@ type adapterInstall struct {
 	// mount is the host path bind-mounted (the container path is the same).
 	// Empty means the probe itself is mounted.
 	mount string
-	// dir requires probe to be a directory; otherwise probe must exist and
-	// NOT be a directory. This mirrors the daemon's original os.Stat gate
-	// for the opencode install byte for byte.
+	// dir requires probe to be a directory; otherwise probe must exist and NOT be a directory.
 	dir bool
-	// rw mounts this install READ-WRITE. Only claude's config/transcript
-	// home (~/.claude + ~/.claude.json) is rw: the CLI writes its JSONL
-	// transcript into ~/.claude/projects/<encoded-cwd>/ at run time, so a
-	// read-only mount would break the session outright.
+	// rw mounts this install READ-WRITE.
 	rw bool
-	// private marks an install whose HOST directory must NOT be bind-mounted.
-	// The container instead gets a PRIVATE, writable, runtime-uid-owned
-	// directory at the same container path, plus — when authFile is set — that
-	// one file bound READ-ONLY inside it.
-	//
-	// opencode's data home is the case this exists for. opencode 2.x writes its
-	// log, its repos and its session DB under ~/.local/share/opencode at run
-	// time, so a read-only mount breaks the boot outright
-	// (EROFS .../opencode/log/opencode.log → `serve handshake: exit status 1`);
-	// but mounting the operator's directory read-write would hand every worker
-	// write access to the operator's credential AND to a session store it has
-	// no business touching. Private + auth-only is the mount that lets the CLI
-	// run without either failure.
+	// The container instead gets a PRIVATE, writable, runtime-uid-owned directory at the same container
+	// path, plus — when authFile is set — that one file bound READ-ONLY inside it.
 	private bool
-	// authFile is the file inside a PRIVATE install's host directory that is
-	// bind-mounted read-only into the container's private copy of it. Empty
-	// means no file is shared (the container's copy is entirely its own).
+	// authFile is the file inside a PRIVATE install's host directory that is bind-mounted into the
+	// container's private copy of it.
 	authFile string
-	// fingerprint lists the sub-trees of this install whose change must
-	// invalidate a WARM pooled container. Empty = not fingerprinted
-	// (config/transcript homes change every session and must never churn
-	// the pool). Derived by adapterFingerprintRoots (hostfp.go).
+	// authWritable mounts authFile READ-WRITE instead of read-only.
+	authWritable bool
+	// fingerprint lists the sub-trees of this install whose change must invalidate a WARM pooled
+	// container.
 	fingerprint []string
 }
 
-// consumptionWitness is one file+needle PROVING a consumption axis is
-// actually wired. It is a literal substring of an existing source file, so a
-// declaration that is never backed by real wiring FAILS the conformance gate
-// (internal/runtime/adapter_bundle_conformance_test.go). The needle is
-// checked by READING the file, never by importing the package — the runtime
-// package cannot import internal/opencode|claude|orchicon (no such import
-// exists in any internal/runtime file), so a source scan is the only
-// mechanism available across that boundary. Same technique as
-// internal/neverallow/share_test.go.
+// consumptionWitness is one file+needle PROVING a consumption axis is actually wired.
 type consumptionWitness struct {
 	// file is a path relative to this package dir (internal/runtime).
 	file string
@@ -166,14 +104,10 @@ type consumptionWitness struct {
 	needle string
 }
 
-// The negative-axis notes. Each NAMES what the kind does NOT do and why — the
-// gate requires a non-empty note for every axis a kind leaves negative, so
-// an unexplained negative is a failure, not a silence.
+// The negative-axis notes.
 const (
-	// hostServeUnionLimitationNote states opencode's HOST-SERVE limitation
-	// precisely: a positive runUnionAtServe covers the CONTAINER serve (baked
-	// once at container creation), but the in-process HOST serve is a
-	// different artifact with a different constraint.
+	// hostServeUnionLimitationNote states opencode's HOST-SERVE limitation precisely: a positive
+	// runUnionAtServe covers the CONTAINER serve (baked once at container creation).
 	hostServeUnionLimitationNote = "opencode consumes the per-session bundle (project-owned ∪ own) via hostResolvedSet and a CONTAINER serve receives the run-level union once at creation (resolveRunUnion → RunMCP). HOST-SERVE LIMITATION: an IN-PROCESS host serve builds its OPENCODE_CONFIG_CONTENT ONCE per serve process (internal/opencode/servehost.go serveConfig, BuildConfigContent) and that process lives for the plane, so unioning several projects' MCP sets onto it would make one project's servers visible in another project's session — a leak with no consent boundary. A session whose set differs therefore runs on a serve built for that set (HostServePool, internal/opencode/servepool.go); the host serve resolves exactly ONE set, the PROJECT scope, and never a cross-project union. The run-level (per-container) union is delivered once, at container creation, and is NOT what a host serve carries."
 
 	// claudeNoServeNote: claude has no in-container HTTP serve at all.
@@ -183,39 +117,23 @@ const (
 	nativeNoServeNote = "the native (orchicon) bridge execs sessions ONE-SHOT inside the run container through the supervisor's exec path with no opencode serve (bootprofile.go nativeAdapterKind), so there is no once-per-run serve to receive the run-level union. The native bridge receives the per-session worker scope (project-owned ∪ own) via ResolveExecutionMCP (internal/orchicon/mcptools.go), which it starts its MCP manager from."
 )
 
-// adapterClass is the ONE classification of an adapter kind. It carries the
-// mount half (installs — read by the daemon's mounts and by
-// adapter_bake_guard_test.go) PLUS the two bundle-consumption axes read by
-// adapter_bundle_conformance_test.go, so the mount guard and the conformance
-// gate read ONE declaration and cannot drift.
+// adapterClass is the ONE classification of an adapter kind.
 type adapterClass struct {
 	installs []adapterInstall
-	// perSessionBundle: the kind resolves AND consumes the per-session bundle
-	// (project-owned ∪ the scope's own specs). Positive ⇒ perSessionWitnesses
-	// required; negative ⇒ note must explain.
+	// perSessionBundle: the kind resolves AND consumes the per-session bundle (project-owned ∪ the
+	// scope's own specs).
 	perSessionBundle    bool
 	perSessionWitnesses []consumptionWitness
-	// runUnionAtServe: the kind's container-serve path receives the RUN-LEVEL
-	// union at container creation. REQUIRED true for every serve-dependent
-	// kind (ServeDependent==true) — the gate fails a serve-dependent kind that
-	// declares it false.
+	// REQUIRED true for every serve-dependent kind (ServeDependent==true) — the gate fails a
+	// serve-dependent kind that declares it false.
 	runUnionAtServe   bool
 	runUnionWitnesses []consumptionWitness
-	// note: the explicit declaration for any NEGATIVE axis, naming what the
-	// kind does NOT do and why. Also carries opencode's HOST-SERVE limitation.
-	// The gate requires it to be non-empty whenever an axis is negative.
+	// note: the explicit declaration for any NEGATIVE axis, naming what the kind does NOT do and why.
 	note string
 }
 
-// classifyAdapter is the ONE adapter-kind classification the daemon mounts
-// from AND both guards read. adapterInstalls is a thin wrapper over it (the
-// mount half), so existing callers and tests compile unchanged and the two
-// concerns cannot diverge.
-//
-// declared == false is a guard failure, never a silent pass: a kind the
-// builtin catalog declares but this switch has not classified (the next
-// adapter — claude/codex-shaped growth) must fail the mount-never-bake guard
-// AND the bundle-conformance gate loudly instead of quietly doing nothing.
+// classifyAdapter is the ONE adapter-kind classification the daemon mounts from AND both guards
+// read.
 func classifyAdapter(home, kind string) (adapterClass, bool) {
 	join := func(parts ...string) string {
 		return filepath.Join(append([]string{home}, parts...)...)
@@ -225,10 +143,8 @@ func classifyAdapter(home, kind string) (adapterClass, bool) {
 		return adapterClass{
 			installs: []adapterInstall{
 				{probe: join(".config", "opencode"), dir: true},
-				// The data home is PRIVATE (see adapterInstall.private): the CLI must
-				// WRITE here, but the operator's credential and session store must
-				// not become writable from a worker — so the container gets its own
-				// uid-owned directory and only auth.json, read-only, from the host.
+				// The data home is PRIVATE (see adapterInstall.private): the CLI must WRITE here, but the
+				// operator's credential and session store must not become writable from a worker.
 				{probe: join(".local", "share", "opencode"), dir: true,
 					private: true, authFile: "auth.json"},
 				{probe: join(".opencode", "bin", "opencode"), mount: join(".opencode"),
@@ -240,14 +156,7 @@ func classifyAdapter(home, kind string) (adapterClass, bool) {
 			},
 			runUnionAtServe: true,
 			runUnionWitnesses: []consumptionWitness{
-				// The CONTAINER-serve path — the axis this declares. resolveRunUnion
-				// (lifecycle.go) is the resolver; adapter.RuntimeServeConfig receives
-				// its `union` and bakes `RunMCP: union.Servers` into the container's
-				// OPENCODE_CONFIG_CONTENT ONCE at creation. NOTE: this is NOT
-				// servehost.go's `RunMCP` — that is the in-process HOST serve, which
-				// resolves exactly ONE set (the PROJECT scope) and never the run
-				// union (see hostServeUnionLimitationNote); witnessing it here would
-				// assert the wrong artifact and false-assure the axis.
+				// The CONTAINER-serve path — the axis this declares.
 				{file: "lifecycle.go", needle: "resolveRunUnion"},
 				{file: "../opencode/adapter.go", needle: "union.Servers"},
 			},
@@ -256,20 +165,15 @@ func classifyAdapter(home, kind string) (adapterClass, bool) {
 	case adapter.KindClaude:
 		return adapterClass{
 			installs: []adapterInstall{
-				// The config/transcript home: the CLI writes
-				// ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl at run time,
-				// so these two MUST be read-write. NOT fingerprinted (they change
-				// every session and would churn the warm pool).
-				{probe: join(".claude"), dir: true, rw: true},
-				{probe: join(".claude.json"), rw: true},
-				// The launcher is a SYMLINK into the install root below, mounted
-				// at its IDENTICAL absolute host path so the link resolves. Mount
-				// it WITHOUT the install root and the link dangles in-container.
-				// NEVER probe a version string (versions/2.1.261): its basename
-				// survives the bake guard's <3-char filter and becomes a
-				// forbidden-bake needle. Probing .local/bin/claude and
-				// .local/share/claude yields only the benign needles claude and
-				// claude — never a version.
+				// THE TRANSCRIPT HOME IS PRIVATE PER CONTAINER, AND THAT IS A CORRECTNESS FIX.
+				{probe: join(".claude"), dir: true, private: true,
+					// authFile is RELATIVE TO THE PROBE DIR (see adapterPrivateHomes, which joins it onto in.probe) —
+					// opencode's "auth.json" is the same shape.
+					authFile: ".credentials.json", authWritable: true},
+				// ~/.claude.json is the CLI's own config, written on start and on settings changes.
+				{probe: join(".claude.json"), private: true},
+				// NEVER probe a version string (versions/2.1.261): its basename survives the bake guard's <3-char
+				// filter and becomes a forbidden-bake needle.
 				{probe: join(".local", "bin", "claude"),
 					fingerprint: []string{join(".local", "bin", "claude")}},
 				{probe: join(".local", "share", "claude"), dir: true,
@@ -283,10 +187,8 @@ func classifyAdapter(home, kind string) (adapterClass, bool) {
 			note:            claudeNoServeNote,
 		}, true
 	case nativeAdapterKind:
-		// The orchicon binary is the PRODUCT binary: the daemon bind-mounts
-		// it at /usr/local/bin/orchicon (never an adapter CLI, never a
-		// host-home install). It contributes no adapter mount, but it IS
-		// classified — the mount-never-bake rule for it is unchanged.
+		// The orchicon binary is the PRODUCT binary: the daemon bind-mounts it at /usr/local/bin/orchicon
+		// (never an adapter CLI, never a host-home install).
 		return adapterClass{
 			perSessionBundle: true,
 			perSessionWitnesses: []consumptionWitness{
@@ -299,24 +201,15 @@ func classifyAdapter(home, kind string) (adapterClass, bool) {
 	return adapterClass{}, false
 }
 
-// adapterInstalls returns the host installs a kind contributes to a demanding
-// container, and whether the kind is CLASSIFIED (declared). Each install
-// carries its own read-only/read-write mode (see adapterInstall.rw).
-//
-// It is a THIN WRAPPER over classifyAdapter (the ONE declaration): the mount
-// half lives there, so the daemon's mounts and BOTH guards
-// (adapter_bake_guard_test.go and adapter_bundle_conformance_test.go) read a
-// single classification and cannot drift.
+// adapterInstalls returns the host installs a kind contributes to a demanding container, and
+// whether the kind is CLASSIFIED (declared).
 func adapterInstalls(home, kind string) ([]adapterInstall, bool) {
 	c, ok := classifyAdapter(home, kind)
 	return c.installs, ok
 }
 
-// adapterInstallPaths returns the host install paths a kind's adapter CLI
-// occupies, plus whether the kind is classified. It is the single source of
-// truth shared by the daemon's mounts (adapterInstalls) and the
-// mount-never-bake guard, so the mounted set and the forbidden-bake set can
-// never drift.
+// adapterInstallPaths returns the host install paths a kind's adapter CLI occupies, plus whether
+// the kind is classified.
 func adapterInstallPaths(home, kind string) ([]string, bool) {
 	installs, declared := adapterInstalls(home, kind)
 	if !declared {
@@ -329,20 +222,8 @@ func adapterInstallPaths(home, kind string) ([]string, bool) {
 	return out, true
 }
 
-// AdapterHostMountRoots returns the host paths a demanded kind's installs are
-// mounted FROM — the roots a resolved adapter CLI must sit under to be reachable
-// from inside a runtime container.
-//
-// THE DECLARATION, NOT THE RUNTIME SET: existence is deliberately NOT checked.
-// adapterHostMounts does check it, because a `-v` must point at something real;
-// this answers a question about the RULE — "would a binary placed here be
-// visible to a worker?" — and a caller that stat'd would get a different answer
-// depending on whether the operator has installed anything yet.
-//
-// The consumer is internal/opencode's ContainerVisible, which pairs with the
-// binary resolver: 'opencode is installed' is a HOST fact, and on its own it says
-// nothing about whether the runtime containers can execute it. Deriving both from
-// this one declaration is what keeps the two answers from disagreeing.
+// AdapterHostMountRoots returns the host paths a demanded kind's installs are mounted FROM — the
+// roots a resolved adapter CLI must sit under to be reachable from inside a runtime container.
 func AdapterHostMountRoots(home string, kinds ...string) []string {
 	if home == "" {
 		return nil
@@ -369,15 +250,32 @@ func AdapterHostMountRoots(home string, kinds ...string) []string {
 	return out
 }
 
-// adapterHostMounts returns the daemon -v args for the adapter installs a
-// demanded kind contributes, emitting only installs whose probe exists with
-// the required file/dir shape (mirroring the original inline os.Stat gate).
-// home == "" (no host home configured) yields nothing.
+// adapterHostMounts returns the daemon -v args for the adapter installs a demanded kind
+// contributes.
 func adapterHostMounts(home string, kinds ...string) []string {
 	if home == "" {
 		return nil
 	}
 	var args []string
+	// THE RESOLVED BINARY'S DIRECTORY, MOUNTED AT ITS OWN ABSOLUTE PATH — the mount half of the same
+	// fix as adapterBinDirs.
+	for _, kind := range kinds {
+		bin := adapter.ResolveBinary(adapter.HostGOOS(), home, kind, os.Getenv)
+		if bin == "" {
+			continue
+		}
+		if ok, _ := adapter.ContainerUsable(bin, "linux"); !ok {
+			continue
+		}
+		dir := filepath.Dir(bin)
+		// SKIP WHEN THE DECLARED TABLE ALREADY MOUNTS IT.
+		if alreadyDeclaredMounts(bin, home, kind) {
+			continue
+		}
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			args = append(args, "-v", dir+":"+dir+":ro")
+		}
+	}
 	for _, kind := range kinds {
 		installs, declared := adapterInstalls(home, kind)
 		if !declared {
@@ -403,6 +301,8 @@ func adapterHostMounts(home string, kinds ...string) []string {
 			if !in.dir && st.IsDir() {
 				continue
 			}
+			// No `,z` relabel yet lands it with the ingress slice (architecture note D-4); see
+			// the same note at the daemon's -v loop in daemon.go createContainer.
 			mode := ":ro"
 			if in.rw {
 				mode = ":rw"
@@ -413,20 +313,18 @@ func adapterHostMounts(home string, kinds ...string) []string {
 	return args
 }
 
-// privateHome is one adapter install's PRIVATE, writable container directory:
-// the path to give the container (identical inside and out, as every other
-// mount is) and, when the operator has one to share, the credential file to
-// bind read-only into it.
+// privateHome is one adapter install's PRIVATE, writable container directory: the path to give the
+// container (identical inside and out, as every other mount is).
 type privateHome struct {
 	dir      string
 	authFile string
+	// authWritable propagates adapterInstall.authWritable to the argv builder.
+	authWritable bool
+	// isFile marks a private install that is a REGULAR FILE rather than a directory (~/.claude.json).
+	isFile bool
 }
 
-// adapterPrivateHomes returns the private homes a demanded kind contributes,
-// in declaration order. Probe-gated like every other install, and for good
-// reason: with no host directory to mount from there is nothing to share, and
-// the container's own copy is then created by the CLI itself under a $HOME
-// that standardHostMountArgs has already made writable by the runtime uid.
+// adapterPrivateHomes returns the private homes a demanded kind contributes, in declaration order.
 func adapterPrivateHomes(home string, kinds ...string) []privateHome {
 	if home == "" {
 		return nil
@@ -442,10 +340,16 @@ func adapterPrivateHomes(home string, kinds ...string) []privateHome {
 				continue
 			}
 			st, err := os.Stat(in.probe)
-			if err != nil || !st.IsDir() {
+			if err != nil {
 				continue
 			}
-			ph := privateHome{dir: in.probe}
+			// A PRIVATE FILE IS DECLARED AND MUST BE MOUNTED. Skipping it was the silent drop described on
+			// privateHome.isFile.
+			if !st.IsDir() {
+				out = append(out, privateHome{dir: in.probe, isFile: true})
+				continue
+			}
+			ph := privateHome{dir: in.probe, authWritable: in.authWritable}
 			if in.authFile != "" {
 				af := filepath.Join(in.probe, in.authFile)
 				if ast, aerr := os.Stat(af); aerr == nil && !ast.IsDir() {
@@ -458,30 +362,50 @@ func adapterPrivateHomes(home string, kinds ...string) []privateHome {
 	return out
 }
 
-// adapterBinDirs returns the container PATH dirs a demanded kind's mounted
-// CLI needs. Derived from the same install table the mounts come from, so a
-// mounted launcher is always reachable by name.
+// adapterBinDirs returns the container PATH dirs a demanded kind's mounted CLI needs.
 func adapterBinDirs(home, kind string) []string {
+	// THE RESOLVED BINARY'S DIRECTORY COMES FIRST, and it is the whole point of this change.
+	var dirs []string
+	if bin := adapter.ResolveBinary(adapter.HostGOOS(), home, kind, os.Getenv); bin != "" {
+		dirs = append(dirs, filepath.Dir(bin))
+	}
+	// THE DECLARED DIRECTORY IS KEPT AS A FALLBACK, for a container whose mounts already carry an
+	// adapter installed at the documented location (a baked image.
 	switch normalizedKind(kind) {
 	case adapter.DefaultAdapterKind:
-		return []string{filepath.Join(home, ".opencode", "bin")}
+		dirs = append(dirs, filepath.Join(home, ".opencode", "bin"))
 	case adapter.KindClaude:
-		return []string{filepath.Join(home, ".local", "bin")}
+		dirs = append(dirs, filepath.Join(home, ".local", "bin"))
 	}
-	return nil
+	return dirs
 }
 
-// adapterPathPrefix returns the EXISTING bin dirs of the demanded kinds,
-// sorted and deduped. Stat-filtered so a prefix never points at an absent
-// host dir (the invariant daemon.go's standardHostMountArgs doc states).
-// Empty kinds yield nil.
+// adapterPathPrefix returns the EXISTING bin dirs of the demanded kinds, sorted and deduped.
 func adapterPathPrefix(home string, kinds ...string) []string {
+	return adapterPathPrefixFor(home, adapter.HostGOOS(), kinds...)
+}
+
+// adapterPathPrefixFor is adapterPathPrefix with the host platform injected, so the non-Linux arm is
+// reachable from a Linux gate.
+func adapterPathPrefixFor(home, hostGOOS string, kinds ...string) []string {
 	if home == "" {
 		return nil
 	}
 	seen := make(map[string]struct{})
 	var out []string
 	for _, kind := range kinds {
+		switch normalizedKind(kind) {
+		case adapter.KindClaude, adapter.DefaultAdapterKind:
+			// THE HOST'S CLI IS WHAT THE CONTAINER RUNS, so its bin dir must be on the PATH that precedes
+			// /usr/local/bin — where an image-installed CLI lives.
+			if ok, _ := adapter.PreferHostAdapterInContainer(hostGOOS, adapter.ResolveBinary(hostGOOS, home, kind, os.Getenv)); !ok {
+				continue
+			}
+		default:
+			if _, inImage := imageSuppliesAdapter(kind); inImage && strings.TrimSpace(os.Getenv(adapter.BinEnv(kind))) == "" {
+				continue
+			}
+		}
 		for _, dir := range adapterBinDirs(home, kind) {
 			if _, ok := seen[dir]; ok {
 				continue
@@ -496,4 +420,95 @@ func adapterPathPrefix(home string, kinds ...string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// imageAdapterKind is one adapter kind the RUNTIME IMAGE supplies itself.
+type imageAdapterKind struct {
+	// kind is the adapter kind (adapter.DefaultAdapterKind, adapter.KindClaude, ...).
+	kind string
+	// bin is the executable NAME the image installs on PATH.
+	bin string
+}
+
+// imageAdapters is the set the shipped images install, keyed by kind.
+var imageAdapters = []imageAdapterKind{
+	{kind: adapter.DefaultAdapterKind, bin: "opencode"},
+	{kind: adapter.KindClaude, bin: "claude"},
+}
+
+// imageSuppliesAdapter reports whether the image for THIS request provides the kind itself.
+func imageSuppliesAdapter(kind string) (imageAdapterKind, bool) {
+	for _, a := range imageAdapters {
+		if a.kind == kind {
+			return a, true
+		}
+	}
+	return imageAdapterKind{}, false
+}
+
+// IT USED TO REPORT "the host's adapter is a Windows executable".
+func CheckAdaptersForContainerWith(home string, kinds ...string) []string {
+	if strings.TrimSpace(home) == "" {
+		// NO HOME CONFIGURED MEANS NO ADAPTER IS MOUNTED, so there is nothing to judge.
+		return nil
+	}
+	return containerAdapterProblems(func(kind string) (string, error) {
+		return adapter.ResolveBinary(adapter.HostGOOS(), home, kind, os.Getenv), nil
+	}, imageSuppliesAdapter, kinds...)
+}
+
+// containerAdapterProblems is the DECISION, with its two inputs injected so both arms are reachable
+// in a test.
+func containerAdapterProblems(resolveBin func(kind string) (string, error),
+	imageSupplies func(kind string) (imageAdapterKind, bool), kinds ...string) []string {
+	var problems []string
+	for _, kind := range kinds {
+		if _, ok := imageSupplies(kind); ok {
+			continue // (1) the image has it
+		}
+		bin, err := resolveBin(kind)
+		if err != nil || bin == "" {
+			continue // absent or unjudgeable, and either may be intentional — see the note above
+		}
+		if ok, why := adapter.ContainerUsable(bin, "linux"); !ok {
+			problems = append(problems, kind+": "+why)
+		}
+	}
+	return problems
+}
+// CheckAdaptersForContainer reports, for the run's demanded adapter kinds, any adapter that CANNOT
+// execute inside a runtime container — and says why for each.
+func CheckAdaptersForContainer(home string, kinds ...string) []string {
+	// DELEGATES to the image-aware check. Kept as a name because callers and tests reference it, but the
+	// judgement behind it is now "can ANY route serve this kind", not "is the host's binary Linux".
+	return CheckAdaptersForContainerWith(home, kinds...)
+}
+
+// IT MATCHES THE BINARY, NOT ONLY THE DIRECTORY, and that distinction is the claude case: its table
+// mounts the LAUNCHER FILE (~/.local/bin/claude.
+func alreadyDeclaredMounts(bin, home, kind string) bool {
+	installs, ok := adapterInstalls(home, kind)
+	if !ok {
+		return false
+	}
+	cleanBin := filepath.Clean(bin)
+	cleanDir := filepath.Dir(cleanBin)
+	for _, in := range installs {
+		src := in.mount
+		if src == "" {
+			src = in.probe
+		}
+		if src == "" || in.private {
+			continue
+		}
+		cleanSrc := filepath.Clean(src)
+		// The declared source is the binary itself, the directory holding it, OR an ANCESTOR of it.
+		if cleanSrc == cleanBin || cleanSrc == cleanDir {
+			return true
+		}
+		if rel, err := filepath.Rel(cleanSrc, cleanBin); err == nil && !strings.HasPrefix(rel, "..") {
+			return true
+		}
+	}
+	return false
 }

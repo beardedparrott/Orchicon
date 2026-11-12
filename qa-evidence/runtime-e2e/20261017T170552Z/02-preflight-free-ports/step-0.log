@@ -1,0 +1,1 @@
+  (skip reason: node_modules is MISSING — the harness itself never drives the UI (step 6 takes --image-id), so the session stays valid; run `make fe-install` only if you mean to create the image spec by hand)

@@ -6,11 +6,8 @@ import (
 	"testing"
 )
 
-// quick_seed_test.go: pure (DB-less) pins for the Quick Software Engineer +
-// Quick Work seeder promotion. The DB-backed seeder tests
-// (seed_workers_test.go, seed_workflows_test.go) cover boot idempotency;
-// these assert the seeded DEFINITIONS are valid and carry the corrected
-// deny-by-default stance.
+// quick_seed_test.go: pure (DB-less) pins for the Quick Software Engineer + Quick Work seeder
+// promotion.
 
 func quickCannedWorker(t *testing.T) *cannedWorker {
 	t.Helper()
@@ -84,10 +81,8 @@ func TestQuickWorkerSeedDefinition(t *testing.T) {
 			t.Errorf("seeded Quick AgentsMD missing %q", want)
 		}
 	}
-	// The all-in-one Quick worker owns the PR: it must NOT defer to a
-	// separate DevOps step (there is none in the Quick Work workflow) and
-	// must not forbid PR creation/merge. The obsolete push-only hand-off
-	// wording is gone.
+	// The all-in-one Quick worker owns the PR: it must NOT defer to a separate DevOps step (there is
+	// none in the Quick Work workflow) and must not forbid PR creation/merge.
 	for _, gone := range []string{"Do not open or merge", "hand off to the DevOps", "that step's contract", "hand off PR"} {
 		if strings.Contains(persisted, gone) {
 			t.Errorf("seeded Quick AgentsMD must not contain %q (the Quick worker owns the PR)", gone)
@@ -112,8 +107,14 @@ func TestQuickWorkflowSeedDefinition(t *testing.T) {
 	if w.VersionID != "wfv_quick_work_v1" {
 		t.Errorf("VersionID = %q, want wfv_quick_work_v1", w.VersionID)
 	}
-	if w.GitStrategy != "pr" {
-		t.Errorf("GitStrategy = %q, want pr (merge autonomy: the all-in-one Quick SWE implements, pushes, AND opens + merges the PR)", w.GitStrategy)
+	// INHERIT, NOT A PIN.
+	if w.GitStrategy != "" {
+		t.Errorf("GitStrategy = %q, want \"\" (INHERIT: the bound project decides local/pr/none; "+
+			"a pin here overrides the operator's own project setting)", w.GitStrategy)
+	}
+	if !w.UnpinGitStrategy {
+		t.Error("UnpinGitStrategy = false, want true — an install seeded with the old \"pr\" pin " +
+			"must be cleared on re-seed, or the fix reaches fresh installs only")
 	}
 	var steps []map[string]any
 	if err := json.Unmarshal([]byte(w.StepsJSON), &steps); err != nil {
@@ -171,9 +172,8 @@ func TestQuickWorkerWorkflowRefAgreement(t *testing.T) {
 }
 
 func TestSeededWorkersCarryDenyByDefaultStance(t *testing.T) {
-	// Every canned worker's persisted seed content carries the corrected
-	// stance (via the shared sandboxPlaneBlock) and none carries the old
-	// rationalizing fallback.
+	// Every canned worker's persisted seed content carries the corrected stance (via the shared
+	// sandboxPlaneBlock) and none carries the old rationalizing fallback.
 	for _, w := range cannedWorkers {
 		persisted := seedAgentsMD(w)
 		if !strings.Contains(persisted, "deny-by-default") {

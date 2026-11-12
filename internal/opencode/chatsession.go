@@ -4,20 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
-
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/askmode"
+	"github.com/beardedparrott/orchicon/internal/mcpclient"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
+	"github.com/beardedparrott/orchicon/internal/tenant"
+	"sync"
 )
 
-// ChatTurnClient is implemented on *Adapter (see adapter.go) by delegating
-// to the host serve's SessionClient. This file holds the Subscribe event
-// adapter that maps the raw opencode bus vocabulary onto the
-// scheduler-neutral SessionEvent surface the Ask drain loop consumes.
+// ChatTurnClient is implemented on *Adapter (see adapter.go) by delegating to the host serve's
+// SessionClient.
 
-// hostServeClient returns the host serve's session client, or nil when the
-// serve transport is unavailable. It never STARTS the serve — callers that
-// may need the serve started go through ensureHostServeClient.
+// hostServeClient returns the host serve's session client, or nil when the serve transport is
+// unavailable.
 func (a *Adapter) hostServeClient() *SessionClient {
 	h := chatHost(a.askHost, a.host)
 	if h == nil {
@@ -26,12 +25,7 @@ func (a *Adapter) hostServeClient() *SessionClient {
 	return h.Client()
 }
 
-// chatHost selects the serve an Ask conversation turn runs on. Ask has its own
-// serve (see NewAskHostServe) because opencode's permission config is
-// per-PROCESS: the worker serve carries the worker sandbox, the Ask serve
-// carries the interactive profile. This pure selector is the ONE place the Ask
-// surface resolves a serve — the worker paths (sessionClientFor, follow-ups)
-// keep a.host.
+// chatHost selects the serve an Ask conversation turn runs on.
 func chatHost(ask, exec *HostServe) *HostServe {
 	if ask != nil {
 		return ask
@@ -39,20 +33,46 @@ func chatHost(ask, exec *HostServe) *HostServe {
 	return exec
 }
 
-// ensureHostServeClient returns the host serve's session client, starting
-// the serve on FIRST demand (AC 2). Every Ask turn whose transport resolves
-// to the opencode adapter comes through here, so an Ask session on an
-// opencode-resolved transport is itself a demand trigger — while a plane
-// whose Ask default resolves natively never starts one.
-//
-// The error is the start failure verbatim (disabled kill-switch, missing
-// binary, serve never ready): the Ask turn fails LOUDLY with the reason
-// instead of silently degrading (AC 4).
-func (a *Adapter) ensureHostServeClient(ctx context.Context) (*SessionClient, error) {
-	h := chatHost(a.askHost, a.host)
-	if h == nil {
-		return nil, errors.New("host opencode serve unavailable — Ask chat transport is disabled")
+// ensureHostServeClient returns the host serve's session client, starting the serve on FIRST demand
+// (AC 2).
+func (a *Adapter) askServeFor(ctx context.Context) *HostServe {
+	fallback := chatHost(a.askHost, a.host)
+	if a.askPool == nil || a.hostScope == nil {
+		return fallback
 	}
+	scope := askmode.ConversationScopeFromContext(ctx)
+	set := a.resolveAskMCPSet(ctx, scope)
+	pooled, err := a.askPool.ServeFor(ctx, set)
+	if err != nil {
+		a.log.Warn("ask session: host serve pool has no serve for this MCP set — using the default Ask serve",
+			"conversation", scope.ConversationID, "project", scope.ProjectID,
+			"servers", mcpclient.ProvenanceString(set.Servers), "error", err)
+		return fallback
+	}
+	return pooled
+}
+
+// resolveAskMCPSet resolves the conversation's MCP set: project-owned ∪ conversation-owned rows, the
+// same ScopeConversation the native and claude Ask paths use, so all three agree by construction.
+func (a *Adapter) resolveAskMCPSet(ctx context.Context, scope askmode.ConversationScope) mcpclient.Resolution {
+	if scope.ConversationID == "" {
+		return mcpclient.Resolution{} // no scope stamped: the default serve, unchanged
+	}
+	res, err := a.hostScope.ResolveScope(ctx, mcpclient.ScopeRef{
+		Kind:           mcpclient.ScopeConversation,
+		ProjectID:      scope.ProjectID,
+		ConversationID: scope.ConversationID,
+	})
+	if err != nil {
+		a.log.Warn("ask session: MCP resolution failed — using the default Ask serve",
+			"conversation", scope.ConversationID, "project", scope.ProjectID, "error", err)
+		return mcpclient.Resolution{}
+	}
+	return res
+}
+
+func (a *Adapter) ensureHostServeClient(ctx context.Context) (*SessionClient, error) {
+	h := a.askServeFor(ctx)
 	if err := h.EnsureStarted(ctx); err != nil {
 		return nil, fmt.Errorf("host opencode serve unavailable — Ask chat transport is disabled: %w", err)
 	}
@@ -63,17 +83,12 @@ func (a *Adapter) ensureHostServeClient(ctx context.Context) (*SessionClient, er
 	return c, nil
 }
 
-// SessionOwnerKind implements scheduler.SessionOwnerKind: sessions created
-// by this adapter belong to the opencode kind. Ask Orchicon uses it to
-// enforce adapter-scoped session identity — a conversation whose persisted
-// session came from another adapter (e.g. the native synthetic
-// "orchicon-ask:" id) must recreate first and never dispatch that foreign id
-// to the opencode serve (which 500s on an unknown session).
+// SessionOwnerKind implements scheduler.SessionOwnerKind: sessions created by this adapter belong
+// to the opencode kind.
 func (a *Adapter) SessionOwnerKind() string { return "opencode" }
 
-// CreateConversationSession implements scheduler.ChatTurnClient, creating a
-// fresh session on the host serve. An Ask turn has no project directory, so
-// the request goes out unscoped (mirrors the historical chat behavior).
+// CreateConversationSession implements scheduler.ChatTurnClient, creating a fresh session on the
+// host serve.
 func (a *Adapter) CreateConversationSession(ctx context.Context, conversationID, title string) (string, error) {
 	c, err := a.ensureHostServeClient(ctx)
 	if err != nil {
@@ -86,18 +101,14 @@ func (a *Adapter) CreateConversationSession(ctx context.Context, conversationID,
 	return sid, nil
 }
 
-// SendTurnMessage implements scheduler.ChatTurnClient, appending a user
-// message to a conversation session. A 404 (session no longer on the serve)
-// is mapped onto scheduler.ErrSessionNotFound so the Ask collector can
-// recreate + re-seed it without depending on the opencode type.
+// SendTurnMessage implements scheduler.ChatTurnClient, appending a user message to a conversation
+// session.
 func (a *Adapter) SendTurnMessage(ctx context.Context, conversationID, sessionID, system, modelRef, text string) error {
 	return a.SendTurnMessageWithAttachments(ctx, conversationID, sessionID, system, modelRef, text, nil)
 }
 
-// SendTurnMessageWithAttachments implements
-// scheduler.SendTurnMessageWithAttachments, the optional attachment-aware
-// sender for Ask turns. Attachments go out as inline data: URLs (no
-// UploadAttachment/BlobStore dependency — mirroring the host serve client).
+// SendTurnMessageWithAttachments implements scheduler.SendTurnMessageWithAttachments, the optional
+// attachment-aware sender for Ask turns.
 func (a *Adapter) SendTurnMessageWithAttachments(ctx context.Context, conversationID, sessionID, system, modelRef, text string, attachments []scheduler.ChatAttachment) error {
 	c, err := a.ensureHostServeClient(ctx)
 	if err != nil {
@@ -110,9 +121,7 @@ func (a *Adapter) SendTurnMessageWithAttachments(ctx context.Context, conversati
 			parts = append(parts, AttachmentPart{Name: at.Name, MimeType: at.MimeType, Data: at.Data})
 		}
 	}
-	// ASK: the prompt is delivered on the turn that follows CREATION, and only there. This client
-	// marked the session when it created it (promptPending), which is the one signal that separates
-	// the seeded first prompt from the non-empty reuse prompt sent on every later turn.
+	// ASK: the prompt is delivered on the turn that follows CREATION, and only there.
 	err = c.sendMessage(ctx, sessionID, system, modelRef, text, parts, c.consumePromptPending(sessionID))
 	if err != nil && errors.Is(err, ErrSessionNotFound) {
 		return scheduler.ErrSessionNotFound
@@ -123,11 +132,8 @@ func (a *Adapter) SendTurnMessageWithAttachments(ctx context.Context, conversati
 // AbortConversationSession implements scheduler.ChatTurnClient, stopping a
 // live turn on a session so the model stops generating now.
 func (a *Adapter) AbortConversationSession(ctx context.Context, sessionID string) error {
-	// Abort is BEST-EFFORT: a turn can only be live on a serve that was
-	// already started, so a serve that cannot be reached here has nothing to
-	// abort. EnsureStarted keeps the lazy path uniform (a live turn implies a
-	// live serve → the fast path), and the error is not surfaced because
-	// there is no turn to fail.
+	// Abort is BEST-EFFORT: a turn can only be live on a serve that was already started, so a serve
+	// that cannot be reached here has nothing to abort.
 	c, err := a.ensureHostServeClient(ctx)
 	if err != nil {
 		return nil
@@ -155,11 +161,7 @@ func (a *Adapter) ReplyPermissionDecision(ctx context.Context, sessionID, permis
 	return c.ReplyPermissionDecision(ctx, sessionID, permissionID, decision)
 }
 
-// Subscribe implements scheduler.ChatTurnClient. It opens the host serve's
-// /event SSE stream (multiplexing ALL sessions) and adapts each raw BusEvent
-// onto the scheduler-neutral SessionEvent surface, applying the mid-generation
-// event classification. The Ask drain loop consumes only SessionEvents — it
-// never sees the raw opencode bus type.
+// Subscribe implements scheduler.ChatTurnClient.
 func (a *Adapter) Subscribe(ctx context.Context, conversationID string) (scheduler.SessionBus, error) {
 	c, err := a.ensureHostServeClient(ctx)
 	if err != nil {
@@ -169,20 +171,30 @@ func (a *Adapter) Subscribe(ctx context.Context, conversationID string) (schedul
 	if err != nil {
 		return nil, err
 	}
-	ad := newSessionEventAdapter(sub)
+	// The conversation's directory, so the ledger observes the files THIS session touched — resolved by
+	// the SERVER's installed resolver, not by reaching for the process's working directory.
+	dir := ""
+	if a.askDirResolver != nil {
+		dir = a.askDirResolver(ctx, conversationID)
+	}
+	ad := newSessionEventAdapterWithLedger(sub, conversationID, dir, tenant.FromContext(ctx), a.askFileEdits)
 	return ad, nil
 }
 
-// sessionEventAdapter adapts an opencode BusSub onto the scheduler.SessionBus
-// surface, classifying events into SessionEvent kinds. Events() returns the
-// SAME channel on every call (the drain loop re-reads it each select
-// iteration), so the translating goroutine is started once at construction.
+// sessionEventAdapter adapts an opencode BusSub onto the scheduler.SessionBus surface, classifying
+// events into SessionEvent kinds.
 type sessionEventAdapter struct {
 	sub    BusSub
 	events chan scheduler.SessionEvent
 	// calls correlates an in-flight tool call's args with the permission.asked
 	// raised for it (see toolCallIndex).
 	calls *toolCallIndex
+	// The diff-ledger context: the conversation this adapter is serving, the session's own directory,
+	// and the hook.
+	convID   string
+	baseDir  string
+	tenantID string
+	ledger   FileEditHookFunc
 }
 
 func (a *sessionEventAdapter) start() {
@@ -195,6 +207,7 @@ func (a *sessionEventAdapter) start() {
 				if !ok {
 					return
 				}
+				a.ledgerToolCall(evt)
 				if se := classifyBusEventIndexed(evt, a.calls); se != nil {
 					select {
 					case a.events <- *se:
@@ -209,14 +222,48 @@ func (a *sessionEventAdapter) start() {
 	}()
 }
 
+// ledgerToolCall records the file edits of a COMPLETED tool_use part.
+func (a *sessionEventAdapter) ledgerToolCall(evt BusEvent) {
+	if a.ledger == nil || a.convID == "" {
+		return
+	}
+	legacy, ok := LegacyEventFromBus(evt)
+	if !ok {
+		return
+	}
+	if etype, _ := legacy["type"].(string); etype != "tool_use" {
+		return
+	}
+	part, _ := legacy["part"].(map[string]any)
+	if part == nil {
+		return
+	}
+	state, _ := part["state"].(map[string]any)
+	if state == nil {
+		return
+	}
+	// Only a finished call has ground truth on disk.
+	if st, _ := state["status"].(string); st != "" && st != "completed" {
+		return
+	}
+	toolName, _ := part["tool"].(string)
+	if toolName == "" {
+		return
+	}
+	input, _ := state["input"].(map[string]any)
+	if input == nil {
+		input = map[string]any{}
+	}
+	output, _ := state["output"].(string)
+	a.ledger(context.Background(), a.convID, a.tenantID, a.baseDir, toolName, input, output)
+}
+
 func (a *sessionEventAdapter) Events() <-chan scheduler.SessionEvent { return a.events }
 func (a *sessionEventAdapter) Done() <-chan struct{}                 { return a.sub.Done() }
 func (a *sessionEventAdapter) Close()                                { a.sub.Close() }
 
-// ClientSessionAdapter adapts a *SessionClient onto the
-// scheduler.ChatTurnClient surface, so a plain host serve client (no
-// *Adapter in the loop) can drive Ask conversations. It is the nil-dispatcher
-// fallback askorchicon uses when no adapter namespace is configured.
+// ClientSessionAdapter adapts a *SessionClient onto the scheduler.ChatTurnClient surface, so a
+// plain host serve client (no *Adapter in the loop) can drive Ask conversations.
 type ClientSessionAdapter struct {
 	sc *SessionClient
 }
@@ -229,6 +276,10 @@ func NewClientSessionAdapter(sc *SessionClient) *ClientSessionAdapter {
 func (a *ClientSessionAdapter) CreateConversationSession(ctx context.Context, conversationID, title string) (string, error) {
 	return a.sc.CreateSession(ctx, title)
 }
+
+// QueuesPrompts implements scheduler.SessionQueuesPrompts and answers TRUE — the same answer as the
+// primary Adapter, because it is the same serve underneath.
+func (a *ClientSessionAdapter) QueuesPrompts() bool { return true }
 
 func (a *ClientSessionAdapter) SendTurnMessage(ctx context.Context, conversationID, sessionID, system, modelRef, text string) error {
 	err := a.sc.SendMessage(ctx, sessionID, system, modelRef, text)
@@ -280,11 +331,8 @@ func (a *ClientSessionAdapter) CompactConversationSession(ctx context.Context, o
 	return compactOnServe(ctx, a.sc, opts)
 }
 
-// CompactConversationSession implements scheduler.ChatCompactor: the serve owns
-// this conversation's session, so compaction is a summarize of that session in
-// place — exactly the call the worker compaction gate makes (see
-// session_run.doCompact). Unlike the native adapter there is no history to
-// reduce first: opencode's own summarize handles the session it holds.
+// CompactConversationSession implements scheduler.ChatCompactor: the serve owns this conversation's
+// session, so compaction is a summarize of that session in place.
 func (a *Adapter) CompactConversationSession(ctx context.Context, opts scheduler.CompactConversationOpts) (scheduler.ChatCompaction, error) {
 	c, err := a.ensureHostServeClient(ctx)
 	if err != nil {
@@ -324,10 +372,8 @@ var _ scheduler.SendTurnMessageWithAttachments = (*ClientSessionAdapter)(nil)
 var _ scheduler.ChatCompactor = (*ClientSessionAdapter)(nil)
 var _ scheduler.ChatCompactor = (*Adapter)(nil)
 
-// NewSessionBusFromSub wraps an opencode BusSub as a scheduler.SessionBus,
-// classifying every raw bus event onto the scheduler-neutral SessionEvent
-// surface. Used by askorchicon tests (a fake opencode.BusSub feeding raw
-// events) and the adapter/plain-client Subscribe paths.
+// NewSessionBusFromSub wraps an opencode BusSub as a scheduler.SessionBus, classifying every raw
+// bus event onto the scheduler-neutral SessionEvent surface.
 func NewSessionBusFromSub(sub BusSub) scheduler.SessionBus {
 	return newSessionEventAdapter(sub)
 }
@@ -335,27 +381,27 @@ func NewSessionBusFromSub(sub BusSub) scheduler.SessionBus {
 // newSessionEventAdapter builds a started adapter carrying a fresh tool-call
 // correlation index.
 func newSessionEventAdapter(sub BusSub) *sessionEventAdapter {
+	return newSessionEventAdapterWithLedger(sub, "", "", "", nil)
+}
+
+// newSessionEventAdapterWithLedger is newSessionEventAdapter for an Ask conversation, which
+// additionally ledgers the file edits its tool calls make.
+func newSessionEventAdapterWithLedger(sub BusSub, convID, baseDir, tenantID string, ledger FileEditHookFunc) *sessionEventAdapter {
 	ad := &sessionEventAdapter{
-		sub:    sub,
-		events: make(chan scheduler.SessionEvent, 32),
-		calls:  newToolCallIndex(),
+		sub:      sub,
+		events:   make(chan scheduler.SessionEvent, 32),
+		calls:    newToolCallIndex(),
+		convID:   convID,
+		baseDir:  baseDir,
+		tenantID: tenantID,
+		ledger:   ledger,
 	}
 	ad.start()
 	return ad
 }
 
-// toolCallIndex correlates an in-flight tool call's ARGS with the
-// permission.asked raised for that call.
-//
-// It exists because the ask itself can carry no detail at all: opencode gates
-// an MCP (and host-suite) tool call by its tool KEY, emitting
-// `permission=<tool key>, patterns=["*"], metadata={}`. Without the args there
-// is nothing to key the decision on and nothing to show a user — the consent
-// layer keyed such an ask on its scope directory and approved it silently (the
-// QA finding on this work item: a sibling-path write through an `orchicon_*`
-// tool raised no ask). The args ARE on the bus, in the tool part that precedes
-// the ask, so they are correlated by callID here and attached to the
-// permission event's Detail as `toolInput`.
+// toolCallIndex correlates an in-flight tool call's ARGS with the permission.asked raised for that
+// call.
 type toolCallIndex struct {
 	mu   sync.Mutex
 	args map[string]map[string]any
@@ -368,13 +414,7 @@ func newToolCallIndex() *toolCallIndex {
 	return &toolCallIndex{args: make(map[string]map[string]any), names: make(map[string]string)}
 }
 
-// observe records the args of a `message.part.updated` tool part, if that is
-// what the event is. Nil-receiver safe: an adapter built without correlation
-// passes nil and simply records nothing.
-//
-// Entries MERGE rather than replace: the serve streams a tool part's input
-// progressively (a later update carries the rest of the args), and an early
-// update can carry an empty input. Later keys win.
+// observe records the args of a `message.part.updated` tool part, if that is what the event is.
 func (x *toolCallIndex) observe(evt BusEvent) {
 	if x == nil {
 		return
@@ -452,23 +492,7 @@ func (x *toolCallIndex) observe(evt BusEvent) {
 	}
 }
 
-// stamp fills a RESOLVED tool part's missing identity from what the index
-// recorded for the same call id: the tool NAME and the call's INPUT.
-//
-// WHY IT IS NEEDED. 2.x announces a call across three events and the resolution
-// carries only the id, so a resolved part arrives with no tool and no args. Every
-// consumer keying on the call's identity then sees all such calls as one thing —
-// the stall monitor read a turn's distinct tool calls as `8 repeats of |null` and
-// killed it. Filling the part is what makes the identity usable again, and it
-// mirrors the execution path, which correlates the same three events by id
-// (session_run.rememberV2Tool/fillV2Tool).
-//
 // FILLS MISSING FIELDS ONLY, so a v1 part that already carries both is untouched.
-// The NAME entry is consumed (id → name is one-shot, and consuming it keeps the
-// map from growing for the session's life); the args entry is left in place
-// because the consent path reads it to annotate a permission ask by call id.
-// get returns a copy of the args recorded for a tool call id, or nil when the
-// call was never observed.
 func (x *toolCallIndex) get(callID string) map[string]any {
 	if x == nil || callID == "" {
 		return nil
@@ -486,13 +510,8 @@ func (x *toolCallIndex) get(callID string) map[string]any {
 	return out
 }
 
-// stamp fills a RESOLVED tool part's missing identity from what the index
-// recorded for the same call id: the tool NAME and the call's INPUT.
-//
-// It mirrors the execution path, which correlates the same three 2.x events by
-// id (session_run.rememberV2Tool/fillV2Tool) — the Ask path had no equivalent,
-// so every resolved part arrived with neither field and every consumer keying
-// on the call's identity collapsed them into one.
+// stamp fills a RESOLVED tool part's missing identity from what the index recorded for the same
+// call id: the tool NAME and the call's INPUT.
 func (x *toolCallIndex) stamp(part map[string]any) {
 	if x == nil || part == nil {
 		return
@@ -501,12 +520,7 @@ func (x *toolCallIndex) stamp(part map[string]any) {
 	if cid == "" {
 		return
 	}
-	// NEITHER ENTRY IS CONSUMED. A call can resolve more than once (a retry, or a
-	// duplicated event), and consuming the name would leave the SECOND resolution
-	// identity-less — which is precisely the state that produced the `|null` false
-	// kill. Retaining is also consistent with the args entry, which the consent
-	// path reads by id after a call has resolved; an id→name string is the same
-	// order of memory as the args already held.
+	// NEITHER ENTRY IS CONSUMED.
 	x.mu.Lock()
 	name := x.names[cid]
 	args := x.args[cid]
@@ -521,9 +535,8 @@ func (x *toolCallIndex) stamp(part map[string]any) {
 	}
 }
 
-// argsForPermission resolves the args of the tool call a permission event's
-// properties name (`tool.callID`), or nil when the ask carries no call id or
-// the call was not observed (a subscription that attached mid-call).
+// argsForPermission resolves the args of the tool call a permission event's properties name
+// (`tool.callID`).
 func (x *toolCallIndex) argsForPermission(props map[string]any) map[string]any {
 	tool, _ := props["tool"].(map[string]any)
 	if tool == nil {
@@ -533,9 +546,8 @@ func (x *toolCallIndex) argsForPermission(props map[string]any) map[string]any {
 	return x.get(cid)
 }
 
-// permissionDetailWithToolInput copies a permission event's properties with the
-// correlated tool-call args attached as `toolInput`. The raw properties are
-// never mutated.
+// permissionDetailWithToolInput copies a permission event's properties with the correlated
+// tool-call args attached as `toolInput`.
 func permissionDetailWithToolInput(props, args map[string]any) map[string]any {
 	out := make(map[string]any, len(props)+1)
 	for k, v := range props {
@@ -546,9 +558,7 @@ func permissionDetailWithToolInput(props, args map[string]any) map[string]any {
 }
 
 // busErrorMessage extracts the human-readable reason from an error-bearing bus event, whichever
-// surface shaped it. v1 put a string under `error`; v2 nests an object with `type` and `message`
-// (measured: {"type":"provider.invalid-request","message":"…insufficient credits…"}). Falls back to a
-// named default so a caller never renders an empty reason.
+// surface shaped it.
 func busErrorMessage(props map[string]any) string {
 	switch e := props["error"].(type) {
 	case map[string]any:
@@ -563,16 +573,14 @@ func busErrorMessage(props map[string]any) string {
 	return "opencode session error"
 }
 
-// classifyBusEvent maps one raw opencode bus event onto a SessionEvent, or
-// nil when the event carries no turn-visible signal. No tool-call correlation
-// (see classifyBusEventIndexed for the adapter's stateful entry point).
+// classifyBusEvent maps one raw opencode bus event onto a SessionEvent, or nil when the event
+// carries no turn-visible signal.
 func classifyBusEvent(evt BusEvent) *scheduler.SessionEvent {
 	return classifyBusEventIndexed(evt, nil)
 }
 
-// classifyBusEventIndexed is classifyBusEvent with the tool-call correlation
-// index the adapter owns: a tool part's args are recorded, and a permission
-// ask is annotated with the args of the call it belongs to.
+// classifyBusEventIndexed is classifyBusEvent with the tool-call correlation index the adapter
+// owns: a tool part's args are recorded.
 func classifyBusEventIndexed(evt BusEvent, calls *toolCallIndex) *scheduler.SessionEvent {
 	calls.observe(evt)
 	sid, _ := evt.Props()["sessionID"].(string)
@@ -602,9 +610,7 @@ func classifyBusEventIndexed(evt BusEvent, calls *toolCallIndex) *scheduler.Sess
 		e.Text = busErrorMessage(evt.Props())
 		return e
 	case "session.step.failed":
-		// A step failing is how v2 reports a provider/model error. The execution-level failure that
-		// follows carries the same error; classifying the STEP one as well means the turn sees it
-		// even if the execution event is missed (a late subscription, a dropped frame).
+		// A step failing is how v2 reports a provider/model error.
 		e := base("error", "")
 		e.Text = busErrorMessage(evt.Props())
 		return e
@@ -612,15 +618,11 @@ func classifyBusEventIndexed(evt BusEvent, calls *toolCallIndex) *scheduler.Sess
 		pid, _ := evt.Props()["id"].(string)
 		e := base("permission", "")
 		e.PermissionID = pid
-		// Carry the raw ask through verbatim (opencode emits `permission`/
-		// `title`, `patterns`/`pattern`, `metadata` and `callID` alongside
-		// `id`). The consent layer answers the ask from THIS detail, so
-		// dropping it here would turn a real ask back into a blind
-		// auto-approve.
+		// Carry the raw ask through verbatim (opencode emits `permission`/ `title`, `patterns`/`pattern`,
+		// `metadata` and `callID` alongside `id`).
 		e.Detail = evt.Props()
-		// An MCP/host-suite ask carries NO detail of its own (patterns ["*"],
-		// metadata {}), so the args of the call it gates are the only thing to
-		// key and show. Attach them when the call was observed.
+		// An MCP/host-suite ask carries NO detail of its own (patterns ["*"], metadata {}), so the args of
+		// the call it gates are the only thing to key and show.
 		if args := calls.argsForPermission(evt.Props()); args != nil {
 			e.Detail = permissionDetailWithToolInput(evt.Props(), args)
 		}
@@ -655,9 +657,8 @@ func classifyBusEventIndexed(evt BusEvent, calls *toolCallIndex) *scheduler.Sess
 		part, _ := legacy["part"].(map[string]any)
 		e := base("part", etype)
 		e.Part = part
-		// Restore the call's identity that 2.x spread across separate events,
-		// so every consumer of this part sees a real tool name and its args
-		// rather than an anonymous call (see toolCallIndex.stamp).
+		// Restore the call's identity that 2.x spread across separate events, so every consumer of this
+		// part sees a real tool name and its args rather than an anonymous call (see toolCallIndex.stamp).
 		if etype == "tool_use" {
 			calls.stamp(part)
 		}
@@ -675,3 +676,7 @@ func classifyBusEventIndexed(evt BusEvent, calls *toolCallIndex) *scheduler.Sess
 	}
 	return nil
 }
+
+// QueuesPrompts implements scheduler.SessionQueuesPrompts: the opencode serve holds a prompt sent
+// while a turn is in flight and answers it at that turn's next boundary (SendMessage's own.
+func (a *Adapter) QueuesPrompts() bool { return true }

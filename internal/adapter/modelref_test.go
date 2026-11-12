@@ -5,9 +5,8 @@ import (
 	"testing"
 )
 
-// testRegistry is a registry with the built-in opencode providers plus a
-// tenant-created custom provider (as the provider-layer task will surface
-// through Settings → Adapters).
+// testRegistry is a registry with the built-in opencode providers plus a tenant-created custom
+// provider (as the provider-layer task will surface through Settings → Adapters).
 func testRegistry() ProviderRegistry {
 	c := NewBuiltinProviderCatalog()
 	c.AddAdapterKind(DefaultAdapterKind, "local-models")
@@ -88,9 +87,8 @@ func TestParseModelRefUnknownAdapter(t *testing.T) {
 }
 
 func TestParseModelRefKnownAdapterTwoSeg(t *testing.T) {
-	// Implementer note (Design Approver): a 2-segment ref whose first
-	// segment is a KNOWN adapter kind is malformed — it should be written
-	// adapter/provider/model.
+	// Implementer note (Design Approver): a 2-segment ref whose first segment is a KNOWN adapter kind
+	// is malformed — it should be written adapter/provider/model.
 	reg := testRegistry()
 	_, err := ParseModelRef("claude/anthropic", reg)
 	if err == nil {

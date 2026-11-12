@@ -1,11 +1,5 @@
-// Package overview implements the Overview screen on the kit2 primitives:
-// the plane's aggregate state in three GUI-parity sources — Dashboard
-// (executions/work items by status, worker + runtime-image health, recent
-// activity), Telemetry (traces list + span detail + the live
-// StreamTelemetry), Cost Explorer (usage/cost aggregation by provider +
-// model + total) — plus the raw Usage records table (`/usage`). Read-only:
-// the GUI's Overview surfaces expose no mutations
-// (frontend/src/lib/nav-config.ts NAV_GROUPS[0]).
+// Package overview implements the Overview screen on the kit2 primitives: the plane's aggregate
+// state in three GUI-parity sources — Dashboard (executions/work items by status.
 package overview
 
 import (
@@ -39,9 +33,7 @@ type Model struct {
 	reconnected bool
 }
 
-// New builds the screen. Sources mirror the GUI Overview domain:
-// Dashboard, Telemetry, Cost Explorer (+ the raw Usage records table that
-// covers the GUI's /usage route, which lives in the same nav tree).
+// New builds the screen.
 func New(cl *client.Clients, reg *subs.Registry, tenantID string) *Model {
 	m := &Model{cl: cl, reg: reg, tenantID: tenantID}
 	m.NameStr = "overview"
@@ -72,9 +64,6 @@ func (m *Model) EnsureSubscriptions() {
 }
 
 // Close unsubscribes (tab switch = unsubscribe).
-// Close unsubscribes and drops the handle: CloseAll tears down the SHARED
-// registry, and EnsureSubscriptions guards on the handle being nil, so a stale
-// one would leave this screen stream-less after its first visit.
 func (m *Model) Close() {
 	m.reg.CloseAll()
 	m.sub = nil
@@ -93,9 +82,8 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 		return m, nil
 
 	case subs.EventPokeMsg:
-		// A live telemetry event landed: refresh the panes that consume
-		// usage/trace data so the view stays current (the pokes are
-		// overflow-dropping, so a burst collapses to one refresh).
+		// A live telemetry event landed: refresh the panes that consume usage/trace data so the view stays
+		// current (the pokes are overflow-dropping, so a burst collapses to one refresh).
 		cmd := m.reg.WaitEventPoke("telemetry")
 		if msg.Name != "telemetry" {
 			return m, cmd
@@ -368,16 +356,7 @@ func tsOf(t time.Time) *timestamppb.Timestamp { return timestamppb.New(t) }
 // costWindow is the lookback the Cost Explorer reports over.
 const costWindow = 30 * 24 * time.Hour
 
-// fetchCost rolls the usage up SERVER-SIDE at the GUI's drill-down levels,
-// grouped into TOP-N sections so the pane is scannable rather than a dump: the
-// grand total, then the ten costliest models, projects and tasks, then the ten
-// costliest workflows. Exactly the shape the operator asked for ("top 10
-// project, task, workflow, model, etc. and then clicking on those brings it over
-// to the right detail pane").
-//
-// The TUI used to aggregate the first page of raw usage records client-side,
-// which is why its breakdowns did not match the GUI — and it silently missed
-// everything past the first page.
+// fetchCost rolls the usage up SERVER-SIDE at the GUI's drill-down levels.
 func (m *Model) fetchCost(ctx context.Context, _ string) ([]kit2.Item, string, error) {
 	var items []kit2.Item
 

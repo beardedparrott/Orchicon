@@ -10,13 +10,8 @@ import (
 
 // --- AC2 (refresh survival): server-confirmed progress signal ---
 
-// TestTurnStatusReportsAccurateProgress verifies the server-confirmed status
-// the frontend reconciles against after a refresh (ADR-0002 D3/AC2): a
-// freshly-registered turn is in flight and progressing; a turn quiet past the
-// no-progress window is not progressing (the server no longer claims "still
-// working"); a wedged turn is never progressing even with recent activity; and
-// a completed (removed) turn clears in flight. This is the source of the
-// "still working…" vs "stalled — stop or retry" state.
+// TestTurnStatusReportsAccurateProgress verifies the server-confirmed status the frontend
+// reconciles against after a refresh.
 func TestTurnStatusReportsAccurateProgress(t *testing.T) {
 	s := &Service{turns: newTurnRegistry(), log: slog.Default()}
 	cancel := func(error) {}
@@ -72,12 +67,8 @@ func TestTurnStatusReportsAccurateProgress(t *testing.T) {
 
 // --- AC3 (mid-run interjection): one-turn gate is never left locked ---
 
-// TestInterjectSupersedeReleasesTurnGate verifies the AC3 interject property
-// at the registry level (the shared supersede path): interjecting on a
-// conversation with an in-flight turn cancels + removes the old entry and is
-// then free to register a fresh turn (the one-turn gate is never left locked),
-// and a stale finalize from the superseded collector cannot clobber the
-// replacement (token guard).
+// TestInterjectSupersedeReleasesTurnGate verifies the AC3 interject property at the registry level
+// (the shared supersede path).
 func TestInterjectSupersedeReleasesTurnGate(t *testing.T) {
 	s := &Service{turns: newTurnRegistry(), log: slog.Default()}
 	cancel := func(error) {}
@@ -115,10 +106,8 @@ func TestInterjectSupersedeReleasesTurnGate(t *testing.T) {
 
 // --- AC4 (multi-session stability): per-turn isolation under concurrency ---
 
-// TestConcurrentTurnsIsolated runs several independent turns concurrently over
-// separate fake bus subscriptions and asserts each collects ONLY its own reply
-// (no cross-session event leakage) and none hangs a reader. This exercises the
-// ADR-0002 D5/D6 isolation + backpressure surface at the collector level.
+// TestConcurrentTurnsIsolated runs several independent turns concurrently over separate fake bus
+// subscriptions and asserts each collects ONLY its own reply (no cross-session event leakage).
 func TestConcurrentTurnsIsolated(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
 	const n = 6

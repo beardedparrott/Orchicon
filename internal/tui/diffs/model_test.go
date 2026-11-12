@@ -89,10 +89,8 @@ func TestMergeEditsDedupAndResume(t *testing.T) {
 	if merged[0].GetId() != "a" || merged[1].GetId() != "b" || merged[2].GetId() != "c" {
 		t.Errorf("merge order = %s,%s,%s", merged[0].GetId(), merged[1].GetId(), merged[2].GetId())
 	}
-	// Out-of-order live events: the port mirrors the GUI mergeEdits — it
-	// iterates live in order and updates maxDurableSeq, so a later live
-	// event with a LOWER seq is dropped (the GUI pre-sorts its live list
-	// ascending, so this never happens with a real monotonic stream).
+	// Out-of-order live events: the port mirrors the GUI mergeEdits — it iterates live in order and
+	// updates maxDurableSeq, so a later live event with a LOWER seq is dropped (the GUI pre-sorts.
 	live2 := []*apiv1.FileEdit{{Id: "f", Seq: 7}, {Id: "e", Seq: 10}}
 	merged2 := MergeEdits(durable, live2)
 	if len(merged2) != 4 {

@@ -1,15 +1,6 @@
 package db_test
 
 // ephemeral_gate_db_test.go — the ephemeral gate against a REAL table.
-//
-// The pure tests in internal/db/ephemeral_scope_test.go pin the predicate's
-// shape; this file pins what the predicate does to actual rows, because the
-// two can disagree. Specifically it is the only place the SelectCols/ScanPtrs
-// wiring is proven at runtime: if `ephemeral` were missing from the SELECT list
-// or landed in the wrong scan slot, the predicate would be filtering on a value
-// that is never loaded and the pure tests would still be green.
-//
-// Guarded by ORCHICON_TEST_DSN like the other DB-backed tests in this package.
 
 import (
 	"context"
@@ -134,12 +125,6 @@ func TestEphemeralItemIsHiddenFromDefaultListAndVisibleOnRequest(t *testing.T) {
 }
 
 // AN EPHEMERAL ITEM STILL DISPATCHES.
-//
-// This is the property the whole design turns on, and it is the one a careless
-// gate would break: the scheduler's scan is ListReadyTasks, a SEPARATE statement
-// that does not go through ListWorkItems. If it did, defaulting that query to
-// exclude ephemeral rows would make every Quick Work job silently do nothing —
-// invisible AND inert, with no error anywhere.
 func TestEphemeralItemStillReachesTheDispatchScan(t *testing.T) {
 	ctx := context.Background()
 	pool, ttx, tenant, _, ephID := setupEphemeralFixture(t, ctx)
@@ -174,11 +159,6 @@ func TestEphemeralItemStillReachesTheDispatchScan(t *testing.T) {
 }
 
 // REORDER STILL WORKS WITH AN EPHEMERAL SIBLING PRESENT.
-//
-// ReorderWorkItems requires child_ids to be an exact permutation of
-// ListSiblingsForReorder. If that query returned the ephemeral sibling while the
-// board hid it, every top-level drag in the project would fail with "not a
-// permutation" and there would be nothing on screen to explain why.
 func TestSiblingListAgreesWithTheVisibleBoard(t *testing.T) {
 	ctx := context.Background()
 	pool, ttx, tenant, ordinaryID, ephID := setupEphemeralFixture(t, ctx)
@@ -214,12 +194,7 @@ func TestSiblingListAgreesWithTheVisibleBoard(t *testing.T) {
 			visibleSiblings++
 		}
 	}
-	// THE AGREEMENT ITSELF: the two queries must count the same children. The
-	// board is built from ListWorkItems (which hides the ephemeral item) and the
-	// permutation check is built from ListSiblingsForReorder; if those disagree by
-	// even one row, every top-level drag fails for a reason the operator cannot
-	// see. Asserting the counts match is asserting that a drag built from what is
-	// on screen is accepted.
+	// THE AGREEMENT ITSELF: the two queries must count the same children.
 	var visibleTopLevel int
 	for _, it := range items {
 		if it.ProjectID == projID && it.ParentID == nil {

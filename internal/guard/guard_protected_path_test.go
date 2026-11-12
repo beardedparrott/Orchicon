@@ -1,25 +1,6 @@
 package guard
 
 // guard_protected_path_test.go — the paths a session may never be allowed to DESTROY.
-//
-// The operator, after a guard test deleted their home directory: "The fact that a permission accept
-// and FULLSEND can do a damaging rm -rf on /home on other directories may be a bit concerning."
-//
-// THEY WERE RIGHT, and this is the measurement that proved it before the rule existed. Without
-// FULLSEND the shim already refused every one of these (a target outside the sanctioned set is
-// blocked); WITH FULLSEND it allowed all of them, because fullsend SKIPS the sanctioned-set tests by
-// design and an ancestor of the project is in no set to begin with — so nothing refused it:
-//
-//     rm -rf /home                 ALLOWED under FULLSEND
-//     rm -rf ~                      ALLOWED under FULLSEND
-//     rm -rf <project's parent>     ALLOWED under FULLSEND
-//
-// The rule that closes it: a target that EQUALS or CONTAINS a path the session works in or depends on
-// is refused, ABOVE the fullsend skip, in the same position as the deny list — because it is the same
-// category of thing, a decision no permission request can turn into an approval.
-//
-// EVERY TARGET HERE IS TEMP SPACE, for the reason this whole package learned the hard way: these
-// tests EXECUTE real binaries, so a case the shim allows does not fail an assertion, it RUNS.
 
 import (
 	"os"
@@ -69,9 +50,8 @@ func TestProtectedPathsSurviveFULLSEND(t *testing.T) {
 		{"the project's parent   no fullsend", projects, false, "blocked"},
 		{"the home directory     no fullsend", home, false, "blocked"},
 
-		// THE FALSE POSITIVE THAT MUST NOT EXIST: acting ON the scope root is ordinary work, so the
-		// project itself stays allowed. Without this the rule would refuse `chmod -R 755 <project>`
-		// and `rm -rf <project>/dist` would be the only shape left.
+		// THE FALSE POSITIVE THAT MUST NOT EXIST: acting ON the scope root is ordinary work, so the project
+		// itself stays allowed.
 		{"the project ITSELF     FULLSEND", proj, true, "allowed"},
 		// A SIBLING that is neither an ancestor nor a protected root: FULLSEND is supposed to widen
 		// what may be written, so this must stay allowed or the mode is useless.

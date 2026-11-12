@@ -76,12 +76,8 @@ func createScheduledItem(t *testing.T, pool *db.Pool, projID, kind, title string
 	return w
 }
 
-// TestScheduledRunFiresSequenceParentAndBoundItem is the regression test
-// for QA BLOCKER #1: a due sequence parent (NULL workflow_id, children)
-// and a co-due bound-workflow item must BOTH fire in the same pass. Before
-// the fix, scanning the parent's NULL workflow_id into a plain string
-// crashed the row scan and rows.Err() aborted the entire pass, so neither
-// fired.
+// TestScheduledRunFiresSequenceParentAndBoundItem is the regression test for QA BLOCKER #1: a due
+// sequence parent (NULL workflow_id.
 func TestScheduledRunFiresSequenceParentAndBoundItem(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -93,6 +89,7 @@ func TestScheduledRunFiresSequenceParentAndBoundItem(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "sched-run",
 		Slug: "sched-run-" + strings.ToLower(db.NewID()), Status: domain.ProjectActive,
 		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -107,9 +104,6 @@ func TestScheduledRunFiresSequenceParentAndBoundItem(t *testing.T) {
 	wfID := seedPublishedWorkflow(t, pool, proj.ID)
 
 	// Sequence parent: no workflow of its own, one child bound to wfID.
-	// The child is a plain pending work item (status pending, no own
-	// scheduled start) — in a sequence children are armed by the engine,
-	// never scheduled independently.
 	parent := createScheduledItem(t, pool, proj.ID, domain.WorkItemKindEpic, "Seq Parent", nil, nil)
 	_ = createWorkItem(t, pool, proj.ID, domain.WorkItemKindTask, "Child", &parent.ID, &wfID)
 

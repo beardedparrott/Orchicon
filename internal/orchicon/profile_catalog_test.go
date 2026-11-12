@@ -96,9 +96,6 @@ func TestCustomProfileLoader(t *testing.T) {
 		t.Fatal("nil provider")
 	}
 	// No credential required (no AuthEnv/AuthSecretRef) → auth-less client.
-	// Runtime ListModels is NON-FATAL on probe failure (chat never needs
-	// the models list): an unreachable endpoint yields an EMPTY list with
-	// a warn — never a synthesized fallback, never an error.
 	ms, err := p.ListModels(context.Background())
 	if err != nil {
 		t.Fatalf("list models: %v", err)

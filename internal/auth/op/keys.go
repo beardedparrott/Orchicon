@@ -1,11 +1,5 @@
-// Package op hosts the embedded OpenID Provider (zitadel/oidc v3, pkg/op)
-// mounted on the control-plane origin. It is the server-side face of
-// Orchicon's auth: a first-party RP can run a real authorization-code +
-// PKCE flow against the plane itself, while the existing BYO-IdP relying
-// party (internal/auth/oidc.go) stays byte-for-byte unchanged.
-//
-// This package is the ONLY place in the tree that imports zitadel/oidc;
-// the rest of internal/auth is wired to it through internal/auth/op_wire.go.
+// This package is the ONLY place in the tree that imports zitadel/oidc; the rest of internal/auth
+// is wired to it through internal/auth/op_wire.go.
 package op
 
 import (
@@ -19,9 +13,7 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 )
 
-// kid is the stable key id for the OP's signing key. The derived key is
-// deterministic, so the id never changes across restarts and short-lived
-// previously-issued ID tokens stay verifiable after a reboot.
+// kid is the stable key id for the OP's signing key.
 const kid = "orchicon-op-v1"
 
 // DeriveES256Key deterministically derives an ES256 (ECDSA P-256) keypair
@@ -51,9 +43,8 @@ func DeriveES256Key(signingKey string) (*ecdsa.PrivateKey, error) {
 	}, nil
 }
 
-// DeriveCryptoKey deterministically derives the [32]byte key the OP uses
-// to encrypt opaque bearer access tokens (info "orchicon:op:enc"). Same
-// key material family as the signing key, separate usage domain.
+// DeriveCryptoKey deterministically derives the [32]byte key the OP uses to encrypt opaque bearer
+// access tokens (info "orchicon:op:enc").
 func DeriveCryptoKey(signingKey string) [32]byte {
 	var out [32]byte
 	seed, err := hkdf.Key(sha256.New, []byte(signingKey), nil, "orchicon:op:enc", 32)
@@ -64,9 +55,8 @@ func DeriveCryptoKey(signingKey string) [32]byte {
 	return out
 }
 
-// hkdfScalar expands the signing key with HKDF-SHA256 into a 32-byte
-// scalar, reduced mod the given curve order (or left raw when mod is nil),
-// and guards against a degenerate zero scalar.
+// hkdfScalar expands the signing key with HKDF-SHA256 into a 32-byte scalar, reduced mod the given
+// curve order (or left raw when mod is nil), and guards against a degenerate zero scalar.
 func hkdfScalar(ikm []byte, info string, mod *big.Int) *big.Int {
 	buf, err := hkdf.Key(sha256.New, ikm, nil, info, 32)
 	if err != nil {

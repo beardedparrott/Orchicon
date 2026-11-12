@@ -8,10 +8,6 @@ import (
 )
 
 // Regression: the operator's message rendered TWICE and at the BOTTOM.
-// The composer appends an optimistic user row ("draft-*") on send; the durable
-// transcript then arrives containing that same user message, and mergeHistory
-// concatenated history ++ live — so the text appeared twice and the optimistic
-// copy (appended last) landed below the reply.
 func TestMergeHistoryDedupesOptimisticUserRow(t *testing.T) {
 	s := &chatStore{items: map[string][]chat.ChatItem{}}
 	// Optimistic send, then the model's streamed reply.
@@ -52,14 +48,7 @@ func TestMergeHistoryDedupesOptimisticUserRow(t *testing.T) {
 	}
 }
 
-// Regression for the operator's "it sent my message twice and put it below the
-// model's response".
-//
-// The message that reaches the plane carries the context preamble prepended
-// (Controller.Send: full = preamble + "\n" + text), while the optimistic row
-// carries the RAW text. The dedupe originally compared them for EQUALITY, so it
-// never matched when a context was attached — and since live rows are appended
-// after history, the surviving optimistic copy landed below the reply.
+// Regression for the operator's "it sent my message twice and put it below the model's response".
 func TestMergeHistoryDedupesWithContextPreamble(t *testing.T) {
 	s := &chatStore{items: map[string][]chat.ChatItem{}}
 	const raw = "What am I looking at?"
@@ -99,20 +88,8 @@ func TestMergeHistoryDedupesWithContextPreamble(t *testing.T) {
 	}
 }
 
-// Regression: a durable poll that lands BEFORE the operator's message is visible
-// to it must not erase that message.
-//
-// replace() is the completion authority and swaps the store for the durable
-// transcript, which is right once the turn resolves. But the transcript load at
-// conversation CREATION races the turn that writes the user row, so an early —
-// legitimately EMPTY — fetch used to wipe the optimistic echo. The conversation
-// then rendered only the reply, and because the first-send path skipped its
-// durable reload the operator's opening message never came back: the reported
-// "it is still not showing the initial user message on a new conversation".
-//
-// The rule: an unmatched optimistic echo SURVIVES a replace, and the durable copy
-// supersedes it the moment the durable list actually contains it (exactly one copy
-// either way).
+// Regression: a durable poll that lands BEFORE the operator's message is visible to it must not
+// erase that message.
 func TestReplaceKeepsAnUnmatchedOptimisticEcho(t *testing.T) {
 	m := newTestApp()
 	const conv = "c1"

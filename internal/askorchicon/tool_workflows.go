@@ -15,10 +15,7 @@ import (
 
 func toolListWorkflows(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		// IncludeEphemeral opts the caller into machine-managed transient
-		// workflows (Quick Work). Default FALSE: the Workflows screen and an
-		// agent's list both render rows a human reads, and a throwaway
-		// workflow showing up there is exactly the leak this prevents.
+		// IncludeEphemeral opts the caller into machine-managed transient workflows (Quick Work).
 		IncludeEphemeral bool `json:"include_ephemeral"`
 	}
 	if len(args) > 0 && string(args) != "null" {
@@ -64,10 +61,8 @@ func toolGetWorkflow(ctx context.Context, pool *db.Pool, args json.RawMessage) (
 	return json.Marshal(workflow)
 }
 
-// toolGetWorkflowVersion returns a workflow version's steps JSON verbatim
-// (defaulting to the latest published version). Used to adopt a
-// UI-built workflow configuration as the seed template: dump the steps,
-// bake them into internal/db/seed_workflows.go, and rebuild.
+// toolGetWorkflowVersion returns a workflow version's steps JSON verbatim (defaulting to the latest
+// published version).
 func toolGetWorkflowVersion(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		WorkflowID string `json:"workflow_id"`
@@ -103,11 +98,8 @@ func toolGetWorkflowVersion(ctx context.Context, pool *db.Pool, args json.RawMes
 	})
 }
 
-// toolCreateWorkflow creates a workflow AND its first draft version-1
-// row in one transaction via the shared workflow.CreateWorkflowTx core
-// (the service path's implementation), seeding steps when provided and
-// writing the workflow.created audit row. The workflow is immediately
-// editable and publishable from the UI.
+// toolCreateWorkflow creates a workflow AND its first draft version-1 row in one transaction via
+// the shared workflow.CreateWorkflowTx core (the service path's implementation).
 func toolCreateWorkflow(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		Name        string          `json:"name"`
@@ -119,9 +111,7 @@ func toolCreateWorkflow(ctx context.Context, pool *db.Pool, args json.RawMessage
 		Type        string          `json:"type"`
 		GitStrategy string          `json:"git_strategy"`
 		ProjectID   string          `json:"project_id"`
-		// Ephemeral marks the workflow machine-managed and transient (Quick
-		// Work). It is hidden from the Workflows view and is meant to be
-		// removed with delete_workflow when the job ends.
+		// Ephemeral marks the workflow machine-managed and transient (Quick Work).
 		Ephemeral bool `json:"ephemeral"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
@@ -177,26 +167,8 @@ func toolCreateWorkflow(ctx context.Context, pool *db.Pool, args json.RawMessage
 	})
 }
 
-// toolDeleteWorkflow permanently removes a workflow AND ITS ENTIRE RUN HISTORY,
-// matching the DeleteWorkflow RPC (internal/workflow/service.go:324).
-//
-// THE GAP IT CLOSES: db.DeleteWorkflow and the RPC both existed; there was no
-// MCP tool. That is the same shape of gap `hard_delete_work_item` had — a real
-// capability an agent could not reach — and here it blocks Quick Work's whole
-// contract: an ephemeral workflow that cannot be deleted is an invisible record
-// that stays forever.
-//
-// ONE GUARD, and it is about the cascade rather than the row: DeleteWorkflow
-// removes the workflow's step runs, its runs, its versions and its edit locks.
-// For an ephemeral workflow that is exactly right — the runs belong to the one
-// job. For a REAL workflow it destroys history, and the agent cannot see how
-// much history it is about to destroy. So a non-ephemeral workflow that has any
-// runs is refused unless the caller states confirm_delete_runs=true, which
-// turns an unconsidered call into a deliberate one. An ephemeral workflow needs
-// no confirmation: everything it owns was created for the job being cleaned up.
-//
-// The audit is recorded because the delete is irreversible and removes the rows
-// that would otherwise be the evidence.
+// toolDeleteWorkflow permanently removes a workflow AND ITS ENTIRE RUN HISTORY, matching the
+// DeleteWorkflow RPC (internal/workflow/service.go:324).
 func toolDeleteWorkflow(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ID                string `json:"id"`
@@ -253,21 +225,8 @@ func toolDeleteWorkflow(ctx context.Context, pool *db.Pool, args json.RawMessage
 	return json.Marshal(map[string]any{"id": current.ID, "deleted": true, "ephemeral": current.Ephemeral})
 }
 
-// toolPublishWorkflowVersion publishes a workflow's draft version so the workflow becomes RUNNABLE, mirroring
-// Service.PublishWorkflow (internal/workflow/service.go).
-//
-// THE GAP IT CLOSES, and why Quick Work could not work without it. create_workflow seeds a DRAFT version
-// (internal/workflow/create.go sets Status=draft and CurrentVersion=0), the scheduler only dispatches published
-// work, and a work item binds "a published workflow to run". Workers had publish_worker_version; WORKFLOWS HAD
-// NOTHING — db.PublishWorkflowVersion was reachable only from tests. So the ephemeral protocol's "create the
-// workflow" step built something that could never be started, and the failure was passive: the bound item sat
-// pending with no error anywhere to explain why. An agent assembling a throwaway workflow for one job must be
-// able to make it runnable in the same session, and an agent that cannot is one that ships inert runs.
-//
-// The version argument is OPTIONAL: omitted, it publishes the latest draft, which is what the
-// create-then-publish flow always wants. Given, it must NAME a draft — publishing a version that is already
-// published is a failed precondition rather than a silent no-op, so a stale call is visible instead of looking
-// like success.
+// toolPublishWorkflowVersion publishes a workflow's draft version so the workflow becomes RUNNABLE,
+// mirroring Service.PublishWorkflow (internal/workflow/service.go).
 func toolPublishWorkflowVersion(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		WorkflowID string `json:"workflow_id"`

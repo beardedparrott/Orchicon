@@ -12,23 +12,15 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Password hashing for the embedded IdP's local accounts. This is the ONLY
-// place the plane turns a plaintext password into stored material, and it
-// lives at the identity-provider boundary (internal/auth). New hashes are
-// argon2id (RFC 9106 parameters, memory-hard) encoded as a self-describing
-// PHC string; bcrypt ($2a$/$2b$/$2y$) hashes are accepted on verify so
-// existing credentials keep working. No plaintext is ever persisted,
-// logged, or returned.
+// This is the ONLY place the plane turns a plaintext password into stored material, and it lives at
+// the identity-provider boundary (internal/auth).
 
 const (
-	// MaxPasswordLen bounds password input at the boundary (AGENTS.md:
-	// size-bounded inputs to prevent memory-exhaustion abuse). argon2 has
-	// no practical length limit, so the cap is purely a resource guard.
+	// MaxPasswordLen bounds password input at the boundary (AGENTS.md: size-bounded inputs to prevent
+	// memory-exhaustion abuse).
 	MaxPasswordLen = 1024
 
 	// argon2id parameters (RFC 9106): m=64 MiB, t=3, p=4, keyLen=32.
-	// They are carried in the PHC string so a future cost increase is a
-	// re-hash, not a schema change.
 	argon2Time    = 3
 	argon2Memory  = 64 * 1024 // KiB → 64 MiB
 	argon2Threads = 4
@@ -36,10 +28,8 @@ const (
 	argon2SaltLen = 16
 )
 
-// HashPassword hashes a plaintext password with argon2id and returns the
-// self-describing PHC string
-// ($argon2id$v=19$m=65536,t=3,p=4$<b64 salt>$<b64 key>). The salt is random
-// (crypto/rand), so equal inputs never produce equal hashes.
+// HashPassword hashes a plaintext password with argon2id and returns the self-describing PHC string
+// ($argon2id$v=19$m=65536,t=3,p=4$<b64 salt>$<b64 key>).
 func HashPassword(password string) (string, error) {
 	if len(password) > MaxPasswordLen {
 		return "", errors.New("password too long")
@@ -55,12 +45,7 @@ func HashPassword(password string) (string, error) {
 		base64.RawStdEncoding.EncodeToString(key)), nil
 }
 
-// VerifyPassword checks a plaintext password against a stored self-
-// describing hash. It dispatches on the prefix: argon2id re-derives the key
-// from the parameters embedded in the PHC string and compares in constant
-// time; bcrypt uses bcrypt.CompareHashAndPassword. A malformed or
-// unsupported hash returns an error — the caller must treat it as a failed
-// login, never a success.
+// VerifyPassword checks a plaintext password against a stored self- describing hash.
 func VerifyPassword(password, stored string) (bool, error) {
 	if len(password) > MaxPasswordLen {
 		return false, nil
@@ -85,10 +70,8 @@ func VerifyPassword(password, stored string) (bool, error) {
 	}
 }
 
-// verifyArgon2id re-derives the key from the PHC-embedded parameters and
-// compares it to the stored key in constant time. The parameter ranges are
-// sanity-bounded so a corrupted or stale stored hash cannot force a
-// pathological allocation on the login path.
+// verifyArgon2id re-derives the key from the PHC-embedded parameters and compares it to the stored
+// key in constant time.
 func verifyArgon2id(password, stored string) (bool, error) {
 	parts := strings.Split(stored, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {

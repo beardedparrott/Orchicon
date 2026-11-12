@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,61 +14,22 @@ import (
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/worktree"
 	"github.com/bmatcuk/doublestar/v4"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// hosttools.go: the native session engine's HOST tool suite — the real
-// implementation of the ToolRegistry contract (ADR-0007) that the loop's
-// `s.tools == nil` branch surfaced as "tool registry not configured".
-// Until this file, sessions only ever carried MCP tools (bridge) and the
-// loop's built-in memory/todo tools; every core capability (read, write,
-// edit, bash, …) returned the registry-absent error, so native executions
-// could survey nothing and write nothing ("the plan is delivered inline").
-//
-// Design:
-//   - REUSE the opencode sidecar's battle-tested composite-tool engine
-//     (internal/worktree: BatchRead/BatchGrep/BatchWrite) rather than a
-//     parallel reimplementation — one containment boundary (Base), one
-//     cap/truncation semantics, one skip-list for .git/node_modules/…
-//   - Tool names + arg shapes match the sidecar's composite tools AND the
-//     loop's existing native-name gates (isFileWritingTool, the todowrite
-//     stash) so parity is by construction.
-//   - Containment: every path resolves inside the execution's working dir
-//     (manifest.WorktreePath when provisioned, else ProjectDir) + the
-//     sanctioned scratch dir; ProjectRoot stays READ-only (writes can
-//     never land in the main checkout — worktree hygiene).
+// hosttools.go: the native session engine's HOST tool suite.
 
-// HostTools is the ToolRegistry handed to every native session: the core
-// file/shell suite scoped to the execution's working directory. The bridge
-// composes MCP tools on top (multi-registry).
-//
-// Always-container: when containerExec is set (runtime mode with a run
-// container), `bash` tool calls execute INSIDE the run's container at the
-// same absolute worktree path (bind-mounted, so host and container paths
-// agree) with the sandbox DSN env — the session's `pwd`/`go version`/DB
-// writes all land in-container. File tools (batch_read/grep/write) stay
-// host-side against the same bind-mounted path: host and container see
-// identical bytes. When containerExec is nil (local mode, standalone
-// tasks, or headless serve) bash runs in-process as before.
+// HostTools is the ToolRegistry handed to every native session: the core file/shell suite scoped to
+// the execution's working directory.
 type HostTools struct {
 	base worktree.Base
 	// containerExec routes bash into the run container; nil = in-process.
 	containerExec func(ctx context.Context, command string, env []string, cwd string) (stdout, stderr string, exitCode int, err error)
-	// envForBash, when set, REPLACES the inherited environment for
-	// in-process bash (cmd.Env). Wired by the Ask path (SetBashEnviron)
-	// to prepend the execution guard's destructive-command shim to PATH
-	// (worker-path parity: runtime/agent.go's prependGuard). Nil →
-	// inherited env (pre-change behavior, worker path untouched).
+	// envForBash, when set, REPLACES the inherited environment for in-process bash (cmd.Env).
 	envForBash func() []string
-	// pathPolicy, when set, is consulted with every path-like argument of
-	// every call BEFORE the call is dispatched, and its error aborts the
-	// call verbatim. Wired by the consent layer to the ONE shared policy
-	// accessor (permpolicy.Store.HostSuiteGuard) so the file suite and the
-	// consent core cannot disagree about what is denied. Nil → no policy
-	// hook (the worker path is unchanged; the policy file is the operator's
-	// interactive-plane rule).
-	//
-	// This suite is the ONE place reads/writes/edits land, which is why the
-	// hook lives here rather than in every tool.
+	// pathPolicy, when set, is consulted with every path-like argument of every call BEFORE the call is
+	// dispatched, and its error aborts the call verbatim.
 	pathPolicy func(paths []string) error
 }
 
@@ -79,15 +39,8 @@ func (h *HostTools) SetPathPolicy(fn func(paths []string) error) {
 	h.pathPolicy = fn
 }
 
-// NewHostTools builds the host tool suite scoped to the execution's
-// working directory (worktree when provisioned, else project dir). The
-// project root is passed READ-only when a worktree is provisioned so
-// reads can reach run-state files outside the worktree (mirroring the
-// opencode sidecar's boundary); writes never reach it.
-//
-// This constructor is deliberately CONFINED and is the one every worker run
-// uses. The interactive (Ask) widening is NewHostToolsUnrestricted and is not
-// reachable from here — a worker suite must never inherit it.
+// NewHostTools builds the host tool suite scoped to the execution's working directory (worktree
+// when provisioned, else project dir).
 func NewHostTools(workingDir, projectRoot string) *HostTools {
 	return &HostTools{base: worktree.Base{
 		Worktree:    workingDir,
@@ -96,22 +49,8 @@ func NewHostTools(workingDir, projectRoot string) *HostTools {
 	}}
 }
 
-// NewHostToolsUnrestricted builds the host tool suite for the INTERACTIVE (Ask)
-// path: the same suite, the same relative-path anchor and bash cwd
-// (workingDir), but the allowed set is the whole filesystem — an absolute path
-// is permitted wherever the process can reach it.
-//
-// WHY A SEPARATE CONSTRUCTOR AND NOT A SETTER OR A PACKAGE DEFAULT. A worker
-// session's suite must be incapable of inheriting the widening, and with a
-// constructor the only way to get an unconfined suite is to name this function
-// in the call. A setter or a shared default would leave the worker path one
-// call away from it. TestWorkerConstructorCannotInheritUnrestricted fails the
-// moment the two ever converge.
-//
-// This is not a security boundary on a host plane: the process runs as the
-// operator's uid, so filesystem modes are the real constraint and the consent
-// layer governs action. Worktree stays the relative-path anchor and the bash
-// cwd default, so project-relative work is unchanged.
+// NewHostToolsUnrestricted builds the host tool suite for the INTERACTIVE (Ask) path: the same
+// suite, the same relative-path anchor and bash cwd (workingDir).
 func NewHostToolsUnrestricted(workingDir string) *HostTools {
 	return &HostTools{base: worktree.Base{
 		Worktree:     workingDir,
@@ -120,26 +59,20 @@ func NewHostToolsUnrestricted(workingDir string) *HostTools {
 	}}
 }
 
-// NewContainerHostTools is NewHostTools with bash routed into the run's
-// container via execFn (command + env + cwd -> stdout/stderr/exit). env
-// carries the sandbox DSN so DB-backed tests hit the in-container plane.
+// NewContainerHostTools is NewHostTools with bash routed into the run's container via execFn
+// (command + env + cwd -> stdout/stderr/exit).
 func NewContainerHostTools(workingDir, projectRoot string, execFn func(ctx context.Context, command string, env []string, cwd string) (string, string, int, error)) *HostTools {
 	h := NewHostTools(workingDir, projectRoot)
 	h.containerExec = execFn
 	return h
 }
 
-// SetBashEnviron wires the environment factory for IN-PROCESS bash
-// (cmd.Env). The Ask path uses it to prepend the execution guard's
-// destructive-command shim to PATH (parity with the worker supervisor's
-// prependGuard). Nil (default) → inherited env (worker path unchanged).
+// SetBashEnviron wires the environment factory for IN-PROCESS bash (cmd.Env).
 func (h *HostTools) SetBashEnviron(fn func() []string) {
 	h.envForBash = fn
 }
 
-// hostToolDefs is the core suite advertised to the model every turn. Arg
-// shapes match the opencode sidecar's composite tools (one grammar to
-// learn) — write/edit use `filePath` (sidecar parity), NOT `path`.
+// hostToolDefs is the core suite advertised to the model every turn.
 var hostToolDefs = []ToolDef{
 	{
 		Name:        "batch_read",
@@ -211,18 +144,10 @@ func (h *HostTools) Defs() []ToolDef {
 	return out
 }
 
-// Execute implements ToolRegistry: route one call to the worktree engine
-// (composite + thin wrappers) or the shell (bash). Every path argument
-// resolves inside the execution's working dir + the sanctioned scratch
-// dir; escapes are refused by the engine's containment boundary.
+// Execute implements ToolRegistry: route one call to the worktree engine (composite + thin
+// wrappers) or the shell (bash).
 func (h *HostTools) Execute(ctx context.Context, name, argsJSON string) (string, error) {
 	// THE POLICY CHOKE POINT, and it runs before EVERY branch.
-	//
-	// Deliberately first: this is the one function every host-suite call
-	// passes through, so a check here cannot be bypassed by which internal
-	// branch a tool happens to take. A returned error is the tool's result
-	// verbatim, so a refusal that names the denied policy entry reaches the
-	// model and the operator unaltered.
 	if err := h.checkPolicy(name, argsJSON); err != nil {
 		return "", err
 	}
@@ -260,32 +185,20 @@ func (h *HostTools) Execute(ctx context.Context, name, argsJSON string) (string,
 	case "bash":
 		return h.execBash(ctx, argsJSON)
 	case "todoread":
-		// The loop serves todoread natively (session todo snapshot) when it
-		// recognizes the name; reaching the registry here means it did not
-		// — defensive parity with the sidecar's registry: an empty list,
-		// never an error.
+		// The loop serves todoread natively (session todo snapshot) when it recognizes the name; reaching
+		// the registry here means it did not — defensive parity with the sidecar's registry: an empty list.
 		return `{"todos":[]}`, nil
 	case "todowrite":
-		// Session todo state is folded into the digest by the loop's
-		// stashMutableToolCall before execution; reaching the registry here
-		// means the loop did not intercept — acknowledge success so the call
-		// never surfaces as `unknown tool "todowrite"` (the composite prompt
-		// orders a todowrite call every turn, so an error here burns a turn).
+		// Session todo state is folded into the digest by the loop's stashMutableToolCall before execution;
+		// reaching the registry here means the loop did not intercept.
 		return `{"ok":true}`, nil
 	default:
 		return "", fmt.Errorf("hosttools: unknown tool %q", name)
 	}
 }
 
-// policyTargetCandidates extracts the path-like targets a call names, each
-// in BOTH spellings the operator might have written a policy entry for: as
-// the model wrote it (`~/.ssh/id_rsa`, or a project-relative path) and, when
-// the suite has a working dir, resolved against it.
-//
-// Keys are a WHITELIST (path/paths/filePath), never "every string in the
-// args": content, oldString and newString are file CONTENT, and a policy
-// entry that matched the text of a file being written would be a rule that
-// mis-fires on the thing it is meant to protect.
+// policyTargetCandidates extracts the path-like targets a call names, each in BOTH spellings the
+// operator might have written a policy entry for: as the model wrote it (`~/.ssh/id_rsa`.
 func (h *HostTools) policyTargetCandidates(name, argsJSON string) []string {
 	var root any
 	if err := json.Unmarshal([]byte(argsJSON), &root); err != nil {
@@ -315,9 +228,8 @@ func (h *HostTools) policyTargetCandidates(name, argsJSON string) []string {
 	}
 	for _, t := range raw {
 		add(t)
-		// A path written RELATIVE lands inside the suite's working dir;
-		// pass the resolved form too so a policy entry written either way
-		// matches. An absolute path is already its own resolution.
+		// A path written RELATIVE lands inside the suite's working dir; pass the resolved form too so a
+		// policy entry written either way matches.
 		if !filepath.IsAbs(t) && !strings.HasPrefix(t, "~") && h.base.Worktree != "" {
 			add(filepath.Join(h.base.Worktree, t))
 		}
@@ -325,9 +237,8 @@ func (h *HostTools) policyTargetCandidates(name, argsJSON string) []string {
 	return out
 }
 
-// collectPolicyPaths walks a decoded JSON value and appends every string
-// under a path-naming key (path/paths/filePath/filePaths), descending into
-// objects and arrays so `writes: [{path: …}]` is covered.
+// collectPolicyPaths walks a decoded JSON value and appends every string under a path-naming key
+// (path/paths/filePath/filePaths), descending into objects and arrays so `writes: [{path.
 func collectPolicyPaths(v any, out *[]string) {
 	switch t := v.(type) {
 	case map[string]any:
@@ -355,12 +266,8 @@ func collectPolicyPaths(v any, out *[]string) {
 	}
 }
 
-// shellPolicyTokens splits a bash command into whitespace-separated tokens
-// and keeps the ones that could name a file: any token containing a path
-// separator, and every token that survives a leading assignment or quote
-// strip. Deliberately over-inclusive — the hook only refuses on a DENY
-// match, so an extra candidate can only make the denial MORE certain, never
-// turn a permitted command into a refused one.
+// shellPolicyTokens splits a bash command into whitespace-separated tokens and keeps the ones that
+// could name a file: any token containing a path separator.
 func shellPolicyTokens(command string) []string {
 	if strings.TrimSpace(command) == "" {
 		return nil
@@ -383,26 +290,7 @@ func shellPolicyTokens(command string) []string {
 	return out
 }
 
-// checkPolicy runs the installed policy hook over the call's targets. A nil
-// hook (the worker path) is a no-op.
-//
-// A BROKEN POLICY DOES NOT BLOCK A READ. When the file cannot be parsed there is no
-// decision to respect, and failing closed on EVERY action — which is what happened —
-// locks the operator out of the one thing that would explain the problem: looking at
-// the file. A read cannot damage anything, so it proceeds; a write or an execution
-// still refuses, because those are the actions a policy exists to gate.
-//
-// A DENY VERDICT still refuses reads, unchanged: the deny list exists to keep files
-// like ~/.ssh out of reach, and that is a decision the policy successfully made.
-//
-// THE READ PROCEEDS WITHOUT A WARNING, and that is a known limitation rather than an
-// oversight: this function returns a single error, so it cannot both succeed and
-// carry a complaint about the policy. The operator's remedy is the thing this
-// unblocks — they can now READ the file and see what is wrong — and a policy broken
-// at boot is still caught loudly by permpolicy.Boot, which refuses to start. Closing
-// the gap properly means giving the suite a logger; it is recorded as a follow-up
-// rather than papered over with a comment that claimed the error was reported when
-// the code returned nil.
+// checkPolicy runs the installed policy hook over the call's targets.
 func (h *HostTools) checkPolicy(name, argsJSON string) error {
 	if h.pathPolicy == nil {
 		return nil
@@ -422,9 +310,7 @@ func (h *HostTools) checkPolicy(name, argsJSON string) error {
 	return err
 }
 
-// readOnlyHostTool reports whether a host-suite tool only reads. It answers from the
-// SAME classification the consent gate uses (ConsentReadOnlyTools), so the two cannot
-// drift about what counts as a read.
+// readOnlyHostTool reports whether a host-suite tool only reads.
 func readOnlyHostTool(name string) bool {
 	for _, n := range ConsentReadOnlyTools {
 		if n == name {
@@ -633,10 +519,6 @@ func (h *HostTools) execBash(ctx context.Context, argsJSON string) (string, erro
 	cctx, cancel := context.WithTimeout(ctx, to)
 	defer cancel()
 	// Always-container: route through the run's container when wired.
-	// The supervisor streams stdout/stderr back; a non-zero exit is a
-	// RESULT (returned like the in-process path below) so the model
-	// course-corrects on it. A transport error (no lease, daemon down)
-	// IS an error — the reconciler fails LOUD, never silent host exec.
 	if h.containerExec != nil {
 		stdout, stderr, code, err := h.containerExec(cctx, a.Command, []string{"ORCHICON_TEST_DSN=" + runtime.SandboxPostgresDSN}, h.base.Worktree)
 		if err != nil {
@@ -654,7 +536,7 @@ func (h *HostTools) execBash(ctx context.Context, argsJSON string) (string, erro
 		}
 		return msg, nil
 	}
-	cmd := exec.CommandContext(cctx, "bash", "-c", a.Command)
+	cmd := procwin.CommandContext(cctx, "bash", "-c", a.Command)
 	cmd.Dir = h.base.Worktree
 	if h.envForBash != nil {
 		cmd.Env = h.envForBash()
@@ -686,11 +568,8 @@ func (h *HostTools) execBash(ctx context.Context, argsJSON string) (string, erro
 	return string(out), nil
 }
 
-// resolveDir resolves a path for the directory-listing tools (list/glob)
-// through the SAME resolver the composite tools use (worktree.ResolvePath), so
-// the allowed set is defined in exactly ONE place — the worktree engine —
-// instead of being re-listed here. An absolute path is refused unless the base
-// is unrestricted (the interactive Ask suite).
+// resolveDir resolves a path for the directory-listing tools (list/glob) through the SAME resolver
+// the composite tools use (worktree.ResolvePath).
 func (h *HostTools) resolveDir(p string) (string, error) {
 	return worktree.ResolvePath(h.base, p, false)
 }
@@ -711,9 +590,8 @@ func jsonStringArray(ss []string) string {
 	return string(b)
 }
 
-// doublestarGlob matches pattern under root (doublestar semantics,
-// rooted AT root so `**/*.go` stays inside it), returning absolute paths,
-// bounded by max.
+// doublestarGlob matches pattern under root (doublestar semantics, rooted AT root so `**/*.go`
+// stays inside it), returning absolute paths, bounded by max.
 func doublestarGlob(root, pattern string, max int) ([]string, error) {
 	fsys := os.DirFS(root)
 	matches, err := doublestar.Glob(fsys, pattern)

@@ -40,15 +40,6 @@ func TestExecutionListTitleShowsWorkflowAndWorkItem(t *testing.T) {
 }
 
 // THE WORK ITEM TITLE IS BOUNDED TO 15 RUNES.
-//
-// The operator: "Executions and workflow runs are still way too crowded. It's too noisy and makes it hard
-// on the eyes. We should clean them up more. How about this instead: Worker Name - Work Item (15
-// character only) - Status."
-//
-// The bound is applied at the SOURCE rather than left to the row's own end-truncation, because the row
-// trims whatever does not fit — so an unbounded title would silently eat the status, which is the field
-// listRow was fixed to protect. Bounding here keeps the workflow name and the status in the budget
-// however long the title is.
 func TestExecutionListTitleBoundsTheWorkItemTitle(t *testing.T) {
 	var names runNames
 	names.mu.Lock()
@@ -81,14 +72,6 @@ func TestExecutionListTitleBoundsTheWorkItemTitle(t *testing.T) {
 }
 
 // THE ROW READS workflow · worker · item, in that order, with the status in Meta.
-//
-// The operator: "I would like the Execution titles to include: Workflow Name - Worker Name - Work Item title
-// (current truncated is perfect) - Status."
-//
-// The WORKER'S PLACE is the point of this test. It used to be appended to the STATUS in Meta
-// ("succeeded · Quick Software Engineer"), which is where it competed for the one field the operator scans for
-// and was removed for crowding; it is now part of the TITLE's identity, between the workflow and the item, and
-// the status keeps Meta to itself.
 func TestExecutionListTitleReadsWorkflowWorkerItem(t *testing.T) {
 	var names runNames
 	names.mu.Lock()
@@ -160,13 +143,6 @@ func TestExecutionListTitleDegradesToWhatIsKnown(t *testing.T) {
 }
 
 // The meta line carries the STATUS AND NOTHING ELSE.
-//
-// This used to assert the worker's name was present too, and that assertion is what the operator's report
-// invalidated: "too crowded... too noisy and makes it hard on the eyes". The worker name is long, nearly
-// identical across rows on this pane, and it pushed the row into the very overflow the status then lost
-// to — so the row now spends its width on the status, the one field that CHANGES, and the worker is one
-// keystroke away in the detail pane. Asserting its ABSENCE is the point: a worker name creeping back in
-// is what re-crowds the row.
 func TestExecutionListMetaIsTheStatusAlone(t *testing.T) {
 	e := &apiv1.WorkerExecution{
 		Id: "exec-1", Status: apiv1.ExecutionStatus_EXECUTION_STATUS_SUCCEEDED, WorkerName: "Quick Software Engineer",
@@ -218,12 +194,8 @@ func TestFetchExecutionsPopulatesNames(t *testing.T) {
 	}
 }
 
-// The list must NOT re-read the per-row system prompt: it is a detail-only field, and loading it per
-// row is what made the page slow. Asserted at the TUI level by "the list fetch does not depend on
-// it", and at the service level by the fact that the batched totals still populate.
-//
-// This test pins the CONTRACT the fix depends on: a list row's cost/tokens come from the batched
-// sums, and nothing in the list path needs the prompt.
+// The list must NOT re-read the per-row system prompt: it is a detail-only field, and loading it
+// per row is what made the page slow.
 func TestExecutionListDoesNotNeedTheSystemPrompt(t *testing.T) {
 	p := namePlane()
 	p.exec = &apiv1.WorkerExecution{

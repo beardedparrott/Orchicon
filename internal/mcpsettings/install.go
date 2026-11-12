@@ -13,6 +13,8 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // Runtime names.
@@ -48,9 +50,6 @@ func lookPathOK(name string) bool {
 }
 
 // installPlan is the resolved install argv + runtime for an entry.
-// Command built only from catalog-derived fields or the entry's own
-// command/args — no shell interpolation (exec.Command with a fixed argv,
-// never sh -c).
 type installPlan struct {
 	runtime string // npx | uvx | docker | "" (remote_url)
 	argv    []string
@@ -69,9 +68,7 @@ func planInstall(e Entry) (installPlan, error) {
 		}
 		mech = c.InstallMechanism
 	case e.Command != "":
-		// Manual stdio entry: install the entry's own command + args. The
-		// runtime is inferred from argv[0] (npx/uvx/docker prefix) or the
-		// bare executable is run directly.
+		// Manual stdio entry: install the entry's own command + args.
 		argv := append([]string{e.Command}, e.Args...)
 		first := strings.ToLower(e.Command)
 		switch {
@@ -159,11 +156,7 @@ type InstallOutcome struct {
 	Available bool
 }
 
-// Install runs the explicit-only auto-install for an entry. dry_run=true
-// (or the ORCHICON_MCP_INSTALL_DRYRUN=1 env gate) resolves the plan and
-// reports what WOULD run without executing anything or writing the DB.
-// Real installs run the plan with a 60s timeout, capture bounded output,
-// and record the result on the entry.
+// Install runs the explicit-only auto-install for an entry.
 func (s *Service) Install(ctx context.Context, tenantID string, in InstallInput) (InstallOutcome, error) {
 	in.ID = strings.TrimSpace(in.ID)
 	if in.ID == "" {
@@ -279,7 +272,7 @@ func (s *Service) runInstall(ctx context.Context, plan installPlan) InstallResul
 	res := InstallResult{Runtime: plan.runtime, Command: plan.display}
 	ctx, cancel := context.WithTimeout(ctx, installTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, plan.argv[0], plan.argv[1:]...)
+	cmd := procwin.CommandContext(ctx, plan.argv[0], plan.argv[1:]...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

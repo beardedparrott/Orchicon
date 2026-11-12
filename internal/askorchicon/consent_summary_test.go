@@ -5,18 +5,11 @@ import (
 	"testing"
 )
 
-// The permission card's text is what an operator decides on, so these pin the
-// two things the reported screenshot got wrong:
-//
-//  1. it dumped Go's own formatting of a nested argument —
-//     "batch_write writes=[map[mode:edit new:type chatBus struct {…]",
-//     truncated mid-struct at 80 chars — instead of saying what would happen;
-//  2. it described the call by its tool name ("batch_write"), which tells an
-//     operator nothing, rather than by its intent ("modify <path>").
+// The permission card's text is what an operator decides on, so these pin the two things the
+// reported screenshot got wrong:
 
-// The exact shape from the report: a batch write whose `writes` value is a
-// []map[string]any, carrying file contents. It must never reach the card as Go
-// syntax.
+// The exact shape from the report: a batch write whose `writes` value is a []map[string]any,
+// carrying file contents.
 func TestAskSummaryNeverDumpsGoSyntaxForNestedArgs(t *testing.T) {
 	a := askAction{
 		Tool: "batch_write",
@@ -83,9 +76,7 @@ func TestScalarArgSummarisesContainersAndNeverFormatsThem(t *testing.T) {
 	}
 }
 
-// The intent verb is the whole point of the change: the card must read as an
-// ACTION. Naming is deliberately broad because the tool vocabulary is open
-// (opencode, MCP, and the native suite each name their tools their own way).
+// The intent verb is the whole point of the change: the card must read as an ACTION.
 func TestToolIntentVerbNamesTheAction(t *testing.T) {
 	cases := map[string]string{
 		"write":                 "modify",
@@ -121,9 +112,7 @@ func TestAskSummaryBashStatesTheCommand(t *testing.T) {
 	}
 }
 
-// The diagnostic for an unresolvable ask belongs in the log, not in the copy an
-// operator reads. This is a regression guard for exactly that: the note used to
-// be appended to the card's text.
+// The diagnostic for an unresolvable ask belongs in the log, not in the copy an operator reads.
 func TestAskSummaryCarriesNoDeveloperDiagnostics(t *testing.T) {
 	// An unresolvable ask: a tool name, no target, no command, no args.
 	got := askSummary(askAction{Tool: "orchicon_unknown_tool"})

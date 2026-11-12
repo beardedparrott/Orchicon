@@ -19,7 +19,7 @@ const (
 	TransUserMessage = "user_message"
 	// TransText is a chunk of assistant text.
 	TransText = "text"
-	// TransReasoning is a chunk of assistant reasoning (never replayed).
+	// TransReasoning is a chunk of assistant reasoning.
 	TransReasoning = "reasoning"
 	// TransToolCall is a complete tool invocation.
 	TransToolCall = "tool_call"
@@ -27,6 +27,9 @@ const (
 	TransToolResult = "tool_result"
 	// TransWrittenFiles carries the deduped set of written file paths.
 	TransWrittenFiles = "written_files"
+	// TransCompaction records that the platform COLLAPSED the session's context mid-run: which trigger
+	// fired, how many messages went in and came out, and how many tool rounds were evicted.
+	TransCompaction = "compaction"
 	// TransError is a surfaced error (stream error, tool failure, panic).
 	TransError = "error"
 	// TransState is a lifecycle marker: started / cancelled / failed / done.
@@ -35,9 +38,7 @@ const (
 	TransFinish = "finish"
 )
 
-// transEntry is one JSONL line. Seq is the monotonically increasing
-// per-session sequence (the DB execution_session_parts counterpart).
-// TS is RFC3339 UTC.
+// transEntry is one JSONL line.
 type transEntry struct {
 	Seq  int64           `json:"seq"`
 	Type string          `json:"type"`
@@ -45,20 +46,15 @@ type transEntry struct {
 	Data json.RawMessage `json:"data,omitempty"`
 }
 
-// transToolCallData is the durable payload of a TransToolCall event: the
-// assistant turn's accumulated text plus its complete tool calls. Replay
-// rebuilds the assistant tool_use history message from this (BUG-1).
+// transToolCallData is the durable payload of a TransToolCall event: the assistant turn's
+// accumulated text plus its complete tool calls.
 type transToolCallData struct {
 	Text      string     `json:"text"`
 	ToolCalls []ToolCall `json:"tool_calls"`
 }
 
 // JSONLTranscript is the crash-safe append-only session transcript at
-// <project_dir>/.orchicon/sessions/<session_id>.jsonl. Every event is
-// fsync'd before the next one starts (f.Sync after each append under a
-// write mutex), so a kill -9 mid-run leaves every committed line durable
-// and the transcript replayable (a torn final line is tolerated on
-// replay).
+// <project_dir>/.orchicon/sessions/<session_id>.jsonl.
 type JSONLTranscript struct {
 	path string
 
@@ -66,12 +62,8 @@ type JSONLTranscript struct {
 	f    *os.File
 	seq  int64
 	done bool // Close already called (or fatal write error)
-	// observer, when set, is invoked after every durable append (while mu
-	// is held) with the entry's seq/type/marshaled payload. The bridge
-	// uses it to mirror the transcript into the DB session-parts store
-	// (execution_session_parts) for the live/terminal session pane — the
-	// same durable surface the opencode adapter writes. It must be cheap
-	// (no I/O): implementations batch and flush separately.
+	// observer, when set, is invoked after every durable append (while mu is held) with the entry's
+	// seq/type/marshaled payload.
 	observer func(seq int64, typ string, data []byte)
 }
 
@@ -83,9 +75,7 @@ func (t *JSONLTranscript) SetObserver(fn func(seq int64, typ string, data []byte
 	t.observer = fn
 }
 
-// openTranscript opens (creating if needed) the JSONL at path in append
-// mode. When the file already exists (resume), it seeks to the last
-// durable line so new appends continue after it.
+// openTranscript opens (creating if needed) the JSONL at path in append mode.
 func openTranscript(path string) (*JSONLTranscript, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("transcript: mkdir: %w", err)
@@ -101,9 +91,7 @@ func openTranscript(path string) (*JSONLTranscript, error) {
 	return t, nil
 }
 
-// lastSeq scans the file for the highest durable seq. A torn final line
-// (kill -9 mid-write) is tolerated: the partial line is skipped and the
-// next append rewrites it. Runs without holding mu (called from open).
+// lastSeq scans the file for the highest durable seq.
 func (t *JSONLTranscript) lastSeq() int64 {
 	var max int64
 	if _, err := t.f.Seek(0, 0); err != nil {
@@ -131,9 +119,7 @@ func (t *JSONLTranscript) lastSeq() int64 {
 	return max
 }
 
-// Append writes one event and fsyncs it before returning. A write error
-// marks the transcript failed (further appends are no-ops) so a panic in
-// the transcript path can't corrupt the file. Safe for concurrent use.
+// Append writes one event and fsyncs it before returning.
 func (t *JSONLTranscript) Append(typ string, data any) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -200,9 +186,7 @@ type replayEvent struct {
 	Data json.RawMessage
 }
 
-// Load reads a transcript file and returns its ordered events, tolerating
-// a torn final line. It does not open the file for writing — use
-// openTranscript for resume.
+// Load reads a transcript file and returns its ordered events, tolerating a torn final line.
 func Load(path string) ([]replayEvent, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -229,13 +213,8 @@ func Load(path string) ([]replayEvent, error) {
 	return out, nil
 }
 
-// SeedFrom re-appends the durable lines of a prior session's transcript
-// into this one, preserving their original seq values (the new session's
-// own header is written first, then the prior events follow — the new
-// file is self-contained and replays to the full prior conversation).
-// Used by the sequence-continuation path (Session.SetContinuation). The
-// caller must verify identity (same worker) before calling — this method
-// performs no identity checks.
+// SeedFrom re-appends the durable lines of a prior session's transcript into this one, preserving
+// their original seq values (the new session's own header is written first.
 func (t *JSONLTranscript) SeedFrom(path string) error {
 	evs, err := Load(path)
 	if err != nil {

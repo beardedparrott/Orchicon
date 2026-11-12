@@ -1,13 +1,6 @@
 package diffs
 
 // scrollbar_drag_test.go — THE BAR'S COLUMN AND THE GRAB MAPPING.
-//
-// The operator: "the scroll only works in the TUI by using the scroll wheel. I can't grab onto the scroll
-// bar and drag it up and down like you can in the GUI."
-//
-// The drag ITSELF is the shell's (a left press in the rail sets a selection region, and the clipboard layer
-// consumes the motion that follows — see App.dispatchMouse), but the two things the gesture depends on live
-// here: WHICH COLUMN the bar occupies, and HOW a grab row maps to a scroll offset.
 
 import (
 	"strings"
@@ -25,10 +18,7 @@ func overflowingModel() *Model {
 	return m
 }
 
-// THE BAR IS NOT ON THE RESIZE EDGE. It used to occupy the pane's LAST cell — which is where the shell's
-// rail-resize handle lives (diffDividerHit matches x == diffPaneWidth()-1) — so the shell claimed the press
-// and the pane never saw a click or a drag on the bar at all: clicking did nothing and dragging RESIZED the
-// rail. The bar now sits one cell inside, and this pins the separation.
+// THE BAR IS NOT ON THE RESIZE EDGE.
 func TestTheScrollbarColumnIsNotTheResizeEdge(t *testing.T) {
 	m := overflowingModel()
 	body := 1 + m.bodyWidth() // the bar's terminal X: the left border, then the content
@@ -54,9 +44,8 @@ func TestTheScrollbarColumnIsNotTheResizeEdge(t *testing.T) {
 // [content][bar][divider], so moving the bar did not change the pane's width or the shell's budget.
 func TestABodyRowCarriesTheBarInTheGrabbableColumn(t *testing.T) {
 	m := overflowingModel()
-	// Scrolled to the BOTTOM, where the thumb sits at the bottom of the track — so the last rendered body
-	// row is the one to read. (Reading the first row would read the track above the thumb and fail for a
-	// reason that has nothing to do with the geometry under test.)
+	// Scrolled to the BOTTOM, where the thumb sits at the bottom of the track — so the last rendered
+	// body row is the one to read.
 	m.scroll = m.maxScroll()
 	lines := strings.Split(m.diffBody(), "\n")
 	if len(lines) == 0 {
@@ -74,10 +63,6 @@ func TestABodyRowCarriesTheBarInTheGrabbableColumn(t *testing.T) {
 			"agree about where the bar is", string(row[barX]))
 	}
 	// The shell's handle column is NOT the bar — it carries the resize grip instead, in its own style.
-	//
-	// IT IS RENDERED, deliberately. It was blank when the bar first got its own column, and that is exactly
-	// what the operator reported as broken resizing: the grip was invisible, and the only thing in that
-	// region they could see to grab was the BAR next to it.
 	if got := string(row[barX+1]); got != scrollHandleGlyph {
 		t.Errorf("the resize-handle cell is %q, want the grip glyph %q — an invisible handle reads as no "+
 			"handle at all", got, scrollHandleGlyph)
@@ -127,11 +112,6 @@ func TestAGrabAtEitherEndReachesTheEnd(t *testing.T) {
 }
 
 // GRABBING THE THUMB DOES NOT JUMP — the "jumps a bit" report.
-//
-// A GUI scrollbar picks the content up where it is when you grab the thumb, and only jumps when you press
-// the track (clicking the track is asking to GO somewhere). Treating both as a jump yanked the content to
-// wherever the pointer happened to be before the drag had started, which is what made the bar feel like it
-// leapt about.
 func TestGrabbingTheThumbDoesNotJump(t *testing.T) {
 	m := overflowingModel()
 	m.scroll = 0

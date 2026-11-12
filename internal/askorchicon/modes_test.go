@@ -49,10 +49,6 @@ func TestEveryModeKnowsItsNameAndItsJob(t *testing.T) {
 }
 
 // EVERY MODE KNOWS WHICH MODE IT IS IN, and names the others.
-//
-// This is the operator's requirement verbatim, and it is what makes the switch
-// suggestion possible: a mode that did not know the roster could not tell the user
-// that another mode fits better.
 func TestEveryModeKnowsWhichModeItIsInAndTheOthers(t *testing.T) {
 	cfg := testAgentConfig()
 	reg := testToolRegistry()
@@ -115,10 +111,6 @@ func TestEveryModeSharesThePlatformAndToolKnowledge(t *testing.T) {
 }
 
 // ITERATION NEVER PROPOSES WORK ITEMS OR WORKFLOWS.
-//
-// The operator, verbatim: "It will never suggest work item creation nor will it ever suggest creating or
-// firing off workflows or schedules." That is the mode's defining constraint, so it is asserted as an
-// ABSENCE — the strongest form available for a prompt.
 func TestIterationNeverProposesWorkItemsOrWorkflows(t *testing.T) {
 	p := BuildSystemPrompt(modeIteration, testAgentConfig(), testToolRegistry(), "")
 
@@ -167,8 +159,7 @@ func TestIterationNeverProposesWorkItemsOrWorkflows(t *testing.T) {
 		"NEVER remove a worktree holding uncommitted or unpushed work",
 		"`git worktree prune`",
 		// A FRESH WORKTREE CANNOT BUILD UNTIL THE DEPENDENCIES ARE LINKED, which is the one thing the
-		// worktree rule costs if it is not said: the build fails with a confusing tool error and the
-		// agent concludes the worktree is broken. Asserted with the symptom it actually prints.
+		// worktree rule costs if it is not said.
 		"THE WORKTREE CARRIES THE TRACKED TREE ONLY",
 		"`tsc: command not found`",
 		"ln -s <project-dir>/frontend/node_modules frontend/node_modules",
@@ -188,9 +179,7 @@ func TestIterationNeverProposesWorkItemsOrWorkflows(t *testing.T) {
 		t.Error("iteration still carries the branch-only workspace rule — a branch in the user's own " +
 			"checkout is not an isolated workspace")
 	}
-	// AND IT STAYS ITERATION'S. The other two modes write nothing (their write tools are refused), so
-	// a workspace rule there would be advice about a working tree they never get. Asserted so the
-	// block cannot be "shared" later by reflex and turn into noise in two prompts.
+	// AND IT STAYS ITERATION'S.
 	for _, other := range []string{modeBrainstorm, modeQuickWork} {
 		if q := BuildSystemPrompt(other, testAgentConfig(), testToolRegistry(), ""); strings.Contains(q, "## Your worktree, and nobody else's") {
 			t.Errorf("%s carries Iteration's worktree block — only the mode that edits code needs a "+
@@ -200,9 +189,6 @@ func TestIterationNeverProposesWorkItemsOrWorkflows(t *testing.T) {
 }
 
 // QUICK WORK DISPATCHES, AND CLEANS UP AFTER ITSELF.
-//
-// The operator: ephemeral items/workers/workflows that never appear in the console and are hard-deleted when
-// the job ends; the worker uses the agent's own model_ref; a failure is reported and a re-run offered.
 func TestQuickWorkDispatchesEphemerally(t *testing.T) {
 	p := BuildSystemPrompt(modeQuickWork, testAgentConfig(), testToolRegistry(), "")
 
@@ -218,10 +204,7 @@ func TestQuickWorkDispatchesEphemerally(t *testing.T) {
 		"do NOT appear in any console list",
 		// The failure rule, in the operator's words.
 		"ON FAILURE: DIAGNOSE, REPORT, OFFER A RE-RUN",
-		// THE MODEL IS ASKED AND NAMED, not assumed. This REPLACES the old
-		// "THE WORKER RUNS ON YOUR MODEL" assertion, which pinned the rule the
-		// operator reversed: the worker no longer silently inherits the agent's
-		// model, and the agent must offer the real ref by name every dispatch.
+		// THE MODEL IS ASKED AND NAMED, not assumed.
 		"ASK WHICH MODEL ON EVERY NEW DISPATCH",
 		"Would you like to use the current model",
 		"or would you like to choose a different one for this run?",
@@ -231,9 +214,8 @@ func TestQuickWorkDispatchesEphemerally(t *testing.T) {
 		"WHICH BRANCH TO CLONE OFF",
 		"WHICH BRANCH TO MERGE INTO",
 		"orchicon_list_project_branches",
-		// The protocol can actually produce a RUNNABLE workflow: both halves
-		// are published, which the old protocol omitted entirely — leaving a
-		// draft that nothing could dispatch.
+		// The protocol can actually produce a RUNNABLE workflow: both halves are published, which the old
+		// protocol omitted entirely — leaving a draft that nothing could dispatch.
 		"Publish the worker",
 		"Publish the workflow",
 		"publish_workflow_version",
@@ -265,10 +247,6 @@ func TestQuickWorkDispatchesEphemerally(t *testing.T) {
 }
 
 // BRAINSTORM ALWAYS CLOSES THE LOOP ON WHAT TO DO WITH THE ANSWER.
-//
-// The operator: "Brainstorm mode should now purposefully ask you if you would like to create work items for
-// the work or work directly with Orchicon after answering the user's question. This check should always be
-// reinforced."
 func TestBrainstormAlwaysAsksWhatToDoNext(t *testing.T) {
 	p := BuildSystemPrompt(modeBrainstorm, testAgentConfig(), testToolRegistry(), "")
 
@@ -292,10 +270,6 @@ func TestBrainstormAlwaysAsksWhatToDoNext(t *testing.T) {
 }
 
 // AN UNKNOWN MODE IS BRAINSTORM, and it gets a real persona rather than a broken one.
-//
-// The fallback matters because the mode arrives as free text from a DB column: a value
-// written by an older build, or hand-edited, must not produce a prompt with no
-// identity or a blank mode banner.
 func TestUnknownModeFallsBackToBrainstorm(t *testing.T) {
 	cfg := testAgentConfig()
 	reg := testToolRegistry()
@@ -309,9 +283,6 @@ func TestUnknownModeFallsBackToBrainstorm(t *testing.T) {
 }
 
 // EVERY MODE ROUND-TRIPS THROUGH THE STORE AND THE WIRE.
-//
-// The mode is persisted as a text value and read back as an enum, so a mode that maps
-// one way and not the other would either be stored wrong or displayed blank.
 func TestEveryModeRoundTrips(t *testing.T) {
 	for _, mode := range everyMode {
 		proto := conversationModeToProto(mode)
@@ -337,10 +308,6 @@ func TestEveryModeRoundTrips(t *testing.T) {
 }
 
 // THE PERSONA IS CHOSEN BY THE MODE, not by the default path.
-//
-// This is the regression that would make the whole feature inert: BuildSystemPrompt used
-// to ignore its mode argument entirely and always return the brainstorm persona, so
-// every mode behaved identically while the UI reported otherwise.
 func TestPersonasDifferByMode(t *testing.T) {
 	cfg := testAgentConfig()
 	reg := testToolRegistry()
@@ -355,12 +322,8 @@ func TestPersonasDifferByMode(t *testing.T) {
 	_ = db.AgentConfigRow{}
 }
 
-// NO MODE IS GRANTED THE WORK IT CANNOT DO, AND THE PERMISSIONS THAT MADE THAT UNENFORCEABLE ARE GONE.
-//
-// This is the test that keeps them gone. The boundary could not hold while the prompt granted the permission —
-// Brainstorm was told "you may take direct action when the user explicitly asks for it", and its own next-step
-// fork offered "Work directly with me". A prompt cannot be argued out of a permission it was explicitly granted,
-// which is why every one of these strings had to go before the tool gate could mean anything.
+// NO MODE IS GRANTED THE WORK IT CANNOT DO, AND THE PERMISSIONS THAT MADE THAT UNENFORCEABLE ARE
+// GONE.
 func TestNoModeIsGrantedTheWorkItCannotDo(t *testing.T) {
 	banned := []string{
 		"you CAN take direct action",
@@ -381,11 +344,8 @@ func TestNoModeIsGrantedTheWorkItCannotDo(t *testing.T) {
 	}
 }
 
-// AND EVERY MODE STATES THE SUPERSESSION RULE, because that is what makes a mode SWITCH take effect.
-//
-// The model's own earlier messages are the anchor that fights a mode change: after switching it can see itself
-// saying, a few messages ago, what it does or does not do. The rule is re-sent with every turn, so unlike the
-// transcript it cannot go stale. Its absence in any one mode is a mode that would carry the old person forward.
+// AND EVERY MODE STATES THE SUPERSESSION RULE, because that is what makes a mode SWITCH take
+// effect.
 func TestEveryModeSupersedesItsEarlierProse(t *testing.T) {
 	for _, mode := range everyMode {
 		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry(), "")
@@ -421,10 +381,7 @@ func TestEveryModeSupersedesItsEarlierProse(t *testing.T) {
 // nothing else (Brainstorm), the user is in the loop (Iteration), and the worker never sees the conversation
 // (Quick Work).
 
-// integrationMapBlock returns the SHARED block's text so a test can assert on it in ISOLATION. The rest of a
-// persona mentions Orchicon's own components legitimately — the platform primer names the adapter, the model
-// question names a registered adapter kind — so a part-agnostic assertion has to be scoped to the block rather
-// than to the whole prompt, or it fails on text that is right.
+// integrationMapBlock returns the SHARED block's text so a test can assert on it in ISOLATION.
 func integrationMapBlock(t *testing.T, prompt string) string {
 	t.Helper()
 	const head = "## Integration completeness — draw the map, then close it"
@@ -444,9 +401,10 @@ func integrationMapBlock(t *testing.T, prompt string) string {
 func TestEveryModeCarriesTheIntegrationMapContract(t *testing.T) {
 	for _, mode := range everyMode {
 		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry(), "")
+		// THE CONTRACT, NOT THE NUMBERING.
 		for _, want := range []string{
-			"### 1. Draw the map BEFORE you write anything",
-			"### 2. Close the map — no half-realized work",
+			"Draw the map first",
+			"Then close it",
 			"What it depends on",
 			"What depends on it",
 			"What must LEARN about it",
@@ -462,12 +420,8 @@ func TestEveryModeCarriesTheIntegrationMapContract(t *testing.T) {
 	}
 }
 
-// THE VOCABULARY IS PART-AGNOSTIC — systems design, architecture and UI/UX, never Orchicon's own members.
-//
-// The operator: "people will be using Orchicon to build out many projects, not just Orchicon itself, so the
-// wording needs to be a bit more agnostic and grounded in systems design, systems architecture, and UI/UX design
-// rather than calling out specific components." A rule that named the instance would teach a project with no
-// adapters nothing, so the INSTANCE is asserted ABSENT and the PATTERN's vocabulary asserted present.
+// THE VOCABULARY IS PART-AGNOSTIC — systems design, architecture and UI/UX, never Orchicon's own
+// members.
 func TestIntegrationMapSpeaksSystemsDesignNotOrchiconComponents(t *testing.T) {
 	for _, mode := range everyMode {
 		block := integrationMapBlock(t, BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry(), ""))
@@ -481,11 +435,12 @@ func TestIntegrationMapSpeaksSystemsDesignNotOrchiconComponents(t *testing.T) {
 		}
 		// The systems/architecture half.
 		for _, want := range []string{
-			"registries and dispatch tables",
-			"configuration defaults",
+			"registries",
+			"dispatch tables",
+			"config defaults",
 			"migrations",
-			"the API/wire contract at each boundary",
-			"the tests that assert each",
+			"wire contract",
+			"tests that assert each",
 		} {
 			if !strings.Contains(block, want) {
 				t.Errorf("%s: the shared block is missing the systems-design vocabulary %q", mode, want)
@@ -493,9 +448,9 @@ func TestIntegrationMapSpeaksSystemsDesignNotOrchiconComponents(t *testing.T) {
 		}
 		// The UI/UX half — what makes the rule apply to a design or front-end project, not only a back end.
 		for _, want := range []string{
-			"loading, empty, error, partial and permission-denied",
-			"design-system primitives and tokens",
-			"keyboard, focus, resize",
+			"loading, empty, error, partial, permission-denied",
+			"design-system primitives",
+			"keyboard, focus and resize",
 			"A user-facing element without its states is not a feature",
 		} {
 			if !strings.Contains(block, want) {
@@ -506,10 +461,6 @@ func TestIntegrationMapSpeaksSystemsDesignNotOrchiconComponents(t *testing.T) {
 }
 
 // THE SHARED BLOCK IS SHARED — byte-for-byte identical in all three modes — and the TAILS DIFFER.
-//
-// Two halves of one design decision, so both are asserted together: a single function is what stops the rule
-// drifting and stops its tokens being paid three times, and a mode-specific tail is what keeps the PLACEMENT
-// rule (brief / reply / dispatch brief) from collapsing into one generic statement.
 func TestTheIntegrationMapBlockIsSharedAndThePlacementTailsAreNot(t *testing.T) {
 	var first string
 	for _, mode := range everyMode {
@@ -604,5 +555,33 @@ func TestQuickWorkPutsTheMapInTheBriefAndTheWorkerPrompt(t *testing.T) {
 			t.Errorf("quick work is missing %q — the dispatched worker never sees this conversation, so the brief "+
 				"and its own prompt are the only places the map can live", want)
 		}
+	}
+}
+
+// TestBrainstormWritesVerifiableAcceptanceCriteria pins the authoring half of the verification
+// feature.
+func TestBrainstormWritesVerifiableAcceptanceCriteria(t *testing.T) {
+	prompt := BuildSystemPrompt(modeBrainstorm, db.AgentConfigRow{}, &ToolRegistry{}, "")
+
+	for _, want := range []string{
+		// The authoring contract.
+		"WRITE ACCEPTANCE CRITERIA THAT CAN BE ANSWERED WITH EVIDENCE",
+		"AC REPORT",
+		// A worked contrast, because an abstract instruction to "be specific" is what we already had.
+		"weak:",
+		"strong:",
+		// The gate disclosure.
+		"`.orchicon/verify`",
+		"UNVERIFIED",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("Brainstorm's drafting rules must carry %q — otherwise it writes items the platform cannot verify", want)
+		}
+	}
+
+	// The numbering instruction matters mechanically: the AC REPORT parser keys on AC1/AC2, so criteria
+	// must be numbered for a worker to answer them in the form the platform reads.
+	if !strings.Contains(prompt, "Number them") {
+		t.Error("Brainstorm must tell the model to number acceptance criteria — the AC REPORT contract keys on the number")
 	}
 }

@@ -1,37 +1,10 @@
-// Package dock implements the always-present bottom chat composer: a real
-// bordered box (Composer 2.0) wrapping a bubbles/textarea that grows from
-// MinInputRows to MaxInputRows rows, inside which the context chip, the
-// notice/error strip, and a persistent affordance row (what Enter does,
-// the newline chord, how to open the command palette) are rendered. The
-// dock also owns bracketed-paste handling, the configurable newline keys
-// (alt+enter default, leading-backslash+enter alternative), and the draft
-// buffer (restored after a failed send).
-//
-// SHIFT+ENTER IS NOT HANDLED HERE, because it never arrives here as a key. Its
-// handling lives one layer down, in internal/tui/input: the sequence a terminal
-// sends for it is rewritten to the alt+enter chord as input is read, so the
-// branch below is what actually runs.
-//
-// THE PREMISE OF AN EARLIER COMMENT HERE WAS WRONG. It claimed Shift+Enter cannot
-// be told apart from Enter at all, because a legacy terminal encodes the Ctrl and
-// Alt modifiers on Enter as an ESC prefix but encodes SHIFT not at all. The first
-// half is true — that is why alt+enter arrives as KeyEnter{Alt:true} — but the
-// second half is not, and it is worth recording so this is not "re-fixed" the same
-// wrong way. Konsole 26.08 sends ESC O M (the legacy keypad-Enter encoding) for
-// Shift+Enter, so the bytes DO carry the distinction. What was missing was not a
-// protocol but DECODING: bubbletea v1.3.10 knows no ESC O M sequence, so it splits
-// those three bytes into alt+O and M, and the composer inserts the literal text
-// "OM".
-//
-// So this is fixed without the bubbletea v2 upgrade that comment prescribed, and
-// without a dock change: rewrite the sequence to a chord the dock already handles.
-// The kitty / CSI-u caveat still stands for terminals that use that protocol — a
-// program must REQUEST it at startup and this bubbletea cannot — but it was never
-// the whole story, and it is not the encoding Konsole uses.
+// Package dock implements the always-present bottom chat composer: a real bordered box (Composer
+// 2.0) wrapping a bubbles/textarea that grows from MinInputRows to MaxInputRows rows.
 package dock
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 
@@ -41,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/beardedparrott/orchicon/internal/chatlimits"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
@@ -51,43 +25,73 @@ type NewlineMode string
 const (
 	NewlineAltEnter       NewlineMode = "alt+enter"
 	NewlineBackslashEnter NewlineMode = "backslash-enter"
-	NewlineBoth           NewlineMode = "both"
+	// Windows Terminal emits no distinct VT sequence for it by default.
+	NewlineCtrlJ NewlineMode = "ctrl+j"
+	NewlineBoth  NewlineMode = "both"
 )
 
 // ParseNewlineMode maps a config string to a NewlineMode (default
 // alt+enter on anything else).
 func ParseNewlineMode(s string) NewlineMode {
-	switch NewlineMode(s) {
-	case NewlineBackslashEnter:
+	switch NewlineMode(strings.ToLower(strings.TrimSpace(s))) {
+	case NewlineBackslashEnter, "backslash+enter", "\\+enter":
 		return NewlineBackslashEnter
-	case NewlineBoth:
+	case NewlineCtrlJ, "ctrl-j", "ctrlj":
+		return NewlineCtrlJ
+	case NewlineAltEnter:
+		return NewlineAltEnter
+	case NewlineBoth, "all":
 		return NewlineBoth
 	default:
-		return NewlineAltEnter
+		// AN UNRECOGNISED VALUE FALLS BACK TO THE PLATFORM DEFAULT, not to alt+enter.
+		return DefaultNewlineMode()
 	}
 }
 
-// Composer geometry (Composer 2.0). The old dock was a single unbordered
-// row; the box now carries a border, inner padding, a persistent
-// affordance row, and grows with the buffer.
+// ChordReachesOrch reports whether a newline mode's chord can actually be DELIVERED on this
+// platform.
+func ChordReachesOrch(mode NewlineMode) bool { return chordReachesOrchFor(mode, runtime.GOOS) }
+
+// The Windows console decoder maps VK_RETURN to KeyEnter reading ONLY Alt — it never consults Shift
+// — so no terminal binding can make it arrive distinct.
+func chordReachesOrchFor(mode NewlineMode, goos string) bool {
+	if goos != "windows" {
+		return true
+	}
+	switch mode {
+	case NewlineCtrlJ:
+		return true
+	case NewlineAltEnter, NewlineBoth:
+		// NewlineBoth's FIRST named chord is ctrl+j, so it still yields a working chord on Windows; but the mode
+		// as a value is not the recommended one there, and mentioning alt+enter in the hint would mislead.
+		return mode == NewlineBoth
+	default:
+		// backslash-enter.
+		return true
+	}
+}
+
+// DefaultNewlineMode is the newline chord a profile gets when it has not chosen one.
+func DefaultNewlineMode() NewlineMode { return defaultNewlineModeFor(runtime.GOOS) }
+
+// defaultNewlineModeFor is DefaultNewlineMode's decision, with the platform injected so it is testable from any
+// host.
+func defaultNewlineModeFor(goos string) NewlineMode {
+	if goos == "windows" {
+		return NewlineCtrlJ
+	}
+	return NewlineAltEnter
+}
+
+// Composer geometry (Composer 2.0).
 const (
 	// MinInputRows is the composer's default input height.
 	MinInputRows = 3
-	// MaxInputRows is the ceiling used when the shell has NOT told the dock how tall
-	// the viewport is — a dock built in isolation (a unit test, an embedder). The real
-	// ceiling is DERIVED from the viewport (see maxInputRows), because a fixed one is
-	// wrong in both directions: eight rows is a lot on a short terminal and far too
-	// few for a long prompt or a pasted block on a tall one.
-	//
-	// The operator, on a long prompt: "Remove the cap." Removing it outright is not
-	// possible — the composer shares the screen with the transcript and the panes, and
-	// a buffer of a thousand lines cannot have a thousand rows of composer. So the
-	// fixed cap is replaced by the space the viewport can spare, which leaves the
-	// screen above it a usable minimum and grows without limit on a bigger terminal.
+	// MaxInputRows is the ceiling used when the shell has NOT told the dock how tall the viewport is —
+	// a dock built in isolation (a unit test, an embedder).
 	MaxInputRows = 8
-	// minContentRows is the room the composer must leave for the screen above it: it
-	// grows into the space that is going spare, never into the space the transcript or
-	// the panes are using.
+	// minContentRows is the room the composer must leave for the screen above it: it grows into the
+	// space that is going spare, never into the space the transcript or the panes are using.
 	minContentRows = 6
 	// boxChrome is the box's horizontal chrome: 2 border cells + 2 padding
 	// cells on each side.
@@ -102,46 +106,35 @@ type Model struct {
 	Focused bool
 	Chip    string // context chip (what outgoing messages inject)
 	Notice  string // status line (stream state, pointers)
+	// charLimit is the message bound this composer feeds (SetCharLimit); 0 disables the near-limit counter.
+	charLimit int
 	// replyInFlight drives the STOP affordance: while a turn is streaming, the affordance row offers
-	// ctrl+y — the operator's "we need a stop button/control key + hint in composer that can interrupt
-	// the agent mid flight". It is DERIVED from the chat controller's own streaming state by the shell
-	// (SetReplyInFlight), so the row cannot advertise a dead key after the reply ends.
+	// ctrl+y — the operator's "we need a stop button/control key + hint in composer that can interrupt.
 	replyInFlight bool
-	Err           string // inline error strip (themed red)
-	Width         int
-	Height        int // allocated rows (set by the shell)
-	// viewportRows is the WHOLE terminal height, set by the shell each layout. The
-	// composer's growth ceiling is derived from it (maxInputRows) rather than being a
-	// constant, because how tall the composer may get depends on how much screen there
-	// is. 0 means "not told", and MaxInputRows is then the fallback.
+	// stopRunHint, when non-empty, is the ACTIVE SCREEN's stop chord — advertised while the operator is
+	// looking at a running item/run, so the composer names the key that stops it.
+	stopRunHint string
+	// abortRunHint is the RUN-level abort chord (AbortWorkflow), advertised while the active screen
+	// holds a live run.
+	abortRunHint string
+	Err          string // inline error strip (themed red)
+	Width        int
+	Height       int // allocated rows (set by the shell)
+	// viewportRows is the WHOLE terminal height, set by the shell each layout.
 	viewportRows int
 	Newlines     NewlineMode
 
-	// Context is the ACTIVE screen's shortcut list (the shell derives it from the
-	// screen's HintLine), rendered at the head of the affordance row so the
-	// guidance always names what the current page can do.
+	// Context is the ACTIVE screen's shortcut list (the shell derives it from the screen's HintLine).
 	Context string
 
-	// Stats is the session stat strip (ask model · context · tokens · cache ·
-	// cost), rendered RIGHT-ALIGNED on the box's bottom row — the operator's
-	// "bottom right corner of the chat box". Mode is the persona pill rendered
-	// immediately to its right, mirroring where the GUI puts its mode dropdown
-	// (the stats sit BEFORE it). Both are set by the shell.
+	// Stats is the session stat strip (ask model · context · tokens · cache · cost), rendered
+	// RIGHT-ALIGNED on the box's bottom row — the operator's "bottom right corner of the chat box".
 	Stats string
 	Mode  string
-	// Fullsend is the FULLSEND indicator, rendered immediately to the LEFT of the mode pill
-	// (mirroring the GUI, which places its fullsend dropdown left of its mode dropdown).
-	//
-	// IT IS EMPTY WHEN OFF, and that is the design rather than an optimisation: FULLSEND is the
-	// ABSENCE of asking, so there is nothing to draw while the gate is doing its job. A
-	// permanently-present "FULLSEND OFF" token would compete for attention on every frame, and
-	// the whole point is that the ON state is unmissable.
+	// Fullsend is the FULLSEND indicator, rendered immediately to the LEFT of the mode pill (mirroring
+	// the GUI, which places its fullsend dropdown left of its mode dropdown).
 	Fullsend string
 	// Model is the ask model ref, rendered LEFT-aligned on the same stat row.
-	// It is deliberately NOT part of Stats: prefixing the ref to the right-aligned
-	// numbers made the row longer than the pane, so the tail (cost, and part of
-	// the cache figure) was clipped off the edge. Keeping the ref at the left
-	// mirrors the GUI, where the model is its own chip beside the stats.
 	Model string
 
 	// sendRequest is a non-nil callback when Enter produced a send; the
@@ -151,25 +144,15 @@ type Model struct {
 	// RestoreDraft (a failed send puts the message back in the box).
 	lastSent string
 
-	// blinkStart is the textarea's focus command, captured when the dock takes
-	// focus. It STARTS the caret's blink loop, so it must reach the runtime —
-	// discarding it (as `_ = m.ta.Focus()` did) left the caret frozen solid and
-	// the operator unable to tell the composer held focus. It is handed out
-	// with the next Update (see the defer there) rather than returned from
-	// Focus, so the focus path needs no command plumbing.
+	// blinkStart is the textarea's focus command, captured when the dock takes focus.
 	blinkStart tea.Cmd
 
-	// pastePathHook, when set, is offered every BRACKETED PASTE before it is inserted: it returns a command
-	// when the pasted text is a FILE PATH it wants to attach, and nil to let the paste insert as text.
-	//
-	// A hook rather than dock logic because the SHELL owns the attachment set and does the I/O — the dock is
-	// a textarea and knows nothing about files. See the k.Paste case for the gesture this serves.
+	// pastePathHook, when set, is offered every BRACKETED PASTE before it is inserted: it returns a
+	// command when the pasted text is a FILE PATH it wants to attach.
 	pastePathHook func(text string) tea.Cmd
 
-	// selectAll marks the WHOLE composer as selected, so the operator can copy it all or throw it away in
-	// one gesture. bubbles' textarea has NO selection model (v1.0.0: no Select/SelectAll, no selection
-	// state at all), so this is the composer's own: the shell copies the buffer on the way in, and the next
-	// replacing key clears it on the way out. See selectAllKey.
+	// selectAll marks the WHOLE composer as selected, so the operator can copy it all or throw it away
+	// in one gesture.
 	selectAll bool
 }
 
@@ -206,19 +189,16 @@ func (m *Model) ClearSelectAll() { m.selectAll = false }
 // New builds the dock.
 func New() Model {
 	ta := textarea.New()
-	// No placeholder: the box shows a plain blinking cursor instead of hint
-	// text. The hints live on the affordance row below, so the placeholder was
-	// redundant — and bubbles takes a SEPARATE view path for an empty value
-	// with a placeholder, which rendered differently from the typed state.
+	// No placeholder: the box shows a plain blinking cursor instead of hint text.
 	ta.Placeholder = ""
 	ta.Prompt = ""
 	ta.CharLimit = 0
 	ta.ShowLineNumbers = false
-	m := Model{ta: ta, Newlines: NewlineAltEnter}
-	// themeStyles pins every textarea cell to the box's surface so no cell can
-	// be left unpainted, and makes the caret a visible accent block. Called at
-	// construction and again after a theme switch (theme.Use re-derives the
-	// package styles, but these are captured per-render).
+	// THE PLATFORM DEFAULT, not alt+enter: on Windows that chord belongs to Windows Terminal, so a dock built
+	// without an explicit profile setting must not default to one that cannot work (see NewlineCtrlJ).
+	m := Model{ta: ta, Newlines: DefaultNewlineMode()}
+	// themeStyles pins every textarea cell to the box's surface so no cell can be left unpainted, and
+	// makes the caret a visible accent block.
 	m.themeStyles()
 	_ = m.ta.Focus() // safe: textarea always lets you re-focus
 	m.resizeTa()
@@ -229,19 +209,8 @@ func New() Model {
 // The shell calls it after /theme so the box never keeps the old theme.
 func (m *Model) ApplyTheme() { m.themeStyles() }
 
-// styledTa returns the textarea with this theme's styles applied and the
-// ACTIVE-style pointer re-resolved.
-//
-// Two bubbles details make this necessary, and both produced visible bugs:
-//
-//   - EndOfBuffer defaults to a FOREGROUND-only style, and bubbles renders the
-//     cursor line's TRAILING PADDING with that style and nothing else. With no
-//     background on those cells they render on the terminal's own background —
-//     the black band that appeared the moment the operator typed.
-//   - Style resolution goes through an unexported `style` POINTER that Focus()
-//     /Blur() re-point. Assigning the Style structs alone can leave the pointer
-//     on a stale copy, so the assignment is followed by Focus()/Blur() to make
-//     bubbles re-resolve it against the styles just set.
+// styledTa returns the textarea with this theme's styles applied and the ACTIVE-style pointer
+// re-resolved.
 func (m *Model) styledTa() textarea.Model {
 	ta := m.ta
 	base := lipgloss.NewStyle().Background(theme.ComposerFill).Foreground(theme.Text)
@@ -265,34 +234,11 @@ func (m *Model) styledTa() textarea.Model {
 	ta.FocusedStyle.LineNumber = dim
 	ta.BlurredStyle.LineNumber = dim
 
-	// THE CARET. theme.ComposerCursor is written PRE-REVERSED because bubbles reverses it again before
-	// painting (`m.Style.Inline(true).Reverse(true).Render(char)`), so the style's FOREGROUND becomes the
-	// block and its BACKGROUND becomes the character. Read that assignment before changing this line: the
-	// obvious-looking `Background(accent).Foreground(Bg)` is what made the cursor a black block on every dark
-	// theme, which is the operator's report.
-	//
-	// TextStyle is what bubbles uses while the caret is BLINKING — i.e. the frames where it is hidden — so it
-	// is the ordinary line style: the character must not vanish when the blink is off.
+	// THE CARET.
 	ta.Cursor.Style = theme.ComposerCursor
 	ta.Cursor.TextStyle = base
 
-	// THE DOCK OWNS THE CARET'S BLINK LOOP. See dockBlinkTick for why: the library
-	// starts a NEW blink timer every time the cursor MOVES (every keystroke, backspace and
-	// arrow key), cancelling the previous one — whose command then returns immediately, so
-	// each of those keys produced a second, pointless message and a second full-screen
-	// repaint. Putting the cursor in CursorStatic is what stops the library from minting:
-	// its move handler only re-arms when the mode IS CursorBlink.
-	//
-	// THE CARET STILL RENDERS AND STILL BLINKS. cursor.View() does not consult the mode at
-	// all — it paints the reversed block whenever Blink is false — so the mode here decides
-	// only who owns the TIMER, not whether a caret is drawn.
-	//
-	// That is verified by READING the library rather than by a test, and the reason is worth
-	// recording: textarea.View has a VALUE receiver, so its m.Cursor.SetChar(...) mutates its
-	// own copy — the caret's character is unobservable from the model after a render. And with
-	// the colour profile stripped (as in tests) the caret is byte-identical to the text it
-	// sits on. A test asserting "the caret is drawn" would therefore have to assert something
-	// it cannot see.
+	// THE DOCK OWNS THE CARET'S BLINK LOOP.
 	ta.Cursor.SetMode(cursor.CursorStatic)
 
 	// Re-resolve the active style pointer against what we just assigned.
@@ -333,9 +279,7 @@ func (m *Model) SetValue(s string) {
 // Value returns the composer buffer.
 func (m *Model) Value() string { return m.ta.Value() }
 
-// RestoreDraft puts the last sent text back into the box after a failed
-// send. It never clobbers text the operator has typed since, and returns
-// true only when a draft was actually restored.
+// RestoreDraft puts the last sent text back into the box after a failed send.
 func (m *Model) RestoreDraft() bool {
 	if m.lastSent == "" || strings.TrimSpace(m.ta.Value()) != "" {
 		return false
@@ -344,23 +288,16 @@ func (m *Model) RestoreDraft() bool {
 	return true
 }
 
-// boxContentCol is the box's left chrome before anything is painted inside it: one border cell plus the
-// ComposerBox style's two cells of horizontal padding. The prompt (`❯ `) then sits before the text on EVERY
-// input row — continuation rows are indented to match — so the text always starts promptWidth further right.
+// boxContentCol is the box's left chrome before anything is painted inside it: one border cell plus
+// the ComposerBox style's two cells of horizontal padding.
 const boxContentCol = 1 + 2
 
 // Caret reports the caret's line and column.
-//
-// Exported for the SHELL's tests: the caret is placed from geometry the shell computes (where the dock starts
-// in the frame), so asserting that a click landed correctly needs to read it back from outside this package.
 func (m *Model) Caret() (line, col int) {
 	return m.ta.Line(), m.ta.LineInfo().ColumnOffset
 }
 
 // TextOrigin is the dock row and column at which the input's TEXT begins.
-//
-// Both halves are derived from the render rather than guessed: the box paints its top border first, the chip
-// row (when there is one) sits above the input inside the box, and the prompt precedes the text.
 func (m *Model) TextOrigin() (row, col int) {
 	row = 1 // the box's top border
 	if m.Chip != "" {
@@ -374,15 +311,6 @@ func (m *Model) TextOrigin() (row, col int) {
 type caretRow struct{ line, start, end int }
 
 // goToTop walks the cursor to the very FIRST visual row (line 0, row offset 0).
-//
-// IT IS NOT CursorStart(), and that cost a round trip to find out: `CursorStart` only calls `SetCursor(0)`, so
-// it moves the cursor to the start of the LINE IT IS ALREADY ON and leaves `row` untouched. A walk that began
-// with it therefore started wherever the operator's caret happened to be — one row of map for a three-line
-// draft, and a click that landed at the end of the buffer.
-//
-// The stop condition is the ROW OFFSET as well as the line, because `CursorUp` within a soft-wrapped line
-// moves to the previous VISUAL row and leaves `Line()` unchanged; stopping on an unchanged line would end the
-// walk halfway up a wrapped line.
 func (m *Model) goToTop() {
 	for i := 0; i < walkLimit; i++ {
 		li := m.ta.LineInfo()
@@ -398,9 +326,7 @@ func (m *Model) goToTop() {
 	}
 }
 
-// walkLimit bounds every cursor walk in this file. It is a guard, not an expectation: one iteration per visual
-// row, so it is generous by orders of magnitude for any real prompt, and a widget that somehow never reports a
-// move ends the walk rather than spinning.
+// walkLimit bounds every cursor walk in this file.
 const walkLimit = 100000
 
 // caretRows enumerates the input's visual rows by WALKING THE TEXTAREA'S OWN CURSOR, and restores the cursor
@@ -539,13 +465,7 @@ func (m *Model) caretRows() []caretRow {
 		}
 	}
 
-	// Restore by ROW INDEX, which the map itself tells us. Walking back by line alone is not enough: a
-	// soft-wrapped line spans several rows and `CursorUp` moves between them without `Line()` changing, so a
-	// "get back to line N" restore can land on the wrong row of the right line.
-	//
-	// THE LAST MATCHING ROW WINS, because that is the row the WIDGET considers the caret to be on at a row
-	// boundary: its own `LineInfo` reports RowOffset i+1 when the column sits exactly at a row's end, i.e. the
-	// caret belongs to the FOLLOWING row.
+	// Restore by ROW INDEX, which the map itself tells us.
 	saveRow := 0
 	for i, r := range rows {
 		if r.line == saveLine && saveCol >= r.start && saveCol <= r.end {
@@ -561,9 +481,6 @@ func (m *Model) caretRows() []caretRow {
 }
 
 // runeAtCell returns the rune index within row r that a click `cell` cells into the row lands on.
-//
-// It accumulates DISPLAY WIDTH rather than counting runes, so a line containing double-width characters puts
-// the caret under the glyph the operator actually clicked instead of at half its position.
 func (m *Model) runeAtCell(r caretRow, cell int) int {
 	if cell <= 0 {
 		return r.start
@@ -585,28 +502,8 @@ func (m *Model) runeAtCell(r caretRow, cell int) int {
 	return idx
 }
 
-// ClickAt places the caret at a click inside the composer, in DOCK coordinates (the shell converts from the
-// frame, since only it knows where the dock starts). It reports whether the click was one it could place.
-//
-// The operator: "I also just realized you can't use your mouse in the composer to change the position of your
-// cursor." The gesture cannot come from the terminal: orch runs with tea.WithMouseCellMotion(), so the
-// terminal hands every press to the program instead of placing the caret itself. Selecting text and placing a
-// caret are the same gesture at that level, so the app has to do both — the selection lives in the shell
-// (clipboard.go) and the caret belongs here, next to the widget that owns it.
-//
-// IT PLACES THE CARET ON WRAPPED CONTENT TOO, which it did not. The previous version refused the WHOLE click
-// if ANY line wrapped — so pasting a paragraph and then clicking anywhere did nothing at all, which is the
-// operator's report: "I pasted in a large amount of text and then tried clicking somewhere and it did not
-// move the cursor to that position." The refusal was honest (the old code could not resolve a wrapped row) and
-// useless (it disabled the gesture exactly when there was the most text to edit). See caretRows for how the
-// row map is now obtained EXACTLY.
-//
-// THE ONE CASE IT STILL REFUSES is a SCROLLED area whose offset cannot be observed from outside the widget
-// (`m.viewport` is unexported and its offset is history-dependent). Two states of that case ARE resolvable
-// and are handled: content that FITS (offset necessarily zero) and content whose caret sits at the END of the
-// buffer — where typing and pasting leave it, and which makes the widget pin the caret to the bottom row,
-// fixing the offset at `total - height`. The rest is refused rather than guessed at, because a caret placed on
-// a guess is worse than one that stayed put: the operator cannot tell it was a guess.
+// ClickAt places the caret at a click inside the composer, in DOCK coordinates (the shell converts
+// from the frame, since only it knows where the dock starts).
 func (m *Model) ClickAt(x, y int) bool {
 	originRow, originCol := m.TextOrigin()
 	vis := y - originRow
@@ -634,10 +531,7 @@ func (m *Model) ClickAt(x, y int) bool {
 		return true
 	}
 
-	// Walk to the clicked row and drop the caret `runeAtCell` into it. Walking is how the row is reached
-	// exactly: `CursorDown` moves one visual row and lands at that row's start, so `n` steps puts the caret at
-	// the beginning of visual row `n` whatever the wrapping is. The walk starts from the TOP — see goToTop for
-	// why that is not `CursorStart`.
+	// Walk to the clicked row and drop the caret `runeAtCell` into it.
 	m.goToTop()
 	for i := 0; i < target; i++ {
 		m.ta.CursorDown()
@@ -646,10 +540,8 @@ func (m *Model) ClickAt(x, y int) bool {
 	return true
 }
 
-// boxInner is the box's content width: the dock width minus the box chrome
-// (border + inner padding). An unset/too-narrow width falls back to a sane
-// default — the shell pads/truncates every frame row to the real width, so
-// the box can never open a hole in the h×w frame.
+// boxInner is the box's content width: the dock width minus the box chrome (border + inner
+// padding).
 func (m *Model) boxInner() int {
 	w := m.Width
 	if w < 24 {
@@ -672,16 +564,47 @@ func (m *Model) taWidth() int {
 	return w
 }
 
-// visualRows estimates the rows the wrapped buffer needs.
+// visualRows estimates the rows the wrapped buffer needs, so the box can grow as the operator
+// types.
 func (m *Model) visualRows() int {
-	tw := m.taWidth()
-	total := 0
-	for _, ln := range strings.Split(m.ta.Value(), "\n") {
-		rows := 1
-		if cells := lipgloss.Width(ln); cells > tw {
-			rows = (cells + tw - 1) / tw
+	return m.exactWrappedRows()
+}
+
+// exactWrappedRows asks the TEXTAREA for its real wrapped height instead of predicting it.
+func (m *Model) exactWrappedRows() int {
+	// THE WIDGET KNOWS ITS OWN HEIGHT, and it reports it for the CURSOR's line via LineInfo().Height.
+	probe := m.ta
+	probe.SetWidth(m.taWidth())
+
+	lines := strings.Split(m.ta.Value(), "\n")
+	if len(lines) <= 1 {
+		// The single-line case is the common one and the widget answers it exactly.
+		if h := m.ta.LineInfo().Height; h > 1 {
+			return h
 		}
-		total += rows
+		// An empty draft: one row.
+		if h := m.ta.LineInfo().Height; h > 0 {
+			return h
+		}
+		return 1
+	}
+
+	// Count the wrapped rows of a single line by handing it to the widget alone and reading its height.
+	rowOf := func(line string) int {
+		c := m.ta
+		c.SetWidth(m.taWidth())
+		c.SetHeight(probeRows)
+		c.SetValue(line)
+		// A fresh value parks the cursor at the end of the line, so Height is that line's wrapped height.
+		if h := c.LineInfo().Height; h > 0 {
+			return h
+		}
+		return 1
+	}
+
+	total := 0
+	for _, line := range lines {
+		total += rowOf(line)
 	}
 	if total < 1 {
 		total = 1
@@ -689,9 +612,12 @@ func (m *Model) visualRows() int {
 	return total
 }
 
-// InputRows is the number of input rows the box shows: at least MinInputRows,
-// growing with the buffer up to however many rows the viewport can spare
-// (maxInputRows; the textarea scrolls internally beyond that).
+// probeRows is the height given to the throwaway textarea copy when measuring the wrapped buffer: large
+// enough that the widget never needs to scroll, so every wrapped row is rendered and countable.
+const probeRows = 200
+
+// InputRows is the number of input rows the box shows: at least MinInputRows, growing with the
+// buffer up to however many rows the viewport can spare (maxInputRows.
 func (m *Model) InputRows() int {
 	n := m.visualRows()
 	if n < MinInputRows {
@@ -703,14 +629,8 @@ func (m *Model) InputRows() int {
 	return n
 }
 
-// maxInputRows is the tallest the input may grow: whatever the viewport can spare
-// once the shell's chrome, the box's own chrome and minContentRows are accounted for.
-//
-// THE ARITHMETIC MIRRORS app.contentHeight, which computes the content region as
-// `m.height - 4 - dock.Lines()`, where dock.Lines() is 2 border rows plus the input,
-// hint and notice rows (plus the chip when present). Solving that for a content region
-// of at least minContentRows gives the bound below, so the composer can grow freely and
-// still cannot starve the screen it sits under.
+// maxInputRows is the tallest the input may grow: whatever the viewport can spare once the shell's
+// chrome, the box's own chrome and minContentRows are accounted for.
 func (m *Model) maxInputRows() int {
 	if m.viewportRows <= 0 {
 		return MaxInputRows
@@ -740,17 +660,11 @@ func (m *Model) SetViewportRows(n int) {
 	m.resizeTa()
 }
 
-// maxHintRows caps the wrapped affordance row. The hint is context-driven (it
-// carries the active screen's shortcuts), so it can be very long — without a
-// cap the composer would grow a row at a time and eat the content region, which
-// is exactly what the layout test caught. Three rows is what the composer can
-// afford out of the screen's budget; anything beyond is marked with an ellipsis
-// rather than silently dropped, and "?" opens the full key list.
+// maxHintRows caps the wrapped affordance row.
 const maxHintRows = 3
 
-// hintLines is the affordance row's final rows: the segment-aware wrap, capped
-// at maxHintRows with a trailing ellipsis. HintRows and View both use it so the
-// reserved row count and the drawn rows can never disagree.
+// hintLines is the affordance row's final rows: the segment-aware wrap, capped at maxHintRows with
+// a trailing ellipsis.
 func (m *Model) hintLines() []string {
 	lines := kit2.WrapHint(m.Hint(), m.boxInner())
 	if len(lines) == 0 {
@@ -767,20 +681,14 @@ func (m *Model) hintLines() []string {
 // (see hintLines).
 func (m *Model) HintRows() int { return len(m.hintLines()) }
 
-// NoticeRows is how many rows the notice/error strip occupies at the current
-// width (0 when there is none).
-//
-// THE ERROR AND THE NOTICE BOTH GET ROWS, because they are DIFFERENT information: the error strip is a
-// sticky global failure (a subscription that cannot connect), the notice is the outcome of what the
-// operator just did. The strip used to render `Err` INSTEAD OF `Notice`, so ANY unrelated failure made the
-// acknowledgement of the operator's own action invisible.
-//
-// Measured while building the stop control (ctrl+y): the byte arrived, the route fired, the notice was
-// set — and nothing was painted, because an unrelated stream error (from a test plane that does not
-// implement every RPC) had taken the row. A control whose feedback depends on nothing else being wrong
-// is a control that appears broken at exactly the moment the operator needs it.
+// NoticeRows is how many rows the notice/error strip occupies at the current width (0 when there is
+// none).
 func (m *Model) NoticeRows() int {
-	return m.wrapRows(m.Err) + m.wrapRows(m.Notice)
+	n := m.wrapRows(m.Err) + m.wrapRows(m.Notice)
+	if m.charCounter() != "" {
+		n++
+	}
+	return n
 }
 
 // wrapRows is how many rows one strip message occupies at the current width.
@@ -795,11 +703,8 @@ func (m *Model) wrapRows(msg string) int {
 	return n
 }
 
-// Lines returns the rows the dock needs: the box's top+bottom border, the input
-// rows (InputRows), the affordance row (HintRows — more than one when it wraps)
-// and the chip / notice strips when present. The shell reserves exactly this many
-// rows (app.contentHeight) and normalizes the block to it
-// (normalizeBlockKeepTail).
+// Lines returns the rows the dock needs: the box's top+bottom border, the input rows (InputRows),
+// the affordance row (HintRows.
 func (m *Model) Lines() int {
 	h := 2 + m.InputRows() + m.HintRows() + m.NoticeRows()
 	if m.Chip != "" {
@@ -818,23 +723,15 @@ func (m *Model) StatsRows() int {
 	return 1
 }
 
-// statLine renders the bottom stat row: the ask model on the LEFT, and the stats
-// followed by the mode pill right-aligned against the box edge. The pill is the
-// CONTROL and the numbers are what the operator watches, so when the row is tight
-// the MODEL ref is sacrificed first.
+// statLine renders the bottom stat row: the ask model on the LEFT, and the stats followed by the
+// mode pill right-aligned against the box edge.
 func (m *Model) statLine(inner int) string {
 	mode := ""
 	if m.Mode != "" {
 		mode = "[" + m.Mode + "]"
 	}
-	// THE LAYOUT MATHS RUNS ON PLAIN STRINGS, and the styled form is assembled at the very
-	// end from the same pieces. Styling mid-calculation is how a width ends up measured on
-	// escape sequences rather than on cells — the bug that made an earlier pill's closing
-	// bracket disappear.
-	//
-	// ORDER: stats, then FULLSEND, then the mode pill — the same left-to-right order as the
-	// GUI's two dropdowns, so the operator reads the same two controls in the same places in
-	// either client.
+	// THE LAYOUT MATHS RUNS ON PLAIN STRINGS, and the styled form is assembled at the very end from the
+	// same pieces.
 	keep := ""
 	if m.Fullsend != "" {
 		keep = m.Fullsend
@@ -855,10 +752,8 @@ func (m *Model) statLine(inner int) string {
 	if right == "" && m.Model == "" {
 		return ""
 	}
-	// Keep the right-hand group whole where the pane allows: trim the STATS first, never the
-	// pill or the FULLSEND badge. Both of those are state the operator has to be able to read
-	// — one tells them what persona they are in, the other that Orchicon has stopped asking —
-	// while the numbers are what they watch. The controls survive; the readout gives way.
+	// Keep the right-hand group whole where the pane allows: trim the STATS first, never the pill or
+	// the FULLSEND badge.
 	if lipgloss.Width(right) > inner {
 		avail := inner - lipgloss.Width(keep) - 2
 		if avail < 4 {
@@ -885,9 +780,8 @@ func (m *Model) statLine(inner int) string {
 	if lipgloss.Width(left)+lipgloss.Width(right) > inner {
 		left = ""
 	}
-	// The row must never exceed `inner`: Pad TRUNCATES, so an overlong line loses
-	// its tail — which is how the pill's closing "] " disappeared. Guarantee the
-	// sum fits, then pad the gap (0 is a valid pad for an exact fit).
+	// The row must never exceed `inner`: Pad TRUNCATES, so an overlong line loses its tail — which is
+	// how the pill's closing "] " disappeared.
 	if lipgloss.Width(right) > inner {
 		right = ansi.Truncate(right, inner, "…")
 	}
@@ -895,10 +789,7 @@ func (m *Model) statLine(inner int) string {
 	if pad < 0 {
 		pad = 0
 	}
-	// THE ASSEMBLY. The FULLSEND badge and the mode pill are painted as their own segments so
-	// the badge can be a filled block; the rest of the row keeps the ordinary meta style. The
-	// badge is matched by value rather than by position because the stats ahead of it may have
-	// been truncated, and a badge the operator cannot see is worse than a tight row.
+	// THE ASSEMBLY.
 	if m.Fullsend == "" {
 		return theme.ListMeta.Render(left + strings.Repeat(" ", pad) + right)
 	}
@@ -916,20 +807,12 @@ func (m *Model) statLine(inner int) string {
 // Focus / Blur move keyboard focus into/out of the composer.
 func (m *Model) Focus() {
 	m.Focused = true
-	// Capture — do not discard — the commands that start the caret's loop and its own
-	// tick. Update hands them to the runtime with the next message.
-	//
-	// TWO COMMANDS, because the dock owns the blink now (see dockBlinkTick): the
-	// textarea's Focus() still sets the cursor's visible state, and dockBlinkTick starts
-	// the single timer that keeps toggling it.
+	// Capture — do not discard — the commands that start the caret's loop and its own tick.
 	m.blinkStart = tea.Batch(m.ta.Focus(), dockBlinkTick())
 }
 
-// TakeBlinkStart hands out (once) the command that starts the caret's blink loop,
-// captured when the dock took focus. Focus paths call this so the caret animates
-// from the moment the composer holds focus, rather than waiting for the operator's
-// first keystroke; Update also drains it (see the defer there) as a safety net for
-// any path that forgets.
+// TakeBlinkStart hands out (once) the command that starts the caret's blink loop, captured when the
+// dock took focus.
 func (m *Model) TakeBlinkStart() tea.Cmd {
 	c := m.blinkStart
 	m.blinkStart = nil
@@ -948,22 +831,47 @@ func (m *Model) SetError(s string) { m.Err = s }
 // SetNotice sets the status strip ("" clears).
 func (m *Model) SetNotice(s string) { m.Notice = s }
 
-// SendingAck is the transient ack the composer writes the instant Enter fires, so a send that produces no
-// visible reaction cannot be mistaken for a dead key (see the enter case in Update).
-//
-// IT IS A CONSTANT BECAUSE TWO PACKAGES NOW SPEAK ABOUT IT. The shell settles it when it learns the send
-// resolved, and a settle that cleared the strip UNCONDITIONALLY would wipe whatever the operator is being
-// told — a connection banner, a context-injection notice — so the shell clears this exact string and
-// nothing else. Spelling the text in two places is how one of them comes to disagree with the other.
+// SetCharLimit installs the message bound this composer feeds, so it can show a counter as the bound is
+// APPROACHED rather than only after a send is refused. 0 disables the counter.
+func (m *Model) SetCharLimit(n int) { m.charLimit = n }
+
+// charCounter is the near-limit counter's text, or "" when there is nothing to say.
+func (m *Model) charCounter() string {
+	if m.charLimit <= 0 {
+		return ""
+	}
+	n := len([]rune(m.ta.Value()))
+	if n < chatlimits.WarnAt {
+		return ""
+	}
+	s := groupDigits(n) + " / " + groupDigits(m.charLimit) + " characters"
+	if n > m.charLimit {
+		s += " — over the limit; trim before sending"
+	}
+	return s
+}
+
+// groupDigits renders 100000 as 100,000 so a six-figure count is readable at a glance.
+func groupDigits(n int) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+	var b strings.Builder
+	for i, r := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// SendingAck is the transient ack the composer writes the instant Enter fires, so a send that
+// produces no visible reaction cannot be mistaken for a dead key (see the enter case in Update).
 const SendingAck = "sending …"
 
 // SettleSendingAck clears the strip IF it still holds the send ack, reporting whether it did.
-//
-// WHY IT IS GUARDED. "Every terminal outcome must replace the ack" is the rule (see setChatError), and the
-// outcome is always written AFTER the ack — so a settle that arrived late (a turn ack racing a connection
-// banner) must not erase the more informative text. Unconditional clearing was survivable while the only
-// callers were failure paths; once completion settles it too, the guard is what keeps a banner that
-// arrived first.
 func (m *Model) SettleSendingAck() bool {
 	if m.Notice != SendingAck {
 		return false
@@ -972,9 +880,7 @@ func (m *Model) SettleSendingAck() bool {
 	return true
 }
 
-// SetReplyInFlight toggles the STOP affordance on the affordance row (see Hint). The shell sets it from
-// the chat controller's live streaming state, so the advertised chord and the running turn can never
-// disagree.
+// SetReplyInFlight toggles the STOP affordance on the affordance row (see Hint).
 func (m *Model) SetReplyInFlight(on bool) { m.replyInFlight = on }
 
 // resizeTa keeps the textarea width+height synced to the box.
@@ -986,9 +892,8 @@ func (m *Model) resizeTa() {
 // Update handles composer keys. Returns (consumed, cmd): consumed=false
 // means the shell should fall through (only when unfocused).
 func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
-	// The caret's blink loop starts from the command captured when focus was
-	// taken, and it has to be dispatched with WHATEVER this message produces.
-	// A deferred batch guarantees that no early return below can drop it.
+	// The caret's blink loop starts from the command captured when focus was taken, and it has to be
+	// dispatched with WHATEVER this message produces.
 	if start := m.blinkStart; start != nil {
 		m.blinkStart = nil
 		defer func() { cmd = tea.Batch(start, cmd) }()
@@ -1010,16 +915,10 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 		m.ta.Cursor.Blink = !m.ta.Cursor.Blink
 		return true, dockBlinkTick()
 	case tea.KeyMsg:
-		// ANY key makes the caret SOLID, which is what bubbles did on a cursor move
-		// (Blink=false) and what keeps it from blinking out mid-word — a caret that
-		// disappears while the operator is typing reads as lost focus.
+		// ANY key makes the caret SOLID, which is what bubbles did on a cursor move (Blink=false) and what
+		// keeps it from blinking out mid-word.
 		m.ta.Cursor.Blink = false
-		// THE ALL-SELECTED STATE GETS FIRST REFUSAL. While the whole composer is selected, the keys that
-		// would normally edit it REPLACE it — which is what "selected" means, and what makes the gesture
-		// useful (the operator asked to "easily copy or delete it all").
-		//
-		// Any OTHER key simply DROPS the selection and then behaves normally, so the state can never trap
-		// the operator: an arrow, a tab or a ctrl chord exits it and does what it always did.
+		// THE ALL-SELECTED STATE GETS FIRST REFUSAL.
 		if m.selectAll {
 			if handled, cmd := m.selectAllKey(k); handled {
 				return true, cmd
@@ -1027,49 +926,33 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 		}
 		switch {
 		case k.Paste:
-			// Bracketed paste: bubbletea collapses the byte sequence into
-			// one KeyMsg with embedded newlines — render verbatim, never
-			// send. textarea inserts it as-is.
-			//
-			// EXCEPT A PASTE THAT IS A FILE PATH. An operator who copies a file in their file manager
-			// and pastes it into this box produces exactly that text, and attaching the file is what they
-			// meant — inserting "/home/me/shot.png" as prose is not. The shell decides (it owns the
-			// attachment set and the I/O), so the paste is offered to it first and only inserted when it
-			// is not a path.
-			// A hook that is NOT INSTALLED must not be called: this is a nil func field, and docks are
-			// built in several places (including tests) that have no shell to install one — so the
-			// ungurded call panicked on the first bracketed paste of every such dock.
+			// Bracketed paste: bubbletea collapses the byte sequence into one KeyMsg with embedded newlines —
+			// render verbatim, never send.
 			if m.pastePathHook != nil {
 				if cmd := m.pastePathHook(string(k.Runes)); cmd != nil {
 					return true, cmd
 				}
 			}
 			return true, m.pasteCmd(k)
+		case k.Type == tea.KeyCtrlJ && (m.Newlines == NewlineCtrlJ || m.Newlines == NewlineBoth):
+			// NOTE: this branch is reached only when the key still HAS its ctrl+j identity here. THIS BRANCH
+			// MUST COME BEFORE THE enterKey ARMS.
+			m.insertNewline("ctrl+j")
+			return true, nil
 		case enterKey(k) && k.Alt:
-			if m.Newlines == NewlineAltEnter || m.Newlines == NewlineBoth {
+			if m.Newlines == NewlineAltEnter || m.Newlines == NewlineBoth || m.Newlines == NewlineCtrlJ {
+				// alt+enter still newlines wherever it is DELIVERED (Linux/macOS, or a Windows terminal whose
+				// bindings leave it alone).
 				m.insertNewline("alt+enter")
 				return true, nil
 			}
 			return true, m.requestSend()
+		case isCtrlJRune(k) && (m.Newlines == NewlineCtrlJ || m.Newlines == NewlineBoth):
+			// CTRL+J AS A CHARACTER, which is HOW WINDOWS DELIVERS IT.
+			m.insertNewline("ctrl+j")
+			return true, nil
 		case enterKey(k):
-			// NOTHING here may silently swallow a send. The composer's own hint
-			// documents the contract as "enter send · alt+enter newline", so any
-			// Enter variant that is not an explicitly configured newline chord
-			// SENDS.
-			//
-			// Three real cases made Enter appear dead, and two are fixed:
-			//  1. a "shift+enter inserts a newline" convenience the hint never
-			//     documented (removed here). It is BACK, but not as a branch in this
-			//     switch: the terminal's Shift+Enter sequence is rewritten to the
-			//     alt+enter chord as input is read (internal/tui/input), so it
-			//     arrives as the branch above;
-			//  2. Enter arriving as LF rather than CR — a different KeyType that
-			//     matched no branch here and no textarea keymap (handled by
-			//     enterKey).
-			// The notice below is the third: it makes "did the send branch run at
-			// all" observable from the UI. A key that produces neither a send nor
-			// a visible change is indistinguishable from a dead key, which is
-			// exactly how this took several rounds to pin down.
+			// NOTHING here may silently swallow a send.
 			if m.leadingBackslash() && (m.Newlines == NewlineBackslashEnter || m.Newlines == NewlineBoth) {
 				// A trailing lone backslash + Enter = newline (the escape
 				// hatch); strip the backslash and wrap.
@@ -1078,14 +961,8 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 				m.insertNewline("\\+enter")
 				return true, nil
 			}
-			// Ack the send BEFORE it happens: sendFromComposer replaces this with
-			// the outcome (context injected, an RPC error, or the conversation
-			// opening), so it can never linger as a false promise.
-			//
-			// An EMPTY buffer never reaches here by design: the shell claims
-			// Enter-with-an-empty-composer to open the active tab's menu
-			// (menuActivationKey, shell.go), so this branch only ever runs with
-			// something to send.
+			// Ack the send BEFORE it happens: sendFromComposer replaces this with the outcome (context
+			// injected, an RPC error, or the conversation opening), so it can never linger as a false promise.
 			m.Notice = SendingAck
 			return true, m.requestSend()
 		default:
@@ -1095,11 +972,7 @@ func (m *Model) Update(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 			return true, cmd
 		}
 	}
-	// A NON-key message (notably the textarea's cursor BlinkMsg) must still
-	// reach the textarea. Swallowing it froze the caret solid while the box
-	// held focus, so the operator had no way to tell where their keystrokes
-	// would land — "the cursor should blink when in the composer and focus is
-	// active so people know they truly have focus there."
+	// A NON-key message (notably the textarea's cursor BlinkMsg) must still reach the textarea.
 	ta, cmd := m.ta.Update(msg)
 	m.ta = ta
 	m.resizeTa()
@@ -1149,22 +1022,11 @@ func (m *Model) pasteCmd(k tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
-// enterKey reports whether a key IS the Enter key, whichever byte the terminal
-// sends for it.
-//
-// Enter does not always arrive as KeyEnter. Most terminals send CR (0x0D), which
-// bubbletea reports as KeyEnter — but some terminals and PTY configurations send
-// LF (0x0A) instead, and bubbletea reports THAT as KeyCtrlJ (keyLF), which is a
-// DIFFERENT KeyType. Nothing in this composer handled ctrl+j and nothing in the
-// textarea bound it either, so on such a terminal pressing Enter did literally
-// NOTHING: no send, no newline, no reaction at all — the operator's "enter is not
-// doing anything at all".
-//
-// The documented contract is "enter send", so both spellings of the key send.
-// Treating ctrl+j as Enter costs nothing real: it is unbound and undocumented here,
-// and "my Enter key does nothing" is a far worse failure than losing a chord
-// nobody can invoke through the UI. (KeyCtrlM is the same value as KeyEnter, so the
-// first case already covers it.)
+// enterKey reports whether a key IS the Enter key, whichever byte the terminal sends for it.
+func isCtrlJRune(k tea.KeyMsg) bool {
+	return k.Type == tea.KeyRunes && len(k.Runes) == 1 && k.Runes[0] == '\n'
+}
+
 func enterKey(k tea.KeyMsg) bool {
 	switch k.Type {
 	case tea.KeyEnter, tea.KeyCtrlJ:
@@ -1174,11 +1036,6 @@ func enterKey(k tea.KeyMsg) bool {
 }
 
 // insertNewline appends a newline instead of sending, and SAYS SO.
-//
-// The notice is not decoration: an Enter that produces neither a send nor a
-// visible change is indistinguishable from a dead key, which is exactly how a
-// terminal reporting its Enter as a modified key hid this for several rounds. The
-// chord that fired is named, so the next occurrence is diagnosable from the UI.
 func (m *Model) insertNewline(chord string) {
 	ta, _ := m.ta.Update(tea.KeyMsg{Type: tea.KeyEnter, Alt: false})
 	m.ta = ta
@@ -1189,9 +1046,7 @@ func (m *Model) insertNewline(chord string) {
 	m.Notice = "newline inserted (" + chord + ") — enter sends"
 }
 
-// leadingBackslash reports whether the buffer ends with a lone "\"
-// (newline-by-escape). A "\\" before "/" is the slash-escape and never
-// counts (the slash framework owns that path).
+// leadingBackslash reports whether the buffer ends with a lone "\" (newline-by-escape).
 func (m *Model) leadingBackslash() bool {
 	v := m.ta.Value()
 	return strings.HasSuffix(v, "\\") && !strings.HasSuffix(v, "\\\\")
@@ -1209,34 +1064,32 @@ func (m *Model) requestSend() tea.Cmd {
 	return nil
 }
 
-// Hint is the persistent affordance row: the ctrl+g focus chord FIRST (so it
-// survives truncation on a narrow pane), then the ACTIVE screen's shortcut
-// list (Context, set by the shell from that screen's HintLine), then the
-// composer's own chords.
+// Hint is the persistent affordance row: the ctrl+g focus chord FIRST (so it survives truncation on
+// a narrow pane), then the ACTIVE screen's shortcut list (Context.
 func (m *Model) Hint() string {
+	// THE HINT NAMES THE CHORD THIS PROFILE ACTUALLY USES.
 	nl := "alt+enter"
 	switch m.Newlines {
 	case NewlineBackslashEnter:
 		nl = "\\+enter"
+	case NewlineCtrlJ:
+		nl = "ctrl+j"
 	case NewlineBoth:
-		nl = "alt+enter or \\+enter"
+		nl = "ctrl+j or alt+enter"
 	}
-	// ctrl+d is named here because it is the ONLY way to open the diff sidebar from
-	// the keyboard, and it was invisible: the operator's "the shortcut advice in the
-	// composer is missing for ctrl+d to open/close the diff box".
-	//
-	// "text box" is shortened to "text" to make room, and that is not cosmetic: the
-	// affordance row is ONE LINE by contract (TestComposerBoxShowsHintAndChip asserts
-	// the box renders the whole hint unbroken), and at an 80-column terminal boxInner
-	// is 74 — the full wording with ctrl+d added measured 79 and wrapped, which pushed
-	// the affordance row out of the box entirely at 80x24. Measured: 75 with "text",
-	// which fits with headroom.
-	// STOP LEADS, immediately after the focus chord: while a reply is streaming it is the action the
-	// operator is looking for, and the row is truncated from the RIGHT on a narrow terminal (which is
-	// why ctrl+g is first). Derived from the live turn, never assumed.
+	// ctrl+d is named here because it is the ONLY way to open the diff sidebar from the keyboard, and
+	// it was invisible: the operator's "the shortcut advice in the composer is missing for ctrl+d.
 	parts := []string{"ctrl+g text"}
 	if m.replyInFlight {
 		parts = append(parts, "ctrl+y stop")
+	}
+	// THE RUN'S STOP COMES BEFORE THE REPLY'S, because when both are live the RUN is what the
+	// operator is trying to interrupt — and `ctrl+y` would only abort the chat turn.
+	if s := strings.TrimSpace(m.stopRunHint); s != "" {
+		parts = append(parts, s)
+	}
+	if s := strings.TrimSpace(m.abortRunHint); s != "" {
+		parts = append(parts, s)
 	}
 	parts = append(parts, "ctrl+d diff")
 	if s := strings.TrimSpace(m.Context); s != "" {
@@ -1249,11 +1102,16 @@ func (m *Model) Hint() string {
 // SetContext sets the active screen's shortcut list for the affordance row.
 func (m *Model) SetContext(s string) { m.Context = s }
 
-// View renders the composer as a bordered box: the context chip, the input
-// rows (the "❯ " prompt on the first), the notice/error strip, and the
-// persistent affordance row — all inside the box's inner padding. The
-// rendered block is exactly Lines() rows tall, which is the row budget the
-// shell reserves for it (baseView's normalizeBlockKeepTail).
+// SetStopRunHint advertises the active screen's "stop the running item" chord on the affordance
+// row.
+func (m *Model) SetStopRunHint(s string) { m.stopRunHint = strings.TrimSpace(s) }
+
+// SetAbortRunHint advertises the active screen's run-abort chord (AbortWorkflow). Empty
+// clears it. Set by the shell from the focused row, so it cannot outlive the live run.
+func (m *Model) SetAbortRunHint(s string) { m.abortRunHint = strings.TrimSpace(s) }
+
+// View renders the composer as a bordered box: the context chip, the input rows (the "❯ " prompt on
+// the first), the notice/error strip, and the persistent affordance row.
 func (m *Model) View() string {
 	m.resizeTa()
 	inner := m.boxInner()
@@ -1263,12 +1121,6 @@ func (m *Model) View() string {
 		rows = append(rows, theme.ListMeta.Render(fit("["+m.Chip+"]", inner)))
 	}
 	// WHILE THE WHOLE BUFFER IS SELECTED THE ROWS ARE PAINTED ON THE SELECTION FILL.
-	//
-	// The operator: "it DOES select all but it doesn't actually show the cursor highlight over all of the text,
-	// it just gives you a little message that the text is highlighted." The message was ALL there was: this
-	// loop rendered the buffer exactly as it does when nothing is selected, so the only evidence of ctrl+a was
-	// the notice strip. A selection you cannot see is a selection you cannot trust — and the next keystroke
-	// silently REPLACES the whole draft, which is a data-loss trap if the state was not visible.
 	selecting := m.selectAll
 	input := m.inputLines()
 	if selecting {
@@ -1276,9 +1128,7 @@ func (m *Model) View() string {
 	}
 	for i, l := range input {
 		if selecting {
-			// ONE UNIFORM FILL ACROSS THE ROW, prompt included and padded to the box's inner width. Nothing
-			// inside the selection competes for attention (no prompt colour, no caret): the fill IS the answer
-			// to "did ctrl+a do anything".
+			// ONE UNIFORM FILL ACROSS THE ROW, prompt included and padded to the box's inner width.
 			prefix := "  "
 			if i == 0 {
 				prefix = "❯ "
@@ -1287,9 +1137,8 @@ func (m *Model) View() string {
 			continue
 		}
 		if i == 0 {
-			// The dock paints the prompt on the first input row (the
-			// textarea's own prompt stays empty so wrapped rows are not
-			// re-prefixed); continuation rows are indented to match.
+			// The dock paints the prompt on the first input row (the textarea's own prompt stays empty so
+			// wrapped rows are not re-prefixed); continuation rows are indented to match.
 			rows = append(rows, theme.ListTitle.Render("❯ ")+l)
 			continue
 		}
@@ -1307,6 +1156,11 @@ func (m *Model) View() string {
 			rows = append(rows, theme.HintText.Render(l))
 		}
 	}
+	// THE COUNTER IS ONE ROW, and NoticeRows counts it, so the shell reserves it and the block stays
+	// exactly Lines() tall.
+	if counter := m.charCounter(); counter != "" {
+		rows = append(rows, m.counterRow(counter, inner))
+	}
 	// The affordance row WRAPS (capped) rather than truncating, so the important
 	// shortcuts stay readable on a narrow composer.
 	for _, l := range m.hintLines() {
@@ -1318,37 +1172,18 @@ func (m *Model) View() string {
 		rows = append(rows, sl)
 	}
 
-	// The box's own background must survive the inner rows' resets: the rows
-	// carry styled spans (prompt, hint, the textarea's own cursor styling),
-	// and each one's reset would otherwise switch the background off for the
-	// rest of the row — the "hole" the operator saw as soon as they typed.
-	// The repair takes the composer's BACKGROUND-ONLY fill: ComposerBox itself
-	// has a border + padding, and re-asserting through THAT injected border
-	// glyphs into the row. It is ComposerBg and NOT SurfaceBg because the two
-	// differ on a transparent theme, where the composer is unpainted and the panels
-	// are not — repairing through the surface would paint the box the one thing the
-	// theme exists to leave alone.
-	//
-	// On a transparent theme this repair is a NO-OP by construction: the style
-	// renders no sequence at all, and RepairAfterResets returns the row unchanged
-	// when there is nothing to re-assert.
+	// The repair takes the composer's BACKGROUND-ONLY fill: ComposerBox itself has a border + padding,
+	// and re-asserting through THAT injected border glyphs into the row.
 	return theme.RepairAfterResets(
 		theme.ComposerBox.Render(strings.Join(fitAll(rows, inner), "\n")),
 		theme.ComposerBg)
 }
 
-// inputLines returns exactly InputRows() rows of the input view (the
-// textarea renders its own height, but the box's row budget is never left
-// to it).
+// inputLines returns exactly InputRows() rows of the input view (the textarea renders its own
+// height, but the box's row budget is never left to it).
 func (m *Model) inputLines() []string {
 	n := m.InputRows()
-	// Read the textarea DIRECTLY — do NOT re-style per render. styledTa()
-	// re-points bubbles' unexported style pointer by calling Focus()/Blur(), and
-	// each of those returns a cursor.BlinkCmd() that CANCELS the in-flight blink
-	// and bumps its tag. Called from here it ran on every render, so it killed
-	// each pending tick and the caret never animated ("no blinking cursor").
-	// m.ta's style pointer is already correct between renders — themeStyles/
-	// ApplyTheme and Focus/Blur each re-point it — so the render path only reads.
+	// Read the textarea DIRECTLY — do NOT re-style per render.
 	src := strings.Split(m.ta.View(), "\n")
 	if len(src) > n {
 		src = src[:n]
@@ -1360,17 +1195,8 @@ func (m *Model) inputLines() []string {
 	return out
 }
 
-// selectionLines returns the composer's input rows as PLAIN text with NO caret, for the SELECTED state.
-//
-// IT RENDERS A BLURRED COPY OF THE TEXTAREA rather than the live one, because bubbles' caret is a
-// REVERSE-VIDEO BLOCK: left in place it punches a hole in the selection fill at the caret's cell and reads as
-// an artefact rather than as part of the selection. Blur() has NO return value, so unlike styledTa's Focus/Blur
-// there is no BlinkCmd for this to accidentally execute and cancel the caret's blink with (see inputLines for
-// the bug that caused) — and it is called on a COPY, so the dock's own textarea keeps its focus.
-//
-// The rows are ANSI-STRIPPED because the textarea paints every cell with its own base style (Foreground Text on
-// Background Surface). An outer fill would never show through that: the inner background wins cell by cell. What
-// survives the strip is exactly the characters the operator typed, which is what the caller then fills.
+// selectionLines returns the composer's input rows as PLAIN text with NO caret, for the SELECTED
+// state.
 func (m *Model) selectionLines() []string {
 	ta := m.ta
 	ta.Blur()
@@ -1446,14 +1272,30 @@ func PlaceholderText() string { return fmt.Sprintf("ask orchicon…") }
 // caret itself is unaffected, since cursor.View() renders from Blink alone.
 const dockBlinkSpeed = 530 * time.Millisecond // bubbles' cursor.BlinkSpeed default
 
-// dockBlinkMsg is our blink tick. It is a dock-local type rather than a cursor.BlinkMsg
-// for the same reason the library is "choosy" about its own: a fabricated tick carrying
-// bubbles' private id/blinkTag is always rejected, so this is the only shape that can
-// drive our loop.
+// dockBlinkMsg is our blink tick.
 type dockBlinkMsg struct{}
 
 // dockBlinkTick returns the one command that keeps the caret blinking: it fires after the
 // blink interval, and delivering dockBlinkMsg re-arms the next one.
 func dockBlinkTick() tea.Cmd {
 	return tea.Tick(dockBlinkSpeed, func(time.Time) tea.Msg { return dockBlinkMsg{} })
+}
+
+// overLimit reports whether the buffer is past the bound, i.e. a send would be refused.
+func (m *Model) overLimit() bool {
+	return m.charLimit > 0 && len([]rune(m.ta.Value())) > m.charLimit
+}
+
+// counterRow pads the counter to the box's inner width so it sits against the right edge — the conventional
+// place for a count — and keeps the row exactly as tall as the shell reserved for it.
+func (m *Model) counterRow(text string, inner int) string {
+	style := theme.HintText
+	if m.overLimit() {
+		style = theme.ErrorText
+	}
+	pad := inner - lipgloss.Width(text)
+	if pad < 0 {
+		pad = 0
+	}
+	return style.Render(strings.Repeat(" ", pad) + text)
 }

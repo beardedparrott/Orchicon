@@ -10,6 +10,20 @@
 # these release assets. When a phase adds new runtime components that
 # need to ship in the binary, update the build step here and verify the
 # install scripts still work end-to-end (AGENTS.md §Install Scripts).
+#
+# Every release also publishes a SHA256SUMS file covering the archives, and
+# BOTH installers verify the download against it before extracting — so a
+# truncated or substituted archive fails the install instead of being
+# installed. Generating the file is only half of it: the upload manifest is
+# the `find` in the Create GitHub Release step, and TestReleasePublishesChecksums
+# pins both halves.
+#
+# The macOS artifacts are signed and notarised ONLY when a Developer ID
+# certificate exists. The `sign-macos` job below is that dormant path, and its
+# header states the cost and the secret/variable names it needs. Until it is
+# enabled the release ships unsigned archives, and the installers' guidance
+# block is the supported story (the curl one-liner is Gatekeeper-clean; a
+# browser download needs one `xattr` command).
 
 name: Release
 
@@ -85,14 +99,27 @@ jobs:
           - os: darwin
             arch: arm64
             archive: tar.gz
-          # NO WINDOWS TARGETS, deliberately — nothing consumes them. On Windows the whole stack
-          # runs inside WSL2 (the runtime layer is POSIX-only; see ARCHITECTURE.md's platform note)
-          # and scripts/install.ps1 installs the LINUX binary into the distro, so a Windows zip was
-          # ~60 MB built, uploaded and published for nobody — and it is the first thing a Windows user
-          # is *not* supposed to download. The `EXT=".exe"` branches below are kept inert so that
-          # re-adding a target is a one-line change rather than a rediscovery of what it needs.
+          - os: windows
+            arch: amd64
+            archive: zip
+          # WINDOWS SHIPS NOW, and the exclusion that used to sit here is dead. It read "nothing
+          # consumes a Windows artifact — the stack runs in WSL2 there, and the installer installs the
+          # Linux binary into the distro", which stopped being true when the plane and the host
+          # services became HOST processes: on Windows `orchicon install` / `orchicon serve` run a
+          # NATIVE orchicon.exe, and WSL2 is left with only the runtime CONTAINERS, which need a Linux
+          # kernel. The `.exe` branches below (build + package) stopped being inert the moment this
+          # entry landed.
+          #
+          # windows/arm64 is deliberately NOT here: Windows on ARM runs the amd64 zip under emulation,
+          # so a second ~60 MB artifact would be published for nobody. It IS compiled by `make
+          # cross-compile` (Makefile CROSS_PLATFORMS), so an arm64 break fails the gate instead of
+          # shipping. TestReleaseWorkflowPackagesTheWindowsZip asserts this wiring.
     steps:
       - uses: actions/checkout@v4
+        with:
+          # FULL HISTORY, not a shallow clone. The source check below has to see the tag's commit, and
+          # `git rev-parse <tag>^{commit}` cannot compare against history the checkout does not have.
+          fetch-depth: 0
 
       - uses: actions/setup-go@v5
         with:
@@ -102,8 +129,27 @@ jobs:
         with:
           node-version: '22'
 
+      # REFUSE A RELEASE WHOSE SOURCE IS NOT EXACTLY THE REVISION IT NAMES.
+      #
+      # A build from a dirty tree stamps vcs.modified=true, so the binary at commit X does not contain commit
+      # X: bug reports cite a revision that lacks the code under test and git bisect cannot work. This runs
+      # BEFORE the build — an artifact that cannot be reproduced should not be produced at all — and it also
+      # requires HEAD to be the release tag, because a clean tree at the wrong commit reproduces just as
+      # falsely. See scripts/check_release_source_clean.sh.
+      - name: Verify the release source is reproducible
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: scripts/check_release_source_clean.sh "${ORCHICON_VERSION}"
+
       - name: Build frontend
         run: cd frontend && npm ci && npm run build
+
+      # THE BUILD ITSELF MUST NOT DIRTY THE TREE. npm ci + the frontend build are the realistic ways a
+      # "clean checkout" stops being clean (a lockfile rewrite, a generated wailsjs tree), so this re-checks
+      # AFTER them: the first check proves the checkout was clean, this one proves the binary is still built
+      # from it.
+      - name: Verify the build did not dirty the tree
+        run: scripts/check_release_source_clean.sh
 
       - name: Build binary
         env:
@@ -133,6 +179,18 @@ jobs:
           mkdir -p "$ASSET"
           cp "orchicon${EXT}" "$ASSET/"
           cp "orch${EXT}" "$ASSET/"
+          # THE LINUX BINARY A RUNTIME CONTAINER RUNS, SHIPPED WITH THE BUILD THAT NEEDS IT.
+          #
+          # A runtime container is a LINUX container running `orchicon runtime-supervisor`, so on a
+          # host whose own executable is a PE (Windows) or a Mach-O (macOS) the daemon needs a
+          # linux/amd64 build to mount. Fetching it as a SEPARATE release asset was the design that
+          # kept failing: a second download that could fail silently, and a version that could drift
+          # from the daemon. Built HERE, from the same commit with the same ldflags, it cannot drift
+          # and needs no second network request.
+          if [ "${{ matrix.os }}" != "linux" ]; then
+            GOOS=linux GOARCH=amd64 go build -ldflags "$LDFLAGS" -o orchicon-linux-amd64 ./cmd/orchicon
+            cp orchicon-linux-amd64 "$ASSET/"
+          fi
           cp README.md "$ASSET/" 2>/dev/null || true
           cp LICENSE "$ASSET/" 2>/dev/null || true
           if [ "${{ matrix.archive }}" = "tar.gz" ]; then
@@ -146,15 +204,361 @@ jobs:
           name: orchicon-${{ matrix.os }}-${{ matrix.arch }}
           path: orchicon_*
 
-  # Build + push the single-container image to GHCR. The image embeds the
-  # frontend and ships every runtime (postgres, nats, tempo, loki, vm,
-  # collector, grafana, opencode) with the orchicon binary as PID-1
-  # supervisor (`orchicon container`). Tagged with the version + latest.
-  container:
+  # SIGNED + NOTARISED macOS ARTIFACTS — DORMANT UNTIL A CERTIFICATE EXISTS.
+  #
+  # WHY A JOB ON A macOS RUNNER RATHER THAN A FLAG ON `build`: `codesign` and `notarytool` are macOS-only,
+  # and the `build` matrix cross-compiles darwin/amd64 and darwin/arm64 on ubuntu-latest — a binary produced
+  # there CANNOT be code-signed. The `build` matrix is deliberately NOT given a macOS runner either: it also
+  # builds the frontend and packages every platform, so duplicating it would double the release time to
+  # sign two artifacts. Signing is therefore its own job, over the darwin artifacts `build` already made.
+  #
+  # PREREQUISITES — the cost of turning this on, stated here rather than in a wiki.
+  #   * an Apple Developer Program membership, USD 99/yr. A "Developer ID Application" certificate cannot be
+  #     issued without one, so this is the standing prerequisite rather than an optional extra; and
+  #   * the certificate exported as a .p12  → secret    MACOS_CERT_P12_BASE64
+  #   * that .p12's password                 → secret    MACOS_CERT_P12_PASSWORD
+  #   * an app-specific password for the Apple ID used to notarise → secret MACOS_NOTARY_PASSWORD
+  #   * repository VARIABLES (not secrets — none of them is sensitive)
+  #       MACOS_SIGNING_ENABLED  = "true" to enable this job (anything else skips it)
+  #       MACOS_SIGNING_IDENTITY = "Developer ID Application: Your Name (TEAMID)"
+  #       MACOS_NOTARY_APPLE_ID  = the Apple ID that submits the notarisation
+  #       MACOS_NOTARY_TEAM_ID   = the 10-character team id
+  #
+  # WHILE IT IS OFF the release ships unsigned archives, and the installers' guidance block is the support
+  # story: the documented curl one-liner is Gatekeeper-clean because curl sets no quarantine bit, and a
+  # BROWSER download needs the single-file `xattr -d com.apple.quarantine` command.
+  #
+  # TestMacOSSigningJobRunsOnAMacOSRunner pins the runner, so this job cannot silently become a cross-compile
+  # on ubuntu-latest — which would report success while signing nothing.
+  sign-macos:
+    needs: [guard, build]
+    if: needs.guard.outputs.proceed == 'true' && vars.MACOS_SIGNING_ENABLED == 'true'
+    name: Sign + notarise macOS
+    # NOT macos-14: GitHub retires the macOS 14 runner images on **2 November 2026** and runs SCHEDULED
+    # BROWNOUTS that deliberately fail any job still using the label. The canary's first failure was exactly
+    # that, and the annotation GitHub attached to the job says so verbatim:
+    #
+    #   "This job failed because of a scheduled macOS 14 runner image brownout. macOS 14 runner images will
+    #    be retired on November 2, 2026."
+    #
+    # (https://github.com/actions/runner-images/issues/13518 — brownouts Oct 31 14:00→Nov 1 00:00 UTC and
+    # Nov 1 14:00→Nov 2 00:00 UTC, then the label is terminated with an error.)
+    #
+    # PINNED TO macos-26, NOT macos-latest. `-latest` never browns out, but it MOVES on GitHub's schedule —
+    # macOS-latest is currently macos-26 and GitHub has announced it changes again in June 2026 — so a
+    # release would silently get a different Xcode and SDK with no commit to blame. Pinning means the host
+    # changes when this file changes, and the deprecation notice still gives ~4 months' warning.
+    #
+    # ARCH NOTE: macos-26 is ARM64 and the retiring macos-14 was x64, so this is a change of build HOST as
+    # well as OS. That is fine here by design — `wails build -platform darwin/universal` cross-compiles and
+    # lipos both slices — but it is stated rather than glossed: if it ever fails it will be a cgo/WebKit link
+    # error naming arm64, and the x64 label for the same OS is `macos-26-intel`.
+    runs-on: macos-26
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: orchicon-darwin-*
+          path: unsigned
+
+      - name: Import the Developer ID certificate
+        env:
+          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_P12_PASSWORD: ${{ secrets.MACOS_CERT_P12_PASSWORD }}
+        run: |
+          set -eo pipefail
+          KEYCHAIN="$RUNNER_TEMP/orchicon-signing.keychain-db"
+          printf '%s' "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12" || \
+            printf '%s' "$CERT_P12_BASE64" | base64 -D > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_P12_PASSWORD" -T /usr/bin/codesign
+          # WITHOUT THE PARTITION LIST codesign blocks on a keychain prompt and the job hangs on a
+          # headless runner instead of failing.
+          security set-key-partition-list -S apple-tool:,apple: -k "" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+
+      - name: Sign, notarise and repackage
+        env:
+          IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ vars.MACOS_NOTARY_APPLE_ID }}
+          TEAM_ID: ${{ vars.MACOS_NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          set -eo pipefail
+          cd unsigned
+          for artifact in orchicon-darwin-*; do
+            archive="$(find "$artifact" -maxdepth 1 -name '*.tar.gz' | head -1)"
+            if [ -z "$archive" ]; then
+              echo "::error::$artifact contains no .tar.gz"
+              exit 1
+            fi
+            dir="$(basename "$archive" .tar.gz)"
+            tar -xzf "$archive"
+            for binary in "$dir/orchicon" "$dir/orch"; do
+              [ -f "$binary" ] || continue
+              codesign --force --options runtime --timestamp --sign "$IDENTITY" "$binary"
+              codesign --verify --strict --verbose=2 "$binary"
+            done
+            # NOTARISE A .pkg, NOT THE TARBALL. A notarisation ticket is stapled to a bundle or an installer
+            # package — never to a bare Mach-O CLI — so the artifact that can carry a stapled ticket has to be
+            # one Gatekeeper inspects, which is the .pkg built here.
+            pkg="${dir}.pkg"
+            pkgbuild --root "$dir" --identifier "dev.orchicon.cli" --version "${ORCHICON_VERSION#v}" "$pkg"
+            xcrun notarytool submit "$pkg" --apple-id "$APPLE_ID" --team-id "$TEAM_ID" \
+              --password "$NOTARY_PASSWORD" --wait
+            xcrun stapler staple "$pkg"
+            xcrun stapler validate "$pkg"
+            # Re-create the tarball around the SIGNED binaries: this is the archive the installer downloads.
+            rm -f "$archive"
+            tar -czf "$archive" "$dir"
+          done
+
+      # STAGED FLAT INTO signed/, AND THAT IS LOAD-BEARING. `download-artifact` rebuilds an artifact's
+      # directory tree from these paths, and the release job merges every artifact into ONE flat directory
+      # and writes SHA256SUMS there from a non-recursive glob. A nested upload therefore leaves the release
+      # holding two files of the same name: the UNSIGNED archive from `build` at the top level, and the
+      # signed one in a subdirectory. The checksums, the `gh release` asset list and the installers would
+      # then all resolve to the unsigned copy while this job reports success — a signing pipeline that
+      # signs nothing, which is exactly the failure TestReleaseInstallsTheSignedMacOSArchivesOverTheUnsignedOnes
+      # exists to prevent. `signed/*` keeps the signed archives at the artifact ROOT, where they belong.
+      - name: Stage the signed archives
+        run: |
+          set -eo pipefail
+          mkdir -p signed
+          find unsigned -mindepth 2 -maxdepth 2 -type f \( -name '*.tar.gz' -o -name '*.pkg' \) \
+            -exec mv {} signed/ \;
+          ls -l signed
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchicon-darwin-signed
+          path: signed/*
+
+  # WebView2), so it cannot be produced by the CGO_ENABLED=0 loop in the `build` job above and it is
+  # deliberately NOT in the Makefile's CROSS_PLATFORMS list. Each OS builds its own binary on its own
+  # runner (pinned by TestDesktopMatrixCoversLinuxMacOSWindows, TestReleaseBuildsDesktopAppPerOS and
+  # TestDesktopNotInCrossPlatforms).
+  #
+  # THE FRONTEND BUILD MUST COME FIRST: `go:embed all:frontend/dist` matches the tracked
+  # frontend/dist/.gitkeep when the bundle has not been built, so a misordered job compiles perfectly
+  # and ships an app that opens an empty window. Asserted by TestDesktopJobBuildsFrontendBeforeBinary.
+  #
+  # AND THE `webkit2_41` TAG IS NOT OPTIONAL ON LINUX: Wails selects the WebKitGTK ABI by build tag
+  # (`#cgo !webkit2_41 pkg-config: webkit2gtk-4.0` / `#cgo webkit2_41 pkg-config: webkit2gtk-4.1`).
+  # Without it the cgo files demand webkit2gtk-4.0's pkg-config file, which no current Ubuntu ships —
+  # the step below installs `libwebkit2gtk-4.1-dev`, so the tags and the package must agree. The tag is
+  # inert on macOS (WKWebView) and Windows (WebView2). Asserted by TestReleaseBuildsDesktopAppPerOS.
+  desktop:
     needs: guard
     if: needs.guard.outputs.proceed == 'true'
-    name: Container image
+    name: Desktop ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install webview build dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+      - name: Build the SPA that the binary embeds
+        run: |
+          set -euo pipefail
+          cd frontend
+          npm ci
+          npm run build
+      - name: Install the Wails CLI
+        run: |
+          set -euo pipefail
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
+      # THE Wails CLI RESOLVES ITS PROJECT FROM THE WORKING DIRECTORY: `wails build` loads
+      # `./wails.json` (wails/v2/internal/project.Load uses os.Getwd and has no project-dir
+      # flag), and the project file lives in cmd/orchicon-desktop, not the repo root. Run
+      # from the root and the step dies on a missing wails.json — which is why the working
+      # directory is explicit rather than inherited. Asserted by
+      # TestDesktopBuildRunsInTheWailsProjectDirectory.
+      - name: Build the desktop app
+        working-directory: cmd/orchicon-desktop
+        run: |
+          set -euo pipefail
+          wails build -tags orchicon_desktop,production,webkit2_41 -clean
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchicon-desktop-${{ matrix.os }}
+          path: |
+            cmd/orchicon-desktop/build/bin/orchicon-desktop
+            cmd/orchicon-desktop/build/bin/orchicon-desktop.exe
+          if-no-files-found: error
+
+  # THE PER-WORKFLOW RUNTIME BASE IMAGE, and the ONLY container image this project
+  # ships. A container exists for exactly one purpose: a workflow's runtime
+  # container (one per active run), pulled by a one-command install and spawned by
+  # the runtime daemon as orchicon-runtime-<runID>.
+  #
+  # THERE IS NO SINGLE-CONTAINER ORCHICON IMAGE. The plane and its services are HOST
+  # processes, always, and the retired image (orchicon as PID 1 running postgres,
+  # nats, telemetry and the plane inside one container) is gone along with the
+  # build context of that image. The runtime image needs no Go or Node toolchain:
+  # it is a pure `docker build` of deploy/runtime/Dockerfile*, and the daemon
+  # bind-mounts its own binary at container-create time.
+  runtime-image:
+    needs: guard
+    if: needs.guard.outputs.proceed == 'true'
+    name: Runtime image
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Per-workflow runtime base image (one container per active workflow
+      # run). Shipped to GHCR so a one-command install can pull it — the
+      # runtime daemon uses it to spawn orchicon-runtime-<runID>. The
+      # orchicon binary is NOT baked in (the daemon bind-mounts its own
+      # executable at container-create time); the image content is a pure
+      # function of the Dockerfiles, so the version-as-tag plus the
+      # org.orchicon.runtime.version label identify the build inputs. The
+      # :gui variant (headless GUI libs) is built FROM the base so the label
+      # + chown model are inherited.
+      # THE BASE ONLY. The gui/dev variants are NOT built or pushed here any more.
+      #
+      # THEY CARRY THIRD-PARTY ADAPTER CLIs. An image this workflow builds and serves to every operator
+      # is Orchicon DISTRIBUTING opencode and Claude Code; built on the operator's own machine from the
+      # template embedded in the binary, the operator installs for themselves, under their own licence
+      # and credentials. That is the same line the project already draws for host-installed adapters,
+      # and it is why the base — which carries no adapter — is the one artifact published.
+      #
+      # The variants remain first-class: their Dockerfiles ship embedded (assets.go, RuntimeImageTemplatesFS),
+      # the catalogue seeds them with LOCAL build tags (internal/runtimeimage LocalTag), and
+      # FetchRuntimeImage BUILDS rather than pulls them (it routes on isRegistryRef).
+      #
+      # DO NOT RE-ADD THE VARIANT PUSHES without reading that routing first: a variant whose tag is a
+      # registry ref is PULLED, so publishing one and building it are mutually exclusive by design.
+      - name: Build runtime image (base only)
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          docker build --label "org.orchicon.runtime.version=${ORCHICON_VERSION}" -f deploy/runtime/Dockerfile -t "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" deploy/runtime
+          docker tag "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:latest
+
+      - name: Push runtime image (base only)
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          set -eo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}"
+          docker push ghcr.io/beardedparrott/orchicon-runtime:latest
+
+  desktop-linux:
+    name: Desktop — Linux (.deb + AppImage)
+    needs: guard
+    if: needs.guard.outputs.proceed == 'true'
+    # ubuntu-22.04, NOT ubuntu-latest: the .deb must link libwebkit2gtk-4.0, which
+    # Ubuntu 24.04 dropped. Building on 24.04 would produce a package that only
+    # runs on the newest distros. Users on those get the AppImage instead.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the webview build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.0-dev libgtk-3-dev pkg-config
+
+      - name: Build frontend
+        run: |
+          set -euo pipefail
+          cd frontend && npm ci && npm run build
+
+      - name: Install the pinned Wails CLI
+        run: |
+          set -euo pipefail
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build the desktop app
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd cmd/orchicon-desktop
+          # THE TAGS ARE EXPLICIT HERE BECAUSE THE ABI IS THIS ARTIFACT'S DECISION, NOT
+          # THE HOST'S. nfpm.yaml declares `depends: libwebkit2gtk-4.0-37`, so the .deb
+          # must LINK 4.0 — i.e. it must NOT carry the `webkit2_41` tag. That tag is
+          # therefore deliberately absent from wails.json (which every `wails build`
+          # inherits) and named here, where the compatibility promise is made: this job
+          # runs on ubuntu-22.04 and installs libwebkit2gtk-4.0-dev, which is exactly the
+          # ABI the package promises its users.
+          wails build -clean -tags orchicon_desktop,production \
+            -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${ORCHICON_VERSION}"
+
+      # The .deb is where AC3's DECLARATION lives (deploy/desktop/nfpm.yaml:
+      # depends on libwebkit2gtk-4.0-37), and its /usr/bin entry point is the
+      # launcher that DETECTS a missing webview before the loader does.
+      - name: Package the .deb
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${ORCHICON_VERSION#v}"
+          mkdir -p dist/desktop
+          ORCHICON_VERSION="$VERSION" go run github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.41.0 \
+            package -f deploy/desktop/nfpm.yaml -p deb \
+            -t "dist/desktop/orchicon_desktop_${VERSION}_linux_amd64.deb"
+          ls -l dist/desktop
+
+      # Same pin and cache as Canary: this is the RELEASE path, so a CDN 504 here costs a release rather
+      # than a canary. Cache key is the digest, so a hit serves the pinned binary with no network.
+      - name: Cache appimagetool
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/orchicon-appimagetool
+          key: appimagetool-x86_64-e8c1169c4af66c3184d7ee110713d4be04befe671fa358e2c1591ee840553b03
+
+      - name: Package the AppImage
+        env:
+          APPIMAGETOOL_SHA256: e8c1169c4af66c3184d7ee110713d4be04befe671fa358e2c1591ee840553b03
+        run: |
+          set -euo pipefail
+          bash deploy/desktop/appimage/build.sh
+          ls -l dist/desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchicon-desktop-linux
+          path: dist/desktop/*
+          if-no-files-found: error
+
+  desktop-macos:
+    name: Desktop — macOS (.app, signed + notarised)
+    needs: guard
+    if: needs.guard.outputs.proceed == 'true'
+    # macos-26, not macos-14 — see the note at the sign-macos job: GitHub retires the macOS 14 runner images
+    # on 2 November 2026 and browns them out beforehand, failing jobs that still use the label. Pinned rather
+    # than -latest so a release host cannot change without a commit to this file.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
@@ -167,73 +571,285 @@ jobs:
           node-version: '22'
 
       - name: Build frontend
-        run: cd frontend && npm ci && npm run build
+        run: |
+          set -euo pipefail
+          cd frontend && npm ci && npm run build
 
-      - name: Build binary
+      - name: Install the pinned Wails CLI
+        run: |
+          set -euo pipefail
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # universal = one .app for both Apple Silicon and Intel, which is why the
+      # artifact is named ..._darwin_universal.zip rather than per-arch.
+      - name: Build the .app
         env:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
-          LDFLAGS="-X github.com/beardedparrott/orchicon/internal/version.gitCommit=$(git rev-parse --short HEAD) \
-                   -X github.com/beardedparrott/orchicon/internal/version.gitTag=${ORCHICON_VERSION} \
-                   -X github.com/beardedparrott/orchicon/internal/version.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          go build -ldflags "$LDFLAGS" -o ./orchicon ./cmd/orchicon
-          go build -ldflags "$LDFLAGS" -o ./orch ./cmd/orch
+          set -euo pipefail
+          cd cmd/orchicon-desktop
+          wails build -clean -platform darwin/universal -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${ORCHICON_VERSION}"
 
-      - name: Build container image
+      # Sign → notarise (--wait) → staple → assert with spctl. The script reads
+      # every secret from the environment and fails on a missing one: shipping an
+      # unsigned .app is exactly the Gatekeeper block AC1 forbids.
+      - name: Sign, notarise and staple the .app
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          bash deploy/desktop/macos/sign-and-notarize.sh
+          ls -l dist/desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchicon-desktop-darwin
+          path: dist/desktop/*.zip
+          if-no-files-found: error
+
+  desktop-windows:
+    name: Desktop — Windows (NSIS installer + portable zip + MSI)
+    needs: guard
+    if: needs.guard.outputs.proceed == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd frontend && npm ci && npm run build
+
+      - name: Install the pinned Wails CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # NSIS IS WHAT `-nsis` ACTUALLY RUNS, AND IT IS NOT ON THE RUNNER IMAGE.
+      #
+      # Wails shells out to makensis. When it is absent it prints
+      #   Warning: Cannot create installer: makensis not found
+      # and EXITS 0 — so the build step goes green and the installer simply is not
+      # produced. THIS JOB HAD EXACTLY THAT DEFECT and no release had ever revealed it:
+      # windows/amd64 joined the matrix on 2026-10-18 and no tag has been cut since, so
+      # the canary build was the first thing in the project's history to run `-nsis`.
+      # It failed, which is why this step exists.
+      #
+      # Chocolatey is preinstalled on the hosted Windows runners. Its PATH change does
+      # not reach this session, so the directory is exported for the NEXT step, which is
+      # where makensis is first used.
+      - name: Install NSIS (makensis)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install nsis -y --no-progress
+          "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # `-webview2 download` embeds the WebView2 Evergreen bootstrapper in the NSIS
+      # installer, which is what makes a Windows 10 machine provision itself on
+      # first run instead of opening a blank window (AC2). `-nsis` is the
+      # installer itself.
+      - name: Build the app + NSIS installer
+        shell: bash
         env:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
-          cp ./orchicon deploy/container/orchicon
-          cp ./orch deploy/container/orch
-          docker build -f deploy/container/Dockerfile -t "ghcr.io/beardedparrott/orchicon:${ORCHICON_VERSION}" deploy/container
-          docker tag "ghcr.io/beardedparrott/orchicon:${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon:latest
+          set -euo pipefail
+          # FAIL LOUDLY WHEN MAKENSIS IS MISSING. Without this the `wails` invocation
+          # below exits 0 having produced no installer, which is a green build that
+          # shipped nothing — and the naming step's throw is two steps too late to say why.
+          if ! command -v makensis >/dev/null 2>&1; then
+            echo "error: makensis is not on PATH — the 'Install NSIS (makensis)' step is missing or failed."
+            echo "       `wails -nsis` only WARNS without it and exits 0, so this assert is what makes it loud."
+            exit 1
+          fi
+          cd cmd/orchicon-desktop
+          wails build -clean -platform windows/amd64 -webview2 download -nsis \
+            -ldflags "-X github.com/beardedparrott/orchicon/internal/version.gitTag=${ORCHICON_VERSION}"
+          # AND ASSERT THE ARTIFACT, not just the exit code.
+          shopt -s nullglob
+          inst=(build/bin/*installer*.exe)
+          if [ ${#inst[@]} -eq 0 ]; then
+            echo "error: wails build -nsis produced no installer in build/bin although makensis was on PATH."
+            ls -l build/bin
+            exit 1
+          fi
+          echo "installer: ${inst[0]}"
 
-      - name: Push container image
+      # THE MSI NEEDS THE CLI BINARIES TOO, and they are built HERE rather than
+      # downloaded from the `build` job: that job publishes a .zip, and unzipping it
+      # to reach two .exe files would couple this packaging step to the archive
+      # layout for no gain. GOOS/GOARCH are explicit because this runner's default
+      # is already windows/amd64 — stating them means the step cannot silently
+      # produce something else.
+      - name: Build the Windows CLI binaries (they go IN the MSI)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orchicon.exe ./cmd/orchicon
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orch.exe ./cmd/orch
+          # THE LINUX BINARY THE RUNTIME CONTAINER RUNS. Built HERE, in the same step and with the
+          # same flags as the exe above it, so the daemon and the supervisor it mounts are the same
+          # build by construction — a Linux container cannot execute the Windows binary.
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orchicon-linux-amd64 ./cmd/orchicon
+
+      # WIX IS A .NET GLOBAL TOOL, which is why this job (and the release) is where
+      # the MSI is built: no other host in this project has dotnet. Pinned in spirit
+      # by dotnet's own resolution — see deploy/desktop/README.md for the version
+      # the artifact was last built with.
+      - name: Install the WiX CLI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # PINNED, AND BELOW 6: WiX v6+ requires accepting the Open Source Maintenance
+          # Fee EULA, and an unpinned install resolves to v7 — which fails the build with
+          # "error WIX7015: You must accept the Open Source Maintenance Fee (OSMF) EULA".
+          # That is a licensing decision, not something a build should make by floating.
+          # cmd/orchicon/windows_msi_test.go fails if this and the Makefile disagree.
+          dotnet tool install --global wix --version 5.0.2
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # THE FILE LIST LIVES IN THE .wxs, NOT HERE. This step only stages what the
+      # .wxs names, so adding a component means editing one file; the two drifting
+      # apart is what cmd/orchicon/windows_msi_test.go exists to prevent.
+      # `-ext` DOES NOT RESTORE FROM NUGET. It resolves a package name through WiX's
+      # own extension store, so the extension has to be INSTALLED first — otherwise:
+      #   error WIX0144: The extension 'WixToolset.UI.wixext/5.0.2' could not be found.
+      #                 Checked paths: WixToolset.UI.wixext/5.0.2
+      # It is its own step because the CLI's PATH export (above) only takes effect in
+      # the NEXT step of the job.
+      - name: Install the WiX UI extension
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+
+      - name: Build the MSI
+        shell: pwsh
         env:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
-          set -eo pipefail
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker push "ghcr.io/beardedparrott/orchicon:${ORCHICON_VERSION}"
-          docker push ghcr.io/beardedparrott/orchicon:latest
+          $ErrorActionPreference = 'Stop'
+          $v = $env:ORCHICON_VERSION.TrimStart('v')
+          $src = "dist/msi-src"
+          $null = New-Item -ItemType Directory -Force -Path $src, dist/desktop
+          Copy-Item bin/orchicon.exe $src/
+          Copy-Item bin/orch.exe $src/
+          # THE CONTAINER'S BINARY, beside orchicon.exe — the daemon's first search location.
+          Copy-Item bin/orchicon-linux-amd64 $src/
+          Copy-Item cmd/orchicon-desktop/build/bin/orchicon-desktop.exe $src/
+          Copy-Item deploy/desktop/windows/README-WINDOWS.txt $src/
+          Copy-Item deploy/desktop/windows/LICENSE.rtf $src/
+          Copy-Item deploy/desktop/windows/orchicon-desktop.ico $src/
+          # THE WIZARD ART (WixUIBannerBmp / WixUIDialogBmp reach it via $(var.SourceDir)).
+          Copy-Item deploy/desktop/windows/wizard-banner.bmp $src/
+          Copy-Item deploy/desktop/windows/wizard-dialog.bmp $src/
+          $srcAbs = (Resolve-Path $src).Path
+          wix build deploy/desktop/windows/Orchicon.wxs -arch x64 -ext WixToolset.UI.wixext `
+            -d "Version=$v" -d "SourceDir=$srcAbs" -bindvariable "WixUILicenseRtf=$srcAbs\LICENSE.rtf" `
+            -o "dist/desktop/orchicon_${v}_windows_amd64.msi"
+          Get-ChildItem dist/desktop
+          # THE LICENSE PAGE TEXT MUST BE IN THE PACKAGE — asserted on the BYTES, because the
+          # flag that puts it there is easy to get subtly wrong and twice did: as an MSI
+          # Property (never read) and as a -d preprocessor variable (never read either, because
+          # the dialog declares a BIND variable). Both times the build succeeded and the wizard
+          # silently kept WiX's lorem-ipsum placeholder. A check that knows nothing about flags
+          # cannot be fooled by them.
+          $msiFile = Get-Item "dist/desktop/orchicon_${v}_windows_amd64.msi"
+          $bytes = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($msiFile.FullName))
+          if ($bytes -notmatch [regex]::Escape("beardedparrott")) {
+            throw "the license page text is NOT in the MSI: WixUILicenseRtf did not reach the dialog (use -bindvariable, not -d)."
+          }
+          if ($bytes -match "Lorem ipsum") {
+            throw "the MSI still contains WiX's lorem-ipsum placeholder license text."
+          }
+          Write-Host "license page text is in the package, and no placeholder remains"
 
-      # Per-workflow runtime base image (one container per active workflow
-      # run). Shipped to GHCR so a one-command install can pull it — the
-      # runtime daemon uses it to spawn orchicon-runtime-<runID>. The
-      # orchicon binary is NOT baked in (the daemon bind-mounts its own
-      # executable at container-create time); the image content is a pure
-      # function of the Dockerfiles, so the version-as-tag plus the
-      # org.orchicon.runtime.version label identify the build inputs. The
-      # :gui variant (headless GUI libs) is built FROM the base so the label
-      # + chown model are inherited.
-      - name: Build runtime image
+      # The portable zip does NOT carry the bootstrapper (an unzip cannot run an
+      # installer), so it ships README-WINDOWS.txt naming the Evergreen URL
+      # instead — the app itself also detects the missing runtime and puts that
+      # URL in a native dialog rather than failing to a blank window.
+      # THE BURN BUNDLE: the wizard a PERSON runs. It wraps the MSI built above, so it has to
+      # come after it. `wix extension add` is required for the Bal extension for the same
+      # reason as the UI one: -ext resolves through WiX's own store, not NuGet.
+      - name: Install the WiX Bal extension (for the bundle)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          wix extension add -g WixToolset.BootstrapperApplications.wixext/5.0.2
+
+      - name: Build the Burn bundle (OrchiconSetup.exe)
+        shell: pwsh
         env:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
-          docker build --label "org.orchicon.runtime.version=${ORCHICON_VERSION}" -f deploy/runtime/Dockerfile -t "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" deploy/runtime
-          docker tag "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:latest
-          docker build --label "org.orchicon.runtime.version=${ORCHICON_VERSION}-gui" --build-arg "BASE_IMAGE=ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" -f deploy/runtime/Dockerfile.gui -t "ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}" deploy/runtime
-          docker tag "ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:gui
-          docker build --label "org.orchicon.runtime.version=${ORCHICON_VERSION}-dev" --build-arg "BASE_IMAGE=ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" -f deploy/runtime/Dockerfile.dev -t "ghcr.io/beardedparrott/orchicon-runtime:dev-${ORCHICON_VERSION}" deploy/runtime
-          docker tag "ghcr.io/beardedparrott/orchicon-runtime:dev-${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:dev
+          $ErrorActionPreference = 'Stop'
+          $v = $env:ORCHICON_VERSION.TrimStart('v')
+          $msi = (Resolve-Path "dist/desktop/orchicon_${v}_windows_amd64.msi").Path
+          $src = (Resolve-Path "dist/msi-src").Path
+          wix build deploy/desktop/windows/OrchiconSetup.wxs -ext WixToolset.BootstrapperApplications.wixext `
+            -d "Version=$v" -d "MsiPath=$msi" -d "LicenseRtf=$src\LICENSE.rtf" `
+            -outputtype bundle -o "dist/desktop/OrchiconSetup_${v}_windows_amd64.exe"
+          Get-Item "dist/desktop/OrchiconSetup_${v}_windows_amd64.exe" | ForEach-Object {
+            Write-Host "bundle: $($_.Name) ($([math]::Round($_.Length/1MB,1)) MB)" }
 
-      - name: Push runtime image
+      - name: Name the artifacts
+        shell: pwsh
         env:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
-          set -eo pipefail
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker push "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}"
-          docker push ghcr.io/beardedparrott/orchicon-runtime:latest
-          docker push "ghcr.io/beardedparrott/orchicon-runtime:gui-${ORCHICON_VERSION}"
-          docker push ghcr.io/beardedparrott/orchicon-runtime:gui
-          docker push "ghcr.io/beardedparrott/orchicon-runtime:dev-${ORCHICON_VERSION}"
-          docker push ghcr.io/beardedparrott/orchicon-runtime:dev
+          $ErrorActionPreference = 'Stop'
+          $v = $env:ORCHICON_VERSION.TrimStart('v')
+          $bins = Get-ChildItem -Path cmd/orchicon-desktop/build/bin -Filter *.exe -File
+          $installer = $null
+          $app = $null
+          foreach ($f in $bins) {
+            if ($f.Name -match 'installer') { $installer = $f } elseif ($null -eq $app) { $app = $f }
+          }
+          if ($null -eq $installer) { throw "no NSIS installer found in desktop/build/bin — wails build -nsis did not produce one" }
+          if ($null -eq $app) { throw "no desktop executable found in desktop/build/bin" }
+          $null = New-Item -ItemType Directory -Force -Path dist/desktop
+          Copy-Item $installer.FullName "dist/desktop/orchicon_desktop_${v}_windows_amd64_installer.exe"
+          $stage = "stage/orchicon_desktop_${v}_windows_amd64"
+          $null = New-Item -ItemType Directory -Force -Path $stage
+          Copy-Item $app.FullName "$stage/orchicon-desktop.exe"
+          Copy-Item deploy/desktop/windows/README-WINDOWS.txt "$stage/README-WINDOWS.txt"
+          Compress-Archive -Path $stage -DestinationPath "dist/desktop/orchicon_desktop_${v}_windows_amd64.zip"
+          Get-ChildItem dist/desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchicon-desktop-windows
+          path: dist/desktop/*
+          if-no-files-found: error
 
   release:
     name: Create Release
-    needs: [build, guard]
-    if: needs.guard.outputs.proceed == 'true'
+    needs: [build, guard, sign-macos]
+    # `sign-macos` IS IN `needs` so the signed archives are the ones downloaded — but it is SKIPPED while
+    # signing is off, and a skipped dependency skips its dependents. Hence the explicit `skipped` arm: the
+    # release must go ahead on an unsigned build, which is the normal case today.
+    if: |
+      needs.guard.outputs.proceed == 'true' &&
+      (needs.sign-macos.result == 'success' || needs.sign-macos.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -245,6 +861,53 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      # OPTIONAL, and it must stay optional (AC6). continue-on-error means a failed or
+      # absent desktop build leaves the CLI release exactly as it was: the `find` below
+      # simply sees no desktop files. The alternative — a `needs:` dependency — would let
+      # a webkit or notarisation failure SKIP the whole release, taking the CLI binaries
+      # with it.
+      - name: Download desktop artifacts (optional — never blocks the CLI release)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: 'orchicon-desktop-*'
+          path: desktop-artifacts
+          merge-multiple: true
+      # THE SIGNED MACOS ARCHIVES, DOWNLOADED SECOND AND ON PURPOSE.
+      #
+      # The step above merges EVERY artifact into one flat directory, so the signed archives carry the same
+      # file names as the unsigned ones `build` uploaded and the order in which artifacts are merged is not
+      # specified. Downloading this artifact afterwards makes the signed files the ones on disk — by
+      # construction rather than by luck — so the SHA256SUMS generated below, the published assets and every
+      # installed binary are the signed ones. `if:` scopes it to a run where signing actually happened; when
+      # the sign job is skipped (the normal case today) there is no such artifact and nothing to download.
+      - name: Download the signed macOS archives last, so they are the ones that stay
+        if: needs.sign-macos.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+          pattern: orchicon-darwin-signed
+
+      # THE CHECKSUMS THE INSTALLERS VERIFY. `merge-multiple: true` above flattens every artifact into
+      # artifacts/, so this is a flat directory and the sums are written flat beside the archives.
+      #
+      # GENERATING THIS FILE IS ONLY HALF THE JOB: the upload manifest is the `find` in the next step, so a
+      # checksum file that is generated here and not listed there is published to nobody. Both halves are
+      # asserted by TestReleasePublishesChecksums.
+      - name: Generate checksums
+        working-directory: artifacts
+        run: |
+          set -eo pipefail
+          shopt -s nullglob
+          files=( *.tar.gz *.pkg )
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::no archives under artifacts/ to checksum"
+            exit 1
+          fi
+          sha256sum "${files[@]}" > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Create GitHub Release
         env:
@@ -281,7 +944,22 @@ jobs:
           # We use `gh release create` directly (not softprops/action-gh-
           # release) for the same reasons as before: explicit retry behavior
           # and clearer errors than the action wrapper under load.
-          ASSETS=$(find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort)
+          # BOTH SETS FROM ONE RELEASE (AC6): the CLI archives (and their SHA256SUMS) AND the
+          # desktop packages. desktop-artifacts/ may not exist at all (a desktop job failed or was
+          # cancelled), so the find tolerates its absence rather than failing the release.
+          #
+          # AND EACH ASSET IS UPLOADED EXACTLY ONCE, keyed by BASENAME. The first download above
+          # carries no pattern, so it already brings EVERY artifact of the run into artifacts/ —
+          # the CLI archives and the three orchicon-desktop-* ones. The optional download above
+          # therefore repeats the desktop packages into desktop-artifacts/, and `gh release create`
+          # names an asset after its basename: handing it one name twice fails the whole release
+          # with HTTP 422 "already_exists", in the HAPPY path with all three desktop builds green.
+          # The awk keeps the first path seen per basename.
+          #
+          # SHA256SUMS IS IN THIS LIST ON PURPOSE — this find IS the upload manifest, so an asset
+          # not named here is silently not published, however carefully it was produced.
+          ASSETS=$(find artifacts desktop-artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.pkg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*_installer.exe' -o -name 'OrchiconSetup_*.exe' -o -name '*.msi' -o -name 'SHA256SUMS' \) 2>/dev/null \
+                   | awk -F/ '!seen[$NF]++' | sort || true)
           if [ -z "$ASSETS" ]; then
             echo "::error::No release assets found under artifacts/"
             exit 1

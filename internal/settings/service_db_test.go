@@ -51,11 +51,7 @@ func TestUpdateSettingsPartialSaveKeepsStallWindows(t *testing.T) {
 		if err != nil {
 			return
 		}
-		// THE AUDIT ROWS GO TOO. UpdateSettings writes a `settings.updated` row in the same transaction as
-		// every save, so this test produced one per call and deleted only the settings row — leaving a
-		// growing pile of orphan audit entries under the probe tenant on every run. Found by auditing the
-		// tenant for leftovers after the audit-path change, i.e. by the same check that caught the mcp
-		// test's leaked conversation.
+		// THE AUDIT ROWS GO TOO.
 		_, _ = ttx.Exec(cctx, `DELETE FROM audit_events WHERE tenant_id=$1`, probeTenant)
 		_, _ = ttx.Exec(cctx, `DELETE FROM tenant_settings WHERE tenant_id=$1`, probeTenant)
 		_ = ttx.Commit(cctx)

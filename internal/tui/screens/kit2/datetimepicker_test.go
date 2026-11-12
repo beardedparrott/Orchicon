@@ -235,9 +235,7 @@ func TestDateTimePickerClockSteps(t *testing.T) {
 	}
 }
 
-// A CARRY OUT OF THE CLOCK LANDS ON THE RIGHT DAY. Wrapping the hour to 00:00 and leaving the date
-// behind would commit a time a full day away from the one on screen — and the resolved line would show
-// it, so the modal would be contradicting itself.
+// A CARRY OUT OF THE CLOCK LANDS ON THE RIGHT DAY.
 func TestDateTimePickerClockCarryMovesTheDate(t *testing.T) {
 	p := dtAt(2026, time.September, 18, 23, 59)
 	tabToTime(p)
@@ -311,9 +309,7 @@ func TestDateTimePickerViewFitsItsWidth(t *testing.T) {
 	}
 }
 
-// NOTHING IS TRUNCATED. Pad() cuts a line that is too wide, and the cut lands on the TAIL — which is
-// where the chords are. The first version of this box painted "esc: ca" and "t t", so every chord the
-// modal advertises is asserted PRESENT rather than merely "some hint text exists".
+// NOTHING IS TRUNCATED.
 func TestDateTimePickerViewDoesNotTruncateItsChords(t *testing.T) {
 	p := dtAt(2026, time.September, 18, 14, 30)
 	p.SetScreen(120, 40)

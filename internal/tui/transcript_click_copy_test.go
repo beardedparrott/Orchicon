@@ -35,9 +35,6 @@ func clickPlane(t *testing.T) *App {
 }
 
 // THE DERIVED BODY-TOP ROW MATCHES WHERE THE TRANSCRIPT IS ACTUALLY DRAWN.
-//
-// This is the pin that matters: the formula is arithmetic over the pane's chrome, and arithmetic over
-// someone else's layout is exactly the kind of thing that drifts without a test noticing.
 func TestTheDerivedBodyTopRowMatchesTheDrawnFrame(t *testing.T) {
 	m := clickPlane(t)
 	want := m.transcriptBodyTopRow()

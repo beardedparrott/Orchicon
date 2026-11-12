@@ -11,12 +11,6 @@ import (
 )
 
 // writeCredentialDB creates a minimal opencode 2.x credential store.
-//
-// The schema is the one the real database uses for the columns read here
-// (`integration_id`, `value`, with `value` holding a JSON object that carries
-// `key`); the other columns the real table has are irrelevant to this read and
-// deliberately omitted, so the test also pins that the read does not depend on
-// them.
 func writeCredentialDB(t *testing.T, path string, rows map[string]string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -38,15 +32,8 @@ func writeCredentialDB(t *testing.T, path string, rows map[string]string) {
 	}
 }
 
-// TestCredentialDBOverridesStaleAuthJSON is the regression guard for a bug that
-// shipped: reading ONLY auth.json hands a worker a DEAD credential.
-//
-// 2.x imports auth.json once and keeps credentials in its own database, so on a
-// 2.x install auth.json becomes a stale copy — and any provider signed in or
-// rotated after the upgrade differs between the two. Measured on the development
-// host: one re-authenticated provider had a different value in each store, and
-// the container got the stale one, failing at the model call as an Unauthorized
-// far from the cause.
+// TestCredentialDBOverridesStaleAuthJSON is the regression guard for a bug that shipped: reading
+// ONLY auth.json hands a worker a DEAD credential.
 func TestCredentialDBOverridesStaleAuthJSON(t *testing.T) {
 	home := t.TempDir()
 	writeAuthStore(t, home, `{"ollama-cloud":{"type":"api","key":"STALE-FROM-AUTH-JSON"}}`)
@@ -63,15 +50,8 @@ func TestCredentialDBOverridesStaleAuthJSON(t *testing.T) {
 	}
 }
 
-// TestCredentialFallbacksAreBestEffort pins the shapes that must still work, and
-// the one that must degrade quietly rather than fail container creation:
-//
-//   - a 1.x install (auth.json only, no database at all);
-//   - a 2.x install whose database has no credential table yet;
-//   - and a corrupt database.
-//
-// None of these is an error, because container creation must never fail over
-// credentials it can read another way.
+// TestCredentialFallbacksAreBestEffort pins the shapes that must still work, and the one that must
+// degrade quietly rather than fail container creation:
 func TestCredentialFallbacksAreBestEffort(t *testing.T) {
 	t.Run("1.x: auth.json only", func(t *testing.T) {
 		home := t.TempDir()
@@ -120,10 +100,8 @@ func TestCredentialFallbacksAreBestEffort(t *testing.T) {
 	})
 }
 
-// TestCredentialDBIgnoresUnusableRows pins what the database read must NOT pass
-// through: a value with no `key`, and a row whose value is not JSON at all. Either
-// would otherwise be emitted as an empty environment variable, which reads as
-// "no credential" at the CLI while looking like the credential was supplied.
+// TestCredentialDBIgnoresUnusableRows pins what the database read must NOT pass through: a value
+// with no `key`, and a row whose value is not JSON at all.
 func TestCredentialDBIgnoresUnusableRows(t *testing.T) {
 	home := t.TempDir()
 	p := openCodeDBPath(home)

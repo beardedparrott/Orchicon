@@ -2,10 +2,7 @@ package adapter
 
 import "testing"
 
-// serveDependent mirrors runtime.Lifecycle.ServeDependent (opencode-only,
-// empty → opencode). It is passed IN to NeedsServe — the primitive never
-// hardcodes the serve dependency, which is what keeps the run gate and the
-// host serve on one predicate (AC 7).
+// serveDependent mirrors runtime.Lifecycle.ServeDependent (opencode-only, empty → opencode).
 func serveDependent(kind string) bool {
 	if kind == "" {
 		kind = DefaultAdapterKind
@@ -109,9 +106,8 @@ func TestDemandSetNeedsServe(t *testing.T) {
 	}
 }
 
-// TestAdapterDemandSetIsServedByAdapterKind pins the single-computation
-// invariant: the demand set's kind for a ref IS what the dispatcher would
-// route it to (adapter.AdapterKind), so demand and dispatch cannot drift.
+// TestAdapterDemandSetIsServedByAdapterKind pins the single-computation invariant: the demand set's
+// kind for a ref IS what the dispatcher would route it to (adapter.AdapterKind).
 func TestAdapterDemandSetIsServedByAdapterKind(t *testing.T) {
 	refs := []string{
 		"orchicon/deepseek/deepseek-v4-flash",

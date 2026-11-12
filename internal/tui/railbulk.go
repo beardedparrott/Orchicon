@@ -1,29 +1,6 @@
 package tui
 
 // railbulk.go — bulk operations on the conversations rail.
-//
-// The operator: "We need to add bulk operations to conversations like we do with the other items in
-// orch. Spacebar selects, then we should be able to bulk delete or bulk assign to a category".
-//
-// WHAT "LIKE THE OTHER ITEMS" MEANS, CONCRETELY. The rest of this client gets its multi-select from
-// kit2 (Base/Table): SPACE marks the cursor row and advances one, ESC clears the marks, and an
-// operation applies to the whole selection once MORE THAN ONE row is marked — one marked row is not a
-// selection, it is the row the cursor is on, and offering "delete 1 conversation" beside "delete"
-// would be a slower way to say the same thing (kit2.BulkThreshold). The rail is not a kit2 table (it
-// is the shell's own list of chat.Conversation), so the rule is re-implemented here rather than
-// borrowed — but it is the SAME rule, including the threshold, which is read from kit2 so the two
-// cannot drift.
-//
-// THE RAIL'S KEYS ARE DRIVEN FROM THE COMPOSER, which is the one constraint that makes this surface
-// different. With an empty box the arrows move the rail and a bare letter would be untypeable as the
-// first character of a message, so the item actions are MODIFIER chords: ctrl+n renames, ctrl+t
-// categorizes, and ctrl+x is the bulk delete. (Space is not a letter, so it keeps the letter-free
-// mark gesture the rest of the app uses.)
-//
-// SPACE NO LONGER OPENS. It did — "space or enter selects", which was the operator's earlier wording —
-// but "selects" now means MARK, which is what it means on every other list here, and the operator
-// asked for exactly that ("Spacebar selects, then we should be able to bulk delete or bulk assign").
-// ENTER remains the open gesture, so nothing became unreachable.
 
 import (
 	"fmt"
@@ -35,22 +12,15 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
-// The rail's item chords. Named here so the rail's hint, the help overlay and the tests cannot drift
-// from the binding — the same discipline the tab chords got (they were once written down in four
-// places, which is how they drifted).
+// The rail's item chords.
 const (
 	conversationBulkDeleteChord = "ctrl+x"
 )
 
 // toggleConvMark marks or unmarks the highlighted conversation and advances one row.
-//
-// ADVANCING IS THE POINT: kit2 marks and steps together (Table.ToggleMark + Move(1)) so a run of
-// spaces builds a selection the way every multi-select list does, without forcing mark-then-down
-// every time.
 func (m *App) toggleConvMark() {
 	// A FOLDER ROW marks its members — "space marks what is under the cursor", and for a folder that is
-	// everything inside it. It is a TOGGLE on the group: if all of them are already marked, space clears
-	// the group, so the same key reads the same way as it does on a single row.
+	// everything inside it.
 	if f := m.railFolderAt(m.convSel); f != nil {
 		if m.convMarked == nil {
 			m.convMarked = map[string]bool{}
@@ -107,11 +77,6 @@ func (m *App) clearConvMarks() bool {
 }
 
 // pruneConvMarks drops marks for conversations that are no longer in the list.
-//
-// A reload is the honest reconciliation for a bulk delete, and without this a deleted conversation
-// would stay marked: the count would overstate the selection and the next bulk action would try to
-// write to a row that no longer exists (the table equivalent is Table.PruneMarks, called from
-// Base.LoadItems for the same reason).
 func (m *App) pruneConvMarks() {
 	if len(m.convMarked) == 0 {
 		return
@@ -129,10 +94,6 @@ func (m *App) pruneConvMarks() {
 
 // convBulkIDs returns the marked conversation ids when they constitute a BULK SELECTION, and nil
 // otherwise — the kit2 rule, including its threshold.
-//
-// The ids come back in LIST ORDER, not map order, so a bulk write is deterministic: an operator
-// watching the rail sees the rows acted on in the order they are displayed, and a partial failure
-// reports a stable set. (A map would reshuffle them run to run.)
 func (m *App) convBulkIDs() []string {
 	if len(m.convMarked) < kit2.BulkThreshold {
 		return nil
@@ -158,11 +119,6 @@ func (m *App) convMarkedIDs() []string {
 }
 
 // railSelectionStep maps a vertical key to the rail's SELECTION step — ±1, ±5.
-//
-// IT IS DELIBERATELY NOT scrollKeyDelta. That returns a LINE delta for scrolling a detail pane (±3
-// and ±12), and reusing it here moved the rail THREE rows per press: the first press of down landed on
-// row 3. The two are different units for a reason — three lines is a comfortable scroll, one row is a
-// selection — so they are separate functions rather than one with a caller that has to remember.
 func railSelectionStep(key string) int {
 	switch key {
 	case "up":
@@ -178,23 +134,12 @@ func railSelectionStep(key string) int {
 }
 
 // railOwnsVerticalKey moves the rail's selection for a vertical key, reporting whether it owned it.
-//
-// ONE implementation for the composer AND the content, because they disagreed: the rail's arrows were
-// only wired into the composer branch, so with the keyboard in the CONTENT — where the operator is
-// when reading the transcript, and what the footer's "ctrl+g composer" tells them — the arrows fell
-// through to the Ask screen. The Ask screen has a HIDDEN "conversations" source (HideSources), so its
-// cursor moved, the pane re-requested that conversation's detail, and the transcript changed while the
-// rail's highlight never moved: exactly the report — "it moves through the conversations but the
-// currently selected conversation selector is not moving".
 func (m *App) railOwnsVerticalKey(key string) bool {
 	step := railSelectionStep(key)
 	if step == 0 {
 		return false
 	}
-	// BOTH the rail being visible AND the rail being SELECTED. Visibility alone was the
-	// old test, and it is true whenever a conversation is open — so the rail claimed the
-	// vertical keys even with the transcript selected, which is the operator's "hitting
-	// enter on a conversation ... up/down" gap: there was no key left to scroll with.
+	// BOTH the rail being visible AND the rail being SELECTED.
 	if !m.railVisible() || m.active != TabAsk || m.askPane != askPaneRail {
 		return false
 	}
@@ -204,16 +149,12 @@ func (m *App) railOwnsVerticalKey(key string) bool {
 }
 
 // railItemKey handles the rail's item chords, reporting whether it owned the key.
-//
-// Called for BOTH focus levels: the chords act on the rail's own selection, so they must work wherever
-// the keyboard is. The caller is responsible for the empty-composer rule (see router.go).
 func (m *App) railItemKey(k string) (bool, tea.Cmd) {
 	if !m.railVisible() || m.active != TabAsk {
 		return false, nil
 	}
 	// A FOLDER ROW MANAGES ITS GROUPING, the same placement as the GUI's FolderItem (onToggle /
-	// onStartRename / onDelete) and the same contextual-key rule the Workers and Workflows panes use:
-	// enter toggles the arrow, `e` renames, `x` deletes.
+	// onStartRename / onDelete) and the same contextual-key rule the Workers and Workflows panes use.
 	if f := m.railFolderAt(m.convSel); f != nil {
 		switch k {
 		case "enter":
@@ -221,9 +162,7 @@ func (m *App) railItemKey(k string) (bool, tea.Cmd) {
 			m.refreshStreamStatus()
 			return true, nil
 		case categoryRenameChord:
-			// A PROJECT FOLDER IS NOT A CATEGORY. hasCat is what keeps a project's name from being
-			// renamed (or deleted) through the category chords — the chords stay available on the row
-			// and simply do not apply, rather than the rail growing a second contextual key set.
+			// A PROJECT FOLDER IS NOT A CATEGORY.
 			if !f.hasCat() {
 				return false, nil
 			}
@@ -281,11 +220,6 @@ func (m *App) railItemKey(k string) (bool, tea.Cmd) {
 		}
 		// NO BULK SELECTION → delete the conversation UNDER THE CURSOR, which is what `x` does on every
 		// other list in this client.
-		//
-		// The operator: "In conversations there is no ctrl+x to just delete 1 item. You have to select
-		// multiple first." Requiring two marks meant there was NO WAY to delete a single conversation —
-		// the one thing the key is most obviously for. A single delete still confirms, because it is
-		// irreversible and takes the messages with it.
 		idx := m.railConvIndexAt(m.convSel)
 		if idx < 0 {
 			m.dock.SetError("no conversation selected in the rail")
@@ -305,10 +239,6 @@ func (m *App) railItemKey(k string) (bool, tea.Cmd) {
 }
 
 // bulkDeleteConversations deletes each conversation, reporting how many failed.
-//
-// The deletes are BATCHED as independent commands rather than chained: each DeleteConversation is its
-// own RPC and returns its own ConversationMutatedMsg, so the list reconciles per row and one failure
-// does not hide the rest. Ordering is preserved by the ids slice (convBulkIDs returns list order).
 func (m *App) bulkDeleteConversations(ids []string) tea.Cmd {
 	if m.chat == nil {
 		m.dock.SetError("no chat client")
@@ -323,11 +253,6 @@ func (m *App) bulkDeleteConversations(ids []string) tea.Cmd {
 }
 
 // openBulkConfirm raises the shell's confirm dialog for a destructive rail operation.
-//
-// The shell hosts it for the same reason it hosts the rename and assign modals: the surface it names
-// belongs to the shell. `run` is what happens on the affirmative choice — captured here rather than
-// re-derived at confirm time, so a list change behind the dialog (the rolling refresh re-seats the
-// cursor, a stream pokes a row in) cannot retarget the write.
 func (m *App) openBulkConfirm(title, body, ok string, run func() tea.Cmd) {
 	d := kit2.Confirm(title, body, ok)
 	d.Danger = true
@@ -374,12 +299,6 @@ func (m *App) bulkConfirmView(base string, w, h int) string {
 }
 
 // railHintLine is the rail's chord list for the COMPOSER's affordance row.
-//
-// It used to be rendered INSIDE the rail, and that was wrong twice over: the rail's inner width is 28
-// cells against a 34-cell chord list, so it was TRUNCATED mid-word ("ctrl+n: rename · ctrl+t: ca…" —
-// the operator's screenshot), and the rail is not where the keys live. The composer is: the rail's
-// keys are driven from there, and the operator asked for the move — "put the shortcuts in the composer
-// on conversations instead of in that pane".
 func (m *App) railHintLine() string {
 	if !m.railVisible() {
 		return ""
@@ -392,9 +311,8 @@ func (m *App) railHintLine() string {
 		conversationRenameChord+": rename",
 		conversationCategorizeChord+": categorize",
 	)
-	// A FOLDER ROW answers its own keys, and the composer is where they are advertised (the rail is where
-	// the operator looks, the composer is where the keys live). Naming them only for folder rows keeps the
-	// hint about what the cursor can actually do.
+	// A FOLDER ROW answers its own keys, and the composer is where they are advertised (the rail is
+	// where the operator looks, the composer is where the keys live).
 	if f := m.railFolderAt(m.convSel); f != nil {
 		if f.hasCat() {
 			parts = append(parts, "enter: collapse/expand", categoryRenameChord+": rename group", categoryDeleteChord+": delete group")

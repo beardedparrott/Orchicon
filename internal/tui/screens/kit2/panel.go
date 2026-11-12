@@ -1,10 +1,5 @@
-// Package kit2 is the screen & interaction re-architecture: bordered
-// focus-aware panels, typed forms, entity-bound actions, modal dialogs,
-// first-class streams, sortable/tree tables, the focus model, and a screen
-// model built on all of them.
-//
-// It deliberately keeps screenkit's leaf widgets (List/Detail/Frame) — kit2
-// composes them inside Panels rather than rewriting them.
+// Package kit2 is the screen & interaction re-architecture: bordered focus-aware panels, typed
+// forms, entity-bound actions, modal dialogs, first-class streams, sortable/tree tables.
 package kit2
 
 import (
@@ -16,10 +11,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// Panel is a bordered, titled, focus-aware region. It replaces the ad-hoc
-// paneW/PaneGap arithmetic screens used to hand-roll: a Panel renders
-// EXACTLY Width×Height cells (border included) so panels tile the content
-// region without drift.
+// Panel is a bordered, titled, focus-aware region.
 type Panel struct {
 	Title   string
 	Focused bool
@@ -220,9 +212,8 @@ func Pad(s string, w int) string {
 	return s
 }
 
-// FitLines normalizes content into exactly h lines of w cells (ANSI-aware),
-// painting the opaque screen background on every padding cell. Same contract
-// as screenkit.Frame, exported here so kit2 widgets can size themselves.
+// FitLines normalizes content into exactly h lines of w cells (ANSI-aware), painting the opaque
+// screen background on every padding cell.
 func FitLines(content string, w, h int) string {
 	if w < 1 || h < 1 {
 		return content
@@ -232,10 +223,8 @@ func FitLines(content string, w, h int) string {
 		lines = lines[:h]
 	}
 	for i, l := range lines {
-		// theme.OpaquePanel (not Opaque) so an inner style's reset cannot
-		// leave a cell on the TERMINAL's background. Opaque repairs with the APP
-		// background, which on a transparent theme is unpainted and would punch a
-		// hole through the panel it is drawing — see theme.OpaquePanel.
+		// theme.OpaquePanel (not Opaque) so an inner style's reset cannot leave a cell on the TERMINAL's
+		// background.
 		lines[i] = theme.OpaquePanel(l, w)
 	}
 	for len(lines) < h {

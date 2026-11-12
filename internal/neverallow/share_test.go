@@ -1,13 +1,6 @@
 package neverallow_test
 
 // share_test.go — THE SHARING PROOF.
-//
-// The acceptance criterion is that the execution guard and the opencode config
-// consume the SAME declaration, "not two lists that agree today". A test that
-// compared two independently written lists would pass after they diverged in
-// intent (the lists agree until someone edits one). So the proof is MUTATION:
-// a sentinel appended to the shared declaration must show up in BOTH consumers'
-// output without either of them being touched.
 
 import (
 	"os"
@@ -67,11 +60,8 @@ func TestConfigProfilesConsumeTheSharedCommandClass(t *testing.T) {
 	}
 }
 
-// The CLAUDE worker adapter consumes the shared command class too: a sentinel
-// appended to the declaration must show up in the PreToolUse hook's refusal for
-// that command, with no edit to internal/claude. This is what makes the claude
-// worker's restrictions and the opencode worker's restrictions ONE declaration
-// rather than two that agree today.
+// The CLAUDE worker adapter consumes the shared command class too: a sentinel appended to the
+// declaration must show up in the PreToolUse hook's refusal for that command.
 func TestClaudeHookConsumesTheSharedCommandClass(t *testing.T) {
 	const sentinel = "orchicon-neverallow-sentinel *"
 	orig := append([]string(nil), neverallow.CommandPatterns...)
@@ -100,10 +90,7 @@ func TestClaudeHookConsumesTheSharedCommandClass(t *testing.T) {
 	}
 }
 
-// THE ANTI-DUPLICATION SCAN. Neither consumer may restate a member of the class
-// as a literal — that is exactly the second list this package exists to remove.
-// It scans for the QUOTED string forms (a Go string literal or a struct field),
-// so the prose comments that legitimately name the class are not false hits.
+// THE ANTI-DUPLICATION SCAN.
 func TestTheClassIsNotRestatedInItsConsumers(t *testing.T) {
 	literals := make([]string, 0, len(neverallow.CommandPatterns)+len(neverallow.Binaries))
 	for _, p := range neverallow.CommandPatterns {
@@ -115,9 +102,8 @@ func TestTheClassIsNotRestatedInItsConsumers(t *testing.T) {
 		}
 	}
 
-	// BOTH worker-adapters' restriction layers are scanned: the claude launch
-	// (permissions.go) and its PreToolUse decision core (hook.go) must consume the
-	// declaration, never re-state it.
+	// BOTH worker-adapters' restriction layers are scanned: the claude launch (permissions.go) and its
+	// PreToolUse decision core (hook.go) must consume the declaration, never re-state it.
 	for _, file := range []string{
 		"../guard/guard.go",
 		"../opencode/config.go",

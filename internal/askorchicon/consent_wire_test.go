@@ -1,16 +1,7 @@
 package askorchicon
 
-// consent_wire_test.go — the QA pass over the CLIENT-VISIBLE surface of the
-// consent core, exercised the way a client sees it:
-//
-//   - what the ask card actually carries on the ChatStreamResponse wire (the
-//     AC: "an ask reaches the client carrying the tool name and the target path
-//     (or the command) — never just an opaque id"), asserted after a proto
-//     encode/decode round trip so a missing oneof/field cannot pass;
-//   - the whole reply path against a real turn: an ask raised on the bus →
-//     registered → answered through the ReplyPermissionAsk RPC → the drain
-//     loop wakes and answers the SERVE. Every choice is asserted at the serve
-//     boundary (always `once`/`reject`) and at the grant store.
+// consent_wire_test.go — the QA pass over the CLIENT-VISIBLE surface of the consent core, exercised
+// the way a client sees it:
 
 import (
 	"context"
@@ -25,9 +16,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
 
-// TestEmitPermissionAskCarriesToolAndTargetOnTheWire pins the card's fields
-// and proves they survive the transport (a field the client cannot read is not
-// "carried to the client").
+// TestEmitPermissionAskCarriesToolAndTargetOnTheWire pins the card's fields and proves they survive
+// the transport (a field the client cannot read is not "carried to the client").
 func TestEmitPermissionAskCarriesToolAndTargetOnTheWire(t *testing.T) {
 	fileAsk := &pendingAsk{
 		AskID:          "per_1",
@@ -63,9 +53,8 @@ func TestEmitPermissionAskCarriesToolAndTargetOnTheWire(t *testing.T) {
 	if pa.GetSummary() == "" {
 		t.Fatal("card summary is empty — an opaque id is not a card")
 	}
-	// The precedence note the card needs: a deny entry under the granted
-	// directory still wins, so the card says so rather than offering a grant
-	// that will be refused for those paths.
+	// The precedence note the card needs: a deny entry under the granted directory still wins, so the
+	// card says so rather than offering a grant that will be refused for those paths.
 	if got := pa.GetDenyEntriesBelow(); len(got) != 1 || got[0] != "/p/sibling/private/**" {
 		t.Fatalf("deny_entries_below = %v, want the deny entry below the directory", got)
 	}
@@ -129,10 +118,7 @@ func waitForAsk(t *testing.T, s *Service, convID, askID string) {
 	}
 }
 
-// askBusEvents feeds the real two-event shape an MCP/host-suite ask arrives as:
-// the tool part (which carries the call's ARGS) then the permission.asked keyed
-// by that call's id (which carries none of its own). The consent layer must
-// still know the target.
+// askBusEvents feeds the real two-event shape an MCP/host-suite ask arrives as.
 func mcpAskBusEvents() []opencode.BusEvent {
 	return []opencode.BusEvent{
 		{Type: "message.part.updated", Properties: map[string]any{
@@ -150,12 +136,8 @@ func mcpAskBusEvents() []opencode.BusEvent {
 	}
 }
 
-// TestReplyPermissionAskDrivesATurnEndToEnd walks the whole reply path for
-// each of the three choices: the ask is raised on the bus and REGISTERED (never
-// blindly approved), the client answers through the RPC, the drain loop wakes
-// and answers the serve. The value the serve sees is always `once` or `reject`
-// — the SESSION decision lives in our grant store (AC9) — and the grant store
-// reflects the choice (AC4/AC5/AC6).
+// TestReplyPermissionAskDrivesATurnEndToEnd walks the whole reply path for each of the three
+// choices: the ask is raised on the bus and REGISTERED (never blindly approved).
 func TestReplyPermissionAskDrivesATurnEndToEnd(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -230,11 +212,8 @@ func TestReplyPermissionAskDrivesATurnEndToEnd(t *testing.T) {
 	}
 }
 
-// TestAnsweringASessionAskKeepsTheAbsoluteTargetOffTheConversationProject is
-// the wire-level companion to the extraction fix: an ask whose ONLY detail is
-// the correlated args of an `orchicon_*` tool call reaches the card carrying
-// that target, and allow_session grants the TARGET's directory — not the
-// conversation's project.
+// TestAnsweringASessionAskKeepsTheAbsoluteTargetOffTheConversationProject is the wire-level
+// companion to the extraction fix.
 func TestAnsweringASessionAskKeepsTheAbsoluteTargetOffTheConversationProject(t *testing.T) {
 	s := &Service{log: slog.Default(), grants: newGrantStore(), pending: newPendingAskRegistry()}
 	client := &fakeSessionClient{}
@@ -298,9 +277,8 @@ func TestAnsweringASessionAskKeepsTheAbsoluteTargetOffTheConversationProject(t *
 // is a wire message naming the ask and the outcome on the same fan-out the ask
 // itself rode.
 
-// TestApplyClientRepliesReportsWhatItApplied is the load-bearing half: the
-// caller cannot publish a resolution it was never told about, so an empty
-// return here is the bug re-appearing as silence.
+// TestApplyClientRepliesReportsWhatItApplied is the load-bearing half: the caller cannot publish a
+// resolution it was never told about, so an empty return here is the bug re-appearing as silence.
 func TestApplyClientRepliesReportsWhatItApplied(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
@@ -326,10 +304,8 @@ func TestApplyClientRepliesReportsWhatItApplied(t *testing.T) {
 	}
 }
 
-// TestApplyClientRepliesPublishesNothingWhenNothingWasApplied is the other
-// direction, and the reason the return value is a REPORT rather than a scan:
-// an ask the operator has not answered must not be published as settled, or the
-// card would vanish from a watching client while the turn is still waiting on it.
+// TestApplyClientRepliesPublishesNothingWhenNothingWasApplied is the other direction, and the
+// reason the return value is a REPORT rather than a scan.
 func TestApplyClientRepliesPublishesNothingWhenNothingWasApplied(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
@@ -348,9 +324,8 @@ func TestApplyClientRepliesPublishesNothingWhenNothingWasApplied(t *testing.T) {
 	}
 }
 
-// TestApplyClientRepliesReportsAQuestionAnswer pins that a QUESTION settles the
-// card too, and carries the operator's words — the watching client shows what
-// was answered rather than only that something was.
+// TestApplyClientRepliesReportsAQuestionAnswer pins that a QUESTION settles the card too, and
+// carries the operator's words.
 func TestApplyClientRepliesReportsAQuestionAnswer(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
@@ -376,9 +351,8 @@ func TestApplyClientRepliesReportsAQuestionAnswer(t *testing.T) {
 	}
 }
 
-// TestEmitAskResolutionSurvivesTheTransport asserts the message the clients
-// actually read, after a proto round trip — a field the client cannot decode is
-// not "published to the client".
+// TestEmitAskResolutionSurvivesTheTransport asserts the message the clients actually read, after a
+// proto round trip — a field the client cannot decode is not "published to the client".
 func TestEmitAskResolutionSurvivesTheTransport(t *testing.T) {
 	var got []*apiv1.ChatStreamResponse
 	emitAskResolution(func(r *apiv1.ChatStreamResponse) { got = append(got, r) }, "conv_1",
@@ -423,9 +397,7 @@ func TestEmitAskResolutionIgnoresNilEmit(t *testing.T) {
 	emitAskResolution(nil, "conv_1", askResolution{AskID: "per_1", Outcome: "deny"})
 }
 
-// TestResolutionOutcomeNamesEveryChoiceDistinctly pins the wire vocabulary. Two
-// choices collapsing onto one name would tell a watching client that a DENIED
-// write was granted — the one failure a consent surface must not have.
+// TestResolutionOutcomeNamesEveryChoiceDistinctly pins the wire vocabulary.
 func TestResolutionOutcomeNamesEveryChoiceDistinctly(t *testing.T) {
 	cases := []struct {
 		in   apiv1.PermissionChoice
@@ -446,23 +418,15 @@ func TestResolutionOutcomeNamesEveryChoiceDistinctly(t *testing.T) {
 		}
 		seen[got] = tc.in
 	}
-	// An UNSPECIFIED choice never reaches here (consentResponse rejects it), so
-	// the default arm is only ever ALLOW_ONCE — assert the assumption holds, so a
-	// future choice cannot silently inherit an "allow".
+	// An UNSPECIFIED choice never reaches here (consentResponse rejects it), so the default arm is only
+	// ever ALLOW_ONCE — assert the assumption holds.
 	if _, ok := consentResponse(apiv1.PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED); ok {
 		t.Fatal("consentResponse accepted UNSPECIFIED — resolutionOutcome's default could then report an allow for a choice nobody made")
 	}
 }
 
-// TestFinalizePublishesTheResolutionForEveryAskItSettles is the OTHER half of the
-// cross-client settling, and the half the operator was still seeing.
-//
-// A decision applied mid-turn is published by applyClientReplies, so the client that did NOT
-// answer settles. A decision that lands AS THE TURN ENDS, and an ask that simply runs out of
-// time, are both settled by finalize instead — and finalize published NOTHING, so every other
-// client kept a live-looking, clickable, inert card. That is the reported "the GUI and TUI
-// are still not in sync": it depended on WHERE the decision happened to land, which is why it
-// looked intermittent.
+// TestFinalizePublishesTheResolutionForEveryAskItSettles is the OTHER half of the cross-client
+// settling, and the half the operator was still seeing.
 func TestFinalizePublishesTheResolutionForEveryAskItSettles(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
@@ -531,17 +495,6 @@ func TestFinalizeWithNoStreamIsSilent(t *testing.T) {
 }
 
 // TestTheDecisionsRecordCarriesTheAskID is the DURABLE half of cross-client settling.
-//
-// The live stream event settles a card in a client that is watching the turn, and that was
-// the whole of the previous fix — which is why the operator kept seeing it come back: a
-// second tab, another device, or the same page after a reload never saw that event, and the
-// persisted transcript could not help because the decision record's id was a sequential
-// `perm-1`, `perm-2`, … that no client could attach to an ask.
-//
-// The record now carries the ADAPTER's ask id, so a client holding a card can look up what
-// became of it in the transcript — which is the server's own truth, survives a restart, and
-// is readable by every client. This asserts the id and the verdict vocabulary a client has
-// to map from.
 func TestTheDecisionsRecordCarriesTheAskID(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
@@ -574,9 +527,7 @@ func TestTheDecisionsRecordCarriesTheAskID(t *testing.T) {
 		t.Fatalf("unmarshal results: %v", err)
 	}
 
-	// BOTH records carry the ask id: the `ask` that raised the card, and the decision. A
-	// client needs the decision's id to settle, and matching on ANY record with this id is
-	// what the client-side lookup does.
+	// BOTH records carry the ask id: the `ask` that raised the card, and the decision.
 	for _, want := range []string{"permission.ask", "permission.user_PERMISSION_CHOICE_ALLOW_SESSION"} {
 		found := false
 		for _, c := range calls {

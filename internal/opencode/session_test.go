@@ -115,11 +115,8 @@ func TestLegacyEventFromBus(t *testing.T) {
 	}
 }
 
-// TestToolStartFromBus verifies the raw-bus-event tool-start signal the
-// in-flight tool-hang watchdog arms on: a tool part still in flight
-// (status "running" or absent) is a start; a resolved part (completed /
-// error) is NOT (the legacy mapping handles it as a tool_use resolution);
-// non-tool and non-message events are not starts.
+// TestToolStartFromBus verifies the raw-bus-event tool-start signal the in-flight tool-hang
+// watchdog arms on: a tool part still in flight (status "running" or absent) is a start.
 func TestToolStartFromBus(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -188,11 +185,8 @@ func TestToolStartFromBus(t *testing.T) {
 	}
 }
 
-// TestTokenDeltaFromBus verifies the mid-generation delta detection: streamed
-// text/reasoning deltas (modern `message.part.delta` and legacy
-// `message.part.updated`-with-delta shapes) are recognized so the progress
-// monitors can count a slow generation as alive, while completed parts and
-// non-token events are excluded.
+// TestTokenDeltaFromBus verifies the mid-generation delta detection: streamed text/reasoning deltas
+// (modern `message.part.delta` and legacy `message.part.updated`-with-delta shapes).
 func TestTokenDeltaFromBus(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -338,12 +332,8 @@ func TestSubscriptionCloseUnblocks(t *testing.T) {
 	pw.Close()
 }
 
-// TestStallReasonSurvivesAbortEcho verifies the abort-path ordering fix
-// (D2): when a fatal stall fires, the terminal reason is recorded BEFORE the
-// session is aborted, so the serve's `session.error: Aborted` echo is a no-op
-// and the true cause (e.g. stalled:no_progress) survives into OnResult. This
-// is the exact-300s Aborted root cause: previously onStall aborted first and
-// recordStreamError could win the finish() race and mask the stall reason.
+// TestStallReasonSurvivesAbortEcho verifies the abort-path ordering fix (D2): when a fatal stall
+// fires, the terminal reason is recorded BEFORE the session is aborted.
 func TestStallReasonSurvivesAbortEcho(t *testing.T) {
 	// The Abort HTTP call lands on a local test server (error ignored by
 	// onStall, but the call must not hit the network).
@@ -387,9 +377,8 @@ func TestStallReasonSurvivesAbortEcho(t *testing.T) {
 	}
 }
 
-// TestRecordStreamErrorGuard verifies recordStreamError on an already-finished
-// run is a no-op (the abort-echo guard): it must not re-mark health, bump the
-// recycle counter, or change the terminal reason.
+// TestRecordStreamErrorGuard verifies recordStreamError on an already-finished run is a no-op (the
+// abort-echo guard): it must not re-mark health, bump the recycle counter.
 func TestRecordStreamErrorGuard(t *testing.T) {
 	callbacks := &liveCallbacks{}
 	r := &sessionRun{
@@ -458,10 +447,8 @@ func TestSessionRunAllTurnsDone(t *testing.T) {
 	}
 }
 
-// TestCompletionProbeDecision covers the pure decision core of the
-// completion-signal probe (H1): a session that goes idle with the decision
-// marker present settles; one without the marker gets probed while budget
-// remains and fails once the budget is spent.
+// TestCompletionProbeDecision covers the pure decision core of the completion-signal probe (H1): a
+// session that goes idle with the decision marker present settles.
 func TestCompletionProbeDecision(t *testing.T) {
 	now := time.Now()
 	withMarker := "Did the work.\n\nORCHICON WORKER SUMMARY: success — done"
@@ -504,11 +491,8 @@ func TestCompletionProbeDecision(t *testing.T) {
 			wantProbe: false, wantFail: true,
 		},
 		{
-			// 2026-09-09 liveness-kill regression (WI: liveness kills
-			// workers): probe #1 was answered by the model seconds later;
-			// when the next idle re-entered the decision INSIDE the probe
-			// cooldown, the old logic returned (fail) and killed an
-			// actively-streaming session. The cooldown must mean WAIT.
+			// 2026-09-09 liveness-kill regression (WI: liveness kills workers): probe #1 was answered by the
+			// model seconds later; when the next idle re-entered the decision INSIDE the probe cooldown.
 			name:      "cooldown after a recent probe waits, never fails (live-kill regression)",
 			output:    withoutMarker,
 			nudges:    1,
@@ -555,10 +539,8 @@ func TestCompletionProbeDecision(t *testing.T) {
 	}
 }
 
-// TestCompletionProbeSuppressedAfterCompact verifies that a compacted run's
-// markerless session.idle is a mid-task pause, NOT a truncated final turn: the
-// completion probe must not interject (and the budget-exhausted fail must not
-// fire) while the run has been compacted. A marker-present idle still settles.
+// TestCompletionProbeSuppressedAfterCompact verifies that a compacted run's markerless session.idle
+// is a mid-task pause, NOT a truncated final turn.
 func TestCompletionProbeSuppressedAfterCompact(t *testing.T) {
 	now := time.Now()
 	mkRun := func(output string, nudges int, compacted bool) *sessionRun {
@@ -606,10 +588,8 @@ func TestCompletionProbeSuppressedAfterCompact(t *testing.T) {
 		t.Fatal("compacted mid-task pause must not fail the run on the missing marker")
 	}
 
-	// Markerless + NOT compacted + budget spent → still fails (probe budget
-	// exhausted remains the terminal guard for non-compacted runs). The run
-	// is armed (workStarted — tool work has begun) so the probe-startup
-	// guard does not shadow the budget check being pinned here.
+	// Markerless + NOT compacted + budget spent → still fails (probe budget exhausted remains the
+	// terminal guard for non-compacted runs).
 	r = mkRun("plain text pause", nudgeMax(), false)
 	r.workStarted = true
 	if v := r.maybeProbeCompletion(); !v {
@@ -623,11 +603,8 @@ func TestCompletionProbeSuppressedAfterCompact(t *testing.T) {
 	}
 }
 
-// TestStallNudgeFirstEscalation verifies the nudge-first routing core (the
-// exact repro of the blocked-write loop): an advisory stall (repetition /
-// text_loop / no_file_progress) nudges the live session instead of killing
-// it, and only escalates to a fatal kill + recovery after the nudge budget
-// (nudgeMax) is spent. no_progress stays fatal from the first trip.
+// TestStallNudgeFirstEscalation verifies the nudge-first routing core (the exact repro of the
+// blocked-write loop).
 func TestStallNudgeFirstEscalation(t *testing.T) {
 	// The Abort / SendMessage HTTP calls land on a local test server.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
@@ -643,9 +620,8 @@ func TestStallNudgeFirstEscalation(t *testing.T) {
 		client:    client,
 		done:      make(chan struct{}),
 		stats:     &execStreamState{},
-		// Explicit budget of 2 nudges; reply window long enough that the
-		// background probe-timeout goroutine never fires during the test;
-		// cooldown negligible so consecutive trips can nudge.
+		// Explicit budget of 2 nudges; reply window long enough that the background probe-timeout goroutine
+		// never fires during the test; cooldown negligible so consecutive trips can nudge.
 		nudgeMaxVal:         2,
 		nudgeReplyWindowVal: time.Hour,
 		nudgeCooldownVal:    time.Nanosecond,
@@ -699,9 +675,8 @@ func TestStallNudgeFirstEscalation(t *testing.T) {
 	}
 }
 
-// TestStallNoProgressFatal verifies no_progress stays FATAL from the first
-// trip — total silence means there is no responsive surface to nudge, so it
-// aborts immediately rather than nudging.
+// TestStallNoProgressFatal verifies no_progress stays FATAL from the first trip — total silence
+// means there is no responsive surface to nudge, so it aborts immediately rather than nudging.
 func TestStallNoProgressFatal(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 	defer srv.Close()
@@ -730,20 +705,8 @@ func TestStallNoProgressFatal(t *testing.T) {
 	}
 }
 
-// TestToolHangWatchdogFiresAndLoopCompletes is the D6 mock-provider test:
-// a tool call goes silent for longer than the hang window. The watchdog
-// must (1) latch once, (2) fire the advisory OnStall with the
-// stalled:tool_hang: reason, (3) inject the course-correcting redirect as
-// the next user turn (SendMessage lands on the mock provider), (4) record
-// the redirect in the durable transcript, and (5) NOT re-fire on a second
-// hang (latch is once per session). The run then completes normally.
-//
-// The tool call is driven through the FULL handleEvent pipeline — the raw
-// `message.part.updated` bus events a real serve emits — so this test also
-// proves the PRODUCTION arming path (D6 review finding): the watchdog arms
-// from the raw tool-start event (status "running"), not from the
-// LegacyEventFromBus completed/error mapping, which never fires for a hung
-// tool.
+// TestToolHangWatchdogFiresAndLoopCompletes is the D6 mock-provider test: a tool call goes silent
+// for longer than the hang window.
 func TestToolHangWatchdogFiresAndLoopCompletes(t *testing.T) {
 	var (
 		mu         sync.Mutex
@@ -799,10 +762,8 @@ func TestToolHangWatchdogFiresAndLoopCompletes(t *testing.T) {
 	// A short manual probe timeout would otherwise fire in the background;
 	// the monitor is not started here so no probe goroutines run.
 
-	// The tool call STARTS through the real event pipeline: the raw bus
-	// event carries a tool part with status "running" (the serve's shape
-	// while the tool executes). handleEvent must arm the hang watchdog from
-	// this event alone.
+	// The tool call STARTS through the real event pipeline: the raw bus event carries a tool part with
+	// status "running" (the serve's shape while the tool executes).
 	r.handleEvent(BusEvent{Type: "message.part.updated", Properties: map[string]any{
 		"sessionID": "ses-toolhang",
 		"part":      map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "running"}},
@@ -850,9 +811,7 @@ func TestToolHangWatchdogFiresAndLoopCompletes(t *testing.T) {
 	if !found {
 		t.Fatalf("redirect not recorded in transcript; parts=%+v", parts)
 	}
-	// (5) A second hang does NOT re-fire (latch is once per session). The
-	// second call starts through the pipeline too — with the latch already
-	// set, checkToolHang must no-op.
+	// (5) A second hang does NOT re-fire (latch is once per session).
 	r.handleEvent(BusEvent{Type: "message.part.updated", Properties: map[string]any{
 		"sessionID": "ses-toolhang",
 		"part":      map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "running"}},
@@ -866,9 +825,8 @@ func TestToolHangWatchdogFiresAndLoopCompletes(t *testing.T) {
 		t.Fatalf("second hang re-fired the watchdog (hangSends=%d), want 1 (latched)", hangN)
 	}
 
-	// The loop continues and completes: the tool resolves (the serve emits
-	// the completed part) and the run ends successfully — the watchdog
-	// never poisoned the run.
+	// The loop continues and completes: the tool resolves (the serve emits the completed part) and the
+	// run ends successfully — the watchdog never poisoned the run.
 	r.handleEvent(BusEvent{Type: "message.part.updated", Properties: map[string]any{
 		"sessionID": "ses-toolhang",
 		"part":      map[string]any{"type": "tool", "tool": "bash", "state": map[string]any{"status": "completed", "output": "ok"}},
@@ -877,20 +835,15 @@ func TestToolHangWatchdogFiresAndLoopCompletes(t *testing.T) {
 		t.Fatal("tool resolution must disarm the hang watchdog")
 	}
 	r.handleEvent(BusEvent{Type: "session.idle", Properties: map[string]any{"sessionID": "ses-toolhang"}})
-	// The run's finish path is exercised by the run loop; here we verify the
-	// watchdog left the run in a state where completion is still reachable:
-	// finished must be false (no fatal kill from the watchdog) and the
-	// latch is the only side effect.
+	// The run's finish path is exercised by the run loop; here we verify the watchdog left the run in a
+	// state where completion is still reachable.
 	if r.isFinished() {
 		t.Fatal("watchdog must not kill the session; finished should remain false")
 	}
 }
 
-// TestToolHangNoFalsePositiveOnLongGeneration is the D6 false-positive
-// regression: a tool call that COMPLETES must immediately disarm the hang
-// watchdog, so the model's long post-tool generation (text streaming after
-// the tool's completed part) never trips a hang. The watchdog fires only
-// for a call that is genuinely silent WHILE in flight.
+// TestToolHangNoFalsePositiveOnLongGeneration is the D6 false-positive regression: a tool call that
+// COMPLETES must immediately disarm the hang watchdog.
 func TestToolHangNoFalsePositiveOnLongGeneration(t *testing.T) {
 	var (
 		mu        sync.Mutex
@@ -945,9 +898,8 @@ func TestToolHangNoFalsePositiveOnLongGeneration(t *testing.T) {
 	if r.toolInFlight() {
 		t.Fatal("tool completion must disarm the hang watchdog immediately")
 	}
-	// The model's long post-tool generation (token deltas + a completed text
-	// part) flows for far longer than the window — the watchdog must not
-	// fire because no tool is in flight.
+	// The model's long post-tool generation (token deltas + a completed text part) flows for far longer
+	// than the window — the watchdog must not fire because no tool is in flight.
 	for i := 0; i < 6; i++ {
 		r.handleEvent(BusEvent{Type: "message.part.delta", Properties: map[string]any{
 			"sessionID": "ses-toolhang-fp", "delta": "streaming text ",
@@ -993,13 +945,8 @@ func TestCompletionProbeReplyClassification(t *testing.T) {
 	}
 }
 
-// 2026-09-09 probe-startup guard (transcript 01M23C2MTF1ZYYHE8ACK17PMKV,
-// native parity in qa_completion_test.go): the probe fired 6s after
-// dispatch — BEFORE the model streamed a token — because an empty/instant
-// first turn read as a "cut-off summary". A session with NO work evidence
-// (no tool call yet) cannot be cut off mid-summary. While workStarted is
-// false, a markerless idle must WAIT (no probe, no fail, no settle); the
-// gate arms from the first tool call (observeToolStart).
+// 2026-09-09 probe-startup guard (transcript 01M23C2MTF1ZYYHE8ACK17PMKV, native parity in
+// qa_completion_test.go): the probe fired 6s after dispatch — BEFORE the model streamed a token.
 func TestCompletionProbeStartupGuardWaitsBeforeWork(t *testing.T) {
 	mkRun := func(output string, workStarted bool) *sessionRun {
 		r := &sessionRun{
@@ -1038,9 +985,8 @@ func TestCompletionProbeStartupGuardWaitsBeforeWork(t *testing.T) {
 		t.Fatal("pre-work markerless idle must not fail (the incident's 6s probe is forbidden)")
 	}
 
-	// Markerless + NO work + budget spent → STILL waits (the startup guard
-	// precedes the budget check — a never-started session is the
-	// wall-clock ladder's owner, not this gate).
+	// Markerless + NO work + budget spent → STILL waits (the startup guard precedes the budget check —
+	// a never-started session is the wall-clock ladder's owner, not this gate).
 	r = mkRun("", false)
 	r.nudgesSent = nudgeMax()
 	if v := r.maybeProbeCompletion(); !v {

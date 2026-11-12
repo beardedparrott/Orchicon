@@ -1,16 +1,6 @@
 package orchicon
 
 // askpressure_notice_test.go — a collapse must reach the transcript, not just the log.
-//
-// The proactive pressure gate compacts INSIDE the bridge, which has no database
-// handle. Before the notice sink existed, it therefore left exactly one trace: a
-// WARN line in the server log. Prod's own log shows what that costs — a conversation
-// of 2,343 messages collapsed into a summary, mid-conversation, with nothing in the
-// transcript the operator was reading to say so.
-//
-// These tests pin that the gate REPORTS a real compaction with enough detail to name
-// what was lost and where the original went, and that it reports nothing when
-// nothing collapsed.
 
 import (
 	"context"
@@ -24,10 +14,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// windowTestProvider arms the pressure gate. chatTestProvider.ListModels returns no
-// models, and a gate with no live window hint stays DISARMED by design
-// ("compaction must never guess a window"), so a test of the gate needs a provider
-// that reports one.
+// windowTestProvider arms the pressure gate.
 type windowTestProvider struct {
 	*chatTestProvider
 	model  string
@@ -96,9 +83,8 @@ func pressureTestBridge(t *testing.T, dir string, promptTokens, window int64) (*
 	return b, sid, prov
 }
 
-// TestAPressureCompactionReportsADurableNotice is the fix: the collapse that prod
-// performed silently now produces a record carrying what happened and where the
-// original went.
+// TestAPressureCompactionReportsADurableNotice is the fix: the collapse that prod performed
+// silently now produces a record carrying what happened and where the original went.
 func TestAPressureCompactionReportsADurableNotice(t *testing.T) {
 	dir := t.TempDir()
 	// 990 of a 1000-token window is over the 0.95 threshold.
@@ -139,9 +125,8 @@ func TestAPressureCompactionReportsADurableNotice(t *testing.T) {
 	}
 }
 
-// TestAGateThatDoesNotFireReportsNoNotice is the other half: a COMPACTION is what
-// earns a marker, so a gate that stays under the threshold — the overwhelmingly
-// common case — must report nothing at all.
+// TestAGateThatDoesNotFireReportsNoNotice is the other half: a COMPACTION is what earns a marker,
+// so a gate that stays under the threshold — the overwhelmingly common case.
 func TestAGateThatDoesNotFireReportsNoNotice(t *testing.T) {
 	dir := t.TempDir()
 	b, sid, prov := pressureTestBridge(t, dir, 900, 1000) // 90%, under the 0.95 threshold
@@ -164,10 +149,7 @@ func TestAGateThatDoesNotFireReportsNoNotice(t *testing.T) {
 	}
 }
 
-// TestANoticeRecordingFailureDoesNotBreakTheCompaction pins the error posture. The
-// collapse has already been applied and cannot be undone, so a sink that fails must
-// be survivable: the transcript loses its marker, the conversation does not lose its
-// ability to continue.
+// TestANoticeRecordingFailureDoesNotBreakTheCompaction pins the error posture.
 func TestANoticeRecordingFailureDoesNotBreakTheCompaction(t *testing.T) {
 	dir := t.TempDir()
 	b, sid, prov := pressureTestBridge(t, dir, 990, 1000)
@@ -188,9 +170,8 @@ func TestANoticeRecordingFailureDoesNotBreakTheCompaction(t *testing.T) {
 	}
 }
 
-// TestAnUnwiredSinkIsNotAnError pins the nil path: a plane with no Ask service (or a
-// bare test bridge) keeps the log line as the only record, which was the behaviour
-// before the sink existed.
+// TestAnUnwiredSinkIsNotAnError pins the nil path: a plane with no Ask service (or a bare test
+// bridge) keeps the log line as the only record, which was the behaviour before the sink existed.
 func TestAnUnwiredSinkIsNotAnError(t *testing.T) {
 	dir := t.TempDir()
 	b, sid, prov := pressureTestBridge(t, dir, 990, 1000)

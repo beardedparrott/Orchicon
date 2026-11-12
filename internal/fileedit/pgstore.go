@@ -7,9 +7,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// PGStore is the Postgres-backed Store: ledger rows persist in
-// file_edit_ledger through db.AppendFileEditLedger (same pool/tx style as
-// every other table; SQL lives in internal/db per repo convention).
+// PGStore is the Postgres-backed Store: ledger rows persist in file_edit_ledger through
+// db.AppendFileEditLedger (same pool/tx style as every other table.
 type PGStore struct {
 	pool *db.Pool
 }

@@ -16,11 +16,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workerrestrict"
 )
 
-// opencodeConfigPath returns the path to the opencode config file
-// (opencode.json or opencode.jsonc) by checking, in order:
-//  1. OPENCODE_CONFIG_DIR/<file>
-//  2. $XDG_CONFIG_HOME/opencode/<file>
-//  3. ~/.config/opencode/<file>
+// opencodeConfigPath returns the path to the opencode config file (opencode.json or opencode.jsonc)
+// by checking, in order: 1.
 func openCodeConfigPath() string {
 	dir := os.Getenv("OPENCODE_CONFIG_DIR")
 	if dir != "" {
@@ -62,9 +59,7 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-// readOpenCodeConfig reads the user's opencode config file and returns
-// the raw map. Returns nil if the file cannot be read. If log is nil,
-// warnings are suppressed.
+// readOpenCodeConfig reads the user's opencode config file and returns the raw map.
 func readOpenCodeConfig(log *slog.Logger) map[string]any {
 	if log == nil {
 		log = slog.Default()
@@ -86,11 +81,8 @@ func readOpenCodeConfig(log *slog.Logger) map[string]any {
 	return cfg
 }
 
-// stripJSONC removes // and /* */ comments and trailing commas from a
-// JSONC document while preserving string contents. opencode config files
-// (.jsonc) routinely contain comments and trailing commas that strict
-// json.Unmarshal rejects. Two passes: comments first, then trailing commas
-// (a comment may sit between a comma and the closing brace).
+// stripJSONC removes // and /* */ comments and trailing commas from a JSONC document while
+// preserving string contents.
 func stripJSONC(data []byte) []byte {
 	return stripTrailingCommas(stripJSONCComments(data))
 }
@@ -171,9 +163,7 @@ func stripTrailingCommas(data []byte) []byte {
 	return out
 }
 
-// readMCPServers extracts the MCP server definitions from the user's
-// opencode config. It checks both the `mcp` key (opencode schema) and
-// `mcpServers` key (MCP standard) for compatibility.
+// readMCPServers extracts the MCP server definitions from the user's opencode config.
 func readMCPServers(log *slog.Logger) map[string]any {
 	cfg := readOpenCodeConfig(log)
 	if cfg == nil {
@@ -198,8 +188,6 @@ func readMCPServers(log *slog.Logger) map[string]any {
 }
 
 // normalizeMCPEntries ensures every MCP entry has proper structure.
-// opencode expects the `command` field as an array of strings, but
-// some configs may store it as a single string — normalize it.
 func normalizeMCPEntries(entries map[string]any) map[string]any {
 	result := make(map[string]any, len(entries))
 	for name, entry := range entries {
@@ -238,115 +226,39 @@ func normalizeMCPEntries(entries map[string]any) map[string]any {
 	return result
 }
 
-// ScratchDir is the single directory workers may use outside the project
-// for ephemeral scratch (screenshots, logs, downloaded files). It is the
-// primary external_directory carve-out: a precise `/tmp/orchicon/**` allow,
-// so the supervisor socket (/tmp/orchicon-agent.sock), the execution guard
-// shims (/tmp/orchicon-guard-*), and the opencode-data dirs
-// (/tmp/opencode-data-*, which hold the seeded model auth.json copies) stay
-// behind the deny. Workers are told to use it in the composite prompt's
-// runtime-environment block.
+// ScratchDir is the single directory workers may use outside the project for ephemeral scratch
+// (screenshots, logs, downloaded files).
 const ScratchDir = workerrestrict.ScratchDir
 
-// OrchiconRunDirGlob is the external_directory carve-out for Orchicon's
-// own run metadata (`.orchicon/<run>/` under the project root, and any
-// `.orchicon/worker.recovery` / run summary files). Workflow step workers
-// run in an isolated worktree that is a SIBLING of the run `.orchicon/`
-// directory, so without this allow they hit an external_directory deny on
-// every read the composite prompt explicitly tells them to make (summary,
-// facts_learned, issues) — each block burns a full tool call + retry. The
-// carve-out is tight: only the `.orchicon/` subtree (Orchicon-owned,
-// aliased run metadata, gitignored), never the supervisor socket or the
-// auth/data dirs elsewhere on disk.
+// OrchiconRunDirGlob is the external_directory carve-out for Orchicon's own run metadata
+// (`.orchicon/<run>/` under the project root.
 const orchidsRunDirPattern = workerrestrict.RunDirPattern
 
-// taskToolDeny denies opencode's built-in `task` (subagent) tool for every
-// worker execution. Orchicon already splits work into focused per-worker
-// steps; a subagent that opencode spawns re-prepends its own system prompt
-// and re-carries the parent's history, roughly DOUBLING context on that
-// turn. This rule removes the surface entirely (permission layers gate the
-// built-in `task` tool the same way they gate `bash`/`edit`). Denied via a
-// "*" catch-all so no subagent plan can be approved.
+// taskToolDeny denies opencode's built-in `task` (subagent) tool for every worker execution.
 const taskToolDeny = workerrestrict.TaskToolDeny
 
-// readGrepDeny doubles as the composite-tool carve-out: when orchicon's
-// worktree batch tools are enabled (ConfigOptions.CompositeTools), the
-// built-in `read` and `grep` tools are denied so the worker MUST use the
-// composite batch_read / batch_grep — which is what collapses the turn count
-// and the re-sent-context cost. Denying the built-in tools here is safe
-// because the composite MCP sidecar is registered alongside, so a worker
-// always has a working read/grep path.
+// readGrepDeny doubles as the composite-tool carve-out: when orchicon's worktree batch tools are
+// enabled (ConfigOptions.CompositeTools).
 const (
 	readToolDeny = "read"
 	grepToolDeny = "grep"
 )
 
-// permissionRules builds the opencode `permission` config injected into every
-// worker execution. Rules with an explicit "deny" are enforced even when the
-// adapter spawns opencode with --auto (auto-approval only affects "ask"), so a
-// compromised or misbehaving worker cannot run commands that damage the host.
-//
-// external_directory is the primary guard: it is triggered by any tool that
-// reads or writes a path outside the project working directory (read, edit,
-// glob, grep, and path-carrying bash commands). It is denied by default with
-// two precise carve-outs — the scratch subtree and the run-metadata subtree —
-// so a worker may read/write ephemeral scratch and Orchicon's own run metadata
-// but nothing else outside the project. opencode evaluates the rules in order
-// with the LAST matching rule winning, so the catch-all "*" deny comes first
-// and the specific allows override it only for those subtrees (see
-// config_permission_test.go).
-//
-// The bash deny list is the second layer. opencode matches each rule against
-// the command string, so these only see the exact command the Bash tool runs:
-// a destructive command issued from inside a subprocess (a python TUI,
-// os.system, subprocess.run) is invisible here. That hole is closed by the
-// OS-level execution guard (guard.go), which shims dangerous binaries on the
-// worker's PATH and catches the command no matter where it is spawned. The
-// rules below are belt-and-suspenders for the direct-Bash-tool case: the
-// destructive-class `rm` targets (/, system paths, ~, $HOME, --no-preserve-
-// root, current-dir wipes — in-project cleanup is allowed), sudo escalation,
-// disk/partition/LVM tools, the shell-construct smuggling variants
-// (`(rm -rf /) &`, `{ rm -rf /; }`, chained `;`/`&&`/`&`/`|`), device
-// redirection, root-wide chmod/chown, and download-and-execute.
-//
-// There is intentionally no catch-all "*" rule here: unmatched commands fall
-// back to opencode's default (ask, which --auto approves) instead of letting a
-// broad allow rule win by ordering.
-//
-// The always-block class (sudo, dd, the disk/partition/LVM/wipe tooling, and
-// the shell-construct variants that smuggle them past a prefix match) is
-// deliberately NOT restated here: it is the shared declaration in
-// internal/neverallow, so this config and the OS-level execution guard consume
-// the SAME list and cannot drift apart.
+// permissionRules builds the opencode `permission` config injected into every worker execution.
 
-// PermissionProfile selects which permission rule set the injected opencode
-// config carries. It is a per-PROCESS choice (opencode's permission config
-// rides the serve's OPENCODE_CONFIG_CONTENT), not a per-session one, so a serve
-// is built with one profile and serves only that profile's work.
+// PermissionProfile selects which permission rule set the injected opencode config carries.
 type PermissionProfile string
 
 const (
-	// ProfileWorker is the sandboxed worker profile: the project boundary
-	// (external_directory denied with the scratch + run-metadata carve-outs),
-	// the full bash deny list, and — with composite tools — the built-in
-	// read/grep deny that forces workers onto batch_read/batch_grep. It is what
-	// the zero value means, so every pre-existing caller is unchanged.
+	// ProfileWorker is the sandboxed worker profile: the project boundary (external_directory denied
+	// with the scratch + run-metadata carve-outs), the full bash deny list, and — with composite tools.
 	ProfileWorker PermissionProfile = "worker"
-	// ProfileInteractive is the Ask Orchicon profile. An interactive session
-	// reaches the OPERATOR's own filesystem, so the tool-layer boundary (a
-	// sibling concern) and the consent layer decide scope and action rather
-	// than a blanket deny: external_directory is allowed, writes and executions
-	// raise opencode's OWN ask (which is what makes the permission.asked events
-	// we relay real asks instead of an artifact of deny-by-default), and the
-	// never-allow class stays hard-denied. The worker-only composite read/grep
-	// deny is NOT applied — an interactive session may use whichever read tool
-	// it reaches for.
+	// ProfileInteractive is the Ask Orchicon profile.
 	ProfileInteractive PermissionProfile = "interactive"
 )
 
-// normalized maps every unrecognised value — including the zero value "" —
-// onto ProfileWorker, so a caller that never set a profile gets today's
-// behaviour rather than an accidental widening.
+// normalized maps every unrecognised value — including the zero value "" — onto ProfileWorker, so a
+// caller that never set a profile gets today's behaviour rather than an accidental widening.
 func (p PermissionProfile) normalized() PermissionProfile {
 	if p == ProfileInteractive {
 		return ProfileInteractive
@@ -363,22 +275,13 @@ func permissionRules(profile PermissionProfile, compositeTools bool) map[string]
 	return workerPermissionRules(compositeTools)
 }
 
-// PermissionRulesForProfile returns a profile's permission subtree with the
-// composite-tool carve-out OFF. It is the seam a test uses to assert that both
-// profiles consume the SAME never-allow declaration as the execution guard.
+// PermissionRulesForProfile returns a profile's permission subtree with the composite-tool
+// carve-out OFF.
 func PermissionRulesForProfile(p PermissionProfile) map[string]any {
 	return permissionRules(p, false)
 }
 
-// interactivePermissionRules builds the Ask Orchicon profile (see
-// ProfileInteractive).
-//
-// Deliberately NO "*" catch-all in `bash`: a catch-all deny would be the worker
-// sandbox again, and a catch-all allow would be dead weight — opencode's rules
-// are a map, so a catch-all could not be ordered ahead of the never-allow
-// denies (encoding/json sorts the keys). Without one, an unmatched command
-// keeps opencode's own default — `ask` — which is exactly what makes the
-// consent asks meaningful.
+// interactivePermissionRules builds the Ask Orchicon profile (see ProfileInteractive).
 func interactivePermissionRules() map[string]any {
 	rules := make(map[string]any, len(neverallow.CommandPatterns))
 	for _, p := range neverallow.DenyRules() {
@@ -394,15 +297,11 @@ func interactivePermissionRules() map[string]any {
 	}
 }
 
-// workerPermissionRules builds the sandboxed worker profile (see
-// ProfileWorker): today's rules, byte-identical. The never-allow class is
-// APPENDED from the shared declaration; the patterns that stay inline below are
-// the worker's own project-boundary deny list, which is not part of that class.
+// workerPermissionRules builds the sandboxed worker profile (see ProfileWorker): today's rules,
+// byte-identical.
 func workerPermissionRules(compositeTools bool) map[string]any {
-	// The worker bash deny list — the shared never-allow binary class PLUS the
-	// project-boundary rules — in ONE copy, in internal/workerrestrict. The
-	// claude adapter's PreToolUse hook matches the SAME list, which is what
-	// makes "a destructive command is refused identically" true by construction.
+	// The worker bash deny list — the shared never-allow binary class PLUS the project-boundary rules —
+	// in ONE copy, in internal/workerrestrict.
 	bashDeny := workerrestrict.WorkerDenyPatterns()
 	rules := make(map[string]any, len(bashDeny))
 	for _, p := range bashDeny {
@@ -419,10 +318,8 @@ func workerPermissionRules(compositeTools bool) map[string]any {
 		taskToolDeny: map[string]any{"*": "deny"},
 	}
 	if compositeTools {
-		// Force the worker onto the composite batch_read/batch_grep tools by
-		// denying the granular built-ins. The composite MCP sidecar is always
-		// registered alongside (see BuildConfigContent), so a worker still has
-		// a working read/grep path — it just batching in one call.
+		// Force the worker onto the composite batch_read/batch_grep tools by denying the granular
+		// built-ins.
 		perm[readToolDeny] = map[string]any{"*": "deny"}
 		perm[grepToolDeny] = map[string]any{"*": "deny"}
 	}
@@ -437,143 +334,66 @@ type ConfigOptions struct {
 	// AgentPrompt is the system prompt text for that agent (empty = no
 	// custom agent; opencode uses its default agent).
 	AgentPrompt string
-	// DefaultAgent names the primary agent sessions fall back to when none
-	// is specified. Orchicon registers a minimal `orchicon-worker` prompt
-	// and sets this so every session uses it instead of opencode's built-in
-	// `build` agent (whose large default prompt is redundant with Orchicon's
-	// own per-message system prompt). Empty = opencode's default (`build`).
+	// DefaultAgent names the primary agent sessions fall back to when none is specified.
 	DefaultAgent string
 	// ModelRef is the model reference the agent runs with.
 	ModelRef string
 	// TenantID scopes the built-in Orchicon MCP server to a tenant. It
 	// is combined with OrchiconMCP: both must be set to register it.
 	TenantID string
-	// OrchiconMCP registers the built-in Orchicon MCP server (spawns this
-	// binary's `mcp` subcommand with ORCHICON_MCP_TENANT_ID set) so every
-	// opencode run has Orchicon's tools natively. Disable ONLY for
-	// executions that cannot reach the plane's Postgres — workflow runtime
-	// containers are isolated sandboxes with no DB route (except the
-	// in-sandbox plane on :orchicon-dev, where MCPEnv points the sidecar
-	// at the container-local Postgres).
+	// Disable ONLY for executions that cannot reach the plane's Postgres — workflow runtime containers
+	// are isolated sandboxes with no DB route (except the in-sandbox plane on :orchicon-dev.
 	OrchiconMCP bool
-	// MCPEnv are extra environment variables merged into the built-in
-	// Orchicon MCP server's `environment` map (on top of the tenant id).
-	// The runtime-container sandbox uses it to point `orchicon mcp` at the
-	// in-container Postgres (ORCHICON_POSTGRES_DSN) so workers get
-	// `orchicon_*` tools against the sandbox DB, never the host plane's.
+	// MCPEnv are extra environment variables merged into the built-in Orchicon MCP server's
+	// `environment` map (on top of the tenant id).
 	MCPEnv map[string]string
-	// MCPBinaryPath overrides the orchicon binary path in the built-in MCP
-	// server's command (defaults to the current executable). The
-	// runtime-container sandbox forces /usr/local/bin/orchicon — the
-	// daemon's bind-mount, guaranteed present in every runtime container —
-	// because the plane's own executable path (which builds the config) is
-	// not necessarily present inside the container.
+	// MCPBinaryPath overrides the orchicon binary path in the built-in MCP server's command (defaults
+	// to the current executable).
 	MCPBinaryPath string
-	// PlaneMCP registers the plane-channel Orchicon MCP server
-	// (`orchicon-plane`): the `orchicon mcp` sidecar runs in API-client
-	// mode against the REAL instance's Connect API (ORCHICON_PLANE_URL)
-	// using a short-lived, role-scoped worker credential
-	// (ORCHICON_PLANE_TOKEN) — no Postgres DSN, no sandbox. Deny-by-default:
-	// only role-bound published workers get the channel (the runtime
-	// lifecycle mints the credential and threads it through planeEnv).
+	// PlaneMCP registers the plane-channel Orchicon MCP server (`orchicon-plane`): the `orchicon mcp`
+	// sidecar runs in API-client mode against the REAL instance's Connect API (ORCHICON_PLANE_URL).
 	PlaneMCP bool
 	// PlaneMCPEnv are the environment variables for the plane-channel MCP
 	// server (ORCHICON_PLANE_URL, ORCHICON_PLANE_TOKEN, tenant + run ids).
 	PlaneMCPEnv map[string]string
-	// SkipUserMCP omits the operator's opencode-config MCP servers from the
-	// injected config. Required for the runtime-container serve: a SERVE
-	// eagerly connects to every configured MCP server at startup, and the
-	// operator's entries (e.g. an `orchicon` MCP that `docker exec`s into
-	// a container, or a local node-based Playwright MCP) cannot run inside
-	// the sandbox — an unresolvable MCP hangs the serve's event loop, so
-	// the published port never answers. (The removed one-shot `opencode
-	// run` path tolerated MCP failures; a serve cannot.)
+	// SkipUserMCP omits the operator's opencode-config MCP servers from the injected config.
 	SkipUserMCP bool
-	// CompositeTools registers the Orchicon worktree MCP server
-	// (`orchicon-worktree`, spawning this binary's `mcp` subcommand with
-	// ORCHICON_MCP_WORKTREE_DIR set) so a worker can call the composite
-	// context-efficient file tools (batch_read / batch_grep / batch_write)
-	// instead of opencode's granular read/grep/write tools. It also denies
-	// the built-in `read` and `grep` tools (see permissionRules), so the
-	// worker is forced onto the batch tools — which is what collapses the
-	// number of turns. Only set alongside WorktreeDir.
+	// CompositeTools registers the Orchicon worktree MCP server (`orchicon-worktree`, spawning this
+	// binary's `mcp` subcommand with ORCHICON_MCP_WORKTREE_DIR set) so a worker can call the composite.
 	CompositeTools bool
-	// Providers are the tenant's provider definitions to inject as opencode's
-	// `provider` block, with their base URLs ALREADY TRANSPOSED for the consumer
-	// (see ProviderConfig). Empty = inherit whatever the mounted opencode config
-	// defines, which is the host-plane path.
-	//
-	// WHY THE PLANE INJECTS THEM AT ALL. A runtime container reaches the host
-	// through the docker bridge, where `127.0.0.1` is the CONTAINER, not the
-	// machine running a local model. The stored provider URL is correct for the
-	// plane (which runs on the host) and wrong for a container, so something has
-	// to hand the container a transposed address. Doing it here — in the config
-	// the plane already builds for the container's serve — keeps it OUT of
-	// adapter-specific files: every adapter that boots an opencode serve gets the
-	// same generated block, and no user has to hand-edit an opencode.jsonc to
-	// make a local model work.
+	// Providers are the tenant's provider definitions to inject as opencode's `provider` block, with
+	// their base URLs ALREADY TRANSPOSED for the consumer (see ProviderConfig).
 	Providers []runtime.ProviderConfig
-	// WorktreeDir is the base directory the composite worktree MCP server
-	// resolves its paths against: the worker's project/worktree directory. It
-	// is injected as the sidecar's ORCHICON_MCP_WORKTREE_DIR env var.
+	// WorktreeDir is the base directory the composite worktree MCP server resolves its paths against:
+	// the worker's project/worktree directory.
 	WorktreeDir string
-	// ProjectDir is the project root, a READ-only extra scope the composite
-	// worktree MCP server may reach for the run-state `.orchicon/<run>/` files
-	// and `architecture-notes/`, which live at the project root — a sibling of
-	// the run worktree. Injected as the sidecar's ORCHICON_MCP_PROJECT_DIR env
-	// var. Writes never reach it (batch_write stays in the worktree).
+	// ProjectDir is the project root, a READ-only extra scope the composite worktree MCP server may
+	// reach for the run-state `.orchicon/<run>/` files and `architecture-notes/`.
 	ProjectDir string
-	// PermissionProfile selects the injected permission rule set (see
-	// PermissionProfile). "" — the zero value — means ProfileWorker, so every
-	// caller that predates the profile split keeps the worker sandbox
-	// byte-identically; only the Ask serve opts into ProfileInteractive.
+	// PermissionProfile selects the injected permission rule set (see PermissionProfile).
 	PermissionProfile PermissionProfile
 
-	// Shape selects the config DOCUMENT shape (see configshape.go). Its ZERO
-	// VALUE is ConfigShapeV1, so every caller that does not set it emits the v1
-	// document byte-identically — a 1.x installation must not change behaviour
-	// because we learned about 2.x.
+	// Shape selects the config DOCUMENT shape (see configshape.go).
 	Shape ConfigShape
 
-	// Workers are the RUN's step workers, each registered as an agent whose
-	// `system` carries that worker's real prompt (see adapter.WorkerAgent). V2
-	// ONLY, and empty for a v1 serve — on 1.x the same prompt rides the prompt
-	// body's `system` field per message, which is why this list has no v1
-	// meaning.
+	// V2 ONLY, and empty for a v1 serve — on 1.x the same prompt rides the prompt body's `system` field
+	// per message, which is why this list has no v1 meaning.
 	Workers []adapter.WorkerAgent
-	// WorkflowRunID is the RUN's id, threaded to the worktree MCP sidecar so it can
-	// derive the run-state directory <projectDir>/.orchicon/<runID>/ its todo
-	// snapshot is written into. Empty leaves the todo panel without a channel.
+	// WorkflowRunID is the RUN's id, threaded to the worktree MCP sidecar so it can derive the
+	// run-state directory <projectDir>/.orchicon/<runID>/ its todo snapshot is written into.
 	WorkflowRunID string
 
-	// RunMCP is the RUN's MCP union (project-owned ∪ every step worker
-	// version's inline specs), resolved ONCE from the run and with
-	// ${SECRET_NAME} expanded at build time. A step sees servers ANOTHER
-	// step defined: that is the same trade the boot profile already makes
-	// for adapter mounts and serves, and it is DELIBERATE (see the
-	// RUN-LEVEL MCP UNION block in BuildConfigContent). Empty = the run
-	// defined no servers.
+	// RunMCP is the RUN's MCP union (project-owned ∪ every step worker version's inline specs),
+	// resolved ONCE from the run and with ${SECRET_NAME} expanded at build time.
 	RunMCP []mcpclient.ScopedServer
 	// RunSkills is the RUN's skill-file union (the same walk's skill half).
 	RunSkills []mcpclient.InlineSkillFile
 }
 
-// BuildConfigContent builds the JSON string for the OPENCODE_CONFIG_CONTENT
-// env var. It merges the agent configuration with MCP servers from the
-// user's opencode config file AND the built-in Orchicon MCP server (when
-// enabled), so worker executions and the Ask Orchicon chat automatically
-// get both the user's MCP tools and Orchicon's own tools.
-//
-// The built-in Orchicon MCP entry spawns this binary's `mcp` subcommand
-// over stdio (opencode names its tools `orchicon_<tool>`) with the tenant
-// injected through the server's `environment` map — proper MCP, no
-// text-protocol tool emulation.
+// BuildConfigContent builds the JSON string for the OPENCODE_CONFIG_CONTENT env var.
 func BuildConfigContent(o ConfigOptions) string {
-	// The document's SHAPE follows the opencode this config will run under,
-	// unless the caller states one outright. Resolving here rather than at each
-	// call site makes it ONE rule: a builder call is correct by default, and a
-	// caller with a specific requirement (a test, or a config built for a
-	// different install) sets ConfigOptions.Shape to override it.
+	// The document's SHAPE follows the opencode this config will run under, unless the caller states
+	// one outright.
 	if o.Shape == "" {
 		o.Shape = configShapeResolver(slog.Default())
 	}
@@ -583,14 +403,10 @@ func BuildConfigContent(o ConfigOptions) string {
 
 	if o.AgentPrompt != "" {
 		if o.Shape.isV2() {
-			// V2 reads `agents` and its prompt field is `system`; a non-empty
-			// `system` is what REPLACES the provider's base prompt, which is how a
-			// worker avoids running under opencode's own `build` prompt.
+			// V2 reads `agents` and its prompt field is `system`; a non-empty `system` is what REPLACES the
+			// provider's base prompt, which is how a worker avoids running under opencode's own `build` prompt.
 			agents := map[string]any{o.AgentName: v2AgentEntry(o.AgentPrompt, o.ModelRef)}
-			// Plus one agent per step worker, each carrying that worker's REAL
-			// prompt. They are ADDITIONAL to the shell above, which stays the
-			// default_agent: a session that never gets switched still runs a real
-			// worker with a thin prompt rather than opencode's `build` agent.
+			// Plus one agent per step worker, each carrying that worker's REAL prompt.
 			for _, w := range o.Workers {
 				if w.Name == "" || w.Prompt == "" {
 					continue
@@ -611,32 +427,21 @@ func BuildConfigContent(o ConfigOptions) string {
 			}
 		}
 	}
-	// Default the session to the registered agent (e.g. orchicon-worker) so
-	// workers do NOT run under opencode's built-in `build` agent prompt.
-	// The worker's real system prompt still rides the per-message `system`
-	// field; the default agent is a MINIMAL tool-guideline shell that
-	// replaces opencode's large built-in prompt (a big per-turn token win).
+	// Default the session to the registered agent (e.g. orchicon-worker) so workers do NOT run under
+	// opencode's built-in `build` agent prompt.
 	if o.DefaultAgent != "" {
 		cfg["default_agent"] = o.DefaultAgent
 	}
-	// Inject the worker's cross-cutting rule file (worker.md) as dedicated
-	// instructions rather than letting the model discover/read it on demand.
-	// opencode combines these with the auto-loaded AGENTS.md router, so a
-	// worker gets the correct rules deterministically and never needs to (and
-	// is told not to) read developer.md — closing the gap where a worker
-	// self-classified as a "developer" and pulled the wrong file. The path is
-	// resolved relative to the session cwd (the worktree), where worker.md is
-	// tracked. Ask Orchicon uses a separate session path and is unaffected.
+	// Inject the worker's cross-cutting rule file (worker.md) as dedicated instructions rather than
+	// letting the model discover/read it on demand.
 	if o.DefaultAgent == workerAgent {
 		instr := []string{"worker.md"}
 		instr = append(instr, runSkillInstructions(o)...)
 		cfg["instructions"] = instr
 	}
 
-	// Merge MCP servers: the user's own opencode-config servers first,
-	// then the built-in Orchicon MCP (unless the user already defines one
-	// named `orchicon` — respect their explicit choice). SkipUserMCP
-	// omits the user's servers entirely (runtime-container serve).
+	// Merge MCP servers: the user's own opencode-config servers first, then the built-in Orchicon MCP
+	// (unless the user already defines one named `orchicon` — respect their explicit choice).
 	mcp := map[string]any{}
 	if !o.SkipUserMCP {
 		if mcpServers := readMCPServers(slog.Default()); len(mcpServers) > 0 {
@@ -660,24 +465,8 @@ func BuildConfigContent(o ConfigOptions) string {
 			mcp["orchicon-worktree"] = worktreeMCPServer(o.WorktreeDir, o.ProjectDir, o.WorkflowRunID, o.MCPBinaryPath)
 		}
 	}
-	// RUN-LEVEL MCP UNION. A container's serve is created ONCE and this
-	// config is applied ONCE (the daemon applies ServeConfig only at
-	// container creation), so this set MUST come from the RUN and never
-	// from the dispatching step: a per-execution input would make
-	// "whichever step created the container first" decide what every step
-	// sees — order-dependent, and forbidden.
-	//
-	// OVER-PROVISIONING IS DELIBERATE: a step therefore sees servers
-	// ANOTHER step defined. That is the same trade the run's boot profile
-	// already makes for adapter mounts and serves (CreateRequest.AdapterKinds),
-	// and it is why this field carries a RUN union rather than an
-	// execution's own set. The widening is RECORDED here and LOGGED per
-	// session (the plane logs the union with provenance at resolution, and
-	// the adapter logs the set the session received).
-	//
-	// The built-ins above are emitted FIRST, so a run server whose id
-	// collides with `orchicon`/`orchicon-plane`/`orchicon-worktree` never
-	// overwrites it.
+	// A container's serve is created ONCE and this config is applied ONCE (the daemon applies
+	// ServeConfig only at container creation).
 	for _, ss := range o.RunMCP {
 		if ss.Spec.ID == "" {
 			continue
@@ -696,82 +485,33 @@ func BuildConfigContent(o ConfigOptions) string {
 		}
 	}
 
-	// Inject the hard permission deny rules so every worker execution is
-	// sandboxed to its project directory regardless of --auto mode. When the
-	// composite worktree tools are enabled AND a worktree dir resolved, the
-	// built-in read/grep are denied too so the worker is forced onto
-	// batch_read/batch_grep. The WorktreeDir guard guarantees the deny is
-	// only applied alongside a registered worktree MCP — so a worker never
-	// loses file access with no batch tool to fall back on.
+	// Inject the hard permission deny rules so every worker execution is sandboxed to its project
+	// directory regardless of --auto mode.
 	compositeTools := o.CompositeTools && o.WorktreeDir != ""
-	// THE READ/GREP DENY IS ONLY SOUND WHERE THE COMPOSITE TOOLS ARE DIRECTLY CALLABLE.
-	//
-	// It exists for one reason: to push the worker off the granular built-ins and onto
-	// batch_read/batch_grep. That reasoning holds only if the worker CAN call them. On a Code
-	// Mode surface (opencode 2.x) every MCP tool is callable ONLY from inside `execute`, so
-	// denying the built-ins does not redirect anything — it deletes the worker's file-reading
-	// tools and leaves it with `shell` alone. Measured on a verified 2.x run: 63 `shell` calls,
-	// zero `batch_*`, and the model reporting the batch tools as absent from its catalog.
-	//
-	// The MCP server itself stays REGISTERED either way (see the mcp block below): on 2.x the
-	// tools are still usable, through `execute`. Only the deny is dropped, so the worker keeps
-	// both the direct built-ins and the batch path.
+	// On a Code Mode surface (opencode 2.x) every MCP tool is callable ONLY from inside `execute`, so
+	// denying the built-ins does not redirect anything.
 	directCompositeTools := compositeTools && !o.Shape.isV2()
 	if o.Shape.isV2() {
-		// V2 is an ordered `permissions` ARRAY with renamed actions; the V1 map
-		// would leave the sandbox unenforced, and it would fail in the permissive
-		// direction (wider tool access than intended) rather than loudly.
+		// V2 is an ordered `permissions` ARRAY with renamed actions.
 		cfg["permissions"] = v2PermissionRules(o.PermissionProfile, directCompositeTools)
 	} else {
 		cfg["permission"] = permissionRules(o.PermissionProfile, directCompositeTools)
 	}
 
-	// Enable context compaction pruning for every worker session. `prune`
-	// trims OLD tool outputs (accumulating command/file-read results) from
-	// the conversation when the window nears its limit, so a long step does
-	// not keep re-sending every past `read`/`grep`/`bash` result on every
-	// turn. It is capability-safe: it removes stale tool RESULTS, not the
-	// tool definitions or the model's working instructions.
-	//
-	// `auto` is set FALSE explicitly. It is opencode's OWN lossy
-	// auto-compaction (collapsing the conversation to a summary when the
-	// window fills), which is redundant — and harmful — alongside Orchicon's
-	// budget-ladder compaction. On a large-window SOTA model (e.g. DeepSeek
-	// with a 1M context) `auto` would never normally fire, but leaving it at
-	// opencode's default risks a second, independent compaction driver
-	// interrupting the worker mid-flight on top of Orchicon's own. Orchicon
-	// is the single source of compaction decisions (its ladder + the
-	// turn-count hygiene gate). Enabling `prune` directly cuts the
-	// accumulated-output token cost across a step; `auto: false` guarantees
-	// opencode does not independently collapse the session.
+	// Enable context compaction pruning for every worker session.
 	if o.Shape.isV2() {
-		// `auto: false` is the load-bearing half on both versions: it is what stops
-		// opencode running its OWN lossy compaction alongside Orchicon's budget
-		// ladder. `prune` has no V2 equivalent — V2 retains recent context by token
-		// budget (compaction.keep.tokens) plus checkpoints, and `prune` is on the
-		// accepted-but-IGNORED list, so emitting it would produce a warning while
-		// doing nothing.
+		// `auto: false` is the load-bearing half on both versions: it is what stops opencode running its
+		// OWN lossy compaction alongside Orchicon's budget ladder.
 		cfg["compaction"] = map[string]any{"auto": false}
 	} else {
 		cfg["compaction"] = map[string]any{"prune": true, "auto": false}
 	}
 
-	// Let a worker ingest a large file in ONE `read` instead of being forced
-	// to chunk it across many small calls. opencode's default tool-output cap
-	// (~50KB) truncates big `read`/`bash` results, so a model that needs a
-	// large file keeps re-issuing small reads over many turns — and every
-	// extra turn re-sends the whole accumulated context (the dominant cost).
-	// Raising the cap trades one big context append for many re-sends.
-	// Orchicon's own capToolOutput (maxToolOutputBytes, default 128k) still
-	// bounds the DURABLE transcript persisted for recovery/follow-ups, so the
-	// two caps are independent: opencode controls what the model per-turn
-	// sees, Orchicon controls what is stored.
+	// Let a worker ingest a large file in ONE `read` instead of being forced to chunk it across many
+	// small calls.
 	cfg["tool_output"] = map[string]any{"max_bytes": 1000000, "max_lines": 5000}
 
-	// The tenant's providers, with base URLs transposed for this consumer. Only
-	// set when non-empty: an empty block would OVERRIDE the mounted config's
-	// provider definitions with nothing, which is how a host-plane serve would
-	// lose the operator's own providers.
+	// The tenant's providers, with base URLs transposed for this consumer.
 	if len(o.Providers) > 0 {
 		providers := make(map[string]any, len(o.Providers))
 		for _, p := range o.Providers {
@@ -786,9 +526,8 @@ func BuildConfigContent(o ConfigOptions) string {
 			if len(opts) > 0 {
 				entry["options"] = opts
 			}
-			// A provider with neither an npm package nor a base URL carries nothing
-			// opencode can act on, so it is skipped rather than emitted as a stub
-			// that would shadow a real definition of the same name.
+			// A provider with neither an npm package nor a base URL carries nothing opencode can act on, so it
+			// is skipped rather than emitted as a stub that would shadow a real definition of the same name.
 			if len(entry) == 0 {
 				continue
 			}
@@ -804,17 +543,8 @@ func BuildConfigContent(o ConfigOptions) string {
 		}
 	}
 
-	// Ask opencode to batch independent tool calls into a single assistant
-	// turn rather than emit them one at a time. Being explicit about batching
-	// (rather than only prompting for it) collapses the number of model
-	// round-trips, which is the main per-turn cost lever for a context-heavy
-	// task. Experimental in opencode; harmless if the provider/model cannot
-	// batch (it falls back to sequential calls).
-	// `batch_tool` is on V2's accepted-but-IGNORED list, so on V2 the key is
-	// omitted rather than emitted to be discarded with a warning. The batching it
-	// asked for is not lost: the composite worktree MCP tools (batch_read /
-	// batch_grep / batch_write) are the mechanism that collapses turns, and they
-	// are MCP tools on BOTH versions.
+	// Ask opencode to batch independent tool calls into a single assistant turn rather than emit them
+	// one at a time.
 	if !o.Shape.isV2() {
 		cfg["experimental"] = map[string]any{"batch_tool": true}
 	}
@@ -856,17 +586,8 @@ func BuildConfigContent(o ConfigOptions) string {
 	return string(b)
 }
 
-// mcpEntryFromSpec renders one resolved MCP ServerSpec into opencode's MCP
-// config entry shape: McpLocalConfig for a stdio server
-// (`{type:"local",command:[...],environment{},enabled}`) or McpRemoteConfig
-// for a streamable-HTTP server (`{type:"remote",url,headers,enabled}`).
-//
-// AUTH IS BEARER/HEADER ONLY — the spec's Headers already carry the resolved
-// plaintext (the plane expands ${SECRET_NAME} at build time, before it
-// reaches this builder), and OAuth is out of scope for v1, exactly as the
-// other adapters already treat it. The spec's Timeout/OnError are the
-// NATIVE adapter's per-call policy and have no opencode analog here, so they
-// are not emitted.
+// AUTH IS BEARER/HEADER ONLY — the spec's Headers already carry the resolved plaintext (the plane
+// expands ${SECRET_NAME} at build time, before it reaches this builder).
 func mcpEntryFromSpec(s mcpclient.ServerSpec) map[string]any {
 	if s.TransportType() == mcpclient.TypeHTTP {
 		e := map[string]any{"type": "remote", "url": s.URL, "enabled": true}
@@ -882,23 +603,7 @@ func mcpEntryFromSpec(s mcpclient.ServerSpec) map[string]any {
 	return e
 }
 
-// runSkillInstructions renders the RUN's skill-file union into opencode
-// `instructions` paths.
-//
-// opencode reads skills from DISK (`.opencode/skills/<name>/SKILL.md`) and its
-// `Config.instructions` is a list of PATHS it loads — there is no config field
-// for inline skill TEXT. So a union entry that already names a filesystem path
-// (`Path` set, `Content` empty — the common case: the skill store renders
-// file/dir paths) is emitted verbatim. An entry that carries INLINE content is
-// materialised under `<WorktreeDir>/.orchicon/skills/` at build time and that
-// path is emitted instead.
-//
-// The write runs on the PLANE, but WorktreeDir is bind-mounted at its
-// IDENTICAL absolute host path (the runtime daemon mounts project_dir at the
-// same path), so the file lands in-container where the serve can read it. A
-// write failure is logged and the skill SKIPPED — never a silent loss and
-// never a failed config build: one unplaceable skill must not take down the
-// whole serve.
+// runSkillInstructions renders the RUN's skill-file union into opencode `instructions` paths.
 func runSkillInstructions(o ConfigOptions) []string {
 	var out []string
 	for _, s := range o.RunSkills {
@@ -920,11 +625,8 @@ func runSkillInstructions(o ConfigOptions) []string {
 	return out
 }
 
-// materialiseInlineSkill writes one inline skill file under
-// <worktreeDir>/.orchicon/skills/ and returns the path to emit as an
-// instruction. The name is derived from the skill's own path (base name,
-// sanitised) so two skills with the same base never collide and the emitted
-// path is deterministic for a given run (AC 3).
+// materialiseInlineSkill writes one inline skill file under <worktreeDir>/.orchicon/skills/ and
+// returns the path to emit as an instruction.
 func materialiseInlineSkill(worktreeDir string, s mcpclient.InlineSkillFile) (string, error) {
 	if worktreeDir == "" {
 		return "", fmt.Errorf("no worktree dir to place the skill in")
@@ -944,9 +646,7 @@ func materialiseInlineSkill(worktreeDir string, s mcpclient.InlineSkillFile) (st
 	return p, nil
 }
 
-// sanitiseSkillName reduces a skill's declared path to a stable, filesystem-
-// safe `.md` file name. The last path element wins (the skill's own slug),
-// non-alphanumerics collapse to `-`, and the result always ends in `.md`.
+// sanitiseSkillName reduces a skill's declared path to a stable, filesystem- safe `.md` file name.
 func sanitiseSkillName(p string) string {
 	base := filepath.Base(strings.TrimSpace(p))
 	base = strings.TrimSuffix(base, filepath.Ext(base))
@@ -969,10 +669,8 @@ func sanitiseSkillName(p string) string {
 	return trimmed + ".md"
 }
 
-// orchiconBinaryPath returns the path to the orchicon executable used to
-// spawn the Orchicon MCP sidecar. Prefers the current executable (the
-// control plane IS the orchicon binary, in-container included) and falls
-// back to "orchicon" on PATH.
+// orchiconBinaryPath returns the path to the orchicon executable used to spawn the Orchicon MCP
+// sidecar.
 func orchiconBinaryPath() string {
 	if exe, err := os.Executable(); err == nil && exe != "" {
 		return exe
@@ -980,14 +678,8 @@ func orchiconBinaryPath() string {
 	return "orchicon"
 }
 
-// orchiconMCPServer builds the opencode MCP config entry for the built-in
-// Orchicon MCP server (opencode v1 schema: type "local", command array,
-// environment map, enabled). The tenant flows to the sidecar through the
-// environment map; the Postgres DSN is inherited from the plane's env
-// unless overridden via extraEnv (the runtime-container sandbox points the
-// sidecar at its in-container Postgres this way). binaryPath overrides the
-// orchicon binary used as the MCP command (defaults to the current
-// executable) — the sandbox forces the daemon's runtime-container mount.
+// orchiconMCPServer builds the opencode MCP config entry for the built-in Orchicon MCP server
+// (opencode v1 schema: type "local", command array, environment map, enabled).
 func orchiconMCPServer(tenantID string, extraEnv map[string]string, binaryPath string) map[string]any {
 	env := map[string]string{"ORCHICON_MCP_TENANT_ID": tenantID}
 	for k, v := range extraEnv {
@@ -1005,11 +697,8 @@ func orchiconMCPServer(tenantID string, extraEnv map[string]string, binaryPath s
 	}
 }
 
-// planeMCPServer builds the opencode MCP config entry for the plane
-// channel (`orchicon-plane`): the `orchicon mcp` sidecar runs in
-// API-client mode against the real instance (ORCHICON_PLANE_URL) with the
-// run's scoped worker credential (ORCHICON_PLANE_TOKEN). The sidecar
-// selects the plane registry from its env (see cmd/orchicon runMCP).
+// planeMCPServer builds the opencode MCP config entry for the plane channel (`orchicon-plane`): the
+// `orchicon mcp` sidecar runs in API-client mode against the real instance (ORCHICON_PLANE_URL).
 func planeMCPServer(extraEnv map[string]string, binaryPath string) map[string]any {
 	env := map[string]string{}
 	for k, v := range extraEnv {
@@ -1027,12 +716,8 @@ func planeMCPServer(extraEnv map[string]string, binaryPath string) map[string]an
 	}
 }
 
-// worktreeMCPServer builds the opencode MCP config entry for the composite
-// worktree tools (batch_read / batch_grep / batch_write). It spawns this
-// binary's `mcp` subcommand with ORCHICON_MCP_WORKTREE_DIR set, which makes
-// runMCP select the worktree registry (no Postgres needed) bound to the
-// worker's project/worktree directory. binaryPath overrides the orchicon
-// binary used as the command (the runtime container forces the daemon mount).
+// worktreeMCPServer builds the opencode MCP config entry for the composite worktree tools
+// (batch_read / batch_grep / batch_write).
 func worktreeMCPServer(dir, projectDir, runID, binaryPath string) map[string]any {
 	if binaryPath == "" {
 		binaryPath = orchiconBinaryPath()
@@ -1041,11 +726,7 @@ func worktreeMCPServer(dir, projectDir, runID, binaryPath string) map[string]any
 	if projectDir != "" {
 		env["ORCHICON_MCP_PROJECT_DIR"] = projectDir
 	}
-	// THE RUN ID IS WHAT LETS THE TODO PANEL SEE ANYTHING. The sidecar derives the
-	// run-state dir from project dir + run id and writes the todo snapshot there
-	// (worktree.TodoSnapshotName); without it, `todowrite` runs, succeeds, and is
-	// invisible — the failure mode that left the panel empty while the tool
-	// answered ok:true.
+	// THE RUN ID IS WHAT LETS THE TODO PANEL SEE ANYTHING.
 	if runID != "" && projectDir != "" {
 		env["ORCHICON_MCP_WORKFLOW_RUN_ID"] = runID
 	}
@@ -1064,9 +745,8 @@ func ReadMCPServersFromConfig(log *slog.Logger) map[string]any {
 	return readMCPServers(log)
 }
 
-// SanitizeMCPForSubprocess strips sensitive fields from MCP entries
-// before passing them to a subprocess. Keeps only fields recognized by
-// the opencode config schema (type, command, url, enabled, timeout, cwd).
+// SanitizeMCPForSubprocess strips sensitive fields from MCP entries before passing them to a
+// subprocess.
 func SanitizeMCPForSubprocess(entries map[string]any) map[string]any {
 	result := make(map[string]any, len(entries))
 	for name, entry := range entries {
@@ -1106,14 +786,8 @@ func SanitizeMCPForSubprocess(entries map[string]any) map[string]any {
 	return result
 }
 
-// BuildCapabilitiesJSON reads the user's opencode config and builds a
-// dynamic capabilities JSON string for the runtime adapter. It includes
-// MCP server names and model providers from the user's config, alongside
-// the base tools opencode always supports. Returns the JSON as a string.
-//
-// The result changes when the user updates their opencode config (adds a
-// new MCP server, configures a new provider) — callers should re-read on
-// each heartbeat rather than caching permanently.
+// BuildCapabilitiesJSON reads the user's opencode config and builds a dynamic capabilities JSON
+// string for the runtime adapter.
 func BuildCapabilitiesJSON() string {
 	caps := map[string]any{
 		"tools":     []string{"file_edit", "terminal", "web_fetch", "git", "glob", "grep"},

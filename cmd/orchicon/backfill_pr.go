@@ -6,27 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// runBackfillPR is a one-shot, idempotent data fix: resolve each git-backed
-// terminal workflow run's branch to its real PR URL/state (via `gh`) and write
-// them into BOTH the run's run_context JSONB (for the run detail page) and the
-// worker_executions.pr_url/pr_state columns (for the work item card and
-// execution detail page).
-//
-// It runs out-of-band (not from the request path) and is safe to re-run: it
-// fills runs that have no pr_url in run_context and runs whose worker
-// execution rows carry no pr_url yet (even when run_context already has a
-// gh-verified PR), so already-complete runs are untouched. Runs whose branch
-// resolves to no PR are left without a PR link.
-//
-// Usage: orchicon backfill-pr [--dry-run]
+// runBackfillPR is a one-shot, idempotent data fix: resolve each git-backed terminal workflow run's
+// branch to its real PR URL/state (via `gh`) and write them into BOTH the run's run_context JSONB.
 func runBackfillPR(args []string, log *slog.Logger) int {
 	dryRun := false
 	repoOverride := ""
@@ -89,10 +79,8 @@ func runBackfillPR(args []string, log *slog.Logger) int {
 			}
 		}
 		if !resolved {
-			// Fall back to the run's already-verified run_context URL: a
-			// run selected because its execution columns are null but whose
-			// run_context already carries a gh-verified PR needs only the
-			// exec-row stamp, which does not require gh to be available.
+			// Fall back to the run's already-verified run_context URL: a run selected because its execution
+			// columns are null but whose run_context already carries a gh-verified PR needs only the exec-row.
 			if u, s := db.PrFromRunContext(run.RunContext); u != "" {
 				prURL, prState = u, s
 				resolved = true
@@ -143,13 +131,10 @@ func runBackfillPR(args []string, log *slog.Logger) int {
 	return 0
 }
 
-// resolvePR maps a branch to its most recent PR (across ALL states — merged
-// PRs are excluded by gh's default open-only query) for the given repo slug.
-// Returns the PR's html_url and a normalized pr_state, or ("", "") when the
-// branch has no PR. `pr_state` is normalized to the lowercase values the
-// frontend's prStateLabel maps (open/merged/draft/closed).
+// resolvePR maps a branch to its most recent PR (across ALL states — merged PRs are excluded by
+// gh's default open-only query) for the given repo slug.
 func resolvePR(ctx context.Context, repoSlug, branch string) (prURL, prState string, err error) {
-	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
+	cmd := procwin.CommandContext(ctx, "gh", "pr", "list",
 		"--repo", repoSlug,
 		"--head", branch,
 		"--state", "all",
@@ -171,9 +156,8 @@ func resolvePR(ctx context.Context, repoSlug, branch string) (prURL, prState str
 	if len(prs) == 0 {
 		return "", "", nil
 	}
-	// Prefer an exact headRefName match if multiple candidates: gh already
-	// filters by --head, so the newest (largest number) is the authoritative
-	// one for this branch.
+	// Prefer an exact headRefName match if multiple candidates: gh already filters by --head, so the
+	// newest (largest number) is the authoritative one for this branch.
 	pick := prs[len(prs)-1]
 	return pick.URL, normalizePRState(pick.State), nil
 }
@@ -193,9 +177,8 @@ func normalizePRState(s string) string {
 	}
 }
 
-// writeRunContextPR merges pr_url/pr_state into the run's run_context JSONB
-// with optimistic concurrency (a single retry on version conflict, mirroring
-// the reconciler's PR-capture write at internal/scheduler/reconciler.go).
+// writeRunContextPR merges pr_url/pr_state into the run's run_context JSONB with optimistic
+// concurrency (a single retry on version conflict.
 func writeRunContextPR(ctx context.Context, tx pgx.Tx, tenantID, runID string, run db.WorkflowRunRow, prURL, prState string) error {
 	ctxBytes, ok := mergeRunContext(run.RunContext, map[string]any{"pr_url": prURL, "pr_state": prState})
 	if !ok {
@@ -217,9 +200,8 @@ func writeRunContextPR(ctx context.Context, tx pgx.Tx, tenantID, runID string, r
 	return err
 }
 
-// mergeRunContext folds the given key/values into an existing run_context
-// JSONB map (additive; best-effort). Mirrors internal/scheduler's
-// mergeRunContext so the CLI backfill and the reconciler stay in sync.
+// mergeRunContext folds the given key/values into an existing run_context JSONB map (additive;
+// best-effort).
 func mergeRunContext(existing []byte, add map[string]any) ([]byte, bool) {
 	out := map[string]any{}
 	if len(existing) > 0 {

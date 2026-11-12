@@ -3,15 +3,7 @@
 package main
 
 // killorphans_test.go — the orphan sweep's tests, which are Unix-shaped BY NATURE rather than by
-// accident: the fixture makes a REAL orphan by spawning `/bin/sh` and cleans it up with SIGKILL, and
-// `parentPID` (which the sweep's safety property rests on) reads `/proc/<pid>/status`. `syscall.Kill`
-// is absent from the Windows syscall package, so an untagged file does not merely skip on Windows — it
-// fails to COMPILE, which is how the same mistake broke the release build for windows/amd64 and
-// windows/arm64 (see serve_reap_unix.go for the production half and the note about that history).
-//
-// The sweep itself is consequently inert on Windows — serve_reap_windows.go explains what that costs
-// and why the direction it fails in is the safe one — so there is nothing here to assert on that
-// platform.
+// accident: the fixture makes a REAL orphan by spawning `/bin/sh` and cleans it up with SIGKILL.
 
 import (
 	"fmt"
@@ -25,22 +17,7 @@ import (
 	"time"
 )
 
-// The plane's boot sweep (killOrphans) must reap what a CRASHED plane left
-// behind and nothing else. Inside a container that distinction never mattered
-// — the only matching processes were the plane's own children — but a
-// HOST-resident plane's pgrep sees the whole user session, where the
-// operator's own `opencode`, a sibling instance's plane and its `orchicon mcp`
-// sidecars are legitimate processes with LIVE parents. A killed sibling plane
-// is restarted by its watchdog; a killed `opencode` is simply gone.
-//
-// The suite runs on the HOST, which is where users are, so it assumes nothing
-// about the host's reparenting behaviour: it establishes where this environment
-// actually hands orphans (see startOrphanedSleep) and asserts the guard agrees.
-//
-// These tests drive the REAL killOrphans against REAL processes, with a fake
-// `pgrep` first on PATH so the matched PIDs are ours to choose, and assert with
-// real signals and real /proc parentage. They never depend on a real pgrep
-// (the build image has none) and never sweep the machine's real processes.
+// The plane's boot sweep (killOrphans) must reap what a CRASHED plane left behind and nothing else.
 
 // fakePgrep puts an executable pgrep shim first on PATH that records its
 // arguments and prints $FIXTURE_PIDS, one PID per line.
@@ -58,7 +35,8 @@ func fakePgrep(t *testing.T) (marker string) {
 	return marker
 }
 
-func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+// shellQuote now lives in shquote_test.go, which has no build tag: it is pure Go and is shared with
+// the untagged binaries_test.go.
 
 // startLiveParentedSleep starts a sleep that is THIS process's child: its
 // parent is alive, so it is not an orphan.
@@ -75,32 +53,16 @@ func startLiveParentedSleep(t *testing.T, marked bool) *exec.Cmd {
 	return cmd
 }
 
-// startOrphanedSleep starts a sleep whose parent has already exited, leaving it
-// reparented to whatever this environment hands orphans to — exactly the shape
-// a crashed plane leaves.
-//
-// NOTHING HERE ASSUMES PID 1. Where an orphan lands is an environment
-// property: a container has no subreaper, so reparenting ends at PID 1, while a
-// host user session hands it to the session manager (which sets
-// PR_SET_CHILD_SUBREAPER, so reparenting stops there). The test therefore
-// establishes its OWN ground truth — the sleeper's parent really is no longer
-// the shell that spawned it — and adapts to whichever pid that turns out to be.
-// Hardcoding PID 1 here is what made this suite pass in a container and fail on
-// a host, which is backwards: the host is where the plane now runs.
+// startOrphanedSleep starts a sleep whose parent has already exited, leaving it reparented to
+// whatever this environment hands orphans to — exactly the shape a crashed plane leaves.
 func startOrphanedSleep(t *testing.T, marked bool) int {
 	t.Helper()
-	// The backgrounded sleep must not inherit the shell's stdout: with the
-	// inherited pipe still open, Command.Output() would block on EOF until the
-	// sleep exits (300s), hanging the test instead of leaving an orphan.
-	//
-	// $$ is the shell's own pid. The sleeper STARTS as that shell's child, so
-	// "its parent is no longer the shell" is the reparenting event itself, and
-	// needs no assumption about where it reparents TO.
+	// The backgrounded sleep must not inherit the shell's stdout: with the inherited pipe still open,
+	// Command.Output() would block on EOF until the sleep exits (300s).
 	cmd := exec.Command("/bin/sh", "-c", "/bin/sleep 300 >/dev/null 2>&1 & echo $!; echo $$")
 	if marked {
-		// The shell exports it, so the backgrounded sleeper inherits it — the
-		// same way the plane's marker reaches the `orchicon mcp` sidecars that
-		// opencode (not the plane) starts.
+		// The shell exports it, so the backgrounded sleeper inherits it — the same way the plane's marker
+		// reaches the `orchicon mcp` sidecars that opencode (not the plane) starts.
 		cmd.Env = append(os.Environ(), planeSpawnMarker+"=1")
 	}
 	out, err := cmd.Output()
@@ -158,10 +120,7 @@ func intField(t *testing.T, status, field string) int {
 	return -1
 }
 
-// running reports whether pid is still executing. A zombie counts as NOT
-// running: it has been terminated and merely not reaped yet (reaping belongs to
-// whichever reaper owns it in this environment) — termination is what the sweep
-// promises either way.
+// running reports whether pid is still executing.
 func running(t *testing.T, pid int) bool {
 	t.Helper()
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
@@ -193,17 +152,8 @@ func waitNotRunning(t *testing.T, pid int, within time.Duration) {
 	t.Fatalf("pid %d is still running after %s (the sweep did not reap it)", pid, within)
 }
 
-// waitForPlaneMarker polls until pid's environ shows the plane spawn marker —
-// i.e. until the child has completed execve.
-//
-// Reading /proc/<pid>/environ in the window between fork and execve returns the
-// PARENT's environment, because cmd.Env is applied BY execve. An immediate read
-// after Start therefore misses the marker completely (measured: false
-// immediately, true ~150ms later, every time).
-//
-// The sweep never races this way — it inspects processes that have been running
-// long enough to be left behind — but a test that asserts on a child it started
-// microseconds ago must, or it asserts on the fork rather than the exec.
+// waitForPlaneMarker polls until pid's environ shows the plane spawn marker — i.e. until the child
+// has completed execve.
 func waitForPlaneMarker(t *testing.T, pid int, within time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(within)
@@ -218,9 +168,7 @@ func waitForPlaneMarker(t *testing.T, pid int, within time.Duration) bool {
 	}
 }
 
-// A live-parented process survives the sweep; a genuine orphan is reaped. Both
-// are asserted with real processes and real signals, and the discovery step is
-// asserted to still use the documented pgrep forms for BOTH patterns.
+// A live-parented process survives the sweep; a genuine orphan is reaped.
 func TestKillOrphansReapsReparentedAndSparesLiveParent(t *testing.T) {
 	marker := fakePgrep(t)
 	live := startLiveParentedSleep(t, true)
@@ -251,10 +199,8 @@ func TestKillOrphansReapsReparentedAndSparesLiveParent(t *testing.T) {
 	}
 }
 
-// ORCHICON_SANDBOX_PLANE still suppresses the sweep ENTIRELY: the orphan
-// survives and pgrep is never even invoked. The control run first proves the
-// same setup would otherwise reap it, so the suppression assertion cannot pass
-// vacuously.
+// ORCHICON_SANDBOX_PLANE still suppresses the sweep ENTIRELY: the orphan survives and pgrep is
+// never even invoked.
 func TestKillOrphansSuppressedBySandboxPlane(t *testing.T) {
 	marker := fakePgrep(t)
 
@@ -281,14 +227,8 @@ func TestKillOrphansSuppressedBySandboxPlane(t *testing.T) {
 	}
 }
 
-// reparentedAway is the whole safety property of the sweep, so it is asserted
-// directly: our own child is not an orphan, a reparented process is, and PID 1
-// (whose parent is 0) and a nonexistent pid never are.
-//
-// The reparented half is asserted against a process this environment ACTUALLY
-// reparented (startOrphanedSleep observes the reparenting rather than assuming
-// its target), so this test is a real check of the host's reap point rather
-// than a restatement of the container's.
+// reparentedAway is the whole safety property of the sweep, so it is asserted directly: our own
+// child is not an orphan, a reparented process.
 func TestReparentedAway(t *testing.T) {
 	reap := reapPoints()
 	live := startLiveParentedSleep(t, true)
@@ -307,15 +247,8 @@ func TestReparentedAway(t *testing.T) {
 	}
 }
 
-// TestKillOrphansSparesAnUnmarkedOrphan is the regression guard for the POINT
-// of this whole sweep: an `opencode` the operator started is not ours to kill,
-// however orphaned it becomes.
-//
-// This is the case parentage alone gets wrong. Start opencode in a terminal,
-// close the terminal, and it reparents to exactly where a crashed plane's
-// leftovers reparent to — the same reaper, the same ppid. Nothing about its
-// parentage marks it as the operator's. Only the absence of the plane spawn
-// marker does, and without that check the sweep would kill it at the next boot.
+// TestKillOrphansSparesAnUnmarkedOrphan is the regression guard for the POINT of this whole sweep:
+// an `opencode` the operator started is not ours to kill, however orphaned it becomes.
 func TestKillOrphansSparesAnUnmarkedOrphan(t *testing.T) {
 	fakePgrep(t)
 
@@ -356,10 +289,8 @@ func TestCarriesPlaneMarker(t *testing.T) {
 	}
 }
 
-// The one pid the reap set must NEVER contain is this process: its children are
-// LIVE children, and reaping them would be the worst possible failure of the
-// sweep. The walk up the tree can land on us when we are a direct child of PID
-// 1 (a container, or a service), so this is asserted rather than assumed.
+// The one pid the reap set must NEVER contain is this process: its children are LIVE children, and
+// reaping them would be the worst possible failure of the sweep.
 func TestReapPointsNeverIncludeSelf(t *testing.T) {
 	reap := reapPoints()
 	if reap[os.Getpid()] {

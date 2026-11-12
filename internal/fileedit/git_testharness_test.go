@@ -38,9 +38,8 @@ import (
 	"time"
 )
 
-// gitFlags disables every git feature that can spawn a writer into .git behind
-// the command that triggered it. Passed to EVERY invocation, including `git init`,
-// so the repo never acquires the feature in the first place.
+// gitFlags disables every git feature that can spawn a writer into .git behind the command that
+// triggered it.
 var gitFlags = []string{
 	"-c", "gc.auto=0",
 	"-c", "maintenance.auto=false",
@@ -78,12 +77,6 @@ func gitRun(t *testing.T, dir string, args ...string) {
 }
 
 // gitTestDir creates a directory for a throwaway repo.
-//
-// IT DELIBERATELY DOES NOT USE t.TempDir(). t.TempDir cleans up with ONE
-// os.RemoveAll, so a git process still writing into .git makes that single call
-// fail — and the failure is reported against the TEST, which passed. A temp
-// directory is not an assertion, so this retries and then gives up SILENTLY
-// rather than failing a suite over git's own housekeeping.
 func gitTestDir(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "fileedit-git-*")

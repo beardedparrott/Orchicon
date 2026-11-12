@@ -9,15 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// TestConsentDenialErrorDistinguishesTheThreeOutcomes is the operator's question as
-// a test: "if I let a permission ask time out and then I asked for the prompt again,
-// would it now be accepted, or is it deny forever at that point?"
-//
-// It is NOT deny-forever — a timeout writes no grant, no deny entry and no
-// once-target, so a retried call is a new call which asks again. But the model has
-// to be TOLD that, and it used to receive identical text for "the operator refused
-// you" and "nobody answered", so it had no reason to ask again. These messages are
-// read by the model, and they must not be interchangeable.
+// TestConsentDenialErrorDistinguishesTheThreeOutcomes is the operator's question as a test: "if I
+// let a permission ask time out and then I asked for the prompt again, would it now be accepted.
 func TestConsentDenialErrorDistinguishesTheThreeOutcomes(t *testing.T) {
 	expired := consentDenialError("write", consentExpired).Error()
 	cancelled := consentDenialError("write", consentCancelled).Error()
@@ -54,34 +47,16 @@ func TestConsentReadOnlyToolsNeverAsk(t *testing.T) {
 			t.Errorf("%q must NOT be gated — reads never ask", name)
 		}
 	}
-	// todowrite writes SESSION state, not the filesystem, so it must NOT ask: a card for
-	// a change that cannot leave the session is how a gate becomes something to click
-	// through. (It was briefly classed as mutating "for completeness"; using the feature
-	// showed that was wrong.)
+	// todowrite writes SESSION state, not the filesystem, so it must NOT ask: a card for a change that
+	// cannot leave the session is how a gate becomes something to click through.
 	if consentGatedTool("todowrite") {
 		t.Error("todowrite must not ask — it cannot change anything outside the session")
 	}
 }
 
 // TestOpaqueMCPToolsAreNeverConsentGated pins the CONSENT half for MCP, which now ALLOWS the class.
-//
-// It used to be its own inverse (`AreAlwaysGated`): an operator's MCP tool was treated as a
-// third-party action the platform cannot classify, gated in every mode. The operator overruled it —
-// the server is in the conversation because they attached it, so consent was spent at configuration
-// time. The MODE table was already the governor for the platform's own surface and remains it for
-// everyone's.
 func TestOpaqueMCPToolsAreNeverConsentGated(t *testing.T) {
-	// THE REQUIREMENT FLIPPED, and the assertion flipped with it rather than being deleted. An MCP
-	// server is in this conversation only because the operator put it there, so the approval already
-	// happened at configuration time; a per-call card asks them to re-decide a standing decision.
-	// The operator: "If it's added in scope it should just have access tbh. I don't want cards for
-	// that."
-	//
-	// WHAT STILL GOVERNS ONE is the MODE boundary, which is a separate layer and is NOT asserted from
-	// here — see internal/askmode's MayExecute (an opaque MCP tool takes its mode's MayAct, so
-	// Brainstorm and Quick Work still refuse it) and native_tools.go, which enforces that at both the
-	// OFFER and the EXECUTE end. Pinning it THERE is what keeps this test honest: this one claims only
-	// that consent is not the thing doing the governing.
+	// THE REQUIREMENT FLIPPED, and the assertion flipped with it rather than being deleted.
 	for _, name := range []string{
 		"mcp__github__create_issue", "mcp__sentry__list_issues", "mcp__notes__append",
 	} {
@@ -155,16 +130,8 @@ func TestAwaitConsentPermissionProceedsOnOnce(t *testing.T) {
 	}
 }
 
-// TestAwaitConsentPermissionDeniesOnSilence pins the CONFIGURED leash: an operator who
-// sets ORCHICON_ASK_CONSENT_WAIT gets the old fail-closed expiry, and silence still
-// resolves the call as "expired" rather than as an approval.
-//
-// IT IS NO LONGER THE DEFAULT. The default is now no bound at all (see
-// nativeConsentWaitDefault): the operator, away from the keyboard, was losing cards to
-// exactly this expiry — "if an ask or permission card has been waiting for awhile (i.e.
-// away from keyboard), I can no longer click into it or use the keyboard to select it" —
-// and decided that a card waits for the user no matter what. This test therefore guards
-// the SETTING rather than the behaviour every card now gets.
+// TestAwaitConsentPermissionDeniesOnSilence pins the CONFIGURED leash: an operator who sets
+// ORCHICON_ASK_CONSENT_WAIT gets the old fail-closed expiry.
 func TestAwaitConsentPermissionDeniesOnSilence(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_CONSENT_WAIT", "80ms")
 	b, bus, cancel := newConsentTestBridge(t)
@@ -192,11 +159,6 @@ func TestAwaitConsentPermissionDeniesOnSilence(t *testing.T) {
 
 // TestAwaitConsentPermissionWaitsIndefinitelyByDefault is the operator's rule as a test: with
 // nothing configured, a card is NEVER taken away from them.
-//
-// The whole bug was the expiry: when the wait ran out the call was refused, the ask was settled,
-// and the card the operator came back to could no longer be clicked or selected. So the
-// assertions here are (1) there is no bound to run out, (2) an absent operator leaves the ask
-// PARKED, and (3) their eventual answer still lands and releases the call.
 func TestAwaitConsentPermissionWaitsIndefinitelyByDefault(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_CONSENT_WAIT", "") // the default: unset
 	if got := nativeConsentWait(); got != 0 {
@@ -278,9 +240,8 @@ func TestAwaitConsentPermissionDeniesOnCancelledTurn(t *testing.T) {
 	}
 }
 
-// TestReplyPermissionDecisionForAMootAskIsNotAnError: a decision for an ask
-// nobody is waiting on (expired, or the turn already ended) must not poison the
-// caller — there is nothing it could do about it.
+// TestReplyPermissionDecisionForAMootAskIsNotAnError: a decision for an ask nobody is waiting on
+// (expired, or the turn already ended) must not poison the caller.
 func TestReplyPermissionDecisionForAMootAskIsNotAnError(t *testing.T) {
 	b, _, cancel := newConsentTestBridge(t)
 	defer cancel()
@@ -289,10 +250,8 @@ func TestReplyPermissionDecisionForAMootAskIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestReplyPermissionAutoApprovesOnlyTheNoConsentFallback: ReplyPermission is the
-// collector's fallback for a turn with no consent core at all. It must release a
-// parked call rather than leaving it to time out (the old stub returned an error,
-// which would have hung every such turn until the window expired).
+// TestReplyPermissionAutoApprovesOnlyTheNoConsentFallback: ReplyPermission is the collector's
+// fallback for a turn with no consent core at all.
 func TestReplyPermissionAutoApprovesOnlyTheNoConsentFallback(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_CONSENT_WAIT", "10m")
 	b, bus, cancel := newConsentTestBridge(t)
@@ -362,20 +321,8 @@ func waitForBusEvent(t *testing.T, bus *chatBus, kind string) scheduler.SessionE
 	}
 }
 
-// TestConsentDenialErrorDoesNotBlameTheOperatorForARule is the OTHER half of the
-// distinction above, and the one that was missing.
-//
-// The consent layer refuses a call for reasons that are not operator decisions at all: a
-// DENY entry (a decision the POLICY made), the never-allow binary class, or a policy that
-// could not be read. In every one of those cases the operator never saw the call — no card
-// was raised — and the layer already computed a precise reason naming the rule. But the
-// collector sent the bridge a bare "reject" and logged the reason, so the model was told
-// "the operator denied ... do not retry it; ask them what they would prefer instead" about
-// a refusal the operator had nothing to do with.
-//
-// That is the exact failure this repo has been corrected on before (a malformed policy was
-// reported as an operator denial), and a model that believes the operator refused something
-// they never saw will ask them to lift a rule they did not know existed.
+// TestConsentDenialErrorDoesNotBlameTheOperatorForARule is the OTHER half of the distinction above,
+// and the one that was missing.
 func TestConsentDenialErrorDoesNotBlameTheOperatorForARule(t *testing.T) {
 	reason := "denied by the permission list (deny entry \"~/.secrets/**\")"
 	got := consentDenialError("read_file", ConsentRefusedPrefix+reason).Error()
@@ -396,9 +343,7 @@ func TestConsentDenialErrorDoesNotBlameTheOperatorForARule(t *testing.T) {
 	if denied := consentDenialError("read_file", "reject").Error(); !strings.Contains(denied, "the operator denied") {
 		t.Errorf("a real operator denial must still say so, got %q", denied)
 	}
-	// THE PREFIX MUST NOT MATCH BY ACCIDENT. Only a prefix-carrying decision may claim the
-	// operator was not involved; every other value is either an operator decision or a
-	// non-refusal, and neither may borrow that wording.
+	// THE PREFIX MUST NOT MATCH BY ACCIDENT.
 	for _, plain := range []string{"reject", consentExpired, consentCancelled, "once"} {
 		if strings.Contains(consentDenialError("t", plain).Error(), "did not refuse") {
 			t.Errorf("decision %q claimed the operator was not involved", plain)

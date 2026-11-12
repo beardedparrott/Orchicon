@@ -7,19 +7,8 @@ import (
 	"strings"
 )
 
-// hostGatewayIP returns the IP the container can use to reach services on
-// the HOST (the docker bridge gateway), or "" when not applicable.
-//
-// Detection: connect a UDP socket toward a public address — the local
-// address the kernel picks is the container's interface on the default
-// bridge. The gateway (the host, from the container's perspective) is the
-// first address in that subnet (the standard docker bridge 172.17.0.0/16 →
-// 172.17.0.1). The UDP "connect" only picks a route; no packet is sent.
-//
-// Container mode ONLY (ORCHICON_CONTAINER_MODE=1): on a host-run plane
-// there is no bridge and localhost already reaches the host — rewriting
-// anything there would break correct configurations. Undetectable gateway
-// (odd network setups) also returns "" — never guess.
+// Container mode ONLY (ORCHICON_CONTAINER_MODE=1): on a host-run plane there is no bridge and
+// localhost already reaches the host — rewriting anything there would break correct configurations.
 func hostGatewayIP() string {
 	if os.Getenv("ORCHICON_CONTAINER_MODE") != "1" {
 		return ""
@@ -44,14 +33,7 @@ func hostGatewayIP() string {
 	return gw.String()
 }
 
-// resolveForPlane rewrites loopback addresses in a custom provider base URL
-// to the container's host gateway (docker bridge) so a user-entered
-// "localhost:8095" reaches their host machine. Container mode ONLY (see
-// hostGatewayIP).
-//
-// Returns (resolvedURL, note, changed). note is operator-facing plain
-// language (no docker jargon) explaining what was rewritten and why, or ""
-// when nothing changed.
+// Container mode ONLY (see hostGatewayIP).
 func resolveForPlane(raw string) (string, string, bool) {
 	trimmed := strings.TrimSpace(raw)
 	u, err := url.Parse(trimmed)
@@ -70,11 +52,8 @@ func resolveForPlane(raw string) (string, string, bool) {
 	if strings.Contains(gw, ":") {
 		gwHost = "[" + gw + "]"
 	}
-	// PRESERVE THE PORT: u.Host is the combined host:port field — replacing
-	// it with the bare gateway IP silently dropped ":8095" (QA round 4:
-	// stored URLs lost their port, probe hit port 80, and repairCandidates
-	// bailed on the portless URL — the resolver poisoned its own repair
-	// path). JoinHostPort keeps host AND port.
+	// PRESERVE THE PORT: u.Host is the combined host:port field — replacing it with the bare gateway IP
+	// silently dropped ":8095" (QA round 4: stored URLs lost their port, probe hit port 80.
 	u.Host = net.JoinHostPort(gwHost, u.Port())
 	resolved := u.String()
 	if resolved == trimmed {
@@ -107,21 +86,8 @@ func resolveForPlane(raw string) (string, string, bool) {
 // about the firewall rule and the address is stated in the UI.
 const ContainerHostAddress = "172.17.0.1"
 
-// TransposeForContainer rewrites a provider base URL whose host is the HOST's
-// loopback into the address a runtime container can dial.
-//
-// A runtime container's loopback is its own, so a local model published on the
-// operator's machine is unreachable from a worker at 127.0.0.1 — while the same
-// URL is exactly right for the host-plane consumer that dials it in-process.
-// One stored provider therefore needs two addresses, and this is the container's.
-//
-// 0.0.0.0 and ::1 are rewritten too, for the same reason: none of them name the
-// host from inside a container.
-//
-// The PORT and PATH are preserved (net.JoinHostPort), because a local model's
-// port IS its identity and the version root (…/v1) is part of the endpoint.
-// A URL that is not loopback is returned unchanged: a public endpoint, a LAN
-// address and an already-transposed value are all reachable as they stand.
+// TransposeForContainer rewrites a provider base URL whose host is the HOST's loopback into the
+// address a runtime container can dial.
 func TransposeForContainer(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	u, err := url.Parse(trimmed)
@@ -134,22 +100,16 @@ func TransposeForContainer(raw string) string {
 		return trimmed
 	}
 	if u.Port() == "" {
-		// A portless loopback URL cannot be transposed usefully — the address is
-		// not the problem, the missing port is, and guessing one would point the
-		// worker at a service that is not the model.
+		// A portless loopback URL cannot be transposed usefully — the address is not the problem, the
+		// missing port is, and guessing one would point the worker at a service that is not the model.
 		return trimmed
 	}
 	u.Host = net.JoinHostPort(ContainerHostAddress, u.Port())
 	return u.String()
 }
 
-// mustTryLocalPorts reports whether a host is one where the common
-// local-inference ports are worth trying.
-//
-// TRUE only for an endpoint reachable on this machine or this network: loopback,
-// the container's host gateway, a private range, or a bare hostname with no dots
-// (a docker service name like `ollama`). FALSE for a public host — see the port
-// fallback in repairCandidates for the cost of getting this wrong.
+// mustTryLocalPorts reports whether a host is one where the common local-inference ports are worth
+// trying.
 func mustTryLocalPorts(host string) bool {
 	h := strings.TrimSpace(host)
 	if h == "" {
@@ -169,17 +129,8 @@ func mustTryLocalPorts(host string) bool {
 	return false
 }
 
-// repairCandidates lists the most-likely-working base URLs for a custom
-// provider whose stored URL cannot be probed. Dimensions explored:
-//   - host: loopback → plane-reachable host gateway (container mode only;
-//     the portless-URL legacy bug may also have stored a bare gateway),
-//   - port: preserved as entered; portless URLs (legacy bug) try common
-//     llama-server/vLLM-class ports,
-//   - path: the version root (/v1) appended when absent.
-//
-// Candidates are ordered most-likely first and deduped; the ORIGINAL URL
-// is NOT included (the caller already tried it). Empty/nil when nothing
-// can be sensibly tried.
+// repairCandidates lists the most-likely-working base URLs for a custom provider whose stored URL
+// cannot be probed.
 func repairCandidates(raw string) []string {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Host == "" {
@@ -188,9 +139,8 @@ func repairCandidates(raw string) []string {
 
 	gw := hostGatewayIP()
 
-	// Hosts to try, in order: the stored host itself, then the gateway
-	// (when the stored host is loopback OR is a portless gateway artifact,
-	// both being container-reachability failures).
+	// Hosts to try, in order: the stored host itself, then the gateway (when the stored host is
+	// loopback OR is a portless gateway artifact, both being container-reachability failures).
 	hosts := []string{u.Host}
 	loopbackOrGateway := false
 	switch u.Hostname() {
@@ -204,18 +154,6 @@ func repairCandidates(raw string) []string {
 	}
 
 	// PORT FALLBACK, LOCAL ENDPOINTS ONLY.
-	//
-	// The common local-inference ports belong to an endpoint on THIS network
-	// (ollama 11434, vLLM 8000, a dev proxy on 8080/8095). Applying them to a
-	// PUBLIC host manufactures addresses that cannot exist: repairing anthropic's
-	// `https://api.anthropic.com/v1` produced api.anthropic.com:11434 and friends,
-	// nine probes of which several hung for 15-30s on the dial — 45 SECONDS IN
-	// TOTAL, which is exactly the model picker's budget, so the picker never got
-	// an answer and the operator saw a list stuck on "loading models…".
-	//
-	// A public host is repaired by a missing version root or nothing at all; it
-	// does not move to another port. `for a custom` in this function's doc is the
-	// intent: a locally-entered endpoint, not a built-in cloud provider.
 	pathNeedsV1 := u.Path == "" || u.Path == "/"
 
 	port := u.Port()
@@ -226,13 +164,6 @@ func repairCandidates(raw string) []string {
 			ports = []string{"8080", "8095", "8000", "11434"}
 		case !pathNeedsV1:
 			// A PUBLIC host, portless, whose path ALREADY carries the version root.
-			// The URL is well formed and there is nothing to repair: a 401 from it is
-			// a TOKEN problem, not an endpoint one. Returning here is what keeps a
-			// built-in cloud provider out of the sweep entirely.
-			//
-			// This is the case that cost 45 seconds: `https://api.anthropic.com/v1`
-			// reached the port fallback, which invented api.anthropic.com:11434 and
-			// friends, each dial blocking on a timeout.
 			return nil
 		}
 	}

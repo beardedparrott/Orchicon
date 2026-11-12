@@ -14,13 +14,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	assets "github.com/beardedparrott/orchicon"
@@ -28,6 +29,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/backup"
 	"github.com/beardedparrott/orchicon/internal/config"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/e2e"
 	"github.com/beardedparrott/orchicon/internal/mcp"
 	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 	"github.com/beardedparrott/orchicon/internal/server"
@@ -37,11 +39,8 @@ import (
 )
 
 func main() {
-	// Wire the OTel slog bridge so the default-mode control plane
-	// (not just the dev subcommand) also streams its structured log
-	// records into the Telemetry logs tab. The OTel handler is a
-	// no-op until telemetry.Setup binds the global LoggerProvider
-	// inside server.New.
+	// Wire the OTel slog bridge so the default-mode control plane (not just the dev subcommand) also
+	// streams its structured log records into the Telemetry logs tab.
 	log := slog.New(telemetry.MultiHandler(
 		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}),
 		telemetry.NewOtelSlogHandler(),
@@ -53,14 +52,16 @@ func main() {
 		switch os.Args[1] {
 		case "serve":
 			os.Exit(runServe(os.Args[2:]))
-		case "container":
-			os.Exit(runContainer(os.Args[2:]))
+		case "host-services":
+			os.Exit(runHostServices(os.Args[2:]))
 		case "mcp":
 			os.Exit(runMCP(context.Background(), os.Args[2:], log))
 		case "db":
 			os.Exit(runDB(os.Args[2:], log))
 		case "backfill-pr":
 			os.Exit(runBackfillPR(os.Args[2:], log))
+		case "prune-executions":
+			os.Exit(runPruneExecutions(os.Args[2:], log))
 		case "claude-hook":
 			os.Exit(runClaudeHook(os.Stdin, os.Stdout))
 		case "run-context":
@@ -71,15 +72,50 @@ func main() {
 			os.Exit(exitOnErr(runRuntimeSupervisor(os.Args[2:], log)))
 		case "runtime-client":
 			os.Exit(exitOnErr(runRuntimeClient(os.Args[2:], log)))
+		case "uninstall":
+			// Takes the instance state off this machine: stops everything, removes the binaries and the
+			// generated config, and KEEPS the data unless --purge.
+			os.Exit(exitOnErr(runUninstall(os.Args[2:], os.Stdout)))
 		case "install":
 			os.Exit(exitOnErr(runInstall(os.Args[2:], log)))
+		case "start":
+			// The one-verb lifeline: services then plane, composed from the primitives below.
+			os.Exit(exitOnErr(runStart(os.Args[2:], log)))
+		case "stop":
+			// The mirror of start: plane then services. Both halves are idempotent.
+			os.Exit(exitOnErr(runStop(os.Args[2:])))
 		case "restart":
 			os.Exit(exitOnErr(runRestart(os.Args[2:], log)))
+		case "plane":
+			// THE shared local plane-control mechanism (internal/planecontrol): status | start | stop | restart.
+			// Local process invocation only — no lifecycle RPC exists, and none is added here.
+			os.Exit(exitOnErr(runPlane(os.Args[2:])))
+		case "services":
+			os.Exit(runServices(os.Args[2:]))
 		case "version", "--version", "-v":
 			fmt.Println(version.Current().String())
 			return
+		case "status":
+			os.Exit(exitOnErr(runStatus(os.Args[2:])))
+		case "logs":
+			os.Exit(exitOnErr(runLogs(os.Args[2:])))
 		case "notices":
 			os.Exit(runNotices(os.Args[2:]))
+		case "e2e":
+			// AN INTERRUPT IS NOT A FAILURE. Ctrl-C cancels the run's context so its cleanup can fire,
+			// which surfaces as context.Canceled — reporting that as an error buries the fact that the
+			// run stopped on purpose and cleaned up.
+			if err := e2e.Run(os.Args[2:]); err != nil {
+				if errors.Is(err, context.Canceled) {
+					fmt.Println("interrupted")
+					os.Exit(130)
+				}
+				os.Exit(exitOnErr(err))
+			}
+			// THE SUBCOMMAND MUST EXIT HERE. Falling through runs the control plane, and a harness that
+			// finishes successfully then tries to BIND :8091 — which fails with "address already in use"
+			// and reports a successful run as an error.
+			os.Exit(0)
 		case "--help", "-h":
 			printHelp()
 			return
@@ -90,6 +126,20 @@ func main() {
 		}
 	}
 
+	// BARE `orchicon` IS NOW A LIFECYCLE COMMAND, NOT A PLANE.
+	fmt.Fprintln(os.Stderr, "orchicon is a control-plane BINARY; it does not run the plane in your terminal.")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "  orchicon start [instance]    start the services and the plane, in the background")
+	fmt.Fprintln(os.Stderr, "  orchicon stop [instance]     stop the plane and the services")
+	fmt.Fprintln(os.Stderr, "  orchicon status [instance]   is it up, and where")
+	fmt.Fprintln(os.Stderr, "  orchicon install [instance]  set this machine up for the first time")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "  To watch the logs of a running plane:")
+	fmt.Fprintln(os.Stderr, "    orchicon logs dev")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "  To run the plane in the foreground (for debugging):")
+	fmt.Fprintln(os.Stderr, "    orchicon serve")
+	fmt.Fprintln(os.Stderr, "")
 	log.Info("orchicon control plane", "version", version.Current().String())
 
 	cfg := config.Default()
@@ -98,8 +148,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	// Platform-dependent stop signals: SIGINT+SIGTERM on Unix, os.Interrupt on Windows (signals_*.go).
+	ctx, cancel := signal.NotifyContext(context.Background(), shutdownSignals()...)
 	defer cancel()
+
+	// MIGRATE HERE TOO.
+	if !migrateOnBoot(ctx, cfg, log) {
+		os.Exit(1)
+	}
 
 	srv, err := server.New(cfg, log, nil)
 	if err != nil {
@@ -256,16 +312,6 @@ func printHelp() {
 	bin := filepath.Base(os.Args[0])
 
 	// THE ROWS ARE DATA, AND THE COMMAND COLUMN IS MEASURED FROM THEM.
-	//
-	// Both halves of that matter, and the first version of this function had neither. The list was
-	// a Printf with one positional argument per line (fifteen of them), maintained by hand — which
-	// is how `install` came to be absent from the help entirely. And the gap after each command was
-	// literal spaces, so the columns only lined up for a binary whose name happened to fit: with a
-	// longer name (a test binary, or `/usr/local/bin/orchicon` → still `orchicon`) the longest rows
-	// lost their gap and the line read as one run-on sentence.
-	//
-	// So: rows first, then the width is the longest command plus a gap. The rendered help is
-	// correct for ANY binary name.
 	type row struct {
 		section string // non-empty starts a new section
 		cmd     string
@@ -275,14 +321,49 @@ func printHelp() {
 	rows := []row{
 		{section: "Setting up and driving an instance:"},
 		{cmd: bin + " install", desc: []string{
-			"Set up this machine: pull the images, create the instance, start the plane.",
+			"Set up this machine: resolve the host ports and binaries, start Postgres + NATS",
+			"as host processes, then start the plane. No container is created and no image is",
+			"pulled — runtime images are optional and fetched later, per project, on demand.",
 			"IDEMPOTENT — re-running converges an existing instance and upgrades a superseded",
 			"plane. It does NOT restart a plane that is already healthy on the installed binary,",
 			"which is why it is not the way to pick up an environment change."}},
+		{cmd: bin + " uninstall [instance] [--purge]", desc: []string{
+			"Take this instance OFF the machine: stop everything it runs, then remove the",
+			"services, their downloaded binaries and the generated config.",
+			"Your DATA is kept — the database cluster, the attachments and the secrets key —",
+			"so a later install of the same instance reuses it. --purge destroys the data too,",
+			"IRREVERSIBLY (it is the only path that removes the cluster or the secrets key)."}},
+		{cmd: bin + " status [instance]", desc: []string{
+			"Report whether the instance is up: the plane, the services, where the logs are",
+			"and where the web UI is. Also names the start and stop commands."}},
+		{cmd: bin + " logs [instance]", desc: []string{
+			"Print the plane's recent log lines and then follow it, the way `tail -f` does.",
+			"The path is also printed by `status` and by `start`."}},
+		{cmd: bin + " e2e [flags]", desc: []string{
+			"Exercise Ask in both modes across every adapter, build a six-task epic pinned to",
+			"Quick Work, dispatch it (with -dispatch) and report. Uses your `orch` profile for the",
+			"plane and credential, so an INSTALLED copy needs no Makefile or Go toolchain.",
+			"-local-only skips runtime-mode tasks (no container engine); -keep skips cleanup."}},
 		{cmd: bin + " restart", desc: []string{
 			"Restart the instance so its components re-read their environment.",
 			"Use this after installing an adapter CLI or changing PATH: a plane inherits its",
 			"environment when it STARTS, so `install` alone will not refresh it."}},
+		{cmd: bin + " start [instance]", desc: []string{
+			"Start an INSTALLED instance: its services (Postgres + NATS), then its plane.",
+			"Idempotent, and it never installs — use `install` for a machine with nothing on it.",
+			"This is the verb for `serve --start`, which does NOT exist."}},
+		{cmd: bin + " stop [instance]", desc: []string{
+			"Stop an instance: its plane, then its services. Idempotent, so running it on a",
+			"stopped instance is a successful no-op."}},
+		{cmd: bin + " plane", desc: []string{
+			"status | start | stop | restart one instance's plane (the same local mechanism the",
+			"TUI and the desktop app call; `scripts/orchicon.sh` delegates to it too)."}},
+		{cmd: bin + " services", desc: []string{
+			"Start/stop this instance's Postgres + NATS on the HOST (no container engine needed).",
+			"services up | down | status — the local backend `make run` and `make migrate` use.",
+			"up is idempotent; down verifies the ports came free, and stops this instance's own",
+			"container-era container if one still holds them. `down --force` also terminates this",
+			"instance's own leftover processes — never a process it does not own."}},
 		{cmd: bin + " version", desc: []string{"Print version info"}},
 		{cmd: bin + " notices", desc: []string{"Print third-party license + notice text"}},
 
@@ -290,25 +371,26 @@ func printHelp() {
 		{cmd: bin, desc: []string{"Run the control plane (API + relay + reconcilers)"}},
 		{cmd: bin + " serve", desc: []string{"Run the control plane with embedded frontend (headless)"}},
 		{cmd: bin + " serve --detach", desc: []string{"Fork the server into the background (PID file + /healthz)"}},
-		{cmd: bin + " serve --status", desc: []string{"Report whether a detached server is running"}},
+		{cmd: bin + " serve --status", desc: []string{
+			"Report the same thing as `plane status`: the instance, its residency, the plane PID, the",
+			"serving binary and whether it has been superseded, plus health. One surface, two spellings."}},
 		{cmd: bin + " serve --stop", desc: []string{"Stop a detached server"}},
-		{cmd: bin + " container", desc: []string{"Run the whole stack as PID 1 inside the single-container image"}},
 
 		{section: "Operating an instance:"},
 		{cmd: bin + " db", desc: []string{"Database snapshots: backup | list | restore | prune"}},
 		{cmd: bin + " backfill-pr", desc: []string{"Backfill real PR URLs for completed git-backed runs"}},
+		{cmd: bin + " prune-executions", desc: []string{"Report (or with --apply, delete) executions older than the newest N"}},
 		{cmd: bin + " run-context", desc: []string{"Print a run's .orchicon archive (steps/summary) for context-by-reference"}},
 
 		{section: "Integration helpers (invoked by the runtime, not usually by hand):"},
 		{cmd: bin + " mcp", desc: []string{"Run the MCP stdio server (for opencode tool integration)"}},
 		{cmd: bin + " claude-hook", desc: []string{"Run the PreToolUse permission hook for a claude worker session"}},
 
-		// INTERNAL COMMANDS ARE LISTED TOO. They are dispatched and they are real, so an operator can
-		// reach them; hiding them would recreate exactly the gap this help had (a command that exists
-		// and runs, absent from the list). The heading is what says "not for hand use".
+		// INTERNAL COMMANDS ARE LISTED TOO.
 		{section: "Internal (started by the installer and the daemon; not for hand use):"},
-		{cmd: bin + " runtime-daemon", desc: []string{"Run the runtime daemon (owns the Docker socket)"}},
+		{cmd: bin + " runtime-daemon", desc: []string{"Run the runtime daemon (owns the container engine)"}},
 		{cmd: bin + " runtime-supervisor", desc: []string{"Run a workflow container's supervisor"}},
+		{cmd: bin + " host-services", desc: []string{"Supervise this instance's Postgres, NATS and telemetry as host processes", "(started by install/start; there is no container to run them in)"}},
 		{cmd: bin + " runtime-client", desc: []string{"Talk to the runtime daemon over its socket"}},
 	}
 
@@ -333,25 +415,44 @@ func printHelp() {
 		}
 	}
 
-	fmt.Fprintf(&b, "\nAlmost every command reads ORCHICON_INSTANCE to choose the instance (default: dev).\n")
-	fmt.Fprintf(&b, "\nThe binary embeds the single-container runtime configs, migrations, and the frontend\n"+
-		"bundle. Run the full stack with `docker run` (see ARCHITECTURE.md §Single-Container\n"+
-		"Deployment) or `%s container` as the container's PID-1 supervisor.\n", bin)
+	fmt.Fprintf(&b, "\nAlmost every command acts on ONE instance (default: dev). Name it as a positional\n"+
+		"(orchicon stop prod) or with --instance (orchicon stop --instance prod); ORCHICON_INSTANCE\n"+
+		"is the fallback when neither is given.\n")
+	fmt.Fprintf(&b, "\nThe binary embeds the service configs, migrations, and the frontend bundle, and it IS\n"+
+		"the whole product: `%s install` puts the plane and its services on this host as\n"+
+		"ordinary processes. There is no image to run and no engine to install; the only\n"+
+		"container Orchicon uses is a workflow's runtime container, opt-in per project.\n", bin)
 
 	fmt.Print(b.String())
 }
 
+// mcpStderrLogger is the logger a stdio MCP server must use: JSON on STDERR.
+func mcpStderrLogger() *slog.Logger {
+	return mcpLogger(os.Stderr)
+}
+
+// mcpLogger takes the writer rather than naming stderr, so the format can be asserted in a test
+// without redirecting the real os.Stderr out from under the test runner.
+func mcpLogger(w io.Writer) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo}))
+}
+
 func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
-	// Worktree-only mode: a worker's composite file tools (batch_read /
-	// batch_grep / batch_write) run against a base directory and need no
-	// Postgres or valid plane config. The control plane sets
-	// ORCHICON_MCP_WORKTREE_DIR when it wires this sidecar into a worker's
-	// opencode config, so the sidecar can run inside a DB-less runtime.
+	// IT AFFECTED BOTH PLATFORMS AND BOTH CARD KINDS because the corrupted channel is the ONLY way this
+	// sidecar is reached.
+	log = mcpStderrLogger()
+	slog.SetDefault(log)
+
+	// Worktree-only mode: a worker's composite file tools (batch_read / batch_grep / batch_write) run
+	// against a base directory and need no Postgres or valid plane config.
 	if wd := os.Getenv("ORCHICON_MCP_WORKTREE_DIR"); wd != "" {
 		pr := os.Getenv("ORCHICON_MCP_PROJECT_DIR")
+		// SAY SO WHEN THE PROJECT DIR IS UNUSABLE, BY NAME.
+		if pr != "" && !filepath.IsAbs(pr) {
+			log.Warn("mcp sidecar: ORCHICON_MCP_PROJECT_DIR is NOT absolute — the run-state todo channel is disabled rather than creating .orchicon relative to the working directory",
+				"project_dir", pr, "worktree", wd)
+		}
 		// The run-state dir is where the todo snapshot the PLANE reads is written.
-		// Derived here from the same two vars the plane uses, so writer and reader
-		// agree by construction rather than by convention.
 		runState := worktree.RunStateDir(pr, os.Getenv("ORCHICON_MCP_WORKFLOW_RUN_ID"))
 		mcpSrv := mcp.New(log, nil, mcp.NewWorktreeRegistry(wd, pr, runState))
 		log.Info("mcp server started (worktree tools, stdio transport)",
@@ -363,11 +464,8 @@ func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
 		return 0
 	}
 
-	// Plane-channel mode: the `orchicon-plane` MCP sidecar (role-bound
-	// worker executions) talks to the REAL instance's Connect API with a
-	// short-lived, role-scoped credential — no Postgres, no sandbox. The
-	// control plane sets ORCHICON_PLANE_URL + ORCHICON_PLANE_TOKEN when it
-	// mints the credential for the run.
+	// Plane-channel mode: the `orchicon-plane` MCP sidecar (role-bound worker executions) talks to the
+	// REAL instance's Connect API with a short-lived, role-scoped credential — no Postgres, no sandbox.
 	if url := os.Getenv("ORCHICON_PLANE_URL"); url != "" && os.Getenv("ORCHICON_PLANE_TOKEN") != "" {
 		mcpSrv := mcp.New(log, nil, mcp.NewPlaneRegistry(url, os.Getenv("ORCHICON_PLANE_TOKEN"), log))
 		log.Info("mcp server started (plane channel, stdio transport)", "url", url)
@@ -384,9 +482,8 @@ func runMCP(ctx context.Context, args []string, log *slog.Logger) int {
 		return 1
 	}
 
-	// Secrets KEK for the MCP surface's secret tools: explicit override
-	// wins, else the per-instance data-dir key (load-or-create on first
-	// boot) — same resolution as the control plane.
+	// Secrets KEK for the MCP surface's secret tools: explicit override wins, else the per-instance
+	// data-dir key (load-or-create on first boot) — same resolution as the control plane.
 	secretsKEK, kekErr := secretcrypto.ResolveKEK(cfg.SecretsKEK, cfg.DataDir)
 	if kekErr != nil {
 		log.Warn("secrets KEK unavailable (secret tools disabled)", "error", kekErr)

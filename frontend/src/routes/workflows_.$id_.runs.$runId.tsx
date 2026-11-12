@@ -14,7 +14,7 @@ import ReactFlow, {
   type Node,
 } from "reactflow";
 import type { WorkflowStepRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
-import { StepKind, StepRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
+import { StepKind, StepRunStatus, WorkflowRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 
 import { useApproveStep } from "@/api/approvals";
 import {
@@ -52,6 +52,8 @@ import {
   type RunView,
 } from "@/components/workflow-runs/headsUp";
 import { HeadsUpGrid } from "@/components/workflow-runs/HeadsUpGrid";
+import { RunBlockageCard } from "@/components/workflow-runs/RunBlockageCard";
+import { RunFailureCard, RunIntegrationNotice } from "@/components/workflow-runs/RunFailureCard";
 import {
   ExecStatusBadge,
   StepStatusPill,
@@ -462,6 +464,28 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
           <span className="text-xs text-muted-foreground">elapsed</span>
         </div>
       )}
+
+      {/* The run blockage card renders in BOTH views (it sits above the view
+          switch on purpose). A stuck run is not a per-view concern: the cause
+          is usually run-EXTERNAL — the project's dispatch cap, held by
+          unreaped executions — and an operator who switched to the graph tab
+          would otherwise lose the one panel that explains it. It renders
+          nothing for a run that is not blocked. */}
+      <RunBlockageCard runId={runId} enabled={run.status === WorkflowRunStatus.RUNNING} />
+
+      {/* WHY IT ENDED, above the steps. The blockage card answers "why is it not moving" and is silent for a
+          finished run — which is exactly the state a failed run is in, so nothing on this page ever said why
+          one failed. Renders nothing when no error was recorded. */}
+      <RunFailureCard
+        errorMessage={run.errorMessage}
+        errorKind={run.errorKind}
+        failed={
+          run.status === WorkflowRunStatus.FAILED || String(run.status).endsWith("FAILED")
+        }
+      />
+
+      {/* A run can be COMPLETE and NOT MERGED. Reported as indistinguishable from a landed run before this. */}
+      <RunIntegrationNotice status={run.integrationStatus} />
 
       {view === "tile" ? (
         <>

@@ -19,9 +19,8 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// testMeter swaps the global meter provider for a manual-reader-backed one so
-// the test can read back exactly what usageMetrics.emit recorded, and restores
-// the previous provider on cleanup.
+// testMeter swaps the global meter provider for a manual-reader-backed one so the test can read
+// back exactly what usageMetrics.emit recorded, and restores the previous provider on cleanup.
 type testMeter struct {
 	reader  *metric.ManualReader
 	restore func()
@@ -119,9 +118,8 @@ func approx(a, b, eps float64) bool {
 	return math.Abs(a-b) <= eps
 }
 
-// TestSplitCostByWeightRenormalizes pins the pricing-weighted allocation: the
-// shares always renormalize to the input total, and a cheap bucket (cache_read,
-// priced ~10x below input) gets less than a token-proportional share.
+// TestSplitCostByWeightRenormalizes pins the pricing-weighted allocation: the shares always
+// renormalize to the input total, and a cheap bucket (cache_read.
 func TestSplitCostByWeightRenormalizes(t *testing.T) {
 	mult := defaultPriceMultipliers[:]
 	cases := []struct {
@@ -175,9 +173,8 @@ func isMaxWeight(tokens []int64, prices []float64, idx int) bool {
 	return idx == maxIdx
 }
 
-// TestSplitCostByWeightNoTokens guards the degenerate case: with no
-// allocatable weight the whole cost lands in the first bucket (never dropped),
-// and a zero total yields all-zero shares.
+// TestSplitCostByWeightNoTokens guards the degenerate case: with no allocatable weight the whole
+// cost lands in the first bucket (never dropped), and a zero total yields all-zero shares.
 func TestSplitCostByWeightNoTokens(t *testing.T) {
 	zeroTokens := []int64{0, 0, 0, 0}
 	shares := splitCostByWeight(1.5, zeroTokens, defaultPriceMultipliers[:])
@@ -208,9 +205,8 @@ func TestBucketPricePerToken(t *testing.T) {
 	}
 }
 
-// TestEmitSplitsTokensLosslessly passes a sample with all four buckets and
-// asserts one token Add per non-zero bucket whose Σ token_class equals
-// TotalTokens (ADR acceptance #1, #2).
+// TestEmitSplitsTokensLosslessly passes a sample with all four buckets and asserts one token Add
+// per non-zero bucket whose Σ token_class equals TotalTokens (ADR acceptance #1, #2).
 func TestEmitSplitsTokensLosslessly(t *testing.T) {
 	tm := newTestMeter(t)
 	defer tm.restore()
@@ -233,9 +229,8 @@ func TestEmitSplitsTokensLosslessly(t *testing.T) {
 	}
 }
 
-// TestEmitSplitsCostRenormalized asserts the cost counter carries one
-// pricing-weighted share per non-zero bucket and Σ shares == CostUSD
-// (ADR acceptance #3).
+// TestEmitSplitsCostRenormalized asserts the cost counter carries one pricing-weighted share per
+// non-zero bucket and Σ shares == CostUSD (ADR acceptance #3).
 func TestEmitSplitsCostRenormalized(t *testing.T) {
 	tm := newTestMeter(t)
 	defer tm.restore()
@@ -261,9 +256,8 @@ func TestEmitSplitsCostRenormalized(t *testing.T) {
 	}
 }
 
-// TestEmitZeroCacheDegradesToPromptCompletion checks the "no change for a
-// zero-cache row" behavior: only prompt+completion buckets, no cache classes,
-// and Σ shares still equals the total (ADR acceptance #4).
+// TestEmitZeroCacheDegradesToPromptCompletion checks the "no change for a zero-cache row" behavior:
+// only prompt+completion buckets, no cache classes.
 func TestEmitZeroCacheDegradesToPromptCompletion(t *testing.T) {
 	tm := newTestMeter(t)
 	defer tm.restore()
@@ -316,9 +310,8 @@ func TestEmitReasoningExcluded(t *testing.T) {
 	}
 }
 
-// TestEmitModelCostPricedPath drills the priced path: when real catalog
-// prices are supplied, the split still renormalizes to CostUSD (they defeat
-// the default-multiplier fallback), so a sum() alarm never fires.
+// TestEmitModelCostPricedPath drills the priced path: when real catalog prices are supplied, the
+// split still renormalizes to CostUSD (they defeat the default-multiplier fallback).
 func TestEmitModelCostPricedPath(t *testing.T) {
 	tm := newTestMeter(t)
 	defer tm.restore()
@@ -334,10 +327,8 @@ func TestEmitModelCostPricedPath(t *testing.T) {
 	}
 }
 
-// TestRecordPrefixCacheEmitsHitMissAndRate drills the D3 prefix-cache
-// metric: the session-terminal segment of the native adapter's cache
-// telemetry emits the hit/miss counters and the hit-rate gauge, carrying
-// tenant/execution/worker attrs, and is a no-op when Turns==0.
+// TestRecordPrefixCacheEmitsHitMissAndRate drills the D3 prefix-cache metric: the session-terminal
+// segment of the native adapter's cache telemetry emits the hit/miss counters and the hit-rate.
 func TestRecordPrefixCacheEmitsHitMissAndRate(t *testing.T) {
 	tm := newTestMeter(t)
 	defer tm.restore()
@@ -380,9 +371,8 @@ func TestRecordPrefixCacheNoOpOnZeroTurns(t *testing.T) {
 	}
 }
 
-// TestAnthropicShapeSplitsDownToOtel feeds the canonical Anthropic sample
-// through UsageRecorder.Record and asserts the emitted OTel split reflects
-// the cache-aware buckets (ADR acceptance #7).
+// TestAnthropicShapeSplitsDownToOtel feeds the canonical Anthropic sample through
+// UsageRecorder.Record and asserts the emitted OTel split reflects the cache-aware buckets (ADR.
 func TestAnthropicShapeSplitsDownToOtel(t *testing.T) {
 	tm := newTestMeter(t)
 	defer tm.restore()

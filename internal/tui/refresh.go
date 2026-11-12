@@ -45,21 +45,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// refreshInterval is the rolling window's period. It matches the GUI's own cadence (its list queries
-// poll at `refetchInterval: 5_000`), so the two clients show the same freshness — an operator moving
-// between them should not be able to tell which one refreshes faster.
+// refreshInterval is the rolling window's period.
 const refreshInterval = 5 * time.Second
 
-// refreshTickMsg is the rolling window's timer. It carries the GENERATION it belongs to, so a tick
-// armed before a tab switch cannot refresh the tab the operator has since moved to (and a stale tick
-// cannot re-arm a second chain, which would double the refresh rate on every switch).
+// refreshTickMsg is the rolling window's timer.
 type refreshTickMsg struct{ gen uint64 }
 
 // Refresher is the optional screen hook the shell calls on every tick.
-//
-// A screen returns the command that re-reads what is ON SCREEN, and returns nil when a refresh would
-// be disruptive (a form is open) or when there is nothing to re-read. The POLICY lives with the
-// screen because only it knows what it is in the middle of; the shell only knows when to ask.
 type Refresher interface {
 	RefreshView() tea.Cmd
 }
@@ -70,21 +62,20 @@ func refreshCmd(gen uint64) tea.Cmd {
 }
 
 // handleRefreshTick runs one turn of the rolling window and re-arms it.
-//
-// THERE IS EXACTLY ONE CHAIN, armed once at Init and re-armed HERE, always with the CURRENT
-// generation. That is simpler than restarting a chain on every tab switch and it is strictly
-// correct: a single chain cannot multiply, and because it is generation-agnostic at re-arm time it
-// needs no restart to follow the operator. The generation is still carried on the message so a tick
-// armed BEFORE a switch (by a previous incarnation, or a test) is ignored rather than acted on —
-// refreshing the tab the operator has just left would be wasted work and a visible flicker.
 func (m *App) handleRefreshTick(msg refreshTickMsg) (*App, tea.Cmd) {
 	if msg.gen != m.refreshGen {
 		return m, refreshCmd(m.refreshGen) // adopt the live generation: exactly one chain survives
 	}
+	// THE DOWN REMEDY IS RE-ASSERTED EVERY TICK, not only on a probe: the strip is shared writable
+	// state and any writer that clears it (connect, reconnect, paste, /find.
+	m.assertPlaneRemedy()
 	cmd := m.refreshActiveView()
+	// A FAILED STREAM IS THE SHELL'S EVIDENCE THAT THE PLANE MAY HAVE GONE — re-probe it, so the plane
+	// chip and the remedy stop describing a plane that is no longer there (planeReprobeCmd throttles.
+	probe := m.planeReprobeCmd()
 	// Re-arm unconditionally, even when the refresh did nothing: a skipped tick must not end the
 	// window, or one open form would stop every screen refreshing for the rest of the session.
-	return m, tea.Batch(cmd, refreshCmd(m.refreshGen))
+	return m, tea.Batch(cmd, probe, refreshCmd(m.refreshGen))
 }
 
 // refreshActiveView asks the active screen to re-read what is on screen. It is the tick's whole
@@ -94,9 +85,7 @@ func (m *App) refreshActiveView() tea.Cmd {
 	if s == nil {
 		return nil
 	}
-	// A MODAL OWNS THE SCREEN. The shell's own overlays (the model picker, the help overlay, the
-	// connect form, a slash palette) are typing surfaces: refreshing underneath them would move rows
-	// the operator is choosing from.
+	// A MODAL OWNS THE SCREEN.
 	if m.refreshBlocked() {
 		return nil
 	}
@@ -133,44 +122,8 @@ func (m *App) refreshActiveView() tea.Cmd {
 	// the transcript), which SETS the pane's body and erases the transcript onChatWake just painted. The
 	// operator: "the conversation pane is completely blank on every chat." See ask.Model.RefreshView.
 	if m.active == TabAsk {
-		// AND THE CONVERSATIONS THEMSELVES ARE RE-READ, which is what keeps a MODE change made in the OTHER
-		// client from being invisible here.
-		//
-		// The operator: "If someone sets the mode in the GUI or TUI, it should not matter. It should change for
-		// both." There is no conversation-changes stream to subscribe to (the Ask service has List/Get and the
-		// per-turn streams, and nothing that broadcasts a mode change), so a re-read on the tick is the
-		// mechanism that makes the two clients agree. Five seconds is the existing cadence for this window, and
-		// it is also what bounds the window in which the pill can disagree with the boundary the SERVER will
-		// actually enforce — the case that matters, because a stale pill turns a correct refusal into an
-		// inexplicable one.
-		//
-		// It is the LIST only, and it does not set convLoading: this is a background reconcile, not the first
-		// load, so it must not flash the rail's loading state every five seconds.
-		//
-		// AND IT ONLY RUNS WHEN THERE IS A LIST TO KEEP CURRENT — `convLoaded` is "a successful rail load has
-		// landed". That gate is both the right behaviour and a HANG FIX, and it is worth being precise about
-		// because the second half is not obvious:
-		//
-		//   - Behaviour: re-reading a list that was never loaded is pointless, and in a session whose first load
-		//     FAILED it would hammer a plane that is already unhappy. That case has an explicit retry (the rail's
-		//     "click to retry"), which is where recovery belongs.
-		//   - The hang: a ConversationsMsg arriving while no project list has landed sends onConversations down
-		//     its SELF-HEALING branch, which returns waitChat() — the blocking waiter that selects on two
-		//     channels nobody sends to outside a live session. On a TIMER that is a command chain that never
-		//     ends, and it hung this package the moment the reload was added here: the tick tests drive the
-		//     window directly against an app that has never loaded a list, so every tick produced a
-		//     ConversationsMsg and therefore a waitChat, and two of those drainers invoke commands INLINE.
-		//     (They are bounded now — see runCmdBounded — so the next such command cannot do this again, but the
-		//     gate is what stops it being asked for at all.)
-		//
-		// THE GATE USED TO BE A ONE-WAY LATCH, AND THAT WAS A REAL DEFECT (AC 16). `reloadConversations` set
-		// `convLoaded = false` (app.go), and only a SUCCESSFUL `onConversations` sets it back true — the error
-		// branch returns before reaching that line. So ONE failed reload (a blip, a 401) left the flag false for
-		// the rest of the session and this reload NEVER FIRED AGAIN, silently disabling the rolling refresh of
-		// the rail. The `ask.Model.RefreshView` candidate does NOT cover it: that reloads the SCREEN's screenkit
-		// list (the pane's own source), not the shell's `m.conversations`, which is what the rail and every
-		// turn-state read use. THE FIX IS THE ONE LINE: `reloadConversations` no longer clears the flag, because
-		// "a load is in flight" is `convLoading`'s job and a successful-load marker must survive a re-read.
+		// AND IT ONLY RUNS WHEN THERE IS A LIST TO KEEP CURRENT — `convLoaded` is "a successful rail load
+		// has landed".
 		var load tea.Cmd
 		if m.convLoaded {
 			load = m.chat.LoadConversations()
@@ -199,16 +152,13 @@ func (m *App) refreshBlocked() bool {
 	case m.modelPicker != nil:
 		return true
 	case m.scope != nil:
-		// THE SCOPE MODAL BLOCKS TOO. It is a list of the very things a background reload would move
-		// under the operator's cursor (definitions being added, installs landing, skill paths changing),
-		// and its own writes already re-read it — so a concurrent refresh could only add churn the
-		// operator did not ask for. Its data is fetched by the modal itself, so nothing here goes stale.
+		// THE SCOPE MODAL BLOCKS TOO.
 		return true
 	}
 	return false
 }
 
-// refreshPeriod is the window's live period. It is a VARIABLE only so a test can shorten it: a test
-// that had to wait the real five seconds would make the suite slower than the feature is worth, and
-// the timing is not what is under test (the re-arm, the generation and the guards are).
+// refreshPeriod is the window's live period.
+
+// refreshPeriod is the window's live period.
 var refreshPeriod = refreshInterval

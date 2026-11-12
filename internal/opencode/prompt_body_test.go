@@ -56,11 +56,6 @@ type capturedReq struct {
 }
 
 // promptRequest returns the request that carried the MESSAGE.
-//
-// It matches the prompt ROUTE rather than "the first POST", and that distinction is not pedantry: on
-// v2 the model is set with a POST before the prompt, so returning the first POST handed back the
-// wrong request and made the ordering assertion below compare a request with itself. A helper that
-// answers the wrong question makes the test lie.
 func promptRequest(t *testing.T, seen []capturedReq) capturedReq {
 	t.Helper()
 	for _, r := range seen {
@@ -131,11 +126,16 @@ func TestV2PromptUsesTopLevelText(t *testing.T) {
 			"saw (Missing key at [\"text\"]); got %v", got.body)
 	}
 	// `parts` must NOT be sent: the schema is additionalProperties:false, and an unknown key is
-	// silently DROPPED by the server rather than rejected, so a body that still carried `parts`
-	// would look accepted while carrying nothing.
+	// silently DROPPED by the server rather than rejected.
 	if _, ok := got.body["parts"]; ok {
 		t.Errorf("the v2 body must NOT carry `parts` — v2 has no such field and would drop it "+
 			"silently; got %v", got.body)
+	}
+	// AND IT MUST ASK TO STEER.
+	if got.body["delivery"] != "steer" {
+		t.Errorf("the v2 prompt body must carry delivery:\"steer\" so a mid-turn message joins the "+
+			"running turn at its next step rather than queueing until the turn ends; got %v",
+			got.body["delivery"])
 	}
 }
 
@@ -219,5 +219,128 @@ func TestV2FilesUseTheUriShape(t *testing.T) {
 	}
 	if _, ok := f["url"]; ok {
 		t.Errorf("v2 uses `uri`, not v1's `url`; got %v", f)
+	}
+}
+
+// nestedPromptShape builds the shape that sends prompts to /api/session/{id}/prompt.
+//
+// NO VERSION RESOLVES TO THIS ANY MORE, and the reason is measured: on 1.19.5 that route ADMITS a message and
+// never runs it, so a turn never started. These tests are kept because they pin the WIRE (the nested body, the
+// delivery sibling, the model being set first) — the contract of a route that a future serve might make usable
+// for steering. Nothing in the shipped version table selects it.
+func nestedPromptShape() apiShape {
+	sh := shapeV1
+	sh.name = "v1+api-prompt"
+	sh.promptStyle = "nested"
+	sh.promptPathOverride = func(id string) string { return "/api/session/" + id + "/prompt" }
+	sh.setModelPath = func(id string) string { return "/api/session/" + id + "/model" }
+	sh.modelFieldName = "id"
+	return sh
+}
+
+// TestV1APIPromptSteersWithNestedBody pins the 1.x steer wire, measured against a real 1.19.4
+// serve: the content nests under `prompt`, `delivery` is its SIBLING.
+func TestV1APIPromptSteersWithNestedBody(t *testing.T) {
+	var seen []capturedReq
+	srv := captureServer(t, &seen)
+
+	c := NewSessionClient(srv.URL, "", "")
+	c.setAPIShape(nestedPromptShape())
+
+	if err := c.SendMessage(context.Background(), "ses_1", "", "opencode/opencode/big-pickle", "hi"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	got := promptRequest(t, seen)
+	if got.path != "/api/session/ses_1/prompt" {
+		t.Errorf("prompt path = %q, want the 1.x steer route /api/session/ses_1/prompt", got.path)
+	}
+	if got.body["delivery"] != "steer" {
+		t.Errorf("delivery = %v, want \"steer\" — omitting it leaves the serve to queue the message "+
+			"until the turn ends, which is the reported bug", got.body["delivery"])
+	}
+	p, ok := got.body["prompt"].(map[string]any)
+	if !ok {
+		t.Fatalf("body has no nested `prompt` object; got %v — 1.x answers "+
+			"`Missing key at [\"prompt\"]` for a flat body", got.body)
+	}
+	if p["text"] != "hi" {
+		t.Errorf("prompt.text = %v, want \"hi\"", p["text"])
+	}
+	// THE MODEL CANNOT RIDE THIS BODY, so it must have been set on the session FIRST — otherwise the
+	// turn runs on the serve's default model rather than the one the operator chose.
+	modelAt := indexOf(seen, "/api/session/ses_1/model")
+	promptAt := -1
+	for i, r := range seen {
+		if r.path == "/api/session/ses_1/prompt" {
+			promptAt = i
+		}
+	}
+	if modelAt == -1 {
+		t.Fatalf("the model was never set on the session; saw %+v", seen)
+	}
+	if modelAt > promptAt {
+		t.Errorf("the model was set AFTER the prompt — the turn would have run on the serve's default model")
+	}
+}
+
+// aWebAppServer answers the /api prompt route the way a 1.x serve answers an UNKNOWN route: 200 and its
+// web app. That is the case a status check cannot see, and the reason the fallback decodes the reply.
+func aWebAppServer(t *testing.T, seen *[]capturedReq) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&b)
+		}
+		*seen = append(*seen, capturedReq{method: r.Method, path: r.URL.Path, body: b})
+		if r.URL.Path == "/api/session/ses_1/prompt" {
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("<!doctype html><html><body>the app</body></html>"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"id":"ses_x"}}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestV1APIPromptFallsBackToPromptAsyncWhenTheRouteIsAbsent is the safety net that makes the
+// version floor non-critical: if a 1.x serve does NOT carry the /api prompt route.
+func TestV1APIPromptFallsBackToPromptAsyncWhenTheRouteIsAbsent(t *testing.T) {
+	var seen []capturedReq
+	srv := aWebAppServer(t, &seen)
+
+	c := NewSessionClient(srv.URL, "", "")
+	c.setAPIShape(nestedPromptShape())
+
+	if err := c.SendMessage(context.Background(), "ses_1", "be terse", "", "hi"); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	// The message must have been delivered the v1 way.
+	var delivered *capturedReq
+	for i, r := range seen {
+		if r.path == "/session/ses_1/prompt_async" {
+			delivered = &seen[i]
+			break
+		}
+	}
+	if delivered == nil {
+		t.Fatalf("the prompt never reached prompt_async, so the message was LOST to the catch-all; saw %+v", seen)
+	}
+	if _, ok := delivered.body["parts"]; !ok {
+		t.Errorf("the fallback body must be the v1 shape (`parts`); got %v", delivered.body)
+	}
+
+	// AND IT IS REMEMBERED: the next send must not repeat the doomed attempt.
+	before := len(seen)
+	if err := c.SendMessage(context.Background(), "ses_1", "be terse", "", "again"); err != nil {
+		t.Fatalf("second SendMessage: %v", err)
+	}
+	for _, r := range seen[before:] {
+		if r.path == "/api/session/ses_1/prompt" {
+			t.Error("the client re-attempted the absent /api route — apiPromptOff should make every later " +
+				"send go straight to prompt_async")
+		}
 	}
 }

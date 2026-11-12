@@ -1,10 +1,7 @@
 package workitem
 
-// Archive/Restore service tests: ArchiveWorkItem hides a terminal item from
-// every normal list read and can be restored to its prior terminal status.
-// Skipped unless ORCHICON_TEST_DSN points at a disposable database (repo
-// convention — the archive columns are added by the embedded migrations,
-// which validateParentTestPool applies on every run).
+// Archive/Restore service tests: ArchiveWorkItem hides a terminal item from every normal list read
+// and can be restored to its prior terminal status.
 
 import (
 	"context"
@@ -117,9 +114,8 @@ func TestArchiveWorkItemRejectsHasChildren(t *testing.T) {
 	}
 }
 
-// bumpWorkItemVersion commits a concurrent version bump (a separate,
-// committed transaction) to simulate the sequence engine mutating a parent
-// behind the archive RPC's back mid-flight.
+// bumpWorkItemVersion commits a concurrent version bump (a separate, committed transaction) to
+// simulate the sequence engine mutating a parent behind the archive RPC's back mid-flight.
 func bumpWorkItemVersion(t *testing.T, pool *db.Pool, tenantID, id string, expectedVersion int) db.WorkItemRow {
 	t.Helper()
 	ctx := context.Background()
@@ -139,12 +135,7 @@ func bumpWorkItemVersion(t *testing.T, pool *db.Pool, tenantID, id string, expec
 	return w
 }
 
-// TestArchiveWorkItemRetriesOnceOnVersionConflict exercises the one-shot
-// retry (docs/09 §5): a concurrent writer (simulating the sequence engine)
-// bumps the row's version between ArchiveWorkItem's initial read and its
-// archive write. The RPC must re-read, re-validate against the fresh row,
-// and retry exactly once — succeeding here since only one bump occurs —
-// with exactly one audit event and one outbox event (no double emission).
+// TestArchiveWorkItemRetriesOnceOnVersionConflict exercises the one-shot retry (docs/09 §5).
 func TestArchiveWorkItemRetriesOnceOnVersionConflict(t *testing.T) {
 	pool, s, ctx, tenantID, projectID := archiveEnv(t)
 	item := archiveItem(t, pool, tenantID, projectID, domain.WorkItemSucceeded)
@@ -153,10 +144,8 @@ func TestArchiveWorkItemRetriesOnceOnVersionConflict(t *testing.T) {
 	s.archiveConflictHook = func(attempt int) {
 		hookCalls++
 		if attempt == 1 {
-			// Commit the bump from a SEPARATE, already-committed
-			// transaction right before the archive RPC's own transaction
-			// attempts its first write — a real Postgres version conflict,
-			// not a mock.
+			// Commit the bump from a SEPARATE, already-committed transaction right before the archive RPC's own
+			// transaction attempts its first write — a real Postgres version conflict, not a mock.
 			bumpWorkItemVersion(t, pool, tenantID, item.ID, item.Version)
 		}
 	}
@@ -179,17 +168,15 @@ func TestArchiveWorkItemRetriesOnceOnVersionConflict(t *testing.T) {
 	}
 }
 
-// TestArchiveWorkItemPersistentConflictSurfacesError: a SECOND consecutive
-// conflict (on the retry itself) is a real race, not staleness — the
-// bounded retry must not loop, and the error must surface to the caller.
+// TestArchiveWorkItemPersistentConflictSurfacesError: a SECOND consecutive conflict (on the retry
+// itself) is a real race, not staleness — the bounded retry must not loop.
 func TestArchiveWorkItemPersistentConflictSurfacesError(t *testing.T) {
 	pool, s, ctx, tenantID, projectID := archiveEnv(t)
 	item := archiveItem(t, pool, tenantID, projectID, domain.WorkItemSucceeded)
 
 	s.archiveConflictHook = func(attempt int) {
-		// Re-read the current row via a throwaway GetWorkItem call so the
-		// bump always targets the row's CURRENT version, then bump again
-		// on both the initial attempt and the retry — a persistent race.
+		// Re-read the current row via a throwaway GetWorkItem call so the bump always targets the row's
+		// CURRENT version, then bump again on both the initial attempt and the retry — a persistent race.
 		ttx, err := pool.BeginTenantTx(ctx, tenantID)
 		if err != nil {
 			t.Fatalf("begin read tx: %v", err)
@@ -276,10 +263,8 @@ func TestRestoreWorkItem(t *testing.T) {
 	}
 }
 
-// TestArchiveAndRestoreSkippedWorkItem pins AC13: a skipped item stays
-// archivable and restorable, confirming domain.WorkItemIsTerminalArchivable
-// still covers "skipped" now that it is a normal, user-settable status
-// rather than a system-managed one.
+// TestArchiveAndRestoreSkippedWorkItem pins AC13: a skipped item stays archivable and restorable,
+// confirming domain.WorkItemIsTerminalArchivable still covers "skipped" now that it is a normal.
 func TestArchiveAndRestoreSkippedWorkItem(t *testing.T) {
 	pool, s, ctx, tenantID, projectID := archiveEnv(t)
 	item := archiveItem(t, pool, tenantID, projectID, domain.WorkItemSkipped)
@@ -317,12 +302,8 @@ func TestRestoreWorkItemRejectsActive(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkItemRejectsArchivedStatus: the generic update path must NOT
-// be able to set status='archived' (that is the ArchiveWorkItem RPC's job,
-// with its terminal-only + no-children preconditions and archived_at
-// bookkeeping). Setting it via update would write status='archived' with
-// archived_at NULL — which every active view (archived_at IS NULL filter)
-// would wrongly surface.
+// TestUpdateWorkItemRejectsArchivedStatus: the generic update path must NOT be able to set
+// status='archived' (that is the ArchiveWorkItem RPC's job.
 func TestUpdateWorkItemRejectsArchivedStatus(t *testing.T) {
 	pool, s, ctx, tenantID, projectID := archiveEnv(t)
 	item := archiveItem(t, pool, tenantID, projectID, domain.WorkItemSucceeded)

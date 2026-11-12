@@ -10,13 +10,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/worktree"
 )
 
-// This test is the claude leg of the todo-panel parity criterion: the payload
-// the claude Mapper persists for a `TodoWrite` must parse through the SAME
-// unexported todoItemsFromPayload the RPC path uses, with ZERO
-// adapter-specific branch. The payloads below are built EXACTLY the way
-// internal/claude/parse.go emits them ({"part": …} envelope, canonical tool
-// name "todowrite", part.state.input.todos), so if the shared parser ever
-// grows an adapter branch this test starts failing.
+// This test is the claude leg of the todo-panel parity criterion.
 
 // claudeTodoEnvelope reproduces the exact durable part claude's mapper
 // writes for a TodoWrite tool_use block.
@@ -62,10 +56,8 @@ func TestClaudeTodoPayloadParsesWithoutAdapterBranch(t *testing.T) {
 	}
 }
 
-// TestClaudeTodosReachLatestTodos proves the full RPC walk (latestTodos over
-// kind='tool_use' parts, DESC by seq) surfaces the claude list. The
-// tool_result part claude writes at the turn boundary carries no
-// state.input.todos and must simply be skipped, not shadow the list.
+// TestClaudeTodosReachLatestTodos proves the full RPC walk (latestTodos over kind='tool_use' parts,
+// DESC by seq) surfaces the claude list.
 func TestClaudeTodosReachLatestTodos(t *testing.T) {
 	running := db.SessionPart{Kind: db.SessionPartToolUse, Payload: claudeTodoEnvelope(t, []worktree.TodoItem{
 		{Content: "step 1", Status: "in_progress", Priority: "high"},
@@ -120,9 +112,8 @@ func TestClaudeNonTodoPartsAreSkipped(t *testing.T) {
 	}
 }
 
-// claudeParityNoop is a do-nothing ExecutionCallbacks: the parity assertion
-// below only cares about what the mapper PERSISTS, so the live-callback fan-out
-// is deliberately inert.
+// claudeParityNoop is a do-nothing ExecutionCallbacks: the parity assertion below only cares about
+// what the mapper PERSISTS, so the live-callback fan-out is deliberately inert.
 type claudeParityNoop struct{}
 
 func (claudeParityNoop) OnStarted(context.Context, string)                          {}
@@ -135,13 +126,8 @@ func (claudeParityNoop) OnToolCall(context.Context, string, string, []byte, []by
 func (claudeParityNoop) OnText(context.Context, string, string)                     {}
 func (claudeParityNoop) OnArtifact(context.Context, string, string, string, string) {}
 
-// TestClaudeMapperPayloadParsesWithoutAdapterBranch closes the loop the
-// hand-mirrored claudeTodoEnvelope above deliberately leaves open: it drives
-// the REAL claude Mapper over a canned stream-json line and feeds the payload
-// the mapper actually persists into the SAME shared parser the RPC path uses.
-// A drift in parse.go's durable envelope (rename the tool, move the todos
-// under a different key, nest the state differently) therefore fails HERE,
-// not just in a mirror that would silently keep matching itself.
+// TestClaudeMapperPayloadParsesWithoutAdapterBranch closes the loop the hand-mirrored
+// claudeTodoEnvelope above deliberately leaves open.
 func TestClaudeMapperPayloadParsesWithoutAdapterBranch(t *testing.T) {
 	var (
 		captured []byte

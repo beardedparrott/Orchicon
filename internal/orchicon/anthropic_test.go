@@ -132,10 +132,7 @@ func TestAnthropicStreamHappyPath(t *testing.T) {
 	}
 }
 
-// Accumulation, not summation: message_start assigns the input/cache buckets
-// once, and each message_delta ASSIGNS the running-total output tokens (and
-// re-assigns cache buckets when >0) rather than ADDING to them. Two deltas
-// carrying cumulative totals must yield the LAST total, never the sum.
+// Accumulation, not summation: message_start assigns the input/cache buckets once.
 func TestAnthropicCumulativeDeltaUsageAccumulatedNotSummed(t *testing.T) {
 	body := sseEvent("message_start", `{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}}`) +
 		sseEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":7}}`) +
@@ -422,14 +419,8 @@ func TestIsUpgradeRequired403(t *testing.T) {
 	}
 }
 
-// The Anthropic wire must stay strictly role-alternating for ANY normalized
-// history, including the realistic shapes compaction (middle eviction) can
-// produce: a plain-text user turn whose surrounding tool rounds were evicted
-// lands directly after the goal user message, and an assistant text+tool_use
-// turn trimmed to bare text can sit next to another assistant text. The
-// marshaler coalesces consecutive same-role turns (content appended in order —
-// never dropped). This is the QA-iteration-2 regression for the compaction
-// role-alternation contract (bug C's generalization).
+// The Anthropic wire must stay strictly role-alternating for ANY normalized history, including the
+// realistic shapes compaction (middle eviction) can produce.
 func TestAnthropicHistoryMarshalRoleAlternationCoalesces(t *testing.T) {
 	hist := []Message{
 		{Role: RoleUser, Content: []Content{{Text: strPtr("Goal")}}},

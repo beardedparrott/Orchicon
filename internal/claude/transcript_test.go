@@ -56,9 +56,7 @@ func argvFlagValue(t *testing.T, argv []string, flag string) string {
 	return ""
 }
 
-// THE BUG, pinned. Reopening a conversation must RESUME, not re-create: passing
-// --session-id for an id that already exists makes the CLI exit 1 with an empty
-// stdout, which the operator saw as the message being accepted and then nothing.
+// THE BUG, pinned.
 func TestAskArgvResumesAnExistingSessionInsteadOfRecreatingIt(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -79,9 +77,8 @@ func TestAskArgvResumesAnExistingSessionInsteadOfRecreatingIt(t *testing.T) {
 		t.Fatalf("--session-id = %q on a session that exists; the CLI refuses this with an EMPTY stdout", got)
 	}
 
-	// (b) the transcript is GONE (a rebuild wiping ~/.claude, a wiped /tmp) → the
-	// id is re-pinned as a NEW session, not resumed. --resume here would fail with
-	// "No conversation found".
+	// (b) the transcript is GONE (a rebuild wiping ~/.claude, a wiped /tmp) → the id is re-pinned as a
+	// NEW session, not resumed.
 	s2 := newAskSession(b, "conv-fresh", filepath.Join(t.TempDir(), "ask"))
 	s2.sid = "vanished-sid"
 	argv2 := s2.argv()
@@ -117,22 +114,6 @@ func TestAskArgvResumesAfterAChildDies(t *testing.T) {
 }
 
 // THE WORKER PATH DELIBERATELY DIFFERS FROM ASK, and this pins why.
-//
-// I first applied the Ask rule here too — drop `--resume` when no transcript
-// exists — and three existing tests failed ("must re-attach the SAME session
-// identity"). They were right:
-//
-//   - the CONTRACT is that a worker continuation re-attaches the same session, so
-//     a silent fresh start would drop the very history it exists to carry;
-//   - a LOST SESSION IS THE RECOVERY SYSTEM'S problem (capture → summarize →
-//     preserve → resume), and working around it here would bypass that and
-//     quietly hand a worker a context-free run;
-//   - the check could not be trusted anyway: a worker's child may run INSIDE A
-//     RUNTIME CONTAINER, where the adapter's host-side view of ~/.claude and the
-//     child's view can diverge. The Ask path is host-only, which is exactly why
-//     the check is sound there and not here.
-//
-// So: ALWAYS resume, with or without a local transcript.
 func TestWorkerAlwaysResumesTheRecordedSession(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -171,9 +152,8 @@ func TestWorkerAlwaysResumesTheRecordedSession(t *testing.T) {
 	}
 }
 
-// The failure the operator would otherwise have seen, spelled out: an empty
-// stdout is what made this silent. Pinning it here so the flag choice is
-// understood as load-bearing rather than cosmetic.
+// The failure the operator would otherwise have seen, spelled out: an empty stdout is what made
+// this silent.
 func TestAskPermissionsAndMCPRobustToFlagChoice(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -37,11 +37,11 @@ whole areas to "use the web GUI".
 
 | GUI route | Screen | TUI state | TUI tab | Notes / mutations |
 |---|---|---|---|---|
-| `/projects` | Projects | **exists** (read-write) | Work | `Projects` source + detail. **Read-write:** `n` create (`CreateProject` with name/slug/goals/default runtime image) · `e` edit title/goals/project_dir (`UpdateProject`) · `d` set + create the project directory (`UpdateProject` + the `ListProjectFiles` probe that materializes/validates it). **Reached by `/projects` (the PLURAL).** `/project` (singular) is the Ask tab's workspace scope, not this pane. |
-| `/projects/$id` | Project detail | **exists** | Work | Detail fields + goals + project dir + default image. |
+| `/projects` | Projects | **exists** (read-write) | Work | `Projects` source + detail. **Read-write:** `n` create (`CreateProject` with name/slug/goals/default runtime image/git strategy/execution mode, plus the owned-MCP-definition seed and the follow-up `UpdateProject` the proto forces for max concurrent runs / context files / skill files) · `e` edit the FULL field set — name, slug, goals, project_dir, default runtime image, git strategy, **execution mode**, max concurrent runs, context files, skill files (`UpdateProject`) · `d` set + validate the project directory (`UpdateProject` + the `ListProjectFiles` probe, which is a real existence check and materializes nothing). **Reached by `/projects` (the PLURAL).** `/project` (singular) is the Ask tab's workspace scope, not this pane. |
+| `/projects/$id` | Project detail | **exists** | Work | Detail fields + goals + project dir + default image + git strategy + execution mode + max concurrent runs + context/skill files + the owned MCP servers. |
 | `/projects/new` | Create project | **exists** | Work | The `n` chord on Projects: the validated create form → `CreateProject`. |
-| `/work-items` | Work Items | **exists** (read-write) | Work | `Work Items` source rendered through three DISPLAY groupings — **Tree** (real Epic→Feature→Task→Subtask DAG from `parent_id`), **Board** (grouped by real status, empty columns kept), **Archive** (`include_archived` — archived items + the status they restore to). `v` cycles; `T`/`B`/`Z` select. Kind badges + state pills render from real fields. **Read-write:** `n` create (`CreateWorkItem` with title/kind/parent/description/acceptance/priority/budgets JSON/context window/workflow/runtime image/context files/auto-start), `e` edit every mutable field (`UpdateWorkItem`), `s` status+priority, `t` schedule (`scheduled_start_at` + auto-start), `w`/`W` assign/unassign worker, `J`/`K` reorder children (`ReorderWorkItems` — the ONLY sequence mutation; display groupings never renumber), `a` archive / `R` restore / `ctrl+x` delete (`HardDeleteWorkItem`, PERMANENT — see below), each Confirm-gated. |
-| `/work-items/$id` | Work Item detail | **exists** | Work | Detail fields (kind badge, state pill, parent, priority, budgets, context window, runtime image, worker, workflow, schedule, sort order, archived-from) + the description / acceptance-criteria body; diff pane opens for the work item's execution. |
+| `/work-items` | Work Items | **exists** (read-write) | Work | `Work Items` source rendered through three DISPLAY groupings — **Tree** (real Epic→Feature→Task→Subtask DAG from `parent_id`), **Board** (grouped by real status, empty columns kept), **Archive** (`include_archived` — archived items + the status they restore to). `v` cycles; `T`/`B`/`Z` select. Kind badges + state pills render from real fields. **Read-write:** `n` create (`CreateWorkItem` with title/kind/parent/description/acceptance/priority/budgets JSON/context window/workflow/runtime image/**execution mode**/context files/auto-start), `e` edit every mutable field (`UpdateWorkItem`) — including the per-item **execution-mode override**, which `e` can SET (`execution_mode`) or REMOVE (`clear_execution_mode`, the only spelling for "inherit from the project"), `s` status+priority, `t` schedule (`scheduled_start_at` + auto-start), `w`/`W` assign/unassign worker, `J`/`K` reorder children (`ReorderWorkItems` — the ONLY sequence mutation; display groupings never renumber), `a` archive / `R` restore / `ctrl+x` delete (`HardDeleteWorkItem`, PERMANENT — see below), each Confirm-gated. |
+| `/work-items/$id` | Work Item detail | **exists** | Work | Detail fields (kind badge, state pill, parent, priority, budgets, context window, runtime image, **execution mode — the RESOLVED effective mode, with the item override named when there is one**, worker, workflow, schedule, sort order, archived-from) + the description / acceptance-criteria body; diff pane opens for the work item's execution. |
 | `/work-items/new` | Create work item | **exists** | Work | The `n` chord on Work Items: the typed create form (JSON budgets/context-window validation inline) → `CreateWorkItem`. |
 | `/runtime-images` | Runtime Images | **exists** (read-write) | Work | `Runtime Images` source + detail (tag, status, base, version/built version, apt packages, toolchains, env, Dockerfile override). |
 | `/runtime-images/$id` | Runtime Image detail | **exists** (read-write) | Work | Detail fields incl. apt packages/toolchains/env/Dockerfile override + the last build log. |
@@ -60,7 +60,7 @@ whole areas to "use the web GUI".
 | `/workflows/$id/runs/$runId` | Workflow run detail | **exists** | Execution (runs) | Detail + step runs body (status per step) + failure diagnosis for a failed run (failed/blocked steps and the linked failed executions' error messages); live Execution detail pane. **Mutations:** `RetryFailedWorkflowRun` (Confirm) · `ForceProgressWorkflowRun` (Confirm) |
 | `/executions` | Executions | **exists** | Execution | Live list + detail. **Mutations:** `CancelExecution` (Confirm, reason recorded) · `SendExecutionMessage` (interject form) — both reconcile the list. |
 | `/executions/$id` | Execution detail | **exists** | Execution | Live session view (Stream widget, scroll preserved) + diff pane. **Mutations:** `CancelExecution` · `SendExecutionMessage`. |
-| `/schedules` | Schedules | **exists** | Automation | Same surface as `/recurring-items` (recurring work items); create/edit/pause/delete landed. |
+| `/schedules` | Schedules | **exists** | Automation | upcoming / running / finished lenses (`v`). **Mutations:** `x` cancels an upcoming/running schedule; on a finished run it removes the schedule from the run's bound work item (confirm) and refuses by name when the run has none; `g` jumps to the run. Create/edit/pause remain GUI-only (Automation → Recurring Items). |
 
 ## Automation
 
@@ -90,6 +90,7 @@ whole areas to "use the web GUI".
 | `/adapters` | Adapters | **exists** (read + local toggle) | Control | `Adapters` source + detail (`ListAdapters` + the capability manifest). Enable/disable is a client-side dispatch filter: the public `RuntimeAdapterService` is read-only (adapters self-register over the sidecar gRPC contract), so there is no adapter write RPC to call. |
 | `/settings` | Settings | **exists** (read-write) | Control | `Settings` source + detail (every field: models, stall knobs, reaper, budgets, backup/log, session TTLs). `e` opens the typed form and saves through `UpdateSettings`; the two model fields open the three-tier picker (see **Model picker** below) and are validated against the pinned grammar before submit. |
 | `/admin` | Admin | **exists** (admin-gated) | Control | `Admin` source: the admin surface inventory plus an EXPLICIT live permission state (probed via an admin-gated read) — a credential without the admin scope sees "permission required", never a silent empty pane. |
+| `/manage-server` | Manage Server | **n/a (desktop-only)** | — | **Desktop shell only.** Plane control and connection state, reached through `internal/planecontrol` — the same mechanism the CLI and the TUI drive (no lifecycle RPC exists). The connection states are `connecting` / `connected` / `offline` / `plane-error`, the last kept distinct from `offline` because a plane that answers is not necessarily the plane we want. **ABSENT from the web nav by decision:** the browser gets no entry, no disabled entry and no notice — a direct hit redirects to `/dashboard`. This is the SECOND structural client divergence (see *Slash commands in the GUI (deliberate difference)*); for an operator the TUI surface for this is `orchicon plane …`, not a pane. |
 | `/usage` | Usage | **exists** | Overview (Usage Records) | Raw usage-records table + per-record detail (`AIGatewayService.GetUsage`). |
 
 ## This run closed (real screens replacing GUI-mirror stubs)
@@ -138,11 +139,14 @@ The Work tab is now read-WRITE for every Work surface the GUI mutates:
 - **Tree / Board / Archive** — display groupings over the real fields: the Tree walks the actual
   `parent_id` DAG (max 4 levels), the Board groups by status (a display sort never touches
   `sort_order` — only `ReorderWorkItems` does), the Archive reads `include_archived`.
-- **Projects** — create (`CreateProject`), edit title/goals/project_dir (`UpdateProject`), and
-  set/create the project directory. `ProjectService` has no `CreateProjectDirectory` RPC (its 10
-  RPCs are Create/Get/List/Update/Archive/Delete/Pause/Activate/StreamProjectEvents/
-  ListProjectFiles), so the directory is set through `UpdateProject` and then probed with
-  `ListProjectFiles` — a bad path fails immediately instead of at worker dispatch.
+- **Projects** — create (`CreateProject`), edit the full field set — name, slug, goals, project_dir,
+  default runtime image, git strategy, execution mode, max concurrent runs, context files, skill
+  files (`UpdateProject`) — and validate the project directory. `ProjectService` has no
+  `CreateProjectDirectory` RPC (its 10 RPCs are Create/Get/List/Update/Archive/Delete/Pause/
+  Activate/StreamProjectEvents/ListProjectFiles), so the directory is set through `UpdateProject`
+  and then probed with `ListProjectFiles` — a bad path fails immediately instead of at worker
+  dispatch. (The probe READS the directory: `internal/project/listDirectory` is stat + read-dir, so
+  it creates nothing.)
 - **Runtime Images** — create/edit the spec and **build** it: `BuildRuntimeImage` is a
   server-stream whose log chunks render live through the kit2 `Stream` widget (append preserves
   the operator's scroll offset), and the build status transition (draft → building → ready|failed)
@@ -266,6 +270,15 @@ Two things this deliberately does NOT do:
   (`proto/orchicon/api/v1/work_item.proto`): a work item's model comes from the worker it is
   assigned to (`assigned_worker_ref`).
 
+## Manage Server is desktop-only (deliberate difference)
+
+The GUI's `Control` group carries a **Manage Server** entry that is **desktop-only and absent from the
+web nav** entirely — not hidden, not disabled, not explained. It hosts local server operations only a
+Wails app can perform (plane start/stop/restart through `internal/planecontrol`, plus the four
+connection states), none of which a browser could execute. The nav item carries a `desktopOnly` flag
+and a browser redirects `/manage-server` to `/dashboard`, so the divergence is structural rather than
+a conditional inside a page. This is the second such divergence, alongside the slash palette below.
+
 ## Slash commands in the GUI (deliberate difference)
 
 The GUI has **no slash palette**, and that is a decision rather than a gap. The TUI is
@@ -312,6 +325,45 @@ a message is, and silently eating the operator's text would lose it.
 One genuine parity gap remains, recorded rather than hidden: **`/context`** (viewing and
 pinning the injected context preamble) has no GUI surface at all. That is a missing feature,
 not a missing control.
+
+## Plane lifecycle control (deliberate divergence, NOT a parity gap)
+
+The TUI can **start, stop and restart the plane** it talks to, and shows the plane's state in the
+footer (`plane up` / `plane down` / `plane drifted` / `plane remote`), and the error strip names
+the remedy.
+
+**The web app has NO lifecycle control, and that is by design — not an outstanding parity item.**
+A browser cannot spawn a process, and the one RPC that ever existed for it had to answer BEFORE
+killing the server answering it (`internal/planecontrol`'s package doc records the decision). The
+web app is therefore out of scope for plane control, permanently.
+
+That makes the TUI one of only **two** user-facing control surfaces, alongside the desktop app. This
+matters for a terminal-first operator: for them the TUI is the ONLY place a plane they just stopped
+can be started again, so these commands are load-bearing rather than a convenience.
+
+| TUI command | Desktop app | Web app |
+|---|---|---|
+| `/plane` — show the state, name the remedy | plane status indicator | none (no lifecycle control) |
+| `/plane-start` | "Start plane" | **none, by design** |
+| `/plane-stop` | "Stop plane" | **none, by design** |
+| `/plane-restart` (also the remedy for drift) | "Restart plane" | **none, by design** |
+
+All four call `internal/planecontrol` DIRECTLY — the same Go package `orchicon plane <verb>` and the
+desktop app call. There is no lifecycle RPC and the TUI adds none: the verbs never touch the plane's
+API, which is why they work when the plane is down (the TUI is a separate binary that does not
+depend on the plane serving it).
+
+The verbs re-exec the **installed `orchicon`** — the plane binary — never `orch` itself: the TUI is a
+thin remote client, so re-execing itself would launch a second TUI and never reach the plane. The
+resolution lives in `internal/planecontrol` (`resolvePlaneBinary`), so the desktop app inherits it.
+
+Which instance: `ORCHICON_INSTANCE` if set, otherwise the local instance whose recorded
+`ORCHICON_CONTROL_PORT` is the port this shell is connected to. A plane that cannot be positively
+identified is reported **not local** and the verbs refuse — they never fall back to a guessed
+instance.
+
+**Do not re-file the web app's absence as a parity gap.** It is the one row in this document where
+the GUI will never catch up, and the reason is a browser's capabilities, not unbuilt work.
 
 ## Recomputed child work items
 

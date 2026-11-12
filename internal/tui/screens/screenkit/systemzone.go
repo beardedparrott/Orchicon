@@ -34,27 +34,8 @@ import (
 // /etc/localtime symlink.
 const zoneinfoDir = "/usr/share/zoneinfo/"
 
-// SystemZoneName returns the operator's zone as an IANA name ("America/Chicago"), or "" when it cannot
-// be determined.
-//
-// IT RETURNS "" RATHER THAN GUESSING. The tempting fallback is UTC, and it is wrong: it would silently
-// schedule a Central-time operator's job five or six hours off while the UI claimed everything was fine
-// — precisely the class of bug this whole change exists to remove. An empty answer lets the caller SAY
-// so ("system timezone could not be determined"), which the operator can act on. The server treats "" as
-// the legacy UTC semantic, so nothing breaks; it just does not pretend.
-//
-// Resolution order, most authoritative first:
-//
-//  1. time.Local's name, when it is a REAL zone name. TZ set by the operator or the desktop is the
-//     strongest signal, and it is what Go itself is using to render their times.
-//  2. /etc/localtime resolved through its symlink. This is the case that would otherwise yield "Local",
-//     and it is recoverable: the symlink points INTO the zoneinfo tree, so the zone name is the path
-//     suffix. A copied file (not a symlink) defeats it, and that is fine — it falls through to "".
-//
-// A name is only accepted when it is unambiguous. Bare abbreviations like "CST" are NOT accepted even
-// though LoadLocation resolves them, because in the IANA database those are legacy FIXED-OFFSET entries
-// that ignore daylight saving: a "CST" schedule would be an hour wrong all summer. A real zone either is
-// UTC/GMT or is qualified by a region ("Area/Location"), so that is the test.
+// SystemZoneName returns the operator's zone as an IANA name ("America/Chicago"), or "" when it
+// cannot be determined.
 func SystemZoneName() string {
 	// 1. Go's own answer, when it is a name it can stand behind.
 	if name := strings.TrimSpace(time.Local.String()); name != "" && name != "Local" {
@@ -70,10 +51,6 @@ func SystemZoneName() string {
 }
 
 // isUnambiguousZone reports whether name identifies one zone the same way on every machine.
-//
-// UTC and GMT are unambiguous without a region. Anything else must be region-qualified ("Area/Location"),
-// which excludes both the pseudo-zone "Local" and the legacy bare abbreviations whose meaning depends on
-// which fixed offset the reader's database happens to carry.
 func isUnambiguousZone(name string) bool {
 	if name == "UTC" || name == "GMT" {
 		return true

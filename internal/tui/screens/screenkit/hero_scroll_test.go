@@ -6,10 +6,8 @@ import (
 	"testing"
 )
 
-// Regression for the Ask launch state: noAutoDetail must keep the hero on
-// screen — the fetch landing must NOT auto-select (and therefore
-// auto-open) the first conversation, which is what made Ask default to an
-// established chat instead of a fresh one.
+// Regression for the Ask launch state: noAutoDetail must keep the hero on screen — the fetch
+// landing must NOT auto-select (and therefore auto-open) the first conversation.
 func TestNoAutoDetailKeepsHero(t *testing.T) {
 	b := &Base{}
 	b.AddSource("conversations", "Conversations", func(ctx context.Context, pageToken string) ([]Item, string, error) {
@@ -55,16 +53,8 @@ func TestNoAutoDetailKeepsHero(t *testing.T) {
 	}
 }
 
-// Scrolling the detail must survive content updates: a live chunk appends to the
-// body on every repaint, and the operator's scroll offset must not be yanked back
-// to the top.
-//
-// The offset is established by scrolling DOWN into the body. It used to be
-// established by scrolling UP, which only worked because a fresh paint left the
-// viewport at the BOTTOM (an empty viewport is trivially "at bottom") — and that
-// is exactly what made a long STATIC detail open at its end, which is why a
-// workflow's FLOW looked like it started at step 3 with an approval on top. A new
-// item now opens at the top; see TestNewItemOpensAtTheTop.
+// Scrolling the detail must survive content updates: a live chunk appends to the body on every
+// repaint, and the operator's scroll offset must not be yanked back to the top.
 func TestDetailScrollSurvivesContentUpdate(t *testing.T) {
 	d := &Detail{Width: 60, Height: 10}
 	body := strings.Repeat("line\n", 200)
@@ -84,11 +74,7 @@ func TestDetailScrollSurvivesContentUpdate(t *testing.T) {
 	}
 }
 
-// A DIFFERENT item opens at the TOP, even if the previous one was scrolled to its
-// end. The pane keeps the operator's offset while the SAME item updates (a live
-// transcript), but carrying it across a selection switch landed the new item
-// wherever the old one happened to be — which is how a workflow's FLOW came to
-// appear mid-way, with its first steps above the fold.
+// A DIFFERENT item opens at the TOP, even if the previous one was scrolled to its end.
 func TestNewItemOpensAtTheTop(t *testing.T) {
 	d := &Detail{Width: 60, Height: 10}
 	body := strings.Repeat("line\n", 200)

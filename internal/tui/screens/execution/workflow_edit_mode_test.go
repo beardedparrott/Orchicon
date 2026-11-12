@@ -1,21 +1,6 @@
 package execution
 
 // workflow_edit_mode_test.go — the WORKFLOW EDIT MODE.
-//
-// The operator: "I want to hit 'e' and edit all steps and add steps, delete steps, etc. IN
-// THIS SCREEN. I want the FULL visual editing to occur as it is much easier and makes more
-// logical sense. Right now you have edit step, add step, and remove step as separate
-// commands outside of a normal edit view. When someone hits 'e' to edit a workflow, they
-// are going to think they are editing the entire workflow and all its steps at once, not in
-// pieces. I see you can move up and down with the arrow keys to select a step. I think that
-// was at least in the right direction. Though I think 'e' should be edit workflow mode (and
-// 'n' new workflow should work like this as well), then you can move the arrow keys down,
-// then hit 'enter' on the specific step to edit a step. Not sure how we can handle adding a
-// step in this mode, maybe we can keep it 'a'."
-//
-// The mode is the whole point, so the tests below check BOTH halves: the keys work inside
-// it, and they DO NOTHING outside it (that second half is what stops the step commands
-// looking like top-level actions living outside an edit view).
 
 import (
 	"context"
@@ -45,14 +30,8 @@ func keyPress(k string) tea.KeyMsg {
 	}
 }
 
-// modeModel loads the real SDLC fixture into the step editor AND establishes the rest of
-// the state the app has when a workflow's flow is on screen: a SELECTED workflow row and a
-// loaded detail.
-//
-// handleFlowKeys requires both because stepWorkflowID alone is stale during the window
-// between selecting another workflow and its detail arriving — being in the mode there
-// would edit the PREVIOUS workflow's steps while the pane showed something else. So the
-// test has to reproduce the real state rather than bypass the guard.
+// modeModel loads the real SDLC fixture into the step editor AND establishes the rest of the state
+// the app has when a workflow's flow is on screen: a SELECTED workflow row and a loaded detail.
 func modeModel(t *testing.T) (*Model, *[]string) {
 	t.Helper()
 	m, writes := stepEditorModel(t)
@@ -65,10 +44,8 @@ func modeModel(t *testing.T) (*Model, *[]string) {
 	if !m.Base.SelectItem(srcWorkflows, "wf-1") {
 		t.Fatal("fixture: could not select the workflow row")
 	}
-	// Resolve the detail through the base's own path, so detailID is set exactly as a real
-	// selection sets it. The detail FUNCTION is stubbed (no plane here) and left in place:
-	// paintFlow writes the pane through SetDetailContent, so the stub cannot mask what these
-	// tests assert about the pane.
+	// Resolve the detail through the base's own path, so detailID is set exactly as a real selection
+	// sets it.
 	m.Base.SetDetail(func(context.Context, string, string) (string, []kit2.Field, string, error) {
 		return "Workflow: wf-1", nil, "", nil
 	})
@@ -206,10 +183,7 @@ func TestEscLeavesTheMode(t *testing.T) {
 	}
 }
 
-// THROUGH THE REAL DISPATCH. The handlers above are called directly; this drives the
-// screen's own Update, which is the path the shell uses — so it catches a key being
-// shadowed by an earlier branch (a form, a dialog, kit2's own enter) rather than reaching
-// the mode at all.
+// THROUGH THE REAL DISPATCH.
 func TestFlowEditModeThroughRealDispatch(t *testing.T) {
 	m, _ := modeModel(t)
 

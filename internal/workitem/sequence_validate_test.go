@@ -234,10 +234,8 @@ func seedPublishedWorkflowForTest(t *testing.T, pool *db.Pool, projID string, pu
 	return wf.ID
 }
 
-// seedEmptyDagPublishedWorkflowForTest publishes a workflow whose current
-// version has an EMPTY step DAG — a run started on it can never progress
-// (the reconciler fails it at start), so a sequence leaf bound to one must
-// be rejected at schedule time.
+// seedEmptyDagPublishedWorkflowForTest publishes a workflow whose current version has an EMPTY step
+// DAG — a run started on it can never progress (the reconciler fails it at start).
 func seedEmptyDagPublishedWorkflowForTest(t *testing.T, pool *db.Pool, projID string) string {
 	t.Helper()
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -273,10 +271,8 @@ func seedEmptyDagPublishedWorkflowForTest(t *testing.T, pool *db.Pool, projID st
 	return wf.ID
 }
 
-// TestValidateSequenceRejectsEmptyStepDag verifies a sequence leaf bound to
-// a published workflow with an EMPTY step DAG is rejected at schedule time
-// (arming it would create a run that can never progress, stranding the
-// chain and leaking a runtime container).
+// TestValidateSequenceRejectsEmptyStepDag verifies a sequence leaf bound to a published workflow
+// with an EMPTY step DAG is rejected at schedule time (arming it would create a run that can never.
 func TestValidateSequenceRejectsEmptyStepDag(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -357,17 +353,8 @@ func sequenceChildren(t *testing.T, pool *db.Pool, parentID string) []db.WorkIte
 
 // --- ControlSequence handler ------------------------------------------------
 
-// TestControlSequenceRejectsWorkflowlessLeaf: ControlSequence must reject
-// START on a leaf that has no workflow bound (InvalidArgument) — there is
-// nothing to fire.
-//
-// The retired "not a sequence parent" rejection (a leaf, or a ticket
-// carrying a workflow_run_id) is gone by design: bdcde9d3 ("Fix work-item
-// Start/Resume/Stop: cascade stop, per-kind controls on all items") replaced
-// it with `isParent := len(children) > 0`, so START/RESUME/STOP work on ALL
-// items — a bare leaf fires its own bound workflow, a parent cascades. The
-// stale sibling case that still asserted the retired rejection could not pass
-// against that contract; it is replaced below by the delivered behaviour.
+// TestControlSequenceRejectsWorkflowlessLeaf: ControlSequence must reject START on a leaf that has
+// no workflow bound (InvalidArgument) — there is nothing to fire.
 func TestControlSequenceRejectsWorkflowlessLeaf(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -389,11 +376,7 @@ func TestControlSequenceRejectsWorkflowlessLeaf(t *testing.T) {
 		wf := seedPublishedWorkflowForTest(t, pool, projID, true)
 		parent := createSequenceItem(t, pool, projID, domain.WorkItemKindEpic, "Bound Parent", nil, nil, nil)
 		_ = createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "C", &parent.ID, &wf, nil)
-		// Stamp a bound run on the parent. Since bdcde9d3 an item is a
-		// sequence parent purely by having children, so a ticket carrying a
-		// workflow_run_id is no longer rejected as "not a sequence parent" —
-		// STOP is accepted and dispatched to the wired stopper (this is the
-		// per-kind-controls contract that replaced the old rejection).
+		// Stamp a bound run on the parent.
 		setSequenceWorkItemField(t, pool, parent.ID, func(f *db.UpdateWorkItemFields) {
 			rid := "run-" + db.NewID()
 			f.WorkflowRunID = &rid
@@ -415,9 +398,8 @@ func TestControlSequenceRejectsWorkflowlessLeaf(t *testing.T) {
 	})
 }
 
-// TestControlSequenceStartRejectsActiveRun: START on a parent that is
-// already running is a failed precondition — an active chain must be
-// STOPped (parked) before it can be re-fired.
+// TestControlSequenceStartRejectsActiveRun: START on a parent that is already running is a failed
+// precondition — an active chain must be STOPped (parked) before it can be re-fired.
 func TestControlSequenceStartRejectsActiveRun(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -441,9 +423,8 @@ func TestControlSequenceStartRejectsActiveRun(t *testing.T) {
 	}
 }
 
-// TestControlSequenceResumeStops: a stopped (parked) parent resumes through
-// the handler's injected starter, and a running parent stops (parks) so its
-// schedule is cleared. Exercises the RPC → scheduler wiring.
+// TestControlSequenceResumeStops: a stopped (parked) parent resumes through the handler's injected
+// starter, and a running parent stops (parks) so its schedule is cleared.
 func TestControlSequenceResumeStops(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -509,11 +490,8 @@ func TestControlSequenceResumeStops(t *testing.T) {
 	}
 }
 
-// TestControlSequenceResumeHaltedParent: RESUME on a halted chain (parent
-// failed, first non-succeeded child failed) is accepted and drives the
-// injected resume starter — the handler gate that made a manual resume a
-// no-op (the scheduler then re-arms the failed child; the scheduler-level
-// semantics are covered in sequence_reconciler_test.go).
+// TestControlSequenceResumeHaltedParent: RESUME on a halted chain (parent failed, first
+// non-succeeded child failed) is accepted and drives the injected resume starter.
 func TestControlSequenceResumeHaltedParent(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -670,11 +648,8 @@ func reorderSequenceItems(t *testing.T, pool *db.Pool, projID, parentID string, 
 	}
 }
 
-// TestUpdateRejectsRunnableStatusWithoutWorkflowDB (AC 1) drives the Connect
-// surface directly: a status TRANSITION into a runnable status (ready /
-// assigned / scheduled / running) is rejected for a workflow-less item; the
-// same transition passes in the request that binds a workflow; and a sequence
-// parent with children is exempt (a container that never executes itself).
+// TestUpdateRejectsRunnableStatusWithoutWorkflowDB (AC 1) drives the Connect surface directly: a
+// status TRANSITION into a runnable status (ready / assigned / scheduled / running) is rejected.
 func TestUpdateRejectsRunnableStatusWithoutWorkflowDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -718,13 +693,8 @@ func TestUpdateRejectsRunnableStatusWithoutWorkflowDB(t *testing.T) {
 	}
 }
 
-// TestCreateScheduledWithoutWorkflowRejectedDB (AC 1 + AC 6, the CREATE half):
-// creating a work item that lands directly in 'scheduled' with no workflow
-// binding is exactly the zombie the retired standalone dispatch left behind —
-// the start time comes due and nothing can ever run it, and (before the scan
-// admitted workflow-less rows) nothing surfaced it either. The CREATE path
-// must apply the same schedule-time gate the UPDATE path already applies, so
-// the two cannot drift.
+// TestCreateScheduledWithoutWorkflowRejectedDB (AC 1 + AC 6, the CREATE half): creating a work item
+// that lands directly in 'scheduled' with no workflow binding is exactly the zombie the retired.
 func TestCreateScheduledWithoutWorkflowRejectedDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)

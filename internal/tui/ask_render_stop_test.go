@@ -14,9 +14,8 @@ import (
 // ask_render_stop_test.go — the two Ask behaviours that have to be judged at the RENDERED FRAME rather
 // than at the widget, plus the Stop control.
 
-// askWithTranscript builds the REAL Ask screen on the stub-backed App, opens a conversation, and leaves
-// the pane showing that conversation's transcript. It returns the stub too, so a test can assert which
-// RPCs were issued.
+// askWithTranscript builds the REAL Ask screen on the stub-backed App, opens a conversation, and
+// leaves the pane showing that conversation's transcript.
 func askWithTranscript(t *testing.T, convID string) (*App, *stubAskParity) {
 	t.Helper()
 	m, stub := newAskApp(t)
@@ -63,9 +62,7 @@ func TestAskFullTranscriptPaintsTheNewestLineAndTheThinkingNotice(t *testing.T) 
 	m.chatStore.append("c1", chat.ChatItem{
 		Kind: chat.KindUser, Text: "NEWEST-USER-LINE", Key: "draft-newest", At: 1000, Live: true,
 	})
-	// A turn is in flight and has produced no prose yet. chat.Send flips the slot SYNCHRONOUSLY, so the
-	// state is real; the returned Cmd is deliberately dropped, because what the pane paints needs no
-	// network.
+	// A turn is in flight and has produced no prose yet.
 	m.chat.Send("c1", "NEWEST-USER-LINE", "")
 	m.onChatWake()
 
@@ -89,14 +86,6 @@ func TestAskFullTranscriptPaintsTheNewestLineAndTheThinkingNotice(t *testing.T) 
 }
 
 // THE STOP CONTROL: ctrl+y interrupts the in-flight reply.
-//
-// The operator: "I realized there is no stop button like in the GUI. We need a stop button/control key +
-// hint in composer that can interrupt the agent mid flight."
-//
-// Driven through the REAL dispatch, because the failure mode this class of feature ships with is a chord
-// that is bound but UNREACHABLE: the composer's textarea consumes every key it is handed and the composer
-// branch RETURNS on a consumed key, so a global route never sees a chord the composer was allowed to eat.
-// That is exactly why ctrl+y is in composerBypassKeys, and this test fails if it is removed from there.
 func TestStopChordAbortsTheInFlightTurn(t *testing.T) {
 	m, stub := askWithTranscript(t, "c1")
 
@@ -176,9 +165,7 @@ func TestComposerStopHintAppearsOnlyWhileAReplyStreams(t *testing.T) {
 		t.Fatalf("the stop affordance must appear while a reply streams: %q", h)
 	}
 
-	// The normal end of a turn clears the slot, and the affordance goes with it. The generation is the
-	// slot's own, which is what consume() carries into StreamDoneMsg — a StreamDoneMsg with the wrong
-	// generation is a stream that was SUPERSEDED, and must leave this slot alone.
+	// The normal end of a turn clears the slot, and the affordance goes with it.
 	m.onStreamDone(chat.StreamDoneMsg{ConvID: "c1", Gen: m.chat.CurrentGen("c1")})
 	if h := m.dock.Hint(); strings.Contains(h, "ctrl+y") {
 		t.Fatalf("the stop affordance must disappear when the reply ends: %q", h)

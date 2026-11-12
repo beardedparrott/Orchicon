@@ -9,10 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ExecutionRow is the data-access shape of a worker_executions table row
-// (docs/02 §2.7, docs/09 §3.3). A concrete invocation of a Worker
-// against a Task on an adapter. Created by the TaskReconciler at
-// dispatch; owns the adapter session.
+// ExecutionRow is the data-access shape of a worker_executions table row (docs/02 §2.7, docs/09
+// §3.3).
 type ExecutionRow struct {
 	ID             string
 	TenantID       string
@@ -49,9 +47,7 @@ type ExecutionRow struct {
 	UpdatedAt      time.Time
 }
 
-// CreateExecution inserts a new worker execution row
-// (docs/03 §4: createWorkerExecution). The caller controls the
-// transaction so the outbox row can be enqueued atomically.
+// CreateExecution inserts a new worker execution row (docs/03 §4: createWorkerExecution).
 func CreateExecution(ctx context.Context, tx pgx.Tx, e ExecutionRow) (ExecutionRow, error) {
 	const q = `INSERT INTO worker_executions
 		(id, tenant_id, project_id, task_id, worker_id, worker_version,
@@ -126,9 +122,8 @@ func GetExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) (Executio
 	return e, nil
 }
 
-// ListExecutionsFilter scopes a list query to a tenant, optionally
-// filtered by project/task/status/workflow_run_id, with free-text
-// search and sort.
+// ListExecutionsFilter scopes a list query to a tenant, optionally filtered by
+// project/task/status/workflow_run_id, with free-text search and sort.
 type ListExecutionsFilter struct {
 	TenantID        string
 	ProjectID       string
@@ -214,8 +209,6 @@ func ListExecutions(ctx context.Context, tx pgx.Tx, f ListExecutionsFilter) ([]E
 	}
 	if f.AfterID != "" {
 		// Keyset pagination on the (sort key, id) tuple of the cursor row.
-		// This replaces the old bare `id > $n` cursor, which contradicted the
-		// default created_at DESC ordering and re-returned page 1 on page 2.
 		cmp := "<"
 		if f.SortOrder == "asc" {
 			cmp = ">"
@@ -279,8 +272,6 @@ type UpdateExecutionFields struct {
 }
 
 // UpdateExecution applies a partial update with optimistic concurrency.
-// The tenant_id is injected into the WHERE clause. Returns ErrNotFound
-// if no row matches the id+tenant+version.
 func UpdateExecution(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, f UpdateExecutionFields) (ExecutionRow, error) {
 	q := `UPDATE worker_executions SET updated_at = now(), version = version + 1`
 	args := []any{tenantID, id, expectedVersion}
@@ -397,19 +388,12 @@ func UpdateExecution(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 	return e, nil
 }
 
-// activeExecutionStatuses is the SQL form of the non-terminal execution
-// set the concurrency guard counts: dispatching / running / healthy /
-// stalled / unhealthy / terminating. Any other status (succeeded, failed,
-// failed_to_start, terminated) has released its dispatch slot. Every
-// per-project dispatch-limit COUNT query MUST use this constant so the
-// "active execution" definition stays in one place.
+// Every per-project dispatch-limit COUNT query MUST use this constant so the "active execution"
+// definition stays in one place.
 const activeExecutionStatuses = "('dispatching','running','healthy','stalled','unhealthy','terminating')"
 
-// CountActiveExecutionsForProject returns the number of currently active
-// (non-terminal) executions for a project. It is the per-project admission
-// measure for the max-concurrent-runs dispatch guard: when the count is at
-// or above a project's effective limit, the TaskReconciler holds the next
-// dispatch until a running execution releases its slot.
+// CountActiveExecutionsForProject returns the number of currently active (non-terminal) executions
+// for a project.
 func CountActiveExecutionsForProject(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (int, error) {
 	var count int
 	err := tx.QueryRow(ctx,
@@ -465,10 +449,7 @@ func ListDispatchingExecutions(ctx context.Context, tx pgx.Tx, tenantID string) 
 	return out, rows.Err()
 }
 
-// ListRunningExecutions returns executions in a non-terminal, started
-// state (running/healthy/dispatching) — the set the execution-liveness
-// reaper checks after a control-plane restart to find executions whose
-// process is gone (docs/03 §6 liveness).
+// The invariant is: ANYTHING THAT CAN HOLD A SLOT MUST BE REAP-CHECKABLE.
 func ListRunningExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]ExecutionRow, error) {
 	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
 		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
@@ -480,7 +461,7 @@ func ListRunningExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]E
 		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
 		LEFT JOIN workflows w ON w.id = wr.workflow_id
 		LEFT JOIN workers wkr ON wkr.id = we.worker_id AND wkr.tenant_id = we.tenant_id
-		WHERE we.tenant_id = $1 AND we.status IN ('running', 'healthy', 'dispatching')
+		WHERE we.tenant_id = $1 AND we.status IN ` + activeExecutionStatuses + `
 		ORDER BY we.created_at ASC`
 	rows, err := tx.Query(ctx, q, tenantID)
 	if err != nil {
@@ -508,9 +489,8 @@ func ListRunningExecutions(ctx context.Context, tx pgx.Tx, tenantID string) ([]E
 	return out, rows.Err()
 }
 
-// ListReadyTasks returns work items in "ready" status for a tenant,
-// ordered by priority (docs/03 §3: scheduling input). The TaskReconciler
-// processes these for dispatch.
+// ListReadyTasks returns work items in "ready" status for a tenant, ordered by priority (docs/03
+// §3: scheduling input).
 func ListReadyTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItemRow, error) {
 	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
@@ -555,11 +535,8 @@ func DeleteExecution(ctx context.Context, tx pgx.Tx, tenantID, id string) error 
 	return nil
 }
 
-// ListBlockedTasks returns work items in "blocked" status for a tenant,
-// ordered by priority — the TaskReconciler scan complement to
-// ListReadyTasks. Blocked tasks are re-evaluated on every pass so a newly
-// satisfied dependency gate flips them back to ready (and dispatches in
-// the same pass) without any new notifier wiring.
+// ListBlockedTasks returns work items in "blocked" status for a tenant, ordered by priority — the
+// TaskReconciler scan complement to ListReadyTasks.
 func ListBlockedTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItemRow, error) {
 	const q = `SELECT id, tenant_id, project_id, parent_id, kind, title, description,
 		acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
@@ -591,23 +568,14 @@ func ListBlockedTasks(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkIt
 	return out, rows.Err()
 }
 
-// terminalSuccessStatuses is the SQL form of
-// domain.WorkItemIsTerminalSuccess: a work item is terminal-success for
-// dependency/arming purposes exactly when its status is one of these.
-// Every SQL dependency gate MUST use this constant (and stay in lockstep
-// with the Go predicate) so skip-status and depends_on share one
-// terminal-success definition. failed/cancelled are NOT listed — they
-// keep dependents blocked.
+// Every SQL dependency gate MUST use this constant (and stay in lockstep with the Go predicate) so
+// skip-status and depends_on share one terminal-success definition.
 const terminalSuccessStatuses = "('succeeded','skipped')"
 
-// CheckDependenciesSatisfied returns true if all dependency edges pointing
-// TO the given work item have their source (from_id) in a terminal-success
-// state (succeeded or skipped). A task is only dispatched when its
-// dependencies are satisfied (docs/02 §4 invariant #1, docs/03 §4).
+// CheckDependenciesSatisfied returns true if all dependency edges pointing TO the given work item
+// have their source (from_id) in a terminal-success state (succeeded or skipped).
 func CheckDependenciesSatisfied(ctx context.Context, tx pgx.Tx, tenantID, workItemID string) (bool, error) {
-	// A work item is ready to dispatch if:
-	// 1. It has no blocking dependencies (no from_id edges where type in blocks/depends_on), OR
-	// 2. All blocking dependencies point to items in a terminal-success state.
+	// A work item is ready to dispatch if: 1.
 	const q = `WITH blocking_deps AS (
 		SELECT from_id FROM work_item_dependencies
 		WHERE tenant_id = $1 AND to_id = $2
@@ -661,4 +629,90 @@ func GetLatestExecutionForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID 
 		return ExecutionRow{}, fmt.Errorf("db: get latest execution for task: %w", err)
 	}
 	return e, nil
+}
+
+// stuckExecutionStatuses is the SQL form of the slot-holding statuses the liveness layer has
+// ALREADY marked not-well: 'unhealthy' and 'stalled' are recorded liveness-probe verdicts.
+const stuckExecutionStatuses = "('unhealthy','stalled','terminating')"
+
+// ListStuckExecutionsForProject returns the project's slot-holding executions that carry a status
+// the liveness layer has already marked not-well (stuckExecutionStatuses), oldest first.
+func ListStuckExecutionsForProject(ctx context.Context, tx pgx.Tx, tenantID, projectID string) ([]ExecutionRow, error) {
+	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
+		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
+		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
+		we.worktree_status, we.worktree_path, we.worktree_branch, we.pr_url, we.pr_state,
+		we.workflow_run_id, we.workflow_step_id, '', COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
+		we.created_at, we.updated_at
+		FROM worker_executions we
+		LEFT JOIN workers wkr ON wkr.id = we.worker_id AND wkr.tenant_id = we.tenant_id
+		WHERE we.tenant_id = $1 AND we.project_id = $2
+		  AND we.status IN ` + stuckExecutionStatuses + `
+		ORDER BY we.created_at ASC`
+	rows, err := tx.Query(ctx, q, tenantID, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list stuck executions for project: %w", err)
+	}
+	defer rows.Close()
+	var out []ExecutionRow
+	for rows.Next() {
+		var e ExecutionRow
+		if err := rows.Scan(
+			&e.ID, &e.TenantID, &e.ProjectID, &e.TaskID, &e.WorkerID,
+			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
+			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
+			&e.CheckpointRef, &e.RecoveryID,
+			&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
+			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
+			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
+			&e.Version,
+			&e.CreatedAt, &e.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan stuck execution: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ListRunningExecutionsForProject is ListRunningExecutions scoped to one project — every execution
+// holding a dispatch slot for that project.
+func ListRunningExecutionsForProject(ctx context.Context, tx pgx.Tx, tenantID, projectID string) ([]ExecutionRow, error) {
+	const q = `SELECT we.id, we.tenant_id, we.project_id, we.task_id, we.worker_id, we.worker_version,
+		we.adapter_id, we.status, we.health_state, we.started_at, we.ended_at,
+		we.token_usage, we.cost_usd, we.checkpoint_ref, we.recovery_id,
+		we.worktree_status, we.worktree_path, we.worktree_branch, we.pr_url, we.pr_state,
+		we.workflow_run_id, we.workflow_step_id, COALESCE(w.name, '') AS workflow_name, COALESCE(wkr.name, '') AS worker_name, we.error_message, we.output, we.conversation, we.is_follow_up, we.iteration, we.version,
+		we.created_at, we.updated_at
+		FROM worker_executions we
+		LEFT JOIN workflow_runs wr ON wr.id = we.workflow_run_id
+		LEFT JOIN workflows w ON w.id = wr.workflow_id
+		LEFT JOIN workers wkr ON wkr.id = we.worker_id AND wkr.tenant_id = we.tenant_id
+		WHERE we.tenant_id = $1 AND we.project_id = $2
+		  AND we.status IN ` + activeExecutionStatuses + `
+		ORDER BY we.created_at ASC`
+	rows, err := tx.Query(ctx, q, tenantID, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("db: list running executions for project: %w", err)
+	}
+	defer rows.Close()
+	var out []ExecutionRow
+	for rows.Next() {
+		var e ExecutionRow
+		if err := rows.Scan(
+			&e.ID, &e.TenantID, &e.ProjectID, &e.TaskID, &e.WorkerID,
+			&e.WorkerVersion, &e.AdapterID, &e.Status, &e.HealthState,
+			&e.StartedAt, &e.EndedAt, &e.TokenUsage, &e.CostUSD,
+			&e.CheckpointRef, &e.RecoveryID,
+			&e.WorktreeStatus, &e.WorktreePath, &e.WorktreeBranch, &e.PrURL, &e.PrState,
+			&e.WorkflowRunID, &e.WorkflowStepID, &e.WorkflowName, &e.WorkerName,
+			&e.ErrorMessage, &e.Output, &e.Conversation, &e.IsFollowUp, &e.Iteration,
+			&e.Version,
+			&e.CreatedAt, &e.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan execution: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }

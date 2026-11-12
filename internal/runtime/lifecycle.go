@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -26,49 +25,29 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
 // devTenantID mirrors the single-dev-tenant assumption used by the
 // reconcilers (docs/03 §1). Multi-tenant scheduling arrives with auth.
 const devTenantID = "tnt_dev"
 
-// opencodeAdapterKind is the adapter kind whose executions need the
-// in-container opencode serve. Kept as a local constant so the runtime
-// layer does not import the scheduler (and to keep the single seam the
-// adapter namespace lands on explicit).
+// opencodeAdapterKind is the adapter kind whose executions need the in-container opencode serve.
 const opencodeAdapterKind = "opencode"
 
-// runtimeNoServeImage is the legacy sentinel RuntimeImage value the
-// WorkflowReconciler used to stamp on runs with no serve-dependent adapter
-// demand (pre-always-container arm gate). It is NEVER written on new runs:
-// imageForRun always persists the resolved image. The constant survives
-// only so EnsureServing/Adopt can recognize legacy rows (which have no
-// container to probe/adopt) without failing them. The daemon never sees it.
+// It is NEVER written on new runs: imageForRun always persists the resolved image.
 const runtimeNoServeImage = "no-serve"
 
 // NoServeImage is the exported legacy sentinel; see runtimeNoServeImage.
-// New code must not stamp it — imageForRun always returns the resolved
-// image. It remains exported for the serve-skip comparisons on legacy rows
-// and for tests asserting it never collides with a real image tag.
 const NoServeImage = runtimeNoServeImage
 
-// worktreeDirName mirrors the WorktreeReconciler's namespace under
-// project_dir where per-run worktrees are provisioned
-// (internal/scheduler/worktree_reconciler.go). The runtime layer must know
-// it so the composite worktree MCP tools can be pointed at the run's
-// worktree instead of the project root.
+// worktreeDirName mirrors the WorktreeReconciler's namespace under project_dir where per-run
+// worktrees are provisioned (internal/scheduler/worktree_reconciler.go).
 const worktreeDirName = ".orchicon-worktrees"
 
-// runWorktreeBase resolves the base directory the composite worktree MCP
-// tools (batch_read/batch_grep/batch_write) resolve relative paths against
-// for a run's container serve. For a git-backed project the run gets a
-// provisioned worktree at the deterministic path
-// <projectDir>/.orchicon-worktrees/<runID> and executions run inside it —
-// so the batch tools MUST resolve there, never at the project root (a
-// project-root base silently writes into the main checkout, violating
-// worktree hygiene). Non-repo projects run in place at projectDir. Mirrors
-// the WorktreeReconciler's isInsideWorkTree decision so the baked base
-// matches the execution cwd.
+// For a git-backed project the run gets a provisioned worktree at the deterministic path
+// <projectDir>/.orchicon-worktrees/<runID> and executions run inside it.
 func runWorktreeBase(ctx context.Context, projectDir, runID string) string {
 	if projectDir == "" {
 		return ""
@@ -79,17 +58,13 @@ func runWorktreeBase(ctx context.Context, projectDir, runID string) string {
 	return projectDir
 }
 
-// isInsideWorkTree mirrors the WorktreeReconciler's git check
-// (`git rev-parse --is-inside-work-tree` exits 0 and prints "true"). A
-// non-zero exit or "false" output means not a git repo / not a work tree —
-// the non-repo skip signal that keeps the execution in place at projectDir.
-// A missing git binary or nonexistent dir is treated as non-repo (the run
-// proceeds in place), matching the reconciler.
+// isInsideWorkTree mirrors the WorktreeReconciler's git check (`git rev-parse
+// --is-inside-work-tree` exits 0 and prints "true").
 func isInsideWorkTree(ctx context.Context, projectDir string) bool {
 	if fi, err := os.Stat(projectDir); err != nil || !fi.IsDir() {
 		return false
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", projectDir, "rev-parse", "--is-inside-work-tree")
+	cmd := procwin.CommandContext(ctx, "git", "-C", projectDir, "rev-parse", "--is-inside-work-tree")
 	out, err := cmd.Output()
 	if err != nil {
 		return false
@@ -97,94 +72,38 @@ func isInsideWorkTree(ctx context.Context, projectDir string) bool {
 	return strings.TrimSpace(string(out)) == "true"
 }
 
-// Lifecycle decides WHEN workflow runtime containers are created and
-// reaped based on workflow run state, and gates execution dispatch on the
-// container's opencode serve being proven usable. It talks to the
-// host-side daemon through runtime.Client. A nil client (no daemon socket
-// — headless `orchicon serve`) makes EnsureServing/ReapForRun/Adopt no-ops
-// and makes EnsureForRun return a LOUD error: silent in-process degrade in
-// runtime mode is gone (local execution_mode is the explicit opt-out, and
-// the reconciler never calls EnsureForRun for it).
+// Lifecycle decides WHEN workflow runtime containers are created and reaped based on workflow run
+// state, and gates execution dispatch on the container's opencode serve being proven usable.
 type Lifecycle struct {
 	client *Client
 	pool   *db.Pool
 	log    *slog.Logger
-	// serveConfigFor builds the OPENCODE_CONFIG_CONTENT for a run's
-	// container serve from its runtime image tag, its in-container project
-	// dir, and THE RUN'S MCP UNION (project-owned ∪ every step worker
-	// version's inline specs + skills). The sandbox-scoped Orchicon MCP is
-	// registered only for dev images (which boot the sandbox plane against a
-	// sandbox DB); the plane-channel Orchicon MCP (`orchicon-plane`) is
-	// registered on EVERY image when the run's worker role grants it
-	// (planeEnv non-empty) — plane access is role-gated, never image-gated.
-	// The project dir is threaded through because the composite worktree
-	// batch tools (batch_read/grep/write) need a base directory to resolve
-	// against — the project is mounted in-container at the same absolute
-	// path.
-	//
-	// The union argument is RUN-LEVEL and carries NO per-execution input: the
-	// daemon applies ServeConfig only at container creation, so a config that
-	// varied per execution would make "whichever step created the container
-	// first" decide what every step sees.
+	// serveConfigFor builds the OPENCODE_CONFIG_CONTENT for a run's container serve from its runtime
+	// image tag, its in-container project dir.
 	serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, providers []ProviderConfig, workers []adapter.WorkerAgent) string
 	// secretsKEK is the plane-resolved 32-byte KEK for tenant secrets
 	// (resolved at server construction; nil disables secret injection).
 	secretsKEK []byte
-	// scopeResolver resolves the RUN's MCP union for the container bake (the
-	// same resolver the native/claude bridges use). Nil = no MCP union: the
-	// container's serve keeps its built-ins only.
+	// scopeResolver resolves the RUN's MCP union for the container bake (the same resolver the
+	// native/claude bridges use).
 	scopeResolver mcpclient.ScopeResolver
 
-	// containerProviders resolves the TENANT's providers as a runtime container
-	// must see them: base URLs transposed off the host's loopback (a container's
-	// own 127.0.0.1 is itself, so a local model on the operator's machine is
-	// unreachable at the URL they typed).
-	//
-	// IT LIVES HERE, not on the opencode adapter, because this is where the
-	// container's serve config is built — from the RUN. The daemon applies
-	// ServeConfig only at container creation, so a config assembled from the
-	// DISPATCHING step would make "whichever step created the container first"
-	// decide what every step sees: order-dependent, and forbidden. Resolving it
-	// here also keeps the run-start and self-heal configs byte-identical, which
-	// is what lets the daemon reuse the run's warmed container.
-	//
-	// Set by the server (the provider rows live behind the providers service).
-	// Nil = no provider block, which is the pre-fix behaviour: the mounted
-	// opencode config stays in charge.
+	// containerProviders resolves the TENANT's providers as a runtime container must see them: base
+	// URLs transposed off the host's loopback (a container's own 127.0.0.1 is itself.
 	containerProviders func(ctx context.Context, tenantID string) []ProviderConfig
 
 	// planeCredMu guards planeCredCache.
 	planeCredMu sync.Mutex
-	// planeCredCache MEMOIZES the plane-channel credential env per run so two
-	// builds of a run's serve config are BYTE-IDENTICAL.
-	//
-	// WHY IT MUST EXIST: mintPlaneCredential MINTS A FRESH RANDOM API KEY on
-	// every call. Because RunServeConfig is invoked from the adapter's
-	// per-execution self-heal path (not only at run start), a run with a
-	// plane-channel worker would otherwise emit a config that differs from the
-	// run-start one on every dispatch — which (a) breaks the determinism AC 3
-	// requires, (b) changes the daemon's serve-config pool key so the run's
-	// already-warmed container is NOT reused, and (c) leaks one api_keys row
-	// per execution. The credential is a stable per-run input, so it is
-	// computed ONCE and reused; it is evicted when the run is reaped.
+	// WHY IT MUST EXIST: mintPlaneCredential MINTS A FRESH RANDOM API KEY on every call.
 	planeCredCache map[string]map[string]string
 }
 
-// NewLifecycle creates a workflow runtime lifecycle. client may be nil to
-// disable per-workflow runtime containers. serveConfigFor builds the
-// OPENCODE_CONFIG_CONTENT the container's opencode serve boots with from
-// the run's runtime image tag (permission rules for every image, the
-// sandbox-scoped Orchicon MCP for dev images, and the plane-channel
-// Orchicon MCP on any image when the run's worker role grants it — built
-// by the opencode package).
+// NewLifecycle creates a workflow runtime lifecycle.
 func NewLifecycle(client *Client, pool *db.Pool, log *slog.Logger, serveConfigFor func(image, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, providers []ProviderConfig, workers []adapter.WorkerAgent) string, secretsKEK []byte) *Lifecycle {
 	return &Lifecycle{client: client, pool: pool, log: log, serveConfigFor: serveConfigFor, secretsKEK: secretsKEK}
 }
 
-// SetScopeResolver injects the MCP scope resolver the run-level union is
-// computed from. It is the SAME resolver the native and claude bridges use,
-// so a run's union and a worker's own set can never disagree on what a given
-// scope resolves to.
+// SetScopeResolver injects the MCP scope resolver the run-level union is computed from.
 func (l *Lifecycle) SetScopeResolver(r mcpclient.ScopeResolver) { l.scopeResolver = r }
 
 // SetContainerProviders injects the container-locality provider resolver (see the
@@ -193,30 +112,7 @@ func (l *Lifecycle) SetContainerProviders(fn func(ctx context.Context, tenantID 
 	l.containerProviders = fn
 }
 
-// resolveRunUnion resolves a run's RUN-LEVEL MCP union — the project's owned
-// definitions ∪ EVERY step worker version's inline specs, plus the run's
-// skill-file union — and expands ${SECRET_NAME} at BUILD time, the same way
-// the native and claude adapters do.
-//
-// IT IS COMPUTED FROM THE RUN, NEVER THE EXECUTING STEP. The result is baked
-// into the container's serve config ONCE, at container creation (the daemon
-// applies ServeConfig only then), so a per-execution input would make
-// "whichever step created the container first" decide what every step sees —
-// order-dependent, and forbidden. The one walk that resolves each step's
-// worker version lives in mcpsettings.Resolver's run scope (it delegates to
-// adapter.ResolveRunSteps, the SAME traversal the adapter demand set uses), so
-// the union and the boot profile cannot drift.
-//
-// A server whose ${SECRET_NAME} cannot resolve is DROPPED, LOUDLY. The
-// SkipUserMCP rule (internal/opencode/config.go) is explicit: a serve eagerly
-// connects to every configured server, so an entry it cannot connect to hangs
-// the serve's event loop and the published port never answers. That is exactly
-// this class, so the drop is logged with the server AND the scope it came from
-// — never silent.
-//
-// A nil resolver (no MCP storage wired) or a resolution error yields the
-// EMPTY union: the container's serve then carries its built-ins only, exactly
-// as before this change.
+// IT IS COMPUTED FROM THE RUN, NEVER THE EXECUTING STEP.
 func (l *Lifecycle) resolveRunUnion(ctx context.Context, run db.WorkflowRunRow) mcpclient.Resolution {
 	if l.scopeResolver == nil {
 		return mcpclient.Resolution{}
@@ -246,39 +142,14 @@ func (l *Lifecycle) resolveRunUnion(ctx context.Context, run db.WorkflowRunRow) 
 			res.Servers[i].Spec.Env, res.Servers[i].Spec.Headers = env, hdr
 		}
 	}
-	// AC 4: log the union's provenance ONCE, plane-side. ProvenanceString reads
-	// only ids + scope ids — never env/headers (which now hold resolved
-	// credentials).
+	// AC 4: log the union's provenance ONCE, plane-side.
 	l.log.Info("run MCP union resolved", "run", run.ID,
 		"servers", mcpclient.ProvenanceString(res.Servers), "skills", len(res.Skills))
 	return res
 }
 
-// resolveRunWorkers returns the run's step workers as opencode agent definitions:
-// one per DISTINCT worker, each carrying the RUN-LEVEL part of that worker's
-// prompt (db.AgentSystemPrompt).
-//
-// WHY IT EXISTS. opencode 2.x has no per-message `system` field, so a worker's
-// prompt has to arrive through something opencode treats as a system prompt, and
-// measurement leaves exactly one candidate: the agent's `system` (see
-// adapter.WorkerAgent for the four channels tried). An agent's `system` is fixed
-// when the serve is configured and a serve hosts a whole RUN — so only the
-// run-level layers of the prompt (the shared stable prefix and the worker's own
-// identity block) belong here. The task, the context files and the execution
-// history vary per execution and stay on the per-execution message.
-//
-// COMPUTED FROM THE RUN, NEVER THE EXECUTING STEP — the same rule the MCP union
-// follows, for the same reason: the config is applied ONCE at container
-// creation, so a per-execution input would let whichever step created the
-// container decide what every step sees.
-//
-// Uses the SAME traversal as the adapter demand set (adapter.ResolveRunSteps), so
-// the agents and the boot profile cannot disagree about which workers a run has.
-//
-// A worker that resolves to nothing contributes NO agent, with a log line. An
-// agent entry with an empty prompt would be worse than absent: `system` REPLACES
-// opencode's base prompt, so an empty one would strip the worker's instructions
-// rather than fall back.
+// COMPUTED FROM THE RUN, NEVER THE EXECUTING STEP — the same rule the MCP union follows, for the
+// same reason: the config is applied ONCE at container creation.
 func (l *Lifecycle) resolveRunWorkers(ctx context.Context, run db.WorkflowRunRow) []adapter.WorkerAgent {
 	if run.WorkflowID == "" {
 		return nil
@@ -301,13 +172,11 @@ func (l *Lifecycle) resolveRunWorkers(ctx context.Context, run db.WorkflowRunRow
 	}
 	resolved := adapter.ResolveRunSteps(ctx, ttx.Tx, run.TenantID, steps)
 
-	// The prompt's runtime-environment block is built from the RUN's image and the
-	// runtime mode, mirroring the composite: scheduler.runEffectiveImage resolves
-	// the same value for a run-driven composite, and a container implies runtime
-	// mode by construction (a local-mode project gets no container at all).
+	// The prompt's runtime-environment block is built from the RUN's image and the runtime mode,
+	// mirroring the composite: scheduler.runEffectiveImage resolves the same value for a run-driven.
 	image := strings.TrimSpace(run.RuntimeImage)
 	if image == "" {
-		image = db.BaseRuntimeImage
+		image = db.RuntimeBaseImage()
 	}
 	mode := db.ExecutionModeRuntime
 
@@ -338,19 +207,8 @@ func (l *Lifecycle) resolveRunWorkers(ctx context.Context, run db.WorkflowRunRow
 	return out
 }
 
-// RunServeConfig implements opencode.RunServeConfigProvider: the RUN-LEVEL
-// OPENCODE_CONFIG_CONTENT a run's container must carry, derived from the run
-// id ONLY.
-//
-// This is what the opencode adapter's self-heal path asks for instead of
-// rebuilding the config from the executing step: the container's config is
-// applied once at creation, so the self-heal value MUST be byte-identical to
-// the run-start one (it is — both go through buildCreateRequest), which also
-// means the daemon's pool env key matches and the run's warmed container is
-// reused rather than recreated.
-//
-// A false return means "no opencode demand / run unresolvable": the caller
-// sends NO config rather than inventing one.
+// This is what the opencode adapter's self-heal path asks for instead of rebuilding the config from
+// the executing step: the container's config is applied once at creation.
 func (l *Lifecycle) RunServeConfig(ctx context.Context, runID string) (string, bool) {
 	ttx, err := l.pool.BeginTenantTx(ctx, devTenantID)
 	if err != nil {
@@ -386,24 +244,15 @@ func (l *Lifecycle) runContainerProviders(ctx context.Context, tenantID string) 
 // Enabled reports whether a daemon is configured.
 func (l *Lifecycle) Enabled() bool { return l.client != nil }
 
-// buildCreateRequest computes the create request for a run: the project
-// directory mount (if the project has one) plus the project's and run's
-// bound work item's context_files paths that lie OUTSIDE project_dir
-// (paths under project_dir are covered by the project-dir mount), and the
-// resolved runtime image. Every container is created with the serve
-// config so the opencode serve warms up at create time, not at first
-// dispatch. Shared by EnsureForRun and EnsureServing.
+// buildCreateRequest computes the create request for a run: the project directory mount (if the
+// project has one) plus the project's and run's bound work item's context_files paths that lie.
 func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRow) (CreateRequest, error) {
 	req := CreateRequest{
 		WorkflowID: run.ID,
 		Image:      run.RuntimeImage,
 	}
-	// Effective git strategy (workflow > project > "local") resolved up
-	// front so the daemon can gate the push credential for a "none" run.
-	// Single source of truth (db.EffectiveGitStrategy) — the same function
-	// the worktree reconciler uses for detached-HEAD provisioning — so the
-	// runtime container's credential gate always agrees with the run's
-	// strategy.
+	// Effective git strategy (workflow > project > "local") resolved up front so the daemon can gate
+	// the push credential for a "none" run.
 	strategyTx, serr := l.pool.BeginTenantTx(ctx, run.TenantID)
 	if serr == nil {
 		req.GitStrategy = db.EffectiveGitStrategy(ctx, strategyTx.Tx, run.TenantID, run.WorkflowID, run.ProjectID)
@@ -421,15 +270,24 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 		if gerr == nil {
 			projectDir = project.ProjectDir
 			if projectDir != "" {
-				req.Mounts = append(req.Mounts, MountSpec{Source: projectDir, Dest: projectDir})
+				// ONCE. The reported argv carried the project bind TWICE:
+				//
+				//	-v /mnt/c/projects/weatherapp:/mnt/c/projects/weatherapp
+				//	-v /mnt/c/projects/weatherapp:/mnt/c/projects/weatherapp
+				//
+				// which is not fatal but is pure noise in the vector an operator has to read to debug
+				// anything — and a duplicate here means the mount list is assembled from more than one
+				// place, so the NEXT duplicate could be two different sources for one destination, which
+				// the engine resolves by ORDER. dedupeMounts makes the list a set, keeping the first.
+				req.Mounts = dedupeMounts(append(req.Mounts, MountSpec{Source: projectDir, Dest: projectDir}))
 				req.ProjectDir = projectDir
 			}
 			// Project context files/directories outside project_dir.
-			req.Mounts = append(req.Mounts, contextMounts(project.ContextFiles, projectDir)...)
+			req.Mounts = dedupeMounts(append(req.Mounts, contextMounts(project.ContextFiles, projectDir)...))
 			// The run's bound work item's context files/directories.
 			if run.WorkItemID != "" {
 				if wi, werr := db.GetWorkItem(ctx, ttx.Tx, run.TenantID, run.WorkItemID); werr == nil {
-					req.Mounts = append(req.Mounts, contextMounts(wi.ContextFiles, projectDir)...)
+					req.Mounts = dedupeMounts(append(req.Mounts, contextMounts(wi.ContextFiles, projectDir)...))
 				}
 			}
 		}
@@ -438,12 +296,8 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 			return CreateRequest{}, fmt.Errorf("ensure runtime: get project: %w", gerr)
 		}
 	}
-	// Plane channel: when the run's worker is a published worker with a
-	// role_ref, mint a short-lived, role-scoped API key and pass it to the
-	// serve config + container env so the `orchicon-plane` MCP channel is
-	// available (deny-by-default — planeEnv is nil otherwise). The plaintext
-	// is never stored; only the hash persists, and the key expires with the
-	// TTL.
+	// Plane channel: when the run's worker is a published worker with a role_ref, mint a short-lived,
+	// role-scoped API key and pass it to the serve config + container env so the `orchicon-plane` MCP.
 	planeEnv, merr := l.mintPlaneCredential(ctx, run)
 	if merr != nil {
 		l.log.Warn("plane credential mint failed", "run", run.ID, "error", merr)
@@ -456,18 +310,8 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 			req.Secrets[k] = v
 		}
 	}
-	// Serve config is built last so the composite worktree batch tools
-	// (batch_read/grep/write) resolve against the RUN'S WORKTREE, not the
-	// project root: the worker's session cwd is the run worktree
-	// (executionDir), so a batch tool resolving relative paths against the
-	// project root silently writes into the main checkout — the worktree
-	// hygiene violation observed in automation runs (research/ pollution in
-	// the develop checkout). The run worktree path is deterministic
-	// (<projectDir>/.orchicon-worktrees/<runID>) for git-backed projects
-	// (the WorktreeReconciler provisions exactly that path); non-repo
-	// projects run in place at the project dir. Mirror the reconciler's
-	// isInsideWorkTree decision so the baked base matches the eventual
-	// execution cwd.
+	// Serve config is built last so the composite worktree batch tools (batch_read/grep/write) resolve
+	// against the RUN'S WORKTREE, not the project root.
 	demand := l.adapterDemandFor(ctx, run)
 	req.AdapterKinds = demand.Kinds()
 	if demand.Has(opencodeAdapterKind) {
@@ -475,9 +319,6 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 			l.resolveRunUnion(ctx, run), l.runContainerProviders(ctx, run.TenantID), l.resolveRunWorkers(ctx, run))
 	}
 	// Secrets: decrypt per-work-item selection and inject as container env.
-	// KEK is plane-only — resolved once at server construction (env override
-	// or the per-instance data-dir key); the daemon blindly injects -e (same
-	// pattern as GH_TOKEN).
 	if run.WorkItemID != "" && len(l.secretsKEK) == 32 {
 		// Reuse the tx already opened above if still in scope; open a fresh one for secrets.
 		ttx2, terr := l.pool.BeginTenantTx(ctx, run.TenantID)
@@ -509,10 +350,7 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 	return req, nil
 }
 
-// planeTokenTTL resolves the plane credential lifetime. Overridable via
-// ORCHICON_PLANE_TOKEN_TTL (duration string); default 24h — long enough to
-// cover the run's container lifetime (including pool reset recreation) but
-// short enough that a leaked token is useless well before it matters.
+// planeTokenTTL resolves the plane credential lifetime.
 func planeTokenTTL() time.Duration {
 	if v := os.Getenv("ORCHICON_PLANE_TOKEN_TTL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
@@ -522,14 +360,8 @@ func planeTokenTTL() time.Duration {
 	return 24 * time.Hour
 }
 
-// planeHTTPPort is the port THIS instance's plane listens on, read from
-// ORCHICON_HTTP_ADDR (default 8080). Env-driven rather than cfg so
-// planePublicURL stays zero-arg for the mint path.
-//
-// The port must come from here, never from a literal: dev and prod are
-// separate instances that migrate independently and can listen on different
-// ports, so a shared "8080" would make one instance's plane advertise the
-// other instance's address (prod's workers dialing dev's plane).
+// planeHTTPPort is the port THIS instance's plane listens on, read from ORCHICON_HTTP_ADDR (default
+// 8080).
 func planeHTTPPort() int {
 	if addr := os.Getenv("ORCHICON_HTTP_ADDR"); addr != "" {
 		if _, portStr, err := net.SplitHostPort(addr); err == nil {
@@ -541,40 +373,7 @@ func planeHTTPPort() int {
 	return 8080
 }
 
-// planePublicURL is the plane's API base URL as reachable from inside a
-// runtime container.
-//
-// Runtime containers share the docker bridge with the plane, so the plane
-// must advertise an address a bridge container can dial — NOT the host's
-// published port. A published port (e.g. prod's 0.0.0.0:8091->8080) is only
-// reachable from outside the bridge: a bridge container dialing the gateway
-// IP + published port is dropped by the docker hairpin NAT, which is why the
-// plane-channel MCP sidecar times out on every call. Hence the plane
-// advertises either its own container bridge IP (container residency) or the
-// docker bridge interface address it binds on the host (host residency).
-//
-// The port is always THIS instance's HTTP port (planeHTTPPort()) — never a
-// literal 8080.
-//
-// Resolution order:
-//  1. ORCHICON_PLANE_PUBLIC_URL, if set (operator override wins). The
-//     launcher sets it PER INSTANCE; a globally exported value would point
-//     one instance's workers at the other instance's plane.
-//  2. Container residency (ORCHICON_CONTAINER_MODE=1): the plane
-//     container's own bridge IP (containerIPAddress) + this instance's
-//     port. Identical to the pre-migration behavior — a containerized plane
-//     keeps working unchanged.
-//  3. Host residency with ORCHICON_HTTP_EXTRA_BIND: that bind's host (the
-//     docker bridge address the host plane listens on) + this instance's
-//     port.
-//  4. Host residency without it (a manual `orchicon serve`): the stable
-//     name host.docker.internal + this instance's port. Every runtime
-//     container is created with
-//     `--add-host=host.docker.internal:host-gateway` (daemon.go), so the
-//     name resolves to the host regardless of bridge subnet — the hardcoded
-//     172.17.0.1 no longer has to be right. NOTE: this fallback depends on
-//     that create arg; if it is ever dropped, the fallback must become the
-//     extra bind host only.
+// planePublicURL is the plane's API base URL as reachable from inside a runtime container.
 func planePublicURL() string {
 	if v := os.Getenv("ORCHICON_PLANE_PUBLIC_URL"); v != "" {
 		return strings.TrimRight(v, "/")
@@ -584,9 +383,13 @@ func planePublicURL() string {
 		if ip := containerIPAddress(); ip != "" {
 			return "http://" + ip + ":" + port
 		}
-		// Container mode with an unresolvable own IP: keep the historical
-		// gateway fallback rather than emitting an empty URL (docker always
-		// writes /etc/hosts, so this is a guard, not a path).
+		if containerResidencyNeedsOverride() {
+			// Podman (typically rootless, and always across the podman-machine VM boundary on macOS/Windows)
+			// gives a container no bridge IP and has no 172.17.0.1 gateway.
+			return ""
+		}
+		// Docker container mode with an unresolvable own IP: keep the historical gateway fallback rather
+		// than emitting an empty URL (docker always writes /etc/hosts, so this is a guard, not a path).
 		return "http://172.17.0.1:" + port
 	}
 	if b := os.Getenv("ORCHICON_HTTP_EXTRA_BIND"); b != "" {
@@ -594,29 +397,29 @@ func planePublicURL() string {
 			return "http://" + host + ":" + port
 		}
 	}
+	// Host-resident plane reached by name: host.docker.internal is the single spelling for BOTH engines
+	// because the daemon maps it at create time (Engine.CreateBaseArgs emits `--add-host.
 	return "http://host.docker.internal:" + port
 }
 
-// containerIPAddress resolves the current container's bridge IP. Docker
-// sets the container hostname to the container ID and writes
-// "<ip> <hostname>" into /etc/hosts, so reading the hostname's entry is the
-// most reliable cross-platform resolution (no `hostname -i` dependency).
-// Returns "" when it cannot be resolved (host mode, or /etc/hosts absent).
+// hostsFilePath is the file containerIPAddress reads.
+var hostsFilePath = "/etc/hosts"
+
+// containerIPAddress resolves the current container's bridge IP.
 func containerIPAddress() string {
 	hostname, err := os.Hostname()
 	if err != nil || hostname == "" {
 		return ""
 	}
-	data, err := os.ReadFile("/etc/hosts")
+	data, err := os.ReadFile(hostsFilePath)
 	if err != nil {
 		return ""
 	}
 	return parseHostsIP(string(data), hostname)
 }
 
-// parseHostsIP extracts the IP for a given hostname from an /etc/hosts body
-// (Docker writes "<ip> <hostname>" as the first field pair). Returns "" when
-// the hostname has no entry.
+// parseHostsIP extracts the IP for a given hostname from an /etc/hosts body (Docker writes "<ip>
+// <hostname>" as the first field pair).
 func parseHostsIP(body, hostname string) string {
 	for _, line := range strings.Split(body, "\n") {
 		fields := strings.Fields(line)
@@ -627,16 +430,8 @@ func parseHostsIP(body, hostname string) string {
 	return ""
 }
 
-// mintPlaneCredential resolves the run's bound worker and, when it is a
-// PUBLISHED worker with a role_ref (deny-by-default), mints a short-lived
-// API key scoped to the role's entitlements. Returns the env vars the serve
-// config + container need for the `orchicon-plane` MCP channel, or nil when
-// no plane access is granted. The plaintext key is returned once and never
-// persisted — only its SHA-256 hash is stored (internal/auth/apikeys.go).
-// IT IS MEMOIZED PER RUN (planeCredCache) so a self-heal build of a run's
-// serve config reuses the SAME credential the run-start container was baked
-// with — the mint is a fresh random key, so an unmemoized call would make the
-// config non-deterministic and leak an api_keys row per execution.
+// mintPlaneCredential resolves the run's bound worker and, when it is a PUBLISHED worker with a
+// role_ref (deny-by-default), mints a short-lived API key scoped to the role's entitlements.
 func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunRow) (map[string]string, error) {
 	if run.WorkItemID == "" {
 		return nil, nil
@@ -671,6 +466,16 @@ func (l *Lifecycle) mintPlaneCredential(ctx context.Context, run db.WorkflowRunR
 	return env, nil
 }
 
+// planeURLForRun returns the plane URL this instance hands to a run's credential, failing LOUDLY
+// when it cannot be derived.
+func planeURLForRun() (string, error) {
+	u := planePublicURL()
+	if u == "" {
+		return "", fmt.Errorf("plane credential: this instance's plane URL is not derivable for a container-resident plane under %s (no bridge IP inside the container) — set ORCHICON_PLANE_PUBLIC_URL to the address this instance's workers can dial", planEngineNameForError())
+	}
+	return u, nil
+}
+
 // mintPlaneCredentialUncached performs the actual mint (see mintPlaneCredential,
 // its sole caller, for the memoization contract).
 func (l *Lifecycle) mintPlaneCredentialUncached(ctx context.Context, run db.WorkflowRunRow) (map[string]string, error) {
@@ -698,11 +503,8 @@ func (l *Lifecycle) mintPlaneCredentialUncached(ctx context.Context, run db.Work
 		_ = json.Unmarshal(wi.AssignedWorkerRef, &ref)
 	}
 	if ref.WorkerID == "" {
-		// Workflow-driven runs (a recurring item bound to a template
-		// workflow) carry their workers on the run's STEPS, not on the work
-		// item — resolve the first published, role-bound step worker so the
-		// plane channel is available there too. Deny-by-default remains: no
-		// qualifying step worker → no channel.
+		// Workflow-driven runs (a recurring item bound to a template workflow) carry their workers on the
+		// run's STEPS, not on the work item — resolve the first published.
 		ref.WorkerID = l.resolveWorkflowStepWorker(ctx, ttx.Tx, run)
 		if ref.WorkerID == "" {
 			return nil, nil
@@ -728,14 +530,13 @@ func (l *Lifecycle) mintPlaneCredentialUncached(ctx context.Context, run db.Work
 		}
 		return nil, fmt.Errorf("plane credential: get role: %w", err)
 	}
-	// The API key's identity_id must reference a REAL identities row — the
-	// audit trail stamps every write with the caller's identity via the
-	// identities_actor_identity_fk, and a worker ID is not an identity. Stamp
-	// writes with a per-run SERVICE identity instead (subject "run:<runID>",
-	// idempotently provisioned via GetOrCreateIdentity so concurrent steps
-	// share one row). Entitlements are unchanged — ResolveApiKey authorizes
-	// from the KEY's scopes alone and never unions identity roles, so this
-	// is audit attribution, not privilege widening.
+	// Resolve the plane URL BEFORE anything is written.
+	planeURL, err := planeURLForRun()
+	if err != nil {
+		return nil, err
+	}
+	// The API key's identity_id must reference a REAL identities row — the audit trail stamps every
+	// write with the caller's identity via the identities_actor_identity_fk.
 	ident, _, err := db.GetOrCreateIdentity(ctx, ttx.Tx, run.TenantID, automationIdentitySubject(run.ID), "Automation run "+run.ID, "service")
 	if err != nil {
 		return nil, fmt.Errorf("plane credential: ensure automation identity: %w", err)
@@ -759,45 +560,25 @@ func (l *Lifecycle) mintPlaneCredentialUncached(ctx context.Context, run db.Work
 	}
 	l.log.Info("plane credential minted", "run", run.ID, "worker", worker.ID, "role", worker.RoleRef, "scopes", len(role.Entitlements))
 	env := map[string]string{
-		"ORCHICON_PLANE_URL":           planePublicURL(),
+		"ORCHICON_PLANE_URL":           planeURL,
 		"ORCHICON_PLANE_TOKEN":         plaintext,
 		"ORCHICON_MCP_TENANT_ID":       run.TenantID,
 		"ORCHICON_MCP_WORKFLOW_RUN_ID": run.ID,
 	}
-	// Relay the run's run_context JSONB (the automation provenance block a
-	// recurring fire writes at fire time) so the plane-channel registry can
-	// stamp created work items with spawned_by/spawned_by_run_id and land
-	// outputs_mode=idea creates in IDEA state — feature 4.1 AC2 on the plane
-	// surface. It rides the same trusted mint path as the token itself: the
-	// control plane injects it, the sidecar relays it verbatim on creates.
-	// A bare run ID is not a run_context (ProvenanceFromRunContext parses
-	// JSON) — sending one instead of this made every plane-path idea spawn
-	// silently land as a plain pending item.
+	// Relay the run's run_context JSONB (the automation provenance block a recurring fire writes at
+	// fire time) so the plane-channel registry can stamp created work items.
 	if len(run.RunContext) > 0 {
 		env["ORCHICON_RUN_CONTEXT"] = string(run.RunContext)
 	}
 	return env, nil
 }
 
-// automationIdentitySubject returns the identities.subject for a run's
-// per-run automation service identity — the stable (tenant, subject) key
-// that GetOrCreateIdentity provisions the plane-channel API key against.
-// The key's identity_id must reference a REAL identities row: the audit
-// trail stamps every write with actor_identity_id, which is FK'd to
-// identities — a worker ID is not an identity and fails writes with
-// SQLSTATE 23503 (audit_events_actor_identity_fk).
+// automationIdentitySubject returns the identities.subject for a run's per-run automation service
+// identity — the stable (tenant.
 func automationIdentitySubject(runID string) string { return "run:" + runID }
 
-// adapterDemandFor resolves the run's BOOT PROFILE — the set of adapter
-// kinds its step workers resolve to — through the ONE shared demand-set
-// primitive (adapter.AdapterDemandSet, Task C). It gathers the same per-step
-// model refs the run-start gate gathers (scheduler.runNeedsServe: by worker
-// version NUMBER when the step pins one, else the latest staged version) and
-// folds every load failure to the CONSERVATIVE opencode demand, mirroring
-// the gate's rule: an unresolvable step behaves exactly as it did before the
-// gate became adapter-aware (gated + warmed), rather than silently skipping
-// the container an opencode step might need. The plane half and the host
-// half therefore feed the same primitive and can never disagree (AC 7).
+// adapterDemandFor resolves the run's BOOT PROFILE — the set of adapter kinds its step workers
+// resolve to — through the ONE shared demand-set primitive (adapter.AdapterDemandSet, Task C).
 func (l *Lifecycle) adapterDemandFor(ctx context.Context, run db.WorkflowRunRow) adapter.DemandSet {
 	// adapter.AdapterDemandSet("") is the conservative default: a ref that
 	// yields no kind contributes the default adapter kind (opencode).
@@ -847,16 +628,8 @@ func (l *Lifecycle) adapterDemandFor(ctx context.Context, run db.WorkflowRunRow)
 	return adapter.AdapterDemandSet(refs...)
 }
 
-// resolveWorkflowStepWorker returns the first PUBLISHED, role-bound worker
-// referenced by any step of the run's workflow version, or "" when the run
-// is not a workflow run or no step worker qualifies (deny-by-default).
-//
-// The run's container and opencode serve are shared across all steps, so a
-// single run-level credential is minted for the first qualifying step
-// worker and the whole run speaks with that role's entitlements. Mixed-role
-// workflows (steps with different roles) are not yet supported — the first
-// qualifying worker's role wins and steps with other roles get no plane
-// channel; per-step minting is a follow-up.
+// resolveWorkflowStepWorker returns the first PUBLISHED, role-bound worker referenced by any step
+// of the run's workflow version.
 func (l *Lifecycle) resolveWorkflowStepWorker(ctx context.Context, tx pgx.Tx, run db.WorkflowRunRow) string {
 	if run.WorkflowID == "" {
 		return ""
@@ -886,13 +659,8 @@ func (l *Lifecycle) resolveWorkflowStepWorker(ctx context.Context, tx pgx.Tx, ru
 	return ""
 }
 
-// ServeDependent implements the scheduler.RuntimeLifecycle capability
-// probe: the only serve-dependent adapter kind today is "opencode" (the
-// in-container opencode serve). The native "orchicon" kind needs no serve
-// — but it DOES need the container (always-container): native sessions
-// exec inside the run's container, never in-process on the host. The
-// empty/legacy kinds resolve through the adapter package's default kind so
-// the predicate and the dispatcher cannot disagree.
+// ServeDependent implements the scheduler.RuntimeLifecycle capability probe: the only
+// serve-dependent adapter kind today is "opencode" (the in-container opencode serve).
 func (l *Lifecycle) ServeDependent(kind string) bool {
 	if kind == "" {
 		kind = opencodeAdapterKind
@@ -900,20 +668,11 @@ func (l *Lifecycle) ServeDependent(kind string) bool {
 	return kind == opencodeAdapterKind
 }
 
-// EnsureForRun creates the runtime container for a workflow run
-// (idempotent) with its opencode serve warmed at create time. Executions
-// dispatch into this container for the whole lifetime of the run.
-//
-// Always-container: a container is created for EVERY run regardless of
-// adapter kind — native sessions exec inside it (same mount/toolchain
-// path as opencode). The needsServe split lives in EnsureServing (the
-// readiness PROBE), not here. A nil client (headless `orchicon serve`
-// without Docker) is a LOUD error — the reconciler calls this only in
-// runtime mode; local mode is the explicit opt-out and never reaches here,
-// so silent host-exec degrade is impossible.
+// EnsureForRun creates the runtime container for a workflow run (idempotent) with its opencode
+// serve warmed at create time.
 func (l *Lifecycle) EnsureForRun(ctx context.Context, run db.WorkflowRunRow) error {
 	if l.client == nil {
-		return fmt.Errorf("runtime daemon not reachable — project is in runtime mode and no container can be created: switch the project to local execution_mode or start the runtime daemon")
+		return fmt.Errorf("runtime daemon not reachable — this run resolves to runtime mode and no container can be created: switch the project (or this work item's execution_mode) to local, or start the runtime daemon")
 	}
 	if !l.client.Ready(ctx) {
 		return fmt.Errorf("runtime daemon not reachable")
@@ -929,24 +688,7 @@ func (l *Lifecycle) EnsureForRun(ctx context.Context, run db.WorkflowRunRow) err
 	return nil
 }
 
-// EnsureServing is the workflow run-start gate. It ensures the run's
-// runtime container exists with its opencode serve brought up, then blocks
-// until the serve is proven USABLE (L1: /global/health AND a real
-// session-create round-trip), bounded by ORCHICON_RUNTIME_SERVE_READY_TIMEOUT
-// (default 120s). When the container's image boots the sandbox plane
-// (dev images; CreateResponse.PlaneURL set), the gate ALSO requires the
-// plane's /healthz to answer on the container bridge IP — a half-initialized
-// plane can't pass, so no execution dispatches against a run whose sandbox
-// environment isn't ready. The WorkflowReconciler must NOT dispatch any
-// execution for the run until this returns nil — a cold-starting serve that
-// would previously fail the first dispatch's 30s window now gets the full
-// window at run start, off the dispatch hot path.
-//
-// Serve-less runs (needsServe=false — native-only, no opencode demand)
-// return nil immediately: EnsureForRun already created their container,
-// there is no serve to prove, and the reconciler must not gate or fail
-// them on one. Legacy no-serve rows (RuntimeImage == runtimeNoServeImage,
-// armed before always-container — no container exists) also return nil.
+// EnsureServing is the workflow run-start gate.
 func (l *Lifecycle) EnsureServing(ctx context.Context, run db.WorkflowRunRow, needsServe bool) error {
 	if run.RuntimeImage == runtimeNoServeImage {
 		return nil
@@ -984,6 +726,11 @@ func (l *Lifecycle) EnsureServing(ctx context.Context, run db.WorkflowRunRow, ne
 			}
 			lastErr = fmt.Errorf("serve %s not usable yet (plane %s: %v)", base, resp.PlaneURL, planeOK)
 		} else if cerr != nil {
+			// A MISSING CONTAINER BINARY IS NOT GOING TO APPEAR.
+			if errors.Is(cerr, ErrNoContainerBinary) {
+				return fmt.Errorf("runtime container cannot be created for run %s and retrying cannot fix "+
+					"it: %w", run.ID, cerr)
+			}
 			lastErr = cerr
 		} else {
 			lastErr = fmt.Errorf("serve not yet published")
@@ -999,11 +746,8 @@ func (l *Lifecycle) EnsureServing(ctx context.Context, run db.WorkflowRunRow, ne
 	}
 }
 
-// planeHealthyAt reports whether the run's sandbox plane answers /healthz
-// at the given base URL (the container bridge IP :8080). The handler only
-// mounts once the plane has finished constructing, so a half-initialized
-// plane can't pass. No auth: the plane lives inside an isolated runtime
-// container reachable only at the bridge IP.
+// planeHealthyAt reports whether the run's sandbox plane answers /healthz at the given base URL
+// (the container bridge IP :8080).
 func planeHealthyAt(baseURL string) bool {
 	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Get(baseURL + "/healthz")
@@ -1025,11 +769,8 @@ func serveReadyTimeout() time.Duration {
 	return 120 * time.Second
 }
 
-// contextMounts converts a context_files JSONB payload into Docker
-// bind-mount specs, skipping paths that lie under projectDir (already
-// covered by the project-dir mount) and any path that isn't absolute.
-// A context path may be a file or a directory; individual file
-// bind-mounts are legal in Docker, so the same shape works for both.
+// contextMounts converts a context_files JSONB payload into Docker bind-mount specs, skipping paths
+// that lie under projectDir (already covered by the project-dir mount) and any path that isn't.
 func contextMounts(ctxFiles []byte, projectDir string) []MountSpec {
 	var out []MountSpec
 	if len(ctxFiles) == 0 {
@@ -1057,6 +798,15 @@ func contextMounts(ctxFiles []byte, projectDir string) []MountSpec {
 	return out
 }
 
+// ImagePresent reports whether a runtime image exists LOCALLY on the daemon's host — the presence
+// probe the reconciler's dispatch fail-fast uses.
+func (l *Lifecycle) ImagePresent(ctx context.Context, ref string) (bool, error) {
+	if l == nil || l.client == nil {
+		return false, errors.New("runtime lifecycle: no runtime daemon configured")
+	}
+	return l.client.ImagePresent(ctx, ref)
+}
+
 // ReapForRun removes the runtime container for a run that reached a
 // terminal state (completed/failed/aborted). Idempotent.
 func (l *Lifecycle) ReapForRun(ctx context.Context, runID string) error {
@@ -1072,15 +822,14 @@ func (l *Lifecycle) ReapForRun(ctx context.Context, runID string) error {
 	l.planeCredMu.Lock()
 	delete(l.planeCredCache, runID)
 	l.planeCredMu.Unlock()
-	l.log.Info("workflow runtime reaped", "run", runID)
+	// DEBUG, NOT INFO. Reaping is routine bookkeeping that happens once per run — the SWEEP logs the
+	// operator-facing line, once, when it actually deals with a terminal run. Logging here as well doubled the
+	// volume for no extra information, and on the path where nothing was left to kill it was simply untrue.
+	l.log.Debug("workflow runtime reaped", "run", runID)
 	return nil
 }
 
-// Adopt ensures a runtime lease exists for every active (pending/running)
-// workflow run at boot. The warm pool owns container lifecycle cleanup
-// (idle-reap + a wholesale reset at daemon start), so adopt only ensures
-// leases for active runs after a plane/daemon restart — the run-start gate
-// and the adapter's self-heal cover the rest.
+// Adopt ensures a runtime lease exists for every active (pending/running) workflow run at boot.
 func (l *Lifecycle) Adopt(ctx context.Context) error {
 	if l.client == nil {
 		return nil
@@ -1098,6 +847,23 @@ func (l *Lifecycle) Adopt(ctx context.Context) error {
 		if run.RuntimeImage == runtimeNoServeImage {
 			continue // legacy no-serve row: no container to adopt
 		}
+		// A LOCAL-MODE RUN HAS NO CONTAINER TO ADOPT, and asking for one both fails and MISLEADS.
+		//
+		// REPORTED from Windows, exactly:
+		//
+		//	msg="adopt: ensure runtime failed" error="...runtime daemon: mount source outside allowed
+		//	    roots: C:\projects\weatherapp ..."
+		//
+		// for a run whose project was execution_mode=local. The run had not asked for a container; this
+		// boot-time sweep asked on its behalf, could not mount the project, and logged a warning that
+		// reads as a container misconfiguration rather than "a local run was wrongly treated as
+		// containerised". It sent an operator hunting a mount-policy problem that did not exist.
+		//
+		// THE RECONCILER ALREADY GETS THIS RIGHT (shouldEnsureRunFor / runLocalMode), and adopt is the
+		// path that disagreed with it. One rule, both callers.
+		if l.runIsLocal(ctx, run) {
+			continue
+		}
 		if err := l.EnsureForRun(ctx, run); err != nil {
 			l.log.Warn("adopt: ensure runtime failed", "run", run.ID, "error", err)
 		}
@@ -1105,25 +871,52 @@ func (l *Lifecycle) Adopt(ctx context.Context) error {
 	return nil
 }
 
-// agentModelForServe renders a worker's model ref in the `provider/model` form an
-// opencode CONFIG takes, or "" when it cannot be rendered.
-//
-// THE ADAPTER SEGMENT MUST BE STRIPPED. A worker's model_ref is adapter/provider/model
-// (`opencode/opencode/muse-spark-1.3-contributor-free`) — the control plane's grammar,
-// not opencode's. Every other consumer converts it with adapter.SplitForServe before it
-// crosses that boundary, and a config's model field is exactly such a boundary. Passing
-// the raw ref put a THREE-segment string in an agent's `model`, which opencode cannot
-// parse as provider/model.
-//
-// EMPTY IS THE HONEST ANSWER for a ref that does not split, and it is safe: a session's
-// model is set separately on the SESSION (the prompt body on v1, session.switchModel on
-// v2), so an agent with no model inherits the session's — which is what a worker wants.
-// Omission is also what the v2 schema prefers: its model reference is pattern-validated,
-// so a malformed string is worse than an absent field.
+// runIsLocal reports whether a run's EFFECTIVE execution mode is local, so the boot-time adopt
+// sweep does not containerise a run that explicitly opted out.
+func (l *Lifecycle) runIsLocal(ctx context.Context, run db.WorkflowRunRow) bool {
+	if l.pool == nil {
+		return false
+	}
+	ttx, err := l.pool.BeginTenantTx(ctx, devTenantID)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = ttx.Rollback(ctx) }()
+
+	var itemMode *string
+	if strings.TrimSpace(run.WorkItemID) != "" {
+		if w, werr := db.GetWorkItem(ctx, ttx.Tx, devTenantID, run.WorkItemID); werr == nil {
+			itemMode = w.ExecutionMode
+		}
+	}
+	return db.EffectiveExecutionMode(ctx, ttx.Tx, devTenantID, itemMode, run.ProjectID) == db.ExecutionModeLocal
+}
+
+// agentModelForServe renders a worker's model ref in the `provider/model` form an opencode CONFIG
+// takes, or "" when it cannot be rendered. THE ADAPTER SEGMENT MUST BE STRIPPED.
 func agentModelForServe(modelRef string) string {
 	provider, model, ok := adapter.SplitForServe(modelRef)
 	if !ok || provider == "" || model == "" {
 		return ""
 	}
 	return provider + "/" + model
+}
+
+// dedupeMounts removes duplicate bind specs, keeping the FIRST occurrence of each (source,
+// destination) pair.
+func dedupeMounts(in []MountSpec) []MountSpec {
+	if len(in) < 2 {
+		return in
+	}
+	seen := make(map[MountSpec]struct{}, len(in))
+	out := in[:0]
+	for _, m := range in {
+		key := MountSpec{Source: m.Source, Dest: m.Dest}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, m)
+	}
+	return out
 }

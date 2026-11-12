@@ -129,13 +129,9 @@ const DEFAULT_PERMISSIONS = `{
   "filesystem": []
 }`;
 
-const DEFAULT_BUDGETS = `{
-  "tokens": 500000,
-  "cost_usd": 0.5,
-  "wall_clock_seconds": 3600,
-  "tool_call_count": 100,
-  "compact_max_turns": 12
-}`;
+// No ceilings: an unset field is no limit, so a new worker starts unlimited and
+// the operator opts in per field (or inherits the tenant defaults).
+const DEFAULT_BUDGETS = `{}`;
 
 function NewWorkerPage() {
   const navigate = useNavigate();
@@ -170,7 +166,7 @@ function NewWorkerPage() {
   });
 
   const modelRef = watch("modelRef");
-  // Worker-level runtime_ref is retired (ADR-0003 single source of truth):
+  // Worker-level runtime_ref is retired ( single source of truth):
   // the model_ref's adapter segment alone governs dispatch.
   const permissions = watch("permissions");
   const gatedTools = watch("gatedTools");

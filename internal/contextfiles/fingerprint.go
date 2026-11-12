@@ -9,31 +9,13 @@ import (
 	"sort"
 )
 
-// FileStamp is the per-path change fingerprint recorded for a context
-// path (ADR-0009 D5). For a file it is a SHA-256 over the path + size +
-// first/last 1 KiB of content (cheap and change-sensitive without hashing
-// multi-MB files wholesale); for a directory it is a SHA-256 over the
-// bounded entry listing + each file's size+mtime. A changed stamp means
-// the rendered prefix changes (costing a cache miss) — the diff is logged
-// so the operator can correlate a miss with an edit.
+// FileStamp is the per-path change fingerprint recorded for a context path.
 type FileStamp struct {
 	Path  string
 	Stamp string
 }
 
-// Fingerprint computes a stable content fingerprint for a resolved
-// context-file set. paths is the raw context_files list (files AND
-// directories); each is resolved exactly as the renderer resolves it, so
-// the fingerprint and the rendered bytes always agree. Returns:
-//
-//   - fp: the hex SHA-256 fingerprint of the whole set (empty-set → a
-//     fixed "none" sentinel so an unset context is still byte-stable).
-//   - stamps: the per-path stamps (sorted), for diffing against a prior
-//     run's stamps by the cache layer.
-//
-// A path that cannot be read stamps as "missing:<path>" — identical to
-// what the renderer notes — so an unreadable file is stable across runs
-// too (no spurious churn on the same error).
+// Fingerprint computes a stable content fingerprint for a resolved context-file set.
 func Fingerprint(paths []string, projectDir string) (fp string, stamps []FileStamp, err error) {
 	if len(paths) == 0 {
 		return "none", nil, nil
@@ -104,11 +86,8 @@ func stampPath(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)[:8]), nil
 }
 
-// DiffStamps returns human-readable lines describing how a set of
-// stamps changed from a previous run (added / removed / changed paths),
-// used in the prefix-change log so a cache miss can be attributed to a
-// specific context-file edit. An empty result means the sets are
-// identical.
+// DiffStamps returns human-readable lines describing how a set of stamps changed from a previous
+// run (added / removed / changed paths).
 func DiffStamps(prev, cur []FileStamp) []string {
 	if prev == nil {
 		prev = []FileStamp{}
@@ -141,9 +120,8 @@ func DiffStamps(prev, cur []FileStamp) []string {
 	return changed
 }
 
-// StampsFromJSON rebuilds a stamp list from its JSON encoding (the shape
-// the scheduler stores alongside a cached section). Malformed or empty
-// input yields nil.
+// StampsFromJSON rebuilds a stamp list from its JSON encoding (the shape the scheduler stores
+// alongside a cached section).
 func StampsFromJSON(data []byte) []FileStamp {
 	if len(data) == 0 {
 		return nil

@@ -9,24 +9,11 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// ExecutionReaper finds executions that are stuck `running` with no live
-// process — orphaned by a control-plane restart (in-flight session runs die
-// with the plane) — and fails them so recovery re-dispatches the step.
-//
-// Without this, a `container.sh rebuild` mid-workflow left the workflow
-// run, step, and execution `running` forever (the stall monitor and
-// wall-clock deadline were in-process state, lost on restart, and no
-// reconciler re-checks running executions).
-//
-// The reaper is deliberately cautious: the liveness probe can false-negative
-// on a transient blip, so an execution is only reaped after it has been
-// "not alive" for `consecutive_failures` consecutive probes AND is older
-// than the `grace` window (fresh-dispatch race). Both are tenant settings
-// (execution_reap_grace_seconds / _consecutive_failures) with env-var
-// fallbacks (ORCHICON_REAP_GRACE_SECONDS / ORCHICON_REAP_CONSECUTIVE_FAILURES)
-// for dev overrides.
+// ExecutionReaper finds executions that are stuck `running` with no live process — orphaned by a
+// control-plane restart (in-flight session runs die with the plane).
 type ExecutionReaper struct {
 	pool   *db.Pool
 	active func(exec db.ExecutionRow) bool // liveness probe (adapter.IsExecutionActive via LivenessReporter type-assert)
@@ -39,19 +26,13 @@ type ExecutionReaper struct {
 	notAlive   map[string]int
 }
 
-// NewExecutionReaper creates the liveness reaper. The active probe
-// receives the full execution row so it can resolve the execution's
-// adapter kind (worker model_ref → Dispatcher) and type-assert the
-// LivenessReporter capability — a bridge without the capability reports
-// inactive (fail-closed: the reaper treats it as lost, matching the
-// pre-dispatcher behavior for kinds that never supported liveness).
+// NewExecutionReaper creates the liveness reaper.
 func NewExecutionReaper(pool *db.Pool, active func(exec db.ExecutionRow) bool, fail func(context.Context, string, string), log *slog.Logger) *ExecutionReaper {
 	return &ExecutionReaper{pool: pool, active: active, fail: fail, log: log, notAlive: make(map[string]int)}
 }
 
-// reapTuning resolves the grace window and consecutive-failure threshold
-// from tenant settings, with env-var overrides (dev) and built-in defaults
-// (60s / 3) as the fallback chain.
+// reapTuning resolves the grace window and consecutive-failure threshold from tenant settings, with
+// env-var overrides (dev) and built-in defaults (60s / 3) as the fallback chain.
 func (r *ExecutionReaper) reapTuning(ctx context.Context) (grace time.Duration, threshold int) {
 	grace = 60 * time.Second
 	threshold = 3
@@ -80,9 +61,54 @@ func (r *ExecutionReaper) reapTuning(ctx context.Context) (grace time.Duration, 
 	return grace, threshold
 }
 
+// recordedNotWellStatus reports whether an execution's row ALREADY records a not-well liveness
+// verdict.
+func recordedNotWellStatus(status string) bool {
+	switch status {
+	case domain.ExecutionUnhealthy, domain.ExecutionStalled, domain.ExecutionTerminating:
+		return true
+	}
+	return false
+}
+
+// It is set ONLY on the manual path, and it is not a weakening: the streak exists so an unattended
+// reaper never acts on a single transient probe BEFORE any verdict is recorded.
+func (r *ExecutionReaper) reapOne(ctx context.Context, exec db.ExecutionRow, grace time.Duration, threshold int, allowRecordedVerdict bool) bool {
+	// AN UN-AGEABLE ROW IS NOT REAPED.
+	if exec.StartedAt == nil {
+		r.forget(exec.ID)
+		r.log.Debug("execution liveness: no start time — cannot age, not reaping", "execution", exec.ID)
+		return false
+	}
+	if time.Since(*exec.StartedAt) < grace {
+		// Too fresh to have an authoritative liveness answer — the exec may not be registered with the
+		// runtime yet.
+		r.forget(exec.ID)
+		return false
+	}
+	// Every execution (workflow-run or standalone) is a session run tracked in the adapter's in-plane
+	// registry.
+	if r.active != nil && r.active(exec) {
+		r.forget(exec.ID)
+		return false
+	}
+	// Sustained not-alive, unless the verdict is already on the row and this
+	// is the attended path.
+	if !(allowRecordedVerdict && recordedNotWellStatus(exec.Status)) {
+		count := r.bump(exec.ID)
+		if count < threshold {
+			r.log.Debug("execution liveness: not-alive below reap threshold",
+				"execution", exec.ID, "run", exec.WorkflowRunID, "count", count, "threshold", threshold)
+			return false
+		}
+	}
+	r.log.Warn("reaping lost execution", "execution", exec.ID, "run", exec.WorkflowRunID, "task", exec.TaskID, "status", exec.Status)
+	r.fail(ctx, exec.ID, "execution lost: control plane restarted or runtime container gone")
+	r.forget(exec.ID)
+	return true
+}
+
 // Reap scans running executions and fails the ones whose process is gone.
-// An execution is only reaped once it is older than the grace window AND
-// has returned "not alive" for `threshold` consecutive probes.
 func (r *ExecutionReaper) Reap(ctx context.Context) error {
 	grace, threshold := r.reapTuning(ctx)
 	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
@@ -97,39 +123,32 @@ func (r *ExecutionReaper) Reap(ctx context.Context) error {
 	seen := make(map[string]bool, len(execs))
 	for _, exec := range execs {
 		seen[exec.ID] = true
-		if exec.StartedAt != nil && time.Since(*exec.StartedAt) < grace {
-			// Too fresh to have an authoritative liveness answer — the
-			// exec may not be registered with the runtime yet. Reset any
-			// streak so a transient miss inside the grace window never
-			// counts toward reaping.
-			r.forget(exec.ID)
-			continue
-		}
-		dead := false
-		// Every execution (workflow-run or standalone) is a session run
-		// tracked in the adapter's in-plane registry. If the adapter is no
-		// longer tracking it, the session runner is gone (plane restart /
-		// runtime container lost) — dead.
-		dead = r.active == nil || !r.active(exec)
-		if !dead {
-			r.forget(exec.ID)
-			continue
-		}
-		// Sustained not-alive. Only reap once the consecutive streak
-		// crosses the threshold.
-		count := r.bump(exec.ID)
-		if count < threshold {
-			r.log.Debug("execution liveness: not-alive below reap threshold",
-				"execution", exec.ID, "run", exec.WorkflowRunID, "count", count, "threshold", threshold)
-			continue
-		}
-		r.log.Warn("reaping lost execution", "execution", exec.ID, "run", exec.WorkflowRunID, "task", exec.TaskID, "status", exec.Status, "consecutive_not_alive", count)
-		r.fail(ctx, exec.ID, "execution lost: control plane restarted or runtime container gone")
-		r.forget(exec.ID)
+		r.reapOne(ctx, exec, grace, threshold, false)
 	}
 	// Drop counters for executions that are no longer running.
 	r.prune(seen)
 	return nil
+}
+
+// ReapProject runs the reap rule NOW, scoped to one project, and reports what it released.
+func (r *ExecutionReaper) ReapProject(ctx context.Context, projectID string) (released []string, examined int, err error) {
+	grace, threshold := r.reapTuning(ctx)
+	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		return nil, 0, err
+	}
+	execs, err := db.ListRunningExecutionsForProject(ctx, ttx.Tx, "tnt_dev", projectID)
+	_ = ttx.Rollback(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	examined = len(execs)
+	for _, exec := range execs {
+		if r.reapOne(ctx, exec, grace, threshold, true) {
+			released = append(released, exec.ID)
+		}
+	}
+	return released, examined, nil
 }
 
 func (r *ExecutionReaper) bump(execID string) int {

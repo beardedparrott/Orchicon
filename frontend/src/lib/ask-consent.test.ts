@@ -395,3 +395,40 @@ describe("askCardPlan", () => {
     expect(askCardPlan(false, true, false)).toEqual({ render: false });
   });
 });
+
+describe("applyAskChunk re-arms a card the server still lists as open", () => {
+  // THE GUI HALF OF THE TUI'S rearmSettledConsent. A card settled even once used to be settled
+  // FOREVER: the discovery poll kept delivering the ask, applyAskChunk kept refusing it, and the
+  // operator could not answer in the GUI at all ("permission cards don't work").
+  const ask = (askId: string): PermissionAsk =>
+    ({ askId, conversationId: "c1", tool: "write", summary: "write a file" }) as PermissionAsk;
+
+  it("re-arms a SETTLED card instead of refusing it", () => {
+    const settled: AskItem[] = [
+      { key: "a1", ask: ask("a1"), outcome: { kind: "deny" }, resolvedAt: 5, at: 1 },
+    ];
+    const out = applyAskChunk(settled, ask("a1"));
+    expect(out).toHaveLength(1);
+    expect(out[0].outcome).toBeNull();
+    expect(out[0].resolvedAt).toBeNull();
+    // The arrival stamp is KEPT, so the card does not jump to the end of the transcript.
+    expect(out[0].at).toBe(1);
+  });
+
+  it("returns the SAME reference for an already-pending card, so the poll stays silent", () => {
+    const pending: AskItem[] = [
+      { key: "a1", ask: ask("a1"), outcome: null, resolvedAt: null, at: 1 },
+    ];
+    expect(applyAskChunk(pending, ask("a1"))).toBe(pending);
+  });
+
+  it("still adds a card it has never seen", () => {
+    expect(applyAskChunk([], ask("a2"))).toHaveLength(1);
+  });
+
+  it("never creates a duplicate for one ask", () => {
+    let items: AskItem[] = [];
+    for (let i = 0; i < 3; i++) items = applyAskChunk(items, ask("a1"));
+    expect(items).toHaveLength(1);
+  });
+});

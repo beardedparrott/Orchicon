@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   dropSupersededMirror,
   hasLiveTextItems,
+  mirrorRowProseLifted,
   mirrorRowSuperseded,
+  orderInjectedBeforeReply,
 } from "./ask-live-merge";
 
 // The double-draw this module exists to prevent was MEASURED, not assumed: against the shared
@@ -88,5 +90,161 @@ describe("hasLiveTextItems", () => {
     expect(hasLiveTextItems([{ kind: "reasoning" }])).toBe(true);
     expect(hasLiveTextItems([{ kind: "error" }, { kind: "user" }])).toBe(false);
     expect(hasLiveTextItems([])).toBe(false);
+  });
+});
+
+// THE REPLY WAS DRAWN TWICE. A row carrying tool calls is never superseded (it is the only thing
+// that can render the ask_user card), so it stayed in the transcript WITH its prose — and the live
+// stream was already drawing that same prose. The operator: "while the model is responding/thinking,
+// it prints the message twice." Measured in their screenshot: 802 chars above 958, the second a
+// strict superset of the first, because the row is a 250ms-old snapshot of the live text.
+describe("mirrorRowProseLifted", () => {
+  const IN_FLIGHT = "msg-acked";
+
+  it("lifts the in-flight row's prose while the live stream draws it", () => {
+    expect(mirrorRowProseLifted({ id: IN_FLIGHT }, IN_FLIGHT, true, true)).toBe(true);
+  });
+
+  it("lifts it EVEN WHEN the row carries tool calls — that is the case the bug was in", () => {
+    // mirrorRowSuperseded deliberately keeps such a row (for its card); its prose is still a duplicate.
+    const withTools = { id: IN_FLIGHT, toolCalls: [{ id: "call-1" }] };
+    expect(mirrorRowSuperseded(withTools, IN_FLIGHT, true, true)).toBe(false);
+    expect(mirrorRowProseLifted(withTools, IN_FLIGHT, true, true)).toBe(true);
+  });
+
+  it("keeps the row's prose whenever the row is the only copy on screen", () => {
+    // No live stream (reload / second tab / turn elsewhere) or no live text yet: the row IS the view,
+    // so lifting its prose would blank the turn.
+    expect(mirrorRowProseLifted({ id: IN_FLIGHT }, IN_FLIGHT, false, true)).toBe(false);
+    expect(mirrorRowProseLifted({ id: IN_FLIGHT }, IN_FLIGHT, true, false)).toBe(false);
+  });
+
+  it("never touches another message's prose", () => {
+    expect(mirrorRowProseLifted({ id: "msg-older" }, IN_FLIGHT, true, true)).toBe(false);
+    expect(mirrorRowProseLifted({ id: IN_FLIGHT }, null, true, true)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// orderInjectedBeforeReply — an interjected message must render BEFORE the reply it prompted.
+//
+// The operator: "the interjection on opencode adapter prints the user message AFTER the response. It
+// should print before and stay before the response from the model that comes after."
+//
+// created_at cannot express this: the assistant row is created when its turn STARTS, the interjection is
+// persisted mid-turn, so created_at puts the operator's message after the answer it prompted.
+// ---------------------------------------------------------------------------------------------
+describe("orderInjectedBeforeReply", () => {
+  const user = (id: string, injected = false) => ({ id, role: "user", injected });
+  const assistant = (id: string) => ({ id, role: "assistant", injected: false });
+
+  it("moves an interjection in front of the reply it was injected into", () => {
+    // Arrival/created_at order: user asked, assistant started, operator interjected mid-turn.
+    const rows = [user("u1"), assistant("a1"), user("u2", true)];
+    expect(orderInjectedBeforeReply(rows).map((m) => m.id)).toEqual(["u1", "u2", "a1"]);
+  });
+
+  it("keeps it before that reply for the rest of the conversation", () => {
+    const rows = [user("u1"), assistant("a1"), user("u2", true), user("u3"), assistant("a2")];
+    expect(orderInjectedBeforeReply(rows).map((m) => m.id)).toEqual([
+      "u1",
+      "u2",
+      "a1",
+      "u3",
+      "a2",
+    ]);
+  });
+
+  it("leaves a normal conversation untouched", () => {
+    const rows = [user("u1"), assistant("a1"), user("u2"), assistant("a2")];
+    expect(orderInjectedBeforeReply(rows).map((m) => m.id)).toEqual(["u1", "a1", "u2", "a2"]);
+  });
+
+  it("preserves the order of several interjections in one turn", () => {
+    const rows = [user("u1"), assistant("a1"), user("u2", true), user("u3", true)];
+    expect(orderInjectedBeforeReply(rows).map((m) => m.id)).toEqual(["u1", "u2", "u3", "a1"]);
+  });
+
+  it("leaves an interjection with no preceding turn where it is", () => {
+    // No assistant row before it means no turn to precede (nothing has started), so moving it would
+    // reorder it past unrelated history for no reason.
+    const rows = [user("u1"), user("u2", true)];
+    expect(orderInjectedBeforeReply(rows).map((m) => m.id)).toEqual(["u1", "u2"]);
+  });
+
+  it("does not treat a normal user message as injected", () => {
+    const rows = [user("u1"), assistant("a1"), user("u2")];
+    expect(orderInjectedBeforeReply(rows).map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
+  });
+});
+
+// --- anchorLiveReply: the streaming reply belongs BELOW the interjection that prompted it -------------
+//
+// REPORTED: "if I send an interjecting message and then refresh the browser, my last message sits at the
+// bottom and your text streams above it instead of below it". The live text was drawn as a trailing section
+// after the whole transcript, so a durable interjection took its place in the timeline and the streaming
+// reply was appended underneath it.
+import { anchorLiveReply } from "./ask-live-merge";
+
+type Row = { id: string };
+
+describe("anchorLiveReply", () => {
+  it("puts the live reply immediately after the row it belongs to", () => {
+    // The reported shape: the interjection is durable, and a reply is still streaming into the turn it joined.
+    const durable: Row[] = [
+      { id: "assistant-turn" },
+      { id: "user-interjection" },
+      { id: "earlier-history" },
+    ];
+    const live: Row[] = [{ id: "live-1" }, { id: "live-2" }];
+
+    const { messages, inserted } = anchorLiveReply(durable, live, "assistant-turn");
+
+    expect(inserted).toBe(true);
+    expect(messages.map((m) => m.id)).toEqual([
+      "assistant-turn",
+      "live-1",
+      "live-2",
+      "user-interjection",
+      "earlier-history",
+    ]);
+  });
+
+  it("keeps the interjection ABOVE nothing — it stays where the durable order put it", () => {
+    const { messages } = anchorLiveReply(
+      [{ id: "a" }, { id: "user" }],
+      [{ id: "live-1" }],
+      "a",
+    );
+    const userAt = messages.findIndex((m) => m.id === "user");
+    const liveAt = messages.findIndex((m) => m.id === "live-1");
+    expect(liveAt).toBeLessThan(userAt);
+  });
+
+  it("does not move anything when there is no anchor (no live turn)", () => {
+    const durable: Row[] = [{ id: "a" }, { id: "b" }];
+    const { messages, inserted } = anchorLiveReply(durable, [], "a");
+    expect(inserted).toBe(false);
+    expect(messages).toEqual(durable);
+  });
+
+  it("does not move anything when the anchor row has not arrived yet", () => {
+    const durable: Row[] = [{ id: "a" }, { id: "b" }];
+    const { messages, inserted } = anchorLiveReply(durable, [{ id: "live-1" }], "not-there");
+    expect(inserted).toBe(false);
+    expect(messages).toEqual(durable);
+  });
+
+  it("appends at the end when the anchor is the last row", () => {
+    const { messages } = anchorLiveReply([{ id: "a" }, { id: "turn" }], [{ id: "live-1" }], "turn");
+    expect(messages.map((m) => m.id)).toEqual(["a", "turn", "live-1"]);
+  });
+
+  it("is pure: the input arrays are untouched", () => {
+    const durable: Row[] = [{ id: "a" }, { id: "b" }];
+    const live: Row[] = [{ id: "live-1" }];
+    anchorLiveReply(durable, live, "a");
+    expect(durable.map((m) => m.id)).toEqual(["a", "b"]);
+    expect(live.map((m) => m.id)).toEqual(["live-1"]);
   });
 });

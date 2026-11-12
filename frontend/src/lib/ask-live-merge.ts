@@ -88,3 +88,142 @@ export function dropSupersededMirror<T extends MirrorRowMessage>(
 export function hasLiveTextItems(items: readonly { kind: string }[]): boolean {
   return items.some((i) => i.kind === "text" || i.kind === "reasoning");
 }
+
+/**
+ * mirrorRowProseLifted answers whether the in-flight row's PROSE should be skipped because the live
+ * stream is already drawing it — while the row ITSELF stays in the transcript.
+ *
+ * THE BUG THIS FIXES. A row carrying tool calls is never superseded (see mirrorRowSuperseded): the
+ * live stream carries text and reasoning only, so the row is the only thing that can render its card.
+ * But keeping the row kept its TEXT too, and the live copy is drawing that same text — so the reply
+ * appeared TWICE, one stale copy above the one still being written. The operator: "while the model is
+ * responding/thinking, it prints the message twice."
+ *
+ * The two copies are visibly the same string at different lengths: the server upserts the turn's
+ * collected text into the row every 250ms (upsertPartialMessage), so the row is a snapshot of the live
+ * stream a fraction of a second behind it. Measured in the operator's screenshot: 802 chars above 958,
+ * the second one a strict superset of the first.
+ *
+ * SO THE ROW IS KEPT AND ITS PROSE IS LIFTED, which is the same shape already used for the clarifying
+ * card (ask-orchicon.tsx: liftedCard): keep the container the operator needs, drop the duplicate of
+ * what is drawn elsewhere. Only prose and reasoning are lifted — never the tool calls, and never the
+ * card, which are the row's whole reason for surviving.
+ *
+ * The row is not dropped, because dropping it would take the card with it: liftedCard is read from
+ * durableMessages, so a dropped row means no lifted card either.
+ */
+export function mirrorRowProseLifted(
+  message: MirrorRowMessage,
+  pendingReplyId: string | null,
+  isStreaming: boolean,
+  hasLiveItems: boolean,
+): boolean {
+  if (!isStreaming) return false; // no live stream here: the row's prose IS the view
+  if (!pendingReplyId) return false; // no acked id: cannot tell which row is the mirror
+  if (message.id !== pendingReplyId) return false; // only the in-flight row is mirrored live
+  return hasLiveItems; // live text exists, so this row's copy of it is the duplicate
+}
+
+/**
+ * orderInjectedBeforeReply moves each INTERJECTED user message in front of the assistant turn it joined.
+ *
+ * THE BUG THIS FIXES. Interjecting on a running turn printed the operator's message BELOW the model's
+ * reply to it. The operator: "the interjection on opencode adapter prints the user message AFTER the
+ * response. It should print before and stay before the response from the model that comes after."
+ *
+ * WHY created_at CANNOT DO IT. An assistant row is created when its turn STARTS (the acked id, later
+ * updated as it streams), so its created_at is the START of the turn. An interjection is persisted
+ * MID-TURN, so its created_at is strictly later. Every surface that orders by created_at therefore put the
+ * operator's message after the reply it prompted, and no server-side reordering could fix it: the row that
+ * would have to move is the assistant's, which is still being written.
+ *
+ * THE RULE. An injected message is joined to the MOST RECENT assistant message BEFORE it — that is the
+ * turn it was injected into, and it is identifiable precisely because the assistant row exists from the
+ * turn's start. The injected message is emitted immediately before that row, so the operator's words read
+ * as a chat message and the model's reply follows them. It keeps that position permanently, which is what
+ * "stay before the response from the model that comes after" asks for, and it survives a reload because
+ * the flag is persisted on the row.
+ *
+ * An injected message with NO preceding assistant row has no turn to precede; it is left where it is
+ * rather than moved past unrelated history.
+ *
+ * Pure and stable: every other message keeps its relative order.
+ */
+export function orderInjectedBeforeReply<
+  T extends { role: string; injected?: boolean },
+>(messages: readonly T[]): T[] {
+  if (!messages.some((m) => m.injected && m.role === "user")) return [...messages];
+
+  // Index of the assistant row each injected message joins: the last assistant BEFORE it.
+  const moves = new Map<number, number[]>(); // assistantIndex -> injected indices, in order
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (!(m.injected && m.role === "user")) continue;
+    let joined = -1;
+    for (let j = i - 1; j >= 0; j--) {
+      if (messages[j].role === "assistant") {
+        joined = j;
+        break;
+      }
+    }
+    if (joined < 0) continue; // no turn to precede: leave it in place
+    const list = moves.get(joined) ?? [];
+    list.push(i);
+    moves.set(joined, list);
+  }
+  if (moves.size === 0) return [...messages];
+
+  const out: T[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const lifted = moves.get(i);
+    if (lifted) {
+      // The interjections that joined THIS turn go first, then the turn's own reply.
+      for (const idx of lifted) out.push(messages[idx]);
+    }
+    // Skip the injected rows here: every one that could move has already been emitted above.
+    if (!lifted && messages[i].injected && messages[i].role === "user") {
+      const moved = [...moves.values()].some((idxs) => idxs.includes(i));
+      if (moved) continue;
+    }
+    out.push(messages[i]);
+  }
+  return out;
+}
+
+/**
+ * anchorLiveReply places the in-flight reply's live text at its ANCHOR — the assistant row it belongs to —
+ * instead of after every message.
+ *
+ * THE BUG. Live text was drawn as a separate section AFTER the whole interleaved transcript. While you are at
+ * the bottom of a streaming turn that looks right, because the live text is the newest thing on screen. After
+ * a REFRESH mid-turn it is wrong: the interjection you just sent is durable with a real created_at, so it
+ * takes its place in the transcript, and the streaming reply is painted BELOW it as an appendix — the
+ * operator's own message sits above text that is answering a question asked after it. Reported as "my last
+ * message sits at the bottom and your text streams above it instead of below it".
+ *
+ * WHY AN ANCHOR AND NOT A TIMESTAMP. The stream carries no timestamp at all (TextChunk is `{content}`), so the
+ * client stamps `Date.now()` on arrival. That clock and the server's created_at are different clocks, and the
+ * comparison is a race decided by which was written first. Ordering does not need a clock here: the mirror row
+ * is created when the turn STARTS, so it is identifiable by id, and the live text always belongs immediately
+ * after it. Identity gives a deterministic answer where a timestamp gives a coin toss.
+ *
+ * ORDER: live text is emitted immediately after the anchor row and before everything that follows it. A reply
+ * to an interjection is the newest thing in the turn, so it comes after the interjection that prompted it —
+ * which is exactly what a refresh used to break.
+ *
+ * An anchor id that is absent (no live turn, or the row has not arrived yet) leaves the list untouched and
+ * returns `inserted: false`, so the caller can fall back to the trailing section rather than lose the text.
+ */
+export function anchorLiveReply<T extends { id: string }>(
+  messages: readonly T[],
+  live: readonly T[],
+  anchorId: string | null | undefined,
+): { messages: T[]; inserted: boolean } {
+  if (!anchorId || live.length === 0) return { messages: [...messages], inserted: false };
+  const at = messages.findIndex((m) => m.id === anchorId);
+  if (at < 0) return { messages: [...messages], inserted: false };
+  return {
+    messages: [...messages.slice(0, at + 1), ...live, ...messages.slice(at + 1)],
+    inserted: true,
+  };
+}

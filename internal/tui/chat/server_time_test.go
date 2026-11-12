@@ -1,17 +1,6 @@
 package chat
 
 // server_time_test.go — THE ACTIVITY VERB ROTATION GETS ITS CLOCK FROM THE HEARTBEAT.
-//
-// The operator: "rotating through a series of words that means 'orchicon is thinking' ... that changes every
-// few seconds." The word itself is a pure function of server time (verbs.go), and the ONLY place that clock
-// reaches this client is Heartbeat.server_time_unix_ms — a field the server already emits (internal/askorchicon
-// /chat.go sets it so "the client [can] measure socket age/skew") that the TUI used to throw away, keeping
-// only the reconnect flag it also clears.
-//
-// These tests pin the WIRING, which is where a rotation silently dies: a heartbeat that records nothing
-// leaves the line on the fallback word forever, and a local clock used as the SOURCE (rather than as a delta)
-// would let two clients with skewed clocks disagree — the one thing the server-stamp design exists to
-// prevent.
 
 import (
 	"testing"
@@ -68,9 +57,7 @@ func TestHeartbeatRecordsTheServerClock(t *testing.T) {
 	}
 }
 
-// A ZERO STAMP IS NOT A STAMP. A server that emitted a zero (or a Heartbeat with no field set, which the
-// generated getter returns as 0) must not plant an anchor at the epoch; the fallback word is the correct
-// answer until a real stamp arrives.
+// A ZERO STAMP IS NOT A STAMP.
 func TestZeroHeartbeatStampIsIgnored(t *testing.T) {
 	c := NewController(nil)
 	c.state["c1"] = &convState{streaming: true}

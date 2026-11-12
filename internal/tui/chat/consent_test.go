@@ -7,9 +7,8 @@ import (
 	"testing"
 )
 
-// TestConsentCardNamesTheToolAndTheTarget pins the first acceptance criterion:
-// a pending write/execution renders in the transcript naming the tool AND the
-// target path or command.
+// TestConsentCardNamesTheToolAndTheTarget pins the first acceptance criterion: a pending
+// write/execution renders in the transcript naming the tool AND the target path or command.
 func TestConsentCardNamesTheToolAndTheTarget(t *testing.T) {
 	ask := PermissionAsk{
 		ID: "a1", Kind: AskTool, Tool: "write",
@@ -33,9 +32,8 @@ func TestConsentWordingMatchesTheGUILiterals(t *testing.T) {
 	if ConsentDeny != "Deny" {
 		t.Fatalf("Deny drifted: %q", ConsentDeny)
 	}
-	// The session row is a TEMPLATE rather than a fixed string, because it NAMES the
-	// directory the grant would cover. Its two pieces and its no-directory fallback
-	// are therefore the literals the GUI has to carry.
+	// The session row is a TEMPLATE rather than a fixed string, because it NAMES the directory the
+	// grant would cover.
 	if ConsentSessionPrefix != "Never ask again in " {
 		t.Fatalf("the session row's prefix drifted: %q", ConsentSessionPrefix)
 	}
@@ -47,20 +45,14 @@ func TestConsentWordingMatchesTheGUILiterals(t *testing.T) {
 	}
 }
 
-// TestConsentWordingMatchesTheGUISource is the CROSS-CLIENT half: the GUI's own
-// source must carry the same three strings. The labels land with the sibling
-// policy task, so until then this test keeps its name and points at it rather
-// than being silently dropped — the repo has precedent for reading frontend/src
-// from a Go test (internal/fileedit/diff_test.go reads its TS fixtures).
+// TestConsentWordingMatchesTheGUISource is the CROSS-CLIENT half: the GUI's own source must carry
+// the same three strings.
 func TestConsentWordingMatchesTheGUISource(t *testing.T) {
 	root := repoRoot(t)
 	dirs := []string{
 		filepath.Join(root, "frontend", "src", "routes"),
 		filepath.Join(root, "frontend", "src", "components"),
-		// THE COPY'S OWN HOME IS SCANNED TOO. The session row's label is built by a
-		// helper in frontend/src/lib, so a scan that stopped at routes/ and components/
-		// would let the one string this test exists to police live somewhere it could not
-		// see — a parity check that passes because it is looking at the wrong tree.
+		// THE COPY'S OWN HOME IS SCANNED TOO.
 		filepath.Join(root, "frontend", "src", "lib"),
 	}
 	var found strings.Builder
@@ -219,9 +211,8 @@ func TestConsentDeniedByIsStatedOnTheCard(t *testing.T) {
 	}
 }
 
-// TestConsentEscOnAQuestionIsRecordedWithoutADanglingSeparator pins the record a
-// dismissed question leaves: esc picks nothing, so the row must say THAT rather
-// than rendering "answer · " with nothing after the separator.
+// TestConsentEscOnAQuestionIsRecordedWithoutADanglingSeparator pins the record a dismissed question
+// leaves: esc picks nothing.
 func TestConsentEscOnAQuestionIsRecordedWithoutADanglingSeparator(t *testing.T) {
 	it := ConsentItem(PermissionAsk{ID: "q9", Kind: AskQuestion, Question: "Which file?", Options: []string{"a.go"}, AllowOther: true}, 1000)
 	it.Consent.Decision = DecisionAnswer
@@ -241,11 +232,8 @@ func TestConsentEscOnAQuestionIsRecordedWithoutADanglingSeparator(t *testing.T) 
 	}
 }
 
-// TestConsentSessionLabelNamesTheDirectory pins the operator's own request: the
-// session row must SAY what it covers. They were asked for the same directory over
-// and over and had no idea how far a session grant reached — "I thought we were going
-// to add an option that says something along the lines of 'Never ask again for this
-// directory for this session'".
+// TestConsentSessionLabelNamesTheDirectory pins the operator's own request: the session row must
+// SAY what it covers.
 func TestConsentSessionLabelNamesTheDirectory(t *testing.T) {
 	a := PermissionAsk{ID: "a1", Kind: AskTool, Tool: "write", Target: "/p/sub/x.go", Directory: "/p/sub"}
 	want := "Never ask again in /p/sub this session"
@@ -261,22 +249,16 @@ func TestConsentSessionLabelNamesTheDirectory(t *testing.T) {
 	if labels[1] != want {
 		t.Fatalf("the session row = %q, want %q", labels[1], want)
 	}
-	// An ask whose detail never resolved names the scope by its lifetime rather than
-	// borrowing Target — Target is a FILE for a write ask, and naming a file as the
-	// directory a grant covers would misstate the scope.
+	// An ask whose detail never resolved names the scope by its lifetime rather than borrowing Target —
+	// Target is a FILE for a write ask.
 	noDir := PermissionAsk{ID: "a2", Kind: AskTool, Tool: "write", Target: "/p/sub/x.go"}
 	if got := noDir.SessionLabel(); got != ConsentSessionNoDir {
 		t.Fatalf("a directory-less ask = %q, want %q", got, ConsentSessionNoDir)
 	}
 }
 
-// TestDecisionForRowIsIndexedNotStringMatched is the regression guard for the
-// landmine the scope-naming label would otherwise have armed.
-//
-// The click path used to resolve a row by matching its LABEL against a constant, with
-// "allow once" as the fall-through. The session row's label is now built from the
-// directory, so it can equal no constant — and every click on it would have become
-// "allow once": approving ONE call where the operator asked for the session, silently.
+// TestDecisionForRowIsIndexedNotStringMatched is the regression guard for the landmine the
+// scope-naming label would otherwise have armed.
 func TestDecisionForRowIsIndexedNotStringMatched(t *testing.T) {
 	a := PermissionAsk{ID: "a1", Kind: AskTool, Tool: "write", Target: "/p/x.go", Directory: "/p"}
 	for i, want := range []ConsentDecision{DecisionAllowOnce, DecisionAllowSession, DecisionDeny} {

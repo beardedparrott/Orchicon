@@ -11,10 +11,7 @@ import (
 
 // The strip's pure pieces: the ratio and the context funnel.
 
-// cacheHitRatio is the share of INPUT tokens served from the cache. The
-// denominator is cache_read + uncached input — the two halves the usage
-// recorder stores separately — and an input-free session reports NOTHING rather
-// than a misleading "0%".
+// cacheHitRatio is the share of INPUT tokens served from the cache.
 func TestCacheHitRatio(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -127,12 +124,6 @@ func TestApplyMetricsInstallsAndDropsStale(t *testing.T) {
 }
 
 // An UNRESOLVED window (0) must not be cached as though it were resolved.
-//
-// 0 is ambiguous — it means "no context hint" AND "the lookup has not succeeded
-// yet" (most often because the read raced the provider list). Caching it as
-// resolved froze the missing limit onto the strip for the life of the
-// conversation: the composer rendered a bare "ctx 24K" with no window and never
-// retried. Leaving it uncached means the next refresh tries again.
 func TestUnresolvedContextWindowIsNotCached(t *testing.T) {
 	m := newTestApp()
 	m.chatConvID = "conv-1"

@@ -1,11 +1,5 @@
-// Package execution implements the ExecutionService Connect handler
-// (docs/07_API_Specification.md §3.8). It manages WorkerExecutions:
-// live streaming telemetry, manual control (pause/resume/cancel/
-// checkpoint), and Tier 2 per-tool-call approval (docs/05 §7.1).
-//
-// The scheduler (TaskReconciler) is the only component permitted to
-// create WorkerExecutions (docs/03 §8 invariant #1); this service
-// reads and controls existing executions.
+// Package execution implements the ExecutionService Connect handler (docs/07_API_Specification.md
+// §3.8).
 package execution
 
 import (
@@ -22,6 +16,7 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/chatlimits"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -50,37 +45,28 @@ type Service struct {
 	subscriber eventbus.Subscriber
 	apiv1connect.UnimplementedExecutionServiceHandler
 
-	// sendExecMessage routes a mid-run human message into a live session
-	// execution (Stage 3). Injected by the server (dispatcher-based — any
-	// registered MessageInjector adapter kind, e.g. the native orchicon and
-	// opencode bridges, via SendExecutionMessage); nil when the session
-	// transport is unavailable → SendExecutionMessage returns Unimplemented.
+	// sendExecMessage routes a mid-run human message into a live session execution (Stage 3).
 	sendExecMessage func(ctx context.Context, execID, message string) error
 
-	// continueSession runs a one-shot follow-up question against a worker's
-	// session in place (no new execution/work item), recording the reply
-	// into the durable transcript. Injected by the server.
+	// continueSession runs a one-shot follow-up question against a worker's session in place (no new
+	// execution/work item), recording the reply into the durable transcript.
 	continueSession func(ctx context.Context, opts scheduler.ContinueSessionOpts) (string, error)
 
-	// abortSession stops a live execution's opencode session when a human
-	// cancels it (wired to the opencode adapter's AbortExecution). Without it
-	// the execution row is marked terminated but the model keeps generating —
-	// the "terminated but still active" runaway that burns tokens. Nil = the
-	// cancel only marks the row terminal (no live session transport).
+	// abortSession stops a live execution's opencode session when a human cancels it (wired to the
+	// opencode adapter's AbortExecution).
 	abortSession func(ctx context.Context, execID, reason string) error
 
-	// In-memory approval registry: pending Tier 2 per-tool-call approval
-	// requests (docs/05 §7.1). Keyed by request_id. When the adapter
-	// emits an ApprovalRequest, the TaskReconciler registers it here;
-	// when a human resolves it via ApproveToolCall, the result is
-	// signaled back to the adapter's Execute stream.
+	// releaseStuck runs the execution-liveness reaper NOW, scoped to one project (the server's
+	// *scheduler.ExecutionReaper.ReapProject).
+	releaseStuck func(ctx context.Context, projectID string) ([]string, int, error)
+
+	// In-memory approval registry: pending Tier 2 per-tool-call approval requests (docs/05 §7.1).
 	mu        sync.Mutex
 	approvals map[string]*pendingApproval
 }
 
-// SetSendExecutionMessage injects the live-session message router (the
-// dispatcher-resolved MessageInjector — any registered adapter kind, not
-// just opencode). Nil = the RPC is unavailable.
+// SetSendExecutionMessage injects the live-session message router (the dispatcher-resolved
+// MessageInjector — any registered adapter kind, not just opencode).
 func (s *Service) SetSendExecutionMessage(fn func(ctx context.Context, execID, message string) error) {
 	s.sendExecMessage = fn
 }
@@ -91,11 +77,15 @@ func (s *Service) SetContinueSession(fn func(ctx context.Context, opts scheduler
 	s.continueSession = fn
 }
 
-// SetAbortExecution injects the live-session abort hook (the opencode
-// adapter's AbortExecution). Nil = cancelling an execution only marks it
-// terminated (the live session, if any, keeps running).
+// SetAbortExecution injects the live-session abort hook (the opencode adapter's AbortExecution).
 func (s *Service) SetAbortExecution(fn func(ctx context.Context, execID, reason string) error) {
 	s.abortSession = fn
+}
+
+// SetReleaseStuckExecutions injects the project-scoped liveness reaper sweep backed by
+// scheduler.ExecutionReaper.ReapProject.
+func (s *Service) SetReleaseStuckExecutions(fn func(ctx context.Context, projectID string) ([]string, int, error)) {
+	s.releaseStuck = fn
 }
 
 // pendingApproval tracks a Tier 2 approval request awaiting a human
@@ -188,12 +178,6 @@ func (s *Service) ListExecutions(ctx context.Context, req *connect.Request[apiv1
 	}
 	resp := &apiv1.ListExecutionsResponse{}
 	// ENRICH THE PAGE IN ONE QUERY, NOT ONE PER ROW.
-	//
-	// Usage totals are summed for the WHOLE page in a single grouped query (db.SumUsageForExecutions).
-	// It used to be one query per row, which was survivable at one page of 100 and is not now that
-	// every list fetches itself whole: the executions list pulls ~3k rows, so the per-row form issued
-	// ~5,900 queries for a single screen load. The operator: "The initial execution page load is
-	// pretty slow."
 	ids := make([]string, 0, len(execs))
 	for _, e := range execs {
 		ids = append(ids, e.ID)
@@ -210,11 +194,8 @@ func (s *Service) ListExecutions(ctx context.Context, req *connect.Request[apiv1
 			p.TokenUsage = t.Tokens
 			p.CostUsd = t.CostUSD
 		}
-		// enrichSystemPrompt is DELIBERATELY NOT CALLED HERE. It loads the step run's `_prompt` —
-		// tens of kilobytes of JSON — and it is a DETAIL-ONLY field: the TUI never reads it, and no
-		// list consumer in the GUI does either (only the execution detail route and the worker detail
-		// use it, and both call GetExecution). Paying for it once per row, on a list nobody reads it
-		// from, was most of the load time. GetExecution still enriches it, so the detail is unchanged.
+		// It loads the step run's `_prompt` — tens of kilobytes of JSON — and it is a DETAIL-ONLY field:
+		// the TUI never reads it.
 		resp.Executions = append(resp.Executions, p)
 	}
 	if len(execs) > 0 {
@@ -252,6 +233,10 @@ func (s *Service) DeleteExecution(ctx context.Context, req *connect.Request[apiv
 		if err != nil {
 			return nil, mapDBError(err)
 		}
+	}
+	// DE-LINK THE SPEND LEDGER BEFORE THE ROW GOES, and this was a real defect rather than tidiness.
+	if _, err := db.ClearUsageExecutionIDs(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("de-link usage records: %w", err))
 	}
 	if err := db.DeleteExecution(ctx, ttx.Tx, tenantID, req.Msg.Id); err != nil {
 		return nil, mapDBError(err)
@@ -304,6 +289,11 @@ func (s *Service) BatchDeleteExecutions(ctx context.Context, req *connect.Reques
 				continue
 			}
 		}
+		// Same de-link as the single path, in the same transaction, for the same reason — the batch path
+		// orphaned usage rows identically.
+		if _, err := db.ClearUsageExecutionIDs(ctx, ttx.Tx, tenantID, id); err != nil {
+			continue
+		}
 		if err := db.DeleteExecution(ctx, ttx.Tx, tenantID, id); err != nil {
 			continue
 		}
@@ -320,10 +310,8 @@ func (s *Service) BatchDeleteExecutions(ctx context.Context, req *connect.Reques
 	return connect.NewResponse(&apiv1.BatchDeleteExecutionsResponse{DeletedCount: deleted}), nil
 }
 
-// StreamExecutionEvents is the server-stream RPC that fans out execution
-// events from NATS to connected clients (docs/07 §4, docs/10 §4). It
-// subscribes to the orchicon.events.execution.* subject filter and
-// streams each event as a StreamExecutionEventsResponse.
+// StreamExecutionEvents is the server-stream RPC that fans out execution events from NATS to
+// connected clients (docs/07 §4, docs/10 §4).
 func (s *Service) StreamExecutionEvents(ctx context.Context, req *connect.Request[apiv1.StreamExecutionEventsRequest], stream *connect.ServerStream[apiv1.StreamExecutionEventsResponse]) error {
 	if s.subscriber == nil {
 		return connect.NewError(connect.CodeUnavailable, errors.New("event streaming is unavailable (NATS subscriber not connected)"))
@@ -495,9 +483,7 @@ func (s *Service) CancelExecution(ctx context.Context, req *connect.Request[apiv
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 	}
-	// The execution row is now terminal. Stop the live opencode session so the
-	// model stops generating — otherwise the "terminated but still active"
-	// runaway keeps burning tokens until it natural-finishes.
+	// The execution row is now terminal.
 	if s.abortSession != nil {
 		if cerr := s.abortSession(ctx, updated.ID, reason); cerr != nil {
 			s.log.Warn("cancel execution: abort live session failed", "execution", updated.ID, "reason", reason, "error", cerr)
@@ -507,9 +493,54 @@ func (s *Service) CancelExecution(ctx context.Context, req *connect.Request[apiv
 	return connect.NewResponse(&apiv1.CancelExecutionResponse{Execution: rowToProto(updated)}), nil
 }
 
-// CheckpointNow requests an immediate checkpoint from the adapter
-// (docs/04 §5). In v0.1 CLI mode, this is a coarse transcript summary
-// + working-tree ref (docs/04 §6.1).
+// ReleaseStuckExecutions runs the execution-liveness reaper now, scoped to one project, and reports
+// what it released.
+func (s *Service) ReleaseStuckExecutions(ctx context.Context, req *connect.Request[apiv1.ReleaseStuckExecutionsRequest]) (*connect.Response[apiv1.ReleaseStuckExecutionsResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.ProjectId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id must not be empty"))
+	}
+	reason, err := validateTextField(req.Msg.Reason, maxReasonLen, "reason")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if s.releaseStuck == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented,
+			errors.New("execution liveness reaping is not available on this plane"))
+	}
+
+	released, examined, err := s.releaseStuck(ctx, req.Msg.ProjectId)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("release stuck executions: %w", err))
+	}
+
+	// Audit the act, not just the outcome, and do it AFTER the sweep so the record names what was
+	// actually released.
+	if len(released) > 0 {
+		ttx, terr := s.pool.BeginTenantTx(ctx, tenantID)
+		if terr != nil {
+			return nil, connect.NewError(connect.CodeInternal, terr)
+		}
+		defer ttx.Rollback(ctx)
+		if aerr := recordAudit(ctx, ttx.Tx, tenantID, "execution.stuck_released", "project", req.Msg.ProjectId,
+			nil, nil); aerr != nil {
+			s.log.Warn("release stuck executions: audit failed", "project", req.Msg.ProjectId, "error", aerr)
+		} else if cerr := ttx.Commit(ctx); cerr != nil {
+			s.log.Warn("release stuck executions: audit commit failed", "project", req.Msg.ProjectId, "error", cerr)
+		}
+	}
+	s.log.Warn("released stuck executions", "project", req.Msg.ProjectId, "examined", examined,
+		"released", len(released), "reason", reason)
+	return connect.NewResponse(&apiv1.ReleaseStuckExecutionsResponse{
+		ReleasedIds: released,
+		Examined:    int32(examined),
+	}), nil
+}
+
+// CheckpointNow requests an immediate checkpoint from the adapter (docs/04 §5).
 func (s *Service) CheckpointNow(ctx context.Context, req *connect.Request[apiv1.CheckpointNowRequest]) (*connect.Response[apiv1.CheckpointNowResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -527,9 +558,7 @@ func (s *Service) CheckpointNow(ctx context.Context, req *connect.Request[apiv1.
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	// In v0.1, the checkpoint is a coarse reference. The actual blob
-	// is produced by the adapter and stored via the blob store. Here
-	// we record the checkpoint event; the adapter writes the blob.
+	// In v0.1, the checkpoint is a coarse reference.
 	checkpointRef := fmt.Sprintf("checkpoint-%s-%d", current.ID, time.Now().Unix())
 	updated, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, req.Msg.Id, current.Version, db.UpdateExecutionFields{
 		CheckpointRef: &checkpointRef,
@@ -554,9 +583,7 @@ func (s *Service) CheckpointNow(ctx context.Context, req *connect.Request[apiv1.
 	}), nil
 }
 
-// ApproveToolCall resolves a Tier 2 per-tool-call approval request
-// (docs/05 §7.1, docs/07 §3.8). The decision is signaled to the
-// adapter's Execute stream via the pending approval registry.
+// ApproveToolCall resolves a Tier 2 per-tool-call approval request (docs/05 §7.1, docs/07 §3.8).
 func (s *Service) ApproveToolCall(ctx context.Context, req *connect.Request[apiv1.ApproveToolCallRequest]) (*connect.Response[apiv1.ApproveToolCallResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -593,9 +620,8 @@ func (s *Service) ApproveToolCall(ctx context.Context, req *connect.Request[apiv
 	return connect.NewResponse(&apiv1.ApproveToolCallResponse{Approval: pending.request}), nil
 }
 
-// recordApprovalAudit writes the tool-call approval/rejection row in a
-// short tenant tx (ApproveToolCall resolves an in-memory registry entry
-// and has no state mutation to share a tx with).
+// recordApprovalAudit writes the tool-call approval/rejection row in a short tenant tx
+// (ApproveToolCall resolves an in-memory registry entry and has no state mutation to share a tx.
 func (s *Service) recordApprovalAudit(ctx context.Context, tenantID string, approved bool, executionID string) {
 	action := "execution.tool_call_rejected"
 	if approved {
@@ -636,12 +662,8 @@ func (s *Service) ListPendingApprovals(ctx context.Context, req *connect.Request
 	return connect.NewResponse(resp), nil
 }
 
-// CreateFollowUpExecution appends the user's follow-up message to the
-// execution's conversation and creates a child work item so the worker
-// processes the follow-up. The assistant's response is written back to
-// the original execution's conversation by the TaskReconciler
-// (appendToParentConversation) when the child execution completes, so
-// the full thread appears on the original execution detail page.
+// CreateFollowUpExecution appends the user's follow-up message to the execution's conversation and
+// creates a child work item so the worker processes the follow-up.
 func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Request[apiv1.CreateFollowUpExecutionRequest]) (*connect.Response[apiv1.CreateFollowUpExecutionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -655,8 +677,8 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 	if q == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message must not be empty"))
 	}
-	if utf8.RuneCountInString(q) > 10000 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
+	if err := chatlimits.TooLong(q); err != nil {
+		return nil, err
 	}
 
 	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
@@ -713,22 +735,14 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("marshal prompt context: %w", err))
 	}
 
-	// 3. Create a child work item with _parent_execution_id so the
-	// TaskReconciler's transitionWorkItemOnResult writes the assistant
-	// response back to the original execution's conversation.
+	// 3.
 	resultsJSON, _ := json.Marshal(map[string]string{
 		"_parent_execution_id": msg.ExecutionId,
 		"_follow_up_message":   q,
 		"_is_follow_up":        "true",
 	})
-	// Workflow-first: standalone dispatch is retired, so the follow-up item
-	// must be workflow-BOUND to be dispatchable — the TaskReconciler's only
-	// remaining non-step-run dispatch path is "a workflow-bound item", and it
-	// FAILS a workflow-less ready item loudly. Without this binding the
-	// follow-up would be created and then immediately failed (nothing to run
-	// inside). Inherit the parent item's binding; without one there is nothing
-	// to execute the follow-up, so reject loudly here instead of creating a
-	// doomed item.
+	// Workflow-first: standalone dispatch is retired, so the follow-up item must be workflow-BOUND to
+	// be dispatchable — the TaskReconciler's only remaining non-step-run dispatch path is "a.
 	followUpWorkflowID := task.WorkflowID
 	if followUpWorkflowID == nil || *followUpWorkflowID == "" {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
@@ -796,10 +810,7 @@ func (s *Service) CreateFollowUpExecution(ctx context.Context, req *connect.Requ
 	return connect.NewResponse(&apiv1.CreateFollowUpExecutionResponse{}), nil
 }
 
-// RegisterApproval creates a pending Tier 2 approval request in the
-// in-memory registry. Called by the TaskReconciler/adapter bridge when
-// the adapter emits an ApprovalRequest on its Execute stream. Returns a
-// channel that receives the human's decision.
+// RegisterApproval creates a pending Tier 2 approval request in the in-memory registry.
 func (s *Service) RegisterApproval(req *apiv1.ApprovalRequest) <-chan approvalDecision {
 	pending := &pendingApproval{
 		request:    req,
@@ -814,9 +825,8 @@ func (s *Service) RegisterApproval(req *apiv1.ApprovalRequest) <-chan approvalDe
 
 // --- helpers ---------------------------------------------------------------
 
-// recordAudit writes an actor-based audit row in the caller's tx,
-// resolving the actor from the request context. Must be called in the
-// same transaction as the mutation so the row commits atomically.
+// recordAudit writes an actor-based audit row in the caller's tx, resolving the actor from the
+// request context.
 func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
 	if e.TenantID == "" {
@@ -1078,13 +1088,8 @@ func rowToProto(e db.ExecutionRow) *apiv1.WorkerExecution {
 	return p
 }
 
-// enrichUsageTotals fills the execution's tokenUsage/costUsd from the
-// usage-records sum (the AI Gateway dual-write source of truth). The
-// worker_executions row columns are write-never (always zero), so without
-// this every API consumer — including Ask Orchicon agents — reports 0
-// tokens for executions the detail card correctly shows spend for.
-// Best-effort: a query failure leaves the row values rather than failing
-// the whole read.
+// enrichUsageTotals fills the execution's tokenUsage/costUsd from the usage-records sum (the AI
+// Gateway dual-write source of truth).
 func (s *Service) enrichUsageTotals(ctx context.Context, tx pgx.Tx, tenantID string, p *apiv1.WorkerExecution, executionID string) {
 	if p == nil || executionID == "" {
 		return
@@ -1098,14 +1103,8 @@ func (s *Service) enrichUsageTotals(ctx context.Context, tx pgx.Tx, tenantID str
 	p.CostUsd = cost
 }
 
-// enrichSystemPrompt resolves the ACTUAL system prompt the execution was
-// dispatched with — the workflow step run's `_prompt` (per-step composite).
-// The execution detail page must show this, not the shared work item's
-// prompt_context: the ticket is a shared input reference that carries the
-// FIRST step's composite forever (it is never mutated per-step), so reading
-// it showed every worker as the first step's role (field incident: every
-// execution in a run displayed "You are a DevOps Engineer"). The step run
-// linked via worker_execution_id holds the real per-step prompt.
+// enrichSystemPrompt resolves the ACTUAL system prompt the execution was dispatched with — the
+// workflow step run's `_prompt` (per-step composite).
 func (s *Service) enrichSystemPrompt(ctx context.Context, tx pgx.Tx, tenantID string, p *apiv1.WorkerExecution, e db.ExecutionRow) {
 	if p == nil || e.WorkflowRunID == "" || e.WorkflowStepID == "" {
 		return
@@ -1125,12 +1124,7 @@ func (s *Service) enrichSystemPrompt(ctx context.Context, tx pgx.Tx, tenantID st
 	p.SystemPrompt = meta.Prompt
 }
 
-// SendExecutionMessage injects a mid-run human message into a LIVE worker
-// session. It creates nothing — no execution, no work item, no workflow
-// state — the message joins the session's turn queue and the reply flows
-// back through StreamExecutionEvents. Fails (FailedPrecondition) when the
-// execution has no live session (finished, legacy one-shot path, or the
-// plane restarted).
+// SendExecutionMessage injects a mid-run human message into a LIVE worker session.
 func (s *Service) SendExecutionMessage(ctx context.Context, req *connect.Request[apiv1.SendExecutionMessageRequest]) (*connect.Response[apiv1.SendExecutionMessageResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1143,8 +1137,8 @@ func (s *Service) SendExecutionMessage(ctx context.Context, req *connect.Request
 	if strings.TrimSpace(msg.Message) == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message must not be empty"))
 	}
-	if utf8.RuneCountInString(msg.Message) > 10000 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
+	if err := chatlimits.TooLong(msg.Message); err != nil {
+		return nil, err
 	}
 	if s.sendExecMessage == nil {
 		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session transport not available"))
@@ -1156,16 +1150,7 @@ func (s *Service) SendExecutionMessage(ctx context.Context, req *connect.Request
 	return connect.NewResponse(&apiv1.SendExecutionMessageResponse{}), nil
 }
 
-// recordMessageAudit writes a session-message audit row in a short
-// tenant tx.
-//
-// DELIBERATE DEVIATION from the transactional-outbox AC (audit row in the
-// same tx as the mutation): SendExecutionMessage / ContinueExecutionSession
-// push the message into the adapter's LIVE session (or its durable
-// transcript via the adapter's best-effort session store) — there is no
-// control-plane DB mutation in the handler to share a tx with. The audit
-// row is therefore written best-effort in its own short tx after the
-// session write succeeds. A record failure is logged, not fatal.
+// recordMessageAudit writes a session-message audit row in a short tenant tx.
 func (s *Service) recordMessageAudit(ctx context.Context, tenantID, executionID, action string) {
 	if tenantID == "" {
 		return
@@ -1185,11 +1170,8 @@ func (s *Service) recordMessageAudit(ctx context.Context, tenantID, executionID,
 	}
 }
 
-// GetExecutionSession returns the durable session transcript for an
-// execution — the full conversation (goal, nudges, human messages,
-// assistant text, tool calls, reasoning, steps, errors) that survives the
-// serve/container lifecycle. It is the source for the post-completion
-// session view and the seed for one-shot follow-ups.
+// GetExecutionSession returns the durable session transcript for an execution — the full
+// conversation (goal, nudges, human messages, assistant text, tool calls, reasoning, steps.
 func (s *Service) GetExecutionSession(ctx context.Context, req *connect.Request[apiv1.GetExecutionSessionRequest]) (*connect.Response[apiv1.GetExecutionSessionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1223,16 +1205,8 @@ func (s *Service) GetExecutionSession(ctx context.Context, req *connect.Request[
 	return connect.NewResponse(resp), nil
 }
 
-// ContinueExecutionSession runs a one-shot follow-up question against a
-// worker's session IN PLACE — no new execution, work item, or workflow
-// state is created. The question joins the session (re-attaching when the
-// serve is still reachable, else a fresh host-serve session seeded with
-// the durable transcript). The RPC returns immediately (the follow-up is
-// fire-and-forget): the question is recorded into the transcript up front,
-// and the reply is collected asynchronously and appended once it lands —
-// so a long model turn can never block (or time out) the browser
-// connection. The returned reply field is empty; clients should watch the
-// session transcript for the assistant's text.
+// ContinueExecutionSession runs a one-shot follow-up question against a worker's session IN PLACE —
+// no new execution, work item, or workflow state is created.
 func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Request[apiv1.ContinueExecutionSessionRequest]) (*connect.Response[apiv1.ContinueExecutionSessionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1245,8 +1219,8 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 	if strings.TrimSpace(msg.Message) == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message must not be empty"))
 	}
-	if utf8.RuneCountInString(msg.Message) > 10000 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("message too long (max 10000 characters)"))
+	if err := chatlimits.TooLong(msg.Message); err != nil {
+		return nil, err
 	}
 	if s.continueSession == nil {
 		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("session transport not available"))
@@ -1278,13 +1252,8 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 
-	// Resolve the run's runtime image so the follow-up system prompt can open
-	// with the same stable prompt prefix as the original composite prompt —
-	// the shared head carries the worker identity, safety rules, and
-	// efficiency directives that the stored AGENTS.md no longer duplicates
-	// (it is stripped at seed time; the prefix is the single source). A
-	// follow-up's per-message system prompt is applied to the turn, so
-	// without this every follow-up turn would lose the safety block.
+	// Resolve the run's runtime image so the follow-up system prompt can open with the same stable
+	// prompt prefix as the original composite prompt — the shared head carries the worker identity.
 	runtimeImage := ""
 	executionMode := db.ExecutionModeRuntime
 	var wiTitle, wiContext string
@@ -1294,9 +1263,9 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 		wiTitle = wi.Title
 		wiContext = wi.Description
 		wiContextWindow = wi.ContextWindow
-		if proj, perr := db.GetProject(ctx, ttx.Tx, tenantID, wi.ProjectID); perr == nil && proj.ExecutionMode == db.ExecutionModeLocal {
-			executionMode = db.ExecutionModeLocal
-		}
+		// The follow-up turn's honest prompt must agree with where the ORIGINAL run executed, so it uses
+		// the SAME resolver as dispatch (item override -> project -> tenant default) — never a second.
+		executionMode = db.EffectiveExecutionMode(ctx, ttx.Tx, tenantID, wi.ExecutionMode, wi.ProjectID)
 	}
 	context, sessionID, serveURL, servePassword, recordedAdapterKind := renderSessionContext(parts)
 	systemPrompt := composeFollowUpPrompt(version, runtimeImage, executionMode)
@@ -1345,24 +1314,7 @@ func (s *Service) ContinueExecutionSession(ctx context.Context, req *connect.Req
 	return connect.NewResponse(&apiv1.ContinueExecutionSessionResponse{Reply: reply}), nil
 }
 
-// GetExecutionTodos returns the worker's most recent todo list for an
-// execution.
-//
-// TWO SOURCES, IN PRIORITY ORDER, because neither alone is sufficient:
-//
-//  1. THE RUN-STATE SNAPSHOT (<projectDir>/.orchicon/<runID>/todos.json) is
-//     AUTHORITATIVE. It is written by the `todowrite` TOOL itself, so it is the
-//     only record that survives opencode 2.x routing every MCP call through
-//     `execute` — on that surface the transcript names the tool `execute` and a
-//     parser matching the tool NAME finds nothing at all, even though the tool
-//     ran and reported success. It also outlives the worktree, so a finished
-//     run's plan stays readable.
-//  2. THE TRANSCRIPT PARSE is the fallback, for a run whose tool never wrote the
-//     snapshot: pre-existing runs, a sidecar not told its run id, or the
-//     DB-backed path where opencode's OWN native todowrite (v1) was used.
-//
-// Falls through to an empty list when neither has anything — a run that never
-// wrote todos is not an error.
+// GetExecutionTodos returns the worker's most recent todo list for an execution.
 func (s *Service) GetExecutionTodos(ctx context.Context, req *connect.Request[apiv1.GetExecutionTodosRequest]) (*connect.Response[apiv1.GetExecutionTodosResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -1396,10 +1348,6 @@ func (s *Service) GetExecutionTodos(ctx context.Context, req *connect.Request[ap
 }
 
 // runStateTodos resolves an execution to its run's run-state todo snapshot.
-// ok=false covers every "no snapshot here" case — an unknown execution, a run
-// with no project, a project with no dir on this host, or simply a run whose
-// tool never wrote one. None of those is an error; each means the caller falls
-// back to the transcript.
 func runStateTodos(ctx context.Context, tx pgx.Tx, tenantID, execID string) ([]worktree.TodoItem, bool) {
 	exec, err := db.GetExecution(ctx, tx, tenantID, execID)
 	if err != nil || exec.WorkflowRunID == "" {
@@ -1416,17 +1364,8 @@ func runStateTodos(ctx context.Context, tx pgx.Tx, tenantID, execID string) ([]w
 	return worktree.ReadRunTodoSnapshot(worktree.RunStateDir(proj.ProjectDir, run.ID))
 }
 
-// composeFollowUpPrompt rebuilds the worker's composed system prompt for a
-// follow-up session (mirrors the TaskReconciler's composeSystemPrompt).
-//
-// It opens with the shared stable prompt prefix (db.StablePromptPrefix) —
-// worker identity + safety rules + efficiency directives + runtime
-// environment — the same byte-identical head every composite prompt starts
-// with. The stored AGENTS.md no longer duplicates the safety block (seedAgentsMD
-// strips it at persistence), so without the prefix a follow-up turn's
-// per-message system prompt would silently drop the HARD-limit safety rules.
-// runtimeImage is the run's runtime container image tag ("" falls back to the
-// default in the prefix text).
+// composeFollowUpPrompt rebuilds the worker's composed system prompt for a follow-up session
+// (mirrors the TaskReconciler's composeSystemPrompt).
 func composeFollowUpPrompt(v db.WorkerVersionRow, runtimeImage, executionMode string) string {
 	var sb strings.Builder
 	sb.WriteString(db.StablePromptPrefix(runtimeImage, executionMode))
@@ -1454,16 +1393,8 @@ func composeFollowUpPrompt(v db.WorkerVersionRow, runtimeImage, executionMode st
 	return sb.String()
 }
 
-// renderSessionContext renders the durable transcript into a readable
-// chronological context for a follow-up seed and extracts the original
-// session identity (session_info part): the recorded session id, serve URL,
-// and — for transcripts written since the adapter identity landed — the
-// adapter kind the session belonged to. The adapter kind is what lets the
-// follow-up resolve the transport from the execution's adapter instead of
-// from a per-execution serve; it is empty for legacy rows. The context is
-// bounded so a long session doesn't blow the model window. The per-part
-// rendering is shared with the scheduler's recovery seed via the leaf
-// transcript package.
+// renderSessionContext renders the durable transcript into a readable chronological context for a
+// follow-up seed and extracts the original session identity (session_info part).
 func renderSessionContext(parts []db.SessionPart) (context, sessionID, serveURL, servePassword, adapterKind string) {
 	for _, p := range parts {
 		var pl struct {

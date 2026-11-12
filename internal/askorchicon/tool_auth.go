@@ -10,12 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// toolListAuditEvents returns a page of audit_events rows for the
-// tenant — the actor-based "who did what" trail (distinct from the
-// policy-decision view). Read-only; tenant-scoped via the transaction +
-// RLS, mirroring AuthService.ListAuditEvents. start_time/end_time are
-// RFC3339 strings (inclusive lower / exclusive upper bound on
-// occurred_at; empty = unbounded).
+// toolListAuditEvents returns a page of audit_events rows for the tenant — the actor-based "who did
+// what" trail (distinct from the policy-decision view).
 func toolListAuditEvents(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		Action     string `json:"action"`
@@ -94,10 +90,8 @@ func toolListAuditEvents(ctx context.Context, pool *db.Pool, args json.RawMessag
 			OccurredAt:      r.OccurredAt.UTC().Format("2006-01-02T15:04:05Z"),
 		})
 	}
-	// The audit list IS the detail (no get_audit_event exists), so the note
-	// points at the list's own filters; rows are capped and pageable via the
-	// returned next_page_token (the DB does composite (occurred_at, id)
-	// keyset pagination).
+	// The audit list IS the detail (no get_audit_event exists), so the note points at the list's own
+	// filters; rows are capped and pageable via the returned next_page_token (the DB does composite.
 	env := newCompactList(out, "")
 	if len(rows) > listCap {
 		env.setNextPage(rows[listCap-1].ID)
@@ -105,9 +99,7 @@ func toolListAuditEvents(ctx context.Context, pool *db.Pool, args json.RawMessag
 	return json.Marshal(env)
 }
 
-// parseToolTime parses an optional RFC3339 time filter. The empty string
-// returns the zero time, which the data-access layer treats as "no bound"
-// via the 'epoch' sentinel.
+// parseToolTime parses an optional RFC3339 time filter.
 func parseToolTime(s string) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, nil

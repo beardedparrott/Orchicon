@@ -49,13 +49,7 @@ func atoi(s string) int {
 	return n
 }
 
-// ParseUnifiedDiff splits a server-computed unified diff into side-by-side
-// rows. It walks the hunk headers to track the running old/new line numbers
-// and emits one row per context/add/delete line. Row kinds map 1:1 to the
-// diff operation (" ", "+", "-"). Hunk-boundary rows are skipped (no
-// visible line) but the line-number state is preserved.
-//
-// This is a faithful port of sideBySide.ts parseUnifiedDiff.
+// ParseUnifiedDiff splits a server-computed unified diff into side-by-side rows.
 func ParseUnifiedDiff(unified string) []Row {
 	if unified == "" {
 		return []Row{}
@@ -90,10 +84,8 @@ func ParseUnifiedDiff(unified string) []Row {
 
 		marker := line[0]
 		body := line[1:]
-		// A "\ No newline at end of file" marker — the leading backslash IS
-		// the line's first char (marker == '\\'), so after slicing it off
-		// body starts with " No newline at end of file". Annotate the
-		// preceding row. Mirrors the GUI exactly (⟪no newline⟫ glyph).
+		// A "\ No newline at end of file" marker — the leading backslash IS the line's first char (marker
+		// == '\\'), so after slicing it off body starts with " No newline at end of file".
 		if marker == '\\' && strings.HasPrefix(body, " No newline at end of file") {
 			if len(rows) > 0 {
 				prev := &rows[len(rows)-1]
@@ -145,9 +137,8 @@ func ParseUnifiedDiff(unified string) []Row {
 	return rows
 }
 
-// applyWordEmphasis pairs a "-" row with the following "+" row (the common
-// replace shape) and computes cheap token-level emphasis on both sides.
-// Mirrors sideBySide.ts applyWordEmphasis.
+// applyWordEmphasis pairs a "-" row with the following "+" row (the common replace shape) and
+// computes cheap token-level emphasis on both sides.
 func applyWordEmphasis(rows []Row) {
 	for i := 0; i < len(rows); i++ {
 		r := &rows[i]

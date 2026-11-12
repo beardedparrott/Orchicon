@@ -32,6 +32,7 @@ import { useDebouncedInvalidation } from "@/lib/useDebouncedInvalidation";
 import { executionStreamEnabled } from "@/lib/debouncedInvalidation";
 import type { StreamStatus } from "@/api/useStream";
 import { Markdown } from "@/components/markdown";
+import { isNoticeMessage, stripNoticePrefix } from "@/lib/verifyNotice";
 import { SessionChatPane } from "@/components/executions/SessionChatPane";
 import { WorkerSummaryCard } from "@/components/executions/WorkerSummaryCard";
 import { ExecutionContextSidebar } from "@/components/executions/ExecutionContextSidebar";
@@ -291,14 +292,31 @@ function ExecutionDetailPage() {
             />
             <div className="flex flex-1 min-w-0 flex-col space-y-4">
           {/* Failure card: pulled out of the sidebar so the operator
-              sees the error first when something breaks. */}
+              sees the error first when something breaks.
+
+              A NOTICE IS NOT A FAILURE. The verification notice ("the platform could not confirm this step
+              mechanically…") rides the SAME error_message slot as a real failure — that is deliberate on the
+              server side, where it is advisory — but rendering it under a red ERROR heading tells the operator
+              something failed on a step that SUCCEEDED. The platform already marks advisory text with the
+              notice prefix; this renders it as what it is. */}
           {exec.errorMessage && (
-            <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4">
-              <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-destructive">
-                Error
+            isNoticeMessage(exec.errorMessage) ? (
+              <div role="status" className="rounded-xl border border-sky-500/40 bg-sky-50 p-4 dark:bg-sky-950/20">
+                <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-sky-700 dark:text-sky-300">
+                  Note
+                </div>
+                <Markdown className="text-sm text-sky-900/90 dark:text-sky-100/90">
+                  {stripNoticePrefix(exec.errorMessage)}
+                </Markdown>
               </div>
-              <Markdown className="text-destructive">{exec.errorMessage}</Markdown>
-            </div>
+            ) : (
+              <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4">
+                <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-destructive">
+                  Error
+                </div>
+                <Markdown className="text-destructive">{exec.errorMessage}</Markdown>
+              </div>
+            )
           )}
           {isFailed && !exec.errorMessage && (
             <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm italic text-muted-foreground">

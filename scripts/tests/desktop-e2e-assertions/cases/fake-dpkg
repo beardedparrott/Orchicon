@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# fixture: a `dpkg` that reports the packaged app installed, so the step-1
+# assertions can be observed on both sides (real capture vs empty capture).
+case "$1" in
+  -L) printf '/usr/bin/orchicon-desktop\n/usr/lib/orchicon/orchicon-desktop\n/usr/share/applications/orchicon-desktop.desktop\n' ;;
+  -s) printf 'Package: orchicon-desktop\nStatus: install ok installed\nVersion: 0.0.0-e2e\nDepends: libwebkit2gtk-4.1-0\n' ;;
+  *)  printf 'fake-dpkg: unsupported %s\n' "$1" >&2; exit 1 ;;
+esac
+exit 0

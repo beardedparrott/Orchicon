@@ -49,9 +49,8 @@ func (d *recordingDispatcher) calls() int {
 	return len(d.stepRuns)
 }
 
-// recoveryGateTestEnv is the shared fixture: project, ticket, run, the
-// dead (failed) execution, and a recovering step run carrying the
-// dead-execution identity + worker pin + recovery strategy.
+// recoveryGateTestEnv is the shared fixture: project, ticket, run, the dead (failed) execution, and
+// a recovering step run carrying the dead-execution identity + worker pin + recovery strategy.
 type recoveryGateTestEnv struct {
 	t          *testing.T
 	pool       *db.Pool
@@ -83,7 +82,8 @@ func newRecoveryGateTestEnv(t *testing.T, strategy string) *recoveryGateTestEnv 
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "Recovery Gate Test", Slug: slug,
 		Status: "active", Goals: []byte("[]"),
-		ProjectDir: "/tmp/orchicon/" + slug,
+		ProjectDir:    "/tmp/orchicon/" + slug,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -113,14 +113,7 @@ func newRecoveryGateTestEnv(t *testing.T, strategy string) *recoveryGateTestEnv 
 	if err != nil {
 		t.Fatalf("create workflow run: %v", err)
 	}
-	// CreateWorkflowRun does not insert runtime_ready (column default false);
-	// flip it true explicitly so reconcileRun's headless runtime gate does
-	// not bump the run version mid-pass (which would stale the optimistic
-	// lock at the terminal-state update). Likewise, worktree_status defaults
-	// to 'pending' and the dispatch section HOLDS every step of a pending
-	// non-branch run until the WorktreeReconciler admits it (ready/skipped) —
-	// this fixture runs only the WorkflowReconciler, so the run must be
-	// pre-admitted or no step ever dispatches.
+	// CreateWorkflowRun does not insert runtime_ready (column default false).
 	if _, err := db.UpdateWorkflowRun(ctx, ttx.Tx, approvalTestTenant, run.ID, run.Version, db.UpdateWorkflowRunFields{
 		RuntimeReady:   boolPtr(true),
 		WorktreeStatus: strPtr(domain.WorktreeReady),
@@ -184,10 +177,8 @@ func newRecoveryGateTestEnv(t *testing.T, strategy string) *recoveryGateTestEnv 
 		t.Fatalf("publish workflow version: %v", err)
 	}
 
-	// Recovering step run carrying the dead-execution identity + strategy
-	// (what pollTaskStep's summarize_restart branch writes today) plus the
-	// worker pin preserved from the first dispatch (what the gate needs to
-	// resolve the seed for the exact dispatching worker).
+	// Recovering step run carrying the dead-execution identity + strategy (what pollTaskStep's
+	// summarize_restart branch writes today) plus the worker pin preserved from the first dispatch.
 	stepResult := recoveringStepResult(ctx, ttx.Tx, approvalTestTenant, ticket.ID, exec.ID, strategy, nil)
 	var srRes map[string]any
 	_ = json.Unmarshal(stepResult, &srRes)
@@ -231,14 +222,7 @@ func (env *recoveryGateTestEnv) getStepRun(ctx context.Context, id string) db.Wo
 	return sr
 }
 
-// TestRecoveryDispatchGateRace is THE regression test for the observed
-// race: a recovering summarize_restart step must NOT be re-dispatched
-// before its recovery is terminal `resumed` AND a seed is resolvable. It
-// replays the exact sequence from the field incident: step recovering →
-// recovery row absent (same-pass race) → active recovery → resumed. Only
-// the terminal-resumed state unlocks dispatch, and the TaskReconciler's
-// file gate then writes+verifies .orchicon/worker.recovery before the
-// session starts (covered by the seedRecoveryFile unit tests).
+// TestRecoveryDispatchGateRace is THE regression test for the observed race.
 func TestRecoveryDispatchGateRace(t *testing.T) {
 	env := newRecoveryGateTestEnv(t, "summarize_restart")
 	ctx := context.Background()
@@ -260,9 +244,7 @@ func TestRecoveryDispatchGateRace(t *testing.T) {
 		t.Fatalf("step run must record _recovery_strategy=summarize_restart, got %q", meta.RecoveryStrategy)
 	}
 
-	// Phase 1: NO recovery row yet — the same-pass race. The gate must HOLD
-	// the dispatch (old behavior created the replacement execution here,
-	// ~200ms before the engine published the seed keys).
+	// Phase 1: NO recovery row yet — the same-pass race.
 	disp := &recordingDispatcher{}
 	env.reconciler.taskDispatcher = disp
 	if err := env.reconciler.reconcileRun(ctx, approvalTestTenant, env.run.ID); err != nil {
@@ -307,10 +289,8 @@ func TestRecoveryDispatchGateRace(t *testing.T) {
 		t.Fatalf("phase 2: dispatch fired with an ACTIVE recovery — must hold (got %d dispatches)", disp.calls())
 	}
 
-	// Phase 3: recovery becomes terminal `resumed` AND the seed keys are
-	// published on the step run (the engine's resume branch does both
-	// atomically — engine.go:811-836). The gate must unlock and the
-	// dispatcher must fire exactly once.
+	// Phase 3: recovery becomes terminal `resumed` AND the seed keys are published on the step run (the
+	// engine's resume branch does both atomically — engine.go:811-836).
 	ttx, err = env.pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatal(err)
@@ -361,9 +341,8 @@ func TestRecoveryDispatchGateRace(t *testing.T) {
 	}
 }
 
-// TestRecoveryDispatchGateRetryStrategy verifies the retry-clone flow is
-// untouched: a recovering step with strategy retry dispatches immediately
-// even with no recovery row (it is not engine-driven).
+// TestRecoveryDispatchGateRetryStrategy verifies the retry-clone flow is untouched: a recovering
+// step with strategy retry dispatches immediately even with no recovery row (it is not.
 func TestRecoveryDispatchGateRetryStrategy(t *testing.T) {
 	env := newRecoveryGateTestEnv(t, "retry")
 	ctx := context.Background()
@@ -377,9 +356,8 @@ func TestRecoveryDispatchGateRetryStrategy(t *testing.T) {
 	}
 }
 
-// TestRecoveryDispatchGateTerminalFailed verifies a terminal NON-resumed
-// recovery (failed/cancelled) fails the step loud instead of holding or
-// dispatching cold.
+// TestRecoveryDispatchGateTerminalFailed verifies a terminal NON-resumed recovery
+// (failed/cancelled) fails the step loud instead of holding or dispatching cold.
 func TestRecoveryDispatchGateTerminalFailed(t *testing.T) {
 	env := newRecoveryGateTestEnv(t, "summarize_restart")
 	ctx := context.Background()
@@ -515,21 +493,14 @@ func TestRecoveryGatePredicateTruthTable(t *testing.T) {
 	}
 }
 
-// TestRecoveryGateWorkerChangeFailsFast is AC#8 (R7): a recovery-resumed
-// step whose dead-execution worker differs from the currently-assigned
-// worker must FAIL the step loud with a clear "worker changed" reason —
-// never wedge in the gate trying to resolve a seed for a worker that can
-// never write it. Reassignment (or a worker delete/version bump) between
-// execute-fail and resume-dispatch must re-arbitrate via retry/fail-fast,
-// not hold forever on "recovery seed never became resolvable".
+// TestRecoveryGateWorkerChangeFailsFast is AC#8 (R7): a recovery-resumed step whose dead-execution
+// worker differs from the currently-assigned worker must FAIL the step loud with a clear "worker.
 func TestRecoveryGateWorkerChangeFailsFast(t *testing.T) {
 	env := newRecoveryGateTestEnv(t, "summarize_restart")
 	ctx := context.Background()
 
-	// The dead execution ran on w_se_devops_engineer; the step has since
-	// been REASSIGNED to w_se_qa_engineer. Rewrite the step run's worker
-	// pin to the new worker, leaving _failed_worker_id (the dead exec's
-	// worker) behind so the R7 check sees a mismatch.
+	// The dead execution ran on w_se_devops_engineer; the step has since been REASSIGNED to
+	// w_se_qa_engineer.
 	sr := env.getStepRun(ctx, env.stepRun.ID)
 	merged := map[string]any{}
 	_ = json.Unmarshal(sr.Result, &merged)
@@ -580,13 +551,8 @@ func TestRecoveryGateWorkerChangeFailsFast(t *testing.T) {
 	}
 }
 
-// TestRecoveryGateWorkerVersionChangeFailsFast is R7b: a recovery-resumed
-// step whose worker ID is unchanged but whose VERSION moved off the dead
-// execution's version must FAIL loud with a "worker version changed"
-// reason — same ID + different version may resolve a different adapter
-// (model_ref is per-version: the v3-opencode vs v4-orchicon flip that
-// dispatched four executions into a dead serve). Never wedge, never
-// dispatch cross-adapter.
+// TestRecoveryGateWorkerVersionChangeFailsFast is R7b: a recovery-resumed step whose worker ID is
+// unchanged but whose VERSION moved off the dead execution's version must FAIL loud with a "worker.
 func TestRecoveryGateWorkerVersionChangeFailsFast(t *testing.T) {
 	env := newRecoveryGateTestEnv(t, "summarize_restart")
 	ctx := context.Background()
@@ -648,9 +614,8 @@ func TestRecoveryGateWorkerVersionChangeFailsFast(t *testing.T) {
 	}
 }
 
-// ageStepRecoveringSince rewrites the recovering step run's
-// `_recovering_since` to the given time (committed), for RC2 fixtures that
-// must age the STEP's own recovering entry rather than the run's age.
+// ageStepRecoveringSince rewrites the recovering step run's `_recovering_since` to the given time
+// (committed).
 func (env *recoveryGateTestEnv) ageStepRecoveringSince(ctx context.Context, old time.Time) db.WorkflowStepRunRow {
 	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
@@ -671,12 +636,7 @@ func (env *recoveryGateTestEnv) ageStepRecoveringSince(ctx context.Context, old 
 	return env.getStepRun(ctx, env.stepRun.ID)
 }
 
-// TestRecoveringStallGuardFailsStuckStep is the regression test for the
-// observed 45-minute "running" limbo: a recovering summarize_restart step
-// whose recovery row never materializes sits in the recovery-dispatch gate
-// forever (no active recovery, no recovery at all), so the run never
-// finalizes and the Retry button never surfaces. The recoveringStallTimeout
-// cap must FAIL the stuck step terminal — keyed off the STEP's own
+// The recoveringStallTimeout cap must FAIL the stuck step terminal — keyed off the STEP's own
 // `_recovering_since` timestamp (RC2), NEVER run.StartedAt.
 func TestRecoveringStallGuardFailsStuckStep(t *testing.T) {
 	env := newRecoveryGateTestEnv(t, "summarize_restart")
@@ -689,10 +649,8 @@ func TestRecoveringStallGuardFailsStuckStep(t *testing.T) {
 	}
 	defer ttx.Rollback(ctx)
 
-	// RC2 — the core regression: a LONG-RUNNING run (StartedAt well past the
-	// stall window) whose recovery trigger has NOT landed yet must HOLD, not
-	// fail. The step run carries a FRESH _recovering_since; run age is
-	// irrelevant to the guard.
+	// RC2 — the core regression: a LONG-RUNNING run (StartedAt well past the stall window) whose
+	// recovery trigger has NOT landed yet must HOLD, not fail.
 	agedRun := env.run
 	oldRun := time.Now().UTC().Add(-2 * time.Hour)
 	agedRun.StartedAt = &oldRun
@@ -701,9 +659,7 @@ func TestRecoveringStallGuardFailsStuckStep(t *testing.T) {
 		t.Fatalf("long-running run + FRESH step ts: (ready=%v, fail=%v), want (false, nil) HOLD — run age must not fail the step", ready, fail)
 	}
 
-	// The genuinely-stuck case: age the STEP's own recovering timestamp past
-	// the cap. The same stuck step must be FAILED terminal instead of
-	// holding a run "running" indefinitely.
+	// The genuinely-stuck case: age the STEP's own recovering timestamp past the cap.
 	stuckSR := env.ageStepRecoveringSince(ctx, time.Now().UTC().Add(-2*time.Hour))
 	ready, fail = env.reconciler.recoveryDispatchReady(ctx, ttx.Tx, approvalTestTenant, env.run, stuckSR)
 	if ready {
@@ -715,8 +671,7 @@ func TestRecoveringStallGuardFailsStuckStep(t *testing.T) {
 }
 
 // TestRecoveringStallDisabledHoldsLegacy verifies the cap can be disabled
-// (ORCHICON_RECOVERING_STALL_TIMEOUT < 1s): the gate returns to legacy
-// hold-only behavior even for a genuinely aged recovering step.
+// (ORCHICON_RECOVERING_STALL_TIMEOUT < 1s).
 func TestRecoveringStallDisabledHoldsLegacy(t *testing.T) {
 	env := newRecoveryGateTestEnv(t, "summarize_restart")
 	t.Setenv("ORCHICON_RECOVERING_STALL_TIMEOUT", "0ms")

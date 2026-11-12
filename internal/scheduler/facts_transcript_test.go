@@ -19,9 +19,8 @@ func partText(seq int64, text, partText string) db.SessionPart {
 	return db.SessionPart{Seq: seq, Kind: db.SessionPartText, Payload: payload}
 }
 
-// TestExtractFactsFromTranscript covers the mechanical transcript extractor:
-// empty/absent transcript degrades to nothing; the final assistant block's
-// FACTS LEARNED lines win over earlier recon turns.
+// TestExtractFactsFromTranscript covers the mechanical transcript extractor: empty/absent
+// transcript degrades to nothing.
 func TestExtractFactsFromTranscript(t *testing.T) {
 	if got := extractFactsFromTranscript(nil); len(got) != 0 {
 		t.Fatalf("nil transcript yielded facts: %v", got)

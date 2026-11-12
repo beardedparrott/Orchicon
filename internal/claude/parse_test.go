@@ -17,9 +17,7 @@ import (
 
 // ------------------------------------------------------------------ recorder
 
-// capturedSnapshot is the data half of captureCallbacks. It carries NO lock,
-// so a consistent copy of it can be handed to a test goroutine that shares
-// the recorder with a live session goroutine (see snap).
+// capturedSnapshot is the data half of captureCallbacks.
 type capturedSnapshot struct {
 	order     []string
 	texts     []string
@@ -36,9 +34,8 @@ type capturedSnapshot struct {
 	usage  []scheduler.UsageRecord
 }
 
-// captureCallbacks records every ExecutionCallbacks invocation with enough
-// detail to assert the parity matrix. It is the shared recorder for
-// parse_test.go and parity_matrix_test.go.
+// captureCallbacks records every ExecutionCallbacks invocation with enough detail to assert the
+// parity matrix.
 type captureCallbacks struct {
 	mu sync.Mutex
 	capturedSnapshot
@@ -153,9 +150,8 @@ func (c *captureCallbacks) recordUsage(_ context.Context, in scheduler.UsageReco
 	return nil
 }
 
-// recordParts is the scheduler.SessionStoreFunc sink: it decodes each
-// persisted part's marshaled payload back into a map so a test can assert
-// the durable envelope EXACTLY as it lands in the transcript table.
+// recordParts is the scheduler.SessionStoreFunc sink: it decodes each persisted part's marshaled
+// payload back into a map so a test can assert the durable envelope EXACTLY as it lands.
 func (c *captureCallbacks) recordParts(_ context.Context, _, _ string, parts []db.SessionPart) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -167,10 +163,8 @@ func (c *captureCallbacks) recordParts(_ context.Context, _, _ string, parts []d
 	return nil
 }
 
-// snap returns a consistent COPY of everything recorded so far. A test that
-// shares the recorder with a live session goroutine MUST read through this
-// (or through the locked accessors below) instead of touching the fields
-// directly — the callbacks append under c.mu from that other goroutine.
+// A test that shares the recorder with a live session goroutine MUST read through this (or through
+// the locked accessors below) instead of touching the fields directly.
 func (c *captureCallbacks) snap() capturedSnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -394,12 +388,8 @@ func TestMapperLedgerInputUsesTheHooksKeyAndIsExecDirRelative(t *testing.T) {
 	}
 }
 
-// TestMapperFileEditLedgerFiresOnlyAfterTheWriteLands pins the TIMING the
-// diff pipeline depends on: the ledger hook reads the file's on-disk state, so
-// it must NOT fire at tool_use time (the CLI has not written the file yet —
-// the observer then diffs the file against itself and silently drops the row,
-// leaving the execution's file-diff pane empty) but at the tool_result, once
-// the file is written. A failed call must never ledger.
+// TestMapperFileEditLedgerFiresOnlyAfterTheWriteLands pins the TIMING the diff pipeline depends on:
+// the ledger hook reads the file's on-disk state.
 func TestMapperFileEditLedgerFiresOnlyAfterTheWriteLands(t *testing.T) {
 	dir := t.TempDir()
 	var calls []string

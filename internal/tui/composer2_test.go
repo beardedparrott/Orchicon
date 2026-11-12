@@ -1,11 +1,7 @@
 package tui
 
-// composer2_test.go — the Composer 2.0 acceptance gate: a bordered, padded,
-// growing composer box with a persistent affordance row and the context
-// chip; the slash palette floating ABOVE the box (live filter, up/down
-// navigation, usage + description per row, enter executes); multi-line
-// sends; drafts across screen switches and failed sends; and the exactly
-// h×w frame contract with a taller composer (the highest regression risk).
+// composer2_test.go — the Composer 2.0 acceptance gate: a bordered, padded, growing composer box
+// with a persistent affordance row and the context chip.
 
 import (
 	"errors"
@@ -21,9 +17,8 @@ import (
 
 func composer2Sizes() [][2]int { return [][2]int{{80, 24}, {120, 40}} }
 
-// assertFrameExact pins the render contract: the view is EXACTLY h rows of
-// EXACTLY w cells, and the composer box's top border lands on the first row
-// of the dock's row budget (no sliver above it).
+// assertFrameExact pins the render contract: the view is EXACTLY h rows of EXACTLY w cells, and the
+// composer box's top border lands on the first row of the dock's row budget (no sliver above it).
 func assertFrameExact(t *testing.T, m *App, w, h int) {
 	t.Helper()
 	lines := strings.Split(m.View(), "\n")
@@ -47,9 +42,8 @@ func assertFrameExact(t *testing.T, m *App, w, h int) {
 	}
 }
 
-// TestComposerBoxedAtBothSizes: the composer is a real bordered box with
-// inner padding and at least dock.MinInputRows input rows by default —
-// strictly larger than the old single-line field — at 80×24 and 120×40.
+// TestComposerBoxedAtBothSizes: the composer is a real bordered box with inner padding and at least
+// dock.MinInputRows input rows by default — strictly larger than the old single-line field.
 func TestComposerBoxedAtBothSizes(t *testing.T) {
 	for _, size := range composer2Sizes() {
 		w, h := size[0], size[1]
@@ -103,14 +97,8 @@ func TestComposerBoxedAtBothSizes(t *testing.T) {
 	}
 }
 
-// TestComposerBoxGrowsAndFrameStaysExact: a full buffer grows the box to the space the
-// VIEWPORT can spare — no longer to the fixed MaxInputRows — and the frame still measures
-// exactly h×w.
-//
-// The operator asked for the cap to go: "Remove the cap." It cannot literally, because the
-// composer shares the screen with the transcript, so the fixed eight is replaced by a
-// viewport-derived ceiling. That makes growth PAST eight the whole point of this test:
-// asserting eight would now assert the thing that was removed.
+// TestComposerBoxGrowsAndFrameStaysExact: a full buffer grows the box to the space the VIEWPORT can
+// spare — no longer to the fixed MaxInputRows — and the frame still measures exactly h×w.
 func TestComposerBoxGrowsAndFrameStaysExact(t *testing.T) {
 	for _, size := range composer2Sizes() {
 		w, h := size[0], size[1]
@@ -127,10 +115,7 @@ func TestComposerBoxGrowsAndFrameStaysExact(t *testing.T) {
 		if got > h {
 			t.Fatalf("%dx%d: input rows = %d, more than the whole viewport", w, h, got)
 		}
-		// AND IT STILL LEAVES THE SCREEN SOMETHING TO SHOW. An unbounded composer would
-		// push the transcript off the top, which is the failure the cap was protecting
-		// against — the bound is now "the space going spare" rather than a number chosen
-		// for one terminal size.
+		// AND IT STILL LEAVES THE SCREEN SOMETHING TO SHOW.
 		if c := m.contentHeight(); c < 6 {
 			t.Fatalf("%dx%d: the composer left the content region %d rows (want >= 6) — growth must come out of "+
 				"the space going spare, not out of the transcript", w, h, c)
@@ -169,10 +154,8 @@ func TestComposerBoxShowsHintAndChip(t *testing.T) {
 	}
 }
 
-// TestPaletteOpensAboveComposerBox: the palette floats ABOVE the boxed
-// composer, filters live on the composer text (which stays visible),
-// navigates with up/down (never typing into the box), and renders usage +
-// description per row.
+// TestPaletteOpensAboveComposerBox: the palette floats ABOVE the boxed composer, filters live on
+// the composer text (which stays visible), navigates with up/down (never typing into the box).
 func TestPaletteOpensAboveComposerBox(t *testing.T) {
 	for _, size := range composer2Sizes() {
 		w, h := size[0], size[1]
@@ -272,9 +255,8 @@ func TestPaletteOpensAboveComposerBox(t *testing.T) {
 	}
 }
 
-// TestSlashPartialExecutesAndUnknownGivesUsage: "partial command + enter"
-// runs the selected command; an unknown slash gives usage feedback and is
-// never sent as a chat message.
+// TestSlashPartialExecutesAndUnknownGivesUsage: "partial command + enter" runs the selected
+// command; an unknown slash gives usage feedback and is never sent as a chat message.
 func TestSlashPartialExecutesAndUnknownGivesUsage(t *testing.T) {
 	m := phase3App(120, 40)
 	m.setFocus(focusComposer)
@@ -318,9 +300,8 @@ func TestSlashPartialExecutesAndUnknownGivesUsage(t *testing.T) {
 	}
 }
 
-// TestMultiLineMessageSendsWithNewlines: the newline chord inserts a
-// newline, Enter sends, and the payload arrives as ONE message with its
-// newlines intact.
+// TestMultiLineMessageSendsWithNewlines: the newline chord inserts a newline, Enter sends, and the
+// payload arrives as ONE message with its newlines intact.
 func TestMultiLineMessageSendsWithNewlines(t *testing.T) {
 	m := phase3App(120, 40)
 	m.setFocus(focusComposer)
@@ -381,10 +362,7 @@ func TestComposerDraftSurvivesScreenSwitchAndFailedSend(t *testing.T) {
 		t.Fatalf("the draft must survive a screen switch, got %q", got)
 	}
 	// THE CHORD DROPS THE SUBMENU, so the draft's Enter belongs to the MENU now — Enter operates what
-	// is on screen rather than sending a message while a dropdown is visibly open. That is the
-	// operator's own ask ("automatically drops the submenu down and gains focus to that"), so this is
-	// asserted rather than worked around, and the way back to typing is the documented one: ctrl+g,
-	// which also dismisses the menu it is leaving.
+	// is on screen rather than sending a message while a dropdown is visibly open.
 	if m.MenuOpenID() != TabWork {
 		t.Fatalf("the chord must drop the Work submenu, got menuOpen=%q", m.MenuOpenID())
 	}
@@ -421,14 +399,7 @@ func TestComposerDraftSurvivesScreenSwitchAndFailedSend(t *testing.T) {
 	assertFrameExact(t, m, 120, 40)
 }
 
-// Regression: typing must render VISIBLE text in the box. The repair that
-// re-asserts the box background after inner resets used to derive its
-// re-assert sequence from theme.ComposerBox itself — a BORDERED style, whose
-// render is a whole box. That injected border glyphs and spaces into every
-// row after a reset, garbling the textarea so the operator could not see the
-// cursor or their own text, and painting a stray band under the box. The
-// repair now takes the background-only style and rejects any style whose
-// render spans lines.
+// Regression: typing must render VISIBLE text in the box.
 func TestComposerTypingRendersVisibleText(t *testing.T) {
 	for _, size := range composer2Sizes() {
 		w, h := size[0], size[1]
@@ -441,9 +412,8 @@ func TestComposerTypingRendersVisibleText(t *testing.T) {
 		if !strings.Contains(plain, "hello") {
 			t.Fatalf("%dx%d: typed text is not visible in the composer\n%s", w, h, plain)
 		}
-		// The box's own border glyphs must appear only as the frame, not
-		// scattered through the dock rows: count the top border characters in
-		// the dock region and require exactly one contiguous run.
+		// The box's own border glyphs must appear only as the frame, not scattered through the dock rows:
+		// count the top border characters in the dock region and require exactly one contiguous run.
 		dockRows := strings.Split(plain, "\n")
 		start := len(dockRows) - 1 - m.dock.Lines()
 		if start < 0 {

@@ -1,16 +1,6 @@
 package tui
 
 // rails_layout_test.go — LAYOUT REGRESSION tests for the Ask column layout.
-//
-// History: Phase 2c added a shell-level CONVERSATIONS right rail. The Ask
-// screen ALSO renders the conversation list as its own source pane, so the
-// tab drew THREE columns where the GUI has two — the operator's "there are
-// two conversation panes for some reason". Worse, Shift+Tab closes the rail,
-// so the conversation list vanished and never came back ("conversations go
-// away").
-//
-// The rail is now disabled (railVisible() == false); the screen's source pane
-// is the single conversation list. These tests pin that contract.
 
 import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
@@ -118,10 +108,8 @@ func TestRailToggleIsInert(t *testing.T) {
 	railLines(t, m, 120, 40)
 }
 
-// TestThemeStepSequence mirrors the real-pty gate's theme step at shell
-// level: "/" opens the palette, typing filters, enter selects /theme (which
-// runs it), then the argument + enter sends "/theme light" — the ACTIVE
-// theme must switch and repaint.
+// TestThemeStepSequence mirrors the real-pty gate's theme step at shell level: "/" opens the
+// palette, typing filters, enter selects /theme (which runs it).
 func TestThemeStepSequence(t *testing.T) {
 	m := newRailsApp(120, 40)
 	m.setFocus(focusComposer)
@@ -191,22 +179,6 @@ func TestSlashDiffTogglesLeftRailFromComposer(t *testing.T) {
 }
 
 // The content width must FOLLOW the conversations rail, not merely a resize.
-//
-// railVisible() depends on SHELL STATE (askMode / chatConvID), so the rail
-// appearing shrinks the content area by ConversationsRailWidth with no
-// WindowSizeMsg to drive refreshLayout(). The dock then kept its pre-rail width
-// and baseView's normalizeBlock TRUNCATED its right edge — silently cutting off
-// everything right-aligned:
-//
-//   - the composer's context/token/cache stat strip and the mode pill, at the
-//     bottom right (the operator's "the context information and model picker on
-//     the bottom right are off the screen and I can't see it");
-//   - the operator's OWN message bubbles — user messages are right-aligned, so a
-//     just-sent message was missing from a transcript that plainly contained it
-//     while the left-aligned reply rendered normally.
-//
-// The existing frame tests could not see this: every row is still EXACTLY w
-// cells wide, because truncation preserves the frame contract.
 func TestLayoutWidthFollowsRailVisibility(t *testing.T) {
 	const w, h = 200, 50
 
@@ -238,9 +210,6 @@ func TestLayoutWidthFollowsRailVisibility(t *testing.T) {
 	railLines(t, m, w, h)
 
 	// And back the other way: a new chat drops the session and the rail with it.
-	// newChat() runs inside dispatch in the real shell, so the layout is corrected
-	// on that same Update; here it is called directly, so feed one message to
-	// exercise that pass.
 	m.newChat()
 	if m.railVisible() {
 		t.Fatal("/new must return to the launch page with no rail")
@@ -252,17 +221,8 @@ func TestLayoutWidthFollowsRailVisibility(t *testing.T) {
 	}
 }
 
-// The transcript must be SCROLLABLE, and the operator must be told when it is
-// scrolled.
-//
-// The transcript follows the tail, so a reply taller than the pane pushes the
-// operator's own earlier messages off the top. The wheel was handled ONLY for
-// the conversations rail, and on the Ask tab the rail also owns the keyboard
-// (with an empty composer the vertical keys move the rail SELECTION, and
-// railVisible() is true whenever a conversation is open) — so nothing was left
-// for the transcript. A message that was merely off-screen therefore read as a
-// message that was never stored: "I still do not see my initial test user
-// message", while the conversation header showed the correct message count.
+// The wheel was handled ONLY for the conversations rail, and on the Ask tab the rail also owns the
+// keyboard (with an empty composer the vertical keys move the rail SELECTION.
 func TestContentRegionWheelScrollsTheTranscript(t *testing.T) {
 	const w, h = 120, 42
 	m, _ := sendApp(t)
@@ -271,9 +231,8 @@ func TestContentRegionWheelScrollsTheTranscript(t *testing.T) {
 	m.askMode = askConversations
 	m.chatConvID = "conv-scroll"
 
-	// A transcript far taller than the pane: this is what a paragraph-sized
-	// reply produces (the live case measured ~35 rendered rows in a ~20-row
-	// viewport).
+	// A transcript far taller than the pane: this is what a paragraph-sized reply produces (the live
+	// case measured ~35 rendered rows in a ~20-row viewport).
 	lines := make([]string, 0, 60)
 	for i := 0; i < 60; i++ {
 		lines = append(lines, "line "+strings.Repeat("x", 20))
@@ -312,19 +271,8 @@ func TestContentRegionWheelScrollsTheTranscript(t *testing.T) {
 	}
 }
 
-// ctrl+g must reach the composer from ANY state, including one where the screen
-// has latched a key claim.
-//
-// The operator: "when I am in work item view, hitting ctrl+g to get focus to the
-// composer is spotty and usually doesn't work. It will still try and recognize
-// letters being pushed to perform actions as opposed to truly dropping into the
-// composer to type."
-//
-// Both halves were real. The screen-claims gate ran BEFORE the composer branch, so
-// a latched claim (the search box, a form being prepared) swallowed ctrl+g — and
-// because the claim was never dropped, the next letters were routed to the SCREEN
-// as actions. Ctrl+g is now a hard chord in dispatch, ahead of that gate, and it
-// drops the claim so the following keystroke is typing.
+// ctrl+g must reach the composer from ANY state, including one where the screen has latched a key
+// claim.
 func TestCtrlGReachesTheComposerThroughAScreenKeyClaim(t *testing.T) {
 	m := newTestApp()
 	m.RegisterScreen(TabWork, work.New(nil, m.reg, ""))
@@ -362,11 +310,6 @@ func TestCtrlGReachesTheComposerThroughAScreenKeyClaim(t *testing.T) {
 	}
 
 	// And typing now lands in the composer rather than triggering a screen action.
-	//
-	// The probe is a letter that is a SCREEN ACTION when the list owns the keys,
-	// and plain text when the composer does — 'n' opens the create form on the Work
-	// tab. ('q' would be a bad probe: it is deliberately in composerBypassKeys so
-	// quit always works while composing.)
 	m.setFocus(focusComposer)
 	beforeLen := len(m.dock.Value())
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
@@ -380,13 +323,6 @@ func TestCtrlGReachesTheComposerThroughAScreenKeyClaim(t *testing.T) {
 }
 
 // Tab must advance the focus ring even while the active screen claims the keys.
-//
-// "When tabbing through the main top menu, the tab now just simply stops at Work
-// and doesn't move to Execution in the menu system." The cause is the same
-// latched screen claim that swallowed ctrl+g: the claims gate runs before the
-// routes, so a screen holding a text input (the Work search box, a form being
-// prepared) ate Tab and the ring never advanced. That claim is usually
-// incidental, so the route between areas cannot depend on it being clear.
 func TestTabAdvancesTheRingThroughAScreenKeyClaim(t *testing.T) {
 	m := newTestApp()
 	for _, tb := range Tabs {
@@ -412,10 +348,8 @@ func TestTabAdvancesTheRingThroughAScreenKeyClaim(t *testing.T) {
 
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	m = nm.(*App)
-	// Tab must leave the CONTENT (returning to the bar) even though the screen is
-	// claiming keys — a claim is about text input, and the route between areas must
-	// not depend on no latch being set. It does NOT advance to the next tab from
-	// here; advancing is the bar's own gesture (one more Tab).
+	// Tab must leave the CONTENT (returning to the bar) even though the screen is claiming keys — a
+	// claim is about text input, and the route between areas must not depend on no latch being set.
 	if m.active != TabWork {
 		t.Fatalf("tab from the content must stay on %q, got %q", TabWork, m.active)
 	}
@@ -430,26 +364,8 @@ func TestTabAdvancesTheRingThroughAScreenKeyClaim(t *testing.T) {
 	}
 }
 
-// The operator's five-step navigation model, end to end:
-//
-//  1. Tab moves through the menu
-//  2. up/down move through the submenu
-//  3. Enter selects the submenu
-//
-// The operator's navigation model, end to end:
-//
-//  1. Tab moves through the top-level tabs — and ONLY moves. It must not pop a
-//     submenu open ("submenus should only pop up if you enter on them"), because
-//     an open menu also eats the arrows.
-//  2. Enter on a tab opens that tab's submenu.
-//  3. up/down move through the submenu.
-//  4. Enter selects — which closes the menu AND moves focus into the pane.
-//  5. up/down then move the pane items.
-//
-// The load-bearing parts are that nothing below the tab bar receives keys until a
-// submenu entry is SELECTED ("the project page STILL captures the down/up controls
-// without actually selecting it yet"), and that once selected the arrows do reach
-// the pane ("Executions and Workers ... are locked").
+// The operator's five-step navigation model, end to end: Tab moves through the top-level tabs — and
+// ONLY moves.
 func TestNavigationModelTabEnterArrows(t *testing.T) {
 	m := newTestApp()
 	for _, tb := range Tabs {
@@ -535,9 +451,8 @@ func TestNavigationModelTabEnterArrows(t *testing.T) {
 	}
 }
 
-// The COMPLEMENT, and the reason the previous fix went too far: with the tab bar
-// focused and no submenu open, a vertical key must not reach a pane — and must not
-// open a menu either.
+// The COMPLEMENT, and the reason the previous fix went too far: with the tab bar focused and no
+// submenu open, a vertical key must not reach a pane — and must not open a menu either.
 func TestArrowsDoNothingUntilASubmenuEntryIsSelected(t *testing.T) {
 	m := newTestApp()
 	for _, tb := range Tabs {
@@ -570,15 +485,6 @@ func TestArrowsDoNothingUntilASubmenuEntryIsSelected(t *testing.T) {
 }
 
 // Tab yields to a WINDOWED MODAL FORM — and ONLY to that.
-//
-// "When inside an edit form, I feel this should be the one place where tab should
-// overwrite the tabbing through menus option. Moving up and down with the arrow
-// keys are fine, but I can definitely see people hitting tab and then being ripped
-// away from the item they were editing."
-//
-// The complement matters as much: an INLINE details-pane editor and a latched
-// search box must NOT take Tab, because yielding to every claim is what made the
-// ring stop at Work.
 func TestTabYieldsOnlyToAWindowedModalForm(t *testing.T) {
 	m := newTestApp()
 	for _, tb := range Tabs {
@@ -594,19 +500,7 @@ func TestTabYieldsOnlyToAWindowedModalForm(t *testing.T) {
 	m.SwitchTo(TabWork)
 	m.setFocus(focusContent)
 
-	// A FORM owns Tab — inline editor or a windowed modal — and the operator settled the
-	// rule explicitly: "ONCE IN EDIT/NEW MODE using down/up OR tab/shift+tab should move
-	// through the edit items as opposed to the top menu bar on every screen. Once you ctrl+s
-	// to save or hit Esc to get out of the editing mode, tab/shift+tab now affects the top
-	// tab menu again."
-	//
-	// This asserts BOTH halves of that: with a form open Tab goes to the FORM (the tab
-	// does not change, and the pane keeps the keyboard); with it closed Tab walks the bar
-	// again. The earlier version of this test asserted the opposite for an inline editor
-	// ("An INLINE details-pane editor must NOT take Tab ... it leaves for the bar"), quoting
-	// an earlier operator preference — the clarification above supersedes it, and that test
-	// passed only because the Work screen was MISSING FormOpen(), so it was satisfied by the
-	// absence rather than by design.
+	// A FORM owns Tab — inline editor or a windowed modal.
 	ws := m.screens[TabWork].(*work.Model)
 	form := kit2.NewForm("Edit work item",
 		kit2.FieldSpec{Name: "title", Label: "Title", Kind: kit2.KText},
@@ -658,10 +552,7 @@ func TestTabYieldsOnlyToAWindowedModalForm(t *testing.T) {
 	}
 }
 
-// CTRL+R IS NOT A NO-OP: toggleRightRail must actually change what railVisible reports. Its route and
-// its help entry both say "toggle conversations rail", but railVisible() used to ignore rightRailOpen
-// (the flag the toggle flips), so the chord changed dead state and the rail never left the screen. The
-// real-PTY mouse gate surfaced it; this pins it where it cannot drift.
+// CTRL+R IS NOT A NO-OP: toggleRightRail must actually change what railVisible reports.
 func TestRailToggleIsNotANoOp(t *testing.T) {
 	m := newTestApp()
 	m.active = TabAsk

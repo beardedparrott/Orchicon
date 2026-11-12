@@ -1,0 +1,27 @@
+# what the developer had to do INSTEAD to see the plane's activity
+# (evidence, not a pass): the tail of make run's stdout from step 1
+{"time":"2026-10-17T05:49:40.027367958Z","level":"WARN","msg":"reconcile scan failed","kind":"task","error":"scan ready tasks: db: list ready tasks: ERROR: relation \"work_items\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.027381864Z","level":"WARN","msg":"reconcile scan failed","kind":"recovery","error":"list pending recoveries: db: list pending recoveries: ERROR: relation \"recovery_executions\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.027385962Z","level":"WARN","msg":"reconcile scan failed","kind":"workflow","error":"list pending runs: db: list pending workflow runs: ERROR: relation \"workflow_runs\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.027365253Z","level":"ERROR","msg":"recurring_fire: scan query","error":"ERROR: relation \"work_items\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.02740077Z","level":"WARN","msg":"reconcile scan failed","kind":"worktree","error":"scan worktree candidates: db: list worktree candidates: ERROR: relation \"workflow_runs\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.02741175Z","level":"WARN","msg":"reconcile scan failed","kind":"scheduled_run","error":"ERROR: relation \"work_items\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.027367357Z","level":"WARN","msg":"reconcile scan failed","kind":"sequence","error":"scan sequence parents: db: list sequence active parents: ERROR: relation \"work_items\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.027433581Z","level":"WARN","msg":"reconcile scan failed","kind":"recurring_fire","error":"ERROR: relation \"work_items\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.227250813Z","level":"ERROR","msg":"scheduled_run: scan query","error":"ERROR: relation \"work_items\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.227280909Z","level":"WARN","msg":"reconcile scan failed","kind":"workflow","error":"list pending runs: db: list pending workflow runs: ERROR: relation \"workflow_runs\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.227281831Z","level":"WARN","msg":"reconcile scan failed","kind":"task","error":"scan ready tasks: db: list ready tasks: ERROR: relation \"work_items\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.227296919Z","level":"WARN","msg":"reconcile scan failed","kind":"worktree","error":"scan worktree candidates: db: list worktree candidates: ERROR: relation \"workflow_runs\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.22730278Z","level":"WARN","msg":"reconcile scan failed","kind":"scheduled_run","error":"ERROR: relation \"work_items\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.227280989Z","level":"WARN","msg":"reconcile scan failed","kind":"sequence","error":"scan sequence parents: db: list sequence active parents: ERROR: relation \"work_items\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.227287752Z","level":"WARN","msg":"reconcile scan failed","kind":"recovery","error":"list pending recoveries: db: list pending recoveries: ERROR: relation \"recovery_executions\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.227245282Z","level":"ERROR","msg":"recurring_fire: scan query","error":"ERROR: relation \"work_items\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:40.22736122Z","level":"WARN","msg":"reconcile scan failed","kind":"recurring_fire","error":"ERROR: relation \"work_items\" does not exist (SQLSTATE 42P01)"}
+{"time":"2026-10-17T05:49:46.172188239Z","level":"INFO","msg":"outbox relay stopped"}
+{"time":"2026-10-17T05:49:46.172204319Z","level":"INFO","msg":"shutting down","timeout":15000000000}
+{"time":"2026-10-17T05:49:46.172680945Z","level":"INFO","msg":"reconciler manager stopped"}
+make: *** [Makefile:273: run] Terminated
+2026/10/17 05:49:49 exporter export timeout: rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp 127.0.0.1:4317: connect: connection refused"
+2026/10/17 05:49:53 traces export: exporter export timeout: rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp [::1]:4317: connect: connection refused"
+2026/10/17 05:49:53 failed to upload metrics: context canceled: rpc error: code = Canceled desc = context canceled
+2026/10/17 05:49:59 exporter export timeout: rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp [::1]:4317: connect: connection refused"

@@ -13,18 +13,15 @@ import (
 	"github.com/beardedparrott/orchicon/internal/worker"
 )
 
-// Header field bounds for tool-driven worker edits — mirror
-// internal/worker's validateName/validateTextField limits so the tool
-// path enforces the same input contract as the Connect RPC.
+// Header field bounds for tool-driven worker edits — mirror internal/worker's
+// validateName/validateTextField limits so the tool path enforces the same input contract.
 const (
 	toolWorkerMaxNameLen    = 500
 	toolWorkerMaxDescLen    = 1 << 14
 	toolWorkerMaxPurposeLen = 1 << 14
 )
 
-// rowWithExtra marshals row and merges extra top-level keys into the flat
-// row JSON. Tool responses keep the flat row shape existing callers parse
-// while surfacing the created draft version (version, version_id).
+// rowWithExtra marshals row and merges extra top-level keys into the flat row JSON.
 func rowWithExtra(row any, extra map[string]any) (json.RawMessage, error) {
 	b, err := json.Marshal(row)
 	if err != nil {
@@ -42,10 +39,7 @@ func rowWithExtra(row any, extra map[string]any) (json.RawMessage, error) {
 
 func toolListWorkers(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		// IncludeEphemeral opts the caller into machine-managed transient
-		// workers (Quick Work). Default FALSE: the Workers screen and an
-		// agent's list both render rows a human reads, and a throwaway
-		// worker showing up there is exactly the leak this prevents.
+		// IncludeEphemeral opts the caller into machine-managed transient workers (Quick Work).
 		IncludeEphemeral bool `json:"include_ephemeral"`
 	}
 	if len(args) > 0 && string(args) != "null" {
@@ -91,11 +85,8 @@ func toolGetWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) (js
 	return json.Marshal(worker)
 }
 
-// toolCreateWorker creates a worker AND its first draft version-1 row in
-// one transaction via the shared worker.CreateWorkerTx core (the service
-// path's implementation), persisting model_ref and the prompt fields on
-// the version and writing the worker.created audit row. The worker is
-// immediately editable and publishable from the UI.
+// toolCreateWorker creates a worker AND its first draft version-1 row in one transaction via the
+// shared worker.CreateWorkerTx core (the service path's implementation).
 func toolCreateWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		Name         string `json:"name"`
@@ -108,10 +99,8 @@ func toolCreateWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 		Behavior     string `json:"behavior"`
 		AgentsMD     string `json:"agents_md"`
 		SystemPrompt string `json:"system_prompt"`
-		// Ephemeral marks the worker machine-managed and transient (Quick
-		// Work): hidden from the Workers view, and meant to be removed with
-		// delete_worker when the job ends. Top-level only in the sense that
-		// nothing else references it by FK — assigned_worker_ref is JSONB.
+		// Ephemeral marks the worker machine-managed and transient (Quick Work): hidden from the Workers
+		// view, and meant to be removed with delete_worker when the job ends.
 		Ephemeral bool `json:"ephemeral"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
@@ -156,10 +145,8 @@ func toolCreateWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 	})
 }
 
-// toolUpdateWorker edits the worker's header fields (name, description,
-// purpose) — the same scope as Service.UpdateWorker, with the same field
-// bounds — and writes a worker.updated audit row (no outbox event: the
-// service writes none for header updates, so this IS parity).
+// toolUpdateWorker edits the worker's header fields (name, description, purpose) — the same scope
+// as Service.UpdateWorker, with the same field bounds.
 func toolUpdateWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ID          string `json:"id"`

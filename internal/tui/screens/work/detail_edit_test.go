@@ -21,12 +21,8 @@ func editPlane(t *testing.T) *Model {
 	return m
 }
 
-// The operator: "When editing a work item, we should be able to edit it in the
-// details pane as opposed some small work item edit modal that pops up. That is
-// more natural and honestly much more usable."
-//
-// So 'e' must NOT open a modal: no floating form, and the DETAIL pane carries
-// the editor.
+// The operator: "When editing a work item, we should be able to edit it in the details pane as
+// opposed some small work item edit modal that pops up.
 func TestEditOpensInTheDetailsPaneNotAModal(t *testing.T) {
 	m := editPlane(t)
 	run(t, m, press(t, m, "e"))
@@ -104,10 +100,8 @@ func TestDetailEditEscCancels(t *testing.T) {
 	}
 }
 
-// The other work-item edit gestures use the same host, so there is ONE
-// editing surface rather than a mix of modals. Assign is deliberately GONE (a
-// worker ref does not belong on a work item), and scheduling moved INTO the
-// editor rather than keeping its own modal.
+// The other work-item edit gestures use the same host, so there is ONE editing surface rather than
+// a mix of modals.
 func TestStatusEditUsesThePane(t *testing.T) {
 	for _, key := range []string{"s"} {
 		m := editPlane(t)
@@ -122,10 +116,8 @@ func TestStatusEditUsesThePane(t *testing.T) {
 	}
 }
 
-// Assigning a worker ref directly to a work item is REMOVED: the operator's
-// "assign makes no sense on work items and is dangerous. That is old left over
-// from earlier versions ... Workflows handle this." 'w'/'W' must be inert and
-// no assign action may be offered.
+// Assigning a worker ref directly to a work item is REMOVED: the operator's "assign makes no sense
+// on work items and is dangerous.
 func TestAssignIsRemovedFromWorkItems(t *testing.T) {
 	m := editPlane(t)
 	for _, key := range []string{"w", "W"} {

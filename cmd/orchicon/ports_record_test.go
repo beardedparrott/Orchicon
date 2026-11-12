@@ -1,12 +1,6 @@
 package main
 
 // ports_record_test.go — the reader `orchicon restart` depends on.
-//
-// The ports are READ BACK from the record an install wrote, never re-resolved: re-resolving prompts
-// on a terminal when the spec is ambiguous, and a command that restarts existing work must not ask
-// a question. So the reader and its failure modes are what make `restart` safe to run on an
-// instance it did not create — including one installed by an older version, which is the case the
-// remedy message exists for.
 
 import (
 	"os"
@@ -25,10 +19,9 @@ func TestReadResolvedPortsRoundTripsWhatTheInstallRecorded(t *testing.T) {
 	scratchHome(t)
 	const instance = "dev"
 
-	// Written through the PRODUCTION writer, so this pins the pair rather than a JSON shape
-	// invented here — a reader that agrees only with the test's own marshal would not notice the
-	// writer changing.
-	written := map[string]int{"ORCHICON_CONTROL_PORT": 8080, "ORCHICON_GRAFANA_PORT": 3002}
+	// Written through the PRODUCTION writer, so this pins the pair rather than a JSON shape invented
+	// here.
+	written := map[string]int{"ORCHICON_CONTROL_PORT": 8080, "ORCHICON_POSTGRES_PORT": 5440}
 	writeResolvedPorts(instance, written)
 
 	got, err := readResolvedPorts(instance)

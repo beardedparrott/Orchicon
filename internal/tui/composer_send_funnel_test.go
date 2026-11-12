@@ -1,22 +1,6 @@
 package tui
 
 // composer_send_funnel_test.go — A KEY THAT PRODUCES A SEND MUST ALWAYS DISPATCH IT.
-//
-// The operator: "Sometimes on subsequent messages in Ask Orchicon conversations, I don't see the orchicon is
-// thinking and I have to send another message" — and then, decisively: "my message does not appear when
-// this happens."
-//
-// THAT SECOND DETAIL IS THE DIAGNOSIS. The optimistic echo is appended by sendFromComposer and BOTH store
-// paths preserve it (mergeHistory and replace each keep a "draft-*" row the durable view has not caught up
-// with), so a message that never appears cannot have been echoed — which means sendFromComposer never ran.
-// The composer emptied anyway, because the DOCK clears the buffer itself. Both halves together are a
-// swallowed send: the dock parks the message in a pending slot for the shell to collect, and the shell
-// never collected it.
-//
-// The hole was a COUNT: four callers of dock.Update, one of which collected the pending send. The wiring
-// test below drives the one that could carry a send — the slash palette forwards every key it does not case
-// to the dock, and its cases include "enter" but NOT "ctrl+j", which is the dock's own second spelling of
-// Enter (dock.enterKey: some terminals and PTY configurations send LF).
 
 import (
 	"strings"

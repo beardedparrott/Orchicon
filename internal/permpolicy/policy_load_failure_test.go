@@ -7,14 +7,8 @@ import (
 	"testing"
 )
 
-// TestABrokenPolicyIsNotADecision is the distinction whose absence cost the operator
-// two rounds of diagnosis.
-//
-// A malformed policy file and a policy that DENIES both surfaced as a bare error, so
-// nothing could tell "this file is denied" (a decision — respect it) from "the policy
-// is broken" (no decision was ever made). The native adapter reported the parse
-// failure to the model as "the operator denied you — do not retry", which was untrue
-// and the opposite of the right advice once the file was fixed.
+// TestABrokenPolicyIsNotADecision is the distinction whose absence cost the operator two rounds of
+// diagnosis.
 func TestABrokenPolicyIsNotADecision(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "permission-policy.yaml")
 	if err := os.WriteFile(path, []byte("deny:\n accept: []\n"), 0o600); err != nil {
@@ -38,9 +32,8 @@ func TestABrokenPolicyIsNotADecision(t *testing.T) {
 	}
 }
 
-// TestADenyIsNotALoadFailure is the CONTROL: a deny is a decision the policy
-// successfully made, so it must NOT be mistaken for a broken file — otherwise the
-// read exemption would let a denied read through.
+// TestADenyIsNotALoadFailure is the CONTROL: a deny is a decision the policy successfully made, so
+// it must NOT be mistaken for a broken file.
 func TestADenyIsNotALoadFailure(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "permission-policy.yaml")
 	if err := os.WriteFile(path, []byte("deny:\n  - /secret/**\naccept: []\n"), 0o600); err != nil {

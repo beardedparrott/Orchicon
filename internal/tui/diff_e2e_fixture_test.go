@@ -1,13 +1,5 @@
-// Package tui — diff_e2e_fixture_test.go — the fixture ledger and disposable
-// plane for diff_e2e_pty_test.go, plus a minimal terminal emulator that turns
-// the live process's byte stream into the SCREEN GRID the operator actually
-// sees.
-//
-// The emulator is what makes the geometry claims in the acceptance review
-// honest: a claim like "the long line's tail is reachable" or "the pane is N
-// cells wide" is asserted on the replayed grid, not on a struct field and not
-// by a substring search over raw escape bytes (bubbletea's line-skip renderer
-// makes a full frame unreliable to substring-match).
+// Package tui — diff_e2e_fixture_test.go — the fixture ledger and disposable plane for
+// diff_e2e_pty_test.go, plus a minimal terminal emulator that turns the live process's byte stream.
 package tui
 
 import (
@@ -41,19 +33,12 @@ type diffE2EFile struct {
 	// Marker is a short contiguous token painted by this file's diff body.
 	Marker string
 	Diff   string
-	// Tail is the final rune-run of the diff's deliberately long added line —
-	// the substring defect 3 asserts is REACHABLE. A wrapping (fixed) pane
-	// keeps it; a truncating (broken) pane destroys it.
+	// Tail is the final rune-run of the diff's deliberately long added line — the substring defect 3
+	// asserts is REACHABLE.
 	Tail string
 }
 
-// diffE2EBuildDiff builds a unified diff with hunkCount hunks, each adding
-// lineCount lines. Hunk 0 carries two witness lines NEAR THE TOP so a fit
-// assertion can read them off the initial frame without scrolling:
-//
-//   - diffE2EMarker: a short contiguous token (no wrap) proving the Diff body
-//     is showing this file's diff — the click-through witness;
-//   - the long (>100 column) tail line proving nothing is truncated.
+// diffE2EBuildDiff builds a unified diff with hunkCount hunks, each adding lineCount lines.
 func diffE2EBuildDiff(path, marker string, hunkCount, lineCount int) (string, string) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "--- a/%s\n+++ b/%s\n", path, path)
@@ -74,10 +59,7 @@ func diffE2EBuildDiff(path, marker string, hunkCount, lineCount int) (string, st
 	return b.String(), longTail
 }
 
-// diffE2EMarkers are short, per-file contiguous tokens. Each is deliberately
-// narrower than the minimum pane body so it never wraps — the reliable witness
-// that the Diff tab is showing THAT file's diff (a wrapped path or a long
-// content line is not).
+// diffE2EMarkers are short, per-file contiguous tokens.
 var diffE2EMarkers = map[string]string{
 	"cmd/first.go":       "WITFIRST",
 	"internal/second.go": "WITSECND",
@@ -119,9 +101,7 @@ func diffE2ELedger(kind, id string, files []diffE2EFile) []*v1.FileEdit {
 	return edits
 }
 
-// diffE2EFileEditService is the fixture FileEditService. It serves the fixture
-// ledger for any owner tuple and can be switched into the two honest-state
-// variants: an empty ledger and a failing fetch.
+// diffE2EFileEditService is the fixture FileEditService.
 type diffE2EFileEditService struct {
 	apiv1connect.UnimplementedFileEditServiceHandler
 	files []diffE2EFile
@@ -195,17 +175,15 @@ func (diffE2EAuthService) ListIdentities(context.Context, *connect.Request[v1.Li
 	}}), nil
 }
 
-// The pane's shell chrome geometry (the diffs package's unexported paneTopRow /
-// paneBodyRow contract): terminal row 3 is the pane's tab bar, row 4 is its
-// first body row. Duplicated here so this gate clicks the REAL coordinates.
+// The pane's shell chrome geometry (the diffs package's unexported paneTopRow / paneBodyRow
+// contract): terminal row 3 is the pane's tab bar, row 4 is its first body row.
 const (
 	diffPaneTopRow  = 3
 	diffPaneBodyRow = 4
 )
 
-// The scrollbar glyphs the pane paints (internal/tui/diffs/scrollbar.go) —
-// duplicated here because that package's constants are unexported and this gate
-// asserts on what the REAL process paints, not on importing the renderer.
+// The scrollbar glyphs the pane paints (internal/tui/diffs/scrollbar.go) — duplicated here because
+// that package's constants are unexported and this gate asserts on what the REAL process paints.
 const (
 	diffScrollThumbGlyph = "█"
 	diffScrollTrackGlyph = "│"
@@ -251,10 +229,8 @@ func diffE2EPlane(t *testing.T, fe *diffE2EFileEditService) string {
 // Minimal terminal emulator
 // ---------------------------------------------------------------------------
 
-// screen replays a live pty byte stream into a rows×cols grid — the cells the
-// terminal would actually show. It handles the subset of ANSI bubbletea's
-// alt-screen renderer emits: cursor positioning (CUP/HVP), line/display erase,
-// carriage return / line feed, backspace, and printable runes (width-aware).
+// screen replays a live pty byte stream into a rows×cols grid — the cells the terminal would
+// actually show.
 type screen struct {
 	cols, rows int
 	grid       [][]rune
@@ -494,11 +470,8 @@ func max2(a, b int) int {
 	return b
 }
 
-// startOrchPtySized is startOrchPtyAt with an explicit pty size (the shared
-// helper hardcodes 120x40). It mirrors that helper's env isolation, and pins
-// ORCHICON_CONFIG_DIR to THIS launch's home so the rail-width persistence is
-// per-launcher (a restart reusing the same home restores it; other tests never
-// see it) rather than the package-wide test dir.
+// startOrchPtySized is startOrchPtyAt with an explicit pty size (the shared helper hardcodes
+// 120x40).
 func startOrchPtySized(t *testing.T, bin, planeURL, home string, cols, rows int) *ptySession {
 	t.Helper()
 	cmd := exec.Command(bin)
@@ -507,9 +480,7 @@ func startOrchPtySized(t *testing.T, bin, planeURL, home string, cols, rows int)
 		"ORCHICON_TOKEN=oc_diff_e2e",
 		"TERM=xterm-256color",
 		"HOME="+home,
-		// The TUI resolves the config path from ORCHICON_CONFIG_DIR when set
-		// (config.DefaultPath). The package init() points it at a shared temp dir;
-		// override it per-launch so a persisted rail width is scoped to `home`.
+		// The TUI resolves the config path from ORCHICON_CONFIG_DIR when set (config.DefaultPath).
 		"ORCHICON_CONFIG_DIR="+filepath.Join(home, ".orchicon"),
 	)
 	tty, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})

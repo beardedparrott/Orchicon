@@ -10,11 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// WorkflowRow is the data-access shape of a workflows table row — the
-// immutable header (docs/02 §2.4, docs/09 §3.4). The mutable snapshot
-// (steps, inputs, outputs) lives in
-// WorkflowVersionRow. type distinguishes one-shot workflows from
-// repeatable templates (docs/11 §2.1).
+// WorkflowRow is the data-access shape of a workflows table row — the immutable header (docs/02
+// §2.4, docs/09 §3.4).
 type WorkflowRow struct {
 	ID             string
 	TenantID       string
@@ -27,23 +24,13 @@ type WorkflowRow struct {
 	Version        int
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
-	// Ephemeral marks a machine-managed transient workflow (Ask Orchicon
-	// Quick Work): built for one job, hidden from the Workflows view, and
-	// HARD-DELETED when the job ends. Always false for a human-created
-	// workflow.
-	//
-	// Ungated by id: GetWorkflow and the run path read this row directly and
-	// deliberately ignore the flag — a run must be able to execute the very
-	// workflow the list gate hides. Only the LIST gate applies. See
-	// ephemeralPredicateOn.
+	// Ephemeral marks a machine-managed transient workflow (Ask Orchicon Quick Work): built for one
+	// job, hidden from the Workflows view, and HARD-DELETED when the job ends.
 	Ephemeral bool
 }
 
-// WorkflowVersionRow is the data-access shape of a workflow_versions
-// table row — the snapshot of a Workflow's steps at a specific version
-// (docs/02 §2.4, docs/09 §3.4). Once published, a version is immutable;
-// changes create a new version. The steps field is a JSON array of Step
-// messages (validated at the API boundary).
+// WorkflowVersionRow is the data-access shape of a workflow_versions table row — the snapshot of a
+// Workflow's steps at a specific version (docs/02 §2.4, docs/09 §3.4).
 type WorkflowVersionRow struct {
 	ID          string
 	TenantID    string
@@ -58,11 +45,8 @@ type WorkflowVersionRow struct {
 	CreatedAt   time.Time
 }
 
-// WorkflowRunRow is the data-access shape of a workflow_runs table row
-// (docs/02 §2.4, docs/09 §3.4). A single execution of a published
-// Workflow version, progressed by the WorkflowReconciler.
-// work_item_id and bound_worker_ref are populated for template-bound
-// runs (docs/11 §5.1).
+// WorkflowRunRow is the data-access shape of a workflow_runs table row (docs/02 §2.4, docs/09
+// §3.4).
 type WorkflowRunRow struct {
 	ID              string
 	TenantID        string
@@ -75,22 +59,23 @@ type WorkflowRunRow struct {
 	WorkItemID      string // bound work item id; empty for one-shot runs
 	BoundWorkerRef  []byte // jsonb; reserved for future use
 	RuntimeImage    string // resolved runtime container image tag at run start
-	RuntimeReady    bool   // runtime-serve readiness gate: executions dispatch only once true
-	WorktreeStatus  string // WorktreeReconciler provisioning state (pending/ready/skipped/failed/pruned)
-	WorktreePath    string // isolated working tree path (git-backed runs)
-	WorktreeBranch  string // deterministic branch created for the run
-	Version         int
-	StartedAt       *time.Time
-	EndedAt         *time.Time
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// RuntimeReady is the RUNTIME GATE, NOT A LIVE TRANSPORT.
+	RuntimeReady   bool   // runtime-serve readiness gate: executions dispatch only once true
+	WorktreeStatus string // WorktreeReconciler provisioning state (pending/ready/skipped/failed/pruned)
+	WorktreePath   string // isolated working tree path (git-backed runs)
+	WorktreeBranch string // deterministic branch created for the run
+	// ErrorMessage / ErrorKind are the run's FAILURE, as an OUTCOME rather than an input.
+	ErrorMessage string
+	ErrorKind    string
+	Version      int
+	StartedAt      *time.Time
+	EndedAt        *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
-// PrFromRunContext extracts the PR surface (pr_url, pr_state) that the
-// per-branch DevOps worker authors into the run's structured `run_context`
-// JSONB. Best-effort: missing or non-string keys yield empty strings, so the
-// read path falls back to the deterministic `pull/new/{branch}` link derived
-// from the project's repo_slug.
+// PrFromRunContext extracts the PR surface (pr_url, pr_state) that the per-branch DevOps worker
+// authors into the run's structured `run_context` JSONB.
 func PrFromRunContext(runContext []byte) (prURL, prState string) {
 	if len(runContext) == 0 {
 		return "", ""
@@ -108,12 +93,8 @@ func PrFromRunContext(runContext []byte) (prURL, prState string) {
 	return prURL, prState
 }
 
-// ProvenanceFromRunContext extracts the automation provenance block that a
-// recurring fire writes into the run's run_context at fire time (feature 4.1,
-// D3): spawned_by (the recurring item id), spawned_by_run_id (this run's id)
-// and outputs_mode (standard/idea/none). The create path reads it to stamp a
-// newly created work item. Best-effort: missing or non-string keys yield zero
-// values, so a run with no provenance block is treated as a plain run.
+// ProvenanceFromRunContext extracts the automation provenance block that a recurring fire writes
+// into the run's run_context at fire time (feature 4.1, D3): spawned_by (the recurring item id).
 func ProvenanceFromRunContext(runContext []byte) (spawnedByWorkItemID, spawnedByRunID, outputsMode string) {
 	if len(runContext) == 0 {
 		return "", "", ""
@@ -134,11 +115,7 @@ func ProvenanceFromRunContext(runContext []byte) (spawnedByWorkItemID, spawnedBy
 	return spawnedByWorkItemID, spawnedByRunID, outputsMode
 }
 
-// MergeRunContext merges add into existing run_context JSONB, returning the
-// merged bytes. A nil/empty existing is treated as {}. Returns ok=false on
-// marshal failure (the caller keeps the original). Exported so the workflow
-// start path can stamp provenance into the run context after the run is
-// created (the run id is only known after creation).
+// MergeRunContext merges add into existing run_context JSONB, returning the merged bytes.
 func MergeRunContext(existing []byte, add map[string]any) ([]byte, bool) {
 	out := map[string]any{}
 	if len(existing) > 0 {
@@ -156,13 +133,7 @@ func MergeRunContext(existing []byte, add map[string]any) ([]byte, bool) {
 	return b, true
 }
 
-// WorkflowStepRunRow is the data-access shape of a workflow_step_runs
-// table row (docs/09 §3.4). The runtime state of a single step within
-// a WorkflowRun. iteration and superseded_by track loop decision
-// re-entry (docs/11 §3.4). worktree_* carry the per-step-run isolated
-// working tree provisioned for parallel-branch children
-// (architecture-notes/concurrent-step-run-dispatch.md D2); non-branch
-// steps keep them at their defaults ('pending'/empty).
+// WorkflowStepRunRow is the data-access shape of a workflow_step_runs table row (docs/09 §3.4).
 type WorkflowStepRunRow struct {
 	ID                string
 	TenantID          string
@@ -186,10 +157,7 @@ type WorkflowStepRunRow struct {
 	UpdatedAt         time.Time
 }
 
-// CreateWorkflow inserts a new workflow header row within the given
-// tenant transaction. The caller controls the transaction so the outbox
-// row can be enqueued in the same atomic unit (docs/09 §6). Version
-// starts at 1; current_version starts at 0 (no published versions yet).
+// CreateWorkflow inserts a new workflow header row within the given tenant transaction.
 func CreateWorkflow(ctx context.Context, tx pgx.Tx, w WorkflowRow) (WorkflowRow, error) {
 	const q = `INSERT INTO workflows
 		(id, tenant_id, project_id, name, current_version, status, type, git_strategy, ephemeral)
@@ -244,20 +212,13 @@ type ListWorkflowsFilter struct {
 	Search        string
 	SortBy        string // "name", "status", "created_at" (default "id")
 	SortOrder     string // "asc" or "desc" (default "asc")
-	// EphemeralScope scopes the ephemeral split (Ask Orchicon Quick Work):
-	// ""/"exclude" (the default) = ONLY ordinary workflows — the Workflows
-	// view; "only" = only ephemeral workflows; "include" = both, for the
-	// Quick Work agent managing the workflows it created.
-	//
-	// The zero value is the SAFE value on purpose: a caller that has never
-	// heard of ephemeral workflows hides them by default. See
-	// ephemeralPredicateOn.
+	// EphemeralScope scopes the ephemeral split (Ask Orchicon Quick Work): ""/"exclude" (the default) =
+	// ONLY ordinary workflows — the Workflows view; "only" = only ephemeral workflows.
 	EphemeralScope string
 }
 
-// ListWorkflows returns a page of workflows for the tenant with
-// cursor-based pagination, optional search/filter, and configurable sort
-// (docs/07 §5.2).
+// ListWorkflows returns a page of workflows for the tenant with cursor-based pagination, optional
+// search/filter, and configurable sort (docs/07 §5.2).
 func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]WorkflowRow, error) {
 	if f.PageSize <= 0 || f.PageSize > 1000 {
 		f.PageSize = 100
@@ -328,23 +289,7 @@ func ListWorkflows(ctx context.Context, tx pgx.Tx, f ListWorkflowsFilter) ([]Wor
 	return out, rows.Err()
 }
 
-// DeleteWorkflowRun hard-deletes ONE workflow run and its step runs, within the tenant scope. This is
-// an irreversible operation.
-//
-// IT IS DELIBERATELY NOT DeleteWorkflow. That one cascades from the WORKFLOW to its ENTIRE run history
-// — every run the workflow has ever produced — which is a different and far blunter act than pruning
-// one finished run from the runs list. The operator, mid-live-test: "Executions and Workflow Runs do
-// not have a delete operation (single and bulk)." Executions had DeleteExecution all along; runs had
-// nothing at any layer, and the only existing path (deleting the parent workflow) would have taken the
-// whole history with it.
-//
-// STEP RUNS GO FIRST, in this order, exactly as DeleteWorkflow does: workflow_step_runs.workflow_run_id
-// references workflow_runs, so removing the run first would either fail on the constraint or silently
-// orphan the step rows depending on the constraint's action. Deleting the children explicitly makes
-// the outcome the same either way.
-//
-// The row count is checked: deleting a run that is not there is ErrNotFound rather than a silent
-// success, so a client cannot believe it pruned something it did not.
+// DeleteWorkflowRun hard-deletes ONE workflow run and its step runs, within the tenant scope.
 func DeleteWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, runID string) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM workflow_step_runs WHERE tenant_id = $1 AND workflow_run_id = $2`, tenantID, runID); err != nil {
 		return fmt.Errorf("db: delete workflow run step runs: %w", err)
@@ -359,9 +304,8 @@ func DeleteWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, runID string) e
 	return nil
 }
 
-// DeleteWorkflow hard-deletes a workflow and all its child rows (runs,
-// step runs, versions, edit locks) within the tenant scope. This is an
-// irreversible operation (docs/02 §2.4 — use Deprecate for soft hide).
+// DeleteWorkflow hard-deletes a workflow and all its child rows (runs, step runs, versions, edit
+// locks) within the tenant scope.
 func DeleteWorkflow(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
 	if _, err := tx.Exec(ctx, `DELETE FROM workflow_step_runs WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE tenant_id = $1 AND workflow_id = $2)`, tenantID, id); err != nil {
 		return fmt.Errorf("db: delete workflow step runs: %w", err)
@@ -474,9 +418,8 @@ func UpdateWorkflowCurrentVersion(ctx context.Context, tx pgx.Tx, tenantID, id s
 	return w, nil
 }
 
-// CreateWorkflowVersion inserts a new workflow version snapshot row
-// within the given tenant transaction. The version number is computed by
-// the caller (max+1). Status starts as "draft".
+// CreateWorkflowVersion inserts a new workflow version snapshot row within the given tenant
+// transaction.
 func CreateWorkflowVersion(ctx context.Context, tx pgx.Tx, v WorkflowVersionRow) (WorkflowVersionRow, error) {
 	const q = `INSERT INTO workflow_versions
 		(id, tenant_id, workflow_id, version, version_note, status,
@@ -499,9 +442,7 @@ func CreateWorkflowVersion(ctx context.Context, tx pgx.Tx, v WorkflowVersionRow)
 	return row, nil
 }
 
-// PublishWorkflowVersion transitions a draft version to published,
-// setting published_at. Uses status CAS (draft → published). Returns
-// ErrNotFound if the version is not in draft state.
+// PublishWorkflowVersion transitions a draft version to published, setting published_at.
 func PublishWorkflowVersion(ctx context.Context, tx pgx.Tx, tenantID, workflowID string, version int) (WorkflowVersionRow, error) {
 	const q = `UPDATE workflow_versions
 		SET status = 'published', published_at = now()
@@ -523,10 +464,7 @@ func PublishWorkflowVersion(ctx context.Context, tx pgx.Tx, tenantID, workflowID
 	return v, nil
 }
 
-// GetLatestWorkflowVersion returns the latest version (by version
-// number) for a workflow. If publishedOnly is true, returns the latest
-// published version; otherwise returns the newest version regardless of
-// status.
+// GetLatestWorkflowVersion returns the latest version (by version number) for a workflow.
 func GetLatestWorkflowVersion(ctx context.Context, tx pgx.Tx, tenantID, workflowID string, publishedOnly bool) (WorkflowVersionRow, error) {
 	q := `SELECT id, tenant_id, workflow_id, version, version_note, status,
 		steps, inputs, outputs, published_at, created_at
@@ -645,11 +583,8 @@ func NextWorkflowVersionNumber(ctx context.Context, tx pgx.Tx, tenantID, workflo
 
 // --- WorkflowRun -----------------------------------------------------------
 
-// CreateWorkflowRun inserts a new workflow run row within the given
-// tenant transaction (docs/03 §2: StartWorkflow).
-// workItemVal returns nil for empty string (SQL NULL) so FK constraints
-// are not violated by the zero value. Used by CreateWorkflowRun and
-// UpdateWorkflowRun for work_item_id.
+// CreateWorkflowRun inserts a new workflow run row within the given tenant transaction (docs/03 §2:
+// StartWorkflow).
 func workItemVal(s string) *string {
 	if s == "" {
 		return nil
@@ -672,7 +607,7 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id, tenant_id, workflow_id, workflow_version, project_id, status,
 			current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-			runtime_ready, worktree_status, worktree_path, worktree_branch,
+			runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at`
 	row := r
 	var wiID *string
@@ -685,7 +620,7 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 		&row.ID, &row.TenantID, &row.WorkflowID, &row.WorkflowVersion,
 		&row.ProjectID, &row.Status, &row.CurrentStep, &row.RunContext,
 		&wiID, &row.BoundWorkerRef, &row.RuntimeImage, &row.RuntimeReady,
-		&row.WorktreeStatus, &row.WorktreePath, &row.WorktreeBranch,
+		&row.WorktreeStatus, &row.WorktreePath, &row.WorktreeBranch, &row.ErrorMessage, &row.ErrorKind,
 		&row.Version, &row.StartedAt, &row.EndedAt,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
@@ -702,7 +637,7 @@ func CreateWorkflowRun(ctx context.Context, tx pgx.Tx, r WorkflowRunRow) (Workfl
 func GetWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkflowRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs WHERE id = $1 AND tenant_id = $2`
 	var r WorkflowRunRow
@@ -711,7 +646,7 @@ func GetWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (Workfl
 		&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 		&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 		&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-		&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+		&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 		&r.Version, &r.StartedAt, &r.EndedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -752,7 +687,7 @@ func listWorkflowRunsQuery(f ListWorkflowRunsFilter) (string, []any) {
 	}
 	q := `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1`
@@ -779,14 +714,7 @@ func listWorkflowRunsQuery(f ListWorkflowRunsFilter) (string, []any) {
 		if f.SortOrder == "asc" {
 			order, cmp = "ASC", ">"
 		}
-		// Keyset pagination on the (started_at, id) tuple. started_at is
-		// nullable and sorted NULLS LAST, so a NULL cursor row pages only
-		// within the trailing NULL block (id order), while a non-NULL cursor
-		// also admits the NULL block that sorts after it. RLS scopes the
-		// cursor subqueries inside the tenant tx.
-		//
-		// THE CURSOR PREDICATE BELONGS TO THE WHERE CLAUSE, so it is emitted
-		// BEFORE the ORDER BY (see listWorkflowRunsQuery).
+		// Keyset pagination on the (started_at, id) tuple.
 		if f.AfterID != "" {
 			n := len(args) + 1 // the cursor id param
 			q += fmt.Sprintf(` AND (
@@ -807,11 +735,7 @@ func listWorkflowRunsQuery(f ListWorkflowRunsFilter) (string, []any) {
 	if f.SortOrder == "asc" {
 		order, cmp = "ASC", ">"
 	}
-	// id-keyset pagination composes exactly with an id sort. (The old
-	// `id > $2` cursor with a DESC default re-returned page 1.)
-	//
-	// Same clause order as the tuple branch above: the cursor predicate is part
-	// of the WHERE clause and is emitted BEFORE the ORDER BY.
+	// id-keyset pagination composes exactly with an id sort.
 	if f.AfterID != "" {
 		q += fmt.Sprintf(` AND id %s $%d`, cmp, len(args)+1)
 		args = append(args, f.AfterID)
@@ -822,12 +746,8 @@ func listWorkflowRunsQuery(f ListWorkflowRunsFilter) (string, []any) {
 	return q, args
 }
 
-// ListWorkflowRunsFilter scopes a list query by tenant and any combination
-// of workflow / project / work item (empty = no filter on that axis),
-// optionally filtered by status. SortBy/SortOrder control ordering; the
-// default is id DESC (kept for backward-compat with the run view and the
-// AskOrchicon tool). When SortBy=started_at the runs order by their real
-// start time (NULLS LAST so created-but-never-started runs sort last).
+// ListWorkflowRunsFilter scopes a list query by tenant and any combination of workflow / project /
+// work item (empty = no filter on that axis), optionally filtered by status.
 type ListWorkflowRunsFilter struct {
 	TenantID   string
 	WorkflowID string
@@ -856,7 +776,7 @@ func ListWorkflowRuns(ctx context.Context, tx pgx.Tx, f ListWorkflowRunsFilter) 
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -876,6 +796,9 @@ type UpdateWorkflowRunFields struct {
 	Status      *string
 	CurrentStep *string
 	RunContext  *[]byte
+	// ErrorMessage / ErrorKind record WHY a run failed, as an outcome.
+	ErrorMessage *string
+	ErrorKind    *string
 	StartedAt   *time.Time
 	EndedAt     *time.Time
 	// ProjectID lets a workflow step bind the run to a project on the
@@ -887,19 +810,14 @@ type UpdateWorkflowRunFields struct {
 	// RuntimeImage is the resolved runtime container image tag captured
 	// at run start.
 	RuntimeImage *string
-	// RuntimeReady flips the runtime-serve readiness gate. The reconciler
-	// sets it false at run start and the async ensure-serving pass sets it
-	// true once the workflow's runtime opencode serve is proven usable.
+	// RuntimeReady flips the runtime-serve readiness gate.
 	RuntimeReady *bool
-	// WorktreeStatus/Path/Branch are written by the WorktreeReconciler
-	// once the run's isolated working tree is provisioned (or skipped/
-	// failed). All three are set atomically on the ready transition.
+	// WorktreeStatus/Path/Branch are written by the WorktreeReconciler once the run's isolated working
+	// tree is provisioned (or skipped/ failed).
 	WorktreeStatus *string
 	WorktreePath   *string
 	WorktreeBranch *string
-	// ClearEndedAt clears ended_at to NULL regardless of the EndedAt
-	// pointer. Used when resuming a terminalized (failed) run — the ended
-	// timestamp must be cleared so the restarted run's lifecycle is honest.
+	// ClearEndedAt clears ended_at to NULL regardless of the EndedAt pointer.
 	ClearEndedAt bool
 }
 
@@ -911,6 +829,16 @@ func UpdateWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expe
 	if f.Status != nil {
 		q += fmt.Sprintf(`, status = $%d`, setIdx)
 		args = append(args, *f.Status)
+		setIdx++
+	}
+	if f.ErrorMessage != nil {
+		q += fmt.Sprintf(`, error_message = $%d`, setIdx)
+		args = append(args, *f.ErrorMessage)
+		setIdx++
+	}
+	if f.ErrorKind != nil {
+		q += fmt.Sprintf(`, error_kind = $%d`, setIdx)
+		args = append(args, *f.ErrorKind)
 		setIdx++
 	}
 	if f.CurrentStep != nil {
@@ -979,7 +907,7 @@ func UpdateWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expe
 	q += ` WHERE tenant_id = $1 AND id = $2 AND version = $3`
 	q += ` RETURNING id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at`
 	var r WorkflowRunRow
 	var wiID *string
@@ -987,7 +915,7 @@ func UpdateWorkflowRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expe
 		&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 		&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 		&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-		&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+		&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 		&r.Version, &r.StartedAt, &r.EndedAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)
@@ -1081,9 +1009,7 @@ func GetWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string) (Wo
 	return s, nil
 }
 
-// GetWorkflowStepRunByStep returns the step run for a given
-// (workflow_run_id, step_id) pair. Used by the reconciler to look up
-// the runtime state of a step within a run.
+// GetWorkflowStepRunByStep returns the step run for a given (workflow_run_id, step_id) pair.
 func GetWorkflowStepRunByStep(ctx context.Context, tx pgx.Tx, tenantID, runID, stepID string) (WorkflowStepRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
 		status, attempt, result, 		worker_execution_id,
@@ -1115,12 +1041,8 @@ func GetWorkflowStepRunByStep(ctx context.Context, tx pgx.Tx, tenantID, runID, s
 	return s, nil
 }
 
-// GetWorkflowStepRunByExecution returns the workflow step run linked to a
-// worker execution (via worker_execution_id). Used to resolve the actual
-// per-step system prompt (_prompt) an execution was dispatched with — the
-// execution page should show THIS, not the shared work item's prompt_context
-// (which holds the FIRST step's composite and never changes — a field incident
-// showed every worker as "DevOps Engineer").
+// GetWorkflowStepRunByExecution returns the workflow step run linked to a worker execution (via
+// worker_execution_id).
 func GetWorkflowStepRunByExecution(ctx context.Context, tx pgx.Tx, tenantID, executionID string) (WorkflowStepRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_run_id, step_id, step_name, step_kind,
 		status, attempt, result, 		worker_execution_id,
@@ -1203,9 +1125,8 @@ type UpdateWorkflowStepRunFields struct {
 	WorktreeBranch    *string
 	StartedAt         *time.Time
 	EndedAt           *time.Time
-	// ClearEndedAt clears ended_at to NULL regardless of the EndedAt
-	// pointer (used when retrying a failed/blocked step run so the
-	// re-dispatched run's lifecycle is honest).
+	// ClearEndedAt clears ended_at to NULL regardless of the EndedAt pointer (used when retrying a
+	// failed/blocked step run so the re-dispatched run's lifecycle is honest).
 	ClearEndedAt bool
 }
 
@@ -1301,13 +1222,12 @@ func UpdateWorkflowStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string, 
 	return s, nil
 }
 
-// ListPendingWorkflowRuns returns workflow runs in a non-terminal state
-// (pending/running/paused) for a tenant, ordered by creation time. Used
-// by the WorkflowReconciler to find runs to progress (docs/03 §2).
+// ListPendingWorkflowRuns returns workflow runs in a non-terminal state (pending/running/paused)
+// for a tenant, ordered by creation time.
 func ListPendingWorkflowRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkflowRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('pending', 'running', 'paused')
@@ -1325,7 +1245,7 @@ func ListPendingWorkflowRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -1339,22 +1259,15 @@ func ListPendingWorkflowRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([
 	return out, rows.Err()
 }
 
-// ListWorktreeCandidates returns workflow runs the WorktreeReconciler
-// should provision an isolated working tree for: non-terminal runs that
-// have a bound project (one-shot runs bind their project on first
-// dispatch — UpdateWorkflowRunFields.ProjectID — so empty project_id
-// runs are skipped) and have not yet been provisioned (worktree_status
-// 'pending'; 'ready'/'skipped'/'failed' runs are left alone). The
-// 'pending' default makes the scan self-healing for runs armed before
-// the columns existed. Batch-capped so one pass can't monopolize the
-// reconciler goroutine.
+// ListWorktreeCandidates returns workflow runs the WorktreeReconciler should provision an isolated
+// working tree for: non-terminal runs that have a bound project (one-shot runs bind their project.
 func ListWorktreeCandidates(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
 	if limit <= 0 {
 		limit = 16
 	}
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('pending', 'running') AND project_id <> ''
@@ -1374,7 +1287,7 @@ func ListWorktreeCandidates(ctx context.Context, tx pgx.Tx, tenantID string, lim
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -1389,23 +1302,23 @@ func ListWorktreeCandidates(ctx context.Context, tx pgx.Tx, tenantID string, lim
 }
 
 // ListTerminalRunsWithWorktrees returns workflow runs in a terminal state
-// (completed/failed/aborted) that still have a recorded worktree to reap
-// (worktree_status 'ready' with a recorded path). This is the scan-side
-// discovery surface for the WorktreeReconciler's prune pass — terminal
-// runs whose worktrees were already pruned are excluded by the
-// 'ready' + non-empty path predicate, so re-scanning is a no-op.
-// Batch-capped to mirror ListWorktreeCandidates.
+// (completed/failed/aborted) that still have a recorded worktree to reap (worktree_status 'ready'.
 func ListTerminalRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
 	if limit <= 0 {
 		limit = 16
 	}
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('completed', 'failed', 'aborted')
-		  AND worktree_status = 'ready' AND worktree_path <> ''
+		  -- 'failed' AS WELL AS 'ready'. A provisioning failure can leave the run-namespaced directory behind
+		  -- before the branch is cut; selecting only 'ready' meant the pruner never saw it, so the debris
+		  -- outlived every sweep and eventually blocked a later run. Retaining it has no resume value — a retry
+		  -- re-provisions from the branch. A 'ready' worktree of a failed run is still retained (that is the
+		  -- deliberate resumability feature).
+		  AND worktree_status IN ('ready', 'failed') AND worktree_path <> ''
 		ORDER BY created_at ASC
 		LIMIT $2`
 	rows, err := tx.Query(ctx, q, tenantID, limit)
@@ -1421,7 +1334,7 @@ func ListTerminalRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID stri
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -1435,23 +1348,15 @@ func ListTerminalRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID stri
 	return out, rows.Err()
 }
 
-// ListTerminalRunsWithPrunedBranches returns COMPLETED workflow runs whose
-// worktree was already pruned but that still record a worktree branch
-// (worktree_status = 'pruned' + non-empty worktree_branch). These are the
-// orphan-branch class: the existing prune pass only reaps 'ready' worktrees
-// and deletes their branch at that moment; a branch that survived pruning
-// (e.g. the run completed after its worktree was taken down by an earlier
-// pass, or a squash merge landed after the prune pass) is never revisited,
-// leaving a dead local ref. Only COMPLETED runs are reclaimable (success-only
-// deletion: a failed/aborted run keeps its branch for a retry to re-attach
-// to it). Batch-capped like the other scan surfaces.
+// ListTerminalRunsWithPrunedBranches returns COMPLETED workflow runs whose worktree was already
+// pruned but that still record a worktree branch (worktree_status = 'pruned' + non-empty.
 func ListTerminalRunsWithPrunedBranches(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
 	if limit <= 0 {
 		limit = 16
 	}
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status = 'completed'
@@ -1471,7 +1376,7 @@ func ListTerminalRunsWithPrunedBranches(ctx context.Context, tx pgx.Tx, tenantID
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -1485,15 +1390,8 @@ func ListTerminalRunsWithPrunedBranches(ctx context.Context, tx pgx.Tx, tenantID
 	return out, rows.Err()
 }
 
-// ListTerminalStepRunsWithPrunedBranches returns workflow step runs whose
-// branch worktree was already pruned but that still record a worktree branch,
-// belonging to a COMPLETED run — the orphan step-branch class. The existing
-// step prune pass only re-claims 'ready' worktrees and deletes the branch for
-// the step run at that moment; a step run pruned earlier (a superseded loop
-// iteration, or pruned before its run completed) is never revisited, so its
-// branch — which is provably ours and merged once the run completed — survives
-// as a dead local ref. Only step runs of a COMPLETED run are reclaimable.
-// Batch-capped like the scan surface.
+// ListTerminalStepRunsWithPrunedBranches returns workflow step runs whose branch worktree was
+// already pruned but that still record a worktree branch, belonging to a COMPLETED run.
 func ListTerminalStepRunsWithPrunedBranches(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowStepRunRow, error) {
 	if limit <= 0 {
 		limit = 16
@@ -1535,23 +1433,15 @@ func ListTerminalStepRunsWithPrunedBranches(ctx context.Context, tx pgx.Tx, tena
 	return out, rows.Err()
 }
 
-// ListTerminalRunsWithPrunedBranchesInclusive returns terminal
-// workflow runs (completed/failed/aborted) whose worktree was already
-// pruned but that still record a worktree branch, FILTERED to the
-// reclaimable window: a run is reclaimable when it is completed (always)
-// or when it is failed/aborted and the bound work item is terminal
-// non-replayable (succeeded/skipped/cancelled/archived) or the run has
-// no bound work item at all. Non-reclaimable failed/aborted rows (active
-// work item) are excluded so the sweep's ORDER BY ... LIMIT page never
-// pins on them (stuck-page fix). Keeps the original completed-only
-// func for audit; this is the sweep's inclusive window.
+// ListTerminalRunsWithPrunedBranchesInclusive returns terminal workflow runs
+// (completed/failed/aborted) whose worktree was already pruned but that still record a worktree.
 func ListTerminalRunsWithPrunedBranchesInclusive(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
 	if limit <= 0 {
 		limit = 16
 	}
 	const q = `SELECT r.id, r.tenant_id, r.workflow_id, r.workflow_version, r.project_id, r.status,
 		current_step, r.run_context, r.work_item_id, r.bound_worker_ref, r.runtime_image,
-		r.runtime_ready, r.worktree_status, r.worktree_path, r.worktree_branch,
+		r.runtime_ready, r.worktree_status, r.worktree_path, r.worktree_branch, r.error_message, r.error_kind,
 			r.version, r.started_at, r.ended_at, r.created_at, r.updated_at
 		FROM workflow_runs r
 		LEFT JOIN work_items wi ON wi.id = r.work_item_id AND wi.tenant_id = r.tenant_id
@@ -1573,7 +1463,7 @@ func ListTerminalRunsWithPrunedBranchesInclusive(ctx context.Context, tx pgx.Tx,
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -1587,13 +1477,8 @@ func ListTerminalRunsWithPrunedBranchesInclusive(ctx context.Context, tx pgx.Tx,
 	return out, rows.Err()
 }
 
-// ListTerminalStepRunsWithPrunedBranchesInclusive returns workflow step
-// runs whose branch worktree was already pruned but that still record a
-// worktree branch, belonging to a terminal run (completed/failed/aborted),
-// FILTERED to the reclaimable window: the parent run is completed (always
-// reclaimable) or failed/aborted with a terminal non-replayable work item
-// (or no bound work item). Excludes non-reclaimable failed/aborted rows
-// so the sweep page advances. Mirror of the run inclusive query.
+// ListTerminalStepRunsWithPrunedBranchesInclusive returns workflow step runs whose branch worktree
+// was already pruned but that still record a worktree branch.
 func ListTerminalStepRunsWithPrunedBranchesInclusive(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowStepRunRow, error) {
 	if limit <= 0 {
 		limit = 16
@@ -1637,18 +1522,12 @@ func ListTerminalStepRunsWithPrunedBranchesInclusive(ctx context.Context, tx pgx
 	return out, rows.Err()
 }
 
-// ListBackfillPRRuns returns git-backed terminal workflow runs whose
-// run_context has no pr_url yet — the one-shot PR backfill target set
-// (architecture-notes/backfill-real-pr-urls-on-completed-runs-link-only-to-the-actual-pr.md).
-// A run qualifies when it is terminal (completed/failed/aborted), is
-// git-backed (a worktree was provisioned and a branch recorded), and has not
-// already captured a pr_url. worktree_status of 'pruned' or 'ready' both count
-// as git-backed; runs that were skipped/failed to provision a worktree carry
-// no branch to resolve.
+// ListBackfillPRRuns returns git-backed terminal workflow runs whose run_context has no pr_url yet
+// — the one-shot PR backfill target set.
 func ListBackfillPRRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkflowRunRow, error) {
 	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
 		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
-		runtime_ready, worktree_status, worktree_path, worktree_branch,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
 			version, started_at, ended_at, created_at, updated_at
 		FROM workflow_runs
 		WHERE tenant_id = $1 AND status IN ('completed', 'failed', 'aborted')
@@ -1676,7 +1555,7 @@ func ListBackfillPRRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([]Work
 			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
 			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
 			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
-			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
 			&r.Version, &r.StartedAt, &r.EndedAt,
 			&r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
@@ -1690,19 +1569,8 @@ func ListBackfillPRRuns(ctx context.Context, tx pgx.Tx, tenantID string) ([]Work
 	return out, rows.Err()
 }
 
-// ListWorktreeStepRunCandidates returns workflow step runs the
-// WorktreeReconciler should provision a per-branch isolated working tree
-// for: step runs belonging to NON-terminal runs that have a bound project,
-// whose worktree_status is still 'pending', and whose own step-run status
-// is NOT terminal (a succeeded/failed/skipped/blocked step run will never
-// dispatch, so it never needs a branch worktree — excluding it keeps
-// non-branch residue from starving the scan batch). The caller filters to
-// parallel-branch children (the DAG shape decides who gets a branch
-// worktree — see parallelBranchChildIDs in the scheduler). The 'pending'
-// default makes the scan self-healing for step runs created before the
-// columns existed. Batch-capped (paged after afterCreated/afterID so the
-// scan can walk past residue rows) so one pass can't monopolize the
-// reconciler goroutine.
+// ListWorktreeStepRunCandidates returns workflow step runs the WorktreeReconciler should provision
+// a per-branch isolated working tree.
 func ListWorktreeStepRunCandidates(ctx context.Context, tx pgx.Tx, tenantID string, limit int, afterCreated time.Time, afterID string) ([]WorkflowStepRunRow, error) {
 	if limit <= 0 {
 		limit = 16
@@ -1751,15 +1619,8 @@ func ListWorktreeStepRunCandidates(ctx context.Context, tx pgx.Tx, tenantID stri
 	return out, rows.Err()
 }
 
-// ListTerminalStepRunsWithWorktrees returns workflow step runs with a
-// recorded branch worktree ('ready' + non-empty path) that can be reaped:
-// step runs that are themselves terminal (succeeded/failed/skipped/
-// blocked/superseded — superseded runs keep their terminal status) OR
-// belong to a terminal run (completed/failed/aborted). This is the
-// scan-side discovery surface for the WorktreeReconciler's step-run prune
-// pass — step runs whose worktrees were already pruned are excluded by the
-// 'ready' + non-empty path predicate, so re-scanning is a no-op.
-// Batch-capped to mirror ListWorktreeStepRunCandidates.
+// ListTerminalStepRunsWithWorktrees returns workflow step runs with a recorded branch worktree
+// ('ready' + non-empty path) that can be reaped.
 func ListTerminalStepRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowStepRunRow, error) {
 	if limit <= 0 {
 		limit = 16
@@ -1770,7 +1631,9 @@ func ListTerminalStepRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID 
 		s.started_at, s.ended_at, s.version, s.created_at, s.updated_at
 		FROM workflow_step_runs s
 		JOIN workflow_runs r ON r.id = s.workflow_run_id AND r.tenant_id = s.tenant_id
-		WHERE s.tenant_id = $1 AND s.worktree_status = 'ready' AND s.worktree_path <> ''
+		-- 'failed' as well as 'ready': see ListTerminalRunsWithWorktrees. A step worktree whose provisioning
+		-- failed can leave a directory behind, and selecting only 'ready' meant the pruner never saw it.
+		WHERE s.tenant_id = $1 AND s.worktree_status IN ('ready', 'failed') AND s.worktree_path <> '' 
 		  AND (s.status IN ('succeeded', 'failed', 'skipped', 'blocked')
 		       OR r.status IN ('completed', 'failed', 'aborted'))
 		ORDER BY s.created_at ASC
@@ -1798,6 +1661,164 @@ func ListTerminalStepRunsWithWorktrees(ctx context.Context, tx pgx.Tx, tenantID 
 			s.SupersededBy = *supBy
 		}
 		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// A run can hold a container ONLY if a container was ever created for it, and the durable evidence
+// of that is runtime_ready (the arm gate flips it for runtime-mode runs and for serve-less ones.
+// MarkRunRuntimeReaped records that a terminal run's container has been dealt with, so the reap sweep stops
+// returning it.
+//
+// THE MARKER IS THE TERMINALITY. Without it the candidate predicate was a condition that never became false:
+// runtime_image and runtime_ready are the run's record and a gate respectively, and the sweep must not clear
+// either — so it re-selected and re-reaped every historical run on every pass, once a second, while logging
+// "reaped a terminal run's container" about a container that had been gone for hours.
+//
+// Best-effort and version-guarded like every other run write: a concurrent reconciler pass may bump the row, and
+// failing to record a bookkeeping fact must never fail a run.
+func MarkRunRuntimeReaped(ctx context.Context, tx pgx.Tx, tenantID, runID string) error {
+	const q = `UPDATE workflow_runs SET runtime_reaped_at = now(), updated_at = now()
+		WHERE tenant_id = $1 AND id = $2 AND runtime_reaped_at IS NULL`
+	if _, err := tx.Exec(ctx, q, tenantID, runID); err != nil {
+		return fmt.Errorf("db: mark run runtime reaped: %w", err)
+	}
+	return nil
+}
+
+func ListTerminalRunsWithRuntimeEvidence(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
+	if limit <= 0 {
+		limit = 16
+	}
+	const q = `SELECT id, tenant_id, workflow_id, workflow_version, project_id, status,
+		current_step, run_context, work_item_id, bound_worker_ref, runtime_image,
+		runtime_ready, worktree_status, worktree_path, worktree_branch, error_message, error_kind,
+			version, started_at, ended_at, created_at, updated_at
+		FROM workflow_runs
+		WHERE tenant_id = $1
+		  AND status IN ('completed', 'failed', 'aborted')
+		  AND (runtime_ready = true OR runtime_image <> '')
+		  -- ALREADY DEALT WITH. The evidence above is never cleared (runtime_image is the run's history,
+		  -- runtime_ready is a gate), so without this a terminal run stayed a candidate on EVERY sweep pass and
+		  -- was re-reaped — and re-LOGGED as "reaped a terminal run's container" — once a second, forever.
+		  AND runtime_reaped_at IS NULL
+		ORDER BY ended_at ASC NULLS LAST, created_at ASC
+		LIMIT $2`
+	rows, err := tx.Query(ctx, q, tenantID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list terminal runs with runtime evidence: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkflowRunRow
+	for rows.Next() {
+		var r WorkflowRunRow
+		var wiID *string
+		if err := rows.Scan(
+			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
+			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
+			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
+			&r.Version, &r.StartedAt, &r.EndedAt,
+			&r.CreatedAt, &r.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan terminal run (runtime evidence): %w", err)
+		}
+		if wiID != nil {
+			r.WorkItemID = *wiID
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListUnintegratedLocalRuns returns COMPLETED runs of ONE PROJECT whose branch has not yet been
+// integrated, oldest first, excluding excludeRunID.
+func ListUnintegratedLocalRuns(ctx context.Context, tx pgx.Tx, tenantID, projectID string, limit int, excludeRunID string) ([]WorkflowRunRow, error) {
+	if projectID == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 16
+	}
+	const q = `SELECT r.id, r.tenant_id, r.workflow_id, r.workflow_version, r.project_id, r.status,
+		current_step, r.run_context, r.work_item_id, r.bound_worker_ref, r.runtime_image,
+		r.runtime_ready, r.worktree_status, r.worktree_path, r.worktree_branch, r.error_message, r.error_kind,
+			r.version, r.started_at, r.ended_at, r.created_at, r.updated_at
+		FROM workflow_runs r
+		WHERE r.tenant_id = $1 AND r.project_id = $2
+		  AND r.status = 'completed'
+		  AND r.worktree_branch <> ''
+		  -- The same termination stamp the tenant-wide query uses: local_integrated_at records that this run
+		  -- has been DEALT WITH, so the set is self-cleaning and cannot pin the page forever.
+		  AND NOT (r.run_context ? 'local_integrated_at')
+		  AND ($3 = '' OR r.id <> $3)
+		ORDER BY r.ended_at ASC NULLS LAST, r.created_at ASC
+		LIMIT $4`
+	rows, err := tx.Query(ctx, q, tenantID, projectID, excludeRunID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list unintegrated runs for project: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkflowRunRow
+	for rows.Next() {
+		var r WorkflowRunRow
+		if err := rows.Scan(&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion, &r.ProjectID, &r.Status,
+			&r.CurrentStep, &r.RunContext, &r.WorkItemID, &r.BoundWorkerRef, &r.RuntimeImage,
+			&r.RuntimeReady, &r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
+			&r.Version, &r.StartedAt, &r.EndedAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("db: scan unintegrated run: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func ListCompletedRunsWithBranch(ctx context.Context, tx pgx.Tx, tenantID string, limit int) ([]WorkflowRunRow, error) {
+	if limit <= 0 {
+		limit = 16
+	}
+	const q = `SELECT r.id, r.tenant_id, r.workflow_id, r.workflow_version, r.project_id, r.status,
+		current_step, r.run_context, r.work_item_id, r.bound_worker_ref, r.runtime_image,
+		r.runtime_ready, r.worktree_status, r.worktree_path, r.worktree_branch, r.error_message, r.error_kind,
+			r.version, r.started_at, r.ended_at, r.created_at, r.updated_at
+		FROM workflow_runs r
+		WHERE r.tenant_id = $1 AND r.status = 'completed'
+		  AND r.worktree_branch <> ''
+		  -- DELIBERATELY NO worktree_status FILTER. A completed run whose branch is NOT provably merged has
+		  -- its worktree pruned and its branch KEPT — markStepPruned runs unconditionally after a refused
+		  -- branch delete — so filtering on 'pruned' excluded exactly the runs integration exists for. That
+		  -- filter is why a green, committed run was never integrated.
+		  --
+		  -- TERMINATION IS THE STAMP, not the worktree state: local_integrated_at records that this run has
+		  -- been dealt with (merged, or found to have no branch left). Without it the set would keep growing
+		  -- with rows whose branch the orphan sweep already deleted, and the LIMIT would eventually starve
+		  -- newer runs behind ancient no-ops.
+		  AND NOT (r.run_context ? 'local_integrated_at')
+		ORDER BY r.ended_at ASC NULLS LAST, r.created_at ASC
+		LIMIT $2`
+	rows, err := tx.Query(ctx, q, tenantID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("db: list completed runs with branch: %w", err)
+	}
+	defer rows.Close()
+	var out []WorkflowRunRow
+	for rows.Next() {
+		var r WorkflowRunRow
+		var wiID *string
+		if err := rows.Scan(
+			&r.ID, &r.TenantID, &r.WorkflowID, &r.WorkflowVersion,
+			&r.ProjectID, &r.Status, &r.CurrentStep, &r.RunContext,
+			&wiID, &r.BoundWorkerRef, &r.RuntimeImage, &r.RuntimeReady,
+			&r.WorktreeStatus, &r.WorktreePath, &r.WorktreeBranch, &r.ErrorMessage, &r.ErrorKind,
+			&r.Version, &r.StartedAt, &r.EndedAt,
+			&r.CreatedAt, &r.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan completed run with branch: %w", err)
+		}
+		if wiID != nil {
+			r.WorkItemID = *wiID
+		}
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }

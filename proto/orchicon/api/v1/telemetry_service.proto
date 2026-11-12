@@ -3,7 +3,7 @@
 //
 // Proxies tenant-scoped queries to Tempo/Loki/VictoriaMetrics so users explore
 // traces/metrics/logs without leaving the Orchicon shell (docs/10 §11:
-// seamless Grafana embedding — same origin, same visual language, inside
+// native telemetry panes — same origin, same visual language, inside
 // the Orchicon shell). The proxy enforces tenant isolation: the
 // tenant_id filter is injected from the request context, never trusted
 // from the client (AGENTS.md tenant isolation).
@@ -40,9 +40,16 @@ service TelemetryService {
   // GetDashboard returns an Orchicon-specific telemetry dashboard: a
   // curated set of metrics + summaries built custom on the Orchicon
   // domain model (docs/10 §11). Custom dashboards are domain-specific
-  // (cost, executions, recovery) — raw exploration uses the embedded
-  // Grafana UI.
+  // (cost, executions, recovery) — raw exploration uses the Telemetry
+  // page panes.
   rpc GetDashboard(GetDashboardRequest) returns (GetDashboardResponse);
+
+  // GetTelemetryReport returns a summarised window over the Orchicon
+  // domain model: token usage, cost, duration and failure rate per project
+  // or per workflow. Backed by Postgres (usage_records,
+  // worker_executions, workflow_runs) — the source of truth — so it keeps
+  // working when a telemetry store is down.
+  rpc GetTelemetryReport(GetTelemetryReportRequest) returns (GetTelemetryReportResponse);
 }
 
 message QueryTracesRequest {
@@ -52,6 +59,9 @@ message QueryTracesResponse {
   repeated Trace traces = 1;
   string next_page_token = 2;
   bool degraded = 3; // true when the telemetry backend is unreachable
+  // degraded_reason names the backend that is down plus the cause, so the
+  // UI can show WHICH store failed instead of a silently empty chart.
+  string degraded_reason = 4;
 }
 
 message QueryMetricsRequest {
@@ -61,16 +71,19 @@ message QueryMetricsRequest {
 message QueryMetricsResponse {
   repeated MetricSeries series = 1;
   bool degraded = 2;
+  string degraded_reason = 3; // names the backend that is down + cause
 }
 
 message QueryLogsRequest {
   TelemetryQuery query = 1;
   string severity = 2; // optional severity filter
+  string search = 3;   // free-text log search (LogQL line filter)
 }
 message QueryLogsResponse {
   repeated LogRecord logs = 1;
   string next_page_token = 2;
   bool degraded = 3;
+  string degraded_reason = 4; // names the backend that is down + cause
 }
 
 message StreamTelemetryRequest {
@@ -114,4 +127,103 @@ message DashboardSummary {
   double avg_dispatch_latency_ms = 6;
   google.protobuf.Timestamp window_start = 7;
   google.protobuf.Timestamp window_end = 8;
+}
+
+// TelemetryReportGroupBy selects the dimension a telemetry report is
+// aggregated on.
+enum TelemetryReportGroupBy {
+  TELEMETRY_REPORT_GROUP_BY_UNSPECIFIED = 0;
+  TELEMETRY_REPORT_GROUP_BY_PROJECT = 1;
+  TELEMETRY_REPORT_GROUP_BY_WORKFLOW = 2;
+}
+
+message GetTelemetryReportRequest {
+  string tenant_id = 1;   // injected from request context; client value ignored
+  string project_id = 2;  // optional scope
+  string execution_id = 3; // optional scope
+  string work_item_id = 4; // optional scope
+  TelemetryReportGroupBy group_by = 5;
+  google.protobuf.Timestamp start = 6;
+  google.protobuf.Timestamp end = 7;
+}
+
+// TelemetryReportRow is one aggregated group (a project or a workflow)
+// over the report window.
+message TelemetryReportRow {
+  string group_key = 1;         // project id, or workflow id
+  string group_name = 2;        // display name, resolved server-side
+  int64 total_tokens = 3;
+  int64 prompt_tokens = 4;
+  int64 cache_read_tokens = 5;
+  double cost_usd = 6;
+  int32 executions = 7;
+  int32 runs = 8;
+  int32 failed_runs = 9;
+  int64 duration_ms_total = 10;
+  int64 duration_ms_avg = 11;
+}
+
+message TelemetryReportTotals {
+  int64 total_tokens = 1;
+  double cost_usd = 2;
+  int32 executions = 3;
+  int32 runs = 4;
+  int32 failed_runs = 5;
+  int64 duration_ms_total = 6;
+  int64 duration_ms_avg = 7;
+  double failure_rate = 8; // failed_runs / runs, 0 when runs == 0
+}
+
+message GetTelemetryReportResponse {
+  repeated TelemetryReportRow rows = 1;
+  TelemetryReportTotals totals = 2;
+  google.protobuf.Timestamp window_start = 3;
+  google.protobuf.Timestamp window_end = 4;
+  // outcomes and models answer the questions a cost/window table cannot: how
+  // much work actually FINISHED, how, and which models did it. They are
+  // separate dimensions, not more columns on a project row — a project row is
+  // a cost bucket and would double-count if it also carried tenant-wide
+  // outcome totals.
+  TelemetryReportOutcomes outcomes = 5;
+  repeated TelemetryReportModel models = 6;
+}
+
+// TelemetryReportOutcomes is the high-level "what happened to the work"
+// roll-up. Both halves are counted over work that reached a TERMINAL state
+// inside the window — the question an operator asks of a dashboard is "what
+// finished in the last day, and how did it end", not "what was created".
+// Open work is reported separately so the totals are not silently a lie:
+// work_* and the workflow_* counters do not sum to each other, and neither
+// pair sums to a throughput number on its own.
+message TelemetryReportOutcomes {
+  // Work items whose status is terminal, by outcome. work_open is everything
+  // else (pending/ready/assigned/running/blocked/…): in flight, not a unit.
+  int32 work_succeeded = 1;
+  int32 work_cancelled = 2;
+  int32 work_failed = 3;
+  int32 work_open = 4;
+  // Workflow runs. workflow_runs.status lives in
+  // {'pending','running','completed','failed','aborted'} — the success state
+  // is 'completed', NOT 'succeeded', and 'aborted' is a distinct terminal
+  // outcome that must not be folded into failed.
+  int32 workflows_completed = 5;
+  int32 workflows_failed = 6;
+  int32 workflows_aborted = 7;
+  int32 workflows_running = 8;
+  // work_skipped is terminal but neither a success nor a failure, so it gets
+  // its own counter: folding it into work_succeeded would report work that
+  // never ran as completed, and folding it into work_open would report
+  // finished work as in flight.
+  int32 work_skipped = 9;
+}
+
+// TelemetryReportModel is one model's share of the window: the "top models"
+// leaderboard and the per-model statistics beneath it, ordered by cost.
+message TelemetryReportModel {
+  string model = 1;
+  int64 total_tokens = 2;
+  double cost_usd = 3;
+  int32 executions = 4;
+  int64 prompt_tokens = 5;
+  int64 cache_read_tokens = 6;
 }

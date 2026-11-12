@@ -1,18 +1,5 @@
-// Package neverallow declares the binary and command class that is NEVER allowed to run — not inside a worker
-// execution, and not inside an interactive Ask Orchicon session either.
-//
-// WHY IT IS ITS OWN PACKAGE. The class is enforced at two layers that live in different packages and have
-// nothing else in common: the OS-level execution guard (internal/guard) refuses the binaries unconditionally by
-// shimming them on PATH, and the opencode config builder (internal/opencode) refuses the same commands at the
-// permission layer. Both used to carry their OWN copy of the list, which is the shape "two lists that agree
-// today" — they agree until someone edits one. The declaration lives here, imports nothing internal (the
-// internal/askmode pattern), and every consumer reads it, so a change lands in all of them at once.
-//
-// WHAT IS HERE vs. WHAT IS NOT. This is the class that is never legitimate — sudo/dd escalation, disk, partition
-// and LVM tooling, and the shell-construct variants that smuggle them past a prefix match. It is deliberately NOT
-// the whole worker deny list: the project-boundary rules (destructive `rm` targets, root-wide chmod/chown,
-// /dev/sd* redirection, download-and-execute) belong to the SANDBOX, not to the class, and stay with the worker
-// profile that needs them. An interactive session keeps the class and drops the sandbox.
+// Package neverallow declares the binary and command class that is NEVER allowed to run — not
+// inside a worker execution, and not inside an interactive Ask Orchicon session either.
 package neverallow
 
 import "strings"
@@ -22,10 +9,7 @@ type Binary struct {
 	// Name is the binary's name as it appears on PATH, or a shell case pattern
 	// (`mkfs.*`) for a family member that has no single canonical basename.
 	Name string
-	// Shim reports whether the execution guard should install a PATH symlink
-	// named after this member. Only real, resolvable basenames get a shim; a
-	// pattern-only family entry exists so the guard's `case` arm still refuses
-	// a differently-suffixed sibling of a shimmed name.
+	// Shim reports whether the execution guard should install a PATH symlink named after this member.
 	Shim bool
 }
 
@@ -52,17 +36,15 @@ var Binaries = []Binary{
 	{Name: "vgremove", Shim: true},
 	{Name: "lvcreate", Shim: true},
 	{Name: "lvremove", Shim: true},
-	// Pattern-only family entries: no symlink is created for these (no such
-	// binary exists on PATH), but the guard's `case` arm needs them so a
-	// member this list did not name exactly is still refused.
+	// Pattern-only family entries: no symlink is created for these (no such binary exists on PATH), but
+	// the guard's `case` arm needs them so a member this list did not name exactly is still refused.
 	{Name: "mkfs.*"},
 	{Name: "fdisk*"},
 	{Name: "wipefs*"},
 }
 
-// CommandPatterns is the class's bash membership: the patterns opencode matches against the exact command string
-// the Bash tool runs. It covers the members above and the shell-construct variants that hide them behind a
-// prefix (`* && sudo *`), so a smuggled invocation is denied by the same declaration that denies the bare one.
+// CommandPatterns is the class's bash membership: the patterns opencode matches against the exact
+// command string the Bash tool runs.
 var CommandPatterns = []string{
 	// sudo — escalate to a root shell is never needed in-project.
 	"sudo", "sudo *", "sudo su *", "sudo -i *", "sudo -s *", "sudo bash *",
@@ -91,9 +73,8 @@ func Shimmed() []string {
 	return out
 }
 
-// CasePattern returns the `case` alternative list the execution guard's shim renders: every declared name joined
-// with "|", so the family members are covered in the guard's own dispatch even though only the exact basenames
-// get a symlink.
+// CasePattern returns the `case` alternative list the execution guard's shim renders: every
+// declared name joined with "|".
 func CasePattern() string {
 	names := make([]string, 0, len(Binaries))
 	for _, b := range Binaries {

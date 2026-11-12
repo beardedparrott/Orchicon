@@ -27,14 +27,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
-// composerUnderColour puts the process into a COLOUR-CAPABLE profile and the default palette before a composer
-// is built.
-//
-// BOTH HALVES ARE LOAD-BEARING. lipgloss STRIPS colour when the terminal profile carries none — which is the
-// profile a test binary has by default, and which other tests in this package (composer_bleed_test,
-// dock_opacity_test) deliberately leave behind — so without TrueColor every assertion below would pass
-// vacuously against colourless output, including the ones that are supposed to FAIL. And theme is
-// package-level state, so a test that switched palette earlier would change the fill these tests measure.
+// composerUnderColour puts the process into a COLOUR-CAPABLE profile and the default palette before
+// a composer is built.
 func composerUnderColour(t *testing.T) {
 	t.Helper()
 	lipgloss.SetColorProfile(termenv.TrueColor)
@@ -66,9 +60,7 @@ func TestTheComposerIsUnfilledBeforeSelection(t *testing.T) {
 	}
 }
 
-// THE OPERATOR'S TEXT IS INSIDE THE FILL. "Over all of the text" is the requirement, so the assertion is that
-// the characters are INSIDE the fill — not merely that the sequence appears somewhere on the frame, which an
-// empty row would satisfy.
+// THE OPERATOR'S TEXT IS INSIDE THE FILL.
 func TestSelectAllFillsTheOperatorText(t *testing.T) {
 	composerUnderColour(t)
 	m := dockWith(t, "a draft I might want to copy")

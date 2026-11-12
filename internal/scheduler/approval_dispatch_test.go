@@ -9,11 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
-// TestResolveApprovalWorkItems covers the ticket-resolution rules for a
-// worker-backed approval step. The execution must run against the run's
-// SHARED work item (never a per-step artifact), resolved exactly like a
-// TASK step: recovering → the ticket recorded in _work_item_id;
-// otherwise WORK_ITEM markers upstream; otherwise the run's bound item.
+// TestResolveApprovalWorkItems covers the ticket-resolution rules for a worker-backed approval
+// step.
 func TestResolveApprovalWorkItems(t *testing.T) {
 	const (
 		ticketID   = "ticket-01"
@@ -27,9 +24,8 @@ func TestResolveApprovalWorkItems(t *testing.T) {
 		Ref:       "w_se_code_approver",
 		DependsOn: []string{"workitem-1"},
 	}
-	// A bare approval step with no upstream WORK_ITEM marker — used for
-	// the bound-item and no-ticket cases, since markers take precedence
-	// over the run's bound item (same as TASK steps).
+	// A bare approval step with no upstream WORK_ITEM marker — used for the bound-item and no-ticket
+	// cases, since markers take precedence over the run's bound item (same as TASK steps).
 	bareApprovalStep := workflow.StepWire{
 		ID:   "approval-2",
 		Name: "Approve (bare)",
@@ -101,11 +97,8 @@ func TestResolveApprovalWorkItems(t *testing.T) {
 	}
 }
 
-// TestBuildApprovalStepResult verifies the step-run record written when a
-// worker-backed approval dispatches: the shared ticket id, the composite
-// prompt, the approver worker pin, the upstream review context, and the
-// pending decision marker — with the recovery narrative preserved across
-// a re-dispatch.
+// TestBuildApprovalStepResult verifies the step-run record written when a worker-backed approval
+// dispatches: the shared ticket id, the composite prompt, the approver worker pin.
 func TestBuildApprovalStepResult(t *testing.T) {
 	prev := []byte(`{"_recovery_summary":"the first attempt failed"}`)
 	got := buildApprovalStepResult(
@@ -149,11 +142,8 @@ func TestBuildApprovalStepResult(t *testing.T) {
 	}
 }
 
-// TestApprovalDecisionFromSources verifies that the step run's own
-// _decision is authoritative (the step run is the approval record) and
-// the work item's decision is only a legacy fallback for step runs that
-// carry none. A stale decision left on a shared ticket by a prior
-// run/step must never override the current step run's real decision.
+// TestApprovalDecisionFromSources verifies that the step run's own _decision is authoritative (the
+// step run is the approval record) and the work item's decision is only a legacy fallback for step.
 func TestApprovalDecisionFromSources(t *testing.T) {
 	wiFailure := []byte(`{"_decision":"failure"}`)
 	wiEmpty := []byte(`{}`)
@@ -179,20 +169,14 @@ func TestApprovalDecisionFromSources(t *testing.T) {
 	}
 }
 
-// typedNilLifecycle returns a RuntimeLifecycle interface wrapping a nil
-// *runtime.Lifecycle — the shape produced by the old server.go wiring
-// (`var runtimeLifecycle *runtime.Lifecycle` left unset) that caused the
-// headless-serve crash.
+// typedNilLifecycle returns a RuntimeLifecycle interface wrapping a nil *runtime.Lifecycle.
 func typedNilLifecycle() RuntimeLifecycle {
 	var lc *runtime.Lifecycle
 	return lc
 }
 
-// TestRuntimeEnabledNilGuard covers the headless-serve crash: a
-// typed-nil *runtime.Lifecycle wrapped in the RuntimeLifecycle interface
-// is non-nil to the interface, and calling its methods would
-// nil-dereference the receiver. runtimeEnabled must treat it as
-// disabled, exactly like a nil interface.
+// TestRuntimeEnabledNilGuard covers the headless-serve crash: a typed-nil *runtime.Lifecycle
+// wrapped in the RuntimeLifecycle interface is non-nil to the interface.
 func TestRuntimeEnabledNilGuard(t *testing.T) {
 	var nilInterface *WorkflowReconciler
 	_ = nilInterface
@@ -210,10 +194,7 @@ func TestRuntimeEnabledNilGuard(t *testing.T) {
 	}
 }
 
-// TestApprovalStepResultCarriesTheAgentPromptLength pins the key the 2.x message
-// trim depends on. Without it the manifest's AgentPromptLen stays 0, the adapter
-// never trims, and the run-level prefix is sent twice on every turn — silently,
-// because a duplicate prompt is not an error.
+// TestApprovalStepResultCarriesTheAgentPromptLength pins the key the 2.x message trim depends on.
 func TestApprovalStepResultCarriesTheAgentPromptLength(t *testing.T) {
 	raw := buildApprovalStepResult("t1", "composite", "fp", "w1", 1, "", "", nil, "", nil, 4242)
 	var m map[string]any

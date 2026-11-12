@@ -12,9 +12,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/config"
 )
 
-// TestTabBarAlwaysVisiblePins the acceptance invariant: the numbered tab
-// bar is ALWAYS the first shell line on every tab at 80x24 and 120x40, and
-// the shell never overflows the terminal height.
+// TestTabBarAlwaysVisiblePins the acceptance invariant: the numbered tab bar is ALWAYS the first
+// shell line on every tab at 80x24 and 120x40, and the shell never overflows the terminal height.
 func TestTabBarAlwaysVisibleOnEveryTab(t *testing.T) {
 	for _, size := range [][2]int{{80, 24}, {120, 40}} {
 		w, h := size[0], size[1]
@@ -36,12 +35,6 @@ func TestTabBarAlwaysVisibleOnEveryTab(t *testing.T) {
 }
 
 // TestTabBarNumberedPins the mockup-parity numbered chrome (ordinal prefix).
-//
-// It asserts against the bar with its ANSI stripped, because the numbers are now UNDERLINED (they are
-// keys — the operator asked for the underline) and the escape codes sit inside the label, so a raw
-// substring search for "1·Ask Orchicon" no longer matches. Asserting on the visible text is what this
-// test always meant — it is about what the operator READS — and the underline is asserted separately
-// below rather than left implied.
 func TestTabBarNumbered(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "b"})
@@ -54,15 +47,8 @@ func TestTabBarNumbered(t *testing.T) {
 		}
 	}
 
-	// THE KEY LABEL IS UNDERLINED, because it IS a key and not decoration — the operator asked for
-	// that when the chords were numbers ("We should probably underline the numbers") and again when
-	// they became function keys ("underline the F1-F7 individually"). Each tab's own label is asserted
-	// individually, which is what "individually" means: a single underline anywhere in the bar would
-	// satisfy a looser check while leaving six tabs unlabelled.
-	//
-	// The assertion spells the SGR sequence out rather than calling underlineTabKey — a test that asks
-	// the helper it is testing to produce the expected text passes when the helper is a no-op, which is
-	// how this assertion read before it was checked by disabling the underline.
+	// THE KEY LABEL IS UNDERLINED, because it IS a key and not decoration — the operator asked for that
+	// when the chords were numbers ("We should probably underline the numbers") and again when they.
 	for _, tab := range Tabs {
 		want := "\x1b[4m" + tab.Ordinal + "\x1b[24m"
 		if !strings.Contains(raw, want) {
@@ -70,11 +56,7 @@ func TestTabBarNumbered(t *testing.T) {
 		}
 	}
 	// THE BAR NO LONGER NAMES A MODIFIER, and that is pinned as a STRUCTURAL fact rather than by
-	// looking for the absence of a string: nothing is painted before the first tab. "alt+ 1·Ask
-	// Orchicon" existed to explain a MODIFIER that the label did not name; the label now IS the whole
-	// key ("F1"), so a prefix would be five cells of noise in front of the operator's own tabs.
-	// Asserting the bar's HEAD, rather than that some substring is missing, also fails if a future
-	// change paints anything else in there (a mode indicator, a title).
+	// looking for the absence of a string: nothing is painted before the first tab.
 	trimmed := strings.TrimLeft(line, " ")
 	if !strings.HasPrefix(trimmed, tabFullLabel(Tabs[0])) {
 		t.Errorf("something is painted before the first tab (want the bar to start with %q): %q",
@@ -166,9 +148,8 @@ func TestPaletteOpensOnSlash(t *testing.T) {
 	}
 }
 
-// TestPaletteNeverOverflowsPins the palette render bounding: the floating
-// overlay must never exceed the terminal height (regression: unbounded
-// command list overflows at 80x24).
+// TestPaletteNeverOverflowsPins the palette render bounding: the floating overlay must never exceed
+// the terminal height (regression: unbounded command list overflows at 80x24).
 func TestPaletteNeverOverflows(t *testing.T) {
 	for _, size := range [][2]int{{80, 24}, {120, 40}} {
 		w, h := size[0], size[1]
@@ -190,9 +171,7 @@ func TestPaletteNeverOverflows(t *testing.T) {
 	}
 }
 
-// TestConnectCancelClearsReconnectPins esc-cancel of the /connect overlay:
-// it must clear reconnectRequested so a LATER normal quit does not re-open
-// the connection screen (the reconnect loop is first-run fallback only).
+// TestConnectCancelClearsReconnectPins esc-cancel of the /connect overlay.
 func TestConnectCancelClearsReconnect(t *testing.T) {
 	m := newTestApp()
 	m.dispatch(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
@@ -217,10 +196,8 @@ func TestConnectCancelClearsReconnect(t *testing.T) {
 	}
 }
 
-// TestTabClickUsesColumnsPins the tab-bar mouse hit-test against terminal
-// COLUMNS (not byte offsets into the ANSI render). Regression: the previous
-// code compared a byte offset to the mouse column and drifted by 1 cell per
-// preceding "·" glyph, so clicks at / right of a mid-tab missed it.
+// TestTabClickUsesColumnsPins the tab-bar mouse hit-test against terminal COLUMNS (not byte offsets
+// into the ANSI render).
 func TestTabClickUsesColumns(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "b"})
@@ -235,9 +212,8 @@ func TestTabClickUsesColumns(t *testing.T) {
 	}
 }
 
-// TestAskColumnLayout pins the Ask column contract: the conversation list is
-// the shell's RIGHT rail (always on, narrowed), the screen shows only the
-// transcript, and the frame fills the viewport exactly.
+// TestAskColumnLayout pins the Ask column contract: the conversation list is the shell's RIGHT rail
+// (always on, narrowed), the screen shows only the transcript.
 func TestAskTwoRailsPins(t *testing.T) {
 	app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 	app.RegisterScreen(TabAsk, &tabBarScreenStub{body: "SRC"})
@@ -260,21 +236,16 @@ func TestAskTwoRailsPins(t *testing.T) {
 	}
 }
 
-// TestFullScreenTakeoverCoversViewport is the Phase-2a acceptance render
-// gate: on EVERY tab in the shell inventory (real screens from the
-// factories), the view is EXACTLY h rows and EVERY row is EXACTLY w cells
-// wide (opaque fill — zero terminal bleed-through) at 80x24 and 120x40.
-// The composer block is pinned to the bottom above the one-line footer.
+// TestFullScreenTakeoverCoversViewport is the Phase-2a acceptance render gate: on EVERY tab in the
+// shell inventory (real screens from the factories).
 func TestFullScreenTakeoverCoversViewport(t *testing.T) {
 	for _, size := range [][2]int{{80, 24}, {120, 40}} {
 		w, h := size[0], size[1]
 		for _, tab := range Tabs {
 			app := NewApp(nil, &config.Profile{URL: "http://x", Token: "t"}, "v0.2.51")
 			app.dispatch(tea.WindowSizeMsg{Width: w, Height: h})
-			// Ask with no session renders the centered LAUNCH layout, where the
-			// composer is deliberately mid-viewport rather than docked — give it
-			// a session so this test keeps pinning the docked contract (the
-			// launch layout has its own test).
+			// Ask with no session renders the centered LAUNCH layout, where the composer is deliberately
+			// mid-viewport rather than docked.
 			app.chatConvID = "conv-takeover"
 			app.SwitchTo(tab.ID)
 			v := app.View()
@@ -289,10 +260,8 @@ func TestFullScreenTakeoverCoversViewport(t *testing.T) {
 					break
 				}
 			}
-			// The composer block is pinned to the bottom: the input line is
-			// inside the dock block (dockRows rows), directly above the
-			// one-line footer; notice strips render above the input line,
-			// so the exact row is found by scanning the dock block.
+			// The composer block is pinned to the bottom: the input line is inside the dock block (dockRows
+			// rows), directly above the one-line footer; notice strips render above the input line.
 			footerIdx := h - 1
 			dockRows := app.dock.Lines()
 			inputIdx := -1
@@ -317,9 +286,8 @@ func TestFullScreenTakeoverCoversViewport(t *testing.T) {
 	}
 }
 
-// TestComposerFocusedAtLaunch pins operator finding 3: the shell launches
-// with the composer focused (typing works immediately, no ctrl+g); esc
-// moves focus to content; ctrl+g returns it; the footer reflects focus.
+// TestComposerFocusedAtLaunch pins operator finding 3: the shell launches with the composer focused
+// (typing works immediately, no ctrl+g); esc moves focus to content; ctrl+g returns it.
 func TestComposerFocusedAtLaunch(t *testing.T) {
 	m := newTestApp()
 	if m.chatFocus != focusComposer {
@@ -341,10 +309,6 @@ func TestComposerFocusedAtLaunch(t *testing.T) {
 		t.Fatal("typing must not steal focus")
 	}
 	// esc → content; ctrl+g → composer.
-	// NOTE: this app launches on Ask, so typing did NOT slide the conversation
-	// strip out (Ask shows the real transcript). esc therefore moves focus
-	// straight to the content. On any OTHER tab the first esc minimises the
-	// strip — see TestSlideOutPanel* in chatpanel_test.go.
 	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyEsc})
 	m = nm
 	if m.chatFocus != focusContent {
@@ -357,9 +321,7 @@ func TestComposerFocusedAtLaunch(t *testing.T) {
 	}
 }
 
-// TestPaletteAboveComposerPins operator finding 4: the slash palette
-// floats ABOVE the composer — the composer input line (with the typed
-// text) stays visible BELOW the palette box while it filters.
+// TestPaletteAboveComposerPins operator finding 4: the slash palette floats ABOVE the composer.
 func TestPaletteAboveComposer(t *testing.T) {
 	m := newTestApp()
 	m.dispatch(tea.WindowSizeMsg{Width: 80, Height: 24})

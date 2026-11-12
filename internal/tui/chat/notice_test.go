@@ -1,13 +1,6 @@
 package chat
 
 // notice_test.go — a platform notice must not be drawn as the model's own words.
-//
-// A `system` row is something the PLATFORM said about the conversation — today, the
-// record that its context was collapsed because it reached the model's window. Both
-// clients used to map every unrecognised role to their assistant rendering, so a
-// compaction record ("compacted 2343 messages into 1 summary + 7 recent messages")
-// appeared in Orchicon's own band, reading as a claim the model had made. On the one
-// event where attribution is the whole point, the attribution was wrong.
 
 import (
 	"strings"

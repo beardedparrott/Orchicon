@@ -1,15 +1,7 @@
 package askorchicon
 
-// tool_ephemeral_worker_workflow_test.go — the ephemeral layer for WORKERS and
-// WORKFLOWS at the tool boundary.
-//
-// The operator added these two tables to the mechanism: "Yeah I would like
-// ephemeral only on the workers and workflows Quick Work creates." Quick Work
-// builds a throwaway worker pinned to its own model_ref and a throwaway workflow
-// to run, and neither may appear in the Workers or Workflows screens.
-//
-// The DB-backed cases skip unless ORCHICON_TEST_DSN is set, like the rest of
-// this package's pool tests.
+// tool_ephemeral_worker_workflow_test.go — the ephemeral layer for WORKERS and WORKFLOWS at the
+// tool boundary.
 
 import (
 	"context"
@@ -26,10 +18,6 @@ import (
 )
 
 // THE DELETE WORKFLOW TOOL EXISTS AND WARNS ABOUT THE CASCADE.
-//
-// The warning matters more here than for a work item: db.DeleteWorkflow also
-// removes the workflow's runs, step runs and versions, so an unconsidered call
-// destroys history rather than just a row.
 func TestDeleteWorkflowToolIsRegisteredAndHonest(t *testing.T) {
 	r := NewToolRegistry(nil, nil, nil)
 	td, ok := r.Get("delete_workflow")
@@ -87,9 +75,7 @@ func TestEphemeralParametersAreAdvertisedOnWorkerAndWorkflowTools(t *testing.T) 
 		}
 	}
 
-	// The create tools must name the tool that removes the record: a transient
-	// left behind by a cancel-style call IS the invisible record to avoid, and
-	// the agent has to be told the disposal path.
+	// The create tools must name the tool that removes the record.
 	for _, pair := range [][2]string{
 		{"create_worker", "delete_worker"},
 		{"create_workflow", "delete_workflow"},
@@ -130,16 +116,6 @@ func TestDeleteWorkflowToolHasAFunction(t *testing.T) {
 }
 
 // THE GUARD: A NON-EPHEMERAL WORKFLOW WITH RUNS IS REFUSED.
-//
-// Deleting a workflow takes its entire run history with it, and an agent cannot
-// see how much history it is about to delete. So the destructive case has to be
-// stated explicitly — and `confirm_delete_runs` must NOT be required for the
-// case this tool exists for (an ephemeral workflow Quick Work just built), or the
-// cleanup path would be unusable.
-//
-// This is asserted WITHOUT a database for the ephemeral case: a nil pool proves
-// the confirmation is not consulted before the transaction opens, so an
-// ephemeral delete is never blocked by it.
 func TestDeleteWorkflowRefusesHistoryWithoutConfirmation(t *testing.T) {
 	r := NewToolRegistry(nil, nil, nil)
 	td, _ := r.Get("delete_workflow")
@@ -243,9 +219,7 @@ func TestDeleteWorkflowGuardAgainstRealRows(t *testing.T) {
 		t.Errorf("delete_workflow refused a workflow with no run history, which needs no confirmation: %v", err)
 	}
 
-	// 4. ALLOWED: the ephemeral workflow, runs and all. This is the path the tool
-	//    exists for — requiring a confirmation here would make Quick Work's
-	//    cleanup impossible.
+	// 4.
 	if _, err := call(`{"id":"` + ephWithRuns.ID + `"}`); err != nil {
 		t.Errorf("delete_workflow refused an EPHEMERAL workflow that had runs — this is exactly the cleanup "+
 			"Quick Work needs, and its runs belong to the job being removed: %v", err)

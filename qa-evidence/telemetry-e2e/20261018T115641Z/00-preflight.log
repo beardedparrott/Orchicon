@@ -1,0 +1,1 @@
+  (invalid host: frontend/node_modules/@playwright is absent — run 'cd frontend && pnpm install')

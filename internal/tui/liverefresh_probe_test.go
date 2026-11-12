@@ -54,11 +54,6 @@ import (
 )
 
 // stubExecList counts the reads, so "did the pane re-read?" is a NUMBER rather than an impression.
-//
-// Both hops are counted, because both are part of the operator's report and they are re-read by two
-// different commands: ListExecutions backs the LIST ("the execution list is also NOT updating live") and
-// GetExecution backs the open DETAIL ("I have to move off the execution and back onto it to see the
-// newest updates" — the transcript lives in the detail pane).
 type stubExecList struct {
 	apiv1connect.UnimplementedExecutionServiceHandler
 	listCalls int
@@ -81,8 +76,7 @@ func (s *stubExecList) GetExecution(_ context.Context, req *connect.Request[apiv
 }
 
 // newExecListApp builds the shell with an Execution screen registered and focused on the Executions
-// pane, and the screen's FIRST load already landed — so every count below measures a REFRESH and not
-// the initial fetch.
+// pane, and the screen's FIRST load already landed.
 func newExecListApp(t *testing.T) (*App, *execution.Model, *stubExecList) {
 	t.Helper()
 	stub := &stubExecList{status: apiv1.ExecutionStatus_EXECUTION_STATUS_RUNNING}
@@ -108,20 +102,13 @@ func newExecListApp(t *testing.T) (*App, *execution.Model, *stubExecList) {
 }
 
 // landFirstLoad runs the screen's LIST command — Load, NOT Init — and nothing else.
-//
-// The distinction is the whole repair (see the header): Load is one fetch per source and returns; Init
-// also ARMS the streams, and a stream arm blocks until the plane emits, which in a test is for ever.
 func landFirstLoad(t *testing.T, scr *execution.Model) {
 	t.Helper()
 	execCmdTree(t, scr.Load(), 0)
 }
 
-// execCmdTree runs a command tree, so the RPC a fetch command issues actually happens. The messages
-// it produces are deliberately NOT dispatched: this probe asks whether the pane RE-READS, and the
-// call count rises when the command runs, not when its result lands.
-//
-// CALLERS MUST PASS A TREE WHOSE COMMANDS RETURN. A tree containing a stream arm will hang here, which
-// is exactly the failure this file's header documents.
+// execCmdTree runs a command tree, so the RPC a fetch command issues actually happens. CALLERS MUST
+// PASS A TREE WHOSE COMMANDS RETURN.
 func execCmdTree(t *testing.T, cmd tea.Cmd, depth int) {
 	t.Helper()
 	if cmd == nil || depth > 5 {
@@ -136,13 +123,10 @@ func execCmdTree(t *testing.T, cmd tea.Cmd, depth int) {
 }
 
 // rollOneTick drives ONE turn of the rolling window exactly as the shell does, through the tick
-// HANDLER, so the generation guard, the dispatch and the re-arm are all in the path rather than only
-// the dispatch.
+// HANDLER, so the generation guard.
 func rollOneTick(t *testing.T, m *App) {
 	t.Helper()
-	// The re-arm is a tea.Tick and BLOCKS until it fires. The production five seconds is not what is
-	// under test here (the re-arm and the generation guard have their own tests in refresh_test.go),
-	// so the period is shortened for the duration of the turn.
+	// The re-arm is a tea.Tick and BLOCKS until it fires.
 	prev := refreshPeriod
 	refreshPeriod = time.Millisecond
 	t.Cleanup(func() { refreshPeriod = prev })
@@ -175,10 +159,8 @@ func TestRollingTickRefetchesTheExecutionList(t *testing.T) {
 	}
 }
 
-// THE PROBE, HOP 4 AGAIN, for the DETAIL pane: a turn must also re-read the OPEN execution, because the
-// transcript the operator is watching lives there. This is the "nothing happens unless you move away
-// from the execution and then come back" half of the report, and it is a SEPARATE command from the list
-// read — a refresh that reloaded only the list would leave the open transcript frozen.
+// THE PROBE, HOP 4 AGAIN, for the DETAIL pane: a turn must also re-read the OPEN execution, because
+// the transcript the operator is watching lives there.
 func TestRollingTickRefetchesTheOpenExecutionDetail(t *testing.T) {
 	m, scr, stub := newExecListApp(t)
 
@@ -203,9 +185,7 @@ func TestRollingTickRefetchesTheOpenExecutionDetail(t *testing.T) {
 	}
 }
 
-// AND THE TICK IS DISPATCHED TO THE SCREEN THAT OWNS IT. A tick for a superseded generation must NOT
-// re-read anything: refreshing the view the operator has already left is wasted work and a visible
-// flicker, which is why the generation is carried on the message at all.
+// AND THE TICK IS DISPATCHED TO THE SCREEN THAT OWNS IT.
 func TestAStaleTickDoesNotRefetchTheView(t *testing.T) {
 	m, scr, stub := newExecListApp(t)
 	landFirstLoad(t, scr)

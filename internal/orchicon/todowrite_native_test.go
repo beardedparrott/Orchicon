@@ -1,10 +1,7 @@
 package orchicon
 
-// todowrite_native_test.go: the native todowrite fix — the composite prompt
-// orders a `todowrite` call every turn, so the native engine must resolve it
-// (advertised def + a succeeding handler), never `unknown tool "todowrite"`.
-// Pins: the def exists in hostToolDefs, HostTools.Execute answers success,
-// and the loop's native path intercepts the call (digest stashed, no error).
+// todowrite_native_test.go: the native todowrite fix — the composite prompt orders a `todowrite`
+// call every turn, so the native engine must resolve it (advertised def + a succeeding handler).
 
 import (
 	"context"

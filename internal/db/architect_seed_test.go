@@ -34,12 +34,8 @@ func TestArchitectSeedWorkflowsJSON(t *testing.T) {
 		if err := json.Unmarshal([]byte(w.wf.StepsJSON), &steps); err != nil {
 			t.Fatalf("%s: steps not valid JSON: %v", label, err)
 		}
-		// The non-human SDLC template is the trimmed graph: Architect entry
-		// step, Senior SWE, PR Reviewer + QA under an explicit Parallel step
-		// feeding a single fan-in loop gate, DevOps (PR/merge), a final
-		// conflict loop-decision, and the End step — 9 steps. The Design and
-		// Code Approver approval steps were removed: quality gates live in
-		// QA + PR Review via the fix-forward contracts.
+		// The non-human SDLC template is the trimmed graph: Architect entry step, Senior SWE, PR Reviewer +
+		// QA under an explicit Parallel step feeding a single fan-in loop gate, DevOps (PR/merge).
 		wantSteps := 9
 		if label == "01KZ1W513F25ASPZM1XW4ZJ2MB" {
 			// The human-approval template keeps the full 11-step graph.
@@ -73,9 +69,7 @@ func TestArchitectSeedWorkflowsJSON(t *testing.T) {
 		if !hasArch {
 			t.Errorf("%s: missing Architect step (ref %s)", label, w.ref)
 		}
-		// There must be an entry step (the only one with no dependencies — the
-		// Principal Architect step). edge_handles is derived from depends_on by
-		// the workflow editor at load time, so the canned seed does not store it.
+		// There must be an entry step (the only one with no dependencies — the Principal Architect step).
 		entryFound := false
 		for _, s := range steps {
 			deps, _ := s["depends_on"].([]any)

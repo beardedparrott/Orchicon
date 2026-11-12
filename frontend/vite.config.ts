@@ -38,6 +38,16 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      // Operational status endpoints the SPA reads as plain JSON (they sit
+      // beside /healthz and /versionz on the control plane's mux, not under
+      // the Connect prefix). WITHOUT THIS RULE a dev-server fetch("/enginez")
+      // never reaches the plane: Vite answers it with the SPA's index.html —
+      // HTTP 200 and HTML, so the execution-mode availability badge reports
+      // "availability unknown" on a host where containers are perfectly fine.
+      "/enginez": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
       // Connect-ES + gRPC-Web share the same path prefix.
       "/orchicon.api.v1": {
         target: "http://localhost:8080",
@@ -70,17 +80,6 @@ export default defineConfig({
         changeOrigin: true,
       },
       "/jwks": {
-        target: "http://localhost:8080",
-        changeOrigin: true,
-      },
-      // Grafana UI proxy (docs/10 §11): seamless embedding — the Grafana
-      // iframe is served same-origin under /grafana so it shares the
-      // Orchicon shell's auth + visual language, not a separate tool.
-      // Grafana runs with serve_from_sub_path so it generates every asset
-      // and API URL under /grafana itself; proxy through the Go control
-      // plane so the /grafana reverse proxy strips the prefix and forwards
-      // (docs/10 §11).
-      "/grafana": {
         target: "http://localhost:8080",
         changeOrigin: true,
       },

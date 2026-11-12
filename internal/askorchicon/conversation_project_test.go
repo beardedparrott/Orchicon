@@ -1,18 +1,7 @@
 package askorchicon
 
-// conversation_project_test.go — A CHAT KNOWS WHICH PROJECT FOLDER IT BELONGS TO, IN ALL THREE MODES.
-//
-// The operator: "Also we should add context to all three modes to know which chat belongs to which project
-// folder. We need better organization here."
-//
-// Two things had to be true for that, and each is asserted separately:
-//
-//  1. The conversation row carries the association, and the API reports it (conversationRowToProto).
-//  2. The turn's system prompt STATES it — in Brainstorm, Iteration and Quick Work alike, because the block is
-//     built from the conversation rather than inside any one persona.
-//
-// The prompt half is the one that could regress silently: a persona rewrite would not touch the block, but a
-// refactor of buildSystemPrompt's parameters could drop it, and nothing else would notice.
+// conversation_project_test.go — A CHAT KNOWS WHICH PROJECT FOLDER IT BELONGS TO, IN ALL THREE
+// MODES.
 
 import (
 	"strings"
@@ -43,9 +32,7 @@ func TestEveryModeIsToldWhichProjectTheChatIsIn(t *testing.T) {
 	}
 }
 
-// AND AN UNASSIGNED CHAT IS TOLD THAT, rather than being left to infer it from a missing line. The agent has to
-// be able to say "this chat has no project" instead of quietly operating on the tenant's default directory as
-// though it were the conversation's own.
+// AND AN UNASSIGNED CHAT IS TOLD THAT, rather than being left to infer it from a missing line.
 func TestAnUnassignedChatIsToldItHasNoProject(t *testing.T) {
 	cfg := testAgentConfig()
 	reg := testToolRegistry()
@@ -80,10 +67,8 @@ func TestConversationRowReportsItsProjectOverTheAPI(t *testing.T) {
 	}
 }
 
-// FULLSEND CROSSES THE PROTO BOUNDARY TOO, and the failure mode if it did not is worse
-// than an empty grouping: a client that cannot read the flag renders a conversation as
-// asking permission when the gate is actually open, so the operator loses the only signal
-// that the mode is on. The indicator IS the safety feature for a bypass.
+// FULLSEND CROSSES THE PROTO BOUNDARY TOO, and the failure mode if it did not is worse than an
+// empty grouping: a client that cannot read the flag renders a conversation as asking permission.
 func TestConversationRowReportsFullsendOverTheAPI(t *testing.T) {
 	s := &Service{fullsend: newFullsendStore()}
 	r := db.ConversationRow{ID: "c1", TenantID: "t1"}

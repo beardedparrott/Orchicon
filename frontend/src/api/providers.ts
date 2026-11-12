@@ -1,4 +1,4 @@
-// Provider settings hooks (ADR-0006): the tenant-facing Providers surface
+// Provider settings hooks: the tenant-facing Providers surface
 // behind Settings → Adapters. All mutations invalidate the shared
 // ["providers"] query key so every consumer — including the ModelPicker's
 // provider tier — auto-refreshes on save.
@@ -109,7 +109,7 @@ export function useProviderModels(providerId: string, enabled = true) {
 }
 
 // useProviderModelsForPicker projects the providers-service sourcing view
-// into the picker's OpenCodeModel shape (ADR-0004 three-tier contract).
+// into the picker's OpenCodeModel shape ( three-tier contract).
 // This is the model tier of the CATALOG-SOURCED kinds — the kinds the server
 // publishes in ListAdapterKinds.sourcing_kinds (orchicon, claude): the
 // vendored catalog ⊕ probed ⊕ manual models from Settings → Adapters, NOT the

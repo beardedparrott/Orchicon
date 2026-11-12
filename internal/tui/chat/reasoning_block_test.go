@@ -1,20 +1,6 @@
 package chat
 
 // reasoning_block_test.go — REASONING RENDERS AS A BLOCK, NOT A FOOTNOTE.
-//
-// The operator, looking at the TUI beside the GUI: "No reasoning block."
-//
-// The GUI renders reasoning as its own card: violet, labelled "reasoning", with a dot that pulses while
-// the model is still thinking and a char count once it has stopped ("reasoning · thinking…" /
-// "reasoning · 60,909 chars"). The TUI drew the same 60,909 characters under a single dim word —
-// `renderMarkdownBubble("thinking", …, theme.HintText, …)` — in the SAME style as every hint line in the
-// application, so the reasoning stream was indistinguishable from a footnote and the operator could not
-// tell it was reasoning, could not tell it was still arriving, and could not tell how much of it there
-// was.
-//
-// These pin the three things the header has to say, because they are the three the operator was looking
-// for. The tests read the RENDERED OUTPUT rather than the item's fields: the fields were always correct,
-// and it is the rendering that was wrong.
 
 import (
 	"strings"
@@ -37,9 +23,7 @@ func TestReasoningBlockIsLabelled(t *testing.T) {
 	}
 }
 
-// A LIVE BLOCK SAYS IT IS STILL COMING — the GUI's "· thinking…". This is the state the operator watches
-// during a slow turn, and it is the reason the indicator and the block are different things: one says the
-// turn started, this says the model is still working.
+// A LIVE BLOCK SAYS IT IS STILL COMING — the GUI's "· thinking…".
 func TestLiveReasoningSaysItIsThinking(t *testing.T) {
 	live := RenderItems([]ChatItem{{Kind: KindReasoning, Text: "partial thou", Live: true}}, 80)
 	if !strings.Contains(live, "thinking") {
@@ -50,9 +34,7 @@ func TestLiveReasoningSaysItIsThinking(t *testing.T) {
 	}
 }
 
-// A FINISHED BLOCK CARRIES ITS SIZE, with thousands separators — the GUI's own format. The count is what
-// makes a collapsed-looking wall of reasoning legible at a glance, and the separator is what keeps the two
-// clients reading the same way.
+// A FINISHED BLOCK CARRIES ITS SIZE, with thousands separators — the GUI's own format.
 func TestFinishedReasoningCarriesACount(t *testing.T) {
 	out := RenderItems([]ChatItem{{Kind: KindReasoning, Text: strings.Repeat("x", 60909)}}, 80)
 	if !strings.Contains(out, "60,909 chars") {
@@ -62,16 +44,6 @@ func TestFinishedReasoningCarriesACount(t *testing.T) {
 }
 
 // A REASONING BODY IS CAPPED, and says so.
-//
-// MEASURED BEFORE THE FIX: a 62,000-character reasoning stream rendered to ~860 transcript LINES. The
-// operator's conversation reported "reasoning · 60,909 chars", so their transcript carried several hundred
-// lines of reasoning per turn — the newest window was almost entirely reasoning, and the conversation's
-// real content was pushed far out of view.
-//
-// The cap is what EVERY OTHER long renderer on this transcript already had: a tool call with 62,000
-// characters of output renders to ONE line and an artifact to TWO, both leaving the body to a place built
-// for it. Reasoning was the one long body drawn in full, because before the block existed it was a dim
-// single-line footnote and the question could not arise.
 func TestReasoningBodyIsCapped(t *testing.T) {
 	big := strings.Repeat("Weighing the options carefully. ", 2000) // ~62k chars
 	out := RenderItems([]ChatItem{{Kind: KindReasoning, Text: big}}, 80)
@@ -111,11 +83,6 @@ func TestReasoningCapDoesNotTruncateTheItem(t *testing.T) {
 }
 
 // NO BAND ROW IS EVER WIDER THAN THE PANE.
-//
-// A row that overflows is TRUNCATED by the stream's Pad, and truncation LOSES TEXT silently — the operator
-// sees a sentence cut mid-word. Measured before the fix, on the labelled band: an 81-cell user row at width
-// 80, because the label was spent OUTSIDE the row's budget (the gap floors at 1, so `1 + label + 1 + line + 1`
-// can exceed the pane).
 func TestNoTranscriptRowExceedsThePane(t *testing.T) {
 	items := []ChatItem{
 		// A long line that leaves the label no room at all — the case that overflowed.

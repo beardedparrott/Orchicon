@@ -1,4 +1,4 @@
-// Providers tab (ADR-0006): tenant provider management under
+// Providers tab: tenant provider management under
 // Settings → Adapters. Lists built-in profiles (read-only entries) and
 // tenant custom providers (first-class CRUD), with enable/disable toggles,
 // baseURL overrides, token auto-write (never a manual secrets visit),
@@ -28,7 +28,7 @@ import { Loader2, Plus, Trash2, AlertTriangle, KeyRound, Eye, Pencil, X } from "
 const OLLAMA_ID = "ollama";
 
 // ManualModelsEditor manages the operator-added manual model entries on a
-// custom provider (ADR-0006 D1/D4): model id + optional context-window /
+// custom provider: model id + optional context-window /
 // max-output / reasoning hints. The whole list is persisted with
 // replaceManualModels=true (the merge logic lives in the service, not the
 // UI). Rendered under the same "models" tier as the probe results.
@@ -185,7 +185,7 @@ function ProviderCard({ entry }: { entry: ProviderEntry }) {
   const [showModels, setShowModels] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
-  // Batch visibility editing (ADR-0006 D4 operator flow): checkbox toggles
+  // Batch visibility editing ( operator flow): checkbox toggles
   // stage a draft hidden-set; the explicit Save button commits
   // hiddenModels in ONE update. null = no draft open (checkboxes mirror
   // entry.hiddenModels); non-null = the draft set being edited.

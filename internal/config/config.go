@@ -1,8 +1,4 @@
-// Package config loads Orchicon control-plane configuration from the
-// environment. v0.1 keeps configuration environment-driven; a typed
-// config struct is the single source of truth for the running process.
-//
-// See docs/01_Architecture_Vision.md §2 for the technology direction.
+// Package config loads Orchicon control-plane configuration from the environment.
 package config
 
 import (
@@ -12,12 +8,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
-// DeploymentMode selects how the control plane validates its runtime
-// environment. "local" is the fully-local mode (no cloud dependencies);
-// "production" requires an OIDC issuer and external object storage.
+// DeploymentMode selects how the control plane validates its runtime environment.
 type DeploymentMode string
 
 const (
@@ -29,18 +24,11 @@ const (
 // the schema follow the same bound).
 const maxTenantIDLen = 63
 
-// tenantIDRE is the canonical tenant-id charset: lowercase alphanumerics
-// plus '-'/'_', must start and end alphanumeric. Accepts the codebase's
-// default ("tnt_dev") and the slug pattern used across the schema.
+// tenantIDRE is the canonical tenant-id charset: lowercase alphanumerics plus '-'/'_', must start
+// and end alphanumeric.
 var tenantIDRE = regexp.MustCompile(`^[a-z0-9]+(?:[-_][a-z0-9]+)*$`)
 
 // AuthConfig holds OIDC + token-issuance configuration (docs/07 §6.1).
-// OIDC is the base authentication path in every mode: the embedded
-// OpenID Provider (EmbeddedOP, default on) is the default IdP in
-// local/non-prod; production validates ID tokens from the configured
-// external issuer. Issuer="local" is the vestigial "no external IdP"
-// marker — it is NOT an issuer and only boots when the embedded OP is
-// enabled (Validate enforces this in every mode).
 type AuthConfig struct {
 	Issuer       string // OIDC issuer URL; "local" = no external IdP (embedded OP is the issuer)
 	ClientID     string // OIDC client id
@@ -50,24 +38,34 @@ type AuthConfig struct {
 	AccessTTL    time.Duration
 	RefreshTTL   time.Duration
 
-	// EmbeddedOP enables the in-process OpenID Provider (zitadel/oidc v3,
-	// pkg/op) mounted on the plane origin. Defaults to true; a strict
-	// production plane that only trusts its BYO IdP can disable the
-	// surface entirely.
+	// EmbeddedOP enables the in-process OpenID Provider (zitadel/oidc v3, pkg/op) mounted on the plane
+	// origin.
 	EmbeddedOP bool
-	// OPRedirectURIs are the registered redirect URIs for the OP's
-	// built-in public client, comma-separated. Empty derives the default:
-	// the auth RedirectURL plus the plane-origin /auth/callback when
-	// OPIssuer is pinned.
+	// OPRedirectURIs are the registered redirect URIs for the OP's built-in public client,
+	// comma-separated.
 	OPRedirectURIs string
 	// OPIssuer pins the OP issuer URL (ORCHICON_OP_ISSUER). Empty derives
 	// the issuer from the request Host on every request.
 	OPIssuer string
+	// PlaneURL is this plane's own origin (scheme://host:port), derived from
+	// HTTPAddr. The embedded OP ALWAYS registers it as a redirect URI.
+	//
+	// WHY IT IS NOT OPTIONAL. The default RedirectURL is the Vite dev server
+	// (http://localhost:5173/auth/callback), which is right for `make fe-dev` and wrong for every
+	// other way of reaching the UI. The plane's own origin was only registered when OPIssuer was
+	// PINNED, and a local install leaves it unpinned — so on a plain install the OP accepted a
+	// callback on a port nothing was serving:
+	//
+	//	GET /authorize?client_id=orchicon&redirect_uri=http://localhost:8080/auth/callback
+	//	400  The requested redirect_uri is missing in the client configuration
+	//
+	// i.e. login was impossible in the browser, before any password was checked, on the product's
+	// default dev-server-less shape. The plane serves the SPA at its own port; that origin must be a
+	// valid callback always.
+	PlaneURL string
 }
 
 // BlobStoreConfig selects the object-storage backend (docs/01 §2).
-// "local" uses the filesystem (production-viable); "s3" uses S3-compatible
-// storage.
 type BlobStoreConfig struct {
 	Kind       string // "local" | "s3"
 	LocalDir   string
@@ -79,57 +77,31 @@ type BlobStoreConfig struct {
 // Config holds all control-plane runtime configuration.
 type Config struct {
 	HTTPAddr string
-	// ExtraBind is an optional SECOND HTTP bind
-	// (ORCHICON_HTTP_EXTRA_BIND): a concrete docker-bridge "host:port".
-	// Empty means the plane is reachable on HTTPAddr only. It exists so a
-	// host-resident plane is reachable from runtime containers across the
-	// docker bridge while host clients (orch, the GUI) keep using the
-	// loopback HTTPAddr. Never a wildcard: the plane must not be reachable
-	// from another machine (Validate rejects one).
+	// ExtraBind is an optional SECOND HTTP bind (ORCHICON_HTTP_EXTRA_BIND): a concrete docker-bridge
+	// "host:port".
 	ExtraBind    string
 	GRPCAddr     string
 	PostgresDSN  string
 	NATSURL      string
 	OTelEndpoint string
-	// Telemetry selects the OTel pipeline mode. "none" skips telemetry
-	// entirely (no exporters, no OTLP dial) — used by the runtime-container
-	// sandbox plane, which has no Grafana stack. Empty/"embedded"/"remote"
-	// keep the default pipeline (the same env the single-container
-	// supervisor reads for the embedded stack decision).
+	// Telemetry selects the OTel pipeline mode.
 	Telemetry string
-	// Grafana stack backends (docs/08 §5). GrafanaURL is the Grafana UI
-	// root (proxied same-origin under /grafana); TempoURL/LokiURL/VMURL
-	// are the query endpoints the control plane reads tenant-scoped
+	// Telemetry backends (docs/08 §5): the query endpoints the control plane reads tenant-scoped
 	// telemetry from.
-	GrafanaURL    string
 	TempoURL      string
 	LokiURL       string
 	VMURL         string
 	BlobStoreDir  string
 	MigrateOnBoot bool
 
-	// RuntimeSocket is the unix socket of the host-side workflow runtime
-	// daemon. The daemon's socket lives inside a bind-mounted DIRECTORY
-	// (/var/run/orchicon-runtime, mounted from the daemon's socket dir on
-	// the host) so a daemon restart — which recreates the socket file —
-	// never staleness the container's mount. Empty/unreachable degrades
-	// the control plane to in-process execution (no per-workflow runtime
-	// containers).
+	// RuntimeSocket is the unix socket of the host-side workflow runtime daemon.
 	RuntimeSocket string
 
-	// DeploymentTenantID is the single tenant this deployment owns
-	// (ORCHICON_DEPLOYMENT_TENANT_ID, default "tnt_dev"). Every auth path
-	// — OIDC callback, the embedded-OP local login, the local-admin
-	// bootstrap — resolves logins into this tenant, and boot provisions it
-	// via SeedDevTenant. It is server config, never client input; the IdP's
-	// identity claims are not consulted for tenant selection
-	// (single-tenant-per-deployment, decision #178).
+	// DeploymentTenantID is the single tenant this deployment owns (ORCHICON_DEPLOYMENT_TENANT_ID,
+	// default "tnt_dev").
 	DeploymentTenantID string
 
-	// Instance identifies this control plane ("dev"/"prod"). It labels
-	// the runtime containers this plane creates and scopes its orphan
-	// reaping, so two instances sharing one runtime daemon do not reap
-	// each other's containers.
+	// Instance identifies this control plane ("dev"/"prod").
 	Instance string
 
 	Mode      DeploymentMode
@@ -139,67 +111,50 @@ type Config struct {
 	ReadHeaderTimeout time.Duration
 	ShutdownTimeout   time.Duration
 
-	// IndexCheckInterval controls how often the control plane runs the
-	// amcheck-based index-integrity sweep (boot + every interval). A
-	// corrupted btree index silently hides rows from `=` lookups (the
-	// planner uses the index) while seq scans still see them — the
-	// field incident where a hard host sleep corrupted
-	// worker_versions_worker_version_idx and the workflow reconciler
-	// failed to load a worker that existed. 0 disables the periodic
-	// sweep (the boot check still runs).
+	// IndexCheckInterval controls how often the control plane runs the amcheck-based index-integrity
+	// sweep (boot + every interval).
 	IndexCheckInterval time.Duration
 
-	// OutboxRetentionDays is the retention window for PUBLISHED outbox
-	// rows (ORCHICON_OUTBOX_RETENTION_DAYS, default 7). The relay prunes
-	// published rows older than this on a schedule; unpublished rows are
-	// never pruned. 0 disables pruning (the table then grows without
-	// bound again, so this is a debugging escape hatch only).
+	// OutboxRetentionDays is the retention window for PUBLISHED outbox rows
+	// (ORCHICON_OUTBOX_RETENTION_DAYS, default 7).
 	OutboxRetentionDays int
 
-	// OutboxPruneBatch bounds how many rows one prune statement deletes
-	// (ORCHICON_OUTBOX_PRUNE_BATCH, default 10000), keeping the lock
-	// window and WAL spike per statement small. Clamped to [1, 100000].
+	// OutboxPruneBatch bounds how many rows one prune statement deletes (ORCHICON_OUTBOX_PRUNE_BATCH,
+	// default 10000), keeping the lock window and WAL spike per statement small.
 	OutboxPruneBatch int
 
-	// OutboxPruneInterval is how often the relay runs a retention pass
-	// (ORCHICON_OUTBOX_PRUNE_INTERVAL, default 1h). Each pass runs at most
-	// 10 bounded batches.
+	// OutboxPruneInterval is how often the relay runs a retention pass (ORCHICON_OUTBOX_PRUNE_INTERVAL,
+	// default 1h).
 	OutboxPruneInterval time.Duration
 
-	// DispatchConcurrency bounds how many ready work items the
-	// TaskReconciler scan pass dispatches CONCURRENTLY in one pass
-	// (ORCHICON_DISPATCH_CONCURRENCY, default 4). Independent,
-	// dependency-satisfied items fan out up to this limit; each in-flight
-	// dispatch holds one pgx pool connection for its short transaction, so
-	// the pool's max_conns must comfortably exceed it. Values are clamped
-	// to [1, scanBatchSize=16] by the reconciler setter.
+	// DispatchConcurrency bounds how many ready work items the TaskReconciler scan pass dispatches
+	// CONCURRENTLY in one pass (ORCHICON_DISPATCH_CONCURRENCY, default 4).
 	DispatchConcurrency int
 
 	// SecretsKEK is the 32-byte KEK for tenant secrets (ORCHICON_SECRETS_KEK).
 	// Base64-encoded 32 bytes or raw 32 chars. Empty = secrets disabled (fail-closed at service layer).
 	SecretsKEK string
 
-	// DataDir is the control plane's state directory (ORCHICON_DATA_DIR,
-	// default /var/lib/orchicon). When no ORCHICON_SECRETS_KEK override is
-	// set, the per-instance KEK is load-or-created under it on first boot.
+	// DataDir is the control plane's state directory (ORCHICON_DATA_DIR, default /var/lib/orchicon on
+	// Unix, %LOCALAPPDATA%\\orchicon on Windows — see defaults_*.go).
 	DataDir string
 
-	// PermissionPolicyPath is the operator's persistent permission policy
-	// file (ORCHICON_PERMISSION_POLICY, default
-	// <DataDir>/permission-policy.yaml). It holds the durable deny/accept
-	// list the consent core and the guard consult on every gated decision;
-	// both halves are computed from one DataDir value in Default() so the
-	// derived default can never drift from DataDir.
+	// PermissionPolicyPath is the operator's persistent permission policy file
+	// (ORCHICON_PERMISSION_POLICY, default <DataDir>/permission-policy.yaml).
 	PermissionPolicyPath string
 }
 
 // Default returns a Config populated with local-dev defaults that match
 // the docker-compose stack in deploy/compose.
 func Default() Config {
-	// One value drives both the state dir and the policy default: the policy
-	// lives IN the state dir unless the operator points it elsewhere, and a
-	// second env read could silently disagree.
-	dataDir := env("ORCHICON_DATA_DIR", "/var/lib/orchicon")
+	// One value drives both the state dir and the policy default: the policy lives IN the state dir
+	// unless the operator points it elsewhere, and a second env read could silently disagree.
+	dataDir := env("ORCHICON_DATA_DIR", defaultDataDir())
+	// The KEK's path is `filepath.Join(DataDir, "secrets", "kek")`, so the ONLY way it can land in a
+	// process's working directory is a relative DataDir.
+	if abs, aerr := filepath.Abs(dataDir); aerr == nil {
+		dataDir = abs
+	}
 	return Config{
 		HTTPAddr:           env("ORCHICON_HTTP_ADDR", ":8080"),
 		ExtraBind:          env("ORCHICON_HTTP_EXTRA_BIND", ""),
@@ -208,13 +163,12 @@ func Default() Config {
 		NATSURL:            env("ORCHICON_NATS_URL", "nats://localhost:4222"),
 		OTelEndpoint:       env("ORCHICON_OTEL_ENDPOINT", "localhost:4317"),
 		Telemetry:          env("ORCHICON_TELEMETRY", ""),
-		GrafanaURL:         env("ORCHICON_GRAFANA_URL", "http://localhost:3002"),
 		TempoURL:           env("ORCHICON_TEMPO_URL", "http://localhost:3200"),
 		LokiURL:            env("ORCHICON_LOKI_URL", "http://localhost:3100"),
 		VMURL:              env("ORCHICON_VM_URL", "http://localhost:8428"),
 		BlobStoreDir:       env("ORCHICON_BLOB_DIR", "./data/blobs"),
 		MigrateOnBoot:      envBool("ORCHICON_MIGRATE_ON_BOOT", true),
-		RuntimeSocket:      env("ORCHICON_RUNTIME_SOCKET", "/var/run/orchicon-runtime/runtime.sock"),
+		RuntimeSocket:      env("ORCHICON_RUNTIME_SOCKET", defaultRuntimeSocket()),
 		DeploymentTenantID: env("ORCHICON_DEPLOYMENT_TENANT_ID", "tnt_dev"),
 		Instance:           env("ORCHICON_INSTANCE", "dev"),
 		Mode:               DeploymentMode(env("ORCHICON_MODE", "local")),
@@ -229,6 +183,7 @@ func Default() Config {
 			EmbeddedOP:     envBool("ORCHICON_OP_ENABLED", true),
 			OPRedirectURIs: env("ORCHICON_OP_REDIRECT_URIS", ""),
 			OPIssuer:       env("ORCHICON_OP_ISSUER", ""),
+			PlaneURL:       planeOriginFrom(env("ORCHICON_HTTP_ADDR", ":8080")),
 		},
 		BlobStore: BlobStoreConfig{
 			Kind:       env("ORCHICON_BLOB_STORE", "local"),
@@ -285,13 +240,7 @@ func envBool(key string, fallback bool) bool {
 	return fallback
 }
 
-// validateExtraBind checks the optional second HTTP bind
-// (ORCHICON_HTTP_EXTRA_BIND). It must be a concrete "host:port" whose host
-// is a literal, specified IP: a hostname cannot be bound, and a wildcard
-// (0.0.0.0 / ::) is exactly the LAN exposure the plane must not allow.
-// A bad value fails closed at boot instead of silently degrading to
-// loopback-only (which would surface later as "workers cannot reach the
-// plane" from the far side of a docker bridge).
+// validateExtraBind checks the optional second HTTP bind (ORCHICON_HTTP_EXTRA_BIND).
 func validateExtraBind(addr string) error {
 	if addr == "" {
 		return nil
@@ -318,9 +267,6 @@ func validateExtraBind(addr string) error {
 }
 
 // Validate reports configuration errors before the process starts serving.
-// Every mode requires a real IdP (the embedded OP or an external issuer);
-// production additionally requires a real external issuer and signing key
-// (BYO-IdP posture), which local mode relaxes for the dev experience.
 func (c Config) Validate() error {
 	if c.HTTPAddr == "" {
 		return fmt.Errorf("config: HTTPAddr must be set")
@@ -348,19 +294,14 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("config: Mode must be %q or %q", ModeLocal, ModeProduction)
 	}
-	// OIDC is the base auth path in every mode: a plane must have a real
-	// IdP — the embedded OP or an external issuer. Issuer="local" is the
-	// vestigial "no external IdP" marker, not an issuer; with the embedded
-	// OP disabled it would leave the plane with no way to authenticate
-	// (the old local-mode anonymous bypass is gone), so it is a config
-	// error, not a runtime surprise.
+	// OIDC is the base auth path in every mode: a plane must have a real IdP — the embedded OP or an
+	// external issuer.
 	if !c.Auth.EmbeddedOP && (c.Auth.Issuer == "" || c.Auth.Issuer == "local") {
 		return fmt.Errorf("config: an OIDC issuer is required in every mode: enable the embedded OP (ORCHICON_OP_ENABLED) or set ORCHICON_OIDC_ISSUER to an external IdP")
 	}
 	if c.Mode == ModeProduction {
-		// Production keeps its stricter BYO-IdP posture: a real external
-		// issuer is required even when the embedded OP is enabled — the
-		// embedded OP alone is not a production trust surface.
+		// Production keeps its stricter BYO-IdP posture: a real external issuer is required even when the
+		// embedded OP is enabled — the embedded OP alone is not a production trust surface.
 		if c.Auth.Issuer == "" || c.Auth.Issuer == "local" {
 			return fmt.Errorf("config: production mode requires ORCHICON_OIDC_ISSUER (not local)")
 		}
@@ -383,4 +324,24 @@ func (c Config) Validate() error {
 		return fmt.Errorf("config: s3 BlobStore requires ORCHICON_S3_BUCKET")
 	}
 	return nil
+}
+
+// planeOriginFrom turns the plane's HTTP bind address into an origin the OP can register as a
+// redirect URI: ":8080" -> "http://localhost:8080", "127.0.0.1:8091" -> "http://127.0.0.1:8091".
+func planeOriginFrom(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "localhost"
+	}
+	if port == "" {
+		return ""
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }

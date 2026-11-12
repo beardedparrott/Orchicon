@@ -1,17 +1,6 @@
 package claude
 
 // ask_mcp_scope_test.go — the claude Ask half of child 6.
-//
-// WHAT IT PROVES (AC 4, AC 5's claude leg, and the mode policy's claude carrier):
-//
-//   - an Ask conversation resolves the CONVERSATION scope with NON-EMPTY ids — the
-//     conversation's project AND the conversation itself — instead of the old
-//     `{Kind: ScopeProject}` with nothing in it (the defect this closes);
-//   - the resolved set reaches the `--mcp-config` claude is launched with;
-//   - the mode file carries `MayAct`, and an opaque MCP tool is REFUSED with the
-//     shared wording in a mode that may not act (read from the SAME table);
-//   - an operator's MCP tool is ASK-BY-DEFAULT in every mode (pinned, not implied),
-//     while the platform's own `mcp__orchicon__*` is allowed.
 
 import (
 	"context"
@@ -35,9 +24,8 @@ func (r *askScopeResolver) ResolveScope(_ context.Context, ref mcpclient.ScopeRe
 	return r.res, nil
 }
 
-// AC 4: an Ask conversation resolves the CONVERSATION scope with the project AND
-// conversation ids — not the empty old ref — and both the project's and the
-// conversation's servers reach the argv.
+// AC 4: an Ask conversation resolves the CONVERSATION scope with the project AND conversation ids —
+// not the empty old ref — and both the project's and the conversation's servers reach the argv.
 func TestClaudeAskResolvesTheConversationScopeWithRealIDs(t *testing.T) {
 	builtinFor(t) // installs the fake CLI + HOME
 	resolver := &askScopeResolver{res: mcpclient.Resolution{
@@ -90,13 +78,6 @@ func mcpConfigArg(t *testing.T, argv []string) string {
 }
 
 // THE SIDECAR IS A CHILD PROCESS, SO THE SCOPE MUST RIDE ITS ENVIRONMENT.
-//
-// The turn's conversation and project are stamped on the CONTEXT in-process, which is
-// fine for the native Ask path (its tools run in this process) and impossible to pass to
-// a stdio child. The claude child is per conversation with an argv fixed at spawn, so its
-// environment is the one channel that cannot go stale — and without it every Orchicon
-// tool in a claude Ask turn ran on an unstamped context, which is why the operator saw
-// get_current_conversation fail with "no conversation is stamped on this turn".
 func TestClaudeAskHandsTheConversationScopeToTheSidecar(t *testing.T) {
 	builtinFor(t)
 	b := New(quietLogger())
@@ -118,10 +99,7 @@ func TestClaudeAskHandsTheConversationScopeToTheSidecar(t *testing.T) {
 	}
 }
 
-// A conversation with NO project still sends the conversation id, and omits only the
-// project var. The sidecar then stamps the scope's own meaning for "" — "assigned to no
-// project" — rather than leaving the whole scope unset, which would make the session
-// look like it had no conversation at all.
+// A conversation with NO project still sends the conversation id, and omits only the project var.
 func TestClaudeAskConversationEnvOmitsAnAbsentProject(t *testing.T) {
 	env := OrchiconMCPConversationEnv("c-only", "")
 	if env[MCPConversationEnv] != "c-only" {
@@ -163,9 +141,8 @@ func TestAskModeFileCarriesMayAct(t *testing.T) {
 	}
 }
 
-// AC 5 (claude leg): an opaque MCP tool is refused in a mode that may not act, with
-// the SAME wording as the native adapter — names the mode, says the model cannot
-// switch itself.
+// AC 5 (claude leg): an opaque MCP tool is refused in a mode that may not act, with the SAME
+// wording as the native adapter — names the mode, says the model cannot switch itself.
 func TestAskModeDenialRefusesOpaqueMCPOutsideAModeThatActs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "c1.mode.json")
 	for _, mode := range []string{askmode.Brainstorm, askmode.QuickWork} {
@@ -193,9 +170,8 @@ func TestAskModeDenialRefusesOpaqueMCPOutsideAModeThatActs(t *testing.T) {
 	}
 }
 
-// The platform's OWN server stays classified by the table: `mcp__orchicon__create_work_item`
-// is a PLANNER tool, denied in Iteration (which may not author the plan) — the prefix
-// stripping is what keeps the table honest for the sidecar.
+// The platform's OWN server stays classified by the table: `mcp__orchicon__create_work_item` is a
+// PLANNER tool, denied in Iteration (which may not author the plan).
 func TestAskModeDenialClassifiesThePlatformsOwnServer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "c1.mode.json")
 	if err := writeAskModeFile(path, askmode.Iteration); err != nil {
@@ -210,19 +186,8 @@ func TestAskModeDenialClassifiesThePlatformsOwnServer(t *testing.T) {
 	}
 }
 
-// EVERY MCP TOOL IS ALLOWED BY THE HOOK, the operator's as well as the platform's — and it must be an
-// explicit ALLOW rather than "no verdict", because abstaining would hand the call to the permission
-// system and prompt anyway (the same card by the other route).
-//
-// THE REQUIREMENT FLIPPED. This used to require the opposite for a third-party server, on the
-// reasoning that an opaque tool is where a human decision is worth having. The operator overruled it:
-// "I didn't even think MCP was supposed to have a card. If it's added in scope it should just have
-// access tbh. I don't want cards for that." The server is in this session only because they attached
-// it, so the decision was already made.
-//
-// THE MODE BOUNDARY IS UNAFFECTED and is the reason this is safe: RunHook consults askModeDenial
-// BEFORE DecideToolForAsk, so an opaque MCP tool is still REFUSED in Brainstorm and Quick Work. The
-// next test in this file pins exactly that half.
+// EVERY MCP TOOL IS ALLOWED BY THE HOOK, the operator's as well as the platform's — and it must be
+// an explicit ALLOW rather than "no verdict".
 func TestDecideToolForAskAllowsEveryMCPTool(t *testing.T) {
 	h := HookInput{ToolName: "mcp__github__create_issue", ToolInput: map[string]any{}}
 	if v := DecideToolForAsk(h, t.TempDir(), ""); !v.Allow {
@@ -235,10 +200,8 @@ func TestDecideToolForAskAllowsEveryMCPTool(t *testing.T) {
 	}
 }
 
-// AC 5's OFFERED half for claude: a mode that may not act is not OFFERED the
-// operator's opaque MCP servers at all — the `--mcp-config` carries only the
-// platform's own sidecar. The hook denies the call too (the ENFORCED half), but
-// advertising an action the mode refuses would invite the model to try it.
+// AC 5's OFFERED half for claude: a mode that may not act is not OFFERED the operator's opaque MCP
+// servers at all — the `--mcp-config` carries only the platform's own sidecar.
 func TestClaudeAskWithholdsOperatorMCPOutsideAModeThatActs(t *testing.T) {
 	builtinFor(t)
 	resolver := &askScopeResolver{res: mcpclient.Resolution{

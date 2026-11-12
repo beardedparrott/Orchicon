@@ -20,15 +20,8 @@ func warmedDiscoverer(providerIDs ...string) *ModelDiscoverer {
 	return d
 }
 
-// TestCLIProviderRegistryScopesCLIIdsToTheDefaultKind is the regression pin for
-// the picker bug: the live CLI provider ids are the OPENCODE CLI's namespace, so
-// they may extend the DEFAULT kind only.
-//
-// The failure it prevents is not cosmetic. Unioning them into every kind put
-// `commandcode`/`deepseek`/`gufo`/`halogen` in the CLAUDE picker's provider tier;
-// selecting one then failed at the provider layer (no builtin profile for those
-// ids), so the claude model tier loaded nothing and claude looked as though it
-// could not source models at all.
+// TestCLIProviderRegistryScopesCLIIdsToTheDefaultKind is the regression pin for the picker bug: the
+// live CLI provider ids are the OPENCODE CLI's namespace.
 func TestCLIProviderRegistryScopesCLIIdsToTheDefaultKind(t *testing.T) {
 	reg := NewCLIProviderRegistry(nil, warmedDiscoverer("deepseek", "gufo", "halogen"))
 
@@ -51,10 +44,8 @@ func TestCLIProviderRegistryScopesCLIIdsToTheDefaultKind(t *testing.T) {
 	}
 }
 
-// TestCLIProviderRegistryKeepsCLIIdsUnderTheDefaultKind pins the other half: the
-// gate must not REMOVE the CLI ids, or legacy 2-segment refs (which infer the
-// default kind via adapter.ParseModelRef) stop validating and every existing
-// opencode ref fails at save.
+// TestCLIProviderRegistryKeepsCLIIdsUnderTheDefaultKind pins the other half: the gate must not
+// REMOVE the CLI ids, or legacy 2-segment refs (which infer the default kind via.
 func TestCLIProviderRegistryKeepsCLIIdsUnderTheDefaultKind(t *testing.T) {
 	reg := NewCLIProviderRegistry(nil, warmedDiscoverer("deepseek", "gufo"))
 
@@ -77,18 +68,15 @@ func TestCLIProviderRegistryKeepsCLIIdsUnderTheDefaultKind(t *testing.T) {
 		}
 	}
 
-	// The empty/legacy kind folds to the default: the 2-segment grammar infers
-	// the default kind, and parse-time callers pass that explicitly — a bare
-	// kind must behave the same rather than losing the CLI namespace.
+	// The empty/legacy kind folds to the default: the 2-segment grammar infers the default kind, and
+	// parse-time callers pass that explicitly.
 	if !reg.IsKnownProvider("", "gufo") {
 		t.Error("IsKnownProvider(\"\", \"gufo\") = false, want true (an empty kind is the default kind)")
 	}
 }
 
-// TestCLIProviderRegistryKeepsTenantCustomsPerKind pins that the additive layer
-// (tenant customs, applied on clones) is still per-kind and unaffected by the
-// CLI gate — a tenant-defined provider under one kind must not leak into
-// another, and must survive for the kind it was added to.
+// TestCLIProviderRegistryKeepsTenantCustomsPerKind pins that the additive layer (tenant customs,
+// applied on clones) is still per-kind and unaffected by the CLI gate.
 func TestCLIProviderRegistryKeepsTenantCustomsPerKind(t *testing.T) {
 	reg := NewCLIProviderRegistry(nil, warmedDiscoverer("gufo"))
 	clone := reg.Clone()

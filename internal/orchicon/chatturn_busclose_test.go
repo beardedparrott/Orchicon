@@ -8,19 +8,10 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// The bus is closed by a turn's deferred Close while ANOTHER goroutine may
-// still be emitting on it. Sending on a closed channel is a panic, and it is
-// not survivable: it took the whole serve process down, which is why an
-// operator's interjection killed their control plane and left the client
-// frozen mid-turn.
-//
-// These pin the two halves of the fix: emit must be inert once the bus is
-// closed, and Close must not race an in-flight emit. Both are driven against a
-// REAL chatBus; the concurrent one is meaningful under -race.
+// The bus is closed by a turn's deferred Close while ANOTHER goroutine may still be emitting on it.
 
-// emitAfterClose is the deterministic reproduction: close, then emit (including
-// a TERMINAL event, which is the path that waits for room rather than dropping).
-// Before the fix this panicked with "send on closed channel".
+// emitAfterClose is the deterministic reproduction: close, then emit (including a TERMINAL event,
+// which is the path that waits for room rather than dropping).
 func TestChatBusEmitAfterCloseIsInert(t *testing.T) {
 	bus := newChatBus()
 	bus.Close()
@@ -56,10 +47,7 @@ func TestChatBusCloseIsIdempotent(t *testing.T) {
 	}
 }
 
-// The racy half: emitters running concurrently with Close. Run under -race this
-// also proves the close/send ordering is synchronised rather than merely
-// usually-correct — the bug it fixes was a race, and a race is not fixed by a
-// comment.
+// The racy half: emitters running concurrently with Close.
 func TestChatBusConcurrentEmitAndClose(t *testing.T) {
 	for iter := 0; iter < 50; iter++ {
 		bus := newChatBus()
@@ -127,11 +115,8 @@ func TestChatBusConcurrentEmitAndClose(t *testing.T) {
 	}
 }
 
-// The scenario that took the serve down: two turns of ONE conversation share a
-// bus (an interjection adopts the bus of the turn it supersedes). When the
-// superseded turn finished it closed the bus, and the still-running turn's next
-// emit panicked the process — and even without the panic, the live turn's
-// stream was over. The bus must stay open until the LAST turn is done.
+// The scenario that took the serve down: two turns of ONE conversation share a bus (an interjection
+// adopts the bus of the turn it supersedes).
 func TestChatBusSharedByTwoTurnsClosesOnlyWhenLastLeaves(t *testing.T) {
 	bus := newChatBus()
 	bus.adopt() // turn A: the turn that gets superseded

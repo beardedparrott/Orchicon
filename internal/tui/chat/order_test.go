@@ -9,13 +9,8 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
-// The operator, twice: "User messages are printing AFTER the model's messages"
-// and "When sending a message it is popping up the model ON TOP of the user."
-//
-// Root cause: db.ListMessages orders created_at DESC — NEWEST first — and
-// askorchicon.Service returns those rows unchanged. The GUI reverses the page
-// (frontend/src/api/askOrchicon.ts); the TUI did not, so the transcript
-// rendered inverted. This pins the reversal against a DESC page.
+// The operator, twice: "User messages are printing AFTER the model's messages" and "When sending a
+// message it is popping up the model ON TOP of the user."
 func TestConversationItemsAreChronological(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0)
 	at := func(sec int64) *timestamppb.Timestamp {

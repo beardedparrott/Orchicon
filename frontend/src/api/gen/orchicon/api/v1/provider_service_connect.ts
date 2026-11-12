@@ -7,7 +7,7 @@ import { ProviderClearTokenRequest, ProviderClearTokenResponse, ProviderCreateCu
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
- * ProviderService (ADR-0006 D4): the tenant-facing Providers management
+ * ProviderService: the tenant-facing Providers management
  * surface behind Settings → Adapters. Merged view over built-in profiles
  * ⊕ stored overrides ⊕ custom providers; token auto-write into the
  * tenant secrets store (standard names, plaintext never returned);

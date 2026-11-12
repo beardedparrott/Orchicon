@@ -1,27 +1,6 @@
 package kit2
 
 // form_edit_lock_test.go — seeing, moving and scrolling a multi-line value.
-//
-// The operator, after the field grew to fit the pane: "even though the text box is
-// larger, it is still cut off and you can't see your cursor to edit. We need the
-// ability to see and move the cursor and scroll vertically with the arrow and the
-// mouse wheel. My take is we should not make 'enter' drop the next line since we
-// already have the down/up doing that, but instead, we should make enter edit that
-// field and then allow the scroll mechanism since the field would be locked until
-// you hit Esc to break out of it."
-//
-// Two things were wrong and they are separable:
-//
-//  1. THE WINDOW WAS ANCHORED AT THE START OF THE VALUE. The caret is spliced in at
-//     its position, but the visible slice was rows[0:budget] — so with the caret at
-//     the end of a 39-line value it was NOT RENDERED AT ALL (measured: "caret rune
-//     found at rendered row -1"). That is the whole of "you can't see your cursor".
-//  2. UP/DOWN MEANT "NEXT FIELD" EVERYWHERE, so there was no way to move through a
-//     value taller than its window.
-//
-// The fix keeps the caret as the single source of scroll position (so the cursor
-// cannot leave the view) and adds the operator's lock: Enter goes INTO a multi-line
-// field, where up/down and the wheel move the caret, and Esc comes back out.
 
 import (
 	"strings"
@@ -31,9 +10,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// tallForm builds a form whose one multi-line field holds `n` numbered lines, with
-// the caret left at the END — which is where typing continues from, and where the
-// caret used to be invisible.
+// tallForm builds a form whose one multi-line field holds `n` numbered lines, with the caret left
+// at the END — which is where typing continues from, and where the caret used to be invisible.
 func tallForm(t *testing.T, n int) *Form {
 	t.Helper()
 	var b strings.Builder
@@ -90,9 +68,6 @@ func TestFocusedMultiLineFieldKeepsTheCaretVisible(t *testing.T) {
 }
 
 // ENTER GOES INTO A MULTI-LINE FIELD; ESC COMES BACK OUT.
-//
-// "we should not make 'enter' drop the next line ... instead, we should make enter
-// edit that field ... locked until you hit Esc to break out of it."
 func TestEditLockEnterAndEsc(t *testing.T) {
 	f := tallForm(t, 40)
 
@@ -186,9 +161,6 @@ func TestEditLockArrowsMoveTheCaretThroughTheValue(t *testing.T) {
 }
 
 // UP/DOWN STEP BY LOGICAL LINE, NOT BY WRAPPED ROW.
-//
-// A long line that soft-wraps into three rows is still ONE line to the operator;
-// stepping by wrapped row would drop the caret at an arbitrary column mid-sentence.
 func TestEditLockStepsByLogicalLine(t *testing.T) {
 	f := NewForm("Edit", FieldSpec{Name: "d", Label: "D", Kind: KTextArea})
 	// Line 1 is short; line 2 is long enough to wrap in a 20-cell field.
@@ -213,9 +185,6 @@ func TestEditLockStepsByLogicalLine(t *testing.T) {
 }
 
 // ENTER INSIDE THE LOCK INSERTS A NEWLINE.
-//
-// It is the only way to type one: Enter is the key that locks the field, so without
-// this a text area could only ever hold a single line unless the text was pasted.
 func TestEditLockEnterInsertsANewline(t *testing.T) {
 	f := tallForm(t, 3)
 	f.HandleKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -260,10 +229,7 @@ func TestMovingOffALockedFieldReleasesIt(t *testing.T) {
 	}
 }
 
-// THE WHEEL SCROLLS THE LOCKED FIELD — "scroll vertically with ... the mouse wheel".
-//
-// It moves the CARET, because the caret IS the scroll position: a separate offset
-// could drift and leave the cursor off screen, which is the bug being fixed.
+// THE WHEEL SCROLLS THE LOCKED FIELD — "scroll vertically with ...
 func TestWheelScrollsALockedField(t *testing.T) {
 	f := tallForm(t, 40)
 
@@ -297,13 +263,8 @@ func TestWheelScrollsALockedField(t *testing.T) {
 	}
 }
 
-// THE FOOTER NAMES ctrl+p — the operator's second report: "there is no hint in the
-// detail pane saying ctrl+p shows markdown preview".
-//
-// The field's OWN hint sits below its value, so on a tall field it is pushed off the
-// pane exactly when the value is long enough to want a preview. The footer is always
-// visible, so the chord is named there too — but only when the focused field can
-// actually preview, so it never advertises a chord that would do nothing.
+// THE FOOTER NAMES ctrl+p — the operator's second report: "there is no hint in the detail pane
+// saying ctrl+p shows markdown preview".
 func TestFooterNamesThePreviewChord(t *testing.T) {
 	// A prose field with markdown in it: the chord is offered AND named.
 	f := NewForm("Edit worker", FieldSpec{Name: "role", Label: "Role", Kind: KTextArea,

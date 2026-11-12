@@ -45,9 +45,8 @@ func TestMatchCommandTable(t *testing.T) {
 	}
 }
 
-// The worker deny list is SUFFIXED with the project-boundary rules on top of the
-// shared class, and appending to the returned slice must not mutate either
-// declaration.
+// The worker deny list is SUFFIXED with the project-boundary rules on top of the shared class, and
+// appending to the returned slice must not mutate either declaration.
 func TestWorkerDenyPatternsComposition(t *testing.T) {
 	got := WorkerDenyPatterns()
 	if len(got) != len(neverallow.CommandPatterns)+len(ProjectBoundaryDenyPatterns()) {

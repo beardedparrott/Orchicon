@@ -1,16 +1,6 @@
 package kit2
 
 // list_share_test.go — THE MASTER-DETAIL SPLIT IS ADJUSTABLE, AND STILL ONE LAYOUT.
-//
-// The operator: "I am talking about every pane in the TUI where there is a tree and detail view. I would like
-// to be able to expand the tree view to see the full work item names, execution names, etc."
-//
-// The split was a hard 50/50 through SplitWidths, so a long name was truncated in the tree however wide the
-// terminal was — half the screen went to the detail pane even when it was empty.
-//
-// THE RISK THIS FILE EXISTS FOR: the split is read by the LAYOUT (SinglePane) and by the CLICK HIT-TEST
-// (mouseRegion). If those two disagree, a click lands in a pane the operator is not looking at — the exact
-// class of bug mouseRegion's own comment records ("clicking one thing selected another").
 
 import (
 	"testing"

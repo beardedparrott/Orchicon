@@ -45,8 +45,7 @@ func TestTheVersionListIsAlwaysUnderTheFlow(t *testing.T) {
 	}
 
 	// NOT EDITING: the refresh runs, which is what keeps the read-only detail (and its VERSIONS
-	// section) on screen and current. A predicate broader than this suppressed it for the whole pane
-	// and left the version list appearing and disappearing depending on which renderer was last.
+	// section) on screen and current.
 	if m.Base.RefreshView() == nil {
 		t.Error("with the editor closed the refresh must run — it is what keeps FLOW + VERSIONS on " +
 			"screen; suppressing it is what made the version list come and go")
@@ -59,12 +58,8 @@ func TestTheVersionListIsAlwaysUnderTheFlow(t *testing.T) {
 	}
 }
 
-// TestRememberingAWorkflowDoesNotPaintTheFlow pins the other half: the bookkeeping that runs on every
-// detail landing must not repaint the pane unless the operator is editing.
-//
-// It remembers the workflow so that `e` can enter the editor without a fresh load — but painting on
-// that path is what put the editing layout (no version list) over the read-only detail on every
-// selection, and it reset the cursor while it did.
+// TestRememberingAWorkflowDoesNotPaintTheFlow pins the other half: the bookkeeping that runs on
+// every detail landing must not repaint the pane unless the operator is editing.
 func TestRememberingAWorkflowDoesNotPaintTheFlow(t *testing.T) {
 	m := newModel(t, &fakePlane{})
 	m.Base.SetDetailID("wf-1")
@@ -114,9 +109,7 @@ func TestTheNewVersionChordExistsAndIsAdvertised(t *testing.T) {
 		t.Errorf("the Workflows hint must name the new-version chord (%q):\n%s", keyNewVersionWf, hint)
 	}
 
-	// AND IT EXISTS. With nothing selected it REFUSES — and refuse() returns a nil command by design,
-	// so the signal is the notice, not the command. Asserting on the command here would have been an
-	// assertion that a refusal must do something, which is the opposite of what a refusal is.
+	// AND IT EXISTS.
 	press(t, m, keyNewVersionWf)
 	if !strings.Contains(m.Notice(), "select a workflow") {
 		t.Errorf("with nothing selected the chord must refuse and say why, got notice %q", m.Notice())

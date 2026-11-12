@@ -1,17 +1,6 @@
 package tui
 
 // scope_modal_owners_test.go — THE ONE MODAL, THREE OWNERS.
-//
-// The operator: "I simply want at least a similar modal to manage MCP and skills for projects and
-// workers. Right now it's one line edit with absolute paths. It doesn't pop up a modal like /mcp or
-// /scope does. I understand that specific one is tied to a scope but we should be able to replicate the
-// UI piece to manage the MCPs and Skills of workers and projects. We reused the same UI on the GUI."
-//
-// The GUI's answer is ONE panel (MCPServersPanel) parameterized by MCPScope — project, conversation,
-// workerVersion — mounted on the project page, the worker page and the conversation disclosure. The TUI
-// had it for conversations only. These tests cover the other two, and the rule that makes them safe:
-// a conversation's and a project's definitions are OWNED ROWS (stamped with that scope's id), while a
-// worker version's are INLINE SPECS written into the version's permissions — never a row.
 
 import (
 	"context"
@@ -77,8 +66,7 @@ func TestProjectScopeModalListsTheProjectsRowsAndSkills(t *testing.T) {
 }
 
 // A CREATE FROM THE PROJECT MODAL IS OWNED BY THE PROJECT — the owner stamp is the whole safety
-// property (a definition belongs to exactly one scope), and it is asserted on the request the plane
-// would receive.
+// property (a definition belongs to exactly one scope).
 func TestProjectModalCreateIsStampedWithTheProjectAndCarriesItsArgs(t *testing.T) {
 	m, stub, _ := newScopeApp(t)
 	openProjectScope(t, m)
@@ -91,8 +79,7 @@ func TestProjectModalCreateIsStampedWithTheProjectAndCarriesItsArgs(t *testing.T
 	m.convScopeForm.Set("command", "npx")
 	m.convScopeForm.Set("args", "-y server-slack")
 	// ${SECRET_NAME} IS PASSED THROUGH VERBATIM — resolved by the tenant secrets store at session time,
-	// never by this form. (This assertion came from the work package's wrapper test, which this replaced
-	// when that wrapper was removed: the modal is what builds this request now.)
+	// never by this form.
 	m.convScopeForm.Set("env", "SLACK_TOKEN=${SLACK_TOKEN}")
 	cmd, err := m.convScopeForm.OnSubmit(m.convScopeForm.Values, nil)
 	if err != nil {
@@ -169,8 +156,7 @@ func openingWorkerVersion(t *testing.T, permissions, skills string) (*App, *stub
 }
 
 // openingWorkerVersionWithStore is the same modal WITH the tenant secrets store read applied — the
-// state the real open path is in (OpenWorkerMCPModal reads the store in the one command that fetches
-// the version, and `r` re-reads it).
+// state the real open path is in (OpenWorkerMCPModal reads the store in the one command.
 func openingWorkerVersionWithStore(t *testing.T, permissions, skills string) (*App, *stubMCP, *stubSecrets, *versionSaveRec) {
 	t.Helper()
 	m, stub, sec, rec := openingWorkerVersion(t, permissions, skills)
@@ -182,9 +168,8 @@ func openingWorkerVersionWithStore(t *testing.T, permissions, skills string) (*A
 	return m, stub, sec, rec
 }
 
-// submitAndRoute submits the open form and feeds the message it produced back through the ROUTER, the
-// way the shell does — which is the point on the credential path: its message arrives while the form
-// is still up, so it must be routed above the form guard (see router.go's form-guard note).
+// submitAndRoute submits the open form and feeds the message it produced back through the ROUTER,
+// the way the shell does — which is the point on the credential path.
 func submitAndRoute(t *testing.T, m *App) {
 	t.Helper()
 	cmd, err := m.convScopeForm.Submit()
@@ -227,9 +212,6 @@ func TestWorkerVersionModalListsInlineSpecsAndSkills(t *testing.T) {
 }
 
 // ADDING A SPEC COMMITS INTO THE VERSION'S PERMISSIONS AND CREATES NO ROW.
-//
-// This is the difference that matters for this scope: a version is immutable once published, so its
-// specs live in its own permissions JSON. A create here would be a row nothing would ever read.
 func TestWorkerVersionAddSpecCommitsInlineAndCreatesNoRow(t *testing.T) {
 	m, stub, _, rec := openingWorkerVersion(t, `{"tools":["read"],"mcp_servers":[]}`, `[]`)
 	pressScope(t, m, "a")
@@ -238,9 +220,7 @@ func TestWorkerVersionAddSpecCommitsInlineAndCreatesNoRow(t *testing.T) {
 	}
 	m.convScopeForm.Set("name", "sentry")
 	m.convScopeForm.Set("command", "npx -y sentry")
-	// SUBMIT, THEN LET THE MODAL HOST CLOSE IT — the real path. mcpforms.InlineForm's save callback
-	// cannot return a command, so the modal commits when the FORM CLOSES (see convScopeKey); calling
-	// OnSubmit directly would skip exactly the step under test.
+	// SUBMIT, THEN LET THE MODAL HOST CLOSE IT — the real path.
 	if _, err := m.convScopeForm.Submit(); err != nil {
 		t.Fatalf("the inline form refused a complete entry: %v", err)
 	}
@@ -290,8 +270,7 @@ func TestWorkerVersionRemoveSpecCommits(t *testing.T) {
 }
 
 // `i` IS REFUSED, WITH A REASON: an INSTALL STATUS can only live on a row, and a version's spec has
-// none. `k` IS NOT — a credential needs no row, it needs a place in the spec's own config, which is
-// what the credential form builds (below).
+// none.
 func TestWorkerVersionRefusesInstallButNotTheCredential(t *testing.T) {
 	m, _, _, rec := openingWorkerVersion(t, versionPermissions, `[]`)
 	putCursor(m, rowIndexOf(t, m, "pg"))
@@ -341,28 +320,15 @@ func TestWorkerVersionSkillsCommitThroughTheSave(t *testing.T) {
 // ── a worker version's CREDENTIAL: selected, and built into the spec ─────────────────────
 
 // versionPermissionsWithEnv is a version whose spec ALREADY carries the env key a GitHub MCP server
-// needs, with no value in it — the shape a catalog pick leaves behind (the prefill never writes a
-// blank secret) and the shape an operator hand-adds when they intend to reference a stored one.
+// needs, with no value in it.
 const versionPermissionsWithEnv = `{"tools":["read"],"mcp_servers":[{"id":"gh","type":"stdio",` +
 	`"command":["npx","-y","server-github"],"env":{"GITHUB_PERSONAL_ACCESS_TOKEN":""}}]}`
 
 // flatJSON drops the whitespace MarshalIndent writes, so an assertion can name a key/value pair
-// without depending on the encoding's layout. The fixtures hold no value containing a space, so
-// squeezing whitespace cannot make two different documents look alike.
+// without depending on the encoding's layout.
 func flatJSON(s string) string { return strings.Join(strings.Fields(s), "") }
 
-// A STORED SECRET AND A TYPED VALUE ARE TWO INTENTIONS, AND THE FORM NEVER SHOWS BOTH AT ONCE.
-//
-// The report, exactly: "if someone already went through the list and added a current secret, it doesn't
-// matter what value they put in the custom field, the stored secret supersedes it. I think a better approach
-// would be to add another item under stored secret called Custom that then only accepts the custom entered
-// new key below". So:
-//
-//   - the new-secret pair exists ONLY under Custom — hidden, not merely ignored, while a stored name is
-//     picked, so the two answers are never on screen together;
-//   - a value left over from BEFORE the pick is REFUSED with a message naming Custom, because silently
-//     dropping it is precisely the behaviour being reported;
-//   - Custom reveals the pair, and the write goes through.
+// So: - the new-secret pair exists ONLY under Custom.
 func TestCredentialFormSeparatesPickingAStoredSecretFromStoringANewOne(t *testing.T) {
 	m, _, sec, rec := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
 	putCursor(m, rowIndexOf(t, m, "gh"))
@@ -429,15 +395,6 @@ func optionValues(spec *kit2.FieldSpec) []string {
 }
 
 // THE CREDENTIAL IS SELECTED FROM THE TENANT STORE AND WRITTEN INTO THE SPEC'S OWN CONFIG.
-//
-// The operator: "When adding an MCP server for a worker either through catalog or manually, the
-// credentials should be able to be selected rather than typed just like it does for projects and
-// conversations. I understand that it is inline but that doesn't mean that info can't be built on top
-// and passed to the config."
-//
-// This is that sentence, asserted end to end: the field offers the STORE'S names (selection), the
-// spec's own env key is what it points at, the reference lands in the version's permissions, and
-// nothing is created in mcp_servers (there is no row to create).
 func TestWorkerVersionCredentialIsSelectedAndBuiltIntoTheSpec(t *testing.T) {
 	m, stub, _, rec := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
 	putCursor(m, rowIndexOf(t, m, "gh"))
@@ -448,8 +405,7 @@ func TestWorkerVersionCredentialIsSelectedAndBuiltIntoTheSpec(t *testing.T) {
 		t.Fatal("`k` opened no credential form on an inline spec")
 	}
 	// SELECTION: the picker's options ARE the store's names — never a value, and never empty for a
-	// store that holds secrets (the names are the whole point of the control). CUSTOM IS LAST, and it is
-	// the only way to store a new one: a name that is not in the store is not a reference.
+	// store that holds secrets (the names are the whole point of the control).
 	if got, want := optionValues(f.Spec("secret")), []string{
 		"MCP_GITHUB_GITHUB_PERSONAL_ACCESS_TOKEN", "SLACK_BOT_TOKEN", mcpforms.CustomSecretChoice,
 	}; !slices.Equal(got, want) {
@@ -521,10 +477,6 @@ func TestWorkerVersionCredentialWritesHeadersForAnHTTPspec(t *testing.T) {
 }
 
 // A NAME THE STORE DOES NOT HOLD IS STORED FIRST, AND ONLY THEN IS THE VERSION WRITTEN.
-//
-// The order is the contract: a version written first would carry a reference nothing resolves, and
-// the operator would find out when the worker ran. The store's write is observed to happen while the
-// version has NOT been saved yet.
 func TestWorkerVersionCredentialStoresANewSecretBeforeTheVersion(t *testing.T) {
 	m, _, sec, rec := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
 	putCursor(m, rowIndexOf(t, m, "gh"))
@@ -562,8 +514,7 @@ func TestWorkerVersionCredentialStoresANewSecretBeforeTheVersion(t *testing.T) {
 }
 
 // A NAME THAT IS NOT STORED, WITH NO VALUE, IS REFUSED BEFORE ANYTHING IS WRITTEN — because the
-// reference could not be resolved when the worker ran, and a form that accepted it would be promising
-// something the store cannot keep.
+// reference could not be resolved when the worker ran.
 func TestWorkerVersionCredentialRefusesAnUnstoredNameWithoutAValue(t *testing.T) {
 	m, stub, sec, rec := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
 	putCursor(m, rowIndexOf(t, m, "gh"))
@@ -595,9 +546,7 @@ func TestWorkerVersionCredentialRefusesAnUnstoredNameWithoutAValue(t *testing.T)
 	}
 }
 
-// A STORE THAT REJECTS THE WRITE LEAVES THE SPEC AND THE VERSION EXACTLY AS THEY WERE. This is the
-// failure the ordering exists for: the operator sees the store's own message, and the version does not
-// end up referencing a secret that is not there.
+// A STORE THAT REJECTS THE WRITE LEAVES THE SPEC AND THE VERSION EXACTLY AS THEY WERE.
 func TestWorkerVersionCredentialStoreFailureLeavesTheSpecAlone(t *testing.T) {
 	m, _, sec, rec := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
 	putCursor(m, rowIndexOf(t, m, "gh"))
@@ -626,9 +575,8 @@ func TestWorkerVersionCredentialStoreFailureLeavesTheSpecAlone(t *testing.T) {
 	}
 }
 
-// AN EXISTING SECRET IS ROTATED IN PLACE (an UPDATE by id, not a create) — which is now the CUSTOM path,
-// because a ROTATION still means "here is a new value": picking the name from the list is a REFERENCE, and
-// the value it points at is not re-sent from the form.
+// AN EXISTING SECRET IS ROTATED IN PLACE (an UPDATE by id, not a create) — which is now the CUSTOM
+// path, because a ROTATION still means "here is a new value".
 func TestWorkerVersionCredentialReplacesAnExistingSecret(t *testing.T) {
 	m, _, sec, _ := openingWorkerVersionWithStore(t, versionPermissionsWithEnv, `[]`)
 	putCursor(m, rowIndexOf(t, m, "gh"))
@@ -677,10 +625,8 @@ func TestWorkerVersionScopeRefreshRereadsTheStore(t *testing.T) {
 	}
 }
 
-// THE OPEN PATH READS THE STORE IN THE ONE FETCH IT ALREADY MAKES, so the picker is POPULATED when the
-// modal appears rather than after a second round trip — and so the wiring that carries the names from
-// the fetch onto the modal cannot come loose unnoticed (it is two assignments, which is exactly the
-// kind of thing that silently stops happening).
+// THE OPEN PATH READS THE STORE IN THE ONE FETCH IT ALREADY MAKES, so the picker is POPULATED when
+// the modal appears rather than after a second round trip.
 func TestOpeningAWorkerVersionCarriesTheStoresNames(t *testing.T) {
 	m, _, _ := newScopeApp(t)
 	cmd := m.OpenWorkerMCPModal("w1", "Sweeper")
@@ -712,15 +658,8 @@ func TestOpeningAWorkerVersionCarriesTheStoresNames(t *testing.T) {
 	}
 }
 
-// THE CATALOG CASE: a spec with NO env key yet — the catalog prefill deliberately leaves a secret key
-// out (it never writes a blank one), so the KEY is typed while the SECRET is still picked. The
-// reference lands the same way.
-//
-// THE KEY'S GRAMMAR IS NOT THE FORM'S BUSINESS, and that is asserted here by typing a name no
-// environment could carry: the form takes it and builds the reference, because the rule belongs to the
-// plane — a worker version's inline specs are validated at save
-// (mcpsettings.ValidateInlinePermissions, which reuses the owned-row rule), so every writer is covered
-// by one copy of it rather than by one per client.
+// THE CATALOG CASE: a spec with NO env key yet — the catalog prefill deliberately leaves a secret
+// key out (it never writes a blank one), so the KEY is typed while the SECRET is still picked.
 func TestWorkerVersionCredentialHandlesASpecWithNoKeysYet(t *testing.T) {
 	const freshCatalogSpec = `{"mcp_servers":[{"id":"github","type":"stdio",` +
 		`"command":["npx","-y","@modelcontextprotocol/server-github"]}]}`
@@ -845,11 +784,6 @@ var (
 // ── the hint advertises every verb that applies ──────────────────────────────────────────
 
 // `c: catalog` IS OFFERED FROM EVERY ROW OF AN OWNED-ROW SCOPE.
-//
-// The operator: "The mcp add screen does not have a shortcut helper or button to add MCPs from the
-// catalog." The catalog is reachable from ANY row — it does not act on the selection — so it must be
-// ADVERTISED from any row. It had been dropped by the MCP row's case, because each case wrote out a
-// complete list and the global verbs were the ones it forgot.
 func TestTheCatalogVerbIsAdvertisedFromEveryRow(t *testing.T) {
 	m, _, _ := newScopeApp(t)
 	openProjectScope(t, m)
@@ -876,12 +810,6 @@ func TestTheCatalogVerbIsAdvertisedFromEveryRow(t *testing.T) {
 }
 
 // A WORKER VERSION ADVERTISES WHAT IT CAN DO AND NOT WHAT IT CANNOT.
-//
-// `i: install` IS ABSENT, because an install status can only live on a row this scope does not have.
-// `c: catalog` and `k: credential` ARE PRESENT, and both were once refused here for the same wrong
-// reason — that a version's specs are INLINE. Inline decides WHERE a thing is written (the version's
-// own permissions, the spec's own env), not whether it can be done: the catalog fills the add form,
-// and a credential is built into the spec's config.
 func TestTheVersionScopeAdvertisesOnlyWhatItCanDo(t *testing.T) {
 	m, _, _, _ := openingWorkerVersion(t, versionPermissions, `[]`)
 	putCursor(m, rowIndexOf(t, m, "pg"))
@@ -899,10 +827,7 @@ func TestTheVersionScopeAdvertisesOnlyWhatItCanDo(t *testing.T) {
 	}
 }
 
-// THE PROJECT SCOPE DOES NOT CLAIM DISCIPLES IT HAS NONE OF. Workers are TENANT-level, so a project's
-// definitions are consumed by its CONVERSATIONS — not by workers, whose specs are their own inline list.
-// The operator caught the earlier wording: "Workers are tenant level and not project level so I don't
-// think the wording on the mcp add for projects should mention 'worker versions'."
+// THE PROJECT SCOPE DOES NOT CLAIM DISCIPLES IT HAS NONE OF.
 func TestTheProjectScopeDoesNotClaimWorkersAsDisciples(t *testing.T) {
 	m, _, _ := newScopeApp(t)
 	openProjectScope(t, m)
@@ -925,18 +850,6 @@ func TestTheProjectScopeDoesNotClaimWorkersAsDisciples(t *testing.T) {
 }
 
 // A CATALOG PICK AT THE VERSION SCOPE PREFILLS THE INLINE FORM AND CREATES NO ROW.
-//
-// The operator: "When I add an MCP from the catalog for workers, it just jumps back to the mcp screen and
-// doesn't show that any MCP servers have been added."
-//
-// The pick must PREFILL the add form (the GUI's handleCatalogAdd fills the form and opens it; nothing is
-// created by the pick itself) — and the form must be opened THROUGH A MESSAGE, from the live model, which
-// is this flow's whole hazard: the pick runs inside the CATALOG form's OnSubmit, so a direct call could
-// mutate a discarded App copy while the catalog form was cleared anyway (it had submitted), which is
-// exactly "it jumps back and nothing was added".
-//
-// Driven the way the runtime drives it: the pick's cmd is run, its message is fed back through Update,
-// and the form is then asserted on the model that Update returned.
 func TestVersionCatalogPickPrefillsTheInlineFormAndCreatesNoRow(t *testing.T) {
 	m, stub, _, _ := openingWorkerVersion(t, `{"tools":["read"],"mcp_servers":[]}`, `[]`)
 
@@ -985,9 +898,7 @@ func TestVersionCatalogPickPrefillsTheInlineFormAndCreatesNoRow(t *testing.T) {
 	}
 }
 
-// THE GUARD REFUSES OUT LOUD. If the form is asked to open when no version scope is live, saying so is
-// the difference between "the key is broken" and "the scope moved" — and the caller is cleared either
-// way, so silence leaves the operator with a modal that closed having done nothing.
+// THE GUARD REFUSES OUT LOUD.
 func TestOpeningTheInlineFormWithoutAVersionScopeSaysSo(t *testing.T) {
 	m, _, _ := newScopeApp(t)
 	m.scope = nil
@@ -1008,17 +919,6 @@ func TestOpeningTheInlineFormWithoutAVersionScopeSaysSo(t *testing.T) {
 }
 
 // A VERSION SAVE ASKS TO REPUBLISH — which is what makes editing a PUBLISHED version work at all.
-//
-// The operator's question is what surfaced this: "You can add models to a worker without modifying a
-// version. Why can't we add MCP servers like that as well?" The model path edits the version row too —
-// model_ref is a column on it — but it has a dedicated RPC (BulkUpdateWorkerModel) that does
-// revert → set → republish for it, preserving the version number (internal/worker/service.go,
-// applyModelChange). The GENERIC version update supports the same flow when the request asks for it, and
-// my modal was not asking: the server refuses a published version with "status is \"published\", must be
-// 'draft' to update" — and published is the state most workers are in.
-//
-// Asserted through a real request (a hermetic worker service that records what it receives), not on a
-// copy of the request built by the test: the whole value here is the WIRE shape.
 func TestVersionSaveRequestCarriesRepublish(t *testing.T) {
 	rec := &recordingWorkerService{}
 	mux := http.NewServeMux()

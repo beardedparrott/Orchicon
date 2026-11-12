@@ -1,18 +1,22 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 )
 
-// These tests cover the two changes that make `orchicon install` legible while it
-// runs. They need no Docker daemon, which is why they can exist here at all: the
-// progress and the honesty of the summary are properties of the output, and the
-// output is what the operator has during a multi-minute unattended install.
+// These tests cover the two changes that make `orchicon install` legible while it runs.
 
 // captureStdout collects everything fn prints to os.Stdout.
 func captureStdout(t *testing.T, fn func()) string {
@@ -34,10 +38,8 @@ func captureStdout(t *testing.T, fn func()) string {
 	return <-done
 }
 
-// TestTailWriterKeepsOnlyTheTail pins the bounded tail that lets a failed
-// `docker pull` still report WHY without holding an entire progress stream in
-// memory. Streaming the pull is what makes a working install distinguishable from
-// a hung one; the tail is what keeps the failure message useful.
+// TestTailWriterKeepsOnlyTheTail pins the bounded tail that lets a failed `docker pull` still
+// report WHY without holding an entire progress stream in memory.
 func TestTailWriterKeepsOnlyTheTail(t *testing.T) {
 	tw := &tailWriter{limit: 16}
 	if n, err := tw.Write([]byte("0123456789")); n != 10 || err != nil {
@@ -57,18 +59,16 @@ func TestTailWriterKeepsOnlyTheTail(t *testing.T) {
 	}
 }
 
-// TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane closes the "green but
-// broken" case in the summary. An install whose control plane never answered used
-// to print "Orchicon is installed and running." and nothing else, so the operator
-// opened a URL that did not respond with nothing to go on. The install IS real, so
-// the URLs stay; the claim about the plane does not.
+// TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane closes the "green but broken" case in the
+// summary.
 func TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane(t *testing.T) {
-	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8080, "ORCHICON_GRAFANA_PORT": 3002}
+	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8080, "ORCHICON_POSTGRES_PORT": 5432}
 	call := func(healthy bool) string {
 		return captureStdout(t, func() {
 			printInstallInfo("dev", residencyContainer, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
 				"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
-				"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin", ports, healthy)
+				"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin",
+				orchLauncher{Path: "/tmp/bin/orch", Installed: true, Method: "symlink"}, pathHint{}, ports, false, healthy, containerengine.Status{})
 		})
 	}
 
@@ -103,5 +103,136 @@ func TestPrintInstallInfoIsHonestAboutAnUnconfirmedPlane(t *testing.T) {
 			}
 			t.Errorf("%s: the summary box is not rectangular (%s):\n%s", name, strings.Join(got, ", "), out)
 		}
+	}
+}
+
+// TestPrintInstallInfoUsesTheInstallsEngineDecision pins the SINGLE-DECISION property the install
+// asserts everywhere else.
+func TestPrintInstallInfoUsesTheInstallsEngineDecision(t *testing.T) {
+	// The disagreement is pinned, not inferred: an empty PATH alone still leaves the engine the
+	// detector finds in a conventional location (a CI runner's /usr/bin/docker).
+	t.Setenv(containerengine.EnginePinEnv, string(containerengine.EngineNone))
+	t.Setenv("PATH", t.TempDir()) // no engine: a re-probe would answer "no containers"
+	if containerEngineAvailable() {
+		t.Fatal("the fixture needs an empty PATH to make the re-probe disagree")
+	}
+	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8080, "ORCHICON_POSTGRES_PORT": 5432}
+	out := captureStdout(t, func() {
+		// residencyHost with containersUsed=true: a host plane whose services run in the instance container.
+		printInstallInfo("dev", residencyHost, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
+			"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
+			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin",
+				orchLauncher{Path: "/tmp/bin/orch", Installed: true, Method: "symlink"}, pathHint{}, ports, true, true, containerengine.Status{})
+	})
+	// SERVICES ARE ALWAYS HOST NOW.
+	if strings.Contains(out, "the services run in orchicon-cnt-dev") {
+		t.Errorf("the summary claims a services container, which the install no longer creates; got:\n%s", out)
+	}
+	if !strings.Contains(out, "host data dir") {
+		t.Errorf("the summary must report the host data dir for a host-services instance; got:\n%s", out)
+	}
+}
+
+// TestPrintInstallInfoIsHonestAboutTheNoEngineShape is the regression for a summary that
+// CONTRADICTED its own install.
+func TestPrintInstallInfoIsHonestAboutTheNoEngineShape(t *testing.T) {
+	// No engine, so printInstallInfo's `containersUsed` is false — the install's threaded decision.
+	t.Setenv("PATH", t.TempDir())
+	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8092, "ORCHICON_POSTGRES_PORT": 5434}
+
+	noEngine := captureStdout(t, func() {
+		printInstallInfo("test", residencyHost, "orchicon-cnt-test", "orchicon-cnt-test-data",
+			"/tmp/orchicon-runtime", "http://localhost:8092/healthz",
+			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin",
+				orchLauncher{Path: "/tmp/bin/orch", Installed: true, Method: "symlink"}, pathHint{}, ports, false, true, containerengine.Status{})
+	})
+	if strings.Contains(noEngine, "short-lived container") {
+		t.Errorf("a no-engine install must NOT promise a per-workflow runtime container it cannot launch:\n%s", noEngine)
+	}
+	if strings.Contains(noEngine, "runtime containers): running") {
+		t.Errorf("a no-engine install must not report the container runtime daemon as the carrier:\n%s", noEngine)
+	}
+	if !strings.Contains(noEngine, "IN-PROCESS") {
+		t.Errorf("the no-engine summary must say work runs in-process:\n%s", noEngine)
+	}
+	// The stop recipe must name the state dir: a bare `serve --stop` resolves a RELATIVE `.dev` and answers
+	// "serve is not running" over a plane that is up.
+	if !strings.Contains(noEngine, "ORCHICON_SERVE_STATE_DIR=") {
+		t.Errorf("the host stop recipe must name the instance's serve state dir, or it stops nothing:\n%s", noEngine)
+	}
+
+	// The OTHER direction: with an engine the container-carrier lines must still be there.
+	withEngine := captureStdout(t, func() {
+		printInstallInfo("dev", residencyHost, "orchicon-cnt-dev", "orchicon-cnt-dev-data",
+			"/tmp/orchicon-runtime", "http://localhost:8080/healthz",
+			"ghcr.io/beardedparrott/orchicon-runtime:latest", "/tmp/bin",
+				orchLauncher{Path: "/tmp/bin/orch", Installed: true, Method: "symlink"}, pathHint{}, ports, true, true, containerengine.Status{})
+	})
+	if !strings.Contains(withEngine, "short-lived container") {
+		t.Errorf("an engine-backed install must still describe the runtime container carrier:\n%s", withEngine)
+	}
+	if strings.Contains(withEngine, "IN-PROCESS") {
+		t.Errorf("an engine-backed install must NOT say work runs in-process:\n%s", withEngine)
+	}
+}
+
+// ----- the download failure posture (AC#6) -----
+
+// TestDownloadFailureReportsABoundedTail mirrors TestTailWriterKeepsOnlyTheTail for the DOWNLOAD
+// path.
+func TestDownloadFailureReportsABoundedTail(t *testing.T) {
+	// A body much larger than the tail limit, with a distinctive marker at the END — which is the part
+	// a bounded tail must keep, since the last bytes are where a server puts its actual explanation.
+	const marker = "THE-ACTUAL-REASON"
+	long := strings.Repeat("filler ", 4000)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, long+marker)
+	}))
+	defer srv.Close()
+
+	dst := filepath.Join(t.TempDir(), "download")
+	opt := acquireOptions{Out: io.Discard, HTTPClient: srv.Client()}
+	err := downloadToFile(context.Background(), srv.URL+"/x", dst, opt)
+	if err == nil {
+		t.Fatal("a 500 must be a failure")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "500") {
+		t.Errorf("the error must carry the HTTP status; got:\n%s", msg)
+	}
+	if !strings.Contains(msg, marker) {
+		t.Errorf("the error must carry the TAIL of the server's explanation; got:\n%s", msg)
+	}
+	if len(msg) > downloadTailLimit+2048 {
+		t.Errorf("the reported tail must stay bounded (got %d bytes of error); the whole body must not be echoed", len(msg))
+	}
+	if _, statErr := os.Stat(dst); statErr == nil {
+		t.Error("a failed download must not leave a file behind that a later step could mistake for the artifact")
+	}
+}
+
+// TestDownloadProgressIsStreamedOncePerChunk pins the other half of AC#6: progress is STREAMED (so
+// a working download is distinguishable from a hung one) but not per read (so it does not flood.
+func TestDownloadProgressIsStreamedOncePerChunk(t *testing.T) {
+	// 3.5 steps worth of body: enough for a few progress lines, far short of noisy.
+	body := bytes.Repeat([]byte("x"), 3*downloadProgressStep+downloadProgressStep/2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	var out bytes.Buffer
+	opt := acquireOptions{Out: &out, HTTPClient: srv.Client()}
+	if err := downloadToFile(context.Background(), srv.URL+"/y", filepath.Join(t.TempDir(), "d"), opt); err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "MiB") {
+		t.Errorf("progress must be reported as it happens, not only at the end; got:\n%s", got)
+	}
+	if lines := strings.Count(got, "\n"); lines > 8 {
+		t.Errorf("progress must not print a line per read (%d lines for a few MiB); got:\n%s", lines, got)
 	}
 }

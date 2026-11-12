@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 
-describe("ModelPicker (three-tier, ADR-0004)", () => {
+describe("ModelPicker (three-tier)", () => {
   const src = fs.readFileSync(path.join(__dirname, "ModelPicker.tsx"), "utf8");
 
   it("renders three tiers: adapter bubbles, provider list, searchable model list", () => {
@@ -13,11 +13,11 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
     expect(src).toMatch(/rounded-full border px-3 py-1/); // adapter pills (in-box)
     expect(src).toContain("Search models...");
     // Tier 2 — provider pills from the tenant-aware providers service
-    // (ADR-0006: built-ins ⊕ enabled tenant customs, auto-refresh on save).
+    // (: built-ins ⊕ enabled tenant customs, auto-refresh on save).
     expect(src).toContain("useProviderList()");
     expect(src).toMatch(/No providers for adapter/);
     // Tier 3 — searchable model list scoped to the selected provider.
-    // Per-adapter data source (ADR-0004): a CATALOG-SOURCED kind — the server's
+    // Per-adapter data source: a CATALOG-SOURCED kind — the server's
     // ListAdapterKinds.sourcing_kinds (orchicon, claude) — resolves models from
     // the providers service; every other kind uses opencode-CLI discovery.
     // (The superseded assumption was "native → providers service, legacy CLI
@@ -153,6 +153,23 @@ describe("ModelPicker (three-tier, ADR-0004)", () => {
 
   it("handles legacy 2-segment refs via parseModelRef (inferred opencode)", () => {
     expect(src).toContain("parseModelRef");
-    expect(src).toContain("parsed?.adapter ?? DEFAULT_ADAPTER_KIND");
+  });
+
+  // A STORED REF STILL WINS; AN EMPTY ONE SEEDS THE PRODUCT DEFAULT.
+  //
+  // These are two different questions and the picker used to answer both with DEFAULT_ADAPTER_KIND:
+  //
+  //   parsed?.adapter ?? DEFAULT_ADAPTER_KIND
+  //
+  // so a fresh selection (no ref at all) seeded the LEGACY INFERENCE — opencode — and the picker's
+  // first act was to ask the opencode-CLI discovery path, which on an opencode-free plane answers
+  // Unimplemented. The operator's issue #3: "The default selected provider in both the web, desktop
+  // and TUI should ALWAYS be orchicon. It's defaulting to opencode and thus giving the user an error
+  // message right away."
+  //
+  // The stored-ref half is unchanged (legacy refs are never repointed); only the EMPTY case moved.
+  it("seeds an EMPTY ref with the native product default, never the legacy inference", () => {
+    expect(src).toContain("parsed?.adapter ?? ORCHICON_ADAPTER_KIND");
+    expect(src).not.toContain("parsed?.adapter ?? DEFAULT_ADAPTER_KIND");
   });
 });

@@ -49,11 +49,6 @@ func TestProseRendersMarkdownNotSource(t *testing.T) {
 }
 
 // TestBandFillSurvivesMarkdownStyling is the reason the renderer is attribute-only.
-//
-// Each transcript row is padded to the pane and painted with the speaker's fill, so the band runs edge
-// to edge. A markdown span that ended in a FULL reset (`\x1b[0m`) would clear that fill for the rest
-// of the row — a band with a hole punched in it wherever a bold word appeared. So: every full reset in
-// a rendered row must be the BAND'S OWN, i.e. the last thing on the line.
 func TestBandFillSurvivesMarkdownStyling(t *testing.T) {
 	text := "A line with **bold** and `code` and a [link](https://x.example) in it, plus enough words to wrap."
 	out := RenderItems([]ChatItem{{Kind: KindText, Text: text}}, 48)
@@ -76,13 +71,7 @@ func TestBandFillSurvivesMarkdownStyling(t *testing.T) {
 }
 
 // TestReasoningRendersMarkdown: the GUI's ReasoningBubble defaults to the RENDERED view (its Raw
-// toggle is opt-in), so reasoning is markdown here too — with the label kept on the first row and the
-// continuation rows indented past it.
-//
-// The label asserts "reasoning", which is the GUI's own word for the block. It used to be "thinking",
-// which named the ACTIVITY and was drawn in the hint style — so a 60,909-character reasoning stream
-// rendered as a dim footnote, and the operator's report was "No reasoning block". See
-// reasoning_block_test.go.
+// toggle is opt-in), so reasoning is markdown here too.
 func TestReasoningRendersMarkdown(t *testing.T) {
 	out := RenderItems([]ChatItem{{Kind: KindReasoning, Text: "## Step one\n\n> because of the constraint"}}, 60)
 	if !strings.Contains(out, "reasoning") {
@@ -149,11 +138,6 @@ func TestBandPaddingStillApplies(t *testing.T) {
 }
 
 // THE OPERATOR'S BAND STAYS IDENTIFIABLE WITH NO FILL.
-//
-// On a transparent theme neither chat band is painted (see theme.buildStyles), so the FILL can no longer be what
-// tells the two speakers apart. It does not have to be: the operator's band carries its own label, and this pins
-// that the label survives the removal of the fill — because the removal was justified by exactly this, and a
-// justification nothing asserts is a guess.
 func TestTheOperatorBandIsLabelledWithNoFill(t *testing.T) {
 	t.Cleanup(func() { theme.Use(theme.DefaultName) })
 	if !theme.Use("forest-transparent") {

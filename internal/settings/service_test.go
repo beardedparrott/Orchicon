@@ -9,11 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// TestSettingsProtoMaxConcurrentRunsRoundTrip verifies the optional
-// max_concurrent_runs field (proto) survives the row conversion with its
-// "explicitly set vs. absent" distinction intact: a nil proto pointer must
-// NOT clobber the persisted value (MaxConcurrentRunsSet=false), while a
-// present pointer — including 0, which means "clear the cap" — must.
+// TestSettingsProtoMaxConcurrentRunsRoundTrip verifies the optional max_concurrent_runs field
+// (proto) survives the row conversion with its "explicitly set vs. absent" distinction intact.
 func TestSettingsProtoMaxConcurrentRunsRoundTrip(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -95,23 +92,8 @@ func TestValidateSessionTTLs(t *testing.T) {
 	}
 }
 
-// TEST-MERGE-OURS-BEGIN
-// TestValidateModelRef_CLIRegistry pins that tenant-default model refs are
-// validated against the CLI-aware registry injected via SetValidationRegistry
-// (builtin catalog ∪ CLI-discovered provider ids), never the bare builtin
-// catalog. This is the settings-service half of the "CLI-aware validation"
-// acceptance: a CLI-namespace provider (e.g. "deepseek") that the picker
-// happily offers must not be rejected at save-time. Both tenant defaults
-// (DefaultAskOrchiconModel, DefaultWorkerModel) flow through the same
-// validateModelRef, so this exercises the shared contract.
-//
-// The observable CLI-aware distinction lives on the LEGACY 2-SEGMENT form
-// (provider/model), where the head is validated as a provider: the builtin
-// catalog does not know "deepseek", so a 2-seg "deepseek/..." ref is
-// rejected; the CLI-aware registry accepts it. A fully-qualified 3-segment
-// "opencode/deepseek/model" ref validates its ADAPTER segment only, so it
-// passes under either registry (and confirms the left-greedy grammar keeps
-// a slashed model id like "deepseek/deepseek-v4-flash" as one model segment).
+// TEST-MERGE-OURS-BEGIN TestValidateModelRef_CLIRegistry pins that tenant-default model refs are
+// validated against the CLI-aware registry injected via SetValidationRegistry (builtin catalog ∪.
 func TestValidateModelRef_CLIRegistry(t *testing.T) {
 	cliRegistry := adapter.NewBuiltinProviderCatalog().Clone()
 	cliRegistry.AddAdapterKind(adapter.DefaultAdapterKind, "deepseek")
@@ -155,21 +137,18 @@ func TestValidateModelRef_CLIRegistry(t *testing.T) {
 
 // TEST-MERGE-OURS-END
 
-// --- validateModelRef (ADR-0003) ---
+// --- validateModelRef ---
 
-// settingsTestCLI mirrors the server's merged validation catalog: the builtin
-// provider profiles, a tenant-custom provider (local-models), and a
-// CLI-discovered provider id (deepseek) — the way the aigateway CLI registry
-// composes over the static catalog.
+// settingsTestCLI mirrors the server's merged validation catalog: the builtin provider profiles, a
+// tenant-custom provider (local-models), and a CLI-discovered provider id (deepseek).
 func settingsTestCLI() adapter.ProviderRegistry {
 	c := adapter.NewBuiltinProviderCatalog()
 	c.AddAdapterKind(adapter.DefaultAdapterKind, "local-models", "deepseek")
 	return c
 }
 
-// TestValidateModelRefThreeSegment pins AC1: 3-segment adapter/provider/model
-// refs validate via the shared parser + CLI-aware registry at the Service seam
-// (the gatekeeper of DefaultAskOrchiconModel). Empty = unset = valid.
+// TestValidateModelRefThreeSegment pins AC1: 3-segment adapter/provider/model refs validate via the
+// shared parser + CLI-aware registry at the Service seam (the gatekeeper.
 func TestValidateModelRefThreeSegment(t *testing.T) {
 	s := &Service{validationRegistry: settingsTestCLI()}
 	for _, ref := range []string{"", "   ", "claude/anthropic/claude-sonnet-5", "opencode/opencode-go/deepseek-v4-flash", "orchicon/local-models/Qwen3.6-35B-A3B-UD-Q4_K_XL", "orchicon/commandcode/deepseek/deepseek-v4-flash"} {
@@ -179,10 +158,8 @@ func TestValidateModelRefThreeSegment(t *testing.T) {
 	}
 }
 
-// TestValidateModelRefLegacyTwoSegment pins AC2: legacy 2-segment provider/model
-// refs still load/resolve via IsKnownProvider against the MERGED registry
-// (built-in and tenant-custom first segments). A 2-seg first segment that is a
-// KNOWN ADAPTER KIND is rejected as malformed.
+// TestValidateModelRefLegacyTwoSegment pins AC2: legacy 2-segment provider/model refs still
+// load/resolve via IsKnownProvider against the MERGED registry (built-in and tenant-custom first.
 func TestValidateModelRefLegacyTwoSegment(t *testing.T) {
 	s := &Service{validationRegistry: settingsTestCLI()}
 	for _, ref := range []string{"opencode-go/deepseek-v4-flash", "local-models/Qwen3.6-35B-A3B-UD-Q4_K_XL"} {
@@ -199,10 +176,8 @@ func TestValidateModelRefLegacyTwoSegment(t *testing.T) {
 	}
 }
 
-// TestValidateModelRefSlashedModel pins AC3: slashed model ids stay a SINGLE
-// model via the shared left-greedy parser — the Service seam reuses
-// adapter.ParseModelRef (no forked splitter), so the slashed remainder is
-// preserved intact.
+// TestValidateModelRefSlashedModel pins AC3: slashed model ids stay a SINGLE model via the shared
+// left-greedy parser — the Service seam reuses adapter.ParseModelRef (no forked splitter).
 func TestValidateModelRefSlashedModel(t *testing.T) {
 	s := &Service{validationRegistry: settingsTestCLI()}
 	ref := "orchicon/commandcode/deepseek/deepseek-v4-flash"
@@ -218,9 +193,8 @@ func TestValidateModelRefSlashedModel(t *testing.T) {
 	}
 }
 
-// TestValidateModelRefUnknownAdapter pins AC4: an unknown adapter segment is
-// rejected with a clear actionable error (register an adapter / use a known
-// adapter/provider/model).
+// TestValidateModelRefUnknownAdapter pins AC4: an unknown adapter segment is rejected with a clear
+// actionable error (register an adapter / use a known adapter/provider/model).
 func TestValidateModelRefUnknownAdapter(t *testing.T) {
 	s := &Service{validationRegistry: settingsTestCLI()}
 	err := s.validateModelRef("foo/anthropic/claude-sonnet-5")
@@ -249,9 +223,8 @@ func TestValidateModelRefUnknownProviderTwoSeg(t *testing.T) {
 	}
 }
 
-// TestValidateModelRefNilRegistryFallsBack pins the registry() nil fallback: a
-// Service with no injected registry validates against the static builtin catalog
-// (3-seg claude kind is built-in, so it still validates).
+// TestValidateModelRefNilRegistryFallsBack pins the registry() nil fallback: a Service with no
+// injected registry validates against the static builtin catalog (3-seg claude kind is built-in.
 func TestValidateModelRefNilRegistryFallsBack(t *testing.T) {
 	s := &Service{}
 	if s.registry() == nil {
@@ -263,12 +236,6 @@ func TestValidateModelRefNilRegistryFallsBack(t *testing.T) {
 }
 
 // THE OPERATOR'S SETTING MUST SURVIVE A SAVE THAT DOES NOT MENTION IT.
-//
-// "I have it set to 600seconds" — and still a two-minute stall error. The cause: the Settings page's
-// Backup panel has its OWN Save button that sends only {backup_schedule, backup_retention_days,
-// backup_directory}. db.UpdateTenantSettings writes the stall columns FROM THE ROW IT IS HANDED, so the
-// absent fields arrived as nil, landed as NULL, and the schema reads NULL as "use the built-in default"
-// — reverting 600s to 120s. Saving a backup schedule quietly reconfigured the stall detector.
 func TestStallSettingsSurviveASaveThatDoesNotMentionThem(t *testing.T) {
 	cur := db.TenantSettingsRow{
 		StallNoProgressWindowSeconds: i64p(600),
@@ -303,9 +270,6 @@ func TestStallSettingsSurviveASaveThatDoesNotMentionThem(t *testing.T) {
 
 	// A field the client DOES name is applied — including an explicit 0, which means DISABLED here and
 	// must not be confused with "absent, so keep what is stored".
-	//
-	// The row is built the way production builds it (settingsProtoToRow carries what the client sent,
-	// and the merge only fills the gaps), so this also pins that a present 0 survives the round trip.
 	want := &apiv1.TenantSettings{
 		StallNoProgressWindowSeconds: i64p(0),
 		StallNudgeMax:                i32p(9),

@@ -49,9 +49,8 @@ func cleanupBootstrap(ctx context.Context, pool *db.Pool, subject string) {
 		return
 	}
 	defer ttx.Rollback(ctx)
-	// role_bindings has no FK on identity_id, so the binding must be
-	// removed explicitly before the identity (the local_credentials row
-	// cascades via its identity_id FK).
+	// role_bindings has no FK on identity_id, so the binding must be removed explicitly before the
+	// identity (the local_credentials row cascades via its identity_id FK).
 	_, _ = ttx.Exec(ctx, `DELETE FROM role_bindings WHERE identity_id IN (SELECT id FROM identities WHERE subject = $1)`, subject)
 	_, _ = ttx.Exec(ctx, `DELETE FROM identities WHERE subject = $1`, subject)
 	// Drop the seed-created admin role only when no bindings reference it
@@ -97,11 +96,8 @@ func adminRoleBound(t *testing.T, pool *db.Pool, tenantID string) bool {
 	return false
 }
 
-// TestBootstrapLocalAdminSeeds verifies a fresh local plane with BOTH envs
-// pinned gets a usable first admin: identity + admin role binding + local
-// credential, and that the seeded credential actually verifies. A PINNED
-// password (env set) is an explicit operator choice and is seeded
-// unflagged — no forced change.
+// TestBootstrapLocalAdminSeeds verifies a fresh local plane with BOTH envs pinned gets a usable
+// first admin: identity + admin role binding + local credential.
 func TestBootstrapLocalAdminSeeds(t *testing.T) {
 	pool := testBootstrapEnv(t)
 	t.Setenv(localAdminUsernameEnv, "seed-admin")
@@ -141,11 +137,8 @@ func TestBootstrapLocalAdminSeeds(t *testing.T) {
 	}
 }
 
-// TestBootstrapLocalAdminNoEnvIsNoOp pins the opt-in contract: with NO env
-// pin (neither username nor password), the bootstrap is a no-op — no
-// credential is minted AND no admin role is created. A fresh plane is
-// bootstrapped by the operator creating their own admin via the sign-up
-// link, never by a default credential.
+// TestBootstrapLocalAdminNoEnvIsNoOp pins the opt-in contract: with NO env pin (neither username
+// nor password), the bootstrap is a no-op — no credential is minted AND no admin role is created.
 func TestBootstrapLocalAdminNoEnvIsNoOp(t *testing.T) {
 	pool := testBootstrapEnv(t)
 	t.Setenv(localAdminUsernameEnv, "")
@@ -178,9 +171,8 @@ func TestBootstrapLocalAdminNoEnvIsNoOp(t *testing.T) {
 	}
 }
 
-// TestBootstrapLocalAdminPartialPinIsNoOp pins the opt-in contract: pinning
-// only ONE of the two envs is still a no-op — both must be set for a
-// credential to be minted.
+// TestBootstrapLocalAdminPartialPinIsNoOp pins the opt-in contract: pinning only ONE of the two
+// envs is still a no-op — both must be set for a credential to be minted.
 func TestBootstrapLocalAdminPartialPinIsNoOp(t *testing.T) {
 	pool := testBootstrapEnv(t)
 	t.Setenv(localAdminUsernameEnv, "partial-admin")
@@ -203,9 +195,8 @@ func TestBootstrapLocalAdminPartialPinIsNoOp(t *testing.T) {
 	}
 }
 
-// TestBootstrapLocalAdminIdempotent pins the seed-once behavior: a second
-// boot does not clobber the credential (the hash stays identical to the
-// first seed).
+// TestBootstrapLocalAdminIdempotent pins the seed-once behavior: a second boot does not clobber the
+// credential (the hash stays identical to the first seed).
 func TestBootstrapLocalAdminIdempotent(t *testing.T) {
 	pool := testBootstrapEnv(t)
 	t.Setenv(localAdminUsernameEnv, "idem-admin")
@@ -248,9 +239,8 @@ func TestBootstrapLocalAdminIdempotent(t *testing.T) {
 	}
 }
 
-// TestBootstrapLocalAdminNoClobber pins the seed-once don't-clobber guard:
-// when a human already provisioned an admin WITH a local credential, the
-// seed never touches the DB (the existing credential hash stays identical).
+// TestBootstrapLocalAdminNoClobber pins the seed-once don't-clobber guard: when a human already
+// provisioned an admin WITH a local credential.
 func TestBootstrapLocalAdminNoClobber(t *testing.T) {
 	pool := testBootstrapEnv(t)
 	t.Setenv(localAdminUsernameEnv, "seed-admin")
@@ -318,12 +308,7 @@ func TestBootstrapLocalAdminNoClobber(t *testing.T) {
 	}
 }
 
-// TestBootstrapLocalAdminCredentialGap pins option B (no-lockout upgrade):
-// when the tenant admin role already binds an identity but that identity
-// has NO local credential (a volume that only ever used dev-login, or an
-// OIDC-first-login volume), the seed provisions a credential for the
-// EXISTING identity — identity + role binding preserved, and the pinned
-// login resolves to that identity.
+// TestBootstrapLocalAdminCredentialGap pins option B (no-lockout upgrade).
 func TestBootstrapLocalAdminCredentialGap(t *testing.T) {
 	pool := testBootstrapEnv(t)
 	t.Setenv(localAdminUsernameEnv, "gap-admin")
@@ -430,9 +415,7 @@ func TestBootstrapLocalAdminGuards(t *testing.T) {
 }
 
 // TestBootstrapLocalAdminReset verifies the lockout-recovery override
-// (ORCHICON_LOCAL_ADMIN_RESET=1): on a plane that already has an admin, the
-// seed re-arms and overwrites the admin credential while preserving the
-// identity and the admin role binding.
+// (ORCHICON_LOCAL_ADMIN_RESET=1): on a plane that already has an admin.
 func TestBootstrapLocalAdminReset(t *testing.T) {
 	pool := testBootstrapEnv(t)
 	t.Setenv(localAdminUsernameEnv, "reset-admin")
@@ -522,10 +505,8 @@ func TestBootstrapLocalAdminReset(t *testing.T) {
 	}
 }
 
-// TestBootstrapLocalAdminResetRequiresPin pins the opt-in reset rule: a
-// lockout reset WITHOUT both envs pinned is a no-op — no default credential
-// is ever minted as a fallback. The operator must pin the new username +
-// password to recover.
+// TestBootstrapLocalAdminResetRequiresPin pins the opt-in reset rule: a lockout reset WITHOUT both
+// envs pinned is a no-op — no default credential is ever minted as a fallback.
 func TestBootstrapLocalAdminResetRequiresPin(t *testing.T) {
 	pool := testBootstrapEnv(t)
 	t.Setenv(localAdminUsernameEnv, "resetc-admin")
@@ -563,9 +544,8 @@ func TestBootstrapLocalAdminResetRequiresPin(t *testing.T) {
 	}
 }
 
-// TestBootstrapLocalAdminResetGuards pins the reset override's guards: it
-// must never fire in production mode or with the embedded OP disabled (nil
-// pool would panic if it tried to run).
+// TestBootstrapLocalAdminResetGuards pins the reset override's guards: it must never fire in
+// production mode or with the embedded OP disabled (nil pool would panic if it tried to run).
 func TestBootstrapLocalAdminResetGuards(t *testing.T) {
 	t.Setenv(localAdminResetEnv, "1")
 	t.Setenv(localAdminUsernameEnv, "guard-admin")

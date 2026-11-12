@@ -70,10 +70,8 @@ func TestGetWorkflowRunCostsWorkItemName(t *testing.T) {
 	}
 }
 
-// TestSumUsageForExecution verifies the per-execution usage-record sum
-// that now backs every per-execution token/cost figure (the
-// worker_executions row columns are write-never). Guarded by
-// ORCHICON_TEST_DSN like the seed tests.
+// TestSumUsageForExecution verifies the per-execution usage-record sum that now backs every
+// per-execution token/cost figure (the worker_executions row columns are write-never).
 func TestSumUsageForExecution(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {
@@ -117,10 +115,8 @@ func TestSumUsageForExecution(t *testing.T) {
 	}
 }
 
-// seedCostData inserts the minimal row set the run-cost query joins
-// (projects → workflows → work_items → workflow_runs → worker_executions →
-// usage_records) for two bound runs and one one-shot run, all scoped to the
-// tenant so the tenant-scoped tx + RLS backstop see them.
+// seedCostData inserts the minimal row set the run-cost query joins (projects → workflows →
+// work_items → workflow_runs → worker_executions → usage_records) for two bound runs and one.
 func seedCostData(t *testing.T, pool *db.Pool, tenant, workflowID string) {
 	t.Helper()
 	ctx := context.Background()

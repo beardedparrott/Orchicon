@@ -13,61 +13,14 @@ import (
 )
 
 // The execution guard is the OS-level backstop for worker safety.
-//
-// The opencode permission rules (config.go permissionRules) only see the
-// exact command the Bash tool runs. A destructive command issued from
-// inside a subprocess — a python TUI calling subprocess.run(["rm","-rf",
-// "/"]), os.system("rm -rf /"), etc. — is invisible to them, because
-// opencode only ever sees "python tui.py". That is precisely how the
-// 2026-07-30 /home wipe got through.
-//
-// The guard closes that hole for EVERY worker execution by shimming
-// dangerous binaries ahead of the worker's PATH. Any process the worker
-// spawns — opencode's Bash tool, python, a TUI, anything — resolves
-// `rm`, `sudo`, `dd`, `mkfs`, etc. through PATH and hits the shim, which
-// refuses the command. This works regardless of how deep in a subprocess
-// tree the command is issued.
-//
-// Policy:
-//   - always-block binaries (sudo, dd, mkfs*, fdisk, parted, shred,
-//     wipefs, LVM tooling, mkswap): never legitimately needed inside a
-//     project directory and catastrophic on a host — refused unconditionally.
-//   - path-scoped binaries (rm, chmod, chown, mv, cp, ln): allowed only
-//     when every path argument resolves inside the worker's project
-//     directory; any target outside it (/, ~, $HOME, /home, ..) is refused.
-//
-// The guard is defense-in-depth, not a substitute for containers: a
-// determined worker could still call /bin/rm by absolute path or write
-// its own binary. That residual risk is what the containerized execution
-// option (internal/opencode/README) closes. See also AGENTS.md.
-//
-// THE INTERACTIVE (Ask) PROFILE. The same shim serves the Ask path, switched
-// into a GRANT-AWARE, FAIL-CLOSED profile by ORCHICON_GUARD_POLICY (see
-// InteractiveEnviron). There the path-scoped check consults the SAME policy
-// accessor the consent core reads (internal/permpolicy), plus the
-// conversation's project dir, its session grants and the operator-approved
-// once-targets — and it REFUSES the command when the policy cannot be read or
-// parsed, because a guard that silently stops guarding is the failure this
-// component was built after. The always-block class is unchanged: sudo/dd/
-// mkfs-level capability is not up for consent.
 
-// ScratchDir is the one writable scratch area outside the project directory
-// (kept in sync with opencode.ScratchDir). Scoped binaries (rm/mv/cp/…)
-// are allowed to operate inside it — it is Orchicon-owned ephemeral
-// scratch (screenshots, logs, downloads), so guarding it like a foreign path
-// burns worker tokens on "blocked" retries for no safety gain. Everything
-// else outside the project stays blocked.
+// ScratchDir is the one writable scratch area outside the project directory (kept in sync with
+// opencode.ScratchDir).
 const ScratchDir = "/tmp/orchicon"
 
-// The INTERACTIVE profile's environment contract. Only the Ask path
-// (internal/askorchicon) sets these; the worker path sets none of them and is
-// byte-for-byte unchanged. They ride the bash environment the Ask path already
-// REPLACES per invocation (orchicon.HostTools.SetBashEnviron) — the same
-// channel the shim's PATH entry uses, so no new constructor and no global.
+// The INTERACTIVE profile's environment contract.
 const (
-	// PolicyEnvVar non-empty switches the shim into the INTERACTIVE profile:
-	// grant-aware, and FAIL-CLOSED (an unreadable or unparsable policy REFUSES
-	// the path-scoped command rather than allowing it).
+	// PolicyEnvVar non-empty switches the shim into the INTERACTIVE profile.
 	PolicyEnvVar = "ORCHICON_GUARD_POLICY"
 	// ProjectEnvVar is the conversation's project directory — the default
 	// scope, where writes proceed without an ask.
@@ -75,27 +28,16 @@ const (
 	// GrantsEnvVar lists the conversation's session-granted directories,
 	// newline-separated (NOT ':'-separated: a path may contain a colon).
 	GrantsEnvVar = "ORCHICON_GUARD_GRANTS"
-	// OnceEnvVar lists the absolute targets the operator approved `once`,
-	// newline-separated, so the approved command runs while a sibling path a
-	// subprocess inside it targets is still refused.
+	// OnceEnvVar lists the absolute targets the operator approved `once`, newline-separated, so the
+	// approved command runs while a sibling path a subprocess inside it targets is still refused.
 	OnceEnvVar = "ORCHICON_GUARD_ONCE"
-	// FullsendEnvVar non-empty puts the shim in FULLSEND: the operator has waived the
-	// permission PROMPT for this conversation, so a path-scoped command may touch a
-	// target the sanctioned set does not cover.
-	//
-	// THE SHIM MUST AGREE WITH THE CONSENT LAYER, or the same command is approved and
-	// then refused — the "blocked" retry loop the two layers exist to avoid. So fullsend
-	// skips the SANCTIONED-SET test here exactly as it skips the ASK there, and the two
-	// things that outrank it hold at BOTH layers: the DENY list (checked FIRST in
-	// blocked_path, home-spelling-agnostic via pem_match_either) and the never-allow
-	// binary class (a separate case arm that never enters blocked_path at all).
+	// THE SHIM MUST AGREE WITH THE CONSENT LAYER, or the same command is approved and then refused —
+	// the "blocked" retry loop the two layers exist to avoid.
 	FullsendEnvVar = "ORCHICON_GUARD_FULLSEND"
 )
 
-// InteractiveEnviron returns the ORCHICON_GUARD_* key/values that switch the
-// shim into the interactive profile. An empty policyPath returns nil — that IS
-// the worker profile, which is the frozen half of "no path-scoped check
-// changes for a worker".
+// InteractiveEnviron returns the ORCHICON_GUARD_* key/values that switch the shim into the
+// interactive profile.
 func InteractiveEnviron(policyPath, projectDir string, grants, once []string, fullsend bool) []string {
 	if strings.TrimSpace(policyPath) == "" {
 		return nil
@@ -106,9 +48,8 @@ func InteractiveEnviron(policyPath, projectDir string, grants, once []string, fu
 		GrantsEnvVar + "=" + strings.Join(grants, "\n"),
 		OnceEnvVar + "=" + strings.Join(once, "\n"),
 	}
-	// The OFF case emits NOTHING rather than "0": unset is the absence of the mode, so a
-	// shim driven by an environment this code did not build cannot be misread as fullsend
-	// by reading a value it does not understand.
+	// The OFF case emits NOTHING rather than "0": unset is the absence of the mode, so a shim driven by
+	// an environment this code did not build cannot be misread as fullsend by reading a value it does.
 	if fullsend {
 		env = append(env, FullsendEnvVar+"=1")
 	}
@@ -123,19 +64,6 @@ type guardedBinary struct {
 
 // scopedBinaryNames is the PATH-SCOPED set: the binaries the shim intercepts and then judges by
 // their TARGET, as opposed to the never-allow class, which is refused on the binary name alone.
-//
-// EXPORTED BECAUSE A CALLER NEEDS TO KNOW WHAT THE SHIM WILL LOOK AT. The consent layer refuses a
-// target that would destroy the work scope, and it was refusing BASH commands that merely MENTION
-// such a path — `HOME=/home/me somecmd` was read as a target that contains the home directory. The
-// shim would never judge that command (it intercepts `rm`/`mv`/... and nothing else), so the consent
-// layer was refusing something the enforcement layer would have let run, which is over-refusal and a
-// false statement about what the rule prohibits.
-//
-// The two layers now agree on scope as well as on meaning: this list is what the shim judges, and
-// the consent layer applies the same protected-path rule to a bash command only when it invokes one
-// of these. The SHIM remains the enforcement — it intercepts any invocation by PATH lookup, even one
-// the text does not literally contain — and the consent layer's job is to refuse EARLY rather than
-// offer a card for something that cannot be approved.
 var scopedBinaryNames = []string{"rm", "chmod", "chown", "mv", "cp", "ln"}
 
 func scopedBinaries() []guardedBinary {
@@ -152,15 +80,8 @@ func ScopedBinaryNames() []string {
 	return append([]string(nil), scopedBinaryNames...)
 }
 
-// buildGuardedBinaries is the shim set for one guard: the never-allow class
-// (always-block, from the SHARED declaration in internal/neverallow so the guard
-// and the opencode permission config cannot drift apart) followed by the
-// path-scoped binaries, which are allowed when every target stays inside the
-// project directory.
-//
-// It is computed per guard rather than cached in a package variable: the shared
-// declaration is the single source of truth, so a guard must read it when it is
-// built rather than inherit whatever it held at package init.
+// buildGuardedBinaries is the shim set for one guard: the never-allow class (always-block, from the
+// SHARED declaration in internal/neverallow so the guard and the opencode permission config.
 func buildGuardedBinaries() []guardedBinary {
 	scoped := scopedBinaries()
 	out := make([]guardedBinary, 0, len(neverallow.Shimmed())+len(scoped))
@@ -170,29 +91,27 @@ func buildGuardedBinaries() []guardedBinary {
 	return append(out, scoped...)
 }
 
-// Guard is a generated shim directory prepended to a worker's
-// PATH. `dir` holds one `guard` script plus symlinks named after each
-// guarded binary. `real` maps scoped binary names to their resolved
-// absolute paths on the host (the shim execs the real binary when it
-// decides the command is safe).
+// Guard is a generated shim directory prepended to a worker's PATH.
 type Guard struct {
 	dir  string
 	real map[string]string
-	// policyPath is the operator's persistent permission policy file, read
-	// PER INVOCATION by the shim's policy_lookup() (no cache, no watcher —
-	// an edit takes effect on the next command). Empty disables the check.
-	// The interactive profile may point the shim at a different file per
-	// invocation through PolicyEnvVar, which overrides this baked default.
+	// disabled marks a guard that could not be BUILT on this platform, as opposed to one that was built
+	// and then removed.
+	disabled bool
+	reason   string
+	// policyPath is the operator's persistent permission policy file, read PER INVOCATION by the shim's
+	// policy_lookup() (no cache, no watcher — an edit takes effect on the next command).
 	policyPath string
 }
 
-// MakeGuard creates a guard shim inside targetDir (which must already
-// exist and be writable) for the given projectDir, and returns the
-// absolute path of the generated shim subdir. It exists so the
-// in-container runtime agent can run workers under the same safety shim
-// inside workflow runtime containers, where the control plane's own /tmp
-// is not reachable.
+// MakeGuard creates a guard shim inside targetDir (which must already exist and be writable) for
+// the given projectDir, and returns the absolute path of the generated shim subdir.
 func MakeGuard(targetDir, projectDir string) (string, error) {
+	if !supported() {
+		// "" means NO GUARD, and every caller must treat it that way rather than prepending an empty
+		// element to PATH (which would add the current directory to a worker's search path.
+		return "", nil
+	}
 	dir, err := os.MkdirTemp(targetDir, "orchicon-guard-*")
 	if err != nil {
 		return "", err
@@ -205,17 +124,17 @@ func MakeGuard(targetDir, projectDir string) (string, error) {
 	return g.dir, nil
 }
 
-// NewExecutionGuard creates a guard for one execution. projectDir is the
-// worker's working directory (may be empty — absolute targets are still
-// blocked). The returned guard must be closed (removes the shim dir).
+// NewExecutionGuard creates a guard for one execution.
 func NewExecutionGuard(projectDir string) (*Guard, error) {
 	return NewExecutionGuardWithPolicy(projectDir, permpolicy.DefaultPath())
 }
 
-// NewExecutionGuardWithPolicy is NewExecutionGuard with an explicit policy
-// file (tests, and any caller that resolves the path itself). An empty
-// policyPath renders a shim without the deny check.
+// NewExecutionGuardWithPolicy is NewExecutionGuard with an explicit policy file (tests, and any
+// caller that resolves the path itself).
 func NewExecutionGuardWithPolicy(projectDir, policyPath string) (*Guard, error) {
+	if !supported() {
+		return &Guard{disabled: true, reason: unsupportedReason()}, nil
+	}
 	dir, err := os.MkdirTemp("", "orchicon-guard-*")
 	if err != nil {
 		return nil, err
@@ -240,9 +159,7 @@ func buildGuardIn(dir, projectDir, policyPath string) (*Guard, error) {
 	g := &Guard{dir: dir, real: make(map[string]string), policyPath: policyPath}
 	binaries := buildGuardedBinaries()
 
-	// Resolve the real binary paths for scoped binaries. They are always
-	// present on a working Linux/macOS host; a missing one means the
-	// binary doesn't exist and nothing needs shimming.
+	// Resolve the real binary paths for scoped binaries.
 	for _, b := range binaries {
 		if b.scoped {
 			g.real[b.name] = resolveRealBin(b.name)
@@ -290,9 +207,24 @@ func buildGuardIn(dir, projectDir, policyPath string) (*Guard, error) {
 	return g, nil
 }
 
-// apply returns environ with the guard directory first on PATH, so every
-// process the worker spawns resolves guarded binaries through the shim.
+// Enabled reports whether this guard is actually intercepting commands. False means the platform
+// cannot support one (platform_windows.go) — NOT that a guard failed to build.
+func (g *Guard) Enabled() bool { return g != nil && !g.disabled && g.dir != "" }
+
+// DisabledReason explains an inert guard in words an operator can act on. Empty when enabled.
+func (g *Guard) DisabledReason() string {
+	if g == nil {
+		return "no guard"
+	}
+	return g.reason
+}
+
+// apply returns environ with the guard directory first on PATH, so every process the worker spawns
+// resolves guarded binaries through the shim.
 func (g *Guard) Apply(environ []string) []string {
+	if !g.Enabled() {
+		return append([]string(nil), environ...)
+	}
 	out := make([]string, 0, len(environ)+1)
 	found := false
 	for _, kv := range environ {
@@ -309,9 +241,7 @@ func (g *Guard) Apply(environ []string) []string {
 	return out
 }
 
-// close removes the shim directory. Called once per execution; children
-// of a killed subprocess that outlive the guard simply fail to resolve
-// the shimmed names, which is the desired end state anyway.
+// close removes the shim directory.
 func (g *Guard) Close() {
 	if g != nil && g.dir != "" {
 		os.RemoveAll(g.dir)
@@ -319,12 +249,8 @@ func (g *Guard) Close() {
 }
 
 func resolveRealBin(name string) string {
-	// Search PATH for the real binary, skipping any orchicon-guard shim
-	// directories that may be present on PATH when this process itself is
-	// running inside a guarded environment (e.g. a worker worktree or
-	// `go test` invoked through a guarded shell). exec.LookPath would
-	// otherwise resolve to the shim itself, causing the new shim to exec
-	// another shim (or itself) instead of the real binary.
+	// Search PATH for the real binary, skipping any orchicon-guard shim directories that may be present
+	// on PATH when this process itself is running inside a guarded environment (e.g. a worker.
 	pathEnv := os.Getenv("PATH")
 	for _, dir := range filepath.SplitList(pathEnv) {
 		if dir == "" {
@@ -339,10 +265,8 @@ func resolveRealBin(name string) string {
 			if fi.Mode()&0o111 != 0 {
 				return candidate
 			}
-			// Even if not executable by mode, return it — the shim will
-			// fail with a clear exec error rather than looping through the
-			// guard. This mirrors exec.LookPath's behaviour for non-exec
-			// files.
+			// Even if not executable by mode, return it — the shim will fail with a clear exec error rather
+			// than looping through the guard.
 			return candidate
 		}
 	}
@@ -381,9 +305,7 @@ func resolveRealBin(name string) string {
 	return p
 }
 
-// guardScriptTemplate is the bash shim generated per execution. It
-// dispatches on argv[0]'s basename (the symlink name) to the policy for
-// that binary, then either refuses the command or execs the real binary.
+// guardScriptTemplate is the bash shim generated per execution.
 var guardScriptTemplate = `#!/bin/bash
 # Orchicon execution safety guard — generated per worker execution.
 # Blocks destructive commands and any file operation targeting a path

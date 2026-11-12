@@ -1,8 +1,7 @@
 package orchicon
 
-// Tests for ADR-0009 native prompt assembly: composite reuse, the thin
-// authoritative native layer, cache-first two-zone ordering, and
-// per-session cache metrics.
+// Tests for native prompt assembly: composite reuse, the thin authoritative native layer,
+// cache-first two-zone ordering, and per-session cache metrics.
 
 import (
 	"context"
@@ -43,9 +42,8 @@ func mustMarshal(t *testing.T, v any) []byte {
 	return b
 }
 
-// AC (byte-identity): two assemblies with identical inputs produce
-// byte-identical static prefix bytes — and the SAME prefix across two
-// executions (the cache lever only pays if this holds).
+// AC (byte-identity): two assemblies with identical inputs produce byte-identical static prefix
+// bytes — and the SAME prefix across two executions (the cache lever only pays if this holds).
 func TestNativeStaticPrefixByteIdentity(t *testing.T) {
 	manifest := promptManifest("You are the test worker.\nComposite body.")
 	s1 := promptSession(t, &mockProvider{}, manifest)
@@ -102,9 +100,8 @@ func TestNativeMutableZoneNeverPrecedesBreakpoint(t *testing.T) {
 	if blocks[1].Text != s.AssembleSystem()[1].Text {
 		t.Error("mutable zone must render deterministically")
 	}
-	// Malformed todo payload on a fresh session degrades to empty digest,
-	// never garbage; on a session with a last-good digest it keeps the
-	// last-good (deterministic either way).
+	// Malformed todo payload on a fresh session degrades to empty digest, never garbage; on a session
+	// with a last-good digest it keeps the last-good (deterministic either way).
 	s2 := promptSession(t, &mockProvider{}, promptManifest("caps"))
 	s2.stashMutableToolCall([]ToolCall{{Name: "todowrite", ArgsJSON: `{"todos":`}})
 	if got := s2.TodosDigest(); got != "" {
@@ -128,10 +125,7 @@ func TestNativeLayerCapAndTopics(t *testing.T) {
 	}
 }
 
-// AC (Anthropic fixture): with ANY explicit flag, ONLY flagged blocks
-// get cache_control — the mutable zone after the breakpoint must never
-// be cached; no-flag callers keep the last-block fallback; TTL opt-in
-// flows into every breakpoint.
+// AC (Anthropic fixture): with ANY explicit flag, ONLY flagged blocks get cache_control.
 func TestAnthropicBreakpointsTwoZone(t *testing.T) {
 	twoZone := TurnRequest{Model: "m", MaxTokens: 10, System: []SystemBlock{
 		{Text: "static", Cache: true},
@@ -182,10 +176,8 @@ func TestAnthropicBreakpointsTwoZone(t *testing.T) {
 	}
 }
 
-// AC (OpenAI-compatible): byte-stable prefix ordering yields implicit
-// prefix caching — the static prefix is a byte-identical head of the
-// joined system text across mutable-state changes, and the wire message
-// order never puts mutable content before the system message.
+// AC (OpenAI-compatible): byte-stable prefix ordering yields implicit prefix caching — the static
+// prefix is a byte-identical head of the joined system text across mutable-state changes.
 func TestOpenAICompatByteStableOrder(t *testing.T) {
 	manifest := promptManifest("composite A\nB\nC")
 	s := promptSession(t, &mockProvider{}, manifest)
@@ -213,9 +205,8 @@ func TestOpenAICompatByteStableOrder(t *testing.T) {
 	}
 }
 
-// AC (metrics): per-session cache hit/miss classification + cached
-// tokens accumulate from real provider usage and surface via
-// Session.CacheStats.
+// AC (metrics): per-session cache hit/miss classification + cached tokens accumulate from real
+// provider usage and surface via Session.CacheStats.
 func TestSessionCacheMetrics(t *testing.T) {
 	prov := &mockProvider{turns: []scriptedTurn{
 		{events: []Event{ToolCallStart{Index: 0, ToolCallID: "n1", Name: "noop"}, ToolCallEnd{Index: 0}}, finish: StopToolUse, usage: Usage{InputTokens: 100, OutputTokens: 10, CacheWriteTokens: 500}},
@@ -245,9 +236,8 @@ func TestSessionCacheMetrics(t *testing.T) {
 	}
 }
 
-// Memory-note tool is loop-registered, session-scoped, and never routed
-// to the registry: the model can call it and the note lands in the
-// mutable zone on the NEXT turn's assembly.
+// Memory-note tool is loop-registered, session-scoped, and never routed to the registry: the model
+// can call it and the note lands in the mutable zone on the NEXT turn's assembly.
 func TestNativeMemoryNoteToolLoopPath(t *testing.T) {
 	prov := &mockProvider{turns: []scriptedTurn{
 		{events: []Event{ToolCallStart{Index: 0, ToolCallID: "m1", Name: "orchicon_memory_note"}, ToolCallDelta{Index: 0, ArgsJSONDelta: `{"text":"keep this fact`}, ToolCallDelta{Index: 0, ArgsJSONDelta: `"}`}, ToolCallEnd{Index: 0}}, finish: StopToolUse, usage: Usage{InputTokens: 10, OutputTokens: 2}},

@@ -60,21 +60,7 @@ func (p *pagedPlane) ListWorkItems(_ context.Context, req *connect.Request[apiv1
 	}), nil
 }
 
-// The operator: "It is still not showing new work items. I can see them in the
-// GUI but even leaving orch and going back into it, it does NOT show them."
-//
-// ROOT CAUSE (second version). The server orders page 1 by the SEQUENCE CHAIN (`sort_order NULLS
-// LAST, created_at, id`) and a TUI-created item has NO sort_order, so it lands at the very END —
-// beyond page 1 on any tenant with a few hundred items. The screen's answer was to FOLLOW the
-// cursors, which is what this test used to pin. That was wrong, because the server's cursor is a
-// bare `id > token` while page 1 is chain-ordered: the two orders disagree, so following the cursor
-// DUPLICATES rows that were already on page 1 and — worse — MISSES rows that fall into the id-gap
-// the cursor skipped past. Measured on the live dev tenant (327 matching items): 200 + 14 rows,
-// 9 duplicated, 122 MISSED.
-//
-// The fix is the GUI's shape: ONE request large enough for a real tenant, no cursor. So what this
-// test asserts now is the INTENT — the newest item, which sorts LAST on the server, must be present
-// — while the mechanism is a single large page.
+// The operator: "It is still not showing new work items.
 func TestWorkItemsFetchGetsTheWholeSetInOneRequest(t *testing.T) {
 	// A plane that honours PageSize, so a small page would truncate.
 	p := &pagedPlane{pageSize: 10}
@@ -137,10 +123,6 @@ func TestWorkItemsFetchAsksForTheMaximumPage(t *testing.T) {
 }
 
 // The DEFECT ITSELF, as a property of the screen: no duplicate rows, ever.
-//
-// A server that returns the SAME work item twice (which is precisely what the chain-ordered page 1
-// plus the id-ordered page 2 produced) must not produce two rows. This is the operator's report
-// stated as an assertion: "There are two of them showing up in the TUI but only one in the GUI."
 func TestWorkItemsDoNotRenderDuplicateRows(t *testing.T) {
 	p := &pagedPlane{pageSize: 1000}
 	twin := &apiv1.WorkItem{
@@ -196,16 +178,8 @@ func TestWorkItemsFetchSinglePage(t *testing.T) {
 	}
 }
 
-// The operator: "New work items (parents) are not showing up in the parent drop
-// down list on new work items."
-//
-// Same root cause as the list itself: the dropdown was built from ONE page while
-// the server orders NULL sort_order LAST, so a freshly created parent sat on a
-// later page and never appeared as a choice.
-//
-// Same correction as the list: the dropdown asks for the whole set in ONE request rather than walking
-// the server's cursor, because that cursor is a bare `id > token` against a chain-ordered page 1 — so
-// walking it could append the SAME parent twice (two options with one value) as well as miss rows.
+// The operator: "New work items (parents) are not showing up in the parent drop down list on new
+// work items."
 func TestParentOptionsGetEveryItemInOneRequest(t *testing.T) {
 	p := &pagedPlane{pageSize: 5}
 	for i := 0; i < 12; i++ {
@@ -249,10 +223,6 @@ func TestParentOptionsGetEveryItemInOneRequest(t *testing.T) {
 }
 
 // A REPEATED id must not become two picker options.
-//
-// The option list is keyed by id, so a duplicate makes the picker ambiguous — the operator would see
-// one parent listed twice and could not tell the two rows apart. The fetch cannot produce a repeat any
-// more; this pins the guard in case a future server change does.
 func TestParentOptionsNeverRepeatAnItem(t *testing.T) {
 	p := &pagedPlane{pageSize: 1000}
 	twin := &apiv1.WorkItem{

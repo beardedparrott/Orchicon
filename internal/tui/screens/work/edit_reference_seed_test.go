@@ -1,39 +1,6 @@
 package work
 
 // edit_reference_seed_test.go — THE EDIT FORM'S REFERENCE PICKERS MUST BE SEEDED FROM THE ITEM.
-//
-// The operator: "when you edit a work item, it shows the workflow as none."
-//
-// It was not a display shortfall. Every other field in the detail editor is seeded from the item
-// (title, description, acceptance, kind, status, priority, budgets, context window, context files,
-// scheduled start, auto-start) and the two REFERENCE pickers were the only exceptions — no
-// `Initial:` on either spec. `Initial:` is the only thing that populates a form's value map
-// (kit2.NewForm writes f.Values[name] only when Initial != ""), and the only other writer is a
-// deliberate pick. So the pickers opened blank and, because the submit handler reads the value map
-// straight through, EVERY save sent workflow_id="" and runtime_image="" — the proto's spelling for
-// unbind/clear. An operator editing only the priority unbound the workflow driving the item and
-// cleared the image it runs in, with no error and nothing on screen to suggest it happened.
-//
-// pickerOptsWithCurrent is NOT the fix and was NOT changed: its guarantee (the item's value is
-// present in the option list) is sound, and its synthetic-option branch is what keeps a since-deleted
-// workflow from being dropped. It does not SELECT anything, so it cannot seed the form. The defect
-// was the missing seed.
-//
-// WHAT IS PINNED HERE. Both option-list branches (the primary assertion is (a), the normal case that
-// fails today), asserted on the RECORDED UpdateWorkItem REQUEST rather than on the rendering alone —
-// a field can render correctly and still submit empty. Plus the no-false-positive direction: an item
-// that genuinely has no reference must still open on "— none —" and still send empty.
-//
-// THE AUDIT (the class, not the instance). Every FieldSpec in the work screen's forms was checked for
-// the same omission. The two seeds added to editFormFor are the only instances:
-//   - newItemCreateForm (workitems.go): workflow Initial:"" and runtime_image/parent unseeded are
-//     CORRECT — a new item has no reference yet, and empty is what the create request should carry.
-//   - newItemStatusForm: status + priority both seeded.
-//   - projects.go: runtimeImageField seeds Initial: current; ProjectMCPDefinitionsField (the
-//     owned-definition SEED that replaced ProjectMCPField) is a create-only field with no
-//     Initial to seed; every other project field seeds. project_dir seeds.
-//   - images.go: the edit form seeds every field; the create form is legitimately empty.
-// None of these needed a change, so none was made.
 
 import (
 	"strings"
@@ -44,8 +11,7 @@ import (
 )
 
 // openItemEditorFor builds a plane with a project (and, when seedImage, the image the fake plane
-// lists as "go-node:latest"), ONE work item carrying the given workflow id + runtime image, and opens
-// its detail editor with 'e'. It returns the recorded-request plane alongside the editor.
+// lists as "go-node:latest"), ONE work item carrying the given workflow id + runtime image.
 func openItemEditorFor(t *testing.T, workflowID, runtimeImage string, seedImage bool) (*Model, *fakePlane, *kit2.Form) {
 	t.Helper()
 	p := newPlane()
@@ -92,9 +58,7 @@ func hasCurrentOption(f *kit2.Form, name string) bool {
 
 // ------------- branch (a): the value IS among the loaded options (the normal case) -------------
 
-// The primary assertion. The item's workflow is `wf-1` — exactly what the fake plane's ListWorkflows
-// returns — so pickerOptsWithCurrent returns the option list UNCHANGED with "— none —" first. Nothing
-// selects the item's value except the spec's seed, which is why this is the case that fails today.
+// The primary assertion.
 func TestEditFormSeedsReferencesWhenListed(t *testing.T) {
 	m, p, f := openItemEditorFor(t, "wf-1", "go-node:latest", true)
 
@@ -143,9 +107,8 @@ func TestEditFormSeedsReferencesWhenListed(t *testing.T) {
 
 // ------------- branch (b): the value is ABSENT from the loaded options -------------
 
-// A since-deleted workflow: pickerOptsWithCurrent prepends the synthetic "workflow wf-gone (current)"
-// option. That branch worked by accident before the fix only in the sense that the value was LISTED —
-// it was still not SELECTED, so the form opened blank and saved empty here too.
+// A since-deleted workflow: pickerOptsWithCurrent prepends the synthetic "workflow wf-gone
+// (current)" option.
 func TestEditFormSeedsReferencesWhenDelisted(t *testing.T) {
 	m, p, f := openItemEditorFor(t, "wf-gone", "ghost:latest", false)
 

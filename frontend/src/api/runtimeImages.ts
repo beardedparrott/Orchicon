@@ -161,6 +161,41 @@ export function useBuildRuntimeImage() {
 }
 
 
+// useFetchRuntimeImage DOWNLOADS the row's published image (the on-demand
+// FETCH). This is NOT Deploy: Deploy builds a spec from a Dockerfile, Fetch
+// pulls an image someone already built. Runtime images are never pulled at
+// install time, so this is how a not-downloaded (status 5) row becomes usable.
+// Idempotent — an image already present locally resolves with skipped: true and
+// no download.
+export function useFetchRuntimeImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (args: { id: string; onLog: (chunk: string) => void }) => {
+      const { id, onLog } = args;
+      let finalStatus: RuntimeImage["status"] | undefined;
+      let finalError = "";
+      let finalTag = "";
+      let skipped = false;
+      for await (const chunk of runtimeImageClient.fetchRuntimeImage({ id })) {
+        if (chunk.log) onLog(chunk.log);
+        if (chunk.status !== 0) {
+          finalStatus = chunk.status;
+          finalError = chunk.error;
+          finalTag = chunk.tag;
+        }
+        if (chunk.skipped) skipped = true;
+      }
+      if (finalError) {
+        throw new Error(finalError);
+      }
+      return { status: finalStatus, tag: finalTag, skipped };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: runtimeImageKeys.all });
+    },
+  });
+}
+
 // useCancelRuntimeImageBuild cancels an in-flight build.
 export function useCancelRuntimeImageBuild() {
   const qc = useQueryClient();

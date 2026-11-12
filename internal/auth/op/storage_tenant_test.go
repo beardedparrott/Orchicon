@@ -28,10 +28,8 @@ func testAuthRequest(id string) *authRequest {
 	}
 }
 
-// TestStorageTenantFallbackUsesDeploymentTenant pins the decision-#178
-// wiring: an embedded-OP token issued for an auth request that carries no
-// explicit tenant resolves into the configured deployment tenant id, not
-// the hardcoded DefaultTenantID.
+// TestStorageTenantFallbackUsesDeploymentTenant pins the decision-#178 wiring: an embedded-OP token
+// issued for an auth request that carries no explicit tenant resolves into the configured.
 func TestStorageTenantFallbackUsesDeploymentTenant(t *testing.T) {
 	s := storageWithTenant(t, "acme")
 	req := testAuthRequest("req-1")
@@ -56,9 +54,8 @@ func TestStorageTenantFallbackUsesDeploymentTenant(t *testing.T) {
 	}
 }
 
-// TestStorageTenantExplicitRequestWins pins that an auth request carrying
-// an explicit tenant (e.g. marked by the login bridge) beats the storage
-// default — the mapping is a fallback, not an override.
+// TestStorageTenantExplicitRequestWins pins that an auth request carrying an explicit tenant (e.g.
+// marked by the login bridge) beats the storage default — the mapping is a fallback.
 func TestStorageTenantExplicitRequestWins(t *testing.T) {
 	s := storageWithTenant(t, "acme")
 	req := testAuthRequest("req-2")
@@ -78,9 +75,7 @@ func TestStorageTenantExplicitRequestWins(t *testing.T) {
 	}
 }
 
-// TestStorageTenantEmptyFallsBackToDefault pins the standalone-wiring
-// contract: a provider constructed without a deployment tenant id keeps
-// the DefaultTenantID behavior (op-package tests / standalone wiring).
+// TestStorageTenantEmptyFallsBackToDefault pins the standalone-wiring contract.
 func TestStorageTenantEmptyFallsBackToDefault(t *testing.T) {
 	s := storageWithTenant(t, "")
 	req := testAuthRequest("req-3")

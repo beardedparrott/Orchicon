@@ -2,28 +2,8 @@ package orchicon
 
 import "strings"
 
-// thinksplit.go — inline-reasoning routing for OpenAI-compatible streams
-// whose server does NOT split reasoning into a reasoning field (observed:
-// llama.cpp's llama-server with the default reasoning format emits the
-// model's chain of thought INLINE in delta.content, wrapped in the
-// "think" tag pair) — the tags then rendered raw in the execution chat
-// while Ask Orchicon's chat already surfaced its thinking as bubbles.
-//
-// The splitter is a streaming state machine over content deltas: text
-// outside the tag pair is passed through as content, text inside is
-// routed as reasoning. It tolerates TAGS SPLIT ACROSS CHUNK BOUNDARIES
-// (an SSE frame boundary can land mid-tag — the classic "<th" | "ink>"
-// split) by holding back a suffix that could still be a tag prefix; the
-// holdback is re-emitted on the next delta, so worst case a chunk's text
-// arrives a few bytes later.
-//
-// Scope guard: EVERY provider wire feeds content deltas through this
-// (openai-compat, ollama native, anthropic text deltas, commandcode
-// legacy) — any server that inlines chain-of-thought instead of using a
-// native reasoning field routes to ReasoningDelta here. Native reasoning
-// fields (openai reasoning_content/reasoning, anthropic thinking blocks,
-// legacy reasoning-delta) bypass the splitter untouched, as does the
-// opencode route with its native reasoning parts.
+// thinksplit.go — inline-reasoning routing for OpenAI-compatible streams whose server does NOT
+// split reasoning into a reasoning field (observed.
 
 // The tag literals are built by concatenation (never one verbatim literal
 // in source) so tooling that rewrites raw markup cannot corrupt them.
@@ -44,10 +24,8 @@ func newThinkSplitter() *thinkSplitter {
 	return &thinkSplitter{}
 }
 
-// feed consumes one content delta and appends the resulting events to the
-// queue: TextDelta for plain content, ReasoningDelta for in-tag content.
-// Exactly one of the two is produced per input byte; the tag delimiters
-// themselves are never emitted.
+// feed consumes one content delta and appends the resulting events to the queue: TextDelta for
+// plain content, ReasoningDelta for in-tag content.
 func (t *thinkSplitter) feed(content string, queue *[]Event) {
 	if content == "" {
 		return
@@ -102,9 +80,8 @@ func (t *thinkSplitter) feed(content string, queue *[]Event) {
 	}
 }
 
-// splitHoldback returns how many TRAILING bytes of s must be held back so
-// that a tag split across the chunk boundary is not emitted as plain
-// text: the longest suffix of s that is a proper prefix of the tag.
+// splitHoldback returns how many TRAILING bytes of s must be held back so that a tag split across
+// the chunk boundary is not emitted as plain text.
 func splitHoldback(s, tag string) int {
 	max := len(tag) - 1
 	if len(s) < max {
@@ -118,9 +95,8 @@ func splitHoldback(s, tag string) int {
 	return 0
 }
 
-// drain flushes any held-back text at end-of-stream (a truncated final
-// tag or a plain suffix that never grew into a tag): held-back text in
-// content mode is content, in think mode it is reasoning.
+// drain flushes any held-back text at end-of-stream (a truncated final tag or a plain suffix that
+// never grew into a tag): held-back text in content mode is content, in think mode it is reasoning.
 func (t *thinkSplitter) drain(queue *[]Event) {
 	if t.holdback.Len() == 0 {
 		return

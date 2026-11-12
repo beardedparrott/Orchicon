@@ -27,9 +27,8 @@ import (
 	"testing"
 )
 
-// numberedDraft is `n` distinct lines, so a click's LANDING LINE identifies the
-// offset unambiguously. Repeated filler text cannot do that: every visual row reads
-// the same, so a wrong offset is invisible.
+// numberedDraft is `n` distinct lines, so a click's LANDING LINE identifies the offset
+// unambiguously.
 func numberedDraft(n int) string {
 	var b strings.Builder
 	for i := 0; i < n; i++ {
@@ -60,10 +59,6 @@ func scrolledDock(n int) *Model {
 }
 
 // THE OFFSET IS REAL AND THE RECONSTRUCTION AGREES WITH IT.
-//
-// Clicking the box's FIRST input row must land on the first VISIBLE buffer row. That
-// landing row IS the offset, measured through the click path rather than asserted from
-// the formula — so this fails if scrollOffset drifts from the widget's real view.
 func TestClickingTheFirstVisibleRowLandsOnTheOffsetRow(t *testing.T) {
 	m := scrolledDock(40)
 	rows := m.caretRows()
@@ -86,11 +81,6 @@ func TestClickingTheFirstVisibleRowLandsOnTheOffsetRow(t *testing.T) {
 }
 
 // THE OPERATOR'S BUG: EVERY CLICK TAKES EFFECT.
-//
-// The old code placed the caret on the first click and refused the rest, so the caret's
-// row never changed again. This clicks four DIFFERENT visible rows and requires four
-// different landing rows — "the caret moved" is the whole assertion, because silence is
-// what the operator experienced.
 func TestEveryClickInAScrolledComposerMovesTheCaret(t *testing.T) {
 	m := scrolledDock(40)
 	originRow, originCol := m.TextOrigin()

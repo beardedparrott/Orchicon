@@ -27,9 +27,7 @@ func newWriteModel(t *testing.T) (*Model, *fakeDock) {
 	return m, dock
 }
 
-// confirmAndRun resolves an action the way the shell's dialog path does: it
-// opens the Confirm dialog when the action needs one, resolves it with the
-// given choice, and returns the dispatched cmd.
+// confirmAndRun resolves an action the way the shell's dialog path does.
 func (m *Model) confirmAndRun(a kit2.Action, choice string) tea.Cmd {
 	cmd := m.openActionsDialog(a)
 	if !a.NeedsConfirm() {
@@ -123,9 +121,6 @@ func TestSettingsEditSaveValidatesModelRefs(t *testing.T) {
 	}
 
 	// A MALFORMED model ref (an empty segment) → rejected inline, no RPC.
-	// The ref must be genuinely malformed: a BARE model id like "llama3" is
-	// legal under the pinned grammar (the adapter segment defaults), which the
-	// old hand-rolled splitter wrongly rejected.
 	m.activeForm().Set("default_worker_model", "/llama3")
 	if _, err := m.activeForm().Submit(); err == nil {
 		t.Fatal("a malformed model ref must be rejected before submit")
@@ -187,10 +182,8 @@ func TestSettingsEditSaveValidatesModelRefs(t *testing.T) {
 	}
 }
 
-// validModelRef delegates to the PINNED grammar (adapter.ParseModelRef), so the
-// TUI accepts exactly what the plane accepts. The legal shapes below are the
-// ones the old hand-rolled SplitN("/", 2) splitter got WRONG: it rejected a
-// bare model id (legal) and accepted malformed multi-segment junk.
+// validModelRef delegates to the PINNED grammar (adapter.ParseModelRef), so the TUI accepts exactly
+// what the plane accepts.
 func TestModelRefValidation(t *testing.T) {
 	for _, ok := range []string{
 		// 1 segment: a bare model id (the adapter segment defaults).
@@ -199,7 +192,7 @@ func TestModelRefValidation(t *testing.T) {
 		"ollama/llama3",
 		// 3 segments: canonical adapter/provider/model.
 		"opencode/anthropic/claude-sonnet-4",
-		// 4 segments: the model segment is the VERBATIM remainder (ADR-0003).
+		// 4 segments: the model segment is the VERBATIM remainder.
 		"orchicon/commandcode/deepseek/deepseek-v4-flash",
 		// Empty means "leave unchanged".
 		"",
@@ -411,16 +404,6 @@ func TestAdaptersSourceDetailAndToggle(t *testing.T) {
 // ------------------------------------------------------------------- mcp
 
 // THE TENANT MCP SOURCE IS GONE, and this pins its absence.
-//
-// A definition is OWNER-SCOPED now (project / conversation / worker version), so the Control screen
-// has no tenant-level MCP pane — the same removal as the GUI's Settings MCP tab. The capability moved
-// to the three scopes through screens/mcpforms; what must not survive is the tenant LIST, which is
-// exactly what the old TestMCPCRUDToggleSecretInstallAndDelete drove (it selected the "mcp" source
-// and exercised create / edit / toggle / install / credential / delete against the unscoped list).
-//
-// The assertion is on the SOURCE SET rather than on one call, because the source is what generated the
-// `/mcp` command and what rendered the tenant list: if it is absent here, neither can come back
-// without this test failing.
 func TestControlHasNoTenantMCPSource(t *testing.T) {
 	m := New(nil, nil)
 	for _, s := range m.Base.SourcesForTest() {
@@ -432,8 +415,7 @@ func TestControlHasNoTenantMCPSource(t *testing.T) {
 		t.Fatal(`SelectSource("mcp") must fail: there is no tenant-level MCP pane`)
 	}
 	// The `s` credential chord reaches NO pane any more (the provider token became a field on the
-	// provider form; the MCP pane is gone), so an `s` keystroke must open nothing. A leftover opener
-	// would be a knob nothing reaches — the same reasoning the provider token assertion above uses.
+	// provider form; the MCP pane is gone), so an `s` keystroke must open nothing.
 	m.SelectSource("secrets")
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 	if m.formOpen() {
@@ -553,10 +535,7 @@ func TestProvidersCRUDToggleTokenAndDelete(t *testing.T) {
 
 	m.clearForm() // the screen clears the form on submit
 
-	// THE TOKEN IS A FIELD ON THE PROVIDER FORM, not a separate `s` form. The operator: "We should get
-	// rid of the 's' to set a token on providers and have that as just another inline field in the
-	// edit/new." So there is no provider entry in secretFormForSource any more — and the assertion is
-	// on THAT, because a leftover form would be a knob nothing reaches.
+	// THE TOKEN IS A FIELD ON THE PROVIDER FORM, not a separate `s` form.
 	if m.secretFormForSource() != nil {
 		t.Fatal("providers must not offer a separate token form — the token is a field on the provider form")
 	}

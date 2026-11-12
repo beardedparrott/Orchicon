@@ -10,14 +10,6 @@ import (
 )
 
 // PresetYAML is the operator-confirmed preset shipped by default.
-//
-// Credential stores are the reason for the deny list: READS never ask, so
-// without these the agent could read a private key or a stored token
-// without the operator noticing a prompt at all. Nothing is pre-accepted
-// beyond project directories, which are already the default scope.
-//
-// The header is written into the file too (fileHeader) so a hand-edit
-// finds the rules documented where it is editing.
 const PresetYAML = `deny:
   - ~/.ssh/**
   - ~/.gnupg/**
@@ -29,10 +21,7 @@ const PresetYAML = `deny:
 accept: []
 `
 
-// fileHeader is the comment block written at the top of the file (and of
-// every rewrite). It documents the precedence in the file the operator
-// edits — and it is the reason a UI write can regenerate the whole file
-// without losing the rules' explanation.
+// fileHeader is the comment block written at the top of the file (and of every rewrite).
 const fileHeader = `# Orchicon permission policy — read on every gated decision; edits take effect immediately.
 # deny  : always refused. A session grant CANNOT override an entry here.
 # accept: never prompts. Precedence: never-allow binaries > deny > session grant > accept > ask.
@@ -40,16 +29,6 @@ const fileHeader = `# Orchicon permission policy — read on every gated decisio
 `
 
 // WriteFile atomically writes p to path with the documented header block.
-//
-// ATOMIC: temp file + rename in the same directory, so a concurrent
-// per-consult read sees either the old file or the new one, never a
-// half-written policy. The mode is 0600 — the file lists credential stores.
-//
-// NOTE ON HAND COMMENTS: a write regenerates the file from the parsed
-// struct and re-emits the top header block. Entry-level comments a human
-// added inline are NOT preserved (the top block documents the file). This
-// is a deliberate trade: surgical YAML comment preservation is a large
-// amount of code for a file whose rules fit on one screen.
 func WriteFile(path string, p Policy) error {
 	body, err := yaml.Marshal(p)
 	if err != nil {
@@ -58,9 +37,7 @@ func WriteFile(path string, p Policy) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		// NOT "mkdir %s", which read as `permission policy: mkdir /var/lib/orchicon: mkdir
-		// /var/lib/orchicon: permission denied` — twice, because *os.PathError already spells
-		// out the failing syscall and its path. Naming the OPERATION we performed and letting
-		// the wrapped error name the syscall reads as one sentence.
+		// /var/lib/orchicon: permission denied` — twice.
 		return fmt.Errorf("permission policy: cannot create %s: %w", dir, err)
 	}
 	tmp, err := os.CreateTemp(dir, ".permission-policy-*.tmp")
@@ -89,14 +66,8 @@ func WriteFile(path string, p Policy) error {
 	return nil
 }
 
-// EnsureDefault installs the preset at path, but ONLY when the operator did
-// not explicitly point at a file (ORCHICON_PERMISSION_POLICY unset) and no
-// file exists yet.
-//
-// Both halves are load-bearing: "ship the preset by default" and
-// "an absent file means no policy" must hold at once, so an explicitly
-// pointed-at nonexistent path is never created — otherwise the acceptance
-// test for "absent file ⇒ no policy" could never be set up.
+// EnsureDefault installs the preset at path, but ONLY when the operator did not explicitly point at
+// a file (ORCHICON_PERMISSION_POLICY unset) and no file exists yet.
 func EnsureDefault(path string) error {
 	if ExplicitPath() {
 		return nil
@@ -122,14 +93,8 @@ func MustParsePreset() Policy {
 	return p
 }
 
-// Boot is the serve-time check: install the preset when that is the rule,
-// then strictly load the file so a malformed policy fails LOUDLY at boot
-// with the path and the parse error.
-//
-// Installing before loading is deliberate: on a fresh instance the preset
-// must be in force immediately, and a preset that failed to parse must stop
-// the boot rather than leave the operator believing credential stores are
-// excluded.
+// Boot is the serve-time check: install the preset when that is the rule, then strictly load the
+// file so a malformed policy fails LOUDLY at boot with the path and the parse error.
 func Boot(path string) error {
 	if err := EnsureDefault(path); err != nil {
 		return err

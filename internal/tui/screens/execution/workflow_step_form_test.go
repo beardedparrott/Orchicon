@@ -1,23 +1,6 @@
 package execution
 
 // workflow_step_form_test.go — the step editor's FORM SHAPE.
-//
-// Two operator reports about the same form:
-//
-//  1. "In workflow edit mode, we need to have a worker lookup as opposed to typing in an
-//     ID just like we do in work items. We are already doing this for loop and success it
-//     seems."
-//
-//  2. "When editing a current step and you change it from a worker task to an approval or
-//     loop, it should automatically show the reviewer/success/loop fields based on the type
-//     that was selected in the edit form. Currently they don't show up if it was a normal
-//     worker type beforehand."
-//
-// (2) is a form-SHAPE defect, not a rendering one: the KIND-specific specs used to be
-// appended conditionally on the kind the form was OPENED with, so choosing a different kind
-// revealed nothing — the fields for it did not exist in the form at all. Every kind's
-// fields are now present, each with a Visible predicate, which is what makes the change
-// live.
 
 import (
 	"context"
@@ -231,11 +214,7 @@ func TestHiddenRequiredFieldDoesNotBlockSubmit(t *testing.T) {
 		t.Fatalf("the loop form failed validation on fields it does not show: %v", f.Errors)
 	}
 
-	// And the SUBMIT writes the loop's keys. A task's `recovery` block is LEFT IN PLACE on
-	// purpose: mergeStepConfig preserves whatever the fields do not model, so a config key
-	// the other kind does not read survives the switch (the same rule that keeps a legacy
-	// retry_delay_seconds). The loop simply does not consult it, and switching back to a
-	// task restores the policy rather than losing it.
+	// And the SUBMIT writes the loop's keys.
 	m, saved := cfgEditorModel(t, `[{"id":"a","name":"Step","kind":"task","ref":"w_x","config":"{\"recovery\":{\"strategy\":\"stop\",\"max_attempts\":2}}","depends_on":[]},
 	                               {"id":"b","name":"B","kind":"end","config":"{}","depends_on":["a"]}]`)
 	form := m.editStepForm(m.rawFlowSteps()[0])

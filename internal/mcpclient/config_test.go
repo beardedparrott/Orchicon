@@ -1,11 +1,6 @@
 package mcpclient
 
 // config_test.go — AC 3 and AC 1's observation seam, at the pure level.
-//
-// The provenance formatter and the scope-naming failure annotator are the two
-// pieces BOTH adapters consume. Testing them here is what makes the per-adapter
-// assertions in internal/claude and internal/orchicon read the SAME behaviour
-// rather than two copies that happen to agree today.
 
 import (
 	"errors"
@@ -13,9 +8,7 @@ import (
 	"testing"
 )
 
-// ProvenanceString is order-stable, names the supplying scope per server, and
-// NEVER touches Env/Headers (which the caller replaces with resolved plaintext
-// before the connection is established).
+// ProvenanceString is order-stable, names the supplying scope per server.
 func TestProvenanceString(t *testing.T) {
 	got := ProvenanceString([]ScopedServer{
 		{
@@ -52,9 +45,7 @@ func TestProvenanceStringFallsBackToKind(t *testing.T) {
 	}
 }
 
-// AC 3: an unreachable server must name BOTH the server and the scope it came
-// from. The manager quotes the id as `mcp server %q: ...` and stops at the
-// first failure over the SAME ordered list, so the match is deterministic.
+// AC 3: an unreachable server must name BOTH the server and the scope it came from.
 func TestDescribeFailedServerNamesTheScope(t *testing.T) {
 	servers := []ScopedServer{
 		{Spec: ServerSpec{ID: "proj-srv"}, From: ScopeProject, FromID: "project:p1"},

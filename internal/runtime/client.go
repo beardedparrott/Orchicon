@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,10 +15,7 @@ import (
 	"time"
 )
 
-// Client is the control-plane side of the daemon API. It talks to the
-// runtime daemon over a unix socket (the daemon's socket is bind-mounted
-// into the supervisor container). The control plane can only ever issue
-// the narrow, validated operations the daemon exposes.
+// Client is the control-plane side of the daemon API.
 type Client struct {
 	socketPath string
 	instance   string // owning instance ("dev"/"prod") — scopes List/Create
@@ -26,28 +24,101 @@ type Client struct {
 
 // NewClient returns a client for the daemon socket at socketPath (e.g.
 // /var/run/orchicon-runtime/runtime.sock inside the supervisor container).
-// instance labels every runtime container this client creates and scopes
-// List to that instance, so two control planes sharing one daemon never
-// reap each other's containers.
 func NewClient(socketPath, instance string) *Client {
 	dial := func(ctx context.Context, _ string, _ string) (net.Conn, error) {
 		var d net.Dialer
 		return d.DialContext(ctx, "unix", socketPath)
 	}
+	transport := &http.Transport{
+		DialContext:           dial,
+		MaxIdleConns:          4,
+		IdleConnTimeout:       30 * time.Second,
+		ResponseHeaderTimeout: 120 * time.Second,
+	}
 	return &Client{
 		socketPath: socketPath,
 		instance:   instance,
 		hc: &http.Client{
-			Transport: &http.Transport{
-				DialContext:           dial,
-				MaxIdleConns:          4,
-				IdleConnTimeout:       30 * time.Second,
-				ResponseHeaderTimeout: 120 * time.Second,
-			},
-			Timeout: 0, // exec streams are long-lived
+			// EVERY method on this client goes through hc.Do, so this wrapper is the ONE place a
+			// transport-level failure can be explained instead of reported raw (see unreachableTransport).
+			Transport: &unreachableTransport{inner: transport, socketPath: socketPath},
+			Timeout:   0, // exec streams are long-lived
 		},
 	}
 }
+
+// NoDaemonOnThisHost is the diagnosis for a control plane constructed WITHOUT a runtime client —
+// the headless / no-daemon configuration, which on a native Windows host is the only configuration.
+const NoDaemonOnThisHost = "this host has no workflow runtime daemon: runtime images are FETCHED and BUILT " +
+	"over a Unix socket by a daemon that runs this platform's per-run Linux containers, and a Windows host has " +
+	"neither. The plane, its projects and git-backed work all run here; fetching or building runtime images " +
+	"requires Linux (WSL2 with a container engine, or a Linux host)."
+
+// unreachableTransport turns a failed DIAL into a diagnosis, and only a failed dial.
+//
+// THE REPORT IT EXISTS FOR, from the Windows plane:
+//
+//	Post "http://runtime/v1/images/pull?ref=ghcr.io/.../orchicon-runtime:latest":
+//	dial unix C:\Users\<user>\AppData\Local\Temp\orchicon-runtime\runtime.sock:
+//	connect: No connection could be made because the target machine actively refused it.
+//
+// Every part of that is true and none of it is the ANSWER: the url says `http://runtime` (a placeholder host the
+// dialer ignores), the path is a Unix socket on a platform whose console cannot serve one, and nothing says the
+// host has no runtime daemon at all. The operator is left to infer that fetching an image requires a Linux
+// container engine they were never told about.
+//
+// WHY A TRANSPORT AND NOT A CHECK PER METHOD. The client has ten methods and all of them go through hc.Do, so a
+// guard here covers every one of them — including any added later — with a single explanation. A per-method
+// check would be the fifth-thing-to-update problem this codebase already has scars from.
+//
+// IT ONLY REPLACES DIAL FAILURES. A request that connected and then failed (a 500 from a live daemon, a broken
+// stream) passes through untouched: those are the daemon's own answers and it already reports them in its own
+// vocabulary (see readError).
+type unreachableTransport struct {
+	inner      http.RoundTripper
+	socketPath string
+}
+
+// noDaemonNote is the diagnosis appended to a failed dial.
+const noDaemonNote = "the workflow runtime daemon is not running on this host. It speaks over a Unix socket " +
+	"(ORCHICON_RUNTIME_SOCKET) and manages the per-run Linux containers, so a Windows host has none: the plane, " +
+	"its projects and git-backed work all run there, but fetching or building runtime IMAGES requires Linux " +
+	"(WSL2 with a container engine, or a Linux host). If a daemon SHOULD be running here, check that " +
+	"ORCHICON_RUNTIME_SOCKET points at its socket"
+
+func (t *unreachableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.inner.RoundTrip(req)
+	if err == nil || !isDialFailure(err) {
+		return resp, err
+	}
+	return resp, &DaemonUnreachableError{SocketPath: t.socketPath, Err: err}
+}
+
+// isDialFailure reports whether err is a failure to ESTABLISH the connection, rather than a failure
+// of the request once established.
+func isDialFailure(err error) bool {
+	var opErr *net.OpError
+	if !errors.As(err, &opErr) {
+		return false
+	}
+	return opErr.Op == "dial"
+}
+
+// DaemonUnreachableError is "there is no runtime daemon to talk to", with the socket and the
+// reason.
+type DaemonUnreachableError struct {
+	SocketPath string
+	Err        error
+}
+
+// Error renders the diagnosis, keeping the ORIGINAL failure so nothing is lost for someone who needs the raw
+// detail (a permissions problem on a Linux host is a different fix from a missing daemon).
+func (e *DaemonUnreachableError) Error() string {
+	return fmt.Sprintf("cannot reach the workflow runtime daemon at %s (%v) — %s", e.SocketPath, e.Err, noDaemonNote)
+}
+
+// Unwrap exposes the dial failure, so errors.Is(err, syscall.ECONNREFUSED) and friends still work.
+func (e *DaemonUnreachableError) Unwrap() error { return e.Err }
 
 // Create ensures a runtime container exists for the workflow.
 func (c *Client) Create(ctx context.Context, req CreateRequest) (*CreateResponse, error) {
@@ -108,9 +179,7 @@ func (c *Client) Images(ctx context.Context) (*ImageList, error) {
 	return &out, nil
 }
 
-// BuildImage streams a `docker build` for a custom runtime image. Log
-// chunks arrive via fn; the final event carries the exit code. Returns
-// the build's exit code (0 = success).
+// BuildImage streams a `docker build` for a custom runtime image.
 func (c *Client) BuildImage(ctx context.Context, req BuildRequest, fn func(AgentEvent) error) (int, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -160,6 +229,64 @@ func (c *Client) BuildImage(ctx context.Context, req BuildRequest, fn func(Agent
 		return 1, &StreamDroppedError{Err: fmt.Errorf("stream ended without exit event")}
 	}
 	return exit, nil
+}
+
+// PullImage streams `podman pull`/`docker pull` for one runtime image — the on-demand FETCH,
+// distinct from BuildImage (which BUILDS a spec from a Dockerfile).
+func (c *Client) PullImage(ctx context.Context, ref string, fn func(AgentEvent) error) (exit int, skipped bool, err error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://runtime"+"/v1/images/pull?ref="+url.QueryEscape(ref), nil)
+	if err != nil {
+		return 1, false, err
+	}
+	resp, err := c.hc.Do(httpReq)
+	if err != nil {
+		return 1, false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1, false, fmt.Errorf("runtime image pull: %w", readError(resp.Body))
+	}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	exit = 1
+	sawExit := false
+	for sc.Scan() {
+		var ev AgentEvent
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			continue
+		}
+		if fn != nil {
+			if ferr := fn(ev); ferr != nil {
+				return 1, skipped, ferr
+			}
+		}
+		if ev.Event == "exit" {
+			sawExit = true
+			exit = ev.ExitCode
+			skipped = ev.Skipped
+			if ev.Error != "" {
+				return exit, skipped, fmt.Errorf("runtime image pull: %s", ev.Error)
+			}
+			break
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return 1, skipped, &StreamDroppedError{Err: err}
+	}
+	if !sawExit {
+		return 1, skipped, &StreamDroppedError{Err: fmt.Errorf("stream ended without exit event")}
+	}
+	return exit, skipped, nil
+}
+
+// ImagePresent reports whether a runtime image exists LOCALLY on the daemon's host.
+func (c *Client) ImagePresent(ctx context.Context, ref string) (bool, error) {
+	in, err := c.InspectImage(ctx, ref)
+	if err != nil {
+		return false, err
+	}
+	return in.Exists, nil
 }
 
 // RemoveImage removes a locally-built runtime image (docker rmi, best-effort).
@@ -240,11 +367,8 @@ func (c *Client) RemoveImage(ctx context.Context, ref string) error {
 	return nil
 }
 
-// Exec runs one shell command inside the run's leased runtime container
-// (always-container native transport) and returns the collected
-// stdout/stderr + exit code. A non-zero exit is a RESULT (returned with a
-// nil error); only transport failures error. The daemon streams the
-// supervisor's JSON-lines AgentEvents; Exec reassembles them.
+// Exec runs one shell command inside the run's leased runtime container (always-container native
+// transport) and returns the collected stdout/stderr + exit code.
 func (c *Client) Exec(ctx context.Context, workflowID string, req ExecRequest) (*ExecResult, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -323,11 +447,44 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+// readError turns a daemon failure response into an error an operator can act on.
+//
+// "runtime daemon: request failed" WAS A DEAD END, and it is the message the operator reported:
+//
+//	runtime image fetch failed for orchicon-runtime:local: runtime image pull: runtime daemon:
+//	request failed
+//
+// The real answer was in the body — Go's plain-text "404 page not found" — and this function threw
+// it away because it only looked for a JSON `error` key. That 404 meant the RUNNING DAEMON DID NOT
+// HAVE THE ROUTE, i.e. it was started from an older binary (8d19h old in this case), which is
+// something the message could have said in one line and instead hid behind "request failed".
+//
+// SO: JSON `error` first (the daemon's own structured failures), then the raw body — truncated and
+// de-whitespaced, because a plain-text body is often a large HTML page and an error that scrolls is
+// only marginally better than no error.
 func readError(r io.Reader) error {
-	var e map[string]string
-	_ = json.NewDecoder(r).Decode(&e)
-	if msg, ok := e["error"]; ok {
-		return fmt.Errorf("runtime daemon: %s", msg)
+	body, _ := io.ReadAll(io.LimitReader(r, 4096))
+	if len(body) == 0 {
+		return fmt.Errorf("runtime daemon: request failed (empty response body)")
 	}
-	return fmt.Errorf("runtime daemon: request failed")
+	var e map[string]string
+	if err := json.Unmarshal(body, &e); err == nil {
+		if msg, ok := e["error"]; ok && msg != "" {
+			// A CODE the retry loop must respect: a host with no linux container binary will not produce one on
+			// the next attempt, so the caller stops instead of re-reading this refusal for the whole.
+			if e["code"] == ContainerBinaryErrCode {
+				return fmt.Errorf("runtime daemon: %s: %w", msg, ErrNoContainerBinary)
+			}
+			return fmt.Errorf("runtime daemon: %s", msg)
+		}
+	}
+	// NOT JSON, OR JSON WITHOUT AN error KEY. Both mean the daemon did not answer in its own
+	// vocabulary, which is itself the diagnosis — usually a route the running daemon does not have.
+	text := strings.Join(strings.Fields(string(body)), " ")
+	if len(text) > 300 {
+		text = text[:300] + "…"
+	}
+	return fmt.Errorf("runtime daemon: request failed — the daemon answered something other than its "+
+		"own JSON error shape (a 404 like this usually means the RUNNING DAEMON IS OLDER THAN THE "+
+		"BINARY, so restart it: orchicon runtime-daemon): %s", text)
 }

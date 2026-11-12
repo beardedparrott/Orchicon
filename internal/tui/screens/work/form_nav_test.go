@@ -6,10 +6,8 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
-// The operator's report: "When I am in the new work item modal, the arrow keys
-// still control the work item list versus moving through the New Work Item
-// fields." This pins BOTH halves of that: Up/Down must move the FORM's field
-// focus, and the work-item list behind the modal must not move at all.
+// The operator's report: "When I am in the new work item modal, the arrow keys still control the
+// work item list versus moving through the New Work Item fields." This pins BOTH halves.
 func TestCreateFormArrowsWalkFieldsNotTheList(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Orchicon")

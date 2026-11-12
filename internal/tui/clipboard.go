@@ -41,16 +41,10 @@ const clipToastDuration = 2 * time.Second
 // clipToastText is the confirmation. The operator named it.
 const clipToastText = "copied to clipboard"
 
-// clipToastMsg clears a copy toast. It carries the COPY'S SEQUENCE NUMBER so a second copy's
-// tick cannot cancel the toast the first one is still showing (and a stale tick from a previous
-// copy cannot clear a newer toast).
+// clipToastMsg clears a copy toast.
 type clipToastMsg struct{ seq int }
 
 // clipState is the frame the shell last painted plus the drag in progress over it.
-//
-// It is held by POINTER on the App because App is a value model: bubbletea's View and Update each
-// receive a copy, so only a shared pointer lets the frame the renderer produced be read back by
-// the mouse handler that arrived after it.
 type clipState struct {
 	frame []string // the last rendered frame, one entry per ROW
 	width int
@@ -61,10 +55,7 @@ type clipState struct {
 	ax, ay int
 	hx, hy int
 
-	// region is the pane the CURRENT drag started in, and hasRegion says whether one was found. Both are
-	// set by the shell at drag start (see App.selectionRegionAt) rather than computed here, because only
-	// the shell knows the layout — and a method value captured on the App would hold a STALE one, since
-	// App is a value model copied on every Update.
+	// region is the pane the CURRENT drag started in, and hasRegion says whether one was found.
 	region    clipRegion
 	hasRegion bool
 
@@ -74,36 +65,14 @@ type clipState struct {
 }
 
 // clipRegion is the pane a selection is confined to.
-//
-// The operator: "When copying something in conversations it is copying the ENTER line even past the
-// conversations window into the conversation list." A selection here is a RECTANGLE over the whole frame —
-// deliberate, since the shell is the only layer that owns the frame — but the practical effect is that a
-// drag from the transcript into the conversations rail copies BOTH, interleaved line by line, which is
-// never what someone selecting a message wants.
 type clipRegion struct{ x0, y0, x1, y1 int }
 
 // setRegion confines the next drag to a pane; clearRegion leaves it unbounded.
 func (c *clipState) setRegion(r clipRegion) { c.region, c.hasRegion = r, true }
 func (c *clipState) clearRegion()           { c.region, c.hasRegion = clipRegion{}, false }
 
-// selectionRegionAt classifies a frame CELL to the PANE that owns it, so a drag can be confined to the
-// pane its anchor fell in.
-//
-// It mirrors baseView's arithmetic exactly rather than re-deriving a layout of its own: the shell paints
-// the chrome (tabBarRows) · one blank separator · the body — the active screen, then the slide-out strip,
-// then the dock — · the footer, and the diff pane and the conversations rail are joined as extra COLUMNS
-// over the WHOLE body. Those three facts are the entire geometry, and they are the reason this lives on
-// the App (which owns them) and not on clipState (which is handed the finished frame and cannot tell one
-// column from another).
-//
-// A cell it cannot classify returns false, leaving the selection UNBOUNDED — the behaviour that existed
-// before any of this. An unclassified cell degrades to what it always did rather than being clipped to a
-// guess, which would silently drop text from a pane the operator did mean to select.
-//
-// WHY THE SCREEN BLOCK AND NOT "JUST THE TRANSCRIPT": on the Ask tab the screen block IS the transcript
-// pane — border, title, fields, body — so confining to it confines to the transcript. Doing it this way
-// also makes the DOCK a pane of its own, which is what stops a drag out of the transcript from picking up
-// the composer's hint line: the operator's "copying the ENTER line".
+// selectionRegionAt classifies a frame CELL to the PANE that owns it, so a drag can be confined to
+// the pane its anchor fell in.
 func (m *App) selectionRegionAt(x, y int) (clipRegion, bool) {
 	w, h := m.width, m.height
 	if w <= 0 || h <= 0 || x < 0 || x >= w || y < 0 || y >= h {
@@ -121,8 +90,7 @@ func (m *App) selectionRegionAt(x, y int) (clipRegion, bool) {
 		return clipRegion{}, false
 	}
 	// The rail and the diff pane are joined over the whole body, so they claim their columns before the
-	// center column is considered. Their widths are subtracted in contentWidth(), so the three never
-	// overlap and the order of these two checks cannot matter.
+	// center column is considered.
 	if m.railVisible() && x >= w-ConversationsRailWidth {
 		return clipRegion{w - ConversationsRailWidth, top, w - 1, bottom}, true
 	}
@@ -169,10 +137,6 @@ func (c *clipState) dragging() bool {
 }
 
 // bounds normalizes the drag into an inclusive cell rectangle, top-left first.
-//
-// ok is false when no drag is in progress or when it covers a SINGLE cell: a single cell is a
-// click, and a click must keep meaning what it always did (select the row under it). Copy-on-click
-// would both hijack clicking everywhere and be useless.
 func (c *clipState) bounds() (x0, y0, x1, y1 int, ok bool) {
 	if !c.drag {
 		return 0, 0, 0, 0, false
@@ -197,24 +161,9 @@ func (c *clipState) bounds() (x0, y0, x1, y1 int, ok bool) {
 }
 
 // rowExtent is the first and last cell of a row that carry CONTENT.
-//
-// TWO EXCLUSIONS, and both are things the operator met in a paste:
-//
-//   - the pane's BORDER cells are chrome, not content, so selecting across the transcript otherwise puts
-//     a `│` at the start of every copied line — the "weird pipes and characters". The pane's own border is
-//     the same glyph the code block used to draw.
-//   - the REGION this selection began in, so a drag into the rail does not take the rail with it.
-//
-// Only box-drawing characters count as border: a plain `|` is CONTENT, and excluding it would corrupt a
-// copy of code that contains one.
 func (c *clipState) rowExtent(row int) (int, int) {
 	lo, hi := 0, c.rowWidth(row)-1
 	// THE REGION COMES FIRST, THEN THE BORDER STRIP — and the order is load-bearing, not stylistic.
-	//
-	// Stripping first would strip the FRAME's outermost border cells and leave the REGION's own border
-	// inside the span: a drag to the right edge of the transcript would still copy the transcript pane's own
-	// `│`, which is precisely the glyph the operator pasted. Confining first means the cells stripped are the
-	// ones the selection actually reached, so the pane edge is clean whichever pane the drag came from.
 	if c.hasRegion {
 		lo = clampTo(lo, c.region.x0, c.region.x1)
 		hi = clampTo(hi, c.region.x0, c.region.x1)
@@ -226,18 +175,6 @@ func (c *clipState) rowExtent(row int) (int, int) {
 		hi--
 	}
 	// AND THE HIGHLIGHT STOPS WHERE THE CONTENT STOPS.
-	//
-	// The frame pads every row out to the pane, so a selection used to be DRAWN across the full width even for a
-	// row holding two words — and the operator, looking at a code block inside one: "I still am copying the
-	// entire band versus just the code block area. We should lock how far it goes on the screen."
-	//
-	// The COPY was already tight (text() right-trims each row), so this changes what the selection LOOKS like —
-	// and the look was the whole complaint, because the highlight is the only evidence the operator has about
-	// what they are about to copy. Making it agree with the extraction is the fix.
-	//
-	// AN ALL-BLANK ROW KEEPS ITS EXTENT, which matters for more than looks: span() reports ok=false when its
-	// range inverts, so a blank row narrowed to nothing would be DROPPED from the selection — and a blank line
-	// between two paragraphs of copied prose would vanish, running them together.
 	if last := c.lastNonBlank(row, lo, hi); last > lo {
 		hi = last
 	}
@@ -270,12 +207,7 @@ func (c *clipState) isBorderCell(row, col int) bool {
 }
 
 // span returns the cell range this row contributes to the selection, or ok=false when the row is
-// outside it. The first and last rows are PARTIAL (from the anchor / to the head); the rows between
-// them are taken whole, which is what makes a multi-row drag copy what it visually covers.
-//
-// EVERY RANGE COMES FROM rowExtent, so the border exclusion and the region confinement apply to the
-// MIDDLE rows as well as the ends — which is where they matter: a multi-row drag across two panes takes
-// its middle rows whole, and "whole" used to mean the entire frame width.
+// outside it.
 func (c *clipState) span(row, x0, y0, x1, y1 int) (int, int, bool) {
 	if row < y0 || row > y1 {
 		return 0, 0, false
@@ -333,10 +265,6 @@ func (c *clipState) text() string {
 }
 
 // highlight inverts the selected cells in the frame, so the drag is VISIBLE while it happens.
-//
-// The operator has to see what they are about to copy — a selection you cannot see is one you
-// cannot aim. Only the reverse-video attribute is added; every other style in the line is left
-// exactly as the screen painted it.
 func (c *clipState) highlight(frame string) string {
 	x0, y0, x1, y1, ok := c.bounds()
 	if !ok {
@@ -368,11 +296,6 @@ func (c *clipState) decorate(frame string) string {
 // --- the cell walker ---------------------------------------------------------------------------
 
 // cellText returns the text of cells [x0, x1] (inclusive) of a rendered line.
-//
-// It walks the line ONE CELL AT A TIME through the ansi parser, so escape sequences (which occupy
-// no cell) are skipped and a wide rune counts for the two cells it covers. Slicing the raw string
-// by byte or rune index instead would drift on any line carrying style — which, here, is every
-// line.
 func cellText(line string, x0, x1 int) string {
 	if x1 < x0 {
 		return ""
@@ -423,9 +346,8 @@ func highlightCells(line string, x0, x1 int) string {
 			break
 		}
 		if width == 0 {
-			// Escape sequences pass through unchanged — but NOT the ones that reset attributes
-			// mid-span: a style reset inside the highlight would turn the inverse video off for
-			// the rest of the selection, so the span is re-opened after it while it is active.
+			// Escape sequences pass through unchanged — but NOT the ones that reset attributes mid-span: a
+			// style reset inside the highlight would turn the inverse video off for the rest of the selection.
 			b.WriteString(seq)
 			if opened && !closed && isFullReset(seq) {
 				b.WriteString(on)
@@ -456,12 +378,6 @@ func isFullReset(seq string) bool {
 }
 
 // toastBand shows the confirmation on the shell's BLANK SEPARATOR ROW.
-//
-// That row is the one the layout guarantees carries nothing (chrome · rule · gap · body · footer —
-// app.go's View), so replacing the WHOLE row costs no content and needs no cell splicing. Splicing
-// a box into a line would have had to re-weave the row's own styling around it, and any escape
-// sequence the splice dropped would take the themed background with it (the bleed-through the
-// opaque-frame work exists to prevent) — so the toast replaces a row instead of editing one.
 func toastBand(frame, text string) string {
 	rows := strings.Split(frame, "\n")
 	if len(rows) == 0 {
@@ -477,11 +393,6 @@ func toastBand(frame, text string) string {
 }
 
 // toastRow builds the band as EXACTLY one row of `width` cells.
-//
-// The text is fitted by hand rather than by a styled Width: lipgloss WRAPS text that overflows a
-// width, and a wrapped toast would push rows down inside a frame whose height is already fixed —
-// corrupting everything below it in a narrow window. Truncating instead keeps the band a band (and
-// the band is a confirmation, so a clipped one in a tiny window is still readable enough).
 func toastRow(label string, width int) string {
 	if width <= 0 {
 		return ""
@@ -498,9 +409,7 @@ func toastRow(label string, width int) string {
 
 // --- the shell-facing API ----------------------------------------------------------------------
 
-// beginDrag anchors a selection at a cell. It does NOT consume the press: a click must keep doing
-// whatever it did before (the whole tab/menu/pane click surface depends on it), and a drag only
-// becomes a selection once it MOVES.
+// beginDrag anchors a selection at a cell.
 func (c *clipState) beginDrag(x, y int) {
 	c.drag = true
 	c.ax, c.ay, c.hx, c.hy = x, y, x, y
@@ -519,9 +428,7 @@ func (c *clipState) extend(x, y int) (consumed bool) {
 	return true
 }
 
-// finish ends the drag. copied is true when the release produced a selection to put on the
-// clipboard (a release with no movement is a CLICK: it returns copied=false so the click's own
-// behaviour stands, and nothing is copied).
+// finish ends the drag.
 func (c *clipState) finish() (text string, copied bool) {
 	defer func() { c.drag = false }()
 	if !c.dragging() {
@@ -531,10 +438,6 @@ func (c *clipState) finish() (text string, copied bool) {
 }
 
 // copyCmd puts the selection on the clipboard and arms the toast.
-//
-// The clipboard write is OSC 52 — the terminal's own clipboard escape — because it is the only
-// mechanism that works from inside an alt-screen TUI, over SSH, and without a helper binary on the
-// host. Combined with the toast's timer so the confirmation clears itself.
 func (c *clipState) copyCmd(text string) tea.Cmd {
 	c.toast = clipToastText
 	c.toastSeq++
@@ -557,15 +460,7 @@ func (c *clipState) clearToast(seq int) {
 	}
 }
 
-// handleMouse routes a mouse event through the selection. copyText is non-empty when the release
-// completed a selection that should be copied.
-//
-// The CONSUMED rules, in one place:
-//   - press   → not consumed: clicking keeps working exactly as before (the drag is only a
-//     candidate until the head MOVES).
-//   - motion  → consumed once a drag is live, so the drag is the selection.
-//   - release → consumed when it completed a selection (there is nothing else for a release to
-//     do); a release with no movement is NOT consumed, so it cannot break a click.
+// handleMouse routes a mouse event through the selection.
 func (c *clipState) handleMouse(m tea.MouseMsg) (consumed bool, copyText string) {
 	switch m.Action {
 	case tea.MouseActionPress:

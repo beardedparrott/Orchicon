@@ -1,25 +1,6 @@
 package claude
 
 // guard_leak_test.go — THE PIN for a leak no assertion could see.
-//
-// The OS-level execution guard is a temp directory: guard.NewExecutionGuard
-// calls os.MkdirTemp("", "orchicon-guard-*"), which lands it in $TMPDIR
-// (internal/guard/guard.go). Its lifetime is owned by whoever built it — a
-// worker session hands the cleanup back with the child environment
-// (session.childEnv, deferred at the spawn site) and an Ask session closes its
-// own in teardown() (ask.go) — so a caller that merely ABANDONS a session
-// leaves the directory behind for the life of the machine, and NOTHING FAILS.
-// Measured before this file existed: 11 tests in ask_test.go leaked exactly one
-// shim dir each on every run of this package.
-//
-// A snapshot of the real temp dir cannot see that reliably: a long-lived Ask
-// session, an opencode host serve and a running worker all legitimately own a
-// shim, and none of those is a leak. The one process that can see precisely the
-// directories ITS OWN tests created is the test binary, so the check lives in
-// TestMain — point $TMPDIR at a directory this package owns for the duration of
-// the run, and assert it holds no shim dirs once every test has finished. A
-// dropped cleanup then FAILS the suite, naming the leftovers, instead of
-// quietly littering the host.
 
 import (
 	"fmt"
@@ -29,17 +10,12 @@ import (
 	"testing"
 )
 
-// shimDirPrefix is the name internal/guard passes to MkdirTemp. Spelled here as
-// a literal rather than exported from the guard package: this file checks an
-// OBSERVABLE (a directory name in $TMPDIR), and exporting the prefix would make
-// the guard package own a test's vocabulary.
+// shimDirPrefix is the name internal/guard passes to MkdirTemp.
 const shimDirPrefix = "orchicon-guard-"
 
 func TestMain(m *testing.M) {
-	// A PRIVATE $TMPDIR for this package's run, so every guard shim these tests
-	// build lands in a directory whose contents are entirely ours. That closes
-	// the set, which is what makes "still present at the end" mean exactly
-	// "leaked" — no liveness scan, no heuristic, no flake.
+	// A PRIVATE $TMPDIR for this package's run, so every guard shim these tests build lands in a
+	// directory whose contents are entirely ours.
 	base := os.Getenv("TMPDIR")
 	if base == "" {
 		base = "/tmp"
@@ -56,10 +32,6 @@ func TestMain(m *testing.M) {
 	}
 
 	// The check is only worth anything if the runtime honours a changed $TMPDIR.
-	// Verified per-call on go1.26 (even after os.TempDir was read once). If a
-	// future runtime caches it, the shims would go to the real temp dir, this
-	// directory would stay empty, and the check would pass VACUOUSLY — so say so
-	// loudly rather than report a clean run that proves nothing.
 	probe, perr := os.MkdirTemp("", "probe-*")
 	mechanismOK := perr == nil && strings.HasPrefix(probe, tmp+string(os.PathSeparator))
 	if perr == nil {
@@ -118,15 +90,8 @@ func leakedShimDirs(dir string) []string {
 	return out
 }
 
-// TestCloseAskRemovesTheGuardShimDir pins the invariant the harness cleanup
-// leans on: a live Ask session OWNS its shim directory, and CloseAsk — the
-// shutdown seam the server calls on a plane restart — takes it with it.
-//
-// The leak this closes is invisible to a behavioural assertion: the session
-// keeps working perfectly while its shim outlives it, which is how eleven tests
-// did it unnoticed. So the assertion is about the DIRECTORY, not the session.
-// It is also the Ask half of TestChildEnvCleanupRemovesTheShimDir, which pins
-// the same ownership for the worker transport.
+// TestCloseAskRemovesTheGuardShimDir pins the invariant the harness cleanup leans on: a live Ask
+// session OWNS its shim directory, and CloseAsk.
 func TestCloseAskRemovesTheGuardShimDir(t *testing.T) {
 	h, _ := askHarness(t)
 	s := h.b.ensureAskSession("conv-guard-close")
@@ -146,9 +111,8 @@ func TestCloseAskRemovesTheGuardShimDir(t *testing.T) {
 	}
 }
 
-// askShimDir returns the guard shim directory an Ask session puts first on its
-// child's PATH — the guard's own report of where it lives, so the test never
-// has to guess at /tmp naming.
+// askShimDir returns the guard shim directory an Ask session puts first on its child's PATH — the
+// guard's own report of where it lives, so the test never has to guess at /tmp naming.
 func askShimDir(t *testing.T, s *askSession) string {
 	t.Helper()
 	path := envValue(s.childEnv(), "PATH")

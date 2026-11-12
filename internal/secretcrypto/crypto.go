@@ -78,11 +78,7 @@ func ParseKEK(s string) ([]byte, error) {
 	return nil, fmt.Errorf("kek must be 32 bytes (raw) or base64-encoded 32 bytes")
 }
 
-// KEKFileName is the persisted per-instance KEK file, relative to the
-// control plane's data dir. It lives next to the instance's other state
-// (backups, blob store) so it survives restarts and container rebuilds
-// exactly like the instance database — the "KEK persistence == instance
-// persistence" invariant. It is never stored in the database itself.
+// KEKFileName is the persisted per-instance KEK file, relative to the control plane's data dir.
 const KEKFileName = "secrets/kek"
 
 // KEKPath returns the absolute path of the persisted KEK file.
@@ -90,14 +86,14 @@ func KEKPath(dataDir string) string {
 	return filepath.Join(dataDir, "secrets", "kek")
 }
 
-// LoadOrCreateKEK returns the instance KEK, generating and persisting a
-// fresh 32-byte key on first use. The key file is written atomically
-// (temp + rename) with 0600 perms inside a 0700 dir, so a partially
-// written key can never be read. An existing file that is not a valid
-// 32-byte key is an error (fail-closed — never silently regenerate over
-// a key that already encrypts stored secrets).
+// LoadOrCreateKEK returns the instance KEK, generating and persisting a fresh 32-byte key on first
+// use.
 func LoadOrCreateKEK(dataDir string) ([]byte, error) {
 	path := KEKPath(dataDir)
+	// A RELATIVE KEK PATH IS REFUSED, NOT RESOLVED.
+	if !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("refusing to use the relative KEK path %q: the instance KEK must have an absolute location, or it lands in whatever directory the process's working directory happens to be — including a worker's bind-mounted worktree", path)
+	}
 	if data, err := os.ReadFile(path); err == nil {
 		if len(data) != 32 {
 			return nil, fmt.Errorf("existing KEK file %s is %d bytes, want 32 (do not delete or regenerate it — stored secrets are encrypted with it)", path, len(data))
@@ -138,11 +134,7 @@ func LoadOrCreateKEK(dataDir string) ([]byte, error) {
 	return kek, nil
 }
 
-// ResolveKEK returns the instance KEK for the control plane. An explicit
-// ORCHICON_SECRETS_KEK override (operator-managed key — KMS, secret
-// manager, shared across replicas) wins; otherwise the per-instance key
-// in the data dir is loaded or created on first boot, so the secrets
-// store works out of the box with no container/env changes.
+// ResolveKEK returns the instance KEK for the control plane.
 func ResolveKEK(override, dataDir string) ([]byte, error) {
 	if override != "" {
 		return ParseKEK(override)

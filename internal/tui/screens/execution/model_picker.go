@@ -1,14 +1,4 @@
 // model_picker.go — the Execution screen's worker-model picker wiring.
-//
-// A worker's model_ref is pinned by a human and lives on the worker's version, so
-// it is CHOSEN from the three-tier ModelPicker (adapter → provider → model, with
-// search) rather than typed. The write is BulkUpdateWorkerModel, which sets
-// model_ref on the worker and republishes the affected version IN PLACE — the
-// version number does not advance (it mirrors the manual edit-then-republish
-// flow), so this is a single-field edit and not a version fork.
-//
-// The shared cascade lives in internal/tui/modelpick; this file owns the screen's
-// modal state, the write, and the thin load thunks.
 package execution
 
 import (
@@ -34,19 +24,8 @@ type (
 	modelModelsMsg    = modelpick.ModelsMsg
 )
 
-// beginBulkSetModel opens the model picker for a SET of workers — the TUI's counterpart to the GUI's
-// BulkChangeWorkerModelDialog.
-//
-// WHY A LIST AND NOT A SINGLE WORKER. A per-worker model edit is a FORM FIELD (e / V), and lowercase `m`
-// was retired for exactly that reason; chaining ten forms is not a feature. So the picker's row-action
-// entry point takes the marked selection, and everything downstream handles one-or-many uniformly — the
-// RPC is BulkUpdateWorkerModel either way, so a single id is just the smallest batch rather than a
-// second code path that can rot.
-//
-// It is seeded from the selected workers' SHARED model_ref when they all agree, which is the common case
-// for a batch (and the one where the operator wants to see what they are changing FROM). When they
-// differ there is nothing honest to seed with, so it opens at the preferred adapter instead of showing
-// one worker's ref as if it were everyone's.
+// beginBulkSetModel opens the model picker for a SET of workers — the TUI's counterpart to the
+// GUI's BulkChangeWorkerModelDialog.
 func (m *Model) beginBulkSetModel(ids []string) tea.Cmd {
 	if len(ids) == 0 {
 		return nil
@@ -73,9 +52,8 @@ func (m *Model) beginBulkSetModel(ids []string) tea.Cmd {
 	mp.LoadModels = m.loadModelModels
 	m.modelPicker = mp
 	m.modelPickerWorkers = append([]string(nil), ids...)
-	// No Commit/Cancel callbacks: the SCREEN closes the modal in its own Update
-	// once the picker reports Done (finishModelPicker) — a callback capturing `m`
-	// would mutate a copy bubbletea has already replaced.
+	// No Commit/Cancel callbacks: the SCREEN closes the modal in its own Update once the picker reports
+	// Done (finishModelPicker).
 	kind, provider, model := modelpick.SplitRef(seed)
 	return mp.Open(kind, provider, model)
 }
@@ -93,10 +71,8 @@ func (m *Model) finishModelPicker(mp *kit2.ModelPicker) tea.Cmd {
 	if !committed {
 		return nil
 	}
-	// A picker opened from a FORM FIELD writes the ref back into that field — the
-	// field is the version's model_ref, and the form's own submit persists it.
-	// Writing through the RPC here as well would be a second, competing write for
-	// the same value.
+	// A picker opened from a FORM FIELD writes the ref back into that field — the field is the
+	// version's model_ref, and the form's own submit persists it.
 	if field != "" {
 		if f := m.Base.DetailForm(); f != nil {
 			f.Set(field, ref)
@@ -233,14 +209,8 @@ func (m *Model) setWorkerModelRefs(workerIDs []string, ref string) tea.Cmd {
 	})
 }
 
-// defaultSetWorkerModelRefs is the real write: ONE BulkUpdateWorkerModel call for the whole selection.
-//
-// THE BATCH IS ONE ROUND TRIP, not a loop of single writes — the RPC is built for it, and a loop would
-// make a ten-worker change ten chances to half-apply. But a batch can PARTLY SUCCEED (a deprecated
-// worker, a worker with no published version), and reporting only the first problem would hide the rest,
-// so the outcomes are TALLIED: the operator needs to know "updated 3 of 5" and WHY the two did not take,
-// in one message. Reasons are grouped rather than listed per worker, because five identical "no published
-// version" lines is noise — and they are already written in plain language (workerModelSkipReason).
+// defaultSetWorkerModelRefs is the real write: ONE BulkUpdateWorkerModel call for the whole
+// selection.
 func (m *Model) defaultSetWorkerModelRefs(ctx context.Context, workerIDs []string, ref string) error {
 	if m.cl == nil || m.cl.Workers == nil {
 		return errors.New("no worker client")
@@ -307,12 +277,8 @@ func (m *Model) defaultSetWorkerModelRefs(ctx context.Context, workerIDs []strin
 	return fmt.Errorf("updated %d of %d — %s", updated, updated+failed, strings.Join(parts, "; "))
 }
 
-// workerModelOutcomeError translates ONE per-worker result into an error (nil
-// when the update succeeded). The proto guarantees exactly one outcome is set;
-// an entirely empty result is still a failure, never an implicit success.
-//
-// It serves the single-worker path (the version editor's own model write), while the BULK path tallies
-// outcomes itself so one message can report a partially-applied batch.
+// workerModelOutcomeError translates ONE per-worker result into an error (nil when the update
+// succeeded).
 func workerModelOutcomeError(workerID string, res *apiv1.BulkUpdateWorkerModelResult) error {
 	if res.GetUpdated() != nil {
 		return nil

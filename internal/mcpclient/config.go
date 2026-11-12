@@ -1,16 +1,4 @@
-// Package mcpclient implements the native adapter's MCP (Model Context
-// Protocol) client: per-session connections to external MCP servers over
-// stdio (CommandTransport) and streamable HTTP (StreamableClientTransport)
-// built on the official Go SDK (github.com/modelcontextprotocol/go-sdk).
-//
-// ADR-0008: tools are discovered at session start and merged into the
-// native tool registry as mcp__<server>__<tool>; connections are lazily
-// established per session (never at control-plane boot); stdio children
-// cannot outlive a dead control plane (PDEATHSIG + boot-time sweep);
-// MCP tool calls honor per-call timeouts and cancellation; config
-// resolution is ONE union, addressed by SCOPE (project / conversation /
-// worker / run) — see ScopeResolver; there is no precedence chain and no
-// tenant-default tier any more.
+// Package mcpclient implements the native adapter's MCP (Model Context Protocol) client.
 package mcpclient
 
 import (
@@ -32,9 +20,8 @@ const (
 	TypeHTTP Type = "http"
 )
 
-// ServerSpec is one MCP server entry (one element of a resolved scope;
-// storage is owned by internal/mcpsettings, this package only consumes
-// it).
+// ServerSpec is one MCP server entry (one element of a resolved scope; storage is owned by
+// internal/mcpsettings, this package only consumes it).
 type ServerSpec struct {
 	// ID is the stable server identifier (also the prefix in the
 	// mcp__<server>__<tool> namespace).
@@ -49,17 +36,15 @@ type ServerSpec struct {
 	// Headers are extra HTTP request headers (e.g. Authorization) for
 	// header/bearer auth on remote servers. OAuth is out of scope for v1.
 	Headers map[string]string `json:"headers,omitempty"`
-	// Env are extra environment variables for stdio servers (e.g.
-	// GITHUB_PERSONAL_ACCESS_TOKEN). Values are already resolved from the
-	// tenant secrets store by the caller — never placeholders.
+	// Env are extra environment variables for stdio servers (e.g. GITHUB_PERSONAL_ACCESS_TOKEN).
 	Env map[string]string `json:"env,omitempty"`
 	// Timeout bounds each tool call against this server (and the connect
 	// handshake). Zero → defaultToolCallTimeout.
 	Timeout time.Duration `json:"-"`
-	// OnError selects the failure mode when the server is selected but
-	// unreachable/missing: "fail" (default — the session start fails
-	// actionably) or "degrade" (the session starts without this server's
-	// tools).
+	// ProtocolVersion pins the MCP wire version this server speaks.
+	ProtocolVersion string `json:"-"`
+	// OnError selects the failure mode when the server is selected but unreachable/missing: "fail"
+	// (default — the session start fails actionably) or "degrade" (the session starts without this.
 	OnError string `json:"onError,omitempty"`
 }
 
@@ -87,13 +72,11 @@ const (
 	// defaultToolCallTimeout bounds one MCP tool call when the spec has no
 	// explicit Timeout.
 	defaultToolCallTimeout = 120 * time.Second
-	// defaultConnectTimeout bounds the lazy per-session connect/discovery.
-	defaultConnectTimeout = 15 * time.Second
+	// defaultConnectTimeout bounds the lazy per-session connect/discovery when the spec states none.
+	defaultConnectTimeout = 30 * time.Second
 )
 
-// ScopeKind addresses a resolution scope. RUN is run-shaped on purpose: its
-// result is applied ONCE per container (child 4), so it must never be
-// derived from an executing worker.
+// ScopeKind addresses a resolution scope.
 type ScopeKind string
 
 const (
@@ -111,17 +94,11 @@ type ScopeRef struct {
 	WorkerID       string // ScopeWorker only; the version is the latest published
 	RunID          string // ScopeRun only
 
-	// Version is the PINNED worker version this ref resolves, used for
-	// provenance when Kind is ScopeWorker (the "inline:<workerID>@<n>"
-	// shape). Zero means "unpinned" — the resolver reads the latest
-	// published version and reports "inline:<workerID>".
+	// Version is the PINNED worker version this ref resolves, used for provenance when Kind is
+	// ScopeWorker (the "inline:<workerID>@<n>" shape).
 	Version int
-	// OwnPermissions, when non-empty, is the CALLER-HELD own-set for this
-	// scope: the executing worker version's permissions jsonb
-	// (worker_versions.permissions → scheduler.ExecutionManifest.Permissions).
-	// When set the resolver unions THIS and does NOT read the latest
-	// published version — a pinned dispatch must resolve the version it
-	// actually pinned. When empty the storage path holds.
+	// OwnPermissions, when non-empty, is the CALLER-HELD own-set for this scope: the executing worker
+	// version's permissions jsonb (worker_versions.permissions →.
 	OwnPermissions []byte
 }
 
@@ -136,10 +113,8 @@ type ScopedServer struct {
 	EntryID string
 }
 
-// Resolution is the outcome of resolving ONE scope: the union of the
-// project-owned definitions and the scope's own definitions, deduped and
-// order-stable (project rows by name, then own definitions in declaration
-// order), plus the skill-file union for the run scope.
+// Resolution is the outcome of resolving ONE scope: the union of the project-owned definitions and
+// the scope's own definitions, deduped and order-stable (project rows by name.
 type Resolution struct {
 	Servers     []ScopedServer
 	SelectedIDs []string
@@ -148,9 +123,8 @@ type Resolution struct {
 	Skills      []InlineSkillFile
 }
 
-// InlineSkillFile is one inline skill file carried by the scope (a worker
-// version's permissions.skill_files). Mirrors db.InlineSkillFile so this
-// package needs no db import.
+// InlineSkillFile is one inline skill file carried by the scope (a worker version's
+// permissions.skill_files).
 type InlineSkillFile struct {
 	Path    string `json:"path"`
 	Content string `json:"content"`
@@ -170,15 +144,8 @@ func (NoopScopeResolver) ResolveScope(context.Context, ScopeRef) (Resolution, er
 	return Resolution{}, nil
 }
 
-// ProvenanceString renders the resolved set's provenance as order-stable
-// "<server-id>=<from-id>" pairs, comma separated.
-//
-// IT READS ONLY Spec.ID / From / FromID ON PURPOSE. The specs' Env and Headers
-// are mutated in place by the caller's secret expansion
-// (${SECRET_NAME} → plaintext) BEFORE the transport connects, so a formatter
-// that touched them would put resolved credentials in the log. Provenance is
-// the observation this package exists to make falsifiable; the payload never
-// is.
+// ProvenanceString renders the resolved set's provenance as order-stable "<server-id>=<from-id>"
+// pairs, comma separated. IT READS ONLY Spec.ID / From / FromID ON PURPOSE.
 func ProvenanceString(servers []ScopedServer) string {
 	if len(servers) == 0 {
 		return ""
@@ -194,15 +161,8 @@ func ProvenanceString(servers []ScopedServer) string {
 	return strings.Join(parts, ",")
 }
 
-// DescribeFailedServer annotates a connect/tool-discovery error with the SCOPE
-// of the server it names, so a server that cannot run is ACTIONABLE: the
-// operator sees both which server failed and where its definition came from.
-//
-// Manager.Start stops at the FIRST failing server over the SAME ordered spec
-// list, and connectOne quotes the id as `mcp server %q: ...`, so matching the
-// quoted id against the ordered ScopedServer list is deterministic. When no
-// server matches (a manager-level error such as "manager closed"), the error is
-// returned unchanged.
+// DescribeFailedServer annotates a connect/tool-discovery error with the SCOPE of the server it
+// names, so a server that cannot run is ACTIONABLE.
 func DescribeFailedServer(err error, servers []ScopedServer) error {
 	if err == nil || len(servers) == 0 {
 		return err

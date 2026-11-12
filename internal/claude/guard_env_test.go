@@ -1,15 +1,7 @@
 package claude
 
-// guard_env_test.go — T5: the OS-level guard shim sits on the path that executes
-// a claude worker's subprocess commands.
-//
-// This is the criterion that makes a destructive command impossible INSIDE the
-// runtime container too: the shim is prepended to the child's PATH, so every
-// process the session (or anything it spawns) resolves a guarded binary through
-// the shim, no matter how the command is spelled or where it is spawned from.
-//
-// The targets are TEMP SPACE — the failure mode of a bad verdict is a directory
-// this test owns (the rule internal/guard/guard_test.go documents).
+// guard_env_test.go — T5: the OS-level guard shim sits on the path that executes a claude worker's
+// subprocess commands.
 
 import (
 	"os"
@@ -107,15 +99,12 @@ func TestChildEnvCleanupRemovesTheShimDir(t *testing.T) {
 	}
 }
 
-// The CONTAINER transport must NOT ship a host-built shim path into the
-// container: the supervisor's stdio path builds and prepends its own shim inside
-// the container (guard.MakeGuard + prependGuard), and a host path would point at
-// a directory that does not exist there.
+// The CONTAINER transport must NOT ship a host-built shim path into the container: the supervisor's
+// stdio path builds and prepends its own shim inside the container (guard.MakeGuard +.
 func TestContainerTransportDoesNotShipAHostShimPath(t *testing.T) {
 	project := t.TempDir()
-	// A container execution: a runtime client is wired (that is what makes
-	// spawn() — and therefore isContainer — choose the container child), the
-	// execution carries a workflow id, and the mode is not local.
+	// A container execution: a runtime client is wired (that is what makes spawn() — and therefore
+	// isContainer — choose the container child), the execution carries a workflow id.
 	s := newSession(&Bridge{rt: &runtime.Client{}}, "exec-1", "tenant-1", scheduler.ExecutionManifest{
 		ProjectDir:        project,
 		RuntimeWorkflowID: "wf-1",
@@ -123,10 +112,8 @@ func TestContainerTransportDoesNotShipAHostShimPath(t *testing.T) {
 	}, nil)
 	env, cleanup := s.childEnv()
 	defer cleanup()
-	// PATH must be UNTOUCHED: the supervisor builds and prepends the shim INSIDE
-	// the container, and a host-built path would not exist there. (The harness's
-	// own PATH may legitimately already carry a guard entry, so the assertion is
-	// that THIS adapter changed nothing.)
+	// PATH must be UNTOUCHED: the supervisor builds and prepends the shim INSIDE the container, and a
+	// host-built path would not exist there.
 	base := envValue(os.Environ(), "PATH")
 	if got := envValue(env, "PATH"); got != base {
 		t.Fatalf("the container transport modified PATH (host shim shipped in?): %q, base %q", got, base)
@@ -161,12 +148,8 @@ func TestLocalExecutionModeStillGetsTheShim(t *testing.T) {
 	}
 }
 
-// A CONTAINER session's hook command must name the in-container bind mount, not
-// the control plane's own (host) executable. The argv — and therefore the
-// settings document naming the hook — is built on the HOST and executed inside
-// the run's container, where the host path does not exist; a hook that cannot
-// launch silently removes the authority layer (protected paths, the carve-outs,
-// the operator policy) from every container run.
+// A CONTAINER session's hook command must name the in-container bind mount, not the control plane's
+// own (host) executable.
 func TestHookBinaryFollowsTheTransport(t *testing.T) {
 	project := t.TempDir()
 	// The operator override names a HOST path — exactly what must never reach a

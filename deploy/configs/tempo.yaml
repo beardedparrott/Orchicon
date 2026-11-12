@@ -1,0 +1,53 @@
+# Tempo — trace backend for the Orchicon supervised service set.
+# @DATA_DIR@ and the @…_PORT@ tokens are replaced at startup from the
+# instance's resolved port table (runServicePorts/writeConfigs in
+# cmd/orchicon/container.go), so the port the child BINDS and the port the
+# supervisor PROBES are the same number.
+#
+# Tempo's OTLP receivers stay OFFSET from the collector's own
+# (@COLLECTOR_OTLP_GRPC_PORT@/@COLLECTOR_OTLP_HTTP_PORT@) by default — the two
+# used to share one network namespace in the single-container image, so they
+# could not both take the OTLP default. The collector's config points at these
+# ports; changing the offset is a coordinated edit across tempo.yaml,
+# otel-collector.yaml and the readiness probes, not a cleanup.
+server:
+  http_listen_port: @TEMPO_HTTP_PORT@
+  # Tempo's OWN gRPC listener — internal only, but it cannot be ephemeral the
+  # way Loki's can: Tempo's query frontend dials its own gRPC port, so 0 makes it
+  # dial 127.0.0.1:0 and fail forever ("error contacting frontend"). It is
+  # therefore TEMPLATED from the instance's port table, which also resolves a
+  # port that is actually free — see internalListenerPort. Left at Tempo's
+  # default 9095 it made the second instance unbootable.
+  grpc_listen_port: @TEMPO_GRPC_PORT@
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "127.0.0.1:@TEMPO_OTLP_GRPC_PORT@"
+        http:
+          endpoint: "127.0.0.1:@TEMPO_OTLP_HTTP_PORT@"
+
+storage:
+  trace:
+    backend: local
+    wal:
+      # SINGLE-QUOTED for the same reason loki.yaml's paths are: a Windows data
+      # directory contains backslashes, and a double-quoted YAML scalar would read
+      # them as escapes ("did not find expected hexdecimal number") and refuse to
+      # parse. Tempo then crash-looped for ever and the Traces view was dead.
+      path: '@DATA_DIR@/tempo/wal'
+    local:
+      path: '@DATA_DIR@/tempo/blocks'
+
+# Compaction + retention: prune trace blocks older than this window so
+# the telemetry volume cannot grow unbounded (Tempo's default is 336h,
+# pinned explicitly here to match Loki's retention).
+compactor:
+  compaction:
+    block_retention: 336h
+    compacted_block_retention: 1h
+
+usage_report:
+  reporting_enabled: false

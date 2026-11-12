@@ -1,12 +1,4 @@
 // Package middleware holds HTTP middleware shared across the API surface.
-//
-// Phase 9 adds the auth middleware that resolves the caller's identity
-// from an OIDC access token or API key (docs/07 §6.1) and stores the
-// resolved identity + tenant in the request context. It supersedes the
-// dev-only tenant-header middleware; the context plumbing
-// (internal/tenant) stays the same. A Connect interceptor applies the
-// per-RPC RBAC entitlement check on top of the resolved identity
-// (docs/07 §6.2, §6.3).
 package middleware
 
 import (
@@ -27,30 +19,25 @@ const AuthHeader = "Authorization"
 
 // publicPaths are not tenant-scoped and require no authentication.
 var publicPaths = map[string]bool{
-	"/healthz":          true,
-	"/versionz":         true,
+	"/healthz":  true,
+	"/versionz": true,
+	// /enginez is the same CLASS of thing as the two above: a credential-free operational status the UI
+	// reads BEFORE it knows anything about the deployment.
+	"/enginez":          true,
 	"/auth/local-login": true,
 	// Self-service account creation (embedded IdP): happens before a
 	// session exists, exactly like local-login.
 	"/auth/signup":  true,
 	"/auth/refresh": true,
-	// /auth/logout is credential-free by design (cookie-based): it can only
-	// end the caller's own browser session, and requiring a bearer token
-	// here would 401 the sign-out request before the refresh cookie is
-	// cleared — leaving a reload after sign-out able to re-authenticate.
+	// /auth/logout is credential-free by design (cookie-based).
 	"/auth/logout":        true,
 	"/auth/oidc/login":    true,
 	"/auth/oidc/callback": true,
 	"/auth/session":       true,
-	// /auth/config is the pre-login capability-flags endpoint the SPA
-	// login page reads to render the honest set of sign-in affordances
-	// (embedded-OP / external IdP). Public + secret-free.
+	// /auth/config is the pre-login capability-flags endpoint the SPA login page reads to render the
+	// honest set of sign-in affordances (embedded-OP / external IdP).
 	"/auth/config": true,
-	// Embedded OpenID Provider endpoints (internal/auth/op). These are NOT
-	// /auth/*-prefixed so they must be listed here explicitly: discovery,
-	// authorize + callback, token, userinfo, and jwks are all reached by
-	// unauthenticated RPs/browsers. The login bridge /auth/op/login inherits
-	// the /auth/* bypass.
+	// Embedded OpenID Provider endpoints (internal/auth/op).
 	"/.well-known/openid-configuration": true,
 	"/authorize":                        true,
 	"/authorize/callback":               true,
@@ -60,11 +47,7 @@ var publicPaths = map[string]bool{
 	"/auth/op/login":                    true,
 }
 
-// ResolveAuth wraps h with auth-resolution middleware. It resolves the
-// caller's identity from the Authorization bearer token (OIDC access
-// token or API key) and stores the resolved identity + tenant in the
-// context. A request with no (valid) credential gets a 401 in every
-// mode — there is no anonymous dev bypass.
+// ResolveAuth wraps h with auth-resolution middleware.
 func ResolveAuth(h http.Handler, issuer *auth.TokenIssuer, resolver *auth.Resolver, log *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Public paths skip auth entirely.
@@ -77,12 +60,7 @@ func ResolveAuth(h http.Handler, issuer *auth.TokenIssuer, resolver *auth.Resolv
 		if err == nil && cred != "" {
 			ident, rerr := resolveCredential(r.Context(), issuer, resolver, cred)
 			if rerr != nil {
-				// WARN, not Debug. A rejected credential is security-relevant, and
-				// it leaves no other trace to investigate with: the 401 is written
-				// before any handler runs, so nothing is audited, and production
-				// runs the logger at LevelInfo — so a Debug line here was never
-				// emitted at all. "The client does nothing and I cannot tell why"
-				// was unfalsifiable from the outside.
+				// WARN, not Debug.
 				log.Warn("auth: resolve credential failed", "error", rerr, "path", r.URL.Path)
 				writeUnauthenticated(w, "invalid or expired token")
 				return
@@ -96,9 +74,7 @@ func ResolveAuth(h http.Handler, issuer *auth.TokenIssuer, resolver *auth.Resolv
 	})
 }
 
-// resolveCredential resolves a bearer credential into the caller's
-// identity context. It tries the access-token verifier first; if that
-// fails it attempts the API-key lookup.
+// resolveCredential resolves a bearer credential into the caller's identity context.
 func resolveCredential(ctx context.Context, issuer *auth.TokenIssuer, resolver *auth.Resolver, cred string) (auth.ResolvedIdentity, error) {
 	if strings.HasPrefix(cred, auth.APIKeyPrefix) {
 		return resolveApiKey(ctx, resolver, cred)
@@ -144,11 +120,8 @@ func writeUnauthenticated(w http.ResponseWriter, msg string) {
 	_, _ = w.Write([]byte(`{"error":"` + msg + `"}`))
 }
 
-// RBACInterceptor is a Connect interceptor that enforces the per-RPC
-// entitlement check (docs/07 §6.2, §6.3). It reads the resolved
-// identity from the request context and checks that it holds the
-// entitlement required by the procedure. Admins bypass; a missing
-// identity is always Unauthenticated (no local-mode dev fallback).
+// RBACInterceptor is a Connect interceptor that enforces the per-RPC entitlement check (docs/07
+// §6.2, §6.3).
 type RBACInterceptor struct{}
 
 // NewRBACInterceptor constructs the per-RPC entitlement interceptor.
@@ -181,9 +154,7 @@ func (i *RBACInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc
 	}
 }
 
-// check enforces the entitlement for a procedure. It requires the
-// resolved identity to hold the procedure's entitlement (or be admin);
-// a request with no resolved identity is Unauthenticated in every mode.
+// check enforces the entitlement for a procedure.
 func (i *RBACInterceptor) check(ctx context.Context, procedure string) error {
 	ident, ok := auth.FromContext(ctx)
 	if !ok {

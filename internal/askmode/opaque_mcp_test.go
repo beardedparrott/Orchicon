@@ -8,9 +8,7 @@ import "testing"
 // reveals nothing to a deny list about whether it acts. So an OPAQUE MCP tool (server != the platform's own
 // `orchicon` sidecar) is treated as an ACTION — offered/executed only by a mode that MAY ACT.
 
-// TestIsOpaqueMCPToolOnlyExcludesThePlatformSidecar pins the classifier. The one case that must NOT be opaque
-// is the platform's OWN server, whose bare tool name is already in the table (that is why the adapter strips
-// the prefix).
+// TestIsOpaqueMCPToolOnlyExcludesThePlatformSidecar pins the classifier.
 func TestIsOpaqueMCPToolOnlyExcludesThePlatformSidecar(t *testing.T) {
 	cases := []struct {
 		name string
@@ -36,9 +34,7 @@ func TestIsOpaqueMCPToolOnlyExcludesThePlatformSidecar(t *testing.T) {
 	}
 }
 
-// TestMayActAgreesWithTheDenialSets is the DRIFT GUARD. MayAct is derived from the table conceptually; this ties
-// it to the denial sets so the flag can never drift from them. A mode may act exactly when it does not deny the
-// work tools.
+// TestMayActAgreesWithTheDenialSets is the DRIFT GUARD.
 func TestMayActAgreesWithTheDenialSets(t *testing.T) {
 	work := theWorkTools()
 	for _, mode := range []string{Brainstorm, Iteration, QuickWork} {

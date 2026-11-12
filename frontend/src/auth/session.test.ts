@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  authConfigError,
   ensureSession,
   getAccessToken,
   localLogin,
@@ -540,5 +541,46 @@ describe("settings validation — back-end gate (proto-level)", () => {
     // The server enforces refresh > access when both are non-zero.
     expect(900).toBeLessThanOrEqual(900); // equal → rejected
     expect(800).toBeLessThan(900); // refresh < access → rejected
+  });
+});
+
+// THE 502 MUST NAME THE PLANE, NOT THE LOGIN.
+//
+// Reported from a real Windows install: the sign-in card said only
+// "Error: auth/config failed: 502". The desktop shell's proxy had already answered with a
+// sentence naming the cause — "the plane at http://127.0.0.1:8080 is unreachable — is it
+// running?" — and the client threw it away, which left the operator with a number and no
+// idea that the thing to start was the control plane.
+describe("authConfigError", () => {
+  const proxyBody = "orchicon desktop: the plane at http://127.0.0.1:8080 is unreachable — is it running?";
+
+  it("keeps the proxy's explanation on a 502 and says what to do", async () => {
+    const msg = await authConfigError(new Response(proxyBody, { status: 502 }));
+    expect(msg).toContain("502");
+    expect(msg).toContain("plane at http://127.0.0.1:8080 is unreachable");
+    // the point of the fix: an action, not just a status
+    expect(msg).toContain("orchicon install");
+  });
+
+  it("treats 503 the same way (a proxy that cannot reach the plane)", async () => {
+    const msg = await authConfigError(new Response("bad gateway", { status: 503 }));
+    expect(msg).toContain("not reachable");
+    expect(msg).toContain("bad gateway");
+  });
+
+  it("falls back to the bare status when the body is empty or unreadable", async () => {
+    expect(await authConfigError(new Response("", { status: 401 }))).toBe("auth/config failed: 401");
+  });
+
+  it("keeps the cause for an ordinary refusal, without the plane guidance", async () => {
+    const msg = await authConfigError(new Response("no embedded IdP", { status: 404 }));
+    expect(msg).toBe("auth/config failed: 404 — no embedded IdP");
+    expect(msg).not.toContain("orchicon install");
+  });
+
+  it("only quotes the FIRST line of the body (a stack trace is not a message)", async () => {
+    const msg = await authConfigError(new Response("first line\nsecond line", { status: 500 }));
+    expect(msg).toContain("first line");
+    expect(msg).not.toContain("second line");
   });
 });

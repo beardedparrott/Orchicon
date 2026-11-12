@@ -35,16 +35,8 @@ func TestMCPServerOwnership(t *testing.T) {
 	}
 
 	// mcp_servers has an FK to tenants(id); create the tenant row first.
-	//
-	// The tenant id is UNIQUE PER RUN: a fixed id makes two concurrent test
-	// processes contend on the same tenants row (the mcp_servers FK takes a
-	// key-share lock on it) and deadlock instead of failing.
 	tenant := "tnt_mcpmodel_" + db.NewID()[10:22]
-	// SETUP COMMITS BEFORE THE BODY. The body's negative probes run in their
-	// own transactions; while this tx held its tenant INSERT uncommitted, an
-	// mcp_servers INSERT in another tx would block on the uncommitted
-	// referenced row (FK key-share) and DEADLOCK — the outer tx never gets to
-	// commit because it is the one waiting.
+	// SETUP COMMITS BEFORE THE BODY.
 	stx, err := pool.BeginTenantTx(ctx, tenant)
 	if err != nil {
 		t.Fatalf("begin setup tx: %v", err)
@@ -148,18 +140,12 @@ func TestMCPServerOwnership(t *testing.T) {
 		t.Fatalf("conversation scope membership wrong: %+v", seen)
 	}
 
-	// The XOR CHECK rejects both-set and neither-set, and the owner-scoped
-	// unique index rejects a second row of the same name for ONE owner. Each
-	// probe runs in its OWN transaction: a rejected statement aborts the
-	// transaction it ran in, so sharing one would poison the rest of the test.
-	// Each probe must also roll back, so nothing is written when it is
-	// (wrongly) accepted.
+	// The XOR CHECK rejects both-set and neither-set, and the owner-scoped unique index rejects a
+	// second row of the same name for ONE owner.
 	probeRejected := func(what, q string, args ...any) {
 		t.Helper()
-		// A SAVEPOINT, not a nested tx: the rejected statement aborts the
-		// transaction it runs in, so without a savepoint to roll back to the
-		// rest of the body would be poisoned. No second tx means no FK lock
-		// contention either.
+		// A SAVEPOINT, not a nested tx: the rejected statement aborts the transaction it runs in, so
+		// without a savepoint to roll back to the rest of the body would be poisoned.
 		if _, err := ttx.Exec(ctx, `SAVEPOINT probe`); err != nil {
 			t.Fatalf("savepoint (%s): %v", what, err)
 		}
@@ -263,10 +249,8 @@ func TestRequireConversation(t *testing.T) {
 	}
 }
 
-// TestMCPServersFromPermissionsShapes is the PURE parser test: full inline
-// specs, the legacy {id,command:string} reference, and the legacy bare id —
-// all three decode through the ONE parser, and the id-only view delegates to
-// it (so the reader and the writer cannot drift).
+// TestMCPServersFromPermissionsShapes is the PURE parser test: full inline specs, the legacy
+// {id,command:string} reference, and the legacy bare id — all three decode through the ONE parser.
 func TestMCPServersFromPermissionsShapes(t *testing.T) {
 	full := []byte(`{"mcp_servers":[
 		{"id":"full-1","type":"stdio","command":["npx","-y","@x/y"],"env":{"K":"V"},"enabled":true,"onError":"degrade"},
@@ -346,9 +330,8 @@ func TestSkillsFromPermissions(t *testing.T) {
 	}
 }
 
-// TestMCPServerTimestampOrderUnused keeps time imported for the row shape
-// assertions without a magic sleep; a no-op assertion that the row carries a
-// created_at (the owner-scoped backfill's determinism depends on it).
+// TestMCPServerTimestampOrderUnused keeps time imported for the row shape assertions without a
+// magic sleep; a no-op assertion that the row carries a created_at (the owner-scoped backfill's.
 func TestMCPServerTimestampOrderUnused(t *testing.T) {
 	var r db.MCPServerRow
 	r.CreatedAt = time.Now()

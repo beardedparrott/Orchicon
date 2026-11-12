@@ -71,16 +71,22 @@ import {
   useSetConversationFullsend,
   useSetConversationProject,
   useCompactConversation,
+  useDeleteConversationMessage,
   askKeys,
 } from "@/api/askOrchicon";
 import { useGetSettings } from "@/api/settings";
 import { askOrchiconClient } from "@/api/clients";
 import { useToast, useToastStore } from "@/components/ui/toast";
+import { MessageActions } from "@/components/ask/MessageActions";
+import { MessageAction, modeForAction, restoresComposer, type MessageActionValue } from "@/lib/ask-message-actions";
 import { COMPACT_COMMAND, parseComposerCommand } from "@/lib/composer-command";
 import { bubbleKindFor } from "@/lib/ask-bubble";
 import {
+  anchorLiveReply,
   dropSupersededMirror,
   hasLiveTextItems,
+  mirrorRowProseLifted,
+  orderInjectedBeforeReply,
 } from "@/lib/ask-live-merge";
 import {
   groupStreamItems,
@@ -108,7 +114,13 @@ import {
   TranscriptSearchBar,
 } from "@/components/chat";
 import { useCategoryPreferences, getItemsForCategory } from "@/lib/category-store";
-import { AskCard, isAskUserToolCall, parseAskUserArgs } from "@/components/ask/AskCard";
+import {
+  AskCard,
+  isAskUserToolCall,
+  askIsAnswered,
+  pickAskCall,
+  parseAskUserArgs,
+} from "@/components/ask/AskCard";
 import { ConsentAskCard } from "@/components/ask/AskCard";
 import {
   applyAskChunk,
@@ -255,11 +267,25 @@ const EMPTY_STREAM: ConvStream = {
   asks: [],
 };
 
-// The server's last-resort fallback when no Ask Orchicon model is configured
-// (conversation model_ref empty AND tenant default empty). Mirrors chat.go's
-// hardcoded fallback — the free model is rate-limited and is the #1 cause of
-// "Ask Orchicon is stuck" (a silent provider 429 looks like a stall).
-const FALLBACK_ASK_MODEL = "opencode/deepseek-v4-flash-free";
+// THERE IS NO LAST-RESORT MODEL, because every candidate was a lie.
+//
+// This mirrored the server's old hardcoded fallback, `opencode/deepseek-v4-flash-free`, and the
+// operator reported what it actually did:
+//
+//	conversation session send: orchicon bridge: start Ask turn: provider status 403 403 Forbidden:
+//	{"type":"error","error":{"type":"FreeTierError","message":"OpenCode's free tier can only be used
+//	from within OpenCode. Download it at https://opencode.ai and keep building."}}
+//
+// The ref was a legacy 2-segment one (so it INFERS the opencode adapter, which a fresh install has no
+// binary for) naming a FREE-TIER-ONLY model (which opencode gates on the request coming from inside
+// its own client — the native adapter is refused too, since it calls the same endpoints with the same
+// key). Both halves are unfixable without the opencode binary, so inventing a model here could only
+// ever produce an error the operator cannot act on.
+//
+// The server now REFUSES such a turn with a FailedPrecondition naming the setting to fix (see
+// askorchicon/chat.go). The UI shows "no model configured" — a true, fixable statement — instead of a
+// model name that cannot dispatch.
+const NO_MODEL_CONFIGURED_LABEL = "no model configured";
 
 // Ticks Date.now() every `intervalMs` while truthy, frozen otherwise. Used to
 // render live "last activity Ns ago" elapsed time in the reconnecting banner
@@ -640,12 +666,53 @@ function AskOrchiconPage() {
   // groupedStream DOES need to be declared before this use; it is a `const` above (useMemo), and
   // this file's own rule is that a const used above its declaration is a TDZ error the production
   // build rejects.
-  const durableMessages = dropSupersededMirror(
-    messages ?? [],
-    pendingReplyId,
-    isStreaming,
-    liveItemsPresent,
+  // INTERJECTIONS ARE REORDERED BEFORE THE MIRROR IS CHOSEN.
+  //
+  // An interjected user message is persisted MID-TURN, so its created_at is later than the assistant row
+  // that was created when the turn started — which made the operator's message render BELOW the reply it
+  // prompted. orderInjectedBeforeReply puts it in front of that reply, where it reads as a chat message the
+  // model then answered. Done here, on the durable list, because every transcript consumer (the render, the
+  // search blocks and the mirror selection below) reads this one value; reordering later would leave one of
+  // them disagreeing.
+  // THE LIVE REPLY, AS BLOCKS, STAMPED WITH THE ANCHOR'S IDENTITY.
+  //
+  // These used to be drawn as a separate section after the whole transcript, which put streaming text BELOW a
+  // durable interjection after a refresh (see anchorLiveReply). They now carry the pending reply's id and are
+  // merged into the transcript at that anchor, so one ordering serves the render and the search.
+  //
+  // DECLARED HERE, ABOVE ITS FIRST CONSUMER: this file's own rule is that a `const` used above its declaration
+  // is a TDZ error the production build rejects — and `tsc -b` DOES reject it where `tsc --noEmit` does not,
+  // which is how this shipped green from a check that was not the one the build runs.
+  const liveBlocks: TranscriptBlock[] = hasLive
+    ? groupedStream
+        .filter((it) => it.kind === "text" || it.kind === "user")
+        .map((it) => ({
+          kind: "message" as const,
+          at: it.at,
+          message: {
+            id: `live-${it.key}`,
+            role: "assistant",
+            content: it.text,
+          } as ChatMessage,
+        }))
+    : [];
+
+  const durableOrdered = orderInjectedBeforeReply(
+    dropSupersededMirror(messages ?? [], pendingReplyId, isStreaming, liveItemsPresent),
   );
+
+  // THE LIVE REPLY TAKES ITS ANCHOR IN THE TRANSCRIPT, not a trailing section (§ anchorLiveReply).
+  //
+  // It is merged HERE, into the durable order, because every transcript consumer reads this one value — the
+  // render, the search blocks and the mirror selection — so merging later would leave one of them disagreeing
+  // about where the streaming text sits. The merged blocks carry the anchor row's own position, which is what
+  // keeps a streaming reply BELOW an interjection that a refresh made durable.
+  const anchored = anchorLiveReply(
+    durableOrdered,
+    liveBlocks.map((b) => (b as { kind: "message"; message: ChatMessage }).message),
+    pendingReplyId,
+  );
+  const durableMessages = anchored.messages;
 
   // A LIVE-ONLY TURN MUST STILL BE SEARCHABLE.
   //
@@ -677,17 +744,8 @@ function AskOrchiconPage() {
   // thing in the turn, and the thing being asked of the operator. Only while live items exist — with no live
   // stream the row IS the turn (a reload, another tab), and the card draws in its own place.
   const inFlightMsg = durableMessages.find((m) => m.id === pendingReplyId);
-  const liftedCard = hasLive && inFlightMsg ? askCardOf(inFlightMsg) : null;
+  const liftedCard = hasLive && inFlightMsg ? askCardOf(activeConvId ?? "", inFlightMsg) : null;
 
-  const liveBlocks: TranscriptBlock[] = hasLive
-    ? groupedStream
-        .filter((it) => it.kind === "text" || it.kind === "user")
-        .map((it) => ({
-          kind: "message" as const,
-          at: it.at,
-          message: { id: `live-${it.key}`, role: "assistant", content: it.text } as ChatMessage,
-        }))
-    : [];
   const transcriptBlocks: TranscriptBlock[] = [];
   for (const msg of durableMessages) {
     transcriptBlocks.push({
@@ -713,7 +771,22 @@ function AskOrchiconPage() {
   // painted from `groupedStream` (the render's own live-item map), so adding it here too would draw every
   // streaming reply twice; WITH a search that render is gated off and these blocks are the only way the
   // text the operator is looking at can be searched.
-  const searchBlocks = searchActive ? [...transcriptBlocks, ...liveBlocks] : transcriptBlocks;
+  // AND THE SEARCH MUST NOT SEE A LIFTED PROSE TWICE EITHER. A row whose prose is lifted is still in the
+  // transcript (for its card and tool calls), but its text is drawn — and therefore searched — from the
+  // live copy. Left in, a live turn would report every match twice and next/prev would step onto the
+  // same words in two invisible copies.
+  const searchBlocks = searchActive
+    ? [
+        ...transcriptBlocks.filter(
+          (b) =>
+            !(
+              b.kind === "message" &&
+              mirrorRowProseLifted(b.message, pendingReplyId, isStreaming, liveItemsPresent)
+            ),
+        ),
+        ...liveBlocks,
+      ]
+    : transcriptBlocks;
 
   // AN UNANSWERED QUESTION IS NOT A TRANSCRIPT ENTRY — IT BELONGS AT THE BOTTOM.
   //
@@ -889,6 +962,7 @@ function AskOrchiconPage() {
   // conversations: the count then reads 0, which is how you know a scope is empty before clicking it.
   const { data: projects } = useListProjects();
   const deleteConv = useDeleteConversation();
+  const deleteMessage = useDeleteConversationMessage(activeConvId ?? "");
   const updateTitle = useUpdateConversationTitle();
   const abortTurn = useAbortConversationTurn();
   const setMode = useSetConversationMode();
@@ -918,13 +992,30 @@ function AskOrchiconPage() {
       if (askInFlight[askId]) return;
       setAskInFlight((prev) => ({ ...prev, [askId]: true }));
       try {
-        const res = await askOrchiconClient.replyPermissionAsk({
-          conversationId: convId,
-          askId,
-          choice,
-          answer,
-        });
+        // THE REPLY IS BOUNDED, BECAUSE A STUCK ONE DISABLES THE CARD FOR EVER.
+        //
+        // `askInFlight[askId]` gates the handler (above) and drives each card's `busy` prop, which disables every
+        // option button. It is cleared only in the `finally` below — so if the RPC never settles, the entry is
+        // never removed, the guard swallows every later click, and the card sits there looking live with buttons
+        // that do nothing. A page refresh resets this component's state, which is why refreshing "fixed" it:
+        // REPORTED — "clicking an answer sometimes doesn't work unless I first refresh the page."
+        //
+        // The transport has no timeout of its own, and this RPC starts a conversation turn server-side, so a slow
+        // or wedged turn can hold it open indefinitely. A deadline guarantees the finally runs, the card frees
+        // itself, and the operator can simply try again.
+        const res = await withReplyDeadline(
+          askOrchiconClient.replyPermissionAsk({
+            conversationId: convId,
+            askId,
+            choice,
+            answer,
+          }),
+        );
         if (res.applied) {
+          // REMEMBER IT LOCALLY TOO — the card must never depend solely on the transcript catching up.
+          // String(choice) because choice is the generated PermissionChoice ENUM, not a string: a
+          // question carries `answer` and an UNSPECIFIED choice, a permission carries the decision.
+          markAskSettled(convId, askId, answer || String(choice));
           setStream(convId, (prev) => ({
             ...prev,
             asks: resolveAsk(prev.asks, askId, outcomeFromChoice(choice)),
@@ -970,9 +1061,11 @@ function AskOrchiconPage() {
     () =>
       activeConv?.modelRef ||
       settings?.defaultAskOrchiconModel ||
-      FALLBACK_ASK_MODEL,
+      "",
     [activeConv?.modelRef, settings?.defaultAskOrchiconModel],
   );
+  // "No model configured" is its own state, and the composer says so rather than naming a model that
+  // cannot dispatch. It is fixable in one click (the model chip), so it is a prompt, not an error.
   const isUsingFallbackModel =
     !activeConv?.modelRef && !settings?.defaultAskOrchiconModel;
 
@@ -1604,12 +1697,14 @@ function AskOrchiconPage() {
     [runStream, setStream],
   );
 
-  // An interjection: sent while a turn is already streaming. The server
-  // supersedes the in-flight turn (persisting its partial content as a plain
-  // message) and answers this message on a fresh turn that acks a NEW
-  // assistant message id. The old id's partial message appears via the poll
-  // and must NOT clear the new turn — the poll effect keys on the current
-  // pendingReplyId, which turnStarted now points at the new id.
+  // An interjection: sent while a turn is already streaming. The server ADDS the
+  // message to that turn — it persists it (so it shows up in the transcript like
+  // any other user message) and injects it into the live session, so the model
+  // treats it as more context for the work in hand. Nothing is aborted.
+  //
+  // The ack still carries an assistant message id: the RUNNING turn's, because the
+  // reply this message just joined is the one that continues. The stream slot
+  // therefore keeps pointing at the message the operator was already watching.
   const interjectStreaming = useCallback(
     async (convId: string, text: string, attachments?: AttachmentInput[]): Promise<boolean> => {
       setStream(convId, (prev) => ({
@@ -1650,9 +1745,10 @@ function AskOrchiconPage() {
     async (text: string, attachments?: AttachmentInput[]): Promise<boolean> => {
       if (!text.trim() || !activeConvId) return false;
       if (isStreaming || serverTurnInFlight) {
-        // Send while streaming = interject: interrupt the current reply and
-        // redirect the model (the server aborts the session + supersedes the
-        // turn), never the "another reply already processing" dead-end.
+        // Send while streaming = interject: the server ADDS this message to the
+        // reply in flight (it persists it and injects it into the live session,
+        // so the model picks it up as more context) without aborting anything.
+        // Never the "another reply already processing" dead-end.
         // serverTurnInFlight covers the case where THIS browser's slot is
         // idle but the turn is running server-side (started here before a
         // refresh, or in another tab/device): the poll may not have re-armed
@@ -1670,6 +1766,45 @@ function AskOrchiconPage() {
       return ok;
     },
     [activeConvId, isStreaming, serverTurnInFlight, sendStreaming, interjectStreaming],
+  );
+
+  // handleMessageAction performs the operator's two edit verbs on a user message.
+  //
+  // Both go through ONE mutation because both are the same server operation with a different mode, and both
+  // need the same two effects: the transcript shrinks AND the conversation's model session is recycled, which
+  // is what takes the text out of the model's context as well as off the screen. The response says whether a
+  // session was actually reset, so the operator is told what happened rather than left to assume.
+  const handleMessageAction = useCallback(
+    async (message: ChatMessage, action: MessageActionValue): Promise<void> => {
+      if (!activeConvId) return;
+      const res = await deleteMessage.mutateAsync({ messageId: message.id, mode: modeForAction(action) });
+      const removed = action === MessageAction.Undo ? "Message removed" : "Conversation reverted";
+      // A REVERT HANDS THE MESSAGE BACK TO THE COMPOSER.
+      //
+      // The operator: "a revert should also put the message you selected back into the composer". Revert
+      // removes the message, so without this its text is gone from the interface entirely — the operator would
+      // have to retype a question they had already written, which is the one thing removing it should not cost.
+      // The composer is the natural home for it: the text comes back as a DRAFT, editable, and sending it starts
+      // the conversation again from exactly where it was cut.
+      //
+      // UNDO DOES NOT DO THIS, deliberately. Undo leaves the message's reply in place, so putting the question
+      // back in the composer would set up a duplicate — the transcript would already read as though it had been
+      // asked and answered.
+      //
+      // It reuses setRestoreDraft, the SAME path a failed send uses, so there is one "put this text back in the
+      // box" mechanism rather than a second one that could drift. token makes a repeated revert re-trigger.
+      if (restoresComposer(action)) {
+        setRestoreDraft({ convId: activeConvId, text: message.content, token: Date.now() });
+      }
+      toast.success(
+        res.sessionReset
+          ? `${removed} and the model's context was reset for the next turn.`
+          : `${removed}.`,
+        { title: "Ask Orchicon" },
+      );
+    },
+    // setRestoreDraft is a useState setter (stable), so it is not listed; the rest are read inside.
+    [activeConvId, deleteMessage, toast],
   );
 
   const handleRetry = useCallback((): Promise<boolean> => {
@@ -2128,8 +2263,12 @@ function AskOrchiconPage() {
                   <ModeIcon mode={localMode} className="h-2.5 w-2.5" />
                   {conversationModeLabel(localMode)}
                 </span>
-                {/* The model answering this conversation — surfaced so a
-                    silent fallback to the free model is never invisible. */}
+                {/* The model answering this conversation.
+                    "No model configured" is its own state, and it is NOT a model name: there is no
+                    last-resort model any more, because every candidate could only fail (a legacy ref
+                    inferred the opencode adapter, and the free tier refuses any client but opencode
+                    itself). Saying so is a prompt the operator can act on; naming a model that cannot
+                    dispatch is an error they cannot. */}
                 <span
                   className={cn(
                     "shrink-0 max-w-[220px] truncate inline-flex items-center rounded-md px-2 py-0.5 font-mono text-[10px]",
@@ -2139,11 +2278,11 @@ function AskOrchiconPage() {
                   )}
                   title={
                     isUsingFallbackModel
-                      ? "No Ask Orchicon model is configured — using the free fallback model, which is rate-limited and can appear stuck."
+                      ? "No Ask Orchicon model is configured — pick one here, or set a default in Settings → Defaults."
                       : "The model answering this conversation"
                   }
                 >
-                  {effectiveModel}
+                  {isUsingFallbackModel ? NO_MODEL_CONFIGURED_LABEL : effectiveModel}
                 </span>
               </div>
               <div className="flex items-center gap-2 shrink-0">
@@ -2165,15 +2304,31 @@ function AskOrchiconPage() {
                 so the server is answering with the free fallback model. That
                 model is rate-limited and is the #1 cause of a stuck turn —
                 surfacing it turns a confusing "Orchicon is thinking" into an
-                actionable "your model config is missing". */}
+                actionable "your model config is missing".
+                (There is no fallback model any more: see NO_MODEL_CONFIGURED_LABEL.) */}
             {isUsingFallbackModel && (
               <div className="flex items-start gap-2 border-b border-amber-300/40 bg-amber-50/60 px-6 py-2 text-xs text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-300">
                 <RefreshCw aria-hidden="true" className="mt-0.5 h-3 w-3 shrink-0" />
                 <span className="min-w-0 [overflow-wrap:anywhere]">
-                  No Ask Orchicon model is configured — answering with the free
-                  fallback model (<span className="font-mono">{effectiveModel}</span>),
-                  which is rate-limited and can appear stuck. Set a model in
-                  Settings → Default models.
+                  No Ask Orchicon model is configured.{" "}
+                  <button
+                    type="button"
+                    // The chip is the control; pointing at it is not enough when the operator is
+                    // reading a banner at the other end of the composer. This opens the same picker
+                    // by clicking the chip for them.
+                    onClick={() =>
+                      document
+                        .querySelector<HTMLButtonElement>('[data-testid="ask-model-chip"]')
+                        ?.click()
+                    }
+                    className="font-medium underline underline-offset-2 hover:no-underline"
+                  >
+                    Choose a model
+                  </button>{" "}
+                  from the chip beside the message box, or set a default in Settings
+                  → Defaults → “Default Ask Orchicon model”. A message sent without
+                  one is refused — the native “orchicon” adapter needs nothing
+                  installed.
                 </span>
               </div>
             )}
@@ -2305,10 +2460,38 @@ function AskOrchiconPage() {
                           <UserBubble text={block.text} source="you" />
                         ) : (
                           <MessageBubble
+                            convId={activeConvId ?? ""}
                             message={block.message}
                             onRetry={handleRetry}
-                            onSelectOption={handleSendMessage}
+                            // ANSWERING A RECORDED CARD IS A REPLY, not a message. It goes through the
+                            // SAME handler the consent card uses (handleAskDecision →
+                            // replyPermissionAsk), because only that replaces the awaiting marker — the
+                            // card's only durable state. Sending the label as an ordinary message left
+                            // the marker in place, so the card stayed open to every other client and
+                            // came back on the next reload: "I answer it and it asks again".
+                            onSelectOption={(label, askId) =>
+                              askId
+                                ? void handleAskDecision(
+                                    activeConvId!,
+                                    askId,
+                                    PermissionChoice.UNSPECIFIED,
+                                    label,
+                                  )
+                                : handleSendMessage(label)
+                            }
                             highlight={searchQuery}
+                            // The per-message edit menu. Offered only when no turn is running: the server
+                            // refuses a delete then, because the reply is being written as it streams.
+                            messageActions={
+                              <MessageActions
+                                disabledReason={
+                                  isStreaming || serverTurnInFlight
+                                    ? "A reply is in progress — stop it or wait before removing messages"
+                                    : undefined
+                                }
+                                onAction={(action) => handleMessageAction(block.message, action)}
+                              />
+                            }
                             // The in-flight row's card is drawn after the live text instead (see
                             // liftedCard): inside this row it would be stranded mid-reply.
                             cardLifted={
@@ -2316,16 +2499,28 @@ function AskOrchiconPage() {
                               block.kind === "message" &&
                               block.message.id === pendingReplyId
                             }
+                            // AND ITS PROSE IS LIFTED TOO, but only while the live stream is drawing
+                            // the same text — otherwise the reply appears twice (see
+                            // mirrorRowProseLifted). The row stays for its tool calls and card.
+                            proseLifted={
+                              block.kind === "message" &&
+                              mirrorRowProseLifted(block.message, pendingReplyId, isStreaming, liveItemsPresent)
+                            }
                           />
                         )}
                       </div>
                     );
                   })}
 
-                {/* Live streaming items (text + reasoning chunks) — hidden while a
-                    search filter is active, so the view shows only matches. */}
+                {/* THE TRAILING LIVE SECTION IS A FALLBACK, NOT THE NORM.
+                    Now that the live reply is anchored into the transcript (see durableMessages), drawing it
+                    here as well would show it twice — so this renders only when the anchor did NOT take,
+                    which happens when the pending row has not arrived from the poll yet. Reasoning and error
+                    chunks have no transcript block, so they still only appear here; that is why this is
+                    gated on `!anchored.inserted` rather than deleted outright. */}
                 {!searchActive &&
                   isStreaming &&
+                  !anchored.inserted &&
                   groupedStream.map((item) => {
                     switch (item.kind) {
                       case "text":
@@ -2393,7 +2588,19 @@ function AskOrchiconPage() {
                       answered={liftedCard.answered}
                       answer={liftedCard.answer}
                       error={liftedCard.error}
-                      onSelect={handleSendMessage}
+                      // THE SAME REPLY PATH AS EVERY OTHER ASK CARD — see the in-row card above.
+                      // The lifted copy is the one the operator actually clicks during a live turn,
+                      // so leaving it on the plain send would have been the one place the bug stayed.
+                      onSelect={(label) =>
+                        liftedCard.id
+                          ? void handleAskDecision(
+                              activeConvId!,
+                              liftedCard.id,
+                              PermissionChoice.UNSPECIFIED,
+                              label,
+                            )
+                          : handleSendMessage(label)
+                      }
                     />
                   </div>
                 )}
@@ -2773,36 +2980,161 @@ function AskOrchiconPage() {
  * So the caller lifts the card out of the row and emits it after the live text, which is where the operator
  * expects it (the newest thing, the thing being asked of them). The row keeps its prose and its reasoning.
  */
-function askCardOf(message: ChatMessage) {
-  const call = (message.toolCalls ?? []).find((c) => isAskUserToolCall(c.functionName));
+/**
+ * SETTLED ASKS — the client's OWN memory of what it has answered.
+ *
+ * A card's settled state otherwise comes only from its transcript result, i.e. from a SERVER write. That
+ * is what made an earlier attempt worse than the bug it fixed: when the write did not land — the ask fell
+ * outside the lookup window, the turn failed, the request raced a refresh — the card stayed OPEN for ever
+ * and the operator could not clear it.
+ *
+ * So the answer is also recorded HERE, in memory, the moment the operator gives it. The card clears
+ * immediately and stays cleared for this session; the transcript remains the durable record and takes
+ * over as soon as it catches up (a reload shows the answered card, because the server did record it).
+ * Neither source can strand the operator: local state cannot be missing, and the server cannot be
+ * outrun by a refresh.
+ */
+const settledAsks = new Map<string, string>();
+
+/**
+ * settledKey scopes a settle to its CONVERSATION.
+ *
+ * THE ID ALONE IS NOT AN IDENTITY, and treating it as one is what made a click silently do nothing:
+ * "clicking an answer sometimes doesn't work unless I first refresh the page." The server minted tool-call ids
+ * from a per-turn ledger, so the counter restarted every turn and every turn's ask was `tc-3`. This map is
+ * module-level and never cleared, so answering an ask in one turn settled `tc-3` for the whole page lifetime —
+ * and a LATER turn's `tc-3` was drawn `answered`, which disables every option button. A refresh re-initialises
+ * the module and the card worked again, which is why it read as flakiness rather than a collision.
+ *
+ * The server now mints process-unique ids (internal/askorchicon/tool_ledger.go), which fixes the cause. This
+ * scoping is the second lock on the same door: even if an id repeated, it could only ever affect the
+ * conversation that produced it.
+ */
+/**
+ * REPLY_DEADLINE_MS bounds a permission/question reply.
+ *
+ * The reply STARTS a conversation turn, so it is not instant — but it must not be unbounded either: the card's
+ * buttons are disabled while it is in flight, and a reply that never settles leaves them disabled for the rest of
+ * the page's life (see handleAskDecision). 30s is comfortably longer than a healthy acknowledgement and far
+ * shorter than "until I refresh".
+ */
+const REPLY_DEADLINE_MS = 30_000;
+
+/** withReplyDeadline rejects if p has not settled within REPLY_DEADLINE_MS. */
+function withReplyDeadline<T>(p: Promise<T>): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error("The platform did not acknowledge the answer in time.")), REPLY_DEADLINE_MS),
+    ),
+  ]);
+}
+
+function settledKey(convId: string, askId: string): string {
+  return `${convId}\u0000${askId}`;
+}
+
+function markAskSettled(convId: string, askId: string, answer: string) {
+  settledAsks.set(settledKey(convId, askId), answer);
+}
+
+function settledAnswerOf(convId: string, askId: string): string | undefined {
+  return settledAsks.get(settledKey(convId, askId));
+}
+
+function askCardOf(convId: string, message: ChatMessage) {
+  const asks = (message.toolCalls ?? []).filter((c) => isAskUserToolCall(c.functionName));
+  if (asks.length === 0) return null;
+  const resultOf = (id: string) =>
+    (message.toolResults ?? []).find((r) => r.toolCallId === id);
+
+  // ONE CARD PER MESSAGE, AND IT MUST BE THE OPEN ONE.
+  //
+  // REPORTED: "it never actually pops up for Claude adapter." claude's adapter announces an ask TWICE
+  // (a tool_part and then its completion), so one turn can carry two ask calls — and this took the
+  // FIRST, which was the phantom, recorded with an EMPTY result. "Has a result" then read as
+  // "answered", with nothing as the answer, so the card was drawn as the settled line
+  //
+  //   Question "…" was dismissed — no answer sent
+  //
+  // from its very first frame — never a card at all. Measured on this deployment's own transcript row
+  // for claude:
+  //
+  //   tc-3  ask_user  output ""                        ← used to be chosen
+  //   tc-4  ask_user  output {"recorded":true,…}       ← the real one
+  //
+  // The card to draw is the call that is STILL AWAITING; a settled one is history and renders as its
+  // own record. A locally settled id comes first so an answered card can never re-open on the wrong
+  // call, and a parseable payload before a phantom, so a malformed duplicate cannot blank the question.
+  const call = pickAskCall(
+    asks,
+    resultOf,
+    (id) => settledAnswerOf(convId, id) !== undefined,
+  );
   if (!call) return null;
+
+  // LOCAL SETTLE WINS, so a card the operator has answered can never be re-drawn as pending.
+  const local = settledAnswerOf(convId, call.id);
+  if (local !== undefined) {
+    return {
+      id: call.id,
+      question: parseAskUserArgs(call.arguments)?.question ?? "",
+      options: parseAskUserArgs(call.arguments)?.options ?? [],
+      allowOther: parseAskUserArgs(call.arguments)?.allowOther,
+      answered: true,
+      answer: local,
+      error: undefined,
+    };
+  }
   const parsed = parseAskUserArgs(call.arguments);
-  const result = (message.toolResults ?? []).find((r) => r.toolCallId === call.id);
+  const result = resultOf(call.id);
+  const said = (result?.output ?? "").trim();
   const plan = askCardPlan(true, !!parsed, !!result);
   if (!plan.render) return null;
+  // A RESULT WHOSE OUTPUT IS THE AWAITING MARKER IS NOT AN ANSWER, and NEITHER IS AN EMPTY ONE.
+  // askIsAnswered owns that rule, with the two shipped failures it exists to prevent.
+  const answered = askIsAnswered(result);
   return {
     id: call.id,
     question: parsed?.question ?? "",
     options: parsed?.options ?? [],
     allowOther: parsed?.allowOther,
-    answered: !!result,
-    answer: result?.output ?? "",
+    answered,
+    answer: answered ? said : "",
     error: plan.error,
   };
 }
 
 function MessageBubble({
+  convId,
   message,
+  messageActions,
   onRetry,
   onSelectOption,
   highlight = "",
   cardLifted = false,
+  proseLifted = false,
 }: {
+  /**
+   * convId scopes a recorded ask's settled state to this conversation. A card's "already answered" memory is
+   * keyed by ask id, and an id is only an identity WITHIN the conversation that minted it — see settledKey.
+   */
+  convId: string;
   message: ChatMessage;
+  /**
+   * messageActions is the per-message edit menu, passed DOWN rather than built here: this bubble renders every
+   * role, and only a USER message can be undone — the assistant reply is the model's record of what it did.
+   */
+  messageActions?: React.ReactNode;
   onRetry?: () => void;
   // onSelectOption sends a clicked clarifying-question option as the answer to the
   // PAUSED turn (it goes over the reply RPC as the ask_user tool result).
-  onSelectOption?: (label: string) => void;
+  // onSelectOption answers a RECORDED clarifying question. It carries the ASK'S ID because the
+  // answer is a REPLY to that ask, not an ordinary next message: only ReplyPermissionAsk replaces
+  // the awaiting marker that IS the card's state. Sending the label as a message leaves the marker
+  // in place, so the card stays open in every other client and comes back on the next reload —
+  // which is what "I answer it and it asks again" was.
+  onSelectOption?: (label: string, askId: string) => void;
   // highlight is the active in-transcript search query. It is threaded to the bubbles so a match is
   // marked WHERE IT IS: the filter already answers "which message", and on a long reply the operator
   // needs "which line". Empty (no search) renders exactly as before.
@@ -2813,6 +3145,17 @@ function MessageBubble({
    * the live text, so drawing the card inside the row strands it mid-reply.
    */
   cardLifted?: boolean;
+  /**
+   * proseLifted tells this bubble its TEXT and REASONING are being drawn by the live stream and it
+   * must not draw its own copy.
+   *
+   * The in-flight row is kept in the transcript even while the reply streams, because it carries the
+   * turn's tool calls and its recorded ask_user card — and the live stream carries neither. But it also
+   * carried a 250ms-old snapshot of the very text the live stream is drawing, so the reply was painted
+   * twice: once as the row's prose, once as the growing live copy. The operator: "while the model is
+   * responding/thinking, it prints the message twice." See mirrorRowProseLifted.
+   */
+  proseLifted?: boolean;
 }) {
   // WHICH SHELL DRAWS THIS MESSAGE. Decided in one tested place (lib/ask-bubble.ts)
   // rather than by a fall-through: `system` is the PLATFORM speaking about the
@@ -2821,7 +3164,9 @@ function MessageBubble({
   const kind = bubbleKindFor(message);
 
   if (kind === "user") {
-    return <UserBubble text={message.content} source="you" highlight={highlight} />;
+    return (
+      <UserBubble text={message.content} source="you" highlight={highlight} actions={messageActions} />
+    );
   }
 
   if (kind === "notice") {
@@ -2861,47 +3206,22 @@ function MessageBubble({
   const reasoning = ("reasoning" in message ? (message as { reasoning?: string[] }).reasoning : undefined) as string[] | undefined;
   const hasReasoning = Array.isArray(reasoning) && reasoning.length > 0;
 
-  // A recorded ask_user call renders as the clarifying-question card. It is
-  // interactive only while NOT answered; selecting an option sends its label as the
-  // answer to the PAUSED turn.
-  const askCall = (message.toolCalls ?? []).find((c) =>
-    isAskUserToolCall(c.functionName),
-  );
-  const askParsed = askCall ? parseAskUserArgs(askCall.arguments) : null;
-  // ANSWERED IS READ FROM THE ASK'S OWN RESULT, not from a later message.
-  //
-  // It used to be `answered={message.id !== lastMessageId}` — "a later message
-  // exists" — which was right while answering SENT the choice as the next user
-  // message. With ask_user made BLOCKING the answer arrives as the TOOL RESULT and
-  // nothing follows the message, so that test stayed false forever and the card never
-  // settled. The operator: "the Orchicon asks card does not go away in the TUI or the
-  // GUI when you select something."
-  //
-  // The result is the ask's own outcome — server truth — rather than an inference from
-  // what happened afterwards.
-  const askResult = askCall
-    ? (message.toolResults ?? []).find((r) => r.toolCallId === askCall.id)
-    : undefined;
-  const askAnswered = !!askResult;
-  // WHETHER TO DRAW AT ALL, and whether to draw as an error. The distinction is the reported bug: a
-  // call recorded but NOT YET RESOLVED carries a placeholder `{}` for its arguments, and for
-  // `ask_user` that state lasts as long as the question is open (the call BLOCKS) — so the
-  // transcript held an unparseable card for the whole time the operator was looking at the real
-  // one. See askCardPlan.
-  const askPlan = askCardPlan(!!askCall, !!askParsed, !!askResult);
-  // The answer ITSELF, so the settled record can state it. It is the ask's own tool result —
-  // server truth, present in the persisted transcript — rather than a guess from a later
-  // message, which is the same rule that fixed "answered" in the first place.
-  const askAnswer = askResult?.output ?? "";
+  // THE CARD COMES FROM ONE PLACE. `askCardOf` owns every rule — which of the message's ask calls
+  // to draw (claude announces one twice, and the FIRST is a phantom with an empty result), whether
+  // it is answered (a result is not an answer: an empty one and the awaiting marker are both "still
+  // open"), and whether to draw at all. This block used to re-derive all of it inline, and the copy
+  // had already drifted: it took the first ask call and treated any result as an answer, which is
+  // exactly the pair of defects that made the card settle itself on arrival or never appear.
+  const askCard = askCardOf(convId, message);
 
   return (
     <>
-      {hasReasoning && (
+      {hasReasoning && !proseLifted && (
         <ReasoningBubble text={reasoning!.join("\n")} />
       )}
       {/* A running turn's mirrored partial row can hold reasoning but no text
           yet (the model is still thinking) — skip the empty bubble shell. */}
-      {message.content && (
+      {message.content && !proseLifted && (
         <AssistantBubble
           text={message.content}
           label="Orchicon"
@@ -2916,15 +3236,15 @@ function MessageBubble({
           of a bunch of other text you sent. That is not intuitive. It should be at
           the bottom (newest/recent)." The TUI emits its card last for the same
           reason (chat.conversationItems), so the two clients read the same way. */}
-      {askCall && askPlan.render && !cardLifted && (
+      {askCard && !cardLifted && (
         <AskCard
-          question={askParsed?.question ?? ""}
-          options={askParsed?.options ?? []}
-          allowOther={askParsed?.allowOther}
-          answered={askAnswered}
-          answer={askAnswer}
-          error={askPlan.error}
-          onSelect={onSelectOption}
+          question={askCard.question}
+          options={askCard.options}
+          allowOther={askCard.allowOther}
+          answered={askCard.answered}
+          answer={askCard.answer}
+          error={askCard.error}
+          onSelect={(label) => onSelectOption?.(label, askCard.id)}
         />
       )}
     </>
@@ -2936,6 +3256,12 @@ function MessageBubble({
 // internal/tui/slash.go. It is imported at the top of this file.
 
 // --- ChatInputField: auto-resizing textarea with attach/voice/send ---
+
+// THE MESSAGE BOUND THE SERVER ENFORCES, mirrored here so the composer can warn BEFORE a send is refused.
+// The authority is internal/chatlimits (Go); these two numbers must move together, which is why they are
+// named once, here, rather than inlined at the render.
+const MAX_MESSAGE_CHARS = 100_000;
+const CHAR_WARN_AT = Math.floor(MAX_MESSAGE_CHARS * 0.8);
 
 function ChatInputField({
   onSend,
@@ -3684,9 +4010,35 @@ function ChatInputField({
                 and immediately BEFORE the mode dropdown (the operator's
                 placement ask). The numbers hide first on a narrow box — the chip
                 is the CONTROL and must survive. */}
-            {modelRef && (
-              <AskModelChip model={modelRef} onModelChange={onModelChange} />
+            {/* ALWAYS RENDERED, INCLUDING WHEN NO MODEL IS CONFIGURED — because the chip IS the
+                picker. Gating it on `modelRef` was a regression I introduced: with no default Ask
+                model set, `modelRef` is empty, so the control disappeared and there was no way to
+                choose a model from the conversation at all. The operator: "If no default ask model
+                is set, it doesn't show a picker in the conversation. That is the wrong approach. We
+                should definitely let people still choose from the conversation if no default is
+                set."
+                The comment below already said the chip "is the CONTROL and must survive"; the gate
+                contradicted it. An empty ref is the state that needs the control MOST, not least. */}
+            {/* THE COUNTER APPEARS ONLY AS THE BOUND IS APPROACHED. A count under every sentence is
+                noise, and noise is ignored by the time it matters — so it shows over the last fifth, and
+                turns red once a send would be refused. Before this the limit was 10,000 and the operator
+                met it mid-paste, after the text was already in the box. */}
+            {text.length >= CHAR_WARN_AT && (
+              <span
+                data-testid="composer-char-counter"
+                title={`The server refuses a message longer than ${MAX_MESSAGE_CHARS.toLocaleString()} characters.`}
+                className={cn(
+                  "font-mono text-[11px]",
+                  text.length > MAX_MESSAGE_CHARS
+                    ? "text-destructive"
+                    : "text-muted-foreground",
+                )}
+              >
+                {text.length.toLocaleString()} /{" "}
+                {MAX_MESSAGE_CHARS.toLocaleString()}
+              </span>
             )}
+            <AskModelChip model={modelRef} onModelChange={onModelChange} />
             {statsLine && (
               <span
                 className="hidden truncate font-mono text-[11px] text-muted-foreground sm:inline"

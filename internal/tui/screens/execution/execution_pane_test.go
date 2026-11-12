@@ -1,17 +1,7 @@
 package execution
 
-// execution_pane_test.go — regression tests for three operator reports about the Executions pane and
-// the step→execution jump. Each one pins a defect that was live in the shipped binary:
-//
-//  1. "On a workflow run page, hitting enter on a step is not taking you to the execution page for
-//     that step."  TWO independent causes, so there are two tests: the key was gated behind a focus
-//     the pane's own text did not ask for, and the jump was then reverted by the executions list
-//     landing and auto-loading the row under the cursor.
-//  2. "they are flicking repeatedly like they are refreshing poorly over and over" and "several of
-//     them still look like the old ones and they don't have all of the same details". Both were the
-//     same closed loop: a todo landing asked for the DETAIL again, and the detail landing issued the
-//     next todo fetch — one round trip per lap, every lap repainting the pane. The flicker test
-//     proves the loop terminates; the composition tests prove the pane keeps all its parts.
+// execution_pane_test.go — regression tests for three operator reports about the Executions pane
+// and the step→execution jump.
 
 import (
 	"context"
@@ -28,19 +18,6 @@ import (
 // --- report 1a: enter is the operator's TWO-STAGE gesture ---------------------------------------
 
 // Enter on the run MOVES INTO the detail pane; enter AGAIN on a step jumps to its execution.
-//
-// The operator's model, verbatim: "hitting enter on the run immediately jumps to the execution.
-// You should have to hit enter FIRST on the workflow run, THEN it moves to the detail pane and
-// then from there enter should select steps."
-//
-// A previous revision claimed enter unconditionally while a flow was drawn — first press jumped —
-// on the reasoning that every row advertises "enter → execution". That misread which enter the row
-// advertises: the rows say what enter does once the DETAIL holds the focus, and the first enter is
-// what GIVES it the focus. Claiming the key from the list also broke the list, because enter on a
-// run row is how the run is opened.
-//
-// Both presses are asserted here, through the screen's own dispatch, because only the second is
-// interesting on its own and a test of the second alone would pass with the first broken.
 func TestEnterIsATwoStageGestureOnARun(t *testing.T) {
 	p := namePlane()
 	p.workflows = []*apiv1.Workflow{{Id: "wf-1", Name: "SDLC"}}
@@ -97,11 +74,6 @@ func TestEnterWithNoFlowIsNotHijacked(t *testing.T) {
 // --- report 1b: the jump must survive the list landing ------------------------------------------
 
 // A jump to an execution that is NOT on the loaded page stays put when the list lands.
-//
-// The executions list is recent-first and paginated, so a step's execution frequently is not row 0.
-// A list landing auto-loads the detail of the row under the cursor, and the jump's claim on the pane
-// used to be consumed by the FIRST landing — after which the next refresh (a live event pokes one
-// continuously) auto-loaded row 0 and slid the operator off the target they had just jumped to.
 func TestJumpSurvivesTheExecutionsListLanding(t *testing.T) {
 	p := namePlane()
 	p.workflows = []*apiv1.Workflow{{Id: "wf-1", Name: "SDLC"}}
@@ -109,9 +81,8 @@ func TestJumpSurvivesTheExecutionsListLanding(t *testing.T) {
 	p.stepRuns = []*apiv1.WorkflowStepRun{
 		stepRun("sr-1", "a", "Architect", apiv1.StepKind_STEP_KIND_TASK, apiv1.StepRunStatus_STEP_RUN_STATUS_SUCCEEDED, 0, 0, "exec-target"),
 	}
-	// The step's execution is what the plane can serve, and the LIST PAGE that lands holds a
-	// DIFFERENT execution at row 0 (the list is recent-first and paginated, so this is the normal
-	// case, not a contrived one).
+	// The step's execution is what the plane can serve, and the LIST PAGE that lands holds a DIFFERENT
+	// execution at row 0 (the list is recent-first and paginated, so this is the normal case.
 	p.exec = &apiv1.WorkerExecution{Id: "exec-target", Status: apiv1.ExecutionStatus_EXECUTION_STATUS_RUNNING}
 	m := newModel(t, p)
 	m.Base.SelectSource(srcRuns)
@@ -145,9 +116,6 @@ func TestJumpSurvivesTheExecutionsListLanding(t *testing.T) {
 // --- report 2a: the refresh loop must terminate -------------------------------------------------
 
 // A todo landing never asks for the detail again, so the fetch cycle has a base case.
-//
-// This is the flicker. The loop was: detail landing → todo fetch → todo landing → RequestDetail →
-// detail landing → … with no exit, one round trip per lap, every lap repainting the pane.
 func TestTodoLandingDoesNotReissueTheDetailFetch(t *testing.T) {
 	p := namePlane()
 	p.exec = &apiv1.WorkerExecution{Id: "exec-1", Status: apiv1.ExecutionStatus_EXECUTION_STATUS_RUNNING}
@@ -191,10 +159,6 @@ func TestTodosFetchIsGatedOnStaleness(t *testing.T) {
 // --- report 2b: the pane keeps every part, whoever paints ---------------------------------------
 
 // A session repaint does NOT drop the run's facts, and the facts' paint does NOT drop the session.
-//
-// The session used to install the whole body from four fields of its own (id / session events /
-// status), so every live repaint replaced the run's record with that stub — "several of them still
-// look like the old ones and they don't have all of the same details".
 func TestSessionAndRecordComposeIntoOnePane(t *testing.T) {
 	p := namePlane()
 	p.exec = &apiv1.WorkerExecution{

@@ -7,7 +7,9 @@ name: CI
 # The gate is split the same way the Makefile splits it (`ci-go` vs
 # `fe-lint`/`fe-test`) so the two jobs run fully in parallel:
 #
-#   go-ci   — lint, gen-check, vet, test, synth-data, rls-check.
+#   go-ci   — lint, gen-check, vet, test, synth-data, rls-check (cross-compile
+#             moved to its OWN job, parallel with this one — it was the slowest
+#             target and shared nothing with the rest).
 #             No Node setup at all: `gen` runs the local protoc-gen-es /
 #             protoc-gen-connect-es plugins from a scratch npm prefix
 #             containing ONLY those two packages (~30s) instead of the
@@ -67,6 +69,13 @@ jobs:
 
     env:
       DB_URL: postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable
+      # THE DB-BACKED SUITES RUN HERE, and this variable is the switch. Without it every DB-gated test
+      # SKIPS, silently: the scheduler's loop routing, the Ask turn lifecycle and the seed roll-forward all
+      # had no coverage anywhere, which is how a worktree-prune leak and a past-dated recurring cursor both
+      # shipped. The service above is disposable and migrated by the atlas step, so pointing the suites at it
+      # is the intended use (db/testguard refuses a test binary opening the PLANE's own database, and this
+      # is not it).
+      ORCHICON_TEST_DSN: postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable
 
     steps:
       - uses: actions/checkout@v4
@@ -92,8 +101,38 @@ jobs:
       - name: Apply migrations (make rls-check non-vacuous)
         run: go run ./tools/atlas-ci
 
-      - name: Run Go control-plane gate (make ci-go)
-        run: make ci-go
+      # CROSS-COMPILE IS NOT HERE ANY MORE. It was the single slowest target in this job (140 s measured
+      # locally, and cold on every fresh runner) and it shares no state with the checks above, so running it
+      # serially at the end only lengthened the wall clock. It is its own job below, in parallel. The LOCAL
+      # `make ci-go` still runs everything, including it — one command, complete gate.
+      - name: Run Go control-plane gate (make ci-go-base)
+        run: make ci-go-base
+
+  # The platform compile gate, as its own job so it runs PARALLEL with go-ci instead of after it.
+  #
+  # What it catches, and why it cannot be deleted: `go build` never compiles `_test.go`, so a
+  # cross-platform break living in a test file is invisible to it; and a gate scoped to the packages a
+  # platform happens to break IN is not a gate for that platform. The recipe vets ./... under each target
+  # GOOS for exactly that reason (see the long note at the Makefile's cross-compile target — it records
+  # the `undefined: syscall.Kill` break that shipped because Windows was not in the list).
+  #
+  # NO BUILD CACHE IS CARRIED BETWEEN RUNS HERE, deliberately. The cache that makes this target fast
+  # locally is 6.8 GB; uploading and downloading that to save ~130 s is a losing trade, so the runner
+  # pays the cold cost and the win comes from running it in parallel instead.
+  cross-compile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Compile + typecheck every gated platform (make cross-compile)
+        run: make cross-compile
 
   fe-lint:
     runs-on: ubuntu-latest
@@ -111,6 +150,16 @@ jobs:
 
       - name: Lint frontend
         run: make fe-lint
+
+      # THE ONLY TYPE GATE. eslint is not a typechecker and vitest transpiles
+      # without checking types, so nothing above can see a type error; the only
+      # other place `tsc -b` ran was `npm run build`, which this workflow never
+      # invokes. That gap is how #736 shipped two calls to a non-existent enum
+      # member (RuntimeImageStatus.RUNTIME_IMAGE_STATUS_ABSENT — the generated TS
+      # member is `ABSENT`) onto develop, where they broke `make build` for every
+      # developer while every check here stayed green.
+      - name: Typecheck frontend
+        run: make fe-typecheck
 
       - name: Test frontend (vitest)
         run: make fe-test
@@ -200,6 +249,14 @@ jobs:
       - name: Install the real installer against a local artifact
         run: bash scripts/tests/install-path/run.sh
 
+      # THE macOS BRANCH, ON THE SAME RUNNER. `--os darwin` serves a cross-compiled darwin/arm64 artifact
+      # behind a `uname` shim, so the script a macOS user actually runs is the thing under test — its
+      # checksum verdict, its quarantine check and the guidance it prints — with no Mac and no certificate
+      # in the picture. Without this step that mode is dead code, and the macOS story would again be
+      # verified only by running it by hand.
+      - name: The macOS branch of the same installer
+        run: bash scripts/tests/install-path/run.sh --os darwin
+
       # The uninstall verbs DELETE things, so their harness stubs `docker` and keeps XDG_DATA_HOME and
       # --install-dir in scratch directories: every container, volume and binary operation is recorded and
       # none is performed. The assertions are then about the log — the only safe place to observe a
@@ -213,7 +270,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Assert the installer's halt and progress invariants
-        run: bash scripts/tests/install-ps1-wsl-encoding/run.sh
+        run: bash scripts/tests/install-ps1-native/run.sh --no-selfcheck
 
       # A DETECTOR THAT STOPPED DETECTING IS WORSE THAN NO DETECTOR, so prove this one still
       # bites: re-introduce the defect into a copy — the sentinel `throw` that unwinds safely
@@ -224,7 +281,332 @@ jobs:
           broken="$RUNNER_TEMP/install-exit.ps1"
           cp scripts/install.ps1 "$broken"
           perl -0pi -e 's/throw "OrchiconInstallHalt"/exit 1/' "$broken"
-          if bash scripts/tests/install-ps1-wsl-encoding/run.sh "$broken"; then
+          if bash scripts/tests/install-ps1-native/run.sh "$broken" --no-selfcheck; then
             echo "::error::the harness passed an installer whose halt closes the operator's session"
             exit 1
           fi
+
+  # THE WINDOWS DESKTOP BUILD IS COVERED HERE TOO, INCLUDING THE NSIS INSTALLER.
+  #
+  # It used to be covered nowhere: the only job that ran `wails build -nsis` lived in
+  # release.yml on a main tag, and no tag had been cut since windows/amd64 joined the
+  # matrix on 2026-10-18 — so `orchicon-desktop.exe` AND the installer around it were
+  # unexercised code, and the MSI packages both.
+  #
+  # THAT GAP HAD A REAL COST. When the canary first ran `-nsis`, it failed: makensis is
+  # not on the runner image and Wails only WARNS about it (exiting 0), so the installer
+  # was silently absent. release.yml carried the identical defect and would have failed
+  # on the first Windows release. Running `-nsis` HERE means a pull request finds that
+  # class of fault instead of a release.
+  #
+  # WHAT THIS PROVES: that the Windows WebView2 build compiles, that makensis produced an
+  # installer, that WiX accepts the .wxs, that an MSI comes out non-trivial, that the LICENCE
+  # PAGE carries our text rather than WiX's placeholder, and that the package INSTALLS — it is
+  # installed per-user, every file the wizard needs is asserted by name, and it is uninstalled
+  # again.
+  #
+  # THAT LAST PART IS NEW, and it was earned: the package had only ever been BUILT, so its
+  # first real run was on an operator's machine, where the wizard's last step could not find
+  # orchicon-setup.cmd. No gate could have known. It does NOT open the app — a WebView2 window
+  # in a session with no desktop is not something CI can assert — which is the remaining gap.
+  windows-desktop-msi:
+    name: windows desktop + MSI (build only)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build the frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd frontend && npm ci && npm run build
+      - name: Install the pinned Wails CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # NSIS IS WHAT `-nsis` ACTUALLY RUNS, AND IT IS NOT ON THE RUNNER IMAGE. Wails
+      # only WARNS when makensis is absent and exits 0, so the build below would go green
+      # with no installer in it. Chocolatey is preinstalled on the hosted Windows runners;
+      # its PATH change does not reach this session, hence the export for the next step.
+      - name: Install NSIS (makensis)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install nsis -y --no-progress
+
+          # FIND makensis RATHER THAN ASSUMING ITS DIRECTORY.
+          #
+          # This appended the literal "C:\Program Files (x86)\NSIS". That is where nsis 3.12 put it, and it
+          # worked until it did not: on 2026-10-23 the same step installed nsis 3.13.0 successfully and the NEXT
+          # step still could not find makensis, so the job failed with "makensis is not on PATH" while the log
+          # plainly said the install had succeeded. A hardcoded path cannot survive a package that relocates.
+          $found = Get-ChildItem -Path "C:\Program Files (x86)\NSIS","C:\Program Files\NSIS" -Filter makensis.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($found) {
+            Write-Host "makensis: $($found.FullName)"
+            Split-Path -Parent $found.FullName | Out-File -FilePath $env:GITHUB_PATH -Append
+          } else {
+            Write-Host "makensis.exe not found after installing nsis"
+          }
+      - name: Build the desktop app + NSIS installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          # RESOLVE IT HERE AS WELL: a $GITHUB_PATH append from the step above did not reach this one
+          # on 2026-10-23, so the job failed claiming the install was missing while the log showed it
+          # working. Adding the plausible directories costs nothing and makes this step independent of a
+          # mechanism we cannot observe from here.
+          # ${PATH} rather than $PATH: on purpose. The workflow tokeniser (windows_msi_test.go's
+          # TestWorkflowPwshStepsParse) applies PowerShell's "$name:" rule to every step, and `$PATH:`
+          # is a hard parse error THERE — so the brace form keeps a bash line from tripping a pwsh rule.
+          export PATH="${PATH}:/c/Program Files (x86)/NSIS:/c/Program Files/NSIS:/c/ProgramData/chocolatey/bin"
+          if ! command -v makensis >/dev/null 2>&1; then
+              echo "error: makensis is not on PATH — the 'Install NSIS (makensis)' step is missing or failed."
+              echo "       `wails -nsis` only WARNS without it and exits 0, so this assert is what makes it loud."
+              exit 1
+          fi
+          cd cmd/orchicon-desktop
+          wails build -platform windows/amd64 -webview2 download -nsis
+          # ASSERT THE ARTIFACT: a present makensis that still emitted nothing is the same
+          # silent-degradation shape as the frontend `.gitkeep` embed.
+          shopt -s nullglob
+          inst=(build/bin/*installer*.exe)
+          if [ ${#inst[@]} -eq 0 ]; then
+            echo "error: wails build -nsis produced no installer in build/bin although makensis was on PATH."
+            ls -l build/bin
+            exit 1
+          fi
+          echo "installer: ${inst[0]}"
+      - name: Build the Windows CLI binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orchicon.exe ./cmd/orchicon
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orch.exe ./cmd/orch
+          # THE LINUX BINARY THE RUNTIME CONTAINER RUNS. Built HERE, in the same step and with the
+          # same flags as the exe above it, so the daemon and the supervisor it mounts are the same
+          # build by construction — a Linux container cannot execute the Windows binary.
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orchicon-linux-amd64 ./cmd/orchicon
+      - name: Install the WiX CLI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # PINNED, AND BELOW 6: WiX v6+ requires accepting the Open Source Maintenance
+          # Fee EULA, and an unpinned install resolves to v7 — which fails the build with
+          # "error WIX7015: You must accept the Open Source Maintenance Fee (OSMF) EULA".
+          # That is a licensing decision, not something a build should make by floating.
+          # cmd/orchicon/windows_msi_test.go fails if this and the Makefile disagree.
+          dotnet tool install --global wix --version 5.0.2
+          "$env:USERPROFILE\.dotnet\tools" | Out-File -FilePath $env:GITHUB_PATH -Append
+      # `-ext` DOES NOT RESTORE FROM NUGET. It resolves a package name through WiX's
+      # own extension store, so the extension has to be INSTALLED first — otherwise:
+      #   error WIX0144: The extension 'WixToolset.UI.wixext/5.0.2' could not be found.
+      #                 Checked paths: WixToolset.UI.wixext/5.0.2
+      # It is its own step because the CLI's PATH export (above) only takes effect in
+      # the NEXT step of the job.
+      - name: Install the WiX UI extension
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          wix extension add -g WixToolset.UI.wixext/5.0.2
+
+      - name: Build the MSI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = "dist/msi-src"
+          $null = New-Item -ItemType Directory -Force -Path $src, dist/desktop
+          Copy-Item bin/orchicon.exe $src/
+          Copy-Item bin/orch.exe $src/
+          # THE CONTAINER'S BINARY, beside orchicon.exe — the daemon's first search location.
+          Copy-Item bin/orchicon-linux-amd64 $src/
+          Copy-Item cmd/orchicon-desktop/build/bin/orchicon-desktop.exe $src/
+          Copy-Item deploy/desktop/windows/README-WINDOWS.txt $src/
+          Copy-Item deploy/desktop/windows/LICENSE.rtf $src/
+          Copy-Item deploy/desktop/windows/orchicon-desktop.ico $src/
+          # THE WIZARD ART (WixUIBannerBmp / WixUIDialogBmp reach it via $(var.SourceDir)).
+          Copy-Item deploy/desktop/windows/wizard-banner.bmp $src/
+          Copy-Item deploy/desktop/windows/wizard-dialog.bmp $src/
+          $srcAbs = (Resolve-Path $src).Path
+          wix build deploy/desktop/windows/Orchicon.wxs -arch x64 -ext WixToolset.UI.wixext `
+            -d "Version=0.0.0" -d "SourceDir=$srcAbs" -bindvariable "WixUILicenseRtf=$srcAbs\LICENSE.rtf" `
+            -o "dist/desktop/orchicon_0.0.0_windows_amd64.msi"
+          $msi = Get-Item "dist/desktop/orchicon_0.0.0_windows_amd64.msi"
+          # THE LICENSE PAGE TEXT MUST BE IN THE PACKAGE, AND THIS IS ASSERTED ON THE BYTES
+          # because the flag that puts it there is easy to get subtly wrong — and twice was.
+          # `WixUILicenseRtf` reached this build as an MSI Property (never read) and then as a
+          # preprocessor variable via -d (also never read, because the dialog declares a BIND
+          # variable). Both times the build SUCCEEDED and the wizard kept WiX's lorem-ipsum
+          # placeholder. This check knows nothing about flags, so it cannot be fooled by them:
+          # it asks the finished package whether our text arrived.
+          $bytes = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($msi.FullName))
+          if ($bytes -notmatch [regex]::Escape("beardedparrott")) {
+            throw "the license page text is NOT in the MSI: WixUILicenseRtf did not reach the dialog (use -bindvariable, not -d). The wizard would show WiX's placeholder."
+          }
+          if ($bytes -match "Lorem ipsum") {
+            throw "the MSI still contains WiX's lorem-ipsum placeholder license text."
+          }
+          Write-Host "license page text is in the package, and no placeholder remains"
+          # A 0-byte or tiny MSI means WiX "succeeded" without packaging the payload.
+          # The three binaries alone are ~170 MB, so anything under 50 MB is the
+          # empty-package failure wearing a success code.
+          if ($msi.Length -lt 50MB) {
+            throw "MSI is only $([math]::Round($msi.Length/1MB,1)) MB — the payload was not packaged"
+          }
+          Write-Host "MSI: $($msi.Name) ($([math]::Round($msi.Length/1MB,1)) MB)"
+
+      # THE BURN BUNDLE: the wizard a PERSON runs. Built here because it wraps the MSI this
+      # job just produced — and building it in the same job means a broken bundle cost is found
+      # on the pull request, not on a release.
+      #
+      # The Bal extension is a separate package from the UI one and needs its own install.
+      - name: Install the WiX Bal extension (for the bundle)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          wix extension add -g WixToolset.BootstrapperApplications.wixext/5.0.2
+
+      - name: Build the Burn bundle (OrchiconSetup.exe)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Resolve-Path "dist/desktop/orchicon_0.0.0_windows_amd64.msi").Path
+          $src = (Resolve-Path "dist/msi-src").Path
+          wix build deploy/desktop/windows/OrchiconSetup.wxs -ext WixToolset.BootstrapperApplications.wixext `
+            -d "Version=0.0.0" -d "MsiPath=$msi" -d "LicenseRtf=$src\LICENSE.rtf" `
+            -outputtype bundle -o "dist/desktop/OrchiconSetup_0.0.0_windows_amd64.exe"
+          $exe = Get-Item "dist/desktop/OrchiconSetup_0.0.0_windows_amd64.exe"
+          # THE BUNDLE MUST CARRY THE PACKAGE, but "bigger than the MSI" is the WRONG TEST and
+          # it failed here on a bundle that was perfectly good: Burn compresses its payload, and
+          # an MSI is ALREADY compressed, so the bundle came out marginally SMALLER
+          # (62.1 MB vs 62.2 MB) while containing the package. The realistic failure is a bundle
+          # that contains NOTHING, which is an order of magnitude smaller. So the floor is a
+          # fraction of the MSI, not the whole of it.
+          $msiLen = (Get-Item $msi).Length
+          $floor = [int]($msiLen * 0.9)
+          if ($exe.Length -lt $floor) {
+            throw "the bundle ($([math]::Round($exe.Length/1MB,1)) MB) is far smaller than the MSI ($([math]::Round($msiLen/1MB,1)) MB) — it almost certainly did not embed the package"
+          }
+          Write-Host "bundle: $($exe.Name) ($([math]::Round($exe.Length/1MB,1)) MB; MSI $([math]::Round($msiLen/1MB,1)) MB is inside)"
+
+      # THE PACKAGE IS INSTALLED HERE, NOT MERELY BUILT.
+      #
+      # UNTIL THIS STEP IT WAS ONLY EVER BUILT — by CI and by canary — so the first time this
+      # package was ever run was on an operator's machine, and it reported
+      # "Windows cannot find ...\orchicon-setup.cmd" from the wizard's last step with no gate
+      # anywhere that could have known. An install covers InstallFiles, the component tree and
+      # the payload TOGETHER, which is what "the file is in the cab" cannot tell you.
+      #
+      # SKIPSETUP=1 stops the setup from launching (it would try to download ~540 MB of host
+      # services); everything up to and including the payload landing is exercised for real.
+      - name: Install the MSI per-user, and verify every file the wizard needs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Get-ChildItem dist/desktop/*.msi | Select-Object -First 1).FullName
+          $log = Join-Path $env:TEMP 'msi-install.log'
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @(
+            '/i', "`"$msi`"", '/qn', '/norestart', '/l*v', "`"$log`"", 'SKIPSETUP=1', 'INSTANCE=dev')
+          if ($p.ExitCode -ne 0) {
+            Get-Content $log -Tail 80
+            throw "msiexec /i exited $($p.ExitCode) — see $log"
+          }
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Orchicon'
+          if (-not (Test-Path $dir)) { throw "the per-user install dir was not created: $dir" }
+          # NAMED INDIVIDUALLY. A partial product installs cleanly and is simply missing a file
+          # — and "orchicon-setup.cmd is missing" is exactly the shape this reported in the
+          # field, so every file the wizard touches is asserted by name.
+          # NO orchicon-setup.cmd ANY MORE: the setup is now run DIRECTLY from the installed
+          # orchicon.exe by the LaunchSetup custom action (FileRef + "install --instance …"), so
+          # the wrapper script is gone and asserting it would assert a file that must not exist.
+          # orchicon-linux-amd64 IS THE ONE FILE AN MSI INSTALL USED TO HAVE NO ROUTE TO. It is the
+          # binary a runtime container executes; without it every container create refuses, which is
+          # what four rounds of this bug were. It must be BESIDE orchicon.exe (the runtime daemon's
+          # first search location) and it must BE A LINUX ELF — a Windows binary under that name
+          # installs perfectly and dies on `exec format error` inside the container.
+          foreach ($f in @('orchicon.exe','orch.exe','orchicon-desktop.exe','README-WINDOWS.txt','orchicon-linux-amd64')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $dir $f))) {
+              Get-ChildItem $dir | ForEach-Object { Write-Host "  present: $($_.Name)" }
+              throw "$f is MISSING from $dir — the payload did not land"
+            }
+          }
+          $elf = Join-Path $dir 'orchicon-linux-amd64'
+          $magic = [System.IO.File]::ReadAllBytes($elf)[0..3]
+          if (-not ($magic[0] -eq 0x7f -and $magic[1] -eq 0x45 -and $magic[2] -eq 0x4c -and $magic[3] -eq 0x46)) {
+            throw "$elf is not an ELF image (magic $($magic -join ' ')) — a runtime container cannot execute it"
+          }
+          Write-Host "container binary installed beside orchicon.exe and is a linux/amd64 ELF"
+          # ${dir} BRACED, NOT $dir:. PowerShell parses "$dir:" as a SCOPE/DRIVE-qualified
+          # variable and fails to parse the whole script — so this was a PARSER error, and the
+          # install never ran at all. It is a silent-by-inspection trap: $env: and $script: are
+          # legitimate, so the form looks ordinary.
+          Write-Host "installed payload verified in ${dir}:"
+          Get-ChildItem $dir | ForEach-Object { Write-Host ("  {0,-26} {1,12}" -f $_.Name, $_.Length) }
+          # THE LAUNCHED THING MUST AT LEAST START. SKIPSETUP stops the wizard's hand-off, but the
+          # binary the wrapper runs is installed, so ask it its version: that proves the file is
+          # an executable image and not a zero-length stub.
+          $exe = Join-Path $dir 'orchicon.exe'
+          $v = (& $exe version 2>&1 | Out-String).Trim()
+          if (-not $v) { throw "$exe ran but printed no version" }
+          Write-Host "installed binary reports: $v"
+
+      - name: Uninstall the MSI (leave the runner clean)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = (Get-ChildItem dist/desktop/*.msi | Select-Object -First 1).FullName
+          $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/x', "`"$msi`"", '/qn', '/norestart')
+          if ($p.ExitCode -ne 0) { throw "msiexec /x exited $($p.ExitCode)" }
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\Orchicon'
+          if (Test-Path (Join-Path $dir 'orchicon.exe')) { throw "uninstall left orchicon.exe behind in $dir" }
+          Write-Host "uninstalled cleanly"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-msi
+          # THE BUNDLE TOO: it is the artifact a person actually runs, so a PR that breaks it
+          # should make the bundle itself downloadable rather than only the MSI inside it.
+          path: |
+            dist/desktop/*.msi
+            dist/desktop/OrchiconSetup_*.exe
+          if-no-files-found: error
+
+  # THE DESKTOP SHELL IS A SEPARATE JOB ON PURPOSE. `go-ci` is CGO_ENABLED=0-shaped and runs the
+  # plane's whole gate; the shell needs libgtk-3-dev + libwebkit2gtk-4.1-dev, so folding it in would
+  # push a large apt install into every Go run and couple the desktop build to the plane's gate.
+  #
+  # It also does NOT run `wails build`: the Wails CLI is a packaging tool, and every line of the shell
+  # that can be wrong is plain Go in internal/desktop — which is why it can be asserted here at all.
+  desktop-shell:
+    name: desktop shell (build + guards)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install webview build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
+      - name: Build the shell and run its guards
+        run: make desktop-test
+      # The guards do not compile the Wails entry point (it is behind the `desktop`
+      # build tag so ordinary Go builds stay CGO-free). This does, which is the only
+      # thing that catches a signature drift in the thin main.go.
+      #
+      # `production,webkit2_41` are the RELEASE's tags, not decoration: without
+      # `production` Wails compiles a stub and no cgo file is ever built (so a broken
+      # Linux build would only be discovered at release time), and without
+      # `webkit2_41` the cgo files demand webkit2gtk-4.0's pkg-config file while this
+      # job installs 4.1. CI therefore compiles the same thing the release ships.
+      - name: Compile the Wails entry point (the release's build path)
+        run: go build -tags orchicon_desktop,production,webkit2_41 -o /tmp/orchicon-desktop ./cmd/orchicon-desktop

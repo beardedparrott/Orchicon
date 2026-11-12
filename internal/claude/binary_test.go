@@ -20,10 +20,8 @@ func installFakeClaude(t *testing.T, home string) string {
 	return p
 }
 
-// The resolution order, which exists because this host has THREE claude
-// installs and a PATH that reaches the wrong one runs a CLI a year older that
-// rejects our argv outright ("unknown option '--permission-prompts"), exits 1,
-// and writes nothing to stdout — a permanent "thinking…" with no error.
+// The resolution order, which exists because this host has THREE claude installs and a PATH that
+// reaches the wrong one runs a CLI a year older that rejects our argv outright ("unknown option.
 func TestClaudeBinaryPath(t *testing.T) {
 	t.Run("the explicit override wins", func(t *testing.T) {
 		t.Setenv(ClaudeBinEnv, "/opt/custom/claude")
@@ -46,6 +44,19 @@ func TestClaudeBinaryPath(t *testing.T) {
 	t.Run("no install falls back to the bare name", func(t *testing.T) {
 		t.Setenv(ClaudeBinEnv, "")
 		t.Setenv("HOME", t.TempDir()) // empty home
+		// THE PATH MUST BE EMPTIED TOO, and that is a behaviour change worth pinning rather than a test
+		// workaround.
+		prev, had := os.LookupEnv("PATH")
+		if err := os.Setenv("PATH", t.TempDir()); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if had {
+				_ = os.Setenv("PATH", prev)
+			} else {
+				_ = os.Unsetenv("PATH")
+			}
+		})
 		if got := ClaudeBinaryPath(); got != "claude" {
 			t.Fatalf("ClaudeBinaryPath() = %q, want the bare fallback so a PATH-only machine still works", got)
 		}
@@ -65,9 +76,7 @@ func TestClaudeBinaryPath(t *testing.T) {
 	})
 }
 
-// THE REGRESSION PIN: the Ask argv must spawn the RESOLVED binary, never the
-// bare name. The bare name is what let PATH pick the wrong install, and the
-// failure it produced was silent.
+// THE REGRESSION PIN: the Ask argv must spawn the RESOLVED binary, never the bare name.
 func TestAskArgvUsesTheResolvedBinary(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -87,9 +96,8 @@ func TestAskArgvUsesTheResolvedBinary(t *testing.T) {
 	}
 }
 
-// The worker session must resolve it the same way: it shares the launch shape,
-// so a fix applied to one transport and not the other would leave dispatched
-// executions picking the wrong CLI.
+// The worker session must resolve it the same way: it shares the launch shape, so a fix applied to
+// one transport and not the other would leave dispatched executions picking the wrong CLI.
 func TestWorkerArgvUsesTheResolvedBinary(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

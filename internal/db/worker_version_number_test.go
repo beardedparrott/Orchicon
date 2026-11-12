@@ -42,13 +42,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// workerVersionLookupTx opens a throwaway tenant with one worker and an
-// interleaved version trail, all inside an uncommitted transaction.
-//
-// The trail is deliberately NOT a tidy 1..n: v2 is published, v3 is a draft,
-// and there is no v4. A test where every version is published and contiguous
-// would pass against a lookup that ignored status, and against one that
-// returned the newest row regardless of the number asked for.
+// workerVersionLookupTx opens a throwaway tenant with one worker and an interleaved version trail,
+// all inside an uncommitted transaction.
 func workerVersionLookupTx(t *testing.T) (ctx context.Context, tx pgx.Tx, tenant, worker string) {
 	t.Helper()
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
@@ -132,10 +127,8 @@ func TestWorkerVersionByNumberResolvesThePinnedVersion(t *testing.T) {
 	}
 }
 
-// TestWorkerVersionByNumberIgnoresDrafts: a draft is not dispatchable, so a
-// pinned number that exists only as a draft must NOT resolve. This is the guard
-// that keeps an abandoned edit (the state the TUI must never leave behind) from
-// becoming the version a run executes.
+// TestWorkerVersionByNumberIgnoresDrafts: a draft is not dispatchable, so a pinned number that
+// exists only as a draft must NOT resolve.
 func TestWorkerVersionByNumberIgnoresDrafts(t *testing.T) {
 	ctx, tx, tenant, worker := workerVersionLookupTx(t)
 
@@ -144,10 +137,8 @@ func TestWorkerVersionByNumberIgnoresDrafts(t *testing.T) {
 	}
 }
 
-// TestWorkerVersionByNumberMissesCleanly: an absent number, another worker's
-// number, and another tenant's row are all ErrNotFound — the documented signal
-// for the callers' latest-published fallback. A miss must never surface as a
-// random row.
+// TestWorkerVersionByNumberMissesCleanly: an absent number, another worker's number, and another
+// tenant's row are all ErrNotFound.
 func TestWorkerVersionByNumberMissesCleanly(t *testing.T) {
 	ctx, tx, tenant, worker := workerVersionLookupTx(t)
 
@@ -162,15 +153,8 @@ func TestWorkerVersionByNumberMissesCleanly(t *testing.T) {
 	}
 }
 
-// TestWorkerVersionByIDCannotResolveAVersionNumber is the REGRESSION PIN for the
-// original defect: it reproduces the exact call the three dispatch paths made,
-// against the exact data shape they faced, and asserts it misses.
-//
-// It is intentionally testing BROKEN-INPUT behaviour rather than the fix. If
-// someone later "simplifies" a call site back to the id form — or makes
-// GetWorkerVersionByID fall back to a number match, which would silently change
-// the meaning of every genuine id lookup in the service layer — this test fails
-// and says why.
+// TestWorkerVersionByIDCannotResolveAVersionNumber is the REGRESSION PIN for the original defect:
+// it reproduces the exact call the three dispatch paths made.
 func TestWorkerVersionByIDCannotResolveAVersionNumber(t *testing.T) {
 	ctx, tx, tenant, worker := workerVersionLookupTx(t)
 

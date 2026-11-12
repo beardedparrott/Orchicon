@@ -1,22 +1,6 @@
 package theme
 
 // cursor_caret_test.go — THE COMPOSER'S CARET IS VISIBLE ON EVERY THEME.
-//
-// The operator: "The cursor in the composer should be white and not black on ALL dark themes on every page."
-//
-// WHAT WAS ACTUALLY WRONG, and why it looked like a colour choice rather than a bug. bubbles renders the
-// visible cursor as `m.Style.Inline(true).Reverse(true).Render(char)` (cursor/cursor.go:220), so the terminal
-// SWAPS the style's foreground and background before anything reaches the screen. The effective BLOCK colour is
-// therefore the style's FOREGROUND, and the effective CHARACTER colour is its BACKGROUND.
-//
-// The dock set `Background(AccentCyan).Foreground(Bg)` — which reads as "cyan block, dark character" and
-// RENDERS as "Bg block, cyan character". On the dark palettes Bg is #0c0f18, so the caret was a near-black
-// block: invisible against the composer it sits in. Measured SGR: `\x1b[7;38;2;12;15;24;48;2;7;182;213m` —
-// reverse first, then fg=#0c0f18, which the terminal promotes to the background.
-//
-// SO THE ASSERTION IS VISIBILITY, NOT A COLOUR. A test that pinned "#f8fafc" would pass while a light-theme
-// caret became a white block on a white surface. This measures the caret against the SURFACE it is drawn on,
-// on every palette — which is the property the operator is describing, and which the old style fails.
 
 import (
 	"testing"
@@ -40,10 +24,6 @@ func cursorColors(t *testing.T) (block, char string) {
 }
 
 // THE CARET IS LEGIBLE AGAINST THE COMPOSER on every theme.
-//
-// The composer's own background is theme.Surface (see dock.styledTa), so that is what the caret has to stand
-// out from. 3.0 is the bar used elsewhere in this package for a NON-TEXT element; the caret carries a glyph, so
-// it is held higher than that below.
 func TestComposerCaretIsVisibleOnEveryTheme(t *testing.T) {
 	restore := Active().Name
 	defer Use(restore)

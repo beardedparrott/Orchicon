@@ -1,17 +1,7 @@
 package runtime
 
-// Per-instance derivation of the plane URL handed to a run container
-// (lifecycle.go planePublicURL / planeHTTPPort).
-//
-// THE HAZARD THIS FILE PINS: the two instances (dev, prod) migrate
-// independently and can therefore sit on DIFFERENT ports. A hardcoded
-// 8080 in either branch makes one host-resident instance advertise the
-// other's plane — a dev run's automation worker would dial prod's plane (or
-// vice versa). The dial is *rejected* rather than silently accepted (the
-// minted credential is instance-bound: its hash lives in the minting
-// instance's database — see the cross-instance test in the server package),
-// so the failure mode is a broken run, not a wrong-instance write. Both
-// must be asserted, not assumed.
+// Per-instance derivation of the plane URL handed to a run container (lifecycle.go planePublicURL /
+// planeHTTPPort).
 
 import (
 	"os"
@@ -19,11 +9,13 @@ import (
 	"testing"
 )
 
-// clearPlaneURLEnv neutralises every input planePublicURL reads, then applies
-// the caller's overrides. t.Setenv with "" is equivalent to unset here: the
-// function treats an empty value as absent.
+// clearPlaneURLEnv neutralises every input planePublicURL reads, then applies the caller's
+// overrides.
 func clearPlaneURLEnv(t *testing.T, kv ...string) {
 	t.Helper()
+	// This file pins the DOCKER topology (historical bridge gateway + own /etc/hosts IP).
+	t.Setenv(EnvEngine, engineDocker)
+	t.Setenv(EnvEngineAlias, "")
 	t.Setenv("ORCHICON_PLANE_PUBLIC_URL", "")
 	t.Setenv("ORCHICON_CONTAINER_MODE", "")
 	t.Setenv("ORCHICON_HTTP_EXTRA_BIND", "")
@@ -100,9 +92,8 @@ func TestPlanePublicURLDerivation(t *testing.T) {
 	})
 
 	t.Run("host residency without an extra bind: stable host name + port", func(t *testing.T) {
-		// A manual `orchicon serve` (no launcher-provided bind): the stable
-		// host name, which resolves because every runtime container is
-		// created with --add-host=host.docker.internal:host-gateway.
+		// A manual `orchicon serve` (no launcher-provided bind): the stable host name, which resolves
+		// because every runtime container is created with --add-host=host.docker.internal:host-gateway.
 		clearPlaneURLEnv(t, "ORCHICON_HTTP_ADDR", "127.0.0.1:8091")
 		if got := planePublicURL(); got != "http://host.docker.internal:8091" {
 			t.Fatalf("host mode without extra bind = %q, want http://host.docker.internal:8091", got)
@@ -110,9 +101,7 @@ func TestPlanePublicURLDerivation(t *testing.T) {
 	})
 
 	t.Run("dev and prod never receive the same URL", func(t *testing.T) {
-		// dev: loopback 8080 + bridge 8080. prod: loopback 8091 + bridge 8091.
-		// Both instances share the host's docker bridge IP; only the PORT
-		// tells them apart, which is exactly what the old literal destroyed.
+		// dev: loopback 8080 + bridge 8080.
 		clearPlaneURLEnv(t,
 			"ORCHICON_HTTP_EXTRA_BIND", "172.17.0.1:8080",
 			"ORCHICON_HTTP_ADDR", "127.0.0.1:8080",

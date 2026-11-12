@@ -31,20 +31,12 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
-// The env vars this sidecar reads its cross-process facts from. A child process
-// inherits an ENVIRONMENT and never a Go context, so every turn-scoped fact a
-// tool needs has to arrive this way and be restored onto the call's context in
-// handleToolsCall.
-//
-// THE PRODUCER NAMES FOR THESE LIVE IN THE TRANSPORTS (claude's MCPConversationEnv
-// and its siblings in internal/claude/mcpconfig.go). The pairing is deliberate and
-// must be changed in both places.
+// The env vars this sidecar reads its cross-process facts from.
 const (
 	envTenantID      = "ORCHICON_MCP_TENANT_ID"
 	envWorkflowRunID = "ORCHICON_MCP_WORKFLOW_RUN_ID"
-	// envConversationID / envConversationProject are set ONLY by a transport whose
-	// MCP child serves a single conversation (claude's Ask child). Absent for a
-	// worker or plane sidecar, where "no conversation" is the honest answer.
+	// envConversationID / envConversationProject are set ONLY by a transport whose MCP child serves a
+	// single conversation (claude's Ask child).
 	envConversationID      = "ORCHICON_MCP_CONVERSATION_ID"
 	envConversationProject = "ORCHICON_MCP_CONVERSATION_PROJECT_ID"
 )
@@ -87,11 +79,7 @@ const (
 	methodToolsCall   = "tools/call"
 )
 
-// Protocol version fallback when the client sends none. We echo the
-// client's requested version in practice (see handleInitialize) because the
-// tools/list + tools/call surface is identical across MCP protocol versions
-// and some SDK clients reject a downgrade to an older version they no longer
-// advertise.
+// Protocol version fallback when the client sends none.
 const fallbackProtocolVersion = "2025-11-25"
 
 // MCP tool definition matching the MCP spec schema.
@@ -136,22 +124,16 @@ type Server struct {
 	pool     *db.Pool
 	tools    ToolRegistry
 	tenantID string
-	// runContext is the owning workflow run's run_context, so a work item
-	// created during a recurring fire's run is stamped with the fire's
-	// provenance (feature 4.1, AC2). Nil for a plain MCP.
+	// runContext is the owning workflow run's run_context, so a work item created during a recurring
+	// fire's run is stamped with the fire's provenance (feature 4.1, AC2).
 	runContext []byte
-	// conversationID / conversationProject are the ASK session this sidecar serves,
-	// when its transport serves exactly one. Empty for a worker or plane sidecar,
-	// and then the tool context is left UNSTAMPED — a tool that reports facts about
-	// "this session" must fail loud on that rather than be told a guess.
+	// conversationID / conversationProject are the ASK session this sidecar serves, when its transport
+	// serves exactly one.
 	conversationID      string
 	conversationProject string
 }
 
-// New creates an MCP server. The tenant is resolved from the
-// ORCHICON_MCP_TENANT_ID env var (set by the control plane when it spawns
-// opencode with the Orchicon MCP registered); falls back to the dev tenant
-// with a warning so a manually-wired `orchicon mcp` still works.
+// New creates an MCP server.
 func New(log *slog.Logger, pool *db.Pool, tools ToolRegistry) *Server {
 	tenantID := os.Getenv(envTenantID)
 	if tenantID == "" {
@@ -171,11 +153,8 @@ func New(log *slog.Logger, pool *db.Pool, tools ToolRegistry) *Server {
 	}
 }
 
-// loadRunContext resolves the run_context of ORCHICON_MCP_WORKFLOW_RUN_ID (the
-// workflow run whose runtime container hosts this worker) against the MCP's
-// pool, so a work item created during a recurring fire's run is stamped with
-// the fire's provenance block (feature 4.1, AC2). Best-effort: an unset id, a
-// missing run, or a DB error yields nil, so a plain create is unaffected.
+// loadRunContext resolves the run_context of ORCHICON_MCP_WORKFLOW_RUN_ID (the workflow run whose
+// runtime container hosts this worker) against the MCP's pool.
 func loadRunContext(log *slog.Logger, pool *db.Pool, tenantID string) []byte {
 	runID := os.Getenv(envWorkflowRunID)
 	if runID == "" || pool == nil || tenantID == "" {
@@ -251,12 +230,7 @@ func (s *Server) handle(ctx context.Context, req jsonRPCRequest) {
 	}
 }
 
-// handleInitialize negotiates the MCP protocol version. We echo the
-// client's requested protocol version back verbatim: our tools/list and
-// tools/call handling is identical across MCP protocol versions, and some
-// SDK clients (opencode 1.18 sends 2025-11-25) reject a handshake that
-// downgrades to an older version they no longer advertise. Empty requests
-// fall back to the newest known version.
+// handleInitialize negotiates the MCP protocol version.
 func (s *Server) handleInitialize(req jsonRPCRequest) {
 	var params struct {
 		ProtocolVersion string `json:"protocolVersion"`
@@ -301,9 +275,7 @@ func (s *Server) handleToolsList(req jsonRPCRequest) {
 	s.writeResult(req.ID, map[string]any{"tools": tools})
 }
 
-// handleToolsCall executes a tool. Per the MCP spec, a tool that runs but
-// fails returns a result with isError=true (not a JSON-RPC error); JSON-RPC
-// errors are reserved for protocol-level problems (bad params, unknown tool).
+// handleToolsCall executes a tool.
 func (s *Server) handleToolsCall(ctx context.Context, req jsonRPCRequest) {
 	var params struct {
 		Name      string          `json:"name"`
@@ -321,21 +293,14 @@ func (s *Server) handleToolsCall(ctx context.Context, req jsonRPCRequest) {
 		params.Arguments = json.RawMessage("{}")
 	}
 
-	// MCP runs over stdio with no HTTP middleware to inject the tenant,
-	// so the tenant comes from the server's ORCHICON_MCP_TENANT_ID env
-	// (set by the control plane when it spawns opencode). Every tool
-	// function reads the tenant from context via tenant.FromContext() and
-	// scopes its DB operations accordingly.
+	// MCP runs over stdio with no HTTP middleware to inject the tenant, so the tenant comes from the
+	// server's ORCHICON_MCP_TENANT_ID env (set by the control plane when it spawns opencode).
 	ctx = tenant.WithID(ctx, s.tenantID)
-	// Inject the owning workflow run's run_context so a work item created
-	// during a recurring fire's run is stamped with automation provenance
-	// (feature 4.1, AC2). No-op (nil) for a plain MCP.
+	// Inject the owning workflow run's run_context so a work item created during a recurring fire's run
+	// is stamped with automation provenance (feature 4.1, AC2).
 	ctx = workitem.WithAutomationRunContext(ctx, s.runContext)
-	// Restore the ASK session's conversation scope, so a tool that reports facts
-	// about THIS session reads the same value the in-process transports stamp. An
-	// UNSTAMPED context is left alone rather than filled with an empty scope: the
-	// zero value means "not stamped", and a tool that needs the id fails loud on it
-	// (which is the honest answer for a sidecar that serves no conversation).
+	// Restore the ASK session's conversation scope, so a tool that reports facts about THIS session
+	// reads the same value the in-process transports stamp.
 	if s.conversationID != "" {
 		ctx = askmode.WithConversationScope(ctx, askmode.ConversationScope{
 			ConversationID: s.conversationID,
@@ -357,9 +322,7 @@ func (s *Server) handleToolsCall(ctx context.Context, req jsonRPCRequest) {
 		return
 	}
 
-	// Return tool result as MCP content items. An empty/absent result is
-	// still a successful call — surface it as a readable message so the
-	// model never sees an empty content array.
+	// Return tool result as MCP content items.
 	text := string(result)
 	if text == "" || text == "null" {
 		text = "ok"

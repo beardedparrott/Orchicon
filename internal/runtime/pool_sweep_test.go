@@ -9,10 +9,8 @@ import (
 	"time"
 )
 
-// sweepHarness is a fake docker that records every invocation, so a test can
-// assert both WHAT was listed (the instance filter) and WHAT was removed.
-// The filter is the whole point: an instance-scoped sweep and a host-wide sweep
-// issue the same `rm -f`, and only the filter tells them apart.
+// sweepHarness is a fake docker that records every invocation, so a test can assert both WHAT was
+// listed (the instance filter) and WHAT was removed.
 type sweepHarness struct {
 	mu      sync.Mutex
 	psCalls [][]string
@@ -29,6 +27,10 @@ func (h *sweepHarness) docker(args ...string) (string, error) {
 	}
 	if len(args) >= 3 && args[0] == "rm" && args[1] == "-f" {
 		h.removed = append(h.removed, args[2])
+		return "", nil
+	}
+	// The removal primitive polls `inspect {{.Id}}` for the name to be released (d.removeContainer).
+	if len(args) >= 3 && args[0] == "inspect" && args[2] == "{{.Id}}" {
 		return "", nil
 	}
 	return "", nil
@@ -60,17 +62,12 @@ func newSweepPool(t *testing.T, listed ...string) (*daemonPool, *sweepHarness) {
 	h := &sweepHarness{listed: listed}
 	d := &Daemon{
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		dockerFn: h.docker,
+		engineFn: h.docker,
 	}
 	return newDaemonPool(d), h
 }
 
 // TestResetPoolTouchesNoDocker is the regression for the cross-instance hazard.
-//
-// resetPool used to call listRuntimes("") and `rm -f` every orchicon.workflow
-// container on the HOST, so starting the daemon for one instance destroyed every
-// instance's containers — including a sibling's live one mid-run. It must now
-// touch no container at all.
 func TestResetPoolTouchesNoDocker(t *testing.T) {
 	p, h := newSweepPool(t, "orchicon-runtime-aaa-111", "orchicon-runtime-bbb-222")
 	p.resetPool()
@@ -97,9 +94,7 @@ func TestSweepIsInstanceScoped(t *testing.T) {
 	if !strings.Contains(joined, "label=orchicon.instance=dev") {
 		t.Errorf("the sweep must filter by instance; got: %s", joined)
 	}
-	// An EMPTY filter would mean every instance on the host — the hazard. Checked
-	// per argument rather than by suffix, because `--format` trails the filter and
-	// a suffix test could never see it.
+	// An EMPTY filter would mean every instance on the host — the hazard.
 	for i, a := range args {
 		if a == "label=orchicon.instance=" || (a == "--filter" && i+1 < len(args) && args[i+1] == "label=orchicon.instance=") {
 			t.Errorf("the sweep used an EMPTY instance filter — that is the host-wide sweep; got: %s", joined)
@@ -110,9 +105,8 @@ func TestSweepIsInstanceScoped(t *testing.T) {
 	}
 }
 
-// TestSweepRefusesEmptyInstance is the guard against reintroducing the hazard: an
-// empty instance means EVERY instance, so it must do nothing rather than
-// everything.
+// TestSweepRefusesEmptyInstance is the guard against reintroducing the hazard: an empty instance
+// means EVERY instance, so it must do nothing rather than everything.
 func TestSweepRefusesEmptyInstance(t *testing.T) {
 	p, h := newSweepPool(t, "orchicon-runtime-aaa-111")
 	p.sweepPreRestartOrphans("")
@@ -125,9 +119,8 @@ func TestSweepRefusesEmptyInstance(t *testing.T) {
 	}
 }
 
-// TestSweepReapsUntrackedOnly pins the discrimination: a container the pool
-// still tracks belongs to a live lease and must survive, while an untracked one
-// is this instance's pre-restart orphan.
+// TestSweepReapsUntrackedOnly pins the discrimination: a container the pool still tracks belongs to
+// a live lease and must survive, while an untracked one is this instance's pre-restart orphan.
 func TestSweepReapsUntrackedOnly(t *testing.T) {
 	live := "orchicon-runtime-live-111"
 	stale := "orchicon-runtime-stale-222"
@@ -145,9 +138,8 @@ func TestSweepReapsUntrackedOnly(t *testing.T) {
 	}
 }
 
-// TestSweepRunsOncePerInstance pins both halves of the claim: it is not repeated
-// for the same instance, and it is NOT global — a second instance gets its own
-// first sweep rather than being starved by the first.
+// TestSweepRunsOncePerInstance pins both halves of the claim: it is not repeated for the same
+// instance, and it is NOT global.
 func TestSweepRunsOncePerInstance(t *testing.T) {
 	p, h := newSweepPool(t)
 
@@ -166,16 +158,15 @@ func TestSweepRunsOncePerInstance(t *testing.T) {
 	}
 }
 
-// TestSweepRetriesAfterAFailedListing pins that a transient docker failure does
-// not spend the one claim: the cleanup is deferred to the next lease rather than
-// lost for the daemon's whole lifetime.
+// TestSweepRetriesAfterAFailedListing pins that a transient docker failure does not spend the one
+// claim.
 func TestSweepRetriesAfterAFailedListing(t *testing.T) {
 	var mu sync.Mutex
 	fail := true
 	var removals []string
 	d := &Daemon{
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		dockerFn: func(args ...string) (string, error) {
+		engineFn: func(args ...string) (string, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			if len(args) > 0 && args[0] == "ps" {

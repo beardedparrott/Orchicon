@@ -28,7 +28,11 @@
 # without an image rebuild (same "mount, never bake" pattern as the adapters).
 # Runtime config (auth, git identity) is mounted by the daemon at runtime,
 # not baked in.
-FROM debian:bookworm-slim
+# FULLY QUALIFIED ON PURPOSE. A short name ("debian:bookworm-slim") is resolved through
+# /etc/containers/registries.conf, which a minimal host does not have — and without it podman refuses
+# with "short-name … did not resolve to an alias". This is the FROM a fresh install builds, so it must
+# work on the least-configured host.
+FROM docker.io/library/debian:bookworm-slim
 
 # Mark this image as the Orchicon runtime base. Docker inherits labels
 # through `FROM`, so any image built on top of this one carries it, and

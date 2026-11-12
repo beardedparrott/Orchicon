@@ -10,10 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/migrate"
 )
 
-// TestListExecutionSessionPartsTail verifies the recovery-tail read-back:
-// the LAST `limit` parts are returned in DESC (tail-first) order, the
-// limit is clamped, and a missing execution returns an empty slice.
-// Guarded by ORCHICON_TEST_DSN like the other DB-backed tests.
+// TestListExecutionSessionPartsTail verifies the recovery-tail read-back: the LAST `limit` parts
+// are returned in DESC (tail-first) order, the limit is clamped.
 func TestListExecutionSessionPartsTail(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {
@@ -94,9 +92,8 @@ func TestListExecutionSessionPartsTail(t *testing.T) {
 	}
 }
 
-// TestLatestToolUseParts verifies the todos read path: only kind='tool_use'
-// parts are returned, in DESC-by-seq order, with the limit clamped, and a
-// missing execution returns an empty slice. Guarded by ORCHICON_TEST_DSN.
+// TestLatestToolUseParts verifies the todos read path: only kind='tool_use' parts are returned, in
+// DESC-by-seq order, with the limit clamped, and a missing execution returns an empty slice.
 func TestLatestToolUseParts(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {

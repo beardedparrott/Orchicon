@@ -18,10 +18,8 @@ func treeFixture() []screenkit.Item {
 	}
 }
 
-// The tree pane's contract: an item's tree metadata reaches the row, a parent
-// draws a +/- toggle, a fresh tree is fully expanded, collapsing hides the
-// whole subtree, and the cursor steps over hidden rows rather than landing on
-// them.
+// The tree pane's contract: an item's tree metadata reaches the row, a parent draws a +/- toggle, a
+// fresh tree is fully expanded, collapsing hides the whole subtree.
 func TestTableTreeMetadataAndCollapse(t *testing.T) {
 	tbl := NewTable("Work Items", Column{Title: ""})
 	tbl.Width, tbl.Height = 80, 20
@@ -160,9 +158,8 @@ func TestTableClickRespectsCollapsedRows(t *testing.T) {
 	}
 }
 
-// Marker hit-testing: a click on a parent's +/- toggles it, a click elsewhere
-// on the row selects (ToggleAt returns false so the caller falls through), and
-// a leaf's gutter is inert.
+// Marker hit-testing: a click on a parent's +/- toggles it, a click elsewhere on the row selects
+// (ToggleAt returns false so the caller falls through), and a leaf's gutter is inert.
 func TestTableToggleAtMarker(t *testing.T) {
 	tbl := NewTable("t", Column{Title: ""})
 	tbl.Width, tbl.Height = 80, 20

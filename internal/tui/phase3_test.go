@@ -1,10 +1,7 @@
 package tui
 
-// phase3_test.go — the Phase-3 acceptance render tests for the six fixes:
-// full-screen takeover / overlay discipline, the connect modal, tab
-// submenus (key + mouse), palette input discipline, and full-viewport
-// screens. These are the STRING-level layout gates; the real-pty gate in
-// orch_pty_phase3_test.go proves the live behavior.
+// phase3_test.go — the Phase-3 acceptance render tests for the six fixes: full-screen takeover /
+// overlay discipline, the connect modal, tab submenus (key + mouse), palette input discipline.
 
 import (
 	"strings"
@@ -25,10 +22,8 @@ func phase3App(w, h int) *App {
 	return m
 }
 
-// TestPaletteTypingOwnedByComposer pins finding 4: the bottom composer owns
-// ALL typing — "/pro" stays visible in the bar while the palette above
-// filters live; up/down move the selection (consumed, never typed); esc
-// closes the palette without losing the text.
+// TestPaletteTypingOwnedByComposer pins finding 4: the bottom composer owns ALL typing — "/pro"
+// stays visible in the bar while the palette above filters live.
 func TestPaletteTypingOwnedByComposer(t *testing.T) {
 	m := phase3App(120, 40)
 	for _, r := range "/pro" {
@@ -75,9 +70,8 @@ func TestPaletteTypingOwnedByComposer(t *testing.T) {
 	}
 }
 
-// TestSubmenuOpensByKeyAndSelects pins finding 3's key path: Enter on the
-// active tab opens its dropdown, arrows move, Enter selects (navigating),
-// Esc closes.
+// TestSubmenuOpensByKeyAndSelects pins finding 3's key path: Enter on the active tab opens its
+// dropdown, arrows move, Enter selects (navigating), Esc closes.
 func TestSubmenuOpensByKeyAndSelects(t *testing.T) {
 	m := phase3App(120, 40)
 	if len(m.navEntries(m.active)) < 2 {
@@ -89,13 +83,6 @@ func TestSubmenuOpensByKeyAndSelects(t *testing.T) {
 		t.Fatalf("enter must open the active tab's submenu (menuOpen=%q)", m.MenuOpenID())
 	}
 	// Esc closes it, and Space re-opens it (the second activation key).
-	//
-	// Space runs HERE, on the LAUNCH page, where no conversations rail is up.
-	// On Ask with the rail VISIBLE, Space/Enter are the rail's SELECT gesture
-	// instead — the operator's "I should be able to move up/down with arrow
-	// keys and space or enter selects". That override owns the key only while
-	// the rail is drawn, and is pinned separately by
-	// TestAskRailEnterSpaceSelectsConversation.
 	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyEsc})
 	m = nm
 	if m.MenuOpenID() != "" {
@@ -129,9 +116,8 @@ func TestSubmenuOpensByKeyAndSelects(t *testing.T) {
 			t.Fatalf("selected entry must navigate: active source %q, want %q", ar.ActiveSourceName(), want.Source)
 		}
 	}
-	// (Space/esc coverage lives above, on the launch page, so the rail's
-	// select gesture cannot shadow the submenu activation.)
-	// A non-empty composer keeps Enter as send (no surprise menu).
+	// (Space/esc coverage lives above, on the launch page, so the rail's select gesture cannot shadow
+	// the submenu activation.) A non-empty composer keeps Enter as send (no surprise menu).
 	m.dock.SetValue("hello")
 	nm, _ = m.dispatch(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm
@@ -140,12 +126,7 @@ func TestSubmenuOpensByKeyAndSelects(t *testing.T) {
 	}
 }
 
-// TestAskRailEnterSpaceSelectsConversation pins the Ask rail's key contract:
-// while the conversations rail is UP and the composer is empty, Enter/Space
-// open the HIGHLIGHTED conversation — the operator's "I should be able to move
-// up/down with arrow keys and space or enter selects". This deliberately
-// overrides the tab-submenu activation on Ask, so it is asserted separately
-// from TestSubmenuOpensByKeyAndSelects (which covers the launch page).
+// TestAskRailEnterSpaceSelectsConversation pins the Ask rail's key contract.
 func TestAskRailEnterSpaceSelectsConversation(t *testing.T) {
 	newRails := func() *App {
 		m := newRailsApp(120, 40)
@@ -171,12 +152,7 @@ func TestAskRailEnterSpaceSelectsConversation(t *testing.T) {
 	}
 
 	// SPACE NO LONGER OPENS — it MARKS, which is what "selects" means on every other list in this
-	// client and what the operator asked for when they requested bulk operations ("Spacebar selects,
-	// then we should be able to bulk delete or bulk assign"). ENTER remains the open gesture, so the
-	// earlier "space or enter selects" wording is satisfied by the pair rather than by both keys.
-	//
-	// The whole point of asserting it HERE is that the two must stay distinguishable: a space that
-	// still opened, or an enter that stopped opening, would both be regressions.
+	// client and what the operator asked for when they requested bulk operations ("Spacebar selects.
 	m2 := newRails()
 	nm2, _ := m2.dispatch(tea.KeyMsg{Type: tea.KeySpace})
 	m2 = nm2
@@ -191,10 +167,8 @@ func TestAskRailEnterSpaceSelectsConversation(t *testing.T) {
 	}
 }
 
-// TestSubmenuMouseEntriesAreHitTargets pins the mouse half of finding 3:
-// clicking entry i (the geometry the panel is painted at) selects entry i.
-// Regression: the old mapping was off by two rows (it treated the header
-// as entry 0), so no entry was ever clickable.
+// TestSubmenuMouseEntriesAreHitTargets pins the mouse half of finding 3: clicking entry i (the
+// geometry the panel is painted at) selects entry i.
 func TestSubmenuMouseEntriesAreHitTargets(t *testing.T) {
 	m := phase3App(120, 40)
 	m.openTabMenu(m.active)
@@ -214,9 +188,8 @@ func TestSubmenuMouseEntriesAreHitTargets(t *testing.T) {
 	}
 }
 
-// TestConnectOverlayIsModal pins finding 2: while the overlay is open every
-// key reaches the connection form — the shell's global routes (tab chords,
-// rail toggle, help, quit) are suspended; esc alone cancels.
+// TestConnectOverlayIsModal pins finding 2: while the overlay is open every key reaches the
+// connection form — the shell's global routes (tab chords, rail toggle, help, quit) are suspended.
 func TestConnectOverlayIsModal(t *testing.T) {
 	m := phase3App(120, 40)
 	m.openConnectOverlay()
@@ -255,10 +228,8 @@ func TestConnectOverlayIsModal(t *testing.T) {
 	}
 }
 
-// TestViewCoversViewportWithOverlays is the Phase-3 takeover gate: on every
-// tab, in every overlay state, at 80x24 and 120x40, the view is EXACTLY
-// height rows of EXACTLY width cells — no overlay may open a hole or change
-// the row count.
+// TestViewCoversViewportWithOverlays is the Phase-3 takeover gate: on every tab, in every overlay
+// state, at 80x24 and 120x40, the view is EXACTLY height rows of EXACTLY width cells.
 func TestViewCoversViewportWithOverlays(t *testing.T) {
 	for _, size := range [][2]int{{80, 24}, {120, 40}} {
 		w, h := size[0], size[1]
@@ -300,9 +271,8 @@ func TestViewCoversViewportWithOverlays(t *testing.T) {
 	}
 }
 
-// TestScreensFillContentRegion pins finding 5: every screen renders its
-// panes across the FULL content region the shell budgeted (height minus tab
-// bar/footer/dock), never a content-sized box at the top-left.
+// TestScreensFillContentRegion pins finding 5: every screen renders its panes across the FULL
+// content region the shell budgeted (height minus tab bar/footer/dock).
 func TestScreensFillContentRegion(t *testing.T) {
 	for _, size := range [][2]int{{80, 24}, {120, 40}} {
 		w, h := size[0], size[1]
@@ -327,15 +297,8 @@ func TestScreensFillContentRegion(t *testing.T) {
 	}
 }
 
-// TestAuthBannerRendersOnce pins finding 6: the re-auth banner is rendered
-// ONCE — where a surface already carries the inline retry state, the global
-// dock banner is suppressed rather than duplicated.
-//
-// The dedupe is only valid while that surface is ON SCREEN. The fixture must
-// therefore put the conversations rail UP: this test used to set convErr and
-// assert suppression while sitting on the launch page, where the rail is not
-// rendered at all (rightrail.go — railVisible is false in welcome mode). It was
-// pinning the defect. TestLaunchPageAuthFailureIsVisible covers that half.
+// TestAuthBannerRendersOnce pins finding 6: the re-auth banner is rendered ONCE — where a surface
+// already carries the inline retry state.
 func TestAuthBannerRendersOnce(t *testing.T) {
 	m := phase3App(120, 40)
 	// The state the dedupe was written for: the rail is on screen, so its own
@@ -363,12 +326,8 @@ func TestAuthBannerRendersOnce(t *testing.T) {
 	}
 }
 
-// TestLaunchPageAuthFailureIsVisible pins the launch-page half of the same
-// finding: in welcome mode the conversations rail is NOT rendered, so its
-// convErr is not an inline retry state and must not suppress the banner. Before
-// this, a 401 on the first send from the launch page was reported NOWHERE — the
-// composer showed a stuck "sending …" ack, the draft reappeared in the box, and
-// no surface said why. That combination was read as "Enter does nothing".
+// TestLaunchPageAuthFailureIsVisible pins the launch-page half of the same finding: in welcome mode
+// the conversations rail is NOT rendered.
 func TestLaunchPageAuthFailureIsVisible(t *testing.T) {
 	m := phase3App(120, 40)
 	if !m.welcomeMode() {
@@ -391,9 +350,8 @@ func TestLaunchPageAuthFailureIsVisible(t *testing.T) {
 	}
 }
 
-// dockedAskApp builds an app on Ask with a session already open, so the shell
-// renders the DOCKED layout (composer pinned at the bottom). Tests that assert
-// the dock's geometry use this; the centered launch layout has its own test.
+// dockedAskApp builds an app on Ask with a session already open, so the shell renders the DOCKED
+// layout (composer pinned at the bottom).
 func dockedAskApp(w, h int) *App {
 	m := phase3App(w, h)
 	m.chatConvID = "conv-docked" // leaves welcome mode

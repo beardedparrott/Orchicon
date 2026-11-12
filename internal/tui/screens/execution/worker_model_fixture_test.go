@@ -34,9 +34,7 @@ func (p *probeWorkers) ListWorkers(context.Context, *connect.Request[apiv1.ListW
 	return connect.NewResponse(&apiv1.ListWorkersResponse{}), nil
 }
 
-// probeWorkerModel builds an Execution screen whose worker reads are served by the
-// fixture above. The other services are unimplemented — the worker surfaces touch
-// none of them.
+// probeWorkerModel builds an Execution screen whose worker reads are served by the fixture above.
 func probeWorkerModel(t *testing.T, w *apiv1.Worker, vs []*apiv1.WorkerVersion) *Model {
 	t.Helper()
 	mux := http.NewServeMux()

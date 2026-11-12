@@ -12,13 +12,7 @@ import (
 	"time"
 )
 
-// TestMCPHealthyAndProbeUsable verifies ADR-0002 D1 — the MCP watchdog gate.
-// A serve that answers /global/health but cannot perform a session-create
-// round-trip (a wedged/unusable MCP) is NOT "healthy" for dispatch: MCPHealthy
-// is false and ProbeUsable errors. A serve that answers both is healthy. This
-// is the plane-level watchdog signal: HostServe.Watch restarts a serve that
-// passes /global/health but fails MCP usability, healing a single wedged MCP
-// for every session on the serve.
+// TestMCPHealthyAndProbeUsable verifies — the MCP watchdog gate.
 func TestMCPHealthyAndProbeUsable(t *testing.T) {
 	// Healthy: /global/health 200, /session 200 returns a probe id, /abort 204.
 	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -73,12 +67,8 @@ func TestMCPHealthyAndProbeUsable(t *testing.T) {
 	}
 }
 
-// TestSubscriptionReadDropsWhenFull verifies ADR-0002 D6 — a slow consumer
-// must not park the /event SSE reader on a full channel. Before the fix a
-// full 256-event buffer blocked `read`, stalling that subscription and, with
-// every session reading the one bus, degrading all of them. Now the reader
-// drops a telemetry event (the durable record is the persisted reply, so a
-// dropped event never loses data) and keeps scanning.
+// TestSubscriptionReadDropsWhenFull verifies — a slow consumer must not park the /event
+// SSE reader on a full channel.
 func TestSubscriptionReadDropsWhenFull(t *testing.T) {
 	var b strings.Builder
 	for i := 0; i < 40; i++ {
@@ -91,9 +81,7 @@ func TestSubscriptionReadDropsWhenFull(t *testing.T) {
 		defer close(done)
 		sub.read(context.Background(), io.NopCloser(strings.NewReader(b.String())))
 	}()
-	// Read nothing: leave the buffer full. If `read` still blocks on a full
-	// channel (pre-D6), it will not return within the timeout. With D6 it drops
-	// and finishes scanning all frames, then closes the event channel.
+	// Read nothing: leave the buffer full.
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
@@ -108,13 +96,8 @@ func TestSubscriptionReadDropsWhenFull(t *testing.T) {
 	}
 }
 
-// TestSubscriptionReadNeverDropsSessionIdle verifies the ADR-0002 D6 WATCH
-// constraint: session.idle is the SOLE completion signal for a turn — the event
-// a collector relies on to mark a reply complete. A slow consumer's buffer
-// overflowing must DROP telemetry events, but it must NEVER drop session.idle,
-// or a completed turn is silently reported as timed out. The reader blocks
-// (bounded by the subscription's own Close) to deliver the completion signal
-// instead of discarding it.
+// A slow consumer's buffer overflowing must DROP telemetry events, but it must NEVER drop
+// session.idle, or a completed turn is silently reported as timed out.
 func TestSubscriptionReadNeverDropsSessionIdle(t *testing.T) {
 	var b strings.Builder
 	// Fill + overflow the buffer with non-idle telemetry, then a terminal
@@ -131,9 +114,7 @@ func TestSubscriptionReadNeverDropsSessionIdle(t *testing.T) {
 		sub.read(context.Background(), io.NopCloser(strings.NewReader(b.String())))
 	}()
 
-	// Drain whatever the reader buffers. The full-buffer telemetry frames are
-	// dropped; the trailing session.idle must STILL be delivered (the reader
-	// blocks on the send rather than discarding the completion signal).
+	// Drain whatever the reader buffers.
 	var gotIdle bool
 	timer := time.After(3 * time.Second)
 	for {

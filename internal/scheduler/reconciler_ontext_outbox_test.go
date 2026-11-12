@@ -45,6 +45,7 @@ func newOnTextEnv(t *testing.T) (*TaskReconciler, *db.Pool, string) {
 	proj, err := db.CreateProject(ctx, ttx.Tx, db.ProjectRow{
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "OnText", Slug: slug,
 		Status: domain.ProjectActive, Goals: []byte("[]"), ProjectDir: "/tmp/orchicon/" + slug,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -102,10 +103,8 @@ func countTextOutboxRows(t *testing.T, pool *db.Pool, execID string) int64 {
 	return n
 }
 
-// TestOnTextDoesNotEnqueueOutbox: per-token execution.text events are no
-// longer written to the outbox (the direct publish is the delivery path), and
-// that holds even when the direct publish fails — the dropped "NATS was down"
-// guarantee is covered by the durable transcript, verified below.
+// TestOnTextDoesNotEnqueueOutbox: per-token execution.text events are no longer written to the
+// outbox (the direct publish is the delivery path).
 func TestOnTextDoesNotEnqueueOutbox(t *testing.T) {
 	r, pool, execID := newOnTextEnv(t)
 	ctx := context.Background()
@@ -125,10 +124,8 @@ func TestOnTextDoesNotEnqueueOutbox(t *testing.T) {
 		t.Fatalf("per-token execution.text must write ZERO outbox rows, found %d", n)
 	}
 
-	// The dropped guarantee: with NATS down at commit time the per-chunk event
-	// is gone, but the completed text part is durably in execution_session_parts
-	// — the GUI's reconnect refetch path (GetExecutionSession ->
-	// db.ListExecutionSessionParts) — so the full text is recoverable.
+	// The dropped guarantee: with NATS down at commit time the per-chunk event is gone, but the
+	// completed text part is durably in execution_session_parts.
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
@@ -161,10 +158,8 @@ func TestOnTextDoesNotEnqueueOutbox(t *testing.T) {
 	}
 }
 
-// TestOnToolCallStillEnqueuesOutbox pins the evidence-based decision to KEEP
-// execution.tool_call outboxed: it is low-frequency (not per-token) and its
-// direct publish is the same code path, so the outbox row is the durable
-// delivery path for it. Same for the low-frequency state events.
+// TestOnToolCallStillEnqueuesOutbox pins the evidence-based decision to KEEP execution.tool_call
+// outboxed: it is low-frequency (not per-token) and its direct publish is the same code path.
 func TestOnToolCallStillEnqueuesOutbox(t *testing.T) {
 	r, pool, execID := newOnTextEnv(t)
 	ctx := context.Background()

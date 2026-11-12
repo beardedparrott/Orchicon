@@ -9,17 +9,10 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
-// usage_claude_aggregation_test.go is the MANDATORY fixtures-only test for
-// claude telemetry: a canned Anthropic `result` usage object is routed through
-// the SHARED UsageFromAnthropic transform and the SHARED UsageRecorder, and the
-// recorded row must carry all FOUR buckets DISTINCTLY (never a flattened
-// single token/cost total) with a cost whose cache-read component is priced at
-// the CACHE-READ rate. NO live Claude session is involved.
+// usage_claude_aggregation_test.go is the MANDATORY fixtures-only test for claude telemetry: a
+// canned Anthropic `result` usage object is routed through the SHARED UsageFromAnthropic transform.
 
-// claudeCatalogCost mirrors the authored anthropic/claude-sonnet-4 catalog
-// rates. Kept literal (rather than importing internal/orchicon) so this test
-// documents exactly the cache rates a cache read is priced at while the
-// gateway package stays provider-agnostic.
+// claudeCatalogCost mirrors the authored anthropic/claude-sonnet-4 catalog rates.
 func claudeCatalogCost() *apiv1.ModelCost {
 	return &apiv1.ModelCost{Input: 3, Output: 15, CacheRead: 0.3, CacheWrite: 3.75}
 }
@@ -94,10 +87,7 @@ func TestClaudeUsageAggregationFixtures(t *testing.T) {
 		t.Fatalf("Σ token_class = %v, want 7000 (lossless)", sum)
 	}
 
-	// 4. The COST split prices each class at its OWN catalog rate — the literal
-	//    "cache-read at the cache-read rate" acceptance. Each share equals
-	//    tokens*rate/1e6 because the split renormalizes to the catalog-priced
-	//    total, which IS the weighted sum.
+	// 4.
 	cost := all["orchicon_cost_usd"]
 	wantShares := map[string]float64{
 		tokenClassPrompt:     1000 * 3.0 / 1e6,

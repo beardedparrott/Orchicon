@@ -1,21 +1,7 @@
 package mcpclient
 
-// e2eproof_test.go — the fixture sanity leg plus the TWO negative proofs that
-// are source-level by nature:
-//
-//   AC 5 (fixture half): the distinctive probe tool is DISCOVERED over a real
-//   streamable-HTTP transport and a call returns the echoed nonce. This is the
-//   plumbing floor every other leg stands on — if it fails, nothing else means
-//   anything.
-//
-//   AC 6: NO tenant-level MCP or skill surface remains. The honest form of
-//   "grep + UI observation" is a source-level gate: walk the tree and FAIL on
-//   any occurrence of the retired tenant-tier vocabulary outside the two places
-//   that must mention it (the migration that DROPS the tier, and the frontend
-//   test that asserts its ABSENCE). A grep run by hand once proves nothing
-//   about the NEXT commit; this test is the pin.
-//
-// Gate: ORCHICON_TEST_DSN (the DB-backed half only; the AC 6 greps always run).
+// e2eproof_test.go — the fixture sanity leg plus the TWO negative proofs that are source-level by
+// nature:
 
 import (
 	"context"
@@ -26,10 +12,8 @@ import (
 	"testing"
 )
 
-// AC 5 (fixture half) + the plumbing floor: the probe tool is discovered under
-// the mcp__<server>__ namespace through a REAL transport, and a call carrying a
-// per-run nonce returns that nonce — so a cached/stale/memoised answer is
-// distinguishable from a live one.
+// AC 5 (fixture half) + the plumbing floor: the probe tool is discovered under the mcp__<server>__
+// namespace through a REAL transport, and a call carrying a per-run nonce returns that nonce.
 func TestE2EFixtureProbeDiscoversAndEchoesNonce(t *testing.T) {
 	url, closeFn := E2EHTTPFixture()
 	defer closeFn()
@@ -67,10 +51,8 @@ func TestE2EFixtureProbeDiscoversAndEchoesNonce(t *testing.T) {
 	}
 }
 
-// AC 5 (fixture half, stdio): the SAME probe tool is reachable over the stdio
-// transport (the transport with child-lifecycle risk in production). The re-exec
-// hook lives in this package's TestMain (the stdio child returns from TestMain
-// via E2EStdioReexec before m.Run, so no test function of its own is needed).
+// AC 5 (fixture half, stdio): the SAME probe tool is reachable over the stdio transport (the
+// transport with child-lifecycle risk in production).
 func TestE2EFixtureProbeOverStdio(t *testing.T) {
 	spec := E2EStdioSpec("e2estdio")
 	m := NewManager(nil)
@@ -91,9 +73,7 @@ func TestE2EFixtureProbeOverStdio(t *testing.T) {
 
 // --- AC 6: no tenant-level MCP or skill surface remains -----------------------
 
-// tenantTierNeedles is the retired tenant-tier vocabulary. Every one of these
-// named a tenant-WIDE default (a tier with no bounded owner). Their absence from
-// the product is criterion 6.
+// tenantTierNeedles is the retired tenant-tier vocabulary.
 var tenantTierNeedles = []string{
 	"tenant_settings.default_mcp_servers",
 	"default_mcp_servers",
@@ -111,25 +91,12 @@ var tenantTierNeedles = []string{
 	"tenant_default_mcp",
 }
 
-// tenantTierAllowlist is the ONLY set of paths allowed to name the tier, with
-// the reason each is legitimate:
-//
-//   - the ownership migration (and its down migration) are the SQL that DROPS
-//     the column — a migration that removes a tier must name it;
-//   - the frontend panel test asserts the hooks' ABSENCE (a negative assertion
-//     cannot be written without the name);
-//   - the frontend placement test does the same for the retired component
-//     names;
-//   - the TUI's project form carries historical NOTE comments explaining what
-//     was REMOVED and why (the "no selection to write any more" record);
-//   - mcpclient/command.go's comment cites the old frontend shape by name.
-//
-// Anything ELSE matching a needle is the failure.
+// tenantTierAllowlist is the ONLY set of paths allowed to name the tier, with the reason each is
+// legitimate:
 func tenantTierAllowlist(path string) bool {
 	p := filepath.ToSlash(path)
-	// The proof harness itself NAMES every needle: the gate below, and the Ask
-	// tool-list gate that reuses the same vocabulary. A file whose job is to
-	// assert the tier's absence must be able to write the tier's name.
+	// The proof harness itself NAMES every needle: the gate below, and the Ask tool-list gate that
+	// reuses the same vocabulary.
 	base := filepath.Base(p)
 	if base == "e2eproof_test.go" || strings.HasPrefix(base, "e2e_") && strings.HasSuffix(base, "_proof_test.go") {
 		return true
@@ -228,9 +195,8 @@ func TestE2ENoTenantMCPSurfaceRemains(t *testing.T) {
 	}
 }
 
-// TestE2EClientsHaveTheOnePanelNotTheTenantTabs is the cheap STRUCTURAL half of
-// the UI observation: child 7 replaced the tenant-scoped tabs with ONE
-// scope-parameterized panel. The retired components must not exist as files.
+// TestE2EClientsHaveTheOnePanelNotTheTenantTabs is the cheap STRUCTURAL half of the UI observation:
+// child 7 replaced the tenant-scoped tabs with ONE scope-parameterized panel.
 func TestE2EClientsHaveTheOnePanelNotTheTenantTabs(t *testing.T) {
 	root := repoRootE2E(t)
 	comps := filepath.Join(root, "frontend", "src", "components")

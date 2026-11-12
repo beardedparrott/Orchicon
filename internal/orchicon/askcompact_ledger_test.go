@@ -1,20 +1,6 @@
 package orchicon
 
-// askcompact_ledger_test.go — the identifier ledger, and the loss it exists to
-// prevent.
-//
-// The collapse is lossy in two places. reduceAskHistory replaces tool arguments,
-// tool results and images with one-line markers BEFORE the summarizer sees
-// anything, and on the over-limit conversation that motivated the pressure gate
-// that dropped material was 83% of the bytes (46% images, 37% tool results) against
-// 3% of actual text. The identifiers a continuing conversation needs — file paths,
-// work item ids, commit shas — live in exactly what gets dropped, so the summary
-// prompt's instruction to "preserve identifiers verbatim" was asked of a model that
-// had never been shown them.
-//
-// These tests pin both halves of the answer: the ledger names what the reduction
-// dropped, and it survives into the compacted history even when the summary omits
-// it entirely.
+// askcompact_ledger_test.go — the identifier ledger, and the loss it exists to prevent.
 
 import (
 	"context"
@@ -25,14 +11,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// ledgerTestHistory builds a history whose ONLY copies of an entity id, a file path
-// and a commit live inside tool arguments and a tool result — the material the
-// reduce stage replaces with markers. The prose messages deliberately contain none
-// of them, so anything the ledger names can only have come from the dropped side.
+// ledgerTestHistory builds a history whose ONLY copies of an entity id.
 func ledgerTestHistory(n int) ([]Message, string, string, string) {
 	const (
 		entityID = "01M33R5RDSENCVRFVZ588N9NRG"
-		path     = "/home/beardedparrott/projects/Orchicon/internal/askorchicon/chat.go"
+		path     = "/srv/orchicon/internal/askorchicon/chat.go"
 		commit   = "c0a80e54"
 	)
 	hist := make([]Message, 0, n)
@@ -57,9 +40,7 @@ func ledgerTestHistory(n int) ([]Message, string, string, string) {
 	return hist, entityID, path, commit
 }
 
-// TestTheLedgerNamesWhatTheReductionDrops is the premise test. If reduceAskHistory
-// already kept these tokens, the ledger would be redundant — so this asserts the
-// gap exists before asserting the ledger closes it.
+// TestTheLedgerNamesWhatTheReductionDrops is the premise test.
 func TestTheLedgerNamesWhatTheReductionDrops(t *testing.T) {
 	hist, entityID, path, commit := ledgerTestHistory(8)
 
@@ -83,10 +64,7 @@ func TestTheLedgerNamesWhatTheReductionDrops(t *testing.T) {
 	}
 }
 
-// TestACompactedHistoryCarriesTheLedgerEvenWhenTheSummaryOmitsIt is the regression
-// that matters. The stub model returns a summary that mentions NOTHING from the
-// transcript, which is the worst case: a lazy or lossy summary. The identifiers must
-// still be in the history afterwards, because the ledger rides verbatim beside it.
+// TestACompactedHistoryCarriesTheLedgerEvenWhenTheSummaryOmitsIt is the regression that matters.
 func TestACompactedHistoryCarriesTheLedgerEvenWhenTheSummaryOmitsIt(t *testing.T) {
 	hist, entityID, path, commit := ledgerTestHistory(20)
 
@@ -151,9 +129,8 @@ func mustText(m Message) string {
 	return b.String()
 }
 
-// TestLedgerGitObjectSeparatesCommitsFromCounts pins the filter that keeps the ledger
-// from filling with numbers. A naive hex match turns every 7+ digit count in tool
-// output into a "commit", which buries the real ones.
+// TestLedgerGitObjectSeparatesCommitsFromCounts pins the filter that keeps the ledger from filling
+// with numbers.
 func TestLedgerGitObjectSeparatesCommitsFromCounts(t *testing.T) {
 	cases := []struct {
 		tok  string
@@ -174,9 +151,7 @@ func TestLedgerGitObjectSeparatesCommitsFromCounts(t *testing.T) {
 	}
 }
 
-// TestTheLedgerIsCappedAndReportsWhatItLeftOut pins the bound. The ledger must not
-// inherit the unbounded growth the collapse exists to fix, and a capped list must
-// say how much it left out rather than looking complete.
+// TestTheLedgerIsCappedAndReportsWhatItLeftOut pins the bound.
 func TestTheLedgerIsCappedAndReportsWhatItLeftOut(t *testing.T) {
 	// More distinct entity ids than the cap, spread across tool results. The prefix is
 	// 24 Crockford characters and two decimal digits make the 26 an id must be.
@@ -199,9 +174,8 @@ func TestTheLedgerIsCappedAndReportsWhatItLeftOut(t *testing.T) {
 	}
 }
 
-// TestAnEmptyLedgerAddsNothingToTheMarker pins that a history with no identifiers
-// produces no ledger section at all — the marker must not grow a heading for an
-// empty list.
+// TestAnEmptyLedgerAddsNothingToTheMarker pins that a history with no identifiers produces no
+// ledger section at all — the marker must not grow a heading for an empty list.
 func TestAnEmptyLedgerAddsNothingToTheMarker(t *testing.T) {
 	hist := []Message{{Role: RoleUser, Content: []Content{{Text: compactTestStr("nothing identifiable here")}}}}
 	if ledger := askHistoryLedger(hist); ledger != "" {

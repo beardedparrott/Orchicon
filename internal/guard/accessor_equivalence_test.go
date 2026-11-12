@@ -1,14 +1,7 @@
 package guard
 
-// accessor_equivalence_test.go — AC-6: "the guard and the consent layer read the
-// SAME policy accessor", asserted by TEST rather than by inspection.
-//
-// The shim keeps a hand-written bash reader of the policy file (the merged,
-// reviewed parser the shipped-format test already pins). The property that makes
-// that safe is that the two readers AGREE: for the same policy and the same
-// target, the shim's verdict is permpolicy.Store.Decide's verdict — including
-// naming the same deny entry. This test fails the moment either side starts
-// reading a different file or applying a different order.
+// accessor_equivalence_test.go — AC-6: "the guard and the consent layer read the SAME policy
+// accessor", asserted by TEST rather than by inspection.
 
 import (
 	"os"
@@ -20,9 +13,8 @@ import (
 )
 
 func TestShimVerdictEqualsPermpolicyDecide(t *testing.T) {
-	// HOME lives outside the project/scratch set, so a matched entry is the ONE
-	// thing that can refuse the target: the interactive shim refuses any
-	// uncovered absolute target anyway, and the entry must be what did it.
+	// HOME lives outside the project/scratch set, so a matched entry is the ONE thing that can refuse
+	// the target: the interactive shim refuses any uncovered absolute target anyway.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	sshKey := filepath.Join(home, ".ssh", "id_rsa")
@@ -66,9 +58,8 @@ func TestShimVerdictEqualsPermpolicyDecide(t *testing.T) {
 
 			exit, out := runGuardEnv(t, g, InteractiveEnviron(tc.policy, "", nil, nil, false), "rm", "-f", tc.target)
 
-			// The shim refuses exactly when Decide says "do not proceed"
-			// (deny / ask / none); it runs the command when Decide proceeds
-			// (grant / accept / project).
+			// The shim refuses exactly when Decide says "do not proceed" (deny / ask / none); it runs the
+			// command when Decide proceeds (grant / accept / project).
 			wantRefuse := !want.Verdict.Proceed()
 			if gotRefuse := exit != 0; gotRefuse != wantRefuse {
 				t.Fatalf("verdict mismatch: shim refuses=%v (exit %d: %s); Decide=%s (proceed=%v)",
@@ -107,14 +98,8 @@ func TestShimVerdictEqualsPermpolicyDecide(t *testing.T) {
 	})
 }
 
-// TestShimMatchesDecideWhereAFirstMatchReadWouldDiverge pins the shim's reader
-// against the accessor on the cases a naive first-match-in-file-order read gets
-// WRONG — the shim allowing a path permpolicy.Decide DENIES is a fail-open in
-// the one component whose whole job is the subprocess hole consent cannot see.
-//
-// It also pins the glob semantics: bash's own '*' crosses '/' while
-// doublestar's does not, so a shim that globbed naively would both deny paths
-// the accessor allows (drift) and accept paths it denies.
+// TestShimMatchesDecideWhereAFirstMatchReadWouldDiverge pins the shim's reader against the accessor
+// on the cases a naive first-match-in-file-order read gets WRONG.
 func TestShimMatchesDecideWhereAFirstMatchReadWouldDiverge(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -143,9 +128,7 @@ func TestShimMatchesDecideWhereAFirstMatchReadWouldDiverge(t *testing.T) {
 		target string
 	}{
 		{
-			// An accept section written ABOVE the deny section. permpolicy.Decide
-			// reads its deny half first, so this is a DENY; a first-match read
-			// hits the accept entry first and would run the command.
+			// An accept section written ABOVE the deny section.
 			name:   "accept section above deny",
 			body:   "accept:\n  - " + grant + "/**\ndeny:\n  - " + denyTarget + "\n",
 			grant:  grant,
@@ -159,9 +142,8 @@ func TestShimMatchesDecideWhereAFirstMatchReadWouldDiverge(t *testing.T) {
 			target: zeroSeg,
 		},
 		{
-			// '*' does not cross '/': /grant/* covers the files directly in
-			// /grant, NOT /grant/sub/file.txt — which the session grant covers,
-			// so the accessor proceeds and the shim must not deny it either.
+			// '*' does not cross '/': /grant/* covers the files directly in /grant, NOT /grant/sub/file.txt —
+			// which the session grant covers, so the accessor proceeds and the shim must not deny it either.
 			name:   "single star does not cross a slash",
 			body:   "deny:\n  - " + grant + "/*\naccept: []\n",
 			grant:  grant,

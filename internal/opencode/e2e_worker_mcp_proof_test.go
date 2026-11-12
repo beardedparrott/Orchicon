@@ -1,21 +1,6 @@
 package opencode
 
 // e2e_worker_mcp_proof_test.go — AC 3 (the OPENCODE worker leg).
-//
-// THE GRANULARITY IS THE POINT. opencode's MCP set is baked into the SERVE's
-// config ONCE (servehost.go serveConfig), because a shared serve is created per
-// resolved SET — never per execution (child 4). So the proof has two halves, and
-// criterion 3 allows the second:
-//
-//  1. OFFLINE (always runs): the project's definition, resolved from REAL
-//     mcp_servers rows, reaches the config opencode actually boots from
-//     (BuildConfigContent's RunMCP/RunSkills) and the pool keys serves by that
-//     set — so a session whose project owns a server gets a serve built for it.
-//  2. LIVE (gated): a real `opencode serve` + a real FREE model
-//     (opencode/longcat-2.5-preview-free) makes the call. When opencode is absent
-//     or the free model is unreachable, the leg RECORDS the actionable reason
-//     ("unavailable", naming the server it could not exercise) and skips — it
-//     never passes silently, which is what criterion 3 requires.
 
 import (
 	"context"
@@ -37,11 +22,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/testfixtures"
 )
 
-// e2eOpenCodeResolvedSet resolves the seed's WORKER scope with the REAL
-// storage-backed resolver — the scope whose SKILL half carries the version's
-// inline skill files. It is also the scope a dispatched worker resolves
-// (ScopeWorker = project-owned ∪ the version's own definitions), so this is the
-// set a real opencode session's serve is built from.
+// e2eOpenCodeResolvedSet resolves the seed's WORKER scope with the REAL storage-backed resolver —
+// the scope whose SKILL half carries the version's inline skill files.
 func e2eOpenCodeResolvedSet(t *testing.T, pool *db.Pool, seed testfixtures.Seed) mcpclient.Resolution {
 	t.Helper()
 	res, err := mcpsettings.NewResolver(pool).ResolveScope(
@@ -60,9 +42,8 @@ func e2eOpenCodeResolvedSet(t *testing.T, pool *db.Pool, seed testfixtures.Seed)
 	return res
 }
 
-// AC 3 (offline half): the project's MCP server and its skill FILE reach the
-// config opencode boots from. This proves the project's configuration reaches
-// the artifact the serve is launched with — not a hand-built set.
+// AC 3 (offline half): the project's MCP server and its skill FILE reach the config opencode boots
+// from.
 func TestE2EOpenCodeResolvesProjectServerIntoItsServeConfig(t *testing.T) {
 	pool := testfixtures.Pool(t)
 	url := mcpclient.E2EHTTPFixtureT(t)
@@ -119,10 +100,8 @@ func TestE2EOpenCodeResolvesProjectServerIntoItsServeConfig(t *testing.T) {
 	})
 }
 
-// AC 3 (offline half): the pool keys a serve by the resolved SET, so a session
-// whose project owns a server runs on a serve built for it — and a DIFFERENT set
-// gets a DIFFERENT serve, each with its own data dir. This is child 4's
-// granularity, re-observed against a real DB-resolved set.
+// AC 3 (offline half): the pool keys a serve by the resolved SET, so a session whose project owns a
+// server runs on a serve built for it — and a DIFFERENT set gets a DIFFERENT serve.
 func TestE2EOpenCodeHostServePoolKeysByResolvedSet(t *testing.T) {
 	pool := testfixtures.Pool(t)
 	url := mcpclient.E2EHTTPFixtureT(t)
@@ -164,9 +143,8 @@ func TestE2EOpenCodeHostServePoolKeysByResolvedSet(t *testing.T) {
 	})
 }
 
-// AC 3 (live half, or the ACTIONABLE failure criterion 3 permits): a REAL
-// `opencode serve` boots the project's config and the free model calls the
-// project's tool. Gated on ORCHICON_TEST_OPENCODE=1 + a binary on PATH.
+// AC 3 (live half, or the ACTIONABLE failure criterion 3 permits): a REAL `opencode serve` boots
+// the project's config and the free model calls the project's tool.
 func TestE2EOpenCodeLiveWorkerCallsTheProjectServer(t *testing.T) {
 	bin, lerr := exec.LookPath("opencode")
 	if lerr != nil || bin == "" {
@@ -219,9 +197,8 @@ func TestE2EOpenCodeLiveWorkerCallsTheProjectServer(t *testing.T) {
 		ID: db.NewID(), TenantID: testfixtures.E2ETenant,
 		ProjectID: seed.ProjectID, TaskID: seed.WorkItemID,
 	}
-	// opencode renders a namespaced MCP tool as `<server>_<tool>` (it strips
-	// the native `mcp__`/`__` framing), so the model is told the name opencode
-	// actually exposes. The assertion below normalizes both forms.
+	// opencode renders a namespaced MCP tool as `<server>_<tool>` (it strips the native `mcp__`/`__`
+	// framing), so the model is told the name opencode actually exposes.
 	manifest := scheduler.ExecutionManifest{
 		Goal: "Call the tool " + e2eOpenCodeToolName(seed.HTTPServerID, mcpclient.E2EProbeTool) +
 			` with {"nonce":"` + nonce + `"} and report its output verbatim. ` +
@@ -266,23 +243,17 @@ func TestE2EOpenCodeLiveWorkerCallsTheProjectServer(t *testing.T) {
 
 // --- small helpers -----------------------------------------------------------
 
-// e2eDecisionMarker is the worker completion contract's terminal line. The LIVE
-// model only emits it when it is told to (in production it rides the composite
-// worker prompt), so the gate instructs the model and the run does not stall on
-// `missing_decision_signal`.
+// e2eDecisionMarker is the worker completion contract's terminal line.
 const e2eDecisionMarker = "ORCHICON WORKER SUMMARY:"
 
-// e2eOpenCodeToolName renders the tool name opencode exposes for a namespaced
-// MCP tool: it strips the native `mcp__<server>__<tool>` framing down to
-// `<server>_<tool>`, so the model must be asked for THAT name.
+// e2eOpenCodeToolName renders the tool name opencode exposes for a namespaced MCP tool: it strips
+// the native `mcp__<server>__<tool>` framing down to `<server>_<tool>`.
 func e2eOpenCodeToolName(server, tool string) string {
 	return server + "_" + tool
 }
 
-// e2eSameTool reports whether two tool names denote the same MCP tool, ignoring
-// the framing opencode strips (`mcp__` prefix, `__`/`_` separators). This keeps
-// the assertion tied to the OBSERVATION — that the project's distinctive probe
-// was called — rather than to one adapter's spelling.
+// e2eSameTool reports whether two tool names denote the same MCP tool, ignoring the framing
+// opencode strips (`mcp__` prefix, `__`/`_` separators).
 func e2eSameTool(got, want string) bool {
 	return e2eNormTool(got) == e2eNormTool(strings.TrimPrefix(want, "mcp"))
 }
@@ -320,9 +291,8 @@ func quietTestLogger() *slog.Logger {
 // DataDir exposes the serve's data dir for the pool-keying assertion.
 func (h *HostServe) DataDir() string { return h.dataDir }
 
-// e2eOpenCodeCallbacks records what the live opencode session called, so the
-// live leg asserts on the OBSERVATION (a tool call the model actually made)
-// rather than on the session's terminal text alone.
+// e2eOpenCodeCallbacks records what the live opencode session called, so the live leg asserts on
+// the OBSERVATION (a tool call the model actually made) rather than on the session's terminal text.
 type e2eOpenCodeCallbacks struct {
 	liveCallbacks
 	mu   sync.Mutex

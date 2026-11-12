@@ -13,20 +13,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// TestWorkItemContextFilesDB verifies the work-item context_files
-// contract end-to-end through the Connect service against a real
-// Postgres (skipped unless ORCHICON_TEST_DSN is set, same convention as
-// the validate-parent tests):
-//
-//  1. CreateWorkItem with context_files (a file + a directory) persists
-//     both and returns them on the proto row.
-//  2. CreateWorkItem without context_files defaults to an empty array
-//     (defined value, not null).
-//  3. UpdateWorkItem replaces the selection (files + directories).
-//  4. UpdateWorkItem with an empty ContextFiles list clears the
-//     selection.
-//  5. Validation rejects non-absolute / traversal paths at the API
-//     boundary (InvalidArgument).
+// TestWorkItemContextFilesDB verifies the work-item context_files contract end-to-end through the
+// Connect service against a real Postgres (skipped unless ORCHICON_TEST_DSN is set.
 func TestWorkItemContextFilesDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -115,11 +103,8 @@ func TestWorkItemContextFilesDB(t *testing.T) {
 	}
 }
 
-// TestWorkItemContextFilesWithinProjectDirDB verifies the confinement rule:
-// when the project has a project_dir configured, context_files must live
-// inside it (the only path guaranteed mounted where workers run). Paths
-// outside are rejected at the API boundary with InvalidArgument, for both
-// Create and Update.
+// TestWorkItemContextFilesWithinProjectDirDB verifies the confinement rule: when the project has a
+// project_dir configured.
 func TestWorkItemContextFilesWithinProjectDirDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -177,9 +162,8 @@ func TestWorkItemContextFilesWithinProjectDirDB(t *testing.T) {
 	}
 }
 
-// TestContextFilesColumnExistsDB verifies the migration added the
-// context_files column and the RLS gate's tenant scoping still works
-// (the row is readable only under its tenant).
+// TestContextFilesColumnExistsDB verifies the migration added the context_files column and the RLS
+// gate's tenant scoping still works (the row is readable only under its tenant).
 func TestContextFilesColumnExistsDB(t *testing.T) {
 	pool := validateParentTestPool(t)
 	ctx := tenant.WithID(context.Background(), validateParentTestTenant)
@@ -189,7 +173,7 @@ func TestContextFilesColumnExistsDB(t *testing.T) {
 	}
 	defer func() { _ = ttx.Rollback(context.Background()) }()
 	// The column exists (a pre-migration query would fail here).
-	var one string
+	var one *string
 	if err := ttx.Tx.QueryRow(ctx,
 		`SELECT context_files FROM work_items LIMIT 1`).Scan(&one); err != nil && !strings.Contains(err.Error(), "no rows") {
 		t.Fatalf("query context_files column: %v", err)

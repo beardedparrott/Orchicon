@@ -1,24 +1,6 @@
 package work
 
-// workitems.go — Work Items full CRUD + the collection semantics the
-// platform contract requires:
-//
-//   - CreateWorkItem (title / kind / parent / description / acceptance
-//     criteria / priority / budgets / context window / workflow / runtime
-//     image / context files / auto-start),
-//   - UpdateWorkItem for every mutable field, including status + priority,
-//     the workflow binding, the schedule (scheduled_start_at) and
-//     auto_start_workflow,
-//   - AssignWorker / UnassignWorker,
-//   - ReorderWorkItems (the ONLY mutation of sequence order),
-//   - HardDeleteWorkItem (permanent — the GUI's Delete, which the TUI's ctrl+x
-//     now performs; DeleteWorkItem's soft delete is a STATUS CHANGE and lives in
-//     the status editor), ArchiveWorkItem / RestoreWorkItem — all Confirm-gated.
-//
-// Switching kind re-resolves the hierarchy and epic/feature are
-// non-schedulable (worker/schedule cleared) — both are enforced
-// server-side; the screen offers kind on create and edit and surfaces the
-// server's answer.
+// workitems.go — Work Items full CRUD + the collection semantics the platform contract requires:
 
 import (
 	"context"
@@ -52,18 +34,15 @@ type itemFormMsg struct {
 	item      *apiv1.WorkItem
 	projects  []projectOpt
 	workflows []workflowOpt
-	// parents / images are the KPicker option lists: the work items that can be
-	// a parent and the runtime images that can be selected (as options, never
-	// as ids the operator would have to know).
+	// parents / images are the KPicker option lists: the work items that can be a parent and the
+	// runtime images that can be selected (as options, never as ids the operator would have to know).
 	parents []kit2.Option
 	images  []kit2.Option
-	// hiddenWorkflows is how many workflow templates the bulk-set picker EXCLUDED because they
-	// cannot run (not PUBLISHED/DEPRECATED, or with no steps). It is reported so the operator is
-	// never left wondering where a template went.
+	// hiddenWorkflows is how many workflow templates the bulk-set picker EXCLUDED because they cannot
+	// run (not PUBLISHED/DEPRECATED, or with no steps).
 	hiddenWorkflows int
-	// parentKinds maps each parent option's id to its kind, so the create form
-	// can derive the child kind from the chosen parent; parentProjects maps it
-	// to its project, because a parent must be in the child's project.
+	// parentKinds maps each parent option's id to its kind, so the create form can derive the child
+	// kind from the chosen parent; parentProjects maps it to its project.
 	parentKinds    map[string]apiv1.WorkItemKind
 	parentProjects map[string]string
 	err            error
@@ -80,11 +59,7 @@ func kindOptions() []kit2.Option {
 	}
 }
 
-// statusOptions is the user-assignable status vocabulary. The
-// system-managed states (running/blocked/idea/archived/…) are deliberately
-// absent — a human cannot assign them. "skipped" IS user-assignable (the
-// sequence engine consumes it as terminal-success and passes over it),
-// which is why it is included below.
+// statusOptions is the user-assignable status vocabulary.
 func statusOptions() []kit2.Option {
 	return []kit2.Option{
 		{Value: "pending", Label: "pending"},
@@ -96,6 +71,58 @@ func statusOptions() []kit2.Option {
 		{Value: "cancelled", Label: "cancelled"},
 		{Value: "skipped", Label: "skipped"},
 	}
+}
+
+// itemExecutionModeInherit is the THIRD choice an ITEM has and a project does not: "no override,
+// follow the project".
+const itemExecutionModeInherit = "inherit"
+
+// itemExecutionModeOptions is the ITEM-side vocabulary: inherit / local / runtime.
+func itemExecutionModeOptions(inherited apiv1.ExecutionMode) []kit2.Option {
+	label := "inherit — from the project"
+	if s := executionModeString(inherited); s != "" {
+		// The inherited mode is STATED where the form knows it — the same shape the GUI's select uses
+		// ("Inherit from project (<mode>)", ExecutionModeSelect.tsx:86-102).
+		label = "inherit from project (" + s + ")"
+	}
+	opts := make([]kit2.Option, 0, 3)
+	opts = append(opts, kit2.Option{Value: itemExecutionModeInherit, Label: label})
+	descriptions := strings.NewReplacer(" (default)", "", " (opt-in)", "")
+	for _, o := range executionModeOptions() {
+		opts = append(opts, kit2.Option{Value: o.Value, Label: descriptions.Replace(o.Label)})
+	}
+	return opts
+}
+
+// itemExecutionModeField is the edit form's seed: the item's stored OVERRIDE, or "inherit" when it
+// has none.
+func itemExecutionModeField(w *apiv1.WorkItem) string {
+	if s := executionModeString(w.GetExecutionMode()); s != "" {
+		return s
+	}
+	return itemExecutionModeInherit
+}
+
+// executionModeDetail renders a work item's execution mode for the DETAIL pane.
+func executionModeDetail(w *apiv1.WorkItem) string {
+	eff := executionModeString(w.GetEffectiveExecutionMode())
+	if eff == "" {
+		eff = "local"
+	}
+	if ov := executionModeString(w.GetExecutionMode()); ov != "" {
+		return eff + " (item override: " + ov + ")"
+	}
+	return eff + " (inherited from the project)"
+}
+
+// projectExecutionMode is a listed project's mode, for the inherit label.
+func (m *Model) projectExecutionMode(id string) apiv1.ExecutionMode {
+	for _, p := range m.projects {
+		if p.ID == id {
+			return p.Mode
+		}
+	}
+	return apiv1.ExecutionMode_EXECUTION_MODE_UNSPECIFIED
 }
 
 func kindFromName(v string) apiv1.WorkItemKind {
@@ -182,17 +209,15 @@ func (m *Model) prepCreateItem() tea.Cmd {
 			return msg
 		}
 		for _, p := range pr.Msg.GetProjects() {
-			msg.projects = append(msg.projects, projectOpt{ID: p.GetId(), Name: p.GetName()})
+			msg.projects = append(msg.projects, projectOpt{ID: p.GetId(), Name: p.GetName(), Mode: p.GetExecutionMode()})
 		}
 		if wr, err := cl.Workflows.ListWorkflows(ctx, connect.NewRequest(&apiv1.ListWorkflowsRequest{PageSize: 100})); err == nil {
 			for _, w := range wr.Msg.GetWorkflows() {
 				msg.workflows = append(msg.workflows, workflowOpt{ID: w.GetId(), Name: w.GetName()})
 			}
 		}
-		// The parent picker lists the real work items, so a parent is CHOSEN by
-		// name instead of typed as an id. It FOLLOWS PAGINATION like the list
-		// itself: a single page hid every item past the first — including the
-		// newly created parents the operator could not find in this dropdown.
+		// The parent picker lists the real work items, so a parent is CHOSEN by name instead of typed as an
+		// id.
 		msg.parents, msg.parentKinds, msg.parentProjects = loadParentOptions(ctx, cl)
 		// The runtime-image picker lists the real images (value = the tag the
 		// request carries).
@@ -224,6 +249,15 @@ func (m *Model) prepEditItem(mode string) tea.Cmd {
 			return itemFormMsg{mode: mode, err: err}
 		}
 		msg := itemFormMsg{mode: mode, item: resp.Msg.GetWorkItem()}
+		// The EXECUTION-MODE field's inherit option names the mode it inherits FROM, and GetWorkItem does
+		// not carry the project's mode — so the edit form needs the project list too.
+		if mode == formEditItem {
+			if pr, err := cl.Projects.ListProjects(ctx, connect.NewRequest(&apiv1.ListProjectsRequest{PageSize: 100})); err == nil {
+				for _, p := range pr.Msg.GetProjects() {
+					msg.projects = append(msg.projects, projectOpt{ID: p.GetId(), Name: p.GetName(), Mode: p.GetExecutionMode()})
+				}
+			}
+		}
 		// The edit form's pickers need the same option lists as the create form.
 		if wr, err := cl.Workflows.ListWorkflows(ctx, connect.NewRequest(&apiv1.ListWorkflowsRequest{PageSize: 100})); err == nil {
 			for _, w := range wr.Msg.GetWorkflows() {
@@ -249,10 +283,8 @@ func (m *Model) workflowPickerOpts() []kit2.Option {
 	return opts
 }
 
-// pickerOptsWithCurrent guarantees the option list contains the item's CURRENT
-// value, so editing an entity never silently drops a reference the fetched list
-// does not know about (a workflow or image that has since been deleted).
-// prefix names what the synthetic option is when its label is not human.
+// pickerOptsWithCurrent guarantees the option list contains the item's CURRENT value, so editing an
+// entity never silently drops a reference the fetched list does not know about (a workflow.
 func pickerOptsWithCurrent(opts []kit2.Option, cur, prefix string) []kit2.Option {
 	if cur == "" {
 		return opts
@@ -265,10 +297,8 @@ func pickerOptsWithCurrent(opts []kit2.Option, cur, prefix string) []kit2.Option
 	return append([]kit2.Option{{Value: cur, Label: prefix + cur + " (current)"}}, opts...)
 }
 
-// kindForParent is the kind to CORRECT to under a parent of kind `parent`:
-// the shallowest kind that is strictly deeper, i.e. the closest legal child.
-// Note this is only a correction target — a parent may legitimately take any
-// strictly deeper kind (an epic may parent a feature, a task OR a subtask).
+// kindForParent is the kind to CORRECT to under a parent of kind `parent`: the shallowest kind that
+// is strictly deeper, i.e. the closest legal child.
 func kindForParent(parent apiv1.WorkItemKind) string {
 	switch parent {
 	case apiv1.WorkItemKind_WORK_ITEM_KIND_EPIC:
@@ -281,9 +311,7 @@ func kindForParent(parent apiv1.WorkItemKind) string {
 	return ""
 }
 
-// parentOptionsFor is the parent picker's option list scoped to a project. The
-// server rejects a parent outside the child's project, so offering one would be
-// offering a guaranteed failure.
+// parentOptionsFor is the parent picker's option list scoped to a project.
 func (m *Model) parentOptionsFor(projectID string) []kit2.Option {
 	opts := []kit2.Option{{Value: "", Label: "— none (top level · epic) —"}}
 	for _, o := range m.parents {
@@ -306,14 +334,7 @@ func hasOption(opts []kit2.Option, v string) bool {
 	return false
 }
 
-// validateHierarchy mirrors the server's parent rules locally
-// (internal/workitem/validate.go), so an illegal combination is caught in the
-// form with a clear message instead of coming back as a rejected write:
-//   - a parentless item must be an EPIC (only epics may be top-level),
-//   - a parent must live in the SAME project as its child,
-//   - a child must be strictly DEEPER than its parent — which means an epic may
-//     parent a feature, a task or a subtask; a FEATURE may parent a task or a
-//     subtask; and a TASK may parent a subtask.
+// validateHierarchy mirrors the server's parent rules locally (internal/workitem/validate.go).
 func (m *Model) validateHierarchy(projectID, parentID, kind string) error {
 	depth := map[string]int{"epic": 1, "feature": 2, "task": 3, "subtask": 4}
 	if parentID == "" {
@@ -335,19 +356,12 @@ func (m *Model) validateHierarchy(projectID, parentID, kind string) error {
 	return nil
 }
 
-// maxParentPages bounds the parent picker's pagination (the same shape as the
-// list's own: the dropdown must show EVERY item that can be a parent, and the
-// server orders NULL sort_order LAST, so a fresh item is only on a later page).
+// maxParentPages bounds the parent picker's pagination (the same shape as the list's own: the
+// dropdown must show EVERY item that can be a parent, and the server orders NULL sort_order LAST.
 const maxParentPages = 25
 
-// loadParentOptions fetches every work item that can be a parent and returns the picker options plus
-// the id→kind and id→project maps the form needs to derive and validate the child kind.
-//
-// ONE request, for the same reason the list is one request (see workItemPageSize in screen.go): the
-// server orders page 1 by the sequence chain and every later page by ID alone, so a cursor walk both
-// DUPLICATES and MISSES rows — and a duplicated id here would append a second "[task] Fix …" option
-// to a dropdown, which is the same visible defect the operator reported for the tree. A real tenant
-// fits in the RPC's maximum page.
+// loadParentOptions fetches every work item that can be a parent and returns the picker options
+// plus the id→kind and id→project maps the form needs to derive and validate the child kind.
 func loadParentOptions(ctx context.Context, cl *client.Clients) ([]kit2.Option, map[string]apiv1.WorkItemKind, map[string]string) {
 	opts := []kit2.Option{{Value: "", Label: "— none (top level · epic) —"}}
 	kinds := map[string]apiv1.WorkItemKind{}
@@ -394,9 +408,8 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 		kit2.FieldSpec{Name: "title", Label: "Title", Kind: kit2.KText, Required: true, Placeholder: "add retry to the sweeper"},
 		kit2.FieldSpec{Name: "project", Label: "Project", Kind: kit2.KSelect, Options: projOpts, Required: true, Initial: initialProject},
 		kit2.FieldSpec{Name: "kind", Label: "Kind", Kind: kit2.KSelect, Options: kindOptions(), Initial: "epic"},
-		// The parent list is scoped to the CHOSEN project: a parent must be in
-		// the same project as its child, so offering another project's items
-		// would offer a guaranteed rejection.
+		// The parent list is scoped to the CHOSEN project: a parent must be in the same project as its
+		// child, so offering another project's items would offer a guaranteed rejection.
 		kit2.FieldSpec{Name: "parent", Label: "Parent", Kind: kit2.KPicker,
 			Options: m.parentOptionsFor(initialProject), Placeholder: "type to search work items"},
 		kit2.FieldSpec{Name: "description", Label: "Description", Kind: kit2.KTextArea},
@@ -406,28 +419,16 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 		kit2.FieldSpec{Name: "context_window", Label: "Context window", Kind: kit2.KNumber, Initial: "0", Validate: validateNonNegativeInt},
 		kit2.FieldSpec{Name: "workflow", Label: "Workflow", Kind: kit2.KPicker, Options: wfOpts, Initial: ""},
 		kit2.FieldSpec{Name: "runtime_image", Label: "Runtime image", Kind: kit2.KPicker, Options: m.images, Placeholder: "type to search images"},
+		// WHERE THIS ITEM'S EXECUTIONS RUN — the per-item override of the project's mode. Three
+		// choices because an item can INHERIT (the default); see itemExecutionModeOptions.
+		kit2.FieldSpec{Name: "execution_mode", Label: "Execution mode", Kind: kit2.KSelect,
+			Options: itemExecutionModeOptions(m.projectExecutionMode(initialProject)),
+			Initial: itemExecutionModeInherit},
 		kit2.FieldSpec{Name: "context_files", Label: "Context files", Kind: kit2.KText, Placeholder: "/abs/path/a.go,/abs/dir"},
 		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: "false"},
 	)
-	// Derived-field rules keep the form on legal ground:
-	//
-	//  1. Changing the PROJECT re-scopes the parent picker to that project and
-	//     drops a parent that no longer belongs (the server requires the same
-	//     project).
-	//  2. Choosing a PARENT corrects the kind ONLY when the pairing is illegal.
-	//     Any strictly deeper kind is legal, so a deliberate choice survives —
-	//     an epic may parent a feature, a task or a subtask; a FEATURE may
-	//     parent a task or a subtask; a TASK may parent a subtask.
-	//
-	// THERE IS NO AUTO-START COUPLING, deliberately. Emptying the workflow must NOT clear
-	// auto-start, because a workflow-less item is exactly how a sequential workflow is kicked
-	// off: the parent carries no binding of its own and its children run in chain order. The
-	// operator: "Workflows need to be empty for a sequential workflow to kick off. We just need
-	// to remove that validation."
-	//
-	// Auto-start with no workflow is legal at every status the operator can save (the server
-	// only gates on ENTERING ready/assigned/scheduled/running, and it exempts a sequence parent
-	// entirely), so the client must not refuse it, warn about it, or clear it.
+	// Derived-field rules keep the form on legal ground: Choosing a PARENT corrects the kind ONLY when
+	// the pairing is illegal.
 	f.OnChange = func(name, value string) {
 		switch name {
 		case "project":
@@ -435,6 +436,11 @@ func (m *Model) newItemCreateForm() *kit2.Form {
 			for i := range f.Specs {
 				if f.Specs[i].Name == "parent" {
 					f.Specs[i].Options = opts
+				}
+				// The inherit option names the mode it inherits FROM, so it is re-read when the project changes —
+				// otherwise the form would state one project's mode while the request lands the item in another.
+				if f.Specs[i].Name == "execution_mode" {
+					f.Specs[i].Options = itemExecutionModeOptions(m.projectExecutionMode(value))
 				}
 			}
 			if cur := f.Values["parent"]; cur != "" && !hasOption(opts, cur) {
@@ -476,53 +482,28 @@ func (m *Model) editFormFor(w *apiv1.WorkItem, projOpts []kit2.Option) *kit2.For
 		kit2.FieldSpec{Name: "priority", Label: "Priority", Kind: kit2.KNumber, Initial: strconv.Itoa(int(w.GetPriority())), Validate: validateNonNegativeInt},
 		kit2.FieldSpec{Name: "budgets", Label: "Budgets", Kind: kit2.KJSON, Initial: w.GetBudgets(), Validate: validateJSON},
 		kit2.FieldSpec{Name: "context_window", Label: "Context window", Kind: kit2.KNumber, Initial: strconv.Itoa(int(w.GetContextWindow())), Validate: validateNonNegativeInt},
-		// SEEDED from the item, like every other field in this form. Initial: is the ONLY thing
-		// that populates the form's value map (kit2.NewForm writes f.Values[name] only when
-		// Initial != ""), so a reference picker WITHOUT it opens on "— none —" AND sends "" on
-		// save: an operator who opens an item only to correct its priority would silently unbind
-		// the workflow that drives it and clear the container image it runs in. The proto reads
-		// empty as the unbind ("bind/unbind to a workflow template"; "empty = base image"), so
-		// the blank field IS a write, not a display shortfall.
-		//
-		// pickerOptsWithCurrent guarantees the value is LISTED; it selects nothing, so it cannot
-		// substitute for the seed. The GUI seeds both fields the same way
-		// (frontend/src/routes/work-items_.$id.tsx:303-304) — this is the TUI catching up.
+		// Initial: is the ONLY thing that populates the form's value map (kit2.NewForm writes
+		// f.Values[name] only when Initial != "").
 		kit2.FieldSpec{Name: "workflow", Label: "Workflow", Kind: kit2.KPicker,
 			Options: pickerOptsWithCurrent(m.workflowPickerOpts(), w.GetWorkflowId(), "workflow "),
 			Initial: w.GetWorkflowId()},
 		kit2.FieldSpec{Name: "runtime_image", Label: "Runtime image", Kind: kit2.KPicker,
 			Options: pickerOptsWithCurrent(m.images, w.GetRuntimeImage(), "image "),
 			Initial: w.GetRuntimeImage()},
+		// THE EXECUTION-MODE OVERRIDE, SEEDED FROM THE ITEM — the same rule as the two reference pickers
+		// above, and for the same reason: Initial: is the only thing that populates the value map.
+		kit2.FieldSpec{Name: "execution_mode", Label: "Execution mode", Kind: kit2.KSelect,
+			Options: itemExecutionModeOptions(m.projectExecutionMode(w.GetProjectId())),
+			Initial: itemExecutionModeField(w)},
 		kit2.FieldSpec{Name: "context_files", Label: "Context files", Kind: kit2.KText, Initial: strings.Join(w.GetContextFiles(), ",")},
 		// A DAY AND A TIME, chosen from ONE modal calendar + clock — never typed, never a preset.
-		//
-		// This replaces a KPicker fed by schedulePresets(): ten canned offsets ("in 15 minutes" …
-		// "in 1 week") whose labels printed a raw UTC timestamp. The operator's report — "Having to
-		// type the time in the EXACT format or pick very specific time jumps like 15 minutes is very
-		// limiting" — describes exactly the two things that control forced: accept a time you did not
-		// want, or type RFC3339 by hand. Neither is choosing, and both are gone.
-		//
-		// The STORED value stays RFC3339 (that is what the request carries); Display renders it in
-		// local time WITH the zone, so what the operator reads back is the moment they picked.
 		kit2.FieldSpec{Name: "scheduled_start", Label: "Scheduled start", Kind: kit2.KDateTime,
-			// SEEDED from the item's existing value, or editing a scheduled item would open on a BLANK
-			// field and saving would clear the schedule the operator never touched. RFC3339 is what the
-			// picker parses; an unscheduled item seeds empty and the picker opens on now.
+			// SEEDED from the item's existing value, or editing a scheduled item would open on a BLANK field
+			// and saving would clear the schedule the operator never touched.
 			Initial:  rfc3339OrEmpty(w.GetScheduledStartAt()),
 			Display:  displayScheduledStart,
 			Validate: validateOptionalRFC3339},
 		// THE BOX OPENS UNCHECKED, ALWAYS — never seeded from the stored flag.
-		//
-		// Auto-start is an ACT on the save, not a state the form reports (the operator's rule: "not fire
-		// anything off that already has auto or schedule set… it must be done as an action when saving
-		// the record only"). Seeding it from auto_start_workflow meant that opening an item whose stored
-		// flag was still true — a legacy row, or one armed by an earlier save — and saving any unrelated
-		// edit (a rename, a kind switch) sent auto=true and LAUNCHED the workflow. The server refuses to
-		// fire on the stored flag alone; the client must not manufacture the explicit gesture either, or
-		// the two halves disagree about what the operator asked for.
-		//
-		// It matches the GUI, which has always reset the box to false when the editor opens, and the
-		// form's own create variant above.
 		kit2.FieldSpec{Name: "auto_start", Label: "Auto-start workflow", Kind: kit2.KCheckbox, Initial: "false"},
 	)
 	m.wireItemForm(f, formEditItem, w.GetId())
@@ -540,14 +521,8 @@ func (m *Model) newItemStatusForm(w *apiv1.WorkItem) *kit2.Form {
 	return f
 }
 
-// displayScheduledStart renders the STORED RFC3339 instant for the operator: in local time, labelled
-// with the zone name AND its UTC offset.
-//
-// WHY THIS IS A DISPLAY HOOK RATHER THAN A REFORMAT OF THE VALUE. The stored string must stay RFC3339,
-// because it is exactly what the request carries and the submit handler reads it back verbatim. But
-// "2026-09-18T14:30:00-04:00" is the wrong thing to show a person, who wants
-// "2026-09-18 14:30 EDT (UTC-04:00)" — and getting that by rewriting the stored value would mean the
-// field no longer holds what it sends. kit2.FieldSpec.Display exists for precisely this split.
+// displayScheduledStart renders the STORED RFC3339 instant for the operator: in local time,
+// labelled with the zone name AND its UTC offset.
 func displayScheduledStart(v string) string {
 	v = strings.TrimSpace(v)
 	if v == "" {
@@ -555,9 +530,8 @@ func displayScheduledStart(v string) string {
 	}
 	t, err := time.Parse(time.RFC3339, v)
 	if err != nil {
-		// A value that cannot be parsed is shown RAW rather than prettified: it is what would be sent
-		// (or what the validator will reject), and replacing it with a friendly string would hide the
-		// one thing the operator needs to look at.
+		// A value that cannot be parsed is shown RAW rather than prettified: it is what would be sent (or
+		// what the validator will reject).
 		return v
 	}
 	return screenkit.FmtLocalFull(t)
@@ -572,16 +546,12 @@ func validateOptionalRFC3339(v string) error {
 	return validateRFC3339(v)
 }
 
-// wireItemForm installs the submit handler: it builds the RPC request from
-// the collected values and hands it to the mutation executor. No screen
-// calls a write RPC from the update loop.
+// wireItemForm installs the submit handler: it builds the RPC request from the collected values and
+// hands it to the mutation executor.
 func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 	f.Focused = true
 	f.Width = 70
-	// The combined calendar + clock, for the scheduled-start field. Wired HERE so every form that
-	// carries a KDateTime field hosts it: the create form, the edit form and the status form all come
-	// through this function, and a hook installed at one call site is a field that silently stops
-	// opening on the others.
+	// The combined calendar + clock, for the scheduled-start field.
 	f.OnOpenDateTimePicker = m.openDateTimePicker
 	f.OnSubmit = func(v map[string]string, _ map[string][]string) (tea.Cmd, error) {
 		title := strings.TrimSpace(v["title"])
@@ -608,8 +578,11 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 				ContextWindow:      int32(atoiOr(v["context_window"], 0)),
 				WorkflowId:         strings.TrimSpace(v["workflow"]),
 				RuntimeImage:       strings.TrimSpace(v["runtime_image"]),
-				ContextFiles:       splitList(v["context_files"]),
-				AutoStartWorkflow:  boolPtr(v["auto_start"] == "true"),
+				// The create field is NON-optional and UNSPECIFIED *is* inherit (work_item_service.proto:186-190),
+				// so "inherit" needs no separate spelling here.
+				ExecutionMode:     executionModeEnum(v["execution_mode"]),
+				ContextFiles:      splitList(v["context_files"]),
+				AutoStartWorkflow: boolPtr(v["auto_start"] == "true"),
 			}
 			name := "create work item " + strconv.Quote(req.GetTitle())
 			return m.Mutate(mutate.Request{
@@ -620,9 +593,8 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 					if err != nil {
 						return err
 					}
-					// Focus the new item as soon as the reload lands, so it is on screen
-					// and selected instead of appearing somewhere below the fold while
-					// the cursor stays on the previously selected row.
+					// Focus the new item as soon as the reload lands, so it is on screen and selected instead of
+					// appearing somewhere below the fold while the cursor stays on the previously selected row.
 					m.Base.SelectWhenLoaded(srcWorkItems, resp.Msg.GetWorkItem().GetId())
 					return nil
 				},
@@ -635,15 +607,6 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 			kind := kindFromName(v["kind"])
 			status := statusFromName(v["status"])
 			// THE SCHEDULE IS SENT AS EITHER A VALUE OR AN EXPLICIT CLEAR, never silently dropped.
-			//
-			// scheduled_start_at is optional, so an EMPTY field means "unchanged" — which is how the
-			// form could never remove a schedule: it seeded the field from the item, round-tripped the
-			// same value back every save, and an operator who emptied it sent nothing at all. The
-			// request now carries clear_scheduled_start_at when the field reads empty, which is the
-			// operator's "there is no way to clear a schedule on a work item".
-			//
-			// A surviving schedule also suppresses auto-start (an item with a start time waits for it),
-			// so clearing is what lets a pending item start on save — the second half of the report.
 			req := &apiv1.UpdateWorkItemRequest{
 				Id:                 id,
 				Title:              strPtr(title),
@@ -662,6 +625,14 @@ func (m *Model) wireItemForm(f *kit2.Form, mode, id string) {
 			}
 			if req.ScheduledStartAt == nil {
 				req.ClearScheduledStartAt = true
+			}
+			// THE EXECUTION-MODE OVERRIDE IS SENT AS EITHER A VALUE OR AN EXPLICIT CLEAR — both halves, exactly
+			// as the GUI sends them (frontend/src/routes/work-items_.$id.tsx:388-389).
+			if v["execution_mode"] == itemExecutionModeInherit {
+				req.ClearExecutionMode = true
+			} else {
+				mode := executionModeEnum(v["execution_mode"])
+				req.ExecutionMode = &mode
 			}
 			name := "save work item " + strconv.Quote(title)
 			return m.Mutate(mutate.Request{
@@ -704,11 +675,7 @@ func (m *Model) itemActions() []kit2.Action {
 		return nil
 	}
 	if m.ViewMode() == viewArchive {
-		// A GHOST ANCHOR IS NOT ARCHIVED. It is an ACTIVE ancestor rendered only to
-		// keep an archived item's hierarchy connected (see archiveRows), so offering
-		// "restore" on it would send a request the plane refuses — and, worse, the
-		// operator would read the row as an archived item that had failed to restore.
-		// The row carries the marker in its Meta, so the action layer can tell.
+		// A GHOST ANCHOR IS NOT ARCHIVED.
 		if strings.HasPrefix(it.Meta, archiveGhostPrefix+" ancestor") {
 			return nil
 		}
@@ -723,7 +690,16 @@ func (m *Model) itemActions() []kit2.Action {
 			},
 		}}
 	}
+	// A RUNNING ITEM CAN BE STOPPED HERE, WITHOUT finding its execution first.
 	return []kit2.Action{
+		{
+			Label: "stop execution", Key: keyStopRun, Danger: true, Source: srcWorkItems,
+			Confirm: "Stop the running EXECUTION for " + title + "?\n" +
+				"The worker stops and in-flight tool calls are abandoned (the reason is recorded as " +
+				strconv.Quote(cancelReason) + ").\n" +
+				"This does NOT end the workflow run — to abort the run itself, use the Runs pane (" + "S" + ").",
+			Do: func(ctx context.Context) error { return m.rpcStopRun(ctx, id) },
+		},
 		{
 			Label: "toggle auto-start", Key: "y", Source: srcWorkItems,
 			Do: func(ctx context.Context) error { return m.rpcToggleAutoStart(ctx, id) },
@@ -739,19 +715,7 @@ func (m *Model) itemActions() []kit2.Action {
 			},
 		},
 		{
-			// THE GUI'S DELETE, WHICH IS PERMANENT. The operator: "Deleting work items in the
-			// TUI is no longer working." It was not working because it was the GUI's OTHER
-			// gesture: this called DeleteWorkItem, which soft-deletes (status → cancelled),
-			// while the TUI's tree has no status filter — so the row STAYED IN THE LIST and the
-			// delete looked like a no-op. The prod audit trail has the fingerprint: five
-			// `work_item.deleted` calls on one item in 40 seconds (each with before.status
-			// already cancelled), then a `work_item.hard_deleted` once the operator gave up and
-			// used the GUI. The GUI's own toolbar delete is hard (useBatchDeleteWorkItems →
-			// hardDeleteWorkItem); this is the TUI catching up to it.
-			//
-			// The REVERSIBLE operation is not lost — it is a status change, which the status
-			// editor (`s`, or `e` → status) already performs, and the confirm says so, because
-			// an operator who wants "just cancel it" must not be left guessing.
+			// THE GUI'S DELETE, WHICH IS PERMANENT.
 			Label: "delete", Key: kit2.DeleteChord, Danger: true, Source: srcWorkItems,
 			Confirm: "Permanently delete " + title + "?\n" +
 				"This removes it and its dependencies for good — it cannot be undone.\n" +
@@ -765,6 +729,42 @@ func (m *Model) itemActions() []kit2.Action {
 			},
 		},
 	}
+}
+
+// keyStopRun is the pane's stop-execution chord.
+const keyStopRun = "x"
+
+// cancelReason is the audit reason recorded on a TUI-initiated stop, matching the
+// Executions pane's wording so one trail describes both entry points.
+const cancelReason = "cancelled from the orch TUI"
+
+// rpcStopRun cancels the item's LIVE execution.
+func (m *Model) rpcStopRun(ctx context.Context, id string) error {
+	if m.cl == nil || m.cl.Executions == nil {
+		return fmt.Errorf("no execution client — cannot stop the run")
+	}
+	resp, err := m.cl.Executions.ListExecutions(ctx, connect.NewRequest(&apiv1.ListExecutionsRequest{
+		TaskId: &id,
+	}))
+	if err != nil {
+		return err
+	}
+	var live *apiv1.WorkerExecution
+	for _, e := range resp.Msg.GetExecutions() {
+		if e.GetStatus() == apiv1.ExecutionStatus_EXECUTION_STATUS_RUNNING {
+			if live == nil || e.GetStartedAt().AsTime().After(live.GetStartedAt().AsTime()) {
+				live = e
+			}
+		}
+	}
+	if live == nil {
+		return fmt.Errorf("no running execution for this item — nothing to stop")
+	}
+	_, err = m.cl.Executions.CancelExecution(ctx, connect.NewRequest(&apiv1.CancelExecutionRequest{
+		Id:     live.GetId(),
+		Reason: cancelReason,
+	}))
+	return err
 }
 
 // rpcToggleAutoStart flips auto_start_workflow from the item's real value.
@@ -781,18 +781,8 @@ func (m *Model) rpcToggleAutoStart(ctx context.Context, id string) error {
 	return err
 }
 
-// reorderChildren moves the selected item one step within its SIBLING sequence
-// and persists the new order with ReorderWorkItems — the only RPC that writes
-// sort_order.
-//
-// This is a SEQUENCE edit, not a display sort: a parent with children IS a
-// sequential run, and its children execute in this order (the first
-// non-succeeded child arms, and the next arms when it succeeds). Moving an item
-// up makes its workflow run earlier. delta is -1 for up, +1 for down.
-//
-// The siblings are re-read from the plane so the order sent is the server's
-// current one, not a stale display grouping, and the swap is computed from the
-// STORED sequence regardless of the display sort.
+// reorderChildren moves the selected item one step within its SIBLING sequence and persists the new
+// order with ReorderWorkItems — the only RPC that writes sort_order.
 func (m *Model) reorderChildren(delta int) tea.Cmd {
 	it, ok := m.ActiveItem()
 	if !ok {
@@ -820,9 +810,8 @@ func (m *Model) reorderChildren(delta int) tea.Cmd {
 			}
 			order := make([]*apiv1.WorkItem, 0, len(sibs.Msg.GetWorkItems()))
 			order = append(order, sibs.Msg.GetWorkItems()...)
-			// The swap is computed from the STORED sequence, never the display
-			// sort: reordering under a display view would send the wrong sibling
-			// list and silently scramble the real order.
+			// The swap is computed from the STORED sequence, never the display sort: reordering under a display
+			// view would send the wrong sibling list and silently scramble the real order.
 			sortSiblings(order, sortSequence)
 			ids := make([]string, 0, len(order))
 			from := -1
@@ -903,10 +892,6 @@ func rfc3339OrEmpty(ts *timestamppb.Timestamp) string {
 		return ""
 	}
 	// LOCAL, with the offset — not a forced "...Z".
-	//
-	// Both spellings denote the same instant, so nothing on the wire changes; this is what the operator
-	// READS in a populated field, and an offset carries the one fact a bare Z throws away: the zone the
-	// value was chosen in.
 	return ts.AsTime().In(time.Local).Format(time.RFC3339)
 }
 

@@ -150,9 +150,9 @@ func (GitStrategy) EnumDescriptor() ([]byte, []int) {
 
 // ExecutionMode controls where native executions run
 // (always-container runtime):
-//   - runtime: executions run inside the run's container (default).
-//   - local: in-process execution allowed, with an honest prompt block
-//     and a hard DSN fence refusing live-plane writes.
+//   - runtime: executions run inside the run's container (opt-in).
+//   - local: in-process execution allowed (the default), with an honest
+//     prompt block and a hard DSN fence refusing live-plane writes.
 type ExecutionMode int32
 
 const (
@@ -341,8 +341,8 @@ type Project struct {
 	// image tag. Empty = inherit tenant/base; copied onto work items at
 	// create time when the caller passes no runtime_image.
 	DefaultRuntimeImage string `protobuf:"bytes,15,opt,name=default_runtime_image,json=defaultRuntimeImage,proto3" json:"default_runtime_image,omitempty"`
-	// execution_mode selects always-container (runtime, default) vs
-	// in-process (local, with honest prompt + DSN fence).
+	// execution_mode selects always-container (runtime, opt-in) vs
+	// in-process (local, the default, with honest prompt + DSN fence).
 	ExecutionMode ExecutionMode `protobuf:"varint,16,opt,name=execution_mode,json=executionMode,proto3,enum=orchicon.api.v1.ExecutionMode" json:"execution_mode,omitempty"`
 	// skill_files are absolute paths (files OR directories) to SKILL artifacts
 	// selected for this project. Each is validated by internal/contextfiles
@@ -634,7 +634,7 @@ type CreateProjectRequest struct {
 	RequestId   string                 `protobuf:"bytes,5,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"` // idempotency key (docs/07 §5.5)
 	GitStrategy GitStrategy            `protobuf:"varint,6,opt,name=git_strategy,json=gitStrategy,proto3,enum=orchicon.api.v1.GitStrategy" json:"git_strategy,omitempty"`
 	// default_runtime_image seeds projects.default_runtime_image (empty =
-	// inherit tenant/base). execution_mode defaults to runtime.
+	// inherit tenant/base). execution_mode defaults to local.
 	DefaultRuntimeImage string        `protobuf:"bytes,7,opt,name=default_runtime_image,json=defaultRuntimeImage,proto3" json:"default_runtime_image,omitempty"`
 	ExecutionMode       ExecutionMode `protobuf:"varint,8,opt,name=execution_mode,json=executionMode,proto3,enum=orchicon.api.v1.ExecutionMode" json:"execution_mode,omitempty"`
 	unknownFields       protoimpl.UnknownFields

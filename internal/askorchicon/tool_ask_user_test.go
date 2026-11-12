@@ -12,9 +12,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// TestParseAskUserArgs is the validation table: the loud refusals the AC
-// requires (at least two options, or the explicit free-text-only form) plus the
-// accepted shapes.
+// TestParseAskUserArgs is the validation table: the loud refusals the AC requires (at least two
+// options, or the explicit free-text-only form) plus the accepted shapes.
 func TestParseAskUserArgs(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -113,11 +112,8 @@ func TestParseAskUserArgs(t *testing.T) {
 	}
 }
 
-// TestToolAskUserReturnsWithoutWaitingOnContext proves the record-and-return
-// model: the handler returns even with an already-cancelled context, i.e. it
-// never selects on ctx.Done(). A blocking clarifying-question tool (waiting for
-// the human) is exactly what the stall guard would kill — this test is the
-// guard against someone reintroducing that shape.
+// TestToolAskUserReturnsWithoutWaitingOnContext proves the record-and-return model: the handler
+// returns even with an already-cancelled context, i.e. it never selects on ctx.Done().
 func TestToolAskUserReturnsWithoutWaitingOnContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already done: a ctx-waiting handler would fail or hang here
@@ -204,10 +200,8 @@ func TestAskUserAllowedInEveryMode(t *testing.T) {
 	}
 }
 
-// TestAskUserPromptTeachesTheToolNotProse asserts the prompt-level half of the
-// "model calls ask_user rather than a numbered list in prose" AC: the shared
-// tool list carries the tool name AND the explicit "do not write a numbered
-// list" rule, and Brainstorm's clarifying-questions principle names the tool.
+// TestAskUserPromptTeachesTheToolNotProse asserts the prompt-level half of the "model calls
+// ask_user rather than a numbered list in prose" AC.
 func TestAskUserPromptTeachesTheToolNotProse(t *testing.T) {
 	reg := NewToolRegistry(nil, slog.Default(), nil)
 	for _, mode := range []string{modeBrainstorm, modeIteration, modeQuickWork} {

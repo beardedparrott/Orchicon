@@ -57,8 +57,7 @@ func TestDockedComposerGeometryMatchesThePaint(t *testing.T) {
 }
 
 // THE CENTERED GEOMETRY: the launch page, where the composer is far from composerTopRow() and the
-// click path uses welcomeLayout instead. An error here is "fairly far" rather than one row, which is
-// why it is measured at several terminal sizes — the wordmark falls back to one row on a narrow one.
+// click path uses welcomeLayout instead.
 func TestCenteredComposerGeometryMatchesThePaint(t *testing.T) {
 	for _, size := range [][2]int{{120, 40}, {100, 30}, {140, 50}, {80, 24}} {
 		m, _ := consentApp(t)

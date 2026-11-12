@@ -15,7 +15,7 @@
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3, Timestamp } from "@bufbuild/protobuf";
 import { DependencyGraph, DependencyType, RecurringSchedule, WorkItem, WorkItemDependency, WorkItemKind, WorkItemStatus } from "./work_item_pb.js";
-import { ContextFiles } from "./project_pb.js";
+import { ContextFiles, ExecutionMode } from "./project_pb.js";
 
 /**
  * SequenceAction enumerates the manual sequence control gestures.
@@ -320,6 +320,16 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
    */
   secretIds: string[] = [];
 
+  /**
+   * execution_mode sets this item's override for where its executions run.
+   * EXECUTION_MODE_UNSPECIFIED (the default) = inherit from the project - on
+   * create there is no prior value, so "absent" needs no separate meaning.
+   * Resolution order: item -> project -> tenant default.
+   *
+   * @generated from field: orchicon.api.v1.ExecutionMode execution_mode = 21;
+   */
+  executionMode = ExecutionMode.UNSPECIFIED;
+
   constructor(data?: PartialMessage<CreateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -348,6 +358,7 @@ export class CreateWorkItemRequest extends Message<CreateWorkItemRequest> {
     { no: 18, name: "depends_on", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
     { no: 19, name: "run_context", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 20, name: "secret_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+    { no: 21, name: "execution_mode", kind: "enum", T: proto3.getEnumType(ExecutionMode) },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CreateWorkItemRequest {
@@ -820,6 +831,25 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
    */
   clearScheduledStartAt = false;
 
+  /**
+   * execution_mode sets this item's execution-mode override. UNSET = unchanged
+   * (field-mask semantics: the request is a patch).
+   *
+   * @generated from field: optional orchicon.api.v1.ExecutionMode execution_mode = 29;
+   */
+  executionMode?: ExecutionMode;
+
+  /**
+   * clear_execution_mode returns the item to "inherit from the project" - it is
+   * the ONLY way to remove an override, because an absent execution_mode means
+   * unchanged. When both are present, CLEAR WINS (same rule as
+   * clear_scheduled_start_at above: the explicit removal is the more specific
+   * intent, and leaving both applied would be contradictory).
+   *
+   * @generated from field: bool clear_execution_mode = 30;
+   */
+  clearExecutionMode = false;
+
   constructor(data?: PartialMessage<UpdateWorkItemRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -852,6 +882,8 @@ export class UpdateWorkItemRequest extends Message<UpdateWorkItemRequest> {
     { no: 26, name: "recurring_enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */, opt: true },
     { no: 27, name: "secret_ids", kind: "message", T: SecretIds, opt: true },
     { no: 28, name: "clear_scheduled_start_at", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 29, name: "execution_mode", kind: "enum", T: proto3.getEnumType(ExecutionMode), opt: true },
+    { no: 30, name: "clear_execution_mode", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UpdateWorkItemRequest {

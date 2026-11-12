@@ -1,13 +1,7 @@
 package askorchicon
 
-// agent_skills_prose_test.go — the FREE-TEXT tenant agent config is PROSE, and it must
-// never grow into a scope.
-//
-// The tenant's `ask_orchicon_agent_config` row is the ONE surviving tenant-level Ask
-// surface. `Skills` there is free text; a conversation's / project's `skill_files` are
-// real on-disk paths rendered as a `# Skills` MANIFEST by the ONE shared platform
-// renderer. The work item requires the two to be unmistakable and the free-text one to
-// stay a PROMPT SECTION ONLY — no tenant MCP tier, no tenant skill_files tier.
+// The work item requires the two to be unmistakable and the free-text one to stay a PROMPT SECTION
+// ONLY — no tenant MCP tier, no tenant skill_files tier.
 
 import (
 	"strings"
@@ -67,10 +61,7 @@ func TestAgentConfigEmptyProseFieldsAddNoHeading(t *testing.T) {
 	}
 }
 
-// THE SHAPE PIN. The tenant agent config carries NO MCP-selection field and NO
-// skill_files field — the free-text fields are prose only. A struct literal naming
-// EVERY field is a compile-time pin: adding a tenant-tier MCP/skill_files field breaks
-// this test rather than quietly introducing the scope the epic forbids.
+// THE SHAPE PIN.
 func TestAgentConfigCarriesNoTenantTierScope(t *testing.T) {
 	cfg := db.AgentConfigRow{
 		ID:              "",

@@ -7,22 +7,15 @@ import (
 	otelmetric "go.opentelemetry.io/otel/metric"
 )
 
-// RecordPrefixCache records a session's prefix-cache hit/miss breakdown and
-// the derived hit rate to the OTel metrics pipeline (D3, ADR-0009 D6). It is
-// the session-terminal half of the native adapter's cache telemetry: the
-// per-turn usage buckets already flow through Record (which emits the
-// cache-aware orchicon_tokens_consumed / orchicon_cost_usd split); this emits
-// the session-level hit/miss/hit-rate family so an operator can see
-// prefix-cache effectiveness per execution. Best-effort — a metric error is
-// dropped, never a control-flow event. Skipped when Turns==0.
+// RecordPrefixCache records a session's prefix-cache hit/miss breakdown and the derived hit rate to
+// the OTel metrics pipeline (D3
 func (u *UsageRecorder) RecordPrefixCache(ctx context.Context, tenantID, projectID, workerID, executionID string, turns, hits, misses, cacheRead, cacheWrite int64) error {
 	u.metrics.emitPrefixCache(ctx, tenantID, projectID, workerID, executionID, turns, hits, misses, cacheRead, cacheWrite)
 	return nil
 }
 
-// emitPrefixCache records the per-session prefix-cache hit/miss counters and
-// the hit-rate gauge (D3, ADR-0009 D6). Skipped when Turns==0. Live usage
-// only — never a synthesized estimate.
+// emitPrefixCache records the per-session prefix-cache hit/miss counters and the hit-rate gauge
+// (D3
 func (m *usageMetrics) emitPrefixCache(ctx context.Context, tenantID, projectID, workerID, executionID string, turns, hits, misses, cacheRead, cacheWrite int64) {
 	if m == nil || turns <= 0 {
 		return

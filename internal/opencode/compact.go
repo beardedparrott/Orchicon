@@ -100,9 +100,7 @@ func dimName(d budgetDimension) string {
 	return "?"
 }
 
-// warnLevel is a stage in the unified ladder. abort is terminal — the
-// session is killed. The three warning stages each produce a message;
-// escalate1 and escalate2 additionally compact the session.
+// warnLevel is a stage in the unified ladder.
 type warnLevel int
 
 const (
@@ -113,9 +111,8 @@ const (
 	levelAbort    warnLevel = 4 // hard kill
 )
 
-// levelIndex maps a warnLevel to a 0..2 index into the warning arrays
-// (warn=0, escalate=1, final=2). abort has no message (the session is
-// killed outright).
+// levelIndex maps a warnLevel to a 0..2 index into the warning arrays (warn=0, escalate=1,
+// final=2).
 func levelIndex(l warnLevel) int {
 	switch l {
 	case levelWarn:
@@ -128,11 +125,7 @@ func levelIndex(l warnLevel) int {
 	return 0
 }
 
-// budgetSpec is the parsed merged per-execution budget. Each dimension's
-// *float64 limit is nil when unset (→ built-in default) or points at a
-// user-configured ceiling. warnFracs[d][0..2] are the fractions of the
-// limit that trip warn/escalate/final; warnMsgs[d][0..2] are the injected
-// messages at each stage.
+// budgetSpec is the parsed merged per-execution budget.
 type budgetSpec struct {
 	wallClockSeconds *float64
 	costUSD          *float64
@@ -143,45 +136,16 @@ type budgetSpec struct {
 	warnFracs [dimCount][3]float64
 	warnMsgs  [dimCount][3]string
 
-	// compactTiers is the per-tier compaction policy for the ladder,
-	// indexed by ladder tier (0=warn, 1=escalate, 2=final): whether that
-	// tier also triggers a context compaction, or only injects its warning
-	// message. Because compaction is lossy and interrupts the worker
-	// mid-flight (forcing it to re-read/re-derive the collapsed working
-	// detail — which is itself more tool calls and more re-sent context),
-	// the default disables compaction at the earliest (warn) tier and keeps
-	// it only once the worker is demonstrably deep in budget (escalate /
-	// final). Operators can override per tier via the budget JSON
-	// `compact_tiers` key, at tenant settings AND per-worker budget, so the
-	// compaction cadence is an explicit operator decision, not a hidden
-	// side effect of the spend ladder.
+	// compactTiers is the per-tier compaction policy for the ladder, indexed by ladder tier (0=warn,
+	// 1=escalate, 2=final): whether that tier also triggers a context compaction.
 	compactTiers [3]bool
 
-	// compactDims is the per-dimension compaction policy: which budget
-	// dimensions are permitted to trigger a context compaction at all.
-	// Compaction is only worthwhile on a dimension it can actually relieve.
-	// cost and tokens both grow with re-sent context, so shrinking the
-	// context buys real headroom there. tool_call_count and wall_clock are
-	// NOT relievable by compacting — a tool call already made cannot be
-	// compacted away, and the lossy collapse forces the worker to re-read /
-	// re-derive the collapsed working detail, which is itself MORE tool
-	// calls and more re-sent context — so they warn but never compact by
-	// default. Operators can override per dimension via the budget JSON
-	// `compact_dims` key (e.g. ["tokens","cost_usd"]).
+	// compactDims is the per-dimension compaction policy: which budget dimensions are permitted to
+	// trigger a context compaction at all.
 	compactDims [dimCount]bool
 }
 
-// budgetAccumulator tallies cumulative spend for one execution. It is fed
-// on each step_finish from the SAME token/cost unpacking the adapter already
-// performs for recordUsage — the gate never builds a second pricing formula.
-//
-// The TOKEN gate counts only FRESH tokens (prompt+completion+reasoning) —
-// cache reads are the re-send figure and are excluded from the budget check,
-// because a long-context code worker can burn its budget re-sending context
-// it already holds without doing any real work. Cost, by contrast, is the
-// provider-discounted cache-aware dollar figure and still counts cache reads
-// at their (discounted) price — cache reads cost real money, so they must
-// still gate spend, just not the raw-token ceiling.
+// budgetAccumulator tallies cumulative spend for one execution.
 type budgetAccumulator struct {
 	costUSD    float64
 	prompt     float64
@@ -201,20 +165,13 @@ func (a *budgetAccumulator) add(tokens map[string]any, cost float64) {
 	a.steps++
 }
 
-// totalTokens returns the FULL token count (no cache discount). This is the
-// raw transport figure the worker pushed to the provider — cache reads
-// included. It is used for reporting/troubleshooting; the budget gate keys
-// off freshTokens() instead so a worker that merely re-sends context can't
-// spend its token budget without doing work.
+// totalTokens returns the FULL token count (no cache discount).
 func (a *budgetAccumulator) totalTokens() float64 {
 	return a.prompt + a.completion + a.reasoning + a.cacheRead
 }
 
-// freshTokens returns only the tokens that represent actual work for the
-// execution: fresh input (prompt) + output (completion) + reasoning. Cache
-// reads are excluded — they are re-sends of tokens already counted, so a
-// cache-heavy session (e.g. a code worker re-loading a large tree) must not
-// be able to hit the token abort by re-sending context it already holds.
+// freshTokens returns only the tokens that represent actual work for the execution: fresh input
+// (prompt) + output (completion) + reasoning.
 func (a *budgetAccumulator) freshTokens() float64 {
 	return a.prompt + a.completion + a.reasoning
 }
@@ -226,15 +183,10 @@ func elapsedSecsToFloat(elapsed time.Duration) float64 {
 
 // ─── effective limits ─────────────────────────────────────────────────────
 
-// effectiveTokenBudget resolves the tokens gate: unset → the built-in
-// default (defaultCompactTokens, 500,000); an explicit value <= 0 disables
-// the gate entirely (ok=false). The gate keys off FRESH tokens
-// (prompt+completion+reasoning) — cache reads are excluded (they re-send
-// already-counted context) — so the ceiling bounds real work, not transport.
-// Cache reads still factor into cost, which remains the other spend gate.
+// effectiveTokenBudget resolves the tokens gate: UNSET → NO GATE (ok=false).
 func effectiveTokenBudget(spec budgetSpec) (tokens float64, ok bool) {
 	if spec.tokens == nil {
-		return defaultCompactTokens, true
+		return 0, false
 	}
 	if *spec.tokens <= 0 {
 		return 0, false
@@ -242,13 +194,11 @@ func effectiveTokenBudget(spec budgetSpec) (tokens float64, ok bool) {
 	return *spec.tokens, true
 }
 
-// effectiveCostBudget resolves the cost_usd gate: unset → the built-in
-// default (defaultCompactCostUSD, $0.50); an explicit value <= 0 disables
-// the gate entirely (ok=false). Cost is priced (cache-aware) by the
-// provider, so it is a SEPARATE gate from tokens, not a token fallback.
+// effectiveCostBudget resolves the cost_usd gate: UNSET → NO GATE (see effectiveTokenBudget — a
+// ceiling is the operator's decision).
 func effectiveCostBudget(spec budgetSpec) (usd float64, ok bool) {
 	if spec.costUSD == nil {
-		return defaultCompactCostUSD, true
+		return 0, false
 	}
 	if *spec.costUSD <= 0 {
 		return 0, false
@@ -256,15 +206,11 @@ func effectiveCostBudget(spec budgetSpec) (usd float64, ok bool) {
 	return *spec.costUSD, true
 }
 
-// effectiveToolCallLimit resolves the tool_call_count HARD-abort gate:
-// unset → the built-in default (defaultToolCallLimit, 100); an explicit
-// value <= 0 disables the gate entirely (ok=false). Unlike the spend
-// gates, a tool call already made cannot be "compacted away", so this is
-// the dimension with the most obvious hard-abort semantics — but it still
-// follows the SAME warn→escalate→abort ladder as the others.
+// effectiveToolCallLimit resolves the tool_call_count HARD-abort gate: UNSET → NO GATE (see
+// effectiveTokenBudget; 100 was a ceiling no operator asked.
 func effectiveToolCallLimit(spec budgetSpec) (limit int, ok bool) {
 	if spec.toolCallCount == nil {
-		return defaultToolCallLimit, true
+		return 0, false
 	}
 	if *spec.toolCallCount <= 0 {
 		return 0, false
@@ -272,13 +218,11 @@ func effectiveToolCallLimit(spec budgetSpec) (limit int, ok bool) {
 	return int(*spec.toolCallCount), true
 }
 
-// effectiveWallClockBudget resolves the wall_clock_seconds gate: unset →
-// the built-in default (defaultWallClockSeconds, 3600); an explicit value
-// <= 0 disables the gate entirely (ok=false). Mirrors wallClockDeadline's
-// "0 disables" convention.
+// effectiveWallClockBudget resolves the wall_clock_seconds gate: UNSET → NO DEADLINE (ok=false),
+// mirroring wallClockDeadline.
 func effectiveWallClockBudget(spec budgetSpec) (sec float64, ok bool) {
 	if spec.wallClockSeconds == nil {
-		return defaultWallClockSeconds, true
+		return 0, false
 	}
 	if *spec.wallClockSeconds <= 0 {
 		return 0, false
@@ -286,13 +230,11 @@ func effectiveWallClockBudget(spec budgetSpec) (sec float64, ok bool) {
 	return *spec.wallClockSeconds, true
 }
 
-// effectiveCompactMaxTurns resolves the turn-count gate (compact_max_turns):
-// unset → the built-in default (defaultCompactMaxTurns, 12); an explicit
-// value <= 0 disables the turn-count trigger entirely (ok=false). This is
-// the ORTHOGONAL context-hygiene compact, not a ladder stage.
+// effectiveCompactMaxTurns resolves the turn-count gate (compact_max_turns): UNSET → NO TURN-COUNT
+// COLLAPSE (ok=false).
 func effectiveCompactMaxTurns(spec budgetSpec) (turns int, ok bool) {
 	if spec.compactMaxTurns == nil {
-		return defaultCompactMaxTurns, true
+		return 0, false
 	}
 	if *spec.compactMaxTurns <= 0 {
 		return 0, false
@@ -317,9 +259,8 @@ func (s budgetSpec) limit(d budgetDimension) (limit float64, ok bool) {
 	return 0, false
 }
 
-// fraction returns the current spend for a dimension as a fraction of its
-// configured limit (>=1.0 when at/over the ceiling). Returns -1 when the
-// dimension has no effective limit.
+// fraction returns the current spend for a dimension as a fraction of its configured limit (>=1.0
+// when at/over the ceiling).
 func (s budgetSpec) fraction(d budgetDimension, acc *budgetAccumulator, elapsed time.Duration, toolUses int) float64 {
 	limit, ok := s.limit(d)
 	if !ok {
@@ -328,9 +269,7 @@ func (s budgetSpec) fraction(d budgetDimension, acc *budgetAccumulator, elapsed 
 	var used float64
 	switch d {
 	case dimTokens:
-		// The token gate counts FRESH tokens only (no cache re-sends) — see
-		// freshTokens. Cache reads are cheap re-sends of already-counted
-		// context and must not be able to trip the abort on their own.
+		// The token gate counts FRESH tokens only (no cache re-sends) — see freshTokens.
 		used = acc.freshTokens()
 	case dimCost:
 		used = acc.costUSD
@@ -345,9 +284,8 @@ func (s budgetSpec) fraction(d budgetDimension, acc *budgetAccumulator, elapsed 
 	return used / limit
 }
 
-// warnFracsFor returns the ladder thresholds for a dimension, falling back
-// to the built-in fractions when the spec was constructed without them (a
-// direct budgetSpec literal, e.g. in tests, has all-zero arrays).
+// warnFracsFor returns the ladder thresholds for a dimension, falling back to the built-in
+// fractions when the spec was constructed without them (a direct budgetSpec literal, e.g. in tests.
 func (s budgetSpec) warnFracsFor(d budgetDimension) [3]float64 {
 	if s.warnFracs[d][0] > 0 || s.warnFracs[d][1] > 0 || s.warnFracs[d][2] > 0 {
 		return s.warnFracs[d]
@@ -355,9 +293,7 @@ func (s budgetSpec) warnFracsFor(d budgetDimension) [3]float64 {
 	return defaultWarnFracs()[d]
 }
 
-// levelFor computes the warn ladder stage for a dimension from its fraction
-// of the limit. abort fires at >= 1.0; the three warning tiers at the
-// configured thresholds.
+// levelFor computes the warn ladder stage for a dimension from its fraction of the limit.
 func (s budgetSpec) levelFor(d budgetDimension, frac float64) warnLevel {
 	if frac < 0 {
 		return levelNone
@@ -376,9 +312,8 @@ func (s budgetSpec) levelFor(d budgetDimension, frac float64) warnLevel {
 	return levelNone
 }
 
-// message returns the configured message for a warn-tier of a dimension,
-// falling back to the built-in copy when the slot is empty. Substitutes
-// {pct} with the percent used (abort has no message).
+// message returns the configured message for a warn-tier of a dimension, falling back to the
+// built-in copy when the slot is empty.
 func (s budgetSpec) message(d budgetDimension, l warnLevel, frac float64) string {
 	if l == levelAbort {
 		return ""
@@ -395,10 +330,8 @@ func (s budgetSpec) message(d budgetDimension, l warnLevel, frac float64) string
 	return strings.ReplaceAll(raw, "{pct}", pct)
 }
 
-// budgetBreached reports whether the accumulated spend has crossed the
-// abort limit on EITHER spend dimension (cost or tokens, both full-weight).
-// Used by callers that need a single "at/over the ceiling" boolean (the
-// ladder's levelAbort). Disabled dimensions never breach.
+// budgetBreached reports whether the accumulated spend has crossed the abort limit on EITHER spend
+// dimension (cost or tokens, both full-weight).
 func budgetBreached(spec budgetSpec, acc *budgetAccumulator) bool {
 	if acc == nil {
 		return false
@@ -414,11 +347,7 @@ func budgetBreached(spec budgetSpec, acc *budgetAccumulator) bool {
 
 // ─── parsing ─────────────────────────────────────────────────────────────
 
-// defaultWarnFracs returns the built-in ladder thresholds. Deliberately
-// front-loaded (25/50/75 rather than 50/75/90): the ladder injects + compacts
-// at every tier, so warning early lets a worker correct its context handling
-// before it is well into the budget — the burn is dominated by re-sent context
-// (cache reads) that grows each turn, not by late output.
+// defaultWarnFracs returns the built-in ladder thresholds.
 func defaultWarnFracs() [dimCount][3]float64 {
 	return [dimCount][3]float64{
 		{0.25, 0.5, 0.75}, // tokens
@@ -429,13 +358,6 @@ func defaultWarnFracs() [dimCount][3]float64 {
 }
 
 // defaultWarnMsgs returns the built-in escalating messages per dimension.
-// They are deliberately CALM-but-severe and instructive, not panicked: they
-// name the actual driver (re-sent context on every turn), explain WHY the
-// worker is close to the budget, and give the concrete remedy (batch tool
-// calls, stop re-reading, deliver the minimal delta). The session is still
-// stopped at the limit, but the messages aim to elicit a course-correction
-// rather than amplify anxiety — a worker that understands the cause fixes
-// it.
 func defaultWarnMsgs() [dimCount][3]string {
 	return [dimCount][3]string{
 		// tokens
@@ -465,33 +387,18 @@ func defaultWarnMsgs() [dimCount][3]string {
 	}
 }
 
-// defaultCompactTiers returns the built-in per-tier compaction policy:
-// warn does NOT compact (the earliest tier — the worker is only ~25% in and
-// can still correct course without a destructive collapse), while escalate
-// and final DO compact (the worker is deep in budget and re-sent context
-// must shrink before the hard abort). Operators override per tier via the
-// budget JSON `compact_tiers` key.
+// defaultCompactTiers returns the built-in per-tier compaction policy: warn does NOT compact (the
+// earliest tier — the worker is only ~25% in and can still correct course without a destructive.
 func defaultCompactTiers() [3]bool { return [3]bool{false, true, true} }
 
-// defaultCompactDims returns the built-in per-dimension compaction policy.
-// Compaction is a lossy, mid-flight-interrupting collapse that buys headroom
-// ONLY on a dimension driven by re-sent context — cost and fresh tokens. For
-// tool_call_count and wall_clock it is actively counterproductive: a tool
-// call already made cannot be compacted away (see the budgetAccumulator
-// doc), and the collapse forces the worker to re-read/re-derive the
-// collapsed working detail, which is itself MORE tool calls and more
-// re-sent context. So the default compacts on tokens + cost and merely
-// warns on tools + time. Operators override per dimension via the budget
-// JSON `compact_dims` key (e.g. ["tokens","cost_usd"]).
+// Compaction is a lossy, mid-flight-interrupting collapse that buys headroom ONLY on a dimension
+// driven by re-sent context — cost and fresh tokens.
 func defaultCompactDims() [dimCount]bool {
 	return [dimCount]bool{true, true, false, false} // tokens, cost only
 }
 
-// compactsDim reports whether a budget dimension is permitted to trigger a
-// context compaction at all (independent of the per-tier policy). Combined
-// with compactsAt, a tier compacts only when BOTH the tier and the dimension
-// permit it — e.g. cost at escalate compacts, but tool_call_count at
-// escalate warns without compacting.
+// compactsDim reports whether a budget dimension is permitted to trigger a context compaction at
+// all (independent of the per-tier policy).
 func (s budgetSpec) compactsDim(d budgetDimension) bool {
 	return s.compactDims[d]
 }
@@ -511,9 +418,8 @@ func dimFromName(name string) (budgetDimension, bool) {
 	return 0, false
 }
 
-// compactsAt reports whether a ladder tier triggers a context compaction
-// (independent of whether it always injects its warning message). abort is
-// terminal and never compacts.
+// compactsAt reports whether a ladder tier triggers a context compaction (independent of whether it
+// always injects its warning message).
 func (s budgetSpec) compactsAt(l warnLevel) bool {
 	switch l {
 	case levelWarn:
@@ -526,11 +432,7 @@ func (s budgetSpec) compactsAt(l warnLevel) bool {
 	return false
 }
 
-// parseBudgetSpec parses the merged budget JSON. It reads the five gate
-// limits AND the optional `warnings` ladder (fractions + messages). Empty
-// or unparseable budgets yield a spec with all-nil gates (built-in defaults
-// apply — the caller decides the wall-clock backstop) and the default
-// warning schedule.
+// parseBudgetSpec parses the merged budget JSON.
 func parseBudgetSpec(budgets []byte) budgetSpec {
 	spec := budgetSpec{
 		warnFracs:    defaultWarnFracs(),
@@ -563,21 +465,15 @@ func parseBudgetSpec(budgets []byte) budgetSpec {
 	spec.compactMaxTurns = raw.CompactMaxTurns
 	spec.toolCallCount = raw.ToolCallCount
 
-	// Per-tier compaction toggles: a 3-element [warn, escalate, final] bool
-	// array. Any present element is honored; absent elements keep the
-	// built-in default for that tier.
+	// Per-tier compaction toggles: a 3-element [warn, escalate, final] bool array.
 	if len(raw.CompactTiers) == 3 {
 		for i := 0; i < 3; i++ {
 			spec.compactTiers[i] = raw.CompactTiers[i]
 		}
 	}
 
-	// Per-dimension compaction policy: a `compact_dims` array of dimension
-	// names (e.g. ["tokens","cost_usd"]). A present array is the COMPLETE
-	// set of compact-allowed dimensions — any dimension not listed never
-	// compacts (it only warns). Absent → the built-in default (tokens +
-	// cost). This lets an operator force compaction on tool_call_count if
-	// they choose, but by default tool/time never compact.
+	// Per-dimension compaction policy: a `compact_dims` array of dimension names (e.g.
+	// ["tokens","cost_usd"]).
 	if raw.CompactDims != nil {
 		for i := range spec.compactDims {
 			spec.compactDims[i] = false
@@ -609,38 +505,10 @@ func parseBudgetSpec(budgets []byte) budgetSpec {
 
 // ── built-in defaults ────────────────────────────────────────────────────
 const (
-	// defaultWallClockSeconds is the built-in per-execution deadline applied
-	// when a budget omits wall_clock_seconds. Matches wallClockDeadline's
-	// existing 3600s backstop.
-	defaultWallClockSeconds = 3600.0
-	// defaultCompactCostUSD is the built-in cost_usd abort gate applied when
-	// a worker/tenant budget omits the field. Calibration is documented on
-	// the old constant it replaces (see git history); $0.50 is ~10x the
-	// clean max observed on a narrow DeepSeek sample, with the intent that
-	// per-worker budgets are raised for materially costlier providers.
-	defaultCompactCostUSD = 0.50
-	// defaultCompactTokens is the built-in tokens gate (FRESH tokens:
-	// prompt+completion+reasoning, cache reads excluded) applied when a
-	// budget omits tokens. 500,000 is ~3x the clean max observed — real
-	// headroom without being oversized.
-	defaultCompactTokens = 500_000.0
-	// defaultCompactMaxTurns is the orthogonal turn-count context-hygiene
-	// compact gate (see file header). 30 keeps a chatty session bounded
-	// without the disruptive mid-flight compaction of the original 12: the
-	// spend ladder now handles budget, so the turn-count gate only needs to
-	// cap a genuinely chatty session's re-sent prefix, not interrupt one that
-	// is comfortably within its token/cost budget. Tuned to the observed
-	// SSE/SDLC worker cadence where a healthy implementation step runs
-	// ~30-50 turns; a compact every ~30 turns bounds the prefix without
-	// forcing an expensive fresh re-send every dozen turns.
-	defaultCompactMaxTurns = 30
-	// defaultCompactMinTurns is the minimum completed turns before the
-	// turn-count gate is armed (never at start; prevents the compact loop).
+	// THE GATE CEILINGS HAVE NO BUILT-IN DEFAULTS.
 	defaultCompactMinTurns = 2
 	// defaultCompactMax bounds how many compacts fire per execution.
 	defaultCompactMax = 10
-	// defaultToolCallLimit is the built-in tool_call_count gate.
-	defaultToolCallLimit = 100
 )
 
 // compactMinTurns returns the minimum-turn floor before the gate is armed

@@ -1,14 +1,6 @@
 package tui
 
 // mouse_leak_test.go — A SPLIT MOUSE REPORT MUST NOT BE TYPED.
-//
-// The operator, resizing: "the resize seems a bit buggy and adds the following into the conversation box
-// when resizing: [<32;27;30M[<32;96;29M[<32;117;29M[<32;113;30M".
-//
-// Those are SGR mouse reports with the ESC stripped (32 = motion with the left button held, which is what a
-// window drag produces). bubbletea emits the lone ESC separately when its sequence timeout fires during a
-// burst, so the tail arrives as runes — and the tail has to be dropped HERE, because reassembling it is not
-// possible from this side.
 
 import (
 	"testing"
@@ -40,9 +32,6 @@ func TestOrphanedMouseReportsAreDropped(t *testing.T) {
 
 func TestATruncatedReportIsDroppedToo(t *testing.T) {
 	// The sequence can split again mid-report, and a fragment is just as unfit to type as a whole one.
-	//
-	// THE BOUNDARY IS TWO CHARACTERS: a report always carries at least the button digit after `[<`, so a real
-	// tail is three or more — which is why the bare `[<` (below) is left alone rather than guessed at.
 	for _, s := range []string{"[<32;27", "[<4;", "[<32;", "[<3", "[<32;27;"} {
 		if !orphanedMouseReport(runes(s)) {
 			t.Errorf("the truncated report %q would be typed into the composer", s)

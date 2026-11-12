@@ -1,26 +1,7 @@
 package tui
 
-// ask_ghost_card_test.go — THE GHOST PHASE: a card the SERVER still lists as open must never be settled
-// or dropped by a CLIENT-SIDE inference about the turn.
-//
-// The operator, verbatim: "Every once in awhile, a card will still be in this ghost phase where it shows
-// up and then goes away before I can answer the card repeatedly. It forces me to go into the GUI to accept
-// or deny the card or type my response."
-//
-// THE MECHANISM. settleStaleConsent used to fire on `!runningFor(convID)`, and runningFor is
-// IsStreaming || the POLLED turn_in_flight row. Neither half is real evidence about the ask:
-//
-//   - a WATCH RE-DIAL's passive close clears the local slot, so IsStreaming goes false on a turn that is
-//     still running;
-//   - the polled turn_in_flight row is stale by construction and ABSENT for a conversation off the current
-//     rail page (the rail is paginated).
-//
-// Together they made `runningFor` false for a LIVE turn, the sweep settled the still-open card,
-// `replace` dropped it (its retention rule was pending-only), and DiscoverPendingAsks re-added it
-// from the server on the next attach/poll: add → settle → drop → re-add. That is the flicker.
-//
-// THE FIX, pinned here: settle on EVIDENCE (the server's open-ask list, or a recorded outcome row), never
-// on an inferred turn state. A dead ask still settles; a live one never does.
+// ask_ghost_card_test.go — THE GHOST PHASE: a card the SERVER still lists as open must never be
+// settled or dropped by a CLIENT-SIDE inference about the turn.
 
 import (
 	"strings"
@@ -72,10 +53,7 @@ func countConsent(s *chatStore, convID, askID string) int {
 	return n
 }
 
-// THE REGRESSION (AC1/AC2). The whole reported sequence, driven through the real close path: a PENDING
-// card is up while the server still lists the ask; a stream close lands with runningFor false; a durable
-// re-read follows — and through NONE of it does the card stop being pending. On the old code the first
-// step settled it (the failure is the card COPY changing state, not a return value).
+// THE REGRESSION (AC1/AC2).
 func TestAGhostCardSurvivesTheReportedSequenceWhileTheServerStillListsIt(t *testing.T) {
 	m, ask := ghostApp(t)
 	if dec, ok := consentCopy(m.chatStore, "c1", "ask-1"); !ok || dec != "" {
@@ -85,9 +63,7 @@ func TestAGhostCardSurvivesTheReportedSequenceWhileTheServerStillListsIt(t *test
 		t.Fatal("fixture: the slot must be armed before the close, or the reproduction measures nothing")
 	}
 
-	// 1. THE STREAM CLOSE. `ended` is true for the slot's own generation; EndStream clears the slot and
-	//    the conversation row is absent, so `runningFor` becomes FALSE — the exact input that used to make
-	//    settleStaleConsent settle a still-open card.
+	// 1.
 	gen := m.chat.CurrentGen("c1")
 	m.onStreamDone(chat.StreamDoneMsg{ConvID: "c1", Gen: gen})
 	if m.runningFor("c1") {
@@ -108,9 +84,7 @@ func TestAGhostCardSurvivesTheReportedSequenceWhileTheServerStillListsIt(t *test
 		t.Fatalf("a transcript load dropped/settled the still-open card, got (dec=%q present=%v)", dec, ok)
 	}
 
-	// 3. THE SERVER'S OWN ANSWER: discovery lists the ask as still open (what ReconcilePendingAsks is
-	//    handed), and it re-draws it (idempotent). Neither settles the card, and there is still exactly ONE.
-	m.chatStore.settleStaleConsent("c1", map[string]bool{"ask-1": true})
+	// 3.
 	m.ShowConsentAsk(ask)
 	if dec, ok := consentCopy(m.chatStore, "c1", "ask-1"); !ok || dec != "" {
 		t.Fatalf("the server lists the ask as open, so the card must stay answerable, got (dec=%q present=%v)", dec, ok)
@@ -123,7 +97,6 @@ func TestAGhostCardSurvivesTheReportedSequenceWhileTheServerStillListsIt(t *test
 	for i := 0; i < 3; i++ {
 		m.onStreamDone(chat.StreamDoneMsg{ConvID: "c1", Gen: m.chat.CurrentGen("c1")})
 		m.ShowConsentAsk(ask)
-		m.chatStore.settleStaleConsent("c1", map[string]bool{"ask-1": true})
 	}
 	if !m.chatStore.hasPendingConsent("c1") {
 		t.Fatal("reapplying the client-side events settled the card the server still lists as open")
@@ -138,7 +111,6 @@ func TestTheGhostCardIsStillTheLiveCardInThePaintedFrame(t *testing.T) {
 	_ = m.onTranscript(chat.TranscriptMsg{ConvID: "c1", Items: []chat.ChatItem{
 		{Kind: chat.KindUser, Text: "do the thing", Key: "m-1", At: 1},
 	}})
-	m.chatStore.settleStaleConsent("c1", map[string]bool{"ask-1": true})
 	m.ShowConsentAsk(ask)
 	m.onChatWake()
 
@@ -167,17 +139,9 @@ func TestAnsweringFromThisClientStillSettlesAndReplies(t *testing.T) {
 	}
 }
 
-// AC4. A GENUINELY-FINISHED ASK STILL SETTLES, both stopping conditions: the server no longer LISTS it,
-// and the page RECORDS an outcome. Without this the fix would be "never settle", leaving a dead card up.
+// AC4.
 func TestAGenuinelyFinishedAskStillSettles(t *testing.T) {
-	// (i) the server's authoritative open-ask list no longer contains it.
-	m, _ := ghostApp(t)
-	m.chatStore.settleStaleConsent("c1", map[string]bool{})
-	if m.chatStore.hasPendingConsent("c1") {
-		t.Fatal("the server lists nothing open, so the card must settle — otherwise a dead card lives forever")
-	}
-
-	// (ii) a recorded outcome on the durable page (answered elsewhere / expired at finalize).
+	// (i) a recorded outcome on the durable page (answered elsewhere / expired at finalize).
 	m2, _ := ghostApp(t)
 	_ = m2.onTranscript(chat.TranscriptMsg{
 		ConvID:      "c1",
@@ -188,9 +152,7 @@ func TestAGenuinelyFinishedAskStillSettles(t *testing.T) {
 	}
 }
 
-// AC5. A settle is VISIBLE AS SETTLED, not a disappearance — and never drawn TWICE once its durable twin
-// lands. A permission ask has no durable rendering row, so its record persists; a question HAS a durable
-// KindAsk twin, so its record is de-duped away.
+// AC5.
 func TestASettledCardStaysAsARecordAndNeverDoubles(t *testing.T) {
 	// (a) no durable twin: the record persists through replace.
 	s := newTestChatStore()
@@ -216,5 +178,43 @@ func TestASettledCardStaysAsARecordAndNeverDoubles(t *testing.T) {
 	})
 	if _, ok := consentCopy(s2, "c1", "q-1"); ok {
 		t.Fatal("a settled question must be de-duped against its durable KindAsk card — it would draw twice")
+	}
+}
+
+// DISCOVERY ONLY ADDS — it can never retire a card, which is the rule the GUI has always followed.
+func TestDiscoveryOnlyAddsAndNeverSettles(t *testing.T) {
+	m, keep := ghostApp(t)
+
+	// A card the server no longer lists.
+	drop := chat.PermissionAsk{
+		ID: "ask-dropped", Kind: chat.AskTool, Tool: "write",
+		Target: "/home/ops/project/gone.go", Directory: "/home/ops/project",
+	}
+	m.ShowConsentAsk(drop)
+
+	// THE ONE CALL the discovery path makes, several times, with both an empty answer and one that lists
+	// only `keep` — neither may settle anything.
+	store := appEventStore{m: m}
+	store.ShowDiscoveredAsks("c1", nil)
+	store.ShowDiscoveredAsks("c1", []chat.PermissionAsk{keep})
+	store.ShowDiscoveredAsks("c1", nil)
+
+	for _, id := range []string{"ask-1", "ask-dropped"} {
+		if dec, ok := consentCopy(m.chatStore, "c1", id); !ok || dec != "" {
+			t.Errorf("%s must still be ANSWERABLE after discovery polled without listing it, got "+
+				"(dec=%q present=%v) — settling on absence is the flicker", id, dec, ok)
+		}
+	}
+	if n := countConsent(m.chatStore, "c1", "ask-1"); n != 1 {
+		t.Errorf("repeated discovery must not duplicate a card: got %d for one ask", n)
+	}
+
+	// AND THE POSITIVE EVIDENCE STILL SETTLES.
+	m.chatStore.settleAsk("c1", "ask-dropped", "allow_once", "")
+	if dec, ok := consentCopy(m.chatStore, "c1", "ask-dropped"); !ok || dec != chat.DecisionAllowOnce {
+		t.Errorf("a RECORDED outcome must still settle the card, got (dec=%q present=%v)", dec, ok)
+	}
+	if dec, _ := consentCopy(m.chatStore, "c1", "ask-1"); dec != "" {
+		t.Errorf("settling one ask must not touch another; ask-1 is now %q", dec)
 	}
 }

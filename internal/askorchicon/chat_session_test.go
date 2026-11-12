@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -44,9 +45,7 @@ func (f *fakeBusSub) Close() {
 	})
 }
 
-// feed pushes an event onto the subscription (test helper). Feeds after Close
-// are dropped — a test may race a trailing feed against the consumer's own
-// deferred Close once the turn has completed.
+// feed pushes an event onto the subscription (test helper).
 func (f *fakeBusSub) feed(evt opencode.BusEvent) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -76,9 +75,7 @@ type fakeSessionClient struct {
 	sendParts    [][]scheduler.ChatAttachment // one entry per SendTurnMessageWithAttachments call
 	sendErrs     []error                      // consumed in order; nil when exhausted
 	sendCall     int
-	// sendGate, when non-nil, makes SendMessage block until the channel is
-	// closed. Lets a test hold the send in flight so it can replay events
-	// that must be observed while sent == false (the stale-idle guard).
+	// sendGate, when non-nil, makes SendMessage block until the channel is closed.
 	sendGate chan struct{}
 	// sentCh, when non-nil, is closed once a gated SendMessage returns nil —
 	// a deterministic "the send was accepted" signal for guard tests.
@@ -89,17 +86,14 @@ type fakeSessionClient struct {
 	sub          *fakeBusSub
 	sbus         scheduler.SessionBus
 	subscribeErr error
-	// serveDownFails is the number of Subscribe calls to fail before the
-	// serve "recovers" (a serve that dropped and is restarting). Each failed
-	// Subscribe decrements it; 0 means always reachable.
+	// serveDownFails is the number of Subscribe calls to fail before the serve "recovers" (a serve that
+	// dropped and is restarting).
 	serveDownFails int
 }
 
 func (f *fakeSessionClient) Subscribe(ctx context.Context, conversationID string) (scheduler.SessionBus, error) {
-	// serveDownFails lets a test make the serve "go down": fail the next N
-	// Subscribe calls (a serve that never accepts a connection), then
-	// recover. Each failure decrements the counter, so a test can drop the
-	// serve mid-turn and bring it back.
+	// serveDownFails lets a test make the serve "go down": fail the next N Subscribe calls (a serve
+	// that never accepts a connection), then recover.
 	f.mu.Lock()
 	if f.serveDownFails > 0 {
 		f.serveDownFails--
@@ -110,12 +104,7 @@ func (f *fakeSessionClient) Subscribe(ctx context.Context, conversationID string
 	if f.subscribeErr != nil {
 		return nil, f.subscribeErr
 	}
-	// Reuse the live subscription (existing turn tests feed the stream the
-	// turn is draining). A CLOSED subscription means the serve "restarted" —
-	// the collector's re-attach gets a fresh event stream. A single cached
-	// SessionBus wrapper is returned so the turn's internal Subscribe and any
-	// test-side Subscribe observe the SAME translated channel (two independent
-	// wrappers would each start a translating goroutine and steal events).
+	// Reuse the live subscription (existing turn tests feed the stream the turn is draining).
 	if f.sub == nil || isClosed(f.sub.done) {
 		f.sub = newFakeBusSub()
 		f.sbus = opencode.NewSessionBusFromSub(f.sub)
@@ -181,9 +170,8 @@ func (f *fakeSessionClient) SendTurnMessage(ctx context.Context, conversationID,
 	return nil
 }
 
-// SendTurnMessageWithAttachments is the attachment-aware capability; the
-// test fake implements it so attachment turns test the capability-gated path
-// (recorded just like a plain send — the adapter's classification differs).
+// SendTurnMessageWithAttachments is the attachment-aware capability; the test fake implements it so
+// attachment turns test the capability-gated path (recorded just like a plain send.
 func (f *fakeSessionClient) SendTurnMessageWithAttachments(ctx context.Context, conversationID, sessionID, system, modelRef, text string, attachments []scheduler.ChatAttachment) error {
 	f.mu.Lock()
 	f.sendParts = append(f.sendParts, append([]scheduler.ChatAttachment(nil), attachments...))
@@ -226,9 +214,8 @@ func busText(sessionID, text string) opencode.BusEvent {
 	}
 }
 
-// busReasoning builds a completed reasoning-part bus event for a session (the
-// same shape the serve emits for thinking blocks and LegacyEventFromBus maps
-// to {type: "reasoning", part: {...}}).
+// busReasoning builds a completed reasoning-part bus event for a session (the same shape the serve
+// emits for thinking blocks and LegacyEventFromBus maps to {type: "reasoning", part: {...}}).
 func busReasoning(sessionID, text string) opencode.BusEvent {
 	return opencode.BusEvent{
 		Type: "message.part.updated",
@@ -338,10 +325,8 @@ func runTurn(t *testing.T, client *fakeSessionClient, sessionID string, feed fun
 		}
 		defer sub.Close()
 		if feed != nil {
-			// Feed events only after the send has been accepted so the
-			// sent guard is deterministic — feeding before the send flips
-			// sent makes the idle-vs-send ordering a timing race (flaky
-			// under -race / load).
+			// Feed events only after the send has been accepted so the sent guard is deterministic — feeding
+			// before the send flips sent makes the idle-vs-send ordering a timing race (flaky under -race /.
 			go func() {
 				waitForSend(t, client, 1)
 				feed(client.sub)
@@ -362,10 +347,8 @@ func runTurn(t *testing.T, client *fakeSessionClient, sessionID string, feed fun
 
 // --- First message: create + seed + persist ----------------------------------
 
-// TestRunOpenCodeTurnFirstMessageCreatesAndSeedsSession verifies the first
-// message in a conversation (no persisted session id) creates a fresh
-// session, uses the seeded system prompt (DB history included), and returns
-// the created session id.
+// TestRunOpenCodeTurnFirstMessageCreatesAndSeedsSession verifies the first message in a
+// conversation (no persisted session id) creates a fresh session.
 func TestRunOpenCodeTurnFirstMessageCreatesAndSeedsSession(t *testing.T) {
 	client := &fakeSessionClient{}
 	feed := func(sub *fakeBusSub) {
@@ -398,9 +381,8 @@ func TestRunOpenCodeTurnFirstMessageCreatesAndSeedsSession(t *testing.T) {
 	}
 }
 
-// TestRunOpenCodeTurnFollowUpReusesSameSession verifies a follow-up message
-// (persisted session id) reuses the SAME session — no CreateSession, the
-// reuse (no-history) system prompt, and the persisted id returned.
+// TestRunOpenCodeTurnFollowUpReusesSameSession verifies a follow-up message (persisted session id)
+// reuses the SAME session — no CreateSession, the reuse (no-history) system prompt.
 func TestRunOpenCodeTurnFollowUpReusesSameSession(t *testing.T) {
 	client := &fakeSessionClient{}
 	feed := func(sub *fakeBusSub) {
@@ -430,11 +412,8 @@ func TestRunOpenCodeTurnFollowUpReusesSameSession(t *testing.T) {
 	}
 }
 
-// TestChatTurnSendsAttachments proves an attachment attached to a message
-// reaches the send path via the attachment-aware capability
-// (SendTurnMessageWithAttachments on the scheduler.ChatTurnClient) rather
-// than being dropped by a concrete-type assertion and falling back to a plain
-// SendTurnMessage.
+// TestChatTurnSendsAttachments proves an attachment attached to a message reaches the send path via
+// the attachment-aware capability (SendTurnMessageWithAttachments.
 func TestChatTurnSendsAttachments(t *testing.T) {
 	client := &fakeSessionClient{}
 	imgData := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a}
@@ -476,10 +455,8 @@ func TestChatTurnSendsAttachments(t *testing.T) {
 
 // --- Stale idle before send --------------------------------------------------
 
-// TestRunOpenCodeTurnIgnoresIdleBeforeSend verifies the sent guard: a
-// session.idle replayed on the bus while OUR message is still being sent
-// (sent == false) must NOT complete the turn — the turn ends only on the
-// idle that follows our accepted message.
+// TestRunOpenCodeTurnIgnoresIdleBeforeSend verifies the sent guard: a session.idle replayed on the
+// bus while OUR message is still being sent (sent == false) must NOT complete the turn.
 func TestRunOpenCodeTurnIgnoresIdleBeforeSend(t *testing.T) {
 	client := &fakeSessionClient{sendGate: make(chan struct{})}
 	s := &Service{log: slog.Default()}
@@ -519,22 +496,7 @@ func TestRunOpenCodeTurnIgnoresIdleBeforeSend(t *testing.T) {
 	}
 
 	fsub := client.sub
-	// Stale idle + text from a PRIOR turn replayed before our send is
-	// accepted. The idle must be ignored (sent == false). The stale text is
-	// legitimate telemetry and is relayed; the STALE IDLE must not end the
-	// turn.
-	//
-	// ⚠️ A MARKER TEXT IS FED AFTER THE STALE IDLE, and that marker is the whole reason this test is
-	// deterministic. Waiting for the stale TEXT alone does NOT prove the idle was consumed — the text is
-	// relayed from inside the drain loop's `case "part"` branch, so it can be observed while the loop has
-	// not yet performed its next select, leaving the idle queued. Releasing the send gate at that moment lets
-	// the select take sendCh FIRST (sent = true) and then consume that stale idle as if it were ours, ending
-	// the turn with only the stale text — which is exactly the failure that surfaced as
-	// `collected text = [stale text]` on a loaded machine while passing on an idle one.
-	//
-	// The events channel is FIFO and the drain loop consumes one event per iteration, so when the MARKER is
-	// relayed the idle before it has definitely been consumed — with sent == false, i.e. correctly ignored.
-	// That is the fact this test needs, and it is now established rather than assumed.
+	// Stale idle + text from a PRIOR turn replayed before our send is accepted.
 	fsub.feed(busText("ses_1", "stale text"))
 	fsub.feed(busIdle("ses_1"))
 	fsub.feed(busText("ses_1", "stale marker"))
@@ -546,15 +508,6 @@ func TestRunOpenCodeTurnIgnoresIdleBeforeSend(t *testing.T) {
 		}
 	}
 	// Release the send; then the real turn produces text + the real idle.
-	// Feed the idle twice with a gap: the drain loop's select may consume
-	// the first fresh idle before it processes the sendCh result (sent still
-	// false → correctly ignored); the second idle is consumed after sent has
-	// flipped, so the turn terminates deterministically.
-	//
-	// The gap is a margin rather than a guarantee, and it is the one remaining
-	// timing assumption here — but it is microseconds of work (the send
-	// goroutine has already returned) against 100ms, so it is orders of
-	// magnitude wider than the window that used to be lost.
 	close(client.sendGate)
 	fsub.feed(busText("ses_1", "fresh reply"))
 	fsub.feed(busIdle("ses_1"))
@@ -575,13 +528,7 @@ func TestRunOpenCodeTurnIgnoresIdleBeforeSend(t *testing.T) {
 	if resSid != "ses_1" {
 		t.Errorf("returned session id = %q, want ses_1", resSid)
 	}
-	// The stale idle must not have ended the turn early with only stale
-	// text. Telemetry text is relayed as it arrives (it is the conversation's
-	// own output), but the turn must continue to the post-accept idle and
-	// collect the FRESH reply — if the stale idle had completed the turn we
-	// would see no FRESH REPLY at all, which is the assertion that carries
-	// the test. (Both stale texts are asserted so a change that dropped the
-	// marker cannot make this pass silently.)
+	// The stale idle must not have ended the turn early with only stale text.
 	got := col.texts()
 	if len(got) != 3 || got[0] != "stale text" || got[1] != "stale marker" || got[2] != "fresh reply" {
 		t.Errorf("collected text = %v, want [stale text stale marker fresh reply] — the fresh reply missing "+
@@ -591,9 +538,8 @@ func TestRunOpenCodeTurnIgnoresIdleBeforeSend(t *testing.T) {
 
 // --- Timeout abort -----------------------------------------------------------
 
-// TestRunOpenCodeTurnTimeoutAborts verifies that when the model never
-// finishes (no idle within ORCHICON_ASK_TIMEOUT) the turn aborts the
-// session (keeping it for the next message) and returns a timeout error.
+// TestRunOpenCodeTurnTimeoutAborts verifies that when the model never finishes (no idle within
+// ORCHICON_ASK_TIMEOUT) the turn aborts the session (keeping it for the next message) and returns.
 func TestRunOpenCodeTurnTimeoutAborts(t *testing.T) {
 	client := &fakeSessionClient{}
 	s := &Service{log: slog.Default()}
@@ -646,17 +592,14 @@ func TestRunOpenCodeTurnSessionErrorEndsTurn(t *testing.T) {
 
 // --- Lost session recreation -------------------------------------------------
 
-// TestRunOpenCodeTurnRecreatesLostSession verifies a follow-up send that
-// 404s (serve data dir wiped / session gone) recreates a fresh session,
-// re-seeds the DB history (seed system), persists the new id, and retries
-// on the fresh session.
+// TestRunOpenCodeTurnRecreatesLostSession verifies a follow-up send that 404s (serve data dir wiped
+// / session gone) recreates a fresh session, re-seeds the DB history (seed system).
 func TestRunOpenCodeTurnRecreatesLostSession(t *testing.T) {
 	client := &fakeSessionClient{
 		sendErrs: []error{scheduler.ErrSessionNotFound},
 	}
-	// Wait until the retry send has been accepted before feeding text +
-	// idle, otherwise the idle can arrive while sent == false and be
-	// ignored (and the retry needs the sendErr consumed first).
+	// Wait until the retry send has been accepted before feeding text + idle, otherwise the idle can
+	// arrive while sent == false and be ignored (and the retry needs the sendErr consumed first).
 	feed := func(sub *fakeBusSub) {
 		deadline := time.After(5 * time.Second)
 		for {
@@ -700,9 +643,8 @@ func TestRunOpenCodeTurnRecreatesLostSession(t *testing.T) {
 	}
 }
 
-// TestRunOpenCodeTurnCreateFailureReturnsError verifies a CreateSession
-// failure on a first message is terminal (error returned, no fallback
-// mid-request — the next message retries).
+// TestRunOpenCodeTurnCreateFailureReturnsError verifies a CreateSession failure on a first message
+// is terminal (error returned, no fallback mid-request — the next message retries).
 func TestRunOpenCodeTurnCreateFailureReturnsError(t *testing.T) {
 	client := &fakeSessionClient{createErr: errors.New("serve down")}
 	_, _, err := runTurn(t, client, "", nil)
@@ -713,11 +655,8 @@ func TestRunOpenCodeTurnCreateFailureReturnsError(t *testing.T) {
 
 // --- Relay of permission.asked and tool_use ---------------------------------
 
-// TestRunOpenCodeTurnRelaysPermissionAndTool verifies that a permission.asked
-// goes through the CONSENT path (never a blind auto-approve) and that tool_use
-// events are still relayed to the callback (never re-executed). The ask is
-// raised, awaited, and — because the turn ends with no human answer — EXPIRED
-// with `reject`, which is what the serve receives instead of an auto-`once`.
+// TestRunOpenCodeTurnRelaysPermissionAndTool verifies that a permission.asked goes through the
+// CONSENT path (never a blind auto-approve) and that tool_use events are still relayed.
 func TestRunOpenCodeTurnRelaysPermissionAndTool(t *testing.T) {
 	client := &fakeSessionClient{}
 	feed := func(sub *fakeBusSub) {
@@ -751,10 +690,8 @@ func TestRunOpenCodeTurnRelaysPermissionAndTool(t *testing.T) {
 	if resErr != nil {
 		t.Fatalf("turn error: %v", resErr)
 	}
-	// The consent path replaced the blind auto-approve: while the ask is open
-	// the serve is NOT answered, and at turn end the unanswered ask is expired
-	// with `reject` — reported, never silently dropped, and the turn was never
-	// wedged on it (this loop returned).
+	// The consent path replaced the blind auto-approve: while the ask is open the serve is NOT
+	// answered, and at turn end the unanswered ask is expired with `reject` — reported.
 	client.mu.Lock()
 	defer client.mu.Unlock()
 	if len(client.replies) != 1 || client.replies[0] != "reject" {
@@ -771,10 +708,8 @@ func TestRunOpenCodeTurnRelaysPermissionAndTool(t *testing.T) {
 
 // --- Subscribe failure -------------------------------------------------------
 
-// TestRunOpenCodeTurnSubscribeFailureReturnsError verifies a Subscribe
-// failure is terminal (error returned). It drives runOpenCodeTurn directly
-// (the runTurn helper pre-subscribes, which would fail first and not
-// exercise the turn's own subscribe).
+// TestRunOpenCodeTurnSubscribeFailureReturnsError verifies a Subscribe failure is terminal (error
+// returned).
 func TestRunOpenCodeTurnSubscribeFailureReturnsError(t *testing.T) {
 	client := &fakeSessionClient{subscribeErr: errors.New("stream down")}
 	s := &Service{log: slog.Default()}
@@ -874,20 +809,10 @@ func TestCollectConversationReplyCollectsReply(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyDeltaStreamPreventsStall verifies the
-// mid-generation delta feed (D1 chat mirror) on the REAL chat path
-// (collectConversationReply → runOneTurnAttempt, which owns the stall
-// monitor): a slow model turn that streams token deltas for longer than the
-// no_progress window does NOT trip the chat stall monitor — each delta
-// resets lastActivity, so the turn completes once the completed text part +
-// idle arrive. Without the feed, a generation longer than the window with no
-// completed parts is aborted as stalled (the same false-stall as worker
-// executions).
+// TestCollectConversationReplyDeltaStreamPreventsStall verifies the mid-generation delta feed (D1
+// chat mirror) on the REAL chat path (collectConversationReply → runOneTurnAttempt.
 func TestCollectConversationReplyDeltaStreamPreventsStall(t *testing.T) {
-	// Window 2s (min stall-ticker interval is 1s; 2s gives deterministic
-	// ticks at 2s/4s). Deltas every ~1s keep lastActivity ≤1s old at every
-	// tick. WITHOUT the feed the monitor trips at the FIRST tick (2s), when
-	// lastActivity is ~2s old — so the test fails fast on a regression.
+	// Window 2s (min stall-ticker interval is 1s; 2s gives deterministic ticks at 2s/4s).
 	t.Setenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW", "2s")
 	client := &fakeSessionClient{}
 	opts := turnCollectOpts{
@@ -922,10 +847,8 @@ func TestCollectConversationReplyDeltaStreamPreventsStall(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyCollectsReasoning verifies reasoning parts on
-// the bus are unwrapped via LegacyEventFromBus, accumulated separately from
-// the reply text (never folded into assistant content), and returned by the
-// collector — the data path F4's reasoning bubbles consume.
+// TestCollectConversationReplyCollectsReasoning verifies reasoning parts on the bus are unwrapped
+// via LegacyEventFromBus.
 func TestCollectConversationReplyCollectsReasoning(t *testing.T) {
 	client := &fakeSessionClient{}
 	opts := turnCollectOpts{
@@ -960,9 +883,8 @@ func TestCollectConversationReplyCollectsReasoning(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyNoReasoningYieldsEmpty verifies a turn with no
-// reasoning parts (a model that emits none) yields an empty slice — additive,
-// no events, no noise.
+// TestCollectConversationReplyNoReasoningYieldsEmpty verifies a turn with no reasoning parts (a
+// model that emits none) yields an empty slice — additive, no events, no noise.
 func TestCollectConversationReplyNoReasoningYieldsEmpty(t *testing.T) {
 	client := &fakeSessionClient{}
 	opts := turnCollectOpts{
@@ -983,9 +905,8 @@ func TestCollectConversationReplyNoReasoningYieldsEmpty(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyFirstMessageCreatesSession verifies a first
-// message (no persisted session id) creates the session and uses the seed
-// system prompt.
+// TestCollectConversationReplyFirstMessageCreatesSession verifies a first message (no persisted
+// session id) creates the session and uses the seed system prompt.
 func TestCollectConversationReplyFirstMessageCreatesSession(t *testing.T) {
 	client := &fakeSessionClient{}
 	opts := turnCollectOpts{
@@ -1047,10 +968,8 @@ func TestCollectConversationReplySessionError(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyReattachesOnBusLoss verifies serve loss
-// mid-reply (bus closes) re-attaches to the SAME session: the collector
-// re-subscribes and re-dispatches, then collects the reply from the fresh
-// subscription.
+// TestCollectConversationReplyReattachesOnBusLoss verifies serve loss mid-reply (bus closes)
+// re-attaches to the SAME session: the collector re-subscribes and re-dispatches.
 func TestCollectConversationReplyReattachesOnBusLoss(t *testing.T) {
 	client := &fakeSessionClient{}
 	opts := turnCollectOpts{
@@ -1088,9 +1007,8 @@ func TestCollectConversationReplyReattachesOnBusLoss(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyRecreatesLostSession verifies a 404 on a reused
-// session (serve data dir wiped) creates a FRESH session seeded from the DB
-// transcript (seedSystem) and re-dispatches once.
+// TestCollectConversationReplyRecreatesLostSession verifies a 404 on a reused session (serve data
+// dir wiped) creates a FRESH session seeded from the DB transcript (seedSystem) and re-dispatches.
 func TestCollectConversationReplyRecreatesLostSession(t *testing.T) {
 	client := &fakeSessionClient{sendErrs: []error{scheduler.ErrSessionNotFound}}
 	opts := turnCollectOpts{
@@ -1128,9 +1046,8 @@ func TestCollectConversationReplyRecreatesLostSession(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyIgnoresIdleBeforeSend verifies the sent guard
-// also protects the detached collector: a session.idle observed while the
-// send is still in flight (sent == false) must NOT complete the turn.
+// TestCollectConversationReplyIgnoresIdleBeforeSend verifies the sent guard also protects the
+// detached collector.
 func TestCollectConversationReplyIgnoresIdleBeforeSend(t *testing.T) {
 	client := &fakeSessionClient{sendGate: make(chan struct{}), sentCh: make(chan struct{})}
 	opts := turnCollectOpts{
@@ -1146,9 +1063,8 @@ func TestCollectConversationReplyIgnoresIdleBeforeSend(t *testing.T) {
 		reply, _, sid, err = s.collectConversationReply(context.Background(), opts)
 	}()
 	waitForSend(t, client, 1)
-	// Stale idle + text from a prior turn replayed before our send is
-	// accepted: the idle must be ignored and the stale text must not leak
-	// into this turn's reply.
+	// Stale idle + text from a prior turn replayed before our send is accepted: the idle must be
+	// ignored and the stale text must not leak into this turn's reply.
 	fsub := client.sub
 	fsub.feed(busText("ses_1", "stale text"))
 	fsub.feed(busIdle("ses_1"))
@@ -1185,9 +1101,7 @@ func TestCollectConversationReplyIgnoresIdleBeforeSend(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyStopCancels verifies the registry-cancel path
-// (Stop button): cancelling the collector context ends the turn immediately
-// with context.Canceled instead of waiting out the reply window.
+// TestCollectConversationReplyStopCancels verifies the registry-cancel path (Stop button).
 func TestCollectConversationReplyStopCancels(t *testing.T) {
 	client := &fakeSessionClient{}
 	opts := turnCollectOpts{
@@ -1214,10 +1128,8 @@ func TestCollectConversationReplyStopCancels(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyServeDownFailsFast verifies a serve that never
-// accepts a connection at send time fails fast with a clean, retryable error
-// (bounded by the short serve-down grace) instead of looping silently up to
-// the full reply window.
+// TestCollectConversationReplyServeDownFailsFast verifies a serve that never accepts a connection
+// at send time fails fast with a clean.
 func TestCollectConversationReplyServeDownFailsFast(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_SERVE_DOWN_GRACE", "100ms")
 	// The reply window stays at its default (30m) — a correct fast-fail must
@@ -1237,9 +1149,8 @@ func TestCollectConversationReplyServeDownFailsFast(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyServeDownRecovers verifies the serve-down grace
-// is not a hard failure: a serve that drops before a connection and comes back
-// within the grace completes the turn normally.
+// TestCollectConversationReplyServeDownRecovers verifies the serve-down grace is not a hard
+// failure.
 func TestCollectConversationReplyServeDownRecovers(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_SERVE_DOWN_GRACE", "5s")
 	client := &fakeSessionClient{serveDownFails: 2}
@@ -1264,11 +1175,8 @@ func TestCollectConversationReplyServeDownRecovers(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyDropAfterLiveKeepsWindow verifies a serve that
-// WAS live during the turn (a reply attempt connected) then drops again on a
-// later subscribe is NOT bounded by the short serve-down grace — it keeps the
-// full reply window (a restart after a live connection). The re-attach
-// succeeds and the turn completes.
+// TestCollectConversationReplyDropAfterLiveKeepsWindow verifies a serve that WAS live during the
+// turn (a reply attempt connected) then drops again on a later subscribe is NOT bounded.
 func TestCollectConversationReplyDropAfterLiveKeepsWindow(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_SERVE_DOWN_GRACE", "10ms")
 	client := &fakeSessionClient{}
@@ -1280,9 +1188,8 @@ func TestCollectConversationReplyDropAfterLiveKeepsWindow(t *testing.T) {
 		// First attempt: live, send accepted, then the bus dies.
 		waitForSend(t, client, 1)
 		client.sub.Close()
-		// The serve is "restarting": the next subscribe (the re-attach)
-		// fails once — the serve-down grace (10ms) must NOT fast-fail a turn
-		// that was already live.
+		// The serve is "restarting": the next subscribe (the re-attach) fails once — the serve-down grace
+		// (10ms) must NOT fast-fail a turn that was already live.
 		client.failNextSubscribes(1)
 		// Then it recovers and completes the turn on the re-dispatch.
 		waitForSend(t, client, 2)
@@ -1298,10 +1205,7 @@ func TestCollectConversationReplyDropAfterLiveKeepsWindow(t *testing.T) {
 	}
 }
 
-// TestTurnRegistry verifies the one-turn-per-conversation gate, the
-// cancel-leaves-entry-until-remove semantics that keep a new send gated while
-// the old turn finalizes, and the token-guarded removal that lets a
-// superseded collector's deferred remove never clobber a replacement turn.
+// TestTurnRegistry verifies the one-turn-per-conversation gate.
 func TestTurnRegistry(t *testing.T) {
 	r := newTurnRegistry()
 	ctx1, c1 := context.WithCancelCause(context.Background())
@@ -1318,9 +1222,8 @@ func TestTurnRegistry(t *testing.T) {
 		t.Fatal("second register for the same conversation must fail (one turn at a time)")
 	}
 
-	// get reports the running turn and its pending assistant message id (the
-	// id the frontend uses to re-attach the Stop button + completion poll
-	// after a refresh), and reports not-in-flight for unknown conversations.
+	// get reports the running turn and its pending assistant message id (the id the frontend uses to
+	// re-attach the Stop button + completion poll after a refresh).
 	entry, ok := r.get("conv_a")
 	if !ok || entry.assistantMsgID != "msg_a1" {
 		t.Fatalf("get after register = (assistantMsgID %q, ok %v), want msg_a1/true", entry.assistantMsgID, ok)
@@ -1348,19 +1251,28 @@ func TestTurnRegistry(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("cancelling the turn did not fire the collector cancel")
 	}
-	// The entry stays until the collector removes it — a new send is still
-	// gated while the old turn finalizes.
-	if _, ok := r.register("conv_a", "tnt_dev", "msg_a3", c2); ok {
-		t.Fatal("register must still fail after cancel (entry removed on finalize)")
+	// A CANCELLED TURN MUST NOT HOLD THE CONVERSATION. Stop is the operator telling us they are done
+	// with this attempt; the entry stays so the stale collector can still finalize, but it no longer
+	// reserves the conversation. Gating the next send here is what left a stopped conversation unable
+	// to accept anything.
+	if entry, _ := r.get("conv_a"); !entry.idle {
+		t.Fatal("cancel must mark the entry idle so it stops reserving the conversation")
 	}
-
-	// Token-guarded removal: a STALE finalize (wrong token) must not remove
-	// the entry; the current token does.
-	r.remove("conv_a", tok1+999)
-	if _, ok := r.register("conv_a", "tnt_dev", "msg_a3", c2); ok {
-		t.Fatal("stale-token remove must not delete the entry")
+	tok3, ok := r.register("conv_a", "tnt_dev", "msg_a3", c2)
+	if !ok {
+		t.Fatal("register must succeed after cancel — the operator stopped the turn, so the conversation is free")
 	}
+	if tok3 <= tok1 {
+		t.Fatalf("a turn started over an idle entry must get a fresh token (got %d, previous %d)", tok3, tok1)
+	}
+	// AND THE STALE COLLECTOR MUST NOT DISTURB IT: the old turn's finalize runs with the OLD token and
+	// must be a no-op, or it would evict the live turn's registration.
 	r.remove("conv_a", tok1)
+	if entry, ok := r.get("conv_a"); !ok || entry.token != tok3 {
+		t.Fatal("a stale-token finalize must not delete the replacement turn's entry")
+	}
+	// Token-guarded removal still holds for the CURRENT token.
+	r.remove("conv_a", tok3)
 	tok2, ok := r.register("conv_a", "tnt_dev", "msg_a2", c2)
 	if !ok || tok2 <= tok1 {
 		t.Fatal("register must succeed after the collector removes its entry, with a fresh token")
@@ -1370,10 +1282,8 @@ func TestTurnRegistry(t *testing.T) {
 	}
 }
 
-// TestTurnRegistrySweep verifies the TTL sweeper: entries older than the
-// max age are cancelled with errTurnExpired, removed, and reported with
-// their tenant so the sweeper can abort the serve session. Fresh entries
-// are untouched.
+// TestTurnRegistrySweep verifies the TTL sweeper: entries older than the max age are cancelled with
+// errTurnExpired, removed.
 func TestTurnRegistrySweep(t *testing.T) {
 	r := newTurnRegistry()
 	_, c1 := context.WithCancelCause(context.Background())
@@ -1391,10 +1301,8 @@ func TestTurnRegistrySweep(t *testing.T) {
 	r.mu.Lock()
 	old := r.turns["conv_old"]
 	old.started = now.Add(-10 * time.Minute)
-	// BOTH stamps: the sweep measures lastActivity now (see
-	// TestTurnRegistrySweepKeepsAWorkingTurn for the long-but-productive turn
-	// that must survive it). A genuinely wedged collector has been quiet for as
-	// long as it has been running.
+	// BOTH stamps: the sweep measures lastActivity now (see TestTurnRegistrySweepKeepsAWorkingTurn for
+	// the long-but-productive turn that must survive it).
 	old.lastActivity = now.Add(-10 * time.Minute)
 	r.turns["conv_old"] = old
 	r.mu.Unlock()
@@ -1414,14 +1322,8 @@ func TestTurnRegistrySweep(t *testing.T) {
 	// context.Cause on the cancelled context).
 }
 
-// TestTurnRegistrySweepKeepsAWorkingTurn is the second half of the operator's
-// "sessions seem to be timing out on me". The sweeper reaped on the turn's AGE
-// (entry.started), so a turn that had been working for an hour — deltas,
-// tool calls, completed parts, all of it advancing lastActivity — was evicted as
-// if it were wedged, and its collector was cancelled out from under it.
-//
-// The entry here is deliberately extreme in both directions: an hour old, and a
-// second since its last activity. Age alone must not condemn it.
+// TestTurnRegistrySweepKeepsAWorkingTurn is the second half of the operator's "sessions seem to be
+// timing out on me".
 func TestTurnRegistrySweepKeepsAWorkingTurn(t *testing.T) {
 	r := newTurnRegistry()
 	_, cancel := context.WithCancelCause(context.Background())
@@ -1445,15 +1347,8 @@ func TestTurnRegistrySweepKeepsAWorkingTurn(t *testing.T) {
 	}
 }
 
-// TestTurnRegistrySweepSparesATurnParkedOnACard is the SECOND quiet-time deadline, and it is the one
-// that makes the first one's fix hold.
-//
-// The reply window (30m) fires first and, after the fix, re-arms while the turn is parked. The TTL
-// sweep (31m) used to be the backstop half a minute behind it — so fixing only the window would have
-// MOVED the kill rather than removed it: at 31 quiet minutes the sweeper cancelled the turn and the
-// caller aborted its serve session, which finalizes the ask exactly as the window had. The carve-out
-// therefore belongs in both deadlines, and both take it from ONE source (hasOpenAsk), so "spare this
-// turn" and "a decision can still land here" cannot drift apart.
+// TestTurnRegistrySweepSparesATurnParkedOnACard is the SECOND quiet-time deadline, and it is the
+// one that makes the first one's fix hold.
 func TestTurnRegistrySweepSparesATurnParkedOnACard(t *testing.T) {
 	r := newTurnRegistry()
 	_, cancelParked := context.WithCancelCause(context.Background())
@@ -1476,9 +1371,7 @@ func TestTurnRegistrySweepSparesATurnParkedOnACard(t *testing.T) {
 			"is being asked to answer")
 	}
 
-	// AND THE CARVE-OUT IS NARROW. A quiet turn that is NOT parked is still reaped, so the backstop
-	// the sweep exists for (a collector that can never finalize) is intact — a change that spared
-	// every quiet turn would have removed the guarantee rather than extended it.
+	// AND THE CARVE-OUT IS NARROW.
 	_, cancelQuiet := context.WithCancelCause(context.Background())
 	if _, ok := r.register("conv_quiet", "tnt_dev", "msg_quiet", cancelQuiet); !ok {
 		t.Fatal("register conv_quiet")
@@ -1497,9 +1390,8 @@ func TestTurnRegistrySweepSparesATurnParkedOnACard(t *testing.T) {
 
 // --- Folded think-segment demux (GLM/DeepSeek) -------------------------------
 
-// collectTurnEvents drives collectConversationReply and captures both the
-// partial-mirror snapshots and the stream events so a test can assert the
-// exact channels (text vs reasoning) a folded-think demux produces.
+// collectTurnEvents drives collectConversationReply and captures both the partial-mirror snapshots
+// and the stream events so a test can assert the exact channels (text vs reasoning) a folded-think.
 type turnEvents struct {
 	mu       sync.Mutex
 	partials []struct {
@@ -1560,10 +1452,8 @@ func collectTurnWithEvents(t *testing.T, client *fakeSessionClient, opts turnCol
 	return reply, reasoning, sid, err, ev
 }
 
-// TestThinkSegmenterSplitOpenTagAcrossThreeChunks verifies the cross-delta
-// carry-over state machine recognizes a think open/close tag split across
-// three chunks (GLM's folded-think output arrives token by token). No tag
-// fragment may leak into text; the body must come out via the think channel.
+// TestThinkSegmenterSplitOpenTagAcrossThreeChunks verifies the cross-delta carry-over state machine
+// recognizes a think open/close tag split across three chunks (GLM's folded-think output arrives.
 func TestThinkSegmenterSplitOpenTagAcrossThreeChunks(t *testing.T) {
 	var text, body strings.Builder
 	seg := thinkSegmenter{}
@@ -1578,9 +1468,8 @@ func TestThinkSegmenterSplitOpenTagAcrossThreeChunks(t *testing.T) {
 	feed("hidden body ")
 	feed("|</thi")
 	feed("nking>")
-	// Unterminated trailing think (flushed at the boundary): "|<thinking>more"
-	// is an open tag whose body "more" never gets a close. Must not leak to
-	// text; flushBody drains it to the think channel.
+	// Unterminated trailing think (flushed at the boundary): "|<thinking>more" is an open tag whose
+	// body "more" never gets a close.
 	feed("|<thinking>more")
 	seg.flushBody(func(b string) { body.WriteString(b) })
 
@@ -1592,10 +1481,8 @@ func TestThinkSegmenterSplitOpenTagAcrossThreeChunks(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyFoldedThinkInCompletedTextPart verifies a
-// completed text part carrying a folded think block is demuxed: the reply is
-// the clean text, the reasoning array carries the folded body, and the
-// emitted TextChunk events exclude the body.
+// TestCollectConversationReplyFoldedThinkInCompletedTextPart verifies a completed text part
+// carrying a folded think block is demuxed: the reply is the clean text.
 func TestCollectConversationReplyFoldedThinkInCompletedTextPart(t *testing.T) {
 	client := &fakeSessionClient{}
 	opts := turnCollectOpts{
@@ -1624,11 +1511,8 @@ func TestCollectConversationReplyFoldedThinkInCompletedTextPart(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyFoldedThinkLiveDeltaDemux verifies the common
-// leak case: a folded think body streamed as TEXT deltas (not a native
-// reasoning part), followed by a CLEAN completed text part. The body must grow
-// the live reasoning tail (partial mirror's reasoning side) and commit to the
-// final reasoning array; the text side stays clean.
+// TestCollectConversationReplyFoldedThinkLiveDeltaDemux verifies the common leak case: a folded
+// think body streamed as TEXT deltas (not a native reasoning part).
 func TestCollectConversationReplyFoldedThinkLiveDeltaDemux(t *testing.T) {
 	client := &fakeSessionClient{}
 	opts := turnCollectOpts{
@@ -1655,9 +1539,8 @@ func TestCollectConversationReplyFoldedThinkLiveDeltaDemux(t *testing.T) {
 		t.Errorf("reasoning = %v, want %v", reasoning, want)
 	}
 	partials, chunks, _ := ev.snapshot()
-	// The live partial mirror's text side must never carry the think body
-	// ("hi there") or a tag remnant. The completed "answer" text legitimately
-	// appears in a partial.
+	// The live partial mirror's text side must never carry the think body ("hi there") or a tag
+	// remnant.
 	for _, p := range partials {
 		if strings.Contains(p.text, "hi there") || strings.Contains(p.text, "think") {
 			t.Errorf("partial text = %q, contains leaked think body/remnant", p.text)
@@ -1669,9 +1552,8 @@ func TestCollectConversationReplyFoldedThinkLiveDeltaDemux(t *testing.T) {
 	}
 }
 
-// TestCollectConversationReplyTurnEndsMidThinkFlushesToReasoning verifies a
-// turn that ends (idle) with an UNTERMINATED think block flushes the buffered
-// body to the reasoning channel and leaves content clean.
+// TestCollectConversationReplyTurnEndsMidThinkFlushesToReasoning verifies a turn that ends (idle)
+// with an UNTERMINATED think block flushes the buffered body to the reasoning channel and leaves.
 func TestCollectConversationReplyTurnEndsMidThinkFlushesToReasoning(t *testing.T) {
 	client := &fakeSessionClient{}
 	opts := turnCollectOpts{
@@ -1696,9 +1578,8 @@ func TestCollectConversationReplyTurnEndsMidThinkFlushesToReasoning(t *testing.T
 	}
 }
 
-// TestCollectConversationReplySupersedeMidThinkPersistsCleanPartial verifies a
-// supersede mid-think (context cancel) persists a partial whose content is
-// clean text and whose reasoning array has the partial body.
+// TestCollectConversationReplySupersedeMidThinkPersistsCleanPartial verifies a supersede mid-think
+// (context cancel) persists a partial whose content is clean text and whose reasoning array has.
 func TestCollectConversationReplySupersedeMidThinkPersistsCleanPartial(t *testing.T) {
 	client := &fakeSessionClient{}
 	opts := turnCollectOpts{
@@ -1743,9 +1624,8 @@ func TestCollectConversationReplySupersedeMidThinkPersistsCleanPartial(t *testin
 	}
 }
 
-// TestCollectConversationReplyFoldedThinkNoDedupe verifies a native reasoning
-// part AND a folded think body in the same turn coexist as separate reasoning
-// entries (no dedupe/merge against native entries).
+// TestCollectConversationReplyFoldedThinkNoDedupe verifies a native reasoning part AND a folded
+// think body in the same turn coexist as separate reasoning entries (no dedupe/merge against.
 func TestCollectConversationReplyFoldedThinkNoDedupe(t *testing.T) {
 	client := &fakeSessionClient{}
 	opts := turnCollectOpts{
@@ -1777,9 +1657,7 @@ func TestCollectConversationReplyFoldedThinkNoDedupe(t *testing.T) {
 	}
 }
 
-// closeLiveSub closes the currently-cached subscription, which the fake treats as "the serve dropped
-// the connection" (its Subscribe hands back a FRESH stream next time — see its own comment). It exists
-// so a test can simulate a serve that keeps dying mid-turn.
+// closeLiveSub closes the currently-cached subscription.
 func (f *fakeSessionClient) closeLiveSub() {
 	f.mu.Lock()
 	s := f.sub
@@ -1789,20 +1667,8 @@ func (f *fakeSessionClient) closeLiveSub() {
 	}
 }
 
-// TestCollectConversationReplyReattachIsBounded pins the bound on re-attaching after a serve restart.
-//
-// THE REPORTED HANG, and why the bound is the fix rather than a tidy-up. The turnReattach path used to
-// retry inside the FULL reply window — 30 minutes, every 2s — justified by a comment assuming "the
-// watchdog brings the serve back and THE SESSION ID SURVIVES".
-//
-// MEASURED on a live conversation that hung: the session did NOT survive. The watchdog restarted the
-// serve, and the conversation's session was absent from the serve's own store (a direct row count
-// against its sqlite DB returned 0) while the conversation still referenced it — so the turn could
-// never complete, had nothing to react to, and retried for half an hour while the client kept drawing
-// a live activity line. The operator reported it as "just seems to be hanging".
-//
-// The test drives the case directly: the serve keeps dropping the connection, so the turn re-attaches
-// until the budget is spent and then fails with something the operator can act on.
+// TestCollectConversationReplyReattachIsBounded pins the bound on re-attaching after a serve
+// restart.
 func TestCollectConversationReplyReattachIsBounded(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_REATTACH_ATTEMPT_BUDGET", "3")
 	// collectTurn already pins the reattach backoff to 1ms, so the budget is reached quickly.
@@ -1845,5 +1711,95 @@ func TestCollectConversationReplyReattachIsBounded(t *testing.T) {
 	if elapsed > 20*time.Second {
 		t.Errorf("the turn took %v to give up; the budget is 3 attempts at a 1ms backoff, so it must "+
 			"fail almost immediately — %v means the re-attach loop is still unbounded", elapsed, elapsed)
+	}
+}
+
+// A STOPPED TURN MUST NOT WEDGE THE CONVERSATION.
+//
+// The reported symptom: the operator pressed Stop (Ctrl+Y), the turn ended, and they still could not
+// send anything. The registry refused the next send with "a reply is still in progress", because
+// cancel() cancelled the collector but left the entry reserving the conversation until that collector
+// happened to finalize — and a collector parked on an open consent ask is never evicted, because sweep
+// skips parked conversations. Stop must free the conversation, not merely signal the collector.
+func TestAStoppedTurnStopsReservingItsConversation(t *testing.T) {
+	r := newTurnRegistry()
+	ctx1, c1 := context.WithCancelCause(context.Background())
+	tok1, ok := r.register("conv_stop", "tnt_dev", "msg_1", c1)
+	if !ok {
+		t.Fatal("first register failed")
+	}
+
+	// A message while the turn is genuinely running IS refused: one turn per conversation.
+	if _, ok := r.register("conv_stop", "tnt_dev", "msg_2", func(error) {}); ok {
+		t.Fatal("a second send must be refused while the turn is genuinely running")
+	}
+
+	r.cancel("conv_stop", errUserStop)
+	if cause := context.Cause(ctx1); cause != errUserStop {
+		t.Fatalf("cancel cause = %v, want errUserStop", cause)
+	}
+
+	// THE FIX: the conversation is free the moment Stop lands.
+	tok2, ok := r.register("conv_stop", "tnt_dev", "msg_3", func(error) {})
+	if !ok {
+		t.Fatal("after Stop the conversation must accept a new turn — this is the wedge the operator hit")
+	}
+	if tok2 <= tok1 {
+		t.Fatalf("the replacement turn must get a fresh token (got %d, previous %d)", tok2, tok1)
+	}
+
+	// And the OLD turn must not be able to reclaim the hub on its way out.
+	if r.ownsHub("conv_stop", tok1) {
+		t.Error("a replaced turn still claims the hub — its finalize would close the live turn's hub")
+	}
+	if !r.ownsHub("conv_stop", tok2) {
+		t.Error("the current turn must own the hub")
+	}
+}
+
+// AN IDLE ENTRY NOBODY RECLAIMED MUST STILL BE SWEPT.
+//
+// register() accepts an idle entry, so an idle entry is harmless while it sits there — except that it
+// hides a conversation from len(), which is the admission cap. A collector that never finalizes would
+// otherwise leave a registration nothing ever removes.
+func TestTheSweeperReclaimsAnAbandonedIdleEntry(t *testing.T) {
+	r := newTurnRegistry()
+	if _, ok := r.register("conv_abandoned", "tnt_dev", "msg_1", func(error) {}); !ok {
+		t.Fatal("register failed")
+	}
+	r.cancel("conv_abandoned", errUserStop)
+
+	// IMMEDIATELY swept, even though it is not old: idle means nothing is using it.
+	evicted := r.sweep(time.Now(), time.Hour, nil)
+	if len(evicted) != 1 || evicted[0].convID != "conv_abandoned" {
+		t.Fatalf("the sweeper must reclaim an idle entry regardless of age, evicted = %+v", evicted)
+	}
+	if _, ok := r.get("conv_abandoned"); ok {
+		t.Fatal("the idle entry survived the sweep")
+	}
+}
+
+// THE HUB GUARD MUST BE WIRED, NOT MERELY AVAILABLE.
+//
+// ownsHub is only useful if startConversationTurn consults it: a turn started over an idle
+// predecessor is legal, and the predecessor's collector calls hubs.remove on its way out. Source-level
+// on purpose — the interleaving needs two real turns racing a collector, which this package cannot
+// construct without the serve. This proves the WIRING; the guard's logic is covered above.
+func TestStartingATurnChecksItStillOwnsTheHub(t *testing.T) {
+	src, err := os.ReadFile("chat.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	guard := strings.Index(body, "s.turns.ownsHub(convID, token)")
+	create := strings.Index(body, "s.hubs.create(convID)")
+	if guard == -1 {
+		t.Fatal("startConversationTurn never consults ownsHub — a dying collector can close the live turn's hub")
+	}
+	if create == -1 {
+		t.Fatal("s.hubs.create is gone; this assertion is now vacuous and must be rewritten")
+	}
+	if guard > create {
+		t.Error("the ownsHub check must come BEFORE s.hubs.create, or the hub is already replaced when it runs")
 	}
 }

@@ -10,20 +10,6 @@ import (
 )
 
 // consent_waiting_footer_test.go — THE FOOTER MUST NAME THE CARD THE TURN IS PARKED ON.
-//
-// The reported symptom, in the operator's words: "I will notice no progress being made for a long
-// time and if I exit the TUI and relaunch orch, a permissions card is sitting waiting for me when I
-// relaunch it."
-//
-// The pane's fixed footer is the one row that is always visible, and it was reading the STREAM's
-// silence — so a turn parked on a permission ask was drawn as "Orchicon is <verb>… · no output for
-// 40s — the stream will re-attach if it stays silent". That sentence blames the stream and promises
-// a re-attach while the stream is healthy and the turn is waiting on the OPERATOR: the operator is
-// told nothing is happening, and the only thing that would re-present the card was a fresh attach.
-//
-// So the footer now says what it is waiting for. It is asserted through transcriptStatusLine — the
-// function that BUILDS the row (and the one onChatWake hands to SetDetailFooter) — because the full
-// pty path needs the e2e harness.
 
 func parkedWithCard(t *testing.T) *App {
 	t.Helper()
@@ -81,9 +67,8 @@ func TestTheFooterSaysAnswerForAQuestionCard(t *testing.T) {
 	}
 }
 
-// ONE ROW, ALWAYS — the footer's own contract (the pane draws a single row and clips the tail, which is why
-// the activity line is fitted too). A long subject must therefore degrade WITHIN the row rather than push the
-// hint off the edge, and the subject is dropped to a truncated form before it is dropped entirely.
+// ONE ROW, ALWAYS — the footer's own contract (the pane draws a single row and clips the tail,
+// which is why the activity line is fitted too).
 func TestTheWaitingLineAlwaysFitsOneRow(t *testing.T) {
 	m, _ := consentApp(t)
 	m.ShowConsentAsk(chat.PermissionAsk{

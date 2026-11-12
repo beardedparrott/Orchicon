@@ -90,9 +90,7 @@ func TestGetDashboardAllTimeTotalsMatchCostExplorer(t *testing.T) {
 			summary.GetTotalCostUsd(), total.CostUSD)
 	}
 
-	// 2. Overview summary == per-model panel sum (the Cost Explorer's
-	//    per-model breakdown), which the frontend renders as its own
-	//    independent total.
+	// 2.
 	if summary.GetTotalTokens() != modelTokens {
 		t.Errorf("dashboard summary tokens %d != sum of per-model rollup %d",
 			summary.GetTotalTokens(), modelTokens)
@@ -115,11 +113,8 @@ func TestGetDashboardAllTimeTotalsMatchCostExplorer(t *testing.T) {
 	}
 }
 
-// seedDashboardCostData inserts usage records across three models with
-// occurred_at spanning well beyond 24h (the former GetDashboard default
-// window). All rows carry the dedicated test tenant so the tenant-scoped
-// tx + RLS backstop see them. Idempotent: wipes any rows a previous run
-// left behind.
+// seedDashboardCostData inserts usage records across three models with occurred_at spanning well
+// beyond 24h (the former GetDashboard default window).
 func seedDashboardCostData(t *testing.T, pool *db.Pool, tenantID string) {
 	t.Helper()
 	ctx := context.Background()

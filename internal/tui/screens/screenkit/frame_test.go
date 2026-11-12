@@ -7,10 +7,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// TestFrameFillsRegion pins the screenkit frame helper: a composed block
-// that is shorter/narrower than the content region is padded to EXACTLY
-// w×h (so panes fill the region instead of floating at the top-left), and
-// an over-long block is truncated rather than overflowing.
+// TestFrameFillsRegion pins the screenkit frame helper: a composed block that is shorter/narrower
+// than the content region is padded to EXACTLY w×h (so panes fill the region instead of floating.
 func TestFrameFillsRegion(t *testing.T) {
 	got := Frame("alpha\nbeta", 20, 6)
 	lines := strings.Split(got, "\n")

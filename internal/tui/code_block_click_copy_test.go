@@ -1,18 +1,7 @@
 package tui
 
-// code_block_click_copy_test.go — CLICKING A CODE BLOCK COPIES THE CODE, not the cells it was drawn in.
-//
-// The operator: "if the command is stretching on more than one line with say a / then it copies the enter
-// width to the pane. You can't copy just the block itself with no added. We should format it properly and not
-// highlight the entire block. I also think the click treatment like we did with the user message would be an
-// added bonus."
-//
-// The "added" is REAL and cannot be trimmed away: the transcript band indents every line by one cell, so a
-// drag-select yields " sudo pacman -U --needed \" — and a leading space cannot be stripped, because it is
-// indistinguishable from a genuine code indent (Python and Makefiles would be silently corrupted by trying).
-//
-// So the block becomes clickable and copies the FENCE'S SOURCE, which never went through the renderer and has
-// nothing to strip. These tests assert the exact bytes, because "close enough" is what a paste cannot forgive.
+// code_block_click_copy_test.go — CLICKING A CODE BLOCK COPIES THE CODE, not the cells it was drawn
+// in.
 
 import (
 	"strings"

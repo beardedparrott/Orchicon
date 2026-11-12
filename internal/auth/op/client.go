@@ -8,8 +8,6 @@ import (
 )
 
 // DefaultClientID is the built-in first-party client of the embedded OP.
-// It is a PUBLIC (user-agent / SPA) client — no secret — so PKCE is the
-// proof of possession at the token endpoint.
 const DefaultClientID = "orchicon"
 
 // clients is the registry the storage resolves GetClientByClientID from.
@@ -20,8 +18,6 @@ var clients = map[string]op.Client{}
 func registerClient(c op.Client) { clients[c.GetID()] = c }
 
 // authRequest is the concrete op.AuthRequest held in the in-memory storage.
-// The login bridge (handlers.go) marks it done via MarkAuthenticated,
-// filling subject (identity ULID), tenant, auth_time and amr.
 type authRequest struct {
 	ID        string
 	authReq   *oidc.AuthRequest
@@ -68,9 +64,8 @@ func (a *authRequest) MarkAuthenticated(identityID, tenantID string) {
 	a.done = true
 }
 
-// refreshTokenRequest implements op.RefreshTokenRequest over a stored
-// refresh-token record (only reachable for the refresh_token grant, which
-// the provider config refuses).
+// refreshTokenRequest implements op.RefreshTokenRequest over a stored refresh-token record (only
+// reachable for the refresh_token grant, which the provider config refuses).
 type refreshTokenRequest struct {
 	refreshToken *refreshToken
 }

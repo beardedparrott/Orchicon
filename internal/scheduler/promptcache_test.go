@@ -1,8 +1,7 @@
 package scheduler
 
-// Tests for ADR-0009 D5: context-file fingerprinting + the rendered
-// context-section prefix cache (hit → verbatim reuse; miss → re-render
-// with an attributable per-path diff).
+// Tests for: context-file fingerprinting + the rendered context-section prefix cache
+// (hit → verbatim reuse; miss → re-render with an attributable per-path diff).
 
 import (
 	"fmt"
@@ -122,4 +121,27 @@ func TestPromptSectionCacheHitReuseVerbatim(t *testing.T) {
 
 	// Different tenant/project isolates cache keys.
 	_, _ = renderContextSectionCached(cache, log, "t2", "p1", "# Project context", []string{file}, dir)
+}
+
+// TestCacheDoesNotConfuseTheTwoPolicies pins that the policy is part of the cache identity.
+func TestCacheDoesNotConfuseTheTwoPolicies(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "big.md")
+	writeCtxFile(t, file, "SKILL-RULE: "+strings.Repeat("z", contextfiles.ManifestInlineMaxBytes+2048))
+	cache := newPromptSectionCache(8)
+	log := &capLog{}
+
+	// Same paths, same rootNote, same fingerprint — only the policy differs.
+	asContext, _ := renderSectionCachedWithPolicy(cache, log, "t1", "p1", "# Skills",
+		[]string{file}, dir, contextfiles.ManifestPolicyContext)
+	asSkill, _ := renderSectionCachedWithPolicy(cache, log, "t1", "p1", "# Skills",
+		[]string{file}, dir, contextfiles.ManifestPolicySkill)
+
+	if strings.Contains(asContext, "SKILL-RULE") {
+		t.Fatal("fixture: the context policy should have degraded the large file")
+	}
+	if !strings.Contains(asSkill, "SKILL-RULE") {
+		t.Fatalf("the skill render was served the CONTEXT render from the cache — the policy is not in the "+
+			"cache key, so a skill silently degrades to a reference:\n%s", asSkill)
+	}
 }

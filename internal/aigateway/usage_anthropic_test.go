@@ -7,16 +7,10 @@ import (
 	"testing"
 )
 
-// TestAnthropicUsageMapsToCanonical pins the canonical usage-sample
-// contract (docs canonical-usage-sample-contract §6): an Anthropic / Claude
-// Code usage object maps to the canonical UsageInput with the expected
-// bucket semantics, the four-bucket total rule holds (reasoning NOT added),
-// and the gateway's row-build is source-agnostic — it applies the same
-// TotalTokens formula to the canonical input with no provider branch.
+// TestAnthropicUsageMapsToCanonical pins the canonical usage-sample contract (docs
+// canonical-usage-sample-contract §6).
 func TestAnthropicUsageMapsToCanonical(t *testing.T) {
-	// 1. Anthropic-shaped sample (docs §3, §6): input_tokens=1000,
-	//    cache_read_input_tokens=5000, cache_creation_input_tokens=200,
-	//    output_tokens=800, reasoning_tokens=300.
+	// 1.
 	usage := AnthropicUsage{
 		InputTokens:              1000,
 		CacheReadInputTokens:     5000,
@@ -52,21 +46,12 @@ func TestAnthropicUsageMapsToCanonical(t *testing.T) {
 		t.Fatalf("UsageFromAnthropic dropped identity fields: %+v", in)
 	}
 
-	// 3. Total rule: TotalTokens = Prompt + CacheRead + CacheWrite +
-	//    Completion. Reasoning (300) is a sub-bucket of output and is NOT
-	//    added — providers that report it separately bill it as output, so
-	//    adding it would double-count. Assert the invariant on the canonical
-	//    sample (the sum the gateway must derive).
+	// 3.
 	if got := in.PromptTokens + in.CacheReadTokens + in.CacheWriteTokens + in.CompletionTokens; got != 7000 {
 		t.Fatalf("total rule: expected 7000, got %d", got)
 	}
 
-	// 4. MANDATORY: the gateway is source-agnostic. Feeding the same
-	//    canonical input through UsageRecorder.Record must produce a row
-	//    with identical token buckets and TotalTokens=7000 (the four-bucket
-	//    sum, reasoning excluded). This enforces the "zero gateway logic
-	//    change" property: with no provider branch, the gateway's single
-	//    TotalTokens formula yields the canonical total.
+	// 4.
 	rec := NewUsageRecorder(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	row, err := rec.Record(context.Background(), in)
 	if err != nil {

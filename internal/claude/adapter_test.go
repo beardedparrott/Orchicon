@@ -8,15 +8,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// Compile-time capability set: Start + the optional capabilities claude
-// implements, INCLUDING ChatTurnClient.
-//
-// Ask chat on claude WAS out of scope and these assertions said so; the
-// requirement changed. The interactive profile (ask.go + permissions.go) plus
-// the control protocol (stream.go + control.go) is what makes an Ask turn
-// possible, so the capability is now required rather than forbidden. The
-// assertions are INVERTED rather than deleted: they still pin the contract, in
-// the direction that now matters.
+// Compile-time capability set: Start + the optional capabilities claude implements, INCLUDING
+// ChatTurnClient.
 var (
 	_ scheduler.AdapterBridge    = (*Bridge)(nil)
 	_ scheduler.MessageInjector  = (*Bridge)(nil)
@@ -26,10 +19,8 @@ var (
 	_ scheduler.ChatTurnClient   = (*Bridge)(nil)
 )
 
-// capability is the anonymous interface matching scheduler.ConfigurableBridge's
-// usage/session-store setters (its SetRuntimeClient takes the scheduler's
-// RuntimeClient interface, which opencode's concrete setter also does not
-// satisfy — so we assert the two setters that DO match).
+// capability is the anonymous interface matching scheduler.ConfigurableBridge's usage/session-store
+// setters (its SetRuntimeClient takes the scheduler's RuntimeClient interface.
 type usageRecorderSetter interface {
 	SetUsageRecorder(scheduler.UsageRecorderFunc)
 }
@@ -46,9 +37,8 @@ var (
 // the streaming method need not be added to scheduler.RuntimeClient).
 var _ = func(b *Bridge, rt *runtime.Client) { b.SetRuntimeClient(rt) }
 
-// The Ask capability is what puts claude in the Ask picker at all: the GUI/TUI
-// read Dispatcher.ChatKinds(), which type-asserts exactly this interface. Without
-// it claude registers but is never offered for Ask.
+// The Ask capability is what puts claude in the Ask picker at all: the GUI/TUI read
+// Dispatcher.ChatKinds(), which type-asserts exactly this interface.
 func TestBridgeImplementsChatTurnClient(t *testing.T) {
 	var b any = New(nil)
 	if _, ok := b.(scheduler.ChatTurnClient); !ok {
@@ -62,11 +52,8 @@ func TestSessionOwnerKindIsClaude(t *testing.T) {
 	}
 }
 
-// TestDispatcherChatKindsIncludesClaude pins the contract: registering the
-// claude bridge makes it dispatchable (Kinds) AND offered for Ask chat
-// (ChatKinds), because the bridge now implements ChatTurnClient. This is the
-// surface both pickers read, so it is the difference between claude being
-// selectable for Ask and being flagged as unsupported.
+// TestDispatcherChatKindsIncludesClaude pins the contract: registering the claude bridge makes it
+// dispatchable (Kinds) AND offered for Ask chat (ChatKinds).
 func TestDispatcherChatKindsIncludesClaude(t *testing.T) {
 	d := scheduler.NewDispatcher()
 	d.Register("claude", New(nil))

@@ -145,7 +145,7 @@ Depth alone cannot distinguish "a busy relay keeping up" from "a stalled relay f
 which is exactly why the six-week backlog was invisible. Either threshold breached on one 5s
 reporting tick increments the counter and emits a structured WARN
 (`outbox relay lag: alert threshold exceeded`, fields `unpublished`, `oldest_age_seconds`,
-`depth_threshold`, `age_threshold_seconds`), which Loki/Grafana ingest. Alert on the counter rather
+`depth_threshold`, `age_threshold_seconds`), which Loki ingests. Alert on the counter rather
 than writing a Prometheus rules file: none exists in-tree.
 
 ## 5. Verification record

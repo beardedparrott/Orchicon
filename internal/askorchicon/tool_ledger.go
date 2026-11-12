@@ -2,20 +2,17 @@ package askorchicon
 
 import (
 	"encoding/json"
-	"fmt"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// Live tool ledger for Ask Orchicon turns: every tool call issued and every
-// result observed during a turn is recorded in memory as it happens, mirrored
-// incrementally into the acked assistant message row (tool_calls /
-// tool_results columns), and persisted terminally by the finalize. A session
-// killed mid-turn therefore leaves the tool activity visible — not just the
-// text. JSON shapes mirror the ChatMessage proto (ToolCall{ id, type,
-// function_name, arguments } / ToolResult{ tool_call_id, output, is_error })
-// so the read path maps them without translation.
+// Live tool ledger for Ask Orchicon turns: every tool call issued and every result observed during
+// a turn is recorded in memory as it happens.
 type toolLedger struct {
 	mu      sync.Mutex
 	nextID  int
@@ -23,27 +20,48 @@ type toolLedger struct {
 	results []toolResultEntry
 }
 
+// toolCallIDPrefix makes a SYNTHESIZED tool-call id unique for the life of the process.
+//
+// THE ID IS AN IDENTITY, NOT A LABEL, AND IT WAS BEING MINTED LIKE A LABEL. A ledger is created per TURN
+// (chat.go: turnLedger := newToolLedger()), so its counter restarted at 1 every turn and every turn's ask
+// became `tc-3`. Three separate things treat that string as an identity:
+//
+//	the CLIENT's settled-ask map (ask-orchicon.tsx: const settledAsks = new Map<string,string>())
+//	findPromotedAsk's query (tool_calls @> '{"id": <askID>}', across the whole conversation)
+//	the in-process pending-ask registry
+//
+// REPORTED: "clicking an answer sometimes doesn't work unless I first refresh the page." Answering an ask in an
+// earlier turn put `tc-3` in the client's settled map; a LATER turn's ask was also `tc-3`; the card was drawn
+// already-answered, so every option button was disabled and clicks did nothing. A refresh re-initialises the
+// module, clearing the map — which is exactly why refreshing "fixed" it, and why it looked flaky rather than
+// broken: it only bites when the new ask's ordinal matches one already answered.
+//
+// The process-scoped prefix makes collisions impossible ACROSS turns, conversations and restarts within a run,
+// while keeping the `tc-<n>` shape every reader already expects. (Nothing parses the number; the shape is only
+// ever compared for equality.)
+var toolCallIDPrefix = "tc-" + strconv.FormatInt(time.Now().UnixNano(), 36) + "-"
+
+// toolCallSeq is the PROCESS-WIDE sequence behind every synthesized tool-call id.
+var toolCallSeq atomic.Int64
+
+// newToolCallID mints a unique id for a synthesized call. THE CALLER MUST HOLD l.mu.
+func (l *toolLedger) newToolCallID() string {
+	l.nextID++ // the ledger's own count, kept for anything that reads it
+	return toolCallIDPrefix + strconv.FormatInt(toolCallSeq.Add(1), 10)
+}
+
 type toolCallEntry struct {
 	ID           string `json:"id"`
 	Type         string `json:"type"`
 	FunctionName string `json:"function_name"`
 	Arguments    string `json:"arguments"`
-	// IssuedAtUnixMs is the wall-clock time at which the call was ISSUED, in
-	// epoch milliseconds — the same time encoding the chat path already uses
-	// (chat.ParsedTool.At). It is display-only durable data for the
-	// rolling-window summarizer (internal/toolclass), and it now RIDES THE WIRE
-	// as well: ToolCall.issued_at_unix_ms carries it to clients, which never see
-	// this column, so the activity line's rolling counter can count the same
-	// window the server does. 0 means "not stamped" (a row persisted before this
-	// field existed); a reader must treat 0 as unknown, never as the epoch.
+	// IssuedAtUnixMs is the wall-clock time at which the call was ISSUED, in epoch milliseconds — the
+	// same time encoding the chat path already uses (chat.ParsedTool.At).
 	IssuedAtUnixMs int64 `json:"issued_at_unix_ms"`
 	resolved       bool
 }
 
-// ledgerNowMillis is the ledger's clock seam: the epoch-millisecond time of a
-// tool event. It is indirected through a package-level var because askorchicon
-// has no injectable clock today and the ledger tests need to assert an EXACT
-// issuance time rather than a range. Production never replaces it.
+// ledgerNowMillis is the ledger's clock seam: the epoch-millisecond time of a tool event.
 var ledgerNowMillis = func() int64 { return time.Now().UnixMilli() }
 
 type toolResultEntry struct {
@@ -54,25 +72,8 @@ type toolResultEntry struct {
 
 func newToolLedger() *toolLedger { return &toolLedger{} }
 
-// recordPermission appends one consent decision as a synthetic tool call +
-// result pair, so the decision lands in the persisted transcript alongside the
-// real tool calls (AC: the transcript records the decision). Nil-safe.
-//
-// askID is the ADAPTER's id for the ask that was decided, and it becomes the
-// record's ID when present. THAT IS THE POINT OF THE PARAMETER: this record is
-// durable — it is persisted with the assistant message — so it is the server's own
-// answer to "what happened to ask X", available to a client that never saw the live
-// stream event (a second tab, another device, or the same page after a reload). It
-// used to be a sequential `perm-N`, which no client could attach to an ask, so every
-// client had to infer the outcome from the live stream alone and a reload lost it.
-//
-// The sequential fallback is kept for a decision with no ask id (a worker-path
-// record, or a defensive caller): those are transcript notes, not reconcilable
-// resolutions, and they must still be recorded.
-//
-// The record is stamped with the decision's own wall-clock issue time: it IS a
-// real event, and the window classifier excludes `permission.*` by name, so the
-// stamp costs the summary nothing.
+// recordPermission appends one consent decision as a synthetic tool call + result pair, so the
+// decision lands in the persisted transcript alongside the real tool calls (AC.
 func (l *toolLedger) recordPermission(tool, target, verdict, detail, askID string) {
 	if l == nil {
 		return
@@ -81,8 +82,20 @@ func (l *toolLedger) recordPermission(tool, target, verdict, detail, askID strin
 	defer l.mu.Unlock()
 	id := strings.TrimSpace(askID)
 	if id == "" {
-		l.nextID++
-		id = fmt.Sprintf("perm-%d", l.nextID)
+		// A FALLBACK ID MUST NOT BE A PER-LEDGER COUNTER, and this one was. The ledger is created per
+		// TURN, so every turn re-minted perm-1, perm-2 … for different asks — and the transcript ledger
+		// is the SETTLE AUTHORITY, keyed by this id. A question in one turn could therefore inherit an
+		// answer recorded in another: measured on one conversation, within a single 200-message window,
+		//
+		//	perm-16 questions=3 answers=1
+		//	perm-15 questions=1 answers=1
+		//	perm-14 questions=1 answers=1
+		//
+		// One id, several incompatible histories — the same collision that made permission cards flicker
+		// (see orchicon.NativeBridge.nextPermID). The prefix is kept so the log still groups by it.
+		//
+		// Only the FALLBACK is affected: a record with a real ask id uses that id, unchanged.
+		id = "perm-" + db.NewID()
 	}
 	out := "permission " + verdict
 	if detail != "" {
@@ -102,19 +115,94 @@ func (l *toolLedger) recordPermission(tool, target, verdict, detail, askID strin
 	})
 }
 
-// recordStart logs a tool call ISSUED but not yet resolved (the tool_part
-// signal: Text carries only the tool name). The arguments are filled in when
-// the resolution arrives (recordResolve matches the last unresolved call for
-// the same tool).
+// promoteRecordedAsk appends a FIRST-CLASS ask_user call when a tool result reports one. THE CALLER
+// MUST HOLD l.mu.
+func (l *toolLedger) promoteRecordedAsk(callID, output string) {
+	args := promotedAskArgs(output)
+	if args == "" {
+		return
+	}
+	// THE ACKNOWLEDGEMENT IS NEVER THE ANSWER — including when the call is ALREADY the ask.
+	if idx := l.callIndex(callID); idx >= 0 && isAskToolName(l.calls[idx].FunctionName) {
+		l.setResultOutput(callID, AskAwaitingAnswerMarker)
+		return
+	}
+	// A WRAPPED ask (opencode's `execute`) needs a first-class call of its own, because a client finds
+	// an ask by NAME.
+	for i := len(l.calls) - 1; i >= 0; i-- {
+		if !isAskToolName(l.calls[i].FunctionName) {
+			continue
+		}
+		if l.calls[i].Arguments == args {
+			return
+		}
+	}
+	// NOT `callID`: that is the parameter naming the WRAPPED call this promotion came from, and
+	// reusing it here would silently attribute the await to the wrong call.
+	promotedID := l.newToolCallID()
+	l.calls = append(l.calls, toolCallEntry{
+		ID:           promotedID,
+		Type:         "function",
+		FunctionName: "orchicon_ask_user",
+		Arguments:    args,
+		// The issue time is the RESULT's arrival: the wrapped call's start was the wrapper, not the
+		// ask, and the card is anchored to when the question became askable.
+		IssuedAtUnixMs: ledgerNowMillis(),
+		resolved:       true,
+	})
+	// THE RESULT IS THE AWAITING MARKER: not the wrapper's output, and NOT NOTHING.
+	l.results = append(l.results, toolResultEntry{
+		ToolCallID: promotedID,
+		Output:     AskAwaitingAnswerMarker,
+	})
+}
+
+// callIndex returns the position of the call with this id, or -1. THE CALLER MUST HOLD l.mu.
+func (l *toolLedger) callIndex(callID string) int {
+	if callID == "" {
+		return -1
+	}
+	for i := range l.calls {
+		if l.calls[i].ID == callID {
+			return i
+		}
+	}
+	return -1
+}
+
+// setResultOutput rewrites the output of an existing result, or appends one when the call has none.
+// THE CALLER MUST HOLD l.mu.
+func (l *toolLedger) setResultOutput(callID, output string) {
+	for i := range l.results {
+		if l.results[i].ToolCallID == callID {
+			l.results[i].Output = output
+			return
+		}
+	}
+	l.results = append(l.results, toolResultEntry{ToolCallID: callID, Output: output})
+}
+
+// isAskToolName matches every spelling the ask tool is recorded under, including the MCP-qualified
+// one.
+func isAskToolName(name string) bool {
+	switch name {
+	case "ask_user", "orchicon_ask_user", "mcp__orchicon__ask_user":
+		return true
+	}
+	// A server may also qualify it with a different separator; the suffix is the stable part.
+	return strings.HasSuffix(name, "__ask_user") || name == "ask_user"
+}
+
+// recordStart logs a tool call ISSUED but not yet resolved (the tool_part signal: Text carries only
+// the tool name).
 func (l *toolLedger) recordStart(tool string) {
 	if l == nil || tool == "" {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.nextID++
 	l.calls = append(l.calls, toolCallEntry{
-		ID:             fmt.Sprintf("tc-%d", l.nextID),
+		ID:             l.newToolCallID(),
 		Type:           "function",
 		FunctionName:   tool,
 		Arguments:      "{}",
@@ -122,9 +210,8 @@ func (l *toolLedger) recordStart(tool string) {
 	})
 }
 
-// recordResolve logs a COMPLETED tool_use part: it backfills the arguments
-// onto the matching in-flight call and appends the result. Unknown shapes
-// never fail the turn — the ledger is best-effort durability, not control.
+// recordResolve logs a COMPLETED tool_use part: it backfills the arguments onto the matching
+// in-flight call and appends the result.
 func (l *toolLedger) recordResolve(part map[string]any) {
 	if l == nil || part == nil {
 		return
@@ -138,14 +225,18 @@ func (l *toolLedger) recordResolve(part map[string]any) {
 	argsJSON := truncateLedgerString(marshalLedgerValue(state["input"]), 4000)
 	output := truncateLedgerString(stringifyLedgerOutput(state["output"]), 8000)
 
+	// AN ASK THAT RETURNED NOTHING IS NOT AN ANSWERED ASK.
+	if isAskToolName(tool) && strings.TrimSpace(output) == "" {
+		return
+	}
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	callID := ""
 	for i := len(l.calls) - 1; i >= 0; i-- {
 		if l.calls[i].FunctionName == tool && !l.calls[i].resolved {
-			// The issue time is deliberately NOT re-stamped here: this branch
-			// backfills arguments onto a call that recordStart already stamped,
-			// and the timestamp taken at ISSUE is the one the window needs.
+			// The issue time is deliberately NOT re-stamped here: this branch backfills arguments onto a call
+			// that recordStart already stamped, and the timestamp taken at ISSUE is the one the window needs.
 			l.calls[i].Arguments = argsJSON
 			l.calls[i].resolved = true
 			callID = l.calls[i].ID
@@ -153,12 +244,9 @@ func (l *toolLedger) recordResolve(part map[string]any) {
 		}
 	}
 	if callID == "" {
-		// Resolution without an observed start (re-attached mid-tool, or a
-		// start event missed): synthesize the call so the result is kept. "Now"
-		// is the honest issue time for it — the call is known to have happened
-		// by the time its result arrived, and the start was never seen.
-		l.nextID++
-		callID = fmt.Sprintf("tc-%d", l.nextID)
+		// Resolution without an observed start (re-attached mid-tool, or a start event missed): synthesize
+		// the call so the result is kept.
+		callID = l.newToolCallID()
 		l.calls = append(l.calls, toolCallEntry{
 			ID:             callID,
 			Type:           "function",
@@ -173,38 +261,24 @@ func (l *toolLedger) recordResolve(part map[string]any) {
 		Output:     output,
 		IsError:    status == "error",
 	})
+	l.promoteRecordedAsk(callID, output)
 }
 
-// recordToolResolution backfills a resolved call's arguments and appends its
-// result, from the TYPED adapter-neutral fields of a SessionEvent (Kind
-// "tool_result"). It is the typed counterpart of recordResolve, which reads an
-// opencode-shaped Part map.
-//
-// An adapter that does not speak opencode's dialect must not have to imitate it
-// to get its tool calls recorded. This is the entry point such an adapter uses;
-// both land in the same ledger, so a client renders one transcript regardless of
-// which adapter produced it.
+// recordToolResolution backfills a resolved call's arguments and appends its result, from the TYPED
+// adapter-neutral fields of a SessionEvent (Kind "tool_result").
 func (l *toolLedger) recordToolResolution(tool, argsJSON, output string, isErr bool) {
 	if l == nil || tool == "" {
+		return
+	}
+	// AN ASK THAT RETURNED NOTHING IS NOT AN ANSWERED ASK — the typed-transport twin of the rule in
+	// recordResolve, and the one claude actually takes.
+	if isAskToolName(tool) && strings.TrimSpace(output) == "" {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	callID := ""
 	// Match the OLDEST unresolved call for the same tool.
-	//
-	// Direction matters, and this is not cosmetic. The native Ask path executes a
-	// round's tool calls SEQUENTIALLY in the order the model issued them, so the
-	// Nth resolution belongs to the Nth unresolved call of that name — scanning
-	// forward is what keeps each call paired with its own arguments and result.
-	// An earlier version of this scanned BACKWARD (copying recordResolve, where
-	// parallel execution makes the order inherently arbitrary) and swapped the
-	// arguments of two same-name calls: the transcript then showed call #1 with
-	// call #2's command. Caught by TestToolResolutionResolvesOnlyOneCallPerEvent.
-	//
-	// The ledger mints its own ids at recordStart, so the transport's call id
-	// cannot correlate; the tool name plus issue order is what the two sides
-	// share.
 	for i := 0; i < len(l.calls); i++ {
 		if l.calls[i].FunctionName == tool && !l.calls[i].resolved {
 			// The issue time is deliberately NOT re-stamped here either: the
@@ -219,11 +293,9 @@ func (l *toolLedger) recordToolResolution(tool, argsJSON, output string, isErr b
 		}
 	}
 	if callID == "" {
-		// Resolution without an observed start (re-attached mid-tool, or a start
-		// event missed): synthesize the call so the result is kept — the same
-		// rule recordResolve applies, including the "stamp now" answer.
-		l.nextID++
-		callID = fmt.Sprintf("tc-%d", l.nextID)
+		// Resolution without an observed start (re-attached mid-tool, or a start event missed): synthesize
+		// the call so the result is kept — the same rule recordResolve applies.
+		callID = l.newToolCallID()
 		l.calls = append(l.calls, toolCallEntry{
 			ID: callID, Type: "function", FunctionName: tool,
 			Arguments: truncateLedgerString(argsJSON, 4000), resolved: true,
@@ -235,11 +307,11 @@ func (l *toolLedger) recordToolResolution(tool, argsJSON, output string, isErr b
 		Output:     truncateLedgerString(output, 8000),
 		IsError:    isErr,
 	})
+	l.promoteRecordedAsk(callID, output)
 }
 
-// snapshot returns the ledger as (tool_calls, tool_results) JSON documents
-// ready for the message columns. Empty ledgers encode as "[]" (never nil)
-// so every write keeps the NOT NULL jsonb columns valid.
+// snapshot returns the ledger as (tool_calls, tool_results) JSON documents ready for the message
+// columns.
 func (l *toolLedger) snapshot() (calls, results []byte) {
 	if l == nil {
 		return []byte("[]"), []byte("[]")
@@ -259,23 +331,14 @@ func (l *toolLedger) snapshot() (calls, results []byte) {
 	return calls, results
 }
 
-// repairedSnapshot returns the ledger's TERMINAL (tool_calls, tool_results)
-// documents, with an explicit aborted result attached for every call that
-// never resolved. The live snapshot() is what the throttled partial mirror
-// writes while the turn runs (a call is legitimately unresolved for as long as
-// it runs); the TERMINAL write — the finalize of any turn, including one that
-// ends abnormally (token exhaustion, Stop, provider error, supersede) — must
-// never persist an assistant row whose tool_calls have no matching
-// tool_results, because the next provider that replays that history rejects
-// the entire request ("No tool output found for function call …").
+// repairedSnapshot returns the ledger's TERMINAL (tool_calls, tool_results) documents, with an
+// explicit aborted result attached for every call that never resolved.
 func (l *toolLedger) repairedSnapshot() (calls, results []byte) {
 	calls, results = l.snapshot()
 	return sanitizeAssistantToolLedger(calls, results)
 }
 
-// hasCalls reports whether the ledger recorded any tool call. A turn that was
-// interrupted between a tool call and its result leaves calls but no reply
-// text: its row must still be finalized (repaired) rather than left dangling.
+// hasCalls reports whether the ledger recorded any tool call.
 func (l *toolLedger) hasCalls() bool {
 	if l == nil {
 		return false

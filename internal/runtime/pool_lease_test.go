@@ -13,10 +13,8 @@ import (
 	"time"
 )
 
-// newLeaseTestPool builds a Daemon + pool with docker/create stubs and a
-// live serve stand-in, wired the same way TestPoolCheckoutReuseAndInvalidation
-// is, plus a scratch ExePath so the host-inputs fingerprint is deterministic.
-// Returns a removedNames func capturing every `docker rm -f` the pool issued.
+// newLeaseTestPool builds a Daemon + pool with docker/create stubs and a live serve stand-in, wired
+// the same way TestPoolCheckoutReuseAndInvalidation.
 func newLeaseTestPool(t *testing.T) (*Daemon, *daemonPool, func(runID string) CreateRequest, func() []string) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -39,7 +37,7 @@ func newLeaseTestPool(t *testing.T) (*Daemon, *daemonPool, func(runID string) Cr
 		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		ExePath:   exe,
 		ghTokenFn: func() string { return "" },
-		dockerFn: func(args ...string) (string, error) {
+		engineFn: func(args ...string) (string, error) {
 			if len(args) >= 3 && args[0] == "rm" && args[1] == "-f" {
 				mu.Lock()
 				removed = append(removed, args[2])
@@ -49,6 +47,11 @@ func newLeaseTestPool(t *testing.T) (*Daemon, *daemonPool, func(runID string) Cr
 			// checkout's reuse-path liveness probe (inspect → Running).
 			if len(args) >= 3 && args[0] == "inspect" && args[2] == "{{.State.Running}}" {
 				return "true", nil
+			}
+			// The removal primitive polls `inspect {{.Id}}` for the engine to release the name
+			// (d.removeContainer); "" = not present, so the poll costs one tick.
+			if len(args) >= 3 && args[0] == "inspect" && args[2] == "{{.Id}}" {
+				return "", nil
 			}
 			return "", nil
 		},
@@ -81,12 +84,8 @@ func ageLease(t *testing.T, p *daemonPool, runID string, d time.Duration) {
 	p.mu.Unlock()
 }
 
-// TestLeaseRenewalKeepsLiveRun pins the renewal contract: an idempotent
-// re-checkout of the same run bumps the lease's lastUsed, so a live run that
-// renews every ≤30s (the plane's 30s adopt sweep → EnsureForRun → Create →
-// checkout fast path) is NEVER reaped no matter how long the run lasts —
-// while a lease that stops renewing is reaped once it ages past leaseMaxAge
-// (the aborted-run leak class: dead run, immortal container).
+// TestLeaseRenewalKeepsLiveRun pins the renewal contract: an idempotent re-checkout of the same run
+// bumps the lease's lastUsed.
 func TestLeaseRenewalKeepsLiveRun(t *testing.T) {
 	_, p, reqFor, _ := newLeaseTestPool(t)
 
@@ -113,9 +112,8 @@ func TestLeaseRenewalKeepsLiveRun(t *testing.T) {
 		t.Fatalf("renewal must bump lastUsed (got %v ago)", time.Since(ent.lastUsed))
 	}
 
-	// ...and the renewed lease must survive a reap pass even though it was
-	// stale the moment before renewal (idle-before-renew is exactly the
-	// pattern the adopt sweep produces on every active run).
+	// ...and the renewed lease must survive a reap pass even though it was stale the moment before
+	// renewal (idle-before-renew is exactly the pattern the adopt sweep produces on every active run).
 	p.reapStaleLeases()
 	p.mu.Lock()
 	_, stillLeased := p.leased["run-1"]
@@ -172,9 +170,8 @@ func TestStaleLeaseContainerRemoved(t *testing.T) {
 	}
 }
 
-// TestDanglingLeaseMappingReaped pins the second leak shape: a lease map
-// entry pointing at an already-dropped entry (no container behind it) is
-// cleared by the reap pass instead of surviving forever.
+// TestDanglingLeaseMappingReaped pins the second leak shape: a lease map entry pointing at an
+// already-dropped entry (no container behind it) is cleared by the reap pass instead of surviving.
 func TestDanglingLeaseMappingReaped(t *testing.T) {
 	_, p, reqFor, removedNames := newLeaseTestPool(t)
 	if _, err := p.checkout(context.Background(), "run-1", reqFor("run-1")); err != nil {

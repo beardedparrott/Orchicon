@@ -1,9 +1,4 @@
 // Package domain defines Orchicon's core domain types.
-//
-// These types mirror the entities in docs/02_Domain_Model.md. They are
-// the Go-level representation of the data-access layer's row shapes and
-// the API layer's response payloads. Domain types hold no business
-// logic — reconcilers and services operate on them.
 package domain
 
 import (
@@ -49,12 +44,11 @@ type Project struct {
 	UpdatedAt    time.Time
 	ProjectDir   string
 	ContextFiles []byte // jsonb: absolute file paths
-	// DefaultRuntimeImage is the project-level default runtime container
-	// image tag (nil = inherit tenant/base). Copied onto work items at
-	// create time when the caller passes no runtime_image.
+	// DefaultRuntimeImage is the project-level default runtime container image tag (nil = inherit
+	// tenant/base).
 	DefaultRuntimeImage *string
-	// ExecutionMode is "runtime" (always-container, default) or "local"
-	// (in-process allowed with honest prompt + DSN fence).
+	// ExecutionMode is "local" (in-process allowed, the default, with an
+	// honest prompt + DSN fence) or "runtime" (always-container, opt-in).
 	ExecutionMode string
 }
 
@@ -93,10 +87,7 @@ const (
 	WorkItemKindSubtask = "subtask"
 )
 
-// Recovery work item kinds (PR C — recovery as work items). These are
-// regular work items with a recovery strategy encoded in the kind.
-// RecoveryReconciler routes on these; the regular TaskReconciler
-// dispatches all other task kinds. docs/06 §3 + §4 + §11.
+// Recovery work item kinds (PR C — recovery as work items).
 const (
 	WorkItemKindRecoveryStop             = "recovery_stop"
 	WorkItemKindRecoverySummarizeRestart = "recovery_summarize_restart"
@@ -104,9 +95,7 @@ const (
 	WorkItemKindRecoveryRetryN           = "recovery_retry_n"
 )
 
-// IsRecoveryKind reports whether a WorkItem kind is one of the typed
-// recovery strategies. Returns false for the regular hierarchy kinds
-// or anything else.
+// IsRecoveryKind reports whether a WorkItem kind is one of the typed recovery strategies.
 func IsRecoveryKind(kind string) bool {
 	switch kind {
 	case WorkItemKindRecoveryStop,
@@ -118,14 +107,8 @@ func IsRecoveryKind(kind string) bool {
 	return false
 }
 
-// NormalizeWorkItemKind canonicalizes a user-supplied work item kind
-// string for storage: it trims surrounding whitespace, lowercases, and
-// validates against the canonical hierarchy kinds
-// (epic/feature/task/subtask). Recovery kinds are engine-internal and
-// are intentionally not accepted here. The returned string is always
-// one of the canonical lowercase constants, so callers can store it
-// verbatim and the strict read path (kindToProto) will map it
-// correctly.
+// NormalizeWorkItemKind canonicalizes a user-supplied work item kind string for storage: it trims
+// surrounding whitespace, lowercases.
 func NormalizeWorkItemKind(kind string) (string, error) {
 	normalized := strings.ToLower(strings.TrimSpace(kind))
 	switch normalized {
@@ -136,8 +119,7 @@ func NormalizeWorkItemKind(kind string) (string, error) {
 	}
 }
 
-// WorkItemStatus — schedulable kinds follow:
-// pending → ready → assigned → running → checkpointing →
+// WorkItemStatus — schedulable kinds follow: pending → ready → assigned → running → checkpointing →
 // succeeded | failed | cancelled | recovering (docs/02 §2.2).
 const (
 	WorkItemPending       = "pending"
@@ -151,45 +133,21 @@ const (
 	WorkItemCancelled     = "cancelled"
 	WorkItemRecovering    = "recovering"
 	WorkItemRecurring     = "recurring"
-	// WorkItemBlocked is a system-managed status set by the reconcilers
-	// when an armed/on-deck item cannot dispatch because an upstream
-	// dependency (blocks/depends_on edge) is not terminal-success. The
-	// next reconcile pass clears it automatically when the gate satisfies.
+	// WorkItemBlocked is a system-managed status set by the reconcilers when an armed/on-deck item
+	// cannot dispatch because an upstream dependency (blocks/depends_on edge) is not terminal-success.
 	WorkItemBlocked = "blocked"
-	// WorkItemSkipped is a terminal-success status, user-settable through
-	// the same generic update path as succeeded/cancelled: an operator
-	// marks an item skipped to tell the sequence engine "do not run this
-	// child", and the engine passes over it when deriving the next child
-	// to arm. It is ALSO produced by the reconcilers when a bound workflow
-	// run completes with every active step terminal-success but at least
-	// one step skipped. Either way, a skipped work item satisfies
-	// dependency edges exactly like succeeded and never blocks dependents
-	// (docs/02_Domain_Model.md §2.2). Unlike WorkItemBlocked, it is not
-	// system-managed: a human can set and unset it like any other status.
+	// WorkItemSkipped is a terminal-success status, user-settable through the same generic update path
+	// as succeeded/cancelled.
 	WorkItemSkipped = "skipped"
-	// WorkItemArchived is a user-initiated terminal status set by
-	// ArchiveWorkItem. An archived item is hidden from every normal
-	// work-item view (board/tree/list/sequence/workflows/counts) because
-	// it carries archived_at IS NOT NULL and every active read filters
-	// archived_at IS NULL. Archiving is only allowed from a terminal
-	// status (succeeded/failed/cancelled/skipped) and only when the item
-	// has no children. Reversible via RestoreWorkItem, which returns the
-	// item to the terminal status recorded in archived_from_status.
+	// WorkItemArchived is a user-initiated terminal status set by ArchiveWorkItem.
 	WorkItemArchived = "archived"
-	// WorkItemIdea is a system-managed status set only by the automation
-	// spawn path (a recurring fire with outputs_mode=idea) and by Idea
-	// Cloud promotion (feature 5). An idea is an automation-produced item
-	// awaiting triage; it is excluded from every normal work-item view
-	// (board/tree/list/sequence/workflows/counts). Never user-assignable —
-	// it mirrors WorkItemBlocked/WorkItemSkipped's system-managed rule.
+	// WorkItemIdea is a system-managed status set only by the automation spawn path (a recurring fire
+	// with outputs_mode=idea) and by Idea Cloud promotion (feature 5).
 	WorkItemIdea = "idea"
 )
 
-// WorkItemIsTerminalArchivable reports whether a work item may be
-// archived — i.e. it is in a terminal (non-pending, non-running) state.
-// The set is exactly succeeded | failed | cancelled | skipped. Pending,
-// ready, assigned, running, checkpointing, recovering, scheduled,
-// recurring and blocked items must first finish or be cancelled.
+// WorkItemIsTerminalArchivable reports whether a work item may be archived — i.e. it is in a
+// terminal (non-pending, non-running) state.
 func WorkItemIsTerminalArchivable(status string) bool {
 	switch status {
 	case WorkItemSucceeded, WorkItemFailed, WorkItemCancelled, WorkItemSkipped:
@@ -199,26 +157,14 @@ func WorkItemIsTerminalArchivable(status string) bool {
 	}
 }
 
-// WorkItemIsTerminalSuccess reports whether a work item is terminal-
-// success for dependency/arming purposes: succeeded or skipped. This is
-// THE single shared terminal-success definition — every dependency gate,
-// sequence chain gate, sequence cursor, blocked_by computation and
-// sequence-advance notification must use it (or its SQL equivalent
-// `status NOT IN ('succeeded','skipped')` in internal/db) so skip-status
-// and depends_on can never disagree. failed/cancelled are terminal-
-// FAILURE and deliberately return false: they keep dependents blocked.
+// WorkItemIsTerminalSuccess reports whether a work item is terminal- success for dependency/arming
+// purposes: succeeded or skipped.
 func WorkItemIsTerminalSuccess(status string) bool {
 	return status == WorkItemSucceeded || status == WorkItemSkipped
 }
 
-// WorkItemIsTerminalNonReplayable reports whether a work item is in a
-// terminal state that can never be re-played via a retry or fresh run
-// re-attachment. A dead run branch is safe to reclaim only when the
-// bound work item (if any) is in this set — or when the run has no
-// bound work item at all. The set is exactly succeeded | skipped |
-// cancelled | archived. Failed and active states (pending/ready/assigned
-// /running/...) are deliberately NOT reclaimable: a failed run with an
-// active item is a retry target.
+// WorkItemIsTerminalNonReplayable reports whether a work item is in a terminal state that can never
+// be re-played via a retry or fresh run re-attachment.
 func WorkItemIsTerminalNonReplayable(status string) bool {
 	switch status {
 	case WorkItemSucceeded, WorkItemSkipped, WorkItemCancelled, WorkItemArchived:
@@ -252,27 +198,18 @@ const (
 	IdeaScopeOnly = "only"
 )
 
-// IdeaStateScope values for ListWorkItems (the idea-rejected split). The
-// store key is a free-form string on ListWorkItemsFilter.IdeaStateScope so
-// ListIdeas can select the population; the API layer maps the
-// IdeaStateScope proto enum onto these.
+// IdeaStateScope values for ListWorkItems (the idea-rejected split).
 const (
 	// IdeaStateActive (the default) = the Idea Cloud: idea-state items
 	// awaiting triage (IdeaScope=only semantics).
 	IdeaStateActive = ""
-	// IdeaStateRejected = the rejected graveyard: automation-spawned items
-	// that were dismissed (status='cancelled' WITH spawned provenance — the
-	// exact state DismissIdea produces). Queryable so rejected ideas stay
-	// visible, readable history and the automation dedupe gate can never
-	// re-propose one. Retroactive: every dismissal ever made already
-	// matches, no backfill needed.
+	// IdeaStateRejected = the rejected graveyard: automation-spawned items that were dismissed
+	// (status='cancelled' WITH spawned provenance — the exact state DismissIdea produces).
 	IdeaStateRejected = "rejected"
 )
 
-// NormalizeRecurringOutputsMode maps an arbitrary outputs_mode string to a
-// canonical value: empty/invalid -> "standard". Exported so the Ask
-// Orchicon tools share the API's boundary normalization (AGENTS.md
-// Ask-Orchicon-sync rule).
+// NormalizeRecurringOutputsMode maps an arbitrary outputs_mode string to a canonical value:
+// empty/invalid -> "standard".
 func NormalizeRecurringOutputsMode(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case RecurringOutputsIdea:
@@ -332,20 +269,7 @@ const (
 	WorkflowRunPaused    = "paused"
 )
 
-// WorktreeStatus — the WorktreeReconciler's per-run working-tree
-// provisioning states, shared between workflow_runs.worktree_status and
-// worker_executions.worktree_status:
-//   - pending: not yet provisioned (the default; self-healing for runs
-//     armed before the columns existed).
-//   - ready: the isolated working tree exists; worktree_path +
-//     worktree_branch are recorded.
-//   - skipped: the project is not a git work tree — the run proceeds in
-//     place (the non-repo fallback work item consumes this decision).
-//   - failed: provisioning errored; the run proceeds in place (today's
-//     behavior) and the DAG gate / cwd wiring is the execution-cwd
-//     companion's job.
-//   - pruned: the working tree was reaped after the run (set by the
-//     pruning task on worker_executions.worktree_status).
+// WorktreeStatus — the WorktreeReconciler's per-run working-tree provisioning states.
 const (
 	WorktreePending = "pending"
 	WorktreeReady   = "ready"
@@ -354,24 +278,8 @@ const (
 	WorktreePruned  = "pruned"
 )
 
-// StepKind — the five step types (docs/02 §2.4):
-// StepKind enumerates the step types a workflow author can place on the
-// canvas (docs/02 §2.4, docs/10 §5.1). Stored as a string in StepWire
-// (workflow_versions.steps JSON) so the wire format is stable across
-// proto renumbering.
-//
-//   - task: a worker node. Processes the work item(s) connected to its
-//     input edge and captures the output summary at its output edge.
-//   - decision: branches based on a prior step's result (reserved).
-//   - approval: blocks until a human approves (gate).
-//   - parallel: fans out to multiple sub-steps, joins on completion.
-//   - recover: invokes a recovery workflow.
-//   - work_item: a passive marker for a work item. Holds the work
-//     item's metadata as context for the downstream worker. Does not
-//     dispatch by itself.
-//   - project: a passive marker for the project that scopes the
-//     downstream work items. Sets the workflow's project_id on the
-//     first reconcile pass.
+// StepKind — the five step types (docs/02 §2.4): StepKind enumerates the step types a workflow
+// author can place on the canvas (docs/02 §2.4, docs/10 §5.1).
 const (
 	StepKindTask         = "task"
 	StepKindDecision     = "decision"
@@ -384,9 +292,8 @@ const (
 	StepKindEnd          = "end"
 )
 
-// StepRun lifecycle states (docs/03 §2, docs/09 §3.4):
-// pending → ready → running → succeeded | failed | skipped | blocked |
-// approval_pending | recovering.
+// StepRun lifecycle states (docs/03 §2, docs/09 §3.4): pending → ready → running → succeeded |
+// failed | skipped | blocked | approval_pending | recovering.
 const (
 	StepRunPending         = "pending"
 	StepRunReady           = "ready"
@@ -417,8 +324,7 @@ const (
 	WorkflowEventStepApproval   = "workflow.step_approval_pending"
 )
 
-// AdapterStatus — runtime adapter registration lifecycle
-// (docs/04_Runtime_Adapter_SDK.md §2):
+// AdapterStatus — runtime adapter registration lifecycle (docs/04_Runtime_Adapter_SDK.md §2):
 // registered → ready → draining → expired
 const (
 	AdapterRegistered = "registered"
@@ -427,8 +333,7 @@ const (
 	AdapterExpired    = "expired"
 )
 
-// ExecutionStatus — WorkerExecution lifecycle
-// (docs/02_Domain_Model.md §2.7, docs/03 §6):
+// ExecutionStatus — WorkerExecution lifecycle (docs/02_Domain_Model.md §2.7, docs/03 §6):
 // dispatching → running → healthy|stalled|unhealthy → terminating → succeeded|failed
 const (
 	ExecutionDispatching   = "dispatching"
@@ -561,9 +466,7 @@ const (
 	RecoveryLevelL3 int32 = 3
 )
 
-// ResumptionPath (docs/06 §4): direct checkpoint replay vs full
-// summarize-resume. The engine attempts direct replay first and falls
-// back on incompatibility.
+// ResumptionPath (docs/06 §4): direct checkpoint replay vs full summarize-resume.
 const (
 	ResumptionPathCheckpoint      = "checkpoint"
 	ResumptionPathSummarizeResume = "summarize_resume"
@@ -576,10 +479,8 @@ const (
 	PlanRejected = "rejected"
 )
 
-// Bounded auto-relax thresholds (docs/06 §11): recovery may
-// automatically increase a Task's budget by up to 25% of the original
-// (with an audit event); beyond 150% of the original budget, human
-// approval is required.
+// Bounded auto-relax thresholds (docs/06 §11): recovery may automatically increase a Task's budget
+// by up to 25% of the original (with an audit event); beyond 150% of the original budget.
 const (
 	BudgetRelaxAutoMaxFraction = 0.25 // +25% automatic
 	BudgetRelaxHumanThreshold  = 1.50 // >150% requires human approval
@@ -603,9 +504,6 @@ const (
 )
 
 // PolicyEventType — event kinds for the policy lifecycle (docs/08 §4.4).
-// `PolicyEventCreated` is emitted when a draft policy is created; it is
-// distinct from `PolicyEventPublished`, which is emitted only when a
-// draft version is explicitly published.
 const (
 	PolicyEventEvaluated  = "policy.evaluated"
 	PolicyEventCreated    = "policy.created"

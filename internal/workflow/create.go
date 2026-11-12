@@ -10,14 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// CreateWorkflowInput is the full input for creating a workflow header
-// plus its first draft version. Both the Connect service
-// (Service.CreateWorkflow) and the AskOrchicon tool adapter
-// (toolCreateWorkflow) funnel through ValidateCreateWorkflowInput +
-// CreateWorkflowTx so there is exactly ONE implementation of "create a
-// workflow" — the ghost-record bug (tool path committed a workflows row
-// with no workflow_versions row and silently dropped steps) was two
-// drifted implementations.
+// CreateWorkflowInput is the full input for creating a workflow header plus its first draft
+// version.
 type CreateWorkflowInput struct {
 	TenantID  string
 	ProjectID string // optional; empty for tenant-level templates
@@ -29,10 +23,8 @@ type CreateWorkflowInput struct {
 	Steps       string // JSON array string; "" becomes "[]"
 	Inputs      string // JSON object string; "" becomes "{}"
 	Outputs     string // JSON object string; "" becomes "{}"
-	// Ephemeral marks this workflow as machine-managed and transient (Ask
-	// Orchicon Quick Work's throwaway workflow). Set only by the Ask tool
-	// layer: a transient workflow is something an AGENT builds for one job,
-	// not something a human files.
+	// Ephemeral marks this workflow as machine-managed and transient (Ask Orchicon Quick Work's
+	// throwaway workflow).
 	Ephemeral bool
 }
 
@@ -55,14 +47,7 @@ func validateStepsString(s string) (string, error) {
 	return string(b), nil
 }
 
-// ValidateCreateWorkflowInput validates and normalizes every field in
-// place: the name is trimmed and required, the version note is
-// bounds-checked, steps must be a JSON array (empty becomes "[]"),
-// inputs/outputs must be JSON objects (empty becomes "{}"), type must be
-// one_shot/template (or empty to derive), and git_strategy must be
-// local/pr/none (or empty for inherit). Callers map the returned error to
-// their surface's invalid-argument code (Connect handler) or return it
-// as-is (tool). Idempotent: calling it twice is safe.
+// ValidateCreateWorkflowInput validates and normalizes every field in place.
 func ValidateCreateWorkflowInput(in *CreateWorkflowInput) error {
 	name, err := validateName(in.Name)
 	if err != nil {
@@ -94,13 +79,8 @@ func ValidateCreateWorkflowInput(in *CreateWorkflowInput) error {
 	return nil
 }
 
-// CreateWorkflowTx inserts the workflow header and its first draft
-// version-1 row, enqueues the workflow.created outbox event, and writes
-// the workflow.created audit row — all inside the caller's tenant
-// transaction. It does NOT commit; the caller owns the transaction and
-// must commit it so the version row, event, and audit row land atomically.
-// Input must have passed ValidateCreateWorkflowInput. When ProjectID is
-// set, the project must exist and be active.
+// CreateWorkflowTx inserts the workflow header and its first draft version-1 row, enqueues the
+// workflow.created outbox event, and writes the workflow.created audit row.
 func CreateWorkflowTx(ctx context.Context, tx pgx.Tx, in CreateWorkflowInput) (db.WorkflowRow, db.WorkflowVersionRow, error) {
 	// Only active projects may host workflows (docs/02 §2.1).
 	if in.ProjectID != "" {

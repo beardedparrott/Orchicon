@@ -1,16 +1,7 @@
 package server
 
-// Tests for the dual-listener wiring (listen.go): the primary HTTP bind
-// (loopback — host clients: orch, the GUI) and the optional docker-bridge
-// bind runtime containers dial.
-//
-// The load-bearing property here is NOT "the bridge listener works" (that
-// is proven end to end by a real dispatched run) but "a bridge listener
-// that CANNOT bind does not take the plane down". Run returns from the
-// whole control plane on any errCh value, so serveExtra is given no channel
-// at all — these tests pin the behaviour that used to be a channel away from
-// a plane-wide outage: the docker bridge address legitimately changes across
-// docker restarts, and host clients must survive that.
+// The load-bearing property here is NOT "the bridge listener works" (that is proven end to end by a
+// real dispatched run) but "a bridge listener that CANNOT bind does not take the plane down".
 
 import (
 	"bytes"
@@ -45,10 +36,8 @@ func (s *syncBuf) String() string {
 	return s.b.String()
 }
 
-// newListenerTestServer builds the minimum Server the listener primitives
-// need: the config, a captured logger, and an http.Server answering
-// /healthz. Run itself needs a live DB and reconcilers, so these tests
-// exercise the primitives Run composes instead.
+// newListenerTestServer builds the minimum Server the listener primitives need: the config, a
+// captured logger, and an http.Server answering /healthz.
 func newListenerTestServer(cfg config.Config, buf *syncBuf) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -96,11 +85,8 @@ func waitForLog(t *testing.T, buf *syncBuf, substr string, within time.Duration)
 	return false
 }
 
-// TestListenerAddrsHasNoWildcard pins the "not reachable from another
-// machine" property at the bind-set level: every address the plane binds
-// names a concrete interface address. A wildcard here would be the LAN
-// exposure the operator rejected (and config.Validate refuses it, but the
-// bind list is what actually gets bound).
+// TestListenerAddrsHasNoWildcard pins the "not reachable from another machine" property at the
+// bind-set level: every address the plane binds names a concrete interface address.
 func TestListenerAddrsHasNoWildcard(t *testing.T) {
 	cfg := config.Config{HTTPAddr: "127.0.0.1:8091", ExtraBind: "172.17.0.1:8091"}
 	addrs := listenerAddrs(cfg)
@@ -132,10 +118,7 @@ func TestPrimaryListenerServes(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	primary, err := s.startListeners(ctx)
-	if err != nil {
-		t.Fatalf("startListeners: %v", err)
-	}
+	primary := mustStartListeners(t, s, ctx)
 	addr := primary.Addr().String()
 	go func() { _ = s.httpSrv.Serve(primary) }()
 	defer func() { _ = s.httpSrv.Close() }()
@@ -145,12 +128,8 @@ func TestPrimaryListenerServes(t *testing.T) {
 	}
 }
 
-// TestServeExtraFailureIsNonFatal is the load-bearing one. The bridge bind
-// points at TEST-NET-1 (192.0.2.1, never a local interface), so the bind
-// CANNOT succeed. Required: the already-bound primary listener keeps serving
-// host clients, and the failure is LOUD (the log names the env var and why it
-// matters) and retried — never fatal, because Run treats any errCh value as
-// "return from the whole plane".
+// TestServeExtraFailureIsNonFatal is the load-bearing one. The bridge bind points at TEST-NET-1
+// (192.0.2.1, never a local interface), so the bind CANNOT succeed.
 func TestServeExtraFailureIsNonFatal(t *testing.T) {
 	prev := extraBindRetryInterval
 	extraBindRetryInterval = 20 * time.Millisecond
@@ -162,10 +141,7 @@ func TestServeExtraFailureIsNonFatal(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	primary, err := s.startListeners(ctx)
-	if err != nil {
-		t.Fatalf("startListeners must not fail because the bridge bind cannot: %v", err)
-	}
+	primary := mustStartListeners(t, s, ctx)
 	addr := primary.Addr().String()
 	go func() { _ = s.httpSrv.Serve(primary) }()
 	defer func() { _ = s.httpSrv.Close() }()
@@ -196,19 +172,15 @@ func TestServeExtraFailureIsNonFatal(t *testing.T) {
 	cancel()
 }
 
-// TestServeExtraBindsWhenAddressAppears pins the recovery direction: an
-// address that is busy on the first attempt (exactly the "the bridge address
-// changed / something else holds it" case) is picked up as soon as it frees.
+// TestServeExtraBindsWhenAddressAppears pins the recovery direction: an address that is busy on the
+// first attempt (exactly the "the bridge address changed / something else holds it" case).
 func TestServeExtraBindsWhenAddressAppears(t *testing.T) {
 	prev := extraBindRetryInterval
 	extraBindRetryInterval = 10 * time.Millisecond
 	defer func() { extraBindRetryInterval = prev }()
 
 	// Hold the address so serveExtra's first attempts fail.
-	holder, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("hold address: %v", err)
-	}
+	holder := mustHoldLoopback(t)
 	addr := holder.Addr().String()
 
 	var buf syncBuf

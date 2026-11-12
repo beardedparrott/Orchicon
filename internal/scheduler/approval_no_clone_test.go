@@ -53,9 +53,8 @@ func approvalTestPool(t *testing.T) *db.Pool {
 
 const approvalTestTenant = "tnt_dev"
 
-// approvalTestEnv is the shared fixture for the integration tests: a
-// project, a bound ticket work item, a running workflow run, and a
-// worker-backed APPROVAL step run. All ids are fresh per test.
+// approvalTestEnv is the shared fixture for the integration tests: a project, a bound ticket work
+// item, a running workflow run, and a worker-backed APPROVAL step run.
 type approvalTestEnv struct {
 	t          *testing.T
 	pool       *db.Pool
@@ -86,7 +85,8 @@ func newApprovalTestEnv(t *testing.T) *approvalTestEnv {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "Approval Test", Slug: slug,
 		Status: "active", Goals: []byte("[]"),
-		ProjectDir: "/tmp/orchicon/" + slug,
+		ProjectDir:    "/tmp/orchicon/" + slug,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -157,11 +157,8 @@ func (e *approvalTestEnv) countWorkItems(t *testing.T) int {
 	return len(items)
 }
 
-// TestApprovalDispatchCreatesNoWorkItems is the core acceptance test: a
-// worker-backed approval step must dispatch the approver against the
-// run's shared ticket without creating any work item, and the step run —
-// the approval record — must carry the composite prompt, the approver
-// worker pin, the upstream context, and the pending decision.
+// TestApprovalDispatchCreatesNoWorkItems is the core acceptance test: a worker-backed approval step
+// must dispatch the approver against the run's shared ticket without creating any work item.
 func TestApprovalDispatchCreatesNoWorkItems(t *testing.T) {
 	env := newApprovalTestEnv(t)
 	ctx := context.Background()
@@ -247,10 +244,8 @@ func TestApprovalDispatchCreatesNoWorkItems(t *testing.T) {
 	}
 }
 
-// TestApprovalRetryDoesNotCloneTicket verifies the failure/retry path
-// stays artifact-free: when the approver execution fails, the retry
-// strategy re-dispatches the SAME step run against the SAME ticket (no
-// fresh work item) and increments the attempt counter.
+// TestApprovalRetryDoesNotCloneTicket verifies the failure/retry path stays artifact-free: when the
+// approver execution fails.
 func TestApprovalRetryDoesNotCloneTicket(t *testing.T) {
 	env := newApprovalTestEnv(t)
 	ctx := context.Background()
@@ -321,9 +316,8 @@ func TestApprovalRetryDoesNotCloneTicket(t *testing.T) {
 		t.Errorf("retry _work_item_id = %q, want ticket %q", res.WorkItemID, env.ticketID)
 	}
 
-	// Re-dispatching the recovering step must succeed against the same
-	// ticket, clear the stale execution link, and queue exactly one
-	// dispatch — again without creating any work item.
+	// Re-dispatching the recovering step must succeed against the same ticket, clear the stale
+	// execution link, and queue exactly one dispatch — again without creating any work item.
 	var dispatched []dispatchReq
 	err = env.reconciler.dispatchStep(ctx, ttx.Tx, approvalTestTenant, env.run,
 		env.step, recovering, runByID, []workflow.StepWire{env.step}, &dispatched, nil, nil)
@@ -345,10 +339,7 @@ func TestApprovalRetryDoesNotCloneTicket(t *testing.T) {
 	}
 }
 
-// TestApprovalDispatchFailsWithoutTicket verifies the documented
-// constraint: a worker-backed approval step on a one-shot run with no
-// bound ticket and no upstream WORK_ITEM marker fails the step with a
-// clear message instead of silently creating an artifact.
+// TestApprovalDispatchFailsWithoutTicket verifies the documented constraint.
 func TestApprovalDispatchFailsWithoutTicket(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -365,6 +356,7 @@ func TestApprovalDispatchFailsWithoutTicket(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "One Shot", Slug: "one-shot-" + db.NewID()[:8],
 		Status: "active", Goals: []byte("[]"),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -415,12 +407,8 @@ func TestApprovalDispatchFailsWithoutTicket(t *testing.T) {
 	}
 }
 
-// TestApprovalDispatchFailsWithoutWorkerRef guards the failStep contract
-// (adopted from #192 for the approval worker-resolution path): a
-// worker-backed approval with NO worker ref anywhere (neither the step's
-// ref nor config.worker_ref) must FAIL this step with a clear reason —
-// not error out and roll back the whole reconcile pass, which would leave
-// the run "running" forever.
+// TestApprovalDispatchFailsWithoutWorkerRef guards the failStep contract (adopted from #192 for the
+// approval worker-resolution path).
 func TestApprovalDispatchFailsWithoutWorkerRef(t *testing.T) {
 	env := newApprovalTestEnv(t)
 	ctx := context.Background()
@@ -465,11 +453,8 @@ func TestApprovalDispatchFailsWithoutWorkerRef(t *testing.T) {
 	}
 }
 
-// TestApprovalDispatchFailsWhenApproverUnresolvable guards the failStep
-// contract for the approver worker-resolution failure: when the approver
-// worker has no usable version (deleted / never existed), the approval
-// step must FAIL with a clear reason instead of erroring out and rolling
-// back the whole reconcile pass (the wedge #192 fixed for TASK steps).
+// TestApprovalDispatchFailsWhenApproverUnresolvable guards the failStep contract for the approver
+// worker-resolution failure.
 func TestApprovalDispatchFailsWhenApproverUnresolvable(t *testing.T) {
 	env := newApprovalTestEnv(t)
 	ctx := context.Background()
@@ -526,18 +511,6 @@ func (e *approvalTestEnv) mustList(t *testing.T, tx pgx.Tx) []db.WorkItemRow {
 }
 
 // createTestAdapter creates a dispatch-candidate adapter for a test AND registers its removal.
-//
-// THE TEARDOWN IS THE POINT. These fixtures exist to exercise dispatch, which needs a READY adapter
-// of the matching kind with a fresh heartbeat. Without cleanup the row outlives the test that made
-// it, and stays a dispatch candidate forever: the dispatcher's query treats a NULL heartbeat as
-// FRESH (`last_heartbeat_at IS NULL OR ... >= now() - ttl`) and selectAdapter breaks ties on adapter
-// ID, so those rows enter the SAME candidate pool as the real adapter. In the live dev tenant that
-// produced 156 permanent phantom adapters (endpoint `localhost:0`) and 993 real executions
-// dispatched onto them.
-//
-// LastHeartbeatAt is deliberately NOT set: a test adapter that heartbeats competes with the real one
-// for the whole 60s TTL. Left NULL it still dispatches (the query accepts NULL), and the cleanup
-// below removes it within the test's lifetime.
 func createTestAdapter(t *testing.T, pool *db.Pool, kind string, maxConcurrent int) string {
 	t.Helper()
 	ctx := context.Background()

@@ -25,9 +25,8 @@ func baseConfig() Config {
 			EmbeddedOP:  true,
 		},
 		BlobStore: BlobStoreConfig{Kind: "local"},
-		// Validate() refuses an empty policy path (a plane with no policy file
-		// name cannot check the policy at boot), so the valid baseline carries
-		// one, exactly like Default() does.
+		// Validate() refuses an empty policy path (a plane with no policy file name cannot check the policy
+		// at boot), so the valid baseline carries one, exactly like Default() does.
 		PermissionPolicyPath: "/var/lib/orchicon/permission-policy.yaml",
 	}
 }
@@ -145,9 +144,8 @@ func TestDeploymentTenantIDEnvOverrides(t *testing.T) {
 	}
 }
 
-// TestDeploymentTenantIDValidation pins the boot-time tenant-id guards: a
-// misconfigured ORCHICON_DEPLOYMENT_TENANT_ID must fail boot, never
-// silently seed a second tenant.
+// TestDeploymentTenantIDValidation pins the boot-time tenant-id guards: a misconfigured
+// ORCHICON_DEPLOYMENT_TENANT_ID must fail boot, never silently seed a second tenant.
 func TestDeploymentTenantIDValidation(t *testing.T) {
 	valid := []string{"tnt_dev", "acme", "prod-2", "my_tenant", "a", "a-b_c"}
 	for _, id := range valid {
@@ -177,12 +175,7 @@ func TestDeploymentTenantIDValidation(t *testing.T) {
 	}
 }
 
-// TestValidateExtraBind pins the second HTTP bind (ORCHICON_HTTP_EXTRA_BIND)
-// rules. The load-bearing one is the wildcard rejection: a 0.0.0.0/:: bind
-// would expose the plane to the operator's LAN, which was explicitly
-// rejected. A bad value must fail closed at boot, not degrade quietly to
-// loopback-only (that surfaces much later as "workers cannot reach the
-// plane" from inside a runtime container).
+// TestValidateExtraBind pins the second HTTP bind (ORCHICON_HTTP_EXTRA_BIND) rules.
 func TestValidateExtraBind(t *testing.T) {
 	valid := []string{
 		"",                // unset: loopback/primary only

@@ -1,0 +1,18 @@
+=== step 4 case 1 — pristine reset (expect 0 fails) ===
+passes=4 fails=0 skips=1
+  probe: container=orchicon-pool-aaa written ABSENT DIR-ABSENT |
+  probe names run A's own container: 1
+  defects: 
+=== step 4 case 2 — state leaked into run B (expect >=1 fail) ===
+passes=0 fails=4 skips=1
+  probe: container=orchicon-pool-aaa FILE-PRESENT DIR-PRESENT |
+  probe names run A's own container: 1
+  defects: state was really created inside run A's container (engine exec) (missing 'written' in /tmp/orchicon/s4-leak/04-state-write.txt)|run B's container does NOT carry run A's /tmp file (the pristine reset) (missing 'ABSENT' in /tmp/orchicon/s4-leak/04-state-probe.txt)|run B's container really did not keep the directory run A made (found 'DIR-PRESENT' in /tmp/orchicon/s4-leak/04-state-probe.txt)|no probed container still holds a file run A wrote (found 'FILE-PRESENT' in /tmp/orchicon/s4-leak/04-state-probe.txt)|
+=== step 8 case 1 — no container created (expect 0 fails, no needle) ===
+passes=3 fails=0 skips=0
+  needle present in the capture: 0
+  defects: 
+=== step 8 case 2 — a container WAS created (expect >=1 fail + the needle) ===
+passes=1 fails=2 skips=0
+  needle present in the capture: 1
+  defects: ALL-NATIVE IN LOCAL MODE: no NEW container appeared for the run (found 'new container appeared:' in /tmp/orchicon/s8-new/08-all-native.txt)|ALL-NATIVE IN LOCAL MODE: no container was created (engine ps diff)|

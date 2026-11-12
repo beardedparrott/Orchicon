@@ -9,13 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
 
-// The tool_call_count ladder dimension, evaluated natively at opencode
-// parity: tier crossings latch without compacting (the dimension is opted
-// out of compact_dims by default — collapsing context on tool pressure
-// would force yet more tool calls), and the abort tier fails the session
-// with budget_abort:tool_call_count. Limits are worker budget_overrides
-// over tenant default_budget_overrides (first-class key end-to-end);
-// unset falls back to the ladder default (100), explicit <= 0 disables.
+// The tool_call_count ladder dimension, evaluated natively at opencode parity: tier crossings latch
+// without compacting (the dimension is opted out of compact_dims by default.
 
 func toolsDimSession(t *testing.T, budgets string, toolUses int) *Session {
 	t.Helper()
@@ -56,15 +51,22 @@ func TestNativeToolsDimDisabledByZero(t *testing.T) {
 	}
 }
 
-func TestNativeToolsDimDefaultLimitPinned(t *testing.T) {
-	// Unset tool_call_count falls back to the ladder default (100) —
-	// pinning the current contract so a default change fails loudly.
-	s := toolsDimSession(t, `{}`, 100)
-	if got := s.maybeCompact(context.Background(), 5, Usage{}); got != "budget_abort:tool_call_count" {
-		t.Fatalf("unset limit at 100 calls → %q, want budget_abort:tool_call_count", got)
+func TestNativeToolsDimUnsetMeansNoAbort(t *testing.T) {
+	// An UNSET tool_call_count is no gate at all. It used to fall back to 100,
+	// which hard-aborted honest tool-heavy runs on a number nobody had set.
+	for _, calls := range []int{100, 250, 5000} {
+		s := toolsDimSession(t, `{}`, calls)
+		if got := s.maybeCompact(context.Background(), 5, Usage{}); strings.HasPrefix(got, "budget_abort:") {
+			t.Fatalf("unset tool_call_count at %d calls → %q, want no abort", calls, got)
+		}
 	}
-	s = toolsDimSession(t, `{}`, 50)
+	// A CONFIGURED limit still aborts — that is the half that must keep working.
+	s := toolsDimSession(t, `{"tool_call_count":100}`, 100)
+	if got := s.maybeCompact(context.Background(), 5, Usage{}); got != "budget_abort:tool_call_count" {
+		t.Fatalf("configured limit 100 at 100 calls → %q, want budget_abort:tool_call_count", got)
+	}
+	s = toolsDimSession(t, `{"tool_call_count":100}`, 50)
 	if got := s.maybeCompact(context.Background(), 5, Usage{}); strings.HasPrefix(got, "budget_abort:") {
-		t.Fatalf("unset limit at 50 calls → %q, want no abort", got)
+		t.Fatalf("configured limit 100 at 50 calls → %q, want no abort", got)
 	}
 }

@@ -1,21 +1,7 @@
 package db
 
-// adapter_heartbeat_test.go — the regression guard for a defect that reached production data.
-//
-// CreateAdapter's INSERT dropped `last_heartbeat_at`: the column list omitted it and the field was
-// only READ BACK, so a caller that passed a heartbeat silently got a row with NULL. The dispatcher's
-// candidate query treats NULL as FRESH (`last_heartbeat_at IS NULL OR last_heartbeat_at >= now() -
-// ttl`), so every test fixture that created an adapter with `LastHeartbeatAt: &now` in fact created
-// one that could NEVER EXPIRE. In the live dev tenant that accumulated 156 phantom adapters with
-// endpoint `localhost:0`, and because selectAdapter breaks ties on the adapter ID, they entered the
-// same candidate pool as the real adapter — 993 real executions were dispatched onto them and came
-// back failed / failed_to_start.
-//
-// The INSERT is the contract; this test asserts it directly, so the next edit to the column list
-// cannot quietly drop a caller's heartbeat again.
-//
-// These run only with ORCHICON_TEST_DSN set (the package's DB-backed convention), and they create
-// and DELETE their own row so the shared instance is left exactly as found.
+// The dispatcher's candidate query treats NULL as FRESH (`last_heartbeat_at IS NULL OR
+// last_heartbeat_at >= now().
 
 import (
 	"context"
@@ -85,9 +71,8 @@ func TestCreateAdapterPersistsTheHeartbeat(t *testing.T) {
 	}
 }
 
-// An OMITTED heartbeat stays NULL, which is the meaning the dispatcher's query relies on (it accepts
-// NULL as fresh). This pins the other half of the contract: persisting a supplied value must not
-// invent one when none was given.
+// An OMITTED heartbeat stays NULL, which is the meaning the dispatcher's query relies on (it
+// accepts NULL as fresh).
 func TestCreateAdapterLeavesAnOmittedHeartbeatNull(t *testing.T) {
 	pool := adapterTestPool(t)
 	ctx := context.Background()
@@ -211,9 +196,8 @@ func adapterTestPool(t *testing.T) *Pool {
 
 // --- the batched usage enrichment (the executions page-load fix) -------------------------------
 
-// SumUsageForExecutions must return exactly what the per-row SumUsageForExecution returns, for every
-// id — the batched form replaced a loop that issued one query per execution, and a batching change
-// that silently lost or mis-attributed a total would be worse than the slowness it fixed.
+// SumUsageForExecutions must return exactly what the per-row SumUsageForExecution returns, for
+// every id — the batched form replaced a loop that issued one query per execution.
 func TestSumUsageForExecutionsMatchesThePerRowForm(t *testing.T) {
 	pool := adapterTestPool(t)
 	ctx := context.Background()

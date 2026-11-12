@@ -9,9 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// fakeBridge is a minimal AdapterBridge test double (Start only) used to
-// prove that bridges register, resolve by kind, and that capabilities are
-// negotiated by type-assertion rather than assumed.
+// fakeBridge is a minimal AdapterBridge test double (Start only) used to prove that bridges
+// register.
 type fakeBridge struct {
 	name string
 }
@@ -33,11 +32,8 @@ func (f *fullBridge) ContinueSession(_ context.Context, opts ContinueSessionOpts
 func (f *fullBridge) AbortExecution(_ context.Context, _, _ string) error { return nil }
 func (f *fullBridge) IsExecutionActive(_ string) bool                     { return true }
 
-// chatBridge implements fakeBridge PLUS the Ask chat-session capability, so a
-// test can prove the Dispatcher routes Ask conversations to the chat-capable
-// bridge and yields an actionable error for a bridge that only implements
-// AdapterBridge.Start (the AC routing contract). It embeds fakeBridge so the
-// AdapterBridge.Start surface is still satisfied.
+// chatBridge implements fakeBridge PLUS the Ask chat-session capability, so a test can prove the
+// Dispatcher routes Ask conversations to the chat-capable bridge and yields an actionable error.
 type chatBridge struct {
 	fakeBridge
 	subscribed []string
@@ -215,9 +211,8 @@ func TestDispatcherChatKinds(t *testing.T) {
 	}
 }
 
-// TestDispatcherCapabilityNegotiation proves the server-side pattern: the
-// caller type-asserts a capability interface and degrades with an
-// actionable error when the bridge does not support it — never a panic.
+// TestDispatcherCapabilityNegotiation proves the server-side pattern: the caller type-asserts a
+// capability interface and degrades with an actionable error when the bridge does not support it.
 func TestDispatcherCapabilityNegotiation(t *testing.T) {
 	d := NewDispatcher()
 	minimal := &fakeBridge{}
@@ -272,11 +267,8 @@ func TestDispatcherCapabilityNegotiation(t *testing.T) {
 	})
 }
 
-// TestTaskReconcilerResolvesBridgeByKind is the end-to-end dispatch-level
-// contract: the reconciler derives the adapter kind from the manifest's
-// model_ref (never a hardcoded singleton), resolves the bridge through the
-// dispatcher, and an unknown kind fails the execution with an actionable
-// message instead of panicking.
+// TestTaskReconcilerResolvesBridgeByKind is the end-to-end dispatch-level contract: the reconciler
+// derives the adapter kind from the manifest's model_ref (never a hardcoded singleton).
 func TestTaskReconcilerResolvesBridgeByKind(t *testing.T) {
 	d := NewDispatcher()
 	claudeBridge := &fakeBridge{name: "claude"}

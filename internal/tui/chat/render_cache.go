@@ -41,26 +41,15 @@ import (
 	"sync"
 )
 
-// renderCacheMaxEntries bounds the map. It is a MEMORY bound, not a correctness one:
-// exceeding it drops every entry, which costs one full re-render and nothing else. A
-// conversation with more items than this, or a terminal resized many times (the width
-// is part of a key), is what it exists for; the alternative — an unbounded map of
-// rendered segments — is how a cache becomes the leak it was meant to prevent.
+// renderCacheMaxEntries bounds the map.
 const renderCacheMaxEntries = 4096
 
 // RenderCache remembers rendered items, so a repaint only pays for what changed.
-//
-// It is safe for concurrent use. A NIL *RenderCache renders without remembering
-// anything, so a caller that has none — a one-off render, a test — needs no branch of
-// its own.
 type RenderCache struct {
 	mu      sync.Mutex
 	entries map[renderCacheKey]renderCacheEntry
 
-	// layouts counts the items this cache has actually laid out, i.e. its misses. It
-	// exists so a test can assert that a frame which changed nothing re-rendered
-	// NOTHING — the whole claim of this file, and one that is invisible from the
-	// rendered output, since a cache that always missed would produce identical text.
+	// layouts counts the items this cache has actually laid out, i.e. its misses.
 	layouts int
 }
 
@@ -78,14 +67,9 @@ type renderCacheKey struct {
 	// glyph is the copy affordance the item was drawn with. It is a parameter rather
 	// than package state (see RenderItemsSpansWithCopy) and it changes the text.
 	glyph string
-	// query is the in-transcript SEARCH armed when the segment was rendered. A searched segment is
-	// DIFFERENT TEXT (it carries match-band escapes), so it must never be served to a render that is not
-	// searching — nor to one searching for something else. Without this the first painted conversation
-	// would keep its marks after the search was cleared, and a later query would show the OLD query's hits.
+	// query is the in-transcript SEARCH armed when the segment was rendered.
 	query string
-	// folded is whether this item's reasoning body was drawn collapsed. The predicate
-	// is a function of the item's key, so it resolves to one bool per item and can be
-	// keyed.
+	// folded is whether this item's reasoning body was drawn collapsed.
 	folded bool
 }
 
@@ -94,10 +78,7 @@ type renderCacheEntry struct {
 	// match, which is what keeps a changed item from being served its old form.
 	sig uint64
 	seg string
-	// code and askOpts are the segment's line geometry. They are handed to the caller
-	// ALIASED rather than copied — an allocation per item would be the cost this cache
-	// exists to remove — and they are written by nobody: ItemSpan.Code and
-	// ItemSpan.Options are read by the click paths and mutated by no one.
+	// code and askOpts are the segment's line geometry.
 	code    []CodeSpan
 	askOpts []AskOptionSpan
 }
@@ -108,10 +89,6 @@ func NewRenderCache() *RenderCache {
 }
 
 // Render is RenderItemsSpansWithCopy through a cache.
-//
-// scope names what the items belong to (the conversation id): items are only ever
-// rendered as part of a conversation, and two conversations can hold items with the
-// same key. copyGlyph is "" for a surface where a click copies nothing.
 func (c *RenderCache) Render(scope string, items []ChatItem, maxWidth int, copyGlyph string, fold func(key string) bool, searchQ string) (string, []ItemSpan) {
 	if c == nil {
 		return renderItems(items, maxWidth, fold, copyGlyph, nil, "", searchQ)
@@ -155,18 +132,8 @@ func (c *RenderCache) layoutsForTest() int {
 	return c.layouts
 }
 
-// renderSig fingerprints EVERY field of an item that its render reads.
-//
-// IT MUST COVER ALL OF THEM, and this is the one place this cache can be wrong: a
-// field left out means an item's rendered form is remembered from a state the item is
-// no longer in, and the transcript quietly shows something stale. Two things keep that
-// honest — the list below is written to match renderItem (and copyTextFor, which the
-// spans read), and TestCachedRenderMatchesUncachedRender drives a mutation of each
-// field through a warm cache and compares against the cacheless render. So an omission
-// fails a test rather than a screenshot.
-//
-// FNV-1a over the fields, with a separator after each string so that two adjacent
-// fields cannot be shuffled into the same bytes ("ab","c" must not equal "a","bc").
+// IT MUST COVER ALL OF THEM, and this is the one place this cache can be wrong: a field left out
+// means an item's rendered form is remembered from a state the item is no longer.
 func renderSig(it ChatItem) uint64 {
 	h := fnv.New64a()
 	var buf [8]byte
@@ -231,6 +198,8 @@ func renderSig(it ChatItem) uint64 {
 		// of the drawn card.
 		flag(a.Drafting)
 		str(a.Draft)
+		// THE CURSOR IS PART OF THE PICTURE, or moving it repaints nothing.
+		num(int64(a.Sel))
 		for _, o := range a.Options {
 			str(o.Label)
 			str(o.Description)

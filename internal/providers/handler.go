@@ -18,11 +18,8 @@ import (
 type Handler struct {
 	svc *Service
 	log *slog.Logger
-	// OnProviderChange, when set, fires after every mutation of the
-	// provider landscape (custom provider create/update/delete, provider
-	// token save/clear, settings visibility batch). Wired by api.go to the
-	// model discoverer's Invalidate: freshly added models/providers become
-	// discoverable immediately instead of after the discovery TTL.
+	// OnProviderChange, when set, fires after every mutation of the provider landscape (custom provider
+	// create/update/delete, provider token save/clear, settings visibility batch).
 	OnProviderChange func()
 	apiv1connect.UnimplementedProviderServiceHandler
 }

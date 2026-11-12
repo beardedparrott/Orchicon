@@ -9,20 +9,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
 
-// The compact_max_turns turn-count context-hygiene gate, ported from the
-// opencode adapter (internal/opencode/compact.go effectiveCompactMaxTurns +
-// session_run.maybeCompact): a chatty session is compacted periodically at
-// the quiet turn boundary even when NO budget dimension breached and NO
-// window pressure exists. Orthogonal to the ladder — it compacts but never
-// warns and never aborts — and it reuses the shared doCompact latches:
-// the step<2 min-turn floor, the same-turn/min-turn re-arm floor, and the
-// per-execution CompactionMax cap.
+// The compact_max_turns turn-count context-hygiene gate, ported from the opencode adapter
+// (internal/opencode/compact.go effectiveCompactMaxTurns + session_run.maybeCompact).
 
-// turnGateSession builds a minimal session (no provider, no history
-// helpers needed beyond a seeded evictable history) with the given merged
-// budget JSON. Budgets with every dimension disabled (`tokens:0`,
-// `cost_usd:0`, `tool_call_count:0`) leave the ladder with nothing live —
-// exactly the tenant configuration the gate exists to rescue.
+// turnGateSession builds a minimal session (no provider, no history helpers needed beyond a seeded
+// evictable history) with the given merged budget JSON.
 func turnGateSession(t *testing.T, budgets string) *Session {
 	t.Helper()
 	cp, _ := policyFromSettings([]byte(budgets))
@@ -39,11 +30,8 @@ func turnGateSession(t *testing.T, budgets string) *Session {
 	return s
 }
 
-// AC: with every budget dimension disabled (explicit 0 → the gate never
-// evaluates) and no window hint, a session that runs past compact_max_turns
-// turns still gets periodic compaction at the quiet boundary. This is THE
-// regression the port exists for: the incident's 1.27M-token churn sessions
-// had no live trigger left at all.
+// AC: with every budget dimension disabled (explicit 0 → the gate never evaluates) and no window
+// hint.
 func TestTurnCountGateFiresWithoutAnyBudgetTier(t *testing.T) {
 	s := turnGateSession(t, `{"tokens":0,"cost_usd":0,"tool_call_count":0,"compact_max_turns":3,"context_compaction":{"recent_turns":2}}`)
 	ctx := context.Background()
@@ -68,10 +56,7 @@ func TestTurnCountGateFiresWithoutAnyBudgetTier(t *testing.T) {
 	if got := s.maybeCompact(ctx, 5, usage); got != "" {
 		t.Fatalf("step 5 (2 turns since compact) → %q, want no compaction", got)
 	}
-	// step 6: 3 turns since the last compact → the gate re-arms. The first
-	// compaction exhausted the seeded eviction pool, so re-seed fresh tool
-	// rounds (the session gained new material since) — the gate fires again
-	// (periodic).
+	// step 6: 3 turns since the last compact → the gate re-arms.
 	seedHistory(s)
 	if got := s.maybeCompact(ctx, 6, usage); got != "compacted:turn_count" {
 		t.Fatalf("step 6 (3 turns since compact) → %q, want compacted:turn_count", got)
@@ -81,33 +66,44 @@ func TestTurnCountGateFiresWithoutAnyBudgetTier(t *testing.T) {
 	}
 }
 
-// AC: unset compact_max_turns → the opencode built-in default
-// (DefaultCompactMaxTurns). ONE source of the default: the native policy
-// falls back to the opencode constant, never a re-stated number.
-func TestTurnCountGateUnsetUsesOpencodeDefault(t *testing.T) {
-	def := opencode.DefaultCompactMaxTurns()
-	if def < 2 {
-		t.Fatalf("opencode default %d < min-turn floor — gate could never fire", def)
+// AC: unset compact_max_turns → the opencode built-in default (DefaultCompactMaxTurns).
+func TestTurnCountGateUnsetMeansNoCollapse(t *testing.T) {
+	if def := opencode.DefaultCompactMaxTurns(); def != 0 {
+		t.Fatalf("opencode's unset turn-count default = %d, want 0 (disabled)", def)
 	}
 	s := turnGateSession(t, `{"tokens":0,"cost_usd":0,"tool_call_count":0,"context_compaction":{"recent_turns":2}}`)
-	if s.cp.CompactMaxTurns != def {
-		t.Fatalf("policy CompactMaxTurns = %d, want the opencode default %d", s.cp.CompactMaxTurns, def)
+	if s.cp.CompactMaxTurns != 0 {
+		t.Fatalf("policy CompactMaxTurns = %d, want 0 (disabled)", s.cp.CompactMaxTurns)
 	}
 	ctx := context.Background()
 	usage := Usage{InputTokens: 10}
-	// Just below the default cap → no fire.
-	if got := s.maybeCompact(ctx, def-1, usage); got != "" {
-		t.Fatalf("step %d < default cap → %q, want no compaction", def-1, got)
-	}
-	// At the default cap → fires.
-	if got := s.maybeCompact(ctx, def, usage); got != "compacted:turn_count" {
-		t.Fatalf("step %d == default cap → %q, want compacted:turn_count", def, got)
+	// A long, healthy session must never turn-count-compact on an unset key.
+	for _, step := range []int{29, 30, 31, 60, 200} {
+		if got := s.maybeCompact(ctx, step, usage); got != "" {
+			t.Fatalf("step %d with compact_max_turns unset → %q, want no compaction", step, got)
+		}
 	}
 }
 
-// AC: explicit 0 disables the turn-count gate entirely
-// (effectiveCompactMaxTurns parity) — a long session with the gate
-// explicitly off never turn-count-compacts.
+// …AND SETTING IT STILL WORKS. The default is gone, not the feature: an operator
+// who configures compact_max_turns gets the collapse at exactly that turn.
+func TestTurnCountGateConfiguredStillFires(t *testing.T) {
+	s := turnGateSession(t, `{"tokens":0,"cost_usd":0,"tool_call_count":0,"compact_max_turns":15,"context_compaction":{"recent_turns":2}}`)
+	if s.cp.CompactMaxTurns != 15 {
+		t.Fatalf("policy CompactMaxTurns = %d, want the configured 15", s.cp.CompactMaxTurns)
+	}
+	ctx := context.Background()
+	usage := Usage{InputTokens: 10}
+	if got := s.maybeCompact(ctx, 14, usage); got != "" {
+		t.Fatalf("step 14 < the configured 15 → %q, want no compaction", got)
+	}
+	if got := s.maybeCompact(ctx, 15, usage); got != "compacted:turn_count" {
+		t.Fatalf("step 15 == the configured 15 → %q, want compacted:turn_count", got)
+	}
+}
+
+// AC: explicit 0 disables the turn-count gate entirely (effectiveCompactMaxTurns parity) — a long
+// session with the gate explicitly off never turn-count-compacts.
 func TestTurnCountGateExplicitZeroDisables(t *testing.T) {
 	s := turnGateSession(t, `{"tokens":0,"cost_usd":0,"tool_call_count":0,"compact_max_turns":0,"context_compaction":{"recent_turns":2}}`)
 	if s.cp.CompactMaxTurns != 0 {
@@ -142,10 +138,8 @@ func TestTurnCountGateMalformedFallsBackToDefault(t *testing.T) {
 	}
 }
 
-// AC: the min-turn floor + re-arm latch — never at session start (the
-// step<2 floor in maybeCompact), never within minT turns of a prior compact
-// (no compact loop): with a tiny cap the gate still cannot fire on the
-// step right after a compaction.
+// AC: the min-turn floor + re-arm latch — never at session start (the step<2 floor in
+// maybeCompact), never within minT turns of a prior compact (no compact loop).
 func TestTurnCountGateRespectsMinTurnFloor(t *testing.T) {
 	s := turnGateSession(t, `{"compact_max_turns":2,"context_compaction":{"recent_turns":2}}`)
 	ctx := context.Background()
@@ -187,21 +181,15 @@ func TestTurnCountGateRespectsPerExecutionCap(t *testing.T) {
 	}
 }
 
-// AC: composition — the turn-count compaction resets the shared latches
-// like any doCompact success (lastCompactStep), so a window-pressure or
-// budget-tier crossing that lands later still latches correctly and the
-// turn gate cannot double-fire behind a budget compaction in the same
-// call. Here a budget escalate-tier compaction fires first; the turn gate
-// must not re-compact on the same step.
+// AC: composition — the turn-count compaction resets the shared latches like any doCompact success
+// (lastCompactStep), so a window-pressure or budget-tier crossing that lands later still latches.
 func TestTurnCountGateComposesWithBudgetTrigger(t *testing.T) {
 	s := turnGateSession(t, `{"tokens":200,"compact_tiers":[false,true,true],"compact_max_turns":2,"context_compaction":{"recent_turns":2}}`)
 	// Seed enough fresh tokens to cross the escalate tier on the first
 	// call: 120/200 = 60% ≥ 0.5 (escalate).
 	usage := Usage{InputTokens: 120}
-	// lastCompactStep == 0 → turns-since = step ≥ 2 would ALSO satisfy the
-	// turn gate, but the budget trigger runs FIRST and its doCompact success
-	// updates lastCompactStep + compactions; the turn gate must not fire a
-	// second time this call.
+	// lastCompactStep == 0 → turns-since = step ≥ 2 would ALSO satisfy the turn gate, but the budget
+	// trigger runs FIRST and its doCompact success updates lastCompactStep + compactions.
 	got := s.maybeCompact(context.Background(), 2, usage)
 	if got != "compacted:budget:tokens:escalate" {
 		t.Fatalf("budget trigger → %q, want compacted:budget:tokens:escalate", got)
@@ -209,21 +197,15 @@ func TestTurnCountGateComposesWithBudgetTrigger(t *testing.T) {
 	if s.cs.compactions != 1 || s.cs.lastCompactStep != 2 {
 		t.Fatalf("compactions=%d lastStep=%d, want 1 at step 2", s.cs.compactions, s.cs.lastCompactStep)
 	}
-	// Same turn's step-3 re-evaluation: turns-since = 3-2 = 1 (inside the
-	// min-turn floor) → the turn gate holds. But the spend is cumulative —
-	// folding the same 120 tokens again puts fresh tokens at 240/200 ≥ 1.0,
-	// and the ABORT tier is terminal regardless of latches (opencode
-	// parity: abort is evaluated unconditionally and never masks). The
-	// session ends with budget_abort:tokens — exactly the ladder's own
-	// contract, unchanged by this port.
+	// Same turn's step-3 re-evaluation: turns-since = 3-2 = 1 (inside the min-turn floor) → the turn
+	// gate holds.
 	if got := s.maybeCompact(context.Background(), 3, usage); got != "budget_abort:tokens" {
 		t.Fatalf("step 3 with spend at 240/200 → %q, want the terminal budget_abort:tokens", got)
 	}
 }
 
-// AC: the gate composes with a budget abort — the abort tier stays
-// TERMINAL and is returned before the turn gate is even evaluated (opencode
-// parity: abort kills the session; compaction never masks it).
+// AC: the gate composes with a budget abort — the abort tier stays TERMINAL and is returned before
+// the turn gate is even evaluated (opencode parity: abort kills the session.
 func TestTurnCountGateDoesNotMaskBudgetAbort(t *testing.T) {
 	s := turnGateSession(t, `{"tool_call_count":3,"compact_max_turns":2}`)
 	s.toolUses = 3 // 3/3 calls → frac 1.0 → the abort tier
@@ -235,9 +217,8 @@ func TestTurnCountGateDoesNotMaskBudgetAbort(t *testing.T) {
 	}
 }
 
-// AC (loop-level): a session whose budget disables every dimension and
-// whose provider exposes no context window still compacts mid-Run on the
-// turn gate, and the session continues to a successful StopStop.
+// AC (loop-level): a session whose budget disables every dimension and whose provider exposes no
+// context window still compacts mid-Run on the turn gate.
 func TestTurnCountGateFiresMidRunAndSessionContinues(t *testing.T) {
 	dir := t.TempDir()
 	ms, err := agentmemory.Open(dir)

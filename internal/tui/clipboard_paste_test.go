@@ -1,16 +1,6 @@
 package tui
 
 // clipboard_paste_test.go — ctrl+v SERVES BOTH THE IMAGE AND THE TEXT.
-//
-// The operator: "The new ctrl+v to paste screenshots broke the ability to simply ctrl+v paste normal text. It
-// should detect it and allow both."
-//
-// The attachment work bound ctrl+v to the image reader alone, so a clipboard holding a sentence produced only
-// "the clipboard holds no image" — and there was no OTHER way to paste text, because this chord is taken.
-//
-// THE FALLBACK IS THE HALF THAT MATTERS, so it is the half these tests drive. The readers shell out to a
-// clipboard helper and cannot run in a test, so the decision takes them as parameters (clipboardPasteCmd) and
-// the assertions are on which outcome each combination of reads produces.
 
 import (
 	"errors"
@@ -81,10 +71,6 @@ func TestClipboardPasteFallsBackToText(t *testing.T) {
 }
 
 // A REAL IMAGE FAILURE IS REPORTED, NOT RETRIED AS TEXT.
-//
-// This is the case a naive fallback gets wrong: an image that is too large, or in an unsupported format, has
-// been FOUND — so telling the operator "the clipboard holds no text" describes a clipboard that plainly holds
-// the picture they were trying to send, and sends them looking for the wrong problem.
 func TestClipboardPasteDoesNotRetryARealImageFailure(t *testing.T) {
 	realFailure := errors.New("clip.png is too large (max 10MB)")
 	consultedText := false

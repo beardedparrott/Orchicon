@@ -1,4 +1,4 @@
-// MCP server management hooks (ADR-0008): the MCP surface
+// MCP server management hooks: the MCP surface
 // behind Settings → Adapters → MCP. CRUD over OWNER-SCOPED MCP server
 // definitions (stdio + streamable HTTP), the curated registry catalog with
 // one-click prefill, explicit-only auto-install (dry-run in CI), and

@@ -55,9 +55,8 @@ func wfDraft(id string, n int32) *apiv1.WorkflowVersion {
 	return &apiv1.WorkflowVersion{Id: id, Version: n, Status: apiv1.WorkflowVersionStatus_WORKFLOW_VERSION_STATUS_DRAFT}
 }
 
-// The lifecycle chords are scoped to the Workflows pane: `p` is ALSO
-// force-progress on a run and `n`/`e`/`x` mean other things elsewhere, so an
-// unscoped switch would hijack them.
+// The lifecycle chords are scoped to the Workflows pane: `p` is ALSO force-progress on a run and
+// `n`/`e`/`x` mean other things elsewhere, so an unscoped switch would hijack them.
 func TestWorkflowChordsAreScopedToTheWorkflowsPane(t *testing.T) {
 	m, _, _ := wfExec(t, &apiv1.Workflow{Id: "w1"}, nil)
 	m.SelectSource(srcRuns)
@@ -68,10 +67,8 @@ func TestWorkflowChordsAreScopedToTheWorkflowsPane(t *testing.T) {
 	}
 }
 
-// `n` opens the create form in the DETAILS PANE with no load, and its submit calls
-// CreateWorkflow with the operator's values — and NO steps: the version starts empty
-// because a DAG is authored in the flow view, not typed as JSON ("same goes for new
-// workflows").
+// `n` opens the create form in the DETAILS PANE with no load, and its submit calls CreateWorkflow
+// with the operator's values — and NO steps.
 func TestWorkflowCreateOpensInlineFormAndSubmits(t *testing.T) {
 	m, loads, writes := wfExec(t, nil, nil)
 	var got *apiv1.CreateWorkflowRequest

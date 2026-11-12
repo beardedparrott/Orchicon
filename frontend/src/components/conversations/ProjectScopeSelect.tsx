@@ -72,25 +72,74 @@ export function ProjectScopeSelect({
   // codebase already uses for the sibling composer controls (mode-toggle, fullsend-toggle, AskModelChip) — so
   // the row's three popovers now behave identically instead of two of them floating and one being clipped.
   //
-  // ABOVE-THE-TRIGGER, like the mode toggle: the composer is pinned to the bottom of its column, so a menu
-  // below it would leave the viewport.
+  // PLACEMENT, AND WHY IT NO LONGER OPENS UPWARD-ONLY.
+  //
+  // It used to be pinned ABOVE the trigger unconditionally (`bottom: innerHeight - rect.top + 4`), on the
+  // reasoning that the composer sits at the bottom of its column so a menu below it would leave the viewport.
+  // That is true of the COMPOSER and false of the SIDEBAR HEADER, where the operator reported the failure:
+  //
+  //   "When the project list is long, setting a project on the conversation rail goes off the screen at the
+  //    top and you can't scroll through everything."
+  //
+  // The rail's header is at the TOP of the page, so an upward menu needed `menuHeight` of room above it — and
+  // the menu is capped at `max-h-72` (288px) while a long project list fills that cap. Its top therefore landed
+  // ABOVE y=0 and the first entries were unreachable: the list scrolls internally, but you cannot scroll to
+  // what is off the viewport.
+  //
+  // So the menu now measures ITSELF and picks the side with room, using the whole viewport rather than the
+  // trigger's own box: it opens DOWNWARD when there is at least a menu's height below the trigger, and upward
+  // otherwise. The cap is also the viewport (`maxHeight`) rather than a fixed 288px, so a long list gets the
+  // room that actually exists instead of a cap that guarantees overflow no matter which side it opens.
+  //
+  // It re-places on scroll (capture, so a scrolling ANCESTOR counts), because a fixed-position menu must track
+  // a trigger that moves — and it observes the menu's own size (ResizeObserver) so the measured height is the
+  // real one, not an assumption made before the options rendered.
   useEffect(() => {
     if (!open || !rootRef.current) return;
+    const MARGIN = 8;
+    const GAP = 4;
     const place = () => {
-      const rect = rootRef.current!.getBoundingClientRect();
-      setMenuStyle({
+      const trigger = rootRef.current?.getBoundingClientRect();
+      const menu = menuRef.current?.getBoundingClientRect();
+      if (!trigger) return;
+      const vh = window.innerHeight;
+      const vw = window.innerWidth;
+      // Measured when the portal has rendered; the cap is the fallback before it has.
+      const menuH = menu?.height ?? Math.min(288, vh - 2 * MARGIN);
+      const roomBelow = vh - trigger.bottom - GAP - MARGIN;
+      const roomAbove = trigger.top - GAP - MARGIN;
+      const openDown = roomBelow >= menuH || roomBelow >= roomAbove;
+      const style: React.CSSProperties = {
         position: "fixed",
-        bottom: `${window.innerHeight - rect.top + 4}px`,
-        right: `${Math.max(8, window.innerWidth - rect.right)}px`,
-        minWidth: `${rect.width}px`,
-      });
+        right: `${Math.max(MARGIN, vw - trigger.right)}px`,
+        minWidth: `${trigger.width}px`,
+        // THE MENU CAN NEVER BE TALLER THAN THE ROOM ON THE SIDE IT CHOSE. This is the other half of the fix:
+        // a fixed 288px cap is what put the header's menu off the top of the screen, because the space above a
+        // top-of-page trigger is smaller than the cap.
+        maxHeight: `${Math.max(120, (openDown ? roomBelow : roomAbove))}px`,
+      };
+      if (openDown) {
+        style.top = `${trigger.bottom + GAP}px`;
+      } else {
+        style.bottom = `${vh - trigger.top + GAP}px`;
+      }
+      setMenuStyle(style);
     };
     place();
+    // A second pass once the portal has laid out and the menu has its real height.
+    const raf = requestAnimationFrame(place);
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
+    let ro: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(place);
+      if (menuRef.current) ro.observe(menuRef.current);
+    }
     return () => {
+      cancelAnimationFrame(raf);
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
+      ro?.disconnect();
     };
   }, [open]);
 
@@ -161,7 +210,11 @@ export function ProjectScopeSelect({
           data-testid="project-scope-menu"
           style={menuStyle}
           className={cn(
-            "z-50 min-w-[190px] max-h-72 overflow-y-auto rounded-md border border-black/10 dark:border-white/10 bg-popover text-popover-foreground shadow-lg p-1",
+            // NO FIXED max-h-72. The height cap is set by the placement effect from the room on the side the
+            // menu chose; a hard cap here reimposed the very limit that pushed the list off screen, and it also
+            // fought the effect (a fixed class cannot be smaller than the inline style in one place and larger
+            // in another without the two disagreeing).
+            "z-50 min-w-[190px] overflow-y-auto overscroll-contain rounded-md border border-black/10 dark:border-white/10 bg-popover text-popover-foreground shadow-lg p-1",
             // The row's control is at the right edge of a 288px panel, so it opens leftward; the header's has
             // room and opens leftward-aligned too, since the header is the panel's own width.
           )}

@@ -21,12 +21,8 @@ import (
 // They guard the draft-preservation contract: a user draft on a canned
 // worker must never be force-published by a boot re-seed.
 
-// seedTenant is the tenant these seed tests exercise.
-//
-// It used to be implicit: SeedDevWorkers hardcoded "tnt_dev" internally, so these tests could not
-// choose a tenant even in principle. Passing it means the fixture states which tenant it is testing —
-// and, because the seed writes ONLY to what it is given, a test can no longer write canned workers
-// into the operator's real tenant by accident.
+// Passing it means the fixture states which tenant it is testing — and, because the seed writes
+// ONLY to what it is given.
 const seedTenant = "tnt_dev"
 
 func seedTestPool(t *testing.T) *db.Pool {
@@ -121,9 +117,8 @@ func setWorkerVersionModel(t *testing.T, pool *db.Pool, workerID string, version
 	}
 }
 
-// resetWorker deletes the canned worker (cascade versions) and re-seeds it so
-// each test starts from a clean, fresh seed state — independent of residue
-// from a previous run against the same disposable DB.
+// resetWorker deletes the canned worker (cascade versions) and re-seeds it so each test starts from
+// a clean, fresh seed state.
 func resetWorker(t *testing.T, pool *db.Pool, workerID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -148,9 +143,8 @@ func resetWorker(t *testing.T, pool *db.Pool, workerID string) {
 	}
 }
 
-// TestSeedLeavesUserDraftUntouched: a user-created draft on a canned worker
-// (alongside the seed's published v1) must survive a boot re-seed as a
-// draft — never force-published.
+// TestSeedLeavesUserDraftUntouched: a user-created draft on a canned worker (alongside the seed's
+// published v1) must survive a boot re-seed as a draft — never force-published.
 func TestSeedLeavesUserDraftUntouched(t *testing.T) {
 	pool := seedTestPool(t)
 	const workerID = "w_se_senior_software_engineer"
@@ -169,10 +163,8 @@ func TestSeedLeavesUserDraftUntouched(t *testing.T) {
 	}
 }
 
-// TestSeedPublishesLatestDraftWhenNoPublishedVersion: when a canned worker
-// has lost every published version, the seeder promotes the latest draft
-// (and only that one) so the worker stays dispatchable, and current_version
-// follows.
+// TestSeedPublishesLatestDraftWhenNoPublishedVersion: when a canned worker has lost every published
+// version, the seeder promotes the latest draft (and only that one) so the worker stays.
 func TestSeedPublishesLatestDraftWhenNoPublishedVersion(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -215,18 +207,14 @@ func TestSeedPublishesLatestDraftWhenNoPublishedVersion(t *testing.T) {
 	}
 }
 
-// replaceCannedWorkerWithUserShell deletes a canned worker and re-creates it
-// as a user-created worker with a ULID id but the SAME slug, simulating the
-// prod situation where the user built the worker before it was canned.
-// If withContent is true the shell's version carries a non-empty role.
+// replaceCannedWorkerWithUserShell deletes a canned worker and re-creates it as a user-created
+// worker with a ULID id but the SAME slug.
 func replaceCannedWorkerWithUserShell(t *testing.T, pool *db.Pool, cannedID, slug string, withContent bool) string {
 	t.Helper()
 	ctx := context.Background()
 	userID := "usr_" + cannedID
-	// Restore the canned worker after the test: without this cleanup the
-	// usr_-prefixed shell (and the seeder's adoption of it) leaks into every
-	// later test that queries the canned ID at version 1 — test order became
-	// load-bearing and content tests failed with "no rows in result set".
+	// Restore the canned worker after the test: without this cleanup the usr_-prefixed shell (and the
+	// seeder's adoption of it) leaks into every later test that queries the canned ID at version 1.
 	t.Cleanup(func() {
 		ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
 		if err != nil {
@@ -253,9 +241,8 @@ func replaceCannedWorkerWithUserShell(t *testing.T, pool *db.Pool, cannedID, slu
 		t.Fatalf("begin tx: %v", err)
 	}
 	defer ttx.Rollback(ctx)
-	// Clear residue from a previous test that used the same generated ids
-	// (the adoption + skip tests share one canned worker) so tests are
-	// order-independent.
+	// Clear residue from a previous test that used the same generated ids (the adoption + skip tests
+	// share one canned worker) so tests are order-independent.
 	if _, err := ttx.Exec(ctx,
 		`DELETE FROM worker_versions WHERE worker_id IN ($1, $2) AND tenant_id = 'tnt_dev'`, cannedID, userID); err != nil {
 		t.Fatalf("delete versions: %v", err)
@@ -289,9 +276,8 @@ func replaceCannedWorkerWithUserShell(t *testing.T, pool *db.Pool, cannedID, slu
 	return userID
 }
 
-// TestSeedAdoptsEmptySlugOwner: a user-created worker that owns the canned
-// slug but is an empty shell is adopted by the seeder — its ID is preserved
-// (workflow step refs stay valid) and its version gets the canned profile.
+// TestSeedAdoptsEmptySlugOwner: a user-created worker that owns the canned slug but is an empty
+// shell is adopted by the seeder.
 func TestSeedAdoptsEmptySlugOwner(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -320,9 +306,8 @@ func TestSeedAdoptsEmptySlugOwner(t *testing.T) {
 	}
 }
 
-// TestSeedSkipsCustomizedSlugOwner: a user-created worker that owns the canned
-// slug AND has real content is left untouched — the seeder neither adopts it
-// nor crashes the batch.
+// TestSeedSkipsCustomizedSlugOwner: a user-created worker that owns the canned slug AND has real
+// content is left untouched — the seeder neither adopts it nor crashes the batch.
 func TestSeedSkipsCustomizedSlugOwner(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -343,10 +328,8 @@ func TestSeedSkipsCustomizedSlugOwner(t *testing.T) {
 	}
 }
 
-// TestSeedKeepsSyncingAdoptedWorker: once an empty shell is adopted and filled
-// by the seeder, it is seed-managed (carries the safety marker) — subsequent
-// boots must KEEP syncing it (e.g. roll the marker forward), not treat it as a
-// user worker and skip it.
+// TestSeedKeepsSyncingAdoptedWorker: once an empty shell is adopted and filled by the seeder, it is
+// seed-managed (carries the safety marker).
 func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -375,9 +358,8 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// Content tests read version 1 — reset the worker so the seed's own v1
-	// is what's read (this box's dev DB carries stale old-seed v1s under
-	// rolled-forward current versions; row 260's hygiene, applied here).
+	// Content tests read version 1 — reset the worker so the seed's own v1 is what's read (this box's
+	// dev DB carries stale old-seed v1s under rolled-forward current versions; row 260's hygiene.
 	resetWorker(t, pool, cannedID)
 	var agents string
 	if err := pool.QueryRow(ctx,
@@ -390,11 +372,8 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	}
 }
 
-// TestSeedVisionWorkersAreRetired: the Vision canned workers (SSE/Architect/
-// QA) were retired 2026-09-02 — visual UI verification moved into the base
-// QA Engineer via the Playwright block. After seeding, the seeder must have
-// DELETED any still-seed-managed Vision worker (they carry the seed safety
-// marker), so no Vision worker remains at all.
+// TestSeedVisionWorkersAreRetired: the Vision canned workers (SSE/Architect/ QA) were retired
+// 2026-09-02 — visual UI verification moved into the base QA Engineer via the Playwright block.
 func TestSeedVisionWorkersAreRetired(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -415,9 +394,8 @@ func TestSeedVisionWorkersAreRetired(t *testing.T) {
 	}
 }
 
-// TestSeedBaseQACarriesPlaywright: the base QA Engineer absorbed the Vision
-// workers' role — it must carry the Playwright visual-verification block and
-// the current safety marker at its current published version.
+// TestSeedBaseQACarriesPlaywright: the base QA Engineer absorbed the Vision workers' role — it must
+// carry the Playwright visual-verification block and the current safety marker at its current.
 func TestSeedBaseQACarriesPlaywright(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -441,15 +419,8 @@ func TestSeedBaseQACarriesPlaywright(t *testing.T) {
 	}
 }
 
-// TestSeedQACarriesSurfaceImpactCheck: the QA Engineer's UI-verification
-// trigger is the MANDATORY surface-impact check — UI verification keys on
-// whether the change affects anything user-visible (displayed data, budgets,
-// costs, tokens, statuses, counts), never on which file types the diff
-// touches. Regression pins the 2026-09-03 native usage/telemetry/budget run
-// where QA verified a backend diff entirely at code level and never opened
-// the UI, although the work item's criteria referenced budget display in the
-// UI. The old conditional trigger ("UI changes get visual verification") must
-// be gone.
+// TestSeedQACarriesSurfaceImpactCheck: the QA Engineer's UI-verification trigger is the MANDATORY
+// surface-impact check.
 func TestSeedQACarriesSurfaceImpactCheck(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -465,10 +436,12 @@ func TestSeedQACarriesSurfaceImpactCheck(t *testing.T) {
 		t.Fatalf("query QA worker: %v", err)
 	}
 	for _, want := range []string{
-		"Surface-impact check — mandatory, before any verdict",
-		"Diff file types are not the test",
+		"Surface-impact check — decide this explicitly, before any verdict",
+		"The diff's file types are not the test",
 		"Verifying only the backend while a criterion references displayed data is an incomplete pass",
-		"State your surface-impact determination",
+		// The summary bullet was reworded; it still requires saying what was verified, or why nothing
+		// user-visible was affected.
+		"state which, or state why nothing user-visible was affected",
 		"Surface-impact analysis",
 	} {
 		if !strings.Contains(agents, want) && !strings.Contains(purpose, want) && !strings.Contains(skills, want) {
@@ -493,9 +466,8 @@ func TestSeedQACarriesSurfaceImpactCheck(t *testing.T) {
 	}
 }
 
-// TestSeedCannedWorkersCarrySandboxPlaneGuard: every canned worker's agents_md
-// must carry the sandbox-vs-plane instruction, must NOT carry prod/dev
-// instance wording, and must carry the safety marker at the current version.
+// TestSeedCannedWorkersCarrySandboxPlaneGuard: every canned worker's agents_md must carry the
+// sandbox-vs-plane instruction, must NOT carry prod/dev instance wording.
 func TestSeedCannedWorkersCarrySandboxPlaneGuard(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -504,9 +476,8 @@ func TestSeedCannedWorkersCarrySandboxPlaneGuard(t *testing.T) {
 	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// Content tests read version 1 — reset so the seed's own v1 is what's
-	// read (stale old-seed v1s under rolled-forward current versions; row
-	// 260's hygiene).
+	// Content tests read version 1 — reset so the seed's own v1 is what's read (stale old-seed v1s
+	// under rolled-forward current versions; row 260's hygiene).
 	resetWorker(t, pool, cannedID)
 	var agents string
 	if err := pool.QueryRow(ctx,
@@ -527,10 +498,8 @@ func TestSeedCannedWorkersCarrySandboxPlaneGuard(t *testing.T) {
 	}
 }
 
-// TestSeedSDLCWorkersAreTimeBoxedWorkhorses: the four SDLC workers (SSE,
-// PR Reviewer, QA, Architect) carry the workhorse contract — hard time-box
-// in the prompt, the roll-forward marker, and the per-worker wall-clock
-// budget fence (~33% grace over the box) in budget_overrides.
+// TestSeedSDLCWorkersAreTimeBoxedWorkhorses: the four SDLC workers (SSE, PR Reviewer, QA,
+// Architect) carry the workhorse contract — hard time-box in the prompt, the roll-forward marker.
 func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -542,10 +511,13 @@ func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 		box    string
 		budget string
 	}{
-		"w_se_principal_architect":      {"Hard time-box: 20 minutes", "1500"},
-		"w_se_senior_software_engineer": {"Hard time-box: 45 minutes", "3600"},
-		"w_se_pr_reviewer":              {"Hard time-box: 30 minutes", "2400"},
-		"w_se_qa_engineer":              {"Hard time-box: 30 minutes", "2400"},
+		// ONLY THE WORKHORSES CARRY THE BUDGET SECTION. pr_reviewer and qa_engineer are deliberately not
+		// time-boxed — they run to a verdict, not to a clock — so they assert their wall-clock budget and no
+		// content marker. An empty box means "assert the budget only".
+		"w_se_principal_architect":      {"## Your time and how to spend it", "1500"},
+		"w_se_senior_software_engineer": {"## Your time and how to spend it", "3600"},
+		"w_se_pr_reviewer":              {"", "2400"},
+		"w_se_qa_engineer":              {"", "2400"},
 	}
 	for id, tc := range want {
 		resetWorker(t, pool, id)
@@ -556,7 +528,7 @@ func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 			id).Scan(&agents, &budget); err != nil {
 			t.Fatalf("query %s: %v", id, err)
 		}
-		if !strings.Contains(agents, tc.box) {
+		if tc.box != "" && !strings.Contains(agents, tc.box) {
 			t.Errorf("%s agents_md missing %q", id, tc.box)
 		}
 		if !strings.Contains(agents, "orchicon.safety=v24") {
@@ -589,57 +561,94 @@ func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 	}
 }
 
-// TestSeedPreExistingFailureRemedyContract pins the autonomous remedy
-// contract on the three quality-owning SDLC workers: a test that already
-// fails without the change is remedied BY the worker autonomously — it owns
-// the decision and executes it (fix the cause by default; remove/correct the
-// test only when its own investigation proves the test no longer protects
-// anything needed) — never left red, never proposed upward, with the
-// decision recorded as a FACTS LEARNED line. Pinned via the exported
-// roll-forward marker so a wording drift breaks the test, not the contract.
+// TestSeedPreExistingFailureRemedyContract pins the SPLIT between the implementer and the gates,
+// which replaced the old shared "remedy it yourself" contract.
 func TestSeedPreExistingFailureRemedyContract(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
-
-	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
+	if err := db.SeedDevWorkers(ctx, pool, "tnt_dev"); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	for _, id := range []string{
-		"w_se_senior_software_engineer",
-		"w_se_pr_reviewer",
-		"w_se_qa_engineer",
-	} {
-		resetWorker(t, pool, id)
+
+	// --- The IMPLEMENTER keeps ownership of the suite. ---
+	t.Run("implementer owns the suite", func(t *testing.T) {
+		resetWorker(t, pool, "w_se_senior_software_engineer")
 		var agents string
 		if err := pool.QueryRow(ctx,
 			`SELECT agents_md FROM worker_versions
 			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
-			id).Scan(&agents); err != nil {
-			t.Fatalf("query %s: %v", id, err)
+			"w_se_senior_software_engineer").Scan(&agents); err != nil {
+			t.Fatalf("query: %v", err)
 		}
 		if !strings.Contains(agents, db.PreExistingRemedyMarker) {
-			t.Errorf("%s agents_md missing the remedy-contract marker %q", id, db.PreExistingRemedyMarker)
+			t.Errorf("the SSE agents_md must carry the remedy-contract marker %q", db.PreExistingRemedyMarker)
 		}
 		if !strings.Contains(agents, "FACTS LEARNED") {
-			t.Errorf("%s must require recording the remedy decision as a FACTS LEARNED line", id)
+			t.Error("the SSE must require recording the remedy decision as a FACTS LEARNED line")
 		}
-		// The contract is AUTONOMOUS by design: the worker decides and
-		// executes (fix by default; remove/correct only when its own
-		// investigation proves the test no longer protects anything
-		// needed). It must never be instructed to propose the remedy
-		// upward or merely note the failure.
 		for _, bad := range []string{"propose", "PROPOSAL", "escalate to a human"} {
 			if strings.Contains(agents, bad) {
-				t.Errorf("%s remedy contract must be autonomous — found %q", id, bad)
+				t.Errorf("the SSE remedy contract must be autonomous — found %q", bad)
 			}
 		}
 		if !strings.Contains(agents, "You own the decision and execute it") {
-			t.Errorf("%s must carry the autonomous ownership wording", id)
+			t.Error("the SSE must carry the autonomous ownership wording")
 		}
-	}
-	// The Architect and DevOps are NOT quality gates for the suite — they
-	// must not carry the marker (marker text is specific to the remedy
-	// contract).
+	})
+
+	// --- The GATES must never edit the suite.
+	t.Run("gates never edit the suite", func(t *testing.T) {
+		for _, id := range []string{"w_se_pr_reviewer", "w_se_qa_engineer"} {
+			resetWorker(t, pool, id)
+			var agents string
+			if err := pool.QueryRow(ctx,
+				`SELECT agents_md FROM worker_versions
+				  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+				id).Scan(&agents); err != nil {
+				t.Fatalf("query %s: %v", id, err)
+			}
+			if strings.Contains(agents, db.PreExistingRemedyMarker) {
+				t.Errorf("%s must NOT carry the remedy marker — a gate that repairs what it finds is not a gate", id)
+			}
+			for _, bad := range []string{"fix it yourself", "fix ALL of them", "you FIX all code bugs", "remove or correct it yourself"} {
+				if strings.Contains(agents, bad) {
+					t.Errorf("%s must not be instructed to repair (%q) — it must reject instead", id, bad)
+				}
+			}
+			for _, want := range []string{"do not fix", "Never delete, skip or weaken a test"} {
+				if !strings.Contains(agents, want) {
+					t.Errorf("%s must state %q so the gate cannot substitute repair for a verdict", id, want)
+				}
+			}
+		}
+	})
+
+	// --- The roll-forward fragments must be per-worker, or the new contract never reaches a published
+	// worker. A shared marker would also re-roll workers whose contract did not change. ---
+	t.Run("gates carry their own roll markers", func(t *testing.T) {
+		for _, tc := range []struct{ id, marker string }{
+			{"w_se_pr_reviewer", db.ReviewerVerdictMarker},
+			{"w_se_qa_engineer", db.QAVerifierMarker},
+		} {
+			resetWorker(t, pool, tc.id)
+			var agents string
+			if err := pool.QueryRow(ctx,
+				`SELECT agents_md FROM worker_versions
+				  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
+				tc.id).Scan(&agents); err != nil {
+				t.Fatalf("query %s: %v", tc.id, err)
+			}
+			if !strings.Contains(agents, tc.marker) {
+				t.Errorf("%s agents_md missing its own roll-forward marker %q — an already-published worker would never re-roll", tc.id, tc.marker)
+			}
+		}
+		// And the two markers must be DIFFERENT, so a change to one gate never re-rolls the other.
+		if db.ReviewerVerdictMarker == db.QAVerifierMarker {
+			t.Error("the reviewer and verifier markers must be distinct")
+		}
+	})
+
+	// The Architect and DevOps are not quality gates for the suite.
 	for _, id := range []string{"w_se_principal_architect", "w_se_devops_engineer"} {
 		var agents string
 		if err := pool.QueryRow(ctx,
@@ -654,11 +663,8 @@ func TestSeedPreExistingFailureRemedyContract(t *testing.T) {
 	}
 }
 
-// TestSeedDesignApproverCarriesDesignReviewContract: the canned Design
-// Approver's seed content must statically review the PLAN only — no
-// implementation expectations, no predecessor-type inference. The review
-// type is fixed by the worker, not guessed at runtime (the split-approver
-// fix: two workflows steps no longer share one context-switching worker).
+// TestSeedDesignApproverCarriesDesignReviewContract: the canned Design Approver's seed content must
+// statically review the PLAN only — no implementation expectations, no predecessor-type inference.
 func TestSeedDesignApproverCarriesDesignReviewContract(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -685,9 +691,8 @@ func TestSeedDesignApproverCarriesDesignReviewContract(t *testing.T) {
 			t.Errorf("Design Approver agents_md missing %q", c)
 		}
 	}
-	// The old context-switching inference must be gone from the design
-	// approver: it never identifies a previous worker or reviews an
-	// implementation.
+	// The old context-switching inference must be gone from the design approver: it never identifies a
+	// previous worker or reviews an implementation.
 	for _, gone := range []string{"Identify the previous worker", "Previous worker was an implementer", "review the outcome of the QA/review loop"} {
 		if strings.Contains(agents, gone) {
 			t.Errorf("Design Approver agents_md should no longer contain %q", gone)
@@ -695,10 +700,8 @@ func TestSeedDesignApproverCarriesDesignReviewContract(t *testing.T) {
 	}
 }
 
-// TestSeedCodeApproverCarriesCodeReviewContract: the canned Code Approver's
-// seed content must statically verify DONE-ness of the completed
-// implementation after QA/PR — not the design, and not inferred from who
-// ran before it.
+// TestSeedCodeApproverCarriesCodeReviewContract: the canned Code Approver's seed content must
+// statically verify DONE-ness of the completed implementation after QA/PR — not the design.
 func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -707,9 +710,8 @@ func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
 	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// Content tests read version 1 — reset so the seed's own v1 is what's
-	// read (stale old-seed v1s under rolled-forward current versions; row
-	// 260's hygiene).
+	// Content tests read version 1 — reset so the seed's own v1 is what's read (stale old-seed v1s
+	// under rolled-forward current versions; row 260's hygiene).
 	resetWorker(t, pool, cannedID)
 	var agents string
 	if err := pool.QueryRow(ctx,
@@ -739,10 +741,8 @@ func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
 	}
 }
 
-// TestSeedDevOpsCarriesMergeConflictResolutionContract: the canned DevOps
-// worker's seed content must instruct detecting a merge conflict AND resolving
-// it (merge develop in, fix with semantic edits, add/commit/push, re-attempt),
-// reporting only success or failure — no conflict signal.
+// TestSeedDevOpsCarriesMergeConflictResolutionContract: the canned DevOps worker's seed content
+// must instruct detecting a merge conflict AND resolving it (merge develop.
 func TestSeedDevOpsCarriesMergeConflictResolutionContract(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -779,9 +779,8 @@ func TestSeedDevOpsCarriesMergeConflictResolutionContract(t *testing.T) {
 	}
 }
 
-// TestSeedFreshCannedWorkersHaveBlankModelRef: freshly seeded canned workers
-// must carry an EMPTY model_ref so dispatch inherits the tenant
-// default_worker_model — model selection is user-owned after creation.
+// TestSeedFreshCannedWorkersHaveBlankModelRef: freshly seeded canned workers must carry an EMPTY
+// model_ref so dispatch inherits the tenant default_worker_model.
 func TestSeedFreshCannedWorkersHaveBlankModelRef(t *testing.T) {
 	pool := seedTestPool(t)
 	const workerID = "w_se_design_approver"
@@ -817,10 +816,8 @@ func TestSeedUserModelEditSurvivesReseed(t *testing.T) {
 	}
 }
 
-// TestSeedRollForwardPreservesModelRef: when the safety-context roll-forward
-// appends a new published version (current published version is NOT v1), the
-// new version must carry the current version's model_ref (user-owned), not the
-// seed's.
+// TestSeedRollForwardPreservesModelRef: when the safety-context roll-forward appends a new
+// published version (current published version is NOT v1).
 func TestSeedRollForwardPreservesModelRef(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -884,13 +881,8 @@ func TestSeedRollForwardPreservesModelRef(t *testing.T) {
 	}
 }
 
-// TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes: the
-// Automation Research trio (Planner/Analyst/Synthesizer) is canned with
-// the automation-research role and project-agnostic purposes — the
-// per-run product targets live in the bound work item's brief, not in the
-// workers. Asserts: role_ref bound, generic wording, no Orchicon-project
-// bias phrases, the web-research runtime image, and the markers +
-// worktree-hygiene rule on the seeded profile.
+// TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes: the Automation Research trio
+// (Planner/Analyst/Synthesizer) is canned with the automation-research role and project-agnostic.
 func TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes(t *testing.T) {
 	pool := seedTestPool(t)
 	ctx := context.Background()
@@ -907,9 +899,8 @@ func TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes(t *testing.T
 		{"01M13DYJWHCYHWQ1X85J1BWWZ1", "automation-research-analyst", "project codebase"},
 		{"01M13DYM3A7CTY8ECP4R7M33SR", "automation-research-synthesizer", "project codebase"},
 	}
-	// Content tests read version 1 — reset the workers so the seed's own v1
-	// is what's read (this box's dev DB carries stale old-seed v1s under
-	// rolled-forward current versions; row 260's hygiene, applied here).
+	// Content tests read version 1 — reset the workers so the seed's own v1 is what's read (this box's
+	// dev DB carries stale old-seed v1s under rolled-forward current versions; row 260's hygiene.
 	for _, tc := range trio {
 		resetWorker(t, pool, tc.id)
 	}
@@ -944,9 +935,8 @@ func TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes(t *testing.T
 			tc.id).Scan(&agents, &modelRef); err != nil {
 			t.Fatalf("query version %s: %v", tc.slug, err)
 		}
-		// Worker-level runtime_ref is retired (ADR-0003): the trio seeds an
-		// empty model_ref (dispatch derives the kind at run time), so the
-		// version row must carry no model_ref and no runtime_ref column.
+		// Worker-level runtime_ref is retired: the trio seeds an empty model_ref (dispatch
+		// derives the kind at run time).
 		if modelRef != "" {
 			t.Errorf("%s model_ref = %q, want empty (runtime_ref retired; dispatch kind derives at run time)", tc.slug, modelRef)
 		}
@@ -956,5 +946,138 @@ func TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes(t *testing.T
 		if !strings.Contains(agents, "Worktree hygiene") {
 			t.Errorf("%s agents_md missing the worktree hygiene rule", tc.slug)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// THE MERGE GATE — canned workers must not land a red PR on develop.
+//
+// THE INCIDENT. PR #850 merged with TWO RED CI JOBS (fe-lint, windows desktop + MSI,
+// both failing a whole-project typecheck) and left `develop` unable to build. The
+// prompts were not silent about verification — the Quick worker's said "never report
+// success with failing build, failing tests" — but two things defeated it:
+//
+//   1. NO PRECONDITION ON THE MERGE. The ship step ran `gh pr create` then straight to
+//      `gh pr merge --squash --admin`, and `--admin` BYPASSES checks. Verification was an
+//      ACTIVITY, never a gate on the command that lands the branch.
+//   2. THE SCOPE WAS THE WORKER'S OWN CHOICE ("the packages you touched"), which is
+//      exactly the subset that misses a whole-repo gate.
+//
+// These tests pin the gate's presence and its stack-agnosticism: they are CANNED workers
+// and must never name one project's toolchain.
+// ---------------------------------------------------------------------------
+
+// cannedSeedByName returns a canned worker's NAME, its RollMarker, and its persisted
+// agents_md, read through the exported tooling view (this is an external test package).
+func cannedSeedByName(t *testing.T, name string) (string, string, string) {
+	t.Helper()
+	for i := range db.CannedWorkers() {
+		w := db.CannedWorkers()[i]
+		if w.Name == name {
+			return w.Name, w.RollMarker, db.SeedAgentsMD(&w)
+		}
+	}
+	t.Fatalf("no canned worker named %q", name)
+	return "", "", ""
+}
+
+// TestEveryMergingCannedWorkerCarriesTheMergeGate: a worker that MERGES into develop must carry the
+// gate.
+func TestEveryMergingCannedWorkerCarriesTheMergeGate(t *testing.T) {
+	for _, name := range []string{"Quick Software Engineer", "DevOps Engineer"} {
+		_, _, md := cannedSeedByName(t, name)
+		if !strings.Contains(md, db.MergeGateMarker) {
+			t.Errorf("%s: agents_md carries no merge gate (%q) — a worker that merges into "+
+				"develop without a check precondition is how a red PR lands on the integration "+
+				"branch", name, db.MergeGateMarker)
+		}
+		// The gate must be a PRECONDITION, not a suggestion: the words that make it
+		// non-optional are the ones that matter.
+		for _, required := range []string{"do not merge", "still-running"} {
+			if !strings.Contains(md, required) {
+				t.Errorf("%s: the merge gate does not say %q — a gate that does not forbid "+
+					"merging on a pending or red check is not a gate", name, required)
+			}
+		}
+	}
+}
+
+// TestMergeGateNamesNoToolchain: these are CANNED workers used against arbitrary projects.
+func TestMergeGateNamesNoToolchain(t *testing.T) {
+	_, _, quickMD := cannedSeedByName(t, "Quick Software Engineer")
+	for _, banned := range []string{"tsc", "npm", "node_modules", "make fe", "go test", "yarn", "pnpm"} {
+		if strings.Contains(quickMD, banned) {
+			t.Errorf("the merge gate names %q — canned workers run against OTHER projects, so "+
+				"the gate must describe the project's own checks, not one repo's toolchain", banned)
+		}
+	}
+	// And it must actually point at the project's definition of verified.
+	if !strings.Contains(quickMD, "project's CI") {
+		t.Errorf("the merge gate does not name the project's CI as the definition of verified")
+	}
+}
+
+// TestShippingDevOpsWorkerHasItsOwnRollMarker: the shipping DevOps worker shares
+// sdlcWorkhorseMarker with the SSE / Reviewer / Architect.
+func TestShippingDevOpsWorkerHasItsOwnRollMarker(t *testing.T) {
+	_, marker, md := cannedSeedByName(t, "DevOps Engineer")
+	if marker == "" {
+		t.Fatal("the shipping DevOps worker has NO RollMarker — the seeder only rolls a canned " +
+			"worker forward when its agents_md lacks the fragment, so this gate would never reach " +
+			"the published version")
+	}
+	if marker == db.SDLCWorkhorseMarker {
+		t.Errorf("the shipping DevOps worker reuses sdlcWorkhorseMarker, so this change would " +
+			"re-roll the SSE / Reviewer / Architect too")
+	}
+	if !strings.Contains(md, marker) {
+		t.Errorf("its RollMarker %q does not appear in its own agents_md, so the roll-forward "+
+			"check can never be satisfied and it would re-roll on every boot", marker)
+	}
+}
+
+// TestQuickWorkerRollsForwardToTheGate: the Quick worker's marker must be the NEW fragment,
+// or workers already carrying the old one are never updated.
+func TestQuickWorkerRollsForwardToTheGate(t *testing.T) {
+	_, marker, md := cannedSeedByName(t, "Quick Software Engineer")
+	if !strings.Contains(md, marker) {
+		t.Errorf("the Quick worker's RollMarker %q is absent from its agents_md — the seeder "+
+			"would never consider it up to date (and would re-roll it every boot)", marker)
+	}
+	if marker == "SHIPPING IS IDEMPOTENT" {
+		t.Error("the Quick worker's marker still pins the OLD generation, so published versions " +
+			"carrying that fragment would never receive this gate")
+	}
+}
+
+// TestEveryRollMarkerAppearsInItsOwnSeed is a pure, DB-free guard on the roll-forward MECHANISM.
+func TestEveryRollMarkerAppearsInItsOwnSeed(t *testing.T) {
+	for _, w := range db.CannedWorkers() {
+		if w.RollMarker == "" {
+			continue
+		}
+		agents := db.SeedAgentsMD(&w)
+		if !strings.Contains(agents, w.RollMarker) {
+			t.Errorf("%s: roll marker %q is not present in its own seeded agents_md.\n"+
+				"The seeder re-syncs only when the STORED content lacks this fragment, and it looks at "+
+				"agents_md alone — a marker that lives in Role (or anywhere else) strands every "+
+				"already-published worker on the old contract.", w.Name, w.RollMarker)
+		}
+		if !strings.Contains(agents, db.SafetyMarker) {
+			t.Errorf("%s: seeded agents_md is missing the global safety marker", w.Name)
+		}
+		if !strings.Contains(agents, db.SandboxPlaneMarker) {
+			t.Errorf("%s: seeded agents_md is missing the sandbox-plane marker", w.Name)
+		}
+	}
+}
+
+// TestGateWorkersDoNotShareAMarker pins that the two gates roll forward independently.
+func TestGateWorkersDoNotShareAMarker(t *testing.T) {
+	if db.ReviewerVerdictMarker == db.QAVerifierMarker {
+		t.Fatal("the reviewer and verifier roll markers must differ")
+	}
+	if db.ReviewerVerdictMarker == db.SDLCWorkhorseMarker || db.QAVerifierMarker == db.SDLCWorkhorseMarker {
+		t.Fatal("a gate marker must not collide with the shared work-budget marker")
 	}
 }

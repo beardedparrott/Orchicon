@@ -12,9 +12,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 )
 
-// newPickerExec builds an Execution screen whose worker-model loads and write are
-// faked, so the whole adapter → provider → model cascade and the write are
-// deterministic without a plane.
+// newPickerExec builds an Execution screen whose worker-model loads and write are faked, so the
+// whole adapter → provider → model cascade and the write are deterministic without a plane.
 func newPickerExec(t *testing.T) (*Model, *[]string, *[]string) {
 	t.Helper()
 	m := newModel(t, &fakePlane{})
@@ -33,9 +32,7 @@ func newPickerExec(t *testing.T) (*Model, *[]string, *[]string) {
 		*loads = append(*loads, "models:"+kind+"/"+provider)
 		return []kit2.PickerOption{{Value: "claude-sonnet-4", Label: "claude-sonnet-4"}}, false, nil
 	}
-	// The write records the WHOLE batch in one entry, because that is what the screen sends: one
-	// BulkUpdateWorkerModel call for the selection (a loop of single writes would make a ten-worker change
-	// ten chances to half-apply). Recording `ids=ref` also lets a test see the ORDER and the COUNT.
+	// The write records the WHOLE batch in one entry, because that is what the screen sends.
 	m.rpcSetWorkerModel = func(_ context.Context, workerIDs []string, ref string) error {
 		*writes = append(*writes, strings.Join(workerIDs, ",")+"="+ref)
 		return nil
@@ -255,11 +252,7 @@ func TestWorkerModelIsSetThroughTheFormField(t *testing.T) {
 	m, _, writes := newPickerExec(t)
 	m.SelectSource(srcWorkers)
 
-	// The model field is seeded from the VERSION's own model_ref — not from the
-	// workers-list cache. model_ref is VERSIONED state (ADR-0003) and the form edits
-	// a specific version, so it has to show that version's stored ref; a cache that
-	// holds the list's active ref would seed the form from a different version's
-	// value (or with nothing at all, for a version the cache does not carry).
+	// The model field is seeded from the VERSION's own model_ref — not from the workers-list cache.
 	w := &apiv1.Worker{Id: "w-7", Name: "sweeper"}
 	versions := []*apiv1.WorkerVersion{{
 		Id: "v1", Version: 1, ModelRef: "orchicon/anthropic/seed",

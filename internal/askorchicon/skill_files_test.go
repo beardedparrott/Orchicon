@@ -26,9 +26,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// skillConversationForTest creates a project (with a project_dir) and a conversation assigned to it, carrying
-// the given conversation-level skill_files JSON. Returns the service, the loaded conversation row, and the
-// project dir.
+// skillConversationForTest creates a project (with a project_dir) and a conversation assigned to
+// it, carrying the given conversation-level skill_files JSON.
 func skillConversationForTest(t *testing.T, dir string, projSkillFiles, convSkillFiles []byte) (*Service, db.ConversationRow, string) {
 	t.Helper()
 	pool := workItemKindTestPool(t)
@@ -122,8 +121,12 @@ func TestSkillManifestSectionByteStable(t *testing.T) {
 	if a != b {
 		t.Fatalf("two Ask skill renders of one selection differ:\n--- a ---\n%s\n--- b ---\n%s", a, b)
 	}
-	if !strings.Contains(a, "(directory — read on demand)") {
-		t.Fatalf("the directory skill did not render as a read-on-demand manifest:\n%s", a)
+	// SKILLS INLINE, which is the opposite of the CONTEXT policy: a skill is instruction the worker must
+	// follow, so ManifestPolicySkill renders the directory's files inline. This asserted the
+	// read-on-demand manifest — the CONTEXT form — and went stale with the policy, unnoticed because the
+	// suite never ran.
+	if !strings.Contains(a, "(skills — follow these)") {
+		t.Fatalf("the directory skill did not render under the skills heading:\n%s", a)
 	}
 	// Sorted, not filesystem-dependent.
 	ai, mi, zi := strings.Index(a, "apple.md"), strings.Index(a, "mango.md"), strings.Index(a, "zebra.md")
@@ -231,11 +234,8 @@ func TestSetConversationSkillFilesRPCValidatesWithin(t *testing.T) {
 	}
 }
 
-// AC2 "in EVERY mode": the conversation's skill files reach the prompt in EVERY mode — the
-// skills half of the scope is mode-INDEPENDENT (a skill is context, not an action), unlike
-// MCP tools, whose OFFER is mode-gated. A real conversation row carrying real skill paths is
-// rendered once and asserted across every mode, so a mode that silently dropped the skills
-// section would fail here rather than on a live turn.
+// AC2 "in EVERY mode": the conversation's skill files reach the prompt in EVERY mode — the skills
+// half of the scope is mode-INDEPENDENT (a skill is context, not an action), unlike MCP tools.
 func TestSkillFilesReachEveryMode(t *testing.T) {
 	dir := t.TempDir()
 	convSkill := filepath.Join(dir, "every-mode-skill.md")

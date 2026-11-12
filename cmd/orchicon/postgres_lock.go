@@ -1,0 +1,186 @@
+package main
+
+// postgres_lock.go — a stale postmaster.pid must not stop the database from starting.
+//
+// REPORTED, in the services log of a real install:
+//
+//	started component=postgres pid=1604
+//	FATAL:  lock file "postmaster.pid" already exists
+//	HINT:  Is another postmaster (PID 26376) running in data directory "…/orchicon-dev/postgres"?
+//	postgres exited during startup: exit status 1
+//
+// POSTGRES USES postmaster.pid AS A LOCK, and it is a real one: if a postmaster is alive the
+// new one MUST refuse to start, because two postmasters on one data directory corrupt it. So
+// the check cannot be "does the file exist" — it must be "is the process it names still
+// alive".
+//
+// AND WHY IT WAS ALIVE. The services supervisor is stopped by PID, and terminating one process
+// does not take that process's CHILDREN with it. So postgres was ORPHANED: it kept the data
+// directory's lock and its port, and the next install's postgres refused to start.
+//
+// Two things must hold, and fixing only one leaves the other:
+//  1. a stop must kill the TREE (see terminateProcessTree), and
+//  2. a start must survive a lock left by a supervisor that was killed outright, because such
+//     a supervisor cannot clean up after itself.
+//
+// A lock naming a DEAD process is stale and is removed. A lock naming a LIVE process is left
+// alone, so postgres gets to refuse with its own accurate diagnosis.
+//
+// THE LOGIC IS PLATFORM-NEUTRAL ON PURPOSE. The sweep is only NEEDED where the tree kill is
+// unavailable, but the DECISION ("is this lock stale?") is pure and is tested on every host —
+// a bug here is a database that cannot start, and a test that only ran on the one platform
+// nobody has in CI is a test nobody runs.
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/beardedparrott/orchicon/internal/planecontrol"
+)
+
+// clearStalePostmasterLock removes a postmaster.pid whose process is gone.
+func clearStalePostmasterLock(dataDir string, out io.Writer, enabled bool) error {
+	if !enabled {
+		return nil
+	}
+	lockPath := filepath.Join(dataDir, "postgres", "postmaster.pid")
+
+	raw, err := os.ReadFile(lockPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // no lock: the ordinary case
+		}
+		return fmt.Errorf("read the postgres lock file %s: %w", lockPath, err)
+	}
+
+	// THE FIRST LINE IS THE POSTMASTER'S PID.
+	pid := 0
+	if line := strings.TrimSpace(strings.SplitN(string(raw), "\n", 2)[0]); line != "" {
+		if n, cerr := strconv.Atoi(line); cerr == nil {
+			pid = n
+		}
+	}
+	if pid <= 0 {
+		// UNPARSEABLE: treat it as stale.
+		if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove the unreadable postgres lock file %s: %w", lockPath, err)
+		}
+		fmt.Fprintf(out, "removed an unreadable postgres lock file (stale): %s\n", lockPath)
+		return nil
+	}
+
+	if pidAlive(pid) {
+		// A LIVE PROCESS HOLDS IT.
+		return nil
+	}
+
+	// A DEAD PID IS NOT PROOF THAT THE CLUSTER IS UNOWNED.
+	//
+	// This removed the lock as soon as the pid in it was gone, and that is how two postmasters end up on
+	// one data directory. MEASURED on a real Windows machine:
+	//
+	//	pid 30488  postgres.exe (postmaster)              -> DEAD
+	//	pid 26236  postgres.exe --forkaux 3892 0         -> ALIVE, parent=30488
+	//	Get-NetTCPConnection -LocalPort 5432 -> OwningProcess 30488
+	//
+	// postgres RE-PARENTS its per-connection backends, so killing the postmaster leaves them running,
+	// holding the data directory open and sharing its listening socket. The lock names the dead parent,
+	// yet the cluster is very much in use. Removing the lock then lets a NEW postmaster start against a
+	// directory another process still has open — the textbook route to a corrupt cluster, and a far worse
+	// outcome than a database that will not start.
+	//
+	// So the lock is only broken when NOTHING of this instance is still running. Anything else is a
+	// clean-up problem for the quiesce (cmd/orchicon/quiesce.go), which kills the instance's own
+	// leftovers and waits; when that leaves survivors the start fails with them named, which is the honest
+	// report.
+	if survivors := survivorsOlderThanBoot(dataDir, bootCutoff()); len(survivors) > 0 {
+		return fmt.Errorf("the postgres lock %s names pid %d, which is gone, but %d process(es) of this "+
+			"instance are STILL RUNNING (%v) — they hold the data directory open, so removing the lock "+
+			"would let a second postmaster start on a live cluster.\n"+
+			"  Stop them first:  orchicon stop <instance>   (it terminates this instance's own leftovers\n"+
+			"  and waits for them to exit). If one survives that, it is not ours to kill — find it in Task\n"+
+			"  Manager → Details.", lockPath, pid, len(survivors), pidsOf(survivors))
+	}
+
+	// DEAD PROCESS AND NO SURVIVORS: the lock is a genuine leftover from a supervisor that was killed
+	// outright, and nothing is using the cluster.
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove the stale postgres lock file %s: %w", lockPath, err)
+	}
+	fmt.Fprintf(out, "removed a stale postgres lock file (pid %d is gone and no process of this instance is running): %s\n",
+		pid, lockPath)
+	return nil
+}
+
+// bootCutoff is how old a process must be to count as a LEFTOVER: it has to have existed BEFORE this boot
+// started.
+//
+// THE DISTINCTION IS THE WHOLE CORRECTNESS OF THIS CHECK, and it was learned by breaking it. "Is anything of
+// this instance running?" is the wrong question at this moment, because prepare() runs BEFORE postgres is
+// spawned and the answer is then about the PREVIOUS run — but a slightly later caller asks the same question
+// about the postgres IT JUST SPAWNED. Measured: a guard without this distinction failed every start with
+//
+//	the postgres lock … names pid 33384, which is gone, but 1 process(es) of this instance are STILL
+//	RUNNING ([27540]) — they hold the data directory open
+//
+// where 27540 was a different pid on every run and was the postmaster being started at that instant. The
+// instance could not start at all, and the message blamed a process that was its own newborn.
+//
+// A small grace is added so a process started in the same second as this one is never classified as old.
+func bootCutoff() time.Time { return processBootTime().Add(-2 * time.Second) }
+
+// processBootTime is when THIS process started — the moment the current boot of the instance began.
+var processBootTime = func() time.Time { return processStartedAt }
+
+// survivorsOlderThanBoot lists processes under dataDir that existed BEFORE cutoff, i.e. genuine leftovers
+// from a previous run rather than something this run is starting right now.
+func survivorsOlderThanBoot(dataDir string, cutoff time.Time) []planecontrol.ProcInfo {
+	var out []planecontrol.ProcInfo
+	for _, p := range ownedProcsForDataDir(dataDir) {
+		// A zero creation time means the platform could not say; do NOT call that a survivor, because the
+		// conservative direction here is "let postgres report its own refusal" rather than "refuse to boot".
+		if p.Created.IsZero() || p.Created.Before(cutoff) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// ownedProcsForDataDir lists processes whose executable lives inside this instance's data
+// directory.
+func ownedProcsForDataDir(dataDir string) []planecontrol.ProcInfo {
+	var out []planecontrol.ProcInfo
+	seen := map[int]bool{}
+	for _, root := range []string{filepath.Join(dataDir, "bin"), filepath.Join(dataDir, "postgres")} {
+		procs, err := planecontrol.ProcessesUnder(root)
+		if err != nil {
+			continue
+		}
+		for _, p := range procs {
+			if !seen[p.PID] {
+				seen[p.PID] = true
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// pidsOf reduces proc identities to pids, for a message.
+func pidsOf(procs []planecontrol.ProcInfo) []int {
+	pids := make([]int, 0, len(procs))
+	for _, p := range procs {
+		pids = append(pids, p.PID)
+	}
+	return pids
+}
+
+// staleLockSweepNeeded reports whether this platform can leave an orphaned postgres behind. TRUE
+// ONLY ON WINDOWS.
+func staleLockSweepNeeded() bool { return runtime.GOOS == "windows" }

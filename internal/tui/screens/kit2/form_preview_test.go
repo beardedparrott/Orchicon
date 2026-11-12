@@ -1,14 +1,6 @@
 package kit2
 
 // form_preview_test.go — the RENDERED markdown view inside the editor (ctrl+p).
-//
-// The operator: "in edit mode you could see the markdown. Like maybe a markdown
-// switcher to view what it looks like but raw would be the only thing ever used."
-//
-// So the contract these pin is deliberately narrow: preview changes what the
-// field DRAWS and nothing else. Values, the caret, submission and every edit stay
-// on the raw text. A preview that could alter what gets saved would be a data-loss
-// bug wearing a convenience's clothes.
 
 import (
 	"strings"
@@ -35,10 +27,6 @@ func previewForm(value string) *Form {
 func ctrlP() tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyCtrlP} }
 
 // THE PREVIEW RENDERS THE MARKDOWN, and the raw value is untouched.
-//
-// The assertion is the MARKERS: raw shows them, rendered consumes them. That is
-// also exactly why the gate exists — rendering is lossy by design, so it must
-// never be the path a value is saved through.
 func TestPreviewRendersMarkdownAndLeavesTheValueAlone(t *testing.T) {
 	f := previewForm(previewMarkdown)
 
@@ -99,10 +87,6 @@ func TestPreviewSubmitsTheRawText(t *testing.T) {
 }
 
 // TYPING IN PREVIEW RESUMES EDITING WITHOUT LOSING THE KEYSTROKE.
-//
-// The alternative — swallowing editable keys until the operator remembers the
-// toggle — makes the preview a mode they can get stuck in, and the first
-// character they type after coming back would be lost.
 func TestTypingInPreviewReturnsToRawEditing(t *testing.T) {
 	f := previewForm("plain text")
 	f.Set("role", previewMarkdown)
@@ -122,10 +106,6 @@ func TestTypingInPreviewReturnsToRawEditing(t *testing.T) {
 }
 
 // THE CHORD IS INERT ON A FIELD WITH NOTHING TO PREVIEW.
-//
-// A Dockerfile, a shell script or a JSON blob: rendering CONSUMES markers, so
-// previewing one would show the operator something other than what they typed.
-// The chord does nothing and — just as important — the hint does not advertise it.
 func TestPreviewIsInertOnNonProseFields(t *testing.T) {
 	// A Dockerfile that WOULD trip the markdown heuristic: a leading "#" reads as a
 	// heading. This is why FieldSpec.NoPreview exists rather than trusting the guess.
@@ -182,14 +162,7 @@ func TestPreviewAndExpandAreMutuallyExclusive(t *testing.T) {
 	}
 }
 
-// STRUCTURED FIELDS ARE NOT PROSE, even when their contents contain markdown
-// characters.
-//
-// KJSON and KYAML are `expandable` — seeing all of a structured value is what
-// ctrl+e is for — but rendering them as markdown would show mangled data: a JSON
-// blob holding a `command` string ("`ls -la`") satisfies the markdown heuristic and
-// would come back with its backticks consumed. Same failure as the Dockerfile, found
-// by surveying every KTextArea/KJSON field rather than by waiting for a report.
+// STRUCTURED FIELDS ARE NOT PROSE, even when their contents contain markdown characters.
 func TestPreviewIsNotOfferedOnStructuredFields(t *testing.T) {
 	const jsonWithMarkdownChars = `{"command":"` + "`ls -la`" + `","note":"**important**"}`
 
@@ -221,11 +194,6 @@ func TestPreviewIsNotOfferedOnStructuredFields(t *testing.T) {
 }
 
 // ESC CLOSES THE PREVIEW, NOT THE WHOLE EDIT.
-//
-// It used to clear the preview and then FALL THROUGH to the form's esc, which the
-// host treats as "cancel the edit". So leaving a preview with Esc also threw away
-// every unrelated field the operator had changed — a lot of damage for a key whose
-// meaning inside a preview is "go back one step".
 func TestEscInPreviewClosesThePreviewNotTheEdit(t *testing.T) {
 	f := previewForm(previewMarkdown)
 	// An unrelated edit elsewhere in the form, which must survive.

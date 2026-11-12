@@ -2,10 +2,8 @@ package adapter
 
 import "testing"
 
-// The model-tier classification the server publishes to BOTH pickers:
-// catalog-sourced kinds resolve their models from the providers sourcing view
-// (the vendored catalog), so they must list claude and orchicon and must NOT
-// list opencode (whose models are the CLI's discovery, not the catalog's).
+// The model-tier classification the server publishes to BOTH pickers: catalog-sourced kinds resolve
+// their models from the providers sourcing view (the vendored catalog).
 func TestCatalogSourcedAdapterKinds(t *testing.T) {
 	got := CatalogSourcedAdapterKinds()
 	set := make(map[string]bool, len(got))
@@ -24,7 +22,7 @@ func TestCatalogSourcedAdapterKinds(t *testing.T) {
 }
 
 // The provider tier of the claude kind is already correct and must stay that
-// way: claude → ["anthropic"], from the registry (ADR-0003 D3).
+// way: claude → ["anthropic"], from the registry.
 func TestClaudeAdapterScopesToAnthropic(t *testing.T) {
 	c := NewBuiltinProviderCatalog()
 	if !c.IsKnownAdapter(KindClaude) {

@@ -33,7 +33,58 @@ export type ChatItem =
   | { kind: "reasoning"; text: string; at: number; key: string; live?: boolean; phase?: string }
   | { kind: "error"; text: string; at: number; key: string }
   | { kind: "artifact"; name: string; type: string; content: string; at: number; key: string }
-  | { kind: "session"; sessionId: string; serveUrl: string; adapterKind?: string; at: number; key: string };
+  | { kind: "session"; sessionId: string; serveUrl: string; adapterKind?: string; at: number; key: string }
+  | { kind: "notice"; text: string; at: number; key: string };
+
+/**
+ * compactedNotice renders a `compacted` session part — from ANY adapter — as the
+ * platform notice it is: the server collapsed the run's context, so what the model
+ * was given afterwards is not what the transcript shows above it.
+ *
+ * The payload shapes differ (the native engine reports messages/tool rounds evicted
+ * plus the spend that fired the trigger; opencode and claude report
+ * step/reason/provider/model, and claude also a scope or an auto-compact source), so
+ * this reads what is there rather than assuming one adapter's fields. A part with
+ * nothing recognisable still says the context was compacted: that is the fact the
+ * operator needs, and dropping it because an adapter named its fields differently is
+ * how the collapse went unseen in the first place.
+ *
+ * Returns "" for a payload that is not a compaction at all, so a malformed part
+ * cannot invent a row.
+ */
+export function compactedNotice(pl: Record<string, unknown>): string {
+  const num = (k: string): number => {
+    const v = pl[k];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+    if (typeof v === "string") {
+      const n = Number(v);
+      if (Number.isFinite(n)) return n;
+    }
+    return 0;
+  };
+  const str = (k: string): string => (typeof pl[k] === "string" ? (pl[k] as string) : "");
+  const step = num("step");
+  const before = num("messages_before");
+  const after = num("messages_after");
+  const evicted = num("tool_rounds_evicted");
+  const reason = str("reason");
+  const provider = str("provider");
+  const model = str("model");
+  const source = str("source");
+  if (!step && !before && !evicted && !reason && !provider && !source) return "";
+
+  let text = "Context compacted mid-run";
+  if (step > 0) text += ` at step ${step}`;
+  text += ".";
+  if (before > 0) text += ` ${before} messages collapsed to ${after}.`;
+  if (evicted > 0) text += ` ${evicted} tool round(s) were moved to the offload file.`;
+  if (reason) text += ` Trigger: ${reason}.`;
+  if (provider) text += model ? ` Provider: ${provider} (${model}).` : ` Provider: ${provider}.`;
+  if (source) text += ` Source: ${source}.`;
+  text +=
+    " The request the provider received after this point carries the collapsed history, not the original.";
+  return text;
+}
 
 export function itemAt(i: ChatItem): number {
   return i.kind === "tool" ? i.tool.at : i.at;

@@ -6,15 +6,8 @@ import (
 	"testing"
 )
 
-// AC 4: the provider-replay path carries NO ledger timestamp, and the added
-// `issued_at_unix_ms` key cannot perturb it.
-//
-// The native bridge builds ContentToolUse from the adapter stream's ToolCall
-// (chatturn.go:1153 → appendAssistantTurn), never from askorchicon's persisted
-// `tool_calls` jsonb column. This test makes that structural fact a REGRESSION
-// guard: a stamped payload and its unstamped predecessor must produce a
-// byte-identical bridge history. If a future change ever routed the stamp into
-// the bridge, this comparison is what catches it.
+// AC 4: the provider-replay path carries NO ledger timestamp, and the added `issued_at_unix_ms` key
+// cannot perturb it.
 func TestStampedLedgerDoesNotAlterNativeBridgeContentToolUse(t *testing.T) {
 	const unstamped = `[{"id":"tc-1","type":"function","function_name":"bash","arguments":"{\"command\":\"make ci\"}"},` +
 		`{"id":"tc-2","type":"function","function_name":"read","arguments":"{\"filePath\":\"main.go\"}"}]`
@@ -40,7 +33,7 @@ func TestStampedLedgerDoesNotAlterNativeBridgeContentToolUse(t *testing.T) {
 			calls = append(calls, ToolCall{ToolCallID: r.ID, Name: r.FunctionName, ArgsJSON: r.Arguments})
 		}
 		var working []Message
-		bridge.appendAssistantTurn(&working, "on it", calls)
+		bridge.appendAssistantTurn(&working, "on it", calls, "")
 		return working
 	}
 

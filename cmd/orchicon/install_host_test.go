@@ -2,16 +2,22 @@ package main
 
 import (
 	"bytes"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/beardedparrott/orchicon/internal/containerengine"
 )
 
-// TestResidencyForInstallDefaultsToHost pins the default shape. `host` is the
-// product default (scripts/container.sh residency_for resolves ${...:-host}), and
-// the installer producing the OTHER shape by default was the bug: a fresh
-// install got a self-contained stack while every rebuild gave a host plane.
+// TestResidencyForInstallDefaultsToHost pins the default shape.
 func TestResidencyForInstallDefaultsToHost(t *testing.T) {
 	t.Setenv("ORCHICON_PLANE_RESIDENCY", "")
 	got, err := residencyForInstall()
@@ -23,10 +29,8 @@ func TestResidencyForInstallDefaultsToHost(t *testing.T) {
 	}
 }
 
-// TestResidencyForInstallAcceptsBothShapesAndRefusesJunk pins that an explicit
-// shape is honoured and a typo is refused rather than silently defaulted — a
-// silently-defaulted typo would create an instance of the WRONG shape, and the
-// shape is recorded on the container at create time.
+// TestResidencyForInstallAcceptsBothShapesAndRefusesJunk pins that an explicit shape is honoured
+// and a typo is refused rather than silently defaulted.
 func TestResidencyForInstallAcceptsBothShapesAndRefusesJunk(t *testing.T) {
 	for _, want := range []string{residencyHost, residencyContainer} {
 		t.Setenv("ORCHICON_PLANE_RESIDENCY", want)
@@ -44,20 +48,17 @@ func TestResidencyForInstallAcceptsBothShapesAndRefusesJunk(t *testing.T) {
 	}
 }
 
-// TestActiveInstallPortsPerResidency pins what each shape actually binds. This
-// is the difference the installer was missing: a container-resident instance
-// exposes two ports, a host-resident one exposes the services too (loopback),
-// and the plane port is never published by the container in the host shape.
+// TestActiveInstallPortsPerResidency pins what each shape actually binds.
 func TestActiveInstallPortsPerResidency(t *testing.T) {
 	host := activeInstallPorts(residencyHost)
 	container := activeInstallPorts(residencyContainer)
 
-	if len(container) != 2 {
-		t.Errorf("container residency binds %d ports, want 2 (control + grafana)", len(container))
+	if len(container) != 1 {
+		t.Errorf("container residency binds %d ports, want 1 (control)", len(container))
 	}
-	// 10: control (plane-bound) + grafana + 8 services.
-	if len(host) != 10 {
-		t.Errorf("host residency binds %d ports, want 10", len(host))
+	// 9: control (plane-bound) + 8 services.
+	if len(host) != 9 {
+		t.Errorf("host residency binds %d ports, want 9", len(host))
 	}
 
 	// Every shape must include the plane port, or there is no instance to reach.
@@ -82,15 +83,9 @@ func TestActiveInstallPortsPerResidency(t *testing.T) {
 }
 
 // TestPublishArgsShapeAndSafety is the port-mapping contract with docker.
-//
-// Two things must hold: the host half is the RESOLVED port (so an override
-// moves the publish), and every service publish is LOOPBACK-BOUND — postgres is
-// a database and NATS an internal bus, and the supervisor's pg_hba trust rules
-// depend on them never being reachable from the LAN.
 func TestPublishArgsShapeAndSafety(t *testing.T) {
 	ports := map[string]int{
 		"ORCHICON_CONTROL_PORT":      9080,
-		"ORCHICON_GRAFANA_PORT":      4002,
 		"ORCHICON_POSTGRES_PORT":     5442,
 		"ORCHICON_NATS_PORT":         4333,
 		"ORCHICON_NATS_MONITOR_PORT": 8333,
@@ -107,7 +102,7 @@ func TestPublishArgsShapeAndSafety(t *testing.T) {
 		t.Errorf("host residency must not publish the plane port (the host plane binds it); got: %s", host)
 	}
 	// Services are loopback-bound and use the RESOLVED host port.
-	for _, want := range []string{"127.0.0.1:5442:5432", "127.0.0.1:4333:4222", "127.0.0.1:8333:8222", "127.0.0.1:4002:3000"} {
+	for _, want := range []string{"127.0.0.1:5442:5432", "127.0.0.1:4333:4222", "127.0.0.1:8333:8222"} {
 		if !strings.Contains(host, want) {
 			t.Errorf("host publishes must contain %q; got: %s", want, host)
 		}
@@ -121,25 +116,20 @@ func TestPublishArgsShapeAndSafety(t *testing.T) {
 	if !strings.Contains(container, "9080:8080") {
 		t.Errorf("container residency must publish its plane port; got: %s", container)
 	}
-	if !strings.Contains(container, "4002:3000") {
-		t.Errorf("container residency must publish grafana; got: %s", container)
-	}
 	// ...and must NOT drag in the service publishes it does not need.
 	if strings.Contains(container, ":5432") {
 		t.Errorf("container residency must not publish postgres; got: %s", container)
 	}
 }
 
-// TestPlaneEnvIsPerInstanceAndComplete pins the host plane's environment: every
-// key the plane needs is present, each is derived from the RESOLVED ports, and
-// the bind and the advertised URL agree.
+// TestPlaneEnvIsPerInstanceAndComplete pins the host plane's environment: every key the plane needs
+// is present, each is derived from the RESOLVED ports, and the bind and the advertised URL agree.
 func TestPlaneEnvIsPerInstanceAndComplete(t *testing.T) {
 	t.Setenv("ORCHICON_DOCKER_BRIDGE_IP", "172.99.0.1")
 	t.Setenv("ORCHICON_SECRETS_KEK", "c2VjcmV0LWtleS1tYXRlcmlhbC0zMmJ5dGVzISE=")
 
 	ports := map[string]int{
 		"ORCHICON_CONTROL_PORT":   9080,
-		"ORCHICON_GRAFANA_PORT":   4002,
 		"ORCHICON_POSTGRES_PORT":  5442,
 		"ORCHICON_NATS_PORT":      4333,
 		"ORCHICON_OTLP_GRPC_PORT": 4317,
@@ -154,15 +144,14 @@ func TestPlaneEnvIsPerInstanceAndComplete(t *testing.T) {
 	joined := strings.Join(env, "\n")
 	for _, want := range []string{
 		"ORCHICON_INSTANCE=dev",
-		// Loopback primary bind, bridge extra bind, and the URL — all on the
-		// RESOLVED port, and the bind and URL must share one bridge IP.
-		"ORCHICON_HTTP_ADDR=127.0.0.1:9080",
-		"ORCHICON_HTTP_EXTRA_BIND=172.99.0.1:9080",
+		// A WILDCARD primary bind on the RESOLVED port.
+		"ORCHICON_HTTP_ADDR=:9080",
+		// The ADVERTISED URL is still required: it is what a runtime container is
+		// told to dial, and it must carry THIS instance's port.
 		"ORCHICON_PLANE_PUBLIC_URL=http://172.99.0.1:9080",
 		"ORCHICON_POSTGRES_DSN=postgres://orchicon:orchicon@localhost:5442/orchicon?sslmode=disable",
 		"ORCHICON_NATS_URL=nats://localhost:4333",
 		"ORCHICON_OTEL_ENDPOINT=localhost:4317",
-		"ORCHICON_GRAFANA_URL=http://localhost:4002",
 		"ORCHICON_TEMPO_URL=http://localhost:3200",
 		"ORCHICON_LOKI_URL=http://localhost:3100",
 		"ORCHICON_VM_URL=http://localhost:8428",
@@ -172,98 +161,660 @@ func TestPlaneEnvIsPerInstanceAndComplete(t *testing.T) {
 		"ORCHICON_BLOB_DIR=/home/u/.local/share/orchicon-dev/blobs",
 		"ORCHICON_SERVE_STATE_DIR=/home/u/.local/share/orchicon-dev/serve",
 		"ORCHICON_RUNTIME_SOCKET=/tmp/orchicon-runtime/runtime.sock",
-		// An operator's identity must be INHERITED, not invented: a deployment
-		// that chose its own KEK must keep it or the migrated data will not
-		// decrypt.
+		// An operator's identity must be INHERITED, not invented: a deployment that chose its own KEK must
+		// keep it or the migrated data will not decrypt.
 		"ORCHICON_SECRETS_KEK=c2VjcmV0LWtleS1tYXRlcmlhbC0zMmJ5dGVzISE=",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("plane env is missing %q; got:\n%s", want, joined)
 		}
 	}
-	// A wildcard bind is the LAN exposure the operator rejected.
-	if strings.Contains(joined, "0.0.0.0") {
-		t.Errorf("plane env must never bind a wildcard:\n%s", joined)
+	// THE EXTRA BIND MUST BE ABSENT, and this is the assertion that keeps the original regression from
+	// coming back.
+	if strings.Contains(joined, "ORCHICON_HTTP_EXTRA_BIND=") {
+		t.Errorf("a wildcard primary already serves the bridge address; there must be no extra bind:\n%s", joined)
+	}
+	// The wildcard is DELIBERATE now, not an accident: it is what makes the plane reachable from other
+	// machines.
+	if !strings.Contains(joined, "ORCHICON_HTTP_ADDR=:9080") {
+		t.Errorf("the wildcard primary bind is required for LAN reachability:\n%s", joined)
 	}
 }
 
-// TestPlaneEnvRefusesWithoutABridge pins the hard failure: a plane whose run
-// containers cannot reach it is worse than one that refuses to start, so an
-// unresolvable bridge is an error and NOT a loopback-only fallback.
-func TestPlaneEnvRefusesWithoutABridge(t *testing.T) {
-	// Pin a hopeless bridge and remove the docker fallbacks by using a value that
-	// resolves to nothing is not possible via env, so assert the pin is honoured
-	// and trust bridgeIP's own error path — the meaningful assertion here is that
-	// planeEnv PROPAGATES it.
-	t.Setenv("ORCHICON_DOCKER_BRIDGE_IP", "")
-	ports := map[string]int{"ORCHICON_CONTROL_PORT": 8080}
-	// With no pin, bridgeIP may still resolve from docker. Either way planeEnv
-	// must never return an env with a wildcard or a missing bind.
+// TestPlaneBindAndShape is acceptance criterion 5: WHEN runtime containers ARE in use, the bridge
+// bind and the advertised plane URL are derived from ONE place.
+func TestPlaneBindAndShape(t *testing.T) {
+	t.Setenv("ORCHICON_DOCKER_BRIDGE_IP", "172.99.0.1")
+	t.Setenv("ORCHICON_RUNTIME_CONTAINERS", "")
+	t.Setenv("ORCHICON_SECRETS_KEK", "")
+
+	devPorts := map[string]int{"ORCHICON_CONTROL_PORT": 9080}
+	prodPorts := map[string]int{"ORCHICON_CONTROL_PORT": 9091}
+
+	dev, err := planeEnv("dev", devPorts, "/home/u/.local/share/orchicon-dev", "/tmp/s.sock")
+	if err != nil {
+		t.Fatalf("planeEnv(dev): %v", err)
+	}
+	prod, err := planeEnv("prod", prodPorts, "/home/u/.local/share/orchicon-prod", "/tmp/s.sock")
+	if err != nil {
+		t.Fatalf("planeEnv(prod): %v", err)
+	}
+	devJoined := strings.Join(dev, "\n")
+	prodJoined := strings.Join(prod, "\n")
+
+	// The bind and the URL come from ONE call: the same IP + the same port.
+	bind, url, err := planeBindEnv(devPorts)
+	if err != nil {
+		t.Fatalf("planeBindEnv: %v", err)
+	}
+	if bind != "172.99.0.1:9080" || url != "http://172.99.0.1:9080" {
+		t.Fatalf("planeBindEnv = (%q, %q), want one IP and this instance's port", bind, url)
+	}
+	// THE ADVERTISED URL IS EMITTED; THE BIND IS NOT.
+	if !strings.Contains(devJoined, "ORCHICON_PLANE_PUBLIC_URL="+url) {
+		t.Errorf("planeEnv must carry the URL planeBindEnv computed:\n%s", devJoined)
+	}
+	if strings.Contains(devJoined, "ORCHICON_HTTP_EXTRA_BIND=") {
+		t.Errorf("the extra bind must not be emitted — the wildcard already serves it:\n%s", devJoined)
+	}
+	// TWO INSTANCES CANNOT POINT AT EACH OTHER'S PLANE: the URLs differ by the instance's own port.
+	if strings.Contains(prodJoined, "ORCHICON_PLANE_PUBLIC_URL=http://172.99.0.1:9080") {
+		t.Errorf("prod must not advertise dev's control port:\n%s", prodJoined)
+	}
+	if !strings.Contains(prodJoined, "ORCHICON_PLANE_PUBLIC_URL=http://172.99.0.1:9091") {
+		t.Errorf("prod must advertise its OWN control port:\n%s", prodJoined)
+	}
+	// The wildcard primary is required in BOTH shapes, and is per-instance on the port.
+	for _, joined := range []string{devJoined, prodJoined} {
+		if !strings.Contains(joined, "ORCHICON_HTTP_ADDR=:") {
+			t.Errorf("the wildcard primary bind is required for LAN reachability:\n%s", joined)
+		}
+	}
+}
+
+// TestInstallShapeWithoutAContainerEngine is acceptance criterion 4: A HOST WITH NO CONTAINER
+// ENGINE installs without a bridge, a bind, or a wildcard — and without an error.
+func TestInstallShapeWithoutAContainerEngine(t *testing.T) {
+	// Case 1: the explicit override, with a bridge pinned to prove the override WINS over the pin.
+	t.Run("explicit override", func(t *testing.T) {
+		t.Setenv("ORCHICON_RUNTIME_CONTAINERS", "0")
+		t.Setenv("ORCHICON_DOCKER_BRIDGE_IP", "172.99.0.1")
+		if runtimeContainersInUse() {
+			t.Error("ORCHICON_RUNTIME_CONTAINERS=0 must win over a pinned bridge")
+		}
+		assertNoBridgeShape(t)
+	})
+	// Case 2: no engine anywhere and nothing pinned. The probe must answer without a daemon.
+	t.Run("no engine on PATH", func(t *testing.T) {
+		t.Setenv("ORCHICON_RUNTIME_CONTAINERS", "")
+		t.Setenv("ORCHICON_DOCKER_BRIDGE_IP", "")
+		// An EMPTY PATH IS NO LONGER A NO-ENGINE HOST: the installer's detector (internal/containerengine)
+		// probes the platform's conventional locations after PATH, and a CI runner has /usr/bin/docker.
+		t.Setenv(containerengine.EnginePinEnv, string(containerengine.EngineNone))
+		t.Setenv("PATH", t.TempDir())
+		if containerEngineAvailable() {
+			t.Error("an empty PATH must not report a container engine")
+		}
+		if runtimeContainersInUse() {
+			t.Error("no engine and no pin must mean no runtime containers")
+		}
+		assertNoBridgeShape(t)
+	})
+}
+
+// assertNoBridgeShape asserts the no-container shape: loopback primary bind, NO extra bind, NO advertised
+// URL, and never a wildcard — and no error anywhere along the way.
+func assertNoBridgeShape(t *testing.T) {
+	t.Helper()
+	ports := map[string]int{"ORCHICON_CONTROL_PORT": 9080}
+	if bind, url, err := planeBindEnv(ports); err != nil || bind != "" || url != "" {
+		t.Fatalf("planeBindEnv with no engine = (%q, %q, %v), want empty and NO error", bind, url, err)
+	}
 	env, err := planeEnv("dev", ports, "/tmp/d", "/tmp/s.sock")
 	if err != nil {
-		if !strings.Contains(err.Error(), "bridge") {
-			t.Errorf("the error must name the bridge; got: %v", err)
-		}
-		return
+		t.Fatalf("planeEnv must not fail without a bridge: %v", err)
 	}
-	if !strings.Contains(strings.Join(env, "\n"), "ORCHICON_HTTP_EXTRA_BIND=") {
-		t.Error("a resolved bridge must still produce the extra bind")
+	joined := strings.Join(env, "\n")
+	// THE PRIMARY BIND IS A WILDCARD EVEN WITH NO ENGINE.
+	if !strings.Contains(joined, "ORCHICON_HTTP_ADDR=:9080") {
+		t.Errorf("the wildcard primary bind is required:\n%s", joined)
 	}
-}
-
-// TestHealthArgsOverrideTheImageProbeForHostResidency is the regression for a
-// bug found by running the installer rather than reading it: a host-resident
-// instance it created reported UNHEALTHY FOREVER (FailingStreak 92), because the
-// image's healthcheck probes the plane's :8080 — which a services-only container
-// does not run.
-//
-// The failure mode is nasty rather than loud: the instance works, so the
-// operator learns to ignore the container's health, which is how a real outage
-// gets missed later.
-func TestHealthArgsOverrideTheImageProbeForHostResidency(t *testing.T) {
-	host := strings.Join(healthArgs(residencyHost), " ")
-	if !strings.Contains(host, "--health-cmd") {
-		t.Fatalf("host residency must override the image healthcheck; got: %q", host)
+	if strings.Contains(joined, "ORCHICON_HTTP_EXTRA_BIND=") {
+		t.Errorf("no engine must produce NO extra bind:\n%s", joined)
 	}
-	// It must probe the SERVICES that actually run in the container...
-	if !strings.Contains(host, "pg_isready") || !strings.Contains(host, "8222/healthz") {
-		t.Errorf("the override must probe postgres + nats; got: %q", host)
-	}
-	// ...and must NOT probe the plane port, which the host plane owns.
-	if strings.Contains(host, "8080/healthz") {
-		t.Errorf("the override must not probe the plane's :8080 (it is not in this container); got: %q", host)
-	}
-
-	// Container residency keeps the image's probe — the plane IS in there.
-	if got := healthArgs(residencyContainer); len(got) != 0 {
-		t.Errorf("container residency must leave the image healthcheck alone; got: %v", got)
+	if strings.Contains(joined, "ORCHICON_PLANE_PUBLIC_URL=") {
+		t.Errorf("no engine must produce NO advertised plane URL:\n%s", joined)
 	}
 }
 
-// TestHealthArgsMatchContainerScript is the cross-language agreement gate for the
-// healthcheck, mirroring the port table's: the two launchers create the same
-// shape, so they must apply the same override or one of them reports unhealthy
-// for the other's instance. Parsed from container.sh so a change there fails here
-// instead of on a live host.
-func TestHealthArgsMatchContainerScript(t *testing.T) {
-	src, err := os.ReadFile("../../scripts/container.sh")
+// TestInstallShapeWithAContainerEngine is acceptance criterion 7's other half, and the counterpart
+// of TestInstallShapeWithoutAContainerEngine.
+func TestInstallShapeWithAContainerEngine(t *testing.T) {
+	bin := t.TempDir()
+	ran := filepath.Join(bin, "ran.txt")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" > " + ran + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("ORCHICON_RUNTIME_CONTAINERS", "")
+	t.Setenv("ORCHICON_DOCKER_BRIDGE_IP", "172.99.0.1")
+
+	if !containerEngineAvailable() {
+		t.Fatal("a docker binary on PATH must report an engine")
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Fatal("the engine probe must be a PATH lookup, never an engine call — the fake docker was executed")
+	}
+	if !runtimeContainersInUse() {
+		t.Fatal("an engine on PATH must mean runtime containers are in use")
+	}
+
+	// The with-containers shape: the bind and the URL exist, agree, and carry THIS instance's port.
+	ports := map[string]int{"ORCHICON_CONTROL_PORT": 9080}
+	env, err := planeEnv("dev", ports, "/tmp/d", "/tmp/s.sock")
 	if err != nil {
-		t.Fatalf("read container.sh: %v", err)
+		t.Fatalf("planeEnv with an engine: %v", err)
 	}
-	script := string(src)
-	want := "pg_isready -h localhost -p 5432 -U orchicon && curl -fs http://localhost:8222/healthz"
-	if !strings.Contains(script, want) {
-		t.Errorf("scripts/container.sh no longer sets the services-only health check %q", want)
+	joined := strings.Join(env, "\n")
+	for _, want := range []string{
+		"ORCHICON_HTTP_ADDR=:9080",
+		"ORCHICON_PLANE_PUBLIC_URL=http://172.99.0.1:9080",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the with-engine shape is missing %q; got:\n%s", want, joined)
+		}
 	}
-	// ...and the installer must use the SAME command, not merely one like it.
-	if got := strings.Join(healthArgs(residencyHost), " "); !strings.Contains(got, want) {
-		t.Errorf("the installer's host-residency health check drifted from container.sh; got: %q", got)
+	if strings.Contains(joined, "ORCHICON_HTTP_EXTRA_BIND=") {
+		t.Errorf("the with-engine shape must not emit an extra bind:\n%s", joined)
 	}
 }
 
-// TestHostDataDirIsPerInstance pins that the state dir is derived from the
-// instance — two instances sharing one data dir would share a KEK and a PID
-// file, so stopping one could kill the other.
+// TestResidencyIsRecordedAndReadBack is acceptance criterion 6's destructive half: a recorded shape
+// that MATCHES converges, an ABSENT/UNREADABLE record reports ok=false.
+func TestResidencyIsRecordedAndReadBack(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Absent: nothing recorded, and NO error — which is what makes the caller's fail-safe mechanical.
+	if got, ok := recordedResidency("dev"); ok || got != "" {
+		t.Fatalf("an absent record = (%q, %v), want (\"\", false)", got, ok)
+	}
+	// Recorded: read back verbatim, per instance.
+	recordResidency("dev", residencyHost)
+	if got, ok := recordedResidency("dev"); !ok || got != residencyHost {
+		t.Fatalf("recordedResidency(dev) = (%q, %v), want (host, true)", got, ok)
+	}
+	recordResidency("prod", residencyContainer)
+	if got, ok := recordedResidency("prod"); !ok || got != residencyContainer {
+		t.Fatalf("recordedResidency(prod) = (%q, %v), want (container, true)", got, ok)
+	}
+	// PER INSTANCE: recording prod must not have moved dev's shape.
+	if got, _ := recordedResidency("dev"); got != residencyHost {
+		t.Fatalf("dev's shape changed when prod was recorded: %q", got)
+	}
+}
+
+// TestRecordedResidencyRejectsJunk pins the fail-safe's teeth: anything that is not a shape this installer
+// wrote reports ok=false, so no caller can turn junk into "host" and recreate a live instance over it.
+func TestRecordedResidencyRejectsJunk(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path, err := residencyRecordPath("dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, junk := range []string{"hostish", "", "  \n", "HOST", "container \n x"} {
+		if err := os.WriteFile(path, []byte(junk), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := recordedResidency("dev"); ok {
+			t.Errorf("junk record %q must not be read as a shape (got %q, ok)", junk, got)
+		}
+	}
+}
+
+// TestEnsureHostDataDirKeepsAnExistingKEK is the one assertion that protects tenant secrets on the common
+// path: an existing host KEK means the switch-over already happened, and re-running must not touch it.
+func TestEnsureHostDataDirKeepsAnExistingKEK(t *testing.T) {
+	dir := t.TempDir()
+	var out bytes.Buffer
+	if err := os.MkdirAll(filepath.Join(dir, "secrets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	kek := filepath.Join(dir, "secrets", "kek")
+	if err := os.WriteFile(kek, []byte("existing-kek"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The dir also holds instance state: the KEK must short-circuit BEFORE the orphan guard, or a re-install
+	// would refuse to converge on a perfectly healthy instance.
+	if err := os.MkdirAll(filepath.Join(dir, "blobs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureHostDataDir("dev", dir, &out); err != nil {
+		t.Fatalf("ensureHostDataDir: %v", err)
+	}
+	if !strings.Contains(out.String(), "leaving it untouched") {
+		t.Errorf("an existing KEK must short-circuit; got:\n%s", out.String())
+	}
+	got, err := os.ReadFile(kek)
+	if err != nil || string(got) != "existing-kek" {
+		t.Fatalf("the existing KEK must not be modified: %q / %v", got, err)
+	}
+}
+
+// TestEnsureHostDataDirRefusesToOrphanASecret is acceptance criterion 3's FATAL half: a data dir
+// that holds instance state but no KEK must STOP the install, not warn.
+func TestEnsureHostDataDirRefusesToOrphanASecret(t *testing.T) {
+	for _, marker := range []string{"blobs", "postgres", "serve", "config"} {
+		t.Run(marker, func(t *testing.T) {
+			// HERMETIC: an operator-managed KEK is key material this guard must NOT read as lost (see
+			// TestEnsureHostDataDirHonoursAnOperatorManagedKEK).
+			t.Setenv("ORCHICON_SECRETS_KEK", "")
+			dir := t.TempDir()
+			var out bytes.Buffer
+			if err := os.MkdirAll(filepath.Join(dir, marker), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			err := ensureHostDataDir("dev", dir, &out)
+			if err == nil {
+				t.Fatalf("a data dir holding %s with no KEK must be refused", marker)
+			}
+			if !strings.Contains(err.Error(), "ORPHANS EVERY TENANT SECRET") {
+				t.Errorf("the refusal must name the orphan rule; got: %v", err)
+			}
+			// ...and it must not have written a KEK on the way out.
+			if _, statErr := os.Stat(filepath.Join(dir, "secrets", "kek")); statErr == nil {
+				t.Error("the guard must not mint a KEK in a dir it refused")
+			}
+		})
+	}
+}
+
+// TestEnsureHostDataDirAllowsAFreshInstallMidRun is the FRESH-INSTALL half of the guard, and it
+// pins an ordering property that is easy to break.
+func TestEnsureHostDataDirAllowsAFreshInstallMidRun(t *testing.T) {
+	t.Setenv("ORCHICON_SECRETS_KEK", "") // hermetic: this test is about the fresh-dir path, not about an env KEK
+	dir := t.TempDir()
+	var out bytes.Buffer
+	// What the earlier install steps have already laid down in the data dir.
+	if err := os.WriteFile(filepath.Join(dir, "ports.json"), []byte("{\n  \"ORCHICON_CONTROL_PORT\": 8080\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, infraBinariesFile), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The resolved bin dir (bin/) is also laid down by step 1.7.
+	if err := os.MkdirAll(filepath.Join(dir, infraBinDirName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureHostDataDir("dev", dir, &out); err != nil {
+		t.Fatalf("a fresh install's own earlier records must not read as instance state: %v", err)
+	}
+	if !strings.Contains(out.String(), "one is minted on first boot") {
+		t.Errorf("this must take the fresh-dir path; got:\n%s", out.String())
+	}
+}
+
+// TestEnsureHostDataDirHonoursAnOperatorManagedKEK is the third half of criterion 3, and it is the
+// case the guard's own reasoning has to get right.
+func TestEnsureHostDataDirHonoursAnOperatorManagedKEK(t *testing.T) {
+	dir := t.TempDir()
+	var out bytes.Buffer
+	// What a known-good env-KEK install leaves behind: instance state, and no secrets/kek.
+	for _, marker := range []string{"blobs", "serve", "postgres"} {
+		if err := os.MkdirAll(filepath.Join(dir, marker), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("ORCHICON_SECRETS_KEK", "c2VjcmV0LWtleS1tYXRlcmlhbC0zMmJ5dGVzISE=")
+	if err := ensureHostDataDir("dev", dir, &out); err != nil {
+		t.Fatalf("an operator-managed KEK must not read as a lost KEK: %v", err)
+	}
+	if !strings.Contains(out.String(), "ORCHICON_SECRETS_KEK") {
+		t.Errorf("the install must say where the KEK comes from; got:\n%s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "secrets", "kek")); err == nil {
+		t.Error("an env-supplied KEK must not be written into the data dir as a file")
+	}
+
+	// THE OVERRIDE GONE IS THE REAL ORPHAN CASE, and it stays FATAL — this must not have been "fixed" by
+	// disabling the guard outright.
+	t.Setenv("ORCHICON_SECRETS_KEK", "")
+	if err := ensureHostDataDir("dev", dir, &out); err == nil {
+		t.Fatal("state with NO key file and NO override must still be refused")
+	}
+}
+
+// TestEnsureHostDataDirCreatesOnAFreshDir pins the ordinary first install: an empty dir is prepared, the
+// secrets dir is created private, and no KEK is minted here (first boot mints it).
+func TestEnsureHostDataDirCreatesOnAFreshDir(t *testing.T) {
+	t.Setenv("ORCHICON_SECRETS_KEK", "") // hermetic: this test is about the fresh-dir path, not about an env KEK
+	dir := t.TempDir()
+	var out bytes.Buffer
+	if err := ensureHostDataDir("dev", dir, &out); err != nil {
+		t.Fatalf("ensureHostDataDir on a fresh dir: %v", err)
+	}
+	st, err := os.Stat(filepath.Join(dir, "secrets"))
+	if err != nil || !st.IsDir() {
+		t.Fatalf("the secrets dir must be created: %v", err)
+	}
+	if perm := st.Mode().Perm(); perm != 0o700 {
+		t.Errorf("the secrets dir must be 0700, got %o", perm)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "secrets", "kek")); err == nil {
+		t.Error("a fresh dir must NOT get a KEK here — first boot mints it")
+	}
+	if !strings.Contains(out.String(), "one is minted on first boot") {
+		t.Errorf("the fresh case must say what happens next; got:\n%s", out.String())
+	}
+}
+
+// TestInstallHostHasNoDockerInvocation is acceptance criterion 1: install_host.go must contain NO
+// docker invocation.
+func TestInstallHostHasNoDockerInvocation(t *testing.T) {
+	src, err := os.ReadFile("install_host.go")
+	if err != nil {
+		t.Fatalf("read install_host.go: %v", err)
+	}
+	body := string(src)
+	// EVERY exec.Command IN THIS FILE MUST LAUNCH THIS BINARY (or a service binary), never an engine.
+	for _, m := range regexp.MustCompile(`exec\.Command\(([^,\n]*)`).FindAllStringSubmatch(body, -1) {
+		callee := strings.TrimSpace(m[1])
+		for _, engine := range []string{`"docker"`, `"docker-compose"`, `"podman"`, `"alpine"`, `"sh"`, `"bash"`} {
+			if callee == engine {
+				t.Errorf("install_host.go must not exec %s (callee: %s)", engine, callee)
+			}
+		}
+	}
+	// The engine probe DELEGATES to internal/containerengine, which owns the search order (podman
+	// first, then docker), so the installer and the plane's /enginez answer with the same rules.
+	shared, err := os.ReadFile(filepath.Join("..", "..", "internal", "planecontrol", "env.go"))
+	if err != nil {
+		t.Fatalf("read internal/planecontrol/env.go: %v", err)
+	}
+	if !strings.Contains(string(shared), `containerengine.Detect(containerengine.DefaultProbe())`) {
+		t.Errorf("the engine probe must delegate to containerengine.Detect, in internal/planecontrol/env.go:\n%s", shared)
+	}
+	// ...and no second copy survives in the file it was moved OUT of. A probe left behind here would
+	// be the drift the delegation removes: two answers to "is there an engine".
+	if strings.Contains(body, `containerengine.Detect`) || strings.Contains(body, `exec.LookPath("docker")`) {
+		t.Errorf("install_host.go must not keep a second copy of the engine probe — it lives in " +
+			"internal/planecontrol/env.go")
+	}
+	// ...and the two symbols the item retires are gone from the whole package, not merely unused here.
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, gone := range []string{"func containerResidency", "func healthArgs"} {
+			if strings.Contains(string(b), gone) {
+				t.Errorf("%s still defines %q", f, gone)
+			}
+		}
+	}
+}
+
+// TestServicesReadyUsesResolvedPortsAndDirectProbes is acceptance criterion 2: the probe is DIRECT
+// (no `docker exec`), it uses the RESOLVED ports rather than the container's literals.
+func TestServicesReadyUsesResolvedPortsAndDirectProbes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake-probe fixture is a shell script")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// A fake pg_isready that RECORDS ITS ARGV and succeeds. It is on PATH and is what pgIsReadyBin falls back
+	// to when the instance has no binaries record.
+	bin := t.TempDir()
+	record := filepath.Join(bin, "argv.txt")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" > " + record + "\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "pg_isready"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	// A real HTTP server for the NATS monitor, so the second half is exercised rather than stubbed.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	_, portStr, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitorPort, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The RESOLVED ports, not the container's 5432/8222.
+	ports := map[string]int{"ORCHICON_POSTGRES_PORT": 5442, "ORCHICON_NATS_MONITOR_PORT": monitorPort}
+	if !servicesReady("dev", ports) {
+		t.Fatal("both probes succeed (fake pg_isready + a live monitor), so servicesReady must be true")
+	}
+	argv, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("the fake pg_isready did not run: %v", err)
+	}
+	if !strings.Contains(string(argv), "5442") {
+		t.Errorf("pg_isready must be asked about the RESOLVED port 5442, not 5432; argv: %q", argv)
+	}
+	if strings.Contains(string(argv), "5432") {
+		t.Errorf("pg_isready must not be asked about the container's 5432; argv: %q", argv)
+	}
+
+	// The NATS half must be able to FAIL on its own — the boolean is a conjunction.
+	bad := map[string]int{"ORCHICON_POSTGRES_PORT": 5442, "ORCHICON_NATS_MONITOR_PORT": 1}
+	if servicesReady("dev", bad) {
+		t.Error("a dead NATS monitor must make servicesReady false")
+	}
+}
+
+// TestServicesReadyIsNotNegativeForACarrierItCannotProbe is the regression for a false negative
+// this item's own re-signature opened, and it is the reason servicesProbeableFromHost exists.
+func TestServicesReadyIsNotNegativeForACarrierItCannotProbe(t *testing.T) {
+	// The container shape: its services are internal, so NO host service port exists to ask about.
+	containerPorts := map[string]int{}
+	for _, p := range activeInstallPorts(residencyContainer) {
+		containerPorts[p.Env] = 1234 // any resolved value; the KEYS are what this test is about
+	}
+	// VACUITY GUARD: the premise is that this shape publishes NO service port. If the table ever gives it one,
+	// this test measures nothing and must be repointed rather than kept green.
+	if containerPorts["ORCHICON_POSTGRES_PORT"] != 0 || containerPorts["ORCHICON_NATS_MONITOR_PORT"] != 0 {
+		t.Fatal("the container shape now resolves a service port — this regression test needs repointing")
+	}
+	// An EMPTY PATH, so a "ready" answer cannot come from a real pg_isready on the host: the only thing that
+	// can make this true is the absence of a probe.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+
+	if !servicesReady("dev", containerPorts) {
+		t.Error("a carrier with no host endpoint must NOT be reported as not-ready: that false negative makes " +
+			"the install's repair gate restart a healthy container-resident instance on every re-run")
+	}
+	// ...and the wait must not manufacture a countdown against a port it has no endpoint for.
+	var out bytes.Buffer
+	if !waitServicesReadyFor("dev", containerPorts, 2, time.Millisecond, &out) {
+		t.Error("the wait must report the carrier ready, not time out on an endpoint that was never published")
+	}
+	got := out.String()
+	if strings.Contains(got, "waiting for") {
+		t.Errorf("there is nothing to wait on, so the wait must not announce one; got:\n%s", got)
+	}
+	if strings.Contains(got, "warning:") {
+		t.Errorf("a carrier with no host endpoint must not warn about readiness; got:\n%s", got)
+	}
+	if !strings.Contains(got, "published on no host port") {
+		t.Errorf("the wait must say WHY it is not waiting; got:\n%s", got)
+	}
+
+	// The HOST shape still gets a real probe — this must not have been "fixed" by disabling the probe outright.
+	hostPorts := map[string]int{}
+	for _, p := range activeInstallPorts(residencyHost) {
+		hostPorts[p.Env] = 1
+	}
+	if hostPorts["ORCHICON_POSTGRES_PORT"] == 0 || hostPorts["ORCHICON_NATS_MONITOR_PORT"] == 0 {
+		t.Fatal("the host shape must publish its service ports — the probe is load-bearing there")
+	}
+	if servicesReady("dev", hostPorts) {
+		t.Error("nothing is listening on the host ports, so the host carrier must still probe and report false")
+	}
+}
+
+// TestWaitServicesReadyWarnsRatherThanFailing is acceptance criterion 2's posture.
+func TestWaitServicesReadyWarnsRatherThanFailing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PATH", t.TempDir()) // no pg_isready at all
+
+	ports := map[string]int{"ORCHICON_POSTGRES_PORT": 1, "ORCHICON_NATS_MONITOR_PORT": 1}
+	var out bytes.Buffer
+	start := time.Now()
+	ready := waitServicesReadyFor("dev", ports, 2, time.Millisecond, &out)
+	if ready {
+		t.Fatal("nothing is listening, so the wait must report NOT ready")
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Fatal("the wait must be bounded by its tries and interval")
+	}
+	got := out.String()
+	if !strings.Contains(got, "waiting for dev services") {
+		t.Errorf("the wait must be ANNOUNCED before it starts; got:\n%s", got)
+	}
+	if !strings.Contains(got, "warning:") {
+		t.Errorf("a timeout must WARN, not fail; got:\n%s", got)
+	}
+	// The announcement comes first — that is the posture, not merely that both strings appear.
+	if strings.Index(got, "waiting for") > strings.Index(got, "warning:") {
+		t.Errorf("the announcement must precede the warning; got:\n%s", got)
+	}
+	// The wrapper keeps the shipped 60×1s shape.
+	if got := waitServicesReady; got == nil {
+		t.Fatal("the exported wait must exist")
+	}
+}
+
+// It is a WIRING assertion because the defect was a MISSING CALL rather than a wrong value:
+// `recordResidency` was written ONLY by `ensureInstallContainer`.
+func TestHostInstallRecordsItsShape(t *testing.T) {
+	src, err := os.ReadFile("install.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	// THE FLOW MOVED, SO THE ASSERTION FOLLOWS IT RATHER THAN NAMING ONE FUNCTION.
+	flow := enclosingFunc(body, "startHostPlane(")
+	// VACUITY GUARD: the assertion below is only meaningful if we found the flow that starts the host plane.
+	if flow == "" {
+		t.Fatal("no top-level function in install.go starts the host plane — this assertion needs " +
+			"repointing, not deletion")
+	}
+	if !strings.Contains(flow, "recordResidency(instance, residency)") {
+		t.Error("the install FLOW must record the shape it created: the host-services path never calls " +
+			"ensureInstallContainer, so a no-engine install would leave NO record and `orchicon restart` would " +
+			"refuse the instance the install just brought up")
+	}
+
+	// BEHAVIOURAL: what that call writes is what restart reads back.
+	t.Setenv("HOME", t.TempDir())
+	recordResidency("dev", residencyHost)
+	if got, ok := recordedResidency("dev"); !ok || got != residencyHost {
+		t.Fatalf("restart's precondition: recordedResidency = (%q, %v), want (host, true)", got, ok)
+	}
+}
+
+// TestNoEngineInstallAdviceNamesAHostLog is the second half of the same defect class, on the
+// install's ADVICE rather than its behaviour.
+func TestNoEngineInstallAdviceNamesAHostLog(t *testing.T) {
+	src, err := os.ReadFile("install.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	i := strings.Index(body, "the instance itself is up. find out why the plane is not")
+	if i < 0 {
+		t.Fatal("the not-answering advice moved — this assertion needs repointing, not deletion")
+	}
+	arm := body[i:]
+	if end := strings.Index(arm, "then re-run"); end > 0 {
+		arm = arm[:end]
+	}
+	// The host half must name the plane's log FILE, not a docker command.
+	if !strings.Contains(arm, `"serve", "logs", "orchicon.log"`) {
+		t.Errorf("the host-plane advice must point at the plane's log file; got:\n%s", arm)
+	}
+	if !strings.Contains(arm, "services.log") {
+		t.Errorf("the no-engine advice must name the host services log; got:\n%s", arm)
+	}
+	// THE CONTAINER SHAPE IS RETIRED, so the advice must not name one AT ALL.
+	if strings.Contains(arm, "docker logs") {
+		t.Errorf("the advice still names a services CONTAINER, which no longer exists — the instance is host processes; got:\n%s", arm)
+	}
+}
+
+// TestPgIsReadyPrefersTheRecordedBinary pins the resolution order: the binaries the install RESOLVED win, so the
+// readiness probe asks the client that matches the server the install runs.
+func TestPgIsReadyPrefersTheRecordedBinary(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir, err := hostDataDir("dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No record yet: PATH fallback.
+	if got := pgIsReadyBin("dev"); got != "pg_isready" {
+		t.Fatalf("with no record = %q, want the PATH fallback", got)
+	}
+	// With a record: the recorded absolute path.
+	want := filepath.Join(dir, infraBinDirName, "pg_isready")
+	if err := recordInfraBinaries(dir, &infraBinaries{
+		Source: "detected", Postgres: filepath.Join(dir, "postgres"), NatsServer: filepath.Join(dir, "nats-server"),
+		PgIsReady: want,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := pgIsReadyBin("dev"); got != want {
+		t.Fatalf("pgIsReadyBin = %q, want the recorded %q", got, want)
+	}
+}
+
+// TestHostServicesLifecycleIsPerInstanceAndFailsClosed pins the host-services seam: the PID file is
+// per-instance, and stopHostServices on an instance with no record is a NO-OP (not an error).
+func TestHostServicesLifecycleIsPerInstanceAndFailsClosed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	devFile, err := hostServicesPIDFile("dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prodFile, err := hostServicesPIDFile("prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if devFile == prodFile {
+		t.Fatalf("two instances must not share a services PID file (%q)", devFile)
+	}
+	var out bytes.Buffer
+	if err := stopHostServices("dev", &out); err != nil {
+		t.Fatalf("stopping nothing must not be an error: %v", err)
+	}
+	if !strings.Contains(out.String(), "nothing to stop") {
+		t.Errorf("the no-op must say so; got:\n%s", out.String())
+	}
+}
+
+// TestHostDataDirIsPerInstance pins that the state dir is derived from the instance — two instances
+// sharing one data dir would share a KEK and a PID file, so stopping one could kill the other.
 func TestHostDataDirIsPerInstance(t *testing.T) {
 	dev, err := hostDataDir("dev")
 	if err != nil {
@@ -287,8 +838,7 @@ func TestHostDataDirIsPerInstance(t *testing.T) {
 }
 
 // TestEnvWithoutStripsOnlyTheNamedKeys pins the container-mode strip: a stray
-// ORCHICON_CONTAINER_MODE in a shell profile must not flip the host plane into
-// container semantics, and nothing else may be dropped.
+// ORCHICON_CONTAINER_MODE in a shell profile must not flip the host plane into container semantics.
 func TestEnvWithoutStripsOnlyTheNamedKeys(t *testing.T) {
 	env := []string{
 		"PATH=/usr/bin",
@@ -310,29 +860,116 @@ func TestEnvWithoutStripsOnlyTheNamedKeys(t *testing.T) {
 	}
 }
 
-// TestMigrateHostDataDirSkipsWhenKekExists is the one assertion that protects
-// tenant secrets on the common path: an existing host KEK means the switch-over
-// already happened, and re-running must not touch it.
-func TestMigrateHostDataDirSkipsWhenKekExists(t *testing.T) {
-	dir := t.TempDir()
+// TestMigrateHostDataDirSkipsWhenKekExists was the ORIGINAL pin of the KEK guard.
+
+// RUNG 0 OF resolveInstallPorts IS THE ONLY PLACE THE RESOLVER ASKS A CONTAINER ANYTHING — it reads
+// a running instance's published ports back with `docker inspect`.
+func TestResolveInstallPortsNeedsNoEngine(t *testing.T) {
+	// "No engine" is PINNED, not inferred from an empty PATH: the detector also searches the
+	// conventional install locations.
+	t.Setenv(containerengine.EnginePinEnv, string(containerengine.EngineNone))
+	t.Setenv("PATH", t.TempDir()) // no docker, no pg_isready — nothing to exec
+	t.Setenv("ORCHICON_STRICT_PORTS", "")
+	t.Setenv("ORCHICON_RUNTIME_CONTAINERS", "")
+	// AND NO INSTANCE OF THE OPERATOR'S MAY BE VISIBLE. An isolated HOME removes every instance from
+	// view without weakening the claim: PORT RESOLUTION MUST NOT NEED A CONTAINER ENGINE.
+	t.Setenv("HOME", t.TempDir())
+
+	if containerEngineAvailable() {
+		t.Fatal("an empty PATH must not report a container engine")
+	}
 	var out bytes.Buffer
-	if err := os.MkdirAll(filepath.Join(dir, "secrets"), 0o755); err != nil {
+	ports, err := resolveInstallPorts("dev", residencyHost, &out, nil)
+	if err != nil {
+		t.Fatalf("a host with no container engine must still resolve its ports: %v", err)
+	}
+	if ports["ORCHICON_CONTROL_PORT"] <= 0 {
+		t.Errorf("the control port must resolve without an engine; got %d", ports["ORCHICON_CONTROL_PORT"])
+	}
+	if strings.Contains(out.String(), "already running") {
+		t.Errorf("with no instance and no engine, nothing can be \"already running\":\n%s", out.String())
+	}
+}
+
+// TestPortResolverGatesItsContainerRead pins the GATE STRUCTURALLY, which is the half the
+// behavioural test above cannot express.
+func TestPortResolverGatesItsContainerRead(t *testing.T) {
+	src, err := os.ReadFile("install_ports.go")
+	if err != nil {
+		t.Fatalf("read install_ports.go: %v", err)
+	}
+	body := string(src)
+	guarded := "if containerEngineAvailable() {\n\t\tif running, _ := containerRunning(name); running {"
+	if !strings.Contains(body, guarded) {
+		t.Errorf("resolveInstallPorts must read a running container's ports ONLY when an engine is available; "+
+			"expected the guarded block:\n%s", guarded)
+	}
+}
+
+// TestWaitServicesReadyStopsWhenTheSupervisorIsGone — a supervisor that has EXITED cannot become
+// ready, so the wait must stop rather than spend its full budget polling a stack that is not there.
+func TestWaitServicesReadyStopsWhenTheSupervisorIsGone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", t.TempDir()) // no pg_isready, so nothing will ever be ready
+
+	ports := map[string]int{"ORCHICON_POSTGRES_PORT": 1, "ORCHICON_NATS_MONITOR_PORT": 1}
+
+	// A RECORDED PID THAT IS GONE. pid 0 is never a live process; the helper treats <=0 as "no
+	// opinion", so use a PID that certainly cannot exist but is still positive.
+	pidFile, err := hostServicesPIDFile("dev")
+	if err != nil {
+		t.Fatalf("hostServicesPIDFile: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(pidFile), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	kek := filepath.Join(dir, "secrets", "kek")
-	if err := os.WriteFile(kek, []byte("existing-kek"), 0o600); err != nil {
+	if err := os.WriteFile(pidFile, []byte("2147483646\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// A volume that does not exist: the guard must be reached BEFORE any docker
-	// call, or a second install would try to copy over a live data dir.
-	if err := migrateHostDataDir("dev", "orchicon-cnt-dev-data-definitely-missing", dir, &out); err != nil {
-		t.Fatalf("migrateHostDataDir: %v", err)
+
+	var out bytes.Buffer
+	start := time.Now()
+	// 600 tries at 1s would be 10 minutes if the early exit did not fire.
+	ready := waitServicesReadyFor("dev", ports, 600, time.Second, &out)
+	elapsed := time.Since(start)
+
+	if ready {
+		t.Fatal("a dead supervisor's stack cannot be ready")
 	}
-	if !strings.Contains(out.String(), "leaving it untouched") {
-		t.Errorf("an existing KEK must short-circuit the migration; got:\n%s", out.String())
+	if elapsed > 15*time.Second {
+		t.Fatalf("the wait ran %s after the supervisor had already exited — it must stop as soon as "+
+			"the process it is waiting on is gone", elapsed)
 	}
-	got, err := os.ReadFile(kek)
-	if err != nil || string(got) != "existing-kek" {
-		t.Fatalf("the existing KEK must not be modified: %q / %v", got, err)
+	if !strings.Contains(out.String(), "exited during startup") {
+		t.Errorf("the wait must say the supervisor EXITED rather than merely timing out; got:\n%s",
+			out.String())
 	}
+}
+
+// THE ABSENCE OF A PID FILE IS NOT EVIDENCE OF DEATH.
+func TestHostServicesRanAndDiedNeedsARealRecord(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	if hostServicesRanAndDied("dev") {
+		t.Error("no pid file was ever written, so nothing was observed to die — this must be false")
+	}
+}
+
+// enclosingFunc returns the body of the top-level function in src that contains needle, or "".
+func enclosingFunc(src, needle string) string {
+	at := strings.Index(src, needle)
+	if at < 0 {
+		return ""
+	}
+	// The function declaration at or before the needle, at column 0.
+	start := strings.LastIndex(src[:at], "\nfunc ")
+	if start < 0 {
+		return ""
+	}
+	start++ // past the newline
+	rest := src[start:]
+	if end := strings.Index(rest[1:], "\nfunc "); end > 0 {
+		return rest[:1+end]
+	}
+	return rest
 }

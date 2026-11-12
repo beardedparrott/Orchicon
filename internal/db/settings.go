@@ -13,14 +13,7 @@ type TenantSettingsRow struct {
 	TenantID                string
 	DefaultWorkerModel      string
 	DefaultAskOrchiconModel string
-	// Stall thresholds. BLANK (NULL in the column) means "use the built-in
-	// default"; 0 means "disabled"; a negative is rejected at the API boundary.
-	// Pointers because blank is a real, distinct state — the same convention the
-	// budget ladder's gates already use (a nil *float64 is the built-in default,
-	// an explicit 0 disables). See db/migrations/
-	// 20260928000000_stall_blank_means_default.sql for why 0 stopped meaning
-	// "unset": it made "disabled" unreachable and made a never-configured tenant
-	// indistinguishable from one that chose 0.
+	// Stall thresholds.
 	StallNoProgressWindowSeconds     *int64
 	StallNoFileDiffWindowSeconds     *int64
 	StallTextLoopWindowSeconds       *int64
@@ -46,13 +39,8 @@ type TenantSettingsRow struct {
 	MaxConcurrentRunsSet             bool         // true when the update explicitly sets max_concurrent_runs (0 is meaningful)
 	SessionAccessTokenTtlSeconds     int64        // access-token TTL in seconds; 0 = leave unchanged on update
 	SessionRefreshTokenTtlSeconds    int64        // refresh-token TTL in seconds; 0 = leave unchanged on update
-	// ContextCompactionEnabled / ContextCompactionPressureFrac /
-	// ContextRecentTurns / MemoryEnabled / MemoryDigestEntries are the typed
-	// compaction + memory policy columns (migration 20260916000000, D4).
-	// They serialize into the budget-JSON transport (context_compaction /
-	// memory keys) via BudgetJSON/ApplyBudgetJSON — the same keys the native
-	// session's policyFromSettings and a worker's budget_overrides parse —
-	// so tenant defaults + per-worker overrides layer through mergeBudgets.
+	// ContextCompactionEnabled / ContextCompactionPressureFrac / ContextRecentTurns / MemoryEnabled /
+	// MemoryDigestEntries are the typed compaction + memory policy columns (migration 20260916000000.
 	ContextCompactionEnabled      bool
 	ContextCompactionPressureFrac float64
 	ContextRecentTurns            int
@@ -143,40 +131,21 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 	return GetTenantSettings(ctx, tx, tenantID)
 }
 
-// UpdateTenantSettings upserts the tenant settings row with the provided
-// values. Empty/zero fields are NOT updated (only non-zero, non-empty values set).
-// Returns the full row after update.
-//
-// EXCEPTION — the stall thresholds are written verbatim, blank included: NULL
-// means "built-in default" and 0 means "disabled", so an absent value is a real
-// instruction ("go back to the default") rather than "leave it alone". Every
-// other column keeps the CASE-guarded preserve-on-zero behaviour.
+// UpdateTenantSettings upserts the tenant settings row with the provided values.
 func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in TenantSettingsRow) (TenantSettingsRow, error) {
-	// The INSERT branch supplies a value for default_budget_overrides, which
-	// is jsonb NOT NULL. A caller that leaves the field unset (nil/empty)
-	// must still yield a valid '{}' — passing literal NULL here makes the
-	// INSERT violate the NOT NULL constraint BEFORE the ON CONFLICT arbiter
-	// engages, so the upsert errors (or returns no row) instead of updating.
+	// The INSERT branch supplies a value for default_budget_overrides, which is jsonb NOT NULL.
 	if len(in.DefaultBudgetOverrides) == 0 {
 		in.DefaultBudgetOverrides = []byte("{}")
 	}
-	// The typed budget columns are written unconditionally on the ON CONFLICT
-	// DO UPDATE branch below, unlike every other field which is CASE-guarded
-	// to preserve the existing value. Guard against a caller that did NOT
-	// intend to change the budget (zero-value Budget + empty '{}' payload):
-	// overlay the current ladder/gates so a partial settings update (e.g. only
-	// editing log management) can never clobber a healthy budget with zeros.
+	// The typed budget columns are written unconditionally on the ON CONFLICT DO UPDATE branch below,
+	// unlike every other field which is CASE-guarded to preserve the existing value.
 	if budgetIsZero(in.Budget) {
 		if cur, err := GetTenantSettings(ctx, tx, tenantID); err == nil {
 			in.Budget = cur.Budget
 		}
 	}
-	// Same guard for the compaction/memory policy columns: an all-zero
-	// policy struct means the caller did not intend to change the policy
-	// (an explicit "disable" is never all-zero — disabling compaction still
-	// carries a valid pressure_frac/recent_turns, disabling memory still a
-	// valid digest_entries). Overlay the current policy so a partial
-	// settings update can never clobber stored policy with zeros.
+	// Same guard for the compaction/memory policy columns: an all-zero policy struct means the caller
+	// did not intend to change the policy (an explicit "disable" is never all-zero.
 	if !in.policyIsSet() {
 		if cur, err := GetTenantSettings(ctx, tx, tenantID); err == nil {
 			in.ContextCompactionEnabled = cur.ContextCompactionEnabled
@@ -186,12 +155,8 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 			in.MemoryDigestEntries = cur.MemoryDigestEntries
 		}
 	}
-	// The nine stall threshold columns are ASSIGNED in the SET clause below, not
-	// CASE-guarded like every other column: blank (NULL) means "use the built-in
-	// default", so a client that omits a field is explicitly asking for the
-	// default and must not have a stale value preserved behind its back. 0
-	// arrives meaning "disabled" and is stored as 0. A negative never reaches
-	// this layer — settings.Service.validateStallSettings rejects it.
+	// The nine stall threshold columns are ASSIGNED in the SET clause below, not CASE-guarded like
+	// every other column: blank (NULL) means "use the built-in default".
 	const q = `INSERT INTO tenant_settings (
 		tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
@@ -349,9 +314,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 	return TenantSettingsRow{}, fmt.Errorf("db: update tenant settings: no row returned")
 }
 
-// DeleteTenantSettings removes a tenant's settings row. Used by tests to
-// clean up scratch tenants; returns the number of rows deleted (0 when the
-// tenant had no row).
+// DeleteTenantSettings removes a tenant's settings row.
 func DeleteTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (int64, error) {
 	tag, err := tx.Exec(ctx, `DELETE FROM tenant_settings WHERE tenant_id = $1`, tenantID)
 	if err != nil {
@@ -398,23 +361,6 @@ func scanTenantSettings(row pgx.Rows) (TenantSettingsRow, error) {
 
 // AuditFields is the audited shape of a settings row: the map an `audit.Snapshot` records for a
 // `settings.updated` entry.
-//
-// IT LIVES ON THE ROW SO BOTH WRITE PATHS RECORD THE SAME THING. There are two: the SettingsService RPC
-// (the GUI form and the TUI's Edit tenant settings) and the agent-facing `update_settings` tool, which
-// writes tenant_settings directly without going through the service. Its snapshot used to name only the
-// default models and the session TTLs — so a stall threshold that had been changed, or blanked, left NO
-// trace, and an operator asking "did my save land?" could not be answered from the audit trail at all.
-// That question was asked for real, and the honest answer was "the trail does not record it".
-//
-// THE POINTERS ARE THE POINT: these columns are NULLABLE, and NULL means "use the built-in default" while
-// 0 means DISABLED. Marshalling them directly preserves that distinction in the snapshot (null vs 0), which
-// is exactly the fact a diagnostic needs — a flattened copy would report a blanked window and a
-// deliberately disabled one identically.
-//
-// The budget ladder and its JSON transport are deliberately EXCLUDED: the ladder carries the full text of
-// every warning message at each tier, so snapshotting it would put multiple KB into every audit row and
-// bury the small scalars. Audit the numbers that decide behaviour; if the ladder's gates need recording,
-// they belong as their own scalar summary rather than as that blob.
 func (r TenantSettingsRow) AuditFields() map[string]any {
 	return map[string]any{
 		"default_worker_model":       r.DefaultWorkerModel,

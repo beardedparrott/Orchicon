@@ -1,0 +1,36 @@
+# Orchicon workflow-runtime web-research variant.
+#
+# Everything in the base image, plus a headless browser research toolchain
+# (Playwright + Chromium and the extraction helpers work that has to read the
+# web needs). It is built FROM the base image so it inherits the toolchain,
+# the chowned-rootfs security model, and the org.orchicon.runtime-base label —
+# the base is always part of this image.
+#
+# NOTHING AN ADAPTER NEEDS IS BAKED IN HERE. Orchicon never ships, downloads,
+# or redistributes an adapter CLI (Claude Code, for example): the daemon mounts
+# the operator's own install into the container at create time. That is a
+# LICENCE constraint, not a preference — an adapter's terms can prohibit
+# bundling it with a product, and baking one here would make the image
+# non-redistributable. The `adapter-bake-guard` test enforces this.
+#
+# BASE_IMAGE lets container.sh point local builds at the locally-built
+# base (orchicon-runtime:local) while the release workflow defaults to
+# the published base.
+ARG BASE_IMAGE=ghcr.io/beardedparrott/orchicon-runtime:latest
+FROM ${BASE_IMAGE}
+
+USER root
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+      libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 \
+      libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2 \
+      fonts-liberation \
+ && rm -rf /var/lib/apt/lists/*
+
+# Playwright is handled by the runtime user's own `playwright install` — the
+# browser binaries land in the writable, ephemeral rootfs, not in this image.
+RUN npm install -g playwright@latest \
+ && chown -R 1000:1000 /usr /opt /var 2>/dev/null || true
+
+USER orchicon

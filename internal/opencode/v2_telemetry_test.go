@@ -58,9 +58,7 @@ const (
 	v2Diff = `{"type":"session.diff","data":{"sessionID":"ses_a","diff":[{"path":"frontend/src/App.tsx","additions":12,"deletions":3}]}}`
 )
 
-// TestV2StepEndedFeedsTheUsageRecorder is the token/cost half: it is why every
-// 2.x execution recorded zero tokens, and it is the dimension the budget ladder
-// and the compaction gate both read.
+// TestV2StepEndedFeedsTheUsageRecorder is the token/cost half.
 func TestV2StepEndedFeedsTheUsageRecorder(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -101,9 +99,8 @@ func TestV2StepEndedFeedsTheUsageRecorder(t *testing.T) {
 	}
 }
 
-// TestV2ToolResolutionIsShapedForTheConsumers pins the tool half: the transcript
-// row, the progress monitor's meaningful-action signal and the repetition
-// signature all read this v1 shape.
+// TestV2ToolResolutionIsShapedForTheConsumers pins the tool half: the transcript row, the progress
+// monitor's meaningful-action signal and the repetition signature all read this v1 shape.
 func TestV2ToolResolutionIsShapedForTheConsumers(t *testing.T) {
 	legacy, ok := LegacyEventFromBus(v2Bus(t, v2ToolSuccess))
 	if !ok {
@@ -131,11 +128,8 @@ func TestV2ToolResolutionIsShapedForTheConsumers(t *testing.T) {
 	}
 }
 
-// TestV2ToolNameAndInputAreCorrelated is the piece a single-event mapper cannot
-// do: 2.x carries the name on input.started and the input on called, and only the
-// id on the resolution. Losing the INPUT is not cosmetic — the repetition
-// signature is derived from it, so without it every call of one tool shares one
-// signature and a busy worker trips the repetition stall.
+// TestV2ToolNameAndInputAreCorrelated is the piece a single-event mapper cannot do: 2.x carries the
+// name on input.started and the input on called, and only the id on the resolution.
 func TestV2ToolNameAndInputAreCorrelated(t *testing.T) {
 	r := &sessionRun{}
 
@@ -226,9 +220,8 @@ func TestV2DiffBecomesAFileDiff(t *testing.T) {
 	}
 }
 
-// v2Monitor drives a monitor from RAW 2.x bus events through the real mappers,
-// exactly as session_run.handleEvent does: deltas become the "text" liveness
-// observation, everything else becomes its legacy event.
+// v2Monitor drives a monitor from RAW 2.x bus events through the real mappers, exactly as
+// session_run.handleEvent does: deltas become the "text" liveness observation.
 func v2Monitor(m *progressMonitor, raw string) {
 	var evt BusEvent
 	if err := json.Unmarshal([]byte(raw), &evt); err != nil {
@@ -245,12 +238,8 @@ func v2Monitor(m *progressMonitor, raw string) {
 	}
 }
 
-// TestAV2WorkingStreamIsNotATextLoop is THE ACCEPTANCE TEST for the bug this file
-// exists for: a healthy 2.x worker must not be killed as `text_loop`.
-//
-// It runs the tenant's real windows (no_progress 400s, text_loop at its 10-minute
-// default) against a realistic 2.x stream — streaming text, tool calls that
-// resolve, steps that end, a diff — and requires NO stall to fire.
+// TestAV2WorkingStreamIsNotATextLoop is THE ACCEPTANCE TEST for the bug this file exists for: a
+// healthy 2.x worker must not be killed as `text_loop`.
 func TestAV2WorkingStreamIsNotATextLoop(t *testing.T) {
 	w := stallWindows{
 		noProgress:  400 * time.Second,
@@ -288,10 +277,8 @@ func TestAV2WorkingStreamIsNotATextLoop(t *testing.T) {
 	}
 }
 
-// TestAV2StreamWithOnlyTextWouldHaveTripped is the CONTRAST that makes the test
-// above mean something: with the telemetry arms absent — the state of the world
-// that killed the real execution — the very same streaming text IS a text loop.
-// If this ever stops tripping, the test above has stopped discriminating.
+// TestAV2StreamWithOnlyTextWouldHaveTripped is the CONTRAST that makes the test above mean
+// something.
 func TestAV2StreamWithOnlyTextWouldHaveTripped(t *testing.T) {
 	w := stallWindows{
 		noProgress:  400 * time.Second,

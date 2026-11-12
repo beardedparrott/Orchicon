@@ -5,10 +5,8 @@ import (
 	"testing"
 )
 
-// TestClaudeAuthFailureClassifiesAuthErrors pins the canonical vocabulary:
-// an auth-looking claude CLI/transport failure is rewritten to the ONE
-// actionable host sign-in message, and a non-auth failure is left untouched
-// (so a compile error or a rate limit is never misreported as "not signed in").
+// TestClaudeAuthFailureClassifiesAuthErrors pins the canonical vocabulary: an auth-looking claude
+// CLI/transport failure is rewritten to the ONE actionable host sign-in message.
 func TestClaudeAuthFailureClassifiesAuthErrors(t *testing.T) {
 	authLooking := []string{
 		"Invalid API key",
@@ -42,11 +40,14 @@ func TestClaudeAuthFailureClassifiesAuthErrors(t *testing.T) {
 	}
 }
 
-// TestClaudeAuthRequiredMessageActionable pins the message contents the
-// acceptance criteria require: it must name the host-side remedy (run
-// `claude` and sign in) and the ANTHROPIC_API_KEY fallback.
+// TestClaudeAuthRequiredMessageActionable pins the message contents: the host-side remedy (run
+// `claude` and sign in), the ANTHROPIC_API_KEY fallback, AND the container-mode explanation.
 func TestClaudeAuthRequiredMessageActionable(t *testing.T) {
-	for _, want := range []string{"not authenticated", "host", "claude", "ANTHROPIC_API_KEY"} {
+	for _, want := range []string{
+		"not authenticated", "host", "claude", "ANTHROPIC_API_KEY",
+		// The container-mode half.
+		"container", "mounted", "never signs in for you",
+	} {
 		if !strings.Contains(ClaudeAuthRequiredMessage, want) {
 			t.Errorf("ClaudeAuthRequiredMessage %q is missing %q", ClaudeAuthRequiredMessage, want)
 		}

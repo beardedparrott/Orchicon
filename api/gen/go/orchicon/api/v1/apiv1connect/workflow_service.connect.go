@@ -95,6 +95,9 @@ const (
 	// WorkflowServiceRetryStepRunProcedure is the fully-qualified name of the WorkflowService's
 	// RetryStepRun RPC.
 	WorkflowServiceRetryStepRunProcedure = "/orchicon.api.v1.WorkflowService/RetryStepRun"
+	// WorkflowServiceGetWorkflowRunDiagnosisProcedure is the fully-qualified name of the
+	// WorkflowService's GetWorkflowRunDiagnosis RPC.
+	WorkflowServiceGetWorkflowRunDiagnosisProcedure = "/orchicon.api.v1.WorkflowService/GetWorkflowRunDiagnosis"
 	// WorkflowServiceForceProgressWorkflowRunProcedure is the fully-qualified name of the
 	// WorkflowService's ForceProgressWorkflowRun RPC.
 	WorkflowServiceForceProgressWorkflowRunProcedure = "/orchicon.api.v1.WorkflowService/ForceProgressWorkflowRun"
@@ -180,6 +183,25 @@ type WorkflowServiceClient interface {
 	// The step run's result and worker execution reference are cleared; the
 	// reconciler picks it up on the next cycle.
 	RetryStepRun(context.Context, *connect.Request[v1.RetryStepRunRequest]) (*connect.Response[v1.RetryStepRunResponse], error)
+	// GetWorkflowRunDiagnosis answers "why is this run not moving?" in the
+	// terms the reconcilers themselves use, so a stuck run stops being a
+	// guessing game.
+	//
+	// WHY THIS EXISTS. A run's blockage is usually RUN-EXTERNAL. Field
+	// incident: run 01M53DXZSF5G2T2Z592F7G5ETE sat "running" with an empty
+	// current step and no execution anywhere while the UI read "waiting for
+	// dispatch". The cause was the PROJECT's max-concurrent-runs cap, fully
+	// occupied by ten unreaped `unhealthy` executions — a fact no part of the
+	// run view could see, because the run view only ever loads the run's OWN
+	// step runs and executions. The per-step `_dispatch_wait` note said
+	// "waiting for a slot" and nothing said whose slot, or that ten dead
+	// executions were holding them all.
+	//
+	// The diagnosis therefore reports the run's own blocked steps AND the
+	// project-level dispatch state, plus the executions holding slots that
+	// the liveness probe considers dead — the ones the operator can clear
+	// with ReleaseStuckExecutions. Read-only: it classifies, it never acts.
+	GetWorkflowRunDiagnosis(context.Context, *connect.Request[v1.GetWorkflowRunDiagnosisRequest]) (*connect.Response[v1.GetWorkflowRunDiagnosisResponse], error)
 	// ForceProgressWorkflowRun advances a stuck running WorkflowRun past its
 	// current in-flight step run(s) regardless of their previous status.
 	//
@@ -343,6 +365,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("RetryStepRun")),
 			connect.WithClientOptions(opts...),
 		),
+		getWorkflowRunDiagnosis: connect.NewClient[v1.GetWorkflowRunDiagnosisRequest, v1.GetWorkflowRunDiagnosisResponse](
+			httpClient,
+			baseURL+WorkflowServiceGetWorkflowRunDiagnosisProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("GetWorkflowRunDiagnosis")),
+			connect.WithClientOptions(opts...),
+		),
 		forceProgressWorkflowRun: connect.NewClient[v1.ForceProgressWorkflowRunRequest, v1.ForceProgressWorkflowRunResponse](
 			httpClient,
 			baseURL+WorkflowServiceForceProgressWorkflowRunProcedure,
@@ -412,6 +440,7 @@ type workflowServiceClient struct {
 	listWorkflowRuns         *connect.Client[v1.ListWorkflowRunsRequest, v1.ListWorkflowRunsResponse]
 	getWorkflowStepRuns      *connect.Client[v1.GetWorkflowStepRunsRequest, v1.GetWorkflowStepRunsResponse]
 	retryStepRun             *connect.Client[v1.RetryStepRunRequest, v1.RetryStepRunResponse]
+	getWorkflowRunDiagnosis  *connect.Client[v1.GetWorkflowRunDiagnosisRequest, v1.GetWorkflowRunDiagnosisResponse]
 	forceProgressWorkflowRun *connect.Client[v1.ForceProgressWorkflowRunRequest, v1.ForceProgressWorkflowRunResponse]
 	retryFailedWorkflowRun   *connect.Client[v1.RetryFailedWorkflowRunRequest, v1.RetryFailedWorkflowRunResponse]
 	deleteWorkflowRun        *connect.Client[v1.DeleteWorkflowRunRequest, v1.DeleteWorkflowRunResponse]
@@ -500,6 +529,11 @@ func (c *workflowServiceClient) GetWorkflowStepRuns(ctx context.Context, req *co
 // RetryStepRun calls orchicon.api.v1.WorkflowService.RetryStepRun.
 func (c *workflowServiceClient) RetryStepRun(ctx context.Context, req *connect.Request[v1.RetryStepRunRequest]) (*connect.Response[v1.RetryStepRunResponse], error) {
 	return c.retryStepRun.CallUnary(ctx, req)
+}
+
+// GetWorkflowRunDiagnosis calls orchicon.api.v1.WorkflowService.GetWorkflowRunDiagnosis.
+func (c *workflowServiceClient) GetWorkflowRunDiagnosis(ctx context.Context, req *connect.Request[v1.GetWorkflowRunDiagnosisRequest]) (*connect.Response[v1.GetWorkflowRunDiagnosisResponse], error) {
+	return c.getWorkflowRunDiagnosis.CallUnary(ctx, req)
 }
 
 // ForceProgressWorkflowRun calls orchicon.api.v1.WorkflowService.ForceProgressWorkflowRun.
@@ -601,6 +635,25 @@ type WorkflowServiceHandler interface {
 	// The step run's result and worker execution reference are cleared; the
 	// reconciler picks it up on the next cycle.
 	RetryStepRun(context.Context, *connect.Request[v1.RetryStepRunRequest]) (*connect.Response[v1.RetryStepRunResponse], error)
+	// GetWorkflowRunDiagnosis answers "why is this run not moving?" in the
+	// terms the reconcilers themselves use, so a stuck run stops being a
+	// guessing game.
+	//
+	// WHY THIS EXISTS. A run's blockage is usually RUN-EXTERNAL. Field
+	// incident: run 01M53DXZSF5G2T2Z592F7G5ETE sat "running" with an empty
+	// current step and no execution anywhere while the UI read "waiting for
+	// dispatch". The cause was the PROJECT's max-concurrent-runs cap, fully
+	// occupied by ten unreaped `unhealthy` executions — a fact no part of the
+	// run view could see, because the run view only ever loads the run's OWN
+	// step runs and executions. The per-step `_dispatch_wait` note said
+	// "waiting for a slot" and nothing said whose slot, or that ten dead
+	// executions were holding them all.
+	//
+	// The diagnosis therefore reports the run's own blocked steps AND the
+	// project-level dispatch state, plus the executions holding slots that
+	// the liveness probe considers dead — the ones the operator can clear
+	// with ReleaseStuckExecutions. Read-only: it classifies, it never acts.
+	GetWorkflowRunDiagnosis(context.Context, *connect.Request[v1.GetWorkflowRunDiagnosisRequest]) (*connect.Response[v1.GetWorkflowRunDiagnosisResponse], error)
 	// ForceProgressWorkflowRun advances a stuck running WorkflowRun past its
 	// current in-flight step run(s) regardless of their previous status.
 	//
@@ -760,6 +813,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("RetryStepRun")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceGetWorkflowRunDiagnosisHandler := connect.NewUnaryHandler(
+		WorkflowServiceGetWorkflowRunDiagnosisProcedure,
+		svc.GetWorkflowRunDiagnosis,
+		connect.WithSchema(workflowServiceMethods.ByName("GetWorkflowRunDiagnosis")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceForceProgressWorkflowRunHandler := connect.NewUnaryHandler(
 		WorkflowServiceForceProgressWorkflowRunProcedure,
 		svc.ForceProgressWorkflowRun,
@@ -842,6 +901,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceGetWorkflowStepRunsHandler.ServeHTTP(w, r)
 		case WorkflowServiceRetryStepRunProcedure:
 			workflowServiceRetryStepRunHandler.ServeHTTP(w, r)
+		case WorkflowServiceGetWorkflowRunDiagnosisProcedure:
+			workflowServiceGetWorkflowRunDiagnosisHandler.ServeHTTP(w, r)
 		case WorkflowServiceForceProgressWorkflowRunProcedure:
 			workflowServiceForceProgressWorkflowRunHandler.ServeHTTP(w, r)
 		case WorkflowServiceRetryFailedWorkflowRunProcedure:
@@ -929,6 +990,10 @@ func (UnimplementedWorkflowServiceHandler) GetWorkflowStepRuns(context.Context, 
 
 func (UnimplementedWorkflowServiceHandler) RetryStepRun(context.Context, *connect.Request[v1.RetryStepRunRequest]) (*connect.Response[v1.RetryStepRunResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.RetryStepRun is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) GetWorkflowRunDiagnosis(context.Context, *connect.Request[v1.GetWorkflowRunDiagnosisRequest]) (*connect.Response[v1.GetWorkflowRunDiagnosisResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.GetWorkflowRunDiagnosis is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) ForceProgressWorkflowRun(context.Context, *connect.Request[v1.ForceProgressWorkflowRunRequest]) (*connect.Response[v1.ForceProgressWorkflowRunResponse], error) {

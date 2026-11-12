@@ -9,12 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// AuditEventRow is the data-access shape of an audit_events row
-// (docs/09 §3.x, db/migrations/..._audit_events.sql). It mirrors the
-// policy_decisions write pattern: the caller owns the transaction, this
-// helper inserts, the caller commits — so the audit row exists iff the
-// mutation it records committed (transactional-outbox, AGENTS.md
-// invariant #3).
+// AuditEventRow is the data-access shape of an audit_events row (docs/09 §3.x,
+// db/migrations/..._audit_events.sql).
 type AuditEventRow struct {
 	ID              string // ULID
 	TenantID        string // scopes the row via RLS
@@ -30,10 +26,7 @@ type AuditEventRow struct {
 	OccurredAt      time.Time
 }
 
-// CreateAuditEvent inserts an audit row within the given transaction. It
-// must be called in the same transaction as the mutation so the audit row
-// and the state change commit atomically. The row is tenant-scoped via the
-// TenantTx's app.tenant_id session variable and enforced again by RLS.
+// CreateAuditEvent inserts an audit row within the given transaction.
 func CreateAuditEvent(ctx context.Context, tx pgx.Tx, r AuditEventRow) error {
 	if r.ID == "" {
 		r.ID = NewID()
@@ -81,13 +74,8 @@ type AuditEventScanRow struct {
 	OccurredAt      time.Time
 }
 
-// ListAuditEvents returns a page of audit rows for the tenant, newest
-// first, keyset-paginated on (occurred_at, id). Every filter is optional;
-// the empty-string filter value selects all rows, and a zero startTime/
-// endTime means "no bound" (the 'epoch' sentinel pattern from usage.go).
-// startTime is an inclusive lower bound; endTime is an exclusive upper
-// bound on occurred_at. RLS is the backstop for tenant isolation even
-// though the query also scopes on tenant_id.
+// ListAuditEvents returns a page of audit rows for the tenant, newest first, keyset-paginated on
+// (occurred_at, id).
 func (p *Pool) ListAuditEvents(ctx context.Context, tenantID, action, actorID, targetType, targetID, pageToken string, pageSize int, startTime, endTime time.Time) ([]AuditEventScanRow, error) {
 	const q = `SELECT id, tenant_id, actor_identity_id, actor_type, auth_method, action,
 		target_type, target_id, before, after, trace_id, occurred_at

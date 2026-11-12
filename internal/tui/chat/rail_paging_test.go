@@ -1,12 +1,6 @@
 package chat
 
 // rail_paging_test.go — the rail must be able to SEE every conversation.
-//
-// The defect this pins: LoadConversations asked for one page of 100 and threw away
-// `next_page_token`, so the rail was a fixed "newest 100" window over an unlimited table.
-// On a tenant holding 184 conversations (132 of them newer test rows) the operator's own
-// history fell past rank 100 and the rail could never ask for it again — which presents as
-// "all my conversations disappeared", because nothing on screen says a filter is in play.
 
 import (
 	"context"
@@ -45,9 +39,8 @@ func (s *pagingAsk) ListConversations(_ context.Context, req *connect.Request[ap
 		}
 		start = n
 	}
-	// The server CLAMPS anything over 100 down to its own default, so a client asking for
-	// more than 100 gets a HALF page and a token — the stub models that, because a rail that
-	// asked for 500 would otherwise look correct here and page twice as often in production.
+	// The server CLAMPS anything over 100 down to its own default, so a client asking for more than 100
+	// gets a HALF page and a token — the stub models.
 	size := int(req.Msg.GetPageSize())
 	if size <= 0 || size > 100 {
 		size = 50

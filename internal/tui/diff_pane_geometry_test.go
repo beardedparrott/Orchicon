@@ -13,12 +13,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/diffs"
 )
 
-// TestDiffPaneComposedGeometryUnchanged is the anti-tear gate for the wrap +
-// viewport + scrollbar work: at several terminal sizes, the composed App.View()
-// has exactly the terminal's row count, every row is exactly the terminal width,
-// and the pane's column band is exactly diffPaneWidth() wide. It is what pins
-// that the pane's outer geometry did NOT change even though its body now reserves
-// a scrollbar column and its content is one cell narrower than the panel.
+// TestDiffPaneComposedGeometryUnchanged is the anti-tear gate for the wrap + viewport + scrollbar
+// work: at several terminal sizes, the composed App.View() has exactly the terminal's row count.
 func TestDiffPaneComposedGeometryUnchanged(t *testing.T) {
 	prev := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.Ascii)
@@ -46,9 +42,8 @@ func TestDiffPaneComposedGeometryUnchanged(t *testing.T) {
 				}
 			}
 
-			// The pane occupies columns [0, pw); no row may be wider than pw
-			// before the content joins on — read the pane's OWN view, which the
-			// shell normalizes to exactly pw.
+			// The pane occupies columns [0, pw); no row may be wider than pw before the content joins on — read
+			// the pane's OWN view, which the shell normalizes to exactly pw.
 			paneLines := normalizeBlock(m.diffPane.View(), pw, m.screenRows()+m.dock.Lines()+m.panelRows())
 			for i, l := range paneLines {
 				if w := ansi.StringWidth(l); w != pw {
@@ -59,10 +54,8 @@ func TestDiffPaneComposedGeometryUnchanged(t *testing.T) {
 	}
 }
 
-// TestDiffPaneNarrowRendersOneColumn is the measured-collapse acceptance
-// criterion at the COMPOSED level: the narrow terminal (80 cols, pane at its
-// 48-cell floor) renders the diff in ONE readable column, while a wide one shows
-// the two-column side-by-side layout.
+// TestDiffPaneNarrowRendersOneColumn is the measured-collapse acceptance criterion at the COMPOSED
+// level: the narrow terminal (80 cols.
 func TestDiffPaneNarrowRendersOneColumn(t *testing.T) {
 	prev := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.Ascii)

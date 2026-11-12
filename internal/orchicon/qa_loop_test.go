@@ -1,9 +1,6 @@
 package orchicon
 
-// QA acceptance-criterion tests for the session engine agent loop
-// (ADR-0007). All tests run against the scripted mock provider — no live
-// API. Several tests intentionally FAIL, demonstrating defects found in
-// review (the assertion comments name the bug).
+// QA acceptance-criterion tests for the session engine agent loop.
 
 import (
 	"context"
@@ -35,10 +32,7 @@ func qaSession(t *testing.T, prov Provider, tools ToolRegistry) *Session {
 	return s
 }
 
-// noToolsProvider honestly reports no tool capability. Guards the
-// no-tools-wire defense: the loop must refuse to send a tool-less request
-// (a tool-trained model would improvise its native token-format tool calls
-// as plain text — the silent-instant-finish bug class).
+// noToolsProvider honestly reports no tool capability.
 type noToolsProvider struct {
 	turns []scriptedTurn
 	sent  []TurnRequest
@@ -130,9 +124,7 @@ func TestQATextOnlyCallbackParity(t *testing.T) {
 	}
 }
 
-// AC1: tool round → OnToolCall + tool result back in history + loop
-// continues. Verifies BUG-1 fix (assistant tool_use precedes tool results
-// in history).
+// AC1: tool round → OnToolCall + tool result back in history + loop continues.
 func TestQAToolRoundHistory(t *testing.T) {
 	tools := newMockTools()
 	tools.results["read"] = "file contents"
@@ -232,9 +224,8 @@ func TestQAManifestIdentityInput(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	req := prov.lastRequest()
-	// ADR-0009 two-zone layout: block 0 is the cached static prefix —
-	// composite prompt verbatim, then the thin native layer + env facts.
-	// No mutable state yet → the single cached block only.
+	// two-zone layout: block 0 is the cached static prefix — composite prompt verbatim, then
+	// the thin native layer + env facts.
 	if len(req.System) != 1 || !req.System[0].Cache {
 		t.Errorf("system = %+v, want one cache-flagged block", req.System)
 	}
@@ -275,9 +266,8 @@ func TestQAInjectionMidRun(t *testing.T) {
 	}
 }
 
-// AC: cancellation — cancelling the context stops the loop gracefully
-// (no new provider call), marks the transcript cancelled, and leaves the
-// session resumable.
+// AC: cancellation — cancelling the context stops the loop gracefully (no new provider call), marks
+// the transcript cancelled, and leaves the session resumable.
 func TestQACancellation(t *testing.T) {
 	prov := &mockProvider{turns: []scriptedTurn{
 		{events: []Event{TextDelta{Text: "never"}}, finish: StopStop, usage: Usage{InputTokens: 1, OutputTokens: 1}},
@@ -342,9 +332,8 @@ func TestQANoProgressGuardNeedsRepeat(t *testing.T) {
 	}
 }
 
-// AC: runaway tool use is stopped by the tool-call budget ladder (not a
-// step guillotine): the tool_call_count abort tier fails the session with
-// budget_abort:tool_call_count, terminal-direct with no stall.
+// AC: runaway tool use is stopped by the tool-call budget ladder (not a step guillotine): the
+// tool_call_count abort tier fails the session with budget_abort:tool_call_count.
 func TestQAToolsBudgetAbort(t *testing.T) {
 	tools := newMockTools()
 	tools.results["noop"] = "ok"
@@ -531,9 +520,6 @@ func TestQABridgeCapabilities(t *testing.T) {
 }
 
 // AC: ContinueSession verifies identity; identity-less transcript refused.
-// The follow-up fires-and-forgets: on success the RPC returns "" (the
-// reply flows via the durable transcript, never the RPC field), and the
-// provider turn runs against the same worker as the prior session.
 func TestQAContinueSessionIdentityVerified(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".orchicon", "sessions", "exec_prior.jsonl")
@@ -567,9 +553,8 @@ func TestQAContinueSessionIdentityVerified(t *testing.T) {
 	if reply != "" {
 		t.Fatalf("reply = %q, want empty (async — reply flows via transcript)", reply)
 	}
-	// Fire-and-forget follow-up: wait for the async session to finish so
-	// t.TempDir() cleanup never races a still-writing session (the
-	// "directory not empty" flake under the full suite).
+	// Fire-and-forget follow-up: wait for the async session to finish so t.TempDir() cleanup never
+	// races a still-writing session (the "directory not empty" flake under the full suite).
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) && prov.requestCount() < 1 {
 		time.Sleep(10 * time.Millisecond)
@@ -601,12 +586,8 @@ func (p *panicProvider) Capabilities() Capabilities {
 	return Capabilities{Streaming: true, Tools: true}
 }
 
-// AC: sequence continuation (opt-in, DEFAULT OFF) — a new session seeded
-// from a prior session's transcript replays the full prior conversation
-// into history (the provider sees the prior goal + assistant tool_use +
-// tool result), the new goal arrives as the LAST user message, and the
-// new session's own header identity is its own execution id (identity
-// isolation preserved — no worker sees another worker's transcript).
+// AC: sequence continuation (opt-in, DEFAULT OFF) — a new session seeded from a prior session's
+// transcript replays the full prior conversation into history (the provider sees the prior goal +.
 func TestQASequenceContinuation(t *testing.T) {
 	dir := t.TempDir()
 
@@ -634,9 +615,8 @@ func TestQASequenceContinuation(t *testing.T) {
 		t.Fatalf("rename prior transcript: %v", err)
 	}
 
-	// Continuing session: SAME worker (identity isolation), new execution
-	// id, new goal (a chain's next step), seeded from the prior
-	// transcript.
+	// Continuing session: SAME worker (identity isolation), new execution id, new goal (a chain's next
+	// step), seeded from the prior transcript.
 	tools := newMockTools()
 	tools.results["read"] = "file contents"
 	prov := &mockProvider{turns: []scriptedTurn{
@@ -733,27 +713,14 @@ func TestQASetContinuationRefusesCrossWorker(t *testing.T) {
 	}
 }
 
-// 2026-09-09 follow-up swallow regression (exec
-// 01M23KR5AAR2GQXS42XSZBZ5QX): a follow-up that settles StopStop with NO
-// substance (no tool calls, no meaningful text — just one line and stop)
-// must NOT settle as a hollow "done". It is probed (bounded) so the model
-// is asked to actually answer; a substantive reply (tool work or real
-// text) settles directly.
+// 2026-09-09 follow-up swallow regression (exec 01M23KR5AAR2GQXS42XSZBZ5QX): a follow-up that
+// settles StopStop with NO substance (no tool calls, no meaningful text.
 
-// 2026-09-09 follow-up thread semantics (exec 01M23KR5AAR2GQXS42XSZBZ5QX):
-// a follow-up is a CONVERSATION TURN, not a completion. There is NO
-// substance heuristic and NO completion probe for follow-ups: every reply
-// (short, long, empty, tool-driven) is a legitimate turn the user can
-// build on with the next message, and the thread stays open via the
-// durable session. A follow-up never fires a re-terminalizing verdict on
-// the execution (already terminal from the main run); it reports to the
-// follow-up callbacks and returns so the next ContinueSession continues
-// the same thread.
+// 2026-09-09 follow-up thread semantics (exec 01M23KR5AAR2GQXS42XSZBZ5QX): a follow-up is a
+// CONVERSATION TURN, not a completion.
 func TestQAFollowUpOpenThreadAnyReplySettles(t *testing.T) {
 	prov := &mockProvider{turns: []scriptedTurn{
-		// The reported repro: a one-line reply with no tools and no
-		// summary. This is a VALID conversation turn — the thread stays
-		// open; the user keeps asking on the same session.
+		// The reported repro: a one-line reply with no tools and no summary.
 		{events: []Event{TextDelta{Text: "Opening the PR against develop and merging now."}}, finish: StopStop, bare: true, usage: Usage{InputTokens: 4, OutputTokens: 12}},
 	}}
 	s := qaSession(t, prov, nil)
@@ -776,10 +743,8 @@ func TestQAFollowUpOpenThreadAnyReplySettles(t *testing.T) {
 	}
 }
 
-// An EMPTY follow-up reply (provider stopped with no text and no tools)
-// is also a valid (empty) turn — the thread stays open; the bridge
-// surfaces an explicit 'no response — retry' hint rather than a hollow
-// success or a dead thread. No probe is fired.
+// An EMPTY follow-up reply (provider stopped with no text and no tools) is also a valid (empty)
+// turn — the thread stays open; the bridge surfaces an explicit 'no response.
 func TestQAFollowUpEmptyReplyThreadStaysOpen(t *testing.T) {
 	prov := &mockProvider{turns: []scriptedTurn{
 		{events: []Event{}, finish: StopStop, bare: true, usage: Usage{InputTokens: 3, OutputTokens: 0}},
@@ -797,13 +762,8 @@ func TestQAFollowUpEmptyReplyThreadStaysOpen(t *testing.T) {
 	}
 }
 
-// 2026-09-09 bounded-replay regression (exec 01M23KR5AAR2GQXS42XSZBZ5QX):
-// a follow-up replayed the ENTIRE prior run's transcript — tool outputs up
-// to 128 KiB each live-capped, replayed UNcapped → ~600KB / ~150K tokens of
-// history, which free models cannot handle (text-only or empty replies,
-// the observed "one line then nothing" follow-up behavior). Replay now
-// applies a much smaller per-result cap (capReplayToolOutput) so a long
-// run's history stays proportional.
+// 2026-09-09 bounded-replay regression (exec 01M23KR5AAR2GQXS42XSZBZ5QX): a follow-up replayed the
+// ENTIRE prior run's transcript — tool outputs up to 128 KiB each live-capped.
 func TestReplayCapsToolOutputs(t *testing.T) {
 	big := strings.Repeat("x", replayToolOutputCap*3) // ~18 KiB
 	s := qaSession(t, &mockProvider{turns: []scriptedTurn{{
@@ -830,11 +790,8 @@ func TestReplayCapsToolOutputs(t *testing.T) {
 	}
 }
 
-// 2026-09-09 follow-up contract regression: a follow-up session's system
-// prompt MUST carry the follow-up overlay (the standing worker contract
-// says "no human, work autonomously", which made the model answer every
-// follow-up with one acknowledgment line and no tool calls). A normal
-// session must NOT carry it.
+// 2026-09-09 follow-up contract regression: a follow-up session's system prompt MUST carry the
+// follow-up overlay (the standing worker contract says "no human, work autonomously".
 func TestFollowUpSystemOverlay(t *testing.T) {
 	s := qaSession(t, &mockProvider{turns: []scriptedTurn{}}, nil)
 	normal := s.AssembleSystem()

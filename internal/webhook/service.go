@@ -22,9 +22,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Service implements the WebhookService Connect handler
-// (docs/07_API_Specification.md §3.11). Subscriptions are tenant-scoped;
-// deliveries are recorded per attempt with retry + dead-letter.
+// Service implements the WebhookService Connect handler (docs/07_API_Specification.md §3.11).
 type Service struct {
 	pool       *db.Pool
 	log        *slog.Logger
@@ -48,9 +46,8 @@ const maxURLLen = 2048
 // CreateSubscription validates + creates a webhook subscription.
 // --- helpers ---------------------------------------------------------------
 
-// recordAudit writes an actor-based audit row in the caller's tx,
-// resolving the actor from the request context. Must be called in the
-// same transaction as the mutation so the row commits atomically.
+// recordAudit writes an actor-based audit row in the caller's tx, resolving the actor from the
+// request context.
 func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, targetID string, before, after json.RawMessage) error {
 	e := auth.ActorFromContext(ctx)
 	if e.TenantID == "" {
@@ -64,9 +61,8 @@ func recordAudit(ctx context.Context, tx pgx.Tx, tenantID, action, targetType, t
 	return audit.Record(ctx, tx, e)
 }
 
-// subAuditSnapshot is the non-secret projection of a webhook
-// subscription for the audit trail. The HMAC secret is NEVER included
-// (only the hint is safe); target_url can embed credentials — excluded.
+// The HMAC secret is NEVER included (only the hint is safe); target_url can embed credentials —
+// excluded.
 func subAuditSnapshot(r db.EventSubscriptionRow) map[string]any {
 	return map[string]any{
 		"id":           r.ID,
@@ -292,11 +288,7 @@ func (s *Service) DeleteSubscription(ctx context.Context, req *connect.Request[a
 	return connect.NewResponse(&apiv1.DeleteSubscriptionResponse{}), nil
 }
 
-// TestSubscription sends a test event to the subscription endpoint. The
-// delivery row, its result, and the audit row commit in ONE tenant
-// transaction (transactional outbox — AC1): the test POST is bounded by
-// the dispatcher's 15s client timeout, so the tx is never held open
-// across a hanging target.
+// TestSubscription sends a test event to the subscription endpoint.
 func (s *Service) TestSubscription(ctx context.Context, req *connect.Request[apiv1.TestSubscriptionRequest]) (*connect.Response[apiv1.TestSubscriptionResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
@@ -382,9 +374,7 @@ func (s *Service) ListDeliveries(ctx context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(resp), nil
 }
 
-// ReplayDelivery re-enqueues a dead-lettered delivery. The replayed
-// delivery row and the audit row commit in ONE tenant transaction
-// (transactional outbox — AC1).
+// ReplayDelivery re-enqueues a dead-lettered delivery.
 func (s *Service) ReplayDelivery(ctx context.Context, req *connect.Request[apiv1.ReplayDeliveryRequest]) (*connect.Response[apiv1.ReplayDeliveryResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {

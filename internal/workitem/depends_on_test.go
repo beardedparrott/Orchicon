@@ -89,9 +89,8 @@ func dependsOnAdd(t *testing.T, ctx context.Context, s *Service, projectID, from
 	return res.Msg.Dependency, nil
 }
 
-// TestDependsOnCreateDB verifies create accepts a dependency list, the
-// payload round-trips it, and the edges land in the dependency table
-// (independent of the parent/child hierarchy).
+// TestDependsOnCreateDB verifies create accepts a dependency list, the payload round-trips it, and
+// the edges land in the dependency table (independent of the parent/child hierarchy).
 func TestDependsOnCreateDB(t *testing.T) {
 	ctx, pool, s, proj := dependsOnTestEnv(t)
 
@@ -170,10 +169,7 @@ func TestDependsOnCreateValidationDB(t *testing.T) {
 	_ = target
 }
 
-// TestDependsOnUpdateReplaceDB verifies set-replace semantics: an update
-// fully replaces the outgoing depends_on set, an empty list clears all
-// edges, and an absent field leaves them unchanged. Get/List return the
-// field too.
+// TestDependsOnUpdateReplaceDB verifies set-replace semantics.
 func TestDependsOnUpdateReplaceDB(t *testing.T) {
 	ctx, pool, s, proj := dependsOnTestEnv(t)
 
@@ -305,9 +301,8 @@ func TestDependsOnUpdateCycleDB(t *testing.T) {
 	}
 }
 
-// TestDependsOnUpdateProjectMoveGuardDB verifies an item that participates
-// in any dependency edge (outgoing or incoming) cannot be moved to another
-// project, while an edge-free item still can.
+// TestDependsOnUpdateProjectMoveGuardDB verifies an item that participates in any dependency edge
+// (outgoing or incoming) cannot be moved to another project, while an edge-free item still can.
 func TestDependsOnUpdateProjectMoveGuardDB(t *testing.T) {
 	ctx, _, s, projA := dependsOnTestEnv(t)
 	projB := validateParentProject(t, ctx, s.pool)
@@ -350,9 +345,8 @@ func TestDependsOnUpdateProjectMoveGuardDB(t *testing.T) {
 	}
 }
 
-// TestDependsOnAddCycleDirectDB verifies AddDependency rejects a direct
-// 2-node cycle (A→B then B→A) with a FailedPrecondition whose message
-// names the offending edge, and that nothing persists.
+// TestDependsOnAddCycleDirectDB verifies AddDependency rejects a direct 2-node cycle (A→B then B→A)
+// with a FailedPrecondition whose message names the offending edge, and that nothing persists.
 func TestDependsOnAddCycleDirectDB(t *testing.T) {
 	ctx, pool, s, proj := dependsOnTestEnv(t)
 
@@ -411,9 +405,8 @@ func TestDependsOnAddMultiHopCycleDB(t *testing.T) {
 	}
 }
 
-// TestDependsOnUpdateMultiHopCycleDB verifies a set-replace that would
-// close a multi-hop cycle (A→B→C→A) is rejected (FailedPrecondition)
-// and rolls the whole tx back.
+// TestDependsOnUpdateMultiHopCycleDB verifies a set-replace that would close a multi-hop cycle
+// (A→B→C→A) is rejected (FailedPrecondition) and rolls the whole tx back.
 func TestDependsOnUpdateMultiHopCycleDB(t *testing.T) {
 	ctx, pool, s, proj := dependsOnTestEnv(t)
 
@@ -472,9 +465,8 @@ func TestDependsOnBlocksCycleDB(t *testing.T) {
 	}
 }
 
-// TestDependsOnRelatesToSymmetricDB verifies a symmetric relates_to pair
-// (A relates_to B and B relates_to A) is allowed — relates_to is not a
-// DAG edge and must never be flagged as a cycle.
+// TestDependsOnRelatesToSymmetricDB verifies a symmetric relates_to pair (A relates_to B and B
+// relates_to A) is allowed — relates_to is not a DAG edge and must never be flagged as a cycle.
 func TestDependsOnRelatesToSymmetricDB(t *testing.T) {
 	ctx, pool, s, proj := dependsOnTestEnv(t)
 
@@ -491,11 +483,8 @@ func TestDependsOnRelatesToSymmetricDB(t *testing.T) {
 	}
 }
 
-// TestDependsOnRelatesToMixedCaseDB verifies the edge-type gate: with an
-// existing A depends_on B, adding B relates_to A must be ALLOWED (the
-// traversal filter alone would falsely walk A→B, reach B = `from`, and
-// report a cycle). Also pins that a relates_to self-loop is still
-// rejected by the service's self-dependency rule.
+// TestDependsOnRelatesToMixedCaseDB verifies the edge-type gate: with an existing A depends_on B,
+// adding B relates_to A must be ALLOWED (the traversal filter alone would falsely walk A→B.
 func TestDependsOnRelatesToMixedCaseDB(t *testing.T) {
 	ctx, _, s, proj := dependsOnTestEnv(t)
 
@@ -516,9 +505,7 @@ func TestDependsOnRelatesToMixedCaseDB(t *testing.T) {
 	}
 }
 
-// TestDependsOnCreateCannotCycleDB documents the create-path invariant:
-// a fresh item has no incoming edges, so an outgoing item→target edge can
-// never close a cycle no matter what the graph around it looks like.
+// TestDependsOnCreateCannotCycleDB documents the create-path invariant.
 func TestDependsOnCreateCannotCycleDB(t *testing.T) {
 	ctx, _, s, proj := dependsOnTestEnv(t)
 
@@ -538,11 +525,8 @@ func TestDependsOnCreateCannotCycleDB(t *testing.T) {
 	}
 }
 
-// TestDependsOnTriggerBackstopDB proves the DB trigger enforces the DAG
-// invariant for writes that bypass the service layer entirely (the bulk
-// import / raw-SQL path): a cyclic edge inserted directly is rejected
-// and never persists, a relates_to self-loop is rejected on every type,
-// and the relates_to exemption holds at the DB layer too.
+// TestDependsOnTriggerBackstopDB proves the DB trigger enforces the DAG invariant for writes that
+// bypass the service layer entirely (the bulk import / raw-SQL path).
 func TestDependsOnTriggerBackstopDB(t *testing.T) {
 	ctx, pool, s, proj := dependsOnTestEnv(t)
 
@@ -604,18 +588,13 @@ func TestDependsOnTriggerBackstopDB(t *testing.T) {
 	}
 }
 
-// TestBlockedByAttachNamesBlockersDB verifies the server names blocking
-// edges on every read path (AC #1, server authority). The batch attach
-// (ListWorkItems / GetDependencyGraph) must put each blocker on the item it
-// actually blocks — a regression where the batch attached rows by the
-// blocker's id (dropping the edges, or attaching a self-blocker when the
-// blocker shares the page).
+// TestBlockedByAttachNamesBlockersDB verifies the server names blocking edges on every read path
+// (AC #1, server authority).
 func TestBlockedByAttachNamesBlockersDB(t *testing.T) {
 	ctx, pool, s, proj := dependsOnTestEnv(t)
 
-	// Create blocker→dependent edges directly in the direction the dispatch
-	// gate uses (from_id = blocker, to_id = dependent — the same direction
-	// ListUnsatisfiedDependencies / CheckDependenciesSatisfied read).
+	// Create blocker→dependent edges directly in the direction the dispatch gate uses (from_id =
+	// blocker, to_id = dependent.
 	addBlock := func(blockerID, depID string) {
 		t.Helper()
 		ttx, err := pool.BeginTenantTx(ctx, validateParentTestTenant)
@@ -713,13 +692,8 @@ func TestBlockedByAttachNamesBlockersDB(t *testing.T) {
 	_ = pool
 }
 
-// TestSkippedBlockerSatisfiesDependencyGateDB pins the shared terminal-
-// success predicate at the SQL gate level (AC1 + AC3): a skipped blocker
-// satisfies CheckDependenciesSatisfied and is absent from
-// ListUnsatisfiedDependencies (never named in blocked_by), while a failed
-// blocker keeps the dependent blocked and stays named (AC2). The two SQL
-// sites share terminalSuccessStatuses, so the dispatch gate and the
-// read-time blocked_by list can never disagree.
+// TestSkippedBlockerSatisfiesDependencyGateDB pins the shared terminal- success predicate at the
+// SQL gate level (AC1 + AC3).
 func TestSkippedBlockerSatisfiesDependencyGateDB(t *testing.T) {
 	ctx, pool, s, proj := dependsOnTestEnv(t)
 
@@ -811,11 +785,8 @@ func TestSkippedBlockerSatisfiesDependencyGateDB(t *testing.T) {
 	}
 }
 
-// TestMapDBErrorDependencyCycle verifies the trigger's cycle rejection —
-// which the service surfaces when the concurrent serialization path catches
-// an app write (the app-layer check ran against stale state) — is mapped to
-// a FailedPrecondition naming the offending edge, not an opaque Internal.
-// Pure unit test: no DB required.
+// TestMapDBErrorDependencyCycle verifies the trigger's cycle rejection — which the service surfaces
+// when the concurrent serialization path catches an app write (the app-layer check ran against.
 func TestMapDBErrorDependencyCycle(t *testing.T) {
 	pgErr := &pgconn.PgError{Code: "P0001", Message: "cannot add dependency w_a -> w_b: would create a cycle in the work DAG"}
 	err := mapDBError(pgErr)
@@ -836,12 +807,8 @@ func TestMapDBErrorDependencyCycle(t *testing.T) {
 	}
 }
 
-// TestDependsOnConcurrentRaceClosedDB proves the DB trigger's per-project
-// transactional advisory lock closes the concurrent-write TOCTOU race:
-// two transactions inserting A→B and B→A at the same time cannot both
-// pass the reachability walk and commit a live cycle. tx1 commits A→B;
-// tx2, queued on the advisory lock until then, re-walks the graph after
-// tx1 commits, sees A→B, and is rejected — the cycle never persists.
+// TestDependsOnConcurrentRaceClosedDB proves the DB trigger's per-project transactional advisory
+// lock closes the concurrent-write TOCTOU race.
 func TestDependsOnConcurrentRaceClosedDB(t *testing.T) {
 	ctx, pool, s, proj := dependsOnTestEnv(t)
 
@@ -890,10 +857,8 @@ func TestDependsOnConcurrentRaceClosedDB(t *testing.T) {
 	}()
 	pid := <-pidCh
 
-	// Barrier: wait until tx2 is visibly queued on the advisory lock
-	// (granted=false) before releasing tx1 — otherwise the interleaving is
-	// sequential (tx2 after tx1 committed) and the race we mean to test
-	// was not exercised.
+	// Barrier: wait until tx2 is visibly queued on the advisory lock (granted=false) before releasing
+	// tx1 — otherwise the interleaving is sequential (tx2 after tx1 committed) and the race we mean.
 	deadline := time.Now().Add(5 * time.Second)
 	blocked := false
 	for time.Now().Before(deadline) {

@@ -1,16 +1,5 @@
-// Package telemetry sets up the OpenTelemetry pipeline: tracer,
-// meter, log exporter, and OTLP gRPC exporter (→ Grafana stack
-// via the OTel collector in deploy/compose). Per docs/08 §5,
-// telemetry flows from the producer to the OTel collector to Grafana
-// — it does not flow through NATS.
-//
-// The pipeline is best-effort: if the collector is unreachable,
-// telemetry is dropped with bounded in-process buffering and control
-// flow is not blocked (docs/08 §8 invariant #5).
-//
-// The gRPC connection to the collector is non-blocking (grpc.NewClient
-// dials in the background), so the control plane starts immediately
-// without waiting for the telemetry stack to be healthy.
+// Package telemetry sets up the OpenTelemetry pipeline: tracer, meter, log exporter, and OTLP gRPC
+// exporter (→ the telemetry backends via the OTel collector in deploy/compose).
 package telemetry
 
 import (
@@ -75,23 +64,10 @@ func (s *Shutdowner) Shutdown(ctx context.Context) {
 	}
 }
 
-// Setup initializes the global OTel tracer and meter, exporting via OTLP
-// gRPC to the collector at cfg.OTelEndpoint. It returns a Shutdowner for
-// graceful cleanup. If the exporter cannot be created, telemetry is
-// disabled but the process continues (docs/08 §8).
-//
-// The gRPC connection is non-blocking — grpc.NewClient dials in the
-// background, so the control plane is not blocked waiting for the OTel
-// collector to be reachable at startup (prevents the 20s startup delay
-// when the telemetry stack is still initializing).
+// Setup initializes the global OTel tracer and meter, exporting via OTLP gRPC to the collector at
+// cfg.OTelEndpoint.
 func Setup(ctx context.Context, cfg config.Config, log *slog.Logger) (*Shutdowner, error) {
-	// v0.1: single dev tenant. Multi-tenant will thread the tenant
-	// id from the request context into both the log resource and
-	// the per-record attribute set. For now, mark every
-	// control-plane log with orchicon.tenant_id=tnt_dev so the
-	// Grafana-stack tenant filter (docs/08 §5.1) does not
-	// drop our own bootstrap / reconciliation / recovery records
-	// when the operator opens the Telemetry logs tab.
+	// v0.1: single dev tenant.
 	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(
 		semconv.SchemaURL,
 		semconv.ServiceName("orchicon-control-plane"),
@@ -104,11 +80,7 @@ func Setup(ctx context.Context, cfg config.Config, log *slog.Logger) (*Shutdowne
 	endpoint := cfg.OTelEndpoint
 	shutdown := &Shutdowner{log: log}
 
-	// Shared non-blocking gRPC connection. grpc.NewClient returns
-	// immediately and connects in the background — the exporter will
-	// queue spans until the connection is established, then flush them.
-	// This eliminates the 10s+10s blocking dial at startup when the
-	// OTel collector is still starting up.
+	// Shared non-blocking gRPC connection.
 	conn, err := grpc.NewClient(endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
@@ -151,10 +123,7 @@ func Setup(ctx context.Context, cfg config.Config, log *slog.Logger) (*Shutdowne
 		shutdown.meterShutdown = mp.Shutdown
 	}
 
-	// Log exporter (same non-blocking connection). The OTel log SDK is
-	// still experimental (v0.x) but the gRPC exporter follows the same
-	// pattern as the stable trace/metric exporters. If it fails, logs
-	// are silently dropped — execution telemetry is not blocked.
+	// Log exporter (same non-blocking connection).
 	logExporter, err := otlploggrpc.New(ctx,
 		otlploggrpc.WithGRPCConn(conn),
 		otlploggrpc.WithTimeout(10*time.Second),
@@ -191,17 +160,13 @@ func Meter() otelmetric.Meter {
 	return otel.Meter("orchicon")
 }
 
-// Logger returns the global OTel log provider logger for emitting
-// structured log records to the telemetry pipeline. The logger is
-// best-effort: log records are queued in-process and dropped when
-// the OTel collector is unreachable (docs/08 §8).
+// Logger returns the global OTel log provider logger for emitting structured log records to the
+// telemetry pipeline.
 func Logger() otel_log.Logger {
 	return global.GetLoggerProvider().Logger("orchicon")
 }
 
 // EmitLog creates and dispatches a log record through the OTel pipeline.
-// severity is a standard OTel severity string (e.g. "ERROR", "INFO").
-// body is the text content. attrs are key-value attribute pairs.
 func EmitLog(ctx context.Context, severity string, body string, attrs ...attribute.KeyValue) {
 	logger := Logger()
 	if logger == nil {
@@ -242,18 +207,12 @@ func severityLevel(s string) int {
 	}
 }
 
-// Middleware wraps an http.Handler with OTel trace extraction and span
-// creation. Every API call gets a root span (docs/08 §5.1: api.<path>).
-// The W3C traceparent header is extracted so frontend and backend spans
-// share the same trace (docs/10 §8).
+// Middleware wraps an http.Handler with OTel trace extraction and span creation.
 func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := otel.GetTextMapPropagator().Extract(r.Context(), headerCarrier(r.Header))
-		// Phase 8: ensure a correlation_id propagates across the whole
-		// user action (API → reconciler → adapter → AI Gateway — docs/08
-		// §3, §5.1). Extract from baggage if present (injected by an
-		// upstream caller); otherwise generate one and inject into baggage
-		// so all downstream spans carry it.
+		// Phase 8: ensure a correlation_id propagates across the whole user action (API → reconciler →
+		// adapter → AI Gateway — docs/08 §3, §5.1).
 		correlationID := CorrelationIDFromContext(ctx)
 		if correlationID == "" {
 			correlationID = newCorrelationID()
@@ -263,18 +222,22 @@ func Middleware(next http.Handler) http.Handler {
 		if route == "" {
 			route = "/"
 		}
+		// The middleware is the ONLY span producer today, so this is the only place those attributes are
+		// written — Tempo tag filters read them.
+		ctx = WithAttribution(ctx, r.Header.Get(hintProjectID), r.Header.Get(hintWorkItemID), r.Header.Get(hintExecutionID))
+		spanAttrs := []attribute.KeyValue{
+			attribute.String("http.method", r.Method),
+			attribute.String("http.route", route),
+			attribute.String(CorrelationIDKey, correlationID),
+		}
+		spanAttrs = append(spanAttrs, attributionAttrsFromContext(ctx)...)
 		ctx, span := Tracer().Start(ctx, "api."+route,
-			trace.WithAttributes(
-				attribute.String("http.method", r.Method),
-				attribute.String("http.route", route),
-				attribute.String(CorrelationIDKey, correlationID),
-			),
+			trace.WithAttributes(spanAttrs...),
 		)
 		defer span.End()
 
-		// Propagate the correlation_id back to the caller via the
-		// response header so clients can join logs/telemetry to the
-		// originating request (docs/08 §6).
+		// Propagate the correlation_id back to the caller via the response header so clients can join
+		// logs/telemetry to the originating request (docs/08 §6).
 		w.Header().Set("x-orchicon-correlation-id", correlationID)
 
 		sw := &statusWriter{ResponseWriter: w, status: 200}
@@ -302,13 +265,7 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
-// Flush delegates to the underlying writer if it implements
-// http.Flusher. Required for Connect server streams
-// (StreamProjectEvents etc.) — Connect checks for http.Flusher and
-// returns CodeInternal if the wrapped writer doesn't expose it.
-// The underlying net/http response writer does implement Flusher in
-// practice; the type-asserting no-op below handles test doubles and
-// any future writer that doesn't.
+// Flush delegates to the underlying writer if it implements http.Flusher.
 func (w *statusWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()

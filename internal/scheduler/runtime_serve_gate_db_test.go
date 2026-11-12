@@ -1,20 +1,12 @@
 package scheduler
 
-// DB-backed regression test for the adapter-aware runtime-serve gate
-// (the observed bug: an orchicon-only run failed at start with "runtime
-// opencode serve failed to become usable" and sat "waiting for dispatch"
-// until the serve deadline expired). The intended full-run shape lives
-// here, parked behind an explicit skip until a full-run seeding helper
-// exists; the load-bearing logic it would exercise is pinned by
-// TestImageForRun + TestRunNeedsServeAdapterKinds (runtime_serve_gate_test.go)
-// and the standing parity suite (internal/orchicon/parity_matrix_test.go).
-//
-// Skipped without ORCHICON_TEST_DSN (approvalTestPool), then again by
-// design until full-run seeding lands.
+// DB-backed regression test for the adapter-aware runtime-serve gate (the observed bug.
 
 import (
 	"context"
+	"log/slog"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -37,23 +29,70 @@ type fmtServeError struct{ msg string }
 
 func (e fmtServeError) Error() string { return e.msg }
 
-// TestNativeOnlyRunSkipsServeGate arms + reconciles a native-only run
-// under a runtime daemon that ALWAYS fails the serve: the run must arm
-// with RuntimeReady=true, carry the NoServeImage sentinel, and progress
-// past the gate (never written a serve-gate failure).
+// TestNativeOnlyRunSkipsServeGate arms + reconciles a native-only run under a runtime daemon that
+// ALWAYS fails the serve: the run must arm with RuntimeReady=true.
 func TestNativeOnlyRunSkipsServeGate(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {
 		t.Skip("ORCHICON_TEST_DSN not set; skipping DB-backed serve-gate test")
 	}
-	t.Skip("parked: reconcileRun needs a full workflow+worker+step-run seed helper; the arm/gate contract is pinned by TestImageForRun + TestRunNeedsServeAdapterKinds")
 
 	ctx := context.Background()
 	pool := approvalTestPool(t)
 
-	r := &WorkflowReconciler{pool: pool, runtime: failingLifecycle{}}
-	wfID := seedPublishedWorkflowSteps(t, pool, "prj_dev", `[
-		{"id":"w1","name":"Native","kind":"task","ref":"w-native-orchicon","depends_on":[]}
+	r := &WorkflowReconciler{
+		pool: pool, runtime: failingLifecycle{},
+		log: slog.New(slog.DiscardHandler), warming: map[string]bool{},
+	}
+
+	// The step ref must resolve to a PUBLISHED worker version whose model ref is a native (serve-less)
+	// one: runNeedsServe is deliberately CONSERVATIVE about an unresolvable ref (assume a serve).
+	ttxW, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	suffix := strings.ToLower(db.NewID())[:12]
+	nativeWorker, err := db.CreateWorker(ctx, ttxW.Tx, db.WorkerRow{
+		ID: "w-" + suffix, TenantID: approvalTestTenant,
+		Name: "native-" + suffix[:8], Slug: "w-" + suffix,
+		Status: domain.WorkerPublished,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateWorkerVersion(ctx, ttxW.Tx, db.WorkerVersionRow{
+		ID: db.NewID(), TenantID: approvalTestTenant, WorkerID: nativeWorker.ID, Version: 1,
+		Status: domain.WorkerVersionPublished, ModelRef: "orchicon/deepseek/deepseek-v4-flash",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ttxW.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// A REAL PROJECT, because the run's image is resolved FROM it: the fixture used a literal "prj_dev"
+	// that exists in no table, so the resolve had nothing to read and the run stamped an empty image —
+	// which is a fixture that cannot express the thing it is asserting.
+	ttxP, err := pool.BeginTenantTx(ctx, approvalTestTenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj, err := db.CreateProject(ctx, ttxP.Tx, db.ProjectRow{
+		ID: db.NewID(), TenantID: approvalTestTenant, Name: "serve-gate-" + suffix,
+		Slug: "serve-gate-" + suffix, Status: domain.ProjectActive,
+		Goals: []byte("[]"), ProjectDir: t.TempDir(),
+		ExecutionMode: db.ExecutionModeRuntime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ttxP.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	db.CleanupProject(t, pool, approvalTestTenant, proj.ID)
+
+	wfID := seedPublishedWorkflowSteps(t, pool, proj.ID, `[
+		{"id":"w1","name":"Native","kind":"task","ref":"`+nativeWorker.ID+`","depends_on":[]}
 	]`)
 	ttx, err := pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
@@ -61,7 +100,8 @@ func TestNativeOnlyRunSkipsServeGate(t *testing.T) {
 	}
 	defer ttx.Rollback(ctx)
 	run, err := db.CreateWorkflowRun(ctx, ttx.Tx, db.WorkflowRunRow{
-		ID: db.NewID(), TenantID: approvalTestTenant, ProjectID: "prj_dev",
+		ID: db.NewID(), TenantID: approvalTestTenant, ProjectID: proj.ID,
+		RunContext: []byte("{}"),
 		WorkflowID: wfID, WorkflowVersion: 1, Status: domain.WorkflowRunPending,
 	})
 	if err != nil {
@@ -85,8 +125,10 @@ func TestNativeOnlyRunSkipsServeGate(t *testing.T) {
 	if got.Status != domain.WorkflowRunRunning {
 		t.Fatalf("run status = %q, want running (run failed at the serve gate)", got.Status)
 	}
-	if got.RuntimeImage != db.BaseRuntimeImage {
-		t.Errorf("runtime_image = %q, want base %q (always-container: resolved image, never the sentinel)", got.RuntimeImage, db.BaseRuntimeImage)
+	// The LIVE fallback (#849): the chain no longer returns the placeholder constant, so the
+	// stamped image is the daemon's real base tag.
+	if got.RuntimeImage != db.RuntimeBaseImage() {
+		t.Errorf("runtime_image = %q, want the live fallback %q (always-container: resolved image, never the sentinel)", got.RuntimeImage, db.RuntimeBaseImage())
 	}
 	if !got.RuntimeReady {
 		t.Error("runtime_ready = false, want true (native-only run must not gate)")

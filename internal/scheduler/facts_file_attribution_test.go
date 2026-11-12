@@ -14,13 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
-// TestFactsFileCarriesStepAttribution verifies the acceptance criterion for
-// facts dedup: after the embedded "## Facts learned (this run)" prompt block
-// was removed, the .orchicon/<run>/facts_learned file must record the
-// originating step per fact (e.g. `FACTS LEARNED (from <step-name>): <fact>`)
-// so downstream workers keep the same attribution. DB-backed (needs a real
-// workflow_step_runs row keyed by worker_execution_id); skipped without
-// ORCHICON_TEST_DSN.
+// TestFactsFileCarriesStepAttribution verifies the acceptance criterion for facts dedup: after the
+// embedded "## Facts learned (this run)" prompt block was removed.
 func TestFactsFileCarriesStepAttribution(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -35,6 +30,7 @@ func TestFactsFileCarriesStepAttribution(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "Facts file",
 		Slug: "facts-file-" + strings.ToLower(db.NewID()), Status: "active",
 		Goals: []byte("[]"), ProjectDir: root,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -110,12 +106,8 @@ func TestFactsFileCarriesStepAttribution(t *testing.T) {
 	}
 }
 
-// TestFactsFileExtractsFromTranscriptOnTerminal verifies the deterministic
-// terminal-time backstop: an execution that terminaled with NO emitted
-// FACTS LEARNED summary (e.g. stall-killed) still has facts folded into
-// .orchicon/<run>/facts_learned from its persisted execution_session_parts
-// transcript by writeOrchiconFiles. DB-backed; skipped without
-// ORCHICON_TEST_DSN.
+// TestFactsFileExtractsFromTranscriptOnTerminal verifies the deterministic terminal-time backstop:
+// an execution that terminaled with NO emitted FACTS LEARNED summary (e.g. stall-killed) still has.
 func TestFactsFileExtractsFromTranscriptOnTerminal(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -130,6 +122,7 @@ func TestFactsFileExtractsFromTranscriptOnTerminal(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "Facts transcript terminal",
 		Slug: "facts-term-" + strings.ToLower(db.NewID()), Status: "active",
 		Goals: []byte("[]"), ProjectDir: root,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -174,9 +167,8 @@ func TestFactsFileExtractsFromTranscriptOnTerminal(t *testing.T) {
 		execID, approvalTestTenant, proj.ID, item.ID, execID); err != nil {
 		t.Fatal(err)
 	}
-	// Seed the transcript: recon, a tool use, then a stalled FINAL assistant
-	// block carrying a FACTS LEARNED under part.text (the shape the
-	// transcript renderer + extractor read).
+	// Seed the transcript: recon, a tool use, then a stalled FINAL assistant block carrying a FACTS
+	// LEARNED under part.text (the shape the transcript renderer + extractor read).
 	finalPart, _ := json.Marshal(map[string]any{
 		"text": "",
 		"part": map[string]any{"text": "all groundwork before the stall\nFACTS LEARNED: the stall hides the backend here."},

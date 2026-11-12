@@ -1,34 +1,28 @@
 // Package main — serve state + frontend serving helpers.
-//
-// These used to live in dev.go (the compose dev subcommand); since the
-// single-container deployment replaced the compose workflow, the detached
-// serve helpers and the embedded-SPA wrapper belong to the serve command
-// itself.
 package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
+	"sync"
+	"time"
 
 	assets "github.com/beardedparrott/orchicon"
 )
 
-// serveStateDirEnv makes the detached `serve --detach` state PER INSTANCE.
-// Two host-resident planes (dev + prod) launched from the same working
-// directory would otherwise share one PID file, and `serve --stop` for one
-// would kill the other. The launcher sets it per instance
-// (scripts/container.sh passes $ORCHICON_DATA_DIR/serve). Default `.dev`
-// reproduces the previous hardcoded paths byte-for-byte.
-const serveStateDirEnv = "ORCHICON_SERVE_STATE_DIR"
-
 // serveStateDir returns the detached serve's state root.
 func serveStateDir() string {
+	// THE INSTANCE DECIDES, NOT THE SHELL.
+	if inst := strings.TrimSpace(os.Getenv("ORCHICON_INSTANCE")); inst != "" {
+		return hostDataDirFor(inst) + "/serve"
+	}
 	if d := os.Getenv(serveStateDirEnv); d != "" {
 		return d
 	}
@@ -36,18 +30,6 @@ func serveStateDir() string {
 }
 
 // servePIDFile / serveLogFile locate the detached `serve --detach` state.
-//
-// THEY ARE FUNCTIONS, NOT VARS, AND THAT IS LOAD-BEARING. They used to be package
-// vars, which Go resolves BEFORE any init() runs — so a test could not influence
-// them even deliberately: by the time a test binary can unset anything, an
-// operator's ambient ORCHICON_SERVE_STATE_DIR (exported by scripts/container.sh
-// for their live plane) is already baked into both paths. TestServeStatePathsShape
-// asserts the DEFAULT `.dev` shape, so it failed on that machine and passed in CI.
-//
-// Reading the environment at CALL time is what makes the value testable, and it is
-// the same shape the codebase already uses for exactly this reason — internal/tui
-// resolves its collapse prefs and config dir through functions, not vars, because a
-// package var captured at init cannot be isolated by a test.
 func servePIDFile() string { return serveStateDir() + "/pids/orchicon.pid" }
 func serveLogFile() string { return serveStateDir() + "/logs/orchicon.log" }
 
@@ -68,58 +50,98 @@ func procRunning(pidFile string) (string, bool) {
 	return pid, pidAlive(p)
 }
 
-// pidAlive reports whether a PID is a RUNNING process.
+
+// compressibleExt lists the asset types worth compressing. Images and fonts are already compressed, so
+// re-encoding them spends CPU to add bytes.
+var compressibleExt = map[string]bool{
+	".js": true, ".css": true, ".html": true, ".json": true, ".svg": true, ".map": true,
+}
+
+// serveCompressed serves an embedded asset gzipped when the client accepts it.
 //
-// SIGNAL 0 ALONE IS NOT THE TEST, and getting that wrong made stop verification lie in the other
-// direction. `signal 0` succeeds for a ZOMBIE — a process that has exited but whose parent has not yet
-// reaped it — and for a stopped-but-traced process, so a server that had genuinely died could still read
-// as alive. `waitForExit` uses this to decide whether a stop is confirmed, so a zombie would make a
-// SUCCESSFUL stop report failure and keep the PID file, which is exactly the state that misleads the next
-// rebuild. It was caught by driving serveStop against a real child that ignored SIGTERM.
+// WITHOUT THIS THE PLANE SHIPPED THE RAW BUNDLE, and the UI is one 2.8 MB JavaScript file: a refresh on any
+// network that is not loopback sat on a blank canvas for seconds while it downloaded. Gzip takes that file
+// to ~707 KB (75% smaller, 80% with brotli), which is the difference between "slow" and "loading".
 //
-// So the state is read from /proc where it is available, and only an R or S or D or T process counts as
-// running. Any other state (Z for zombie, X for dead) is not a live process. Where /proc is not readable
-// (a non-Linux host, a locked-down procfs) the signal probe stands alone, which is the previous behaviour.
-func pidAlive(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
+// http.FileServer over an embed.FS never compresses — it has no encoder and no way to know the content type
+// before reading — so the encoding happens here, where the file is already open and its bytes are in memory.
+//
+// The encoded form is cached in memory, keyed by path: these are content-hashed release assets that never
+// change for the life of the process, so the compression cost is paid once per asset rather than per request.
+func serveCompressed(w http.ResponseWriter, r *http.Request, spaFS fs.FS, cleanPath string, fallback http.Handler) {
+	if !compressibleExt[strings.ToLower(filepath.Ext(cleanPath))] ||
+		!strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") ||
+		r.Method == http.MethodHead {
+		fallback.ServeHTTP(w, r)
+		return
 	}
-	if proc.Signal(syscall.Signal(0)) != nil {
-		return false
-	}
-	if state, ok := procStateChar(pid); ok {
-		switch state {
-		case 'R', 'S', 'D', 'T', 't', 'W':
-			return true
-		default:
-			// Z (zombie), X (dead), or anything unrecognised: not a running server.
-			return false
+	body, cached := gzipCacheLoad(cleanPath)
+	if !cached {
+		raw, err := fs.ReadFile(spaFS, cleanPath)
+		if err != nil {
+			fallback.ServeHTTP(w, r)
+			return
 		}
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		if _, err := zw.Write(raw); err != nil {
+			fallback.ServeHTTP(w, r)
+			return
+		}
+		if err := zw.Close(); err != nil {
+			fallback.ServeHTTP(w, r)
+			return
+		}
+		body = buf.Bytes()
+		gzipCacheStore(cleanPath, body)
 	}
-	return true
+	// Vary is REQUIRED: without it a shared cache may hand the gzipped bytes to a client that did not ask
+	// for them, which decodes as garbage.
+	w.Header().Set("Content-Encoding", "gzip")
+	w.Header().Set("Vary", "Accept-Encoding")
+	w.Header().Set("Content-Type", contentTypeFor(cleanPath))
+	http.ServeContent(w, r, cleanPath, time.Time{}, bytes.NewReader(body))
 }
 
-// procStateChar reads the process state character from /proc/<pid>/stat, whose format is
-// `pid (comm) state ...` — and `comm` may itself contain spaces and parentheses, so the state is the first
-// field AFTER THE LAST ')' rather than a fixed offset.
-func procStateChar(pid int) (byte, bool) {
-	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return 0, false
-	}
-	i := bytes.LastIndexByte(b, ')')
-	if i < 0 || i+2 >= len(b) {
-		return 0, false
-	}
-	return b[i+2], true
+// gzipCache is a plain map: the set of embedded assets is small and fixed, and concurrent writes to
+// distinct keys are safe behind the mutex without costing a lock per request in the steady state.
+var (
+	gzipMu    sync.Mutex
+	gzipByKey = map[string][]byte{}
+)
+
+func gzipCacheLoad(key string) ([]byte, bool) {
+	gzipMu.Lock()
+	defer gzipMu.Unlock()
+	b, ok := gzipByKey[key]
+	return b, ok
 }
 
-// withFrontend wraps the API handler so that non-API requests serve the
-// embedded SPA. API routes (starting with /orchicon.api.v1) and
-// health/version endpoints are passed through to the API handler. All
-// other paths serve from the embedded frontend/dist, falling back to
-// index.html for client-side routing (docs/10 §9).
+func gzipCacheStore(key string, body []byte) {
+	gzipMu.Lock()
+	defer gzipMu.Unlock()
+	gzipByKey[key] = body
+}
+
+// contentTypeFor answers from the extension rather than sniffing gzipped bytes — http.DetectContentType on
+// compressed data reports application/x-gzip, and a browser then refuses to execute the script.
+func contentTypeFor(cleanPath string) string {
+	switch strings.ToLower(filepath.Ext(cleanPath)) {
+	case ".js", ".mjs":
+		return "text/javascript; charset=utf-8"
+	case ".css":
+		return "text/css; charset=utf-8"
+	case ".html":
+		return "text/html; charset=utf-8"
+	case ".json", ".map":
+		return "application/json; charset=utf-8"
+	case ".svg":
+		return "image/svg+xml"
+	}
+	return "application/octet-stream"
+}
+
+// withFrontend wraps the API handler so that non-API requests serve the embedded SPA.
 func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 	spaFS, err := fs.Sub(assets.FrontendFS, assets.FrontendDir)
 	if err != nil {
@@ -129,15 +151,6 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 	fileServer := http.StripPrefix("/", http.FileServer(http.FS(spaFS)))
 	indexHTML, _ := fs.ReadFile(spaFS, "index.html")
 	// A BINARY WITH NO FRONTEND MUST SAY SO, because the symptom points nowhere near the cause.
-	//
-	// `frontend/dist/.gitkeep` is tracked precisely so `go:embed all:frontend/dist` always has a target, which
-	// means a build that skipped `npm run build` compiles PERFECTLY and embeds only the placeholder. Every UI
-	// request then falls through the `len(indexHTML) > 0` branch below to the API handler, where the auth
-	// middleware answers `{"error":"missing credentials"}`.
-	//
-	// OBSERVED EXACTLY THAT: a canary install replaced a working host plane with such a binary, and the
-	// operator's browser reported "missing credentials" — a credentials-shaped message for a build problem,
-	// with a server that was entirely healthy. This line makes the next occurrence a one-line answer.
 	if len(indexHTML) == 0 {
 		log.Warn("THIS BINARY EMBEDS NO FRONTEND — only the API is served, so the UI at / will report an " +
 			"auth error instead of loading. It was built without `cd frontend && npm run build`; the release " +
@@ -148,11 +161,11 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 		path := r.URL.Path
 		if strings.HasPrefix(path, "/orchicon.api.v1") ||
 			strings.HasPrefix(path, "/auth/") ||
-			strings.HasPrefix(path, "/grafana") ||
-			path == "/healthz" || path == "/versionz" ||
-			// Embedded OpenID Provider exact paths (internal/auth/op) —
-			// without passthrough the SPA fallback below would swallow
-			// them (they are not /auth/*-prefixed).
+			// A REAL ENDPOINT THAT THE UI CANNOT READ IS WORSE THAN A MISSING ONE: the fetch succeeds, the
+			// status is 200, and the only symptom is "unknown".
+			path == "/healthz" || path == "/versionz" || path == "/enginez" ||
+			// Embedded OpenID Provider exact paths (internal/auth/op) — without passthrough the SPA fallback
+			// below would swallow them (they are not /auth/*-prefixed).
 			path == "/.well-known/openid-configuration" ||
 			path == "/authorize" || path == "/authorize/callback" ||
 			path == "/token" || path == "/userinfo" || path == "/jwks" {
@@ -164,13 +177,11 @@ func withFrontend(apiHandler http.Handler, log *slog.Logger) http.Handler {
 		f, err := spaFS.Open(cleanPath)
 		if err == nil {
 			f.Close()
-			// Hashed assets (JS, CSS, images) have unique filenames and
-			// can be cached. HTML files must never be cached so the SPA
-			// picks up new JS bundles on deployment.
+			// Hashed assets (JS, CSS, images) have unique filenames and can be cached.
 			if strings.HasSuffix(path, ".html") || strings.HasSuffix(path, "/") || !strings.Contains(path, ".") {
 				w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			}
-			fileServer.ServeHTTP(w, r)
+			serveCompressed(w, r, spaFS, cleanPath, fileServer)
 			return
 		}
 

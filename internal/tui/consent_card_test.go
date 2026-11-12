@@ -14,9 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
 )
 
-// consentApp builds a shell with the REAL Ask screen registered and an open
-// conversation, so the key claim is asserted against the actual model rather
-// than a stub that merely reports `true`.
+// consentApp builds a shell with the REAL Ask screen registered and an open conversation, so the
+// key claim is asserted against the actual model rather than a stub that merely reports `true`.
 func consentApp(t *testing.T) (*App, *ask.Model) {
 	t.Helper()
 	m := NewApp(&client.Clients{}, &config.Profile{Name: "default", URL: "https://x.example.com"}, "v9.9.9")
@@ -46,9 +45,8 @@ func pendingCard(t *testing.T) (*App, *ask.Model, []chat.ChatItem) {
 	return m, as, items
 }
 
-// TestConsentCardRendersTheToolAndTargetInTheTranscript pins the acceptance
-// criterion against the REAL transcript renderer: the card names the tool and
-// the target, with the three actions.
+// TestConsentCardRendersTheToolAndTargetInTheTranscript pins the acceptance criterion against the
+// REAL transcript renderer: the card names the tool and the target, with the three actions.
 func TestConsentCardRendersTheToolAndTargetInTheTranscript(t *testing.T) {
 	m, _, items := pendingCard(t)
 	out := chat.RenderItems(items, 90)
@@ -61,9 +59,8 @@ func TestConsentCardRendersTheToolAndTargetInTheTranscript(t *testing.T) {
 	_ = m
 }
 
-// TestConsentCardOwnsTheKeysWhilePending is THE key-ownership assertion: with a
-// card pending, a bare letter is not a shell route and does not reach the
-// composer.
+// TestConsentCardOwnsTheKeysWhilePending is THE key-ownership assertion: with a card pending, a
+// bare letter is not a shell route and does not reach the composer.
 func TestConsentCardOwnsTheKeysWhilePending(t *testing.T) {
 	m, as, _ := pendingCard(t)
 	keys := []tea.KeyMsg{
@@ -94,9 +91,8 @@ func TestConsentCardOwnsTheKeysWhilePending(t *testing.T) {
 	}
 }
 
-// TestConsentEscapeDeniesAndRecordsTheRefusal pins the pipeline end to end:
-// Escape denies, the claim is released (the turn stays usable), and the refusal
-// is recorded in the transcript.
+// TestConsentEscapeDeniesAndRecordsTheRefusal pins the pipeline end to end: Escape denies, the
+// claim is released (the turn stays usable), and the refusal is recorded in the transcript.
 func TestConsentEscapeDeniesAndRecordsTheRefusal(t *testing.T) {
 	m, as, _ := pendingCard(t)
 	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -114,22 +110,8 @@ func TestConsentEscapeDeniesAndRecordsTheRefusal(t *testing.T) {
 	}
 }
 
-// TestConsentSessionGrantIsRecordedOnTheServerVerdict pins "ask once per directory per
-// session" — WITHOUT giving the client a second authority over it.
-//
-// IT USED TO PIN THE OPPOSITE, and that is what broke. The grant was recorded the instant the
-// operator pressed Enter, and the shell then suppressed any later card for that directory. But a
-// session grant is the SERVER's fact: the server's store is in memory and is dropped by every plane
-// restart (the prod plane restarted 14 times in the two days this was measured), it matches a whole
-// SUBTREE while the client matched the directory EXACTLY, and the decision may have been REFUSED
-// (the ask expired, the turn ended, the other client answered first) while the card was still
-// settled locally. Each of those left the TUI silently deaf to a directory the GUI was still asking
-// about — the operator watching both: "the permission ask card pops up in the GUI but it doesn't pop
-// up in the TUI. It just sits at 'orchicon is thinking'."
-//
-// So the grant is now recorded on the server's APPLIED verdict (settleConsentScope), and a card the
-// server raises is ALWAYS drawn — only the server knows whether consent is missing, and the operator
-// can always answer a card that should not have been necessary.
+// TestConsentSessionGrantIsRecordedOnTheServerVerdict pins "ask once per directory per session" —
+// WITHOUT giving the client a second authority over it.
 func TestConsentSessionGrantIsRecordedOnTheServerVerdict(t *testing.T) {
 	m, as, _ := pendingCard(t)
 	before := len(m.chatStore.snapshot("c1"))
@@ -140,9 +122,7 @@ func TestConsentSessionGrantIsRecordedOnTheServerVerdict(t *testing.T) {
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = nm.(*App)
 
-	// NOT YET: the click is not consent. Until the server says it applied the decision, no grant
-	// exists — recording one here is the lie the operator's "worked in the GUI but not the TUI"
-	// report is made of.
+	// NOT YET: the click is not consent.
 	if grants, _ := m.ConsentGrants("c1"); len(grants) != 0 {
 		t.Fatalf("a grant was recorded before the server applied the decision: %+v", grants)
 	}
@@ -152,9 +132,7 @@ func TestConsentSessionGrantIsRecordedOnTheServerVerdict(t *testing.T) {
 	if dir := m.settleConsentScope("c1", "ask-1", "session · "); dir != "/home/ops/project" {
 		t.Fatalf("the applied verdict did not confirm the grant, got %q", dir)
 	}
-	// THIS CLIENT DOES NOT ACCRUE THE GRANT. What the shell can be asked is the SERVER's list, which here is the
-	// fixture's (a shell with no plane): the point is that nothing local was fabricated from the click, and that
-	// the applied verdict is what the header and /grants are told about.
+	// THIS CLIENT DOES NOT ACCRUE THE GRANT.
 	if grants := m.permGrants["c1"]; len(grants) != 0 {
 		t.Fatalf("the shell invented a grant the server did not report: %+v", grants)
 	}
@@ -162,9 +140,7 @@ func TestConsentSessionGrantIsRecordedOnTheServerVerdict(t *testing.T) {
 		t.Fatalf("the grants roll-up must be visible in the header, got %+v", v)
 	}
 
-	// A second ask for the SAME directory is still DRAWN. The server is the one that decides whether to
-	// raise it (it consults its grant store first), so a card that arrives here is a decision the
-	// operator must be able to make — muting it would hide the answer, not the question.
+	// A second ask for the SAME directory is still DRAWN.
 	m.ShowConsentAsk(chat.PermissionAsk{
 		ID: "ask-2", Kind: chat.AskTool, Tool: "write",
 		Target: "/home/ops/project/other.go", Directory: "/home/ops/project",
@@ -177,19 +153,8 @@ func TestConsentSessionGrantIsRecordedOnTheServerVerdict(t *testing.T) {
 	}
 }
 
-// TestConsentQuestionCardAnswersThroughTheReplyRPC pins the clarifying-question
-// criterion AGAINST THE REAL SHELL, under the PAUSE contract.
-//
-// IT USED TO ASSERT THE OPPOSITE. Before the pause, ask_user was record-and-return,
-// so answering a card sent the option's label as the NEXT USER MESSAGE — a new turn
-// with the answer as its prompt. Now the question BLOCKS the turn, so the answer is
-// delivered as the ask_user TOOL RESULT over the reply RPC and the SAME turn resumes.
-// Sending it as a user message would leave the blocked call blocked and start a second
-// turn on top of it.
-//
-// What the operator asked for is unchanged and is what this still checks: answering
-// is ONE keystroke, and the card settles with the choice recorded — no retyping prose,
-// and no second turn.
+// TestConsentQuestionCardAnswersThroughTheReplyRPC pins the clarifying-question criterion AGAINST
+// THE REAL SHELL, under the PAUSE contract.
 func TestConsentQuestionCardAnswersThroughTheReplyRPC(t *testing.T) {
 	m, _ := newAskApp(t)
 	as := ask.New(m.clients, m.reg)
@@ -234,11 +199,8 @@ func fieldValueContains(fields []screenkit.Field, key, want string) bool {
 	return false
 }
 
-// TestConsentCardOwnsTabWhilePending is the SHELL-level half of the
-// key-ownership criterion: with a card pending, tab must reach the card and must
-// NOT be consumed by the shell's tab chord. Asserted against the real router,
-// because the defect it pins lived in the shell (the chord runs above the
-// ClaimsKeys gate), not in the card.
+// TestConsentCardOwnsTabWhilePending is the SHELL-level half of the key-ownership criterion: with a
+// card pending, tab must reach the card and must NOT be consumed by the shell's tab chord.
 func TestConsentCardOwnsTabWhilePending(t *testing.T) {
 	m, as, items := pendingCard(t)
 	before := items[0].Consent.Sel

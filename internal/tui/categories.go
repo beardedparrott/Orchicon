@@ -1,34 +1,7 @@
 package tui
 
-// categories.go — the TUI's category surfaces (feature: worker / workflow / conversation groupings).
-//
-// The operator: "conversation/workflows/worker category groupings don't exist (create, rename, and
-// delete groupings)" … "For categories, we could assign a key to create new category and a key to
-// assign an item to a specific category."
-//
-// THE SERVER HAD ALL OF IT. `category_service.proto` exposes the full set — List, Create, Update,
-// Delete, Assign, Unassign, Reorder — keyed by a `target_type` of worker / workflow / conversation,
-// and the GUI consumes them (CategoryFolder, CreateCategoryDialog, CategoryDndContext, wired into
-// workers.tsx, workflows.tsx and ask-orchicon.tsx). The TUI had ZERO surface and had not even wired
-// the client, so this is a parity gap of the same kind as the rename one: nothing was missing on the
-// platform, an entire surface was missing from one client.
-//
-// WHERE THINGS LIVE, AND WHY THEY ARE SPLIT. There are two acts, and they belong in different places:
-//
-//  1. MANAGING the groupings (create / rename / delete) is a SETTINGS act — it applies to the target
-//     type as a whole, not to any one item — so it lives on the Control tab, which is where this
-//     client files its settings surfaces (providers, secrets, webhooks, adapters, themes). One pane
-//     lists all three target types together, because "the groupings" is one idea to the operator and
-//     three kinds to the API.
-//
-//  2. ASSIGNING one item is an act ON THAT ITEM, so it is a key on the pane the item lives in — `C`
-//     on the Workers and Workflows panes, and a chord on the Ask conversations rail, which is the one
-//     list in this app whose keys are driven from the composer and therefore cannot use a bare letter.
-//
-// ONE MODAL DOES BOTH KINDS OF ASSIGNMENT, and it folds "make a new one" into the same gesture: the
-// picker offers the existing categories, "— uncategorized —", and "＋ new category…", and choosing the
-// last one reveals a name field. That is what makes "a key to create new category and a key to assign
-// an item" a single keystroke rather than a trip to another tab and back.
+// categories.go — the TUI's category surfaces (feature: worker / workflow / conversation
+// groupings).
 
 import (
 	"context"
@@ -81,17 +54,6 @@ func allTargetTypes() []apiv1.CategoryTargetType {
 // --- loading ------------------------------------------------------------------------------------
 
 // categoriesLoadedMsg carries every target type's categories in one round trip.
-//
-// All three are loaded together because the Control pane lists them together and the assign modal
-// needs whichever type its item belongs to — a per-type lazy load would mean the first assign after a
-// tab switch opens a picker with nothing in it.
-//
-// THE ASSIGNMENTS ARE THE POINT. The first version of this fetched only the categories and DISCARDED
-// the assignments the same response carries — which is why the operator's "I created a conversation
-// category and assigned a conversation to it, but it is not showing up in the UI" was literally true:
-// the assignment existed on the server, arrived in this response, and was thrown away before anything
-// could render it. A category list is useless to a LIST OF ITEMS without knowing which item is in
-// which group.
 type categoriesLoadedMsg struct {
 	Categories  []*apiv1.Category
 	Assignments []*apiv1.CategoryAssignment
@@ -152,18 +114,12 @@ func (m *App) onCategoriesLoaded(msg categoriesLoadedMsg) tea.Cmd {
 	return nil
 }
 
-// catEntityKey keys the assignment map. The TARGET TYPE is part of the key because an entity id is only
-// unique within its own kind — a bare id would let a worker's grouping leak onto a conversation that
-// happened to share it.
+// catEntityKey keys the assignment map.
 func catEntityKey(t apiv1.CategoryTargetType, entityID string) string {
 	return fmt.Sprintf("%d\x00%s", int32(t), entityID)
 }
 
 // CategoryOf is the shell's read-side hook for a screen that GROUPS its rows by category.
-//
-// One method, returning the id AND the name, because a caller needs both and two lookups could report a
-// different group between them. Unexported work stays in categoryOf; this is the contract with the
-// screens, alongside OpenAssignCategory.
 func (m *App) CategoryOf(target apiv1.CategoryTargetType, entityID string) (string, string) {
 	c := m.categoryOf(target, entityID)
 	if c == nil {
@@ -188,13 +144,7 @@ func (m *App) catByID(id string) *apiv1.Category {
 	return nil
 }
 
-// categoryGroupsFor returns the categories to render as folders for one target type, IN THE SERVER'S
-// ORDER (sort_order, then name — the same rule categoriesFor applies to the assign picker).
-//
-// EMPTY CATEGORIES ARE INCLUDED, which is the GUI's behaviour: it builds a group for every category it
-// knows about and only then appends the Uncategorized folder, so an operator who created "Frontend"
-// sees the folder even before anything is in it. Passing the ORDERED list in (rather than letting the
-// list helper invent an order) is also what keeps the two clients' folder order identical.
+// categoryGroupsFor returns the categories to render as folders for one target type.
 func (m *App) categoryGroupsFor(target apiv1.CategoryTargetType) []screenkit.GroupSpec {
 	cats := m.categoriesFor(target)
 	out := make([]screenkit.GroupSpec, 0, len(cats))
@@ -249,20 +199,11 @@ func (m *App) categoryName(id string) string {
 // --- the assign modal ---------------------------------------------------------------------------
 
 // openAssignCategory opens the assign-or-create modal for one entity.
-//
-// entityID is carried in the form's Values rather than read from the shell at submit time, so a
-// selection change behind the modal (the rolling refresh re-seats a cursor, a stream pokes a list)
-// cannot retarget the write to a different item.
 func (m *App) openAssignCategory(entityID, entityLabel string, target apiv1.CategoryTargetType) {
 	m.openAssignCategories([]string{entityID}, entityLabel, target)
 }
 
 // openAssignCategories is the general form: ONE OR MANY entities.
-//
-// It is the same modal either way — the picker, the "— uncategorized —" row and the "+ new category…"
-// row all mean the same thing for a list as for a row, and the write loops the ids. Splitting it into
-// two modals would mean two implementations of one write, which is how the TUI's tab-selection gesture
-// ended up written three times and drifted.
 func (m *App) openAssignCategories(entityIDs []string, entityLabel string, target apiv1.CategoryTargetType) {
 	// Drop empty ids: a caller passing [] is a bug, and a modal that writes to "" is worse than a
 	// refusal.
@@ -287,8 +228,7 @@ func (m *App) openAssignCategories(entityIDs []string, entityLabel string, targe
 			Kind:  kit2.KPicker,
 		},
 		// The new-name field is present from the start and HIDDEN until "new category…" is chosen: the
-		// form's Visible predicate reads the picker's live value, so the modal grows a row exactly when
-		// the operator asks for one.
+		// form's Visible predicate reads the picker's live value.
 		assignNewSpec(),
 	)
 	f.Focused = true
@@ -308,10 +248,7 @@ func (m *App) openAssignCategories(entityIDs []string, entityLabel string, targe
 	m.assignTarget = target
 	m.assignEntities = ids
 	m.refreshAssignOptions()
-	// ALWAYS RELOAD WHEN THE PICKER OPENS, so the options are as fresh as the pane's own list is. The
-	// reply fills the picker IN PLACE (onCategoriesLoaded → refreshAssignOptions), so the modal appears
-	// immediately and its options land a moment later — better than offering a grouping that was deleted
-	// in the other client, which is the one failure a picker cannot recover from.
+	// ALWAYS RELOAD WHEN THE PICKER OPENS, so the options are as fresh as the pane's own list is.
 	if m.clients != nil && m.clients.Categories != nil {
 		m.pendingCatCmd = m.loadCategories()
 	}
@@ -319,9 +256,6 @@ func (m *App) openAssignCategories(entityIDs []string, entityLabel string, targe
 }
 
 // refreshAssignOptions rebuilds the picker's option list from the cache.
-//
-// It is called both when the modal opens and when a load lands, which is why the options are a
-// function of state rather than a snapshot taken at open time.
 func (m *App) refreshAssignOptions() {
 	if m.assignForm == nil {
 		return
@@ -344,13 +278,6 @@ func (m *App) refreshAssignOptions() {
 		case assignNewField:
 			// The name field appears ONLY when "new category…" is chosen, so the common case (assign to
 			// something that exists) stays a one-line modal.
-			//
-			// VISIBLE READS THE LIVE VALUES MAP — that is why the field's signature takes one. An
-			// earlier version captured the picker's value in a local at build time, so the field could
-			// never become visible: the form asks Visible AFTER a value changes, and a captured
-			// snapshot always answered with the value from before the operator chose anything. A test
-			// caught it (the typed name arrived empty, because the field was still hidden), and the
-			// same bug would have made "create a grouping while assigning" impossible in the real UI.
 			s.Visible = func(values map[string]string) bool {
 				return values[assignPickField] == assignNewValue
 			}
@@ -368,8 +295,7 @@ func hasOption(opts []kit2.Option, v string) bool {
 }
 
 // assignPlaceholder is the conditional field's own spec, added on demand so a form with no "new"
-// choice does not carry an invisible required field (a hidden Required field cannot block a save —
-// that is the form's rule — but keeping it out entirely is simpler to reason about).
+// choice does not carry an invisible required field (a hidden Required field cannot block a save.
 func assignNewSpec() kit2.FieldSpec {
 	return kit2.FieldSpec{
 		Name:        assignNewField,
@@ -405,14 +331,8 @@ func (m *App) closeAssign() {
 	m.refreshComposerHint()
 }
 
-// assignSubmit performs the write the modal describes: assign, unassign, or create-then-assign — for
-// ONE entity or for a whole marked selection.
-//
-// The three branches each LOOP the entity list. Every write is a separate RPC per entity (the API is
-// per-entity: AssignToCategory / UnassignFromCategory take one entity_id each), and a partial failure
-// is REPORTED as one — "assigned 3 of 5" — rather than stopping at the first error, because the ids
-// after the failure are just as valid as the ones before it and abandoning them would leave the
-// selection half-applied with no explanation.
+// assignSubmit performs the write the modal describes: assign, unassign, or create-then-assign —
+// for ONE entity or for a whole marked selection.
 func (m *App) assignSubmit(vals map[string]string) tea.Cmd {
 	cl := m.clients
 	if cl == nil || cl.Categories == nil {
@@ -449,11 +369,8 @@ func (m *App) assignSubmit(vals map[string]string) tea.Cmd {
 		if name == "" {
 			return nil
 		}
-		// CREATE THEN ASSIGN, in one command: the operator asked for one gesture that makes a grouping
-		// AND puts the item in it, so a failure of either half must be reported as one failure.
-		//
-		// The CREATE happens ONCE for the whole selection: creating one grouping per entity would make
-		// five groupings with five suffixed slugs, when the operator asked for one.
+		// CREATE THEN ASSIGN, in one command: the operator asked for one gesture that makes a grouping AND
+		// puts the item in it, so a failure of either half must be reported as one failure.
 		return func() tea.Msg {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
@@ -502,12 +419,7 @@ func (m *App) assignSubmit(vals map[string]string) tea.Cmd {
 	}
 }
 
-// categoriesMutatedMsg is the result of any category write. It always RELOADS the list: an assignment
-// changes no name and a create changes no assignment, but every one of them changes what the next
-// picker must offer, and a stale picker offers a category that no longer exists.
-//
-// Count/Failed describe a BULK write, so a partial failure can be reported as one ("3 of 5 failed")
-// instead of the first error hiding the rest. Failed == 0 with Count > 1 is a clean bulk write.
+// categoriesMutatedMsg is the result of any category write.
 type categoriesMutatedMsg struct {
 	Op     string
 	Err    error
@@ -566,9 +478,6 @@ const (
 // Control → Categories be removed rather than kept as a second, divergent home for the same actions.
 
 // openRenameCategory opens the PREFILLED rename form for a grouping.
-//
-// Prefilled for the reason that keeps recurring in this client: an edit box that opens EMPTY makes the
-// operator retype a value they cannot see. The GUI's folder rename starts from the current name.
 func (m *App) openRenameCategory(categoryID string) {
 	cat := m.catByID(categoryID)
 	if cat == nil {
@@ -606,9 +515,6 @@ func (m *App) openRenameCategory(categoryID string) {
 }
 
 // openDeleteCategory raises the confirm for deleting a grouping, saying where its items go.
-//
-// The wording is the GUI's own: `Delete "<name>"? Items will move to Uncategorized.` — the operator's
-// real question is not whether the grouping goes but what happens to what was in it.
 func (m *App) openDeleteCategory(categoryID string) {
 	cat := m.catByID(categoryID)
 	if cat == nil {
@@ -681,15 +587,8 @@ func (m *App) catAdminView(base string, w, h int) string {
 	return m.overlayCentered(base, m.modalPanel(m.catForm.View(), m.modalWidth()))
 }
 
-// applyCategorySet replaces the cached CATEGORIES AND ASSIGNMENTS for one target type with a fresher
-// set, leaving the other two kinds alone.
-//
-// Why per-type rather than "replace everything": the three sets arrive from three different responses,
-// each carrying only its own kind (ListWorkers sends worker groupings, ListWorkflows workflow ones,
-// ListConversations conversation ones). Replacing wholesale would make whichever response landed last
-// the only one that existed.
-//
-// It is called from the MAIN LOOP only — from a response handler, never from a fetch goroutine.
+// applyCategorySet replaces the cached CATEGORIES AND ASSIGNMENTS for one target type with a
+// fresher set, leaving the other two kinds alone.
 func (m *App) applyCategorySet(target apiv1.CategoryTargetType, cats []*apiv1.Category, assigns []*apiv1.CategoryAssignment) {
 	if len(cats) == 0 && len(assigns) == 0 {
 		return
@@ -705,9 +604,8 @@ func (m *App) applyCategorySet(target apiv1.CategoryTargetType, cats []*apiv1.Ca
 	if m.catAssignedBy == nil {
 		m.catAssignedBy = map[string]string{}
 	}
-	// The assignments are REPLACED for this type, never merged: an unassign has to CLEAR the entry, and a
-	// merge would leave an item showing a grouping it is no longer in. The map's key already carries the
-	// target type (catEntityKey), so the type's own slice is a prefix sweep.
+	// The assignments are REPLACED for this type, never merged: an unassign has to CLEAR the entry, and
+	// a merge would leave an item showing a grouping it is no longer in.
 	prefix := fmt.Sprintf("%d\x00", int32(target))
 	for k := range m.catAssignedBy {
 		if strings.HasPrefix(k, prefix) {

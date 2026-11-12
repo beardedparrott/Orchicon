@@ -10,9 +10,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// defaultProviders returns the LLM providers known to the gateway for
-// v0.1 (docs/01 §2, docs/04 §6). The OpenCode adapter routes to these
-// providers; the gateway records usage + cost from adapter telemetry.
+// defaultProviders returns the LLM providers known to the gateway for v0.1 (docs/01 §2, docs/04
+// §6).
 func defaultProviders() []*apiv1.AIProvider {
 	return []*apiv1.AIProvider{
 		{
@@ -37,8 +36,6 @@ func defaultProviders() []*apiv1.AIProvider {
 }
 
 // tsToTime converts an optional protobuf timestamp to a time.Time.
-// Returns the zero time if nil, which the data-access layer treats as
-// "no bound" via the 'epoch' sentinel in parameterized queries.
 func tsToTime(ts *timestamppb.Timestamp) time.Time {
 	if ts == nil {
 		return time.Time{}
@@ -46,10 +43,8 @@ func tsToTime(ts *timestamppb.Timestamp) time.Time {
 	return ts.AsTime()
 }
 
-// optTimestamp converts a time.Time to a protobuf timestamp, returning nil
-// for the zero time so an absent "finished_at" stays absent on the wire
-// rather than serialising as year 1 (the total roll-up has no per-group
-// finish time and must not fabricate one).
+// optTimestamp converts a time.Time to a protobuf timestamp, returning nil for the zero time so an
+// absent "finished_at" stays absent on the wire rather than serialising as year 1 (the total.
 func optTimestamp(t time.Time) *timestamppb.Timestamp {
 	if t.IsZero() {
 		return nil
@@ -103,10 +98,8 @@ func costRowToProto(r *db.CostSummaryRow, groupBy, parentKey string, start, end 
 	}
 }
 
-// parseUsageEvent decodes a NATS usage event payload (the outbox envelope
-// payload for an "usage.recorded" event) into the wire UsageEvent proto.
-// The payload is the JSON event envelope's `payload` field re-encoded
-// as the UsageEvent shape.
+// parseUsageEvent decodes a NATS usage event payload (the outbox envelope payload for an
+// "usage.recorded" event) into the wire UsageEvent proto.
 func parseUsageEvent(data []byte) (*apiv1.UsageEvent, error) {
 	if len(data) == 0 {
 		return nil, errors.New("empty usage event payload")
@@ -159,9 +152,8 @@ func parseUsageEvent(data []byte) (*apiv1.UsageEvent, error) {
 	return evt, nil
 }
 
-// usageEventEnvelope is the payload shape published to the
-// orchicon.events.usage.> subject via the outbox (docs/08 §5.2). It
-// mirrors a usage_records row.
+// usageEventEnvelope is the payload shape published to the orchicon.events.usage.> subject via the
+// outbox (docs/08 §5.2).
 type usageEventEnvelope struct {
 	ID               string  `json:"id"`
 	TenantID         string  `json:"tenant_id"`

@@ -7,7 +7,7 @@ package scheduler
 // (internal/contextfiles.RenderManifest) with NO adapter carrying skill-handling code. This file asserts the
 // worker half: the union of the project's skill_files and the VERSION's skill_files renders the `# Skills`
 // manifest, and two calls over the same selection are byte-identical (the section sits inside the prompt's
-// cached static prefix — ADR-0009 — so an unstable order is a permanent per-turn cache miss).
+// cached static prefix — so an unstable order is a permanent per-turn cache miss).
 //
 //	export ORCHICON_TEST_DSN='postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable'
 //	go test ./internal/scheduler/ -run 'SkillFiles' -v
@@ -37,6 +37,7 @@ func skillFileTestSetup(t *testing.T, slug string) (*WorkflowReconciler, context
 		ID: db.NewID(), TenantID: approvalTestTenant, Name: "Skills " + slug,
 		Slug: slug + "-" + strings.ToLower(db.NewID()), Status: "active",
 		Goals: []byte("[]"), ProjectDir: root,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -66,7 +67,7 @@ func TestSkillFilesWorkerUnionRendersInCompositePrompt(t *testing.T) {
 	if err := os.MkdirAll(verDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(verDir, "vskill.md"), []byte("V\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(verDir, "vskill.md"), []byte("VERSION_SKILL_BODY\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -95,9 +96,16 @@ func TestSkillFilesWorkerUnionRendersInCompositePrompt(t *testing.T) {
 	if !strings.Contains(out, verDir) || !strings.Contains(out, "vskill.md") {
 		t.Fatalf("the worker version's skill directory did not render into the composite prompt:\n%s", out)
 	}
-	// The Skills section must be the MANIFEST form (read on demand), not an inline dump of every file.
-	if !strings.Contains(out, "(directory — read on demand)") {
-		t.Fatalf("the directory skill did not render as a read-on-demand manifest:\n%s", out)
+	// SKILLS INLINE THEIR FILES, WHICH IS THE OPPOSITE OF THE CONTEXT POLICY. A skill is instruction the
+	// worker must follow rather than material to consult, so `ManifestPolicySkill` renders the directory's
+	// files inline under "(skills — follow these)". This test asserted the read-on-demand manifest, which is
+	// the CONTEXT form — stale since the skills policy changed, and invisible because the suite never ran.
+	if !strings.Contains(out, "(skills — follow these)") {
+		t.Fatalf("the directory skill did not render under the skills heading:\n%s", out)
+	}
+	if !strings.Contains(out, "VERSION_SKILL_BODY") {
+		t.Fatalf("the skill directory's file was not inlined — a skill the worker never reads is not a "+
+			"skill:\n%s", out)
 	}
 }
 
@@ -141,9 +149,8 @@ func TestSkillFilesCompositePromptByteStable(t *testing.T) {
 	}
 }
 
-// AC5-adjacent (worker half): a skill OUTSIDE the project dir is dropped at the render boundary rather than
-// rendering a dead "could not read" note — a worker version is project-agnostic, so containment can only be
-// enforced here.
+// AC5-adjacent (worker half): a skill OUTSIDE the project dir is dropped at the render boundary
+// rather than rendering a dead "could not read" note — a worker version is project-agnostic.
 func TestSkillFilesOutsideProjectDirNotRendered(t *testing.T) {
 	r, ctx, _, ttx, _, item, _ := skillFileTestSetup(t, "skills-outside")
 	defer ttx.Rollback(ctx)

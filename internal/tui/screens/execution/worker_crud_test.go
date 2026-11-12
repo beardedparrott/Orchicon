@@ -1,12 +1,6 @@
 package execution
 
 // worker_crud_test.go — Item 6: the worker CRUD surface.
-//
-// These drive the REAL path: a write chord → the load thunk → the loaded
-// message → the form the operation opened → its submit → the RPC thunk. That is
-// the whole chain the operator exercises, and each hop has failed in this
-// codebase before (a modal that could not close, a form that never opened), so
-// asserting the parts in isolation would not have caught those.
 
 import (
 	"context"
@@ -71,14 +65,7 @@ func crudExec(t *testing.T, worker *apiv1.Worker, versions []*apiv1.WorkerVersio
 // modal into the details pane), or nil.
 func detailForm(m *Model) *kit2.Form { return m.Base.DetailForm() }
 
-// openWorkerForm drives a worker-form chord END TO END and returns the form it
-// opened.
-//
-// The chord alone is no longer enough to open a form: every worker form now LOADS
-// first (the plane-role picker needs the tenant's roles, and the edit forms need
-// the worker's version trail), so the form appears when the load's message lands.
-// A test that asserted on the form immediately after the chord would be asserting
-// on an intermediate state.
+// openWorkerForm drives a worker-form chord END TO END and returns the form it opened.
 func openWorkerForm(t *testing.T, m *Model, key string) *kit2.Form {
 	t.Helper()
 	cmd, handled := m.handleActionKey(key)
@@ -97,9 +84,7 @@ func pubV(id string, n int32, model string) *apiv1.WorkerVersion {
 	return &apiv1.WorkerVersion{Id: id, Version: n, ModelRef: model, Status: apiv1.WorkerVersionStatus_WORKER_VERSION_STATUS_PUBLISHED}
 }
 
-// The chords are scoped to the Workers pane. That matters because `p` is ALSO
-// force-progress on a run: an unscoped switch would hijack it and refuse with a
-// worker message.
+// The chords are scoped to the Workers pane.
 func TestWorkerChordsAreScopedToTheWorkersPane(t *testing.T) {
 	m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1"}, nil)
 	m.Base.SelectSource("runs")
@@ -110,9 +95,8 @@ func TestWorkerChordsAreScopedToTheWorkersPane(t *testing.T) {
 	}
 }
 
-// Inside the Workers pane: `n` opens the create form (no load and no selection
-// needed), while the operations that act on a ROW refuse by name when nothing is
-// selected rather than opening a form against an empty id.
+// Inside the Workers pane: `n` opens the create form (no load and no selection needed), while the
+// operations that act on a ROW refuse by name when nothing is selected rather than opening a form.
 func TestWorkerChordsInsideTheWorkersPane(t *testing.T) {
 	m, calls, _ := crudExec(t, &apiv1.Worker{Id: "w1"}, nil)
 	if !m.Base.SelectSource(srcWorkers) {
@@ -146,14 +130,8 @@ func TestWorkerChordsInsideTheWorkersPane(t *testing.T) {
 	}
 }
 
-// EDITING AN EXISTING WORKER IS ONE OPERATION: the form carries the header AND the
-// version fields, and saving sends the version write with republish set — so the
-// server does revert → update → publish in ONE transaction and the worker is
-// published before and after with the version number unchanged.
-//
-// This replaces the old "edit version" chord, which UPDATED a draft when one
-// existed and otherwise CREATED one — leaving an unpublished draft behind on every
-// save, the state the operator asked us never to produce.
+// EDITING AN EXISTING WORKER IS ONE OPERATION: the form carries the header AND the version fields,
+// and saving sends the version write with republish set.
 func TestWorkerEditSavesTheVersionInPlaceWithRepublish(t *testing.T) {
 	w := &apiv1.Worker{Id: "w1", Name: "writer", Status: apiv1.WorkerStatus_WORKER_STATUS_PUBLISHED}
 	m, _, _ := crudExec(t, w, []*apiv1.WorkerVersion{pubV("v1", 1, "orchicon/deepseek/deepseek-flash")})
@@ -301,9 +279,8 @@ func TestWorkerLoadResultForAnAbandonedOpIsDropped(t *testing.T) {
 	}
 }
 
-// The keys avoid d/D on purpose: the shell's global routes consume those for the
-// diff pane BEFORE the screen sees them, so a deprecate bound to D could never
-// fire. This pins the choice so a future change cannot quietly reintroduce it.
+// The keys avoid d/D on purpose: the shell's global routes consume those for the diff pane BEFORE
+// the screen sees them, so a deprecate bound to D could never fire.
 func TestWorkerChordsAvoidTheGlobalDiffKeys(t *testing.T) {
 	for _, k := range []string{keyNewWorker, keyEditWorker, keyEditVersion, keyPublish, keySetActive, keyDeprecate, keyDelete} {
 		if k == "d" || k == "D" {
@@ -339,9 +316,7 @@ func TestWorkerFormsOpenInlineInTheDetailsPaneNotAModal(t *testing.T) {
 	}
 }
 
-// Item 2: the model is selectable in BOTH worker form modes. model_ref is a
-// VERSION field (ADR-0003), so it belongs on the create form and the version
-// editor — and on neither the header editor, whose RPC takes no model.
+// Item 2: the model is selectable in BOTH worker form modes.
 func TestWorkerFormsOfferTheModelPicker(t *testing.T) {
 	m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1", Name: "writer"}, []*apiv1.WorkerVersion{draftV("v1", 1)})
 
@@ -356,11 +331,8 @@ func TestWorkerFormsOfferTheModelPicker(t *testing.T) {
 	if !hasModelField(vf) || vf.OnOpenModelPicker == nil {
 		t.Fatal("the new-version form must offer a model field wired to the picker")
 	}
-	// The EDIT form carries the model too: model_ref is a VERSION field (ADR-0003),
-	// and the edit form is where the version is edited now that the header/version
-	// split is gone. The operator: "the edit page of a worker should also have the
-	// model selector ... It works on new versions, it should work on editing
-	// current versions as well."
+	// The EDIT form carries the model too: model_ref is a VERSION field, and the edit form
+	// is where the version is edited now that the header/version split is gone.
 	hf, err := m.editWorkerForm(w, []*apiv1.WorkerVersion{draftV("v1", 1)}, nil)
 	if err != nil {
 		t.Fatalf("edit form: %v", err)
@@ -398,15 +370,7 @@ func hasModelField(f *kit2.Form) bool {
 	return false
 }
 
-// The inline worker forms must own their keys: arrows move between FIELDS and esc
-// cancels.
-//
-// "When editing a worker, I can't use the arrow keys to move between the different
-// fields and it will not let me hit ESC to cancel out of editing the item" and
-// "New worker form is the same way." The screen's write chords ran BEFORE the
-// inline editor, and handleActionKey answers esc/up/down (it explains why a chord
-// has nothing to run on), so it swallowed them before kit2.Base could move the
-// cursor or close the editor.
+// The inline worker forms must own their keys: arrows move between FIELDS and esc cancels.
 func TestInlineWorkerFormOwnsArrowsAndEsc(t *testing.T) {
 	m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1", Name: "writer"}, nil)
 	if !m.Base.SelectSource(srcWorkers) {
@@ -439,15 +403,6 @@ func TestInlineWorkerFormOwnsArrowsAndEsc(t *testing.T) {
 }
 
 // Tab inside an open form moves through the FORM'S FIELDS, not the tab ring.
-//
-// "When in an edit form, tab should move through the fields of the form just like
-// up/down keys. Tabbing currently breaks out and moves to the next top tabmenu
-// item. This is wrong. Tabs should only move to the next menu item if you are NOT
-// in edit mode."
-//
-// The hook the shell consults is FormOpen — not the narrower ModalFormOpen it used
-// before, which only yielded to a centred WINDOW and therefore let Tab ESCAPE an
-// inline details-pane editor (the host these forms now use).
 func TestTabMovesFormFieldsWhileEditing(t *testing.T) {
 	m, _, _ := crudExec(t, &apiv1.Worker{Id: "w1", Name: "writer"}, nil)
 	if !m.Base.SelectSource(srcWorkers) {

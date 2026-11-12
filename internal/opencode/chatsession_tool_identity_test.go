@@ -53,10 +53,8 @@ func TestV2ToolIdentityIsRestoredAcrossEvents(t *testing.T) {
 	}
 }
 
-// TestV2ToolIdentityIsAbsentWithoutTheIndex is the CONTRAST that makes the test
-// above mean something: it shows the pre-fix state, so a future change that
-// drops the correlation fails here with a message naming the consequence rather
-// than only in the stall monitor's behaviour.
+// TestV2ToolIdentityIsAbsentWithoutTheIndex is the CONTRAST that makes the test above mean
+// something: it shows the pre-fix state.
 func TestV2ToolIdentityIsAbsentWithoutTheIndex(t *testing.T) {
 	// No index: exactly what the Ask path did before this fix.
 	se := classifyBusEvent(v2Event(t, v2ToolSuccess))
@@ -69,14 +67,8 @@ func TestV2ToolIdentityIsAbsentWithoutTheIndex(t *testing.T) {
 	}
 }
 
-// TestV2ToolIdentitySurvivesASecondResolution pins WHY neither entry is
-// consumed, and it is a case the first draft of this fix got WRONG: consuming
-// the name at stamping left a SECOND resolution of the same call with no name —
-// the very identity-less state that produced the `|null` false kill.
-//
-// Both entries are retained, which is also consistent with the args entry: the
-// consent path reads it by call id AFTER a call resolves (argsForPermission), so
-// it can never be consumed either.
+// TestV2ToolIdentitySurvivesASecondResolution pins WHY neither entry is consumed, and it is a case
+// the first draft of this fix got WRONG.
 func TestV2ToolIdentitySurvivesASecondResolution(t *testing.T) {
 	calls := newToolCallIndex()
 	classifyBusEventIndexed(v2Event(t, v2ToolInputStarted), calls)

@@ -9,11 +9,8 @@ import (
 
 var errContainerGone = errors.New("no runtime container leased for run")
 
-// TestContainerBashRouting pins always-container native exec: a HostTools
-// wired with a container exec fn routes `bash` through it (cwd = the
-// in-container worktree, sandbox DSN env passed through) and maps a
-// non-zero exit to a RESULT (nil error), while a transport failure is an
-// error (fail LOUD, never silent host fallback).
+// TestContainerBashRouting pins always-container native exec: a HostTools wired with a container
+// exec fn routes `bash` through it (cwd = the in-container worktree.
 func TestContainerBashRouting(t *testing.T) {
 	var gotCmd, gotCwd string
 	var gotEnv []string
@@ -41,9 +38,8 @@ func TestContainerBashRouting(t *testing.T) {
 	}
 }
 
-// TestContainerBashNonZeroExitIsResult pins the exit-code contract: a
-// failing command inside the container returns its output with a nil
-// error (the model course-corrects), matching the in-process path.
+// TestContainerBashNonZeroExitIsResult pins the exit-code contract: a failing command inside the
+// container returns its output with a nil error (the model course-corrects).
 func TestContainerBashNonZeroExitIsResult(t *testing.T) {
 	h := NewContainerHostTools(t.TempDir(), "",
 		func(ctx context.Context, command string, env []string, cwd string) (string, string, int, error) {
@@ -58,9 +54,8 @@ func TestContainerBashNonZeroExitIsResult(t *testing.T) {
 	}
 }
 
-// TestContainerBashTransportErrorFailsLoud pins the fail-LOUD contract: a
-// broken exec channel (no lease, daemon down) surfaces an error — the
-// reconciler fails the execution, never silently runs on the host.
+// TestContainerBashTransportErrorFailsLoud pins the fail-LOUD contract: a broken exec channel (no
+// lease, daemon down) surfaces an error — the reconciler fails the execution.
 func TestContainerBashTransportErrorFailsLoud(t *testing.T) {
 	h := NewContainerHostTools(t.TempDir(), "",
 		func(ctx context.Context, command string, env []string, cwd string) (string, string, int, error) {

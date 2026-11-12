@@ -21,25 +21,14 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workitem"
 )
 
-// toolLogger is the package-level logger used for post-commit side effects
-// (auto-start workflow) that need a logger but receive none via the ToolFn
-// signature. Initialized in NewToolRegistry(pool, log); falls back to
-// slog.Default() when a nil logger is passed.
+// toolLogger is the package-level logger used for post-commit side effects (auto-start workflow)
+// that need a logger but receive none via the ToolFn signature.
 var toolLogger *slog.Logger
 
 var numberRefRe = regexp.MustCompile(`(?i)(?:number|item|#)\s*(\d+)`)
 
-// validateEphemeralPlacement rejects the one ephemeral shape the "hidden from
-// every human view" guarantee cannot honour: a CHILD.
-//
-// The hierarchy has no foreign key on parent_id — it is enforced in the
-// service layer — so an ephemeral child would be RENDERED inside its real
-// parent's tree (ListDirectChildren does not filter ephemeral: the sequence
-// engine needs every child) while being absent from every list that does
-// filter it. It would then be hard-deleted out of a tree still displaying it.
-//
-// Pure (no pool, no transaction), so both directions are testable and the
-// check runs before the transaction is opened rather than inside it.
+// validateEphemeralPlacement rejects the one ephemeral shape the "hidden from every human view"
+// guarantee cannot honour: a CHILD.
 func validateEphemeralPlacement(ephemeral bool, parentID string) error {
 	if ephemeral && strings.TrimSpace(parentID) != "" {
 		return fmt.Errorf("an ephemeral work item cannot have a parent: ephemeral items are hidden from every view, so a child would be invisible in the list but visible inside its parent's tree, and hard-deleting it would rip a row out of a live tree. Create it top-level")
@@ -47,9 +36,7 @@ func validateEphemeralPlacement(ephemeral bool, parentID string) error {
 	return nil
 }
 
-// ephemeralScopeFor maps the include_ephemeral flag to the ListWorkItems
-// ephemeral scope. Shared so the opt-in spelling cannot drift between tools
-// that list work items.
+// ephemeralScopeFor maps the include_ephemeral flag to the ListWorkItems ephemeral scope.
 func ephemeralScopeFor(include bool) string {
 	if include {
 		return "include"
@@ -64,10 +51,7 @@ func toolListWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		Kind      string `json:"kind"`
 		Search    string `json:"search"`
 		PageToken string `json:"page_token"`
-		// IncludeEphemeral opts the caller into machine-managed transient
-		// items (Quick Work). The default is FALSE: a list is a human-facing
-		// read even when an agent issues it — its rows land in the
-		// transcript the operator is reading.
+		// IncludeEphemeral opts the caller into machine-managed transient items (Quick Work).
 		IncludeEphemeral bool `json:"include_ephemeral"`
 	}
 	if len(args) > 0 && string(args) != "null" {
@@ -88,9 +72,8 @@ func toolListWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessage)
 		AfterID:   params.PageToken,
 		// Ephemeral transients stay hidden unless asked for by name.
 		EphemeralScope: ephemeralScopeFor(params.IncludeEphemeral),
-		// Fetch one extra row so truncation is detected without ever loading
-		// the whole backlog's fat columns (description, acceptance criteria,
-		// budgets, context files…) — the "list is HUGE" bloat.
+		// Fetch one extra row so truncation is detected without ever loading the whole backlog's fat
+		// columns (description, acceptance criteria, budgets, context files…) — the "list is HUGE" bloat.
 		PageSize: listCap + 1,
 	})
 	if err != nil {
@@ -166,16 +149,15 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		AutoStartWorkflow  bool     `json:"auto_start_workflow"`
 		RuntimeImage       string   `json:"runtime_image"`
 		ContextFiles       []string `json:"context_files"`
-		// run_context is the calling workflow run's run_context JSONB (feature
-		// 4.1, AC2): a recurring fire writes the provenance block into it, and a
-		// create issued from inside a recurring fire's run carries it so the
-		// created item is stamped with automation provenance.
+		// run_context is the calling workflow run's run_context JSONB (feature 4.1, AC2): a recurring fire
+		// writes the provenance block into it.
 		RunContext string `json:"run_context"`
-		// Ephemeral marks this item as machine-managed and transient (Ask
-		// Orchicon Quick Work): hidden from every human work-item view, and
-		// meant to be HARD-DELETED via hard_delete_work_item when the job
-		// ends. Top-level only — see the guard below.
+		// Ephemeral marks this item as machine-managed and transient (Ask Orchicon Quick Work): hidden from
+		// every human work-item view.
 		Ephemeral bool `json:"ephemeral"`
+		// Empty = inherit from the project (NEVER silently omitted-but-forced: an omitted field means
+		// inherit, which is a real, documented choice.
+		ExecutionMode string `json:"execution_mode"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -237,9 +219,8 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if err := db.RequireProjectActive(ctx, ttx.Tx, tenantID, params.ProjectID); err != nil {
 		return nil, fmt.Errorf("project not active: %w", err)
 	}
-	// Context files must live inside the project directory (the only path
-	// guaranteed mounted where workers run) — same rule as the Connect
-	// Create handler.
+	// Context files must live inside the project directory (the only path guaranteed mounted where
+	// workers run) — same rule as the Connect Create handler.
 	if len(params.ContextFiles) > 0 {
 		if proj, err := db.GetProject(ctx, ttx.Tx, tenantID, params.ProjectID); err == nil {
 			if err := contextfiles.ValidateWithin(params.ContextFiles, proj.ProjectDir); err != nil {
@@ -247,13 +228,8 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 			}
 		}
 	}
-	// Enforce hierarchy depth, shared with the Create path. The ephemeral
-	// flag is threaded in as the second top-level exemption: an ephemeral
-	// item lives in no tree, so it may legitimately be a top-level task
-	// instead of an epic (see workitem.ValidateParent for the reasoning).
-	// Its top-level ONLY shape is enforced just above, before the
-	// transaction opens, by validateEphemeralPlacement. The tool's create
-	// takes no recurring_schedule, so no recurring exemption is claimed.
+	// Enforce hierarchy depth, shared with the Create path. Its top-level ONLY shape is enforced just
+	// above, before the transaction opens, by validateEphemeralPlacement.
 	if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, params.ParentID, kind, params.ProjectID, false, params.Ephemeral); err != nil {
 		return nil, err
 	}
@@ -278,10 +254,19 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if scheduledStartAt != nil {
 		status = domain.WorkItemScheduled
 	}
-	// Trim the runtime image; the MCP stdio process has no daemon resolver,
-	// so empty stays empty and the WorkflowReconciler resolves base at run
-	// start (functionally identical to the API's eager stamping).
+	// Trim the runtime image; the MCP stdio process has no daemon resolver, so empty stays empty and
+	// the WorkflowReconciler resolves base at run start (functionally identical to the API's eager.
 	runtimeImage := strings.TrimSpace(params.RuntimeImage)
+	// Work-item execution_mode override (item -> project -> tenant default, resolved in
+	// db.EffectiveExecutionMode).
+	executionMode, err := workitem.ValidateExecutionMode(params.ExecutionMode)
+	if err != nil {
+		return nil, err
+	}
+	var executionModePtr *string
+	if executionMode != "" {
+		executionModePtr = &executionMode
+	}
 	row := db.WorkItemRow{
 		ID:                 db.NewID(),
 		TenantID:           tenantID,
@@ -301,15 +286,13 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		RuntimeImage:       runtimeImage,
 		ContextFiles:       contextFiles,
 		Ephemeral:          params.Ephemeral,
+		ExecutionMode:      executionModePtr,
 	}
 	if workflowID == "" {
 		row.WorkflowID = nil
 	}
-	// Stamp automation provenance (feature 4.1, AC2): a create inside a
-	// recurring fire's run carries the run_context (passed on the call or
-	// injected into the context by the sandbox Orchicon MCP from the run's
-	// run_context), so the created item is stamped spawned_by /
-	// spawned_by_run_id and, when outputs_mode=idea, lands in IDEA state.
+	// Stamp automation provenance (feature 4.1, AC2): a create inside a recurring fire's run carries
+	// the run_context (passed on the call or injected into the context by the sandbox Orchicon MCP.
 	rc := []byte(params.RunContext)
 	if len(rc) == 0 {
 		rc = workitem.RunContextFrom(ctx)
@@ -319,11 +302,8 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if err != nil {
 		return nil, err
 	}
-	// Workflow-first enforcement at CREATE, mirroring the Connect Create
-	// handler: a SCHEDULED item with no workflow binding has nothing to run —
-	// the delivered schedule-time gate rejects that shape on the UPDATE path,
-	// so run it here too (the two surfaces must not drift). A freshly created
-	// item has no children, so this is the leaf case.
+	// Workflow-first enforcement at CREATE, mirroring the Connect Create handler: a SCHEDULED item with
+	// no workflow binding has nothing to run.
 	if scheduledStartAt != nil {
 		if err := workitem.ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, created); err != nil {
 			return nil, err
@@ -336,9 +316,8 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	// Post-commit auto-start, same guard and call as the Connect Create
-	// handler: bound to a workflow, no scheduled time, and auto-start
-	// requested — start the run immediately.
+	// Post-commit auto-start, same guard and call as the Connect Create handler: bound to a workflow,
+	// no scheduled time, and auto-start requested — start the run immediately.
 	if workflowID != "" && scheduledStartAt == nil && autoStart {
 		if err := workflow.StartWorkflowDirect(ctx, pool, toolLogger, tenantID, workflowID, params.ProjectID, created.ID); err != nil {
 			toolLogger.Warn("auto-start workflow failed", "work_item", created.ID, "workflow", workflowID, "error", err)
@@ -350,9 +329,8 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 }
 
 func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
-	// Pointer-based params: an unset field (nil) is distinct from an
-	// explicit zero/empty value, exactly like the proto optional fields
-	// the Connect Update handler reads.
+	// Pointer-based params: an unset field (nil) is distinct from an explicit zero/empty value, exactly
+	// like the proto optional fields the Connect Update handler reads.
 	var params struct {
 		ID                 string  `json:"id"`
 		Title              *string `json:"title"`
@@ -367,15 +345,17 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		WorkflowID         *string `json:"workflow_id"`
 		ParentID           *string `json:"parent_id"`
 		ScheduledStartAt   *string `json:"scheduled_start_at"`
-		// ClearScheduledStartAt removes the schedule WITHOUT starting the item — the answer to
-		// "there is no way to clear a schedule". Distinct from AutoStartWorkflow, which clears as a
-		// side effect of FIRING.
-		ClearScheduledStartAt *bool     `json:"clear_scheduled_start_at"`
-		AutoStartWorkflow     *bool     `json:"auto_start_workflow"`
-		WorkflowRunID         *string   `json:"workflow_run_id"`
-		RuntimeImage          *string   `json:"runtime_image"`
-		Kind                  *string   `json:"kind"`
-		ContextFiles          *[]string `json:"context_files"`
+		// ClearScheduledStartAt removes the schedule WITHOUT starting the item — the answer to "there is no
+		// way to clear a schedule".
+		ClearScheduledStartAt *bool   `json:"clear_scheduled_start_at"`
+		AutoStartWorkflow     *bool   `json:"auto_start_workflow"`
+		WorkflowRunID         *string `json:"workflow_run_id"`
+		RuntimeImage          *string `json:"runtime_image"`
+		// ExecutionMode sets this item's override ("runtime" | "local").
+		ExecutionMode      *string   `json:"execution_mode"`
+		ClearExecutionMode *bool     `json:"clear_execution_mode"`
+		Kind               *string   `json:"kind"`
+		ContextFiles       *[]string `json:"context_files"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -393,15 +373,13 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if err != nil {
 		return nil, err
 	}
-	// Ideas are system-managed (feature 4.1): the generic update tool must
-	// never move an idea out of idea state — only PromoteIdea / DismissIdea
-	// are sanctioned. Mirrors the Connect Update handler guard.
+	// Ideas are system-managed (feature 4.1): the generic update tool must never move an idea out of
+	// idea state — only PromoteIdea / DismissIdea are sanctioned.
 	if workitem.IsIdeaStatus(current.Status) {
 		return nil, workitem.ErrWorkItemIsIdea()
 	}
-	// Context files must live inside the effective project's directory (the
-	// only path guaranteed mounted where workers run) — same rule as the
-	// Connect Update handler.
+	// Context files must live inside the effective project's directory (the only path guaranteed
+	// mounted where workers run) — same rule as the Connect Update handler.
 	if params.ContextFiles != nil {
 		effProject := current.ProjectID
 		if params.ProjectID != nil && *params.ProjectID != "" {
@@ -505,6 +483,23 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		v := strings.TrimSpace(*params.RuntimeImage)
 		update.RuntimeImage = &v
 	}
+	// CLEAR WINS over a simultaneously supplied value (same rule as the
+	// Connect UpdateWorkItem handler).
+	if params.ClearExecutionMode != nil && *params.ClearExecutionMode {
+		update.ClearExecutionMode = true
+	} else if params.ExecutionMode != nil {
+		v, err := workitem.ValidateExecutionMode(*params.ExecutionMode)
+		if err != nil {
+			return nil, err
+		}
+		if v == "" {
+			// Explicit empty string means "back to inherit" — an empty string is
+			// never a third stored state.
+			update.ClearExecutionMode = true
+		} else {
+			update.ExecutionMode = &v
+		}
+	}
 	if params.ContextFiles != nil {
 		if err := contextfiles.Validate(*params.ContextFiles); err != nil {
 			return nil, err
@@ -515,10 +510,8 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		}
 		update.ContextFiles = &cfJSON
 	}
-	// Kind switch uses the SAME shared resolution as the Connect Update
-	// path (AGENTS.md: the tool and the service cannot drift) — parent
-	// walk-up, child reparenting, and schedulability cleanup are decided
-	// in one place, inside this transaction.
+	// Kind switch uses the SAME shared resolution as the Connect Update path (AGENTS.md: the tool and
+	// the service cannot drift) — parent walk-up, child reparenting.
 	var kindSwitchPlan *workitem.KindSwitchPlan
 	if params.Kind != nil {
 		kind, err := domain.NormalizeWorkItemKind(*params.Kind)
@@ -531,17 +524,8 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 				effectiveProject = *update.ProjectID
 			}
 			if effectiveProject != current.ProjectID {
-				// Switching kind AND moving to another project: the
-				// auto-resolution walk-up follows the current ancestor
-				// chain, which must not cross projects. Only a genuine
-				// explicit reparent (a parent different from the current
-				// one) is validated against the target project by
-				// ResolveKindSwitch. Naming no parent, or naming the
-				// current parent, leaves the resolution to walk the OLD
-				// project's chain — unless the current parent already
-				// lives in the target project, the request must choose
-				// the new parent explicitly (matches the carried-parent
-				// guard below).
+				// Switching kind AND moving to another project: the auto-resolution walk-up follows the current
+				// ancestor chain, which must not cross projects.
 				keepCurrent := params.ParentID != nil && current.ParentID != nil && *params.ParentID == *current.ParentID
 				explicitForTarget := params.ParentID != nil && !keepCurrent
 				if !explicitForTarget {
@@ -574,19 +558,8 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 			return nil, fmt.Errorf("target project not active: %w", err)
 		}
 	}
-	// Reparenting is validated against the *effective* project — the
-	// request's project_id if also being changed, otherwise the current
-	// one — using the same rules as Create (shared helper). Clearing the
-	// parent (empty string) is only valid for epics; a non-epic must keep
-	// a parent. When a kind switch is in flight, the explicit parent was
-	// already validated against the NEW kind inside ResolveKindSwitch, so
-	// this block is skipped (the old kind's rules no longer apply).
-	// Flat-recurring exemption (D1 parity with the Connect Update path): a
-	// recurring item is a flat top-level task, so hierarchy validation for
-	// the top-level (empty parent) case is skipped. An EPHEMERAL item is
-	// exempt for the same reason (it lives in no tree — see
-	// workitem.ValidateParent). Both flags are derived from the ROW, so this
-	// tool and the Connect handler cannot disagree about an existing item.
+	// Reparenting is validated against the *effective* project — the request's project_id if also being
+	// changed, otherwise the current one — using the same rules as Create (shared helper).
 	itemIsRecurring := current.RecurringSchedule != nil
 	itemIsEphemeral := current.Ephemeral
 	if params.ParentID != nil && kindSwitchPlan == nil {
@@ -598,12 +571,8 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 			return nil, err
 		}
 	} else if params.ParentID == nil && update.ProjectID != nil && *update.ProjectID != "" && *update.ProjectID != current.ProjectID && current.ParentID != nil {
-		// The item is moving to another project WITHOUT an explicit
-		// reparent, so its current parent is carried over. That only
-		// stays consistent if the parent already lives in the target
-		// project (e.g. the parent was moved first). Otherwise the
-		// request must reparent explicitly — reject rather than leave
-		// the hierarchy cross-project (AGENTS.md: fix the whole class).
+		// The item is moving to another project WITHOUT an explicit reparent, so its current parent is
+		// carried over.
 		if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, *current.ParentID, current.Kind, *update.ProjectID, itemIsRecurring, itemIsEphemeral); err != nil {
 			return nil, err
 		}
@@ -632,23 +601,14 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	}
 	// Saving a scheduled start flips the item to "scheduled" (ADR-001 in
 	// architecture-notes/running-workflows-not-showing-in-schedules.md).
-	// Applied AFTER the kind-switch plan so a switch to a non-schedulable
-	// kind (which clears the schedule and demotes status to pending) always
-	// wins. Guarded against in-flight runs: flipping a running item would
-	// let ScheduledRunReconciler fire a duplicate run and would misstate an
-	// in-flight run as waiting. Clearing a schedule never triggers the flip.
 	if scheduledStartAt != nil &&
 		!workitem.IsActiveRunStatus(current.Status) &&
 		!(kindSwitchPlan != nil && kindSwitchPlan.ClearScheduledStartAt) {
 		status := domain.WorkItemScheduled
 		update.Status = &status
 	}
-	// Final-state invariant mirror of the Connect Update handler: switching
-	// status to anything other than "recurring" clears the schedule, and a
-	// resulting "recurring" status without a schedule is impossible — demote
-	// to pending (an empty-but-present recurring_schedule from the edit form
-	// would otherwise leave the row recurring with a NULL schedule). The
-	// tool cannot SET a schedule, so only the clear/demote direction applies.
+	// Final-state invariant mirror of the Connect Update handler: switching status to anything other
+	// than "recurring" clears the schedule.
 	if update.Status != nil && *update.Status != domain.WorkItemRecurring && current.RecurringSchedule != nil {
 		update.ClearRecurringSchedule = true
 	}
@@ -657,12 +617,8 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		status := domain.WorkItemPending
 		update.Status = &status
 	}
-	// Schedule-time validation (architecture-notes §3): scheduling or
-	// auto-starting a workflow-less parent WITH children runs a sequence —
-	// the full subtree must be executable (every leaf bound to a runnable
-	// workflow, no worker-assigned one-shots). Runs before commit so a
-	// rejection leaves nothing scheduled or started. Shared with the
-	// Connect path so the two surfaces cannot drift.
+	// Schedule-time validation (architecture-notes §3): scheduling or auto-starting a workflow-less
+	// parent WITH children runs a sequence.
 	effWorkflow := ""
 	if current.WorkflowID != nil {
 		effWorkflow = *current.WorkflowID
@@ -671,21 +627,16 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		effWorkflow = *update.WorkflowID
 	}
 	if effWorkflow == "" && (scheduledStartAt != nil || (params.AutoStartWorkflow != nil && *params.AutoStartWorkflow)) {
-		// Validate against the POST-update workflow binding: an update that
-		// unbinds a previously-bound workflow turns a parent-with-children
-		// into a sequence, which must be validated too.
+		// Validate against the POST-update workflow binding: an update that unbinds a previously-bound
+		// workflow turns a parent-with-children into a sequence, which must be validated too.
 		effItem := current
 		effItem.WorkflowID = nil
 		if err := workitem.ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, effItem); err != nil {
 			return nil, err
 		}
 	}
-	// Workflow-first enforcement (standalone dispatch is retired) — the
-	// mirror of the Connect Update handler so the two surfaces cannot drift: a
-	// STATUS TRANSITION into a runnable status (ready / assigned / scheduled /
-	// running) is rejected when the resulting item has no workflow binding,
-	// because nothing would execute it. Non-status edits and status no-ops are
-	// never gated; a sequence parent with children is exempt.
+	// Workflow-first enforcement (standalone dispatch is retired) — the mirror of the Connect Update
+	// handler so the two surfaces cannot drift.
 	if update.Status != nil && *update.Status != current.Status {
 		effWorkflowPtr := (*string)(nil)
 		if effWorkflow != "" {
@@ -703,16 +654,12 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if err != nil {
 		return nil, err
 	}
-	// A kind switch must never trigger the post-commit auto-start on its
-	// own — the user re-typed the item, they did not ask to start it now
-	// (ADR-WIT-2). Only an explicit autoStartWorkflow=true in the same
-	// request still wins.
+	// A kind switch must never trigger the post-commit auto-start on its own — the user re-typed the
+	// item, they did not ask to start it now (ADR-WIT-2).
 	kindSwitchInFlight := kindSwitchPlan != nil
 	userExplicitlyAutoStarts := params.AutoStartWorkflow != nil && *params.AutoStartWorkflow
-	// Outbox (invariant #3): a kind switch emits work_item.kind_changed +
-	// work_item.updated for the item and work_item.updated for every
-	// reparented child; otherwise a single work_item.updated. All in the
-	// same transaction as the mutation.
+	// Outbox (invariant #3): a kind switch emits work_item.kind_changed + work_item.updated for the
+	// item and work_item.updated for every reparented child; otherwise a single work_item.updated.
 	if kindSwitchPlan != nil {
 		if err := workitem.EnqueueKindChangedEvent(ctx, ttx.Tx, current, updated); err != nil {
 			return nil, err
@@ -736,20 +683,8 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	// Auto-start workflow after commit, with the same guard the Connect
-	// Update handler applies: no scheduled time, auto-start true,
-	// not a kind-switch (unless the user explicitly asked), any prior run
-	// is terminal, AND the item's status is startable both before this
-	// edit and after it (architecture-notes/fix-update-path-auto-start-…).
-	// A cancelled/terminal/in-flight item is never re-armed by an edit: a
-	// stale stored flag declines silently; an explicit auto_start_workflow
-	// request declines with an explicit warning carried in the tool result.
-	//
-	// The FIRE PATH is routed by SHAPE, exactly as Connect routes it: a work
-	// item with CHILDREN is a sequence and starts its CHAIN; a bound leaf
-	// starts its own run; an unbound leaf has nothing to start and declines.
-	// The flag alone is NOT a request (see the service's copy of this rule): auto-start fires only on an
-	// EXPLICIT gesture in this request, so a stale stored flag cannot start a run on an unrelated edit.
+	// Auto-start workflow after commit, with the same guard the Connect Update handler applies: no
+	// scheduled time, auto-start true, not a kind-switch (unless the user explicitly asked).
 	requestNamedStart := userExplicitlyAutoStarts || params.ScheduledStartAt != nil
 	wouldAutoStart := requestNamedStart && updated.ScheduledStartAt == nil && updated.AutoStartWorkflow &&
 		!(kindSwitchInFlight && !userExplicitlyAutoStarts)
@@ -771,23 +706,8 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 					}
 				}
 			}
-			// A work item WITH CHILDREN is a SEQUENCE, never a run: a parent's
-			// own workflow binding is meaningless — StartSequence CLEARS it
-			// ("a parent with children IS a sequence container, its own
-			// workflow_id is ignored") — so every armed epic/feature is stored
-			// in exactly this shape: startable status, auto_start_workflow
-			// true, workflow_id NULL. The Connect handler has always routed
-			// that shape to the CHAIN (itemHasChildren → maybeStartSequence,
-			// internal/workitem/service.go); this path claimed the same parity
-			// and skipped the branch, so a sequence parent fell through to the
-			// leaf branch and dereferenced the NULL binding its own mode
-			// guarantees. That panic ran on a goroutine spawned by
-			// dispatchTurnMessage, which net/http's per-connection recovery
-			// does not cover — so ONE edit killed the WHOLE control plane
-			// (live: three crashed planes on 2026-09-28, the last 2.7 ms after
-			// this row's write; the row was a pending feature with six
-			// children). Pinned by
-			// TestToolUpdateAutoStartSequenceParentFiresChainDB.
+			// A work item WITH CHILDREN is a SEQUENCE, never a run: a parent's own workflow binding is
+			// meaningless — StartSequence CLEARS it ("a parent with children IS a sequence container.
 			if toolItemHasChildren(ctx, pool, tenantID, updated.ID) {
 				if err := scheduler.StartSequence(ctx, pool, toolLogger, tenantID, updated.ID, toolStartWorkflowFn(pool)); err != nil {
 					toolLogger.Warn("auto-start sequence after update failed", "work_item", updated.ID, "error", err)
@@ -804,9 +724,8 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 				"work_item", updated.ID, "status", effectiveStatus)
 		}
 	}
-	// The tool result is raw JSON (no proto response), so an explicit
-	// auto-start decline must carry its warning as a sibling field of the
-	// item — MCP parity with UpdateWorkItemResponse.warning.
+	// The tool result is raw JSON (no proto response), so an explicit auto-start decline must carry its
+	// warning as a sibling field of the item — MCP parity with UpdateWorkItemResponse.warning.
 	if autoStartWarning != "" {
 		return json.Marshal(struct {
 			db.WorkItemRow
@@ -816,10 +735,8 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	return json.Marshal(updated)
 }
 
-// toolItemHasChildren reports whether the item has direct children — the
-// "has children = sequence parent" determinant the auto-start fire path
-// routes on. The tool-side twin of workitem.Service.itemHasChildren: a work
-// item with children IS a sequence, so its fire path is the chain.
+// toolItemHasChildren reports whether the item has direct children — the "has children = sequence
+// parent" determinant the auto-start fire path routes on.
 func toolItemHasChildren(ctx context.Context, pool *db.Pool, tenantID, itemID string) bool {
 	ttx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -830,19 +747,15 @@ func toolItemHasChildren(ctx context.Context, pool *db.Pool, tenantID, itemID st
 	return err == nil && len(children) > 0
 }
 
-// toolStartWorkflowFn is the per-child dispatcher scheduler.StartSequence
-// fires each link through — byte-for-byte the closure toolControlSequence
-// uses, so the auto-start path and the manual gesture cannot drift.
+// toolStartWorkflowFn is the per-child dispatcher scheduler.StartSequence fires each link through —
+// byte-for-byte the closure toolControlSequence uses.
 func toolStartWorkflowFn(pool *db.Pool) scheduler.StartWorkflowFn {
 	return func(ctx context.Context, tenantID, workflowID, projectID, workItemID string) error {
 		return workflow.StartWorkflowDirect(ctx, pool, toolLogger, tenantID, workflowID, projectID, workItemID)
 	}
 }
 
-// toolAssignWorker assigns a worker to a work item, mirroring the
-// AssignWorker RPC: the ref {worker_id, version} is stored in
-// assigned_worker_ref and a work_item.worker_assigned outbox event is
-// emitted in the same transaction.
+// toolAssignWorker assigns a worker to a work item, mirroring the AssignWorker RPC.
 func toolAssignWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ID       string `json:"id"`
@@ -894,9 +807,8 @@ func toolAssignWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) 
 	return json.Marshal(updated)
 }
 
-// toolUnassignWorker clears the worker binding from a work item, mirroring
-// the UnassignWorker RPC (status CAS bumping the version, worker
-// work_item.worker_unassigned outbox event in the same transaction).
+// toolUnassignWorker clears the worker binding from a work item, mirroring the UnassignWorker RPC
+// (status CAS bumping the version.
 func toolUnassignWorker(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ID string `json:"id"`
@@ -917,9 +829,8 @@ func toolUnassignWorker(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if err != nil {
 		return nil, err
 	}
-	// Clear assigned_worker_ref with a version CAS (the bytea column
-	// cannot encode NULL through the *[]byte pointer — the direct-query
-	// approach mirrors UnassignWorker in internal/workitem/service.go).
+	// Clear assigned_worker_ref with a version CAS (the bytea column cannot encode NULL through the
+	// *[]byte pointer.
 	const q = `UPDATE work_items
 		SET assigned_worker_ref = NULL, updated_at = now(), version = version + 1
 		WHERE tenant_id = $1 AND id = $2 AND version = $3
@@ -979,9 +890,8 @@ func toolDeleteWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	return json.Marshal(map[string]any{"id": params.ID, "status": domain.WorkItemCancelled})
 }
 
-// toolArchiveWorkItem hides a terminal work item from every normal view,
-// matching the ArchiveWorkItem RPC the UI uses. Only allowed from a terminal
-// status and blocked when the item has children.
+// toolArchiveWorkItem hides a terminal work item from every normal view, matching the
+// ArchiveWorkItem RPC the UI uses.
 func toolArchiveWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ID string `json:"id"`
@@ -1027,9 +937,8 @@ func toolArchiveWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessag
 	return json.Marshal(archived)
 }
 
-// toolRestoreWorkItem returns an archived work item to the active views,
-// back to the terminal status it was archived from, matching the
-// RestoreWorkItem RPC the UI uses.
+// toolRestoreWorkItem returns an archived work item to the active views, back to the terminal
+// status it was archived from, matching the RestoreWorkItem RPC the UI uses.
 func toolRestoreWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ID string `json:"id"`
@@ -1067,9 +976,8 @@ func toolRestoreWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessag
 	return json.Marshal(restored)
 }
 
-// toolScheduleWorkItem sets a work item's status to "scheduled" and
-// optionally sets its scheduled_start_at. Accepts a work_item_id and an
-// optional scheduled_time (ISO 8601 or "N [minutes|hours] from now").
+// toolScheduleWorkItem sets a work item's status to "scheduled" and optionally sets its
+// scheduled_start_at.
 func toolScheduleWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ID            string `json:"id"`
@@ -1092,9 +1000,8 @@ func toolScheduleWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessa
 	if err != nil {
 		return nil, err
 	}
-	// A workflow-less parent with children is a sequence — validate the
-	// subtree before scheduling it (architecture-notes §3). Shared with
-	// the Connect path so the two surfaces cannot drift.
+	// A workflow-less parent with children is a sequence — validate the subtree before scheduling it
+	// (architecture-notes §3).
 	if current.WorkflowID == nil || *current.WorkflowID == "" {
 		if err := workitem.ValidateSequenceSchedule(ctx, ttx.Tx, tenantID, current); err != nil {
 			return nil, err
@@ -1130,12 +1037,8 @@ func toolScheduleWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessa
 	})
 }
 
-// toolReorderWorkItems renumbers sort_order for the siblings under a
-// parent (empty = top level) to the given order, in one transaction —
-// mirrors the ReorderWorkItems RPC (architecture-notes/
-// sequential-multi-workflow-runs.md §1). Only explicit drags change
-// sort_order; display sort never does. Safe while a sequence is running:
-// the derived cursor reads sort_order at arm time.
+// toolReorderWorkItems renumbers sort_order for the siblings under a parent (empty = top level) to
+// the given order, in one transaction.
 func toolReorderWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectID string   `json:"project_id"`
@@ -1226,15 +1129,8 @@ func toolReorderWorkItems(ctx context.Context, pool *db.Pool, args json.RawMessa
 	return json.Marshal(map[string]any{"reordered": out, "parent_id": params.ParentID})
 }
 
-// toolControlSequence drives a sequence parent manually (start / resume /
-// stop) — mirrors the ControlSequence RPC (AGENTS.md Ask-Orchicon-sync
-// rule). A parent with children IS a sequence run; these explicit gestures
-// are what the engine's derived cursor cannot infer on its own:
-//   - start re-fires the chain from child #1 (destructive — every
-//     descendant resets to pending).
-//   - resume continues from the first non-succeeded child (keeps state).
-//   - stop parks the chain (parent → pending, schedule cleared) so
-//     children can be run standalone.
+// toolControlSequence drives a sequence parent manually (start / resume / stop) — mirrors the
+// ControlSequence RPC (AGENTS.md Ask-Orchicon-sync rule).
 func toolControlSequence(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ID     string `json:"id"`
@@ -1411,8 +1307,6 @@ func replaceWordNumbers(s string) string {
 }
 
 // copyAttachmentsByReference copies chat message attachments (by blob_ref share) onto a work item.
-// It is the server-side copy-by-reference helper (ADR-4) — no LLM byte echo.
-// copyChatAttachmentsToWorkItem is the MCP-visible wrapper for copyAttachmentsByReference (ADR-4 reference-only). Agent calls this when user asks to include images.
 func copyChatAttachmentsToWorkItem(ctx context.Context, pool *db.Pool, args []byte) ([]byte, error) {
 	return nil, nil
 }
@@ -1498,9 +1392,7 @@ func toolHardDeleteWorkItem(ctx context.Context, pool *db.Pool, args json.RawMes
 			"delete the children first — parent_id has no foreign key, so removing this row would leave them "+
 			"pointing at a parent that no longer exists", len(children))
 	}
-	// THE AUDIT IS RECORDED FOR A DELETE, unlike the other MCP tools, which do not audit at all. A hard
-	// delete is irreversible and destroys the row that would otherwise be the evidence, so the audit entry
-	// is the only remaining record of what was removed. The snapshot carries the fields that identify it.
+	// THE AUDIT IS RECORDED FOR A DELETE, unlike the other MCP tools, which do not audit at all.
 	before := audit.Snapshot(map[string]any{
 		"id":         current.ID,
 		"title":      current.Title,

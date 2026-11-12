@@ -1,15 +1,7 @@
 package tui
 
-// railprojects.go — the harness that puts every PROJECT in the conversations rail.
-//
-// The operator: "For every project that is created (active or otherwise), there should be a list that can be
-// dragged to and also created from."
-//
-// THE RAIL CANNOT DERIVE THE PROJECT LIST FROM THE CONVERSATIONS. It has to know about projects with ZERO
-// conversations — those are precisely the empty folders the operator wants to be able to move a chat INTO — and
-// a list derived from the conversations can only ever contain projects that already have one. So the shell
-// holds the project list alongside the conversation list and refreshes them together, which is also what keeps
-// a project created in the other client from being invisible here until a relaunch.
+// The operator: "For every project that is created (active or otherwise), there should be a list
+// that can be dragged to and also created from." THE RAIL CANNOT DERIVE THE PROJECT LIST.
 
 import (
 	"context"
@@ -24,12 +16,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
-// projectStatusWord renders the proto enum as the domain word the server uses for a project's status
-// (internal/project's statusFromProto), so the rail's "archived" marker and the conversation-project block the
-// agent receives say the same thing about the same project.
-//
-// UNSPECIFIED maps to "" — deliberately: a status the client cannot name is better rendered as nothing than as
-// a word that might be wrong, and the rail treats "" as "do not mark it".
+// projectStatusWord renders the proto enum as the domain word the server uses for a project's
+// status (internal/project's statusFromProto).
 func projectStatusWord(st apiv1.ProjectStatus) string {
 	switch st {
 	case apiv1.ProjectStatus_PROJECT_STATUS_DRAFTING:
@@ -47,12 +35,7 @@ func projectStatusWord(st apiv1.ProjectStatus) string {
 	}
 }
 
-// projLabelForConv names the project a conversation sits in, for a rail row. It returns "" when the
-// conversation is unassigned — an unassigned chat is not "in" anything, and inventing a label for it would
-// put a word on a row where the absence is the fact.
-//
-// An ARCHIVED project still names itself, because the association rule is "active or otherwise" and a chat
-// parked in an archived workspace is exactly the case where the operator needs telling.
+// projLabelForConv names the project a conversation sits in, for a rail row.
 func (m *App) projLabelForConv(c chat.Conversation) string {
 	if c.ProjectID == "" {
 		return ""
@@ -81,15 +64,11 @@ func (m *App) projectLabelFor(projectID string) string {
 	return projectID
 }
 
-// resolveProjectRef was removed with the argument-as-selection form of the command: /project takes a FILTER
-// now, and moving a conversation goes through the picker's own action (see projectPickerKey), so nothing needs
-// to turn a project name into an id from a slash argument any more.
+// resolveProjectRef was removed with the argument-as-selection form of the command: /project takes
+// a FILTER now, and moving a conversation goes through the picker's own action (see.
 
-// setConversationProject moves the OPEN conversation into a project (or unassigns it) — the write behind
-// /project, and the same rpc the GUI's folder drop target calls.
-//
-// It refuses with a notice rather than a silent no-op when there is nothing open, because /project with no
-// conversation would otherwise look like it worked.
+// setConversationProject moves the OPEN conversation into a project (or unassigns it) — the write
+// behind /project, and the same rpc the GUI's folder drop target calls.
 func (m *App) setConversationProject(convID, projectID string) tea.Cmd {
 	if convID == "" {
 		m.dock.SetError("no conversation is open — /project applies to the chat you are in")
@@ -110,11 +89,8 @@ type railProject struct {
 	// Dir is the project's project_dir. It is here so the rail can answer "which workspace was I launched in?"
 	// with the SAME boundary rule the launch prompt uses (dirInsideProject) rather than a second one.
 	Dir string
-	// SkillFiles is the project's skill_files path list, for the SHOWING half of the conversation scope modal:
-	// a conversation's skills are the UNION of its own and its project's (the same union the server renders
-	// into the turn — internal/askorchicon/chat.go, skillManifestSection), so the modal lists the project's
-	// contributions read-only above the conversation's own. It rides on the project list the rail already
-	// fetches rather than a second RPC for the same rows.
+	// SkillFiles is the project's skill_files path list, for the SHOWING half of the conversation scope
+	// modal: a conversation's skills are the UNION of its own and its project's (the same union.
 	SkillFiles []string
 }
 
@@ -125,11 +101,6 @@ type railProjectsMsg struct {
 }
 
 // loadRailProjects fetches the tenant's projects for the rail's grouping.
-//
-// ARCHIVED PROJECTS ARE INCLUDED, which is the operator's "active or otherwise": a chat parked in an archived
-// project must still be findable in its folder, and the folder has to exist for the association to render at
-// all. The status travels with each project so the rail can mark it rather than silently presenting an
-// archived project as a working one.
 func (m *App) loadRailProjects() tea.Cmd {
 	if m.clients == nil {
 		return nil
@@ -142,9 +113,7 @@ func (m *App) loadRailProjects() tea.Cmd {
 			PageSize: 200,
 		}))
 		if err != nil {
-			// NOT A RAIL FAILURE. The conversations loaded; only the folder names are missing, and the rail
-			// still renders every conversation under its project id. Reporting this as the rail's error state
-			// would blank a working list over a cosmetic miss, so it degrades quietly.
+			// NOT A RAIL FAILURE.
 			return railProjectsMsg{Err: err.Error()}
 		}
 		out := make([]railProject, 0, len(resp.Msg.GetProjects()))
@@ -162,19 +131,18 @@ func (m *App) loadRailProjects() tea.Cmd {
 // onRailProjects applies a fetched project list.
 func (m *App) onRailProjects(msg railProjectsMsg) tea.Cmd {
 	if msg.Err != "" {
-		// LEFT UNLOADED ON FAILURE, deliberately: railProjectsLoaded stays false so the next conversations load
-		// retries. Marking it loaded on a failure would leave the operator with an empty picker for the rest of
-		// the session over one transient error.
+		// LEFT UNLOADED ON FAILURE, deliberately: railProjectsLoaded stays false so the next conversations
+		// load retries.
 		return nil
 	}
 	m.railProjects = msg.Projects
 	m.railProjectsLoaded = true
+	// A SELECTION DECIDED BEFORE THE LIST ARRIVED (projectselect.go).
+	if name := m.pendingProjectName; name != "" {
+		m.pendingProjectName = ""
+		m.selectProjectByName(name)
+	}
 	// THE WORKSPACE FROM THE LAUNCH DIRECTORY, when the operator has not chosen one.
-	//
-	// The operator: "The default project in the TUI should be the one based on the directory you launched it
-	// from." It is applied HERE rather than at startup because the project list is what answers it — there is
-	// nothing to match a directory against until it arrives — and only while the scope is UNCHOSEN, so it can
-	// never override a deliberate selection (including one made in the moment before the list landed).
 	m.applyLaunchDirScope()
 	// A picker opened on a cold rail showed only the conversations' own ids; now that the names have arrived,
 	// refresh the list behind the overlay so /project never presents raw ids to someone who just asked for it.
@@ -183,14 +151,12 @@ func (m *App) onRailProjects(msg railProjectsMsg) tea.Cmd {
 	if m.convSel >= len(m.railRows()) {
 		m.convSel = max(0, len(m.railRows())-1)
 	}
-	return nil
+	// AND THE WORKSPACE REACHES THE SCREENS IN THIS SAME CYCLE.
+	return m.pushProjectScope()
 }
 
-// applyLaunchDirScope points the rail at the workspace the operator launched from, once, and only while they
-// have not chosen for themselves.
-//
-// A directory that matches NOTHING leaves the scope at All projects: an unmatched launch directory is not a
-// reason to hide the conversation list, and inventing a default workspace would be worse than none.
+// applyLaunchDirScope points the rail at the workspace the operator launched from, once, and only
+// while they have not chosen for themselves.
 func (m *App) applyLaunchDirScope() {
 	if m.projectScopeChosen || m.launchDir == "" || m.projectScope != projectScopeAll {
 		return
@@ -201,14 +167,7 @@ func (m *App) applyLaunchDirScope() {
 	}
 	m.projectScope = p.ID
 
-	// AND IF THAT HID ANYTHING, SAY SO. This default NARROWS the rail, and before this the narrowing was
-	// completely silent: the only clue was the scope label, so a rail holding one row out of 184 looked
-	// like catastrophic data loss rather than a filter. The operator: "ALL conversations except this one
-	// disappeared ... even after restarting orch they are missing" — and it survived a restart precisely
-	// because this line re-derives the same scope from the same launch directory every time.
-	//
-	// THE SCOPE LABEL STAYS QUIET (this is an automatic default, not a declared switch — the existing
-	// contract), but the CONSEQUENCE is not: the operator is told what was hidden and how to widen it.
+	// AND IF THAT HID ANYTHING, SAY SO.
 	var extra []string
 	hidden := m.scopeHiddenCount()
 	// Record what THIS notice already covers, so the list-reload path (noteScopeHidesNewRows) only speaks
@@ -218,31 +177,12 @@ func (m *App) applyLaunchDirScope() {
 		extra = append(extra, fmt.Sprintf("scope: %s — %d conversation(s) not shown; /project to widen",
 			projectScopeLabel(p.ID, projectScopeOptions(m.railProjects, m.conversations)), hidden))
 	}
-	// THE PALETTE FOLLOWS, same as any other scope change — see projecttheme.go. Quiet about the scope
-	// itself, and about anything the operator still needs to hear, like a degraded palette; the caller's
-	// own note rides in the SAME notice rather than replacing it.
+	// THE PALETTE FOLLOWS, same as any other scope change — see projecttheme.go.
 	m.applyScopeTheme(false, extra...)
 }
 
-// noteScopeHidesNewRows re-announces an ACTIVE scope's narrowing when a re-read of the conversation list
-// shows it is hiding a row the operator has not been told about.
-//
-// THE DEFECT THIS FIXES. `applyLaunchDirScope` announces what a narrowing hides, but it runs ONCE, against
-// the list held at that moment. Nothing announced it again, and nothing else re-reads the scope after a
-// list reload — so a conversation that appears in the list LATER is hidden silently, with no notice, no
-// count change the operator can see, and no clue that a filter is responsible. That is the reported case
-// exactly: a conversation created in the GUI while the TUI sits in a project scope never appears, and the
-// only thing that looks like a fix is leaving and re-entering, because re-entry reset the pane. The row was
-// always in the list; the scope was hiding it quietly.
-//
-// IT IS DRIVEN BY THE FULL LOADED LIST, NOT BY THE SCOPED COUNT ALONE. `scopeHiddenCount` is computed from
-// `m.conversations`, so it changes when a new conversation is hidden — and comparing it against the last
-// number ANNOUNCED is what makes this fire on the hidden row that just arrived, rather than on every
-// reload. A plain "hidden > 0" test would re-notice on every tick and turn the status line into noise.
-//
-// IT SAYS NOTHING WHEN THERE IS NOTHING NEW: an unchanged count, or a scope hiding nothing, is not news.
-// The silent-when-unchanged rule is the same one `applyLaunchDirScope` follows for a narrowing that hides
-// nothing.
+// noteScopeHidesNewRows re-announces an ACTIVE scope's narrowing when a re-read of the conversation
+// list shows it is hiding a row the operator has not been told about.
 func (m *App) noteScopeHidesNewRows() {
 	hidden := m.scopeHiddenCount()
 	if hidden == m.scopeHiddenNoticed {
@@ -256,12 +196,7 @@ func (m *App) noteScopeHidesNewRows() {
 		projectScopeLabel(m.projectScope, projectScopeOptions(m.railProjects, m.conversations)), hidden))
 }
 
-// scopeHiddenCount is how many of the LOADED conversations the active scope hides. 0 for All projects
-// (which filters nothing).
-//
-// It deliberately measures the loaded list rather than the table: this is the number the OPERATOR can act
-// on right now, and claiming a total the client never fetched would be a different (and unverifiable)
-// statement.
+// scopeHiddenCount is how many of the LOADED conversations the active scope hides.
 func (m *App) scopeHiddenCount() int {
 	if m.projectScope == projectScopeAll {
 		return 0
@@ -272,12 +207,8 @@ func (m *App) scopeHiddenCount() int {
 	return 0
 }
 
-// projectForDir resolves the project a directory belongs to, using the SAME boundary rule the launch prompt
-// uses (dirInsideProject) — one rule, so the prompt cannot call a directory attached while the rail cannot name
-// its project.
-//
-// The DEEPEST match wins. A directory can sit inside two projects (a nested repo, or a project whose dir is a
-// parent of another's), and the more specific one is the workspace the operator is actually in.
+// projectForDir resolves the project a directory belongs to, using the SAME boundary rule the
+// launch prompt uses (dirInsideProject) — one rule.
 func (m *App) projectForDir(dir string) (railProject, bool) {
 	var best railProject
 	bestLen := -1
@@ -292,13 +223,8 @@ func (m *App) projectForDir(dir string) (railProject, bool) {
 	return best, bestLen >= 0
 }
 
-// activeProjectID is the project a NEW conversation belongs to: the selected workspace, when it names a real
-// project.
-//
-// Empty for All projects and for the No-project scope, which is what those scopes mean. A scope naming a project
-// the rail does not know (a stale selection) is also empty rather than passed through: the server REJECTS an
-// unknown project id on create, so forwarding one would fail the send outright instead of filing the chat as
-// unassigned.
+// activeProjectID is the project a NEW conversation belongs to: the selected workspace, when it
+// names a real project.
 func (m *App) activeProjectID() string {
 	if m.projectScope == projectScopeAll || m.projectScope == unassignedScope {
 		return ""

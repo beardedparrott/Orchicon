@@ -6,9 +6,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// TestPrFromRunContext covers the read-time PR surface parse from the run's
-// structured run_context JSONB. Missing/non-string keys must yield empty
-// values so the UI falls back to the deterministic pull/new/{branch} link.
+// TestPrFromRunContext covers the read-time PR surface parse from the run's structured run_context
+// JSONB.
 func TestPrFromRunContext(t *testing.T) {
 	cases := []struct {
 		name       string

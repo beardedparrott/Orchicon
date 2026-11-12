@@ -1,24 +1,6 @@
 package tui
 
 // ask_leave_return_send_test.go — THE LEAVE-AND-RETURN SEND.
-//
-// The operator: "There is also a weird lingering issue where if I leave a conversation in the TUI and
-// come back, it doesn't actually send my message and I have to send it twice."
-//
-// THE MESSAGE IS DISPATCHED AND THE SERVER REFUSES IT — which is why the operator sees it "not send"
-// and has to press Enter again. The service allows ONE turn per conversation and answers a second
-// ChatStream with FailedPrecondition ("a reply is still in progress for this conversation — wait for
-// it to complete or stop it first": internal/askorchicon/chat.go, turnRegistry.register). The TUI
-// decides between ChatStream and the supersede RPC from ITS OWN slot — `interject := st.streaming`
-// (internal/tui/chat/controller.go, SendWithAttachments) — and that slot is exactly what a
-// leave-and-return loses and only re-syncs from the RAIL row (app.reattachRunningTurn; the operator's
-// earlier report, quoted in OpenAskConversation: "When I leave an chat and go back into it, it loses
-// the 'orchicon is thinking...' and watchdog"). A rail row that predates the turn therefore leaves the
-// client saying "idle" while the server is busy — and the operator's next message is bounced, with the
-// draft put back in the composer. Pressing Enter again (by which time the turn has moved on) sends it.
-//
-// The test drives the REAL keys for the leave, the return, the focus and the send, and asserts on what
-// the SERVER received. It fails before the fix with "the server received no turn at all".
 
 import (
 	"context"
@@ -41,9 +23,7 @@ import (
 )
 
 // busyTurnPlane serves a conversation whose reply is STILL RUNNING server-side while its rail row
-// reports no turn in flight. That pair is the desynchronised state a leave-and-return leaves behind:
-// the shell re-attaches from the row (reattachRunningTurn), finds nothing to re-attach to, and
-// believes the conversation is idle.
+// reports no turn in flight.
 type busyTurnPlane struct {
 	apiv1connect.UnimplementedAskOrchiconServiceHandler
 
@@ -82,8 +62,7 @@ func (p *busyTurnPlane) ChatStream(context.Context, *connect.Request[apiv1.ChatS
 }
 
 // InterjectConversationTurn is the supersede path — how a message is delivered while a reply runs
-// (the documented rule in the composer's own help: "sending while a reply streams interjects
-// (supersedes the turn) instead"). It records what the server actually received.
+// (the documented rule in the composer's own help.
 func (p *busyTurnPlane) InterjectConversationTurn(_ context.Context, req *connect.Request[apiv1.InterjectConversationTurnRequest], _ *connect.ServerStream[apiv1.ChatStreamResponse]) error {
 	p.mu.Lock()
 	p.delivered = append(p.delivered, req.Msg.GetMessage())
@@ -171,9 +150,7 @@ func TestSendAfterLeavingAndReturningDispatchesOnce(t *testing.T) {
 	}
 	m = runCmd(t, m, cmd)
 
-	// THE RE-ISSUE ARRIVES FROM THE STREAM'S OWN GOROUTINE, exactly as the runtime delivers it: the
-	// controller posts it on the shell's chat-command channel and the shell runs it (chatCmdMsg →
-	// Update). Pump that channel the way the runtime does until the server has received the turn.
+	// THE RE-ISSUE ARRIVES FROM THE STREAM'S OWN GOROUTINE.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) && len(plane.deliveredMessages()) == 0 {
 		select {

@@ -11,17 +11,10 @@ import (
 	"connectrpc.com/connect"
 )
 
-// These are DB-backed tests for ADR-0002 AC2/AC4 (refresh survival + the
-// admission bound). They reuse the ORCHICON_TEST_DSN-gated helpers in
-// chat_turn_db_test.go and skip unless a disposable database is configured
-// (the repo pattern; `make ci` gates what runs in CI).
+// These are DB-backed tests for AC2/AC4 (refresh survival + the admission bound).
 
-// TestRefreshKeepsTurnInFlightAndAccurate verifies the AC2 refresh-survival
-// contract against a real DB: after the ChatStream RPC has returned (the
-// client disconnect / page refresh), the detached collector keeps the turn in
-// flight and the read path reports turn_in_flight + turn_progressing with the
-// acked pending id until the reply persists, then clears both — so a refreshed
-// UI re-attaches to a genuinely-running turn, not a stale one.
+// TestRefreshKeepsTurnInFlightAndAccurate verifies the AC2 refresh-survival contract against a real
+// DB: after the ChatStream RPC has returned (the client disconnect / page refresh).
 func TestRefreshKeepsTurnInFlightAndAccurate(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW", "5s")
 	pool := chatDBTestPool(t)
@@ -70,10 +63,8 @@ func TestRefreshKeepsTurnInFlightAndAccurate(t *testing.T) {
 	}
 }
 
-// TestStartConversationTurnAdmissionCapBusyError verifies ADR-0002 D7 (AC4):
-// beyond the concurrent-turn cap a new dispatch is rejected with a clear
-// CodeResourceExhausted error — and the rejected conversation is not left
-// with an orphan turn — instead of degrading under contention.
+// TestStartConversationTurnAdmissionCapBusyError verifies (AC4): beyond the
+// concurrent-turn cap a new dispatch is rejected with a clear CodeResourceExhausted error.
 func TestStartConversationTurnAdmissionCapBusyError(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_MAX_CONCURRENT_TURNS", "2")
 	pool := chatDBTestPool(t)
@@ -106,15 +97,13 @@ func TestStartConversationTurnAdmissionCapBusyError(t *testing.T) {
 	}
 }
 
-// TestInterjectRecyclesWedgedSession verifies ADR-0002 D4 (AC3): a mid-run
-// interjection onto a conversation whose in-flight turn wedged on an
-// unresolved tool (MCP wedge) recycles the wedged session. The interjection is
-// dispatched on a FRESH seeded session (sessionID forced to "" in
-// startConversationTurnOpts) rather than queued behind / dispatched onto the
-// stuck one, and its reply is persisted on that fresh session. It drives a
-// genuinely wedged in-flight turn through startConversationTurnOpts(supersede).
+// TestInterjectRecyclesWedgedSession verifies (AC3): a mid-run interjection onto a
+// conversation whose in-flight turn wedged on an unresolved tool (MCP wedge) recycles the wedged.
 func TestInterjectRecyclesWedgedSession(t *testing.T) {
-	t.Setenv("ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW", "200ms")
+	// THE WEDGE WINDOW NEEDS SLACK OVER THE 150ms SETTLE SLEEP BELOW. At 200ms the margin was 50ms, so
+	// ordinary scheduling jitter under a full-package run tripped the window before the tool event was
+	// observed and the test failed intermittently — the fixture was betting on the scheduler.
+	t.Setenv("ORCHICON_ASK_MCP_TOOL_WEDGE_WINDOW", "1500ms")
 	t.Setenv("ORCHICON_ASK_STALL_NO_PROGRESS_WINDOW", "3s")
 	t.Setenv("ORCHICON_ASK_MCP_RECONNECT_ATTEMPTS", "1")
 	t.Setenv("ORCHICON_ASK_REATTACH_BACKOFF", "1ms")
@@ -123,7 +112,7 @@ func TestInterjectRecyclesWedgedSession(t *testing.T) {
 	client := &fakeSessionClient{}
 	s := newChatService(t, pool, client)
 	ctx := context.Background()
-	convID := createConversation(t, pool, "")
+	convID := createConversation(t, pool, testInterjectModelRef)
 	// The conversation already has a session (a follow-up turn reuses it). The
 	// wedged turn wedges THIS session; D4 must recycle away from it.
 	setConversationSessionID(t, pool, convID, "ses_live")
@@ -139,10 +128,7 @@ func TestInterjectRecyclesWedgedSession(t *testing.T) {
 	// observed (a pre-accept event would be ignored as a prior turn's telemetry).
 	time.Sleep(150 * time.Millisecond)
 
-	// The wedged tool: issued (non-terminal tool part) on ses_live, never
-	// resolves. The collector's tool-wedge monitor detects it and recycles the
-	// session — aborts ses_live, creates ses_1, re-dispatches (the second
-	// send) — and marks the registry turn wedged (the D4 pre-condition).
+	// The wedged tool: issued (non-terminal tool part) on ses_live, never resolves.
 	client.sub.feed(busToolRunning("ses_live", "list_projects"))
 
 	// Wait for the collector's wedge-recycle re-dispatch (second send) so the
@@ -183,7 +169,9 @@ func TestInterjectRecyclesWedgedSession(t *testing.T) {
 	// persisted on that session.
 	client.sub.feed(busText(interjectSend.sessionID, "steered reply"))
 	client.sub.feed(busIdle(interjectSend.sessionID))
-	msg := waitForMessage(t, pool, convID, ackB)
+	// The row is written TWICE — the in-flight partial mirror first, then the terminal finalize that
+	// records the session.
+	msg := waitForMessageSessionID(t, pool, convID, ackB)
 	if strings.TrimSpace(msg.Content) != "steered reply" {
 		t.Errorf("interjection reply = %q, want %q", msg.Content, "steered reply")
 	}

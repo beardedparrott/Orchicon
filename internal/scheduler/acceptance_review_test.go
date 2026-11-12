@@ -9,11 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// TestFormatAcceptanceReviewCompleted verifies the deterministic
-// acceptance-review aggregation for a completed run: succeeded steps with
-// non-empty summaries are listed under "What was delivered", skipped and
-// empty-summary steps are omitted, superseded iterations are omitted, and
-// the header records run id + status.
+// TestFormatAcceptanceReviewCompleted verifies the deterministic acceptance-review aggregation for
+// a completed run: succeeded steps with non-empty summaries are listed under "What was delivered".
 func TestFormatAcceptanceReviewCompleted(t *testing.T) {
 	ended := time.Now().UTC()
 	run := db.WorkflowRunRow{
@@ -67,9 +64,8 @@ func TestFormatAcceptanceReviewCompleted(t *testing.T) {
 	}
 }
 
-// TestFormatAcceptanceReviewFailed verifies the failed-run review: the
-// failed step's _summary/_issues land under "Not delivered / needs
-// attention", and a succeeded sibling still appears under delivered.
+// TestFormatAcceptanceReviewFailed verifies the failed-run review: the failed step's
+// _summary/_issues land under "Not delivered / needs attention".
 func TestFormatAcceptanceReviewFailed(t *testing.T) {
 	ended := time.Now().UTC()
 	run := db.WorkflowRunRow{
@@ -128,9 +124,8 @@ func TestFormatAcceptanceReviewRecovery(t *testing.T) {
 	}
 }
 
-// TestFormatAcceptanceReviewEmptyFallback verifies a run whose steps carry
-// no summaries still produces a non-empty review recording the terminal
-// outcome (never an indistinguishable empty field).
+// TestFormatAcceptanceReviewEmptyFallback verifies a run whose steps carry no summaries still
+// produces a non-empty review recording the terminal outcome (never an indistinguishable empty.
 func TestFormatAcceptanceReviewEmptyFallback(t *testing.T) {
 	run := db.WorkflowRunRow{ID: db.NewID(), WorkflowID: db.NewID(), Status: domain.WorkflowRunCompleted, Version: 1}
 	out := formatAcceptanceReview(run, nil, nil, domain.WorkflowRunCompleted)

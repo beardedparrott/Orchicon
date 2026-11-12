@@ -26,8 +26,10 @@ var lintIgnore string
 //	semgrep scan --config .orchicon/semgrep_orchicon.yml --error .
 //
 // Best-effort by design: a failure only means the lint is unavailable to
-// that execution — it never blocks dispatch, and the permission deny
-// rules + execution guard still protect the host.
+// that execution — it never blocks dispatch. The permission deny rules and the
+// execution guard are defense-in-depth, not containment (a worker invoking an
+// absolute-path binary, or one it wrote itself, escapes both), so the lint is
+// one more best-effort layer rather than a safety guarantee.
 func writeSafetyLint(projectDir string) {
 	if projectDir == "" {
 		return

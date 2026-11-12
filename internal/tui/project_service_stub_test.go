@@ -1,11 +1,7 @@
 package tui
 
-// project_service_stub_test.go — a ProjectService backed by a real Connect server, so a test can drive the
-// WIRING (does a load actually reach the service?) rather than only the pure functions around it.
-//
-// The operator's report was a wiring fault: the project list was never FETCHED, so the workspace picker offered
-// nothing but "All projects". Nothing in this file's siblings could see it — they all test rules, and a rule
-// cannot notice a request that was never made. This is the fixture that can.
+// project_service_stub_test.go — a ProjectService backed by a real Connect server, so a test can
+// drive the WIRING (does a load actually reach the service?) rather than only the pure functions.
 
 import (
 	"context"
@@ -94,9 +90,8 @@ func appWithProjectServiceOpts(t *testing.T, stub apiv1connect.ProjectServiceHan
 	return m
 }
 
-// flattenCmds expands a command's result into its member commands, mirroring how bubbletea's runtime delivers
-// a BatchMsg: each member is run and its message fed back. A test that runs only the outer command would
-// deliver a BatchMsg the shell never sees in production.
+// flattenCmds expands a command's result into its member commands, mirroring how bubbletea's
+// runtime delivers a BatchMsg: each member is run and its message fed back.
 func flattenCmds(msg tea.Msg) []tea.Cmd {
 	batch, ok := msg.(tea.BatchMsg)
 	if !ok {

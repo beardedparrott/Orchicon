@@ -1,30 +1,6 @@
 package tui
 
 // ask_rail_refresh_test.go — THE RAIL PICKS UP A CONVERSATION CREATED IN THE OTHER CLIENT.
-//
-// The operator: "If you create a conversation in the GUI, it doesn't show up in the TUI
-// automatically. You have to leave orch and come back into it."
-//
-// THE MECHANISM, and why it is exactly the class of bug the rolling window exists for. The Ask
-// service has NO conversation-changes stream: ListConversations and GetConversation are unary reads,
-// and the per-turn streams are scoped to ONE conversation's turn. So nothing PUSHES a new row to
-// this client, and a conversation created in the GUI is discoverable only by RE-READING the list.
-// The tick is therefore the entire mechanism that makes the two clients agree — there is no second
-// path, and no event that could arrive late to rescue it.
-//
-// The tick's rail reload is gated on `convLoaded` (refresh.go), which is set by a SUCCESSFUL
-// onConversations and, per AC 16, is deliberately NOT cleared by a re-read. These tests pin the
-// other half of that contract — the half a latch-style regression would break silently: that a
-// successful first load keeps the window LIVE for the rest of the session, so a row that appears
-// later is picked up without the operator leaving the pane.
-//
-// Everything runs through the REAL load path (chat.LoadConversations, a connect RPC against the
-// httptest plane), so a test cannot pass on a helper the production code does not use.
-//
-// NOTE ON ADOPTING THE MODEL. App.Update has a VALUE receiver: it returns a NEW *App, and the fields
-// a rail reload sets (convLoaded, conversations) live on that copy. A test that discards the return
-// mutates a model nobody sees and asserts on the old one — which is exactly how the first draft of
-// this file failed. `feedApp` adopts the returned model.
 
 import (
 	"strings"
@@ -36,10 +12,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/screens/ask"
 )
 
-// feedApp delivers one message to the shell and ADOPTS the model it returns. The command the shell
-// produces is deliberately NOT run: it is where `waitChat` lives (the blocking waiter that appMsg
-// pairs with a ConversationsMsg), and a test that invoked it would hang. Only the commands this file
-// creates for itself are ever called.
+// feedApp delivers one message to the shell and ADOPTS the model it returns.
 func feedApp(t *testing.T, m *App, msg tea.Msg) *App {
 	t.Helper()
 	next, _ := m.Update(msg)
@@ -50,17 +23,8 @@ func feedApp(t *testing.T, m *App, msg tea.Msg) *App {
 	return nm
 }
 
-// deliver expands a command's result RECURSIVELY and feeds every non-batch message back to the shell.
-//
-// RECURSION IS THE POINT, and getting it wrong is what the first version of this file did: the tick
-// returns a batch that CONTAINS a batch (handleRefreshTick batches the refresh command with the
-// re-arm), so a one-level expansion hands the shell a tea.BatchMsg — the runtime's own transport,
-// which the shell does not handle — and silently drops the reload inside the inner batch. Only a
-// leaf message is something the shell can act on.
-//
-// A batch member that produces nothing (nil) is skipped; the shell's own timer member produces a
-// tick message, which is fed back (that is harmless here — the cmd it returns is dropped) and is why
-// the tests call brisk() to keep the timer from costing five seconds.
+// deliver expands a command's result RECURSIVELY and feeds every non-batch message back to the
+// shell.
 func deliver(t *testing.T, m *App, msg tea.Msg) *App {
 	t.Helper()
 	if bm, ok := msg.(tea.BatchMsg); ok {
@@ -79,10 +43,6 @@ func deliver(t *testing.T, m *App, msg tea.Msg) *App {
 }
 
 // railTickOnce runs ONE turn of the rolling refresh window and feeds back what it produced.
-//
-// IT DRIVES THE REAL TICK, generation gate included: calling refreshActiveView directly would skip
-// handleRefreshTick's `msg.gen != m.refreshGen` check — the one path that can discard a tick outright
-// — and would therefore test a route production never takes.
 func railTickOnce(t *testing.T, m *App) *App {
 	t.Helper()
 	nm, cmd := m.handleRefreshTick(refreshTickMsg{gen: m.refreshGen})
@@ -180,10 +140,7 @@ func TestRailPicksUpAConversationCreatedElsewhere(t *testing.T) {
 	}
 }
 
-// THE GATE MUST STAY LIVE. The reload is gated on convLoaded; if anything clears that latch — the exact
-// regression AC 16 records — the window stops re-reading the rail for the REST OF THE SESSION and every
-// later conversation is missed. This drives the window repeatedly with a list that keeps growing, so a
-// one-shot reload cannot pass it.
+// THE GATE MUST STAY LIVE.
 func TestRailReloadKeepsWorkingAcrossTicks(t *testing.T) {
 	brisk(t)
 	m, stub := askRailApp(t)
@@ -203,9 +160,7 @@ func TestRailReloadKeepsWorkingAcrossTicks(t *testing.T) {
 	}
 }
 
-// A FRESH SESSION HAS A LANDED RAIL. This is the precondition the reported case runs from, and it is
-// asserted separately because a gate that is never armed would make the two tests above fail for a
-// reason that has nothing to do with the reload.
+// A FRESH SESSION HAS A LANDED RAIL.
 func TestRailReloadIsGatedOnASuccessfulFirstLoad(t *testing.T) {
 	m, _ := askRailApp(t)
 
@@ -222,18 +177,8 @@ func TestRailReloadIsGatedOnASuccessfulFirstLoad(t *testing.T) {
 	}
 }
 
-// THE SCOPE FILTER IS THE OTHER HALF OF "it did not show up", and it is the half a list-refresh test
-// cannot see: a conversation created in the GUI that lands OUTSIDE the rail's active project scope is
-// reloaded correctly, sits in m.conversations, and is still not drawn.
-//
-// The observed data makes this concrete rather than hypothetical: the newest conversation on this
-// tenant — created from the GUI an hour after the one this report was filed from — carries
-// project_id "" (No project), while a conversation created from within a project carries that
-// project's id. Nothing in the Ask service has a project-changes stream either, so the ONLY signal
-// that a scope is hiding a new row is a re-read plus the scope's own label.
-//
-// This test states the boundary rather than assuming it: with the rail scoped to a project, an
-// unassigned conversation must NOT appear, and switching the scope to All projects must reveal it.
+// Nothing in the Ask service has a project-changes stream either, so the ONLY signal that a scope
+// is hiding a new row is a re-read plus the scope's own label.
 func TestRailScopeHidesAConversationFromAnotherProject(t *testing.T) {
 	brisk(t)
 	m, stub := askRailApp(t)
@@ -267,9 +212,7 @@ func TestRailScopeHidesAConversationFromAnotherProject(t *testing.T) {
 		t.Errorf("scopeHiddenCount = %d, want 1 — a silent narrowing reads as data loss", hidden)
 	}
 
-	// Widening the scope is what surfaces it. This is the documented recovery (/project), and it is
-	// why "leave and come back" appeared to fix it: the re-entry path re-derives scope, so the
-	// operator's mental model was a refresh when the mechanism was the filter.
+	// Widening the scope is what surfaces it.
 	m.projectScope = projectScopeAll
 	if got := railConvIDs(m); len(got) != 2 {
 		t.Errorf("widening the scope to All projects still shows %v, want both rows", got)
@@ -277,15 +220,6 @@ func TestRailScopeHidesAConversationFromAnotherProject(t *testing.T) {
 }
 
 // A NEW ROW HIDDEN BY AN ACTIVE SCOPE MUST BE SAID OUT LOUD.
-//
-// This is the second half of the reported symptom, and the half the scope test above only describes: the
-// scope is set ONCE (applyLaunchDirScope) and its notice quotes the list at that moment. A conversation
-// that appears in the list LATER — created in the GUI, which is the reported case — is hidden with no
-// notice at all, so the operator cannot tell a filter from a conversation that never arrived. The row is
-// loaded, the rail is correct, and the screen is silent.
-//
-// It must also stay QUIET when nothing new is hidden: re-noticing on every five-second reload would turn
-// the status line into noise the operator stops reading.
 func TestRailAnnouncesANewRowItsScopeIsHiding(t *testing.T) {
 	brisk(t)
 	m, stub := askRailApp(t)

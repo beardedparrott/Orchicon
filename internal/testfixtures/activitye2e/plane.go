@@ -1,26 +1,5 @@
-// Package activitye2e is the SHARED disposable plane for the activity-line end-to-end
-// capstone (work item end-to-end-proof-the-activity-line-through-the-real-tui-frame-and-gui-pane).
-//
-// WHY A FIXTURE PLANE AT ALL. A genuinely model-driven turn cannot be driven in this container:
-// exec.LookPath("opencode") is empty and the serve-host fallback probe misses too, so
-// internal/opencode/chatsession.go fails every ChatStream with "host opencode serve unavailable".
-// The repo already sanctions exactly this outcome — TestE2EOpenCodeLiveWorkerCallsTheProjectServer
-// skips and records ModelAccess "unavailable" — so this harness substitutes ONE layer (the
-// provider behind ChatStream) and serves EVERY REAL layer above it: the real Connect/HTTP
-// transport, the real internal/tui/chat controller state machine, the real App.onChatWake -> pane
-// -> frame pipeline in a real pty, and the real React route/DOM in a real browser.
-//
-// ONE PLANE, TWO CLIENTS. The TUI takes any plane URL (writeOrchConfig) and the SPA proxies
-// /orchicon.api.v1 to 127.0.0.1:8080 (frontend/vite.config.ts), so a single process here serves
-// the SAME conversation, the SAME ledger and the SAME server clock to both clients — which is
-// what makes the cross-client claim (the same word + the same counts) a literal observation
-// rather than an inference.
-//
-// THE LEDGER IS THE ONE SOURCE OF TRUTH. The scripted turn appends its tool calls to p.calls and
-// serves them on the SAME ListMessages page the production client polls (chat/pageToolCalls ->
-// App.onTranscript -> chatStore), each row carrying a real issued_at_unix_ms. So the client's
-// counter and the server's own SummarizeCalls over p.calls are two independent reads of one
-// ledger — the reconciliation the feature's honesty check demands.
+// Package activitye2e is the SHARED disposable plane for the activity-line end-to-end capstone
+// (work item end-to-end-proof-the-activity-line-through-the-real-tui-frame-and-gui-pane).
 package activitye2e
 
 import (
@@ -51,40 +30,24 @@ const (
 	AssistantMsgID = "a1"
 
 	// AskCallID / AskQuestion / AskOption are the recorded `ask_user` call the assistant row can carry.
-	//
-	// WHY THIS EXISTS. The GUI draws a clarifying card from a RECORDED TOOL CALL on the assistant row
-	// (MessageBubble: `message.toolCalls.find(isAskUserToolCall)`), not from the live stream — the stream
-	// carries text and reasoning only. So "a card renders on a live turn" is a claim about the DURABLE row
-	// being drawn while the turn is still streaming, and it needs a fixture where the row carries an ask
-	// while live items exist. That combination is exactly what was broken: the in-flight row was dropped in
-	// favour of the live copy, taking the card with it.
 	AskCallID   = "tc-ask"
 	AskQuestion = "E2EASK Which thread should I take further?"
 	AskOption   = "E2EOPTION"
 	// AskID is the pending ask's id — the same value the stream emits and ListPendingAsks serves, so a
 	// discovered ask and a streamed ask dedupe to ONE card (applyAskChunk keys on it).
 	AskID = "perm-e2e"
-	// PermID / PermCommand are the PERMISSION ask's identity: a bash approval, which is the other kind of
-	// card the same path draws. It has NO question — that is the discriminator ConsentAskCard uses to tell a
-	// permission request from a clarifying question — and it must be treated identically, because the rule
-	// is about whether the operator still has to act, not about which kind of ask it is.
+	// PermID / PermCommand are the PERMISSION ask's identity: a bash approval, which is the other kind
+	// of card the same path draws.
 	PermID      = "perm-bash-e2e"
 	PermCommand = "npm run build"
 	// Prompt is the message the TUI types. It asks for work of MIXED CLASSES — a read, a grep, a
 	// bash and a modify — which is what makes every bucket of the counter legible in one turn.
 	Prompt = "E2EPROMPT inspect files and run the tests"
 
-	// StampOnPeriod is the heartbeat's server_time_unix_ms, chosen EXACTLY on a
-	// chat.VerbPeriodMS (15000 ms) boundary so that a client sampling within the next fifteen seconds
-	// derives the SAME word from it (VerbAt(stamp + delta) == VerbAt(stamp) for delta < 15000 ms).
-	// That is what lets the cross-client comparison be EXACT rather than "some entry of the list":
-	// both clients draw VerbAt(StampOnPeriod), and the harness asserts the equality rather than
-	// accepting any rotation member.
+	// StampOnPeriod is the heartbeat's server_time_unix_ms.
 	StampOnPeriod int64 = 1_699_999_995_000
 
-	// HeartbeatCadence is how often the live stream re-sends the heartbeat. It is well inside
-	// the 25 s warn band, so a HEALTHY turn never escalates — which is what makes the escalation
-	// leg an observation of silence rather than of the band being mis-set.
+	// HeartbeatCadence is how often the live stream re-sends the heartbeat.
 	HeartbeatCadence = time.Second
 )
 
@@ -95,9 +58,7 @@ const (
 	// PhaseFlight is a healthy turn: heartbeat on cadence, tool calls landing, content streaming.
 	PhaseFlight Phase = "flight"
 	// PhaseStarted is a live turn that has streamed its first content but counted NOTHING YET, and
-	// holds there until the harness flips it to PhaseFlight. It exists so "the turn just started and
-	// the line carries no counter" is a STEADY state the harness can stand in, rather than a ~4s
-	// window it has to win a race against.
+	// holds there until the harness flips it to PhaseFlight.
 	PhaseStarted Phase = "started"
 	// PhaseNoTools is a live turn that issues ZERO tool calls (the "no counters, exactly as
 	// before the change" state).
@@ -110,9 +71,7 @@ const (
 )
 
 // scriptCalls is the fixture turn's work list: a read, a grep, a bash and a modify, issued one at a
-// time. MIXED on purpose — the counter's three buckets are all legible in ONE turn, which is what
-// makes the painted string a real test of the summarizer's fixed ordering and its per-class counts
-// rather than of a single bucket.
+// time.
 var scriptCalls = []string{"read", "batch_grep", "bash", "write"}
 
 // Plane is the fixture Ask service plus its control surface.
@@ -136,25 +95,15 @@ type Plane struct {
 	// and the client's line must clear (the "turn ends" observation).
 	done    chan struct{}
 	endOnce sync.Once
-	// scripted guards the ONE-TURN-ONE-SCRIPT rule: only the first stream to attach to a turn runs
-	// the work. A re-dial (WatchTurnStream) must RE-ATTACH, not re-run the model — the real server's
-	// collector owns the turn and replays it to a late watcher, which is why the client may
-	// legitimately hold two streams for one turn without the ledger growing twice.
+	// scripted guards the ONE-TURN-ONE-SCRIPT rule: only the first stream to attach to a turn runs the
+	// work.
 	scripted bool
-	// gen is a GENERATION COUNTER, bumped by Reset. A stream captures it at attach and re-checks it
-	// before every call it makes. Without it a stream that attached BEFORE a Reset would resume its
-	// script AFTER the reset cleared `scripted` (the sleep between calls spans the reset), and the
-	// ledger would grow to TWICE the script: two interleaved runs, one turn. That is a harness
-	// artefact, never a client bug, and it must be impossible rather than unlikely — this is what
-	// makes the count reconciliation (AC4) a statement about ONE scripted turn.
+	// gen is a GENERATION COUNTER, bumped by Reset.
 	gen int
 	// settleBeforeCalls is how long the turn streams CONTENT before it issues its first tool call,
 	// so "turn just started, no counters yet" is an observable state rather than a race.
 	settleBeforeCalls time.Duration
-	// callGap is how long the turn waits BETWEEN calls. It is deliberately LONGER than the client's
-	// 1s transcript poll, so each intermediate count ("1 read", then "2 reads") is a state the
-	// operator — and this harness — can actually stand in, rather than a burst that only ever
-	// renders its final shape.
+	// callGap is how long the turn waits BETWEEN calls.
 	callGap time.Duration
 	// stalledAt is when the plane entered PhaseStalled: it fixes turn_last_activity_at in the
 	// past so the GUI's own silence age grows from a real stamp rather than from a guess.
@@ -243,10 +192,6 @@ func (p *Plane) AskArmed() bool {
 }
 
 // pendingAsk builds the OPEN question as the client receives it.
-//
-// IT IS A PermissionAsk WITH A NON-EMPTY `question`, which is the discriminator ConsentAskCard uses to tell a
-// clarifying question from a permission request — the same message the turn stream emits and ListPendingAsks
-// serves, deliberately, so a streamed ask and a discovered one cannot drift into two renderings.
 func (p *Plane) pendingAsk() *v1.PermissionAsk {
 	return &v1.PermissionAsk{
 		AskId:          AskID,
@@ -259,9 +204,8 @@ func (p *Plane) pendingAsk() *v1.PermissionAsk {
 	}
 }
 
-// permissionAsk builds the OPEN permission request as the client receives it: a bash approval, with a
-// command and NO question. ConsentAskCard renders it with the three consent actions rather than the question
-// card's options, and the ordering rule must place it exactly where a question goes.
+// permissionAsk builds the OPEN permission request as the client receives it: a bash approval, with
+// a command and NO question.
 func (p *Plane) permissionAsk() *v1.PermissionAsk {
 	return &v1.PermissionAsk{
 		AskId:          PermID,
@@ -316,7 +260,6 @@ func trace(format string, args ...any) {
 
 // issueCall records one scripted tool call: the ledger row (for the counter) and its wire shape
 // (for the transcript page), both stamped NOW so the rolling window really contains the work.
-// The client sees the SAME row the server counts — there is no second source of truth.
 func (p *Plane) issueCall(name string) {
 	at := time.Now().UnixMilli()
 	p.mu.Lock()
@@ -388,12 +331,7 @@ func (p *Plane) GetConversation(_ context.Context, req *connect.Request[v1.GetCo
 }
 
 // ListMessages serves the durable transcript NEWEST-FIRST, which is the contract the server's
-// db.ListMessages holds and both clients reverse (chat.conversationItems, askOrchicon.ts). The
-// assistant row carries BOTH the streamed text and the turn's accumulated tool rows, which is the
-// shape a real persisted turn has.
-// ListPendingAsks serves the conversation's OPEN asks — the discovery read, and the shape a fresh page load
-// uses. An ask that is armed is reported here, which is what makes "the card appears after a reload" and "the
-// card appears live" the same card.
+// db.ListMessages holds and both clients reverse (chat.conversationItems, askOrchicon.ts).
 func (p *Plane) ListPendingAsks(_ context.Context, req *connect.Request[v1.ListPendingAsksRequest]) (*connect.Response[v1.ListPendingAsksResponse], error) {
 	out := &v1.ListPendingAsksResponse{}
 	if p.AskArmed() {
@@ -421,12 +359,7 @@ func (p *Plane) ListMessages(_ context.Context, req *connect.Request[v1.ListMess
 	toolCalls := append([]*v1.ToolCall(nil), p.toolRows...)
 	if p.askOn {
 		// THE LEDGER SHAPE PRODUCTION ACTUALLY HAS, copied from a live conversation's row: the blocking
-		// `ask_user` call is recorded with EMPTY arguments, and the ask itself is a separate
-		// `permission.question` record. Neither parses into a card, which is the point — the card comes from
-		// the PENDING ASK (streamed, and served by ListPendingAsks), not from the row.
-		//
-		// Modelling it with parseable arguments would put TWO cards on screen for one question and make this
-		// fixture test a path production does not take.
+		// `ask_user` call is recorded with EMPTY arguments.
 		toolCalls = append(toolCalls,
 			&v1.ToolCall{Id: AskCallID, FunctionName: "orchicon_ask_user", Arguments: ""},
 			&v1.ToolCall{Id: "perm-9", FunctionName: "permission.question", Arguments: ""},
@@ -464,11 +397,6 @@ func (p *Plane) WatchTurnStream(ctx context.Context, _ *connect.Request[v1.Watch
 }
 
 // streamTurn is the scripted turn, shared by both stream arms.
-//
-// THE ORDER IS THE OBSERVATION. Content arrives FIRST, then the counters land one at a time, then
-// more content — so a frame sampled after the counters land has BOTH a partially rendered reply
-// AND a live activity line. That coincidence is the regression this feature exists to fix (before
-// it, the line vanished the instant content arrived).
 func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.ChatStreamResponse]) error {
 	p.mu.Lock()
 	p.running = true
@@ -479,9 +407,7 @@ func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.Chat
 	// myGen is the generation this stream belongs to. Reset bumps p.gen, so a stream that attached
 	// before a reset recognises itself as stale at every call it is about to make.
 	myGen := p.gen
-	// myDone is the end-signal channel THIS stream watches, captured under the same lock. Reset
-	// replaces p.done (so one ended turn does not end every later one); reading the field directly in
-	// the selects below would race that write, so the channel is pinned to the stream's generation.
+	// myDone is the end-signal channel THIS stream watches, captured under the same lock.
 	myDone := p.done
 	p.mu.Unlock()
 	trace("streamTurn attach runWork=%v gen=%d", runWork, myGen)
@@ -515,9 +441,7 @@ func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.Chat
 		return nil
 	}
 
-	// THEN THE QUESTION, after text has already streamed. This ordering is the point: the operator's report is
-	// that the card is drawn ABOVE that text, and a fixture that raised the ask before any text could not
-	// reproduce it.
+	// THEN THE QUESTION, after text has already streamed.
 	if p.AskArmed() {
 		if err := send(&v1.ChatStreamResponse{Event: &v1.ChatStreamResponse_PermissionAsk{
 			PermissionAsk: p.pendingAsk()}}); err != nil {
@@ -531,9 +455,7 @@ func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.Chat
 		}
 	}
 
-	// THEN THE WORK, one call at a time: the counters appear and GROW. The settle beat before the
-	// first call is what makes "the turn just started and has counted nothing" a state the harness
-	// can actually stand in.
+	// THEN THE WORK, one call at a time: the counters appear and GROW.
 	if p.Phase() != PhaseNoTools && runWork {
 		// THE SETTLE BEAT, and in PhaseStarted it is a STANDING GATE: the harness can observe the
 		// bare line for as long as it likes, then flip the phase and watch the counters land.
@@ -566,9 +488,8 @@ func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.Chat
 			p.issueCall(name)
 		}
 	} else if runWork {
-		// THE ZERO-TOOL-CALL TURN still takes real time and still streams a closing line, so the
-		// transcript it leaves has the SAME shape as the with-tools one. That is what makes the
-		// row-budget comparison (AC6) a comparison of the counter's cost and nothing else.
+		// THE ZERO-TOOL-CALL TURN still takes real time and still streams a closing line, so the transcript
+		// it leaves has the SAME shape as the with-tools one.
 		select {
 		case <-ctx.Done():
 			return nil
@@ -586,9 +507,7 @@ func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.Chat
 		}
 	}
 
-	// THE HEARTBEAT LOOP. It keeps the healthy turn healthy (a live stream can never reach the
-	// 25s band) and, when the harness flips the phase to stalled, STOPS — which is how a real
-	// silence is produced for the escalation legs rather than simulated in the client.
+	// THE HEARTBEAT LOOP.
 	t := time.NewTicker(HeartbeatCadence)
 	defer t.Stop()
 	for {
@@ -606,13 +525,7 @@ func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.Chat
 				continue
 			}
 			if p.Phase() == PhaseDown {
-				// THE PLANE WENT UNREACHABLE. A real server that dies mid-turn does not politely go
-				// quiet on an open stream — the stream terminates, and the client's OWN failure path
-				// (route `fail()` -> reconnecting) is what tells the operator. Returning the error is
-				// that termination: the browser's async iterator THROWS, which is the only way the GUI
-				// reaches its "connection interrupted" banner. (A bare CloseClientConnections is not
-				// enough THROUGH THE DEV PROXY: it severs plane<->vite while leaving browser<->vite open,
-				// so the client sees silence, not a drop.)
+				// THE PLANE WENT UNREACHABLE.
 				return p.down()
 			}
 			if err := send(&v1.ChatStreamResponse{Event: &v1.ChatStreamResponse_Heartbeat{
@@ -623,18 +536,13 @@ func (p *Plane) streamTurn(ctx context.Context, st *connect.ServerStream[v1.Chat
 	}
 }
 
-// Reissue appends a FRESH burst of calls to the running turn, stamped at the current instant. It is
-// what the harness calls to put counters back on the row after a long stall leg has aged the earlier
-// calls out of the rolling window — an honest "more work landed on this turn", not a rewind.
+// Reissue appends a FRESH burst of calls to the running turn, stamped at the current instant.
 func (p *Plane) Reissue() {
 	p.issueCall("read")
 	p.issueCall("bash")
 }
 
-// Reset returns the plane to a clean slate: no ledger rows, no streamed text, no turn. It is what
-// lets the SAME plane serve the with-tools leg and the zero-tool-call leg without the first leg's
-// ledger leaking into the second (a counter the second leg never earned would be exactly the false
-// claim this feature's honesty check exists to catch).
+// Reset returns the plane to a clean slate: no ledger rows, no streamed text, no turn.
 func (p *Plane) Reset(ph Phase) {
 	p.mu.Lock()
 	p.gen++
@@ -646,10 +554,7 @@ func (p *Plane) Reset(ph Phase) {
 	p.scripted = false
 	p.phase = ph
 	p.stalledAt = time.Time{}
-	// ENDTURN IS UNDONE BY RESET. Without this the first EndTurn closes p.done for the life of the
-	// process and every stream opened afterwards returns at once — the control surface would work
-	// exactly once and then silently serve nothing, which is why an end/turn-end observation could not
-	// be composed with the legs that follow it.
+	// ENDTURN IS UNDONE BY RESET.
 	p.done = make(chan struct{})
 	p.endOnce = sync.Once{}
 	p.mu.Unlock()
@@ -738,12 +643,7 @@ func JSON(w http.ResponseWriter, code int, v any) {
 }
 
 // Mux builds the whole fixture plane: the Connect services (path/handler pairs from the generated
-// constructors, so the wire path is the server's own), the SPA's HTTP auth routes, and the harness
-// control surface.
-//
-// IT IS ALSO THE IN-PROCESS HANDLER THE GO TEST SERVES. The real-pty gate starts this behind an
-// httptest server on 127.0.0.1:8080 and the Playwright spec talks to the standalone command — one
-// implementation, so the two clients cannot be served by two drifting planes.
+// constructors, so the wire path is the server's own), the SPA's HTTP auth routes.
 func Mux(plane *Plane, sessions *Sessions, dir string) http.Handler {
 	mux := http.NewServeMux()
 
@@ -813,9 +713,6 @@ func Mux(plane *Plane, sessions *Sessions, dir string) http.Handler {
 			sessions.SetDown(true)
 		case "rpc-down":
 			// RPCs fail but the SPA's OWN session routes keep answering, so the page stays mounted.
-			// This is how the harness "stops the plane mid-turn" (the work item's own AC5 wording)
-			// while the banner remains observable: the open stream and the re-dial both fail, the
-			// page does not go blank.
 			plane.SetPhase(PhaseDown)
 		default:
 			http.Error(w, "unknown phase", http.StatusBadRequest)
@@ -846,11 +743,7 @@ func Mux(plane *Plane, sessions *Sessions, dir string) http.Handler {
 		plane.EndTurn()
 		JSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
-	// reissue appends a FRESH burst of calls to the running turn, stamped NOW. It is the browser's
-	// half of Plane.Reissue: after a long stall leg the earlier calls have honestly aged out of the
-	// summarizer's 30s rolling window, so a leg that wants counters BACK on the row must earn them
-	// with new work rather than rewind a clock. Without it the GUI's restore-to-flight assertion was
-	// racing the window (it passed only while the stall leg stayed under ~30s).
+	// reissue appends a FRESH burst of calls to the running turn, stamped NOW.
 	mux.HandleFunc("/__e2e/reissue", func(w http.ResponseWriter, _ *http.Request) {
 		plane.Reissue()
 		JSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -864,8 +757,7 @@ func Mux(plane *Plane, sessions *Sessions, dir string) http.Handler {
 		}
 		plane.Reset(ph)
 		// RESET CLEARS THE WHOLE HARNESS, not only the ledger: a run that stopped the plane
-		// (`down`/`rpc-down`) flipped the SPA's auth routes off, and a later reset that left them off
-		// would serve an unauthenticated page — a "clean slate" that is not one. See Sessions.SetDown.
+		// (`down`/`rpc-down`) flipped the SPA's auth routes off.
 		sessions.SetDown(false)
 		JSON(w, http.StatusOK, map[string]any{"ok": true, "phase": string(ph)})
 	})

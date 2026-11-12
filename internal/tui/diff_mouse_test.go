@@ -10,12 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/diffs"
 )
 
-// TestDiffPaneMouseTabSwitchPersistsThroughNav: a mouse click on the pane's
-// "tree" tab switches the tab, and that choice survives navigating to another
-// screen and back (the acceptance criterion: sidebar open state persists
-// while navigating between screens). This exercises the terminal-global
-// row/col offsets the shell forwards for pane clicks (pane tab bar sits at
-// terminal row 2, below the shell tab bar + its bottom border).
+// TestDiffPaneMouseTabSwitchPersistsThroughNav: a mouse click on the pane's "tree" tab switches the
+// tab, and that choice survives navigating to another screen and back (the acceptance criterion.
 func TestDiffPaneMouseTabSwitchPersistsThroughNav(t *testing.T) {
 	m := newTestApp()
 	ex := &diffStubOwner{detailID: "exec-1"}
@@ -28,11 +24,8 @@ func TestDiffPaneMouseTabSwitchPersistsThroughNav(t *testing.T) {
 	m.width, m.height = 120, 40
 	m.refreshLayout()
 
-	// Click the "tree" tab at the pane's tab-bar row (terminal row 2) and
-	// terminal column 10 (the "tree" label text, right of the left border).
-	// Click the "tree" tab at the pane's tab-bar row (terminal row 3: the
-	// shell paints tab bar / underline / gap on rows 0-2) and terminal column
-	// 10 (the "tree" label text, right of the left border).
+	// Click the "tree" tab at the pane's tab-bar row (terminal row 2) and terminal column 10 (the
+	// "tree" label text, right of the left border).
 	m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 10, Y: 3})
 	m.syncDiffPaneState()
 	if m.diffTab != "tree" {
@@ -47,12 +40,8 @@ func TestDiffPaneMouseTabSwitchPersistsThroughNav(t *testing.T) {
 	}
 }
 
-// TestDiffPaneRowClickFocusPersistsThroughNav: a file-row click forwarded
-// through the SHELL (the rail) must select the file AND move the pane to the
-// Diff tab, with the shell's persisted App.diffTab following automatically
-// (diffMsg calls syncDiffPaneState after every forwarded mouse event — the
-// point is that this test never calls it by hand), and the choice must
-// survive navigating to another screen and back.
+// TestDiffPaneRowClickFocusPersistsThroughNav: a file-row click forwarded through the SHELL (the
+// rail) must select the file AND move the pane to the Diff tab.
 func TestDiffPaneRowClickFocusPersistsThroughNav(t *testing.T) {
 	m := newTestApp()
 	ex := &diffStubOwner{detailID: "exec-1"}
@@ -81,9 +70,8 @@ func TestDiffPaneRowClickFocusPersistsThroughNav(t *testing.T) {
 		}
 		return *v.ExpectedUnifiedDiff
 	}
-	// Load the pane's data by driving it directly: FetchDoneMsg populates the
-	// groups and defaults SelectedPath to groups[0] (the create file). The
-	// click below targets the SECOND row, so the selection genuinely changes.
+	// Load the pane's data by driving it directly: FetchDoneMsg populates the groups and defaults
+	// SelectedPath to groups[0] (the create file).
 	m.diffPane.Update(diffs.FetchDoneMsg{Snapshot: &diffs.Snapshot{Edits: []*apiv1.FileEdit{
 		{Id: "1", Path: create.Path, Kind: create.ExpectedKind, Tool: "batch_write", Seq: 1, UnifiedDiff: diffOf(create)},
 		{Id: "2", Path: modify.Path, Kind: modify.ExpectedKind, Tool: "batch_write", Seq: 2, UnifiedDiff: diffOf(modify)},
@@ -94,14 +82,8 @@ func TestDiffPaneRowClickFocusPersistsThroughNav(t *testing.T) {
 	m.diffPane.SetTab(diffs.TabTimeline)
 	m.syncDiffPaneState()
 
-	// Click the second file row through the shell: per the pane's
-	// paneTopRow/paneBodyRow contract the tab bar is terminal row 3 and body
-	// row 0 is terminal row 4, so terminal Y=5 is body row 1 (the modify
-	// file). X=5 is inside the rail. Same global-coordinate contract as the
-	// tab-click test above. App is a VALUE model — the shell-owned diffTab
-	// written by diffMsg's sync lands on the returned copy (only the pane
-	// pointer is shared), so the returned App must be captured: this test
-	// never calls syncDiffPaneState by hand, which is the point.
+	// Click the second file row through the shell: per the pane's paneTopRow/paneBodyRow contract the
+	// tab bar is terminal row 3 and body row 0 is terminal row 4.
 	NM, _ := m.Update(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonLeft, X: 5, Y: 5})
 	m = NM.(*App)
 	if m.diffTab != diffs.TabDiff {

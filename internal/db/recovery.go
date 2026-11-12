@@ -9,9 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// RecoveryExecutionRow is the data-access shape of a recovery_executions
-// table row (docs/06 §2, docs/09 §3.6). A specialized WorkerExecution
-// whose Worker is the recovery workflow driver.
+// RecoveryExecutionRow is the data-access shape of a recovery_executions table row (docs/06 §2,
+// docs/09 §3.6).
 type RecoveryExecutionRow struct {
 	ID                 string
 	TenantID           string
@@ -24,10 +23,6 @@ type RecoveryExecutionRow struct {
 	Status             string
 	CurrentStep        string
 	// Strategy is the recovery strategy routed on by the engine (PR C).
-	// One of: summarize_restart (default — the 6-step flow), stop,
-	// human_escalation, retry_n. Empty string falls back to
-	// summarize_restart for backward compat with rows written before
-	// the column existed.
 	Strategy            string
 	ResumptionPath      string
 	BudgetTokensLimit   int64
@@ -47,9 +42,7 @@ type RecoveryExecutionRow struct {
 	UpdatedAt           time.Time
 }
 
-// RecoveryStepRunRow is the data-access shape of a recovery_step_runs
-// table row (docs/06 §3, §9). Rich narrative fields for the timeline
-// (docs/06 §11).
+// RecoveryStepRunRow is the data-access shape of a recovery_step_runs table row (docs/06 §3, §9).
 type RecoveryStepRunRow struct {
 	ID                string
 	TenantID          string
@@ -92,21 +85,6 @@ type ContinuationPlanRow struct {
 }
 
 // CreateRecoveryExecution inserts a new recovery execution row.
-//
-// Strategy (PR C — recovery as typed work items) is intentionally NOT in
-// the INSERT column list: the column has a DEFAULT of 'summarize_restart'
-// (migration 20260715000000_recovery_strategy.sql) and the engine
-// currently sets Strategy on the row only as a routing hint — the
-// recover-strategy rounding happens at the top of the engine loop
-// (engine.go applyStrategy), not via this INSERT. Preserving the column
-// default keeps backward compat with rows written before PR C without
-// requiring the engine to plumb strategy through every reader.
-//
-// Parameter numbering used to skip $12 (params went $1..$11, $13..$22),
-// which Postgres rejected with "could not determine data type of
-// parameter $12" — the engine's insert into recovery_executions has
-// been silently failing on every failed execution, so recovery never
-// actually started. Renumber contiguously to fix it.
 func CreateRecoveryExecution(ctx context.Context, tx pgx.Tx, r RecoveryExecutionRow) (RecoveryExecutionRow, error) {
 	if r.MaxRetries <= 0 {
 		r.MaxRetries = 5
@@ -194,9 +172,8 @@ func ListRecoveries(ctx context.Context, tx pgx.Tx, f ListRecoveriesFilter) ([]R
 	q := `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions WHERE tenant_id = $1`
 	args := []any{f.TenantID}
 	if f.AfterID != "" {
-		// Keyset pagination on the (triggered_at, id) tuple — replaces the old
-		// bare `id < $2` cursor that only approximated the triggered_at DESC
-		// ordering (id and trigger time drift for backfilled/edited rows).
+		// Keyset pagination on the (triggered_at, id) tuple — replaces the old bare `id < $2` cursor that
+		// only approximated the triggered_at DESC ordering (id and trigger time drift.
 		q += fmt.Sprintf(` AND (triggered_at, id) < (SELECT triggered_at, id FROM recovery_executions WHERE tenant_id = $1 AND id = $%d)`, len(args)+1)
 		args = append(args, f.AfterID)
 	}
@@ -252,9 +229,7 @@ func ListPendingRecoveries(ctx context.Context, tx pgx.Tx, tenantID string) ([]R
 	return out, rows.Err()
 }
 
-// GetActiveRecoveryForTask returns a non-terminal recovery for a task,
-// if one exists. Used to avoid duplicate recoveries (docs/06 §9
-// idempotency).
+// GetActiveRecoveryForTask returns a non-terminal recovery for a task, if one exists.
 func GetActiveRecoveryForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (RecoveryExecutionRow, error) {
 	q := `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions
 		WHERE tenant_id = $1 AND task_id = $2 AND status IN ('pending', 'running', 'blocked')
@@ -269,12 +244,8 @@ func GetActiveRecoveryForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID s
 	return r, nil
 }
 
-// GetActiveRecoveryForExecution returns a non-terminal recovery for a
-// specific failed execution, if one exists. Recovery is scoped per
-// failing execution (each workflow step run that fails gets its OWN
-// recovery cycle — the work item is a shared input reference and is not
-// the recovery unit), so two steps failing on the same ticket in the
-// same window each get a recovery instead of one swallowing the other.
+// GetActiveRecoveryForExecution returns a non-terminal recovery for a specific failed execution, if
+// one exists.
 func GetActiveRecoveryForExecution(ctx context.Context, tx pgx.Tx, tenantID, taskID, failedExecID string) (RecoveryExecutionRow, error) {
 	q := `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions
 		WHERE tenant_id = $1 AND task_id = $2 AND failed_execution_id = $3 AND status IN ('pending', 'running', 'blocked')
@@ -289,11 +260,8 @@ func GetActiveRecoveryForExecution(ctx context.Context, tx pgx.Tx, tenantID, tas
 	return r, nil
 }
 
-// GetLatestRecoveryForExecution returns the most recent recovery execution
-// for a specific failed execution, regardless of status. Used by the
-// dispatch gate (terminal-resumed check) and the seed fallback resolver:
-// a recovering step run is only re-dispatched once its recovery is terminal
-// `resumed` and a seed is resolvable from it.
+// GetLatestRecoveryForExecution returns the most recent recovery execution for a specific failed
+// execution, regardless of status.
 func GetLatestRecoveryForExecution(ctx context.Context, tx pgx.Tx, tenantID, taskID, failedExecID string) (RecoveryExecutionRow, error) {
 	q := `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions
 		WHERE tenant_id = $1 AND task_id = $2 AND failed_execution_id = $3
@@ -308,10 +276,8 @@ func GetLatestRecoveryForExecution(ctx context.Context, tx pgx.Tx, tenantID, tas
 	return r, nil
 }
 
-// GetLatestRecoveryForFailedExecution returns the most recent recovery
-// execution for a failed execution, tenant-wide (no task filter). Used by
-// the recovery-file gate's foreign-seed ownership check, which sees only
-// the file's footer execution id and does not know the owner's task id.
+// GetLatestRecoveryForFailedExecution returns the most recent recovery execution for a failed
+// execution, tenant-wide (no task filter).
 func GetLatestRecoveryForFailedExecution(ctx context.Context, tx pgx.Tx, tenantID, failedExecID string) (RecoveryExecutionRow, error) {
 	q := `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions
 		WHERE tenant_id = $1 AND failed_execution_id = $2
@@ -326,10 +292,8 @@ func GetLatestRecoveryForFailedExecution(ctx context.Context, tx pgx.Tx, tenantI
 	return r, nil
 }
 
-// GetLatestRecoveryForTask returns the most recent recovery execution for
-// a task, regardless of status. Used by the workflow RECOVER step to
-// determine whether a recovery has completed (terminal) or is still
-// in flight.
+// GetLatestRecoveryForTask returns the most recent recovery execution for a task, regardless of
+// status.
 func GetLatestRecoveryForTask(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (RecoveryExecutionRow, error) {
 	q := `SELECT ` + recoveryExecutionCols + ` FROM recovery_executions
 		WHERE tenant_id = $1 AND task_id = $2
@@ -594,9 +558,7 @@ type UpdateRecoveryStepRunFields struct {
 	EndedAt           *time.Time
 }
 
-// UpdateRecoveryStepRun applies a partial update with optimistic
-// concurrency. Idempotent: re-running a step for the same recovery yields
-// the same artifacts (docs/06 §9).
+// UpdateRecoveryStepRun applies a partial update with optimistic concurrency.
 func UpdateRecoveryStepRun(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, f UpdateRecoveryStepRunFields) (RecoveryStepRunRow, error) {
 	q := `UPDATE recovery_step_runs SET updated_at = now(), version = version + 1`
 	args := []any{tenantID, id, expectedVersion}

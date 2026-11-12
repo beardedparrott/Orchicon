@@ -1,0 +1,78 @@
+# OTel collector config for the Orchicon supervised service set.
+# @DATA_DIR@ and the @…_PORT@ tokens are replaced at startup from the
+# instance's resolved port table (see tempo.yaml's header). The backend
+# endpoints are the SAME resolved ports the children bind — including Tempo's
+# offset OTLP HTTP receiver, which is @TEMPO_OTLP_HTTP_PORT@ rather than the
+# collector's own @COLLECTOR_OTLP_HTTP_PORT@.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:@COLLECTOR_OTLP_GRPC_PORT@
+      http:
+        endpoint: 127.0.0.1:@COLLECTOR_OTLP_HTTP_PORT@
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+  memory_limiter:
+    check_interval: 2s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+exporters:
+  # Traces → Tempo (OTLP HTTP).
+  otlphttp/tempo:
+    endpoint: http://localhost:@TEMPO_OTLP_HTTP_PORT@
+    tls:
+      insecure: true
+  # Logs → Loki (OTLP HTTP endpoint).
+  otlphttp/loki:
+    endpoint: http://localhost:@LOKI_HTTP_PORT@/otlp
+    tls:
+      insecure: true
+  # Metrics → VictoriaMetrics (Prometheus remote write).
+  # add_metric_suffixes=false keeps the canonical orchidicon_* names.
+  prometheusremotewrite:
+    endpoint: http://localhost:@VM_HTTP_PORT@/api/v1/write
+    add_metric_suffixes: false
+    resource_to_telemetry_conversion:
+      enabled: true
+
+extensions:
+  health_check:
+    endpoint: 127.0.0.1:@COLLECTOR_HEALTH_PORT@
+
+service:
+  # THE COLLECTOR'S OWN STATS LISTENER MUST BE DECLARED, NOT DEFAULTED.
+  #
+  # Left out, the collector serves its internal telemetry on its DEFAULT
+  # localhost:8888 — a socket every instance on the host then claims. That is
+  # the third instance of the same bug the Loki/Tempo internal listeners had:
+  # measured here, prod held 127.0.0.1:8888 and dev's collector crash-looped
+  # for ever ("binding address localhost:8888 for Prometheus exporter: bind:
+  # address already in use", 16 restarts). Because the COLLECTOR is what ships
+  # OTLP from the plane to Tempo, Loki and VictoriaMetrics, dev also ingested
+  # nothing: its Metrics view showed only the plane's own outbox gauges while
+  # tokens, cost and execution counts were emitted into nothing at all.
+  #
+  # Templated and walked off an occupied port (see countTokens/internalListenerPort)
+  # so the second instance binds without an install-time allocation.
+  telemetry:
+    metrics:
+      address: 127.0.0.1:@COLLECTOR_SELF_METRICS_PORT@
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheusremotewrite]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/loki]

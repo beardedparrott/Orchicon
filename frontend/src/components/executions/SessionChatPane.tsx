@@ -28,7 +28,7 @@ import {
 } from "lucide-react";
 import type { StreamExecutionEventsResponse } from "@/api/gen/orchicon/api/v1/execution_pb";
 import { useGetExecutionSession, useSendExecutionMessage, useContinueExecutionSession } from "@/api/executions";
-import { ReasoningBubble } from "@/components/chat";
+import { NoticeBubble, ReasoningBubble } from "@/components/chat";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -43,7 +43,14 @@ import {
   type ScrollEnd,
 } from "@/lib/chat-scroll";
 
-import { groupByPhase, mergeSessionItems, sessionMeta, type ChatItem, type ParsedTool } from "./sessionItems";
+import {
+  compactedNotice,
+  groupByPhase,
+  mergeSessionItems,
+  sessionMeta,
+  type ChatItem,
+  type ParsedTool,
+} from "./sessionItems";
 
 interface SessionChatPaneProps {
   executionId: string;
@@ -147,6 +154,14 @@ function transcriptItems(
           });
         }
         break;
+      case "compacted": {
+        // Every adapter writes this part and nothing drew it, so a mid-run collapse —
+        // the one event that changes the history the provider receives — had no row in
+        // the transcript it rewrote.
+        const text = compactedNotice(pl);
+        if (text) out.push({ kind: "notice", text, at, key });
+        break;
+      }
       case "error":
         out.push({ kind: "error", text: pl.error?.message || pl.error?.name || "opencode session error", at, key });
         break;
@@ -876,6 +891,8 @@ export function SessionChatPane({
               return <ArtifactCard key={item.key} artifact={item} />;
             case "error":
               return <ErrorBubble key={item.key} text={item.text} />;
+            case "notice":
+              return <NoticeBubble key={item.key} text={item.text} />;
             case "session":
               return (
                 <div key={item.key} className="flex justify-center">

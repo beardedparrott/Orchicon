@@ -2,20 +2,14 @@ package chat
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
-// execsession.go — the converters from the two durable/live execution
-// sources into ChatItems, mirroring
-// frontend/src/components/executions/SessionChatPane.tsx:
-//   - HistoryItems: GetExecutionSession parts → items tagged phase
-//     `step-N` (N = opencode step counter, incremented on
-//     step_start/step_finish boundaries).
-//   - LiveItems: StreamExecutionEvents responses → items tagged phase
-//     `live-N` (N = synthetic counter bumped on tool/error boundaries).
+// execsession.go — the converters from the two durable/live execution sources into ChatItems.
 
 // msOf converts a protobuf timestamp to ms since epoch (0 when nil),
 // falling back to wall-clock like the TS `Date.now()` fallback.
@@ -61,9 +55,8 @@ func strOfJSON(v any) string {
 	}
 }
 
-// HistoryItems converts GetExecutionSession parts into ChatItems
-// (SessionChatPane.tsx transcriptItems). The result is phase-grouped so
-// per-chunk reasoning/text parts of one step converge into one bubble.
+// HistoryItems converts GetExecutionSession parts into ChatItems (SessionChatPane.tsx
+// transcriptItems).
 func HistoryItems(parts []*apiv1.ExecutionSessionPart) []ChatItem {
 	if len(parts) == 0 {
 		return nil
@@ -118,13 +111,17 @@ func HistoryItems(parts []*apiv1.ExecutionSessionPart) []ChatItem {
 				}
 			}
 		case "session_info":
-			// The part is rendered as a session identity row when it carries
-			// EITHER a session id or an adapter kind: a native execution has no
-			// serve/session id to point at, only the adapter it ran on.
+			// The part is rendered as a session identity row when it carries EITHER a session id or an adapter
+			// kind: a native execution has no serve/session id to point at, only the adapter it ran on.
 			sid := strOf(pl, "session_id")
 			adapterKind := strOf(pl, "adapter_kind")
 			if sid != "" || adapterKind != "" {
 				out = append(out, ChatItem{Kind: KindSession, SessionID: sid, ServeURL: strOf(pl, "serve_url"), AdapterKind: adapterKind, At: at, Key: key})
+			}
+		case "compacted":
+			// The platform collapsed this execution's context mid-run.
+			if txt := compactedNotice(pl); txt != "" {
+				out = append(out, ChatItem{Kind: KindNotice, Text: txt, At: at, Key: key})
 			}
 		case "error":
 			msg := "opencode session error"
@@ -141,10 +138,57 @@ func HistoryItems(parts []*apiv1.ExecutionSessionPart) []ChatItem {
 	return GroupByPhase(out)
 }
 
-// LiveItems converts StreamExecutionEvents responses into ChatItems
-// (SessionChatPane.tsx liveItems): TELEMETRY text / reasoning-wrapped
-// JSON chunks, TOOL_CALL rows, ERROR rows, ARTIFACT rows. The live
-// phase counter bumps on tool/error boundaries.
+// compactedNotice renders a `compacted` session part — from ANY adapter — as the platform notice it
+// is.
+func compactedNotice(pl map[string]any) string {
+	var b strings.Builder
+	b.WriteString("Context compacted mid-run")
+	if step := numOf(pl, "step"); step > 0 {
+		b.WriteString(" at step " + itoa(int64(step)))
+	}
+	b.WriteString(".")
+	if before, after := numOf(pl, "messages_before"), numOf(pl, "messages_after"); before > 0 {
+		b.WriteString(" " + itoa(int64(before)) + " messages collapsed to " + itoa(int64(after)) + ".")
+	}
+	if evicted := numOf(pl, "tool_rounds_evicted"); evicted > 0 {
+		b.WriteString(" " + itoa(int64(evicted)) + " tool round(s) were moved to the offload file.")
+	}
+	if reason := strOf(pl, "reason"); reason != "" {
+		b.WriteString(" Trigger: " + reason + ".")
+	}
+	if provider := strOf(pl, "provider"); provider != "" {
+		if model := strOf(pl, "model"); model != "" {
+			b.WriteString(" Provider: " + provider + " (" + model + ").")
+		} else {
+			b.WriteString(" Provider: " + provider + ".")
+		}
+	}
+	if src := strOf(pl, "source"); src != "" {
+		b.WriteString(" Source: " + src + ".")
+	}
+	b.WriteString(" The request the provider received after this point carries the collapsed history, not the original.")
+	return b.String()
+}
+
+// numOf reads a numeric payload field (JSON numbers decode as float64, and a count may arrive either way).
+func numOf(pl map[string]any, key string) int {
+	switch v := pl[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case string:
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+// LiveItems converts StreamExecutionEvents responses into ChatItems (SessionChatPane.tsx
+// liveItems).
 func LiveItems(events []*apiv1.StreamExecutionEventsResponse) []ChatItem {
 	out := []ChatItem{}
 	phase := 0

@@ -128,10 +128,8 @@ func seedKeysSetup(t *testing.T, workflowBound bool) *seedKeysFixture {
 	return f
 }
 
-// TestRecoverySeedKeysStandalone drives a standalone recovery to resume and
-// verifies the work item's Results carry _recovery_execution_id and
-// _recovery_worker_id (the keys the dispatch path seeds the recovery file
-// from).
+// TestRecoverySeedKeysStandalone drives a standalone recovery to resume and verifies the work
+// item's Results carry _recovery_execution_id and _recovery_worker_id (the keys the dispatch path.
 func TestRecoverySeedKeysStandalone(t *testing.T) {
 	if os.Getenv("ORCHICON_TEST_DSN") == "" {
 		t.Skip("ORCHICON_TEST_DSN not set; skipping DB-backed recovery seed test")
@@ -179,9 +177,8 @@ func TestRecoverySeedKeysStandalone(t *testing.T) {
 	}
 }
 
-// TestRecoverySeedKeysStepRun drives a workflow-bound recovery to resume and
-// verifies the STEP RUN's result carries the seed keys (the workflow
-// dispatch path reads them from there).
+// TestRecoverySeedKeysStepRun drives a workflow-bound recovery to resume and verifies the STEP
+// RUN's result carries the seed keys (the workflow dispatch path reads them from there).
 func TestRecoverySeedKeysStepRun(t *testing.T) {
 	if os.Getenv("ORCHICON_TEST_DSN") == "" {
 		t.Skip("ORCHICON_TEST_DSN not set; skipping DB-backed recovery seed test")

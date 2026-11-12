@@ -1,0 +1,9 @@
+[
+  {
+    "Name": "podman-machine-default",
+    "Running": true,
+    "LastUp": "2 minutes ago",
+    "VMType": "applehv",
+    "CPUs": 4
+  }
+]

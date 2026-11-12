@@ -1,14 +1,4 @@
-// Package diffs is the TUI's side-by-side diff pane. It is the TUI sibling
-// of the GUI DiffSidebar: it consumes the SAME file-edit ledger (FileEdit
-// RPCs) and renders it with the SAME logical layout as the GUI's
-// frontend/src/lib/diff/sideBySide.ts, so the pipeline truth (Go engine),
-// the GUI renderer (TS), and the TUI renderer (Go) all agree.
-//
-// The pure parsing/emphasis/grouping functions in this package are a
-// faithful port of sideBySide.ts's parseUnifiedDiff / emphasizeTokens /
-// groupByFile and are the cross-language contract. The Go tests drive them
-// over the SAME internal/testfixtures/fileedit/*.json vectors that both the
-// Go engine's diff_test.go and the TS sideBySide.test.ts consume.
+// Package diffs is the TUI's side-by-side diff pane.
 package diffs
 
 import (
@@ -34,13 +24,7 @@ type EmphasisSpan struct {
 	Type  string // "add" | "del"
 }
 
-// Row is one side-by-side diff row. It mirrors the GUI's SideBySideRow:
-// paired line numbers (null = no line on that side; an added line has no
-// old line number), the sign, the old/new text, and optional word-level
-// emphasis spans.
-//
-// HasOld/HasNew represent the "null line number" cases (Go has no null int;
-// a zero line number would be ambiguous with line 1).
+// Row is one side-by-side diff row.
 type Row struct {
 	LineNoOld int
 	LineNoNew int

@@ -129,10 +129,8 @@ func retryFetchStep(t *testing.T, ctx context.Context, pool *db.Pool, stepRunID 
 	return sr
 }
 
-// TestRetryFailedWorkflowRunDB verifies the full retry semantics: run →
-// pending with ended_at cleared, failed/skipped/blocked step runs → pending
-// (result/attempt/execution/ended_at cleared), succeeded steps untouched,
-// and the bound work item flipped back to running.
+// TestRetryFailedWorkflowRunDB verifies the full retry semantics: run → pending with ended_at
+// cleared, failed/skipped/blocked step runs → pending (result/attempt/execution/ended_at cleared).
 func TestRetryFailedWorkflowRunDB(t *testing.T) {
 	pool := retryTestPool(t)
 	ctx := tenant.WithID(context.Background(), retryTestTenant)
@@ -242,13 +240,8 @@ func TestRetryFailedWorkflowRunRejectsNonFailedDB(t *testing.T) {
 
 func strPtr(s string) *string { return &s }
 
-// TestRetryAfterPruneProvisionsWorktree is the regression test for the
-// observed silent project-dir fallback (run 01M0WQPSG). A failed run whose
-// worktree was pruned (worktree_status='pruned', path cleared, branch
-// retained) is retried: the run and its pruned step runs must flip to
-// worktree_status='pending' with empty path (so the WorktreeReconciler
-// re-provisions a usable branch worktree before dispatch) while the branch
-// name is preserved for re-attach.
+// TestRetryAfterPruneProvisionsWorktree is the regression test for the observed silent project-dir
+// fallback (run 01M0WQPSG).
 func TestRetryAfterPruneProvisionsWorktree(t *testing.T) {
 	pool := retryTestPool(t)
 	ctx := tenant.WithID(context.Background(), retryTestTenant)

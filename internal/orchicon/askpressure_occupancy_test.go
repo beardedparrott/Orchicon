@@ -3,13 +3,6 @@ package orchicon
 import "testing"
 
 // The pressure gate must measure the FULL input side, not the fresh bucket.
-//
-// Every protocol mapping normalizes InputTokens down to the UNCACHED portion, so a
-// cached conversation reports a tiny InputTokens against a huge CacheReadTokens. The
-// gate used to take InputTokens alone, which made it blind: the real session measured
-// here (168 fresh, 976,384 cached) computed 0.016% against a 0.95 threshold and could
-// never fire — while the composer strip, summing the same three buckets, correctly
-// showed the context at 93% of the window.
 func TestPromptOccupancyIsTheFullInputSide(t *testing.T) {
 	u := Usage{
 		InputTokens:      168,
@@ -25,9 +18,8 @@ func TestPromptOccupancyIsTheFullInputSide(t *testing.T) {
 		t.Fatal("promptOccupancy collapsed to InputTokens — the gate would be blind to cached context again")
 	}
 	const window = 1048576
-	// The measured truth for this session: 93.13% — genuinely close, and genuinely
-	// BELOW the 0.95 threshold, so the gate is right not to have fired yet. What
-	// matters is that it can now SEE that, instead of reading the fresh bucket.
+	// The measured truth for this session: 93.13% — genuinely close, and genuinely BELOW the 0.95
+	// threshold, so the gate is right not to have fired yet.
 	frac := float64(got) / float64(window)
 	if frac < 0.93 || frac > 0.94 {
 		t.Errorf("occupancy/window = %.4f, want ~0.9313 (the measured session)", frac)
@@ -38,9 +30,8 @@ func TestPromptOccupancyIsTheFullInputSide(t *testing.T) {
 	}
 }
 
-// A conversation whose FULL input side clears the threshold must fire, and the same
-// conversation measured by its fresh bucket alone must not. That difference is the
-// bug in one assertion.
+// A conversation whose FULL input side clears the threshold must fire, and the same conversation
+// measured by its fresh bucket alone must not.
 func TestPressureGateFiresOnTheFullInputSideOnly(t *testing.T) {
 	const window = 1048576
 	const threshold = 0.95

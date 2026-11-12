@@ -1,19 +1,7 @@
 package opencode
 
-// system_delivery_test.go — THE SYSTEM PROMPT MUST REACH THE MODEL ON v2, AND EXACTLY ONCE PER SESSION.
-//
-// v2's prompt body has no `system` field (checked across all 118 spec paths), so the prompt travels as
-// CONTENT. Two ways to get that wrong, and both are pinned here:
-//
-//   * NOT delivering it: the worker runs with only the minimal tool shell from the agent config and
-//     never learns its task framing — and NOTHING errors, because v2 silently drops unknown keys.
-//   * delivering it on EVERY turn: the context grows by a full prompt copy per message, which on a
-//     long run is a large, self-inflicted cost that no single message looks wrong in isolation.
-//
-// The rule that avoids both: carry it on the session's FIRST message and again after a compact, and on
-// no other send. Callers that know which is which say so (SendMessageCarryingSystem); the Ask path,
-// where the seeded and reuse prompts are both non-empty, uses the client's own record of the sessions
-// it CREATED.
+// system_delivery_test.go — THE SYSTEM PROMPT MUST REACH THE MODEL ON v2, AND EXACTLY ONCE PER
+// SESSION.
 
 import (
 	"context"
@@ -143,9 +131,7 @@ func TestTheAskPathDeliversOnceViaTheCreationMark(t *testing.T) {
 }
 
 func TestAFollowUpOnAnUncreatedSessionNeverCarriesThePrompt(t *testing.T) {
-	// THE SAFETY CASE. A follow-up ATTACHES to a session this client did not create (a recorded URL
-	// from an earlier execution), so it must never re-state the prompt — the conversation already has
-	// it, and re-sending would append a second copy.
+	// THE SAFETY CASE.
 	var seen []capturedReq
 	srv := captureServer(t, &seen)
 
@@ -165,8 +151,6 @@ func TestAFollowUpOnAnUncreatedSessionNeverCarriesThePrompt(t *testing.T) {
 
 func TestTheAfterCompactReminderCarriesThePromptAgain(t *testing.T) {
 	// A compact summarizes the conversation away, INCLUDING the first message the prompt travelled in.
-	// Without re-stating it the resumed turns run with no standing instructions while appearing to
-	// continue normally — which is why this send is explicit rather than mark-driven.
 	var seen []capturedReq
 	srv := captureServer(t, &seen)
 

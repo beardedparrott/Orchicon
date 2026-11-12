@@ -3,24 +3,6 @@ package theme
 import "github.com/charmbracelet/lipgloss"
 
 // theme_palettes.go — the TUI's extended palette set.
-//
-// The GUI ships ten light and ten dark themes that differ mainly by the HUE of
-// their background and accent, with consistent lightness/saturation patterns
-// per mode (frontend/src/lib/themes.ts + the [data-theme] blocks in
-// frontend/src/index.css). The TUI mirrors that character — forest, ocean,
-// violet, ember, amber, rose, teal, crimson, slate — but is NOT a copy:
-//
-//   - palettes are DERIVED from HSL specs, exactly the way the GUI builds its
-//     tokens, so a family stays internally consistent and a new one is a few
-//     numbers rather than 15 hand-picked hexes;
-//   - every derived palette is then clamped to TUI CONTRAST FLOORS. A browser
-//     can afford a 91%-lightness border because the DOM supplies structure
-//     through spacing, shadow and border-radius. A terminal has only the
-//     border — and it carries each panel's title — so borders are floored
-//     where a hairline would render the layout invisible.
-//
-// theme/contrast_test.go gates the whole registry, so a spec that produces an
-// unreadable palette fails the build instead of shipping.
 
 // paletteSpec is one palette in the same HSL terms the GUI uses, plus the
 // floors that make it a TERMINAL palette.
@@ -28,10 +10,8 @@ type paletteSpec struct {
 	name string
 	dark bool
 
-	// transparent marks the palette as one whose APP BACKGROUND is left
-	// unpainted, so the terminal (and its own transparency) shows through. Every
-	// other token is derived exactly as for a solid palette, which is what keeps
-	// the tints — see Theme.Transparent.
+	// transparent marks the palette as one whose APP BACKGROUND is left unpainted, so the terminal (and
+	// its own transparency) shows through.
 	transparent bool
 
 	bgH, bgS, bgL float64
@@ -62,10 +42,7 @@ func mod360(h float64) float64 {
 	return h
 }
 
-// theme derives the full TUI palette. The lightness relationships mirror the
-// GUI's: surfaces step away from the background, the border is floored for
-// legibility, and the accent family supplies the selection/interactive fills
-// (kept dark enough to carry white text).
+// theme derives the full TUI palette.
 func (s paletteSpec) theme() Theme {
 	bgS := s.bgS
 	if bgS > 40 {
@@ -97,16 +74,11 @@ func (s paletteSpec) theme() Theme {
 		textFaint = hsl(s.textH, 16, 52)
 	}
 
-	// The fill backgrounds (selected rows, tabs, chips) carry WHITE text, and a
-	// filled region is a different job from an accent foreground: the accent may
-	// be vivid because it draws thin strokes, while a FILL must be dark enough
-	// for white to read on it. Deriving the fill by rotating the accent hue was
-	// wrong outright — ember's +45 landed on yellow-green — so the fill keeps
-	// the family hue and is clamped dark.
+	// The fill backgrounds (selected rows, tabs, chips) carry WHITE text, and a filled region is a
+	// different job from an accent foreground: the accent may be vivid because it draws thin strokes.
 	fillL := clampL(s.accentL, 24, 34)
-	// Hues that carry more luminance at the same lightness need a lower cap to
-	// leave white text legible: the yellow/green-yellow band first, then the
-	// green-through-cyan band (both fail a 3:1 white-on-fill check at 34%).
+	// Hues that carry more luminance at the same lightness need a lower cap to leave white text
+	// legible: the yellow/green-yellow band first.
 	switch h := mod360(s.accentH); {
 	case h >= 40 && h <= 110:
 		fillL = clampL(s.accentL, 20, 27)
@@ -189,14 +161,8 @@ var paletteSpecs = []paletteSpec{
 	{name: "crimson", dark: true, bgH: 0, bgS: 25, bgL: 8, accentH: 0, accentS: 75, accentL: 58, textH: 0, textS: 20, textL: 96},
 	{name: "slate", dark: true, bgH: 215, bgS: 12, bgL: 10, accentH: 215, accentS: 25, accentL: 62, textH: 215, textS: 15, textL: 95},
 
-	// Screen-phosphor pair (the operator's "amber on black and a green on black
-	// kind of like fallout inspired"). The reference is a CRT terminal: a
-	// genuinely BLACK screen (no tint to speak of) with a single saturated
-	// phosphor that glows — the classic amber is ~#ffb000 and the green ~#41ff00,
-	// both at HIGH saturation and MID lightness. An earlier pass pushed the text
-	// toward near-white, which is what made it read as "a dark theme with a warm
-	// accent" rather than a glowing screen; the phosphor stays saturated here and
-	// only its lightness rises.
+	// Screen-phosphor pair (the operator's "amber on black and a green on black kind of like fallout
+	// inspired").
 	{name: "crt-amber", dark: true, bgH: 36, bgS: 45, bgL: 1, accentH: 40, accentS: 100, accentL: 50, textH: 40, textS: 100, textL: 60},
 	{name: "crt-green", dark: true, bgH: 120, bgS: 45, bgL: 1, accentH: 105, accentS: 100, accentL: 50, textH: 105, textS: 100, textL: 56},
 
@@ -211,15 +177,8 @@ var paletteSpecs = []paletteSpec{
 	{name: "teal-light", dark: false, bgH: 173, bgS: 60, bgL: 98, accentH: 173, accentS: 80, accentL: 32, textH: 222, textS: 47, textL: 11},
 	{name: "slate-light", dark: false, bgH: 210, bgS: 20, bgL: 98, accentH: 215, accentS: 25, accentL: 42, textH: 222, textS: 47, textL: 11},
 
-	// COFFEE, at the operator's request, and the request is the interesting part: "Catpuccin-mocha and latte
-	// looks blue. Shouldn't a cappacunio type of theme be more brown?" The NAME misleads and the PALETTE is
-	// faithful — Catppuccin's own Mocha base is #1e1e2e, a blue-purple, and its accents are blue and mauve, so
-	// it genuinely is not brown. Rather than repaint a ported palette and misrepresent it, these are the
-	// brown ones: a warm dark roast and a light cream, defined here in the same HSL terms as the rest of the
-	// generated families so they inherit the derivation AND its contrast floors.
-	//
-	// espresso is a deep, low-lightness roast (the darkness of a shot, not of a bean);
-	// cafe is the same family in light — cream paper with coffee-dark text.
+	// COFFEE, at the operator's request, and the request is the interesting part: "Catpuccin-mocha and
+	// latte looks blue.
 	{name: "espresso", dark: true, bgH: 24, bgS: 22, bgL: 8, accentH: 30, accentS: 62, accentL: 56, textH: 34, textS: 24, textL: 94},
 	{name: "cafe", dark: false, bgH: 33, bgS: 45, bgL: 97, accentH: 26, accentS: 58, accentL: 34, textH: 24, textS: 32, textL: 13},
 }
@@ -234,10 +193,7 @@ var derivedThemes = func() []*Theme {
 	return out
 }()
 
-// IsDark reports whether a palette is a dark one. It reads the DERIVED spec
-// (the palette's own declared mode) and falls back to the background's
-// luminance for the hand-written palettes (dark, light, gruvbox-*). The Themes
-// pane uses it to group the picker into dark and light sections.
+// IsDark reports whether a palette is a dark one.
 func IsDark(name string) bool {
 	for _, s := range paletteSpecs {
 		if s.name == name {

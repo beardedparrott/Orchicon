@@ -774,6 +774,43 @@ export class WorkflowRun extends Message<WorkflowRun> {
    */
   prState = "";
 
+  /**
+   * error_message is WHY THIS RUN FAILED, when the PLATFORM is the party that knows — a preflight refusal
+   * (no valid base ref, a worktree that cannot be created), a dispatch failure. Such a run fails before any
+   * step dispatches, so there is no execution and no worker summary: without this the operator's surfaces
+   * all said nothing, and the reason was reachable only by decoding run_context by hand.
+   *
+   * @generated from field: string error_message = 21;
+   */
+  errorMessage = "";
+
+  /**
+   * error_kind is a small vocabulary the UI groups and phrases on ("worktree_no_base_ref",
+   * "worktree_empty_base", "worktree_preflight"). Empty means unclassified. It is intentionally NOT an enum:
+   * a new kind must be addable without a schema change.
+   *
+   * @generated from field: string error_kind = 22;
+   */
+  errorKind = "";
+
+  /**
+   * integration_status says whether this run's work actually reached the integration branch.
+   *
+   * REPORTED: "both missed-integration runs and correctly-integrated runs present identically: status=succeeded,
+   * WorkflowRun=completed ... There is no field anywhere recording whether integration happened." That is the
+   * worst kind of gap — a run that looks finished and is not.
+   *
+   * DERIVED, not stored, and the derivation is exact rather than heuristic: a run branch is deleted ONLY when
+   * it is provably merged (branchProvablyMerged → ancestry), and deleting it clears worktree_branch. So a
+   * COMPLETED run with no branch has landed, and one with a surviving branch has not. Two facts the platform
+   * already records, read together.
+   *
+   * Values: "merged" | "not_merged" | "not_applicable". Empty for runs that have not completed.
+   *
+   * @generated from field: string integration_status = 23;
+   */
+  integrationStatus = "";
+
   constructor(data?: PartialMessage<WorkflowRun>) {
     super();
     proto3.util.initPartial(data, this);
@@ -802,6 +839,9 @@ export class WorkflowRun extends Message<WorkflowRun> {
     { no: 18, name: "worktree_path", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 19, name: "pr_url", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 20, name: "pr_state", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 21, name: "error_message", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 22, name: "error_kind", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 23, name: "integration_status", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): WorkflowRun {

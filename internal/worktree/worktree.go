@@ -41,19 +41,15 @@ import (
 	"github.com/beardedparrott/orchicon/internal/fileedit"
 )
 
-// Default caps keep a single tool call well-bounded so it cannot blow up the
-// context. They are high enough to capture a real need in one pass, low
-// enough to never feed a document back wholesale.
+// Default caps keep a single tool call well-bounded so it cannot blow up the context.
 const (
 	defaultMaxBytes   = 128_000 // total batch_read output cap
 	defaultPerFileMax = 32_000  // per-file read cap
 	defaultMaxFiles   = 64      // directory expansion file cap
 	defaultMaxMatches = 250     // batch_grep match cap
 	defaultMaxDirs    = 64      // directory expansion dir cap
-	// batch_grep's walk caps are deliberately larger than batch_read's: a
-	// search returns only matches (bounded by maxBytesOut + maxMatches), so
-	// reading more files is cheap — a read-sized 64-file cap would silently
-	// miss most of a real tree (internal/ alone has 322 files).
+	// batch_grep's walk caps are deliberately larger than batch_read's: a search returns only matches
+	// (bounded by maxBytesOut + maxMatches), so reading more files is cheap.
 	defaultMaxGrepFiles = 512
 	defaultMaxGrepDirs  = 512
 )
@@ -97,59 +93,32 @@ type WriteArgs struct {
 
 // --- path safety ----------------------------------------------------------
 
-// Base is the scoping boundary for the composite file tools. Each tool
-// resolves every worker-supplied path against Worktree (the read+write
-// root — the run worktree / in-place project dir), plus ProjectRoot for
-// READ-only access and ScratchDir for read+write access.
+// Base is the scoping boundary for the composite file tools.
 type Base struct {
 	// Worktree is the read+write root: the run worktree (provisioned) or the
 	// in-place project dir. File writes and deletes resolve only inside it.
 	Worktree string
-	// ProjectRoot is the READ-only extra root: the project root that holds
-	// the run-state `.orchicon/<run>/` files and `architecture-notes/`, which
-	// sit OUTSIDE the run worktree (a sibling of it). Reads may additionally
-	// reach here; writes never do (so batch_write stays out of the main
-	// checkout). Empty in tests and in-place runs (worktree == project root).
+	// ProjectRoot is the READ-only extra root: the project root that holds the run-state
+	// `.orchicon/<run>/` files and `architecture-notes/`.
 	ProjectRoot string
-	// ScratchDir is the read+write root for the sanctioned ephemeral scratch
-	// area (guard.ScratchDir / opencode.ScratchDir, /tmp/orchicon). Replaces
-	// the previously-broad os.TempDir() allow.
+	// ScratchDir is the read+write root for the sanctioned ephemeral scratch area (guard.ScratchDir /
+	// opencode.ScratchDir, /tmp/orchicon).
 	ScratchDir string
-	// AllowAnyPath, when true, removes the allowed-root check entirely: an
-	// absolute path is accepted wherever the process can reach it, a relative
-	// path still anchors at Worktree, and `..` is just a path component. Set
-	// ONLY by the interactive (Ask) suite — orchicon.NewHostToolsUnrestricted.
-	// The worker constructors never set it: a worker session's suite must
-	// remain unable to read outside its worktree/project root.
+	// Set ONLY by the interactive (Ask) suite — orchicon.NewHostToolsUnrestricted.
 	AllowAnyPath bool
 }
 
-// DefaultScratchDir is the sanctioned scratch area the composite tools may
-// read and write: ONE documented boundary, aligned with guard.ScratchDir and
-// opencode.ScratchDir (replaces the broad os.TempDir() allow).
+// DefaultScratchDir is the sanctioned scratch area the composite tools may read and write: ONE
+// documented boundary, aligned with guard.ScratchDir and opencode.ScratchDir (replaces the broad.
 const DefaultScratchDir = "/tmp/orchicon"
 
-// BaseFor builds a Base for a plain worktree directory with the sanctioned
-// scratch dir and NO project root. Used by direct-call tests and by callers
-// that only need worktree+scratch scoping (e.g. the todo snapshot).
+// BaseFor builds a Base for a plain worktree directory with the sanctioned scratch dir and NO
+// project root.
 func BaseFor(worktreeDir string) Base {
 	return Base{Worktree: worktreeDir, ScratchDir: DefaultScratchDir}
 }
 
-// safeResolve resolves a worker-supplied path against the scoping Base and
-// rejects anything that escapes it. It is the single enforcement point for
-// every composite tool.
-//
-// writable selects the read vs write roots:
-//   - reads (writable==false): roots = {Worktree, ScratchDir, ProjectRoot}.
-//     A `..` traversal is permitted ONLY when the cleaned, joined path still
-//     lands under one of those roots — which lets a worktree worker read
-//     <root>/.orchicon/<run>/facts_learned (via ../../.orchicon/<run>/... or
-//     an absolute project-root path) without allowing arbitrary escape.
-//   - writes (writable==true): roots = {Worktree, ScratchDir}. A `..` that
-//     escapes to the project root is still rejected (batch_write must never
-//     land in the main checkout); an absolute /tmp/orchicon/... path is
-//     allowed via ScratchDir.
+// A `..` traversal is permitted ONLY when the cleaned.
 func safeResolve(b Base, rel string, writable bool) (string, error) {
 	if strings.TrimSpace(rel) == "" {
 		return "", fmt.Errorf("empty path")
@@ -158,15 +127,19 @@ func safeResolve(b Base, rel string, writable bool) (string, error) {
 		return "", fmt.Errorf("empty worktree base")
 	}
 	if b.AllowAnyPath {
-		// The interactive (Ask) boundary: the allowed set is the whole
-		// filesystem, so there is nothing to check. A relative path still
-		// anchors at Worktree (the conversation's project) and `..` is just
-		// another path component — project-relative work is unchanged.
+		// The interactive (Ask) boundary: the allowed set is the whole filesystem, so there is nothing to
+		// check.
 		clean := filepath.Clean(rel)
 		if filepath.IsAbs(clean) {
 			return clean, nil
 		}
 		return filepath.Join(b.Worktree, clean), nil
+	}
+	// REPORTED in container mode: every `bash` call died `chdir`-ing into the run's worktree, while
+	// batch_read/batch_write/glob happily resolved against the READ-ONLY extra root.
+	if fi, err := os.Stat(b.Worktree); err != nil || !fi.IsDir() {
+		return "", fmt.Errorf("the run's working directory %s does not exist (%v) — nothing here can be read "+
+			"or written until it is provisioned", b.Worktree, err)
 	}
 	roots := []string{filepath.Clean(b.Worktree)}
 	if b.ScratchDir != "" {
@@ -192,9 +165,8 @@ func safeResolve(b Base, rel string, writable bool) (string, error) {
 	}
 	clean := filepath.Clean(rel)
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		// `..` is allowed for a READ only when the joined path still resolves
-		// under a read root (e.g. reaching the project-root run-state). For a
-		// WRITE it is always rejected, so batch_write cannot escape the worktree.
+		// `..` is allowed for a READ only when the joined path still resolves under a read root (e.g.
+		// reaching the project-root run-state).
 		if writable {
 			return "", fmt.Errorf("path escapes the worktree (..)")
 		}
@@ -211,17 +183,14 @@ func safeResolve(b Base, rel string, writable bool) (string, error) {
 	return p, nil
 }
 
-// ResolvePath is safeResolve for callers outside this package (the host tool
-// suite's list/glob wrappers), so the allowed-root list lives in ONE place:
-// the worktree engine. writable selects the read vs write root set.
+// ResolvePath is safeResolve for callers outside this package (the host tool suite's list/glob
+// wrappers), so the allowed-root list lives in ONE place: the worktree engine.
 func ResolvePath(b Base, rel string, writable bool) (string, error) {
 	return safeResolve(b, rel, writable)
 }
 
-// pruneDirName reports whether a directory should be pruned from a
-// recursive walk: VCS metadata and vendored/build output that a worker
-// never wants to read or search (a whole-tree grep over node_modules would
-// otherwise drown in noise).
+// pruneDirName reports whether a directory should be pruned from a recursive walk: VCS metadata and
+// vendored/build output that a worker never wants to read or search (a whole-tree grep over.
 func pruneDirName(name string) bool {
 	switch name {
 	case ".git", ".hg", ".svn", ".bzr",
@@ -231,15 +200,8 @@ func pruneDirName(name string) bool {
 	return false
 }
 
-// expandPaths resolves each entry; a directory is expanded RECURSIVELY into
-// the regular files it contains (bounded by the file/dir caps, pruning
-// noise dirs via pruneDirName) so `batch_grep "internal"` searches the
-// whole subtree and `batch_read "docs"` grabs the docs in one call. An
-// unsafe path (absolute or traversal) is FATAL — the whole call is
-// rejected so a crafted path can never touch a file outside the worktree.
-// Missing paths are skipped with a note. truncated reports that the walk
-// stopped at a cap with entries left unvisited — callers must surface it so
-// a partial read/search is never mistaken for an exhaustive one.
+// expandPaths resolves each entry; a directory is expanded RECURSIVELY into the regular files it
+// contains (bounded by the file/dir caps.
 func expandPaths(b Base, entries []string, maxFiles, maxDirs int) (files []string, skipped []string, truncated bool, err error) {
 	seen := map[string]bool{}
 	dirs := 0
@@ -274,10 +236,8 @@ func expandPaths(b Base, entries []string, maxFiles, maxDirs int) (files []strin
 				walk(fp)
 				continue
 			}
-			// Symlinks and specials are skipped during the walk: a symlink
-			// to a directory could loop forever, and specials are not
-			// readable content. (Explicit named paths below still follow
-			// os.Stat, so a directly-named symlink target is read.)
+			// Symlinks and specials are skipped during the walk: a symlink to a directory could loop forever,
+			// and specials are not readable content.
 			if !de.Type().IsRegular() {
 				continue
 			}
@@ -349,13 +309,8 @@ func BatchRead(b Base, args ReadArgs) (string, error) {
 		return "batch_read: no matching paths were readable.", nil
 	}
 
-	// Parallel read phase (D3): independent file reads run CONCURRENTLY with
-	// bounded parallelism (default 8, overridable via
-	// ORCHICON_TOOL_PARALLELISM) and the results are emitted in DETERMINISTIC
-	// path order (the order `expandPaths` returned), never completion order —
-	// the model sees one batch_read result block whose file order matches its
-	// request order, so its reasoning stays stable. The per-file read itself
-	// is the expensive part (disk + decode); the rendering below is serial.
+	// Parallel read phase (D3): independent file reads run CONCURRENTLY with bounded parallelism
+	// (default 8.
 	var (
 		readWg sync.WaitGroup
 		readMu sync.Mutex
@@ -574,11 +529,8 @@ func pathSafeLine(l []byte) []byte {
 // maxBytesOut is the whole-result cap for batch_grep.
 func maxBytesOut() int { return defaultMaxBytes }
 
-// readParallelism is the bounded-parallelism cap for the batch_read parallel
-// read phase (D3): independent file reads run concurrently up to this many
-// goroutines. Configurable via ORCHICON_TOOL_PARALLELISM (0/negative → the
-// default 8; 1 → fully serial). Deterministic result ORDER is preserved
-// regardless of the cap — completion order never leaks into the output.
+// readParallelism is the bounded-parallelism cap for the batch_read parallel read phase (D3):
+// independent file reads run concurrently up to this many goroutines.
 func readParallelism() int {
 	const def = 8
 	if v := os.Getenv("ORCHICON_TOOL_PARALLELISM"); v != "" {
@@ -604,19 +556,14 @@ type writeOp struct {
 	exist bool   // whether the path existed on disk before this batch
 }
 
-// BatchWrite implements batch_write. It validates every operation first
-// (a virtual-state dry-run, so chained writes to the same path in one batch
-// are correctly assessed), then applies each in order. Any write failure
-// triggers a best-effort rollback of every applied path to its original disk
-// state, so the batch is all-or-nothing.
+// BatchWrite implements batch_write.
 func BatchWrite(b Base, args WriteArgs) (string, error) {
 	if len(args.Writes) == 0 {
 		return "batch_write: no writes provided.", nil
 	}
 
-	// Pass 1: validate with a virtual file-state view so create→edit chains
-	// within one batch are evaluated against their in-flight state, not just
-	// the untouched disk.
+	// Pass 1: validate with a virtual file-state view so create→edit chains within one batch are
+	// evaluated against their in-flight state, not just the untouched disk.
 	stateContent := map[string]string{} // path → current virtual content
 	stateExists := map[string]bool{}    // path → current virtual existence
 	origContent := map[string]string{}  // path → original on-disk content
@@ -711,9 +658,8 @@ func BatchWrite(b Base, args WriteArgs) (string, error) {
 
 	summary := fmt.Sprintf("batch_write: applied %d write(s): %s", len(applied), strings.Join(paths(applied), ", "))
 	if edits := fileEditsJSON(applied); len(edits) > 0 {
-		// Structured diff payload: keep the human summary line first, then
-		// the machine-readable record on its own line (the MCP layer returns
-		// this string verbatim; the ledger parses the JSON object).
+		// Structured diff payload: keep the human summary line first, then the machine-readable record on
+		// its own line (the MCP layer returns this string verbatim; the ledger parses the JSON object).
 		payload, err := json.Marshal(map[string]any{
 			"summary":    summary,
 			"file_edits": edits,
@@ -725,13 +671,7 @@ func BatchWrite(b Base, args WriteArgs) (string, error) {
 	return summary, nil
 }
 
-// fileEditsJSON builds the per-path ground-truth diff records for the paths
-// a BatchWrite applied. The ORIGINAL on-disk content is already in hand
-// (op.orig/op.exist — captured before any write); the AFTER side is the
-// final virtual state (op.next). Nothing is re-read from disk: the snapshot
-// pair is race-free by construction. A path whose content did not actually
-// change (identical before/after) produces no record — the ledger skips
-// no-op entries by construction too.
+// fileEditsJSON builds the per-path ground-truth diff records for the paths a BatchWrite applied.
 func fileEditsJSON(applied []writeOp) []map[string]any {
 	out := make([]map[string]any, 0, len(applied))
 	seen := map[string]bool{}
@@ -752,10 +692,6 @@ func fileEditsJSON(applied []writeOp) []map[string]any {
 }
 
 // fileEditRecord renders one path's diff record via the fileedit engine.
-// fileedit is a stdlib-only leaf; worktree does not import it — the diff
-// engine lives in fileedit and is duplicated here ONLY at the type level is
-// false: see diff.go — worktree imports fileedit directly (no cycle:
-// fileedit imports nothing from worktree).
 func fileEditRecord(op writeOp) map[string]any {
 	var before, after []byte
 	if op.exist {
@@ -807,9 +743,8 @@ func paths(ops []writeOp) []string {
 	return out
 }
 
-// rollback restores the original disk state for every applied path, in
-// reverse, best-effort: a path that did not exist is removed, a path that did
-// is rewritten with its prior content.
+// rollback restores the original disk state for every applied path, in reverse, best-effort: a path
+// that did not exist is removed, a path that did is rewritten with its prior content.
 func rollback(applied []writeOp) {
 	for i := len(applied) - 1; i >= 0; i-- {
 		op := applied[i]

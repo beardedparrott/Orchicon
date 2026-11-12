@@ -9,24 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
 
-// toolGetCurrentConversation reports THIS conversation's own session facts: its id, its mode, and the model_ref
-// its turns actually resolve to — plus the SOURCE of that ref, so "why this one" is answerable.
-//
-// THE GAP IT CLOSES. Quick Work must ask, on every new dispatch, "the current model is <adapter/provider/model>,
-// or a different one?" — and it could not. No tool exposed the running conversation's model_ref, so the only way
-// to name the current model was to guess at it. A prompt that says "pin the worker to your model_ref" while
-// giving the agent no way to read one produces exactly two behaviours, both wrong: invent a plausible ref, or
-// silently substitute the tenant default and present it as "your model". This makes the fact READABLE instead of
-// inferable.
-//
-// THE RESOLUTION IS DELIBERATELY THE TURN'S OWN (modelRefOrFallback, chat.go): the conversation's own ref when it
-// carries one, else the tenant's DefaultAskOrchiconModel. Reporting anything else would name a model the session
-// is demonstrably not running on — and the whole point is to offer the user the REAL one, by name, before it gets
-// pinned into a worker that cannot fail over.
-//
-// It FAILS LOUD when no conversation is stamped rather than inventing one: answering "here is your model" from
-// the tenant default for a session it could not identify would be confidently wrong, which is worse for the
-// caller than a visible error.
+// toolGetCurrentConversation reports THIS conversation's own session facts: its id, its mode, and
+// the model_ref its turns actually resolve to — plus the SOURCE of that ref.
 func toolGetCurrentConversation(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	convID := askConversationFromContext(ctx)
 	if convID == "" {

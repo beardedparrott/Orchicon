@@ -33,8 +33,13 @@ GOPATH      ?= $(DEV_TOOLS)/gopath
 export GOPATH
 GOCACHE     ?= $(DEV_TOOLS)/gocache
 export GOCACHE
-GOTMPDIR    ?= $(DEV_TOOLS)/gotmp
+# OUTSIDE the repository, because t.TempDir() honours it and git discovers an enclosing repo from any
+# subdirectory: a temp dir inside the repo makes test fixtures register worktrees against the real one.
+GOTMPDIR    ?= $(shell scripts/dev/gotmpdir.sh "$(CURDIR)")
 export GOTMPDIR
+# go CREATES gocache and gopath but NOT gotmp, and reports the missing one as "creating work dir: stat …" —
+# which names a path, not a cause. Parse-time so no per-target prerequisite list can forget it.
+$(shell mkdir -p $(GOPATH) $(GOCACHE) $(GOTMPDIR))
 # PATH as well: a couple of recipes call a bare `go` (the standing PTY gate), and
 # they must resolve the SAME toolchain rather than whatever the shell happens to
 # have. Deliberately NOT adding .dev/tools/bin — `buf` and `atlas` each resolve
@@ -69,12 +74,81 @@ endif
 # Stated as ONE variable used by every target that walks the tree, so a target
 # added later cannot forget it. Any dir under tmp/ is skipped, including a
 # worktree (those are skipped for a different reason — they DO have a go.mod).
+#
+# CROSS-COMPILE WAS THE TARGET THAT HAD NOT USED IT, and it is the one that proves the rule,
+# because it is the only target that vets an EXPLICIT `./...` of its own. It was added after
+# this variable and walked the tree directly, so a stray file under tmp/ broke `make
+# rebuild-dev` at the CROSS-COMPILE step — "vet: tmp/.../restore.go: undefined: PolicyEvaluator"
+# — while `make vet` and `make test` stayed GREEN, because they do consult this variable. Same
+# class of scratch-vs-gate failure as the one above, in the one gate that skipped the guard.
+# It now reads PKGS like the rest, so there is no longer a target that walks the tree without it.
+#
+# A FAILED `go list` IS NOT AN EMPTY ONE — and the guard below could not tell them apart.
+# `2>/dev/null` threw away the ONLY line that explains a failure, so both cases produced an empty
+# PKGS and the guard blamed the one cause it knew about: "no packages matched". That cost a full
+# diagnosis of a HEALTHY tree. An agent had run with a RELATIVE GOMODCACHE — relative to the repo
+# root, so the cache landed INSIDE the repo at tmp/orchicon/gomodcache — leaving ~1.2 GB of module
+# sources under tmp/ with no go.mod. `go list ./...` then aborted the WHOLE pattern —
+#
+#	pattern ./...: directory tmp/orchicon/gomodcache/github.com/arbovm/levenshtein@...:
+#	outside main module or its selected dependencies
+#
+# — and printed NOTHING on stdout, so `make vet` reported "no packages matched ./... (tmp/
+# excluded)" over 98 perfectly good packages and `make rebuild-dev` could not run at all. The
+# message invited the one conclusion that was FALSE ("the merge broke the module").
+#
+# So the failure is CAPTURED here and reported in `go`'s own words, while the empty-match text
+# survives as the OTHER arm of the guard. Recursive (`=`, not `:=`) as before: PKGS is read inside
+# recipes, and `:=` would run `go list` at PARSE time — in a worktree or on a fresh clone where the
+# toolchain or the module graph is not ready yet. Cost: one extra `go list` per gate run, ~0.2s warm.
+GO_LIST_ERR = $(shell $(GO) list ./... 2>&1 >/dev/null | head -3)
 PKGS = $(shell $(GO) list ./... 2>/dev/null | grep -v '/tmp/')
 
 BUF         := buf
 ATLAS       := atlas
 NPX         := npx
-DB_URL      ?= postgres://orchicon:orchicon@localhost:5432/orchicon?sslmode=disable
+
+# THE INSTANCE THIS CHECKOUT'S DATABASE TARGETS. One word picks it:
+# `make migrate instance=prod` uses prod's 5433, the default dev uses 5432. DB_URL
+# is DERIVED from it through scripts/instance-ports.sh db-url — the same per-instance
+# port table the launcher and `orchicon install` use — so the DSN and the bound
+# port cannot drift and two instances on one host never collide (AC4).
+#
+# IT IS EMPTY WHEN IT CANNOT BE DERIVED, AND THAT IS THE POINT. It first shipped with
+# a `|| echo <dev DSN>` fallback, which turned EVERY resolution failure into dev:
+# `make migrate instance=staging` (a typo, or an instance the table does not define)
+# printed no error and applied DEV's migrations to DEV's database, and
+# `make rls-check instance=staging` then gated dev — the exact collision AC4 exists to
+# prevent, reintroduced by a literal. So a failed resolution stays EMPTY and
+# db_url_required refuses with the reason. Export DB_URL yourself to target a database
+# this table does not describe.
+instance    ?= dev
+DB_URL      ?= $(shell scripts/instance-ports.sh db-url $(instance) 2>/dev/null)
+
+# THE REFUSAL THAT REPLACES THE FALLBACK. Every target that OPENS $(DB_URL) runs this
+# first, so "I do not know which instance you mean" is an error naming the instance and
+# the remedy instead of a silent dev default. One definition, so the message cannot
+# drift between migrate and rls-check.
+db_url_required = @test -n "$(DB_URL)" || { echo "cannot resolve DB_URL for instance '$(instance)': scripts/instance-ports.sh db-url refused it." >&2; echo "  Use instance=<dev|prod|test> (the per-instance port table), or set DB_URL explicitly." >&2; exit 1; }
+
+# ...BUT THE DEFAULT MUST NOT SILENCE THE TARGETS THAT REQUIRE A CHOICE.
+#
+# `instance ?= dev` is what makes `make run`/`migrate`/`services` work with no
+# argument (AC1), and it is a DEFAULT, not a decision. Two targets deliberately
+# REFUSE to run without an explicit instance — `instance-rebuild` and
+# `full-rebuild` (DESTRUCTIVE: they stop an instance, rebuild its binaries and
+# restart it) —
+# and they test it with `test -n "$(instance)"`. A `?=` default makes that test
+# see "dev" and pass, so `make full-rebuild` with no argument silently rebuilt
+# and restarted DEV instead of printing its usage line: the guard is dead.
+# That is not hypothetical drift, it is this variable's blast radius.
+#
+# `instance_given` is non-empty ONLY when the operator named the instance on the
+# command line or in the environment — `$(origin)` is `file` for this default.
+# The two guards test THIS, so a bare `make full-rebuild` refuses again while
+# `make full-rebuild instance=dev` (and the `rebuild-*` wrappers, which pass
+# `instance=` explicitly) still work.
+instance_given = $(filter command line environment override,$(origin instance))
 BIN_DIR     := bin
 
 # Git metadata injected into the binary via -ldflags (internal/version).
@@ -88,7 +162,12 @@ BUILD_DATE  := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 # embed an older version (a rebuild could report v0.1.181 for merged v0.1.183 code).
 # Recursive (`=` + `?=`) so the tag is resolved at recipe time, AFTER the fetch-tags
 # prerequisite has synced the local tags.
-VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
+# `--match 'v[0-9]*'` KEEPS A MOVING PRERELEASE TAG OUT OF THE VERSION. `git describe --tags` accepts ANY
+# tag, and with several lightweight tags on one commit the tie-break is LEXICAL — so on a commit the canary
+# build had tagged, `canary` beat `v0.5.45` and a local rebuild reported "orchicon canary" for a tree that
+# WAS v0.5.45. Releases are unaffected (CI takes the version from GITHUB_REF_NAME on a tag checkout); it
+# bites local rebuilds, which is where it was noticed. Keep this match on every describe call site.
+VERSION ?= $(shell git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo dev)
 LDFLAGS     = -X github.com/beardedparrott/orchicon/internal/version.gitCommit=$(GIT_COMMIT) \
                -X github.com/beardedparrott/orchicon/internal/version.gitTag=$(VERSION) \
                -X github.com/beardedparrott/orchicon/internal/version.buildDate=$(BUILD_DATE)
@@ -96,7 +175,11 @@ LDFLAGS     = -X github.com/beardedparrott/orchicon/internal/version.gitCommit=$
 # --- Help ------------------------------------------------------------------
 .PHONY: help
 help: ## Show available targets
-	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@# TARGET NAMES MAY CONTAIN DIGITS. The regex was [a-zA-Z_-]+, which silently dropped
+	@# every target with a number in it — install-ps1-test was in the file with its `##`
+	@# description and simply never printed, so the one list a developer trusts said the
+	@# target did not exist. `make help` must list what is there.
+	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  \033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 # --- Tooling ---------------------------------------------------------------
 # buf is pinned (version + SHA256) and installed into ./bin by `make tools`
@@ -120,6 +203,20 @@ BUF_BIN     = $(if $(wildcard $(BIN_DIR)/buf),$(BIN_DIR)/buf,buf)
 # A BUILD MUST NOT DEPEND ON THE OPERATOR'S SHELL PROFILE — the profile is a file like any other, and
 # this one was on the same filesystem an `rm` emptied. Prefer our own copies, then PATH.
 ATLAS_BIN   = $(if $(wildcard $(BIN_DIR)/atlas),$(BIN_DIR)/atlas,$(if $(wildcard $(DEV_TOOLS)/bin/atlas),$(DEV_TOOLS)/bin/atlas,atlas))
+
+# ENGINE is the container engine every hygiene/teardown recipe drives (docker or
+# podman). It resolves through scripts/lib/engine.sh — the ONE resolver the shell
+# libs also use — so `make clean-docker` and `scripts/orchicon.sh uninstall`
+# cannot disagree about which engine they are pruning with. The lib is SOURCED
+# (it defines a function, it is not an executable), so make dots it into one
+# POSIX shell and asks engine_cmd; `engine_available` is the same call. Recursive `=` on
+# purpose: it resolves per invocation, so a newly installed podman is picked up
+# without a fresh `make`. Empty when neither engine is installed, which
+# clean-docker treats as a LOUD SKIP (hygiene must not fail a build).
+# ORCHICON_ENGINE pins it (make ORCHICON_ENGINE=podman clean-docker, or the env var —
+# make does not put a command-line variable in $(shell)'s environment, so it is checked
+# as a make variable FIRST and the resolver second).
+ENGINE      = $(if $(ORCHICON_ENGINE),$(ORCHICON_ENGINE),$(shell . scripts/lib/engine.sh 2>/dev/null && engine_cmd))
 
 .PHONY: toolchain
 toolchain: ## Show the Go toolchain + env this Makefile will build with
@@ -183,12 +280,67 @@ build: fetch-tags fe-build ## Build the control-plane + TUI client binaries into
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon
 	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orch ./cmd/orch
+	@# THE LINUX CONTAINER BINARY, BESIDE THE BINARY THAT WILL MOUNT IT. A runtime container is Linux
+	@# and runs `orchicon runtime-supervisor`, so a daemon built on Windows or macOS needs a
+	@# linux/amd64 build to put in it — and the daemon looks beside its own executable first. Without
+	@# this, a locally built daemon refuses every container create while an installed one works, which
+	@# is a difference nobody would guess.
+	@if [ "$$(uname -s)" != "Linux" ]; then \
+	  echo "==> cross-compiling the linux container binary"; \
+	  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -ldflags "$(LDFLAGS)" \
+	    -o $(BIN_DIR)/orchicon-linux-amd64 ./cmd/orchicon; \
+	fi
 
-run: fetch-tags fe-build ## Run the control plane from source
+# run STARTS THIS INSTANCE'S LOCAL SERVICES FIRST (the `services` prerequisite),
+# so it works on a host with no container engine and no Postgres installed:
+# startHostServices re-execs this binary as `host-services`, which downloads the pinned
+# Postgres + NATS on first use (cmd/orchicon/binaries.go). The plane's OWN env is then
+# pointed at the instance
+# the services bound — the plane's config defaults are dev's 5432/4222
+# (internal/config/config.go), so without these exports `instance=prod` would
+# reach dev's database. ORCHICON_HTTP_ADDR is exported for the SAME reason, one
+# layer up: the config default is a WILDCARD `:8080` (dev's port) on EVERY
+# interface, so `instance=prod` would take dev's 8080 — the collision AC4
+# forbids — and expose the plane on the LAN. The launcher binds this instance's
+# own loopback port (scripts/lib/instances.sh's plane_env), and so does this.
+run: services fetch-tags fe-build ## Run the control plane from source (starts this instance's local services first)
+	ORCHICON_INSTANCE=$(instance) \
+	ORCHICON_DATA_DIR="$${ORCHICON_DATA_DIR:-$$HOME/.local/share/orchicon-$(instance)}" \
+	ORCHICON_HTTP_ADDR="127.0.0.1:$$(scripts/instance-ports.sh services-port $(instance) control)" \
+	ORCHICON_POSTGRES_DSN="$(DB_URL)" \
+	ORCHICON_NATS_URL="nats://localhost:$$(scripts/instance-ports.sh services-port $(instance) nats)" \
 	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon
 
-test: ## Run Go tests
-	@test -n "$(PKGS)" || { printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; exit 1; }
+# -p 1 WHEN A DATABASE IS IN PLAY. The DB-backed suites in internal/db, internal/scheduler and
+# internal/askorchicon all create and delete rows in the SHARED tnt_dev seed, so `go test` running those
+# packages CONCURRENTLY is two writers on one tenant: measured here as "current_version should follow the
+# promoted draft, got 4 want 3" in a package whose own run was clean. Package-level parallelism is worth
+# keeping for the 125 packages that touch no database, so it is disabled only when one is configured.
+TEST_PARALLEL := $(if $(strip $(ORCHICON_TEST_DSN)),-p 1,)
+
+test: ## Run Go tests (NEVER point ORCHICON_TEST_DSN at prod — see README §Testing)
+	@# A TEST MUST NEVER RUN AGAINST PRODUCTION, AND THIS WARNS BEFORE THE SUITES DO.
+	@#
+	@# THE INCIDENT. A `go test ./...` run from a shell with a live prod plane in it wrote ~125 test
+	@# projects into the deployment tenant and created 281 throwaway test tenants in a live instance —
+	@# because ORCHICON_TEST_DSN was pointed at the same prod DSN the plane was using. The suites create
+	@# real rows by design; nothing distinguished "a database" from "THIS database".
+	@#
+	@# The ENFORCEMENT is in the code (db.Open refuses a test binary opening the plane's own database —
+	@# internal/db/testguard.go), because a warning in a build log is missed and a failing test is not.
+	@# This is the EARLY, LOUD version: it prints before the suites run, so the operator can stop rather
+	@# than read it after the damage.
+	@#
+	@# It only warns — it cannot refuse — because make cannot know which database a DSN names: a mismatch
+	@# between the two variables here is a real signal, but the same DSN pointing at a legitimately restored
+	@# scratch clone is a deliberate act. Naming it plainly is the useful half.
+	@if [ -n "$$ORCHICON_TEST_DSN" ] && [ -n "$$ORCHICON_POSTGRES_DSN" ] && [ "$$ORCHICON_TEST_DSN" = "$$ORCHICON_POSTGRES_DSN" ]; then \
+		printf '\n*** ORCHICON_TEST_DSN IS THE SAME AS ORCHICON_POSTGRES_DSN ***\n'; \
+		printf 'Tests that open that database will write TEST DATA into the instance the plane is USING.\n'; \
+		printf 'db.Open will refuse it unless ORCHICON_TEST_ALLOW_PROD=1. Point it at the DEV instance\n'; \
+		printf '(the services container on 5432), not at the plane on 5433. See README, section Testing.\n\n'; \
+	fi
+	@test -n "$(PKGS)" || { if printf '%s\n' "$(GO_LIST_ERR)" | grep -q .; then printf 'ERROR: `go list ./...` FAILED — the local gate cannot run. This is NOT the empty-match case: tmp/ exclusion is not the cause, and the packages were never the problem.\n\n%s\n\nFix the cause above (a module cache or foreign module left in the repo scratch dirs is the usual one), then re-run.\n' "$(GO_LIST_ERR)" >&2; else printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; fi; exit 1; }
 	@# A TEST MUST NEVER TOUCH THE DEVELOPER'S REAL CONFIG.
 	@#
 	@# One did: TestThemeCommand drives `/theme light` then `/theme dark`, and SetTheme persists the
@@ -201,25 +353,30 @@ test: ## Run Go tests
 	@# exported into each test binary so there is no per-package opt-in to forget.
 	@#
 	@# A TEST MUST ALSO NEVER INHERIT THE OPERATOR'S LIVE PLANE. The same reasoning, one layer up: a
-	@# shell that launched a host plane carries that plane's configuration (scripts/container.sh
+	@# shell that launched a host plane carries that plane's configuration (scripts/lib/instances.sh's plane_env
 	@# exports ORCHICON_SERVE_STATE_DIR, ORCHICON_GUARD_POLICY, ...), and a test that EXECS a
-	@# subprocess hands the whole ambient environment to it. Four packages failed on the operator's
+	@# subprocess hands the whole ambient environment to it. Five packages failed on the operator's
 	@# machine and none in CI for exactly that reason — cmd/orchicon (the serve state paths resolved
 	@# to the LIVE instance), internal/guard + internal/runtime (the shim ran the interactive profile
 	@# where the tests assert the worker one), internal/claude (Ask's shim refused differently than
-	@# the docs say).
+	@# the docs say), internal/orchicon (the model registry resolved the LIVE plane's cache).
 	@#
 	@# The list is testfixtures.AmbientConfigEnv, and each affected package unsets it in its own
 	@# `init` (so a bare `go test ./...` works too, and a test written later cannot forget). It is
 	@# cleared here as well so anything running under `make` matches CI even in a package that has no
 	@# isolate file yet. It is NOT env -i: the opt-in variables (ORCHICON_TEST_DSN,
 	@# ORCHICON_SKIP_NETWORK_TESTS, ORCHICON_LIVE_*) are deliberately left reachable.
+	@# SERVICES ARE DELIBERATELY NOT A PREREQUISITE OF test, and ORCHICON_SERVICE_RESIDENCY is
+	@# deliberately NOT in the unset list below. CI runs this after `container up` against the container
+	@# DB, so starting host services here would double-bind 5432; and a developer's inner-loop services
+	@# (make services) must stay reachable, which is what the opt-in variables are for. The isolation
+	@# that matters — config, live plane, guard — is unchanged.
 	@for v in ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_ONCE ORCHICON_GUARD_PROJECT \
-	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR; do unset "$$v"; done; \
-	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test $(PKGS)
+	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR ORCHICON_DATA_DIR; do unset "$$v"; done; \
+	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test $(TEST_PARALLEL) $(PKGS)
 
 vet: ## Run go vet
-	@test -n "$(PKGS)" || { printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; exit 1; }
+	@test -n "$(PKGS)" || { if printf '%s\n' "$(GO_LIST_ERR)" | grep -q .; then printf 'ERROR: `go list ./...` FAILED — the local gate cannot run. This is NOT the empty-match case: tmp/ exclusion is not the cause, and the packages were never the problem.\n\n%s\n\nFix the cause above (a module cache or foreign module left in the repo scratch dirs is the usual one), then re-run.\n' "$(GO_LIST_ERR)" >&2; else printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; fi; exit 1; }
 	$(GO) vet $(PKGS)
 
 tidy: ## Run go mod tidy
@@ -231,18 +388,22 @@ tidy: ## Run go mod tidy
 # the entries the next build actually wants. Run `clean` when the cache is corrupt, or when
 # you want a guaranteed-cold build (timings, or a suspected bad cache entry). It does NOT
 # touch the DB, container images, or any runtime data.
-.PHONY: clean cache-check cache-trim cache-trim-test
+.PHONY: e2e-adapters clean cache-check cache-trim cache-trim-test cleanup cleanup-apply
 clean: ## Remove local build artifacts and the ENTIRE Go build cache (dev hygiene; see cache-trim)
 	$(GO) clean -cache -testcache
 	@command -v $(GO) >/dev/null 2>&1 && go clean -modcache 2>/dev/null || true
 	@rm -f $(BIN_DIR)/orchicon
 	@rm -f $(BIN_DIR)/orch
-	# Stale copies of the binary dropped into the container/runtime build
-	# contexts by older scripts. The runtime image no longer bakes the
-	# binary (the daemon bind-mounts its own executable), so a leftover
-	# deploy/runtime/orchicon would only bloat the build context -- remove
-	# both here so a heavy dev session never leaves them behind.
-	@rm -f deploy/container/orchicon deploy/runtime/orchicon
+	@rm -f $(BIN_DIR)/atlas-ci
+	@# Stale copies of the binary that the hand-build recipe drops into a build
+	@# context (`cp bin/orchicon deploy/<context>/` -- ARCHITECTURE.md's "build
+	@# the image by hand" steps). ONE context is left (`deploy/runtime/`), and its
+	@# Dockerfile does not bake the binary (the daemon bind-mounts its own
+	@# executable), so a leftover copy would only bloat that context -- removed
+	@# here so a heavy dev session never leaves one behind. Only `orchicon` is
+	@# ever copied in -- the TUI client (bin/orch) is not -- so there is no second
+	@# name to sweep.
+	@rm -f deploy/runtime/orchicon
 
 # cache-trim bounds the Go build cache by SIZE, evicting the coldest entries first.
 #
@@ -264,6 +425,16 @@ clean: ## Remove local build artifacts and the ENTIRE Go build cache (dev hygien
 # updates on reuse), with a grace window so a build running concurrently is never truncated.
 cache-trim: ## Bound the Go build cache by size, evicting coldest-first (a no-op when under cap)
 	@scripts/gocache-trim.sh "$(GOCACHE)" --cap-mb "$(CACHE_CAP_MB)" $(if $(filter 1,$(cache_dry)),--dry-run,)
+
+# cleanup reclaims the disk Orchicon's CACHES AND LEFTOVERS hold: go caches, leaked worktrees, rotated
+# logs, tmp/. It removes nothing that does not regenerate from a build or the network — no containers,
+# no telemetry stores, no transcripts, no backups, no instance data. REPORT-ONLY by default, because
+# the categories it does touch include a worktree's unpushed branch, whose loss is not recoverable.
+cleanup: ## Report the disk Orchicon's caches and leftovers hold (nothing is deleted)
+	@scripts/orchicon-cleanup.sh
+
+cleanup-apply: ## Reclaim caches and leftovers (go caches, leaked worktrees, logs, scratch)
+	@scripts/orchicon-cleanup.sh --all --apply
 
 # CACHE_CAP_MB is the ceiling `make cache-trim` enforces. 20 GiB is a little over the working set of
 # an active dev loop on this repo (its hot native entries measured ~17 GB over 30h), so a healthy
@@ -294,7 +465,14 @@ cache-check: ## Show the Go build cache size against the trim cap
 	  echo "within cap"; \
 	fi
 
-# clean-docker reclaims disk from ORCHICON's own Docker build leftovers, and nothing else.
+# clean-docker reclaims disk from ORCHICON's own container-engine build leftovers, and nothing else.
+#
+# IT IS ENGINE-AWARE, NOT ENGINE-LOYAL. Every recipe line below drives $(ENGINE)
+# (docker or podman, resolved by scripts/lib/engine.sh) because this project now
+# runs on either. Podman's `container prune`/`image prune` are the same operations
+# with the same filters, so the scoping story is unchanged -- but it has to be
+# re-stated for podman, because the incident below is not a docker bug: it is a
+# property of HOST-WIDE prunes, and podman has them too.
 #
 # EVERY PRUNE HERE IS SCOPED TO WHAT THIS PROJECT OWNS, which the first version of this target was
 # not. It ran `docker container prune -f` and `docker volume prune -f` — both HOST-WIDE. On a machine
@@ -314,16 +492,36 @@ cache-check: ## Show the Go build cache size against the trim cap
 #   volumes     GONE, deliberately. There is no filter that makes this ours: we create no labelled
 #               volumes, so any predicate would be a guess about someone else's data. An operator who
 #               wants a host-wide volume prune can run it themselves, knowing what it does.
+#
+# PODMAN'S `volume prune` IS THE SAME HOST-WIDE OPERATION with the same absence of an ownership
+# filter, so the refusal applies to both engines and is not a docker-only scruple. Do not "fix" this
+# by adding a label filter to the volume prune: we do not label the volumes we create, so such a
+# filter would either match nothing (a lie that looks like a fix) or match someone else's volume by
+# accident. The one engine-level asymmetry worth knowing: podman also keeps build-cache and pod
+# namespaces, and pruning those is likewise host-wide -- so they are not pruned here either.
 .PHONY: clean-docker
-clean-docker: ## Prune Orchicon's dangling images and stopped containers (never volumes)
-	@docker image prune -f --filter "dangling=true"
-	@docker container prune -f --filter "label=orchicon-instance"
+clean-docker: ## Prune Orchicon's dangling images and stopped containers, never volumes (docker or podman)
+	@test -n "$(ENGINE)" || { echo "==> no container engine found (docker/podman) — nothing to prune"; exit 0; }
+	@$(ENGINE) image prune -f --filter "dangling=true"
+	@$(ENGINE) container prune -f --filter "label=orchicon-instance"
 
 # --- Database --------------------------------------------------------------
 .PHONY: migrate migrate-diff migrate-hash rls-check synth-data
-migrate: ## Apply pending Atlas migrations to $$DB_URL
-	@command -v $(ATLAS_BIN) >/dev/null 2>&1 || curl -sSfL https://atlasgo.sh | sh
-	cd db && $(ATLAS_BIN) migrate apply --env local --url "$(DB_URL)"
+# APPLIED BY THE REPO'S OWN ENGINE, NOT THE ATLAS CLI. internal/migrate over the embedded
+# db/migrations is what the plane applies on boot and what CI applies (tools/atlas-ci), so
+# `make migrate` cannot disagree with either - the DSN resolved above is the only variable.
+# The CLI path could not read this directory AT ALL: Atlas rejects the paired *_down.sql as a
+# duplicate migration version, with the exact CLI the dev image installs (`curl -sSfL
+# https://atlasgo.sh | sh`). It also wanted a network install and a matching CLI build, neither
+# of which an offline, container-less inner loop has. migrate-diff / migrate-hash still use the
+# CLI: they GENERATE and HASH the directory, which the Go engine deliberately does not do.
+# BUILT, THEN RUN. `go run` would do the same compile, but its throwaway binary lands in the
+# shared Go build cache, which some sandboxes refuse to exec from; bin/ is this repo's
+# own artifact dir (gitignored) and `make clean` owns it.
+migrate: ## Apply pending Atlas migrations to $$DB_URL (instance=<dev|prod|test> picks the instance)
+	$(db_url_required)
+	@$(GO) build -o $(BIN_DIR)/atlas-ci ./tools/atlas-ci
+	DB_URL="$(DB_URL)" $(BIN_DIR)/atlas-ci
 
 migrate-diff: ## Generate a new migration from db/schema.hcl (usage: make migrate-diff name=foo)
 	@test -n "$(name)" || { echo "usage: make migrate-diff name=<migration_name>"; exit 1; }
@@ -334,10 +532,51 @@ migrate-hash: ## Recompute the Atlas migration directory hash (after hand-edits)
 	cd db && $(ATLAS_BIN) migrate hash --dir "file://migrations"
 
 rls-check: ## CI gate: every tenant_id table must have the RLS policy (docs/09 §8.5)
-	scripts/check-rls.sh "$(DB_URL)"
+	@# ORCHICON_INSTANCE travels WITH the DSN: check-rls.sh resolves the instance's OWN
+	@# downloaded psql from it, so `rls-check instance=prod` must not read dev's record.
+	$(db_url_required)
+	ORCHICON_INSTANCE=$(instance) scripts/check-rls.sh "$(DB_URL)"
+
+# --- Local services (the de-containerized inner loop) ----------------------
+#
+# On a host with NO container engine these are the backend `make run` and
+# `make migrate` talk to. `orchicon services up` reuses the SAME host-services
+# supervisor the installer uses (startHostServices → `orchicon container` with
+# ORCHICON_SERVICE_RESIDENCY=host), so there is one implementation of "run the
+# services as this user's processes". Only `run` depends on it: `migrate` and
+# `rls-check` run in CI AFTER `container up` against the container DB, so a
+# `services` prerequisite there would double-bind 5432.
+.PHONY: services services-down services-status
+services: ## Start this instance's local Postgres + NATS on the host (no container engine needed)
+	ORCHICON_TELEMETRY=none $(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon services up $(instance)
+
+services-down: ## Stop this instance's local services and verify the ports are free
+	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon services down $(instance)
+
+services-status: ## Show this instance's local services state and its DSN
+	$(GO) run -ldflags "$(LDFLAGS)" ./cmd/orchicon services status $(instance)
+
+# The adapter/mode matrix, run against a LIVE instance. Setup-only by default: it creates a
+# throwaway project, one worker per adapter and the six-task epic, then cleans up.
+#   make e2e-adapters ARGS="-local-only"                      # no containers (cloud Mac)
+#   make e2e-adapters ARGS="-claude-model claude/anthropic/claude-sonnet-4 -dispatch"
+#
+# A CONVENIENCE WRAPPER over `orchicon e2e`, which is the real surface: an INSTALLED copy has the
+# subcommand and needs no Makefile or Go toolchain, which is the only thing that works on Windows.
+e2e-adapters: ## Adapter/mode matrix against a live instance (ARGS pass through)
+	$(GO) run ./cmd/orchicon e2e $(ARGS)
 
 synth-data: ## CI gate: no synthesized data planes in non-test source (ADR-0010)
 	scripts/check_no_synth_data.sh
+
+no-operator-paths: ## CI gate: no real person's home directory in any tracked file (code, comments, docs, fixtures)
+	scripts/check_no_operator_paths.sh
+
+# A RELEASE IS THE ONE BUILD WHOSE SOURCE MUST BE EXACT. Building from a dirty tree stamps vcs.modified=true,
+# so the binary at commit X does not contain commit X — bug reports cite a revision that lacks the code under
+# test and git bisect cannot work. This refuses rather than warns; see the script's header for the full case.
+release-src-check: ## Refuse a release from a dirty tree (pass tag= to also require HEAD == that tag)
+	scripts/check_release_source_clean.sh $(tag)
 
 adapter-bake-guard: ## CI gate: adapter CLIs are MOUNTED, never baked into image layers (ADR-0003/0005)
 	go test ./internal/runtime/ -run 'TestAdapterCLINeverBaked' -count=1 -v
@@ -349,56 +588,52 @@ adapter-bake-guard: ## CI gate: adapter CLIs are MOUNTED, never baked into image
 cache-trim-test: ## CI gate: assert the Go cache trim's eviction semantics and its refusals
 	bash scripts/tests/gocache-trim/run.sh
 
-# disk-report answers a question `df` structurally cannot: how much of the filesystem is held by
-# SNAPSHOTS rather than by live files. The two disagree by design, and the gap is invisible —
-# deleting files frees nothing while a snapshot still references the extents. Measured on this
-# machine: 65.6 GB deleted against 7.0 GB freed, with ~58 GB of it sitting in a snapshot, and
-# 343 GiB (67% of all data in use) pinned in total. That is what this reports.
-#
-# WHY IT NEEDS ITS OWN TARGET. Every other hygiene target here measures FILES. This one measures
-# the space where files are not — which is why `du` and `df` both looked healthy while the disk
-# sat at 93%. It is a HOST DIAGNOSTIC, so it describes the machine it runs on and is deliberately
-# never called from CI. disk-report-test is the part that IS a gate: it fakes the inputs and
-# pins the subtraction, because a report that overstates the pinned figure argues the wrong way
-# at exactly the moment someone is deciding whether to delete a snapshot.
-DISK_REPORT_TARGET ?=
-.PHONY: disk-report disk-report-test
-disk-report: ## Report how much of the filesystem is held by btrfs snapshots, not live files
-	@scripts/disk-report.sh $(DISK_REPORT_TARGET)
-
-disk-report-test: ## CI gate: assert disk-report's subtraction, its bounds, and its exit codes
-	bash scripts/tests/disk-report/run.sh
 # install-ps1-test pins the Windows installer's two invisibles, both of which are silent
 # by construction: it must never call `exit` (under `irm … | iex` the file's text runs in
 # the operator's OWN session, so an exit closes the window and takes the diagnosis with
 # it) and its long or interactive steps must STREAM rather than capture (a captured step
 # is indistinguishable from a hang, and a captured PROMPT blocks for ever).
 #
-# It needs pwsh + iconv and no Windows at all: a wsl.exe double carries the contract, and
-# the failure paths are run inside a child pwsh. PWSH=/path/to/pwsh overrides the lookup.
+# It needs pwsh + iconv + python3 and no Windows at all: a wsl.exe double and a release-archive
+# double carry the contract, and the WHOLE install path runs inside a child pwsh. That archive
+# double's orchicon.exe is behind a deny-list that now covers podman as well as docker — a real
+# install started from a test mutates the operator's machine AND is indistinguishable from a hang,
+# so it must be impossible rather than unlikely. New assertions: a plain install never invokes wsl
+# (WSL2 is provisioned only for -Containers), the setup is told when a human is present
+# (ORCHICON_INSTALL_INTERACTIVE=1) and when not (-Yes), and the ports printed are the RECORDED ones
+# rather than a constant. PWSH=/path/to/pwsh overrides the lookup.
 # This is pwsh 7, NOT Windows PowerShell 5.1 — the 5.1-only behaviours it must avoid (the
 # `2>&1` ErrorRecord trap) are documented in the installer's source instead.
 .PHONY: install-ps1-test
-install-ps1-test: ## CI gate: the Windows installer never closes the session, and streams
+install-ps1-test: ## CI gate: the Windows installer is native, never closes the session, and streams
 	PWSH="$${PWSH:-$$(command -v pwsh || ls -d .dev/tools/pwsh/*/pwsh 2>/dev/null | head -1)}" \
-		bash scripts/tests/install-ps1-wsl-encoding/run.sh
+		bash scripts/tests/install-ps1-native/run.sh
 
 # install-path-test RUNS THE REAL INSTALLER against a real artifact: scripts/tests/install-path
 # packages a build in the release's exact asset shape, serves it over HTTP, and runs scripts/install.sh
 # against it end to end. It needs no network, no Docker and no release — which is the point, because the
 # install path was previously exercised only by a user, and a broken installer reached two published
-# releases that way. It covers the POSIX installer; install.ps1's WSL path needs a Windows runner (its
-# offline behaviour is covered by install-ps1-test).
-install-path-test: ## Run the real installer against a locally-served artifact, and the uninstall verbs against a stubbed docker
+# releases that way. It covers the POSIX installer; install.ps1's NATIVE path is covered offline by
+# install-ps1-test (a real zip, a real child process); only the container opt-in needs a Windows runner.
+install-path-test: ## Run the real installer against a locally-served artifact, and the uninstall verbs against redirected state and stubbed engines
 	bash scripts/tests/install-path/run.sh
+	bash scripts/tests/install-path/run.sh --os darwin
 	bash scripts/tests/install-path/uninstall.sh
 
-# host-residency-test guards the LAUNCH SHAPE of an instance: which of the two residencies a plain
-# `up` produces, that each instance's ports and plane URL are its own (a shared value points one
-# instance's workers at another's database), and that the host plane's two listeners cannot collide.
+# host-residency-test guards the LAUNCH SHAPE of an instance: the plane and its services ARE host
+# processes (there is no container shape to choose), each instance's ports and plane URL are its own
+# (a shared value points one instance's workers at another's database), and the host plane's two
+# listeners cannot collide.
 #
-# IT IS DOCKER-FREE, which is why it belongs in this gate rather than behind a container job: it
-# resolves shapes through container.sh's own functions with a stubbed log and no engine.
+# IT GUARDS TWO HALVES AND NO LONGER A SECOND IMPLEMENTATION. The shell half drives the per-instance
+# table (scripts/lib/instances.sh: instance_info, plane_env, bridge_bind_env) with the bridge PINNED
+# (ORCHICON_DOCKER_BRIDGE_IP) rather than discovered, and asserts the ONE-SHAPE rule: scripts/container.sh
+# is gone, and no shell or Makefile path can select a container residency any more. The GO half drives
+# `go test ./cmd/orchicon` against install_host.go -- the implementation that actually ships, since a
+# curl-installed host has no .sh launcher behind the binary.
+#
+# IT IS ENGINE-FREE, which is why it belongs in this gate rather than behind a container job: nothing in
+# it starts a container, and the Go half asserts the no-engine shape explicitly.
 #
 # IT IS ALSO THE HARNESS THAT WOULD HAVE CAUGHT 5cc8039c'S FALLOUT. That commit deliberately changed
 # the default residency and did not update this harness, which then failed for weeks — unnoticed,
@@ -411,6 +646,78 @@ install-path-test: ## Run the real installer against a locally-served artifact, 
 host-residency-test: ## CI gate: the instance launch shape (residency default, per-instance ports, plane binds)
 	bash scripts/tests/host-residency/run.sh
 
+# orchicon-cli-test is the gate for scripts/orchicon.sh — the command a developer
+# runs every day. It needs no container engine, no database and no running plane:
+# every delegation is asserted against stub binaries on PATH, so it runs anywhere
+# CI runs. It covers what the script alone can get wrong — a truncated `help` (the
+# usage block used to be a positional slice of the file's own header), a verb that
+# stops reaching the CLI's shared control surface, a `status` that reports health it
+# never verified, two instances that stop sharing nothing, a rebuild whose warning
+# about not running the tests goes missing, and any surviving reference to the
+# retired container launcher.
+.PHONY: orchicon-cli-test
+orchicon-cli-test: ## CI gate: scripts/orchicon.sh (verbs, help completeness, delegation, honest status)
+	bash scripts/tests/orchicon-cli/run.sh
+
+# local-services-test pins the INNER LOOP: that DB_URL is DERIVED per instance,
+# that the pure query verbs honour overrides, that `services` is a prerequisite
+# of `run` alone, and that the `test` isolation contract is unbroken. Offline —
+# no Docker and no database.
+.PHONY: local-services-test
+local-services-test: ## CI gate: the local-services inner loop (derived DB_URL, per-instance ports, help rows)
+	bash scripts/tests/local-services/run.sh
+
+# no-engine-e2e-assertions-test pins the acceptance harness's OWN HONESTY: an
+# assertion that reads a captured file can never PASS on an empty capture (that
+# is how AC3 was once reported verified on a plane serving no UI at all). Offline
+# — it sources the harness's functions and touches no engine, port or database.
+.PHONY: no-engine-e2e-assertions-test
+no-engine-e2e-assertions-test: ## CI gate: the no-engine acceptance harness never PASSes on an empty capture
+	bash scripts/tests/no-engine-e2e-assertions/run.sh
+
+# desktop-e2e-assertions-test pins the PACKAGED-DESKTOP acceptance harness's own
+# honesty: an EMPTY capture can never produce a PASS. It runs offline — no app, no
+# plane, no display — against the harness's own sourced functions and fixtures.
+.PHONY: desktop-e2e-assertions-test
+desktop-e2e-assertions-test: ## CI gate: the desktop acceptance harness never PASSes on an empty capture
+	bash scripts/tests/desktop-e2e-assertions/run.sh
+
+# runtime-e2e-assertions-test pins the RUNTIME-CONTAINER acceptance harness's own
+# honesty. That procedure is ABSENCE-SHAPED ("no container was created", "the gate
+# rejected it", "the pooled container was reused"), and every one of those is
+# trivially true of a `podman ps` that failed to run — so an ungated assertion
+# would manufacture the very blindness the feature removes. Offline: it sources
+# the harness's functions and touches no engine, port or database.
+.PHONY: runtime-e2e-assertions-test
+runtime-e2e-assertions-test: ## CI gate: the runtime-container acceptance harness never PASSes on an empty capture
+	bash scripts/tests/runtime-e2e-assertions/run.sh
+
+# plane-control-e2e-assertions-test pins the PLANE-CONTROL acceptance harness's own
+# honesty. Its verdicts are absence-shaped too: "the connection was REFUSED", "every
+# port is free", "the plane was left alone", "the status does not say drifted" — all
+# trivially true of a probe that failed to run, and all of them the difference between
+# a Stop that worked and a Stop nobody verified. Offline: it sources the harness and
+# drives it against a throwaway python3 HTTP fixture and the real /proc socket table,
+# so it touches no Orchicon plane, instance, port or database.
+.PHONY: plane-control-e2e-assertions-test
+plane-control-e2e-assertions-test: ## CI gate: the plane-control acceptance harness never PASSes on a refused/empty probe
+	bash scripts/tests/plane-control-e2e-assertions/run.sh
+
+# published-archive-e2e-assertions-test pins the PUBLISHED-ARCHIVE acceptance harness's
+# own honesty. Its verdicts are IDENTITY- and ABSENCE-shaped: "this artifact IS the
+# version under test", "no engine was invoked", "the install asked nothing" — every one
+# of them trivially true of a probe that failed to run. Offline: it sources the harness,
+# runs the engine shims for real, and measures a fixture tree with the footprint tool.
+# No release is downloaded, no plane starts, no port is bound, no database is touched.
+.PHONY: published-archive-e2e-assertions-test
+published-archive-e2e-assertions-test: ## CI gate: the published-archive acceptance harness never PASSes on an empty/unverified probe
+	bash scripts/tests/published-archive-e2e-assertions/run.sh
+
+# The MEASUREMENT the epic's "under 1 GB" claim is checked with — measured, not derived.
+.PHONY: published-archive-e2e-footprint
+published-archive-e2e-footprint: ## Measure an install's footprint (binaries + host services + instance data, excl. projects/runtime images)
+	bash scripts/e2e/footprint.sh $(if $(INSTANCE),--instance $(INSTANCE),) $(FOOTPRINT_ARGS)
+
 # --- Frontend --------------------------------------------------------------
 .PHONY: fe-install fe-dev fe-build fe-lint fe-test docs-check site-check
 fe-install: ## Install frontend dependencies
@@ -422,12 +729,17 @@ fe-dev: ## Start the Vite dev server
 # fe-build rebuilds the production bundle only when the frontend source is
 # newer than the existing dist — repeated `make build` stays fast while any
 # frontend edit is guaranteed to land in the next binary. Set force-fe=1 to
-# ALWAYS rebuild (used by container-rebuild so a rebuilt instance is
+# ALWAYS rebuild (used by instance-rebuild so a rebuilt instance is
 # guaranteed to reflect the current source — the stamp check silently ships a
 # stale dist when the working tree is older than the last build, which is how
 # frontend fixes have repeatedly gone "invisible after a rebuild").
 force-fe ?= 0
+# THE DEPENDENCY CHECK RUNS FIRST, because a broken `frontend/node_modules` used to surface as
+# `make[2]: *** [Makefile:707: fe-build] Error 216` — an exit code with no cause attached. The real cause
+# was a symlink pointing at ITSELF, so every path under it failed with ELOOP and `tsc -b` died.
+# scripts/dev/fe-deps.sh diagnoses that precisely, and repairs it; on a healthy tree it is silent.
 fe-build: ## Build the frontend for production (skipped when dist is up to date; force-fe=1 to always rebuild)
+	@./scripts/dev/fe-deps.sh
 	@if [ "$(force-fe)" = "1" ] || { [ ! -f frontend/dist/index.html ] || find frontend/src frontend/index.html frontend/vite.config.ts frontend/tailwind.config.js frontend/postcss.config.js frontend/components.json -newer frontend/dist/index.html -print -quit 2>/dev/null | grep -q . ; }; then \
 		echo "==> building frontend bundle"; \
 		cd frontend && npm run build; \
@@ -441,6 +753,177 @@ fe-lint: ## Lint the frontend
 fe-test: ## Run frontend unit/component tests (vitest; Playwright specs live under test:snapshots/test:a11y/test:scope)
 	cd frontend && npm test
 
+# fe-typecheck is the ONLY thing that typechecks the frontend, and it exists because
+# nothing did. `fe-lint` is eslint (it has no type information) and `fe-test` is vitest
+# (transpile-only: types are erased), so a reference to a member that does not exist
+# lints clean and tests clean. The only other place `tsc -b` ran was `npm run build`,
+# which no gate invoked — so a type error could only ever be discovered by whoever next
+# ran `make build`, i.e. the first developer to try a rebuild.
+#
+# THAT IS EXACTLY WHAT HAPPENED. #736 shipped two calls to
+# RuntimeImageStatus.RUNTIME_IMAGE_STATUS_ABSENT — the generated TS member is `ABSENT`,
+# because protoc-gen-es strips the enum-name prefix — onto develop. Every one of the
+# seven CI checks stayed green while `make build` (and therefore `make rebuild-dev`) was
+# broken for everyone, on a clean checkout.
+#
+# IT IS SEPARATE FROM fe-build ON PURPOSE: both tsconfigs are noEmit and the build info
+# goes to node_modules/.tmp, so this emits no bundle, does not touch frontend/dist, and
+# leaves the working tree clean — which is what makes it safe to put in the gate.
+fe-typecheck: ## CI gate: typecheck the frontend (tsc -b) — the only gate that can see a type error
+	cd frontend && npm run typecheck
+
+# --- Desktop app -----------------------------------------------------------
+# THE DESKTOP APP IS NOT PART OF CROSS_PLATFORMS. It is CGO + a native webview
+# (WebKitGTK/WKWebView/WebView2), so it cannot go in the CGO_ENABLED=0
+# cross-compile loop — that loop would fail, and folding it in would break
+# `make cross-compile` for everyone. Each OS builds its own binary on its own
+# runner in .github/workflows/release.yml.
+.PHONY: desktop-deps desktop-build desktop-build-if-possible desktop-test desktop-test-live
+desktop-deps: ## Print the host prerequisites for building the desktop app (wails CLI + webkit2gtk)
+	@echo "desktop app prerequisites:"
+	@echo "  Go toolchain (go.mod's version), Node 22+, CGO enabled"
+	@echo "  Linux:   libgtk-3-dev libwebkit2gtk-4.1-dev   (apt-get install ...)"
+	@echo "           the 4.1 ABI needs the webkit2_41 BUILD TAG (desktop-build sets it);"
+	@echo "           only an old distro with libwebkit2gtk-4.0-dev drops it"
+	@echo "  macOS:   Xcode command line tools (WKWebView is part of the OS)"
+	@echo "  Windows: WebView2 runtime + gcc (either 32/64-bit match, per Wails docs)"
+	@echo "  wails CLI: go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0"
+
+# desktop-build builds the app for THIS OS only. The frontend build comes FIRST
+# because `//go:embed all:frontend/dist` matches the tracked .gitkeep when the
+# bundle has not been built: a misordered build compiles perfectly and opens an
+# empty window.
+# THE WEBKITGTK ABI IS A PROPERTY OF THE BUILD HOST, NOT OF THE PROJECT — so it is
+# DETECTED here and NOT baked into wails.json. Wails selects the ABI with a build tag,
+# and the tag decides which pkg-config file cgo demands:
+#
+#	#cgo !webkit2_41 pkg-config: webkit2gtk-4.0
+#	#cgo  webkit2_41 pkg-config: webkit2gtk-4.1
+#
+# A host has whichever its distro ships: current releases ship 4.1, while Ubuntu 22.04
+# and Debian 12 ship only 4.0. Putting the tag in wails.json (which every `wails build`
+# inherits) therefore forced 4.1 into the .deb job running on ubuntu-22.04, where
+# libwebkit2gtk-4.1-dev does not exist — the release would have failed to build. Putting
+# it here unconditionally is the mirror-image bug for a 22.04 developer. So: ask the host.
+# Inert on macOS (WKWebView) and Windows (WebView2), where there is no such tag.
+comma := ,
+WEBKIT_TAG := $(shell pkg-config --exists webkit2gtk-4.1 2>/dev/null && echo webkit2_41)
+DESKTOP_TAGS := orchicon_desktop,production$(if $(WEBKIT_TAG),$(comma)$(WEBKIT_TAG))
+
+desktop-build: fe-build ## Build the desktop app for THIS OS (CGO on; NOT part of cross-compile)
+	@# THE LDFLAGS ARE NOT DECORATION. Without them version.Current().Tag keeps its
+	@# "dev" placeholder, the shell's AppTag becomes "dev", and the SPA's mismatch
+	@# banner fires against a REAL plane ("this window's UI is dev but the plane is
+	@# v0.5.104") on a tree that matches it exactly. That banner is a genuine signal —
+	@# a UI from one tree talking to a plane from another may speak a different API —
+	@# so the fix is to stamp the build, never to silence the warning.
+	@#
+	@# `wails build` cannot inherit these (wails.json has no ldflags key), which is
+	@# exactly why this target is the one to use for the inner loop.
+	@printf '==> desktop tags: %s\n' '$(DESKTOP_TAGS)'
+	CGO_ENABLED=1 go build -tags $(DESKTOP_TAGS) -ldflags '$(LDFLAGS)' -o bin/orchicon-desktop ./cmd/orchicon-desktop
+
+# desktop-build-if-possible builds the desktop app WHEN THIS HOST CAN, and says why not when
+# it cannot — without failing the caller.
+#
+# WHY THE REBUILD CHAIN NEEDS THIS. Reported as three separate symptoms, and they were ONE
+# stale binary:
+#
+#   "On Linux, it doesn't have the nice server section separated" ... "It doesn't relaunch the
+#    desktop app when you switch instances" ... "the error/warning text is hard to see"
+#
+# All three had already been fixed on develop (f109d2235, 5e9f92490, 4533ef77a) and none of them
+# had reached the operator, because `make rebuild-dev` rebuilt bin/orchicon and bin/orch only.
+# The SPA is `go:embed`-ed at BUILD time (`//go:embed all:frontend/dist`), so the desktop binary
+# carries its own frozen copy of the UI: rebuilding the plane four times in a week left the app
+# from four days earlier still serving the old pages. Nothing failed. Nothing was even wrong.
+# The rebuild simply never touched the thing the operator was looking at.
+#
+# SO THE APP IS PART OF A REBUILD, the same way the plane and the TUI client are.
+#
+# BUT NOT UNCONDITIONALLY, and the reason is not politeness. desktop-build needs CGO, GTK and
+# WebKitGTK dev headers, and this chain also runs on headless servers and in CI containers where a
+# GUI can never launch. Making the rebuild FAIL there would trade one silent defect (a stale
+# window) for a loud one ("the rebuild I use every day no longer works on my build box"). So the
+# precondition is checked, the app is built when it is met, and when it is not the chain says so
+# ONCE and continues — the plane is still rebuilt, which is what those hosts actually run.
+#
+# THE SKIP IS PRINTED, NOT SWALLOWED. It used to be that the operator's only evidence of an
+# un-built app was a wrong page days later; a one-line "skipped" here is the difference between a
+# fact and a mystery.
+.PHONY: desktop-build-if-possible
+desktop-build-if-possible: ## Build the desktop app if this host can, else say why and continue
+	@# ONE SHELL, DELIBERATELY. Make runs each recipe line in its OWN shell, so an `exit 0` in a
+	@# separate line ends that line and NOT the recipe — make then happily runs the next line and
+	@# the guard protects nothing. Written as separate lines this target SKIPPED with the right
+	@# message and then invoked desktop-build anyway, which is how it was found. Everything below
+	@# is a single recipe line held together by backslashes, so `exit 0` really does stop it.
+	@#
+	@# THE SAME PRECONDITIONS desktop-build itself would demand, asked BEFORE invoking it, because
+	@# the failure mode being avoided is a cgo error buried inside a four-target rebuild.
+	@# `go env CGO_ENABLED` rather than a guess: it is 0 unless the toolchain and a C compiler are
+	@# usable. `pkg-config --exists` rather than `ldconfig`: cgo needs the DEV headers, and a host
+	@# with only the runtime library has the .so and not the .pc file.
+	@# Linux-only: WebView2 and WKWebView are part of Windows and macOS, so those hosts go straight
+	@# through.
+	@skip=""; \
+	if [ "$$(uname -s)" = "Linux" ]; then \
+		if [ "$$(go env CGO_ENABLED)" != "1" ]; then \
+			skip="cgo is disabled (CGO_ENABLED=0), so the GUI cannot be built here"; \
+		elif ! pkg-config --exists gtk+-3.0 2>/dev/null || \
+		     ! { pkg-config --exists webkit2gtk-4.1 2>/dev/null || pkg-config --exists webkit2gtk-4.0 2>/dev/null; }; then \
+			skip="this host has no GTK3/WebKitGTK dev headers"; \
+		fi; \
+	fi; \
+	if [ -n "$$skip" ]; then \
+		echo "==> desktop app: SKIPPED — $$skip"; \
+		echo "    install libgtk-3-dev + libwebkit2gtk-4.1-dev (see: make desktop-deps)"; \
+		echo "    the plane and the TUI were rebuilt; the desktop app keeps its previous UI."; \
+		exit 0; \
+	fi; \
+	$(MAKE) --no-print-directory desktop-build \
+		|| { echo "==> desktop app: the build FAILED (see above) — the plane and the TUI were rebuilt."; exit 0; }
+
+desktop-install: desktop-build ## Install the app for THIS USER: menu entry + taskbar icon (no root)
+	@# WHY THIS TARGET EXISTS, AND WHY IT IS ABOUT ICONS RATHER THAN CONVENIENCE.
+	@#
+	@# On Wayland the window's own icon does NOT reach the taskbar. Wails sets it with
+	@# gtk_window_set_icon, which is X11-only (it publishes _NET_WM_ICON) and is ignored by a
+	@# compositor. KDE resolves a task's icon as app_id -> .desktop -> Icon=; with no .desktop
+	@# installed, launching the binary straight from a terminal gives you a generic entry
+	@# whatever the binary embeds. That is the "still the yellow icon" report on a Wayland
+	@# session, and the fix is an installed .desktop + icon, not more work in main.go.
+	@#
+	@# The package installs both system-wide (deploy/desktop/nfpm.yaml); this does the same
+	@# thing for a DEV CHECKOUT, per user, with Exec pointing at THIS build — so the dev loop
+	@# gets the real icon without a .deb.
+	@test -x $(DESKTOP_PROJECT)/build/appicon.png || test -f $(DESKTOP_PROJECT)/build/appicon.png || \
+		{ echo "ERROR: $(DESKTOP_PROJECT)/build/appicon.png is missing"; exit 1; }
+	@mkdir -p "$(HOME)/.local/share/applications" "$(HOME)/.local/share/icons/hicolor/512x512/apps"
+	@sed -e 's|^Exec=.*|Exec=$(CURDIR)/bin/orchicon-desktop|' \
+	     -e 's|^TryExec=.*|TryExec=$(CURDIR)/bin/orchicon-desktop|' \
+	     deploy/desktop/linux/orchicon-desktop.desktop > "$(HOME)/.local/share/applications/orchicon-desktop.desktop"
+	@cp -f $(DESKTOP_PROJECT)/build/appicon.png "$(HOME)/.local/share/icons/hicolor/512x512/apps/orchicon-desktop.png"
+	@-gtk-update-icon-cache -f -t "$(HOME)/.local/share/icons/hicolor" >/dev/null 2>&1 || true
+	@-for k in kbuildsycoca6 kbuildsycoca5 update-desktop-database; do \
+		if command -v $$k >/dev/null 2>&1; then $$k >/dev/null 2>&1 || true; fi; \
+	done
+	@echo "==> installed $(HOME)/.local/share/applications/orchicon-desktop.desktop"
+	@echo "==> installed $(HOME)/.local/share/icons/hicolor/512x512/apps/orchicon-desktop.png"
+	@echo "    Launch from the menu (or the taskbar entry will pick the icon up) — a window"
+	@echo "    started from a shell still associates through the same app_id."
+
+desktop-test: ## CI gate: the desktop shell's guards (no webview needed)
+	go build ./internal/desktop/ ./internal/controlport/
+	go test ./internal/desktop/... ./internal/controlport/...
+	go vet ./internal/desktop/... ./internal/controlport/...
+
+# desktop-test-live is the TRANSPORT PROOF: unary + server-streaming RPCs through
+# the shell's own origin against a real plane. Skips loudly when the plane URL is
+# unset, so a unit run reports "not configured" rather than a false green.
+desktop-test-live: ## Transport proof through the shell origin against a REAL plane (set ORCHICON_DESKTOP_PLANE_URL)
+	go test -tags desktop_e2e ./internal/desktop/ -run 'TestLive' -v
+
 site-check: ## Assert the landing page's nav and version-stamp invariants
 	@# The landing page is served from a CDN and rendered by a browser, so a CSS or
 	@# markup defect in it has no other detector. This reads the committed page as
@@ -448,6 +931,23 @@ site-check: ## Assert the landing page's nav and version-stamp invariants
 	@# all inline, the footer version is a build-time stamp) — deliberately
 	@# dependency-free, because no browser can run in the CI container.
 	bash scripts/tests/site-nav-layout/run.sh
+
+# version-tag-match — every version resolution must restrict itself to version-shaped tags.
+#
+# `canary` is a real tag and it MOVES (the canary build re-points it at develop's tip), so a bare
+# `git describe --tags` can resolve a local rebuild's version to "canary" instead of the version it is —
+# observed as {"version":"canary"} from a tree whose content was v0.5.45. Releases are unaffected (CI takes
+# the version from GITHUB_REF_NAME on a tag checkout), which is exactly why nothing caught it: only local
+# rebuilds and the site/notes scripts ever resolve it this way.
+.PHONY: version-tag-match
+version-tag-match: ## Assert no version resolution accepts a moving tag (canary)
+	bash scripts/tests/version-tag-match/run.sh
+
+# The README digest is the repository front page. Its source prose is hard-wrapped, and the
+# renderer used to keep only the first line of each paragraph, cutting bullets mid-clause.
+.PHONY: release-notes-digest
+release-notes-digest: ## Assert every README release-digest bullet is a complete sentence
+	bash scripts/tests/release-notes-digest/run.sh
 
 docs-check: ## Validate every Mermaid diagram in the root docs with a real parser
 	@# The prefix is REUSED once installed, so a repeat run is instant rather than re-resolving the
@@ -464,61 +964,135 @@ docs-check: ## Validate every Mermaid diagram in the root docs with a real parse
 		ORCHICON_MERMAID_PREFIX="$(CURDIR)/.mermaid-check/node_modules" node scripts/check-mermaid.mjs; \
 	fi
 
-# --- Single container (deployment) -----------------------------------------
-# The single container is the only full-stack deployment (dev + prod as two
-# instances on offset ports). See scripts/container.sh.
-.PHONY: container-build container-rebuild container-up container-down container-status container-logs container-ps runtime-build runtime-daemon runtime-stop
-# Plane residency per rebuild: `host` (the container runs the SERVICES only and
-# the plane runs on the HOST — now the product's default shape; see
-# residency_for in scripts/container.sh, which resolves ${...:-host}) or
-# `container` (the plane runs inside the instance's container, as it did before
-# the host-residency migration).
+# --- Instances (host-resident dev loop) -------------------------------------
+# The control plane runs on THIS host; `scripts/orchicon.sh` starts, stops and
+# reports it (its verbs: start|stop|restart|status|logs). Nothing here builds a
+# container image, and nothing here talks to a container engine.
 #
-# HOST IS THE DEFAULT HERE TOO, matching the launcher and the product:
-# scripts/container.sh residency_for resolves ${...:-host}. This variable used to
-# be `container`, which made this target the ONE entry point still producing the
-# old shape — so `make container-rebuild instance=dev` silently gave a different
-# residency from `make rebuild-dev`, and from every fresh install. Pass
-# `residency=container` explicitly for the self-contained shape; that is the
-# documented rollback.
-residency = host
-container-build: ## Build bin/orchicon + the container image
+# THE SHAPE IS NO LONGER A CHOICE, SO IT IS NO LONGER A VARIABLE — and that is the
+# lesson kept from the `residency` variable this section used to carry. That
+# variable existed because ONE entry point (`container-rebuild`) shipped its own
+# default while every other path took the launcher's, so a single target silently
+# produced a different shape from a fresh install and from `make rebuild-dev`. A
+# per-target default that disagrees with the product default is not an option, it
+# is a divergence with a friendly name. If a future knob makes one path differ from
+# the rest, the path is the bug — fix the path, do not add the knob.
+#
+# The plane's per-instance listeners (loopback ORCHICON_HTTP_ADDR plus the
+# docker-bridge address at THIS instance's port, so runtime containers can dial
+# it) are computed in ONE place — the launcher — and are PER INSTANCE. Never put a
+# globally-shared ORCHICON_PLANE_PUBLIC_URL in a shell profile: a globally-set
+# value points one instance's workers at the other's plane. This file re-derives
+# none of it.
+#
+# Instance selection: `instance=dev` (the default) names which stack these targets
+# act on. `instance_given` is the narrower question "did the operator actually say
+# so", and only the DESTRUCTIVE targets ask it.
+.PHONY: instance-build instance-up instance-down instance-restart instance-status instance-logs instance-ps instance-rebuild desktop-build-if-possible
+
+# The launcher owns instance lifecycle; this file owns the Makefile concerns
+# (build, guards, the rebuild chain). Keeping that split means the launcher can be
+# rewritten — it is, to delegate to `orchicon instance` — without a Makefile edit.
+INSTANCE_SH := scripts/orchicon.sh
+
+instance-build: ## Build the binaries an instance runs (bin/orchicon + bin/orch)
 	$(MAKE) build
-	scripts/container.sh build
-runtime-build: ## Build the workflow runtime base image
-	$(MAKE) build
-	scripts/container.sh build
+
+instance-up: ## Start this instance on the host (services + plane; instance=dev default)
+	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — run 'make instance-build' first"; exit 1; }
+	@$(INSTANCE_SH) start $(instance)
+
+instance-down: ## Stop this instance on the host (plane and the services it started)
+	@$(INSTANCE_SH) stop $(instance)
+
+instance-restart: ## Restart this instance without rebuilding anything
+	@$(INSTANCE_SH) restart $(instance)
+
+instance-status: ## Show whether this instance's plane and services are up (and healthy)
+	@$(INSTANCE_SH) status $(instance)
+
+instance-logs: ## Tail this instance's plane log
+	@$(INSTANCE_SH) logs $(instance)
+
+instance-ps: ## List the ORCHICON instances on this host and their state
+	@$(INSTANCE_SH) status
+
+# DESTRUCTIVE: it stops the instance before it starts it, so it requires the
+# operator to NAME the instance. The guard tests instance_given, not instance —
+# `instance ?= dev` makes a bare `test -n "$(instance)"` see "dev" and pass, which
+# is how a bare `make full-rebuild` used to silently rebuild dev.
+instance-rebuild: ## Stop this instance, rebuild the binaries, start it (usage: make instance-rebuild instance=dev|prod|test)
+	@test -n "$(instance_given)" || { echo "usage: make instance-rebuild instance=dev|prod|test"; exit 1; }
+	$(MAKE) instance-down instance=$(instance)
+	$(MAKE) instance-build force-fe=1
+	$(MAKE) instance-up instance=$(instance)
+
+# --- Plane lifecycle (ONE local mechanism, no API path) ----------------------
+# These are the PLANE-only half of instance-up/instance-down: they leave the
+# instance's host services exactly as they are, which is what a restart onto a
+# freshly built binary needs.
+#
+# EVERY PATH HERE IS THE SAME LOCAL MECHANISM the TUI, the desktop app and the
+# launcher call — `orchicon plane ...`, implemented once in
+# internal/planecontrol. There is no lifecycle RPC and this file composes none:
+# a browser cannot spawn a process, which is the only reason the API path ever
+# existed, and the browser is not a lifecycle surface. Anything that needs a
+# remote control is a separate decision, not a target here.
+.PHONY: plane-status plane-start plane-stop plane-restart
+plane-status: ## Show this instance's plane: PID, serving BINARY, drift, health
+	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — run 'make instance-build' first"; exit 1; }
+	@$(BIN_DIR)/orchicon plane status $(instance)
+plane-start: ## Start this instance's plane only (idempotent; leaves its services alone)
+	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — run 'make instance-build' first"; exit 1; }
+	@$(BIN_DIR)/orchicon plane start $(instance)
+plane-stop: ## Stop this instance's plane only (graceful, bounded, verified)
+	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — nothing to stop"; exit 1; }
+	@$(BIN_DIR)/orchicon plane stop $(instance)
+plane-restart: ## Restart this instance's plane so it re-reads its environment
+	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — run 'make instance-build' first"; exit 1; }
+	@$(BIN_DIR)/orchicon plane restart $(instance)
+# --- Runtime image + daemon (podman; no instance lifecycle) ------------------
+# `runtime.sh` owns both: the version-gated build of the three stock runtime
+# images, and the host daemon's lifecycle. They used to live in container.sh.
+# The orchicon binary is NOT baked into these images — the daemon bind-mounts its
+# own executable into every runtime container — so runtime-build does not depend
+# on `make build` and a binary rebuild alone never needs an image rebuild.
+RUNTIME_SH := scripts/runtime.sh
+.PHONY: runtime-build runtime-daemon runtime-stop runtime-status
+runtime-build: ## Build the workflow runtime base images with podman (version-gated)
+	@$(RUNTIME_SH) build
 runtime-daemon: ## Start the host-side workflow runtime daemon
-	scripts/container.sh runtime-daemon
+	@$(RUNTIME_SH) daemon-start
 runtime-stop: ## Stop the host-side workflow runtime daemon
-	scripts/container.sh runtime-stop
-container-rebuild: ## Stop an instance, rebuild the image, start it (usage: make container-rebuild instance=dev|prod|test [residency=host|container])
-	@test -n "$(instance)" || { echo "usage: make container-rebuild instance=dev|prod|test"; exit 1; }
-	# residency is passed down as ENV (per invocation) — never exported globally,
-	# so rebuilding one instance cannot change the other's shape.
-	ORCHICON_PLANE_RESIDENCY="$(residency)" scripts/container.sh down $(instance)
-	$(MAKE) container-build force-fe=1
-	ORCHICON_PLANE_RESIDENCY="$(residency)" scripts/container.sh up $(instance)
-# Host-resident plane listeners: the plane binds its loopback address
-# (ORCHICON_HTTP_ADDR → host clients: orch, the GUI) plus the docker bridge
-# address at THIS instance's port, so its run containers can dial it. Both the
-# bind (ORCHICON_HTTP_EXTRA_BIND) and the URL those containers are handed
-# (ORCHICON_PLANE_PUBLIC_URL) come from the ONE place that computes them
-# (`scripts/container.sh plane-bind <dev|prod>`, bridge_bind_env) and
-# `plane-start` picks them up through container.sh's plane_env. Both are PER
-# INSTANCE: never put a globally-shared ORCHICON_PLANE_PUBLIC_URL in a shell
-# profile — a globally-set value points one instance's workers at the other's
-# plane.
-container-up: ## Start the dev single-container instance (ORCHICON_PLANE_RESIDENCY=host opt-in: plane on the host)
-	scripts/container.sh up dev
-container-down: ## Stop the dev single-container instance
-	scripts/container.sh down dev
-container-status: ## Show single-container instance status
-	scripts/container.sh status
-container-logs: ## Tail the dev container instance logs
-	scripts/container.sh logs dev
-container-ps: ## List orchicon container instances
-	scripts/container.sh ps
+	@$(RUNTIME_SH) daemon-stop
+runtime-status: ## Show whether the runtime daemon is answering, and its socket
+	@$(RUNTIME_SH) daemon-status
+
+# runtime-daemon-refresh restarts the daemon ONLY if it is serving an older bin/orchicon, and is what
+# a rebuild calls. Separated from runtime-daemon because the caller's intent differs: `make
+# runtime-daemon` is an operator saying "start it", while this is a build saying "make sure what is
+# running is what I just built" — and a build must never START a daemon the operator did not have.
+.PHONY: runtime-daemon-refresh
+runtime-daemon-refresh: ## Restart the runtime daemon if (and only if) it serves a stale binary
+	@$(RUNTIME_SH) daemon-refresh
+
+# --- Retired names ----------------------------------------------------------
+# The container-era aliases (container-build/-up/-down/-rebuild/-status/-logs/-ps) were
+# REMOVED by the single-container-deletion work item: they printed "this is now
+# instance-<verb>" while the container they were named for no longer exists, which made a
+# retired shape look supported. Use the instance-* targets above, or `scripts/orchicon.sh`
+# and `orchicon plane start|stop|status` for the plane itself.
+#
+# THE POLICY THAT OUTLIVED THEM: an alias must never defeat a destructive guard, and the
+# per-instance shape is not a per-target choice. If a rename is ever needed again, add the
+# alias with a `## ` comment only if it stays discoverable — and never let a per-target
+# default disagree with the product default.
+
+# --- Plane lifecycle — see "Instances (host-resident dev loop)" above --------
+# plane-status / plane-start / plane-stop / plane-restart are defined THERE, next to
+# instance-up/instance-down, because they are the plane-only half of that pair. They are
+# deliberately not repeated here: two recipes for one target is exactly the drift this
+# branch removed from the shell side, and `make` can only be right about one of them.
 
 # --- Full rebuild (one command) --------------------------------------------
 # A single command that runs everything needed before/for an instance rebuild:
@@ -529,76 +1103,112 @@ container-ps: ## List orchicon container instances
 #   2. all checks/tests         (make ci:  lint gen vet test rls-check)
 #   3. migration hash sync      (make migrate-hash — keeps db/migrations/atlas.sum
 #                                 in sync so the Atlas CLI path stays happy)
-#   4. frontend + binary + image (container-build force-fe=1 — the frontend is
-#                                 rebuilt and embedded into the binary via go:embed)
-#   5. stop/restart the instance (down then up; the container boots with
-#                                 MigrateOnBoot=true, which applies any pending
-#                                 embedded migrations — so step 3 is the repo
-#                                 hash sync and step 5 surfaces the DB migration)
-#
-# The DB migration itself is applied by the container at boot (migrate.Run), so
-# there is no separate `make migrate` needed here — running it against the
-# instance's Postgres would conflict with the container-owned DB.
-.PHONY: full-rebuild rebuild-dev rebuild-prod
-# residency propagates to container-rebuild through the make chain: BOTH
-# rebuild-dev and rebuild-prod pass residency=host explicitly, so each rebuild
-# migrates its OWN instance to a host-resident plane and neither can alter the
-# other's shape. This now MATCHES the launcher's own default, which
-# residency_for in scripts/container.sh resolves as ${...:-host}; nothing here is
-# ever exported globally.
-#
-# `residency=container` on the command line OVERRIDES the target default (a
-# command-line variable beats a target-specific one), which is the documented
-# rollback: `make rebuild-prod residency=container` puts prod's plane back
-# inside its container.
+#   4. frontend + binary        (instance-build force-fe=1 — the frontend is
+#                                 rebuilt and embedded into the binary via go:embed.
+#                                 NO image is built and no container is created)
+#   5. stop/restart the instance (instance-down then instance-up; the plane on THIS
+#                                 host boots with MigrateOnBoot=true — serve.go:366 —
+#                                 which applies any pending embedded migrations, so
+#                                 step 3 is the repo hash sync and step 5 surfaces
+#                                 the DB migration)
 #   6. cache hygiene            (make cache-trim — placed AFTER the gate that grows the cache, so
 #                                 the run that just laid down a day of build artifacts also bounds
 #                                 them. It is a NO-OP when the cache is under CACHE_CAP_MB, so a
 #                                 healthy dev loop pays nothing for it. This is the "regularly"
 #                                 half of the fix: cross-compile no longer dumps foreign-platform
 #                                 artifacts into the shared cache, and this keeps the rest honest)
-full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + image build + instance restart (usage: make full-rebuild instance=dev|prod|test)
-	@test -n "$(instance)" || { echo "usage: make full-rebuild instance=dev|prod|test"; exit 1; }
+#
+# The DB migration itself is applied by the PLANE at boot (migrate.Run), so there is
+# no separate `make migrate` needed here — running it against the instance's Postgres
+# would race the plane that owns that database.
+.PHONY: full-rebuild rebuild-dev rebuild-prod rebuild-test
+full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + instance restart (usage: make full-rebuild instance=dev|prod|test)
+	@test -n "$(instance_given)" || { echo "usage: make full-rebuild instance=dev|prod|test"; exit 1; }
 	$(MAKE) build
 	$(MAKE) ci
 	$(MAKE) migrate-hash
-	$(MAKE) container-rebuild instance=$(instance)
+	# THE RUNTIME DAEMON IS PART OF A REBUILD, for the same reason the desktop app is: it is a
+	# long-lived host process holding an image of the binary we just replaced, so a rebuild that
+	# skipped it left the daemon serving the PREVIOUS build from a deleted inode. That is not
+	# theoretical — it is how a fetch failed with "runtime image pull: runtime daemon: request failed"
+	# against a daemon eight days old, whose /v1/images/pull route did not exist yet.
+	#
+	# It REFRESHES rather than restarts. See runtime-daemon-refresh and scripts/runtime.sh
+	# cmd_daemon_refresh: the daemon is host-wide (one machine, shared by dev/prod/test), so cycling it
+	# unconditionally would disturb a sibling instance's in-flight work every time anyone rebuilt.
+	# Staleness is the only condition worth acting on, and it is always available to compare.
+	#
+	# BEFORE the instance restart, so the plane comes up against the daemon it will actually use, and
+	# so any disruption lands while the plane is going down anyway.
+	$(MAKE) runtime-daemon-refresh
+	$(MAKE) instance-rebuild instance=$(instance)
+	# THE DESKTOP APP IS PART OF A REBUILD, and it goes LAST for a reason: it is the slowest
+	# step, and it must not stand between a failing test and the operator hearing about it. A
+	# rebuild that reported a stale window as success — while the plane was rebuilt four times
+	# — is the defect this line closes (see desktop-build-if-possible for the full account).
+	#
+	# Here rather than in rebuild-dev/rebuild-prod, because all three rebuild-* targets go
+	# through this one, and three copies of a hook is three chances to add a fourth target and
+	# forget it.
+	$(MAKE) desktop-build-if-possible
 	$(MAKE) cache-trim
 
-rebuild-dev: residency = host
-rebuild-dev: ## One command: full checks/tests + rebuild + restart the DEV instance (plane residency: host)
-	$(MAKE) full-rebuild instance=dev residency=$(residency)
+# instance= reaches instance-rebuild EXPLICITLY on the command line: that is how
+# the operator's choice survives into the sub-make, whose own guard tests
+# instance_given. Nothing here is ever exported globally, so rebuilding one
+# instance cannot change another's state.
+rebuild-dev: ## One command: full checks/tests + rebuild + restart the DEV instance
+	$(MAKE) full-rebuild instance=dev
 	$(MAKE) orch-launcher-dev
 
-rebuild-prod: residency = host
-rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD instance (plane residency: host; pass residency=container to keep it in its container)
-	$(MAKE) full-rebuild instance=prod residency=$(residency)
+rebuild-prod: ## One command: full checks/tests + rebuild + restart the PROD instance
+	$(MAKE) full-rebuild instance=prod
 	$(MAKE) orch-launcher-prod
 
 # rebuild-test mirrors the other two, minus the launcher: a throwaway instance
 # exists to be rebuilt and torn down repeatedly, and it needs no dedicated TUI
-# client. Teardown is `scripts/container.sh uninstall test --yes`.
-rebuild-test: residency = host
-rebuild-test: ## One command: full checks/tests + rebuild + restart the TEST instance (plane residency: host)
-	$(MAKE) full-rebuild instance=test residency=$(residency)
+# client (that is why there is deliberately no `make orch-launcher-test` below —
+# a throwaway is reached by running it, not by holding a TUI client pinned to it).
+# Teardown is `scripts/orchicon.sh uninstall test --yes`: `make instance-down`
+# merely stops it, this REMOVES the instance and its data — which is the whole
+# point of a throwaway instance.
+rebuild-test: ## One command: full checks/tests + rebuild + restart the TEST instance
+	$(MAKE) full-rebuild instance=test
 
 # --- Dual orch launchers ----------------------------------------------------
 # Two orch clients on PATH: `orch` tracks bin/orch (dev vintage) and
 # `orch-prod` is a snapshot COPY of bin/orch refreshed only by the prod
 # path — so a prod-vintage client survives later `rebuild-dev` runs (the
-# operator holds prod back when dev has breaking changes). Wrapper scripts
-# orch-dev / orch-prod preset ORCHICON_URL per instance and carry a clearly
-# marked ORCHICON_TOKEN line for the user to fill per instance (dev and
-# prod have separate identity stores, so one config token cannot serve
-# both). Wrappers are generated only if absent (never overwritten) and
-# chmod 600.
+# operator holds prod back when dev has breaking changes).
+#
+# THERE IS ONE WRAPPER, `orch-dev`, and only one. It presets ORCHICON_URL for
+# the dev instance and carries a clearly marked ORCHICON_TOKEN line for the user
+# to fill (dev and prod have separate identity stores, so one config token
+# cannot serve both). There cannot be an `orch-prod` WRAPPER: that path is
+# occupied by the snapshot COPY of the binary above, so a generate-if-absent
+# wrapper for it could never be written -- the copy always creates the file
+# first, so the block that used to sit in orch-launcher-prod reported "already
+# exists" and never ran once. Prod is selected through `orch-prod` itself plus
+# the ~/.orchicon/config profile that names the instance. The dev wrapper is
+# generated only if absent (never overwritten) and chmod 600.
+#
+# NO `test` LAUNCHER, DELIBERATELY. The dev/prod split exists because an operator
+# holds two LONG-LIVED instances at different vintages; the `test` instance is a
+# throwaway that exists to be rebuilt and torn down (see rebuild-test above), so
+# it needs no dedicated TUI client and gets no wrapper here. It is still a first
+# class instance everywhere else: it has its own port column, data dir and
+# database in scripts/lib/instances.sh, and `make rebuild-test` drives it.
 LAUNCHER_DIR ?= $(HOME)/.local/bin
 .PHONY: orch-launchers orch-launcher-dev orch-launcher-prod
-orch-launchers: ## Install/refresh the dual orch launchers into ~/.local/bin (orch + orch-prod + wrappers)
+orch-launchers: ## Install/refresh the dual orch launchers into ~/.local/bin (orch + orch-prod + the orch-dev wrapper)
 	@test -f $(BIN_DIR)/orch || { echo "ERROR: $(BIN_DIR)/orch not found — run 'make build' first"; exit 1; }
-	@mkdir -p $(LAUNCHER_DIR)
-	# orch: dev-tracked symlink to bin/orch (refreshed on every dev rebuild).
-	@ln -sfn "$(CURDIR)/$(BIN_DIR)/orch" "$(LAUNCHER_DIR)/orch"
+	@# THROUGH THE SCRIPT, because a launcher must NEVER point into a throwaway worktree. These targets
+	@# used to symlink "$(CURDIR)/$(BIN_DIR)/orch" directly, so running a rebuild from a worktree repointed
+	@# ~/.local/bin/orch into `.orchicon-worktrees/<id>/bin/` — and removing the worktree then deleted the
+	@# operator's launcher. The reported symptom was "my orch binary has been deleted", which is exactly what
+	@# a symlink into a removed directory looks like. The script points them at the MAIN checkout, and
+	@# repairs a launcher that is already pointing at a worktree.
+	@./scripts/dev/install-launcher.sh --root "$(CURDIR)" --launcher-dir "$(LAUNCHER_DIR)" orch
 	@echo "==> orch launcher: $(LAUNCHER_DIR)/orch -> bin/orch (dev vintage)"
 	# orch-prod: snapshot COPY of the current bin/orch (moves only on prod rebuild).
 	@cp -f "$(BIN_DIR)/orch" "$(LAUNCHER_DIR)/orch-prod"
@@ -612,24 +1222,42 @@ orch-launchers: ## Install/refresh the dual orch launchers into ~/.local/bin (or
 	else \
 		echo "==> $(LAUNCHER_DIR)/orch-dev already exists — leaving untouched"; \
 	fi
-	@if [ ! -f "$(LAUNCHER_DIR)/orch-prod" ]; then \
-		printf '#!/bin/sh\n# orch-prod: prod instance launcher (generated by make orch-launchers).\n# Fill in the token for the PROD instance below (dev and prod have separate\n# identity stores, so each instance needs its own token).\nexport ORCHICON_URL=http://localhost:8091\nexport ORCHICON_TOKEN=\nexec "$(LAUNCHER_DIR)/orch-prod" "$$@"\n' > "$(LAUNCHER_DIR)/orch-prod"; \
-		chmod 600 "$(LAUNCHER_DIR)/orch-prod"; \
-		echo "==> generated $(LAUNCHER_DIR)/orch-prod (fill in ORCHICON_TOKEN)"; \
-	else \
-		echo "==> $(LAUNCHER_DIR)/orch-prod already exists — leaving untouched"; \
-	fi
+	# NO `orch-prod` WRAPPER, AND THAT IS NOT AN OVERSIGHT: `orch-prod` is the
+	# SNAPSHOT COPY of the binary made above, so a generate-if-absent wrapper for
+	# the same path could never be written -- the copy always creates the file
+	# first, so the block reported "already exists" and never ran once. The
+	# dev/prod split is carried by the two BINARIES plus the ~/.orchicon/config
+	# profile that names the instance; only the dev wrapper needs a token file.
 	@echo ""
-	@echo "  Tokens are per-instance (separate identity stores). Fill ORCHICON_TOKEN"
-	@echo "  in $(LAUNCHER_DIR)/orch-dev and $(LAUNCHER_DIR)/orch-prod."
+	@echo "  Tokens are per-instance (dev and prod have separate identity stores)."
+	@echo "  Fill ORCHICON_TOKEN in $(LAUNCHER_DIR)/orch-dev; orch-prod selects the"
+	@echo "  prod instance through its profile in ~/.orchicon/config."
+
 
 # orch-launcher-dev refreshes the dev-tracked launcher (orch symlink +
 # orch-dev wrapper) after a dev rebuild.
 orch-launcher-dev: ## Refresh the dev orch launcher after a dev rebuild
 	@test -f $(BIN_DIR)/orch || { echo "ERROR: $(BIN_DIR)/orch not found — run 'make build' first"; exit 1; }
-	@mkdir -p $(LAUNCHER_DIR)
-	@ln -sfn "$(CURDIR)/$(BIN_DIR)/orch" "$(LAUNCHER_DIR)/orch"
+	@# See orch-launchers above: the script decides which checkout a launcher may point at, so a rebuild
+	@# run from a worktree cannot leave the operator's launchers dangling. BOTH binaries in ONE call, so the
+	@# worktree notice is printed once rather than once per link.
+	@./scripts/dev/install-launcher.sh --root "$(CURDIR)" --launcher-dir "$(LAUNCHER_DIR)" orch orchicon
 	@echo "==> orch launcher refreshed: $(LAUNCHER_DIR)/orch -> bin/orch (dev vintage)"
+	@# AND THE `orchicon` BINARY, WHICH IS THE ONE THAT MATTERS MOST.
+	@#
+	@# THE BUG THIS FIXES. A THIN CLIENT never re-execs itself to serve: internal/planecontrol's
+	@# resolvePlaneBinary runs the plane from `$PATH` when the caller is not itself `orchicon` (the
+	@# TUI and the desktop app are exactly that shape). So "start dev" pressed in the desktop app's
+	@# Manage Server launched whatever `orchicon` PATH found first — here a STALE regular file in
+	@# ~/.local/bin from October, which nothing ever refreshed because this target only symlinked
+	@# `orch`. The instance then ran a six-day-old binary: it served the OLD embedded SPA (the
+	@# pre-native telemetry page with Grafana), reported `canary` while the desktop app reported
+	@# v0.5.105, and answered GetTelemetryReport with `unimplemented` — three reported symptoms, one
+	@# cause, and a rebuild that appeared to work.
+	@#
+	@# `orch` was already dev-tracked here; `orchicon` simply was not. It is now, so the plane a dev
+	@# rebuild starts is the binary that rebuild just produced. `orch-prod` stays the prod snapshot.
+	@echo "==> orchicon refreshed: $(LAUNCHER_DIR)/orchicon -> bin/orchicon (dev vintage, runs the plane)"
 	@if [ ! -f "$(LAUNCHER_DIR)/orch-dev" ]; then \
 		printf '#!/bin/sh\n# orch-dev: dev instance launcher (generated by make orch-launchers).\n# Fill in the token for the DEV instance below (dev and prod have separate\n# identity stores, so each instance needs its own token).\nexport ORCHICON_URL=http://localhost:8080\nexport ORCHICON_TOKEN=\nexec "$(LAUNCHER_DIR)/orch" "$$@"\n' > "$(LAUNCHER_DIR)/orch-dev"; \
 		chmod 600 "$(LAUNCHER_DIR)/orch-dev"; \
@@ -638,8 +1266,8 @@ orch-launcher-dev: ## Refresh the dev orch launcher after a dev rebuild
 		echo "==> $(LAUNCHER_DIR)/orch-dev already exists — leaving untouched"; \
 	fi
 
-# orch-launcher-prod refreshes the prod snapshot (orch-prod copy + wrapper)
-# after a prod rebuild. The dev launcher is left untouched, so a prod-vintage
+# orch-launcher-prod refreshes the prod snapshot (the orch-prod copy) after a
+# prod rebuild. The dev launcher is left untouched, so a prod-vintage
 # client survives later rebuild-dev runs.
 orch-launcher-prod: ## Refresh the prod orch launcher snapshot after a prod rebuild
 	@test -f $(BIN_DIR)/orch || { echo "ERROR: $(BIN_DIR)/orch not found — run 'make build' first"; exit 1; }
@@ -647,13 +1275,9 @@ orch-launcher-prod: ## Refresh the prod orch launcher snapshot after a prod rebu
 	@cp -f "$(BIN_DIR)/orch" "$(LAUNCHER_DIR)/orch-prod"
 	@chmod +x "$(LAUNCHER_DIR)/orch-prod"
 	@echo "==> orch-prod launcher refreshed: $(LAUNCHER_DIR)/orch-prod (snapshot copy, prod vintage)"
-	@if [ ! -f "$(LAUNCHER_DIR)/orch-prod" ]; then \
-		printf '#!/bin/sh\n# orch-prod: prod instance launcher (generated by make orch-launchers).\n# Fill in the token for the PROD instance below (dev and prod have separate\n# identity stores, so each instance needs its own token).\nexport ORCHICON_URL=http://localhost:8091\nexport ORCHICON_TOKEN=\nexec "$(LAUNCHER_DIR)/orch-prod" "$$@"\n' > "$(LAUNCHER_DIR)/orch-prod"; \
-		chmod 600 "$(LAUNCHER_DIR)/orch-prod"; \
-		echo "==> generated $(LAUNCHER_DIR)/orch-prod (fill in ORCHICON_TOKEN)"; \
-	else \
-		echo "==> $(LAUNCHER_DIR)/orch-prod already exists — leaving untouched"; \
-	fi
+	# No wrapper is generated here on purpose -- see the section header: the
+	# snapshot copy above IS $(LAUNCHER_DIR)/orch-prod, so a generate-if-absent
+	# wrapper for the same path could never be written.
 
 # --- Install ---------------------------------------------------------------
 #
@@ -667,6 +1291,186 @@ install-dry-run: ## Dry-run the install script for the dev instance (no changes 
 
 install-uninstall: ## Uninstall the dev instance via the install script (data preserved; pass instance=test|prod to change)
 	scripts/install.sh --uninstall --instance $(if $(instance),$(instance),dev)
+
+# --- Desktop app (Wails shell) ---------------------------------------------
+#
+# PACKAGING, NOT PART OF `ci`, and that is deliberate: `ci` is the Go + frontend
+# gate and must stay runnable on a plain runner, while a Wails build needs a
+# per-host webview toolchain (WebKitGTK dev libs, Xcode, the Windows SDK). The
+# part that NEEDS testing everywhere — the webview detection — is ordinary Go in
+# internal/desktoppreflight and rides the normal `./...` gate.
+#
+# THE WAILS PROJECT LIVES AT cmd/orchicon-desktop (wails.json + main.go), which is
+# where the shell item put it. `wails build` resolves its project from the working
+# directory and has no project-dir flag, so every target below cd's there first.
+# desktop-check is the prerequisite that says so instead of failing with a missing
+# wails.json. (`desktop-build`/`desktop-deps` above are the shell's own targets —
+# they build the binary with `go build`; the targets here PACKAGE it.)
+#
+# The pinned Wails CLI is the version go.mod requires (v2.17.0), so a local build and
+# a release build use the same framework.
+WAILS_VERSION  := v2.17.0
+NFPM_VERSION   := v2.41.0
+# WIX_VERSION IS PINNED, AND MUST STAY BELOW 6. WiX v6 introduced the Open Source
+# Maintenance Fee EULA: an UNPINNED `dotnet tool install --global wix` now resolves
+# to v7 and fails the build outright with
+#
+#     error WIX7015: You must accept the Open Source Maintenance Fee (OSMF) EULA
+#
+# which is a licensing decision, not a build detail — so this target must not make
+# it implicitly by floating to latest. 5.0.2 is the last free line, and it takes the
+# same v4 schema namespace this .wxs uses. Raising it is a deliberate act that must
+# come with whatever the new version requires.
+WIX_VERSION    ?= 5.0.2
+WAILS          ?= $(shell command -v wails 2>/dev/null || echo $(HOME)/go/bin/wails)
+DESKTOP_DIST   := dist/desktop
+DESKTOP_VERSION := $(patsubst v%,%,$(VERSION))
+# The Wails output paths are the contract the .deb/zip/AppImage steps rely on, and
+# BuildDir defaults to `build` INSIDE the project directory.
+DESKTOP_PROJECT := cmd/orchicon-desktop
+DESKTOP_BIN    := $(DESKTOP_PROJECT)/build/bin/orchicon-desktop
+
+.PHONY: desktop-check desktop-preflight-test desktop-linux-deps-check \
+        desktop-build-linux desktop-package-linux \
+        desktop-build-macos desktop-sign-macos desktop-build-windows
+
+desktop-check: ## Report whether the Wails project is in this tree
+	@test -f $(DESKTOP_PROJECT)/wails.json || { echo "error: $(DESKTOP_PROJECT)/wails.json is not in this tree, so there is nothing to package yet"; exit 1; }
+
+desktop-preflight-test: ## Run the webview detection tests (no webview needed)
+	$(GO) test ./internal/desktoppreflight/...
+
+desktop-linux-deps-check: ## Report whether this host can build/run the desktop app
+	@printf 'webkit:  %s\n' "$$(ldconfig -p 2>/dev/null | grep -c 'libwebkit2gtk-4\.[01]\.so\.37' || true) matching soname(s)"
+	@command -v wails >/dev/null 2>&1 && echo "wails:   $$(wails version 2>/dev/null | head -1)" || echo "wails:   not installed (run: make desktop-deps)"
+	@test -f $(DESKTOP_PROJECT)/wails.json && echo "shell:   $(DESKTOP_PROJECT)/ present" || echo "shell:   $(DESKTOP_PROJECT)/wails.json MISSING — nothing to package yet"
+
+desktop-build-linux: desktop-check ## Build the Linux .deb payload (needs libwebkit2gtk-4.0-dev — see NOTE)
+	@# THE 4.0 ABI IS A DELIBERATE ARTIFACT DECISION, NOT A HOST ACCIDENT.
+	@#
+	@# deploy/desktop/nfpm.yaml declares `depends: libwebkit2gtk-4.0-37`, because the
+	@# .deb exists for Ubuntu <= 23.10 and Debian 12, which ship WebKitGTK 4.0; newer
+	@# distros get the AppImage instead. So this build must link 4.0 and the tags must
+	@# say so EXPLICITLY — hence no `webkit2_41` here, and hence it is NOT left to
+	@# wails.json or to $(DESKTOP_TAGS): the dependency the package declares and the
+	@# SONAME the binary links have to be the same ABI, and on this target that is 4.0.
+	@#
+	@# It therefore needs 4.0's DEV headers even on a 4.1-only host, which is what the
+	@# preflight says out loud instead of failing inside cgo.
+	@pkg-config --exists webkit2gtk-4.0 2>/dev/null || { \
+		echo "ERROR: this target builds the 4.0 .deb (deploy/desktop/nfpm.yaml depends on"; \
+		echo "       libwebkit2gtk-4.0-37) but webkit2gtk-4.0 dev headers are not installed."; \
+		echo "       Install libwebkit2gtk-4.0-dev, or run 'make desktop-build' for a local"; \
+		echo "       build against whichever ABI this host ships."; exit 1; }
+	cd $(DESKTOP_PROJECT) && $(WAILS) build -clean -platform linux/amd64 -tags orchicon_desktop,production -ldflags '$(LDFLAGS)'
+
+# --- Windows MSI -----------------------------------------------------------
+#
+# WHY AN MSI ON TOP OF THE NSIS INSTALLER. Wails emits an NSIS .exe, and the
+# tooling a Windows estate actually uses speaks MSI: Intune, SCCM, Group Policy
+# and `msiexec /qn`. None of them can drive an NSIS wizard. The NSIS installer
+# stays (it is the desktop app's own installer, used by `install.ps1 -Desktop`);
+# the MSI packages the WHOLE product - CLI, TUI and desktop app - for the managed
+# case, and per-user so it needs no elevation (see deploy/desktop/windows/Orchicon.wxs).
+#
+# IT BUILDS ON WINDOWS, NOT HERE. WiX is a .NET tool (`dotnet tool install --global wix`),
+# and this host has no dotnet/msbuild — so the target REFUSES with a sentence rather
+# than failing inside a missing command. CI proves it builds and validates; only a
+# real Windows run proves it installs.
+WIX ?= $(shell command -v wix 2>/dev/null)
+MSI_SRC_DIR := $(DESKTOP_DIST)/msi-src
+
+desktop-package-windows: ## Produce the Windows MSI (Windows host with the WiX CLI only)
+	@test -n "$(WIX)" || { \
+		printf 'error: the WiX CLI (`wix`) was not found.\n\n'; \
+		printf '  The MSI is built by WiX v4, a .NET global tool:\n'; \
+		printf '      dotnet tool install --global wix --version $(WIX_VERSION)\n\n'; \
+		printf '  The version is PINNED ($(WIX_VERSION)): WiX v6+ requires accepting the Open Source\n'; \
+		printf '  Maintenance Fee EULA, so an unpinned install resolves to v7 and fails.\n\n'; \
+		printf '  This host cannot build it, and that is not a repo defect: the release and CI build the\n'; \
+		printf '  MSI on windows-latest. To produce one by hand, run this target on Windows.\n'; \
+		exit 1; }
+	@# EVERY FILE THE .wxs NAMES MUST BE HERE FIRST. The MSI's components are files,
+	@# so a missing exe is a build error that names a path — staging them makes that
+	@# error impossible rather than explaining it later.
+	@test -f $(DESKTOP_PROJECT)/build/bin/orchicon-desktop.exe || { \
+		echo "error: $(DESKTOP_PROJECT)/build/bin/orchicon-desktop.exe is missing — run 'wails build --nsis' (or the release's desktop-windows job) first"; exit 1; }
+	@test -f $(BIN_DIR)/orchicon.exe || { echo "error: $(BIN_DIR)/orchicon.exe is missing — build the Windows binaries first"; exit 1; }
+	@mkdir -p $(MSI_SRC_DIR)
+	cp -f $(BIN_DIR)/orchicon.exe $(MSI_SRC_DIR)/
+	cp -f $(BIN_DIR)/orch.exe $(MSI_SRC_DIR)/
+	@# THE BINARY A RUNTIME CONTAINER RUNS. Built from THIS tree rather than copied, because it is not
+	@# something `make build` leaves on Windows unless it cross-compiled it: a runtime container is a
+	@# LINUX container and cannot execute orchicon.exe, so the daemon mounts this (exe_resolve.go).
+	@# Same ldflags as the exe beside it, so the two can never be different builds.
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build $(LDFLAGS) -o $(MSI_SRC_DIR)/orchicon-linux-amd64 ./cmd/orchicon
+	cp -f $(DESKTOP_PROJECT)/build/bin/orchicon-desktop.exe $(MSI_SRC_DIR)/
+	cp -f deploy/desktop/windows/README-WINDOWS.txt $(MSI_SRC_DIR)/
+	cp -f deploy/desktop/windows/LICENSE.rtf $(MSI_SRC_DIR)/
+	cp -f deploy/desktop/windows/orchicon-desktop.ico $(MSI_SRC_DIR)/
+	@# THE WIZARD ART. WixVariable points at these through $(var.SourceDir), so a missing
+	@# file fails the build — this is the copy that stops that being a mystery.
+	cp -f deploy/desktop/windows/wizard-banner.bmp $(MSI_SRC_DIR)/
+	cp -f deploy/desktop/windows/wizard-dialog.bmp $(MSI_SRC_DIR)/
+	@# -arch x64: the release matrix builds windows/amd64 only (Windows on ARM runs
+	@# the amd64 package under emulation — see release.yml's matrix comment).
+	@# `-ext` resolves through WiX's OWN extension store, not NuGet, so the extension
+	@# must be installed once before the build can name it. Idempotent: adding an
+	@# extension that is already there is a no-op.
+	$(WIX) extension add -g WixToolset.UI.wixext/$(WIX_VERSION) || true
+	$(WIX) build deploy/desktop/windows/Orchicon.wxs \
+		-arch x64 \
+		-ext WixToolset.UI.wixext \
+		-d Version=$(DESKTOP_VERSION) \
+		-d SourceDir=$(abspath $(MSI_SRC_DIR)) \
+		-bindvariable WixUILicenseRtf=$(abspath $(MSI_SRC_DIR))/LICENSE.rtf \
+		-o "$(DESKTOP_DIST)/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi"
+	@ls -l "$(DESKTOP_DIST)/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi"
+
+# THE BUNDLE: one wizard for a person, built ON TOP of the MSI above.
+#
+# A bare MSI is the right unit of deployment but a poor experience: it draws the wizard and
+# then hands the interesting part — a long download with prompts — to a console it cannot
+# report on. The Burn bundle owns the UI and chains the MSI, so progress and the log belong
+# to the wizard. It does NOT replace the MSI: `msiexec /qn` estates keep using that.
+#
+# The Bal extension is a SEPARATE NuGet package from the UI one, and needs the same
+# `wix extension add` dance — `-ext` resolves through WiX's own store, never NuGet.
+desktop-package-windows-bundle: ## Produce OrchiconSetup.exe (the Burn bundle around the MSI)
+	@test -n "$(WIX)" || { \
+		printf 'error: the WiX CLI (`wix`) was not found.\n\n'; \
+		printf '  The bundle is built by the same .NET global tool as the MSI:\n'; \
+		printf '      dotnet tool install --global wix --version $(WIX_VERSION)\n\n'; \
+		printf '  See desktop-package-windows for why the version is pinned.\n'; \
+		exit 1; }
+	@test -f "$(DESKTOP_DIST)/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi" || { \
+		echo "error: the MSI is missing — run 'make desktop-package-windows' first (the bundle wraps it)"; exit 1; }
+	$(WIX) extension add -g WixToolset.BootstrapperApplications.wixext/$(WIX_VERSION) || true
+	$(WIX) build deploy/desktop/windows/OrchiconSetup.wxs \
+		-ext WixToolset.BootstrapperApplications.wixext \
+		-d Version=$(DESKTOP_VERSION) \
+		-d MsiPath=$(abspath $(DESKTOP_DIST))/orchicon_$(DESKTOP_VERSION)_windows_amd64.msi \
+		-d LicenseRtf=$(abspath $(MSI_SRC_DIR))/LICENSE.rtf \
+		-outputtype bundle \
+		-o "$(DESKTOP_DIST)/OrchiconSetup_$(DESKTOP_VERSION)_windows_amd64.exe"
+	@ls -l "$(DESKTOP_DIST)/OrchiconSetup_$(DESKTOP_VERSION)_windows_amd64.exe"
+
+desktop-package-linux: desktop-build-linux ## Produce the .deb (nfpm) + the AppImage
+	mkdir -p $(DESKTOP_DIST)
+	ORCHICON_VERSION=$(DESKTOP_VERSION) $(GO) run github.com/goreleaser/nfpm/v2/cmd/nfpm@$(NFPM_VERSION) \
+		package -f deploy/desktop/nfpm.yaml -p deb \
+		-t "$(DESKTOP_DIST)/orchicon_desktop_$(DESKTOP_VERSION)_linux_amd64.deb"
+	ORCHICON_VERSION=$(DESKTOP_VERSION) bash deploy/desktop/appimage/build.sh
+	@ls -l $(DESKTOP_DIST)
+
+desktop-build-macos: desktop-check ## Build the universal macOS .app (macOS host only)
+	cd $(DESKTOP_PROJECT) && $(WAILS) build -clean -platform darwin/universal -ldflags '$(LDFLAGS)'
+
+desktop-sign-macos: ## Sign + notarise + staple the .app, then assert Gatekeeper accepts it
+	bash deploy/desktop/macos/sign-and-notarize.sh
+
+desktop-build-windows: desktop-check ## Build the NSIS installer + portable exe (Windows host only)
+	cd $(DESKTOP_PROJECT) && $(WAILS) build -clean -platform windows/amd64 -webview2 download -nsis -ldflags '$(LDFLAGS)'
 
 # --- CI --------------------------------------------------------------------
 # The CI gate, split the same way .github/workflows/ci.yml splits it:
@@ -687,11 +1491,12 @@ install-uninstall: ## Uninstall the dev instance via the install script (data pr
 # Windows, so no amount of running them would have caught it. Compiling for the shipped platforms is
 # the only check that does.
 #
-# Output goes to a temp directory: this is a COMPILE check, not a build, and dropping four pairs of
+# Output goes to a temp directory: this is a COMPILE check, not a build, and dropping six pairs of
 # binaries into the repo root would leave them behind.
 #
 # THE CACHE GOES THE SAME WAY AS THE BINARIES — and its absence is why the dev cache reached 71 GB.
-# This gate compiles FOUR platforms, and each platform's package archives are ~130 MB, so ONE
+# This gate compiles SIX platforms (the five that ship plus windows/arm64), and each platform's
+# package archives are ~130 MB, so ONE
 # `make ci-go` (and therefore one `make rebuild-dev`) wrote TENS OF GB into the shared dev GOCACHE.
 # Those artifacts are worthless to the dev loop — nothing on an amd64 dev host ever links a
 # windows/arm64 archive — but they are not free: they are what filled the disk.
@@ -702,32 +1507,130 @@ install-uninstall: ## Uninstall the dev instance via the install script (data pr
 # THE SOURCE; `make cache-trim` bounds whatever is left.
 #
 # The cost is measured, not assumed: a COLD cross-compile of the two shipped binaries for one
-  # platform takes ~21s and writes ~1.1 GB, so all four from a clean cache is a couple of minutes of
-  # CPU — paid once per gate run, in exchange for a shared cache that no longer carries foreign bytes.
-  #
-  # WINDOWS IS NOT HERE, deliberately: no Windows artifact ships any more (nothing consumed one — see
-  # release.yml), so there is nothing for a Windows compile to protect. The incident below is still
-  # worth reading, because it is why this list is derived from the RELEASE MATRIX rather than picked
-  # by hand.
-  CROSS_PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64
+# platform takes ~21s and writes ~1.1 GB, so all six from a clean cache is a couple of minutes of
+# CPU — paid once per gate run, in exchange for a shared cache that no longer carries foreign bytes.
+#
+# WINDOWS IS IN BOTH LISTS NOW, and the one remaining difference is stated rather than implied.
+# windows/amd64 SHIPS (release.yml builds orchicon_<version>_windows_amd64.zip): the plane and the
+# host services are HOST processes on Windows (cmd/orchicon/privilege_windows.go,
+# hostproc_windows.go), so `orchicon install`/`serve` there run a NATIVE orchicon.exe and WSL2 is
+# left with only the runtime CONTAINERS — which need a Linux kernel. windows/arm64 does NOT ship
+# (Windows on ARM runs the amd64 zip under emulation, so a second artifact would be published for
+# nobody) but it stays in THIS list on purpose: a compile break there must fail here, before a
+# release, not on a user's machine after one. Gate = six platforms, ship list = five; the gap is
+# exactly arm64 Windows.
+#
+# WHY THE GATE IS NOT OPTIONAL: cmd/orchicon/install_host.go once called syscall.Kill from an
+# UNTAGGED file, so windows/amd64 and windows/arm64 could not compile while every gate stayed green
+# — because Windows was not in this list. `go build`, `go vet` and `go test` on linux/amd64 all pass
+# for code that cannot build for Windows.
+  CROSS_PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
+
+# CROSS_TMP is where cross-compile keeps its throwaway cache and output. It is under the repo rather
+# than mktemp's default because the default is /tmp, and /tmp is a 2 GB tmpfs on some hosts: this gate
+# writes ~1.1 GB of cache per platform, so with Windows included it would fill that tmpfs PART WAY
+# THROUGH and surface the disk as a COMPILE ERROR on whichever platform happened to hit it last. The
+# directory is gitignored and removed by the trap, so nothing is left behind.
+CROSS_TMP := $(CURDIR)/.cross-compile
+
+# CROSS_CACHE_DIR makes that cache PERSISTENT instead of throwaway. Empty (the local default) keeps the
+# behaviour above exactly as it was, which is right for a developer: a scratch run should not leave 6 GB
+# of foreign-platform object files behind.
+#
+# IT EXISTS BECAUSE THE THROWAWAY CACHE MAKES EVERY GATE RUN COLD, and that was the single largest cost
+# in the gate. Measured here: a warm `make cross-compile` (CPU caches warm, Go cache cold because the
+# trap deleted it) takes 140 s, against 28 s for the ENTIRE `go test ./...` and 4 s for `go vet ./...`.
+# So this one target was ~60% of the local Go gate, and in CI — where the runner is fresh — it is paid
+# in full on every push.
+#
+# Caching it is SAFE, and that is worth stating because it is a BUILD CACHE being restored across runs:
+# Go keys build-cache entries by content, so a restored entry can only ever be a MISS, never a wrong
+# answer. A stale cache costs nothing but the rebuild it would have done anyway. CI sets this to a
+# directory it restores and saves via actions/cache; the isolation that the throwaway rule protects is
+# preserved, because this cache still lives outside $(GOCACHE) and never carries foreign bytes into it.
+CROSS_CACHE_DIR ?=
 .PHONY: cross-compile
-cross-compile: ## Compile the shipped binaries for every release platform (catches platform-specific breaks)
-	@set -e; tmp="$$(mktemp -d)"; xcache="$$(mktemp -d)"; \
-	trap 'rm -rf "$$tmp" "$$xcache"' EXIT; \
-	echo "==> cross-compile cache: $$xcache (throwaway — never pollutes $(GOCACHE))"; \
+# It is 6.8 GB when populated, so it is OPT-IN (CROSS_CACHE_DIR=... above) rather than a default nobody
+# asked for. Clean it with `make cross-cache-clean`, and see README §Build and test speed for the
+# measured trade-off (139 s cold-every-run vs 12.7 s warm).
+cross-cache-clean: ## Remove the persistent cross-compile cache (if CROSS_CACHE_DIR was used)
+	@if [ -n "$(CROSS_CACHE_DIR)" ]; then rm -rf "$(CROSS_CACHE_DIR)"; echo "removed $(CROSS_CACHE_DIR)"; \
+	else echo "CROSS_CACHE_DIR is unset — the cross-compile cache is throwaway and already removed each run"; fi
+
+cross-compile: ## Compile the shipped binaries for every release platform plus windows/arm64 (compile-only; catches platform-specific breaks)
+	@test -n "$(PKGS)" || { if printf '%s\n' "$(GO_LIST_ERR)" | grep -q .; then printf 'ERROR: `go list ./...` FAILED — the local gate cannot run. This is NOT the empty-match case: tmp/ exclusion is not the cause, and the packages were never the problem.\n\n%s\n\nFix the cause above (a module cache or foreign module left in the repo scratch dirs is the usual one), then re-run.\n' "$(GO_LIST_ERR)" >&2; else printf 'ERROR: no packages matched ./... (tmp/ excluded) — refusing to run the gate over nothing\n' >&2; fi; exit 1; }
+	@set -e; mkdir -p $(CROSS_TMP); tmp="$$(mktemp -d $(CROSS_TMP)/out.XXXXXX)"; \
+	if [ -n "$(CROSS_CACHE_DIR)" ]; then \
+	  xcache="$(CROSS_CACHE_DIR)"; mkdir -p "$$xcache"; \
+	  trap 'rm -rf "$$tmp"' EXIT; \
+	  echo "==> cross-compile cache: $$xcache (PERSISTENT — reused across runs)"; \
+	else \
+	  xcache="$$(mktemp -d $(CROSS_TMP)/cache.XXXXXX)"; \
+	  trap 'rm -rf "$$tmp" "$$xcache"' EXIT; \
+	  echo "==> cross-compile cache: $$xcache (throwaway — never pollutes $(GOCACHE))"; \
+	fi; \
 	for t in $(CROSS_PLATFORMS); do \
 	  os="$${t%%/*}"; arch="$${t##*/}"; \
 	  echo "==> $$os/$$arch"; \
 	  GOCACHE="$$xcache" GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 $(GO) build -o "$$tmp/" ./cmd/orchicon ./cmd/orch; \
+	  GOCACHE="$$xcache" GOOS="$$os" GOARCH="$$arch" CGO_ENABLED=0 $(GO) vet $(PKGS); \
 	done; \
-	echo "==> all $(words $(CROSS_PLATFORMS)) release platforms compile"
+	echo "==> all $(words $(CROSS_PLATFORMS)) release platforms compile and typecheck"
 
-# ALL THREE test targets, because each side added one to the same line: this branch adds the
-# two script gates (cache-trim-test, disk-report-test) and develop added install-ps1-test. They
-# are independent, so the union is the correct resolution — dropping either side would silently
-# retire a gate that other work depends on.
-ci-go: lint gen-check vet test synth-data rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test cache-trim-test disk-report-test cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
-ci: ci-go fe-lint fe-test site-check ## Run the full CI gate locally (Go + frontend + landing page)
+# WHY `go vet` IS IN THE LOOP ABOVE, AND NOT ONLY `go build`: `go build` never compiles `_test.go`, so
+# a cross-platform break that lives in a TEST file is invisible to it. Not hypothetical: with Windows
+# in CROSS_PLATFORMS but only `go build` running, this gate stayed GREEN while
+#   GOOS=windows go test -c ./cmd/orchicon
+# failed with `cmd/orchicon/binaries_test.go:48:31: undefined: shellQuote` — shellQuote is pure Go,
+# but it sat in `//go:build !windows` killorphans_test.go, and binaries_test.go is untagged on purpose
+# (it drives the resolver through a `goos` argument, so it builds Windows-shaped paths on every host).
+# `go vet` typechecks the package TOGETHER WITH its test files under the target GOOS, so it catches
+# exactly that class for ~0.1 s per platform out of a ~21 s cold build. It compiles the tests without
+# running them, which is what this gate is: a COMPILE check.
+#
+# `./...` AND NOT `./cmd/orchicon ./cmd/orch`, and that scope was the second half of the same bug.
+# The FIRST fix (1efd8b40) added this vet but pointed it only at the two command packages, so it
+# still could not see the rest of the module — and the rest of the module carried the identical
+# defect: internal/mcpclient/manager_test.go was untagged, and its orphan/sweep tests call
+# `syscall.Kill(pid, 0)` and read `/proc/<pid>/{exe,stat,environ}`:
+#
+#   GOOS=windows go test -c ./internal/mcpclient
+#   internal/mcpclient/manager_test.go:363:20: undefined: syscall.Kill
+#
+# A gate scoped to the packages a platform happens to break IN is not a gate for that platform.
+# `./...` costs ~4 s on top of the two-package vet COLD (measured: 58 s -> 62 s for one platform,
+# because the `go build ./cmd/...` above already populates most of the module's cache) — nothing
+# beside the ~21 s build it rides on, and it is the difference between "the command packages
+# compile" and "the module compiles, tests included, for every platform we gate."
+#
+# AND IT VETS `$(PKGS)`, WHICH IS THAT SAME `./...` LIST MINUS THE GITIGNORED SCRATCH — not a
+# narrowing of the scope argued above. `PKGS` IS a module-wide `go list ./...` (strict, so a real
+# module breakage still fails it); all it removes is the packages under tmp/, which have no go.mod
+# and are not this module's code. The scope that mattered here — every package of the module,
+# test files included, per platform — is intact. What is gone is the ability of a leftover
+# scratch file to break the COMPILE gate, which is the one gate that must never be hostage to
+# scratch: it is the reason `make vet`/`make test` stayed green while this target failed, and
+# the reason a healthy tree could not be rebuilt. Checked, not assumed: `GOOS=windows go list
+# ./...` and the host listing return the SAME package set, so resolving the list on the host
+# loses nothing platform-specific. The guard above the loop refuses an empty list, because
+# `go vet` with no arguments would silently vet the CURRENT DIRECTORY and report success.
+
+# ci-go-base is the gate MINUS cross-compile. It exists so CI can run cross-compile as its OWN job, in
+# PARALLEL with everything else, instead of serially after it — cross-compile is the single slowest target
+# (140 s measured, ~60% of the gate) and it shares nothing with the other checks, so serialising it only
+# makes the wall clock longer. `ci-go` still includes it, so the LOCAL gate is unchanged and complete:
+# a developer runs one command and gets every check, including the platform compile.
+#
+# THE GATE LIST IS THE UNION OF BOTH SIDES. This branch added the parallel split; develop added
+# plane-control-e2e-assertions-test, published-archive-e2e-assertions-test and desktop-e2e-assertions-test.
+# They are independent, so neither side may be dropped — a gate quietly retired by a merge conflict is the
+# worst possible outcome for a file whose whole purpose is to catch what nobody looked at.
+CI_GO_GATES := lint gen-check vet test synth-data no-operator-paths rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test published-archive-e2e-assertions-test desktop-e2e-assertions-test cache-trim-test version-tag-match
+
+ci-go-base: $(CI_GO_GATES) ## The Go gate WITHOUT cross-compile (CI runs that as a parallel job)
+
+ci-go: ci-go-base cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
+ci: ci-go fe-lint fe-typecheck fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate
 tui-pty-gate: ## Standing real-pty TUI verification gate (smoke + mouse + /connect)

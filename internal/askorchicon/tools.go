@@ -11,8 +11,6 @@ import (
 // ToolIntent represents a detected tool call from the user's message.
 
 // ToolFn is the signature for every tool function.
-// It receives the tenant-scoped context, the DB pool, and JSON arguments,
-// and returns a JSON result or an error.
 type ToolFn func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error)
 
 // PropertySchema describes a single field in a tool's input schema.
@@ -39,9 +37,8 @@ type ToolRegistry struct {
 
 // NewToolRegistry creates the registry with all available tools.
 func NewToolRegistry(pool *db.Pool, log *slog.Logger, secretsKEK []byte) *ToolRegistry {
-	// Package-level logger for tools whose post-commit side effects (e.g.
-	// auto-starting a workflow) need a logger but receive none via the
-	// ToolFn signature.
+	// Package-level logger for tools whose post-commit side effects (e.g. auto-starting a workflow)
+	// need a logger but receive none via the ToolFn signature.
 	toolLogger = log
 	if toolLogger == nil {
 		toolLogger = slog.Default()
@@ -114,20 +111,40 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Required:    []string{"id"},
 		},
 		{
-			Name:        "create_project",
-			Description: "Create a new project. Requires title. Optionally accepts goals, project_dir.",
-			Mutating:    true,
-			Fn:          toolCreateProject,
-			Properties:  map[string]PropertySchema{"title": {Type: "string", Description: "Project title"}, "goals": {Type: "string", Description: "Project goals (markdown)"}, "project_dir": {Type: "string", Description: "Project directory path"}},
-			Required:    []string{"title"},
+			Name: "create_project",
+			Description: "Create a new project. Requires title. Optionally accepts goals, project_dir, " +
+				"git_strategy (local|pr|none, default local), init_git (run the platform's git setup for it), " +
+				"default_runtime_image, execution_mode (runtime|local, default local). ASK the user for the git " +
+				"strategy before creating: local = runs commit to a branch the platform integrates, pr = the same " +
+				"plus a pull request, none = ephemeral, no branch. If they pick local or pr, ask whether to " +
+				"initialise the repository and pass init_git true if they agree.",
+			Mutating: true,
+			Fn:       toolCreateProject,
+			Properties: map[string]PropertySchema{
+				"title":                 {Type: "string", Description: "Project title"},
+				"goals":                 {Type: "string", Description: "Project goals (markdown)"},
+				"project_dir":           {Type: "string", Description: "Project directory path"},
+				"git_strategy":          {Type: "string", Description: "local | pr | none (default local). local and pr need a git repository; none works in place with no branch."},
+				"init_git":              {Type: "boolean", Description: "Run the platform's git setup (EnsureGitState: git init, initial commit, integration branch) against project_dir. Only after the user agrees. No-op when the directory already has a repository."},
+				"default_runtime_image": {Type: "string", Description: "Default runtime image tag (empty = inherit)"},
+				"execution_mode":        {Type: "string", Description: "runtime = always-container (opt-in); local = in-process (default). Omit for local."},
+			},
+			Required: []string{"title"},
 		},
 		{
 			Name:        "update_project",
-			Description: "Update an existing project's fields (title, goals, project_dir).",
+			Description: "Update an existing project's fields (title, goals, project_dir, execution_mode). A changed execution_mode applies to subsequent runs; an in-flight run keeps the transport it started with.",
 			Mutating:    true,
 			Fn:          toolUpdateProject,
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Project ID"}, "title": {Type: "string", Description: "New title"}, "goals": {Type: "string", Description: "New goals"}, "project_dir": {Type: "string", Description: "New project directory"}},
-			Required:    []string{"id"},
+			Properties: map[string]PropertySchema{
+				"id":                    {Type: "string", Description: "Project ID"},
+				"title":                 {Type: "string", Description: "New title"},
+				"goals":                 {Type: "string", Description: "New goals"},
+				"project_dir":           {Type: "string", Description: "New project directory"},
+				"default_runtime_image": {Type: "string", Description: "New default runtime image tag (empty = inherit)"},
+				"execution_mode":        {Type: "string", Description: "runtime = always-container (opt-in); local = in-process (default). Omit to leave unchanged; changes apply to subsequent runs."},
+			},
+			Required: []string{"id"},
 		},
 		{
 			Name:        "delete_project",
@@ -138,11 +155,18 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Required:    []string{"id"},
 		},
 		{
-			Name:        "create_project_directory",
-			Description: "Create a project directory on the filesystem and set it as the project's project_dir. Optionally scaffold subdirectories (src, docs, tests, workflows).",
+			Name: "create_project_directory",
+			Description: "Create a project directory on the filesystem and set it as the project's project_dir. " +
+				"Optionally scaffold subdirectories (src, docs, tests, workflows) and initialise a git repository " +
+				"(init_git) — which a local/pr project needs before its runs can branch. init_git is a no-op when " +
+				"the directory already has a repository, and the project's strategy none means it never runs.",
 			Mutating:    true,
 			Fn:          toolCreateProjectDir,
-			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Project ID"}, "scaffold": {Type: "boolean", Description: "Whether to create scaffold subdirectories"}},
+			Properties: map[string]PropertySchema{
+				"project_id": {Type: "string", Description: "Project ID"},
+				"scaffold":   {Type: "boolean", Description: "Whether to create scaffold subdirectories"},
+				"init_git":   {Type: "boolean", Description: "Run the platform's git setup on the new directory (git init + initial commit + integration branch when a remote exists). Only after the user agrees; no-op when a repository already exists."},
+			},
 			Required:    []string{"project_id"},
 		},
 		{
@@ -186,10 +210,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Properties:  map[string]PropertySchema{},
 		},
 		{
-			// ask_user — the interactive clarifying question the clients render as a card. It RECORDS the
-			// question and returns immediately (see tool_ask_user.go): the turn then ends normally and the user
-			// answers in their NEXT message, so it can never trip the stall guard's tool wedge. One registration
-			// here reaches BOTH transports (native via toolRegistry.List(); opencode via the orchicon mcp sidecar).
+			// ask_user — the interactive clarifying question the clients render as a card.
 			Name: "ask_user",
 			Description: "Ask the user a clarifying question and END YOUR TURN. Use this instead of writing a numbered " +
 				"list of choices in prose. Provide `question` and 2+ choice-shaped `options` (each {label, description?} " +
@@ -370,10 +391,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Required:    []string{"id"},
 		},
 		{
-			// THE HARD DELETE the operator asked for. It is a SEPARATE tool rather than a flag on
-			// delete_work_item, because the two differ in kind and not in degree: one is a reversible status
-			// change and the other destroys the row. An agent that has to name the destructive one has read
-			// the name, which is the only warning a function signature can give.
+			// THE HARD DELETE the operator asked for.
 			Name: "hard_delete_work_item",
 			Description: "PERMANENTLY remove a work item and its dependencies. IRREVERSIBLE — the row is gone, " +
 				"not cancelled, and cannot be restored. Refused for an item with children (delete them first) " +
@@ -427,7 +445,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Properties: map[string]PropertySchema{
 				"name":          {Type: "string", Description: "Worker name"},
 				"purpose":       {Type: "string", Description: "Worker purpose"},
-				"model_ref":     {Type: "string", Description: "Model reference (adapter/provider/model, e.g. opencode/opencode-go/deepseek-v4-flash, or the legacy provider/model e.g. opencode-go/deepseek-v4-flash). Segment 1 selects and routes the per-worker adapter (ADR-0005): fresh selections default to the orchicon adapter (e.g. orchicon/commandcode/deepseek/deepseek-v4-flash); legacy 2-segment refs (provider/model) infer and keep dispatching to opencode — existing workers are never repointed. The ref's adapter segment is the single source of truth for dispatch; there is no separate runtime_ref."},
+				"model_ref": {Type: "string", Description: "Model reference (adapter/provider/model, e.g. opencode/opencode-go/deepseek-v4-flash, or the legacy provider/model e.g. opencode-go/deepseek-v4-flash). Segment 1 selects and routes the per-worker adapter: fresh selections default to the orchicon adapter (e.g. orchicon/commandcode/deepseek/deepseek-v4-flash); legacy 2-segment refs (provider/model) infer and keep dispatching to opencode — existing workers are never repointed. The ref's adapter segment is the single source of truth for dispatch; there is no separate runtime_ref."},
 				"description":   {Type: "string", Description: "Optional human-readable description"},
 				"version_note":  {Type: "string", Description: "Optional note describing draft version 1"},
 				"role":          {Type: "string", Description: "Optional role section for the composed system prompt"},
@@ -834,7 +852,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"stall_nudge_reply_window_seconds":    {Type: "number", Description: "Seconds a probe is awaited before the execution is considered unresponsive (0 = leave unchanged)"},
 				"stall_nudge_cooldown_seconds":        {Type: "number", Description: "Seconds between consecutive probes (0 = leave unchanged)"},
 				"stall_tool_hang_seconds":             {Type: "number", Description: "Seconds a tool call with no events is allowed before it is cancelled natively and a course-correcting redirect is injected (0 = leave unchanged; negative = disabled)"},
-				"default_budget_overrides":            {Type: "string", Description: "JSON object of default execution-budget gates (e.g. {\"tokens\":500000,\"cost_usd\":0.5,\"wall_clock_seconds\":7200,\"tool_call_count\":0,\"compact_max_turns\":12}). Empty string = leave unchanged."},
+				"default_budget_overrides":            {Type: "string", Description: "JSON object of default execution-budget gates. An OMITTED gate means NO LIMIT — there are no built-in ceilings, so each one exists only because an operator set it. Example: {\"cost_usd\":10,\"wall_clock_seconds\":7200,\"compact_max_turns\":30}. Empty string = leave unchanged."},
 				"execution_reap_grace_seconds":        {Type: "number", Description: "Liveness reaper grace before a stuck running execution is reaped (0 = leave unchanged)"},
 				"execution_reap_consecutive_failures": {Type: "number", Description: "Liveness probe failures before the reaper acts (0 = leave unchanged)"},
 			},

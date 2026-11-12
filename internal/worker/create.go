@@ -10,14 +10,10 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// CreateWorkerInput is the full input for creating a worker header plus
-// its first draft version. Both the Connect service (Service.CreateWorker)
-// implementation of "create a worker" — the ghost-record bug (tool path
-// committed a workers row with no worker_versions row and dropped
-// model_ref) was two drifted implementations.
+// CreateWorkerInput is the full input for creating a worker header plus its first draft version.
 type CreateWorkerInput struct {
 	TenantID     string
-	Adapter      string // explicit adapter selection (ADR-0005 D2); must agree with ModelRef
+	Adapter      string // explicit adapter selection; must agree with ModelRef
 	Name         string
 	Slug         string // optional; derived from Name when empty
 	Description  string
@@ -31,18 +27,11 @@ type CreateWorkerInput struct {
 	AgentsMD     string
 	SystemPrompt string // raw prompt; used only when no structured field is set
 
-	// Ephemeral marks this worker as machine-managed and transient (Ask
-	// Orchicon Quick Work's throwaway worker). It is set only by the Ask tool
-	// layer: no UI or Connect handler passes it, because a transient worker
-	// is something an AGENT creates for one job, not something a human files.
-	// Threaded through the row so the create path stays one insert.
+	// Ephemeral marks this worker as machine-managed and transient (Ask Orchicon Quick Work's throwaway
+	// worker).
 	Ephemeral bool
 
-	// SkillFiles is a JSON array of absolute skill file/directory paths for the
-	// worker's first version. DISTINCT FROM Skills above (free-text prompt prose):
-	// these are real on-disk paths, validated by contextfiles.Validate, and
-	// rendered into the composite prompt by contextfiles.RenderManifest, union-ed
-	// with the project's skill_files at render time.
+	// SkillFiles is a JSON array of absolute skill file/directory paths for the worker's first version.
 	SkillFiles string // JSON array of absolute paths
 
 	// JSON-encoded fields (validated; empty becomes the canonical default).
@@ -52,7 +41,7 @@ type CreateWorkerInput struct {
 	BudgetOverrides string // JSON object
 	Labels          string // JSON object
 
-	// NOTE: worker-level RuntimeRef was retired (ADR-0003 single source of
+	// NOTE: worker-level RuntimeRef was retired ( single source of
 	// truth): the model_ref's adapter segment alone governs dispatch.
 
 	ExecutionPolicyRef  string
@@ -70,13 +59,8 @@ func validateJSONString(s, empty, field string) (string, error) {
 	return string(b), nil
 }
 
-// ValidateCreateWorkerInput validates and normalizes every field in place:
-// the name is trimmed and required, the slug is derived from the name when
-// empty, text fields are trimmed and bounds-checked, JSON fields must be
-// valid JSON (empty becomes the canonical "[]"/"{}"), and a negative
-// concurrency limit clamps to 0. Callers map the returned error to their
-// surface's invalid-argument code (Connect handler) or return it as-is
-// (tool). Idempotent: calling it twice is safe.
+// ValidateCreateWorkerInput validates and normalizes every field in place: the name is trimmed and
+// required, the slug is derived from the name when empty.
 func ValidateCreateWorkerInput(in *CreateWorkerInput) error {
 	name, err := validateName(in.Name)
 	if err != nil {
@@ -154,13 +138,8 @@ func ValidateCreateWorkerInput(in *CreateWorkerInput) error {
 	return nil
 }
 
-// CreateWorkerTx inserts the worker header and its first draft version-1
-// row, enqueues the worker.created outbox event, and writes the
-// worker.created audit row — all inside the caller's tenant transaction.
-// It does NOT commit; the caller owns the transaction and must commit it
-// so the version row, event, and audit row land atomically. Input must
-// have passed ValidateCreateWorkerInput (the slug is deduped here against
-// the tenant: -2, -3, ... until free).
+// CreateWorkerTx inserts the worker header and its first draft version-1 row, enqueues the
+// worker.created outbox event, and writes the worker.created audit row.
 func CreateWorkerTx(ctx context.Context, tx pgx.Tx, in CreateWorkerInput) (db.WorkerRow, db.WorkerVersionRow, error) {
 	// Dedupe the slug against the tenant so clones and re-created workers
 	// never hit the unique workers_tenant_slug_idx constraint.
@@ -190,10 +169,8 @@ func CreateWorkerTx(ctx context.Context, tx pgx.Tx, in CreateWorkerInput) (db.Wo
 		return db.WorkerRow{}, db.WorkerVersionRow{}, fmt.Errorf("create worker: %w", err)
 	}
 
-	// Structured prompt fields are the source of truth for the version; the
-	// composed system_prompt is derived so the DB column always matches what
-	// dispatch would send. Legacy callers that only supply system_prompt keep
-	// working (structured fields stay empty and the raw prompt is stored).
+	// Structured prompt fields are the source of truth for the version; the composed system_prompt is
+	// derived so the DB column always matches what dispatch would send.
 	versionRow := db.WorkerVersionRow{
 		ID:                  versionID,
 		TenantID:            in.TenantID,

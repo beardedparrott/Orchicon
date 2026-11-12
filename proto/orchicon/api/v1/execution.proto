@@ -212,6 +212,26 @@ message CancelExecutionResponse {
   WorkerExecution execution = 1;
 }
 
+// ReleaseStuckExecutionsRequest asks the liveness reaper to run now, scoped to
+// one project. project_id is REQUIRED: releasing is a project-level remedy,
+// because it is the project's dispatch cap that a stuck execution holds.
+message ReleaseStuckExecutionsRequest {
+  string project_id = 1;
+  // reason is recorded on each released execution (audit + the execution's
+  // error message), so a release is never anonymous.
+  string reason = 2;
+}
+
+message ReleaseStuckExecutionsResponse {
+  // released_ids are the executions the reaper judged dead and failed. Empty
+  // when nothing was dead — which is a SUCCESS, not an error: it means every
+  // slot holder is genuinely alive and there is nothing to clear.
+  repeated string released_ids = 2;
+  // examined is how many slot-holding executions the reaper looked at, so the
+  // caller can tell "nothing was stuck" from "nothing was checked".
+  int32 examined = 3;
+}
+
 message CheckpointNowRequest {
   string id = 1;
 }

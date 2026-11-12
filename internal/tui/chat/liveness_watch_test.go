@@ -1,22 +1,6 @@
 package chat
 
 // liveness_watch_test.go — A STREAM THAT DIES SILENTLY MUST STILL BE RE-DIALLED.
-//
-// The operator, with a side-by-side screenshot: the GUI showed the reply streaming, a reasoning
-// block, and "Connection interrupted — still working… Output continues below." with "Last activity
-// 1s ago". The TUI showed only "Orchicon is thinking…" for the whole turn — and re-entering the
-// conversation "fixed" it, because that runs a fresh ListMessages.
-//
-// The TUI had no client-side liveness check at all. A connection through the container network can
-// die HALF-OPEN — no FIN reaches the client — so `stream.Receive()` blocks forever: no error, no
-// EOF, so consume() never returns and dropStream (which owns the re-dial) is never reached. The
-// server was sending a Heartbeat every 15 seconds the whole time, and the TUI received them; the
-// Heartbeat case only cleared a flag. A heartbeat IS the server saying "alive", so its absence is
-// the death signal.
-//
-// These tests drive the watchdog directly (its timeout is a constant, and waiting 40s per case is
-// not a test). What they pin is the DECISION: staleness is measured from activity, activity includes
-// heartbeats, and a stale stream takes the SAME re-dial path as a socket that broke loudly.
 
 import (
 	"testing"
@@ -26,9 +10,6 @@ import (
 )
 
 // A STREAM WITH NO EVENTS GOES STALE, and a stream that keeps receiving heartbeats does not.
-//
-// The two halves matter equally: without the first, the bug stands; without the second, a working
-// turn would be torn down mid-flight every time the model thought for a while.
 func TestStalenessIsMeasuredFromActivityIncludingHeartbeats(t *testing.T) {
 	c := NewController(nil)
 
@@ -55,9 +36,6 @@ func TestStalenessIsMeasuredFromActivityIncludingHeartbeats(t *testing.T) {
 }
 
 // A STREAM THAT HAS NOT DELIVERED ITS FIRST EVENT IS NOT STALE.
-//
-// lastActivity is zero until the stream is armed, and zero is not "silent since 1970" — the
-// observable difference is a turn torn down during its own handshake.
 func TestAStreamThatHasNotStartedIsNotStale(t *testing.T) {
 	c := NewController(nil)
 	c.state["c1"] = &convState{streaming: true} // lastActivity unset
@@ -81,19 +59,12 @@ func TestAFinishedTurnIsNeverStale(t *testing.T) {
 }
 
 // AND A STALLED STREAM TAKES THE SAME RE-DIAL PATH AS A BROKEN SOCKET.
-//
-// This is what makes the watchdog a FIX rather than a report: dropStream is where `reconnecting` is
-// set and the Watch command is queued, and that is exactly what the shell acts on — it flips the
-// pane to its connection banner and re-attaches. So the stalled case is driven THROUGH dropStream
-// and asserted on the production state and the real command channel.
 func TestAStalledStreamGoesReconnectingAndQueuesARedial(t *testing.T) {
 	c := NewController(nil)
 	cmds := make(chan tea.Cmd, 4) // bounded like the shell's own channel
 	c.Bind(&recorder{conn: map[string]bool{}}, cmds)
 
-	// An ACKED, streaming turn that has gone quiet — the operator's situation. pendingReplyID is what
-	// makes it recoverable: without an ack the server-side turn may never have started, and
-	// dropStream tears that down instead.
+	// An ACKED, streaming turn that has gone quiet — the operator's situation.
 	c.state["c1"] = &convState{
 		streaming:      true,
 		pendingReplyID: "a1",
@@ -141,11 +112,6 @@ func TestAStallBeforeTheAckTearsTheTurnDown(t *testing.T) {
 }
 
 // THE AGE THE ACTIVITY LINE SHOWS COMES FROM THIS CLOCK, so the two cannot disagree.
-//
-// The shell's notice renders chat.Controller.SilenceSince, and the watchdog tears a stream down on
-// the SAME lastActivity. If the line computed its own elapsed time from a different start point, the
-// pane could read "last activity 2s ago" for a stream the watchdog was about to declare stalled —
-// a reassurance that is worse than silence, because it hides the failure.
 func TestSilenceSinceReportsOnlyRealSilence(t *testing.T) {
 	c := NewController(nil)
 

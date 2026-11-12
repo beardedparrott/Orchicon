@@ -24,12 +24,8 @@ func readGoldenProps(t *testing.T, name string) map[string]any {
 	return props
 }
 
-// TestPermissionAskCorrelatesMCPToolCallArgs pins the fix for the ask shape
-// that carries no detail of its own: the MCP/host-suite ask the Ask prompt's
-// `orchicon_*` tools raise (permission=tool key, patterns ["*"], metadata {}).
-// Its args exist only on the bus, in the tool part that precedes the ask, so
-// the index correlates them by callID; without them the consent layer had
-// nothing to key or show and approved a sibling-path write silently.
+// TestPermissionAskCorrelatesMCPToolCallArgs pins the fix for the ask shape that carries no detail
+// of its own: the MCP/host-suite ask the Ask prompt's `orchicon_*` tools raise (permission=tool.
 func TestPermissionAskCorrelatesMCPToolCallArgs(t *testing.T) {
 	props := readGoldenProps(t, "permission_asked_mcp_golden.json")
 	if props["permission"] != "orchicon_write" {
@@ -48,9 +44,8 @@ func TestPermissionAskCorrelatesMCPToolCallArgs(t *testing.T) {
 			},
 		}}
 	}
-	// An early input-less update must not erase a later one, and a later
-	// update MERGES into the args already seen (the serve streams a tool
-	// part's input progressively).
+	// An early input-less update must not erase a later one, and a later update MERGES into the args
+	// already seen (the serve streams a tool part's input progressively).
 	calls.observe(toolPart(nil))
 	calls.observe(toolPart(map[string]any{"filePath": "/p/sibling/notes.md"}))
 	calls.observe(toolPart(map[string]any{"mode": "create"}))
@@ -92,12 +87,8 @@ func TestPermissionAskCorrelatesMCPToolCallArgs(t *testing.T) {
 	}
 }
 
-// TestPermissionAskedGoldenClassifies is the golden pin for the consent
-// layer's detail extraction: it feeds the CAPTURED permission.asked payload
-// (testdata/permission_asked_golden.json) through classifyBusEvent and asserts
-// the raw detail survives verbatim. If a live serve's shape disagrees with the
-// fixture, the fixture is re-captured — the parser's candidate keys are then
-// corrected in internal/askorchicon/consent.go.
+// TestPermissionAskedGoldenClassifies is the golden pin for the consent layer's detail extraction:
+// it feeds the CAPTURED permission.asked payload (testdata/permission_asked_golden.json) through.
 func TestPermissionAskedGoldenClassifies(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("testdata", "permission_asked_golden.json"))
 	if err != nil {

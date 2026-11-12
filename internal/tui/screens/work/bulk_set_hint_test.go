@@ -1,15 +1,7 @@
 package work
 
-// bulk_set_hint_test.go — THE BULK SET IS DISCOVERABLE FROM THE COMPOSER.
-//
-// The operator: "We recently added bulk workflow and runtime image setting but the workers didn't add a
-// shortcut helper in the composer to tell people that they can and how to do it. We need one for W."
-//
-// The chord existed and the action bar offered it — but ONLY once a selection existed, which made it
-// discoverable only to an operator who had already found it. And below the bulk threshold the key did
-// nothing at all: keyBulkSet is the one chord in its key group that is not always in the action list, so
-// actionByKey found nothing and the key fell through in SILENCE. A hint that names a chord which then does
-// nothing is worse than no hint, so both halves are pinned here.
+// We need one for W." The chord existed and the action bar offered it — but ONLY once a selection
+// existed, which made it discoverable only to an operator who had already found it.
 
 import (
 	"strings"
@@ -58,9 +50,7 @@ func TestTheWorkItemsHintStatesTheSelection(t *testing.T) {
 	}
 }
 
-// THE CHORD IS NOT A DEAD KEY BELOW THE THRESHOLD. It cannot open the picker — there is no selection to
-// apply it to — but it must say so rather than doing nothing, which is what made it undiscoverable in the
-// first place.
+// THE CHORD IS NOT A DEAD KEY BELOW THE THRESHOLD.
 func TestTheBulkSetRefusesOutLoudWithoutASelection(t *testing.T) {
 	for _, marks := range []int{0, 1} {
 		m := bulkModel(t)

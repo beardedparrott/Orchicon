@@ -1,20 +1,5 @@
-// Package opencode implements the OpenCode adapter bridge — the single
-// session-transport bridge that drives worker executions as persistent
-// opencode sessions on a serve instance (docs/04_Runtime_Adapter_SDK.md
-// §6).
-//
-// Transport strategy (docs/04 §6.0): every execution runs as a persistent
-// opencode session created + driven over the serve HTTP+SSE API
-// (session_run.go). The legacy one-shot `opencode run` subprocess path
-// was REMOVED: a run that cannot get a session fails loudly
-// (failed_to_start → workflow recovery) instead of silently degrading to
-// a second, inferior transport. When OpenCode ships a stable IPC API, the
-// adapter swaps its internals to an IPC client; the gRPC contract and
-// control plane are unaffected.
-//
-// The adapter MUST NOT advertise capabilities the CLI surface cannot
-// honestly deliver (docs/04 §6.2). v0.1 advertises a reduced
-// capability set.
+// The adapter MUST NOT advertise capabilities the CLI surface cannot honestly deliver (docs/04
+// §6.2).
 package opencode
 
 import (
@@ -45,165 +30,102 @@ import (
 	otelmetric "go.opentelemetry.io/otel/metric"
 )
 
-// Adapter is the OpenCode adapter bridge. It implements
-// scheduler.AdapterBridge. Every execution runs as a persistent opencode
-// session driven through a serve's HTTP+SSE API (session_run.go); the
-// legacy one-shot `opencode run` subprocess transport was removed.
+// Adapter is the OpenCode adapter bridge.
 type Adapter struct {
 	log *slog.Logger
 	mu  sync.Mutex
 
-	// sessions tracks live session-transport executions (execution_id →
-	// runner). It is the routing table for SendExecutionMessage and makes
-	// IsExecutionActive report session executions as alive until the plane
-	// restarts (an empty map after boot = every session execution orphaned
-	// and correctly reported dead).
+	// sessions tracks live session-transport executions (execution_id → runner).
 	sessions map[string]*sessionRun
 
 	// host is the always-on host opencode serve for the in-process
 	// (local) execution population. Session-transport only.
 	host *HostServe
 
-	// askHost is the Ask Orchicon serve, built with the INTERACTIVE permission
-	// profile (see NewAskHostServe). Ask's turn surface resolves its serve
-	// through chatHost(a.askHost, a.host); every worker path keeps a.host. Nil
-	// falls back to the worker serve — the pre-split behaviour, which is what
-	// tests and an unconfigured plane get.
+	// askHost is the Ask Orchicon serve, built with the INTERACTIVE permission profile (see
+	// NewAskHostServe).
 	askHost *HostServe
 
-	// hostPool is the DEMAND-KEYED pool of host serves for the in-process
-	// population, keyed by the RESOLVED MCP set (see HostServePool). A shared
-	// host serve builds its config ONCE and lives for the plane, so unioning
-	// several projects' MCP sets onto it would leak one project's servers into
-	// another project's session — FORBIDDEN; the pool is why each session lands
-	// on a serve whose config matches exactly what that session is entitled to.
-	// Nil keeps today's single-serve behaviour (legacy/tests).
+	// askPool is the pool the ASK serve is drawn from, and it is what lets a conversation's own MCP
+	// servers reach an Ask turn on this adapter.
+	askPool *HostServePool
+
+	// hostPool is the DEMAND-KEYED pool of host serves for the in-process population, keyed by the
+	// RESOLVED MCP set (see HostServePool).
 	hostPool *HostServePool
 
-	// runServeCfg is the RUN-LEVEL serve-config provider (see
-	// RunServeConfigProvider). It is why the adapter never rebuilds the
-	// container config per execution: the daemon applies ServeConfig only at
-	// container creation, so a per-execution input would make "whichever step
-	// created the container first" decide what every step sees. Nil = no
-	// provider (tests/headless); the container path then sends an empty config
-	// and the daemon's create-time config stands.
+	// runServeCfg is the RUN-LEVEL serve-config provider (see RunServeConfigProvider).
 	runServeCfg RunServeConfigProvider
 
 	// hostScope resolves the in-process session's MCP set for the host pool.
-	// Nil = the EMPTY set, which maps to the default serve (today's single
-	// host serve) — an unconfigured plane behaves exactly as before.
 	hostScope mcpclient.ScopeResolver
 
-	// rt is the workflow runtime daemon client. When non-nil AND an
-	// execution carries a RuntimeWorkflowID, the adapter reaches that
-	// workflow's runtime container serve for the session. Nil keeps
-	// everything in-process (headless serve).
+	// rt is the workflow runtime daemon client.
 	rt *runtime.Client
 
-	// usageRecorder records LLM usage (Postgres dual-write + OTel
-	// metrics) on each step_finish event carrying tokens + cost
-	// (docs/04 §6.1, docs/08 §5.2). Injected by the server; nil =
-	// usage is not recorded (telemetry loss never blocks control flow
-	// — docs/08 §8 invariant #5).
+	// usageRecorder records LLM usage (Postgres dual-write + OTel metrics) on each step_finish event
+	// carrying tokens + cost (docs/04 §6.1, docs/08 §5.2).
 	usageRecorder UsageRecorderFunc
 
-	// sessionStore persists the durable per-execution session transcript
-	// (execution_session_parts). Injected by the server; nil = the
-	// transcript is not recorded (e.g. tests).
+	// sessionStore persists the durable per-execution session transcript (execution_session_parts).
 	sessionStore SessionStoreFunc
 
-	// fileEdits is the diff-pipeline hook: on every mutating tool_use event
-	// it parses the tool's structured file_edits output (worktree engine
-	// tools) or takes a server-side after-snapshot (opencode built-in
-	// write/edit) and persists ground-truth ledger entries. Injected by the
-	// server; nil = no ledger (tests, adapters without DB access). The
-	// contract mirrors SessionStoreFunc: best-effort, never blocks the
-	// event loop, all errors are the implementation's concern.
+	// fileEdits is the diff-pipeline hook: on every mutating tool_use event it parses the tool's
+	// structured file_edits output (worktree engine tools) or takes a server-side after-snapshot.
 	fileEdits FileEditHookFunc
+	// askFileEdits is the Ask-population ledger hook (owner kind ask_conversation).
+	askFileEdits FileEditHookFunc
+	// askDirResolver resolves an Ask conversation's working directory.
+	askDirResolver func(ctx context.Context, conversationID string) string
 
-	// resolveBinary is the adapter-CLI resolution seam. Default
-	// (resolveOpenCodeBinary) probes PATH then $HOME/.opencode/bin —
-	// Orchicon never ships the binary; the operator's host install is the
-	// single source. Tests override it via SetBinaryResolver so hermetic
-	// CI (bare runners, no adapter CLI installed) exercises the real
-	// fail-fast paths without provisioning anything. Each future adapter
-	// gets its own equivalent resolver + seam.
+	// resolveBinary is the adapter-CLI resolution seam.
 	resolveBinary func() (string, error)
 
-	// consecutiveSessionErrors counts back-to-back model-layer session
-	// failures across executions (guarded by mu). When it reaches
-	// sessionErrorRecycleThreshold, the adapter recycles the affected
-	// workflow's runtime container so the next dispatch gets a FRESH
-	// serve — the observed wedge was a serve that kept answering health
-	// (so the health watchdog never fired) but whose model turns failed
-	// instantly, poisoning every auto-retry. Reset to zero on any
-	// non-error progress (a successful step / tool call / message).
+	// consecutiveSessionErrors counts back-to-back model-layer session failures across executions
+	// (guarded by mu).
 	consecutiveSessionErrors int
 
-	// infraModelTurnRecycles counts runtime-container recycles performed
-	// for the infra-model-turn class (a model call that couldn't reach the
-	// model API at the socket/transport layer) within a SINGLE dispatch —
-	// the per-dispatch repair budget for the immediate recycle path. Reset
-	// on any non-error progress so a healthy step never inherits a prior
-	// dispatch's spent budget.
+	// infraModelTurnRecycles counts runtime-container recycles performed for the infra-model-turn class
+	// (a model call that couldn't reach the model API at the socket/transport layer) within a SINGLE.
 	infraModelTurnRecycles int
 }
 
-// SessionStoreFunc persists transcript entries for one execution. The
-// implementation owns the tenant transaction. It is the opencode alias
-// for the scheduler contract type (scheduler.SessionStoreFunc) so the
-// adapter reads identically to how it did before the contract move.
+// SessionStoreFunc persists transcript entries for one execution.
 type SessionStoreFunc = scheduler.SessionStoreFunc
 
-// SetRuntimeClient injects the workflow runtime daemon client. When set,
-// executions with a RuntimeWorkflowID dispatch into that workflow's
-// runtime container; without it the adapter runs in-process. It is the
-// opencode implementation of scheduler.ConfigurableBridge.
+// SetRuntimeClient injects the workflow runtime daemon client.
 func (a *Adapter) SetRuntimeClient(rt *runtime.Client) { a.rt = rt }
 
-// SetHostServe injects the always-on host opencode serve manager. When
-// set AND sessions are enabled, local (in-process) executions run as
-// persistent sessions on it. Nil means no host serve is available — such
-// executions fail fast (the one-shot subprocess path was removed). It is
-// the opencode implementation of scheduler.ConfigurableBridge.
+// SetHostServe injects the always-on host opencode serve manager.
 func (a *Adapter) SetHostServe(hs *HostServe) { a.host = hs }
 
-// SetAskHostServe injects the dedicated Ask Orchicon serve (the interactive
-// permission profile). Nil leaves Ask on the worker serve, so an unconfigured
-// plane behaves exactly as it did before the profile split.
+// SetAskHostServe injects the dedicated Ask Orchicon serve (the interactive permission profile).
 func (a *Adapter) SetAskHostServe(hs *HostServe) { a.askHost = hs }
+
+// SetAskHostServePool injects the resolved-set-keyed pool the ASK serve is drawn from. Nil keeps
+// Ask on the single askHost, i.e. no conversation-scoped MCP servers.
+func (a *Adapter) SetAskHostServePool(p *HostServePool) { a.askPool = p }
 
 // SetHostServePool injects the resolved-set-keyed pool of host serves for the
 // in-process population. Nil keeps today's single host serve (a.host).
 func (a *Adapter) SetHostServePool(p *HostServePool) { a.hostPool = p }
 
-// SetHostScopeResolver injects the resolver used to compute an in-process
-// session's MCP set (the pool key). Nil = the empty set for every in-process
-// session, which maps to the default serve.
+// SetHostScopeResolver injects the resolver used to compute an in-process session's MCP set (the
+// pool key).
 func (a *Adapter) SetHostScopeResolver(r mcpclient.ScopeResolver) { a.hostScope = r }
 
-// RunServeConfigProvider supplies the RUN-LEVEL serve config for a workflow
-// run's container. It takes ONLY a run id — never a per-execution input —
-// because the daemon applies the config once at container creation: a value
-// that varied per execution would let whichever step created the container
-// first decide what every step sees (order-dependent, forbidden).
+// It takes ONLY a run id — never a per-execution input — because the daemon applies the config once
+// at container creation.
 type RunServeConfigProvider interface {
-	// RunServeConfig returns the OPENCODE_CONFIG_CONTENT the run's container
-	// must carry, derived from the RUN. ok=false means the run has no opencode
-	// demand (or the run could not be resolved) — the caller then sends no
-	// config rather than inventing one.
+	// RunServeConfig returns the OPENCODE_CONFIG_CONTENT the run's container must carry, derived from
+	// the RUN.
 	RunServeConfig(ctx context.Context, runID string) (string, bool)
 }
 
 // SetRunServeConfigProvider injects the run-level serve-config provider.
 func (a *Adapter) SetRunServeConfigProvider(p RunServeConfigProvider) { a.runServeCfg = p }
 
-// SendExecutionMessage routes a mid-run human message into a live session
-// execution. It does NOT create a new execution, work item, or workflow
-// state — the message joins the session's existing turn queue and the
-// reply streams back through the normal execution event stream. Returns
-// an error when the execution has no live session (already finished or
-// unknown execution).
+// SendExecutionMessage routes a mid-run human message into a live session execution.
 func (a *Adapter) SendExecutionMessage(ctx context.Context, execID, message string) error {
 	a.mu.Lock()
 	r := a.sessions[execID]
@@ -220,13 +142,8 @@ func (a *Adapter) SendExecutionMessage(ctx context.Context, execID, message stri
 	return nil
 }
 
-// AbortExecution tears down a running execution's live opencode session so the
-// model stops generating immediately. It is invoked when a human cancels an
-// execution: the execution row is already transitioned to terminated, and this
-// is what actually stops the token spend (without it the session keeps turning
-// in the background — the "terminated but still active" runaway). It cancels
-// the session's subscription context (ending the run loop) and aborts the
-// opencode session on the serve. Unknown/finished executions are a no-op.
+// AbortExecution tears down a running execution's live opencode session so the model stops
+// generating immediately.
 func (a *Adapter) AbortExecution(ctx context.Context, execID, reason string) error {
 	a.mu.Lock()
 	r := a.sessions[execID]
@@ -236,9 +153,8 @@ func (a *Adapter) AbortExecution(ctx context.Context, execID, reason string) err
 		return nil
 	}
 	a.log.Info("aborting execution session", "execution", execID, "session", r.sessionID, "reason", reason)
-	// Cancel the run loop's subscription context first so the runner unwinds
-	// (its defer cleans up the sessions registry), then abort the opencode
-	// session so the model's current turn stops streaming.
+	// Cancel the run loop's subscription context first so the runner unwinds (its defer cleans up the
+	// sessions registry), then abort the opencode session so the model's current turn stops streaming.
 	r.subCancel()
 	if err := r.client.Abort(ctx, r.sessionID); err != nil {
 		a.log.Warn("abort session failed", "execution", execID, "error", err)
@@ -246,21 +162,13 @@ func (a *Adapter) AbortExecution(ctx context.Context, execID, reason string) err
 	return nil
 }
 
-// sessionsEnabled reports whether the session transport is enabled for an
-// execution. The global kill-switch ORCHICON_OPCODE_SESSION_TRANSPORT=0
-// disables it everywhere — with the one-shot path removed, a disabled
-// transport means executions FAIL (fail-fast) rather than degrading.
+// sessionsEnabled reports whether the session transport is enabled for an execution.
 func (a *Adapter) sessionsEnabled(manifest scheduler.ExecutionManifest) bool {
 	return os.Getenv("ORCHICON_OPCODE_SESSION_TRANSPORT") != "0"
 }
 
-// executionDir resolves the worker's working directory: the run's provisioned
-// worktree path when set, else the project dir. The worktree lives under the
-// project dir (.orchicon-worktrees/<runID>), so it is covered by the
-// project-dir mount and passes the project-dir containment checks.
-// engineEditedFromOutput extracts the paths a worktree-engine tool output
-// recorded in its structured file_edits array (empty for every other tool /
-// plain text output). Tolerant: any parse problem yields nil.
+// executionDir resolves the worker's working directory: the run's provisioned worktree path when
+// set, else the project dir.
 func engineEditedFromOutput(out string) []string {
 	entries, err := fileedit.ParseEngineOutput(out)
 	if err != nil {
@@ -280,44 +188,13 @@ func executionDir(m scheduler.ExecutionManifest) string {
 	return m.ProjectDir
 }
 
-// sessionClientFor resolves the SessionClient for an execution: the
-// per-container serve for workflow-run executions (ensuring the container
-// exists + is serving), or the host serve for the in-process population.
-// Returns nil when no serve is available — the caller fails the execution
-// (the legacy one-shot fallback was removed).
-//
-// tenantID is the EXECUTION's tenant (exec.TenantID). It is threaded through
-// because the host-serve pool resolves the session's project MCP set through
-// mcpsettings.Resolver, which reads the tenant from the CONTEXT and errors
-// when none is present — and the reconciler's dispatch context carries NO
-// tenant (it derives straight from the plane's signal context). Without it,
-// every in-process session resolved the EMPTY set and silently landed on the
-// default serve with none of its project's servers (the silent absence AC 6
-// forbids).
+// sessionClientFor resolves the SessionClient for an execution: the per-container serve for
+// workflow-run executions (ensuring the container exists + is serving).
 func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.ExecutionManifest, tenantID string) *SessionClient {
-	// Local execution mode: run in-process via the host serve, never
-	// create/exec a container. The reconciler skipped EnsureForRun for a
-	// local run, so RuntimeWorkflowID has no lease — routing it to
-	// a.rt.Create would silently create a container the run was
-	// explicitly configured NOT to use.
+	// Local execution mode: run in-process via the host serve, never create/exec a container.
 	if runtimeContainerRouteEnabled(a.rt != nil, manifest) {
-		// The composite worktree MCP tools resolve relative paths against
-		// ORCHICON_MCP_WORKTREE_DIR, which must be the execution's working
-		// directory — the run worktree when provisioned, else the project
-		// dir — NOT the project root. Passing the project root here (the
-		// pre-fix behavior) made batch_write land in the main checkout
-		// instead of the run worktree (worktree hygiene violation).
-		// executionDir mirrors the reconciler's cwd resolution, so the
-		// serve config baked for a self-healed/recreated container carries
-		// the same base the run-start gate uses.
-		// The serve config is the RUN-LEVEL one, resolved from the RUN by the
-		// plane's provider — NEVER rebuilt here from the dispatching execution.
-		// The daemon applies ServeConfig only at container creation, so a
-		// per-execution input would make "whichever step created the container
-		// first" decide what every step sees: order-dependent, and forbidden.
-		// Asking the run also makes this self-heal path BYTE-IDENTICAL to the
-		// run-start one, so the pool env key matches and the daemon reuses the
-		// run's already-warmed container instead of building a fresh one.
+		// The serve config is the RUN-LEVEL one, resolved from the RUN by the plane's provider — NEVER
+		// rebuilt here from the dispatching execution.
 		serveCfg := ""
 		if a.runServeCfg != nil {
 			if cfg, ok := a.runServeCfg.RunServeConfig(ctx, manifest.RuntimeWorkflowID); ok {
@@ -339,16 +216,11 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 		if resp.ServePort == 0 || resp.ServePassword == "" {
 			return nil
 		}
-		// AC 4: record the set the session ACTUALLY received, with the RUN it
-		// came from. The plane logs the union's provenance (which scope
-		// supplied each server) once at resolution; this per-session line
-		// confirms an execution really got it, and names only the server IDS —
-		// never env/headers (a resolved credential must never reach a log).
+		// AC 4: record the set the session ACTUALLY received, with the RUN it came from.
 		a.log.Info("session MCP provenance", "execution", manifest.ExecutionID,
 			"run", manifest.RuntimeWorkflowID, "servers", provenanceOfServeConfig(serveCfg))
-		// The daemon returns the plane-reachable base URL (the docker
-		// bridge gateway, reachable from a containerized plane). Fall back
-		// to loopback for host-plane deployments.
+		// The daemon returns the plane-reachable base URL (the docker bridge gateway, reachable from a
+		// containerized plane).
 		baseURL := resp.ServeURL
 		if baseURL == "" {
 			baseURL = fmt.Sprintf("http://127.0.0.1:%d", resp.ServePort)
@@ -357,28 +229,12 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 		// The container serve runs the SAME binary this adapter resolves, so it speaks the same API.
 		client.setAPIShape(a.apiShape())
 		// This serve was built for THIS run (see RunServeConfig), so it carries the run's step-worker
-		// agents and the session can be switched to its own. The HOST path below deliberately does not
-		// set this: a host serve is shared and bakes no agents.
+		// agents and the session can be switched to its own.
 		client.SetAgentsAvailable(true)
 		return client
 	}
 	if a.host != nil {
-		// Lazy host serve (AC 2): the in-process serve starts on FIRST
-		// opencode demand. Standalone dispatches, workflow-run local
-		// executions, and follow-up continuations all arrive here through
-		// Adapter.Start, so a plane with no opencode demand never spawns
-		// (or probes for) the serve at all (AC 1).
-		//
-		// WHEN A POOL IS WIRED the serve is chosen by the session's RESOLVED
-		// MCP SET: the shared serve builds its config once and lives for the
-		// plane, so a cross-project union on it would leak one project's
-		// servers into another project's session (FORBIDDEN — see HostServe
-		// and HostServePool). A session with no project resolves the EMPTY set
-		// and gets the default serve, i.e. exactly today's behaviour.
-		//
-		// The failure is LOUD and fail-fast: a pool with no serve for the set
-		// (at cap, or a start failure) NAMES the set and fails the execution —
-		// never a silent absence.
+		// Lazy host serve (AC 2): the in-process serve starts on FIRST opencode demand.
 		h := a.host
 		if a.hostPool != nil {
 			set := a.hostResolvedSet(ctx, manifest, tenantID)
@@ -400,34 +256,22 @@ func (a *Adapter) sessionClientFor(ctx context.Context, manifest scheduler.Execu
 	return nil
 }
 
-// hostResolvedSet resolves the MCP set an in-process (host-serve) session is
-// entitled to, so the pool can hand out a serve whose config matches exactly
-// that set.
-//
-// SCOPE IS PROJECT — deliberately NOT the run union. The run union is a
-// per-CONTAINER artifact (one serve per run, created once); the host serve
-// serves heterogeneous work over time, so a cross-project union there would
-// leak one project's servers into another project's session. A session with
-// no project (standalone dispatch, Ask) resolves the EMPTY set, which maps to
-// the default serve — today's behaviour, unchanged.
-//
-// tenantID is scoped onto the context because mcpsettings.Resolver reads the
-// tenant from it (tenant.FromContext) and REFUSES an unscoped context — the
-// reconciler's dispatch context carries no tenant, so passing ctx verbatim
-// made every resolution fail and every session fall back to the default serve.
+// hostResolvedSet resolves the MCP set an in-process (host-serve) session is entitled to, so the
+// pool can hand out a serve whose config matches exactly that set.
 func (a *Adapter) hostResolvedSet(ctx context.Context, manifest scheduler.ExecutionManifest, tenantID string) mcpclient.Resolution {
 	if a.hostScope == nil || manifest.ProjectID == "" {
 		return mcpclient.Resolution{}
 	}
 	res, err := a.hostScope.ResolveScope(tenant.WithID(ctx, tenantID), mcpclient.ScopeRef{
-		Kind:      mcpclient.ScopeProject,
-		ProjectID: manifest.ProjectID,
+		Kind:           mcpclient.ScopeWorker,
+		ProjectID:      manifest.ProjectID,
+		WorkerID:       manifest.WorkerID,
+		Version:        manifest.WorkerVersion,
+		OwnPermissions: manifest.Permissions,
 	})
 	if err != nil {
-		// A failed resolution is NOT silently an empty set: an execution that
-		// silently lost its project's servers is one that looks fine and cannot
-		// do its job. Log it; the empty set still maps to the default serve so
-		// the execution is not blocked by an operator misconfiguration.
+		// A failed resolution is NOT silently an empty set: an execution that silently lost its project's
+		// servers is one that looks fine and cannot do its job.
 		a.log.Warn("host serve: MCP resolution failed — using the default serve",
 			"execution", manifest.ExecutionID, "project", manifest.ProjectID, "error", err)
 		return mcpclient.Resolution{}
@@ -435,12 +279,8 @@ func (a *Adapter) hostResolvedSet(ctx context.Context, manifest scheduler.Execut
 	return res
 }
 
-// provenanceOfServeConfig extracts the server NAMES an emitted
-// OPENCODE_CONFIG_CONTENT carries, sorted, for the per-session provenance log
-// (AC 4). It reports names ONLY — the config's `mcp` entries carry resolved
-// env/headers (credentials), and a resolved credential must never reach a
-// log (the same rule mcpclient.ProvenanceString states). An empty or
-// unparseable config yields an empty string.
+// It reports names ONLY — the config's `mcp` entries carry resolved env/headers (credentials), and
+// a resolved credential must never reach a log (the same rule mcpclient.ProvenanceString states).
 func provenanceOfServeConfig(cfgContent string) string {
 	if cfgContent == "" {
 		return ""
@@ -462,43 +302,14 @@ func provenanceOfServeConfig(cfgContent string) string {
 	return strings.Join(names, ",")
 }
 
-// runtimeContainerRouteEnabled is the always-container routing gate: an
-// opencode session dispatches into the run's container only when a daemon
-// client is wired, the execution belongs to a workflow run, AND the run is
-// NOT in local execution mode. A local run has no container (EnsureForRun
-// skipped) — it uses the host serve (in-process), never a fresh container.
+// runtimeContainerRouteEnabled is the always-container routing gate: an opencode session dispatches
+// into the run's container only when a daemon client is wired.
 func runtimeContainerRouteEnabled(hasClient bool, m scheduler.ExecutionManifest) bool {
 	return hasClient && m.RuntimeWorkflowID != "" && m.ExecutionMode != db.ExecutionModeLocal
 }
 
-// RuntimeServeConfig builds the OPENCODE_CONFIG_CONTENT for a runtime
-// container's serve given its runtime image tag: the permission rules only,
-// with the operator's MCP servers omitted — a SERVE eagerly connects to
-// every configured MCP server at startup, and the operator's entries (an
-// `orchicon` MCP that docker execs, a local Playwright MCP) cannot run
-// inside the sandbox, which would hang the serve (the one-shot run path
-// tolerates MCP failures and keeps them). Worker system prompts ride the
-// per-message `system` field instead.
-//
-// THE MCP SET IS THE RUN'S UNION, NOT THE DISPATCHING STEP'S. union is
-// resolved once from the RUN (project-owned ∪ every step worker version's
-// inline specs, plus the run's skill-file union) and this result is applied
-// ONCE, at container creation. A step therefore sees servers ANOTHER step
-// defined — a DELIBERATE over-provision, the same trade the run's boot
-// profile already makes for adapter mounts and serves
-// (CreateRequest.AdapterKinds). It is NOT the dispatching execution's own
-// set: a per-execution input would make "whichever step created the
-// container first" decide what every step sees (order-dependent, and
-// forbidden). That is why this builder takes NO per-execution argument and
-// why its only new input is the run union.
-//
-// For DEV images (which boot the sandbox plane — Postgres + NATS +
-// `orchicon serve` in-container), the serve ALSO registers the built-in
-// Orchicon MCP against the sandbox DB: the `orchicon mcp` sidecar is
-// pointed at the container-local Postgres via the entry's environment map
-// (ORCHICON_POSTGRES_DSN), so workers get the `orchicon_*` tools natively
-// against their own sandbox — never the host plane's DB. Base/gui images
-// get no MCP (no sandbox plane), behavior identical to today.
+// RuntimeServeConfig builds the OPENCODE_CONFIG_CONTENT for a runtime container's serve given its
+// runtime image tag: the permission rules only, with the operator's MCP servers omitted.
 func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map[string]string, union mcpclient.Resolution, providers []runtime.ProviderConfig, workers []adapter.WorkerAgent) string {
 	opts := ConfigOptions{
 		AgentName:    workerAgent,
@@ -508,74 +319,38 @@ func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map
 		SkipUserMCP:  true,
 		RunMCP:       union.Servers,
 		RunSkills:    union.Skills,
-		// Workers are the RUN's step workers as agents, each carrying the run-level
-		// part of that worker's prompt. They matter on 2.x, where a prompt can only
-		// reach the model through the agent (see adapter.WorkerAgent); on a v1
-		// serve the builder ignores them and the prompt rides the per-message
-		// `system` field as it always did.
+		// Workers are the RUN's step workers as agents, each carrying the run-level part of that worker's
+		// prompt.
 		Workers: workers,
-		// WorkflowRunID reaches the worktree MCP sidecar, which needs it to derive
-		// the run-state directory its todo snapshot is written into (see
-		// worktreeMCPServer). Without it the sidecar still serves every tool, but
-		// `todowrite` has nowhere the PLANE can read and the todo panel stays empty.
+		// WorkflowRunID reaches the worktree MCP sidecar, which needs it to derive the run-state directory
+		// its todo snapshot is written into (see worktreeMCPServer).
 		WorkflowRunID: workflowRunID,
-		// Shape is deliberately NOT set: BuildConfigContent resolves it from the
-		// host's version probe, and the container's serve runs the SAME opencode
-		// install bind-mounted from this host, so the host's answer is its answer.
-		// Providers are the tenant's local-model endpoints, TRANSPOSED for this
-		// container by the run-level resolver (providers.TransposeForContainer). A
-		// container's own 127.0.0.1 is itself, so the host's loopback is unreachable
-		// there; the row keeps what the operator typed and this consumer gets a view
-		// it can dial.
+		// Shape is deliberately NOT set: BuildConfigContent resolves it from the host's version probe, and
+		// the container's serve runs the SAME opencode install bind-mounted from this host.
 		Providers: providers,
 	}
 	if runtime.IsDevImageTag(imageTag) {
 		opts.TenantID = serveTenantID()
 		opts.OrchiconMCP = true
 		opts.MCPEnv = map[string]string{"ORCHICON_POSTGRES_DSN": runtime.SandboxPostgresDSN}
-		// The sandbox worker's Orchicon MCP sidecar is told its workflow run so
-		// it can inject the run_context into create calls and stamp recurring-
-		// fire provenance (feature 4.1, AC2).
+		// The sandbox worker's Orchicon MCP sidecar is told its workflow run so it can inject the
+		// run_context into create calls and stamp recurring- fire provenance (feature 4.1, AC2).
 		if workflowRunID != "" {
 			opts.MCPEnv["ORCHICON_MCP_WORKFLOW_RUN_ID"] = workflowRunID
 		}
 	}
-	// Plane channel: when the runtime lifecycle minted a role-scoped worker
-	// credential for this run, register the `orchicon-plane` MCP server so
-	// the worker gets `orchicon_plane_*` tools against the REAL instance.
-	// Orthogonal to the sandbox channel (dev images register `orchicon_*`
-	// against the in-container sandbox DB) — a role-bound worker on a dev
-	// image gets both.
+	// Plane channel: when the runtime lifecycle minted a role-scoped worker credential for this run,
+	// register the `orchicon-plane` MCP server so the worker gets `orchicon_plane_*` tools against.
 	if len(planeEnv) > 0 {
 		opts.PlaneMCP = true
 		opts.PlaneMCPEnv = planeEnv
 	}
-	// The orchicon binary is bind-mounted read-only at /usr/local/bin/orchicon
-	// in EVERY runtime container (the runtime daemon's own executable,
-	// daemon.go:450) — never baked into the image. So the MCP sidecars always
-	// run from there, regardless of image tag.
+	// The orchicon binary is bind-mounted read-only at /usr/local/bin/orchicon in EVERY runtime
+	// container (the runtime daemon's own executable, daemon.go:450) — never baked into the image.
 	opts.MCPBinaryPath = runtimeContainerBinaryPath
 
-	// Composite worktree tools (batch_read / batch_grep / batch_write) are LIVE
-	// for ALL runtime images, not just dev. The worktree MCP sidecar is
-	// DB-less and runs from the daemon's bind-mounted binary, so it works on
-	// the base/gui images too — it does not need the sandbox plane. The worker
-	// is handed the batch tools and opencode's built-in read/grep are denied
-	// (see config.go permissionRules), so it is forced onto the batch tools —
-	// the whole point: fewer turns, less re-sent context. WorktreeDir is the
-	// in-container project dir (the runtime daemon starts the serve with cwd
-	// == project dir); ORCHICON_WORKTREE_DIR overrides it, and the serve
-	// process cwd is the last-resort fallback. CompositeTools is only set when
-	// a worktree dir resolves, so the batch MCP is always registered alongside
-	// the read/grep deny (no lockout).
-	// ProjectRoot is the READ-only extra scope the composite worktree tools may
-	// reach for the run-state files (.orchicon/<run>/) and architecture-notes,
-	// which live at the project root — a sibling of the run worktree. Derived
-	// from the worktree path: when the worktree sits under
-	// <root>/.orchicon-worktrees/<runID>, the project root is its
-	// parent-of-parent; in-place runs (worktree == project dir) derive to the
-	// project dir itself. The project root is reachable in-container as an
-	// ancestor of the worktree (projectMount(manifest.ProjectDir)).
+	// Composite worktree tools (batch_read / batch_grep / batch_write) are LIVE for ALL runtime images,
+	// not just dev.
 	projectRoot := projectDir
 	if filepath.Base(filepath.Dir(projectDir)) == ".orchicon-worktrees" {
 		projectRoot = filepath.Dir(filepath.Dir(projectDir))
@@ -594,10 +369,7 @@ func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map
 	return BuildConfigContent(opts)
 }
 
-// startViaSession runs an execution through a persistent opencode session
-// on the given serve. Returns nil once the execution completes (OnResult
-// fired); a non-nil error means the session transport could not be set up
-// — the caller surfaces it as a failed execution (no one-shot fallback).
+// startViaSession runs an execution through a persistent opencode session on the given serve.
 func (a *Adapter) startViaSession(ctx context.Context, procCtx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, callbacks scheduler.ExecutionCallbacks, client *SessionClient, modelRef string) error {
 	if client == nil {
 		return fmt.Errorf("no opencode serve available")
@@ -623,14 +395,7 @@ func (a *Adapter) startViaSession(ctx context.Context, procCtx context.Context, 
 	return runner.run()
 }
 
-// executionSystemPrompt returns the per-session system prompt for an
-// execution. When the execution runs inside a workflow runtime container
-// with the composite worktree tools enabled (a runtime container with a
-// project dir), it appends the batch-tool discipline so the worker is
-// steered to `batch_read`/`batch_grep`/`batch_write` instead of the granular
-// built-in tools — the whole point of the composite-tools feature (fewer
-// turns, less re-sent context). Host-serve executions (RuntimeWorkflowID
-// empty) have no composite tools and get the bare worker system prompt.
+// executionSystemPrompt returns the per-session system prompt for an execution.
 func executionSystemPrompt(manifest scheduler.ExecutionManifest, shape apiShape) string {
 	sp := manifest.SystemPrompt
 	if manifest.WorktreePath != "" {
@@ -638,11 +403,7 @@ func executionSystemPrompt(manifest scheduler.ExecutionManifest, shape apiShape)
 	}
 	if manifest.RuntimeWorkflowID != "" && manifest.ProjectDir != "" {
 		// WHICH DISCIPLINE DEPENDS ON WHETHER THE TOOLS CAN BE CALLED AT ALL, and the two are not
-		// interchangeable. batchToolsDiscipline tells the worker to reach for `batch_read` directly;
-		// on a Code Mode surface that instruction is UNSATISFIABLE — MCP tools are callable only
-		// from inside `execute` — and a worker given it reports the tools as missing from its
-		// catalog and falls back to `shell` (observed on a real 2.x run). One of these is always
-		// emitted for a composite-tools run; neither is emitted for a run without them.
+		// interchangeable.
 		if shape.codeMode {
 			sp += codeModeDiscipline
 		} else {
@@ -654,11 +415,6 @@ func executionSystemPrompt(manifest scheduler.ExecutionManifest, shape apiShape)
 
 // codeModeDiscipline steers a composite-tools worker on an opencode 2.x serve, where MCP tools
 // CANNOT be called directly (see apiShape.codeMode).
-//
-// It names the exact call form rather than describing it, because the namespace is the one thing
-// the model cannot infer: our server is registered as `orchicon-worktree`, so the tools are reached
-// as `tools["orchicon-worktree"].<name>(...)` inside an `execute` call and never by a bare name.
-// The model discovered this form by searching, unaided — this just saves it the detour.
 const codeModeDiscipline = "\n\n# Tool discipline (Code Mode)\n" +
 	"THIS SERVES OPENCODE 2.x, WHOSE CODE MODE FORBIDS CALLING MCP TOOLS DIRECTLY. " +
 	"You have an `execute` tool that runs JavaScript, and our file/todo tools are MCP tools — " +
@@ -674,11 +430,7 @@ const codeModeDiscipline = "\n\n# Tool discipline (Code Mode)\n" +
 	"Never re-read a file whose content is already in context — every extra call re-sends the whole " +
 	"conversation.\n"
 
-// batchToolsDiscipline steers the worker to the composite context-efficient
-// file tools. It is phrased defensively ("if available") so a worker whose
-// runtime does not expose them falls back to the built-ins without error, and
-// it explicitly forbids the granular tools so the model does not keep reaching
-// for read/grep in batches (the conflicting behaviour the old guidance caused).
+// batchToolsDiscipline steers the worker to the composite context-efficient file tools.
 const worktreePathDiscipline = "\n\n## File scoping\n" +
 	"- Reads may resolve the project root too: run-state files under `.orchicon/<run>/` and `architecture-notes/` live at the project root, a sibling of this worktree — `batch_read`/`read`/`grep`/`list` can read them (by project-root or `../../.orchicon/<run>/...` path).\n" +
 	"- Writes land ONLY in this worktree and the sanctioned scratch dir `/tmp/orchicon` — never the main checkout at the project root.\n" +
@@ -695,12 +447,7 @@ const batchToolsDiscipline = "\n\n# Tool discipline (composite worktree tools)\n
 	"- Bundle independent reads/searches/writes into ONE batch call; never split related work across many micro calls.\n" +
 	"- Oversized tool outputs are truncated head+tail at capture time with the full payload offloaded to disk (<project>/.orchicon/outputs/); the transcript carries the reference — grep/read the offloaded file only if you actually need the middle.\n"
 
-// IsExecutionActive reports whether an in-process execution subprocess is
-// still tracked as running. Used by the execution-liveness reaper to
-// detect executions orphaned by a control-plane restart (a fresh boot has
-// an empty sessions registry, so every previously-running execution is
-// correctly reported dead). Session-transport executions are tracked in
-// the sessions registry and report active while their runner lives.
+// IsExecutionActive reports whether an in-process execution subprocess is still tracked as running.
 func (a *Adapter) IsExecutionActive(execID string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -708,67 +455,40 @@ func (a *Adapter) IsExecutionActive(execID string) bool {
 	return ok
 }
 
-// UsageRecord is the usage sample the adapter emits on step_finish
-// (docs/04 §6.1 step_finish carries tokens + cost). It is the opencode
-// alias for the scheduler contract type (scheduler.UsageRecord) — the
-// server copies it field-for-field into the gateway's input so the
-// gateway never branches on provider.
+// UsageRecord is the usage sample the adapter emits on step_finish (docs/04 §6.1 step_finish
+// carries tokens + cost).
 type UsageRecord = scheduler.UsageRecord
 
-// UsageRecorderFunc records a usage sample. Decoupled from the
-// aigateway package via a function type so the adapter has no import
-// dependency on the gateway (docs/04 §6.0: adapter is a thin bridge). It
-// is the opencode alias for the scheduler contract type.
+// UsageRecorderFunc records a usage sample.
 type UsageRecorderFunc = scheduler.UsageRecorderFunc
 
-// SetUsageRecorder injects the usage recording callback. The server
-// constructs it from the aigateway.UsageRecorder. It is the opencode
-// implementation of scheduler.ConfigurableBridge.
+// SetUsageRecorder injects the usage recording callback.
 func (a *Adapter) SetUsageRecorder(fn UsageRecorderFunc) { a.usageRecorder = fn }
 
-// SetSessionStore injects the durable transcript writer. The server wraps
-// db.AppendExecutionSessionParts in a tenant transaction. Nil = the
-// session transcript is not persisted. It is the opencode implementation
-// of scheduler.ConfigurableBridge.
+// SetSessionStore injects the durable transcript writer.
 func (a *Adapter) SetSessionStore(fn SessionStoreFunc) { a.sessionStore = fn }
 
-// FileEditHookFunc is the diff-pipeline ledger callback. tool is the tool
-// name (batch_write/write/edit for the worktree engine, opencode built-ins
-// pass their input map for the snapshot path), input/out carry the tool_use
-// event's state. The server implements it over fileedit.Service.
+// FileEditHookFunc is the diff-pipeline ledger callback.
 type FileEditHookFunc func(ctx context.Context, execID, tenantID, execDir, toolName string, input map[string]any, output string)
 
 // SetFileEditHook injects the file-edit ledger hook. Nil = no ledger.
 // It is the opencode implementation of the diff-pipeline wiring point.
 func (a *Adapter) SetFileEditHook(fn FileEditHookFunc) { a.fileEdits = fn }
 
+// SetDiffLedger implements scheduler.DiffLedgerSink.
+func (a *Adapter) SetDiffLedger(execution, ask FileEditHookFunc) {
+	a.fileEdits = execution
+	if ask != nil {
+		a.askFileEdits = ask
+	}
+}
+
 // workerAgent is the opencode agent name the adapter injects the worker's
 // composed system prompt under (selected with --agent).
 const workerAgent = "orchicon-worker"
 
-// sessionToolShell is the MINIMAL, session-kind-NEUTRAL system prompt registered
-// for the serve's default agent. It deliberately carries ONLY a tool inventory —
-// which tool fits which job — because its purpose is to REPLACE opencode's large
-// built-in `build` agent prompt (a big per-turn token win), not to state an
-// identity, a budget, or a quota discipline.
-//
-// It is shared by EVERY session on the serve: worker executions AND Ask
-// Orchicon conversations. That is exactly why nothing identity- or budget-shaped
-// belongs here. This shell previously opened with "You are an autonomous coding
-// agent.", asserted the granular tools were "disabled", and closed with
-// tool-call-economy rules ("every extra tool call re-sends the whole
-// conversation", "prefer the fewest tool calls that complete the task"). Ask
-// conversations select no agent, so they inherit the serve default — meaning a
-// live conversation was told it was an autonomous coding agent spending a
-// per-call budget, and it duly reported being "almost at my budget" in a session
-// that has no budget at all (Ask carries no budget ladder, no gates and no
-// warning injections; those are worker-only).
-//
-// The worker identity and the tool-economy discipline live where ONLY an
-// execution sees them: db.WorkerIdentityPreamble + db.efficiencyBlock in the
-// worker's composite per-message prompt, and batchToolsDiscipline for
-// composite-tool runs. A worker loses nothing by this shell going neutral; a
-// conversation stops being told it is a worker.
+// It deliberately carries ONLY a tool inventory — which tool fits which job — because its purpose
+// is to REPLACE opencode's large built-in `build` agent prompt (a big per-turn token win).
 const sessionToolShell = "File access tools:\n" +
 	"- `batch_read` — read several files or a whole directory in ONE call\n" +
 	"- `batch_grep` — search several patterns across the tree in ONE call\n" +
@@ -784,23 +504,14 @@ const sessionToolShell = "File access tools:\n" +
 	"- `skill` — load a skill's instructions\n" +
 	"- `orchicon_*` — Orchicon platform tools: projects, work items, workers, workflows, executions, policies, runtime images, usage, settings, and the project-directory list/read tools."
 
-// runtimeContainerBinaryPath is where the runtime daemon bind-mounts its
-// own executable in every runtime container (internal/runtime/daemon.go).
-// The sandbox Orchicon MCP sidecar spawns there, never at the plane's
-// (host) executable path.
+// runtimeContainerBinaryPath is where the runtime daemon bind-mounts its own executable in every
+// runtime container (internal/runtime/daemon.go).
 const runtimeContainerBinaryPath = "/usr/local/bin/orchicon"
 
 // apiShape resolves the API surface of this adapter's opencode binary, once.
-//
-// It goes through a.resolveBinary — the SAME seam the spawn path uses — so a test that stubs the
-// binary also stubs the version, and a plane cannot detect one opencode while spawning another. A
-// resolver failure is not an error here: it means the spawn path will fail loudly on its own, and
-// this only needs to pick a shape, so v1 (the installed-base default) is the answer.
 func (a *Adapter) apiShape() apiShape {
 	// THE RESOLVER IS AN OPTIONAL SEAM, so a nil one is not an error to report — it is an adapter that
-	// has not been wired for spawning, and it will fail loudly on its own when it tries. Guarding here
-	// rather than relying on every construction path to call New() is what keeps this from turning a
-	// detection detail into a panic in an unrelated test.
+	// has not been wired for spawning, and it will fail loudly on its own when it tries.
 	if a.resolveBinary == nil {
 		return shapeV1
 	}
@@ -812,10 +523,6 @@ func (a *Adapter) apiShape() apiShape {
 }
 
 // New creates an OpenCode adapter bridge.
-// SetBinaryResolver overrides the adapter-CLI resolver (test seam —
-// hermetic CI: bare runners never install adapter CLIs, so tests stub
-// the resolution instead of provisioning a binary; nil restores the
-// default PATH + $HOME/.opencode/bin probe).
 func (a *Adapter) SetBinaryResolver(f func() (string, error)) {
 	if f == nil {
 		f = resolveOpenCodeBinary
@@ -823,16 +530,7 @@ func (a *Adapter) SetBinaryResolver(f func() (string, error)) {
 	a.resolveBinary = f
 }
 
-// resolveOpenCodeBinary is the production resolver. It LIVES IN binary.go now —
-// the adapter, the host serve and the plane's discovery wiring had one copy each
-// and they disagreed about ORCHICON_OPENCODE_BIN (only discovery read it), which
-// is the variable the plane's own error message tells the operator to set. See
-// binary.go for the candidate list and why every candidate is one a runtime
-// container can actually reach.
-//
-// It stays declared here as a package-level name because it is the adapter's
-// DEFAULT for the resolveBinary seam (SetBinaryResolver(nil) restores it) and the
-// fail-fast tests call it directly.
+// resolveOpenCodeBinary is the production resolver.
 
 func New(log *slog.Logger) *Adapter {
 	return &Adapter{
@@ -842,37 +540,8 @@ func New(log *slog.Logger) *Adapter {
 	}
 }
 
-// Start runs the given execution as a persistent opencode session on a
-// serve instance (the host serve for the in-process population, the
-// workflow's runtime container serve for workflow runs) and streams
-// telemetry back via the callbacks (docs/03 §4, docs/04 §6). The session
-// runs until completion or context cancellation.
-//
-// Per AGENTS.md verification standards: this adapter calls the REAL
-// `opencode` runtime. Simulation mode is an explicit opt-in via the
-// ORCHICON_SIMULATE_ADAPTER=1 env var (offline dev only) — it is NOT
-// a silent fallback. If `opencode` is absent from PATH and simulation
-// is not explicitly enabled, Start returns an error so the failure is
-// loud and visible (do not fall back to simulation and claim dispatch
-// works). Verification workers/executions must pin a free model in
-// model_ref (e.g. opencode/deepseek-v4-flash-free).
-//
-// The legacy one-shot `opencode run` subprocess path was REMOVED: when
-// no serve is available (or the session transport is disabled via
-// ORCHICON_OPCODE_SESSION_TRANSPORT=0), Start returns an error and the
-// execution fails (failed_to_start → workflow recovery) instead of
-// degrading to a second, inferior transport.
-//
-// Two recovery-relevant guardrails (docs/06 §2 triggers):
-//   - Stall detection: a progress monitor detects stuck-looping (no
-//     progress, no file changes, repeated tool calls) and raises
-//     OnStall → triggers recovery. Catches the loop a hard timeout
-//     can't (a worker making "progress" but spinning).
-//   - Wall-clock timeout: the worker's budget_overrides.wall_clock_seconds
-//     (default 3600) is enforced as a per-execution context deadline.
-//     When it hits, the session turn is aborted →
-//     OnResult(false) → recovery triggered with reason
-//     "wall_clock_timeout". This is the runaway-spend backstop.
+// Start runs the given execution as a persistent opencode session on a serve instance (the host
+// serve for the in-process population.
 func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, callbacks scheduler.ExecutionCallbacks) error {
 	// Simulation mode is opt-in ONLY (offline dev). Never a silent
 	// fallback (AGENTS.md verification standards).
@@ -881,32 +550,14 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		return a.runSimulation(ctx, execRow, manifest, callbacks)
 	}
 
-	// Resolve the adapter CLI. Orchicon never ships opencode — in
-	// containerized deployments the operator's host install is mounted at
-	// $HOME/.opencode (see scripts/container.sh and the runtime daemon's
-	// standard mounts), so besides PATH we also probe that location
-	// directly. The error is loud either way: the caller (TaskReconciler)
-	// marks the execution failed_to_start and the operator sees it
-	// (AGENTS.md). resolveBinary is a test seam (see SetBinaryResolver):
-	// hermetic CI never installs adapter CLIs, so tests stub the resolver
-	// instead of provisioning one — the pattern scales to every future
-	// adapter (claude code etc.), whose tests stub their own resolver.
+	// Resolve the adapter CLI.
 	binary, err := a.resolveBinary()
 	if binary == "" || err != nil {
 		return fmt.Errorf("opencode binary not found on PATH or ~/.opencode/bin (install it on the host: curl -fsSL https://opencode.ai/install | bash; set ORCHICON_SIMULATE_ADAPTER=1 only for offline dev): %w", err)
 	}
 
-	// Wall-clock timeout backstop (docs/06 §2 budget overrun trigger).
-	// The worker's budget_overrides.wall_clock_seconds bounds the
-	// subprocess; when the deadline hits the process is killed →
-	// OnResult(false) → recovery with reason "wall_clock_timeout".
-	//
-	// The deadline is applied ONLY to the subprocess context (procCtx),
-	// never to the ctx handed to callbacks: when the deadline fires the
-	// process is killed, but the terminal OnResult/OnStall writebacks must
-	// still complete against the DB. Passing the exhausted ctx into
-	// BeginTenantTx fails with "context deadline exceeded" and the
-	// execution stays running forever (observed live on a wall-clock E2E).
+	// The deadline is applied ONLY to the subprocess context (procCtx), never to the ctx handed to
+	// callbacks: when the deadline fires the process is killed.
 	procCtx := ctx
 	if deadline, ok := wallClockDeadline(ctx, manifest.Budgets); ok {
 		var cancel context.CancelFunc
@@ -925,38 +576,16 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 		a.log.Info("no model_ref on worker, using tenant default", "model", modelRef, "execution", execRow.ID)
 	}
 
-	// Best-effort: drop the safety lint script into .orchicon/ so review
-	// and QA workers can run it (their bash tool is scoped to the project
-	// directory). See internal/opencode/lint.go.
+	// Best-effort: drop the safety lint script into .orchicon/ so review and QA workers can run it
+	// (their bash tool is scoped to the project directory).
 	writeSafetyLint(executionDir(manifest))
 
-	// Session transport is the ONLY execution transport. Drive the
-	// execution through a persistent opencode session on a serve instance
-	// (the always-on host serve for the in-process population, or the
-	// workflow's runtime container serve). It enables the liveness nudge,
-	// mid-run human messages, and SSE-streamed progress.
-	//
-	// The legacy one-shot `opencode run` subprocess path is REMOVED: when
-	// no serve is available the execution FAILS (failed_to_start →
-	// workflow recovery) instead of silently degrading to a second,
-	// inferior transport that Orchicon deliberately moved away from.
+	// Session transport is the ONLY execution transport.
 	if !a.sessionsEnabled(manifest) {
 		return fmt.Errorf("opencode session transport disabled (ORCHICON_OPCODE_SESSION_TRANSPORT=0) — no execution transport available for execution %s", execRow.ID)
 	}
 
-	// Session-transport setup with self-heal. The serve converges within a
-	// minute of its container starting (cold start: providers/MCP + the
-	// docker-proxy settling), so session setup retries with backoff — but
-	// never falls back to a one-shot subprocess. On top of the plain backoff
-	// retries, an INFRA failure (see isInfraSessionError: serve unreachable —
-	// connection refused — or POST /session 5xx on a poisoned session store)
-	// triggers a bounded RUNTIME-CONTAINER REPAIR: the run's container is
-	// recycled so the next dispatch builds a fresh serve AND a fresh store.
-	// A poisoned store cannot be fixed by restarting the serve process (the
-	// daemon watchdog reuses the same XDG data dir on disk — the observed
-	// field class), so recycling the container is the only repair that
-	// unblocks the run; the step's on-disk worktree state survives, so the
-	// re-dispatch continues the work rather than starting cold.
+	// Session-transport setup with self-heal.
 	var lastErr error
 	repairs := 0
 	maxRepairs := sessionRepairBudget()
@@ -970,10 +599,8 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 			case <-time.After(time.Duration(attempt) * 2 * time.Second):
 			}
 		}
-		// Re-resolve the client every attempt so a repair (container killed)
-		// is picked up: sessionClientFor re-runs Create, which rebuilds the
-		// container and returns the freshly-published serve once it answers
-		// health — the repair's health-gate before re-dispatch.
+		// Re-resolve the client every attempt so a repair (container killed) is picked up: sessionClientFor
+		// re-runs Create, which rebuilds the container and returns the freshly-published serve once it.
 		client := a.sessionClientFor(ctx, manifest, execRow.TenantID)
 		if client == nil {
 			// No serve to talk to at all. For a runtime-container run this
@@ -989,47 +616,28 @@ func (a *Adapter) Start(ctx context.Context, execRow db.ExecutionRow, manifest s
 			if isInfraSessionError(err) {
 				consecutiveInfra++
 			} else {
-				// A worker/model-side failure won't be fixed by recycling
-				// the container — reset the counter so a later transient
-				// infra blip starts fresh (and never nukes the container
-				// on a single infra failure without a worker error in
-				// between).
+				// A worker/model-side failure won't be fixed by recycling the container — reset the counter so a
+				// later transient infra blip starts fresh (and never nukes the container on a single infra failure.
 				consecutiveInfra = 0
 			}
 		}
 
-		// Infra repair is NOT first-resort: a single infra failure is retried
-		// on the SAME container (a fresh session create — the serve converges,
-		// transient provider hiccups happen), so a HEALTHY parallel step on
-		// the same run container is not torn down by one blip. Only a
-		// PERSISTENT infra failure — consecutiveInfra at the threshold — is
-		// treated as a genuinely broken backend (serve dead / store poisoned)
-		// and repaired by recycling the container: the poisoned store lives
-		// on disk in the container's stable XDG data dir, so only a fresh
-		// container discards it; the step's on-disk worktree survives.
-		// Bounded by sessionRepairBudget.
+		// Infra repair is NOT first-resort: a single infra failure is retried on the SAME container (a
+		// fresh session create — the serve converges, transient provider hiccups happen).
 		if consecutiveInfra >= infraThreshold && repairs < maxRepairs && a.rt != nil && manifest.RuntimeWorkflowID != "" {
 			repairs++
 			consecutiveInfra = 0
 			a.repairRuntimeContainer(ctx, manifest.RuntimeWorkflowID)
 			continue
 		}
-		// Non-infra, or below the repair threshold, or past the repair
-		// budget: keep the backoff retries; the step's own retry/recovery
-		// loop is the bounded owner of persistent failures.
+		// Non-infra, or below the repair threshold, or past the repair budget: keep the backoff retries;
+		// the step's own retry/recovery loop is the bounded owner of persistent failures.
 	}
 	return fmt.Errorf("session transport setup failed: %w", lastErr)
 }
 
-// infraRepairThreshold is how many CONSECUTIVE infra failures (within one
-// dispatch's session-setup) must occur before the adapter recycles the run's
-// runtime container. Default 2: the first infra failure is retried on the
-// same container so a transient service blip never tears down a healthy
-// parallel step on the same run container; a second consecutive infra
-// failure in the same dispatch indicates a broken backend worth repairing.
-// Overridable via ORCHICON_SESSION_INFRA_THRESHOLD; < 2 means container
-// repair can never be triggered by the consecutive counter (only the repair
-// budget, reached via repeated infra failures across executions, recycles).
+// infraRepairThreshold is how many CONSECUTIVE infra failures (within one dispatch's session-setup)
+// must occur before the adapter recycles the run's runtime container.
 func infraRepairThreshold() int {
 	if v := os.Getenv("ORCHICON_SESSION_INFRA_THRESHOLD"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -1039,19 +647,8 @@ func infraRepairThreshold() int {
 	return 2
 }
 
-// repairRuntimeContainer is the session-backend infra repair: it kills the run's
-// runtime container so the NEXT dispatch's Create rebuilds it with a fresh
-// opencode serve and a FRESH session store. Restarting the serve process in
-// place cannot heal a poisoned store (the daemon watchdog reuses the same XDG
-// data dir on disk), which is why this is the kernel of "restart the runtime
-// and continue": a Killed container has none of the poisoned on-disk state.
-// The step's worktree (the on-disk work it already did) is untouched.
-//
-// The caller (the dispatch retry loop) re-resolves the SessionClient after
-// this returns; the next sessionClientFor → rt.Create blocks until the fresh
-// serve answers health, which is the repair's health-gate before re-dispatch.
-// Best-effort: a failed kill is logged and the dispatch proceeds to its next
-// attempt (backoff) as today.
+// repairRuntimeContainer is the session-backend infra repair: it kills the run's runtime container
+// so the NEXT dispatch's Create rebuilds it with a fresh opencode serve and a FRESH session store.
 func (a *Adapter) repairRuntimeContainer(ctx context.Context, workflowID string) {
 	if a.rt == nil || workflowID == "" {
 		return
@@ -1065,47 +662,25 @@ func (a *Adapter) repairRuntimeContainer(ctx context.Context, workflowID string)
 	}
 }
 
-// execStreamState tracks per-execution opencode stream structure so a
-// run that ends before its final model step completes can be flagged as
-// failed instead of reported as a clean, empty success. opencode emits a
-// step_start before every model turn and a step_finish when the turn
-// ends; a clean exit (exit 0) with an unpaired step_start means the
-// final response was lost in transit (line-cap drop, stream truncation,
-// runtime disconnect) — the worker's output and decision signal are
-// missing, so the run must NOT count as succeeded.
+// execStreamState tracks per-execution opencode stream structure so a run that ends before its
+// final model step completes can be flagged as failed instead of reported as a clean.
 type execStreamState struct {
 	stepStarts   int
 	stepFinishes int
 
-	// toolUses counts evtToolUse events for the execution — the real
-	// per-tool-call granularity (a single step/turn can contain several
-	// tool calls before its step_finish). Drives the tool-call dimension of
-	// the unified warn→escalate→abort budget ladder (maybeEnforceLadder).
+	// toolUses counts evtToolUse events for the execution — the real per-tool-call granularity (a
+	// single step/turn can contain several tool calls before its step_finish).
 	toolUses int
 
-	// writtenFiles accumulates the paths opencode reported as file
-	// modifications (file_diff events). Unlike diff markers parsed out of
-	// the worker's text output, this is the telemetry the runtime itself
-	// emits for every file the session writes or edits — including files
-	// the model saves without echoing a diff (e.g. .orchicon/ review
-	// notes written via the Write tool). Surfaced to the next worker so
-	// it can read what the previous step actually produced.
+	// writtenFiles accumulates the paths opencode reported as file modifications (file_diff events).
 	writtenFiles []string
 
-	// engineEditedPaths holds the paths already ledgered by the worktree
-	// engine's structured file_edits output during this run (batch_write
-	// family) — the file_diff fallback skips them so a path never gets two
-	// entries for one edit. Guarded by the same event-loop serialization
-	// as writtenFiles (parseEvent runs on one goroutine per execution).
+	// engineEditedPaths holds the paths already ledgered by the worktree engine's structured file_edits
+	// output during this run (batch_write family).
 	engineEditedPaths map[string]bool
 
-	// truncatedFinish marks a FINAL step_finish that indicates the model
-	// turn was interrupted rather than completed: reason "unknown" with
-	// zero tokens (the signature of a truncated/aborted response — the
-	// failing run's last part was exactly `step_finish {reason:"unknown",
-	// tokens all 0}`). A run ending on such a step is not a clean success:
-	// the worker's final text / ORCHICON WORKER SUMMARY is missing even
-	// though the step counters are balanced (38/38 in the original bug).
+	// truncatedFinish marks a FINAL step_finish that indicates the model turn was interrupted rather
+	// than completed: reason "unknown" with zero tokens (the signature of a truncated/aborted response.
 	truncatedFinish bool
 }
 
@@ -1118,16 +693,7 @@ func (s *execStreamState) unfinished() bool {
 	return s.stepStarts > s.stepFinishes || s.truncatedFinish
 }
 
-// allTokensZero reports whether a step_finish's tokens map is empty or all
-// counts are zero. A real completion carries input/output/cache counts; an
-// interrupted turn (reason "unknown") is emitted with no usage at all.
-//
-// opencode emits cache counts as a nested sub-object ({"cache":{"read":N,
-// "write":M}}), so a cache-served turn has non-zero token counts but an
-// empty input/output at the top level. The old top-level-only scan treated
-// such a turn as "zero" and wrongly flagged a real cache-served completion
-// as a truncated finish. The predicate must look inside the cache sub-object
-// before deciding.
+// allTokensZero reports whether a step_finish's tokens map is empty or all counts are zero.
 func allTokensZero(tokens map[string]any) bool {
 	if len(tokens) == 0 {
 		return true
@@ -1147,12 +713,7 @@ func allTokensZero(tokens map[string]any) bool {
 	return true
 }
 
-// parseTodoItems extracts the worker's todo list from a `todowrite` tool
-// input payload. opencode's todowrite input carries the full replacement
-// array under `todos` ({content, status, priority} per item). Malformed
-// items are dropped; items with no content are skipped; a missing status
-// defaults to "pending". This is the exact shape `todoread` (and the native
-// todo surface) renders from.
+// parseTodoItems extracts the worker's todo list from a `todowrite` tool input payload.
 func parseTodoItems(inRaw any) []worktree.TodoItem {
 	inputMap, ok := inRaw.(map[string]any)
 	if !ok {
@@ -1182,13 +743,7 @@ func parseTodoItems(inRaw any) []worktree.TodoItem {
 	return items
 }
 
-// parseEvent dispatches a decoded opencode event into the telemetry
-// pipeline. It is the single dispatch used by the session transport
-// (legacyEventFromBus builds the {type, part} object from the server SSE
-// bus; parseStdoutLine unmarshals a JSON line into the same shape). One
-// dispatch guarantees consistent downstream behavior: progress monitor,
-// usage recording, artifact capture, summary accumulation, and the
-// streaming callbacks.
+// parseEvent dispatches a decoded opencode event into the telemetry pipeline.
 func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, evt map[string]any, callbacks scheduler.ExecutionCallbacks, monitor *progressMonitor, output *strings.Builder, lastStreamErr *string, textSeq *int, stats *execStreamState, budget *budgetAccumulator) {
 	eventType, _ := evt["type"].(string)
 	part, _ := evt["part"].(map[string]any)
@@ -1203,14 +758,7 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		}
 		a.log.Info("opencode step started", "execution", execID)
 	case evtText:
-		// Text part: the model's response text. PR B: append to the
-		// accumulator so the TaskReconciler can extract the
-		// ORCHICON WORKER SUMMARY block on completion. Also fan the
-		// text out as incremental chunks (textStreamingChunkSize +
-		// textStreamingChunkDelay) so the runtime session pane shows
-		// a typing-style live stream — opencode's --format json
-		// delivers the full text in one event at step_finish, so
-		// without chunking the user would see no streaming at all.
+		// Text part: the model's response text.
 		text, _ := part["text"].(string)
 		if output != nil && text != "" {
 			output.WriteString(text)
@@ -1223,61 +771,23 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		if stats != nil {
 			stats.toolUses++
 		}
-		// opencode v1.x: input + output both arrive in a single
-		// `tool_use` event. The previous dispatch only matched the
-		// legacy `tool_call` / `tool_result` pair — which v1.x never
-		// emits — so tool calls were silently dropped and the
-		// runtime session pane never saw any tool cards. The model's
-		// actual work (file writes, bash commands, web fetches) was
-		// invisible to the operator. Handle the v1.x shape:
-		//   {
-		//     "type": "tool_use",
-		//     "part": {
-		//       "tool": "bash",
-		//       "callID": "...",
-		//       "state": {
-		//         "status": "completed",
-		//         "input":  {...},
-		//         "output": "...",
-		//         "title":  "...",
-		//         "time":   {...}
-		//       }
-		//     }
-		//   }
+		// opencode v1.x: input + output both arrive in a single `tool_use` event.
 		toolName, _ := part["tool"].(string)
 		callID, _ := part["callID"].(string)
 		state, _ := part["state"].(map[string]any)
 		inRaw, _ := state["input"]
 		outStr, _ := state["output"].(string)
 
-		// The ledger hook below must see the PRE-capped output: capToolOutput
-		// splices the tail out of large outputs, which would hide the
-		// file_edits payload of a huge batch_write (the JSON rides at the
-		// end). rawOut is the ledger's copy; outStr stays capped for the UI
-		// fan-out and the durable transcript.
+		// The ledger hook below must see the PRE-capped output: capToolOutput splices the tail out of large
+		// outputs, which would hide the file_edits payload of a huge batch_write (the JSON rides.
 		rawOut := outStr
 
-		// Cap tool OUTPUT before it is streamed to the UI / persisted into
-		// the durable transcript (which a follow-up or a recovery-resumed
-		// session re-seeds as context). A single giant output (a `make ci`
-		// build log, a full `git diff`, a huge glob/find listing) otherwise
-		// inflates everything downstream of this execution. Truncate with a
-		// clear marker so the worker/operator knows the tail is available on
-		// the host or project disk without ballooning the transcript.
+		// Cap tool OUTPUT before it is streamed to the UI / persisted into the durable transcript (which a
+		// follow-up or a recovery-resumed session re-seeds as context).
 		outStr = capToolOutput(outStr, executionDir(manifest), execID, callID)
 
-		// Diff pipeline: record the file edits this tool made BEFORE any
-		// early-break branch below — notably the `write` artifact path, which
-		// breaks out of the switch for every write carrying a `content` input
-		// (both the opencode built-in writer AND the worktree engine's
-		// single-op `write` wrapper share that {filePath|path, content}
-		// shape). The hook sees rawOut (PRE-cap — capToolOutput may have
-		// spliced the tail out of outStr, hiding the file_edits payload of a
-		// huge batch_write). Best-effort: the hook owns its error posture; a
-		// ledger gap never fails the session. Only completed calls ledger: an
-		// error/failed/in-flight state carries no ground truth, and failed
-		// edits must never create phantom rows. An absent status keeps the
-		// legacy fire behavior.
+		// Diff pipeline: record the file edits this tool made BEFORE any early-break branch below — notably
+		// the `write` artifact path.
 		toolStatus, _ := state["status"].(string)
 		if a.fileEdits != nil && (toolStatus == "" || toolStatus == "completed") {
 			inputMap, _ := inRaw.(map[string]any)
@@ -1299,28 +809,12 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 			a.fileEdits(ctx, execID, execRow.TenantID, executionDir(manifest), toolName, inputMap, rawOut)
 		}
 
-		// Detect `todowrite` (native opencode todo tool) and mirror its
-		// payload into the DB-less sidecar snapshot so `todoread` — and the
-		// native todo surface — can re-sync it without a Postgres
-		// transcript. The todo list is the live task-progress list the
-		// execution UI renders from; snapshotting it here (rather than
-		// re-parsing the durable transcript) is what makes the native todo
-		// surface work for DB-less sessions. Best-effort: a failed snapshot
-		// is a log-level concern, never a tool failure.
+		// Detect `todowrite` (native opencode todo tool) and mirror its payload into the DB-less sidecar
+		// snapshot so `todoread` — and the native todo surface.
 		if toolName == "todowrite" {
 			items := parseTodoItems(inRaw)
 			worktree.SaveTodoSnapshot(worktree.BaseFor(executionDir(manifest)), items)
 			// AND THE RUN-STATE COPY, which is the one the todo PANEL reads.
-			//
-			// On 2.x this mirror never fires at all — our tools are MCP tools and
-			// opencode routes them through `execute`, so the transcript names the
-			// tool `execute`, not `todowrite`. That is exactly why the MCP SIDECAR
-			// writes the run-state file too (internal/mcp/worktree.go). This path
-			// covers a v1 serve, where `todowrite` can be opencode's OWN native tool
-			// and so never reaches our MCP handler.
-			//
-			// Reported rather than swallowed: a silently missing snapshot is how the
-			// panel came to show nothing while every layer believed it had succeeded.
 			if rs := worktree.RunStateDir(manifest.ProjectDir, manifest.RuntimeWorkflowID); rs != "" {
 				if err := worktree.SaveRunTodoSnapshot(rs, items); err != nil {
 					a.log.Warn("todowrite run-state snapshot not written — the todo panel will not update",
@@ -1329,28 +823,16 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 			}
 		}
 
-		// Detect `write` tool calls (opencode built-in file writer)
-		// and route them as artifacts instead of raw tool calls. The
-		// model uses `write` to save output files (essays, configs,
-		// code); capturing the content as an artifact event lets the
-		// frontend render it inline as a rich document card instead
-		// of a truncated tool input (docs/10 §11).
+		// Detect `write` tool calls (opencode built-in file writer) and route them as artifacts instead of
+		// raw tool calls.
 		if toolName == "write" {
 			if inputMap, ok := inRaw.(map[string]any); ok {
 				if content, ok := inputMap["content"].(string); ok && content != "" {
 					path, _ := inputMap["path"].(string)
 					a.log.Info("opencode write artifact",
 						"execution", execID, "path", path, "content_len", len(content))
-					// Stream the content as text FIRST so the user sees
-					// the story appear incrementally in the runtime
-					// session pane (chunked into 40-char pieces with
-					// 60ms delay for a typing-style effect). Then emit
-					// the artifact card with the full content so the
-					// operator can inspect/download/copy the file.
-					// Without this, the entire content arrives as one
-					// artifact event at the END of the model's
-					// processing, and the user sees "Waiting for model
-					// output…" → nothing for 30s → artifact burst.
+					// Stream the content as text FIRST so the user sees the story appear incrementally in the runtime
+					// session pane (chunked into 40-char pieces with 60ms delay for a typing-style effect).
 					if output != nil {
 						output.WriteString(content)
 					}
@@ -1383,11 +865,8 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 			}
 		}
 
-		// `inp` is the JSON-marshalled input object so the frontend
-		// can render it as a structured "Input:" block. If
-		// marshalling fails (rare — input is always a JSON object)
-		// fall back to a string form so the operator still sees what
-		// was attempted.
+		// `inp` is the JSON-marshalled input object so the frontend can render it as a structured "Input:"
+		// block.
 		inp, err := json.Marshal(inRaw)
 		if err != nil {
 			inp = []byte(fmt.Sprintf("%v", inRaw))
@@ -1397,35 +876,22 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 			"status", state["status"], "output_len", len(outStr))
 		callbacks.OnToolCall(ctx, execID, toolName, inp, []byte(outStr))
 	case evtReasoning:
-		// v1.x reasoning content (only when --thinking is enabled
-		// on the opencode CLI). Show as a separate reasoning block
-		// so the operator can see what the model was "thinking"
-		// before each assistant turn. Without this the live pane
-		// just shows the final answer.
+		// v1.x reasoning content (only when --thinking is enabled on the opencode CLI).
 		reasonText, _ := part["text"].(string)
 		if reasonText == "" {
 			return
 		}
 		a.log.Debug("opencode reasoning", "execution", execID, "len", len(reasonText))
-		// Reasoning is also streamed chunk-by-chunk so it appears to
-		// unfold live. We tag it with a `kind: reasoning` prefix in
-		// the JSON payload so the frontend can render it in a
-		// distinct style without a new event-type enum.
+		// Reasoning is also streamed chunk-by-chunk so it appears to unfold live.
 		a.emitReasoningChunked(ctx, callbacks, execID, reasonText, textSeq)
 	case evtStepFinish:
 		// Step completion carries token usage + cost (docs/04 §6.1).
-		// Record it via the AI Gateway dual-write: Postgres source of
-		// truth + OTel metrics → VictoriaMetrics (docs/08 §5.2). Best-effort
-		// — telemetry loss never blocks control flow (docs/08 §8).
 		tokens, _ := part["tokens"].(map[string]any)
 		cost, _ := part["cost"].(float64)
 		if stats != nil {
 			stats.stepFinishes++
-			// A step_finish with reason "unknown" and zero tokens is the
-			// signature of a truncated/interrupted model turn (the failing
-			// run's last part was exactly that). Flag it so the final
-			// result can be downgraded to a failure instead of a clean
-			// success with no decision signal.
+			// A step_finish with reason "unknown" and zero tokens is the signature of a truncated/interrupted
+			// model turn (the failing run's last part was exactly that).
 			reason, _ := part["reason"].(string)
 			if (reason == "unknown" || reason == "") && allTokensZero(tokens) {
 				stats.truncatedFinish = true
@@ -1439,20 +905,6 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 			budget.add(tokens, cost)
 		}
 		// PER-STEP FILE ATTRIBUTION, and on 2.x the only LIVE capture there is.
-		//
-		// `session.step.ended.files` is opencode's own list of the paths the step
-		// changed. It matters because every other capture in this file keys on a
-		// TOOL NAME — and on a Code Mode serve no MCP tool is ever a tool name:
-		// `batch_write` arrives as `execute`. So the live hook above matches
-		// nothing, and the end-of-run git reconcile is defeated separately by the
-		// worker COMMITTING its work (its brief orders a clean `git status`). This
-		// is what remains: a signal the agent surface emits about its own edit,
-		// independent of how it was invoked.
-		//
-		// Fed through the SAME "file_diff" hook the diff-event path uses, so the
-		// observer's before/after reading and its no-op suppression are shared
-		// rather than reimplemented — and an engine-covered path is skipped, since
-		// its exact diff is already recorded.
 		if a.fileEdits != nil {
 			files, _ := part["files"].([]any)
 			for _, f := range files {
@@ -1467,12 +919,7 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 			}
 		}
 	case evtFileDiff:
-		// A file_diff event carries the path of a file the session wrote
-		// or edited (part["path"]). Capture it so the worker's written
-		// files — including ones written via the Write tool without a
-		// diff echoed in the output text — can be passed to the next
-		// worker as explicit context to read. Dedup: a file edited many
-		// times in one run is listed once.
+		// A file_diff event carries the path of a file the session wrote or edited (part["path"]).
 		if stats != nil {
 			if p, ok := part["path"].(string); ok && p != "" {
 				for _, existing := range stats.writtenFiles {
@@ -1485,15 +932,8 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 					stats.writtenFiles = append(stats.writtenFiles, p)
 					a.log.Debug("opencode file modified", "execution", execID, "path", p)
 				}
-				// Diff-pipeline fallback (plan step 7): a file_diff for a
-				// path the mutating-tool hook did not cover (an unusual
-				// tool, or a tool whose input shape we don't special-case)
-				// still gets a ledger entry — a plane-side after-read of
-				// real file state under the run's exec dir. Engine-covered
-				// paths (batch_write family) skip this: their entry already
-				// exists with an exact in-engine diff. No-ops (unchanged
-				// files) yield empty entries inside ObserveAfter and are
-				// dropped there.
+				// Diff-pipeline fallback (plan step 7): a file_diff for a path the mutating-tool hook did not cover
+				// (an unusual tool, or a tool whose input shape we don't special-case) still gets a ledger entry.
 				if a.fileEdits != nil && !stats.engineEditedPaths[p] {
 					input := map[string]any{"path": p}
 					a.fileEdits(ctx, execID, execRow.TenantID, executionDir(manifest), "file_diff", input, "")
@@ -1506,15 +946,7 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 		}
 	case evtError:
 		// opencode's --format json emits an error event shaped like
-		// {"type":"error","error":{"name":"...","data":{"message":"..."}}}
-		// — the human-readable message lives at error.data.message, NOT
-		// at the top level (which has no `message` field). The previous
-		// implementation read evt["message"] and got "" every time,
-		// silently dropping the actual reason. Read it correctly here
-		// AND stash the message in lastStreamErr so the OnResult call
-		// below can include it in error_message (docs/04 §6.1: errors
-		// surfaced via telemetry must also be surfaced in the failure
-		// reason).
+		// {"type":"error","error":{"name":"...","data":{"message":"..."}}}.
 		msg := extractErrorMessage(evt)
 		a.log.Warn("opencode error", "execution", execID, "message", msg)
 		if msg != "" {
@@ -1526,26 +958,13 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 	}
 }
 
-// emitTextChunked fans a single assistant-text payload out as a stream
-// of smaller chunks, each separated by a short delay, so the frontend
-// RuntimeSessionPane can render a typing-style live view. Without this,
-// opencode's --format json mode delivers the entire response in one
-// `text` event at step_finish and the user would see nothing until
-// completion.
-//
-// Each chunk is delivered via callbacks.OnText with a per-execution
-// sequence number so the frontend can order chunks even if NATS
-// delivers them out of order. The accumulator (`output`) is NOT
-// touched here — it is updated in parseEvent's text case so the
-// ORCHICON WORKER SUMMARY block is still extractable at OnResult time.
+// emitTextChunked fans a single assistant-text payload out as a stream of smaller chunks.
 func (a *Adapter) emitTextChunked(ctx context.Context, callbacks scheduler.ExecutionCallbacks, execID, text string, seq *int) {
 	if text == "" {
 		return
 	}
-	// Honor cancellation: if the context is done (execution
-	// cancelled/terminated), drop remaining chunks. The final
-	// accumulated output is still in `output` and will be folded
-	// into OnResult.
+	// Honor cancellation: if the context is done (execution cancelled/terminated), drop remaining
+	// chunks.
 	for i := 0; i < len(text); i += textStreamingChunkSize {
 		select {
 		case <-ctx.Done():
@@ -1559,9 +978,7 @@ func (a *Adapter) emitTextChunked(ctx context.Context, callbacks scheduler.Execu
 		chunk := text[i:end]
 		*seq++
 		callbacks.OnText(ctx, execID, chunk)
-		// Pace the chunks so the frontend actually has time to
-		// render them. We skip the delay after the very last
-		// chunk — there's nothing to wait for.
+		// Pace the chunks so the frontend actually has time to render them.
 		if end < len(text) {
 			select {
 			case <-ctx.Done():
@@ -1572,12 +989,7 @@ func (a *Adapter) emitTextChunked(ctx context.Context, callbacks scheduler.Execu
 	}
 }
 
-// emitReasoningChunked is the reasoning-content counterpart to
-// emitTextChunked. Reasoning text arrives on a `reasoning` event
-// (opencode --thinking mode) and is also delivered in one big chunk,
-// so we fan it out the same way. Each chunk is tagged via a JSON
-// wrapper in the payload so the frontend can distinguish reasoning
-// from assistant text without needing a new event-type enum value.
+// emitReasoningChunked is the reasoning-content counterpart to emitTextChunked.
 func (a *Adapter) emitReasoningChunked(ctx context.Context, callbacks scheduler.ExecutionCallbacks, execID, text string, seq *int) {
 	if text == "" {
 		return
@@ -1600,10 +1012,8 @@ func (a *Adapter) emitReasoningChunked(ctx context.Context, callbacks scheduler.
 			"seq":  *seq,
 		}
 		payload, _ := json.Marshal(wrapped)
-		// Use the existing OnText callback but encode the reasoning
-		// marker in the payload so the frontend can render it
-		// differently. OnText writes the payload verbatim into the
-		// outbox row.
+		// Use the existing OnText callback but encode the reasoning marker in the payload so the frontend
+		// can render it differently.
 		callbacks.OnText(ctx, execID, string(payload))
 		if end < len(text) {
 			select {
@@ -1615,20 +1025,8 @@ func (a *Adapter) emitReasoningChunked(ctx context.Context, callbacks scheduler.
 	}
 }
 
-// recordUsage records a usage sample from a step_finish event via the
-// AI Gateway dual-write (docs/08 §5.2). It extracts token counts from
-// the opencode JSON shape and derives provider/model from the manifest's
-// ModelRef (which the human defined — docs/05 §11). Best-effort: a nil
-// recorder means usage is not recorded (docs/08 §8).
-//
-// Token field naming: opencode emits `tokens.input` / `tokens.output`
-// (plus reasoning and a cache sub-object) at the top level of the
-// tokens object. The previous version read `prompt_tokens` /
-// `completion_tokens` — names that don't appear on the wire — so
-// `recordUsage` always saw zeros and the early-return dropped every
-// sample. Result: usage_records stayed empty even when the model was
-// clearly running, and the AI Gateway's Postgres source-of-truth had
-// no data to surface. Now reads the actual opencode fields.
+// recordUsage records a usage sample from a step_finish event via the AI Gateway dual-write
+// (docs/08 §5.2).
 func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, tokens map[string]any, cost float64) {
 	if a.usageRecorder == nil {
 		return
@@ -1638,9 +1036,7 @@ func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, mani
 	cacheWriteTokens := toInt64(cacheToken(tokens, "write"))
 	completionTokens := toInt64(tokens["output"])
 	reasoningTokens := toInt64(tokens["reasoning"])
-	// A genuinely empty sample (no tokens, no cost) is dropped. A cache-only
-	// turn that was fully served from cache (zero fresh input/output but
-	// non-zero cache read/write) must NOT be dropped — cache spend is real.
+	// A genuinely empty sample (no tokens, no cost) is dropped.
 	if promptTokens == 0 && cacheReadTokens == 0 && cacheWriteTokens == 0 &&
 		completionTokens == 0 && reasoningTokens == 0 && cost == 0 {
 		return
@@ -1672,11 +1068,8 @@ func (a *Adapter) recordUsage(ctx context.Context, execRow db.ExecutionRow, mani
 	}
 }
 
-// cacheToken reads a sub-count from the opencode tokens.cache sub-object
-// (e.g. {"cache":{"read":N,"write":M}} → cacheToken(tokens,"read")). opencode
-// emits cache counts as a nested object rather than flat fields, so a plain
-// toInt64(tokens["cache"]) would always be 0. Returns nil when the cache
-// sub-object is absent, which toInt64 turns into 0.
+// cacheToken reads a sub-count from the opencode tokens.cache sub-object (e.g.
+// {"cache":{"read":N,"write":M}} → cacheToken(tokens,"read")).
 func cacheToken(tokens map[string]any, key string) any {
 	if cache, ok := tokens["cache"].(map[string]any); ok {
 		return cache[key]
@@ -1703,9 +1096,8 @@ func extractErrorMessage(evt map[string]any) string {
 	}
 	if data, ok := errObj["data"].(map[string]any); ok {
 		if m, ok := data["message"].(string); ok && m != "" {
-			// If the message looks like a JSON object (common with
-			// provider errors like OpenRouter 500s), unquote it so the
-			// error_message column carries the readable form.
+			// If the message looks like a JSON object (common with provider errors like OpenRouter 500s),
+			// unquote it so the error_message column carries the readable form.
 			if len(m) > 0 && m[0] == '{' {
 				if unq, err := strconv.Unquote(m); err == nil {
 					return unq
@@ -1732,15 +1124,8 @@ func toInt64(v any) int64 {
 	return 0
 }
 
-// maxToolOutputBytes caps a single tool's output before it is persisted to
-// the session transcript / re-enters the model context. opencode passes the
-// FULL tool output (a build log, a directory listing) to OnToolCall; an
-// uncapped output is then re-sent on every later turn — the main amplifier
-// behind the observed ~45k-72k context-per-call across workflow runs. Keep
-// the head + tail of the output (the decision part + the error tail) and
-// offload the FULL payload to the project disk so the worker can
-// grep/read the middle if it needs to. Overridable via
-// ORCHICON_MAX_TOOL_OUTPUT_BYTES; < 1 disables the cap.
+// maxToolOutputBytes caps a single tool's output before it is persisted to the session transcript /
+// re-enters the model context.
 const maxToolOutputBytesDefault = 128 * 1024 // 128 KiB ≈ ~30k tokens
 
 // toolOutputOffloadRatio is the head+tail split of the cap: each side keeps
@@ -1756,11 +1141,8 @@ func maxToolOutputBytes() int {
 	return maxToolOutputBytesDefault
 }
 
-// toolOutputOffloadDir returns the directory where oversized tool outputs
-// are offloaded: <project_dir>/.orchicon/outputs/<execution_id>/. The
-// .orchicon/ directory is gitignored (verified: .gitignore:57) and the
-// execution dir is scoped so a giant build log lands in exactly one place.
-// Returns "" when the project dir is not resolvable (offload disabled).
+// toolOutputOffloadDir returns the directory where oversized tool outputs are offloaded:
+// <project_dir>/.orchicon/outputs/<execution_id>/.
 func toolOutputOffloadDir(projectDir, execID string) string {
 	if projectDir == "" || execID == "" {
 		return ""
@@ -1772,10 +1154,8 @@ func toolOutputOffloadDir(projectDir, execID string) string {
 	return p
 }
 
-// offloadToolOutput writes the full oversized tool output to the offload dir
-// and returns a short reference line the transcript carries instead of the
-// payload. Best-effort: a disk-write failure degrades to the truncated
-// head+tail only (the worker still gets the decision part).
+// offloadToolOutput writes the full oversized tool output to the offload dir and returns a short
+// reference line the transcript carries instead of the payload.
 func offloadToolOutput(projectDir, execID, callID string, full string) string {
 	dir := toolOutputOffloadDir(projectDir, execID)
 	if dir == "" {
@@ -1796,17 +1176,8 @@ func offloadToolOutput(projectDir, execID, callID string, full string) string {
 	return fmt.Sprintf(" (full output offloaded to %s)", rel)
 }
 
-// capToolOutput truncates a tool output to maxToolOutputBytes (128k default),
-// keeping the HEAD (the decision/summary part) + a truncation marker + the
-// TAIL (the error/stack part — the part a worker needs when a build fails).
-// Returns the string unchanged when under the cap or the cap is disabled.
-//
-// projectDir + execID + callID feed the offload path: when the output is
-// over the cap, the FULL payload is written to
-// <projectDir>/.orchicon/outputs/<execID>/<callID>.out and the returned
-// string carries a reference to it (plus the head+tail preview), so the
-// transcript never re-sends the payload and the worker can still reach the
-// full content from disk if needed.
+// capToolOutput truncates a tool output to maxToolOutputBytes (128k default), keeping the HEAD (the
+// decision/summary part) + a truncation marker + the TAIL (the error/stack part.
 func capToolOutput(s, projectDir, execID, callID string) string {
 	limit := maxToolOutputBytes()
 	if limit < 1 || len(s) <= limit {
@@ -1841,12 +1212,8 @@ func capToolOutput(s, projectDir, execID, callID string) string {
 
 const toolOutputTruncatedMarker = "\n…[output truncated by Orchicon — head+tail shown, full payload on disk]\n"
 
-// capPartOutput applies the tool-output cap to a legacy event's `part`
-// map (the durable-transcript shape). It returns the part unchanged when
-// the part has no tool output. For a tool_use part it returns a shallow
-// copy with state.output replaced by the capped value, so the transcript
-// (re-seeded by follow-ups / recovery-resumed sessions) stays bounded
-// without mutating the event the UI path consumed.
+// capPartOutput applies the tool-output cap to a legacy event's `part` map (the durable-transcript
+// shape).
 func (a *Adapter) capPartOutput(part any, execID, projectDir string) any {
 	m, ok := part.(map[string]any)
 	if !ok {
@@ -1878,9 +1245,8 @@ func (a *Adapter) capPartOutput(part any, execID, projectDir string) any {
 	return cp
 }
 
-// runSimulation emits synthetic telemetry events so the dispatch flow
-// can be verified end-to-end without the `opencode` binary
-// (docs/04 §6.3: in-process adapter for tests/dev only).
+// runSimulation emits synthetic telemetry events so the dispatch flow can be verified end-to-end
+// without the `opencode` binary (docs/04 §6.3: in-process adapter for tests/dev only).
 func (a *Adapter) runSimulation(ctx context.Context, execRow db.ExecutionRow, manifest scheduler.ExecutionManifest, callbacks scheduler.ExecutionCallbacks) error {
 	callbacks.OnStarted(ctx, execRow.ID)
 
@@ -1900,8 +1266,7 @@ func (a *Adapter) runSimulation(ctx context.Context, execRow db.ExecutionRow, ma
 				"execution", execRow.ID, "step", steps, "max", maxSteps,
 				"goal", manifest.Goal)
 			if steps >= maxSteps {
-				// Simulation emits no real worker output, so the
-				// summary is empty; the workflow run sees an empty
+				// Simulation emits no real worker output, so the summary is empty; the workflow run sees an empty
 				// _summary for this stage.
 				callbacks.OnResult(ctx, execRow.ID, true, "", "")
 				return nil
@@ -1914,19 +1279,12 @@ func (a *Adapter) runSimulation(ctx context.Context, execRow db.ExecutionRow, ma
 // interface.
 var _ scheduler.AdapterBridge = (*Adapter)(nil)
 
-// Compile-time assertions that Adapter satisfies the Ask chat-session
-// capability interfaces it implements as an OPTIONAL surface (the same
-// capability pattern as MessageInjector/Aborter): a bridge that registers
-// under its kind and implements ChatTurnClient can drive Ask conversation
-// turns; a bridge that does not surfaces an actionable "does not support
-// Ask chat" error at the Dispatch boundary (never a panic). SendTurnMessageWithAttachments
-// is the attachment-aware variant mirroring MessageInjector.
+// Compile-time assertions that Adapter satisfies the Ask chat-session capability interfaces it
+// implements as an OPTIONAL surface (the same capability pattern as MessageInjector/Aborter).
 var _ scheduler.ChatTurnClient = (*Adapter)(nil)
 var _ scheduler.SendTurnMessageWithAttachments = (*Adapter)(nil)
 
-// artifactTypeFromPath returns a type label for an artifact based on its
-// file extension. Used by the `write` tool handler to tag artifact events
-// so the frontend can display them appropriately (docs/10 §11).
+// artifactTypeFromPath returns a type label for an artifact based on its file extension.
 func artifactTypeFromPath(path string) string {
 	switch {
 	case strings.HasSuffix(path, ".md"), strings.HasSuffix(path, ".markdown"):
@@ -1948,26 +1306,14 @@ func artifactTypeFromPath(path string) string {
 	}
 }
 
-// textStreamingChunkSize is the number of bytes per chunk when the
-// adapter fans out a single opencode `text` event into the streaming
-// pipeline (docs/04 §6.1). opencode's `--format json` mode delivers
-// the full assistant text as one event at step_finish — there is no
-// per-token streaming on the wire — so we chunk it on the adapter
-// side to give the frontend a typing-style experience. ~40 chars ≈
-// one short clause; small enough to feel incremental, large enough to
-// keep outbox writes under ~150/sec for the typical 1000-word
-// response.
+// textStreamingChunkSize is the number of bytes per chunk when the adapter fans out a single
+// opencode `text` event into the streaming pipeline (docs/04 §6.1).
 const textStreamingChunkSize = 40
 
 // textStreamingChunkDelay is the gap between emitted text chunks.
-// Tuned so a 1000-word response (~6000 chars) takes ~10s to "type
-// out" — fast enough to feel live, slow enough that each chunk is a
-// visible update rather than a flash.
 const textStreamingChunkDelay = 60 * time.Millisecond
 
 // opencode v1.x's --format json stream emits these event types.
-// Keep them as named constants so the dispatch table in parseEvent
-// reads like the schema.
 const (
 	evtStepStart  = "step_start"
 	evtStepFinish = "step_finish"
@@ -1979,13 +1325,8 @@ const (
 	evtHealth     = "health"
 )
 
-// sessionErrorRecycleThreshold is the number of CONSECUTIVE model-layer
-// session errors (a serve whose /global/health answers but whose model
-// turns fail instantly — invisible to the health watchdog) after which the
-// adapter recycles the affected workflow's runtime container so the next
-// dispatch builds a fresh serve. Overridable via
-// ORCHICON_SESSION_ERROR_RECYCLE_THRESHOLD. A value < 1 disables the
-// recycle.
+// sessionErrorRecycleThreshold is the number of CONSECUTIVE model-layer session errors (a serve
+// whose /global/health answers but whose model turns fail instantly.
 func sessionErrorRecycleThreshold() int {
 	if v := os.Getenv("ORCHICON_SESSION_ERROR_RECYCLE_THRESHOLD"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -1995,17 +1336,8 @@ func sessionErrorRecycleThreshold() int {
 	return 3
 }
 
-// sessionRepairBudget bounds the runtime-container repairs the adapter
-// attempts within a SINGLE dispatch when the session backend is infra-broken
-// (serve unreachable — connection refused — or alive-but-poisoned: POST
-// /session returns 5xx because its session store is corrupt). Each repair
-// kills the run's runtime container so the next dispatch rebuilds it with a
-// fresh serve AND a fresh store — a restart-in-place of the serve process
-// (the daemon watchdog) cannot fix a poisoned store because it reuses the
-// same XDG data dir on disk. After the budget is spent the dispatch fails as
-// today (failed_to_start → the step-level retry/recovery loop, which is
-// bounded separately). Overridable via ORCHICON_SESSION_REPAIR_ATTEMPTS; a
-// value < 1 disables the repair (legacy behavior: only backoff retries).
+// sessionRepairBudget bounds the runtime-container repairs the adapter attempts within a SINGLE
+// dispatch when the session backend is infra-broken (serve unreachable — connection refused.
 func sessionRepairBudget() int {
 	if v := os.Getenv("ORCHICON_SESSION_REPAIR_ATTEMPTS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -2015,21 +1347,8 @@ func sessionRepairBudget() int {
 	return 3
 }
 
-// isInfraSessionError reports whether a session-transport setup failure is an
-// INFRASTRUCTURE failure — the serve is unreachable or refuses to create
-// sessions — as opposed to a worker/model failure. This is the discriminator
-// for the dispatch repair loop: an infra failure means EVERY re-dispatch
-// fails through the same hole (the observed field class: run 01a742NSHW... on
-// 2026-08-22/23 died when the runtime serve either process-died – dial
-// connection refused – or stayed up but its session store was poisoned with
-// `Failed to execute statement`, so `POST /session` 5xx'd every retry). Such
-// failures are REPAIRED (recycle the container → fresh serve + store → the
-// step continues) instead of counting against the step's retry budget.
-//
-// The signatures match what the SessionClient produces on the session-create
-// path (session.go: doJSON https-5xx + CreateSession dial errors) plus the
-// no-serve case the adapter itself raises. A 4xx is a client error, not an
-// infra failure.
+// isInfraSessionError reports whether a session-transport setup failure is an INFRASTRUCTURE
+// failure — the serve is unreachable or refuses to create sessions.
 func isInfraSessionError(err error) bool {
 	if err == nil {
 		return false
@@ -2041,41 +1360,20 @@ func isInfraSessionError(err error) bool {
 		strings.Contains(msg, "opencode serve POST /session: http 5")
 }
 
-// isInfraModelTurnError reports whether a MODEL-TURN failure is an
-// INFRASTRUCTURE failure — the session's model call could not reach the
-// model API at the socket/transport layer — as opposed to a per-request or
-// server-decision rejection that must stay on the retry → recovery → human
-// path. This is the discriminator that lets a model-turn socket connect
-// failure recycle the run's runtime container IMMEDIATELY (the next dispatch
-// builds a fresh serve + store) instead of waiting for the 3-consecutive
-// `recycleOnWedgedServe` counter to burn a dead-API session three times.
-//
-// The input is the human-readable reason from a session.error bus event (the
-// observed field: "Cannot connect to API: Unable to connect. Is the computer
-// able to access the url?"), which is the same TCP-class as the session-create
-// path's "connection refused" but surfaces on the model-turn path. It is a
-// string heuristic, so it is guarded FIRST against the per-request /
-// server-decision class: if any guard term is present the message is
-// definitively NOT infra, even if it also carries a socket phrase. Only when
-// no guard matches does the socket/transport class decide.
+// isInfraModelTurnError reports whether a MODEL-TURN failure is an INFRASTRUCTURE failure — the
+// session's model call could not reach the model API at the socket/transport layer.
 func isInfraModelTurnError(msg string) bool {
 	if msg == "" {
 		return false
 	}
 	m := strings.ToLower(msg)
-	// Guard terms: a wrapped provider error that carries a status/auth/quota/
-	// policy rejection must never be reclassified as infra. Checked first so a
-	// message that happens to mention a socket phrase AND "http 400" stays on
-	// the retry path.
+	// Guard terms: a wrapped provider error that carries a status/auth/quota/ policy rejection must
+	// never be reclassified as infra.
 	for _, term := range []string{
 		"http 4", "http 5",
 		"401", "403", "unauthorized", "forbidden",
-		// The AUTH/ACCESS class BY NAME, not only by status code — and this is load-bearing
-		// since v2 failures gained a path into here. opencode's refusal to serve a free-tier
-		// model unattended is `AI.Error.Authentication: OpenCode's free tier can only be used
-		// from within OpenCode`: no 401, no "unauthorized". Without these terms it fell
-		// through to the socket check, where an infrastructure MISCLASSIFICATION recycles the
-		// container instead of telling the operator that the MODEL is the problem.
+		// The AUTH/ACCESS class BY NAME, not only by status code — and this is load-bearing since v2
+		// failures gained a path into here.
 		"authentication", "unauthenticated", "free tier",
 		"rate limit", "429",
 		"insufficient", "quota", "policy",
@@ -2102,12 +1400,7 @@ func isInfraModelTurnError(msg string) bool {
 	return false
 }
 
-// sessionRecycleMetrics holds the OTel counter for runtime-container recycles
-// by reason. A single `orchicon_session_recycle{reason=…}` counter keeps the
-// recycle family (session-create infra, wedged-consecutive, infra-model-turn)
-// observable with one instrument and minimal wiring, mirroring the
-// recoverySeedMetrics best-effort pattern (internal/scheduler/recovery_seed.go).
-// Best-effort: a nil OTel pipeline is a no-op, never an error.
+// sessionRecycleMetrics holds the OTel counter for runtime-container recycles by reason.
 type sessionRecycleMetrics struct {
 	ensureOnce sync.Once
 	recycled   otelmetric.Int64Counter
@@ -2138,14 +1431,12 @@ func (m *sessionRecycleMetrics) recordInfraSessionCreate()   { m.record("infra_s
 func (m *sessionRecycleMetrics) recordWedgedConsecutive()    { m.record("wedged_consecutive", false) }
 func (m *sessionRecycleMetrics) recordInfraModelTurn(v bool) { m.record("infra_model_turn", v) }
 
-// sessionRecycleMetricsSingleton is the shared instance for the recycle
-// counters (single instrument instance avoids duplicate-instrument churn on
-// the OTel Meter).
+// sessionRecycleMetricsSingleton is the shared instance for the recycle counters (single instrument
+// instance avoids duplicate-instrument churn on the OTel Meter).
 var sessionRecycleMetricsSingleton = &sessionRecycleMetrics{}
 
-// projectMount returns the project-dir mount spec for a runtime container
-// (empty when no project dir — the daemon still adds the standard home
-// mounts).
+// projectMount returns the project-dir mount spec for a runtime container (empty when no project
+// dir — the daemon still adds the standard home mounts).
 func projectMount(projectDir string) []runtime.MountSpec {
 	if projectDir == "" {
 		return nil

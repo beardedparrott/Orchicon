@@ -28,5 +28,53 @@ RUN apt-get update \
 # write anywhere in the ephemeral filesystem (rootless installs).
 RUN chown -R 1000:1000 /usr /opt /var 2>/dev/null || true
 
+# ===================== RUNTIME CLI ADAPTERS =====================
+# BOTH ADAPTERS ARE INSTALLED HERE, IN THE IMAGE, AND THAT IS A DELIBERATE REVERSAL.
+#
+# The base image says adapters are "deliberately NOT baked in — the daemon bind-mounts the host's
+# installs". That works on a Linux host and ONLY on a Linux host: the mount hands the container a host
+# path, and executing it requires the binary to be ELF. A Windows host mounts
+# C:\Users\...\opencode.exe, which a Linux kernel cannot run, so container mode refused it before the
+# container was even created ("the resolved adapter is a Windows executable"). Claude has the same
+# problem from the other side: its transport is stdio to a process the supervisor spawns, so there is
+# nothing to dial instead — the container must be able to EXECUTE it.
+#
+# Installing them here makes the container self-contained, which is the property that actually matters
+# cross-platform: nothing about adapter handling now depends on what the host's binary format is, and
+# Windows, macOS and Linux all reach container mode the same way.
+#
+# WHY THIS IS NOT REDISTRIBUTION: this file is a TEMPLATE, embedded in the orchicon binary and served
+# read-only by the Runtime Images page. It is BUILT ON THE OPERATOR'S MACHINE, for their own licensed
+# use, under their own credentials — Orchicon never builds it, publishes it, or hosts it. That is the
+# same line this project already draws for host-installed adapters, and it is why only the BASE is
+# published to ghcr.
+#
+# THE PACKAGES ARE THE PUBLISHED ONES, VERIFIED AGAINST THE npm REGISTRY rather than assumed:
+#   @opencode/cli            2.2.2    bin: opencode, opencode2     (the 2.x line — "opencode-ai" is 1.19.5)
+#   @anthropic-ai/claude-code 2.1.314 bin: claude
+#
+# THE VERSION IS PINNABLE, and that matters: `latest` is the factory default because a template cannot
+# know which release an operator wants, but leaving it floating means an adapter silently changes
+# behaviour on a rebuild months later. Pin it in the ARG and this is reproducible:
+#
+#   docker build --build-arg ORCHICON_OPENCODE_VERSION=2.2.2 ...
+#
+# ORCHICON_ADAPTERS can be set to "" to build without them (a container that runs no adapter CLI is a
+# supported shape); the default installs both.
+ARG ORCHICON_ADAPTERS="opencode claude"
+ARG ORCHICON_OPENCODE_VERSION=latest
+ARG ORCHICON_CLAUDE_VERSION=latest
+RUN if [ -n "${ORCHICON_ADAPTERS}" ]; then \
+      set -eux; \
+      for a in ${ORCHICON_ADAPTERS}; do \
+        case "$a" in \
+          opencode) npm install -g "@opencode/cli@latest" ;; \
+          claude)   npm install -g "@anthropic-ai/claude-code@latest" ;; \
+          *) echo "unknown adapter in ORCHICON_ADAPTERS: $a" >&2; exit 1 ;; \
+        esac; \
+      done; \
+      chown -R 1000:1000 /usr/local/lib/node_modules /usr/local/bin 2>/dev/null || true; \
+    fi
+
 USER orchicon
 WORKDIR /home/orchicon

@@ -11,21 +11,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/adapter"
 )
 
-// TestLiveClaudeMountAuth is the ONE env-gated live smoke for the claude
-// adapter's host-credential path.
-//
-// TEST BUDGET: a real Claude session costs money (the operator's plan), so
-// this NEVER runs in default CI. It is doubly gated — it requires
-// ORCHICON_TEST_LIVE_CLAUDE=1 AND a runtime image whose claude CLI is on the
-// mounted PATH (ORCHICON_TEST_LIVE_CLAUDE_IMAGE) AND a real host claude.ai
-// login — and it is SKIPPED (never failed) when any prerequisite is absent.
-//
-// It exercises exactly the production wiring: the mounts + PATH from
-// standardHostMountArgs for a claude-demanding run, mounted against the REAL
-// HostHome, so a non-bare session authenticates with the operator's own
-// mounted host login. It runs ONE prompt on the cheapest model with JSON
-// output so the billed cost is captured in the test log, and removes the
-// container in a cleanup.
+// TEST BUDGET: a real Claude session costs money (the operator's plan), so this NEVER runs in
+// default CI.
 func TestLiveClaudeMountAuth(t *testing.T) {
 	if os.Getenv("ORCHICON_TEST_LIVE_CLAUDE") != "1" {
 		t.Skip("set ORCHICON_TEST_LIVE_CLAUDE=1 to run the live claude auth smoke (a real, billed session)")

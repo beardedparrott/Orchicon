@@ -1,21 +1,6 @@
 package askorchicon
 
 // fullsend_test.go — FULLSEND at the CONSENT layer.
-//
-// The mode has two enforcement points (this decision path and the host-suite guard shim
-// a bash subprocess runs under; the shim's half is pinned in guard_fullsend_test.go).
-// What is pinned HERE is the boundary of the waiver at the point the operator experiences
-// it: which actions stop raising a card, and which keep refusing.
-//
-// The three properties these tests exist for:
-//
-//  1. A write that would have raised a card proceeds instead, and does so SILENTLY — the
-//     point of the mode is not to ask, so an implementation that proceeded but still
-//     emitted a card would be the worst of both.
-//  2. A DENY entry still refuses, for the reason the whole mode is safe: a deny is a
-//     policy DECISION, not a permission request, so there is no prompt to waive.
-//  3. The never-allow binary class still refuses, because it is refused before any
-//     permission decision is reached.
 
 import (
 	"context"
@@ -28,9 +13,7 @@ import (
 // TestFullsendStoreIsPerConversationAndFailsClosed pins the store's contract, including
 // the two directions that must never be permissive.
 func TestFullsendStoreIsPerConversationAndFailsClosed(t *testing.T) {
-	// A NIL STORE IS OFF. Service is constructed without one in several tests and in any
-	// pre-wiring path, and the failure mode of getting this wrong is that an
-	// uninitialised store approves everything.
+	// A NIL STORE IS OFF.
 	var nilStore *fullsendStore
 	if nilStore.Enabled("c1") {
 		t.Fatal("a nil store reported fullsend ON")
@@ -98,9 +81,8 @@ func TestFullsendProceedsWithoutACard(t *testing.T) {
 	}
 }
 
-// TestFullsendCoversAnUnresolvedAction — an ask whose detail could not be extracted is
-// still an ASK, so it is still waived. The operator said "stop asking me", not "ask me
-// only about the things you can describe".
+// TestFullsendCoversAnUnresolvedAction — an ask whose detail could not be extracted is still an
+// ASK, so it is still waived.
 func TestFullsendCoversAnUnresolvedAction(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
@@ -120,10 +102,6 @@ func TestFullsendCoversAnUnresolvedAction(t *testing.T) {
 }
 
 // TestFullsendStillRefusesADenyEntry is THE safety property at this layer.
-//
-// If this fails, FULLSEND opens the operator's own exclusions — the presets included —
-// and the mode means something other than what it is called. It must fail with a REASON,
-// because that reason is the model's only route to a workaround.
 func TestFullsendStillRefusesADenyEntry(t *testing.T) {
 	isolatedPolicy(t, "deny:\n  - \"/p/denied/**\"\naccept: []\n")
 	svc := testConsentService()
@@ -142,9 +120,8 @@ func TestFullsendStillRefusesADenyEntry(t *testing.T) {
 	}
 }
 
-// TestFullsendCannotReachTheNeverAllowClass — sudo / dd / mkfs* are refused at the TOP of
-// decide, before the policy is consulted and long before the fullsend check, so there is
-// no permission for the mode to waive.
+// TestFullsendCannotReachTheNeverAllowClass — sudo / dd / mkfs* are refused at the TOP of decide,
+// before the policy is consulted and long before the fullsend check.
 func TestFullsendCannotReachTheNeverAllowClass(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()
@@ -210,10 +187,7 @@ func TestEnablingFullsendClearsTheCardsAlreadyOnScreen(t *testing.T) {
 	}
 }
 
-// TestFullsendApprovalIsRecordedAsFullsend is the honesty half. The verdict must name the
-// DECIDER, because a transcript that says `user_PERMISSION_CHOICE_ALLOW_ONCE` claims the
-// operator clicked something they never saw — the same misattribution class as reporting a
-// policy refusal as "the operator denied you".
+// TestFullsendApprovalIsRecordedAsFullsend is the honesty half.
 func TestFullsendApprovalIsRecordedAsFullsend(t *testing.T) {
 	isolatedPolicy(t, "")
 	svc := testConsentService()

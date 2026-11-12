@@ -1,17 +1,6 @@
 package chat
 
 // verbs_test.go — THE ROTATION IS A PURE FUNCTION OF SERVER TIME, PINNED ACROSS CLIENTS.
-//
-// The operator: "rotating through a series of words that means 'orchicon is thinking' ... that changes every
-// few seconds. We should have a ton of them." The list and selector live in verbs.go; these tests pin the
-// four properties that make the rotation safe to ship: it is deterministic, its fallback is never empty, its
-// shape fits the one-row footer, and the Go list cannot drift from the GUI's.
-//
-// THE CROSS-CLIENT ASSERTION IS THE IMPORTANT ONE. The old activity line was a fixed literal, so both
-// clients agreeing was trivially true. Rotation breaks that, and what replaces it is a STRONGER promise:
-// both clients draw the SAME word for the same server time. That is what TestAskVerbsMatchTheSharedFixture
-// pins — one JSON fixture, read by this test and by frontend/src/lib/ask-verbs.test.ts, exactly as the
-// Schedules pane binds the two languages (schedules_queued_test.go reads schedules-fixture.json).
 
 import (
 	"encoding/json"
@@ -41,9 +30,7 @@ func TestVerbAtIsPureAndDeterministic(t *testing.T) {
 	}
 }
 
-// TestVerbAtFallbackIsNeverEmpty — the moment before the first heartbeat (AC5). 0, negative and tiny stamps
-// must all produce a LIST MEMBER, never "" and never a panic: this is the first second after the operator
-// sends, which is exactly when they are looking.
+// TestVerbAtFallbackIsNeverEmpty — the moment before the first heartbeat (AC5).
 func TestVerbAtFallbackIsNeverEmpty(t *testing.T) {
 	for _, ts := range []int64{0, -1, -1_700_000_000_000, 1} {
 		got := VerbAt(ts)
@@ -61,10 +48,8 @@ func TestVerbAtFallbackIsNeverEmpty(t *testing.T) {
 	}
 }
 
-// TestVerbAtRotatesOnThePeriod — the word advances once per VerbPeriodMS and wraps at the list's end
-// (AC1/AC2 boundary). invariant: the rotation is driven by server time and is deterministic, and the
-// operator's reaction is the boundary — a line repainted about once a second must NOT churn, so two
-// stamps 1s apart draw the SAME word and two stamps a full period apart draw DIFFERENT ones.
+// TestVerbAtRotatesOnThePeriod — the word advances once per VerbPeriodMS and wraps at the list's
+// end (AC1/AC2 boundary).
 func TestVerbAtRotatesOnThePeriod(t *testing.T) {
 	for k := int64(0); k < int64(len(AskVerbs))*2; k++ {
 		want := AskVerbs[(k)%int64(len(AskVerbs))]
@@ -91,9 +76,7 @@ func TestVerbAtRotatesOnThePeriod(t *testing.T) {
 	}
 }
 
-// TestAskVerbsMatchTheSharedFixture — THE CROSS-CLIENT PARITY (AC3). The fixture is read from disk and
-// compared byte for byte AND in ORDER against the Go literal, and its periodMs against VerbPeriodMS. The GUI
-// reads the same file, so a drift fails here and in vitest.
+// TestAskVerbsMatchTheSharedFixture — THE CROSS-CLIENT PARITY (AC3).
 func TestAskVerbsMatchTheSharedFixture(t *testing.T) {
 	raw, err := os.ReadFile(askVerbsFixturePath)
 	if err != nil {
@@ -122,9 +105,7 @@ func TestAskVerbsMatchTheSharedFixture(t *testing.T) {
 	}
 }
 
-// TestAskVerbsAreAsciiShortAndUnique — the SHAPE of the list (AC1/AC8). One row of a TUI footer means single
-// lowercase a-z words within the documented cell cap, and no duplicate (a duplicate would silently shorten
-// the rotation the operator asked to be long).
+// TestAskVerbsAreAsciiShortAndUnique — the SHAPE of the list (AC1/AC8).
 func TestAskVerbsAreAsciiShortAndUnique(t *testing.T) {
 	if len(AskVerbs) < 60 {
 		t.Errorf("AskVerbs has %d entries — the operator asked for \"a ton of them\" (target 60+)", len(AskVerbs))
@@ -147,10 +128,7 @@ func TestAskVerbsAreAsciiShortAndUnique(t *testing.T) {
 	}
 }
 
-// TestAskVerbsNeverClaimLiveness — NO WORD MAY BE A CLAIM THE STREAM CANNOT ALWAYS BACK (AC6). Every entry is
-// a continuation of "Orchicon is ___", so anything asserting the stream is RECEIVING or the work is
-// PROGRESSING would be false the moment a socket goes half-open — the very failure the activity line exists
-// to expose. Mirrors activity_line_test.go's TestTheLineNeverClaimsActivityItCannotSee.
+// TestAskVerbsNeverClaimLiveness — NO WORD MAY BE A CLAIM THE STREAM CANNOT ALWAYS BACK (AC6).
 func TestAskVerbsNeverClaimLiveness(t *testing.T) {
 	banned := []string{"receiving", "progressing", "streaming", "completing", "advancing", "succeeding", "finishing"}
 	for _, v := range AskVerbs {

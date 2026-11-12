@@ -1,22 +1,6 @@
 package guard
 
-// accessor_equivalence_globs_test.go — the second half of AC-6: the shim's
-// hand-written bash matcher must reach permpolicy.Decide's verdict for the
-// pattern SHAPES the accessor accepts, not just for plain literals.
-//
-// Each case here was a REAL divergence found by sweeping the shim against
-// permpolicy.Decide. The first two are FAIL-OPEN — the shim ran a command the
-// operator's deny list refused, in the one component whose job is the
-// subprocess hole consent cannot see:
-//
-//   * a deny entry using {a,b} alternation was never matched (bash 'case' has
-//     no brace expansion), so the denied target was deleted;
-//   * a deny entry with two '/**/' runs was only tried with its runs collapsed
-//     front-to-back, so 'a/**/b/**/c' never matched 'a/x/b/c'.
-//
-// The rest are drift (the shim refusing a path the accessor proceeds on), which
-// is the failure mode the work item names: a command that prompts and is then
-// refused anyway.
+// accessor_equivalence_globs_test.go — the second half of AC-6.
 
 import (
 	"os"
@@ -43,9 +27,8 @@ func TestShimMatchesDecideOnPatternShapes(t *testing.T) {
 		return p
 	}
 
-	// Fail-open sweep: the guard's PROJECT_DIR IS the home dir, so a target the
-	// deny list does NOT cover is allowed to run — a deny entry the shim misses
-	// deletes the file.
+	// Fail-open sweep: the guard's PROJECT_DIR IS the home dir, so a target the deny list does NOT
+	// cover is allowed to run — a deny entry the shim misses deletes the file.
 	t.Run("deny entries cover what Decide refuses", func(t *testing.T) {
 		cases := []struct{ name, entry, target string }{
 			{"brace alternation", filepath.Join(home, "a", "{x,y}.txt"), mkfile("a/x.txt")},
@@ -128,9 +111,8 @@ func TestShimMatchesDecideOnPatternShapes(t *testing.T) {
 		}
 	})
 
-	// A deny entry the operator spelled with a home reference is recognised even
-	// when the TARGET carries the reference too (the accessor matches either
-	// spelling on either side), and the refusal names the operator's own text.
+	// A deny entry the operator spelled with a home reference is recognised even when the TARGET
+	// carries the reference too (the accessor matches either spelling on either side).
 	t.Run("tilde-written target is denied by name", func(t *testing.T) {
 		key := filepath.Join(home, ".ssh", "id_rsa")
 		if err := os.MkdirAll(filepath.Dir(key), 0o700); err != nil {
@@ -159,9 +141,8 @@ func TestShimMatchesDecideOnPatternShapes(t *testing.T) {
 		}
 	})
 
-	// An entry the translation cannot vouch for (a nested brace group) must
-	// REFUSE in the interactive profile rather than be silently dropped — a
-	// dropped entry is a policy the operator believes is in force.
+	// An entry the translation cannot vouch for (a nested brace group) must REFUSE in the interactive
+	// profile rather than be silently dropped.
 	t.Run("untranslatable entry fails closed", func(t *testing.T) {
 		policy := writePolicyLists(t, []string{filepath.Join(home, "a", "{x,{y,z}}.txt")}, nil)
 		target := mkfile("a/x.txt")

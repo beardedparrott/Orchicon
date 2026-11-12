@@ -76,7 +76,7 @@ if [ "$MODE" = "body" ] && [ -z "$VERSION" ]; then
   if [ -n "${GITHUB_REF_NAME:-}" ]; then
     VERSION="$GITHUB_REF_NAME"
   else
-    VERSION="$(git describe --tags --abbrev=0 2>/dev/null || echo "latest")"
+    VERSION="$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo "latest")"
   fi
 fi
 
@@ -198,23 +198,45 @@ render_readme_digest() {
     }
     /^## / { exit }
     in_also && /^- / {
+      # A bullet wraps, and its indented continuation lines are part of it.
+      # Dropping them ends the bullet mid-sentence on the README front page.
       line = $0
       sub(/^- /, "", line)
       bullets[++n] = line
       pending[n] = 0
+      cont = n
       next
     }
-    /^[[:space:]]*$/ { next }
+    cont > 0 && /^[[:space:]]+[^[:space:]]/ {
+      text = $0
+      gsub(/^[[:space:]]+/, "", text)
+      bullets[cont] = bullets[cont] " " text
+      next
+    }
+    cont > 0 { cont = 0 }
+    /^[[:space:]]*$/ {
+      # End of the paragraph with no sentence break in it: emit what we have
+      # rather than dropping the bullet.
+      if (cur > 0 && pending[cur]) {
+        if (accum != "") bullets[cur] = bullets[cur] accum
+        pending[cur] = 0; accum = ""
+      }
+      next
+    }
     {
-      # First paragraph line of the current "### New:" section completes
-      # its bullet; later paragraphs are dropped.
+      # The bullet is the first sentence of the section, and the source wraps
+      # it across lines. Join continuation lines until a sentence break appears;
+      # stopping at the first line ends the bullet mid-sentence (this script
+      # used to emit "…and it ships signed and " before a hard cut).
       if (cur > 0 && pending[cur]) {
         text = $0
         gsub(/^[[:space:]]+/, "", text)
-        idx = index(text, ". ")
-        if (idx > 0) text = substr(text, 1, idx)
-        bullets[cur] = bullets[cur] text
-        pending[cur] = 0
+        accum = (accum == "") ? text : accum " " text
+        idx = index(accum, ". ")
+        if (idx > 0) {
+          bullets[cur] = bullets[cur] substr(accum, 1, idx)
+          pending[cur] = 0; accum = ""
+        }
       }
     }
     END {

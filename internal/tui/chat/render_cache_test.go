@@ -1,23 +1,6 @@
 package chat
 
 // render_cache_test.go — THE CACHE MUST NEVER DRAW AN ITEM THAT IS NOT THERE.
-//
-// A remembered render is only safe if it is invalidated by EVERYTHING the render reads. Two
-// things can go wrong, and they need different tests:
-//
-//  1. renderSig misses a field → an item's rendered form is remembered from a state it is no
-//     longer in, and the transcript shows something stale. That is invisible in the rendered
-//     output (a cache that always missed would draw the same text), so it is pinned DIRECTLY:
-//     TestRenderSigCoversEveryFieldTheRenderReads mutates each field and requires the
-//     fingerprint to move.
-//  2. the key or the invalidation is wrong in a way the fingerprint cannot catch → the two
-//     renders diverge. That is pinned by comparison: TestCachedRenderMatchesUncachedRender
-//     drives every mutation through a WARM cache and requires the result to equal what the
-//     cacheless renderer produces for the same items.
-//
-// The conversation is deliberately one of every kind, because the invalidation has to hold for
-// the consent card's live state (the operator's highlight and their half-typed free text) and
-// for the ask card's, and those are the items that change while the operator is looking at them.
 
 import (
 	"reflect"
@@ -108,11 +91,11 @@ func itemMutations() []mutation {
 		{"ask answer text", func(i []ChatItem) { i[8].Ask.AnswerText = "develop" }},
 		{"ask option label", func(i []ChatItem) { i[8].Ask.Options[0].Label = "main" }},
 		{"ask option description", func(i []ChatItem) { i[8].Ask.Options[0].Description = "other" }},
-		// The free-text row this card gained: an open input row, and the text in it. Both are drawn,
-		// so a signature that ignored either would serve the operator a card with their own typing
-		// missing from it.
+		// The free-text row this card gained: an open input row, and the text in it.
 		{"ask drafting", func(i []ChatItem) { i[8].Ask.Drafting = true }},
 		{"ask draft text", func(i []ChatItem) { i[8].Ask.Draft = "seed.sql" }},
+		// THE CURSOR.
+		{"ask selection", func(i []ChatItem) { i[8].Ask.Sel = 1 }},
 		{"consent ask id", func(i []ChatItem) { i[9].Consent.Ask.ID = "c-2" }},
 		{"consent conversation", func(i []ChatItem) { i[9].Consent.Ask.ConvID = "conv-2" }},
 		{"consent tool", func(i []ChatItem) { i[9].Consent.Ask.Tool = "write" }},
@@ -173,9 +156,8 @@ func TestCachedRenderMatchesUncachedRender(t *testing.T) {
 	}
 }
 
-// AND THE CACHE IS PER (CONVERSATION, WIDTH, GLYPH) — the same items drawn for another surface
-// must not be served the other surface's render. The strip and the Ask pane draw one
-// conversation at two widths with and without the copy glyph, which is exactly this case.
+// AND THE CACHE IS PER (CONVERSATION, WIDTH, GLYPH) — the same items drawn for another surface must
+// not be served the other surface's render.
 func TestACachedSegmentIsNotSharedAcrossSurfaces(t *testing.T) {
 	cache := NewRenderCache()
 	items := richConversation()
@@ -189,9 +171,8 @@ func TestACachedSegmentIsNotSharedAcrossSurfaces(t *testing.T) {
 	}
 }
 
-// TestAnUnchangedFrameRendersNothing is the CLAIM OF THE CACHE, asserted rather than assumed:
-// the second and third repaints of identical items must lay out no items at all, and changing
-// exactly one item must lay out exactly one.
+// TestAnUnchangedFrameRendersNothing is the CLAIM OF THE CACHE, asserted rather than assumed: the
+// second and third repaints of identical items must lay out no items at all.
 func TestAnUnchangedFrameRendersNothing(t *testing.T) {
 	cache := NewRenderCache()
 	items := richConversation()
@@ -217,8 +198,7 @@ func TestAnUnchangedFrameRendersNothing(t *testing.T) {
 }
 
 // A NIL CACHE IS NOT A SPECIAL CASE FOR THE CALLER: a shell without one (an embedder, a test)
-// renders as it always did. This is what lets the two App call sites read the cache
-// unconditionally.
+// renders as it always did.
 func TestANilCacheRendersWithoutRemembering(t *testing.T) {
 	var cache *RenderCache
 	items := richConversation()

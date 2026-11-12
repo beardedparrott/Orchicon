@@ -1,18 +1,5 @@
-// Package worker implements the WorkerService Connect handler
-// (docs/07_API_Specification.md §3.3, docs/05_Worker_Specification.md).
-//
-// It is the API-layer boundary between the generated Connect handlers
-// and the data-access layer. Responsibilities:
-//   - validate and sanitize all inputs (the security boundary),
-//   - resolve the tenant from the request context,
-//   - perform the mutation + outbox enqueue in one transaction,
-//   - enforce the Worker lifecycle (draft → published → deprecated →
-//     retired) and versioning model (docs/05 §4, §5),
-//   - manage edit locks for the visual Worker editor (docs/07 §3.3).
-//
-// No business logic lives here beyond input validation and lifecycle
-// transitions; reconcilers and policy engines govern deeper behavior
-// (AGENTS.md invariant #1).
+// Package worker implements the WorkerService Connect handler (docs/07_API_Specification.md §3.3,
+// docs/05_Worker_Specification.md).
 package worker
 
 import (
@@ -46,47 +33,25 @@ const (
 	maxActorLen       = 200
 )
 
-// slugRE defines the canonical slug character set: lowercase alphanumerics
-// and hyphens, must start and end alphanumeric. This is the security
-// gate that rejects path-traversal or injection-laden slugs before they
-// reach the database (mirrors internal/project/validate.go).
+// slugRE defines the canonical slug character set: lowercase alphanumerics and hyphens, must start
+// and end alphanumeric.
 var slugRE = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
-// modelRefRegistry is the validation catalog for model refs: the built-in
-// provider profiles, wrapped with the same CLI-aware live discovery the
-// model picker uses. The server wires it via SetModelRefRegistry at
-// construction (api.go composes builtin ∪ tenant customs ∪ CLI ids);
-// the static catalog alone is the test/fallback floor so validation never
-// breaks saves when discovery is unavailable.
+// modelRefRegistry is the validation catalog for model refs: the built-in provider profiles,
+// wrapped with the same CLI-aware live discovery the model picker uses.
 var modelRefRegistry adapter.ProviderRegistry = adapter.NewBuiltinProviderCatalog()
 
-// customProviderIDs returns the requesting tenant's ENABLED custom
-// provider ids (ADR-0006 D6). Wired by the API layer; nil = no tenant
-// custom providers (built-ins only).
+// customProviderIDs returns the requesting tenant's ENABLED custom provider ids.
 var customProviderIDs func(ctx context.Context, tenantID string) ([]string, error)
 
-// SetCustomProviderIDs wires the tenant custom-provider source for
-// model-ref validation (the providers settings service). Called by the
-// server layer after construction; the package-level seam mirrors
-// SetModelRefRegistry.
+// SetCustomProviderIDs wires the tenant custom-provider source for model-ref validation (the
+// providers settings service).
 func SetCustomProviderIDs(fn func(ctx context.Context, tenantID string) ([]string, error)) {
 	customProviderIDs = fn
 }
 
-// customProviderRegistry merges the tenant's enabled custom provider ids
-// into the validation catalog under the default adapter kind (legacy
-// 2-segment `local-models/...` refs parse — ADR-0006 D2/D6), and under the
-// product-default "orchicon" kind when that kind is registered (fresh
-// `orchicon/local-models/...` refs validate). A merge failure is
-// non-fatal: validation degrades to the base registry (never breaks
-// worker saves). No tenant context → base registry only.
-//
-// The merge uses the ProviderKindExtender seam (aigateway.CLIProviderRegistry
-// satisfies it) so composition works with ANY registry the server installs
-// — including the CLI-aware one — not just the built-in catalog. When the
-// base registry cannot be extended (e.g. a custom test implementation),
-// tenant customs are unioned via a fallback overlay instead of silently
-// vanishing.
+// customProviderRegistry merges the tenant's enabled custom provider ids into the validation
+// catalog under the default adapter kind (legacy 2-segment `local-models/...` refs parse.
 func customProviderRegistry(ctx context.Context, tenantID string) adapter.ProviderRegistry {
 	if tenantID == "" || customProviderIDs == nil {
 		return modelRefRegistry
@@ -98,9 +63,8 @@ func customProviderRegistry(ctx context.Context, tenantID string) adapter.Provid
 	if ext, ok := modelRefRegistry.(adapter.ProviderKindExtender); ok {
 		merged := ext.Clone()
 		merged.AddAdapterKind(adapter.DefaultAdapterKind, ids...)
-		// The adapter-change validator offers the new kind's provider set
-		// on failure; "orchicon" is the product default kind, so tenant
-		// customs join it too when registered.
+		// The adapter-change validator offers the new kind's provider set on failure; "orchicon" is the
+		// product default kind, so tenant customs join it too when registered.
 		if merged.IsKnownAdapter("orchicon") {
 			merged.AddAdapterKind("orchicon", ids...)
 		}
@@ -148,22 +112,16 @@ func (o *customKindOverlay) Providers(adapterKind string) []string {
 	return out
 }
 
-// SetModelRefRegistry replaces the validation catalog (server wiring —
-// api.go installs the CLI-aware registry so worker validation agrees with
-// the model picker; also the test seam).
+// SetModelRefRegistry replaces the validation catalog (server wiring — api.go installs the
+// CLI-aware registry so worker validation agrees with the model picker; also the test seam).
 func SetModelRefRegistry(reg adapter.ProviderRegistry) {
 	if reg != nil {
 		modelRefRegistry = reg
 	}
 }
 
-// migrationKindsSnapshot overrides the adapter-kind cut used by
-// NormalizeRefForMigration (test seam). Production migrations run BEFORE
-// the server starts, so they cannot read live dispatcher kinds — the
-// migration SQL pins the kind list at authoring time instead (a migration
-// must be a frozen snapshot, never live-config-dependent). This seam
-// exists so tests can exercise the snapshot mechanism; production always
-// uses the built-in kind set via MigrationKinds' fallback.
+// migrationKindsSnapshot overrides the adapter-kind cut used by NormalizeRefForMigration (test
+// seam).
 var migrationKindsSnapshot map[string]struct{}
 
 // SetMigrationKinds overrides the migration kind cut (test seam).
@@ -180,12 +138,8 @@ func MigrationKinds() map[string]struct{} {
 	return adapter.BuiltinAdapterKinds()
 }
 
-// validateModelRef trims and bounds-checks a model_ref, then validates it
-// against the adapter/provider/model grammar (ADR-0003). An empty value is
-// returned unchanged (empty model_ref is valid — the system default applies).
-// The registry is a static built-in catalog UNION the requesting tenant's
-// enabled custom providers (ADR-0006 D6); the settings/worker service
-// layers check tenant custom providers when one is configured.
+// validateModelRef trims and bounds-checks a model_ref, then validates it against the
+// adapter/provider/model grammar.
 func validateModelRef(ctx context.Context, tenantID, ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -200,15 +154,8 @@ func validateModelRef(ctx context.Context, tenantID, ref string) (string, error)
 	return ref, nil
 }
 
-// validateModelRefForUpdate validates a NEW model ref for an EXISTING
-// version whose stored ref is currentRef. An identical re-save (modulo
-// whitespace) is a pure no-op — the value is already-stored data, and
-// re-running grammar validation against it would brick saves of legacy
-// refs written under the pre-namespace free-form grammar (e.g. a re-save
-// of the stored "commandcode/deepseek/x" fails the new grammar's
-// unknown-adapter parse). This pins the ADR-0004 D5 re-save semantics for
-// the full legacy surface. Any DIFFERENT ref goes through the full
-// validateModelRef (fresh selection, fully validated).
+// validateModelRefForUpdate validates a NEW model ref for an EXISTING version whose stored ref is
+// currentRef.
 func validateModelRefForUpdate(ctx context.Context, tenantID, currentRef, newRef string) (string, error) {
 	if strings.TrimSpace(currentRef) == strings.TrimSpace(newRef) {
 		return newRef, nil
@@ -279,10 +226,8 @@ func validateTextField(s string, max int, field string) (string, error) {
 	return s, nil
 }
 
-// validateJSONField validates a JSON-encoded string field: trims, checks
-// size, and verifies valid JSON. Returns the canonical empty value for
-// empty input so the DB always stores well-formed JSON (AGENTS.md
-// security standards: JSON fields are validated).
+// validateJSONField validates a JSON-encoded string field: trims, checks size, and verifies valid
+// JSON.
 func validateJSONField(s, empty, field string, max int) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -297,20 +242,8 @@ func validateJSONField(s, empty, field string, max int) ([]byte, error) {
 	return []byte(s), nil
 }
 
-// validateSkillFiles validates a worker version's skill_files field: a JSON
-// array of absolute skill file/directory PATHS.
-//
-// It reuses internal/contextfiles' validator UNCHANGED (AGENTS.md: fix the whole
-// class, not one instance) — no skills-specific validator exists or should exist.
-// The structural rules (absolute, no "..", bounded) apply here; the
-// project-containment rule (ValidateWithin) cannot, because a worker version is
-// project-agnostic by design: the same worker may be bound to workers in many
-// projects, each with a different project_dir. Containment is therefore enforced
-// at the RENDER boundary in the composite-prompt builder, which does know the
-// project dir — see internal/scheduler/workflow_reconciler.go.
-//
-// DISTINCT FROM the free-text `skills` prompt section (validateTextField,
-// maxPromptLen), which is prose: this is a path list.
+// validateSkillFiles validates a worker version's skill_files field: a JSON array of absolute skill
+// file/directory PATHS.
 func validateSkillFiles(s string) (string, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -324,9 +257,8 @@ func validateSkillFiles(s string) (string, error) {
 		return "", fmt.Errorf("skill_files must be a JSON array of strings: %w", err)
 	}
 	if err := contextfiles.Validate(files); err != nil {
-		// The shared validator's messages say "context_files"; restate them in
-		// this field's own terms so the operator is not sent looking at the
-		// wrong field.
+		// The shared validator's messages say "context_files"; restate them in this field's own terms so
+		// the operator is not sent looking at the wrong field.
 		return "", fmt.Errorf("skill_files: %s", strings.Replace(err.Error(), "context_files", "skill_files", 1))
 	}
 	out, err := json.Marshal(files)
@@ -337,19 +269,7 @@ func validateSkillFiles(s string) (string, error) {
 }
 
 // validatePermissions validates a worker version's permissions payload — the field that carries the
-// version's MCP servers (permissions.mcp_servers) and its tool policy — and returns the bytes to store.
-//
-// TWO GATES, because the field had one and needed two. It is validated as a JSON field like every other
-// JSON member (valid JSON, bounded — validateJSONField), which the version-update paths did NOT do: they
-// stored whatever string arrived. And the INLINE MCP specs it carries are validated too
-// (mcpsettings.ValidateInlinePermissions), which is the same set of rules an OWNED definition already
-// has applied at create/update: the argv shape, the env/header key grammar, the transport's own
-// requirement, and — the one that only ever surfaced when a worker RAN — that every ${SECRET_NAME} it
-// references actually exists in the tenant secrets store.
-//
-// previous is what the version (or, for a new version, the version it was copied from) already held: the
-// specs that are UNCHANGED are left alone, so stored data can never turn an unrelated edit into a
-// failure. See mcpsettings/validate_inline.go for why that distinction is the contract and not leniency.
+// version's MCP servers (permissions.mcp_servers) and its tool policy.
 func validatePermissions(ctx context.Context, tx pgx.Tx, tenantID string, previous []byte, raw string) ([]byte, error) {
 	out, err := validateJSONField(raw, "{}", "permissions", maxJSONFieldLen)
 	if err != nil {
@@ -383,27 +303,19 @@ func requireTenant(ctx context.Context) (string, error) {
 	return id, nil
 }
 
-// --- adapter selection (ADR-0005) ------------------------------------------
+// --- adapter selection ------------------------------------------
 
-// adapterKindsFn returns the adapter kinds currently REGISTERED with the
-// Dispatcher (ADR-0005 D2). It is injected by the server layer via
-// SetAdapterKinds (a func to avoid an api → scheduler import cycle, the
-// same seam Dependencies.AdapterKinds uses). nil falls back to the
-// validation catalog's kinds (headless/tests).
+// adapterKindsFn returns the adapter kinds currently REGISTERED with the Dispatcher.
 var adapterKindsFn func() []string
 
-// SetAdapterKinds wires the Dispatcher's registered adapter kinds into the
-// worker service's adapter-input validation (ADR-0005 D2). Explicit
-// adapter selections are deliberate routing requests, so they validate
-// against what can actually dispatch — not merely what the catalog knows.
+// SetAdapterKinds wires the Dispatcher's registered adapter kinds into the worker service's
+// adapter-input validation.
 func SetAdapterKinds(fn func() []string) {
 	adapterKindsFn = fn
 }
 
-// registeredAdapterKinds returns the adapter kinds an explicit selection
-// may name: the Dispatcher's registered kinds when wired, else the
-// validation catalog's kinds (headless/tests), else the legacy default
-// kind so validation never accepts an empty allowlist silently.
+// registeredAdapterKinds returns the adapter kinds an explicit selection may name: the Dispatcher's
+// registered kinds when wired, else the validation catalog's kinds (headless/tests).
 func registeredAdapterKinds() []string {
 	if adapterKindsFn != nil {
 		if kinds := adapterKindsFn(); len(kinds) > 0 {
@@ -418,11 +330,8 @@ func registeredAdapterKinds() []string {
 	return []string{adapter.DefaultAdapterKind}
 }
 
-// validateAdapterInput validates an explicit adapter selection against the
-// Dispatcher's registered kinds (ADR-0005 D2/D3). An empty value is valid
-// (no explicit selection was made); anything else must name a registered
-// kind — catalog-known-but-unregistered kinds are rejected here with an
-// actionable error, because an explicit input is a routing request.
+// validateAdapterInput validates an explicit adapter selection against the Dispatcher's registered
+// kinds.
 func validateAdapterInput(kind string) (string, error) {
 	kind = strings.TrimSpace(kind)
 	if kind == "" {
@@ -439,10 +348,8 @@ func validateAdapterInput(kind string) (string, error) {
 	return "", fmt.Errorf("unknown or unregistered adapter %q — registered adapter kinds: %s", kind, strings.Join(registeredAdapterKinds(), ", "))
 }
 
-// validateAdapterRefAgreement enforces ADR-0005 D2 for the optional
-// explicit adapter input: it must travel WITH a model_ref (the ref is the
-// only store — a lone adapter has nowhere to persist) and must AGREE with
-// the ref's parsed adapter segment.
+// validateAdapterRefAgreement enforces for the optional explicit adapter input: it must
+// travel WITH a model_ref (the ref is the only store.
 func validateAdapterRefAgreement(adapterSel, modelRef string) error {
 	if adapterSel == "" {
 		return nil
@@ -460,29 +367,7 @@ func validateAdapterRefAgreement(adapterSel, modelRef string) error {
 	return nil
 }
 
-// validateAdapterChange enforces the adapter-change contract (ADR-0005 D4):
-// when a version's model_ref changes to one whose parsed adapter kind
-// differs from its CURRENT ref's parsed adapter kind, the full new pair
-// must be valid FOR THE NEW adapter — the provider segment must be a known
-// provider of that kind (built-in profile ∪ tenant custom via the same
-// registry seam validateModelRef uses). Unchanged-adapter re-saves keep
-// the ADR-0004 D5 semantics verbatim (catalog-known-but-deleted providers
-// re-save flagged) and pass through here untouched.
-//
-// Two legacy-data contracts (2026-09 QA: pre-namespace refs bricked saves):
-//
-//   - PHANTOM KINDS ARE LEGACY DATA, NOT SELECTIONS. A current ref whose
-//     parsed head is NOT a registered adapter kind (e.g. the pre-namespace
-//     "commandcode/deepseek/x" parsing to kind "commandcode") never
-//     expressed an adapter selection — the old grammar was free-form. The
-//     gate is skipped: whatever the operator saves is validated as a fresh
-//     selection, never diffed against a phantom. This survives data
-//     migrations cannot foresee (backups restored, imported tenants, refs
-//     written between release windows).
-//   - IDENTICAL-REF RE-SAVES ARE NO-OPS. Re-storing the exact current ref
-//     creates no new state; nothing beyond the parse is validated. This
-//     pins D5's "re-save flagged values keep working" semantics across the
-//     full legacy surface, including phantom-kind heads.
+// validateAdapterChange enforces the adapter-change contract.
 func validateAdapterChange(ctx context.Context, tenantID, currentRef, newRef string) error {
 	// Identical re-save: a pure no-op (the new ref already parsed upstream).
 	if strings.TrimSpace(currentRef) == strings.TrimSpace(newRef) {
@@ -490,12 +375,8 @@ func validateAdapterChange(ctx context.Context, tenantID, currentRef, newRef str
 	}
 	current := adapterKindOf(currentRef)
 	next := adapterKindOf(newRef)
-	// Phantom current kind (not a registered adapter kind): the current
-	// ref is pre-namespace legacy data — skip the adapter-change gate. An
-	// EMPTY current ref is NOT phantom: it means "no selection yet", so
-	// the first selection still validates the full provider/model pair
-	// (the D4 gate applies). The NEW ref was already fully validated by
-	// validateModelRef upstream.
+	// Phantom current kind (not a registered adapter kind): the current ref is pre-namespace legacy
+	// data — skip the adapter-change gate.
 	if current != "" && !isRegisteredKind(current) {
 		return nil
 	}
@@ -523,13 +404,8 @@ func validateAdapterChange(ctx context.Context, tenantID, currentRef, newRef str
 	return fmt.Errorf("model_ref %q changes the worker's adapter from %q to %q, but provider %q is not a known provider of %q — valid providers: %s", newRef, current, next, parsed.Provider, next, strings.Join(provs, ", "))
 }
 
-// isRegisteredKind reports whether kind is a registered adapter kind per
-// the base validation registry. Kinds come from the dispatcher's live set
-// (wired at construction) with the built-in catalog as floor; tenant
-// customs only extend provider sets under existing kinds, so the base
-// registry's kind set is authoritative here. An empty kind (empty or
-// malformed current ref) is NOT a registered selection — callers treat it
-// as legacy data.
+// isRegisteredKind reports whether kind is a registered adapter kind per the base validation
+// registry.
 func isRegisteredKind(kind string) bool {
 	if kind == "" {
 		return false
@@ -537,10 +413,8 @@ func isRegisteredKind(kind string) bool {
 	return modelRefRegistry.IsKnownAdapter(kind)
 }
 
-// adapterKindOf reports the worker-facing adapter selection for a
-// model_ref (ADR-0005 D2, computed): the parsed adapter segment; legacy
-// 1/2-segment refs report the inferred default kind ("opencode") — never
-// a stored value; an empty ref reports empty.
+// adapterKindOf reports the worker-facing adapter selection for a model_ref (,
+// computed): the parsed adapter segment.
 func adapterKindOf(modelRef string) string {
 	ref := strings.TrimSpace(modelRef)
 	if ref == "" {

@@ -1,7 +1,5 @@
-// Package connection implements orch's first-run connection screen: the
-// user enters a server URL and credentials (GUI-created API key, or local
-// username+password), orch probes /versionz + a cheap authenticated RPC,
-// then persists the profile (§3 of the plan).
+// Package connection implements orch's first-run connection screen: the user enters a server URL
+// and credentials (GUI-created API key, or local username+password).
 package connection
 
 import (
@@ -73,60 +71,37 @@ type Model struct {
 	// storedRefresh carries the existing profile's refresh token through an
 	// edit (API-key switch clears it; password probe overwrites it).
 	storedRefresh string
-	// storedToken is the API KEY that a switch away from API-key mode parked, so
-	// toggling ctrl+a back restores it.
-	//
-	// It is deliberately NOT the profile's Token in password mode: there, Token is
-	// the previous session's minted ACCESS TOKEN — not a password, and not a key.
+	// storedToken is the API KEY that a switch away from API-key mode parked, so toggling ctrl+a back
+	// restores it.
 	storedToken string
-	// embedded marks the model as the SHELL's in-place /connect overlay:
-	// ctrl+c does not quit the process (esc cancels), tea.Quit is never
-	// emitted on success — the shell polls Result() each Update.
+	// embedded marks the model as the SHELL's in-place /connect overlay.
 	embedded bool
 	width    int
 	height   int
 	busy     bool
 	errMsg   string
 	info     string
-	// reason is the WHY of this screen: set by the shell when it bounces the
-	// operator here because the stored session could not be authenticated.
-	// Unlike info (which each probe cycle clears), it persists until the
-	// operator signs in or cancels.
+	// reason is the WHY of this screen: set by the shell when it bounces the operator here because the
+	// stored session could not be authenticated.
 	reason    string
 	saveErr   string
 	insecure  bool
 	connected *Result // set when the probe succeeded (read by cmd/orch)
 }
 
-// SetReason seeds the persistent "why am I being asked" line. A shell that
-// bounced here — /connect, or the launch-time credential check rejecting a
-// dead session — calls this so the operator is asked to sign in WITH A REASON
-// instead of out of nowhere.
+// SetReason seeds the persistent "why am I being asked" line.
 func (m *Model) SetReason(s string) { m.reason = s }
 
 // New creates the connection screen. profile may be nil (first run) or a
 // partially-filled profile (e.g. env URL without token).
 func New(profile *config.Profile, probes ProbeFuncs) Model {
-	// THE LANDING MODE IS USERNAME+PASSWORD, and this was the OTHER way round for the whole
-	// life of the screen (authAPI: true, never changed since the file was introduced). The
-	// rationale for API-first was that an API key never expires while password mode's access
-	// token does — a real trade-off, and the reason it was written that way. It is reversed
-	// deliberately: a first-run operator has just created an account with a username and a
-	// password (§2 "First run" of the USERGUIDE), so the screen they meet must ask for what
-	// they already have. An API key has to be minted in the GUI first, which is not something
-	// the login screen can walk them through.
-	//
-	// THIS ONLY SETS THE LANDING MODE. API-key login is a toggle away and is still selected
-	// automatically for a profile that says so, so nothing is lost — the expiring-token cost
-	// is paid only by an operator who leaves it here, and they can type a username.
+	// THIS ONLY SETS THE LANDING MODE.
 	m := Model{probes: probes, profile: profile, authAPI: false}
 	for i := range m.inputs {
 		m.inputs[i] = textinput.New()
 		m.inputs[i].CharLimit = 512
-		// Explicit field width (Phase 3 finding 2): a zero-width textinput
-		// never bounds its frame, so the masked credential echo painted a
-		// full-width dotted line and the fields could not be read. ~40
-		// cells is the form's natural measure at the 80-col floor.
+		// Explicit field width (Phase 3 finding 2): a zero-width textinput never bounds its frame, so the
+		// masked credential echo painted a full-width dotted line and the fields could not be read.
 		m.inputs[i].Width = 40
 	}
 	m.inputs[fieldURL].Placeholder = "https://orch.example.com"
@@ -142,24 +117,14 @@ func New(profile *config.Profile, probes ProbeFuncs) Model {
 		if profile.Username != "" {
 			m.inputs[fieldUsername].SetValue(profile.Username)
 		}
-		// THE MODE COMES FROM THE PROFILE WHEN IT SAYS, and only then. This has to be
-		// explicit in BOTH directions now that the default is password: leaving it implicit
-		// (the old shape only ever cleared the flag) would silently drop an API-key profile
-		// into password mode.
+		// THE MODE COMES FROM THE PROFILE WHEN IT SAYS, and only then.
 		switch {
 		case profile.AuthMethod == config.AuthAPIKey, profile.AuthMethod == "" && profile.Token != "":
-			// API-KEY MODE: the Token IS the key. Park it so a mode switch can restore it;
-			// applyCredentialMode puts it in the field. The second arm covers a profile that
-			// predates the AuthMethod field or never wrote one: a stored token is a key.
+			// API-KEY MODE: the Token IS the key.
 			m.authAPI = true
 			m.storedToken = profile.Token
 		default:
-			// PASSWORD MODE (the default): the profile's Token is the previous session's
-			// minted ACCESS TOKEN. It is not a password, and showing it in the password
-			// field meant the field arrived pre-satisfied — so submit sent the stale token
-			// as the password, the plane answered HTTP 401, and there was no way to type the
-			// real one over it. The field is therefore left EMPTY (a password is never
-			// stored) and the operator types it.
+			// PASSWORD MODE (the default): the profile's Token is the previous session's minted ACCESS TOKEN.
 			m.authAPI = false
 		}
 		// Carry the stored refresh token through an edit — a re-connect of the
@@ -171,21 +136,8 @@ func New(profile *config.Profile, probes ProbeFuncs) Model {
 	return m
 }
 
-// applyCredentialMode derives the credential field's prompt + placeholder
-// from the active auth mode. API-key mode shows "API key >" with the oc_…
-// placeholder; username+password mode shows "Password >" with a password
-// placeholder — never "API key" in password mode.
-// visibleFields is the fields the operator can edit in the current mode, IN THE
-// ORDER THEY ARE DRAWN.
-//
-// The tab cycle walks THIS rather than the raw 0..fieldCount range. The constants
-// are fieldURL, fieldCredential, fieldUsername — the ORIGINAL two-field API-key
-// layout, with Username bolted on at the end when password mode arrived — but
-// password mode DRAWS URL, Username, Password, with the credential field THIRD.
-// Cycling by index therefore moved focus DOWN to Password and then back UP to
-// Username: the highlight jumped around the form, and a keystroke — or a
-// backspace — landed in the field the operator was not looking at, which is
-// exactly why the password box seemed impossible to clear.
+// applyCredentialMode derives the credential field's prompt + placeholder from the active auth
+// mode.
 func (m *Model) visibleFields() []int {
 	if m.authAPI {
 		return []int{fieldURL, fieldCredential}
@@ -221,13 +173,8 @@ func (m *Model) setFocus(field int) {
 	m.inputs[field].CursorEnd()
 }
 
-// applyCredentialMode derives the credential field's prompt, placeholder AND VALUE
-// from the active auth mode.
-//
-// The VALUE is the load-bearing part. Deriving only the label is this screen's
-// oldest bug: the field kept whatever it had been given — an API key, or the
-// previous session's access token — while its label changed to "Password > ", so
-// the operator saw a filled password box they had not filled and could not explain.
+// applyCredentialMode derives the credential field's prompt, placeholder AND VALUE from the active
+// auth mode.
 func (m *Model) applyCredentialMode() {
 	if m.authAPI {
 		m.inputs[fieldCredential].Prompt = "API key > "
@@ -241,9 +188,8 @@ func (m *Model) applyCredentialMode() {
 		// nor a stale access token is one.
 		m.inputs[fieldCredential].SetValue("")
 	}
-	// Park the caret at the END: SetValue only moves the cursor when the field was
-	// previously empty, so a restored value could otherwise leave it at position 0
-	// with nothing before it to backspace.
+	// Park the caret at the END: SetValue only moves the cursor when the field was previously empty, so
+	// a restored value could otherwise leave it at position 0 with nothing before it to backspace.
 	m.inputs[fieldCredential].CursorEnd()
 }
 
@@ -293,47 +239,37 @@ func (m *Model) probe(ctx context.Context) (*Result, error) {
 		if err := m.probes.ListProjects(ctx, m.currentURL(), m.credential(), m.insecure); err != nil {
 			return nil, fmt.Errorf("API key rejected: %w\n\nRe-create the key in the GUI (Settings → API keys). Read scopes cover browsing; sending chat messages and interjecting into live executions needs the corresponding write scopes (conversations, execution messaging).", err)
 		}
-		return &Result{Profile: m.buildProfile(m.credential(), ""), ServerVersion: vr.Version}, nil
+		// API-KEY MODE HAS NO EXPIRY: a key is not a session token, so there is no lifetime to
+		// keep alive against. 0 is the honest value and makes the keep-alive inert.
+		return &Result{Profile: m.buildProfile(m.credential(), "", 0), ServerVersion: vr.Version}, nil
 	}
 	lr, err := m.probes.LocalLogin(ctx, m.currentURL(), m.username(), m.password(), m.insecure)
 	if err != nil {
-		// One wrap, never two: client.Login already prefixes its failures
-		// with "login failed:" (Phase 3 finding 2 — the message used to
-		// read "login failed: login failed: HTTP 401").
+		// One wrap, never two: client.Login already prefixes its failures with "login failed:" (Phase 3
+		// finding 2 — the message used to read "login failed: login failed: HTTP 401").
 		if strings.Contains(err.Error(), "login failed") {
 			return nil, err
 		}
 		return nil, fmt.Errorf("login failed: %w", err)
 	}
-	// lr.RefreshToken carries the HttpOnly orchicon_refresh Set-Cookie value
-	// (24h TTL) — stored in the profile so the client auto-refreshes the
-	// 900s access token instead of dead-ending on auth-expired. A server
-	// without refresh support leaves it empty: fall back to the profile's
-	// stored token (the re-connect of the same session keeps auto-refresh).
+	// lr.RefreshToken carries the HttpOnly orchicon_refresh Set-Cookie value (24h TTL) — stored in the
+	// profile so the client auto-refreshes the 900s access token instead of dead-ending.
 	refresh := lr.RefreshToken
 	if refresh == "" {
 		refresh = m.storedRefresh
 	}
-	return &Result{Profile: m.buildProfile(lr.AccessToken, refresh), ServerVersion: vr.Version}, nil
+	return &Result{Profile: m.buildProfile(lr.AccessToken, refresh, lr.ExpiresIn), ServerVersion: vr.Version}, nil
 }
 
-// profileNameForURL names a profile after the INSTANCE its URL points at, so two
-// instances get two slots in the config file instead of fighting over one.
-//
-// HOST:PORT, with the separators turned into '-' so the result is a valid TOML section
-// key ([profiles.localhost-8080]). A URL with no host falls back to "default", which is
-// also what SaveProfile uses for an unnamed profile. The connection screen's validate()
-// already requires a scheme and host before a probe runs, so the fallback is for safety
-// and for callers that build a profile without probing.
+// profileNameForURL names a profile after the INSTANCE its URL points at, so two instances get two
+// slots in the config file instead of fighting over one.
 func profileNameForURL(raw string) string {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Host == "" {
 		return "default"
 	}
-	// A literal IPv6 host carries '[' and ']', which cannot appear in a TOML bare key, so
-	// they are dropped along with the ':' separator. '.' is folded in as well: it is legal
-	// in a hostname and NOT legal in a TOML bare key, and render() writes this name as
-	// `[profiles.<name>]`.
+	// A literal IPv6 host carries '[' and ']', which cannot appear in a TOML bare key, so they are
+	// dropped along with the ':' separator.
 	name := strings.NewReplacer(":", "-", ".", "-", "[", "", "]", "").Replace(u.Host)
 	if name == "" {
 		return "default"
@@ -341,10 +277,8 @@ func profileNameForURL(raw string) string {
 	return name
 }
 
-// buildProfile assembles the profile from the form. token overrides the
-// credential field (password mode stores the minted access token, never
-// the password); refresh carries the login's refresh token.
-func (m *Model) buildProfile(token, refresh string) *config.Profile {
+// buildProfile assembles the profile from the form.
+func (m *Model) buildProfile(token, refresh string, expiresIn int64) *config.Profile {
 	name := profileNameForURL(m.currentURL())
 	method := config.AuthAPIKey
 	if !m.authAPI {
@@ -360,43 +294,24 @@ func (m *Model) buildProfile(token, refresh string) *config.Profile {
 	}
 	url_ := m.currentURL()
 	// AN EXPLICIT NAME IS CARRIED; OTHERWISE THE INSTANCE NAMES ITSELF.
-	//
-	// The name used to be the literal "default" for EVERY url, and SaveProfile sets
-	// cfg.Active to it — so connecting to a SECOND instance overwrote the first instance's
-	// profile (URL, token, refresh token) IN PLACE, and every later launch went to whichever
-	// instance was connected to last. That is the whole of the operator's "it seems to flop
-	// which port you are connecting to each time you run it": there was only ever one slot
-	// for two instances. Deriving the name from host:port gives each instance its own entry,
-	// so both survive, `orch` keeps landing on the last one chosen (Active), and
-	// ORCHICON_PROFILE can pin a process to a specific one.
-	//
-	// "default" IS DELIBERATELY NOT CARRIED. A profile under that name was written by the
-	// single-slot build, and its URL may well be a DIFFERENT instance than the one being
-	// connected to now — that mixed-up pair is how this bug shows itself. Reusing the name
-	// would re-create the collision. It is left on disk rather than deleted, because it may
-	// still hold a working credential the operator wants.
 	if m.profile != nil && m.profile.Name != "" && m.profile.Name != "default" {
 		name = m.profile.Name
 	}
-	// DISPLAY PREFERENCES are not credentials and must survive this rebuild. The
-	// original profile carried them and this function returns a FRESH struct, so
-	// omitting them DROPPED them: a saved palette was lost for the whole session
-	// (and, because the rebuilt profile is what gets re-saved, the theme was
-	// scrubbed from the config too). `Newline` had the same defect — an operator's
-	// configured newline chord silently reverted to the default. Credentials are
-	// deliberately NOT carried by default (token/username/refresh come from the
-	// form), which is why this is an explicit list and not a struct copy.
+	// DISPLAY PREFERENCES are not credentials and must survive this rebuild.
 	themeName, newlineMode := "", ""
 	if m.profile != nil {
 		themeName, newlineMode = m.profile.Theme, m.profile.Newline
 	}
 	return &config.Profile{
-		Name:               name,
-		URL:                url_,
-		AuthMethod:         method,
-		Token:              cred,
-		Username:           user,
-		RefreshToken:       refresh,
+		Name:         name,
+		URL:          url_,
+		AuthMethod:   method,
+		Token:        cred,
+		Username:     user,
+		RefreshToken: refresh,
+		// The access token's lifetime, so the shell can refresh it BEFORE it expires instead of
+		// discovering the expiry on the operator's next action (see client.StartKeepalive).
+		TokenExpiresIn:     expiresIn,
 		InsecureSkipVerify: m.insecure,
 		Newline:            newlineMode,
 		Theme:              themeName,
@@ -452,9 +367,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.authAPI = !m.authAPI
 			m.applyCredentialMode()
-			// The visible field set changes with the mode, and the credential field
-			// is not always the same neighbour — re-seat focus on the first field so
-			// the caret is never left inside a field that is no longer drawn.
+			// The visible field set changes with the mode, and the credential field is not always the same
+			// neighbour.
 			m.setFocus(fieldURL)
 			m.errMsg = ""
 			m.info = ""
@@ -600,21 +514,7 @@ func (m Model) View() string {
 	return b.String()
 }
 
-// SaveProfile persists the profile to the config file. Passwords are never
-// written — only the minted access token.
-//
-// IT CARRIES FORWARD THE STORED PREFERENCES the connection form cannot know about, and this is a fix
-// rather than tidiness. `res.Profile` is built BY the connection form, which collects a URL and a
-// credential and nothing else — so its Theme is empty. Writing it verbatim BLANKED the profile's saved
-// theme on every launch that passed through the connection screen (first run, and every reauth), which
-// is every launcher-driven launch whose wrapper has an unset ORCHICON_TOKEN. The operator suspected
-// exactly this: "I have a feeling when I do a rebuild, it is modifying my config file." The rebuild was
-// not the cause — but this save was.
-//
-// The TOP-LEVEL theme survives a blanked PROFILE theme (applyStoredTheme falls back to it), which is why
-// the loss was invisible for a launcher-driven session — and why it would bite the moment somebody
-// relied on the per-profile value, or after the top-level fallback changed. Carrying it forward costs
-// nothing and removes the class.
+// SaveProfile persists the profile to the config file.
 func SaveProfile(path string, res *Result) error {
 	cfg, err := config.Load(path)
 	if err != nil {

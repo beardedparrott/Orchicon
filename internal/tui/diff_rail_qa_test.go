@@ -1,10 +1,6 @@
 package tui
 
 // diff_rail_qa_test.go — INDEPENDENT QA probes for the drag-resizable diff rail.
-//
-// These deliberately do NOT reuse the feature's own helpers where a helper could hide the bug: each
-// probe measures the DRAWN frame (or the resolver the drawing must agree with) rather than the fields
-// the feature maintains.
 
 import (
 	"os"
@@ -201,9 +197,7 @@ func TestQADiffRailClampRespectsTheConversationsRail(t *testing.T) {
 	}
 }
 
-// A DIVIDER PRESS WITH NO MOTION MUST NOT PIN A WIDTH THE OPERATOR DID NOT DRAG TO. A stray click on the
-// rail's edge is not a resize: it must not turn AUTO into a fixed override (the terminal would then stop
-// scaling, and the release persists the pinned number).
+// A DIVIDER PRESS WITH NO MOTION MUST NOT PIN A WIDTH THE OPERATOR DID NOT DRAG TO.
 func TestQADiffRailStrayDividerClickDoesNotPinAuto(t *testing.T) {
 	path := useTempConfigDir(t)
 	m := newDiffRailApp(t, 240, 40)

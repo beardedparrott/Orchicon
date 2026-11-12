@@ -9,9 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
 
-// busAskStart builds a NON-terminal tool part — the serve's "tool_part" signal
-// (ToolStartFromBus maps state.status absent/"running"/"pending" to a start).
-// This is what latches the stall monitor's open-tool clock.
+// busAskStart builds a NON-terminal tool part — the serve's "tool_part" signal (ToolStartFromBus
+// maps state.status absent/"running"/"pending" to a start).
 func busAskStart(sessionID, tool string) opencode.BusEvent {
 	return opencode.BusEvent{
 		Type: "message.part.updated",
@@ -46,12 +45,8 @@ func busAskCompleted(sessionID, tool string, input map[string]any, output string
 	}
 }
 
-// TestAskUserDoesNotWedgeTheStallMonitor is the deterministic half of the
-// "returns immediately: no tool-call timeout, no stall-guard intervention" AC.
-// It drives the REAL wedge mechanism (stall.go) with the injected clock seam: a
-// record-and-return tool resolves in the same round, so the human reading the
-// card for ten minutes cannot trip the wedge. The control proves the assertion
-// is meaningful — a tool left open and silent DOES wedge.
+// TestAskUserDoesNotWedgeTheStallMonitor is the deterministic half of the "returns immediately: no
+// tool-call timeout, no stall-guard intervention" AC.
 func TestAskUserDoesNotWedgeTheStallMonitor(t *testing.T) {
 	base := time.Now()
 
@@ -84,11 +79,8 @@ func TestAskUserDoesNotWedgeTheStallMonitor(t *testing.T) {
 	}
 }
 
-// TestAskUserCallCollectedAndRecordedInLedger drives the collector through a
-// full turn whose tool activity is an ask_user call, and asserts the turn ends
-// COLLECTED (a completed turn — not pending, not wedged) and the live tool
-// ledger — the object the finalize persists into tool_calls/tool_results —
-// holds the call with its question and options intact.
+// TestAskUserCallCollectedAndRecordedInLedger drives the collector through a full turn whose tool
+// activity is an ask_user call, and asserts the turn ends COLLECTED (a completed turn.
 func TestAskUserCallCollectedAndRecordedInLedger(t *testing.T) {
 	client := &fakeSessionClient{}
 	led := newToolLedger()

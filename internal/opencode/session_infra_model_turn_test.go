@@ -9,10 +9,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// TestIsInfraModelTurnError verifies the socket/transport class of
-// model-turn failures is classified as infra — so recordStreamError recycles
-// the runtime container immediately — while per-request / server-decision
-// rejections (4xx/5xx, auth, quota, policy) stay on the retry path.
+// TestIsInfraModelTurnError verifies the socket/transport class of model-turn failures is
+// classified as infra — so recordStreamError recycles the runtime container immediately.
 func TestIsInfraModelTurnError(t *testing.T) {
 	cases := []struct {
 		name string
@@ -52,11 +50,8 @@ func TestIsInfraModelTurnError(t *testing.T) {
 	}
 }
 
-// TestRecycleOnInfraModelTurn verifies the immediate-recycle path's
-// per-dispatch repair budget: the FIRST infra model-turn failure recycles
-// (counter increments), further recycles stop once the budget is spent, and
-// any progress resets the counter so a healthy step never inherits a prior
-// dispatch's spent budget.
+// TestRecycleOnInfraModelTurn verifies the immediate-recycle path's per-dispatch repair budget: the
+// FIRST infra model-turn failure recycles (counter increments).
 func TestRecycleOnInfraModelTurn(t *testing.T) {
 	t.Setenv("ORCHICON_SESSION_REPAIR_ATTEMPTS", "2")
 	// rt points at a non-existent daemon socket so the best-effort Kill fails

@@ -8,9 +8,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// TestCardLinesAreExactlyTheWidth pins the card's sizing contract: every row is
-// EXACTLY `width` display cells. A card one cell wide or narrow would shift the
-// whole transcript it is spliced into.
+// TestCardLinesAreExactlyTheWidth pins the card's sizing contract: every row is EXACTLY `width`
+// display cells.
 func TestCardLinesAreExactlyTheWidth(t *testing.T) {
 	spec := CardSpec{
 		Title:  "Permission",
@@ -108,9 +107,8 @@ func TestCardEscReturnsClosed(t *testing.T) {
 	}
 }
 
-// TestCardFooterNamesEscsOutcome pins the "a mode the operator cannot tell they
-// are in is worse than no mode" rule: the footer says what esc DOES, because on
-// this card esc is a decision rather than a dismissal.
+// TestCardFooterNamesEscsOutcome pins the "a mode the operator cannot tell they are in is worse
+// than no mode" rule: the footer says what esc DOES.
 func TestCardFooterNamesEscsOutcome(t *testing.T) {
 	if !strings.Contains(CardFooter(false), "esc denies") {
 		t.Fatalf("the permission card must say esc denies, got %q", CardFooter(false))
@@ -120,16 +118,8 @@ func TestCardFooterNamesEscsOutcome(t *testing.T) {
 	}
 }
 
-// TestCardWrapsRatherThanCuttingLongContent pins the no-silent-cut rule on every
-// row kind that used to be clamped: the body (a target path), the deny-by-file
-// notice, a long option label, the disabled row's reason and the footer.
-//
-// WHY IT IS AN ACCEPTANCE-CRITERION TEST, not polish: the card IS the decision.
-// At the widths this transcript actually gets, `ansi.Truncate(…, "")` cut the
-// deny-by-file sentence to "…a session grant cannot ove" — the statement that
-// criterion 4 requires the card to make, rendered unreadable — and would cut a
-// long target path the same way, so the operator could neither read the warning
-// nor see what they were consenting to.
+// TestCardWrapsRatherThanCuttingLongContent pins the no-silent-cut rule on every row kind that used
+// to be clamped: the body (a target path), the deny-by-file notice, a long option label.
 func TestCardWrapsRatherThanCuttingLongContent(t *testing.T) {
 	const (
 		path   = "/home/ops/a/rather/long/workspace/path/that/no/pane/can/hold/main.go"
@@ -150,10 +140,8 @@ func TestCardWrapsRatherThanCuttingLongContent(t *testing.T) {
 	for _, w := range []int{40, 56, 72} {
 		lines := CardLines(spec, w)
 		painted := strip.Replace(strings.Join(lines, "\n"))
-		// `words` collapses the row breaks back to single spaces (the notice wraps
-		// on word boundaries, so its wording survives); `glued` removes whitespace
-		// too, because a token LONGER than a row is hard-split mid-word and the row
-		// break lands inside it.
+		// `words` collapses the row breaks back to single spaces (the notice wraps on word boundaries, so
+		// its wording survives); `glued` removes whitespace too.
 		words := strings.Join(strings.Fields(painted), " ")
 		glued := strings.Join(strings.Fields(painted), "")
 		for _, want := range []string{path, notice} {

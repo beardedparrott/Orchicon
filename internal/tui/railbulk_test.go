@@ -63,14 +63,7 @@ var enterKey = tea.KeyMsg{Type: tea.KeyEnter}
 // ---------------------------------------------------------------- 1. the arrows
 
 // TestRailArrowsMoveTheSelectionFromContentFocus is the operator's report: "I move up/down the
-// conversation list and it moves through the conversations but the currently selected conversation
-// selector is not moving".
-//
-// THE CAUSE, and why this test drives all three focus levels: the rail's arrows were wired into the
-// COMPOSER branch alone. With the keyboard in the CONTENT — which is where the operator is when
-// reading the transcript, and exactly what the footer's "ctrl+g composer" tells them — the key fell
-// through to the Ask screen, whose HIDDEN "conversations" source moved its own cursor and
-// re-requested that conversation's detail. So the transcript changed and the rail's highlight did not.
+// conversation list and it moves through the conversations but the currently selected conversation.
 func TestRailArrowsMoveTheSelectionFromContentFocus(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -107,8 +100,7 @@ func TestRailArrowsMoveTheSelectionFromContentFocus(t *testing.T) {
 }
 
 // TestRailArrowsRespectACloserDraft: with TEXT in the composer the arrows belong to the textarea
-// (cursor movement). That rule must survive for the composer path — while the CONTENT path is
-// deliberately exempt, because there the composer does not have the keys at all.
+// (cursor movement).
 func TestRailArrowsRespectACloserDraft(t *testing.T) {
 	m := railApp(t, 12)
 	m.setFocus(focusComposer)
@@ -121,13 +113,8 @@ func TestRailArrowsRespectACloserDraft(t *testing.T) {
 
 // ---------------------------------------------------------------- 2. the hint
 
-// TestRailChordListLivesInTheComposer: "The command shortcut guidance is inside the conversation list
-// pane which is causing it to get cut off. I suggest we put the shortcuts in the composer on
-// conversations instead of in that pane."
-//
-// THE CUT-OFF WAS ARITHMETIC, which is why it is asserted rather than eyeballed: the rail is 32 cells
-// with 28 of inner text, and the chord list was 34 characters, so it rendered as
-// "ctrl+n: rename · ctrl+t: ca…".
+// TestRailChordListLivesInTheComposer: "The command shortcut guidance is inside the conversation
+// list pane which is causing it to get cut off.
 func TestRailChordListLivesInTheComposer(t *testing.T) {
 	m := railApp(t, 3)
 
@@ -426,13 +413,7 @@ func TestAssignModalWriteIsUnchangedForOneEntity(t *testing.T) {
 	}
 }
 
-// TestMarksArePrunedWhenTheListShrinks: a reload is the honest reconciliation for a bulk delete. A
-// mark on a conversation that no longer exists would OVERSTATE the selection (the count is the number
-// the operator reads before confirming) and aim the next bulk action at a row the server would reject.
-//
-// Note what convBulkIDs() can and cannot hide: it only ever returns ids that are still in the list, so
-// a stale mark is invisible there while still inflating convMarkedCount(). That is why this asserts on
-// the COUNT — the number the operator actually sees — and not only on the ids.
+// TestMarksArePrunedWhenTheListShrinks: a reload is the honest reconciliation for a bulk delete.
 func TestMarksArePrunedWhenTheListShrinks(t *testing.T) {
 	m := railApp(t, 5)
 	m = press(m, spaceKey, spaceKey, spaceKey) // conv-01, conv-02, conv-03
@@ -455,9 +436,8 @@ func TestMarksArePrunedWhenTheListShrinks(t *testing.T) {
 	}
 }
 
-// TestMarksSurviveARefreshThatKeepsTheConversations: pruning must not clear a selection that is still
-// valid — the rolling refresh reloads every few seconds, and losing the selection each time would make
-// the feature unusable.
+// TestMarksSurviveARefreshThatKeepsTheConversations: pruning must not clear a selection that is
+// still valid — the rolling refresh reloads every few seconds.
 func TestMarksSurviveARefreshThatKeepsTheConversations(t *testing.T) {
 	m := railApp(t, 5)
 	m = press(m, spaceKey, spaceKey)
@@ -485,15 +465,12 @@ func TestMarkedRowsShowInTheRail(t *testing.T) {
 // ------------------------------------------------- 1b. WHICH PANE HAS THE KEYS
 
 // askPaneApp builds the Ask shell with a loaded rail AND a sized transcript, so both panes can be
-// exercised. The WindowSizeMsg is what gives the rail and the stream real dimensions — a fixture that
-// only sets width/height directly leaves contentHeight() at 0 and the rail renders through the
-// no-focus fallback path, which would make the border assertion below vacuous.
+// exercised.
 func askPaneApp(t *testing.T, n int) *App {
 	t.Helper()
 	m := newTestApp()
 	// THE REAL Ask screen, not a stub: the pane-focus assertion is a TYPE assertion on the screen, and
-	// kit2.Base's SetPaneFocus is reached through EMBEDDING — so a stub silently makes that path
-	// untestable, which is exactly what it did on the first run of these tests.
+	// kit2.Base's SetPaneFocus is reached through EMBEDDING.
 	m.RegisterScreen(TabAsk, ask.New(nil, m.reg))
 	m.dispatch(tea.WindowSizeMsg{Width: 140, Height: 40})
 	m.SwitchTo(TabAsk)
@@ -516,17 +493,7 @@ func askPaneApp(t *testing.T, n int) *App {
 }
 
 // THE OPERATOR'S MODEL: "make left/right actually select the full conversation versus the pane and
-// then up/down works accordingly between the rail and conversation". Left/right select; the vertical
-// keys follow the selection.
-//
-// THE DIRECTIONS MATCH THE LAYOUT: the rail is drawn to the RIGHT of the conversation, so right selects
-// the rail and left the conversation. My first cut had them swapped and the operator reported it at
-// once — "the arrows are in reverse ... even though the conversation pane is on the left" — so the
-// directions are asserted explicitly rather than left to a comment.
-//
-// Before any of this, the rail claimed the vertical keys whenever it was VISIBLE — which is whenever a
-// conversation is open — so with a conversation on screen there was no keyboard key left to scroll the
-// transcript with, and the operator had to ask what to press.
+// then up/down works accordingly between the rail and conversation".
 func TestAskPaneSelectionRoutesTheVerticalKeys(t *testing.T) {
 	leftKey := tea.KeyMsg{Type: tea.KeyLeft}
 	rightKey := tea.KeyMsg{Type: tea.KeyRight}
@@ -550,12 +517,7 @@ func TestAskPaneSelectionRoutesTheVerticalKeys(t *testing.T) {
 	}
 	str.ScrollToBottom()
 
-	// LEFT selects the CONVERSATION, because the conversation is the LEFT pane. The arrows must stop
-	// moving the rail's selection and scroll the transcript instead.
-	//
-	// The scroll is asserted with UP from the BOTTOM, which is the realistic gesture ("read back
-	// through a long reply") and the only direction that can move an offset already at its maximum —
-	// pressing Down at the bottom clamps and would have made this assertion vacuous.
+	// LEFT selects the CONVERSATION, because the conversation is the LEFT pane.
 	m = press(m, leftKey)
 	if m.askPane != askPaneConversation {
 		t.Fatalf("left did not select the conversation, which is the LEFT pane (askPane = %v)", m.askPane)
@@ -583,14 +545,7 @@ func TestAskPaneSelectionRoutesTheVerticalKeys(t *testing.T) {
 	}
 }
 
-// BOTH PANES SHOW WHERE THE KEYBOARD IS. The rail's border was hardcoded unfocused and the conversation
-// pane's was never told about the pane selection, so the operator had "no ... highlight [on] the pane
-// letting you know you have focus".
-//
-// This asserts the DECISION, not the pixels, and the reason is worth keeping: lipgloss strips styling
-// under the test colour profile, so a focused and an unfocused panel render to byte-identical output
-// (measured: both 1413 bytes, no escape sequences at all). A rendered-border assertion is impossible
-// for the rail — which is how `p.Focused = false` survived so long.
+// BOTH PANES SHOW WHERE THE KEYBOARD IS.
 func TestAskPaneSelectionShowsFocusOnBothPanes(t *testing.T) {
 	m := askPaneApp(t, 3)
 
@@ -629,13 +584,8 @@ func TestOpeningAConversationSelectsTheConversationPane(t *testing.T) {
 	}
 }
 
-// The rail SHOWS that it holds the keyboard: the border was hardcoded unfocused, so the selection was
-// invisible and the operator had to remember it.
-//
-// This asserts the DECISION, not the pixels, and the reason is worth keeping: lipgloss strips styling
-// under the test colour profile, so a focused and an unfocused panel render to byte-identical output
-// (measured: both 1413 bytes, no escape sequences at all). A rendered-border assertion is therefore
-// impossible here — which is precisely how `p.Focused = false` survived this long.
+// The rail SHOWS that it holds the keyboard: the border was hardcoded unfocused, so the selection
+// was invisible and the operator had to remember it.
 func TestRailFocusFollowsThePaneSelection(t *testing.T) {
 	m := askPaneApp(t, 3)
 

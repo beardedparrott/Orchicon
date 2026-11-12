@@ -14,12 +14,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// runProjectMountsWriter keeps the project-mounts manifest in sync with the
-// projects table. Docker bind mounts are fixed at container-create time, so
-// scripts/container.sh reads this manifest (from the data volume) to mount
-// exactly the host dirs/files the projects reference — project_dir plus any
-// context_files. "Save a project dir, then scripts/container.sh sync-mounts"
-// applies the change. Only runs in container mode (ORCHICON_DATA_DIR set).
+// runProjectMountsWriter keeps the project-mounts manifest in sync with the projects table.
 func runProjectMountsWriter(ctx context.Context, pool *db.Pool, log *slog.Logger, dataDir string) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -56,10 +51,8 @@ func writeProjectMountsManifest(ctx context.Context, pool *db.Pool, dataDir stri
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
-// collectProjectMountPaths returns the sorted unique set of host paths
-// (project dirs + context files) across all projects AND work items. Work
-// items carry their own context_files (files/directories) that must be
-// mounted into the single-container instance too.
+// collectProjectMountPaths returns the sorted unique set of host paths (project dirs + context
+// files) across all projects AND work items.
 func collectProjectMountPaths(ctx context.Context, pool *db.Pool) ([]string, error) {
 	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
 	if err != nil {
@@ -101,9 +94,8 @@ func collectProjectMountPaths(ctx context.Context, pool *db.Pool) ([]string, err
 		return nil, fmt.Errorf("project mounts: rows: %w", err)
 	}
 
-	// Union the work items' context_files (AGENTS.md: fix the whole
-	// class — a work item's context paths must be mounted just like a
-	// project's).
+	// Union the work items' context_files (AGENTS.md: fix the whole class — a work item's context paths
+	// must be mounted just like a project's).
 	wrows, err := ttx.Tx.Query(ctx,
 		`SELECT DISTINCT context_files FROM work_items WHERE context_files IS NOT NULL`)
 	if err != nil {

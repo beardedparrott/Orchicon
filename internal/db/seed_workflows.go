@@ -5,12 +5,7 @@ import (
 	"fmt"
 )
 
-// cannedWorkflow defines a pre-canned template workflow to seed into the
-// dev tenant on every boot. Idempotent — the workflow is created if it
-// does not exist. If the workflow already exists AND the current version
-// is still the original seed (same VersionID), the steps are updated so
-// seed improvements (e.g. edge_handles) propagate. If the user has
-// created new versions, their work is preserved untouched.
+// cannedWorkflow defines a pre-canned template workflow to seed into the dev tenant on every boot.
 type cannedWorkflow struct {
 	ID          string
 	VersionID   string
@@ -18,10 +13,11 @@ type cannedWorkflow struct {
 	VersionNote string
 	StepsJSON   string // JSON array of step objects
 	// GitStrategy pins the workflows row's git_strategy (local|pr|none).
-	// Empty = NULL (inherit the effective strategy). The Quick Work template
-	// pins "pr" so the run ends with a PR merged into develop (Quick SWE
-	// pushes, DevOps opens + merges).
 	GitStrategy string
+
+	// UnpinGitStrategy, when true, CLEARS a previously pinned git_strategy on an existing row (sets it
+	// back to NULL/inherit).
+	UnpinGitStrategy bool
 }
 
 var cannedWorkflows = []cannedWorkflow{
@@ -74,16 +70,41 @@ var cannedWorkflows = []cannedWorkflow{
 ]`,
 	},
 	{
-		ID:          "01M1ERHNCNF38MP3SEV1GTH26G",
-		VersionID:   "wfv_quick_work_v1",
-		Name:        "Quick Work",
-		VersionNote: "Merge-autonomy fast path (git_strategy=pr): the all-in-one Quick Software Engineer implements, verifies green, commits to the run branch, pushes to origin, and opens + merges the PR into develop, then End. There is no separate DevOps step — the Quick worker owns PR creation + merge (PR_URL + PR_STATE), so the run ends merged with fully autonomous handoff.",
-		GitStrategy: "pr",
+		ID:               "01M1ERHNCNF38MP3SEV1GTH26G",
+		VersionID:        "wfv_quick_work_v1",
+		Name:             "Quick Work",
+		VersionNote:      "Merge-autonomy fast path (git_strategy=INHERIT — the bound PROJECT decides local/pr/none): the all-in-one Quick Software Engineer implements, verifies green, commits to the run branch, pushes to origin, then ships according to that strategy. There is no separate DevOps step — the Quick worker owns PR creation + merge (PR_URL + PR_STATE) when the strategy is pr, so the run ends merged with fully autonomous handoff.",
+		GitStrategy:      "",
+		UnpinGitStrategy: true,
 		StepsJSON: `[
-  {"id":"step-quick","ref":"01M1ERH9921YS9S1QWGZV8D1VM","kind":"task","name":"Quick Software Engineer","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6}}","depends_on":[],"position_x":73.66668701171875,"position_y":28.75,"worker_version":0,"gate_policy_ref":""},
+  {"id":"step-quick","ref":"01M1ERH9921YS9S1QWGZV8D1VM","kind":"task","name":"Quick Software Engineer","config":"{\"recovery\":{\"strategy\":\"summarize_restart\",\"max_attempts\":6},\"requires_pr\":true}","depends_on":[],"position_x":73.66668701171875,"position_y":28.75,"worker_version":0,"gate_policy_ref":""},
   {"id":"step-end","ref":"","kind":"end","name":"End","config":"{}","depends_on":["step-quick"],"position_x":366.4761407515862,"position_y":43.75,"worker_version":0,"gate_policy_ref":""}
 ]`,
 	},
+}
+
+// CannedWorkflows returns the canned-workflow seed definitions (read-only view for tooling
+// and tests), mirroring CannedWorkers. The returned slice must not be mutated.
+func CannedWorkflows() []cannedWorkflow { return cannedWorkflows }
+
+// CannedWorkflowView is the exported read-only shape of a canned workflow seed.
+type CannedWorkflowView struct {
+	ID               string
+	Name             string
+	GitStrategy      string
+	UnpinGitStrategy bool
+}
+
+// CannedWorkflowViews is the exported, fully-typed view for external test packages.
+func CannedWorkflowViews() []CannedWorkflowView {
+	out := make([]CannedWorkflowView, 0, len(cannedWorkflows))
+	for _, w := range cannedWorkflows {
+		out = append(out, CannedWorkflowView{
+			ID: w.ID, Name: w.Name,
+			GitStrategy: w.GitStrategy, UnpinGitStrategy: w.UnpinGitStrategy,
+		})
+	}
+	return out
 }
 
 // retiredCannedWorkflow is a template that was once seeded as canned but
@@ -93,11 +114,8 @@ type retiredCannedWorkflow struct {
 	VersionID string // the seed version — the workflow is seed-managed only while this is still its current version
 }
 
-// retiredCannedWorkflows lists workflow templates that were seeded in earlier
-// builds but removed from cannedWorkflows. SeedDevWorkflows hard-deletes any
-// still-seed-managed instance on boot so retired templates don't linger in
-// tenants. A workflow whose current version is no longer the original seed
-// version has been forked by a user and is left untouched.
+// retiredCannedWorkflows lists workflow templates that were seeded in earlier builds but removed
+// from cannedWorkflows.
 var retiredCannedWorkflows = []retiredCannedWorkflow{
 	{
 		ID:        "01KZB0CONFLICT000000000001",
@@ -133,9 +151,8 @@ var retiredCannedWorkflows = []retiredCannedWorkflow{
 	},
 }
 
-// SeedDevWorkflows creates or updates all canned workflow templates in the
-// dev tenant and retires templates that have been removed from
-// cannedWorkflows. Idempotent — safe to call on every boot.
+// SeedDevWorkflows creates or updates all canned workflow templates in the dev tenant and retires
+// templates that have been removed from cannedWorkflows.
 func SeedDevWorkflows(ctx context.Context, p *Pool) error {
 	for _, w := range cannedWorkflows {
 		ttx, err := p.BeginTenantTx(ctx, "tnt_dev")
@@ -153,10 +170,8 @@ func SeedDevWorkflows(ctx context.Context, p *Pool) error {
 		}
 	}
 
-	// Retired canned templates: workflows that used to be seeded but have
-	// been removed. Delete them ONLY when they are still seed-managed
-	// (their current version is the original seed version) — a user who
-	// forked one keeps their workflow.
+	// Delete them ONLY when they are still seed-managed (their current version is the original seed
+	// version) — a user who forked one keeps their workflow.
 	for _, r := range retiredCannedWorkflows {
 		ttx, err := p.BeginTenantTx(ctx, "tnt_dev")
 		if err != nil {
@@ -193,10 +208,8 @@ func SeedDevWorkflows(ctx context.Context, p *Pool) error {
 	return nil
 }
 
-// workflowIsSeedManaged reports whether the workflow still carries its
-// original seed version (its current version id matches the seed's
-// VersionID). A workflow the user has forked by publishing new versions is
-// no longer seed-managed.
+// workflowIsSeedManaged reports whether the workflow still carries its original seed version (its
+// current version id matches the seed's VersionID).
 func workflowIsSeedManaged(ctx context.Context, ttx *TenantTx, workflowID, seedVersionID string) (bool, error) {
 	var currentVer int
 	if err := ttx.QueryRow(ctx,
@@ -214,10 +227,8 @@ func workflowIsSeedManaged(ctx context.Context, ttx *TenantTx, workflowID, seedV
 	return verID == seedVersionID, nil
 }
 
-// deleteWorkflowByID hard-deletes a workflow and its owned rows (versions,
-// runs, step runs, edit locks) inside the seeder's tenant transaction.
-// Mirrors db.DeleteWorkflow but scoped to the seeded tenant so the seeder
-// can purge retired templates.
+// deleteWorkflowByID hard-deletes a workflow and its owned rows (versions, runs, step runs, edit
+// locks) inside the seeder's tenant transaction.
 func deleteWorkflowByID(ctx context.Context, ttx *TenantTx, workflowID string) error {
 	if _, err := ttx.Exec(ctx,
 		`DELETE FROM workflow_step_runs WHERE workflow_run_id IN (SELECT id FROM workflow_runs WHERE tenant_id = 'tnt_dev' AND workflow_id = $1)`, workflowID); err != nil {
@@ -250,9 +261,7 @@ func seedWorkflow(ctx context.Context, ttx *TenantTx, w cannedWorkflow) error {
 	).Scan(&existingID)
 
 	if err == nil {
-		// Workflow exists. Only update the original seed version
-		// (matching VersionID) — newer versions are user-created
-		// and must be preserved.
+		// Workflow exists.
 		var currentVer int
 		_ = ttx.QueryRow(ctx,
 			`SELECT current_version FROM workflows WHERE id = $1 AND tenant_id = 'tnt_dev'`, w.ID,
@@ -281,9 +290,8 @@ func seedWorkflow(ctx context.Context, ttx *TenantTx, w cannedWorkflow) error {
 			if err != nil {
 				return fmt.Errorf("update seed workflow name: %w", err)
 			}
-			// Propagate a pinned git_strategy so the harness keeps its
-			// strategy on seed-managed tenants (NULL = inherit; only set
-			// when the seed pins one).
+			// Propagate a pinned git_strategy so the harness keeps its strategy on seed-managed tenants (NULL =
+			// inherit; only set when the seed pins one).
 			if w.GitStrategy != "" {
 				_, err = ttx.Exec(ctx,
 					`UPDATE workflows SET git_strategy = $1, updated_at = now()
@@ -292,6 +300,16 @@ func seedWorkflow(ctx context.Context, ttx *TenantTx, w cannedWorkflow) error {
 				)
 				if err != nil {
 					return fmt.Errorf("update seed workflow git_strategy: %w", err)
+				}
+			} else if w.UnpinGitStrategy {
+				// A SEED THAT NO LONGER PINS MUST BE ABLE TO UNDO A PIN IT ONCE SET.
+				_, err = ttx.Exec(ctx,
+					`UPDATE workflows SET git_strategy = NULL, updated_at = now()
+					 WHERE id = $1 AND tenant_id = 'tnt_dev' AND git_strategy IS NOT NULL`,
+					w.ID,
+				)
+				if err != nil {
+					return fmt.Errorf("unpin seed workflow git_strategy: %w", err)
 				}
 			}
 		}

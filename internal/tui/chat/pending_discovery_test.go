@@ -1,19 +1,7 @@
 package chat
 
-// pending_discovery_test.go — a card can be DISCOVERED, not only delivered.
-//
-// The operator: "you sent numerous permission card requests and user ask card requests. ALL
-// of them reached the GUI conversation just fine, however, they did not all reach the TUI…
-// it appeared you were stalled. So I went into the GUI and lo and behold, a permissions card
-// was waiting for me to click on it."
-//
-// The TUI learned about an ask ONLY through consume(), which runs for a conversation it is
-// actively streaming. The shell only re-attached to a turn the conversation row said was in
-// flight WITH a pending reply id — so a turn this client never started, or stopped tracking,
-// had no path for a card at all while the SERVER kept the turn parked. That is the stall.
-//
-// These tests pin the property that fixes it: the pending set is a QUESTION the client can
-// ask, answered from the server's own registry, independent of the client's stream state.
+// So I went into the GUI and lo and behold, a permissions card was waiting for me to click on it."
+// The TUI learned about an ask ONLY through consume().
 
 import (
 	"context"
@@ -44,9 +32,6 @@ func (s *stubPendingAsk) ListPendingAsks(ctx context.Context, req *connect.Reque
 }
 
 // A CARD IS RAISED FROM THE SERVER'S ANSWER, with no stream involved at all.
-//
-// This is the operator's failure directly: the turn is parked server-side, this client has
-// no live stream for it, and the card must still appear.
 func TestAnOpenAskIsDiscoveredWithoutAnyStream(t *testing.T) {
 	stub := &stubPendingAsk{asks: []*apiv1.PermissionAsk{{
 		AskId:          "ask-1",
@@ -106,9 +91,8 @@ func TestAQuestionAskIsDiscoveredToo(t *testing.T) {
 	}
 }
 
-// IT IS SAFE ON EVERY ATTACH AND POLL: a conversation with nothing pending raises nothing,
-// and a failing call is harmless (best-effort, like every live signal here — it must never
-// fail a turn).
+// IT IS SAFE ON EVERY ATTACH AND POLL: a conversation with nothing pending raises nothing, and a
+// failing call is harmless (best-effort, like every live signal here — it must never fail a turn).
 func TestDiscoveryIsQuietWhenNothingIsPendingAndOnFailure(t *testing.T) {
 	// Nothing pending.
 	stub := &stubPendingAsk{}

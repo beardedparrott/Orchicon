@@ -16,7 +16,15 @@ import { ensureSession, useSessionStore } from "@/auth/session";
 // OIDC fragment-token landing route (it arrives here with a token in the
 // URL fragment before the session store resolves). Add future public
 // routes (e.g. a marketing landing under the SPA) here.
-export const PUBLIC_PATHS = new Set(["/login", "/signup", "/auth/callback"]);
+// /manage-server is here BY NECESSITY, not by permission. It is the one desktop-only,
+// LOCAL-ONLY surface: it contacts no plane (status and actions come from the Wails Go
+// side), so it has to render precisely when nothing answers — which is also when
+// ensureSession() cannot succeed. Without this entry the page that matters most with
+// no plane running could never render. Two things keep it from widening anything:
+// in a browser the route redirects to /dashboard before it renders (routes/
+// manage-server.tsx:beforeLoad), and the SERVER remains the enforcement backstop for
+// every RPC — no protected path becomes public here.
+export const PUBLIC_PATHS = new Set(["/login", "/signup", "/auth/callback", "/manage-server"]);
 
 // requireAuth is the root beforeLoad guard. It fast-paths on an
 // already-resolved session (SPA navigations are zero-cost) and only awaits

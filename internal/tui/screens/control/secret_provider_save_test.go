@@ -1,18 +1,6 @@
 package control
 
 // secret_provider_save_test.go — SAVING THROUGH THE REAL KEY PATH.
-//
-// The operator: "I tried adding a secret and a provider in the TUI and saved it, yet they were never
-// actually created."
-//
-// WHY THIS FILE EXISTS SEPARATELY from control_write_test.go: those tests drive the FORMS — they
-// build the form, Set its values, and call Submit() DIRECTLY. That proves the form and its OnSubmit
-// are right, and it proves NOTHING about whether ctrl+s through the real dispatch ever reaches them.
-// Every such test would stay green while the operator's key went nowhere, which is the exact shape of
-// this class of bug (and of five others found earlier in this project).
-//
-// So these tests press the actual keys: "n" to open, characters to type, ctrl+s to save — through
-// Model.Update, the same entry point the shell calls — and then run the command that comes back.
 
 import (
 	"context"
@@ -156,9 +144,7 @@ func TestNewProviderThroughTheKeysIsPersisted(t *testing.T) {
 	if f == nil {
 		t.Fatal("the pane has no form")
 	}
-	// Every REQUIRED field, filled by TYPING through real key events. FocusName moves the form's
-	// cursor (navigation is not what this test is about); the characters still arrive as keys, so the
-	// form's own insert path is exercised, and ctrl+s remains the thing under test.
+	// Every REQUIRED field, filled by TYPING through real key events.
 	for _, name := range []string{"display_name", "ref_id", "base_url"} {
 		if !f.FocusName(name) {
 			t.Fatalf("the provider form has no %q field", name)
@@ -185,13 +171,8 @@ func TestNewProviderThroughTheKeysIsPersisted(t *testing.T) {
 	}
 }
 
-// A LOWERCASE SECRET NAME IS REFUSED BY THE FORM, NOT BY THE SERVER AFTER IT CLOSES.
-//
-// This is the operator's report: "I tried adding a secret and a provider in the TUI and saved it, yet
-// they were never actually created." The store's rule is `^[A-Z][A-Z0-9_]+$` — UPPERCASE ONLY — and
-// a lowercase name is the natural thing to type. Before the form had a validator, `my_token` passed
-// the form's only check (Required), the form CLOSED as if it had saved, and the server rejected it a
-// moment later: a closed form, no row, and a transient dock error.
+// This is the operator's report: "I tried adding a secret and a provider in the TUI and saved it,
+// yet they were never actually created." The store's rule is `^[A-Z][A-Z0-9_]+$` — UPPERCASE ONLY.
 func TestLowercaseSecretNameIsRefusedBeforeSubmit(t *testing.T) {
 	m, _ := newWriteModel(t)
 	var created *apiv1.CreateSecretRequest
@@ -268,16 +249,6 @@ func errorStrings(errs map[string]string) []string {
 }
 
 // EVERY AUTH MODE THE FORM OFFERS IS ONE THE SERVER ACCEPTS.
-//
-// The form offered `none`, `bearer` and `api_key`. The server accepts exactly `none` and `token`
-// (providers.AuthModeNone / AuthModeToken) and rejects everything else — so BOTH extra options
-// produced a provider the server refused, and `token`, the value the GUI offers and every existing
-// provider uses (2×token, 1×none, ZERO bearer/api_key in the live table), could not be chosen at all.
-// That is the second half of "I tried adding a secret and a provider in the TUI and saved it, yet
-// they were never actually created."
-//
-// The assertion runs the SERVER'S validator over the form's own options, so a future edit that adds
-// an invented mode fails here rather than in the operator's hands.
 func TestProviderAuthModesAreAllServerAccepted(t *testing.T) {
 	opts := authModeOptions()
 	if len(opts) == 0 {

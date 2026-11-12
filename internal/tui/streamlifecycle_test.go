@@ -8,20 +8,11 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/subs"
 )
 
-// The operator: "the connection status is CONSTANTLY saying disconnected or
-// reconnecting. Something is wrong there."
-//
-// Root cause: every screen's Close() calls reg.CloseAll(), which tears down the
-// SHARED registry, but each screen kept its own non-nil sub handle — and
-// EnsureSubscriptions guards on that handle being nil. So after the FIRST visit
-// to a tab its live stream was never recreated: no further events arrived, and
-// the footer stayed frozen on the last reported status ("reconnecting" /
-// "closed" → "disconnected, retrying") for the rest of the session.
+// The operator: "the connection status is CONSTANTLY saying disconnected or reconnecting.
 func TestStreamsAreRecreatedWhenReturningToATab(t *testing.T) {
 	m := newTestApp()
-	// A REAL client set pointing at an unreachable address: the lifecycle is what
-	// is under test, and a nil client would panic inside the dial (which is now
-	// guarded, but the point here is the registry, not the guard).
+	// A REAL client set pointing at an unreachable address: the lifecycle is what is under test, and a
+	// nil client would panic inside the dial (which is now guarded.
 	m.clients = client.New(client.Options{BaseURL: "http://127.0.0.1:1"})
 	m.dispatch(keyFor(tabChord(TabWork))) /* work */
 	m.EnsureSubscriptions(TabWork)
@@ -48,9 +39,8 @@ func TestStreamsAreRecreatedWhenReturningToATab(t *testing.T) {
 	}
 }
 
-// The footer aggregates the ACTIVE screen's statuses worst-wins, so a screen
-// that reports a broken stream drives the label. This pins the mapping the
-// operator reads.
+// The footer aggregates the ACTIVE screen's statuses worst-wins, so a screen that reports a broken
+// stream drives the label.
 func TestFooterShowsDisconnectedForABrokenStream(t *testing.T) {
 	for _, tc := range []struct {
 		label   string
@@ -77,15 +67,8 @@ func containsStr(hay, needle string) bool {
 	return false
 }
 
-// The operator: "when doing /connect while in orch, it connected and then all
-// items were blank as if I was no longer connected. It seemed to do the
-// opposite."
-//
-// Root cause: applyConnectResult deleted the ACTIVE screen and relied on
-// refreshLayout to rebuild it — but refreshLayout reads m.screens[active], which
-// was nil, so nothing was rebuilt and the tab rendered blank. On top of that the
-// tab factories closed over the ORIGINAL client pointer, so a reconstructed
-// screen would still have used the stale, unauthorised client.
+// The operator: "when doing /connect while in orch, it connected and then all items were blank as
+// if I was no longer connected.
 func TestConnectRebuildsTheActiveScreenWithTheNewClient(t *testing.T) {
 	m := newTestApp()
 	m.dispatch(keyFor(tabChord(TabWork))) // Work

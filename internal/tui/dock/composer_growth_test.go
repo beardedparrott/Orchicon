@@ -1,18 +1,6 @@
 package dock
 
 // composer_growth_test.go — HOW TALL THE COMPOSER MAY GROW.
-//
-// The operator: "as the text grows and/or newlines are inserted, the box height should
-// grow automatically." Growth already worked, bounded by two constants. MinInputRows is
-// the resting height and was left alone (three rows, two of them slack, so a single
-// newline changes nothing on screen — a deliberate choice, not the reported problem).
-// The other bound was the complaint: "Remove the cap."
-//
-// It cannot be removed outright — the composer shares the screen with the transcript,
-// and a thousand-line buffer cannot have a thousand rows of composer. So the fixed eight
-// became a viewport-derived ceiling that grows with the terminal. These tests pin the
-// arithmetic, because it is the sort of bound that is easy to get subtly wrong and
-// invisible when it is.
 
 import (
 	"strings"
@@ -38,12 +26,6 @@ func TestGrowthCeilingFollowsTheViewport(t *testing.T) {
 }
 
 // AND IT NEVER EXCEEDS THE VIEWPORT, once the viewport is big enough to hold the box.
-//
-// THE DEGENERATE CASE IS CHOSEN, NOT OVERLOOKED: below the rows the composer needs for its
-// chrome plus its resting height, the FLOOR wins over the ceiling and the box takes
-// MinInputRows anyway. A zero-height composer would be unusable, and on a terminal that
-// small everything else is broken regardless — so the box stays visible and the ceiling
-// simply has no room to bind.
 func TestTheCeilingNeverExceedsTheViewport(t *testing.T) {
 	for _, vp := range []int{1, 6, 10, 14, 18, 24, 40, 120} {
 		m := New()
@@ -83,9 +65,7 @@ func TestAnUntoldViewportFallsBackToTheConstant(t *testing.T) {
 	}
 }
 
-// THE BUFFER ACTUALLY DRIVES IT, ABOVE THE OLD CAP. This is the operator's request stated
-// as a test: past the eleven lines that used to be the ceiling, the box keeps growing
-// until it runs out of viewport.
+// THE BUFFER ACTUALLY DRIVES IT, ABOVE THE OLD CAP.
 func TestALongBufferGrowsPastTheOldCap(t *testing.T) {
 	m := New()
 	m.SetViewportRows(40)
@@ -109,11 +89,6 @@ func TestALongBufferGrowsPastTheOldCap(t *testing.T) {
 }
 
 // EVERY ROW THE CEILING SPENDS IS A ROW THE SCREEN KEEPS.
-//
-// The ceiling exists so growth comes out of the space going spare rather than out of the
-// transcript. Stated as the inequality: viewport - shell chrome - box chrome - the rows
-// the box needs for its hint/notice/chip - input rows >= minContentRows. If this ever
-// fails, a long prompt is silently pushing content off the top of the screen.
 func TestTheCeilingLeavesTheScreenItsMinimum(t *testing.T) {
 	for _, vp := range []int{20, 24, 40, 60} {
 		for _, extra := range []struct {
@@ -150,9 +125,8 @@ func TestTheCeilingLeavesTheScreenItsMinimum(t *testing.T) {
 	}
 }
 
-// A RESIZE RE-FITS IMMEDIATELY, without waiting for the next keystroke: growing the
-// window must let the box expand to the new ceiling, and shrinking it must pull the box
-// back in rather than leaving it overflowing.
+// A RESIZE RE-FITS IMMEDIATELY, without waiting for the next keystroke: growing the window must let
+// the box expand to the new ceiling.
 func TestAResizeRefitsTheBoxAtOnce(t *testing.T) {
 	m := New()
 	m.Width = 80

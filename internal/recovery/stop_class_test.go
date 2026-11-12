@@ -7,10 +7,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// TestStrategyForFailureStopClass verifies WI-4 class 3: a deterministic
-// config/infra failure (empty/invalid model ref, credential, image, etc.)
-// resolves to the stop strategy regardless of the work item's kind — no
-// resume loop — while a normal failure keeps the kind-derived strategy.
+// TestStrategyForFailureStopClass verifies WI-4 class 3: a deterministic config/infra failure
+// (empty/invalid model ref, credential, image.
 func TestStrategyForFailureStopClass(t *testing.T) {
 	stopErrors := []string{
 		`orchicon bridge: session: model ref "" has no provider/model (expected orchicon/<provider>/<model>)`,

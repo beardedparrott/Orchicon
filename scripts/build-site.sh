@@ -18,8 +18,9 @@
 # ("Orchicon v0.4.0") that nothing ever updated, so the live site advertised a
 # version five releases out of date. The committed page now carries a
 # `v__VERSION__` placeholder in `<span id="site-version">` and this step fills
-# it from the same `git describe --tags --abbrev=0` the binary uses (Makefile
-# VERSION), so the site footer and `orchicon version` cannot disagree.
+# it from the same `git describe --tags --abbrev=0 --match 'v[0-9]*'` the binary uses
+# (Makefile VERSION), so the site footer and `orchicon version` cannot disagree —
+# including when a moving prerelease tag (canary) shares the commit.
 #
 # This is the only step between the source repo and the CloudFlare
 # Pages deploy. Run by CF Pages on every push; safe to re-run locally:
@@ -52,10 +53,10 @@ cp -f "${SCRIPTS_DIR}/install.ps1" "${SITE_DIR}/install.ps1"
 # have them yet — the Makefile documents the same hazard ("`git pull` does NOT
 # fetch tags") — so a best-effort fetch precedes the resolve. Offline, the
 # fetch fails harmlessly and a local tag list still resolves.
-SITE_VERSION="$(git -C "${REPO_ROOT}" describe --tags --abbrev=0 2>/dev/null || true)"
+SITE_VERSION="$(git -C "${REPO_ROOT}" describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
 if [ -z "${SITE_VERSION}" ]; then
   git -C "${REPO_ROOT}" fetch --tags --quiet 2>/dev/null || true
-  SITE_VERSION="$(git -C "${REPO_ROOT}" describe --tags --abbrev=0 2>/dev/null || echo dev)"
+  SITE_VERSION="$(git -C "${REPO_ROOT}" describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo dev)"
 fi
 
 # Rewrite whatever the span currently holds — the placeholder OR a version a

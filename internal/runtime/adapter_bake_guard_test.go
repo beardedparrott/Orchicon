@@ -10,13 +10,32 @@ import (
 	"github.com/beardedparrott/orchicon/internal/adapter"
 )
 
-// TestAdapterCLINeverBaked is the ADAPTER-NEUTRAL IMAGE INVARIANT guard
-// (AC 6): no image built from this repo's Dockerfiles may BAKE an adapter
-// CLI. The invariant is already true by design — deploy/runtime/Dockerfile
-// and deploy/container/Dockerfile deliberately bind-MOUNT the operator's
-// host adapter installs at runtime (license redistributability: Claude
-// Code's terms forbid bundling it) — and this guard makes a silent
-// regression impossible.
+// TestAdapterCLINeverBaked guards the ADAPTER-NEUTRAL IMAGE INVARIANT for
+// PUBLISHED images: an image Orchicon BUILDS AND SERVES may never bake a
+// third-party adapter CLI. Such an image is Orchicon DISTRIBUTING that CLI,
+// and distributing someone else's binary is the thing to avoid.
+//
+// IT NO LONGER BANS BAKING IN THE LOCALLY-BUILT VARIANTS, and that narrowing is
+// the point of this revision rather than a relaxation. A file under
+// deploy/runtime/ that release.yml never builds is a TEMPLATE: it is embedded
+// in the orchicon binary and served read-only by the Runtime Images page, and
+// the OPERATOR builds it on their own machine, for their own licensed use,
+// under their own credentials. Nothing about that is distribution, so the reason
+// the original guard cited — "Claude Code's terms forbid bundling it" — does not
+// reach it.
+//
+// The distinction is enforced rather than asserted: PUBLISHED_DOCKERFILES below
+// is checked against release.yml, so a template that GRADUATES into a published
+// image fails this test until someone decides about it deliberately. That is the
+// regression the original guard existed to catch, kept intact.
+//
+// WHY BAKING IS NEEDED AT ALL, recorded so the next reader does not undo it: a
+// bind-mount hands the container a host PATH, and executing it requires the
+// binary to be native to the container. A Windows host mounts
+// C:\...\opencode.exe, which a Linux kernel cannot exec, and Claude's adapter
+// speaks stdio to a process the supervisor spawns — so there is nothing to dial
+// instead. In-image install is what makes container mode work identically on
+// Windows, macOS and Linux.
 //
 // Two properties make it regression-proof rather than a snapshot:
 //
@@ -85,10 +104,21 @@ func TestAdapterCLINeverBaked(t *testing.T) {
 		t.Fatal("no bake needles derived from the catalog — the guard would pass vacuously")
 	}
 
-	// (b) Layer scan: Dockerfiles ONLY.
-	files := dockerfilesUnder(t, filepath.Join("..", "..", "deploy"))
-	if len(files) < 3 {
-		t.Fatalf("guard found only %d Dockerfile(s) under deploy/ (%v) — the discovery walk is broken and the guard would pass vacuously", len(files), files)
+	// (b) Layer scan: Dockerfiles ONLY, and only the PUBLISHED ones.
+	all := dockerfilesUnder(t, filepath.Join("..", "..", "deploy"))
+	if len(all) < 3 {
+		t.Fatalf("guard found only %d Dockerfile(s) under deploy/ (%v) — the discovery walk is broken and the guard would pass vacuously", len(all), all)
+	}
+	published := publishedDockerfiles(t)
+	files := make([]string, 0, len(all))
+	for _, f := range all {
+		if published[filepath.Clean(f)] {
+			files = append(files, f)
+		}
+	}
+	if len(files) == 0 {
+		t.Fatal("no PUBLISHED Dockerfile was found to scan — the invariant would pass vacuously. " +
+			"release.yml must build at least the base image.")
 	}
 	scanned := 0
 	for _, f := range files {
@@ -106,14 +136,39 @@ func TestAdapterCLINeverBaked(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("scanned %d Dockerfile(s) for %d adapter needle(s) across %d catalog kind(s)", scanned, len(needles), len(kinds))
+	t.Logf("scanned %d PUBLISHED Dockerfile(s) of %d for %d adapter needle(s) across %d catalog kind(s)",
+		scanned, len(all), len(needles), len(kinds))
 }
 
-// adapterBakeNeedles derives the forbidden substrings for one adapter kind
-// from the SHARED install-path declaration (adapterInstallPaths — the same
-// source the daemon mounts from), so the mounted set and the forbidden-bake
-// set can never drift. A kind with no install paths (orchicon: the product
-// binary, bind-mounted by the daemon) contributes NO needles.
+// publishedDockerfiles returns the Dockerfiles release.yml actually BUILDS — the set the invariant
+// applies to.
+func publishedDockerfiles(t *testing.T) map[string]bool {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatalf("read release.yml: %v — the published/unpublished split cannot be established, so the "+
+			"invariant cannot be scoped honestly", err)
+	}
+	out := map[string]bool{}
+	for _, line := range strings.Split(string(b), "\n") {
+		if !strings.Contains(line, "docker build ") {
+			continue
+		}
+		for _, field := range strings.Fields(line) {
+			if strings.HasPrefix(field, "deploy/") && strings.Contains(field, "Dockerfile") {
+				out[filepath.Clean(filepath.Join("..", "..", field))] = true
+			}
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("release.yml builds no Dockerfile under deploy/ — the guard cannot tell published from " +
+			"template and would silently scan nothing")
+	}
+	return out
+}
+
+// adapterBakeNeedles derives the forbidden substrings for one adapter kind from the SHARED
+// install-path declaration (adapterInstallPaths — the same source the daemon mounts from).
 func adapterBakeNeedles(kind string, installPaths []string) []string {
 	if len(installPaths) == 0 {
 		return nil
@@ -139,9 +194,8 @@ func adapterBakeNeedles(kind string, installPaths []string) []string {
 	return uniq
 }
 
-// dockerfilesUnder returns every file under root whose base name starts with
-// "Dockerfile", skipping nothing else — the committed binaries in
-// deploy/container/ have unrelated names and are therefore never opened.
+// dockerfilesUnder returns every file under root whose base name starts with "Dockerfile", skipping
+// nothing else — the committed binaries in deploy/container/ have unrelated names.
 func dockerfilesUnder(t *testing.T, root string) []string {
 	t.Helper()
 	var out []string
@@ -164,10 +218,8 @@ func dockerfilesUnder(t *testing.T, root string) []string {
 	return out
 }
 
-// logicalInstructions returns the Dockerfile INSTRUCTION lines (comments and
-// blanks dropped), with line continuations joined, so a needle cannot hide on
-// a backslash-continued line. `#` inside an instruction is preserved — only
-// a line whose first non-space character is `#` is a comment.
+// logicalInstructions returns the Dockerfile INSTRUCTION lines (comments and blanks dropped), with
+// line continuations joined, so a needle cannot hide on a backslash-continued line.
 func logicalInstructions(body string) []string {
 	var out []string
 	var cur string
@@ -193,13 +245,8 @@ func logicalInstructions(body string) []string {
 	return out
 }
 
-// TestClaudeBakeNeedlesNoVersionString pins the constraint that no claude
-// probe may name a version directory: adapterBakeNeedles derives needles from
-// probe BASENAMES, and a probe like ".../versions/2.1.261" would survive the
-// >=3-char filter and become a forbidden-bake needle that false-positives on
-// an unrelated Dockerfile line. The four claude installs must therefore probe
-// only ~/.claude, ~/.claude.json, ~/.local/bin/claude and
-// ~/.local/share/claude — all with the benign basename "claude"/".claude".
+// TestClaudeBakeNeedlesNoVersionString pins the constraint that no claude probe may name a version
+// directory: adapterBakeNeedles derives needles from probe BASENAMES.
 func TestClaudeBakeNeedlesNoVersionString(t *testing.T) {
 	const fakeHome = "/home/orchicon-host"
 	paths, declared := adapterInstallPaths(fakeHome, "claude")

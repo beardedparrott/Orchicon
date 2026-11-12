@@ -1,25 +1,5 @@
-// Package tui — orch_pty_reconnect_scope_test.go — THE LIVE OBSERVATION of the
-// launch-directory workspace default surviving a reconnect (acceptance criterion 1).
-//
-// The rendered/unit tests (project_scope_reconnect_test.go) drive two App values in
-// sequence. This file drives the REAL orch binary through the SAME two shells that
-// cmd/orch's main loop actually produces, in a real pty, against a live
-// Orchicon-shaped plane:
-//
-//  1. LAUNCH in a directory covered by a project, with a STORED session the plane
-//     rejects. That is the real entry into the second-shell path: runShell's
-//     launch-time credential probe answers Unauthenticated, main's loop calls
-//     runConnection and then re-enters runShell — a NEW App (see the reconnect
-//     topology: the in-place /connect overlay reuses the App, so this is the path
-//     a reconnect can actually lose state on).
-//  2. THE SECOND SHELL must still be handed the launch DIRECTORY (a fact about the
-//     process, needed on every shell) while its PROMPT stays disarmed (a
-//     first-shell-only rule). The observable consequence is the rail: its title
-//     names the workspace derived from the launch directory, and no launch
-//     question is asked.
-//
-// PRE-FIX (the directory blanked on a continuation) the second shell's rail reads
-// "Conversations · All projects" and this test fails.
+// Package tui — orch_pty_reconnect_scope_test.go — THE LIVE OBSERVATION of the launch-directory
+// workspace default surviving a reconnect (acceptance criterion 1).
 package tui
 
 import (
@@ -52,9 +32,8 @@ const (
 	ptyQASpace = "Qaws"
 )
 
-// ptyReconnectAuth is the cheap AUTHENTICATED probe runShell opens with
-// (probeIdentity): the stale session must come back Unauthenticated, which is the
-// only code main treats as "ask for credentials again".
+// ptyReconnectAuth is the cheap AUTHENTICATED probe runShell opens with (probeIdentity): the stale
+// session must come back Unauthenticated.
 type ptyReconnectAuth struct {
 	apiv1connect.UnimplementedAuthServiceHandler
 }
@@ -66,9 +45,8 @@ func (h *ptyReconnectAuth) ListIdentities(ctx context.Context, req *connect.Requ
 	return connect.NewResponse(&v1.ListIdentitiesResponse{}), nil
 }
 
-// ptyReconnectProjects serves the rail's project list — and the same auth gate, so
-// the connection screen's API-key probe (ProjectService.ListProjects) is the thing
-// that accepts the replacement key.
+// ptyReconnectProjects serves the rail's project list — and the same auth gate, so the connection
+// screen's API-key probe (ProjectService.ListProjects) is the thing that accepts the replacement.
 type ptyReconnectProjects struct {
 	apiv1connect.UnimplementedProjectServiceHandler
 	dir string
@@ -99,9 +77,8 @@ func ptyAuthGate(req connect.AnyRequest) error {
 	return nil
 }
 
-// ptyReconnectPlane is the disposable Orchicon-shaped plane this test drives: the
-// version handshake, the auth probe, the project list (with the project's
-// DIRECTORY), and the ask rail.
+// ptyReconnectPlane is the disposable Orchicon-shaped plane this test drives: the version
+// handshake, the auth probe, the project list (with the project's DIRECTORY), and the ask rail.
 func ptyReconnectPlane(t *testing.T, projectDir string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -141,12 +118,8 @@ func startOrchPtyIn(t *testing.T, bin, workDir, home string) *ptySession {
 	t.Helper()
 	cmd := exec.Command(bin)
 	cmd.Dir = workDir
-	// The HOME this session must use has to be the ONLY one in the environment:
-	// appending to os.Environ() leaves the inherited HOME in front of it, and a
-	// first-match getenv (what the child's os.UserHomeDir does) then resolves the
-	// WRONG config dir — the launch would open the first-run screen and never reach
-	// the reconnect this test is about. Same for the ORCHICON_* overrides and XDG,
-	// which would otherwise replace the file profile under test.
+	// The HOME this session must use has to be the ONLY one in the environment: appending to
+	// os.Environ() leaves the inherited HOME in front of it.
 	env := make([]string, 0, len(os.Environ())+2)
 	for _, kv := range os.Environ() {
 		if strings.HasPrefix(kv, "HOME=") || strings.HasPrefix(kv, "ORCHICON_") || strings.HasPrefix(kv, "XDG_CONFIG_HOME=") {
@@ -170,16 +143,14 @@ var ptyANSI = regexp.MustCompile("\x1b\\[[0-9;?]*[a-zA-Z]|\\x1b\\][^\\x07\\x1b]*
 
 func ptyPlain(s string) string { return ptyANSI.ReplaceAllString(s, "") }
 
-// waitForReconnectScopeText polls the session's accumulating paint log until needle
-// appears (the persistent reader keeps draining, so no bytes are missed between
-// polls).
+// waitForReconnectScopeText polls the session's accumulating paint log until needle appears (the
+// persistent reader keeps draining, so no bytes are missed between polls).
 func waitForReconnectScopeText(t *testing.T, s *ptySession, needle string, d time.Duration) string {
 	t.Helper()
 	deadline := time.Now().Add(d)
 	for {
-		// Match on the PLAIN text: the live paint log carries the SGR/cursor escapes
-		// that style the shell, and a title or a notice is a styled span — so the
-		// literal phrase is only contiguous once the escapes are removed.
+		// Match on the PLAIN text: the live paint log carries the SGR/cursor escapes that style the shell,
+		// and a title or a notice is a styled span.
 		out := ptyPlain(s.readFor(250 * time.Millisecond))
 		if strings.Contains(out, needle) {
 			return out
@@ -191,10 +162,8 @@ func waitForReconnectScopeText(t *testing.T, s *ptySession, needle string, d tim
 	}
 }
 
-// TestPTYReconnectKeepsTheLaunchDirectoryWorkspace is acceptance criterion 1: a real
-// orch launched from a directory covered by a project, bounced through the
-// reconnect, opens AFTER it with that project selected — the rail scoped to it and
-// its title naming it — exactly as the first launch would.
+// TestPTYReconnectKeepsTheLaunchDirectoryWorkspace is acceptance criterion 1: a real orch launched
+// from a directory covered by a project, bounced through the reconnect.
 func TestPTYReconnectKeepsTheLaunchDirectoryWorkspace(t *testing.T) {
 	skipInteractivePTY(t)
 	if testing.Short() {
@@ -227,15 +196,7 @@ func TestPTYReconnectKeepsTheLaunchDirectoryWorkspace(t *testing.T) {
 	_, _ = s.tty.WriteString(ptyFreshSession)
 	_, _ = s.tty.WriteString("\r")
 
-	// PHASE 2 — THE SECOND SHELL. The launch directory was computed before the
-	// reconnect and must still reach this shell, so the workspace it derives is the one
-	// that directory belongs to.
-	//
-	// The workspace is read through the shell's OWN surface: the rail only paints in
-	// the Ask tab's conversation view (railVisible: askNew shows the hero), so the
-	// observable is the /project picker's notice — the picker opens with its cursor ON
-	// the live scope, so selecting it names the scope the shell actually holds.
-	// PRE-FIX that line reads "project: All projects".
+	// PHASE 2 — THE SECOND SHELL.
 	waitForReconnectScopeText(t, s, "connected ·", 30*time.Second)
 	_, _ = s.tty.WriteString("/project\r")
 	time.Sleep(1500 * time.Millisecond)
@@ -255,13 +216,8 @@ func TestPTYReconnectKeepsTheLaunchDirectoryWorkspace(t *testing.T) {
 	}
 }
 
-// The CONTROL for the test above: an unattached launch directory is silent on the
-// reconnect too — criterion 2's other half, and the reason a passing run of the test
-// above cannot be explained by "the prompt fired and set the scope".
-//
-// A directory the plane does not know must leave the rail on All projects with no
-// question: the reconnect is a continuation, so the FIRST shell would have asked and
-// this one must not.
+// The CONTROL for the test above: an unattached launch directory is silent on the reconnect too —
+// criterion 2's other half.
 func TestPTYReconnectFromAnUnattachedDirectoryAsksNothing(t *testing.T) {
 	skipInteractivePTY(t)
 	if testing.Short() {

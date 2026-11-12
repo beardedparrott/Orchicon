@@ -1,10 +1,12 @@
 import { createRoute, Link, useNavigate } from "@tanstack/react-router";
+import { StatusBadge } from "@/routes/runtime-images";
 import { useMemo, useState } from "react";
-import { ArrowLeft, Hammer, Trash2, Save, XCircle } from "lucide-react";
+import { ArrowLeft, Download, Hammer, Trash2, Save, XCircle } from "lucide-react";
 
 import {
   useGetRuntimeImage,
   useBuildRuntimeImage,
+  useFetchRuntimeImage,
   useCancelRuntimeImageBuild,
   useResetRuntimeImage,
   useUpdateRuntimeImage,
@@ -23,6 +25,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { BuildLogViewer } from "@/components/BuildLogViewer";
 import { RuntimeImageFailureAlert } from "@/components/RuntimeImageFailureAlert";
+import { generateDockerfile, parseList } from "@/lib/runtimeImageDockerfile";
 import { Route as rootRoute } from "@/routes/__root";
 import type { RuntimeImage as RuntimeImageProto } from "@/api/gen/orchicon/api/v1/runtime_image_pb";
 
@@ -35,9 +38,6 @@ export const Route = createRoute({
   component: RuntimeImageDetailPage,
 });
 
-function parseList(s: string): string[] {
-  return s.split("\n").map((x) => x.trim()).filter(Boolean);
-}
 
 function parseEnv(s: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -53,6 +53,7 @@ function RuntimeImageDetailPage() {
   const navigate = useNavigate();
   const { data: img, isLoading, error } = useGetRuntimeImage(id);
   const buildImage = useBuildRuntimeImage();
+  const fetchImage = useFetchRuntimeImage();
   const updateImage = useUpdateRuntimeImage();
   const deleteImage = useDeleteRuntimeImage();
   const cancelBuild = useCancelRuntimeImageBuild();
@@ -64,6 +65,7 @@ function RuntimeImageDetailPage() {
   const [description, setDescription] = useState("");
   const [apt, setApt] = useState("");
   const [toolchains, setToolchains] = useState("");
+  const [includeAdapters, setIncludeAdapters] = useState(true);
   const [env, setEnv] = useState("");
   const [tag, setTag] = useState("");
   const [advanced, setAdvanced] = useState(false);
@@ -85,6 +87,7 @@ function RuntimeImageDetailPage() {
       toolchains: toolArr.join("\n"),
       env: Object.entries(envObj).map(([k, v]) => `${k}=${v}`).join("\n"),
       tag: img.tag,
+      includeAdapters: img.includeAdapters,
       advanced: !!img.dockerfileOverride,
       dockerfileOverride: img.dockerfileOverride || "",
     };
@@ -92,8 +95,8 @@ function RuntimeImageDetailPage() {
 
   const preview = useMemo(() => {
     if (advanced) return dockerfileOverride;
-    return generateDockerfile(img?.baseImageRef || "", apt, toolchains, env);
-  }, [advanced, dockerfileOverride, img?.baseImageRef, apt, toolchains, env]);
+    return generateDockerfile(img?.baseImageRef || "", apt, toolchains, env, includeAdapters);
+  }, [advanced, dockerfileOverride, img?.baseImageRef, apt, toolchains, env, includeAdapters]);
 
   const startEdit = () => {
     if (!draft) return;
@@ -104,6 +107,7 @@ function RuntimeImageDetailPage() {
     setToolchains(draft.toolchains);
     setEnv(draft.env);
     setTag(draft.tag);
+    setIncludeAdapters(draft.includeAdapters);
     setAdvanced(draft.advanced);
     setDockerfileOverride(draft.dockerfileOverride);
     setEditMode(true);
@@ -122,6 +126,7 @@ function RuntimeImageDetailPage() {
         toolchains: JSON.stringify(parseList(toolchains)),
         env: JSON.stringify(parseEnv(env)),
         dockerfileOverride: advanced ? dockerfileOverride : "",
+        includeAdapters,
         tag,
         version: img.version,
       });
@@ -154,6 +159,23 @@ function RuntimeImageDetailPage() {
     }
   };
 
+  const handleFetch = async () => {
+    if (!img) return;
+    setBuildLog("");
+    setBuildError("");
+    try {
+      const res = await fetchImage.mutateAsync({
+        id: img.id,
+        onLog: (chunk) => setBuildLog((prev) => prev + chunk),
+      });
+      if (res.skipped) {
+        setBuildLog((prev) => prev || "This image is already downloaded — nothing to fetch.");
+      }
+    } catch (e) {
+      setBuildError(String(e));
+    }
+  };
+
   const handleDelete = async () => {
     if (!img) return;
     if (!window.confirm("Delete this runtime image and its local Docker image?")) return;
@@ -182,6 +204,15 @@ function RuntimeImageDetailPage() {
             <p className="text-sm text-muted-foreground">
               <code className="rounded bg-muted px-1">{img.tag || "no tag"}</code>{" "}
               · base <code className="rounded bg-muted px-1">{img.baseImageRef}</code>
+              {/* THE STATUS IS ON THIS PAGE TOO, and its absence was half of the reported
+                  confusion: "it just says stock and the deploy button is still lit up and
+                  clickable". Deploying changed the row and nothing visible said so — only the
+                  log moved — so the operator could not tell whether it had worked. The badge is
+                  the same component and vocabulary the list uses, so one glance answers whether
+                  the image is ready, still to be downloaded, or failed. */}
+              <span className="ml-2 inline-flex items-center align-middle">
+                <StatusBadge status={img.status} />
+              </span>
               {img.source === "stock" && (
                 <span className="ml-2 rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-800">
                   stock
@@ -200,6 +231,21 @@ function RuntimeImageDetailPage() {
                 <Hammer aria-hidden="true" className="mr-1 h-4 w-4" />
                 {deploying ? "Building…" : "Deploy"}
               </Button>
+              {/* FETCH, distinct from Deploy: it DOWNLOADS the published image
+                  instead of building it from this spec. Offered whenever the
+                  image is not ready locally (the seeder leaves such a row in
+                  "not downloaded" and never auto-builds it). */}
+              {img.status !== 3 && img.status !== 2 && (
+                <Button
+                  variant="outline"
+                  onClick={handleFetch}
+                  disabled={fetchImage.isPending || !img.tag}
+                  title="Download the published image for this tag (idempotent — nothing is downloaded if it is already present)"
+                >
+                  <Download aria-hidden="true" className="mr-1 h-4 w-4" />
+                  {fetchImage.isPending ? "Fetching…" : "Fetch"}
+                </Button>
+              )}
               {img.status === 2 && (
                 <>
                   <Button variant="outline" onClick={() => cancelBuild.mutate({ id: img.id, version: img.version })} disabled={cancelBuild.isPending}>
@@ -219,6 +265,13 @@ function RuntimeImageDetailPage() {
         </div>
       </div>
 
+      {img.status === 5 && (
+        <div role="status" className="rounded-xl border border-slate-500/30 bg-slate-50 p-3 text-sm text-slate-900 dark:bg-slate-950/20 dark:text-slate-100">
+          This image is <strong>not downloaded</strong>. Its spec is correct — nothing is wrong with it — but the image is not present locally,
+          so no workflow run can use it yet. Press <strong>Fetch</strong> to download the published image (Deploy instead <em>builds</em> it from
+          the Dockerfile, which is much slower).
+        </div>
+      )}
       {img.status === 4 && (img.failureReason || img.error) && (
         <RuntimeImageFailureAlert reason={img.failureReason || img.error} failedStep={img.failedStep} logTail={img.logTail} buildLog={img.buildLog} category={img.failureCategory} />
       )}
@@ -254,7 +307,7 @@ function RuntimeImageDetailPage() {
             </CardHeader>
             <CardContent>
               <pre className="max-h-96 overflow-auto rounded-md bg-muted p-3 text-xs">
-                {d.dockerfileOverride || generateDockerfile(img.baseImageRef, d.apt, d.toolchains, d.env)}
+                {d.dockerfileOverride || generateDockerfile(img.baseImageRef, d.apt, d.toolchains, d.env, d.includeAdapters)}
               </pre>
             </CardContent>
           </Card>
@@ -371,27 +424,12 @@ function statusLabel(status: RuntimeImageProto["status"]): string {
     case 2: return "building";
     case 3: return "ready";
     case 4: return "failed";
+    // 5 = ABSENT: the spec is correct but the image is not downloaded locally
+    // and nothing is building. Fetch it (the Fetch action) — Deploy BUILDS from
+    // the Dockerfile instead, which is the heavy path this state exists to
+    // avoid on a machine that never pulled a runtime image.
+    case 5: return "not downloaded";
     default: return "unknown";
   }
 }
 
-function generateDockerfile(base: string, apt: string, toolchains: string, env: string): string {
-  const aptList = parseList(apt);
-  const toolList = parseList(toolchains);
-  const envPairs = parseList(env);
-  const lines: string[] = [`FROM ${base}`, "USER root"];
-  if (aptList.length > 0) {
-    lines.push("RUN apt-get update && apt-get install -y --no-install-recommends \\");
-    aptList.forEach((p, i) => lines.push(`      ${p} ${i < aptList.length - 1 ? "\\" : ""}`));
-    lines.push("      && rm -rf /var/lib/apt/lists/*");
-  }
-  for (const t of toolList) lines.push(`RUN ${t}`);
-  for (const e of envPairs) {
-    const i = e.indexOf("=");
-    if (i > 0) lines.push(`ENV ${e.slice(0, i)}=${e.slice(i + 1)}`);
-  }
-  lines.push("RUN chown -R 1000:1000 /usr /opt /var 2>/dev/null || true");
-  lines.push("USER orchicon");
-  lines.push("WORKDIR /home/orchicon");
-  return lines.join("\n");
-}

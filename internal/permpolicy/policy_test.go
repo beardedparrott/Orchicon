@@ -109,15 +109,7 @@ func TestAcceptEntryNeverAsks(t *testing.T) {
 	}
 }
 
-// AC: precedence is asserted by test — deny > session grant > accept > ask, in
-// that order.
-//
-// THERE IS NO PROJECT RUNG ANY MORE. The conversation's own project used to sit
-// between accept and ask as a pre-approved default scope; the operator removed it
-// ("any directory should ask before allowing on write/execute, project or
-// otherwise"). What matters for the chain is that accepting the project as a
-// scope no longer short-circuits anything: a bare path with no grant and no accept
-// entry ASKS, project or not.
+// AC: precedence is asserted by test — deny > session grant > accept > ask, in that order.
 func TestPrecedenceOrder(t *testing.T) {
 	// deny wins over grant AND accept.
 	s := writePolicy(t, "deny:\n  - /srv/secret/**\naccept:\n  - /srv/secret/**\n")

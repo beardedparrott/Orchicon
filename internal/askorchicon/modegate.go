@@ -1,16 +1,7 @@
 package askorchicon
 
-// modegate.go — the NATIVE adapter's application of the mode boundary.
-//
-// The POLICY itself is not here any more: it lives in internal/askmode, because it is a property of the modes
-// rather than of this adapter, and the operator is adding more adapters ("we should definitely build the agnostic
-// approach now for all adapters instead of waiting"). This file is the native adapter's two responsibilities:
-// carrying the turn's mode on its context, and turning a denial into a MESSAGE the model can relay.
-//
-// The operator's requirement, which this is the enforcement of: "Each mode of Ask Orchicon must NEVER just do the
-// work it is not supposed to do and must always enforce the user switch the mode first no matter what the user
-// says." "No matter what the user says" is not something a prompt can deliver — a user can argue any model past
-// its instructions, which is what a prompt is — so the refusal is at the layer that EXECUTES the call.
+// The operator's requirement, which this is the enforcement of: "Each mode of Ask Orchicon must
+// NEVER just do the work it is not supposed to do and must always enforce the user switch the mode.
 
 import (
 	"context"
@@ -21,9 +12,6 @@ import (
 )
 
 // withAskMode stamps a turn's context with the mode it is running under.
-//
-// A thin wrapper over askmode so this package's call sites (and tests) keep one name for it, while the KEY and the
-// lookup live somewhere every adapter can use.
 func withAskMode(ctx context.Context, mode string) context.Context {
 	return askmode.WithMode(ctx, mode)
 }
@@ -35,23 +23,7 @@ func askModeFromContext(ctx context.Context) string {
 
 // --- the turn's conversation ----------------------------------------------------------------
 
-// WHY IT IS ON THE CONTEXT rather than passed as a parameter. A tool that reports facts about THIS session —
-// which conversation it is in, which mode it runs under, which model_ref it resolves to — cannot ask the caller
-// for them: the model would be guessing at its own identity, and "which model am I on" is exactly the fact a
-// Quick Work dispatch has to state out loud before it pins one into a worker. The id is stamped in the SAME
-// place the mode is (chat.go's startConversationTurnOpts) and rides the same path to the tool boundary, so both
-// halves of a turn's self-knowledge come from one read of one row.
-//
-// THE KEY LIVES IN internal/askmode NOW (ConversationScope), because a SECOND adapter reads the same ids: the
-// claude Ask child resolves its `--mcp-config` from the conversation's project and its own id, and it cannot
-// see an unexported key declared here. The two wrappers below keep this package's names and signatures (its
-// tests and native_tools.go call them) while the VALUE is the one every adapter reads.
-//
-// THE STAMP DOES NOT REACH A SIDECAR BY ITSELF. This is a CONTEXT value, so it governs only tools that run
-// IN-PROCESS (the native Ask path). claude's Orchicon tools run in a stdio CHILD, which inherits an
-// environment and not a context: that transport puts the scope in the child's env
-// (claude.MCPConversationEnv) and internal/mcp/server.go stamps it back onto each tool call. The ids are
-// therefore read in three places and all three must agree — here, internal/askmode, and the sidecar.
+// WHY IT IS ON THE CONTEXT rather than passed as a parameter.
 
 // withAskConversation stamps a turn's context with its conversation id.
 func withAskConversation(ctx context.Context, convID string) context.Context {
@@ -60,29 +32,16 @@ func withAskConversation(ctx context.Context, convID string) context.Context {
 	return askmode.WithConversationScope(ctx, s)
 }
 
-// askConversationFromContext reads the conversation id stamped on a turn. "" when there is none — a test driving
-// a tool directly, or a caller that never stamped one. A tool that REQUIRES the id must fail loud on "" rather
-// than substituting a guess, because a confidently wrong answer about this session is worse than an error.
+// A tool that REQUIRES the id must fail loud on "" rather than substituting a guess, because a
+// confidently wrong answer about this session is worse than an error.
 func askConversationFromContext(ctx context.Context) string {
 	return askmode.ConversationScopeFromContext(ctx).ConversationID
 }
 
 // --- the conversation's PROJECT -------------------------------------------------------------------
 
-// ctxKeyConversationProject is the unexported context key for the PROJECT the turn's conversation belongs to.
-//
-// WHY IT IS ON THE CONTEXT rather than re-read in the tool layer. The turn already loads the conversation row
-// (chat.go's startConversationTurnOpts) and stamps its mode and its id from that ONE read — the same row names
-// the project. A tool that must decide WHERE its file/shell work lands (AskFileScopeFor) needs the same value the
-// system prompt's "## This conversation's project" block is built from; carrying it here is what makes the prompt
-// and the tool boundary agree BY CONSTRUCTION instead of by two DB reads that can drift. Re-reading the
-// conversation inside the resolver would add a round trip for a fact already in hand.
-//
-// "" means "no project" — an unassigned conversation, or a caller (a test) that never stamped one. The two are
-// deliberately the same value: a sentinel for "never stamped" would buy nothing and need a second code path (see
-// AskFileScope).
-// The VALUE rides in askmode.ConversationScope beside the conversation id; these two wrappers keep the local
-// names so this package's call sites and tests are unchanged.
+// ctxKeyConversationProject is the unexported context key for the PROJECT the turn's conversation
+// belongs to.
 
 // withAskConversationProject stamps a turn's context with its conversation's project id. An empty id clears it to
 // the unassigned view, which is exactly what an unassigned conversation wants.
@@ -92,25 +51,13 @@ func withAskConversationProject(ctx context.Context, projectID string) context.C
 	return askmode.WithConversationScope(ctx, s)
 }
 
-// askConversationProjectFromContext reads the conversation's project id stamped on a turn. "" when the
-// conversation has no project, or the caller never stamped one — both mean "this conversation has no project",
-// which is what the file/shell suite's scope resolver falls back from.
+// askConversationProjectFromContext reads the conversation's project id stamped on a turn.
 func askConversationProjectFromContext(ctx context.Context) string {
 	return askmode.ConversationScopeFromContext(ctx).ProjectID
 }
 
-// applyAskToolPolicy hands the turn's policy to the adapter, and — the important half — reports when the adapter
-// cannot enforce it.
-//
-// THE HONEST REPORT IS THE POINT. Whether an adapter can restrict tools per turn depends on whether its mechanism
-// is per-invocation or per-process, and the platform cannot assume either. An adapter that does not implement
-// scheduler.ChatToolRestrictor is running a turn where the mode boundary is PROSE ONLY — real, but advisory — and
-// saying so in the log is what stops that from being discovered later, from a mode doing something it should not
-// have, with nothing to point at.
-//
-// It is a log line rather than a refusal because an adapter without the capability is a KNOWN state, not an
-// error: the boundary is still described in the prompt, the mode is still stamped on the turn, and a second
-// adapter is a work item rather than an outage.
+// An adapter that does not implement scheduler.ChatToolRestrictor is running a turn where the mode
+// boundary is PROSE ONLY — real, but advisory.
 func (s *Service) applyAskToolPolicy(ctx context.Context, client scheduler.ChatTurnClient, mode, modelRef string) {
 	denied := askmode.DeniedNames(mode)
 	if len(denied) == 0 {
@@ -129,14 +76,8 @@ func (s *Service) applyAskToolPolicy(ctx context.Context, client scheduler.ChatT
 	}
 }
 
-// modeAllowsTool reports whether the mode may run tool, and when it may not, the refusal to hand back.
-//
-// THE DECISION IS askmode's; only the WORDING is here. It states the boundary, says the PLATFORM refuses it rather
-// than the model choosing to, and names the one action that resolves it — the user switching the mode. That last
-// part is the operator's requirement made literal ("must always enforce the user switch the mode first"), and it
-// is true: there is no mode-setting tool for the model to call instead.
-//
-// A mode with no policy (empty, or a value written by an older build) allows everything — see askmode.Allows.
+// modeAllowsTool reports whether the mode may run tool, and when it may not, the refusal to hand
+// back.
 func modeAllowsTool(mode, tool string) (bool, string) {
 	if askmode.Allows(mode, tool) {
 		return true, ""

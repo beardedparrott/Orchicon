@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# fixture: a `curl` that says /healthz is UP — used to prove step 0 REFUSES a run
+# on a machine that already has a plane (the premise of the claim).
+for a in "$@"; do
+  case "$a" in
+    */healthz) printf '{"status":"ok"}\n'; exit 0 ;;
+  esac
+done
+printf '\n'
+exit 0

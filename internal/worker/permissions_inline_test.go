@@ -102,8 +102,7 @@ func TestInlineSpecsChangedSpecRefusedOnVersionUpdate(t *testing.T) {
 }
 
 // A REFERENCE TO A SECRET NOBODY STORED is refused at save, which is the whole point: it used to be
-// discovered per server when the worker RAN (mcpsettings.ResolveSecretRefs). With the secret stored it
-// saves.
+// discovered per server when the worker RAN (mcpsettings.ResolveSecretRefs).
 func TestInlineSpecsMissingSecretRefRefusedOnVersionUpdate(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createDraftWorker(t, ctx, s, "inline-perms-refs")
@@ -142,9 +141,8 @@ func TestInlineSpecsMissingSecretRefRefusedOnVersionUpdate(t *testing.T) {
 	}
 }
 
-// STORED DATA KEEPS WORKING: a version carrying a spec this gate would refuse is still editable, and
-// still re-savable with the blob sent whole (which is what every client does). The moment that spec
-// changes, the rules apply to it.
+// STORED DATA KEEPS WORKING: a version carrying a spec this gate would refuse is still editable,
+// and still re-savable with the blob sent whole (which is what every client does).
 func TestInlineSpecsStoredBloatDoesNotBrickAnEdit(t *testing.T) {
 	pool, s, ctx, tenantID := bulkEnv(t)
 	id := createDraftWorker(t, ctx, s, "inline-perms-legacy")

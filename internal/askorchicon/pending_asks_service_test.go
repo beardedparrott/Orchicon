@@ -63,9 +63,7 @@ func TestListPendingAsksReturnsOpenAsks(t *testing.T) {
 	}
 }
 
-// A DECIDED ASK IS NOT RETURNED. Returning one would resurrect a card the operator has
-// already answered — the same rule the re-attach replay follows (isOpen), so discovery and
-// replay cannot disagree about what counts as pending.
+// A DECIDED ASK IS NOT RETURNED.
 func TestListPendingAsksOmitsDecidedAndFinalized(t *testing.T) {
 	svc := testConsentService()
 	svc.pending.put("conv-1", &pendingAsk{AskID: "open", ConversationID: "conv-1", state: askOpen})
@@ -120,9 +118,7 @@ func TestListPendingAsksIsScopedToTheConversation(t *testing.T) {
 	}
 }
 
-// AN EMPTY CONVERSATION ID IS REFUSED, never silently answered with an empty list — a
-// client that forgot the id would otherwise conclude "nothing is pending" and appear to
-// work while losing every card.
+// AN EMPTY CONVERSATION ID IS REFUSED, never silently answered with an empty list.
 func TestListPendingAsksRefusesAnEmptyConversationID(t *testing.T) {
 	svc := testConsentService()
 	if _, err := svc.ListPendingAsks(tenantCtx(), connectReq(&apiv1.ListPendingAsksRequest{})); err == nil {
@@ -142,11 +138,6 @@ func TestListPendingAsksRequiresATenant(t *testing.T) {
 }
 
 // A DISCOVERED ASK AND A STREAMED ASK ARE THE SAME MESSAGE.
-//
-// This is the property that lets a client feed both through one path and dedupe by ask id.
-// If the two ever differed by a field, a card discovered on attach would render differently
-// from the same card delivered live — which is the exact class of defect this file's sibling
-// has been chasing.
 func TestADiscoveredAskMatchesTheStreamedAsk(t *testing.T) {
 	svc := testConsentService()
 	a := &pendingAsk{

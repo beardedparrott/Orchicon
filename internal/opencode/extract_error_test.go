@@ -1,13 +1,4 @@
 // Package opencode: JSON error-event parsing tests.
-//
-// opencode's --format json stream emits structured error events like
-// {"type":"error","error":{"name":"UnknownError","data":{"message":"..."}}}.
-// The adapter must extract the human-readable message from
-// error.data.message (NOT from a top-level message field, which doesn't
-// exist on the wire) so the failure reason is preserved in
-// worker_executions.error_message for the operator. These tests pin the
-// parser so a refactor of opencode's JSON shape trips us early instead
-// of silently dropping the reason in production.
 package opencode
 
 import "testing"

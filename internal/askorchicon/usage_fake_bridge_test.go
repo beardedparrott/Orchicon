@@ -12,9 +12,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/opencode"
 )
 
-// spyUsageRecorder captures every UsageInput passed to Record so an Ask
-// turn's usage capture can be asserted field-by-field. It satisfies the
-// Service's usageRecorder interface.
+// spyUsageRecorder captures every UsageInput passed to Record so an Ask turn's usage capture can be
+// asserted field-by-field.
 type spyUsageRecorder struct {
 	mu  sync.Mutex
 	in  []aigateway.UsageInput
@@ -36,10 +35,8 @@ func (s *spyUsageRecorder) inputs() []aigateway.UsageInput {
 	return out
 }
 
-// busStepFinish builds the step-finish bus event the serve emits on step
-// completion (the opencode tokens/cost shape LegacyEventFromBus maps to
-// {type: "step_finish", part: {...}}). The tokens map mirrors the wire:
-// {"input","output","reasoning"} plus a nested {"cache":{"read","write"}}.
+// busStepFinish builds the step-finish bus event the serve emits on step completion (the opencode
+// tokens/cost shape LegacyEventFromBus maps to {type: "step_finish", part: {...}}).
 func busStepFinish(sessionID string, tokens map[string]any, cost float64) opencode.BusEvent {
 	return opencode.BusEvent{
 		Type: "message.part.updated",
@@ -55,9 +52,8 @@ func busStepFinish(sessionID string, tokens map[string]any, cost float64) openco
 	}
 }
 
-// collectTurnWithRecorder drives collectConversationReply over the fake
-// session client with a usage recorder wired into the Service. It returns the
-// collector's reply/error so tests can assert usage capture around a live turn.
+// collectTurnWithRecorder drives collectConversationReply over the fake session client with a usage
+// recorder wired into the Service.
 func collectTurnWithRecorder(t *testing.T, client *fakeSessionClient, opts turnCollectOpts, spy *spyUsageRecorder) (string, error) {
 	t.Helper()
 	s := &Service{log: slog.Default(), turns: newTurnRegistry(), usageRecorder: spy}
@@ -77,18 +73,13 @@ func collectTurnWithRecorder(t *testing.T, client *fakeSessionClient, opts turnC
 	return reply, err
 }
 
-// TestAskUsageCaptureNonOpencodeAdapter is the fake-bridge usage aggregation
-// test: an Ask session driven on a NON-opencode adapter (via the fake session
-// client acting as that adapter's bridge) records a live usage sample with the
-// correct adapter kind, provider/model attribution, token/cost buckets, and
-// Ask-session (conversation) attribution. No claude claim — the non-opencode
-// kind is a fake until a real non-opencode adapter lands.
+// TestAskUsageCaptureNonOpencodeAdapter is the fake-bridge usage aggregation test: an Ask session
+// driven on a NON-opencode adapter (via the fake session client acting as that adapter's bridge).
 func TestAskUsageCaptureNonOpencodeAdapter(t *testing.T) {
 	client := &fakeSessionClient{}
 	spy := &spyUsageRecorder{}
-	// A non-opencode adapter kind (segment 1 ≠ "opencode"): a fake bridge
-	// kind standing in until a real non-opencode adapter lands. The serve
-	// grammar is adapter/provider/model.
+	// A non-opencode adapter kind (segment 1 ≠ "opencode"): a fake bridge kind standing in until a real
+	// non-opencode adapter lands.
 	ref := "orbital/mockprov/deepseek-v4-flash"
 	opts := turnCollectOpts{
 		client: client, tenantID: "tnt_ask", convID: "conv_usage", sessionID: "ses_1",
@@ -143,9 +134,8 @@ func TestAskUsageCaptureNonOpencodeAdapter(t *testing.T) {
 	}
 }
 
-// TestAskUsageCaptureEmptySampleDropped verifies live-usage-only parity with
-// the worker recorder: a step_finish with no tokens and no cost is dropped,
-// never synthesized into a usage record.
+// TestAskUsageCaptureEmptySampleDropped verifies live-usage-only parity with the worker recorder: a
+// step_finish with no tokens and no cost is dropped, never synthesized into a usage record.
 func TestAskUsageCaptureEmptySampleDropped(t *testing.T) {
 	client := &fakeSessionClient{}
 	spy := &spyUsageRecorder{}

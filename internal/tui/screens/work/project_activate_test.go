@@ -1,15 +1,7 @@
 package work
 
-// project_activate_test.go — A DRAFTING PROJECT CANNOT HOLD WORK, AND THE TUI HAD NO
-// WAY OUT OF DRAFTING.
-//
-// CreateProject always lands a project in `drafting` (deliberately — it is the gate
-// that lets a project be configured before it accepts work), and
-// db.RequireProjectActive refuses work items for anything not `active`. The GUI answers
-// that with an Activate button on the project page; the TUI offered nothing at all, so
-// a project created here — including by orch's launch prompt — could never host a
-// single work item and no surface said why. The operator: "it created the project in
-// draft mode."
+// project_activate_test.go — A DRAFTING PROJECT CANNOT HOLD WORK, AND THE TUI HAD NO WAY OUT OF
+// DRAFTING.
 
 import (
 	"context"
@@ -20,9 +12,6 @@ import (
 )
 
 // THE ACTION IS OFFERED FOR A DRAFTING PROJECT, and calling it activates that project.
-//
-// The RPC is exercised through the fake rather than asserted by shape, so this fails if
-// the action's Do does nothing or targets the wrong id.
 func TestADraftingProjectOffersActivate(t *testing.T) {
 	p := newPlane()
 	pr := p.seedProject("proj-1", "Thing") // seeded ACTIVE (see the fake); the server creates DRAFTING
@@ -58,9 +47,7 @@ func TestADraftingProjectOffersActivate(t *testing.T) {
 	}
 }
 
-// AND NOT FOR ANY OTHER STATE. ActivateProject's UPDATE requires `status = 'drafting'`,
-// so offering the action on an active project would be a control that fails when used
-// correctly — on the most common case, since every project ends up active.
+// AND NOT FOR ANY OTHER STATE.
 func TestAnActiveProjectOffersNoActivate(t *testing.T) {
 	p := newPlane()
 	p.seedProject("proj-1", "Thing") // ACTIVE
@@ -83,11 +70,6 @@ func TestAnActiveProjectOffersNoActivate(t *testing.T) {
 }
 
 // THE STATUS READING CANNOT FALSE-POSITIVE ON A DIRECTORY NAME.
-//
-// projectNeedsActivation reads the row's Meta, which fetchProjects builds as
-// "<status> · <project_dir>". A directory is arbitrary operator-supplied text, so the
-// check must key on the status being the FIRST token rather than on the string merely
-// containing the word.
 func TestProjectNeedsActivationReadsTheStatusToken(t *testing.T) {
 	drafting := []string{
 		"drafting",

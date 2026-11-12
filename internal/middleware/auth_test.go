@@ -13,9 +13,8 @@ import (
 
 var testLog = slog.New(slog.DiscardHandler)
 
-// TestResolveAuthRequiresCredentialInLocalMode pins the removal of the
-// anonymous dev bypass: a request with no Authorization header is 401 in
-// local mode (previously it fell back to the dev tenant).
+// TestResolveAuthRequiresCredentialInLocalMode pins the removal of the anonymous dev bypass: a
+// request with no Authorization header is 401 in local mode (previously it fell back to the dev.
 func TestResolveAuthRequiresCredentialInLocalMode(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("inner handler reached without a credential")
@@ -46,13 +45,8 @@ func TestResolveAuthPublicPathsSkipAuth(t *testing.T) {
 	}
 }
 
-// TestResolveAuthAdmitsCredentialFreeLogout pins the sign-out contract at
-// the middleware boundary: POST /auth/logout must reach its handler with NO
-// bearer token (it is cookie-based by design), otherwise ResolveAuth 401s
-// before the refresh-cookie clear runs and a reload after sign-out
-// re-authenticates via the still-valid HttpOnly cookie. The mux-level
-// handler test in internal/auth bypasses this wrapper; this test closes
-// that gap.
+// TestResolveAuthAdmitsCredentialFreeLogout pins the sign-out contract at the middleware boundary:
+// POST /auth/logout must reach its handler with NO bearer token (it is cookie-based by design).
 func TestResolveAuthAdmitsCredentialFreeLogout(t *testing.T) {
 	var reached bool
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

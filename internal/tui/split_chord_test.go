@@ -1,15 +1,6 @@
 package tui
 
 // split_chord_test.go — THE WIDTH CHORD RESIZES WHICHEVER SPLIT IS IN FRONT OF YOU.
-//
-// The operator: "I am talking about every pane in the TUI where there is a tree and detail view. I would like
-// to be able to expand the tree view to see the full work item names, execution names, etc."
-//
-// Every such screen renders through kit2.Base.SinglePane, so ONE preference on the Base reaches them all —
-// and ctrl+left/right already resize the diff rail while explicitly doing nothing when the rail is closed
-// (diffRailWidthStep returns false). That made the chord free to serve the screen split, in precedence order:
-// the rail when it is open (it is drawn over everything, so it is what the operator is looking at), otherwise
-// the active screen's tree/detail split.
 
 import (
 	"strings"
@@ -144,11 +135,6 @@ func TestTheRailKeepsTheChordWhenItIsOpen(t *testing.T) {
 }
 
 // THE CHORD IS ADVERTISED WHEREVER IT WORKS, AND NOT WHERE IT DOES NOT.
-//
-// The operator: "You should add the ctrl+left/right shortcut advice to the composer on every screen so people
-// know they can do it." The condition is therefore the SAME one the chord applies (splitAdjustable), so the
-// hint cannot promise a key that does nothing — which is the failure this file's own composer-hint note
-// records from the providers form ("it advertised six keys that do nothing and hid the one that saves").
 func TestTheSplitChordIsAdvertisedWhereItWorks(t *testing.T) {
 	m, st := splitApp(t)
 	// Give the screen a source, so it genuinely has a tree/detail split.

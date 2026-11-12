@@ -12,10 +12,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
-// TestStopSequenceSucceedsWhileChildrenTransitioning reproduces the live race:
-// a concurrent version bump between the walk and the park must not abort STOP
-// with misleading "db: not found". With bounded retry + ParkWorkItem fallback
-// STOP commits and parks the subtree.
+// TestStopSequenceSucceedsWhileChildrenTransitioning reproduces the live race: a concurrent version
+// bump between the walk and the park must not abort STOP with misleading "db: not found".
 func TestStopSequenceSucceedsWhileChildrenTransitioning(t *testing.T) {
 	env := newSequenceTestEnv(t)
 	ctx := context.Background()

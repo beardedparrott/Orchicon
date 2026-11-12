@@ -96,7 +96,7 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
   purpose = "";
 
   /**
-   * model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+   * model_ref is the canonical adapter/provider/model ref; a
    * legacy 1/2-segment ref is accepted and infers adapter "opencode".
    *
    * @generated from field: string model_ref = 7;
@@ -203,7 +203,7 @@ export class CreateWorkerRequest extends Message<CreateWorkerRequest> {
   roleRef = "";
 
   /**
-   * Optional explicit adapter selection (ADR-0005 D2): a validation and
+   * Optional explicit adapter selection: a validation and
    * consistency affordance for API clients. Must be a Dispatcher-registered
    * kind; when model_ref is also set the two must AGREE (the ref's parsed
    * adapter segment == this value); a lone adapter with no model_ref is
@@ -1128,10 +1128,10 @@ export class WorkerListItem extends Message<WorkerListItem> {
 
   /**
    * active_model_ref is the model_ref of the active version
-   * (worker_versions.model_ref) — canonical adapter/provider/model
-   * (ADR-0003), e.g. "orchicon/anthropic/claude-sonnet-4", reported
-   * VERBATIM as stored (a legacy ref keeps its legacy form until it is
-   * re-saved). Empty when the worker has no versions yet.
+   * (worker_versions.model_ref) — canonical adapter/provider/model,
+   * e.g. "orchicon/anthropic/claude-sonnet-4", reported VERBATIM as stored
+   * (a legacy ref keeps its legacy form until it is re-saved). Empty when the
+   * worker has no versions yet.
    *
    * @generated from field: string active_model_ref = 2;
    */
@@ -1144,8 +1144,8 @@ export class WorkerListItem extends Message<WorkerListItem> {
 
   /**
    * active_adapter is the parsed adapter segment of active_model_ref
-   * (ADR-0005 D2, computed server-side). Legacy 2-segment refs report
-   * the inferred default kind ("opencode") — never a stored value.
+   * (computed server-side). Legacy 2-segment refs report the inferred default
+   * kind ("opencode") — never a stored value.
    *
    * @generated from field: string active_adapter = 4;
    */
@@ -1409,7 +1409,7 @@ export class UpdateWorkerVersionRequest extends Message<UpdateWorkerVersionReque
   versionId = "";
 
   /**
-   * model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+   * model_ref is the canonical adapter/provider/model ref; a
    * legacy 1/2-segment ref is accepted and infers adapter "opencode".
    *
    * @generated from field: optional string model_ref = 7;
@@ -1490,7 +1490,7 @@ export class UpdateWorkerVersionRequest extends Message<UpdateWorkerVersionReque
   agentsMd?: string;
 
   /**
-   * Optional explicit adapter selection (ADR-0005 D2/D4): validated
+   * Optional explicit adapter selection: validated
    * against the Dispatcher's registered kinds; must agree with model_ref
    * when both are set. When the resulting ref's adapter CHANGES, the new
    * adapter/provider pair must be valid (provider known for the new
@@ -1633,7 +1633,7 @@ export class CreateWorkerVersionRequest extends Message<CreateWorkerVersionReque
   workerId = "";
 
   /**
-   * model_ref is the canonical adapter/provider/model ref (ADR-0003); a
+   * model_ref is the canonical adapter/provider/model ref; a
    * legacy 1/2-segment ref is accepted and infers adapter "opencode".
    *
    * @generated from field: optional string model_ref = 7;
@@ -1714,7 +1714,7 @@ export class CreateWorkerVersionRequest extends Message<CreateWorkerVersionReque
   agentsMd?: string;
 
   /**
-   * Optional explicit adapter selection (ADR-0005 D2/D4) — same contract
+   * Optional explicit adapter selection — same contract
    * as UpdateWorkerVersion.
    *
    * @generated from field: optional string adapter = 22;

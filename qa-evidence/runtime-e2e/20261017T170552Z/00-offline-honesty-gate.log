@@ -1,0 +1,109 @@
+
+  -- the harness is a library when sourced --
+  [32mPASS[0m  sourcing scripts/runtime-e2e.sh never executes the session 0
+  [32mPASS[0m  the harness defines gated_absent() after sourcing          yes
+  [32mPASS[0m  the harness defines gated_contains() after sourcing        yes
+  [32mPASS[0m  the harness defines check_absent() after sourcing          yes
+  [32mPASS[0m  the harness defines check_contains() after sourcing        yes
+  [32mPASS[0m  the harness defines check() after sourcing                 yes
+  [32mPASS[0m  the harness defines skip() after sourcing                  yes
+  [32mPASS[0m  the harness defines record() after sourcing                yes
+  [32mPASS[0m  the harness defines engine_capture() after sourcing        yes
+  [32mPASS[0m  the harness defines engine_bin() after sourcing            yes
+  [32mPASS[0m  the harness defines connect_stream() after sourcing        yes
+  [32mPASS[0m  the harness defines wait_run_terminal() after sourcing     yes
+  [32mPASS[0m  the harness defines step0_preflight() (one function per AC) yes
+  [32mPASS[0m  the harness defines step1_local_run() (one function per AC) yes
+  [32mPASS[0m  the harness defines step2_opt_in() (one function per AC)   yes
+  [32mPASS[0m  the harness defines step3_container_run() (one function per AC) yes
+  [32mPASS[0m  the harness defines step4_pristine_reset() (one function per AC) yes
+  [32mPASS[0m  the harness defines step5_pool_reuse() (one function per AC) yes
+  [32mPASS[0m  the harness defines step6_image_path() (one function per AC) yes
+  [32mPASS[0m  the harness defines step7_gate_check() (one function per AC) yes
+  [32mPASS[0m  the harness defines step8_all_native() (one function per AC) yes
+
+  -- rule 1: an empty capture proves nothing --
+  [32mPASS[0m  gated_absent on an EMPTY capture counts no PASS            0
+  [32mPASS[0m  gated_absent on an EMPTY capture counts no FAIL            0
+  [32mPASS[0m  gated_absent on an EMPTY capture counts one SKIP           1
+  [32mPASS[0m  the SKIP records its reason in the step log                yes
+  [32mPASS[0m  the results.tsv row is SKIP, not PASS                      SKIP
+  [32mPASS[0m  gated_contains on an EMPTY capture counts no PASS          0
+  [32mPASS[0m  gated_contains on an EMPTY capture counts no FAIL          0
+  [32mPASS[0m  gated_contains on an EMPTY capture is SKIP                 1
+  [32mPASS[0m  a MISSING capture is SKIP too (unwritten == empty)         1
+  [32mPASS[0m  a MISSING capture counts no PASS                           0
+
+  -- rule 2: a real capture still yields real verdicts --
+  [32mPASS[0m  gated_absent PASSes when the needle really is absent       1
+  [32mPASS[0m  gated_absent reports no SKIP for a real capture            0
+  [32mPASS[0m  gated_absent FAILs when the needle really is present (a defect, not a pass) 1
+  [32mPASS[0m  the FAIL is recorded in defects.tsv (it names an owner)    yes
+  [32mPASS[0m  gated_contains PASSes when the needle really is present    1
+  [32mPASS[0m  gated_contains FAILs when the needle really is missing     1
+  [32mPASS[0m  the FAIL names the marker that was actually sought         yes
+  [32mPASS[0m  the FAIL names the OWNING file:line (AC10)                 yes
+
+  -- rule 3: no RAW content assertion is left in any engine-reading step --
+  [32mPASS[0m  step1_local_run was extracted from the harness (vacuity guard) yes
+  [32mPASS[0m  step1_local_run calls NO raw check_absent (an ABSENCE is the vacuous case) 0
+  [32mPASS[0m  step1_local_run calls NO raw check_contains (every content read is gated) 0
+  [32mPASS[0m  step1_local_run gates at least one assertion               yes
+  [32mPASS[0m  step3_container_run was extracted from the harness (vacuity guard) yes
+  [32mPASS[0m  step3_container_run calls NO raw check_absent (an ABSENCE is the vacuous case) 0
+  [32mPASS[0m  step3_container_run calls NO raw check_contains (every content read is gated) 0
+  [32mPASS[0m  step3_container_run gates at least one assertion           yes
+  [32mPASS[0m  step4_pristine_reset was extracted from the harness (vacuity guard) yes
+  [32mPASS[0m  step4_pristine_reset calls NO raw check_absent (an ABSENCE is the vacuous case) 0
+  [32mPASS[0m  step4_pristine_reset calls NO raw check_contains (every content read is gated) 0
+  [32mPASS[0m  step4_pristine_reset gates at least one assertion          yes
+  [32mPASS[0m  step5_pool_reuse was extracted from the harness (vacuity guard) yes
+  [32mPASS[0m  step5_pool_reuse calls NO raw check_absent (an ABSENCE is the vacuous case) 0
+  [32mPASS[0m  step5_pool_reuse calls NO raw check_contains (every content read is gated) 0
+  [32mPASS[0m  step5_pool_reuse gates at least one assertion              yes
+  [32mPASS[0m  step7_gate_check was extracted from the harness (vacuity guard) yes
+  [32mPASS[0m  step7_gate_check calls NO raw check_absent (an ABSENCE is the vacuous case) 0
+  [32mPASS[0m  step7_gate_check calls NO raw check_contains (every content read is gated) 0
+  [32mPASS[0m  step7_gate_check gates at least one assertion              yes
+  [32mPASS[0m  step8_all_native was extracted from the harness (vacuity guard) yes
+  [32mPASS[0m  step8_all_native calls NO raw check_absent (an ABSENCE is the vacuous case) 0
+  [32mPASS[0m  step8_all_native calls NO raw check_contains (every content read is gated) 0
+  [32mPASS[0m  step8_all_native gates at least one assertion              yes
+
+  -- rule 3b: the decisive ACs read INDEPENDENT evidence --
+  [32mPASS[0m  AC3 reads the engine's own ps output (not the plane's report) yes
+  [32mPASS[0m  AC3 compares the in-container hostname against the host's  yes
+  [32mPASS[0m  AC7 attempts a REAL create on the daemon socket            yes
+  [32mPASS[0m  AC2 asserts availability on /enginez                       yes
+  [32mPASS[0m  AC2 has an ADVERSARIAL control (availability only after verify) yes
+  [32mPASS[0m  AC8 records the runtime-mode contradiction instead of reinterpreting it yes
+
+  -- rule 4: every assertion is satisfiable on a correct system --
+  [32mPASS[0m  the E2E workflow is worker-free (an END step, not a task step with no ref) yes
+  [32mPASS[0m  the mode AC1 asserts is read from the PROJECT (the run has no such field) yes
+  [32mPASS[0m  the in-run marker is interpolated INTO the container exec command yes
+  [32mPASS[0m  the availability control uses an engine the probe cannot DRIVE (not a verify image) yes
+  [32mPASS[0m  the stream chunk count walks Connect ENVELOPES, not lines  yes
+
+  -- rule 5: no assertion can fail on a correct system --
+  [32mPASS[0m  every Connect procedure path is well-formed (a typo'd path is a silent 404 -> false FAIL) 0
+  [32mPASS[0m  step 4 probes run A's OWN container (the pool relocates under the same name) yes
+  [32mPASS[0m  step 4 does not require run B to be a DIFFERENT container (AC4 is about state) yes
+  [32mPASS[0m  step 4 observes that run B itself completed (a reset nobody observed proves nothing) yes
+  [32mPASS[0m  step 8's absence needle can exist in its own capture (no vacuous PASS) yes
+  [32mPASS[0m  step 8 no longer uses a needle no capture could contain    yes
+  [32mPASS[0m  step 6 only sets the project image when a tag is known (empty would CLEAR it) yes
+  [32mPASS[0m  step 5 asserts the changed-input run was accepted          yes
+  [32mPASS[0m  preflight RECORDS machine state as a SKIP when the host is unprepared yes
+  [32mPASS[0m  preflight aborts the session when the host is short of disk (exit 2, not a defect) yes
+  [32mPASS[0m  the frontend precondition no longer claims step 6 drives the page yes
+  [32mPASS[0m  connect_frames counts 3 DATA frames (a real stream)        3
+  [32mPASS[0m  connect_frames counts a single-blob stream as 1 frame      1
+  [32mPASS[0m  connect_frames counts an EMPTY capture as 0 (never a vacuous pass) 0
+
+  -- the gate is discoverable --
+  [32mPASS[0m  make help lists runtime-e2e-assertions-test                yes
+  [32mPASS[0m  make ci-go runs this gate                                  yes
+  [32mPASS[0m  the runbook exists and names the harness                   yes
+
+  runtime-e2e-assertions harness: 91 passed, 0 failed

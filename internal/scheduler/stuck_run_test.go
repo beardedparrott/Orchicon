@@ -14,17 +14,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workflow"
 )
 
-// Tests for runs that would otherwise wedge permanently in "running" and
-// leak their per-workflow runtime container (the 30s adopt sweep treats
-// any running run as active and keeps the container alive):
-//
-//   - a run on a workflow whose published version has an EMPTY step DAG
-//     (observed: 18 prod runs from empty `seq-wf-*` workflows),
-//   - a task step whose work item or execution row was hard-deleted
-//     (observed: dev runs stuck on step-pr-reviewer with a deleted item).
-//
-// All three paths must terminalize the run so the container is reaped
-// instead of sitting "running" forever.
+// Tests for runs that would otherwise wedge permanently in "running" and leak their per-workflow
+// runtime container (the 30s adopt sweep treats any running run as active and keeps the container.
 
 // seedPublishedWorkflowSteps creates a published workflow template whose
 // current version carries the given steps JSON. Returns the workflow id.
@@ -77,7 +68,8 @@ func createStuckTestProject(t *testing.T, pool *db.Pool) db.ProjectRow {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "Stuck Test", Slug: slug,
 		Status: domain.ProjectActive, Goals: []byte("[]"),
-		ProjectDir: "/tmp/orchicon/" + slug,
+		ProjectDir:    "/tmp/orchicon/" + slug,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -91,9 +83,8 @@ func createStuckTestProject(t *testing.T, pool *db.Pool) db.ProjectRow {
 	return proj
 }
 
-// TestReconcileRunFailsEmptyStepDag verifies a run on a workflow whose
-// published version has NO steps is failed at start by the reconciler
-// instead of sitting "running" forever (the container leak).
+// TestReconcileRunFailsEmptyStepDag verifies a run on a workflow whose published version has NO
+// steps is failed at start by the reconciler instead of sitting "running" forever (the container.
 func TestReconcileRunFailsEmptyStepDag(t *testing.T) {
 	pool := approvalTestPool(t)
 	proj := createStuckTestProject(t, pool)
@@ -145,9 +136,8 @@ func TestReconcileRunFailsEmptyStepDag(t *testing.T) {
 	}
 }
 
-// TestReconcileRunFailsMissingVersion verifies a run whose workflow
-// version row is gone (deleted workflow / raw-seeded run) is failed at
-// start rather than erroring every pass forever.
+// TestReconcileRunFailsMissingVersion verifies a run whose workflow version row is gone (deleted
+// workflow / raw-seeded run) is failed at start rather than erroring every pass forever.
 func TestReconcileRunFailsMissingVersion(t *testing.T) {
 	pool := approvalTestPool(t)
 	proj := createStuckTestProject(t, pool)
@@ -194,10 +184,8 @@ func TestReconcileRunFailsMissingVersion(t *testing.T) {
 	}
 }
 
-// TestPollTaskStepFailsOnDeletedWorkItem verifies a running task step
-// whose referenced work item was hard-deleted is failed terminal by
-// pollTaskStep instead of being waited on forever (the run then
-// terminalizes and its container is reaped).
+// TestPollTaskStepFailsOnDeletedWorkItem verifies a running task step whose referenced work item
+// was hard-deleted is failed terminal by pollTaskStep instead of being waited on forever (the run.
 func TestPollTaskStepFailsOnDeletedWorkItem(t *testing.T) {
 	pool := approvalTestPool(t)
 	proj := createStuckTestProject(t, pool)
@@ -255,9 +243,8 @@ func TestPollTaskStepFailsOnDeletedWorkItem(t *testing.T) {
 	}
 }
 
-// TestPollTaskStepRecoversOnDeletedExecution verifies a running task step
-// whose worker execution row was hard-deleted falls through to the
-// recovery block (retry) instead of being waited on forever.
+// TestPollTaskStepRecoversOnDeletedExecution verifies a running task step whose worker execution
+// row was hard-deleted falls through to the recovery block (retry) instead of being waited.
 func TestPollTaskStepRecoversOnDeletedExecution(t *testing.T) {
 	pool := approvalTestPool(t)
 	proj := createStuckTestProject(t, pool)

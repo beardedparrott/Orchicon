@@ -1,12 +1,6 @@
 package execution
 
 // schedules_queued_qa_render_test.go — QA (step 4) surface verification for the Upcoming fix.
-//
-// The engineer's tests assert the FETCH's membership. This file asserts the SURFACE the operator
-// actually reads: the rendered pane text. It is the TUI equivalent of a screenshot check — the
-// rendered frame is dumped to /tmp/orchicon/ so it can be read back and compared against the
-// acceptance criteria (queued children visible, the Schedules empty state GONE for the
-// reproduction, and still present for a tenant with genuinely nothing scheduled).
 
 import (
 	"context"

@@ -110,6 +110,28 @@ message WorkflowRun {
   // still jump to a PR even before one exists.
   string pr_url = 19;
   string pr_state = 20; // e.g. open/merged/draft/none; empty until worker-authored
+  // error_message is WHY THIS RUN FAILED, when the PLATFORM is the party that knows — a preflight refusal
+  // (no valid base ref, a worktree that cannot be created), a dispatch failure. Such a run fails before any
+  // step dispatches, so there is no execution and no worker summary: without this the operator's surfaces
+  // all said nothing, and the reason was reachable only by decoding run_context by hand.
+  string error_message = 21;
+  // error_kind is a small vocabulary the UI groups and phrases on ("worktree_no_base_ref",
+  // "worktree_empty_base", "worktree_preflight"). Empty means unclassified. It is intentionally NOT an enum:
+  // a new kind must be addable without a schema change.
+  string error_kind = 22;
+  // integration_status says whether this run's work actually reached the integration branch.
+  //
+  // REPORTED: "both missed-integration runs and correctly-integrated runs present identically: status=succeeded,
+  // WorkflowRun=completed ... There is no field anywhere recording whether integration happened." That is the
+  // worst kind of gap — a run that looks finished and is not.
+  //
+  // DERIVED, not stored, and the derivation is exact rather than heuristic: a run branch is deleted ONLY when
+  // it is provably merged (branchProvablyMerged → ancestry), and deleting it clears worktree_branch. So a
+  // COMPLETED run with no branch has landed, and one with a surviving branch has not. Two facts the platform
+  // already records, read together.
+  //
+  // Values: "merged" | "not_merged" | "not_applicable". Empty for runs that have not completed.
+  string integration_status = 23;
 }
 
 // WorkflowStepRun is the runtime state of a single step within a

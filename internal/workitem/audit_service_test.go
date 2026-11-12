@@ -43,11 +43,8 @@ func seedAuditIdentity(t *testing.T, pool *db.Pool, tenantID, subject string) db
 	return ident
 }
 
-// auditServiceEnv wires the service over a migration-applied test pool and
-// returns a context carrying BOTH the tenant and a resolved identity (the
-// middleware-equivalent for the audit actor), plus the acting identity id.
-// Each caller passes a unique tenant id so sibling tests never share audit
-// rows (a mutation test's rows would otherwise leak into a "no rows" test).
+// auditServiceEnv wires the service over a migration-applied test pool and returns a context
+// carrying BOTH the tenant and a resolved identity (the middleware-equivalent for the audit actor).
 func auditServiceEnv(t *testing.T, tenantID string) (*db.Pool, *Service, context.Context, string, string) {
 	t.Helper()
 	pool := validateParentTestPool(t)
@@ -102,9 +99,8 @@ func auditEventCount(t *testing.T, pool *db.Pool, tenantID, action, targetType, 
 	return len(rows)
 }
 
-// TestAuditServiceWorkItemMutations asserts the transactional-outbox
-// contract through the real handler surface: one row per mutation, zero
-// rows for Get/List, correct actor + auth_method + before/after.
+// TestAuditServiceWorkItemMutations asserts the transactional-outbox contract through the real
+// handler surface: one row per mutation, zero rows for Get/List.
 func TestAuditServiceWorkItemMutations(t *testing.T) {
 	pool, s, ctx, tenantID, actorID := auditServiceEnv(t, "tnt_audit_wi_mut")
 
@@ -176,14 +172,8 @@ func TestAuditServiceWorkItemMutations(t *testing.T) {
 	}
 }
 
-// TestUpdateWorkItemAcceptsSkippedStatus pins the Connect UpdateWorkItem
-// contract for the new user-settable "skipped" status (this item's actual
-// remaining work): the generic status write accepts
-// WORK_ITEM_STATUS_SKIPPED exactly like succeeded/cancelled with no new
-// guard, persists "skipped", bumps the version, and emits one
-// work_item.updated audit row + one outbox event in the same transaction.
-// The same test proves the archived/idea guards at service.go:852-863 are
-// untouched: both are still rejected by this path.
+// TestUpdateWorkItemAcceptsSkippedStatus pins the Connect UpdateWorkItem contract for the new
+// user-settable "skipped" status (this item's actual remaining work).
 func TestUpdateWorkItemAcceptsSkippedStatus(t *testing.T) {
 	pool, s, ctx, tenantID, _ := auditServiceEnv(t, "tnt_audit_wi_skip")
 	proj := seedAuditProject(t, pool, tenantID)
@@ -234,9 +224,8 @@ func TestUpdateWorkItemAcceptsSkippedStatus(t *testing.T) {
 		t.Fatalf("work_item.updated outbox events = %d, want 1", n)
 	}
 
-	// Pre-existing guards are untouched: archived and idea are still
-	// rejected by this same generic status path — no new skipped guard
-	// was added alongside them.
+	// Pre-existing guards are untouched: archived and idea are still rejected by this same generic
+	// status path — no new skipped guard was added alongside them.
 	archived := apiv1.WorkItemStatus_WORK_ITEM_STATUS_ARCHIVED
 	if _, err := s.UpdateWorkItem(ctx, connect.NewRequest(&apiv1.UpdateWorkItemRequest{
 		Id: wiID, Status: &archived,
@@ -251,9 +240,7 @@ func TestUpdateWorkItemAcceptsSkippedStatus(t *testing.T) {
 	}
 }
 
-// TestAuditServiceWorkItemAtomicRollback pins atomicity the other way: a
-// mutation that fails validation must NOT leave an audit row (nothing to
-// record — the row exists iff the mutation committed).
+// TestAuditServiceWorkItemAtomicRollback pins atomicity the other way.
 func TestAuditServiceWorkItemAtomicRollback(t *testing.T) {
 	pool, s, ctx, tenantID, _ := auditServiceEnv(t, "tnt_audit_wi_rb_"+strings.ToLower(db.NewID()))
 	proj := seedAuditProject(t, pool, tenantID)
@@ -271,9 +258,8 @@ func TestAuditServiceWorkItemAtomicRollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListAuditEvents: %v", err)
 	}
-	// The env seeds an identity (identity rows are not audit events), so any
-	// audit row here would be a mutation record — assert none for the tenant
-	// beyond what the seeding itself never writes. Filter by action pattern.
+	// The env seeds an identity (identity rows are not audit events), so any audit row here would be a
+	// mutation record — assert none for the tenant beyond what the seeding itself never writes.
 	for _, r := range rows {
 		if strings.HasPrefix(r.Action, "work_item.") {
 			t.Fatalf("failed create left an audit row: %+v", r)

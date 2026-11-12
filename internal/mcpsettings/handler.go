@@ -93,17 +93,18 @@ func (h *Handler) CreateMCPServer(ctx context.Context, req *connect.Request[apiv
 	}
 	msg := req.Msg
 	e, err := h.svc.Create(ctx, tenantID, CreateInput{
-		Name:           msg.Name,
-		ProjectID:      msg.ProjectId,
-		ConversationID: msg.ConversationId,
-		Transport:      transportFromProto(msg.Transport),
-		Command:        msg.Command,
-		Args:           msg.Args,
-		Env:            msg.Env,
-		URL:            msg.Url,
-		Headers:        msg.Headers,
-		Enabled:        msg.Enabled,
-		CatalogSlug:    msg.CatalogSlug,
+		Name:            msg.Name,
+		ProjectID:       msg.ProjectId,
+		ConversationID:  msg.ConversationId,
+		Transport:       transportFromProto(msg.Transport),
+		Command:         msg.Command,
+		Args:            msg.Args,
+		Env:             msg.Env,
+		URL:             msg.Url,
+		Headers:         msg.Headers,
+		Enabled:         msg.Enabled,
+		CatalogSlug:     msg.CatalogSlug,
+		ProtocolVersion: msg.ProtocolVersion,
 	})
 	if err != nil {
 		return nil, h.mapErr(err)
@@ -148,6 +149,9 @@ func (h *Handler) UpdateMCPServer(ctx context.Context, req *connect.Request[apiv
 	}
 	if msg.CatalogSlug != nil {
 		in.CatalogSlug = msg.CatalogSlug
+	}
+	if msg.ProtocolVersion != nil {
+		in.ProtocolVersion = msg.ProtocolVersion
 	}
 	e, err := h.svc.Update(ctx, tenantID, in)
 	if err != nil {
@@ -297,6 +301,7 @@ func entryToProto(e Entry) *apiv1.MCPServer {
 		Url:             e.URL,
 		Enabled:         e.Enabled,
 		CatalogSlug:     e.CatalogSlug,
+		ProtocolVersion: e.ProtocolVersion,
 		InstallStatus:   installStatusToProto(e.InstallStatus),
 		RequiredSecrets: append([]string{}, e.RequiredSecrets...),
 		HasSecretStored: e.HasSecretStored,

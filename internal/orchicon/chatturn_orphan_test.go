@@ -32,10 +32,8 @@ import (
 const fixtureProviderErrorOrphanedToolResult = `{"error":{"message":"Messages with role 'tool' must be a response to a preceding ` +
 	`message with 'tool_calls'","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`
 
-// hasOrphanedToolResults reports whether a provider-bound history contains a
-// tool-role message whose result answers a call that no PRECEDING assistant
-// message declares. It is the mirror of hasDanglingToolCalls and is the other
-// half of the replay-boundary invariant (see sanitizeChatHistory).
+// hasOrphanedToolResults reports whether a provider-bound history contains a tool-role message
+// whose result answers a call that no PRECEDING assistant message declares.
 func hasOrphanedToolResults(messages []Message) bool {
 	declared := map[string]bool{}
 	for _, m := range messages {
@@ -57,9 +55,8 @@ func hasOrphanedToolResults(messages []Message) bool {
 	return false
 }
 
-// assertHistoryToolPairsWellFormed asserts the FULL replay-boundary invariant,
-// both directions: every declared call answered, and every result answering a
-// declared call. A history that fails either half is one a provider rejects.
+// assertHistoryToolPairsWellFormed asserts the FULL replay-boundary invariant, both directions:
+// every declared call answered, and every result answering a declared call.
 func assertHistoryToolPairsWellFormed(t *testing.T, messages []Message) {
 	t.Helper()
 	if hasDanglingToolCalls(messages) {
@@ -115,11 +112,8 @@ func historyContainsText(messages []Message, want string) bool {
 	return false
 }
 
-// compactedOrphanedHistory is the history the compact button left on Ask
-// conversation 01M2C8VXFQY5ZE26PYBSNKA2CA, read VERBATIM off that session's
-// persisted file (/var/lib/orchicon/ask-history/orchicon-ask_<id>.json): the
-// summary, then a tool result whose declaring assistant was collapsed away,
-// then the kept tail, then the operator's send that 400'd.
+// compactedOrphanedHistory is the history the compact button left on Ask conversation
+// 01M2C8VXFQY5ZE26PYBSNKA2CA, read VERBATIM off that session's persisted file.
 func compactedOrphanedHistory() []Message {
 	return []Message{
 		{Role: RoleAssistant, Content: []Content{{Text: strptr(
@@ -147,10 +141,8 @@ func compactedOrphanedHistory() []Message {
 	}
 }
 
-// TestSanitizeChatHistoryDropsOrphanedToolResult is the reproduction and the
-// fix: the compacted history is rejected as-is, and the sanitizer — which runs at
-// the replay boundary before every provider send — drops the orphan while
-// keeping every intact round and the summary.
+// TestSanitizeChatHistoryDropsOrphanedToolResult is the reproduction and the fix: the compacted
+// history is rejected as-is, and the sanitizer.
 func TestSanitizeChatHistoryDropsOrphanedToolResult(t *testing.T) {
 	history := compactedOrphanedHistory()
 
@@ -184,9 +176,8 @@ func TestSanitizeChatHistoryDropsOrphanedToolResult(t *testing.T) {
 	}
 }
 
-// TestSanitizeChatHistoryDropsLeadingOrphanedToolResult pins the shape the
-// compaction tail alignment clamps against: a history whose FIRST message is a
-// tool result (nothing precedes it at all, so no walk-back can save it).
+// TestSanitizeChatHistoryDropsLeadingOrphanedToolResult pins the shape the compaction tail
+// alignment clamps against.
 func TestSanitizeChatHistoryDropsLeadingOrphanedToolResult(t *testing.T) {
 	history := []Message{
 		{Role: RoleTool, Content: []Content{{ToolResult: &ContentToolResult{ToolCallID: "call_gone", Content: "orphan"}}}},
@@ -204,9 +195,8 @@ func TestSanitizeChatHistoryDropsLeadingOrphanedToolResult(t *testing.T) {
 	}
 }
 
-// TestSanitizeChatHistoryDropsOrphanedResultInsideToolMessage covers a tool
-// message that carries several results of which only some are orphaned: the
-// declared ones must survive, and a message left with nothing goes away.
+// TestSanitizeChatHistoryDropsOrphanedResultInsideToolMessage covers a tool message that carries
+// several results of which only some are orphaned: the declared ones must survive.
 func TestSanitizeChatHistoryDropsOrphanedResultInsideToolMessage(t *testing.T) {
 	history := []Message{
 		{Role: RoleAssistant, Content: []Content{{ToolUse: &ContentToolUse{ToolCallID: "call_a", Name: "bash", ArgsJSON: "{}"}}}},
@@ -236,11 +226,8 @@ func TestSanitizeChatHistoryDropsOrphanedResultInsideToolMessage(t *testing.T) {
 	}
 }
 
-// TestChatTurnReplayHealsCompactedOrphanedHistory asserts the operator-visible
-// recovery: a conversation wedged by the compact button becomes sendable again
-// ON THE SAME SESSION, with no manual surgery — the repair happens at the replay
-// boundary and is persisted, so the session heals permanently rather than being
-// repaired on every turn.
+// TestChatTurnReplayHealsCompactedOrphanedHistory asserts the operator-visible recovery: a
+// conversation wedged by the compact button becomes sendable again ON THE SAME SESSION.
 func TestChatTurnReplayHealsCompactedOrphanedHistory(t *testing.T) {
 	prov := &chatTestProvider{events: []Event{TextDelta{Text: "ok"}, Finish{StopReason: StopStop}}}
 	b := newChatBridge(t, prov)

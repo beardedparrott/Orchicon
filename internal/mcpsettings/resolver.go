@@ -41,9 +41,7 @@ func NewResolver(pool *db.Pool) *Resolver {
 
 var _ mcpclient.ScopeResolver = (*Resolver)(nil)
 
-// ResolveScope implements mcpclient.ScopeResolver. The tenant is read from
-// the context (tenant.FromContext) — the bridge scopes the session context
-// with the execution's tenant before resolving.
+// ResolveScope implements mcpclient.ScopeResolver.
 func (r *Resolver) ResolveScope(ctx context.Context, ref mcpclient.ScopeRef) (mcpclient.Resolution, error) {
 	tenantID := tenant.FromContext(ctx)
 	if tenantID == "" {
@@ -62,10 +60,8 @@ func (r *Resolver) ResolveScope(ctx context.Context, ref mcpclient.ScopeRef) (mc
 	return mcpclient.Resolution{}, nil
 }
 
-// ResolveRunUnion is the RUN-SCOPE entry point for callers that hold a run
-// id (child 4's container bake). It takes the RUN and, internally, its
-// project — NEVER an executing worker: its result is applied ONCE per
-// container, so a per-execution input would make it order-dependent.
+// It takes the RUN and, internally, its project — NEVER an executing worker: its result is applied
+// ONCE per container, so a per-execution input would make it order-dependent.
 func (r *Resolver) ResolveRunUnion(ctx context.Context, tenantID, runID string) (mcpclient.Resolution, error) {
 	if tenantID == "" {
 		return mcpclient.Resolution{}, fmt.Errorf("mcpsettings resolver: no tenant")
@@ -99,23 +95,13 @@ func (r *Resolver) resolveConversation(ctx context.Context, tenantID, projectID,
 	if err != nil {
 		return mcpclient.Resolution{}, err
 	}
-	// Provenance is read off each ROW's own owner by resolutionFromRows: a
-	// project-owned row is From=project, a conversation-owned row is
-	// From=conversation. The union of the two is the conversation scope.
+	// Provenance is read off each ROW's own owner by resolutionFromRows: a project-owned row is
+	// From=project, a conversation-owned row is From=conversation.
 	return resolutionFromRows(rows), nil
 }
 
-// resolveWorker is the per-session scope: project-owned ∪ the resolving
-// VERSION's INLINE specs (its permissions.mcp_servers).
-//
-// THE VERSION'S OWN SET COMES FROM THE CALLER WHEN IT HAS ONE. A dispatch
-// pins a worker version and carries its permissions on the manifest
-// (worker_versions.permissions → ExecutionManifest.Permissions →
-// ScopeRef.OwnPermissions); resolving the LATEST published version instead
-// would union a different version's servers than the one that is actually
-// running. When the caller has no bytes (direct / TUI / ContinueSession
-// callers) the storage read holds, so those paths keep resolving the latest
-// published version.
+// resolveWorker is the per-session scope: project-owned ∪ the resolving VERSION's INLINE specs (its
+// permissions.mcp_servers).
 func (r *Resolver) resolveWorker(ctx context.Context, tenantID string, ref mcpclient.ScopeRef) (mcpclient.Resolution, error) {
 	tx, err := r.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
@@ -145,10 +131,6 @@ func (r *Resolver) resolveWorker(ctx context.Context, tenantID string, ref mcpcl
 }
 
 // inlineFromID is the provenance label for a worker scope's own half.
-// Unpinned (Version == 0) keeps child 1's "inline:<workerID>" shape (the
-// storage path); a PINNED dispatch reports "inline:<workerID>@<n>", the
-// documented shape resolveRun already uses, so the log names the version the
-// execution actually ran.
 func inlineFromID(ref mcpclient.ScopeRef) string {
 	if ref.Version != 0 {
 		return fmt.Sprintf("inline:%s@%d", ref.WorkerID, ref.Version)
@@ -157,12 +139,6 @@ func inlineFromID(ref mcpclient.ScopeRef) string {
 }
 
 // resolveRun is the RUN scope — the one to get right by construction.
-//
-// It takes the RUN, never an executing worker: the run's own published
-// version is the DAG, and every step's worker version is resolved by the
-// ONE shared walk (adapter.ResolveRunSteps) that the adapter demand set
-// also reads (AC 2/AC 3). The result is the project-owned definitions plus
-// EVERY step version's inline specs plus the skill-file union.
 func (r *Resolver) resolveRun(ctx context.Context, tenantID, runID string) (mcpclient.Resolution, error) {
 	if runID == "" {
 		return mcpclient.Resolution{}, nil
@@ -185,9 +161,8 @@ func (r *Resolver) resolveRun(ctx context.Context, tenantID, runID string) (mcpc
 
 	version, err := db.GetWorkflowVersion(ctx, tx.Tx, tenantID, run.WorkflowID, run.WorkflowVersion)
 	if err != nil {
-		// A run whose version is gone has no steps to union: the project
-		// rows are the whole answer, never an error (the run itself will
-		// fail at start for the same reason — see the reconciler).
+		// A run whose version is gone has no steps to union: the project rows are the whole answer, never
+		// an error (the run itself will fail at start for the same reason — see the reconciler).
 		return res, nil
 	}
 	steps, err := workflow.ParseSteps(version.Steps)
@@ -207,13 +182,7 @@ func (r *Resolver) resolveRun(ctx context.Context, tenantID, runID string) (mcpc
 	return res, nil
 }
 
-// resolutionFromRows converts owner-scoped DB rows into the resolution
-// shape. Disabled rows are collected (reported) but never resolve.
-//
-// ORDER IS PART OF THE CONTRACT: PROJECT-owned rows first (name ASC, the
-// query's order), then the scope's OWN rows (name ASC). One owner-scoped
-// query returns both kinds for a conversation scope, so the split is done
-// here rather than depending on how the names happen to sort.
+// resolutionFromRows converts owner-scoped DB rows into the resolution shape.
 func resolutionFromRows(rows []db.MCPServerRow) mcpclient.Resolution {
 	var res mcpclient.Resolution
 	appendRow := func(row db.MCPServerRow) {
@@ -248,16 +217,8 @@ func resolutionFromRows(rows []db.MCPServerRow) mcpclient.Resolution {
 	return res
 }
 
-// unionInline appends inline (worker-owned) definitions to a resolution,
-// deduped by server id, first occurrence wins, in declaration order.
-//
-// The dedup key is Spec.ID, NOT EntryID: an inline definition has no row, so
-// its EntryID is "" (see mcpclient.ScopedServer) and a seen-set seeded from
-// EntryID alone would be empty on every call — two steps declaring the SAME
-// inline id would each resolve it (and the run scope is where that happens:
-// two worker versions can declare one shared name). ServerSpec.ID is the
-// connection namespace (mcp__<server>__<tool>), which is what must appear
-// once.
+// unionInline appends inline (worker-owned) definitions to a resolution, deduped by server id,
+// first occurrence wins, in declaration order.
 func unionInline(res mcpclient.Resolution, inline []db.InlineMCPServer, fromID string) mcpclient.Resolution {
 	seen := map[string]bool{}
 	for _, s := range res.Servers {
@@ -313,6 +274,9 @@ func specFromRow(r db.MCPServerRow) mcpclient.ServerSpec {
 		URL:     r.URL,
 		Headers: r.Headers,
 		Env:     r.Env,
+		// The operator's pin travels with the definition, so a known-old server can skip the modern
+		// handshake that would kill it. "" negotiates.
+		ProtocolVersion: r.ProtocolVersion,
 	}
 	switch r.Transport {
 	case TransportStreamable, "http":
@@ -368,11 +332,8 @@ func workerPermissions(ctx context.Context, tx pgx.Tx, tenantID, workerID string
 	return perms, nil
 }
 
-// ResolveSecretRefs replaces ${SECRET_NAME} references in a server's
-// env/header values with the stored tenant-secret plaintext (never baked,
-// never stored inline). A reference to an unset secret is a clear error
-// naming the secret — callers surface it as a per-server session error.
-// Values without a reference pass through unchanged.
+// ResolveSecretRefs replaces ${SECRET_NAME} references in a server's env/header values with the
+// stored tenant-secret plaintext (never baked, never stored inline).
 func ResolveSecretRefs(ctx context.Context, pool *db.Pool, kek []byte, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
 	resolve := func(m map[string]string) (map[string]string, error) {
 		if len(m) == 0 {

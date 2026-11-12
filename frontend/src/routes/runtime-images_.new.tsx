@@ -14,6 +14,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { generateDockerfile } from "@/lib/runtimeImageDockerfile";
 import { cn } from "@/lib/utils";
 import { Route as rootRoute } from "@/routes/__root";
 
@@ -35,42 +36,6 @@ export const Route = createRoute({
 
 const slugRegex = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-// generateDockerfile mirrors internal/runtimeimage/generatedDockerfile so
-// the preview matches exactly what the daemon receives (minus the
-// daemon-rewritten FROM/label lines).
-function generateDockerfile(base: string, apt: string, toolchains: string, env: string): string {
-  const aptList = (apt || "")
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const toolList = (toolchains || "")
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const envPairs = (env || "")
-    .split("\n")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  const lines: string[] = [`FROM ${base}`, "USER root"];
-  if (aptList.length > 0) {
-    lines.push("RUN apt-get update && apt-get install -y --no-install-recommends \\");
-    aptList.forEach((p, i) => {
-      lines.push(`      ${p} ${i < aptList.length - 1 ? "\\" : ""}`);
-    });
-    lines.push("      && rm -rf /var/lib/apt/lists/*");
-  }
-  for (const t of toolList) lines.push(`RUN ${t}`);
-  for (const e of envPairs) {
-    const idx = e.indexOf("=");
-    if (idx > 0) lines.push(`ENV ${e.slice(0, idx)}=${e.slice(idx + 1)}`);
-  }
-  lines.push("RUN chown -R 1000:1000 /usr /opt /var 2>/dev/null || true");
-  lines.push("USER orchicon");
-  lines.push("WORKDIR /home/orchicon");
-  return lines.join("\n");
-}
-
 function NewRuntimeImagePage() {
   const navigate = useNavigate();
   const { data: avail } = useAvailableRuntimeImages();
@@ -83,6 +48,8 @@ function NewRuntimeImagePage() {
   const [description, setDescription] = useState("");
   const [apt, setApt] = useState("");
   const [toolchains, setToolchains] = useState("");
+  // ON by default: an image that cannot run any work is not what "create a runtime image" means.
+  const [includeAdapters, setIncludeAdapters] = useState(true);
   const [env, setEnv] = useState("");
   const [tag, setTag] = useState("");
   const [advanced, setAdvanced] = useState(false);
@@ -94,8 +61,8 @@ function NewRuntimeImagePage() {
   // Live preview — always shown (easy mode generated; advanced mode raw).
   const preview = useMemo(() => {
     if (advanced) return dockerfileOverride;
-    return generateDockerfile(base, apt, toolchains, env);
-  }, [advanced, dockerfileOverride, base, apt, toolchains, env]);
+    return generateDockerfile(base, apt, toolchains, env, includeAdapters);
+  }, [advanced, dockerfileOverride, base, apt, toolchains, env, includeAdapters]);
 
   const slugError = slug && !slugRegex.test(slug) ? "Slug must be lowercase words separated by hyphens." : "";
 
@@ -120,6 +87,7 @@ function NewRuntimeImagePage() {
           return i > 0 ? [e.slice(0, i), e.slice(i + 1)] : [e, ""];
         }))),
         dockerfileOverride: advanced ? dockerfileOverride : "",
+        includeAdapters,
         tag: finalTag,
       });
       setDeployedId(created.id);
@@ -235,6 +203,23 @@ function NewRuntimeImagePage() {
                       rows={2}
                       placeholder="QT_QPA_PLATFORM=offscreen"
                     />
+                  </div>
+                  <div className="flex items-start gap-2 pt-1">
+                    <input
+                      id="adapters"
+                      type="checkbox"
+                      className="mt-1"
+                      checked={includeAdapters}
+                      onChange={(e) => setIncludeAdapters(e.target.checked)}
+                    />
+                    <div className="space-y-1">
+                      <Label htmlFor="adapters">Install the runtime CLI adapters</Label>
+                      <p className="text-xs text-muted-foreground">
+                        Adds opencode and Claude Code to the image. Leave this on unless the image is
+                        deliberately a bare toolchain — without them, no agent session can start in it.
+                        Ignored when you supply your own Dockerfile below.
+                      </p>
+                    </div>
                   </div>
                 </>
               )}

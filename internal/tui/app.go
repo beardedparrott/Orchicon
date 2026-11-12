@@ -1,7 +1,5 @@
-// Package tui is orch's app shell: the seven-tab shell (Ask, Overview,
-// Work, Execution, Automation, Enforcement, Control) mirroring the GUI nav
-// (frontend/src/lib/nav-config.ts + app-shell.tsx), with the global key
-// router, status footer, and help overlay.
+// Package tui is orch's app shell: the seven-tab shell (Ask, Overview, Work, Execution, Automation,
+// Enforcement, Control) mirroring the GUI nav (frontend/src/lib/nav-config.ts + app-shell.tsx).
 package tui
 
 import (
@@ -24,6 +22,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/tui/client"
 	"github.com/beardedparrott/orchicon/internal/tui/config"
 	"github.com/beardedparrott/orchicon/internal/tui/diffs"
+	"github.com/beardedparrott/orchicon/internal/chatlimits"
 	"github.com/beardedparrott/orchicon/internal/tui/dock"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/ask"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/automation"
@@ -62,41 +61,7 @@ type Tab struct {
 	Ordinal string // "F1"…"F7" — the key the bar prints, UNDERLINED: it IS the chord, not decoration
 }
 
-// Tabs is the top tab bar, in GUI nav order. Ordinals number the tabs so
-// the tab bar matches the mockup's "1 · 2 · 3…" chrome; clicking a tab
-// (mouse) is wired in the shell dispatcher.
-//
-// THE CHORDS ARE F1 … F7, and the label the bar prints IS the chord (only the case differs), so the
-// key the operator presses and the text beside the tab cannot disagree — the same invariant the
-// chord list has carried since the ctrl+letter chords were replaced, when a letter per tab sat next
-// to an unrelated number: "I think we should get rid of the ctrl+letter for the tab menus up top".
-//
-// HOW WE GOT TO F-KEYS — three candidates, each MEASURED through a pty and bubbletea's OWN parser
-// (the same one the running program uses; the probe is validated by its delivery of plain letters
-// and of the chord under test), never assumed:
-//
-//  1. ctrl+<digit> DOES NOT EXIST as a key. ctrl+1 arrives as ctrl+q, ctrl+2 as ctrl+@, and — the
-//     reason this is more than cosmetic — **ctrl+3 arrives as ESC and ctrl+8 as BACKSPACE**, because
-//     a control byte is `digit & 0x1f` and 3 and 8 collide with the escape and delete bytes.
-//     ctrl+4/5/6/7 arrive as ctrl+\ / ctrl+] / ctrl+^ / ctrl+_. The protocols that would
-//     disambiguate (xterm's modifyOtherKeys, kitty CSI-u) are NOT negotiated by bubbletea and return
-//     nothing at all.
-//  2. alt+<digit> IS delivered correctly — measured: alt+1 genuinely arrives as alt+1 — but the
-//     operator's EMULATOR claims it first: "I use Konsole and I bet a lot of other people do as well
-//     and when I hit alt+number it moves to a different terminal tab as opposed to actually
-//     affecting orch". That is claimed at the emulator's level, before any program sees the byte, so
-//     no binding here can recover it. The operator's own suggestion, shift+<digit>, is ALSO not
-//     bindable: shift+1 arrives as the SHIFTED SYMBOL ("!"), so binding the digits' shifted forms
-//     would break typing punctuation everywhere. (Measured alongside: shift+1 → "!", ctrl+alt+1 →
-//     nothing, and both disambiguating protocols → nothing.)
-//  3. F1 … F7 IS delivered cleanly — measured: F1 → "f1". One keystroke, not claimed by the
-//     emulator, and it collides with nothing here (no screen binds an F-key).
-//
-// WHICH IS WHY THE BAR NO LONGER NAMES A MODIFIER. "alt+ 1·Ask Orchicon" existed because a bare
-// number beside a tab does not say what to hold down — it was a label explaining the MODIFIER. An
-// F-key needs no explanation: the label printed at the tab ("F1") already names the whole key, so a
-// modifier prefix would be five cells of noise in front of the operator's own tabs. The label is
-// gone, and the label printed at each tab is what the operator presses.
+// Tabs is the top tab bar, in GUI nav order.
 var Tabs = []Tab{
 	{TabAsk, "Ask Orchicon", "f1", "F1"},
 	{TabOverview, "Overview", "f2", "F2"},
@@ -111,40 +76,33 @@ var Tabs = []Tab{
 // screenkit interface so shell code stays short).
 type Screen = screenkit.Screen
 
-// DockError / DockNotice are the shell hooks screens use to surface
-// mutation feedback (the kit2 mutate.Executor sink) in the always-present
-// chat dock.
+// DockError / DockNotice are the shell hooks screens use to surface mutation feedback (the kit2
+// mutate.Executor sink) in the always-present chat dock.
 func (m *App) DockError(msg string)  { m.dock.SetError(msg) }
 func (m *App) DockNotice(msg string) { m.dock.SetNotice(msg) }
 
-// focusMode is where keyboard focus lives: the content pane (screens
-// keep tab chords + editing) or the chat composer (global tab chords
-// fall through to readline editing inside the input).
+// focusMode is where keyboard focus lives: the content pane (screens keep tab chords + editing) or
+// the chat composer (global tab chords fall through to readline editing inside the input).
 type focusMode int
 
 const (
 	focusContent focusMode = iota
 	focusComposer
-	// focusTabs means the TAB BAR holds the keyboard — nothing below it has been
-	// chosen yet.
-	//
-	// It exists because "the default Projects view under Work captures the down
-	// arrows" was the pane receiving keys before the operator had selected
-	// anything: Tab put them straight into the content, whose default source was
-	// already focused. With this state Tab moves the top-level selection only; a
-	// submenu opens on Enter, and SELECTING an entry is what moves focus into the
-	// pane (see MenuSelect).
+	// focusTabs means the TAB BAR holds the keyboard — nothing below it has been chosen yet.
 	focusTabs
 )
 
 // App is the root model.
 type App struct {
+	// deadNewlineChord records that the profile's configured newline chord cannot be delivered on this
+	// platform and was replaced by the platform default.
+	deadNewlineChord string
+
 	clients *client.Clients
 	profile *config.Profile
 	reg     *subs.Registry
-	// A constructed screen is never built without its shell reference: newScreen
-	// injects this into every screen it creates (see the helper's comment for
-	// the bug that omission caused).
+	// A constructed screen is never built without its shell reference: newScreen injects this into
+	// every screen it creates (see the helper's comment for the bug that omission caused).
 	shellOwner *App
 	screens    map[TabID]Screen
 	factories  map[TabID]func() Screen
@@ -155,52 +113,45 @@ type App struct {
 	// lastStreamErr is the last stream error already surfaced in the dock, so
 	// the same failure is not re-reported on every status update.
 	lastStreamErr string
-	help          helpModel
-	routes        []KeyRoute
-	quitting      bool
-	// launchDir is the directory the process was launched from — a FACT ABOUT THE
-	// PROCESS (os.Getwd), set by tui.WithLaunchDir and empty in tests and embedders.
-	//
-	// IT IS NEEDED ON EVERY SHELL, including a post-/connect continuation: the rail's
-	// workspace default (railprojects.go applyLaunchDirScope) is derived from it, so
-	// the directory is passed on every shell of a launch. Empty means "no directory",
-	// which disables that default.
+	// plane is the last PLANE-STATE probe (plane_lifecycle.go).
+	plane planeInfo
+	// planeProbed says the first-layout probe has been armed, so a resize storm does not re-probe.
+	planeProbed bool
+	// planeDownErrText is the EXACT strip text applyPlaneState wrote for a down plane, so leaving the
+	// down state clears that message and never one somebody else wrote.
+	planeDownErrText string
+	// planeReprobeAt is when the last disconnect-driven re-probe was armed — planeReprobeCmd's cooldown.
+	planeReprobeAt time.Time
+	help           helpModel
+	// msgMenu is the per-message edit menu (undo / revert to here), opened by a RIGHT-CLICK on one of the
+	// operator's own messages. See msgmenu.go.
+	msgMenu  *msgMenu
+	routes   []KeyRoute
+	quitting bool
+	// launchDir is the directory the process was launched from — a FACT ABOUT THE PROCESS (os.Getwd),
+	// set by tui.WithLaunchDir and empty in tests and embedders.
 	launchDir string
-	// launchPromptArmed says whether THIS shell may raise the launch-time project
-	// PROMPT (launch.go). It is deliberately a SEPARATE signal from launchDir being
-	// non-empty: they answer two different questions and gating both on one decision
-	// is what silently disabled the workspace default after every reconnect.
-	//
-	// The prompt is a QUESTION, asked only on the FIRST shell of a launch: a /connect
-	// round trip re-enters runShell (cmd/orch/main.go) and is a CONTINUATION of the
-	// session, where re-asking would be the nagging the feature exists to avoid. The
-	// directory is not a question and is still needed there for the scope default.
-	//
-	// Defaults to false, so every existing NewApp caller (tests, embedders) is
-	// unaffected. Set only by tui.WithLaunchPrompt.
+	// launchPromptArmed says whether THIS shell may raise the launch-time project PROMPT (launch.go).
 	launchPromptArmed bool
 	// launch is the launch-time project prompt while it is up (nil = not showing).
-	// It is an App-level overlay rather than a screen because it exists BEFORE any
-	// tab has been chosen and must not be reachable as a tab.
 	launch *launchPrompt
-	// refreshGen identifies the CURRENT rolling-refresh chain. Every tick carries the generation that
-	// armed it and is dropped when it no longer matches, so switching tabs cannot leave the old chain
-	// running (which would multiply the refresh rate on every switch) — see refresh.go.
+	// refreshGen identifies the CURRENT rolling-refresh chain.
 	refreshGen uint64
+
+	// keepalive refreshes the access token BEFORE it expires, so a password-mode session never meets an
+	// expiry during an idle stretch (see client.StartKeepalive).
+	keepalive *client.Keepalive
+
+	// shellCtx is the shell's lifetime context: cancelled when the App is torn down, so background
+	// work (the keepalive above) exits with it rather than outliving the screen that started it.
+	shellCtx context.Context
 
 	// Chat dock state (feature: context-aware Ask Orchicon + slash).
 	dock      dock.Model
 	chat      *chat.Controller
 	chatStore *chatStore // guarded chatItems (stream goroutine writes)
-	// renderCache remembers each transcript item's rendered segment, so a repaint
-	// pays for the items that CHANGED rather than for every item in the conversation.
-	//
-	// IT IS ONE CACHE FOR BOTH SURFACES — the Ask transcript and the slide-out strip —
-	// because the two draw the same conversation and the entries cannot collide: an
-	// entry is keyed by the conversation, the item, the pane WIDTH and the copy glyph,
-	// so the strip's 40-column, glyph-less render of an item and the pane's 120-column
-	// one are separate entries of the same item. See internal/tui/chat/render_cache.go
-	// for what makes a remembered segment safe to reuse.
+	// renderCache remembers each transcript item's rendered segment, so a repaint pays for the items
+	// that CHANGED rather than for every item in the conversation.
 	renderCache  *chat.RenderCache
 	chatWake     chan struct{} // live-chunk repaint poke (cap 1)
 	chatCmds     chan tea.Cmd  // goroutine follow-ups (watch re-dial, poll)
@@ -208,22 +159,15 @@ type App struct {
 	mouseEnabled bool // tea.WithMouseCellMotion is on; footer shows "Mouse Enabled"
 
 	// permGrants is the conversation's active session grants AS LAST REPORTED BY THE SERVER, keyed by
-	// conversation. It is a CACHE OF THE SERVER'S ANSWER, never a record of this client's own decisions: the
-	// plane is the enforcer (that is where the tool runs), grants live in its memory, and the client FETCHES
-	// them (LoadPermissionGrants) instead of accumulating a second copy that can disagree — see App.ConsentGrants.
-	//
-	// permGrantsLoaded/permGrantsErr keep "not asked yet" and "the plane could not answer" distinct from "this
-	// conversation holds no grants", so no surface reports an empty list as a fact.
+	// conversation.
 	permGrants       map[string][]chat.SessionGrant
 	permGrantsLoaded map[string]bool
 	permGrantsErr    map[string]string
-	// pendingConsentRevoke carries the revoke command the Ask screen's SYNCHRONOUS host call cannot return
-	// (ConsentRevoke must answer "did that work" with an error, and the RPC is asynchronous). Drained by the
-	// shell's staged-command funnel, exactly like pendingScreenCmd and friends.
+	// pendingConsentRevoke carries the revoke command the Ask screen's SYNCHRONOUS host call cannot
+	// return (ConsentRevoke must answer "did that work" with an error, and the RPC is asynchronous).
 	pendingConsentRevoke tea.Cmd
 	// permStore is the PERSISTENT allow/deny list (the FILE is the source of truth; storage is the
-	// sibling policy task's). nil means the plane cannot answer, and every surface says so rather than
-	// fabricating a list.
+	// sibling policy task's).
 	permStore chat.PermissionStore
 
 	// clip is the frame the renderer last painted plus the drag-select in progress over it.
@@ -241,107 +185,59 @@ type App struct {
 	reconnectRequested bool
 	chatConvID         string // active conversation ("" = none yet)
 
-	// modelPicker is the /models modal (nil = closed). The composer lives on the
-	// App (not on a screen), so the SHELL hosts this picker and owns its keys and
-	// mouse while it is open — the same kit2.ModelPicker the screens use.
+	// modelPicker is the /models modal (nil = closed).
 	modelPicker *kit2.ModelPicker
-	// renameConv is the conversation-rename modal (nil = closed), hosted here for the same reason as the
-	// model picker: the surface it names (the conversations rail) belongs to the SHELL, so no screen
-	// can own its keys.
-	//
-	// The operator: "We can't rename conversations in the TUI." The RPC was already wired and reachable
-	// by `/rename <title>` — but that is a command you have to KNOW, and it cannot show you the current
-	// title to edit. The GUI prefills an input with the existing title (startRenameConv), which is what
-	// this form does, and `ctrl+n` opens it from the rail itself so the gesture is available where the
-	// operator is looking.
+	// renameConv is the conversation-rename modal (nil = closed), hosted here for the same reason as
+	// the model picker: the surface it names (the conversations rail) belongs to the SHELL.
 	renameConv *kit2.Form
-	// convScopeForm is the conversation-scope MCP modal (/mcp define|edit|secret|install), hosted
-	// here for the same reason: the surface it edits belongs to the SHELL's open conversation, not to
-	// any screen.
+	// convScopeForm is the conversation-scope MCP modal (/mcp define|edit|secret|install), hosted here
+	// for the same reason: the surface it edits belongs to the SHELL's open conversation.
 	convScopeForm *kit2.Form
-	// scope is the CONVERSATION SCOPE modal (/scope, /mcp, /skills): the conversation's MCP
-	// definitions and skill files in one list, with the project's shown read-only above them
-	// (scope_modal.go). It sits BELOW convScopeForm: a form it opens is layered on top, and the
-	// confirm dialog it raises is on top of that.
+	// scope is the CONVERSATION SCOPE modal (/scope, /mcp, /skills): the conversation's MCP definitions
+	// and skill files in one list, with the project's shown read-only above them (scope_modal.go).
 	scope        *scopeModal
 	renameConvID string
-	// Categories (worker / workflow / conversation groupings). The CACHE is one slice for every target
-	// type because the picker needs whichever type its item belongs to and the Control pane lists all
-	// three; assignForm is the assign-or-create modal (nil = closed); assignTarget/assignEntities record
-	// what it is pointed at so a selection change behind it cannot retarget the write.
+	// Categories (worker / workflow / conversation groupings).
 	categories   []*apiv1.Category
 	assignForm   *kit2.Form
 	assignTarget apiv1.CategoryTargetType
-	// catAssignedBy maps a TARGET-TYPE-SCOPED entity key (catEntityKey) to the grouping that entity is in.
-	//
-	// THIS is what makes a grouping visible on the item. Without it the shell knew the categories but not
-	// which item belonged to which, so the operator's "I created a conversation category and assigned a
-	// conversation to it, but it is not showing up in the UI" was literally true: the assignment was
-	// fetched in the same response as the categories and thrown away before anything could render it.
+	// catAssignedBy maps a TARGET-TYPE-SCOPED entity key (catEntityKey) to the grouping that entity is
+	// in.
 	catAssignedBy map[string]string
 	// catForm is the shell's PREFILLED grouping-rename form (nil = closed), hosted here for the same
-	// reason as the rename/assign modals: the grouping it edits is drawn by whoever shows it, and the
-	// shell owns the modal host and the cache. catFormID is the grouping it was opened for, so a
-	// refresh that re-seats the cursor cannot retarget the write.
+	// reason as the rename/assign modals: the grouping it edits is drawn by whoever shows it.
 	catForm   *kit2.Form
 	catFormID string
 	// assignEntities is what the modal is pointed at — a LIST, because the rail can bulk-assign a whole
-	// marked selection as well as one row. It is a field rather than a value read from the shell at
-	// submit time so a selection change behind the modal cannot retarget the write.
+	// marked selection as well as one row.
 	assignEntities []string
 	pendingCatCmd  tea.Cmd
 	// convMarked is the rail's multi-selection, keyed by conversation ID (never by index: the rolling
-	// refresh re-seats rows by id, and an index-keyed mark would silently move to a different
-	// conversation). nil = nothing marked.
+	// refresh re-seats rows by id.
 	convMarked map[string]bool
 	// convCollapsed is the conversations rail's collapsed folders, keyed by category id.
-	//
-	// IT IS PERSISTED, and this comment used to say the opposite — that it was session state "exactly as
-	// the GUI's per-page collapse is LOCAL state". That reasoning was wrong about the GUI: its collapse
-	// lives in the BROWSER's localStorage, which survives a relaunch, so "local" there still means
-	// remembered. Here it meant a restart forgot it, which is the operator's "Conversation categories
-	// don't stay collapsed when you leave orch and come back in." See persistCollapsedGroups.
 	convCollapsed map[string]bool
 
 	// reasoningFolded is the set of FOLDED reasoning blocks in the open conversation, keyed by the
 	// ChatItem's Key (stable per block, because the controller assigns it).
-	//
-	// PER-OPERATOR and per-conversation, in memory only: the operator's ask was "a arrow on the left to
-	// expand and collapse", and a fold is a reading gesture, not a fact about the conversation. It is NOT
-	// persisted, unlike the rail's folders — a block the operator collapsed to skim past an hour ago is not
-	// something they want still hidden tomorrow, and the reasoning's own char count remains visible either
-	// way.
 	reasoningFolded map[string]bool
 
-	// pendingAttach holds the files acquired for the NEXT turn — pasted screenshots and attached paths that
-	// have not been sent yet, so the operator can see what is about to go and can remove a mistake.
-	//
-	// It is SHELL state, not composer state, for the same reason the transcript is: the composer is a
-	// textarea that owns its own buffer, and an attachment is not text. The send path reads it, clears it on
-	// success, and puts it back if the send fails (see restoreAttachments).
+	// pendingAttach holds the files acquired for the NEXT turn — pasted screenshots and attached paths
+	// that have not been sent yet.
 	pendingAttach []attachment
 	// bulkConfirm hosts the confirm dialog for a destructive bulk rail operation (nil = closed), and
 	// bulkConfirmRun is what the affirmative choice dispatches.
 	bulkConfirm    *kit2.Dialog
 	bulkConfirmRun func() tea.Cmd
-	// metrics is the open conversation's usage roll-up feeding the composer's
-	// stat strip. ctxWindowFor/ctxWindow cache the resolved context window per
-	// model ref: the window costs a provider round trip and changes only when
-	// the model does.
+	// metrics is the open conversation's usage roll-up feeding the composer's stat strip.
 	metrics      sessionMetrics
 	ctxWindowFor string
 	ctxWindow    int64
-	// askDefaultModel is the tenant's DefaultAskOrchiconModel (settings). It is
-	// the LAST link in the composer's model chain after the conversation's own
-	// model_ref and a pending selection — the GUI's ordering.
+	// askDefaultModel is the tenant's DefaultAskOrchiconModel (settings).
 	askDefaultModel string
 	execSessions    map[string][]chat.ChatItem // execution id → durable session items
 
-	// Transcript Stream widgets (kit2): one per conversation. Live chunks
-	// APPEND (preserving the operator's scroll offset; following the tail
-	// only when already pinned at the bottom) instead of resetting the pane
-	// on every repaint. transcriptLines is each stream's last rendered line
-	// set, so an extension is an Append and anything else a reload.
+	// Transcript Stream widgets (kit2): one per conversation.
 	chatStreams     map[string]*kit2.Stream
 	transcriptLines map[string][]string
 	// transcriptSpans is each conversation's rendered item geometry, from the same render that produced
@@ -350,116 +246,71 @@ type App struct {
 	pendingDetail   tea.Cmd
 	lastScreenKeys  string
 
-	// Diff sidebar (TUI sibling of the GUI DiffSidebar). The shell owns the
-	// open/tab/selected state so it persists across SwitchTo (the GUI
-	// persists it at the host). The pane is a left rail that slides out over
-	// the content; when open, the main screen + chat dock reflow by
-	// App.diffPaneWidth (proportional to the terminal).
+	// Diff sidebar (TUI sibling of the GUI DiffSidebar).
 	diffOpen bool
 	diffPane *diffs.Model
 	diffTab  diffs.Tab
 	diffPath string
-	// diffArmedFor is the owner+liveness the pane's live stream was last SETTLED
-	// for, as "kind|id|live". The wake path re-evaluates the pane's owner on every
-	// event, so without this it would re-fetch the ledger per event — see
-	// ensureDiffStreamArmed.
+	// diffArmedFor is the owner+liveness the pane's live stream was last SETTLED for, as
+	// "kind|id|live".
 	diffArmedFor string
-	// diffPaneW is the operator's OVERRIDE for the left rail's width in cells
-	// (0 = auto). It is the ONLY extra input to diffPaneWidth, so every consumer
-	// of the width — contentWidth, refreshLayout, both SetSize calls, the mouse
-	// hit-tests, the selection-region guard, the clipboard region resolver and the
-	// View join — follows from one accessor with no call-site change.
-	//
-	// It stores the operator's INTENT (the grabbed column + 1), not the clamped
-	// width: clamping is diffPaneWidth's job alone, so a terminal that grows back
-	// restores what the operator asked for.
+	// It is the ONLY extra input to diffPaneWidth, so every consumer of the width — contentWidth,
+	// refreshLayout, both SetSize calls, the mouse hit-tests, the selection-region guard.
 	diffPaneW int
-	// listSharePct is the operator's master-detail split preference for the screens (0 = the default even
-	// split). The APP owns it and rebindScreens pushes it into every screen, because screens are built
-	// lazily: a value applied only at startup would be missing on any tab not yet opened.
+	// listSharePct is the operator's master-detail split preference for the screens (0 = the default
+	// even split).
 	listSharePct int
 	// diffScrollDragging is a LIVE scrollbar drag on the rail (see dispatchMouse): the press jumped the
-	// viewport and every motion follows the pointer until the release. It is the shell's state for the same
-	// reason diffResizing is — the gesture is claimed above the clipboard layer, so the pane cannot own it.
+	// viewport and every motion follows the pointer until the release.
 	diffScrollDragging bool
-	// diffResizing is true from a divider press until its release. The HELD state
-	// lives here rather than in the mouse button because tea delivers motion with
-	// MouseButtonNone (the same shape clipState already tolerates).
+	// diffResizing is true from a divider press until its release.
 	diffResizing bool
-	// diffResizeMoved records whether the live gesture actually MOVED the rail, and
-	// diffResizePrev is the override in force when it began (0 = auto). They exist so
-	// a PRESS WITH NO DRAG is treated as the click it is: the press seeds the override
-	// from the grabbed column, so without this a stray click on the rail's edge would
-	// silently pin AUTO to a fixed width — the pane would stop scaling with the
-	// terminal and the release would persist that pin.
+	// diffResizeMoved records whether the live gesture actually MOVED the rail, and diffResizePrev is
+	// the override in force when it began (0 = auto).
 	diffResizeMoved bool
 	diffResizePrev  int
 
-	// Ask conversations rail (GUI Ask sidebar). OPEN by default; collapsible
-	// via ctrl+r toggle and a mouse click on the rail header. State persists
-	// for the session. The diff pane is the LEFT rail; this is the RIGHT rail.
+	// Ask conversations rail (GUI Ask sidebar).
 	askMode askMode // Ask's presentation: launch page vs conversations
-	// askSearch is the OPEN transcript search query for the Ask pane
-	// (transcript_search.go). Empty = no filter. askMatchIdx is the current match
-	// (0-based) that n/N navigate.
+	// askSearch is the OPEN transcript search query for the Ask pane (transcript_search.go).
 	askSearch   string
 	askMatchIdx int
 	// findBox is the FIND MODAL (nil = closed) — the box ctrl+f opens and the field the query is typed
-	// into (findbox.go). It lives beside the search state it drives because it IS a view of askSearch:
-	// kept apart, the transcript would have two queries that can disagree.
+	// into (findbox.go).
 	findBox *findBox
-	// Slide-out conversation strip (chatpanel.go): open when the operator
-	// engages the composer on a screen other than Ask, so a send is VISIBLE.
-	// panelScroll is in lines up from the transcript tail (0 = following).
+	// Slide-out conversation strip (chatpanel.go): open when the operator engages the composer on a
+	// screen other than Ask, so a send is VISIBLE.
 	panelOpen     bool
 	panelScroll   int
 	conversations []chat.Conversation
-	// railProjects is the tenant's projects, for the rail's PROJECT grouping (railprojects.go). It is held
-	// here rather than derived from `conversations` because the rail has to show projects with NO
-	// conversations — those empty folders are what makes it a place to move a chat INTO, which is the
-	// operator's "a list that can be dragged to and also created from". Refreshed with the conversations, so a
-	// project made in the other client appears here without a relaunch.
+	// railProjects is the tenant's projects, for the rail's PROJECT grouping (railprojects.go).
 	railProjects []railProject
-	// projectScope is the ACTIVE PROJECT the rail is filtered by — the operator's "Projects are WORKSPACES" and
-	// "/project to set the active project". It defaults to projectScopeAll so nothing that predates the project
-	// column (which defaults to empty) is hidden on launch, and is then pointed at the launch directory's own
-	// project (see applyLaunchDirScope) once the project list arrives.
+	// projectScope is the ACTIVE PROJECT the rail is filtered by — the operator's "Projects are
+	// WORKSPACES" and "/project to set the active project".
 	projectScope string
-	// projectScopeChosen records that the operator picked the workspace THEMSELVES, which is what stops the
-	// launch-directory default from overruling them. It is set by setProjectScope and never cleared: choosing a
-	// workspace is a decision about this session.
+	// projectScopeChosen records that the operator picked the workspace THEMSELVES, which is what stops
+	// the launch-directory default from overruling them.
 	projectScopeChosen bool
 	// railProjectsLoaded records that a project load SUCCEEDED, so a failed one is retried by the next
 	// conversations load rather than leaving an empty picker for the session.
 	railProjectsLoaded bool
+	// pendingProjectName is a workspace selection parked until the project list arrives
+	// (projectselect.go).
+	pendingProjectName string
 	// projectThemes mirrors the config file's top-level project_themes map: project id -> palette name,
-	// verbatim (see config.Config.ProjectThemes). Loaded once at construction (loadProjectThemes) and
-	// read/written by Bind/UnbindProjectTheme — see projecttheme.go.
+	// verbatim (see config.Config.ProjectThemes).
 	projectThemes map[string]string
 	// themePinned marks that the ACTIVE palette was chosen by an explicit /theme (or the Themes pane),
-	// not by the project-scope follower. It is the precedence switch for criterion 5: an explicit choice
-	// PINS the session, and the project's own palette (bound or default) returns the next time the
-	// workspace changes — see applyScopeTheme, which clears it. What must never happen is a SILENT
-	// override in either direction, so every place that would flip this also writes a notice saying so.
+	// not by the project-scope follower.
 	themePinned bool
 	// degradedPaletteWarned dedupes the "this project's palette is unknown to this build" notice per
-	// (project id, palette name) pair, so re-entering the same project does not repeat it on every scope
-	// change — criterion 7's "says so once".
+	// (project id, palette name) pair.
 	degradedPaletteWarned map[string]bool
 	// projectPick is the /project modal (nil = closed). It chooses the scope, or moves one conversation — see
 	// projectpick.go for why the two share the control.
 	projectPick  *projectPicker
 	convRailOpen bool
-	// askPane records which Ask pane holds the keyboard. Left/right select between the
-	// conversations rail and the open conversation, and the vertical keys follow the
-	// selection: on the rail they move the rail's cursor, in the conversation they scroll
-	// the transcript. The operator: "When the conversation is selected up/down scrolls as
-	// well as the wheel. When the list pane is selected up/down and scroll scrolls the
-	// list of the conversation."
-	//
-	// It exists because focusContent is ONE stop covering both panes, so without it the rail
-	// claimed the vertical keys unconditionally whenever it was visible — which is whenever a
-	// conversation is open — leaving the transcript unscrollable by keyboard.
+	// askPane records which Ask pane holds the keyboard.
 	askPane askPaneID
 
 	convSel    int
@@ -468,15 +319,13 @@ type App struct {
 	// empty box — a failed load holds an explicit error + retry state.
 	convErr    string // last rail load failure (auth/API); "" = healthy
 	convLoaded bool   // a successful rail load has landed
-	// scopeHiddenNoticed is the number of conversations the ACTIVE scope was last REPORTED to be hiding.
-	// It exists so the scope's narrowing is announced again when a re-read reveals a NEW row it hides
-	// (see noteScopeHidesNewRows) without re-noticing on every reload: only a CHANGE is news.
+	// scopeHiddenNoticed is the number of conversations the ACTIVE scope was last REPORTED to be
+	// hiding.
 	scopeHiddenNoticed int
 	convLoading        bool // a rail load is in flight
 
-	// failedTurnRestored latches the message id of a durable failed turn whose draft has been put back in the
-	// composer, so the restore happens ONCE per failed row and not on every poll that re-delivers it (the
-	// transcript is re-read each second while a turn runs). See restoreDraftForFailedTurn.
+	// failedTurnRestored latches the message id of a durable failed turn whose draft has been put back
+	// in the composer, so the restore happens ONCE per failed row and not on every poll.
 	failedTurnRestored map[string]bool
 
 	// rightRailOpen records the Ask screen's right-rail visibility; kept so
@@ -489,63 +338,42 @@ type App struct {
 	// pendingRailCmd carries the conversations-rail retry/reload cmd out of
 	// a route or a mouse handler that cannot return one directly.
 	pendingRailCmd tea.Cmd
-	// pendingStopCmd carries the Stop (ctrl+y) abort out of its global key route — a
-	// KeyRoute.Handle returns only a bool, so it cannot return a Cmd directly (same
-	// constraint as pendingDiffCmd/pendingRailCmd; drainStaged re-emits it).
+	// pendingStopCmd carries the Stop (ctrl+y) abort out of its global key route — a KeyRoute.Handle
+	// returns only a bool, so it cannot return a Cmd directly (same constraint.
 	pendingStopCmd tea.Cmd
 	// pendingFindCmd carries the find box's caret-blink cmd out of the ctrl+f route — the same constraint
 	// as pendingStopCmd (a route Handle returns only a bool); drainStaged re-emits it.
 	pendingFindCmd tea.Cmd
-	// pendingAttachCmd carries an ATTACHMENT read out of its global key route (ctrl+v pastes a clipboard
-	// image). It does real I/O — a screenshot can be megabytes — so it runs as a command and never on the
-	// tea loop, and the route stages the command for drainStaged to re-emit. (/attach does NOT use this
-	// field: a SlashCommand.Run RETURNS its tea.Cmd, so dispatchSlash re-emits it directly. ctrl+f no
-	// longer attaches at all — it is find-in-transcript now.)
+	// pendingAttachCmd carries an ATTACHMENT read out of its global key route (ctrl+v pastes a
+	// clipboard image).
 	pendingAttachCmd tea.Cmd
-	// pendingClipCmd carries the OSC 52 WRITE for ctrl+a's copy. The route cannot run it itself (routes
-	// return only a bool), and the clipboard belongs to the shell rather than to the dock — see the
-	// "select all in the composer" route.
+	// pendingClipCmd carries the OSC 52 WRITE for ctrl+a's copy.
 	pendingClipCmd tea.Cmd
-	// pendingAttachClear says the composer's text was a PATH being attached, so a SUCCESSFUL attach should
-	// clear the box — otherwise the path would also be sent as prose, and the turn would carry both the file
-	// and a line naming it.
-	//
-	// It is only honoured on success: a failed attach leaves the path where it was so the operator can fix
-	// a typo rather than retype it.
+	// pendingAttachClear says the composer's text was a PATH being attached, so a SUCCESSFUL attach
+	// should clear the box — otherwise the path would also be sent as prose.
 	pendingAttachClear bool
-	// lastSentAttachments holds the attachments of the turn currently in flight, so a FAILED send can put
-	// them back (see restoreAttachments). Cleared when the turn resolves — the bytes are the operator's, and
-	// holding them past the window they could still be needed would keep a screenshot in memory for the life
-	// of the session.
+	// lastSentAttachments holds the attachments of the turn currently in flight, so a FAILED send can
+	// put them back (see restoreAttachments).
 	lastSentAttachments []*apiv1.AttachmentInput
 	// pendingScreenCmd carries a newly activated screen's first-load cmd
 	// out of SwitchTo (which cannot return one).
 	pendingScreenCmd tea.Cmd
-	// loaded records which screens have run their first load. Screens are
-	// constructed eagerly for the nav registry, so without this bookkeeping
-	// ONLY the startup tab ever fetched its lists — every other tab
-	// rendered "nothing here" with no error.
+	// Screens are constructed eagerly for the nav registry, so without this bookkeeping ONLY the
+	// startup tab ever fetched its lists — every other tab rendered "nothing here" with no error.
 	loaded map[TabID]bool
 }
 
-// DiffRailMinWidth is the left rail's MINIMUM width (cells). The pane is sized
-// proportionally to the terminal — see diffPaneWidth — because a fixed 48 was the
-// operator's "the diff box is very tiny and cut off": 48 cells split across a
-// side-by-side diff leaves each column about 18 cells of code after the line
-// numbers, which is not enough to read a line of Go.
+// DiffRailMinWidth is the left rail's MINIMUM width (cells).
 const DiffRailMinWidth = 48
 
-// diffPaneAutoWidth is the PROPORTIONAL width the pane gets when the operator has set no override: the
-// auto share of the available columns, normalised through the SAME clamp every other width uses. It is
-// expressed as "compute, then clamp" rather than repeating the floor/cap inline, so AUTO mode and an
-// override cannot drift into two different width policies.
+// diffPaneAutoWidth is the PROPORTIONAL width the pane gets when the operator has set no override:
+// the auto share of the available columns.
 func (m *App) diffPaneAutoWidth() int {
 	return m.clampDiffPaneWidth(m.diffAvailWidth() * 45 / 100)
 }
 
-// diffAvailWidth is the column budget the diff rail and the content pane share: the terminal width, less
-// the conversations rail when it is showing. It is the ONE derivation of "available", so the auto width
-// and the clamp cannot disagree about what they are dividing.
+// diffAvailWidth is the column budget the diff rail and the content pane share: the terminal width,
+// less the conversations rail when it is showing.
 func (m *App) diffAvailWidth() int {
 	avail := m.width
 	if avail < 1 {
@@ -558,9 +386,8 @@ func (m *App) diffAvailWidth() int {
 	return avail
 }
 
-// clampDiffPaneWidth is THE width clamp — the floor and the cap are expressed in this one function and
-// nowhere else, so neither an override nor the auto path can invent a third rule. Every width (auto,
-// drag, keyboard step, stored value) is normalised here.
+// clampDiffPaneWidth is THE width clamp — the floor and the cap are expressed in this one function
+// and nowhere else, so neither an override nor the auto path can invent a third rule.
 func (m *App) clampDiffPaneWidth(width int) int {
 	avail := m.diffAvailWidth()
 	if width < DiffRailMinWidth {
@@ -575,12 +402,8 @@ func (m *App) clampDiffPaneWidth(width int) int {
 	return width
 }
 
-// diffPaneWidth returns the left rail's APPLIED width for the current terminal: the operator's override
-// when they have set one, the proportional width otherwise, clamped in exactly one place.
-//
-// Clamping is applied on every CALL, so a terminal shrink re-clamps a stored width that no longer fits
-// with no WindowSizeMsg hook needed — refreshLayout runs on the resize and every consumer reads back
-// through here.
+// diffPaneWidth returns the left rail's APPLIED width for the current terminal: the operator's
+// override when they have set one, the proportional width otherwise, clamped in exactly one place.
 func (m *App) diffPaneWidth() int {
 	w := m.diffPaneAutoWidth()
 	if m.diffPaneW > 0 {
@@ -593,13 +416,8 @@ func (m *App) diffPaneWidth() int {
 // proportional so the chord's effect is predictable on any terminal.
 const diffResizeStep = 4
 
-// setDiffPaneW records the operator's chosen rail width (the pane's right-edge column + 1) and re-lays the
-// layout out. Clamping is diffPaneWidth's job, so this stores the INTENT: a value below the floor is
-// raised to it here only so the stored number is never nonsensical, never to fight the terminal (the cap
-// is applied on read).
-//
-// It does NOT persist: a drag calls this on every motion CELL, and a config write per cell is pointless
-// I/O. The gesture's release (and each keyboard chord) persists once, when the width has settled.
+// setDiffPaneW records the operator's chosen rail width (the pane's right-edge column + 1) and
+// re-lays the layout out.
 func (m *App) setDiffPaneW(cells int) {
 	if cells < DiffRailMinWidth {
 		cells = DiffRailMinWidth
@@ -608,10 +426,7 @@ func (m *App) setDiffPaneW(cells int) {
 	m.refreshLayout()
 }
 
-// diffRailWidthStep grows (delta > 0) or shrinks (delta < 0) the rail by one step. It returns false
-// when the pane is not open, so the route falls through and the chord is a no-op — the item's stated
-// gate. On the FIRST step with no override yet, it seeds from the width the operator is LOOKING at
-// (diffPaneWidth returns the auto width while diffPaneW == 0), so the rail never jumps on first use.
+// diffRailWidthStep grows (delta > 0) or shrinks (delta < 0) the rail by one step.
 func (m *App) diffRailWidthStep(delta int) bool {
 	if !m.diffOpen || m.diffPane == nil {
 		return false
@@ -621,11 +436,8 @@ func (m *App) diffRailWidthStep(delta int) bool {
 	return true
 }
 
-// splitAdjustable reports whether there is a split here for the chord to resize: the diff rail when it is
-// open, otherwise the active screen's tree/detail split.
-//
-// ONE QUESTION, TWO READERS — the chord and the composer hint. They must agree, or the hint advertises a key
-// that does nothing (or hides one that works), and "is there a split" is the only thing either needs to know.
+// splitAdjustable reports whether there is a split here for the chord to resize: the diff rail when
+// it is open, otherwise the active screen's tree/detail split.
 func (m *App) splitAdjustable() bool {
 	if m.diffOpen && m.diffPane != nil {
 		return true
@@ -639,23 +451,13 @@ func (m *App) splitAdjustable() bool {
 }
 
 // splitWidthStep widens or narrows the split IN FRONT OF THE OPERATOR.
-//
-// ONE CHORD, TWO SPLITS, in precedence order: the diff rail when it is open (it is drawn over everything,
-// so it is what the operator is looking at), otherwise the ACTIVE SCREEN's tree/list-versus-detail split.
-//
-// The operator: "I am talking about every pane in the TUI where there is a tree and detail view. I would
-// like to be able to expand the tree view to see the full work item names, execution names, etc." The chord
-// already existed for the rail and explicitly did nothing when the rail was closed (diffRailWidthStep
-// returns false), so it was free to serve the screen split — which is better than inventing a second chord
-// for "make this pane wider".
 func (m *App) splitWidthStep(delta int) bool {
 	if m.diffRailWidthStep(delta) {
 		return true
 	}
 	if !m.splitAdjustable() {
-		// NOTHING TO RESIZE HERE, so the chord is NOT claimed — the rail's own step returns false in the same
-		// situation, and a chord that silently changed a width nobody draws is worse than one that falls
-		// through. (The hint is gated on the same question, so what is advertised is what works.)
+		// NOTHING TO RESIZE HERE, so the chord is NOT claimed — the rail's own step returns false in the
+		// same situation, and a chord that silently changed a width nobody draws is worse than one.
 		return false
 	}
 	s := m.screens[m.active]
@@ -714,8 +516,7 @@ func (m *App) diffRailWidthReset() bool {
 }
 
 // diffDividerHit reports whether a frame CELL is the pane's right-most column — the divider a drag
-// grabs — over the pane's body rows. The vertical extent mirrors selectionRegionAt's bounds
-// (clipboard.go), so the drag region and the selectable region agree at the pane's edge.
+// grabs — over the pane's body rows.
 func (m *App) diffDividerHit(x, y int) bool {
 	if !m.diffOpen || m.diffPane == nil {
 		return false
@@ -731,19 +532,10 @@ func (m *App) diffDividerHit(x, y int) bool {
 	return y >= top && y <= bottom
 }
 
-// AppOption customizes App construction. Options are how the launch prompt stays
-// opt-in: everything it needs arrives through one, so a test or an embedder that
-// passes none behaves exactly as before.
+// AppOption customizes App construction.
 type AppOption func(*App)
 
-// WithLaunchDir sets the launch DIRECTORY — where the process was started. It is a
-// FACT ABOUT THE PROCESS and is passed on every shell of a launch.
-//
-// It does NOT arm the launch-time project prompt: that is a first-shell-only rule and
-// has its own option, WithLaunchPrompt. The directory still feeds the rail's workspace
-// default (railprojects.go applyLaunchDirScope) on every shell, including a
-// post-/connect continuation. An empty dir sets no directory at all, which disables
-// both the default and (indirectly) the prompt.
+// WithLaunchDir sets the launch DIRECTORY — where the process was started.
 func WithLaunchDir(dir string) AppOption {
 	return func(m *App) {
 		dir = strings.TrimSpace(dir)
@@ -758,23 +550,6 @@ func WithLaunchDir(dir string) AppOption {
 }
 
 // WithLaunchPrompt arms the launch-time project prompt (launch.go) for THIS shell.
-//
-// IT IS SEPARATE FROM WithLaunchDir ON PURPOSE. The directory is a fact about the process
-// and is passed on every shell; the prompt is a question, and it is armed only on the
-// FIRST shell of a launch. A continuation (/connect, or a rejected stored session)
-// re-enters the shell with the same directory and this option NOT passed, so it derives
-// its workspace from the directory without asking anything again.
-//
-// It is an option of its own, rather than a boolean on WithLaunchDir, so the two cannot
-// be left out of step by argument order or by a zero value.
-//
-// A continuation does NOT remember the previous shell's workspace: the new App starts
-// unchosen (NewApp sets projectScopeAll, projectScopeChosen=false) and re-derives the
-// scope from the launch directory. A workspace the operator picked BY HAND before
-// reconnecting is therefore replaced by the launch-directory default — deliberate: the
-// alternative is carrying scope state across shells, which is wrong the moment a shell
-// sits in a different directory, and the default is strictly better than falling back to
-// All projects. WithLaunchDir's empty-directory opt-out still wins over this option.
 func WithLaunchPrompt() AppOption {
 	return func(m *App) { m.launchPromptArmed = true }
 }
@@ -785,10 +560,11 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 		clients: cl,
 		profile: profile,
 		reg:     subs.NewRegistry(),
-		// The SELECTION and its clipboard live on a shared pointer: App is a value model, so
-		// View and Update each receive a COPY — only a shared pointer lets the frame the
-		// renderer painted be read back by the mouse handler that arrives after it
-		// (clipboard.go).
+		// The shell's lifetime context. Cancelled on teardown so the token keep-alive (and anything
+		// else started for the shell's lifetime) exits with it.
+		shellCtx: context.Background(),
+		// The SELECTION and its clipboard live on a shared pointer: App is a value model, so View and
+		// Update each receive a COPY.
 		clip:    &clipState{},
 		screens: map[TabID]Screen{},
 		chatStore: &chatStore{
@@ -812,25 +588,25 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 		},
 	}
 	m.dock = dock.New()
-	// THE RAIL OPENS ON ALL PROJECTS, which is what the field's own doc has always claimed — and what it must be
-	// for the launch-directory default to be reachable at all.
-	//
-	// IT WAS NEVER SET, so the zero value stood and a fresh shell opened on unassignedScope ("") — the picker's
-	// "No project" — and filterConversationsByScope then showed ONLY chats with no project. Two consequences, both
-	// observed: on this instance every conversation is assigned to Orchicon, so the rail opened EMPTY, and
-	// applyLaunchDirScope refused to fire because its guard is "only while the scope is still the untouched
-	// default" (it compared against projectScopeAll and found "").
-	//
-	// Setting it here rather than relaxing the guard is deliberate: "" is now reachable ONLY by the operator
-	// choosing No project, which sets projectScopeChosen, so the guard's question — has the operator chosen a
-	// workspace? — stays exactly answerable.
+	// THE COMPOSER KNOWS THE MESSAGE BOUND, so it can warn BEFORE a send is refused. At 10,000 the limit was
+	// discovered mid-paste, after the text was already in the box and the send button was pressed.
+	m.dock.SetCharLimit(chatlimits.MaxMessageChars)
+	// IT WAS NEVER SET, so the zero value stood and a fresh shell opened on unassignedScope ("") — the
+	// picker's "No project" — and filterConversationsByScope then showed ONLY chats with no project.
 	m.projectScope = projectScopeAll
 	if profile != nil && profile.Newline != "" {
-		m.dock.Newlines = dock.ParseNewlineMode(profile.Newline)
+		// A PROFILE CAN CARRY A CHORD THIS PLATFORM CANNOT DELIVER — the common case being a profile saved
+		// on Linux with `newline = "alt+enter"`.
+		nl := dock.ParseNewlineMode(profile.Newline)
+		if !dock.ChordReachesOrch(nl) {
+			def := dock.DefaultNewlineMode()
+			m.deadNewlineChord = string(nl) + " does not reach orch on this platform (the terminal consumes it), " +
+				"so the newline chord has been set to " + string(def)
+			nl = def
+		}
+		m.dock.Newlines = nl
 	}
-	// A PASTE THAT IS A FILE PATH ATTACHES THE FILE. The dock offers every bracketed paste here before
-	// inserting it, and this is the shell's answer: a path resolves to a real attachable file and becomes a
-	// pending attachment; anything else returns nil and inserts as ordinary text.
+	// A PASTE THAT IS A FILE PATH ATTACHES THE FILE.
 	m.dock.SetPastePathHook(func(text string) tea.Cmd {
 		if !isProbablyPath(text) {
 			return nil
@@ -838,24 +614,16 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 		m.pendingAttachClear = false // the paste IS the path; do not also clear what is already in the box
 		return attachFileFromPrompt(text)
 	})
-	// The diff pane shares the shell's client set + registry so its live
-	// StreamFileEdits subscription follows the same reconnect/resume/dedup
-	// semantics and is closed by CloseAll on screen close.
+	// The diff pane shares the shell's client set + registry so its live StreamFileEdits subscription
+	// follows the same reconnect/resume/dedup semantics and is closed by CloseAll on screen close.
 	m.diffPane = diffs.NewModel(cl, m.reg)
 	m.diffTab = diffs.TabDiff
 	m.chat = chat.NewController(cl)
 	m.chatWake = make(chan struct{}, 1)
 	m.chatCmds = make(chan tea.Cmd, 16)
 	m.chat.Bind(&appEventStore{m: m}, m.chatCmds)
-	// One factory per tab — screens construct lazily on first visit so
-	// stream subscriptions only exist while their tab is active.
-	// Screens take tenantID="" for their streams: the plane resolves the
-	// tenant from the bearer credential (internal/project/service.go —
-	// StreamProjectEvents ignores req.TenantId), so orch never guesses one.
-	// The factory reads m.clients AT CALL TIME, not the cl captured here:
-	// /connect rebuilds the client set, and a factory closing over the ORIGINAL
-	// pointer handed every reconstructed screen a stale, unauthorised client —
-	// which is why reconnecting left the screens blank.
+	// One factory per tab — screens construct lazily on first visit so stream subscriptions only exist
+	// while their tab is active.
 	m.factories = map[TabID]func() Screen{
 		TabAsk:         func() Screen { return ask.New(m.clients, m.reg) },
 		TabOverview:    func() Screen { return overview.New(m.clients, m.reg, "") },
@@ -863,13 +631,14 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 		TabExecution:   func() Screen { return execution.New(m.clients, m.reg, "") },
 		TabAutomation:  func() Screen { return automation.New(m.clients, m.reg, "") },
 		TabEnforcement: func() Screen { return enforcement.New(m.clients, m.reg, "") },
-		TabControl:     func() Screen { return control.New(m.clients, m.reg) },
+		// SERVERS IS OFFERED ONLY FOR A LOCAL PLANE (D6).
+		TabControl: func() Screen {
+			_, local := instanceForProfile(m.profile)
+			return control.New(m.clients, m.reg, control.WithServers(local))
+		},
 	}
-	// The slash registry is generated from the screens' Sources() (the
-	// no-drift source of truth), so factories must exist before it builds.
-	// The nav registry (tab dropdown entries) shares that source — build it
-	// ONCE here and let buildSlashRegistry consume it, so the two can never
-	// disagree (and openTabMenu sees the same entries as /work-items).
+	// The slash registry is generated from the screens' Sources() (the no-drift source of truth), so
+	// factories must exist before it builds.
 	m.navReg = buildNavEntries(m)
 	m.slash = buildSlashRegistry(m)
 	m.routes = GlobalKeyRoutes(Tabs)
@@ -883,38 +652,18 @@ func NewApp(cl *client.Clients, profile *config.Profile, serverVersion string, o
 	m.chatFocus = focusComposer
 	m.dock.Focus()
 	m.footer.ComposerFocus = true
-	// THE TOKEN-REFRESH RECOVERY HOOK, WIRED. SessionClient.OnRefreshed was documented
-	// as "the shell uses it to redial live streams with the fresh credential" and was
-	// assigned NOWHERE, so the promise never happened: a session that refreshed mid-run
-	// left every ALREADY-OPEN stream holding the stale bearer until it happened to
-	// re-dial on its own error. The operator's "every so often it just loses its
-	// connection" is that window.
-	//
-	// Redialing every live stream on a successful refresh closes it: the re-dial runs
-	// through the interceptors, and the bearer reads the LIVE token, so the new
-	// connection carries the fresh credential. It is safe to call unconditionally —
-	// Reconnect is a no-op on a stopped sub and the subs re-arm themselves.
+	// THE TOKEN-REFRESH RECOVERY HOOK, WIRED.
 	m.wireSessionRecovery(m.clients)
 	// THE TERMINAL'S OWN BACKGROUND IS ASKED FOR ONCE, HERE, before bubbletea takes the tty.
-	//
-	// A transparent theme has to adapt its foregrounds to whatever is behind the app (see
-	// theme.transparent_adapt.go), and reading that means querying the terminal and waiting for its reply on
-	// stdin — which must not happen while bubbletea is draining the same tty. NewApp runs before
-	// tea.NewProgram, so this is the safe window; termenv caches the answer for the process, so a later switch
-	// to a transparent theme costs nothing.
 	theme.PrimeTerminalGround()
-	// THE THEME IS APPLIED AND THE COMPOSER RE-PINNED, in that order and in one place. The dock was
-	// constructed above with the DEFAULT palette captured into its textarea, so a session whose theme
-	// came from config rendered its composer in the wrong colours — see applyThemeAndRefresh.
+	// THE THEME IS APPLIED AND THE COMPOSER RE-PINNED, in that order and in one place.
 	if profile != nil && profile.Theme != "" {
 		m.applyThemeAndRefresh(profile.Theme)
 	} else {
 		m.applyThemeAndRefresh(theme.DefaultName)
 	}
 	// The persisted fold state comes from the same file, at the same moment, for the same reason: a
-	// display preference that only takes effect after the operator has re-toggled it is the bug the
-	// operator reported ("Conversation categories don't stay collapsed when you leave orch and come back
-	// in"). Silent on failure by design — see prefs.go.
+	// display preference that only takes effect after the operator has re-toggled it is the bug.
 	m.loadCollapsedGroups()
 	// The diff rail's width is the SAME kind of preference in the SAME file, so it is restored at the SAME
 	// moment and by the same silent-on-failure rule (see prefs.go loadDiffRailWidth).
@@ -944,33 +693,43 @@ func (m *App) RegisterScreen(id TabID, s Screen) {
 }
 
 // rebindScreens re-points every live screen's shell reference at THIS App.
-//
-// Called on every dispatch — see the call site for why the reference goes stale at all (`App.Update` has a
-// value receiver) and what it cost. Kept beside newScreen so the two halves of the contract are read together:
-// newScreen gives a screen its shell at construction, and this keeps it correct for the App's whole life.
 func (m *App) rebindScreens() {
 	for _, s := range m.screens {
 		if ss, ok := s.(interface{ SetShell(any) }); ok {
 			ss.SetShell(m)
 		}
-		// The split is the App's preference, so every screen is brought to it here — the same pass that fixes
-		// a stale shell reference, for the same reason: a screen built during an earlier Update is not
-		// otherwise reachable, and one built later must not miss the setting.
+		// The split is the App's preference, so every screen is brought to it here — the same pass that
+		// fixes a stale shell reference, for the same reason.
 		if lr, ok := s.(interface{ SetListSharePct(int) }); ok {
 			lr.SetListSharePct(m.listSharePct)
 		}
 	}
+	// THE ACTIVE WORKSPACE, on the same pass and for the same reason: a screen built during an earlier
+	// Update is not otherwise reachable.
+	if c := m.pushProjectScope(); c != nil {
+		m.pendingScreenCmd = tea.Batch(m.pendingScreenCmd, c)
+	}
+}
+
+// pushProjectScope tells every screen which project is the active workspace, and returns the reload
+// commands of the ones whose filter actually changed.
+func (m *App) pushProjectScope() tea.Cmd {
+	id := m.activeProjectID()
+	var cmds []tea.Cmd
+	for _, s := range m.screens {
+		if ap, ok := s.(interface{ SetActiveProject(string) tea.Cmd }); ok {
+			if c := ap.SetActiveProject(id); c != nil {
+				cmds = append(cmds, c)
+			}
+		}
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 // newScreen constructs a tab's screen and injects the shell reference.
-//
-// This used to be hand-written inside each factory and Control's was MISSING,
-// so Control.Shell() returned nil — which meant its Themes pane switched the
-// palette in-session but could never persist it (applyTheme fell through to
-// theme.Use), and its mutation notices were silently dropped (Notice reports
-// through the shell's dock sink). Both failures were invisible: no error, no
-// message, just a theme that did not come back. Constructing through this ONE
-// helper makes forgetting impossible.
 func (m *App) newScreen(id TabID) Screen {
 	f, ok := m.factories[id]
 	if !ok {
@@ -1003,26 +762,20 @@ func (m *App) SwitchTo(id TabID) {
 	}
 	m.active = id
 	// Bumping the generation makes any tick still in flight stale, so it cannot act on the tab the
-	// operator has left. The single chain adopts the new generation on its next fire (refresh.go), so
-	// no new chain is armed here — one chain for the session's lifetime.
+	// operator has left.
 	m.refreshGen++
 	if _, ok := m.screens[id]; !ok {
 		if s := m.newScreen(id); s != nil {
 			m.screens[id] = s
 		}
 	}
-	// Always (re)apply the layout to the screen being activated: a screen
-	// cached earlier (e.g. the nav registry's introspection build, or a
-	// pre-resize visit) never saw a SetSize and would otherwise render
-	// against a zero-sized content region.
+	// Always (re)apply the layout to the screen being activated: a screen cached earlier (e.g. the nav
+	// registry's introspection build.
 	if s := m.screens[id]; s != nil && m.width > 0 {
 		s.SetSize(m.contentWidth(), m.screenRows())
 	}
-	// A tab switch swaps the chrome's submenu to the new tab's (the
-	// dropdown follows focus, per the mockup's menu-under-tab pattern);
-	// switching to the OPEN tab's neighbor while its menu is up moves the
-	// menu. A fresh SwitchTo with no menu open leaves it closed (the
-	// mouse route toggles explicitly around this call).
+	// A tab switch swaps the chrome's submenu to the new tab's (the dropdown follows focus, per the
+	// mockup's menu-under-tab pattern).
 	if m.menuOpen != "" {
 		if m.menuOpen == id {
 			m.closeTabMenu()
@@ -1032,22 +785,17 @@ func (m *App) SwitchTo(id TabID) {
 	}
 	m.updateContextChip()
 	m.refreshComposerHint()
-	// The diff pane's open state persists across SwitchTo (the GUI persists
-	// it at the host). Re-point it at the new tab's owner (if any) so it
-	// shows the active session without resetting open/tab/selected.
+	// The diff pane's open state persists across SwitchTo (the GUI persists it at the host).
 	if m.diffOpen {
 		m.refreshDiffOwner()
 	}
-	// A screen first reached this session runs its first load now: the nav
-	// registry builds every screen eagerly, so a lazily-activated screen
-	// would otherwise never fetch (every pane "nothing here").
+	// A screen first reached this session runs its first load now: the nav registry builds every screen
+	// eagerly, so a lazily-activated screen would otherwise never fetch (every pane "nothing here").
 	m.ensureLoaded(id)
 }
 
-// EnsureSubscriptions starts the screen's live event streams if it has
-// any and they are not already running (idempotent). Called on every tab
-// chord (re-press = re-arm) and on the first layout, so the opening tab
-// starts live without extra keys.
+// EnsureSubscriptions starts the screen's live event streams if it has any and they are not already
+// running (idempotent).
 func (m *App) EnsureSubscriptions(id TabID) {
 	if s := m.screens[id]; s != nil {
 		if es, ok := s.(interface{ EnsureSubscriptions() }); ok {
@@ -1056,10 +804,8 @@ func (m *App) EnsureSubscriptions(id TabID) {
 	}
 }
 
-// ensureLoaded runs a screen's first load (Init → Load) exactly once, when
-// it first becomes activatable. Screens are constructed eagerly for the nav
-// registry (buildNavEntries → screenForNav), so relying on App.Init alone
-// means the startup tab loads and every other tab renders an empty list.
+// ensureLoaded runs a screen's first load (Init → Load) exactly once, when it first becomes
+// activatable.
 func (m *App) ensureLoaded(id TabID) {
 	if id == "" || m.loaded[id] {
 		return
@@ -1072,9 +818,8 @@ func (m *App) ensureLoaded(id TabID) {
 	m.pendingScreenCmd = tea.Batch(m.pendingScreenCmd, s.Init())
 }
 
-// drainStaged returns (once) every cmd staged by a route or mouse handler
-// that cannot return one directly: screen first-loads, diff-pane owner
-// setup, and conversations-rail reloads.
+// drainStaged returns (once) every cmd staged by a route or mouse handler that cannot return one
+// directly: screen first-loads, diff-pane owner setup, and conversations-rail reloads.
 func (m *App) drainStaged() tea.Cmd {
 	var cmds []tea.Cmd
 	if m.pendingScreenCmd != nil {
@@ -1119,13 +864,8 @@ func (m *App) drainStaged() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// newChat drops the active conversation and returns Ask to its hero: the
-// next composer send creates a fresh conversation (the GUI's New chat).
-// The transcript starts EMPTY (the detail pane is cleared and the stream
-// for the new conversation has no lines yet).
-// showAskConversations switches Ask to its conversation view: the transcript
-// pane plus the conversations rail on the right, so the operator can continue a
-// previous session. This is the Ask tab's "Conversations" menu row.
+// newChat drops the active conversation and returns Ask to its hero: the next composer send creates
+// a fresh conversation (the GUI's New chat).
 func (m *App) showAskConversations() {
 	m.askMode = askConversations
 	if m.active != TabAsk {
@@ -1133,9 +873,8 @@ func (m *App) showAskConversations() {
 	}
 	m.EnsureSubscriptions(TabAsk)
 	m.refreshLayout()
-	// The rail only loads when it is shown, so the first time it appears it may
-	// never have been fetched (or may have failed) — fetch it now. Never a
-	// silent empty rail.
+	// The rail only loads when it is shown, so the first time it appears it may never have been fetched
+	// (or may have failed) — fetch it now.
 	if m.convErr != "" || !m.convLoaded {
 		m.pendingRailCmd = m.reloadConversations()
 	}
@@ -1150,11 +889,6 @@ func (m *App) newChat() {
 	if m.chat != nil {
 		m.chat.SetActive("")
 		// A NEW CONVERSATION STARTS AT THE DEFAULT MODE.
-		//
-		// The operator: "When someone creates a new conversation, it should always default back to brainstorm
-		// unless they do /mode again." Clearing the pending mode here is what makes that true even after the
-		// pre-conversation choice has been used: a mode picked on the launch page belongs to the conversation it
-		// created, not to every conversation afterwards.
 		m.chat.SetPendingMode(apiv1.ConversationMode_CONVERSATION_MODE_BRAINSTORM)
 	}
 	m.SwitchTo(TabAsk)
@@ -1172,11 +906,8 @@ func (m *App) newChat() {
 	m.updateContextChip()
 }
 
-// openRenameConversation opens the rename modal for a conversation, PREFILLED with its current title.
-//
-// Prefilling is the whole point, and it is the GUI's behaviour ("Conversation rename state" /
-// startRenameConv selects the existing title). A rename box that opened EMPTY would make the operator
-// retype a title they cannot see, which is worse than the `/rename <title>` command it replaces.
+// openRenameConversation opens the rename modal for a conversation, PREFILLED with its current
+// title.
 func (m *App) openRenameConversation(id, current string) {
 	if id == "" {
 		m.dock.SetError("no conversation to rename — open one first")
@@ -1195,9 +926,8 @@ func (m *App) openRenameConversation(id, current string) {
 	f.OnSubmit = func(vals map[string]string, _ map[string][]string) (tea.Cmd, error) {
 		title := strings.TrimSpace(vals["title"])
 		if title == "" {
-			// Stay open and SAY why, rather than closing on a no-op (the GUI's saveRenameConv
-			// silently returns when the trimmed value is empty — a save that does nothing is the
-			// silent-rejection class this codebase keeps having to fix).
+			// Stay open and SAY why, rather than closing on a no-op (the GUI's saveRenameConv silently returns
+			// when the trimmed value is empty.
 			return nil, fmt.Errorf("a title is required")
 		}
 		if title == prev {
@@ -1250,9 +980,7 @@ func (m *App) modalPanelFittingContent(body string) string {
 	return m.modalPanel(body, w)
 }
 
-// widestLineWidth is the display width of the widest line in s. Display cells, not
-// runes: the border box is measured in cells, and these bodies contain the ▸/↑/→
-// glyphs and en-dashes the hints are written with.
+// widestLineWidth is the display width of the widest line in s.
 func widestLineWidth(s string) int {
 	w := 0
 	for _, l := range strings.Split(s, "\n") {
@@ -1263,9 +991,7 @@ func widestLineWidth(s string) int {
 	return w
 }
 
-// renameConvKey drives the rename modal. The modal OWNS every key while it is open (like the model
-// picker): a form whose keystrokes could reach the composer behind it would let a save chord land in
-// a message.
+// renameConvKey drives the rename modal.
 func (m *App) renameConvKey(k tea.KeyMsg) (*App, tea.Cmd) {
 	if m.renameConv == nil {
 		return m, nil
@@ -1329,11 +1055,8 @@ func scrollKeyDelta(key string) int {
 	return 0
 }
 
-// scrollActiveDetail scrolls the active screen's detail pane when it has
-// one (every list+detail screen embeds screenkit.Base.ScrollDetail). On the
-// Ask tab the transcript is the kit2 Stream, so vertical keys scroll IT
-// (the operator's scroll offset is what the Stream preserves across
-// appends).
+// scrollActiveDetail scrolls the active screen's detail pane when it has one (every list+detail
+// screen embeds screenkit.Base.ScrollDetail).
 func (m *App) scrollActiveDetail(delta int) {
 	if m.active == TabAsk && m.chatConvID != "" {
 		m.ScrollTranscript(delta)
@@ -1353,11 +1076,8 @@ func (m *App) ActiveTab() TabID { return m.active }
 func (m *App) NextTab() { m.cycle(1) }
 func (m *App) PrevTab() { m.cycle(-1) }
 
-// tabRingNext advances the operator focus ring: chat prompt FIRST, then
-// the six area tabs in order, then back to the prompt. From the composer
-// Tab drops to the Ask tab's content; each further Tab advances to the
-// next tab's content; after Control it wraps back to the composer. Left /
-// right still switch tabs directly (content focus).
+// tabRingNext advances the operator focus ring: chat prompt FIRST, then the six area tabs in order,
+// then back to the prompt.
 func (m *App) tabRingNext() {
 	// One action per press: an open dropdown just closes (no focus move).
 	if m.TabMenu() != nil {
@@ -1365,13 +1085,6 @@ func (m *App) tabRingNext() {
 		return
 	}
 	// Tab lands on the TAB BAR, from the composer AND from the content.
-	//
-	// Landing in the content is what let a pane take the arrows before the operator
-	// had chosen anything. Returning from CONTENT is step 5 of the operator's model
-	// — "Tab breaks that and moves through submenu again" — and it is what makes the
-	// submenu reachable after a selection: Enter on the bar opens it. Without it,
-	// Tab from a pane jumped to the NEXT tab, leaving no way back to the menu of the
-	// row just picked except cycling the whole ring.
 	if m.chatFocus != focusTabs {
 		m.setFocus(focusTabs)
 		return
@@ -1383,9 +1096,7 @@ func (m *App) tabRingNext() {
 			break
 		}
 	}
-	// WRAP. The operator: "once you hit the end of the tab menu it stops. It
-	// should rotate back around." Past the last tab the ring returns to the
-	// first rather than stopping.
+	// WRAP.
 	next := (idx + 1) % len(Tabs)
 	m.SwitchTo(Tabs[next].ID)
 	m.EnsureSubscriptions(Tabs[next].ID)
@@ -1414,20 +1125,14 @@ func (m *App) tabRingPrev() {
 }
 
 // toggleSideRails is the Shift+Tab action: toggle the LEFT diff pane.
-//
-// The operator's ask was explicit — "Shift+Tab should honestly just bring out
-// the diff pane back and forth" — so the conversations rail is NOT part of
-// this toggle (it is always on for MVP1; see railVisible).
 func (m *App) toggleSideRails() {
 	if m.diffOpen {
 		m.closeDiffPane()
 		return
 	}
 	if kind, id := m.diffOwner(); kind == diffs.NoneOwner || id == diffs.NoneOwner {
-		// No diff-relevant session yet: still bring the pane OUT so Shift+Tab
-		// is a predictable toggle (it renders its empty state) rather than a
-		// silent no-op — the operator's "Shift+Tab should just bring out the
-		// diff pane back and forth".
+		// No diff-relevant session yet: still bring the pane OUT so Shift+Tab is a predictable toggle (it
+		// renders its empty state) rather than a silent no-op.
 		m.diffOpen = true
 		m.refreshLayout()
 		return
@@ -1448,12 +1153,8 @@ func (m *App) cycle(delta int) {
 }
 
 func (m *App) contentHeight() int {
-	// Fixed shell overhead (Phase 2a full-screen chrome): the centered tab
-	// bar + underline rule (2), the ONE blank separator after the chrome,
-	// the footer strip, and the composer pinned to the bottom (dock.Lines
-	// = input + notice strips). Screens get every remaining row; the
-	// content column is always m.height - 4 - dock.Lines() so the
-	// composer lands flush against the footer on every screen.
+	// Fixed shell overhead (Phase 2a full-screen chrome): the centered tab bar + underline rule (2),
+	// the ONE blank separator after the chrome, the footer strip.
 	h := m.height - 4 - m.dock.Lines()
 	if h < 1 {
 		h = 1
@@ -1461,9 +1162,7 @@ func (m *App) contentHeight() int {
 	return h
 }
 
-// contentWidth is the main content area width. The left diff pane and the
-// Ask right conversations rail both consume columns; the screen and dock
-// reflow into the remainder.
+// contentWidth is the main content area width.
 func (m *App) contentWidth() int {
 	w := m.width
 	if m.diffOpen {
@@ -1481,11 +1180,8 @@ func (m *App) contentWidth() int {
 // dockHeight is the rows the dock renders.
 func (m *App) dockHeight() int { return m.dock.Lines() }
 
-// diffOwner derives the pane's owner from the active context: the execution
-// screen's selected detail (owner_kind "execution", owner_id = DetailID) or
-// the ask screen's active conversation (owner_kind "ask_conversation",
-// owner_id = chatConvID). Empty (kind, id) → the pane has no diff-relevant
-// session and the toggle is a no-op.
+// diffOwner derives the pane's owner from the active context: the execution screen's selected
+// detail (owner_kind "execution".
 func (m *App) diffOwner() (kind, id string) {
 	switch m.active {
 	case TabExecution:
@@ -1502,30 +1198,8 @@ func (m *App) diffOwner() (kind, id string) {
 	return diffs.NoneOwner, diffs.NoneOwner
 }
 
-// ensureDiffStreamArmed arms an ALREADY-OPEN pane's live stream once its owner
-// becomes live, and does nothing otherwise.
-//
-// THE BUG THIS FIXES, in the operator's words: "In the TUI it worked but not
-// while I was actively watching it. I had to hit ctrl+d again to refresh the
-// screen." The pane was armed EXACTLY ONCE, when it was opened — and at that
-// moment the turn had not started, so `diffOwnerLive` said false and no stream
-// was ever subscribed. Nothing re-evaluated it: `refreshDiffOwner` runs on a
-// tab switch and on conversation selection, NOT on the wake path, and it also
-// refuses while the COMPOSER holds focus — which is where the operator is
-// sitting while watching a turn run. So the pane's data was whatever the
-// open-time fetch saw, and only closing/reopening it (ctrl+d twice) re-armed the
-// stream and showed the files.
-//
-// TWO PROPERTIES MAKE THIS THE RIGHT SEAM. It is IDEMPOTENT — it acts only when
-// the pane is open and UNARMED with a LIVE owner, so it costs one call at a turn
-// start and nothing thereafter. And it is about DATA PLUMBING, not input
-// routing: which surface owns the keystrokes has no bearing on whether the pane
-// subscribes to its owner's ledger, so the focus gate that guarded the re-point
-// path does not belong here.
-//
-// A pane whose owner is NOT live is deliberately left alone: a finished
-// execution or an idle conversation has a durable, git-reconciled ledger and no
-// live stream to subscribe to.
+// ensureDiffStreamArmed arms an ALREADY-OPEN pane's live stream once its owner becomes live, and
+// does nothing otherwise.
 func (m *App) ensureDiffStreamArmed() tea.Cmd {
 	if !m.diffOpen || m.diffPane == nil {
 		return nil
@@ -1535,10 +1209,7 @@ func (m *App) ensureDiffStreamArmed() tea.Cmd {
 		m.diffArmedFor = ""
 		return nil
 	}
-	// THE KEY IS WHAT KEEPS THIS CHEAP. The wake path runs on every chat event,
-	// so acting unconditionally would re-fetch the ledger continuously — SetOwner
-	// fetches. Only a CHANGE of owner or of liveness is worth acting on, which is
-	// also exactly when the answer differs.
+	// THE KEY IS WHAT KEEPS THIS CHEAP.
 	live := m.diffOwnerLive(kind, id)
 	key := kind + "|" + id + "|" + strconv.FormatBool(live)
 	if key == m.diffArmedFor {
@@ -1553,9 +1224,8 @@ func (m *App) ensureDiffStreamArmed() tea.Cmd {
 	return m.diffPane.SetOwner(kind, id, true)
 }
 
-// diffOwnerLive reports whether the owner's session is live (a running
-// execution or an open ask conversation). A completed owner is not live —
-// its diff is the durable, git-reconciled ledger only.
+// diffOwnerLive reports whether the owner's session is live (a running execution or an open ask
+// conversation).
 func (m *App) diffOwnerLive(kind, id string) bool {
 	if kind == "execution" {
 		running, _ := m.runningExecutionID()
@@ -1572,9 +1242,8 @@ func (m *App) openDiffPane() tea.Cmd {
 	if m.diffPane == nil {
 		return nil
 	}
-	// NOTE: the composer-vs-content focus rule lives on the `d`/`D` ROUTE
-	// (so `d` stays a literal character while composing); an explicit
-	// request (the /diff command) opens the rail regardless of focus.
+	// NOTE: the composer-vs-content focus rule lives on the `d`/`D` ROUTE (so `d` stays a literal
+	// character while composing).
 	kind, id := m.diffOwner()
 	if kind == diffs.NoneOwner || id == diffs.NoneOwner {
 		// No diff-relevant session on this screen — the toggle is a no-op.
@@ -1589,18 +1258,8 @@ func (m *App) openDiffPane() tea.Cmd {
 	return m.diffPane.SetOwner(kind, id, m.diffOwnerLive(kind, id))
 }
 
-// applyThemeAndRefresh applies a theme AND re-pins every component that CAPTURES styles, rather than
-// reading them at render time.
-//
-// This exists because the app applied its theme in two places that did not agree. NewApp built the
-// composer FIRST (`m.dock = dock.New()` captures the textarea's styles at construction) and applied the
-// operator's theme AFTER, so a light-theme session ran with the DARK theme's composer — the operator's
-// "weird black box around the composer box". The /theme command did it correctly, with a comment
-// explaining that the textarea holds copies rather than package state; the STARTUP path simply lacked
-// that step, and its own comment asserted the opposite ("styles are package state").
-//
-// One function so the two paths cannot disagree again: any future captured-style component is
-// refreshed in one place.
+// applyThemeAndRefresh applies a theme AND re-pins every component that CAPTURES styles, rather
+// than reading them at render time.
 func (m *App) applyThemeAndRefresh(name string) bool {
 	if !theme.Use(name) {
 		return false
@@ -1611,10 +1270,8 @@ func (m *App) applyThemeAndRefresh(name string) bool {
 	return true
 }
 
-// closeDiffPane closes the pane, tears down its live stream, and restores
-// the previous layout (the content + dock widths are re-derived on the next
-// render by contentWidth). The shell-owned open/tab/selected state is kept
-// so re-opening restores the last view.
+// closeDiffPane closes the pane, tears down its live stream, and restores the previous layout (the
+// content + dock widths are re-derived on the next render by contentWidth).
 func (m *App) closeDiffPane() {
 	if m.diffOpen {
 		m.diffOpen = false
@@ -1629,31 +1286,7 @@ func (m *App) closeDiffPane() {
 	m.refreshLayout()
 }
 
-// syncLayoutWidth re-applies the layout when the CONTENT WIDTH changed since it
-// was last applied.
-//
-// The width is not a pure function of a terminal resize: contentWidth() subtracts
-// ConversationsRailWidth whenever railVisible() is true, and railVisible() depends
-// on SHELL STATE (askMode / chatConvID). So the conversations rail APPEARING — the
-// launch page becoming the conversation view, or the rail being toggled — changes
-// the content width with no WindowSizeMsg to drive refreshLayout().
-//
-// The dock and the screen then keep the pre-rail (wider) width, and baseView's
-// normalizeBlock TRUNCATES their right edge down to the real width. That silently
-// cuts off everything RIGHT-ALIGNED:
-//
-//   - the composer's stat strip — the context/token/cache figures and the mode
-//     pill live at the bottom-RIGHT ("the context information and model picker on
-//     the bottom right are off the screen and I can't see it");
-//   - the operator's OWN message bubbles, which are right-aligned — so a just-sent
-//     message was missing from a transcript that plainly CONTAINED it, while the
-//     left-aligned reply rendered normally;
-//   - and it sliced long LEFT-aligned lines mid-sentence, because the renderer had
-//     wrapped them to a pane wider than the one they were finally drawn in.
-//
-// Checks the applied width rather than a change counter, so it is self-correcting:
-// every path that alters rail visibility is covered without each such path having
-// to remember to re-layout, and once corrected the check is a no-op.
+// syncLayoutWidth re-applies the layout when the CONTENT WIDTH changed since it was last applied.
 func (m *App) syncLayoutWidth() {
 	if m.width <= 0 {
 		return
@@ -1667,18 +1300,13 @@ func (m *App) syncLayoutWidth() {
 // reflowForDiff was unified into refreshLayout (Phase 2a): one layout
 // applier for window resize, rail toggles, and diff-pane toggles.
 func (m *App) refreshLayout() {
-	// The DOCK WIDTH comes first: the composer's height (dock.Lines) depends on
-	// how its hint wraps at that width, and the screens are sized from the rows
-	// the dock leaves. Sizing the screen first measured the dock at its previous
-	// width, so a hint that gained a row pushed the screen out of its budget.
+	// The DOCK WIDTH comes first: the composer's height (dock.Lines) depends on how its hint wraps at
+	// that width, and the screens are sized from the rows the dock leaves.
 	if m.width > 0 {
 		m.dock.Width = m.contentWidth()
 	}
-	// AND THE DOCK'S HEIGHT BUDGET: the composer's growth ceiling is derived from the
-	// viewport, so the dock has to know how tall the terminal is before anything asks it
-	// how many rows it needs (see dock.maxInputRows). Set here — the one layout applier
-	// for resize, rail toggles and pane toggles — so every path that can change the
-	// available height tells the dock about it.
+	// AND THE DOCK'S HEIGHT BUDGET: the composer's growth ceiling is derived from the viewport, so the
+	// dock has to know how tall the terminal is before anything asks it how many rows it needs (see.
 	if m.height > 0 {
 		m.dock.SetViewportRows(m.height)
 	}
@@ -1688,26 +1316,15 @@ func (m *App) refreshLayout() {
 	if m.diffPane != nil {
 		m.diffPane.SetSize(m.diffPaneWidth(), m.screenRows()+m.dock.Lines()+m.panelRows())
 	}
-	// THE ASK TRANSCRIPT IS RE-MEASURED HERE, for the same reason the dock's width is set first: its SIZE
-	// depends on the dock's height, and the dock's height depends on its own content.
-	//
-	// dock.Lines() counts the chip row, the input rows, the hint rows and the notice/error strip — so a
-	// reload that changes ANY of those (a new conversation arriving, a notice appearing) changes the rows
-	// the screens get. The transcript Stream is sized from DetailBodyHeight, which is derived from that, so
-	// a stream sized before such a change is one row too tall and the PANE'S VIEWPORT CLIPS ITS BOTTOM ROW
-	// — and the row drawn last is the NOTICE.
-	//
-	// MEASURED, on the thinking indicator: after a rolling tick the dock went 7 rows -> 8, the content
-	// region 29 -> 28, and the indicator was set on the widget yet absent from the frame; re-waking (which
-	// re-measures) brought it back. Re-measuring on every layout change removes the window entirely.
+	// THE ASK TRANSCRIPT IS RE-MEASURED HERE, for the same reason the dock's width is set first: its
+	// SIZE depends on the dock's height, and the dock's height depends on its own content.
 	if m.active == TabAsk && m.chatConvID != "" {
 		m.remeasureTranscript()
 	}
 }
 
-// remeasureTranscript re-sizes the open conversation's transcript to the pane's CURRENT body height,
-// preserving the operator's scroll. Used by refreshLayout, because the pane's height depends on the dock's
-// content and the dock's content changes under the transcript.
+// remeasureTranscript re-sizes the open conversation's transcript to the pane's CURRENT body
+// height, preserving the operator's scroll.
 func (m *App) remeasureTranscript() {
 	str := m.chatStreams[m.chatConvID]
 	if str == nil {
@@ -1745,12 +1362,8 @@ func (m *App) refreshDiffOwner() tea.Cmd {
 	return m.diffPane.SetOwner(kind, id, m.diffOwnerLive(kind, id))
 }
 
-// syncDiffPaneState captures the pane's current tab/selection into the
-// shell-owned state (pane→shell). Called whenever the pane may have changed
-// (key/mouse interactions, close) so the shell's open/tab/selected state
-// stays authoritative and survives a later SwitchTo. It does NOT push the
-// shell state into the pane — that direction (restoreDiffPaneState) runs on
-// open/refresh so a reopened pane resumes the last view.
+// syncDiffPaneState captures the pane's current tab/selection into the shell-owned state
+// (pane→shell).
 func (m *App) syncDiffPaneState() {
 	if m.diffPane == nil {
 		return
@@ -1761,10 +1374,7 @@ func (m *App) syncDiffPaneState() {
 	}
 }
 
-// restoreDiffPaneState applies the shell-owned open/tab/selected state to the
-// pane (shell→pane). Called when the pane is (re)opened or re-pointed at a
-// new owner so the pane resumes the last view rather than resetting to the
-// default diff tab.
+// restoreDiffPaneState applies the shell-owned open/tab/selected state to the pane (shell→pane).
 func (m *App) restoreDiffPaneState() {
 	if m.diffPane == nil {
 		return
@@ -1775,63 +1385,54 @@ func (m *App) restoreDiffPaneState() {
 	}
 }
 
-// wireSessionRecovery installs the session's OnRefreshed hook on a client set: on a
-// successful token refresh, redial every live stream so it picks up the fresh bearer.
-//
-// IT IS A METHOD SO EVERY CLIENT SET GOES THROUGH IT. /connect builds a NEW client set
-// (applyConnectResult) and swaps it in, so wiring only in NewApp would leave the
-// reconnected session with the hook unset — the same class of omission that left the
-// hook unwired in the first place. Both call sites use this.
-//
-// The hook is a no-op for api-key mode (Session is nil: nothing ever refreshes), which
-// is why it can be installed unconditionally.
+// wireSessionRecovery installs the session's OnRefreshed hook on a client set: on a successful
+// token refresh, redial every live stream so it picks up the fresh bearer.
 func (m *App) wireSessionRecovery(cl *client.Clients) {
 	if cl == nil || cl.Session == nil {
 		return
 	}
 	cl.Session.OnRefreshed = m.reconnectStreams
+
+	// AND KEEP THE TOKEN ALIVE, so the operator never meets an expiry at all.
+	if m.keepalive != nil {
+		m.keepalive.Stop()
+		m.keepalive = nil
+	}
+	m.keepalive = cl.StartKeepalive(m.shellCtx, m.tokenLifetime(), m.reconnectStreams)
+}
+
+// tokenLifetime is the access token's TTL, as the server reported it at login/refresh.
+func (m *App) tokenLifetime() time.Duration {
+	if m.profile == nil || m.profile.TokenExpiresIn <= 0 {
+		return 0
+	}
+	return time.Duration(m.profile.TokenExpiresIn) * time.Second
 }
 
 // reconnectStreams forces every live subscription to redial now.
 func (m *App) reconnectStreams() { m.reg.ReconnectAll() }
 
-// refreshComposerHint fills the composer's affordance row with the ACTIVE
-// screen's shortcut list, so the guidance follows the page the operator is on
-// (the screen's own HintLine is the single source of truth) and always leads
-// with the ctrl+g focus chord. A screen with no HintLine just clears the
-// context.
+// refreshComposerHint fills the composer's affordance row with the ACTIVE screen's shortcut list,
+// so the guidance follows the page the operator is on (the screen's own HintLine is the single.
 func (m *App) refreshComposerHint() {
 	// THE STOP AFFORDANCE IS DERIVED, NOT STORED, and it is derived HERE — before the row is measured
-	// below — so a hint that gains the stop segment also gains its row (the Lines() comparison at the
-	// end of this function is what re-applies the layout). Deriving it from the controller's live state
-	// means the advertised chord cannot outlive the reply it stops.
+	// below — so a hint that gains the stop segment also gains its row (the Lines() comparison.
 	m.dock.SetReplyInFlight(m.chat != nil && m.chatConvID != "" && m.chat.IsStreaming(m.chatConvID))
+	// THE RUN'S STOP IS DERIVED HERE TOO, and for the same reason: the composer must advertise the
+	// chord that stops the thing the operator is looking.
+	m.dock.SetStopRunHint(m.stopRunHint())
+	m.dock.SetAbortRunHint(m.abortRunHint())
 	ctx := ""
 	// AN APP-LEVEL MODAL OWNS THE KEYBOARD TOO, so it must win over the screen's hint for the same
-	// reason an in-screen form does — and it is checked FIRST, because while the modal is up the screen
-	// underneath is not the thing reading the operator's keystrokes.
+	// reason an in-screen form does — and it is checked FIRST.
 	if m.findBox != nil {
 		// THE FIND BOX OWNS THE KEYBOARD TOO, and it is checked FIRST because it is claimed FIRST in
-		// dispatch: whatever takes the keys is what the row has to describe. The box is not a form, so
-		// it does not get formComposerHint — those chords (ctrl+s, tab between fields) do not exist
-		// here, and the row would be advertising keys that do nothing.
+		// dispatch: whatever takes the keys is what the row has to describe.
 		ctx = findComposerHint
 	} else if m.renameConv != nil || m.assignForm != nil || m.bulkConfirm != nil || m.catForm != nil {
 		ctx = formComposerHint
 	} else if s := m.screens[m.active]; s != nil {
 		// AN OPEN FORM OWNS THE KEYBOARD, SO THE HINT MUST DESCRIBE THE FORM.
-		//
-		// The operator: "There is no ctrl+s - save guidance in the composer under providers or secrets
-		// like other pages". The screen's own HintLine is a BROWSING cheat-sheet — for the providers
-		// pane it says "n: new custom · e: edit · t: enable/disable · s: set token · c: clear ·
-		// x: delete" — and it said exactly that while a provider form had the keyboard. Every one of
-		// those chords is INERT in that state (the form consumes every key), and the two that DO work,
-		// ctrl+s and esc, were not mentioned. So the hint was not merely incomplete, it was wrong:
-		// it advertised six keys that do nothing and hid the one that saves.
-		//
-		// The fix is here rather than in each screen's HintLine because this is the ONE place that
-		// knows a form is open for EVERY screen (the same FormOpen probe the Tab chord uses), so the
-		// form's keys cannot be forgotten by a screen that adds a form later.
 		if fo, ok := s.(interface{ FormOpen() bool }); ok && fo.FormOpen() {
 			ctx = formComposerHint
 		} else if h, ok := s.(interface{ HintLine() string }); ok {
@@ -1839,12 +1440,6 @@ func (m *App) refreshComposerHint() {
 		}
 	}
 	// THE RAIL'S CHORD LIST BELONGS HERE, NOT INSIDE THE RAIL PANE.
-	//
-	// It was drawn inside the rail, and that was wrong twice over: the rail's inner text width is 28
-	// cells against a 34-cell chord list, so it was TRUNCATED mid-word ("ctrl+n: rename · ctrl+t: ca…"
-	// — the operator's screenshot), and the rail is not where the keys live. The composer is: the
-	// rail's keys are driven from there (an empty box is what makes the arrows move the rail at all),
-	// and the operator asked for the move.
 	if rail := m.railHintLine(); rail != "" {
 		if ctx == "" {
 			ctx = rail
@@ -1853,29 +1448,10 @@ func (m *App) refreshComposerHint() {
 		}
 	}
 	// THE TRANSCRIPT'S OWN AFFORDANCE, and it belongs to the composer because that is where this client
-	// advertises what the keys and the mouse can do. The operator asked for it by name alongside the
-	// gesture itself: "clicking on a user message in conversations auto copy to clipboard ... and we should
-	// add a hint in the composer saying as such."
-	//
-	// Named for the OPERATOR'S OWN messages rather than "a message", because that is what the gesture does
-	// — a click on the model's reply is deliberately inert (see transcriptUserMessageAtFrameRow) — and a
-	// hint that promised more than the code delivers would be the interface lying.
-	// NOT WHILE THE FIND BOX IS UP: the box owns the keyboard there, so these chords are inert and
-	// naming them would be the row lying about the state the operator is in — the exact failure
-	// formComposerHint exists to avoid, one surface along.
+	// advertises what the keys and the mouse can do.
 	if m.active == TabAsk && m.chatConvID != "" && m.findBox == nil {
-		// THE TRANSCRIPT'S FIND + JUMP KEYS, ADVERTISED — because a chord nobody can see is a chord
-		// nobody has. The operator asked for exactly this: "no note in the composer about search or
-		// jumping to beginning to end is there so no one would know they exist." They are named HERE,
-		// on the composer's affordance row, because that is where this client advertises what the
-		// keyboard can do (the click-to-copy gesture and the width chord are named here for the same
-		// reason) — and not only in the `?` overlay, which you have to already know about.
-		//
-		// home/end ARE ADVERTISED UNCONDITIONALLY, which is the same bar the arrow keys are already held
-		// to: they jump the transcript whenever the composer is NOT holding text, and while the operator
-		// IS drafting a message they are the textarea's line-start/line-end. Both are true, and the row
-		// describes what the keys mean on this SURFACE — exactly what every other screen's hint does
-		// with its own contextual keys.
+		// THE TRANSCRIPT'S FIND + JUMP KEYS, ADVERTISED — because a chord nobody can see is a chord nobody
+		// has.
 		for _, seg := range []string{transcriptFindHint, transcriptCopyHint} {
 			if ctx == "" {
 				ctx = seg
@@ -1885,15 +1461,6 @@ func (m *App) refreshComposerHint() {
 		}
 	}
 	// THE WIDTH CHORD, WHEREVER THERE IS A SPLIT TO RESIZE.
-	//
-	// The operator: "You should add the ctrl+left/right shortcut advice to the composer on every screen so
-	// people know they can do it" — asked for after having to be TOLD the chord existed, which is the whole
-	// argument for advertising it.
-	//
-	// ADDED ON EVERY SCREEN WITH A SPLIT, not only on Work: the preference is shared across screens, so an
-	// operator who learned it here should see it everywhere it applies — and NOT on a screen with no split
-	// (the Ask launch page renders its detail pane full width), where it would advertise a key that changes a
-	// width nothing draws. splitAdjustable is the same question the chord itself asks.
 	if m.splitAdjustable() {
 		if ctx == "" {
 			ctx = splitResizeHint
@@ -1913,21 +1480,7 @@ func (m *App) refreshComposerHint() {
 // transcriptCopyHint is the composer's advertisement for the transcript's click gesture.
 const transcriptCopyHint = "click your message to copy"
 
-// transcriptFindHint is the composer's advertisement for the transcript's find + jump chords. It names
-// the two entry points and what they DO, rather than the reason they exist.
-//
-// IT IS DELIBERATELY TERSE, AND THE LENGTH IS THE CONSTRAINT. The affordance area has a hard budget of
-// maxHintRows (3) at the width the composer actually gets, and past that the last row is ellipsized —
-// measured at the diff E2E gate's geometry (200 columns with both rails AND the diff pane open, which
-// leaves the box 88 cells inside): the first wording of this constant, "ctrl+f: find in the transcript ·
-// home/end: first·latest message", packed into FOUR rows and lost the tail of the row, which the gate
-// caught as its forbidden truncation signature. This form packs into three in both the idle and the
-// reply-in-flight states (the latter adds "ctrl+y stop").
-//
-// SO: MEASURE A NEW SEGMENT AGAINST THE WRAPPER BEFORE ADDING IT. The `?` overlay carries the full
-// descriptions; this row is a reminder, and a reminder that is cut off is worse than a shorter one that
-// is read. TestDiffE2EAskMountPTY fails on any ellipsis in the frame, which is what makes this checkable
-// rather than a matter of taste.
+// transcriptFindHint is the composer's advertisement for the transcript's find + jump chords.
 const transcriptFindHint = "ctrl+f: find · home/end: top·bottom"
 
 // findComposerHint is what the composer advertises while the FIND BOX is up. It names only keys the box
@@ -1954,9 +1507,8 @@ func (m *App) updateContextChip() {
 	m.dock.Chip = ""
 }
 
-// activeContext is the context engine read: what the active screen is
-// showing, as (tab, source, itemID, label). Used by outgoing message
-// preambles and the /context command.
+// activeContext is the context engine read: what the active screen is showing, as (tab, source,
+// itemID, label).
 func (m *App) activeContext() (tab TabID, src, id, label string) {
 	tab = m.active
 	s := m.screens[m.active]
@@ -1989,9 +1541,8 @@ func (m *App) activeContext() (tab TabID, src, id, label string) {
 	return tab, src, id, label
 }
 
-// activeContextLabel renders the chip: "<SourceTitle>: <item>" (or the
-// pinned override), with a running prefix when the selected execution
-// is live.
+// activeContextLabel renders the chip: "<SourceTitle>: <item>" (or the pinned override), with a
+// running prefix when the selected execution is live.
 func (m *App) activeContextLabel() string {
 	if m.contextOverride != "" {
 		return m.contextOverride
@@ -2000,11 +1551,8 @@ func (m *App) activeContextLabel() string {
 	if src == "" {
 		return ""
 	}
-	// The Ask tab's conversations list IS the chat's own conversation: its
-	// title is self-referential inside that conversation's own messages, so
-	// it is not context. Injecting it made every send carry a useless
-	// "[context: Conversations: <its own title>]" header (the operator's
-	// report). The GUI injects nothing here either.
+	// The Ask tab's conversations list IS the chat's own conversation: its title is self-referential
+	// inside that conversation's own messages, so it is not context.
 	if m.active == TabAsk && src == "conversations" {
 		return ""
 	}
@@ -2035,9 +1583,8 @@ func srcTitle(m *App, src string) string {
 	return src
 }
 
-// contextPreamble builds the bracketed context line prepended to every
-// outgoing chat message (the only context shape the Ask API accepts —
-// plan fact 2). Empty when nothing is selected.
+// contextPreamble builds the bracketed context line prepended to every outgoing chat message (the
+// only context shape the Ask API accepts — plan fact 2).
 func (m *App) contextPreamble() string {
 	label := m.contextOverride
 	if label == "" {
@@ -2072,9 +1619,7 @@ func (m *App) selectScreenSource(tab TabID, src string) {
 	}
 }
 
-// selectScreenItem selects an item by ID and loads its detail (arg
-// jumps). Falls back to RequestDetail when the item is not on the
-// loaded page (detail works without a list hit — plan §2).
+// selectScreenItem selects an item by ID and loads its detail (arg jumps).
 func (m *App) selectScreenItem(tab TabID, src, id string) {
 	s := m.screens[tab]
 	if s == nil {
@@ -2098,9 +1643,8 @@ func (m *App) selectScreenItem(tab TabID, src, id string) {
 	}
 }
 
-// OpenAskConversation makes the conversation the active chat target and
-// loads its durable transcript (the ask screen's onDetail hook; live
-// chunks then stream into the open pane).
+// OpenAskConversation makes the conversation the active chat target and loads its durable
+// transcript (the ask screen's onDetail hook; live chunks then stream into the open pane).
 func (m *App) OpenAskConversation(id string) tea.Cmd {
 	if id == "" {
 		return nil
@@ -2108,66 +1652,40 @@ func (m *App) OpenAskConversation(id string) tea.Cmd {
 	if m.chatConvID == id {
 		return nil
 	}
-	// THE SCOPE MODAL BELONGS TO ONE CONVERSATION: opening a different one closes it rather than leaving
-	// a pane on screen that edits the previous chat's servers (the GUI's Scope disclosure closes on a
-	// conversation switch for the same reason).
+	// THE SCOPE MODAL BELONGS TO ONE CONVERSATION: opening a different one closes it rather than
+	// leaving a pane on screen that edits the previous chat's servers (the GUI's Scope disclosure.
 	m.closeScopeModal()
 	m.askMode = askConversations
 	m.chatConvID = id
-	// OPENING A CONVERSATION SELECTS IT FOR THE KEYBOARD. Opening one is a deliberate
-	// "I want to read this", and leaving the rail selected would make the operator press
-	// right before their arrows did anything to what they just opened. Left still returns
-	// to the rail.
+	// OPENING A CONVERSATION SELECTS IT FOR THE KEYBOARD.
 	m.askPane = askPaneConversation
 	m.syncAskPaneFocus()
+	// THE HIGHLIGHT MUST FOLLOW WHAT WAS JUST OPENED.
+	m.railSyncSelectionToOpenConversation()
 	m.chat.SetActive(id)
-	// DECLARE THE PANE'S CONTENT. The transcript is pushed by the shell for this conversation, so
-	// nothing else would ever set the detail id — and the shell's chat repaint is guarded on it, so a
-	// keyboard-opened conversation (which does not go through RequestDetail, unlike a CLICK on the
-	// rail) rendered no transcript at all until something incidental painted it. The click path worked
-	// and the keyboard path did not, which is the same asymmetry that made Enter inert on this rail.
+	// DECLARE THE PANE'S CONTENT.
 	if s := m.screens[TabAsk]; s != nil {
 		if sid, ok := s.(interface{ SetDetailID(string) }); ok {
 			sid.SetDetailID(id)
 		}
 	}
-	// The right rail appears with a conversation, which SHRINKS contentWidth()
-	// — and every pane's width is assigned from it in refreshLayout, which is
-	// only otherwise run on a window resize. Without re-laying-out here the dock
-	// kept the pre-rail width: it built its rows for more columns than the body
-	// gave it, normalizeBlock trimmed the TAIL of each row, and the stat row's
-	// numbers and the mode pill were cut off (the operator's "the context is off
-	// the screen").
+	// The right rail appears with a conversation, which SHRINKS contentWidth() — and every pane's width
+	// is assigned from it in refreshLayout, which is only otherwise run on a window resize.
 	m.refreshLayout()
-	// RE-ATTACH TO A TURN THAT IS STILL RUNNING SERVER-SIDE. The operator: "When I leave an chat and go back
-	// into it, it loses the 'orchicon is thinking...' and watchdog." Opening a conversation is exactly when the
-	// shell learns the server's view of it (the rail row carries turn_in_flight and the pending assistant id),
-	// so this is the one place that can restore the slot the pane's notices are derived from.
-	//
-	// It is safe to do unconditionally: Reattach refuses when a live local stream already owns the slot, so a
-	// turn started in THIS client keeps its own stream. Only a gap is filled.
+	// RE-ATTACH TO A TURN THAT IS STILL RUNNING SERVER-SIDE.
 	re := m.reattachRunningTurn(id)
 	// A conversation switch changes whose usage the strip reports, so re-read it
 	// (the previous conversation's numbers must never linger under a new chat).
 	return tea.Batch(m.chat.OpenConversation(id), m.refreshMetrics(), re)
 }
 
-// reattachRunningTurn restores the stream slot for a conversation whose turn the server still reports as
-// running, when this client has no live stream for it.
-//
-// The rail row is the source: it is the freshest server-side view the shell holds, and it is reloaded after
-// every send and on every completion, so it is never staler than the pane. A row with no turn in flight (or no
-// pending assistant id) is nothing to re-attach to, and returns nil.
+// reattachRunningTurn restores the stream slot for a conversation whose turn the server still
+// reports as running, when this client has no live stream for it.
 func (m *App) reattachRunningTurn(convID string) tea.Cmd {
 	if m.chat == nil {
 		return nil
 	}
-	// DISCOVERY IS UNCONDITIONAL, the re-attach is not. The early return below is exactly
-	// how a card went missing: it fires when the row does not say a turn is in flight with a
-	// pending reply id — which is the case for a turn this client never started, or stopped
-	// tracking. The server is parked on that turn regardless, so a card for it had no path
-	// into the pane at all while the GUI (holding a watch socket) displayed one. Asking the
-	// server directly costs nothing when there is nothing pending, and the store dedupes.
+	// DISCOVERY IS UNCONDITIONAL, the re-attach is not.
 	discover := m.chat.DiscoverPendingAsks(convID)
 	c, ok := m.conversationByID(convID)
 	if !ok || !c.TurnInFly || c.PendingReplyID == "" {
@@ -2176,10 +1694,8 @@ func (m *App) reattachRunningTurn(convID string) tea.Cmd {
 	return tea.Batch(discover, m.chat.Reattach(convID, c.PendingReplyID))
 }
 
-// onExecutionSessionLoaded paints the merged session view into the
-// execution detail pane: durable GetExecutionSession parts + live
-// StreamExecutionEvents (MergeSessionItems drops covered chunks, sorts,
-// phase-groups).
+// onExecutionSessionLoaded paints the merged session view into the execution detail pane: durable
+// GetExecutionSession parts + live StreamExecutionEvents (MergeSessionItems drops covered chunks.
 func (m *App) onExecutionSessionLoaded(execID string, parts []*apiv1.ExecutionSessionPart, err error) tea.Cmd {
 	if err != nil {
 		m.setChatErrorPlain("session: " + err.Error())
@@ -2261,9 +1777,8 @@ func (m *App) OpenExecutionSession(execID string) tea.Cmd {
 		if err != nil {
 			return execSessionMsg{execID: execID, err: err}
 		}
-		// The server returns the tail NEWEST-first (seq DESC); the transcript reads oldest-first,
-		// so it is reversed here rather than at every render (chat.MergeSessionItems sorts, but it
-		// should be handed a coherent sequence to merge).
+		// The server returns the tail NEWEST-first (seq DESC); the transcript reads oldest-first, so it is
+		// reversed here rather than at every render (chat.MergeSessionItems sorts.
 		parts := resp.Msg.GetParts()
 		chronological := make([]*apiv1.ExecutionSessionPart, len(parts))
 		for i, p := range parts {
@@ -2274,13 +1789,10 @@ func (m *App) OpenExecutionSession(execID string) tea.Cmd {
 }
 
 // sessionTailFromSeq is the "from the end" sentinel for GetExecutionSession's before_seq: every
-// part whose seq is below this, i.e. all of them, newest-first. It is math.MaxInt64, the same value
-// the GUI sends, so both clients ask the server the identical question.
+// part whose seq is below this, i.e. all of them, newest-first.
 const sessionTailFromSeq = int64(^uint64(0) >> 1)
 
-// sessionPartLimit bounds how much of a transcript is fetched. 10000 is the GUI's number (see
-// useGetExecutionSession): generous enough to cover a long run's tail, bounded enough that a
-// pathological session cannot stall the pane.
+// sessionPartLimit bounds how much of a transcript is fetched.
 const sessionPartLimit = 10000
 
 // execSessionMsg carries the durable session parts for one execution.
@@ -2290,9 +1802,8 @@ type execSessionMsg struct {
 	err    error
 }
 
-// navEntries returns (building once) the tab's dropdown rows from the
-// screen inventory (buildNavEntries over Sources()) — the same no-drift
-// source as the slash registry, per docs/tui-parity.md.
+// navEntries returns (building once) the tab's dropdown rows from the screen inventory
+// (buildNavEntries over Sources()).
 func (m *App) navEntries(tab TabID) []NavEntry {
 	if m.navReg == nil {
 		m.navReg = buildNavEntries(m)
@@ -2306,18 +1817,15 @@ func (m *App) navEntries(tab TabID) []NavEntry {
 	return out
 }
 
-// refreshStreamStatus updates the footer AND surfaces the underlying reason a
-// stream is down, once per distinct message. Without this a dead endpoint (or a
-// rejected subscription) produced a bare "connecting…" that could never be
-// diagnosed from inside the UI.
+// refreshStreamStatus updates the footer AND surfaces the underlying reason a stream is down, once
+// per distinct message.
 func (m *App) refreshStreamStatus() {
 	m.footer.StreamStatus = m.streamStatus()
 	m.surfaceStreamError()
 }
 
-// surfaceStreamError pushes the active screen's stream error into the dock's
-// error strip whenever the footer is not "open", so the operator reads the
-// actual reason (e.g. "connection refused") instead of guessing.
+// surfaceStreamError pushes the active screen's stream error into the dock's error strip whenever
+// the footer is not "open".
 func (m *App) surfaceStreamError() {
 	if m.footer.StreamStatus == openStatus {
 		return
@@ -2332,30 +1840,20 @@ func (m *App) surfaceStreamError() {
 			continue
 		}
 		m.lastStreamErr = errText
-		m.dock.SetError(st.Name + ": " + errText)
+		text := st.Name + ": " + errText
+		// A BARE "connection refused" IS THE FAILURE THIS FEATURE WAS FILED FOR.
+		if m.plane.State == planeStateDown {
+			text += " — " + planeRemedy(m.plane)
+		}
+		m.dock.SetError(text)
 		return
 	}
 }
 
-// streamStatus derives the footer state from the active screen's declared
-// subscriptions. The VALUE comes from the registry's latest report, not from
-// what the screen last received: a delivery can be routed to a different screen
-// than the one that armed the read, and the wake-up queue drops on overflow —
-// either way the screen's copy could freeze on an old value (the footer stuck on
-// "connecting…" for the rest of the session).
+// streamStatus derives the footer state from the active screen's declared subscriptions.
 func (m *App) streamStatus() streamStatusString {
-	// THE CONNECTION IS NOT A PROPERTY OF THE ACTIVE TAB.
-	//
-	// This used to aggregate ONLY over the statuses the active screen declares — and a screen that declares
-	// none reports nothing, so the worst-wins loop started and ended at "open". The Ask tab is exactly that
-	// screen: its conversation list is the shell's rail and it subscribes to no stream of its own, so an
-	// operator sitting on Ask while the plane died saw a green "connected" footer for the whole session.
-	// The operator: "if a connection dies, the GUI tells you, but the TUI conversation does not."
-	//
-	// Every subscription in the registry talks to the SAME plane over the SAME credentials, so the worst
-	// status among them is the honest answer wherever the operator is standing. The screen's own report is
-	// still consulted — it can hold a status for a stream the registry has not reported on yet — but it can
-	// no longer be the ONLY input, and it can never again silently mean "healthy".
+	// This used to aggregate ONLY over the statuses the active screen declares — and a screen that
+	// declares none reports nothing, so the worst-wins loop started and ended at "open".
 	worst := openStatus
 	if st, _ := m.reg.WorstStatus(); st != "" {
 		worst = streamStatusString(st)
@@ -2369,8 +1867,7 @@ func (m *App) streamStatus() streamStatusString {
 		return worst
 	}
 	// The screen's own report can still RAISE the severity (a stream it holds that the registry has not
-	// seen), which is why it is folded in rather than dropped. It cannot LOWER it: a screen with no
-	// streams no longer votes "connected" on behalf of a dead plane.
+	// seen), which is why it is folded in rather than dropped.
 	for _, st := range rp.ReportStatus() {
 		live := st.Status
 		if v := m.reg.LatestStatus(st.Name); v != "" {
@@ -2390,35 +1887,29 @@ func (m *App) Init() tea.Cmd {
 	// (ensureLoaded, called from SwitchTo).
 	m.ensureLoaded(m.active)
 	cmds = append(cmds, m.waitChat(), m.chat.LoadConversations(), m.loadRailProjects(), m.fetchAskDefaultModel())
-	// The category list is loaded ONCE at startup alongside everything else, so the first assignment the
-	// operator makes already has its picker populated. The assign modal also triggers a load if the
-	// cache is empty (a session that started before the server had any, or a failed first load), so this
-	// is the fast path rather than the only path.
+	// The category list is loaded ONCE at startup alongside everything else, so the first assignment
+	// the operator makes already has its picker populated.
 	if c := m.loadCategories(); c != nil {
 		cmds = append(cmds, c)
 	}
-	// ARM THE ROLLING REFRESH WINDOW (refresh.go). One chain for the session, re-armed by its own
-	// handler, refreshing whatever the active tab is showing every few seconds — because an event
-	// poke only arrives when the server chooses to emit one, and the follow-up reply that made this
-	// necessary is written durably without any live event at all.
+	// ARM THE ROLLING REFRESH WINDOW (refresh.go).
 	cmds = append(cmds, refreshCmd(m.refreshGen))
-	// THE LAUNCH CHECK — one question, and only when this shell may ask it and the
-	// directory is unattached.
-	//
-	// It runs ALONGSIDE the first loads rather than before them, so a slow check
-	// never delays startup and a failed one costs nothing: until the answer lands,
-	// the app is simply the normal launch page. That also keeps the worst case
-	// honest — if the plane cannot be listed, no question is asked at all.
-	//
-	// THE ARMING GATE IS SEPARATE FROM THE DIRECTORY, and both must hold: the directory
-	// (a fact about the process, passed on every shell) and launchPromptArmed (a
-	// first-shell-only rule). A /connect continuation carries the directory but is not
-	// armed, so it re-derives the rail's workspace without re-asking this question.
+	// THE LAUNCH CHECK — one question, and only when this shell may ask it and the directory is
+	// unattached.
 	if m.launchDir != "" && m.launchPromptArmed {
 		cmds = append(cmds, m.checkLaunchProject())
 	}
 	if c := m.drainStaged(); c != nil {
 		cmds = append(cmds, c)
+	}
+	// THE SIZE PROBE'S CHAIN (resize_probe.go). Nil wherever the platform delivers its own resize events,
+	// which is every platform but Windows — so this appends nothing on Linux/macOS.
+	if c := sizeProbeTickCmd(); c != nil {
+		cmds = append(cmds, c)
+	}
+	// TELL THE OPERATOR IF THEIR CONFIGURED NEWLINE CHORD COULD NOT BE USED (applyProfile).
+	if m.deadNewlineChord != "" {
+		m.dock.SetNotice(m.deadNewlineChord)
 	}
 	return tea.Batch(cmds...)
 }
@@ -2431,13 +1922,6 @@ type askDefaultSettingsMsg struct {
 }
 
 // fetchAskDefaultModel reads the tenant's DefaultAskOrchiconModel.
-//
-// The TUI previously never consulted it: the composer's model came only from the
-// active conversation's model_ref (then the pending one for a new chat), so a
-// conversation created WITHOUT a model_ref reported no model at all — and, since
-// the context window is resolved from that ref, the strip showed a bare
-// occupancy with no limit. The GUI has always used the full chain
-// (`conv.modelRef || settings.defaultAskOrchiconModel || fallback`); this mirrors it.
 func (m *App) fetchAskDefaultModel() tea.Cmd {
 	cl := m.clients
 	return func() tea.Msg {
@@ -2455,33 +1939,13 @@ func (m *App) fetchAskDefaultModel() tea.Cmd {
 }
 
 // Update implements tea.Model (via the router dispatch).
-// Update implements tea.Model.
-//
-// It is the ONE choke point every input path funnels through, so it also
-// flushes any cmd a handler staged but did not return. Staging exists because
-// SwitchTo must run the newly-activated screen's first load, and SwitchTo
-// cannot return a tea.Cmd — handlers that switch tabs then return their own
-// cmd and silently DROPPED the staged load. That is why every domain rendered
-// its empty state forever when tabs were reached by mouse (the chord routes
-// happened to drain it; the mouse tab-click, the dropdown chord and MenuSelect
-// did not). Rather than depend on every present and future caller remembering,
-// flush here.
 func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.dispatch(msg)
-	// The CONTENT WIDTH is not a pure function of a resize: railVisible()
-	// depends on STATE (askMode / chatConvID), so the conversations rail
-	// appearing shrinks the content area by ConversationsRailWidth with no
-	// WindowSizeMsg to trigger refreshLayout(). Re-apply the layout whenever the
-	// width it implies has changed — see syncLayoutWidth.
+	// The CONTENT WIDTH is not a pure function of a resize: railVisible() depends on STATE (askMode /
+	// chatConvID), so the conversations rail appearing shrinks the content area.
 	next.syncLayoutWidth()
-	// The composer's caret BLINK STARTER (captured when the dock took focus) has
-	// to reach the runtime, and focus is taken from several places — ctrl+g, a
-	// click, keyboard navigation — most of which return their own command or nil.
-	// Draining it here, once, after every dispatch, is the only place that covers
-	// all of them: without it the blink loop was never started, so the caret sat
-	// solid until a keypress happened to change the cursor position and bubbles
-	// started the loop itself (the operator's "it only blinks if I type something
-	// then backspace it to nothing").
+	// The composer's caret BLINK STARTER (captured when the dock took focus) has to reach the runtime,
+	// and focus is taken from several places — ctrl+g, a click, keyboard navigation.
 	if b := next.dock.TakeBlinkStart(); b != nil {
 		if cmd == nil {
 			cmd = b
@@ -2498,10 +1962,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return next, cmd
 }
 
-// passToScreen forwards to the active screen. When the diff pane is open it
-// first lets the pane consume pane-scoped messages (its own async results,
-// the file-edits live-stream status/pokes, and key/mouse events that land
-// in the pane rail) before the screen sees them.
+// passToScreen forwards to the active screen.
 func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 	if m.help.open {
 		if k, ok := msg.(tea.KeyMsg); ok && (k.String() == "esc" || k.String() == "?") {
@@ -2514,6 +1975,7 @@ func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 		// handled in dispatch (App-level sizing)
 		return m, nil
 	}
+
 	if m.diffOpen && m.diffPane != nil {
 		if consumed, cmd := m.diffMsg(msg); consumed {
 			return m, cmd
@@ -2525,10 +1987,7 @@ func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 	}
 	ns, cmd := s.Update(msg)
 	m.screens[m.active] = ns
-	// The Ask screen's detail pane is the transcript surface: whenever it
-	// re-renders (e.g. a conversation detail just loaded — including from a
-	// rail click), relay the merged transcript into it. No-op unless the
-	// open detail is the active conversation (operator finding 9).
+	// The Ask screen's detail pane is the transcript surface.
 	if m.active == TabAsk {
 		m.onChatWake()
 	}
@@ -2537,36 +1996,23 @@ func (m *App) passToScreen(msg tea.Msg) (*App, tea.Cmd) {
 	m.footer.StreamStatus = m.streamStatus()
 	m.footer.Width = m.width
 	// footer.ComposerFocus is NOT recomputed here: it is derived in setFocus, the one place focus
-	// changes (see setFocus). Recomputing it on this path was one of only two partial sources for
-	// the flag, and the KEYBOARD paths — exactly the ones that move focus — reached neither.
+	// changes (see setFocus).
 	return m, cmd
 }
 
 // diffRailOwnsX reports whether a terminal column belongs to the diff rail.
-//
-// ONE DEFINITION, TWO CALLERS, because a column belongs to the rail or it does not: diffMsg routes a
-// message that lands there to the pane, and the Ask transcript's wheel claim has to YIELD to it. Those two
-// disagreed — the wheel claim tested nothing but the tab — and the operator felt it as a diff rail that
-// would not scroll ("In the TUI diff bar, the scroll doesn't seem to be working").
 func (m *App) diffRailOwnsX(x int) bool {
 	return m.diffOpen && m.diffPane != nil && x < m.diffPaneWidth()
 }
 
 // diffScrollbarHit reports whether a terminal (x, y) is on the diff rail's SCROLLBAR — the cell the
 // operator grabs to jump or drag the viewport.
-//
-// The GEOMETRY is the pane's (diffs.Model.ScrollbarHit knows where its bar is and how tall it is); the
-// GESTURE is the shell's, because a left press in the rail sets a selection region and the clipboard layer
-// consumes the motion that follows — so the drag cannot be handled inside the pane.
 func (m *App) diffScrollbarHit(x, y int) bool {
 	return m.diffOpen && m.diffPane != nil && m.diffPane.ScrollbarHit(x, y)
 }
 
-// diffMsg forwards a pane-scoped message to the diff pane's Update and
-// reports whether the pane consumed it. Pane-scoped (consumed=true): the
-// pane's own async results (FetchDoneMsg/OwnerSetMsg), the file-edits
-// live-stream status/pokes, and key/mouse events that land in the left pane
-// rail. Anything else returns (false, nil) so it falls through to the screen.
+// diffMsg forwards a pane-scoped message to the diff pane's Update and reports whether the pane
+// consumed it.
 func (m *App) diffMsg(msg tea.Msg) (bool, tea.Cmd) {
 	switch msg := msg.(type) {
 	case diffs.FetchDoneMsg, diffs.OwnerSetMsg:
@@ -2584,40 +2030,28 @@ func (m *App) diffMsg(msg tea.Msg) (bool, tea.Cmd) {
 		}
 		return false, nil
 	case tea.KeyMsg:
-		// Global routes already consumed d/esc/y (and ctrl chords). Only
-		// forward navigation keys to the pane when it is open (the pane is
-		// the focus then); the screen's own list/detail navigation is
-		// intentionally left to the pane while it is open. Both tab-switch
-		// keys (h = previous, l = next) must reach the pane so the h/l
-		// switcher is symmetric.
+		// Global routes already consumed d/esc/y (and ctrl chords).
 		switch msg.String() {
 		case "h", "l", "j", "k", "up", "down", "pgup", "pgdown", "g", "G":
 			cmd := m.diffPane.Update(msg)
-			// The pane's tab/selection may have changed (tab-switch keys
-			// h/l, or scroll state); copy it back so the shell-owned state
-			// stays in sync and survives a later SwitchTo (the pane must not
-			// reset the user's tab when navigating screens).
+			// The pane's tab/selection may have changed (tab-switch keys h/l, or scroll state); copy it back so
+			// the shell-owned state stays in sync and survives a later SwitchTo (the pane must not reset.
 			m.syncDiffPaneState()
 			return true, cmd
 		}
 		return false, nil
 	case tea.MouseMsg:
-		// Forward clicks/wheel that land in the left pane rail (x <
-		// the pane width). Motion/Release stay native (Shift+drag); the pane
-		// ignores them anyway. Clicks right of the rail pass to the screen.
+		// Forward clicks/wheel that land in the left pane rail (x < the pane width).
 		if m.diffRailOwnsX(msg.X) {
 			cmd := m.diffPane.Update(msg)
-			// A click may have hit the pane's ✕ close button (the mouse
-			// toggle area). If so, close the pane (restore the layout) and
-			// consume the event — mirroring the GUI's PanelLeftClose.
+			// A click may have hit the pane's ✕ close button (the mouse toggle area).
 			if m.diffPane.TakeCloseRequest() {
 				m.closeDiffPane()
 				m.syncDiffPaneState()
 				return true, cmd
 			}
-			// A click may switch the pane's tab or select a file; copy the
-			// new tab/selection back to the shell-owned state so it persists
-			// across navigation.
+			// A click may switch the pane's tab or select a file; copy the new tab/selection back to the
+			// shell-owned state so it persists across navigation.
 			m.syncDiffPaneState()
 			return true, cmd
 		}
@@ -2663,14 +2097,8 @@ func (m App) viewFrame() string {
 	if h < 1 {
 		h = 1
 	}
-	// ONE opaque full-viewport frame is painted FIRST on every path
-	// (baseView); every overlay is a layer INSIDE that frame — never an
-	// inline drawing over the terminal (Phase 3 overlay discipline). The
-	// final fillView re-normalizes the composited result to exactly w×h so
-	// no overlay can ever change the row count or open a hole.
-	// THE LAUNCH PROMPT OWNS THE WHOLE FRAME while it is up: the question (and then
-	// the create modal) REPLACES the shell rather than layering over it, so nothing
-	// behind it can read as "the app already started".
+	// ONE opaque full-viewport frame is painted FIRST on every path (baseView); every overlay is a
+	// layer INSIDE that frame — never an inline drawing over the terminal (Phase 3 overlay discipline).
 	if m.launch != nil {
 		return m.launchView(w, h)
 	}
@@ -2680,41 +2108,28 @@ func (m App) viewFrame() string {
 		return fillView(m.overlayCentered(base, overlay), w, h)
 	}
 	if m.palette.connectOpen {
-		// SOLID, LIKE EVERY OTHER MODAL. The connection form's View is NOT a rectangle —
-		// its title and hint rows are written at their natural width while its input rows
-		// are not, so splicing it raw over the frame let the base show through the gaps
-		// and the ragged rows tripped the splice, shifting everything after them.
-		// modalPanel normalizes it to one opaque, uniformly-sized panel; this path was
-		// the only overlay still splicing raw, which is why /connect was the one surface
-		// that looked broken (the operator's screenshot: the launch page's own text
-		// showing through two overlapping box outlines).
+		// SOLID, LIKE EVERY OTHER MODAL.
 		return fillView(m.overlayCentered(base, m.modalPanelFittingContent(m.connectOverlayView())), w, h)
 	}
 	if m.palette.PaletteOpen() {
 		base = m.paletteComposerView(base)
 	}
 	base = m.composeView(base)
-	// The /models picker is spliced LAST (above every other layer). Its origin is
-	// recomputed from the same w×h the overlay uses, so a click addresses the box
-	// that was actually drawn.
+	// The /models picker is spliced LAST (above every other layer).
 	if m.modelPicker != nil {
 		m.modelPicker.SetScreen(w, h)
 		base = m.overlayCentered(base, m.modelPicker.View())
 	}
-	// The rename modal goes in the same layer. It and the model picker are mutually exclusive in
-	// practice (the picker opens from the composer's model chip, the rename box from the rail), and
-	// both are hosted here rather than on a screen, so ordering is not load-bearing.
+	// The rename modal goes in the same layer.
 	if m.renameConv != nil {
 		base = m.renameConvView(base, w, h)
 	}
+	// THE MESSAGE EDIT MENU, drawn above the transcript it edits and centred by the same compositor
+	// every other overlay uses — so it cannot change the frame's row count.
+	if m.msgMenu != nil {
+		base = m.overlayCentered(base, m.msgMenuView())
+	}
 	// THE CONVERSATION SCOPE MODAL IS DRAWN FIRST OF THE TWO, so a form raised FROM it lands ON TOP.
-	//
-	// THIS ORDER IS LOAD-BEARING, and getting it backwards is the operator's "none of the buttons
-	// within the modal does anything excepet for ESC": the keys were routed correctly (the form WAS
-	// built and hosted), but the shell composited the list AFTER the form, so the form rendered
-	// UNDERNEATH the modal that opened it and the key looked dead. It matches the router's order —
-	// convScopeForm's keys are claimed before the list's — which is the invariant to keep: whatever
-	// takes the keys must be what the operator sees.
 	if m.scope != nil {
 		base = m.scopeView(base, w, h)
 	}
@@ -2740,23 +2155,14 @@ func (m App) viewFrame() string {
 		base = m.catAdminView(base, w, h)
 	}
 	// THE FIND BOX IS COMPOSED LAST — over every other modal — because it is CLAIMED FIRST in dispatch.
-	//
-	// THE INVARIANT IS "WHATEVER TAKES THE KEYS IS WHAT THE OPERATOR SEES": the box answers every
-	// keystroke and the mouse while it is up, so drawing it under a sibling would put the keyboard on a
-	// surface the operator cannot read. (This is the ordering the conversation-scope modal got wrong
-	// once — the form was raised from it and composited BENEATH it, which is why none of its buttons
-	// appeared to work.)
 	if m.findBox != nil {
 		base = m.findBoxView(base, w, h)
 	}
 	return fillView(base, w, h)
 }
 
-// baseView paints the opaque full-viewport shell grid: the centered tab
-// bar, the underline rule, one separator row, the active screen block,
-// the composer dock, and the one-line footer — every cell carrying the
-// theme's solid background, so nothing bleeds through from beneath the
-// alt-screen frame.
+// baseView paints the opaque full-viewport shell grid: the centered tab bar, the underline rule,
+// one separator row, the active screen block, the composer dock, and the one-line footer.
 func (m App) baseView(w, h int) string {
 	cw := m.contentWidth()
 	screenRows := m.contentHeight()
@@ -2764,10 +2170,8 @@ func (m App) baseView(w, h int) string {
 	if screenRows < 1 {
 		screenRows = 1
 	}
-	// Center column: the active screen block + the dock block beneath it,
-	// each normalized to its budget row count (padded with the theme
-	// background when short, truncated when over — the composer can never
-	// be pushed off-screen by an over-tall screen render).
+	// Center column: the active screen block + the dock block beneath it, each normalized to its budget
+	// row count (padded with the theme background when short, truncated when over.
 	var bodyLines []string
 	if m.welcomeMode() {
 		// opencode-style launch: the composer sits in the MIDDLE of the
@@ -2824,9 +2228,8 @@ const (
 	askConversations
 )
 
-// welcomeMode reports whether to render the centered launch layout: the Ask
-// tab showing "New" with no conversation open. Choosing Conversations (or
-// opening one) leaves it.
+// welcomeMode reports whether to render the centered launch layout: the Ask tab showing "New" with
+// no conversation open.
 func (m App) welcomeMode() bool {
 	if m.active != TabAsk || m.chatConvID != "" {
 		return false
@@ -2839,14 +2242,7 @@ func (m App) welcomeMode() bool {
 	return m.askMode != askConversations
 }
 
-// brandGlyphs is a 5-row block font. EVERY glyph is EXACTLY brandGlyphW cells
-// wide in every row, and welcomeBrand below COMPOSES the word from them.
-//
-// Hand-writing one aligned block is what broke the previous wordmark: a single
-// row came out one cell short, which shifted the H's crossbar and every glyph
-// after it on that row and sheared the whole thing (the operator's "looks like
-// I'm tripping on acid"). Composing per-glyph makes width drift impossible,
-// and TestWelcomeBrandRowsAreUniform asserts it.
+// brandGlyphs is a 5-row block font.
 const brandGlyphW = 8
 
 var brandGlyphs = map[rune][]string{
@@ -2861,9 +2257,8 @@ var brandGlyphs = map[rune][]string{
 // brandRows is the glyph stack height.
 const brandRows = 5
 
-// welcomeBrand is "ORCHICON" composed from brandGlyphs: each glyph padded to
-// brandGlyphW and separated by one space, so every row is the same width by
-// construction.
+// welcomeBrand is "ORCHICON" composed from brandGlyphs: each glyph padded to brandGlyphW and
+// separated by one space, so every row is the same width by construction.
 var welcomeBrand = composeBrand("ORCHICON")
 
 // composeBrand lays out word in the block font, one string per row.
@@ -2944,22 +2339,11 @@ func (g welcomeComposer) contains(x, y int) bool {
 	return x >= g.Left && x < g.Left+g.Width && y >= g.Top && y < g.Top+g.Rows
 }
 
-// bodyTopRow is the frame row of the body region's FIRST row. The chrome above it is the tab bar and its
-// underline rule (tabBarRows) plus the one blank separator (row 2) — the same derivation composerTopRow
-// and selectionRegionAt use, named once so the launch page's centered geometry cannot be off by the
-// chrome it is drawn under.
+// bodyTopRow is the frame row of the body region's FIRST row.
 func bodyTopRow() int { return tabBarRows + 1 }
 
-// welcomeLayout builds the launch block — the large brand lockup, the composer box, and the tagline —
-// vertically centered in the w×h body region, AND reports where the composer box landed in that block.
-//
-// The composer keeps its own rendering (border, hint row, palette target); only its width and position
-// change, so typing, slash commands and drafts behave identically to the docked layout.
-//
-// The row of the box is DERIVED from the block it is composed into (a leading blank, the wordmark,
-// a blank, then the box) rather than hardcoded, because the wordmark is FIVE rows on a wide terminal
-// and ONE row on a narrow one — a constant here would be wrong on exactly the terminals where the
-// layout has already changed shape.
+// welcomeLayout builds the launch block — the large brand lockup, the composer box, and the tagline
+// — vertically centered in the w×h body region.
 func (m App) welcomeLayout(w, h int) ([]string, welcomeComposer) {
 	boxW := w * 2 / 3
 	if boxW > 76 {
@@ -2975,9 +2359,8 @@ func (m App) welcomeLayout(w, h int) ([]string, welcomeComposer) {
 	d.Width = boxW
 	boxLines := strings.Split(d.View(), "\n")
 
-	// The wordmark falls back to a plain bold title on terminals too narrow for
-	// the block letters (they are ~63 cells wide), so the launch screen never
-	// wraps or truncates mid-glyph.
+	// The wordmark falls back to a plain bold title on terminals too narrow for the block letters (they
+	// are ~63 cells wide), so the launch screen never wraps or truncates mid-glyph.
 	brandW := lipgloss.Width(welcomeBrand[0])
 	var brand []string
 	if w >= brandW+4 {
@@ -3014,9 +2397,7 @@ func (m App) welcomeLayout(w, h int) ([]string, welcomeComposer) {
 	for i := 0; i < top; i++ {
 		out = append(out, "")
 	}
-	// The box's LEFT edge. Every box line is exactly boxW wide (ComposerBox pads its inner rows and adds
-	// its border), so one pad serves them all — and it is the same pad the lines below are drawn with,
-	// derived once here rather than re-derived by the click mapping.
+	// The box's LEFT edge.
 	boxLeft := (w - boxW) / 2
 	if boxLeft < 0 {
 		boxLeft = 0
@@ -3057,12 +2438,8 @@ func safeView(s Screen) string {
 	return s.View()
 }
 
-// normalizeBlock pins a rendered block to exactly h rows × w columns:
-// over-long rows are ANSI-aware truncated, short rows background-padded
-// (the padding cells are painted by fillView's ScreenBg pass), and the
-// row count is exact — a short block never leaves the rows below it to
-// drift up (the pre-Phase-2a bleed-through), an over-tall block never
-// pushes the composer/footer off-screen.
+// normalizeBlock pins a rendered block to exactly h rows × w columns: over-long rows are ANSI-aware
+// truncated, short rows background-padded (the padding cells are painted by fillView's ScreenBg.
 func normalizeBlock(block string, w, h int) []string {
 	if w < 1 {
 		w = 1
@@ -3083,10 +2460,8 @@ func normalizeBlock(block string, w, h int) []string {
 	return lines
 }
 
-// normalizeBlockKeepTail is normalizeBlock for blocks whose LAST row is
-// the load-bearing one (the dock: chip/notice strips sit above the input
-// line). Overflow drops rows from the TOP (the chip first) so the
-// composer input line survives an over-tall block.
+// normalizeBlockKeepTail is normalizeBlock for blocks whose LAST row is the load-bearing one (the
+// dock: chip/notice strips sit above the input line).
 func normalizeBlockKeepTail(block string, w, h int) []string {
 	if w < 1 {
 		w = 1
@@ -3107,10 +2482,8 @@ func normalizeBlockKeepTail(block string, w, h int) []string {
 	return lines
 }
 
-// fillView pins content to the exact viewport: every rendered line is
-// padded to w cells (truncated on overflow) and the whole grid is filled
-// to exactly h rows, ALL through ScreenBg so every cell is opaque theme
-// background — no terminal bleed-through anywhere.
+// fillView pins content to the exact viewport: every rendered line is padded to w cells (truncated
+// on overflow) and the whole grid is filled to exactly h rows.
 func fillView(content string, w, h int) string {
 	lines := strings.Split(content, "\n")
 	for i, l := range lines {
@@ -3126,26 +2499,10 @@ func fillView(content string, w, h int) string {
 }
 
 // bgOpaque re-asserts the theme background after every SGR reset inside l.
-//
-// Why: padScreenLine wraps a rendered line in ScreenBg once, but ANY inner
-// style (HintText, DetailValue, …) emits its own trailing \x1b[0m reset,
-// which turns the background OFF for the rest of the line — including all
-// of padScreenLine's padding spaces. On a terminal whose own background is
-// not the theme background (most terminals; transparent-background setups
-// especially), every cell after an inner reset renders UNPAINTED and the
-// terminal's content bleeds straight through the "opaque" frame.
-//
-// The fix mirrors what bubbletea's renderer does for its own cells: after
-// each reset, immediately re-emit the background SGR so every subsequent
-// cell (content or padding) stays on the theme background. A reset that is
-// immediately followed by another escape needs no repair (the next SGR
-// sets its own state and the next reset is caught then).
 func bgOpaque(l string) string {
 	const reset = "\x1b[0m"
 	bg := theme.ScreenBg
-	// The re-assert sequence: the same SGR ScreenBg emits, minus its own
-	// trailing reset. We derive it once from a zero-width render so the
-	// repair always matches the active theme + color profile.
+	// The re-assert sequence: the same SGR ScreenBg emits, minus its own trailing reset.
 	paint := bg.Render("")
 	if paint == "" {
 		return l // profile off / no background: nothing to re-assert
@@ -3159,8 +2516,7 @@ func bgOpaque(l string) string {
 		return l
 	}
 	// The foreground repair sequence, derived the same way so it always matches the active theme and
-	// colour profile. A style with no foreground (an unusual theme) yields "" and the repair is a
-	// no-op, which is the honest behaviour: there is then no theme colour to assert.
+	// colour profile.
 	fgPaint := lipgloss.NewStyle().Foreground(theme.Text).Render("")
 	fgOpen := ""
 	if strings.HasSuffix(fgPaint, reset) {
@@ -3208,13 +2564,7 @@ func bgOpaque(l string) string {
 	}
 }
 
-// sgrSetsBackground reports whether rest begins with an SGR sequence that establishes a
-// BACKGROUND. Those are the only sequences after which the background does not need re-asserting:
-//   - 48;…  an explicit background colour;
-//   - 7      reverse video, which swaps fg and bg and is how a bold/selected cell gets its fill.
-//
-// A full reset (0) is NOT included: it clears the background too, and the loop's next iteration
-// catches it.
+// sgrSetsBackground reports whether rest begins with an SGR sequence that establishes a BACKGROUND.
 func sgrSetsBackground(rest string) bool {
 	return sgrHasParam(rest, "48", "7")
 }
@@ -3244,11 +2594,8 @@ func sgrHasParam(rest string, params ...string) bool {
 	return false
 }
 
-// padScreenLine renders one row at exactly w cells: overlong lines are
-// ANSI-aware truncated, short lines background-padded. Every cell —
-// including padding — carries the theme's solid background AND its body foreground.
-// Any inner style's reset is followed by a re-assert of whichever of the two it
-// cleared (bgOpaque), so no cell can be left to the terminal.
+// padScreenLine renders one row at exactly w cells: overlong lines are ANSI-aware truncated, short
+// lines background-padded.
 func padScreenLine(l string, w int) string {
 	cols := lipgloss.Width(l)
 	if cols > w {
@@ -3259,24 +2606,12 @@ func padScreenLine(l string, w int) string {
 		l += strings.Repeat(" ", w-cols)
 	}
 	// BOTH attributes, because each is independently lost: an inner style ends with a reset and the
-	// next one frequently restores only the foreground, which is how the background went missing; and
-	// the row's own leading cells (padding, and text before any styled span) need a colour from the
-	// start, which a background-only wrap does not give them.
+	// next one frequently restores only the foreground, which is how the background went missing.
 	return bgOpaque(screenBase().Render(l))
 }
 
-// screenBase is the style every row of the frame is wrapped in: the theme's body text on the theme's
-// screen background.
-//
-// IT IS A FUNCTION, NOT A VAR. As a package-level `var` it evaluated `theme.Text` and `theme.Bg` ONCE,
-// at package initialisation — when the active theme is the default (DARK) — so every row of every frame
-// was wrapped in the dark palette's colours for the life of the process. In a light session that put a
-// dark background behind the entire frame, which is the operator's "weird black box around the composer
-// box", the black behind "connected" in the footer, and the black blocks inside executions and work
-// items. All of those looked like separate bugs and were this one.
-//
-// It also survived the earlier per-cell audit, because those cells were PAINTED — just painted wrong.
-// Measuring "is there a background here" is not the same as measuring "is it the RIGHT background".
+// screenBase is the style every row of the frame is wrapped in: the theme's body text on the
+// theme's screen background.
 func screenBase() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(theme.Text).Background(theme.Bg)
 }
@@ -3297,10 +2632,8 @@ func (m App) StreamStatus() streamStatusString { return m.streamStatus() }
 
 // --- chat dock: shell-side handlers ---------------------------------------
 
-// waitChat arms the shell's chat waiter: one tea.Cmd parked on the
-// wake/cmd channels, returning whichever fires first. The shell re-arms
-// after every handled chat message (same re-armable pattern as the
-// subs status channels).
+// waitChat arms the shell's chat waiter: one tea.Cmd parked on the wake/cmd channels, returning
+// whichever fires first.
 func (m *App) waitChat() tea.Cmd {
 	wake, cmds := m.chatWake, m.chatCmds
 	return func() tea.Msg {
@@ -3320,9 +2653,8 @@ type chatWakeMsg struct{}
 // transcript poll) into the tea loop.
 type chatCmdMsg struct{ cmd tea.Cmd }
 
-// appEventStore adapts the App into chat.EventStore (live chunks land
-// in the per-conversation item list). Mutations go through chatStore
-// (mutex-guarded); chatWake pokes the tea loop for a repaint.
+// appEventStore adapts the App into chat.EventStore (live chunks land in the per-conversation item
+// list).
 type appEventStore struct{ m *App }
 
 func (s appEventStore) AppendLiveItem(convID string, item chat.ChatItem) {
@@ -3331,29 +2663,18 @@ func (s appEventStore) AppendLiveItem(convID string, item chat.ChatItem) {
 }
 
 func (s appEventStore) SetReconnecting(convID string, on bool) {
-	// The dock mutates on the tea loop (onChatWake) — this goroutine
-	// only records state + pokes (bubbletea's value-model copies make a
-	// direct dock write here invisible).
+	// The dock mutates on the tea loop (onChatWake) — this goroutine only records state + pokes
+	// (bubbletea's value-model copies make a direct dock write here invisible).
 	s.m.chatStore.setReconnecting(convID, on)
 	s.pokeChat()
 }
 
-// ShowConsentAsk puts a pending ask's card into the conversation's transcript, from the STREAM goroutine.
-//
-// IT REPLACES A NON-BLOCKING SEND ON THE SHELL'S COMMAND CHANNEL, which could DROP a card in silence — see
-// EventStore.ShowConsentAsk for what that cost (the GUI asked, the TUI sat at "orchicon is thinking", and
-// the turn eventually failed on an answer no card ever collected). A store write cannot fail, and the
-// repaint is a coalescing wake poke whose loss is harmless.
-//
-// ONLY POINTER AND CHANNEL FIELDS ARE TOUCHED. App.Update has a VALUE receiver, so the App this goroutine
-// holds is a copy from Bind time: a plain field read here (chatConvID) would see that copy's value, not the
-// live shell's. chatStore and chatWake are the fields designed to survive that, and the CONVERSATION comes
-// from the ask itself, which the controller stamps with the turn that raised it.
+// ShowConsentAsk puts a pending ask's card into the conversation's transcript, from the STREAM
+// goroutine. ONLY POINTER AND CHANNEL FIELDS ARE TOUCHED.
 func (s appEventStore) ShowConsentAsk(ask chat.PermissionAsk) {
 	if ask.ConvID == "" {
 		// The controller always stamps the turn's conversation (see the PermissionAsk wire arm), so an
-		// empty id here is a locally built ask and there is no live shell to fall back to. Draw it nowhere
-		// rather than guess a conversation off a stale App copy.
+		// empty id here is a locally built ask and there is no live shell to fall back to.
 		return
 	}
 	s.m.chatStore.drawConsentAsk(ask.ConvID, ask)
@@ -3367,21 +2688,46 @@ func (s appEventStore) SettleConsentAsk(convID, askID, outcome, answer string) {
 	s.pokeChat()
 }
 
-// ReconcilePendingAsks settles the cards the server no longer lists, from DiscoverPendingAsks' answer.
-// Straight to the store, like the other card paths here: a settle that is dropped leaves an inert card
-// claiming a choice, and the poke that follows repaints (see EventStore.ReconcilePendingAsks).
-func (s appEventStore) ReconcilePendingAsks(convID string, openIDs []string) {
-	open := make(map[string]bool, len(openIDs))
-	for _, id := range openIDs {
-		open[id] = true
+// ShowDiscoveredAsks draws the open asks the server just reported. IT ONLY EVER ADDS.
+//
+// THIS IS THE GUI'S RULE, and adopting it verbatim is the fix. The GUI's discovery effect is:
+//
+//	if (!pendingAsks || pendingAsks.length === 0) return;
+//	for (const ask of pendingAsks) applyAsk(activeConvId, ask);
+//
+// It adds what the server lists and never retires anything because the list did not mention it.
+//
+// WHAT THE TUI DID INSTEAD, and why it flickered. This method used to settle every pending card whose id
+// was ABSENT from the server's answer. Absence is not evidence: the answer is a point-in-time read over a
+// poll, and an empty or partial one (a read that raced the raise, a conversation the server was still
+// indexing, a poll that landed between the persist and the registry write) retired LIVE cards. The next
+// poll then drew them again — a settle → redraw cycle at poll cadence, which is exactly the flicker the
+// operator reported, and which the GUI never showed because it cannot settle this way at all. The
+// operator's own observation localised it: "Looks like just in the TUI."
+//
+// SO WHAT STILL SETTLES A CARD? Only positive evidence, never absence:
+//   - a RECORDED OUTCOME in the durable page (onTranscript → TranscriptMsg.SettledAsks), which is what
+//     survives a reload and covers an expiry at finalize and a decision taken in the other client;
+//   - a DECISION THIS CLIENT MADE (SettleConsentAsk, from the resolve event or its own reply).
+//
+// The other direction is the safe one: a card the server has genuinely dropped but that no outcome record
+// covers stays answerable — a stale card the operator can still click, which resolves to "already answered"
+// on the server, rather than a live card that vanished. A dead card that can be dismissed is a far smaller
+// harm than a live turn parked behind a card nobody can see.
+//
+// drawConsentAsk is idempotent by ask id and re-arms a card settled in error, so drawing on every poll is
+// correct and never duplicates. One poke, after every draw, so no repaint can observe a half-applied state.
+func (s appEventStore) ShowDiscoveredAsks(convID string, asks []chat.PermissionAsk) {
+	for _, ask := range asks {
+		if ask.ConvID == "" {
+			ask.ConvID = convID
+		}
+		s.m.chatStore.drawConsentAsk(ask.ConvID, ask)
 	}
-	s.m.chatStore.settleStaleConsent(convID, open)
 	s.pokeChat()
 }
 
-// pokeChat wakes the tea loop for a repaint. A no-op when a poke is already pending: the POKE is a coalescing
-// signal (the loop repaints the whole transcript), so losing one costs nothing — which is exactly why it is
-// safe to be non-blocking here and was not safe for the card itself.
+// pokeChat wakes the tea loop for a repaint.
 func (s appEventStore) pokeChat() {
 	select {
 	case s.m.chatWake <- struct{}{}:
@@ -3389,11 +2735,7 @@ func (s appEventStore) pokeChat() {
 	}
 }
 
-// onConversations ingests the loaded conversation list for the Ask
-// screen's CONVERSATIONS rail. The rail is OPEN by default (GUI parity),
-// but NO conversation is auto-opened on launch — the shell lands on a
-// fresh chat context (GUI default behavior); existing conversations are
-// reached only deliberately (rail click, slash command, /context, chat).
+// onConversations ingests the loaded conversation list for the Ask screen's CONVERSATIONS rail.
 func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 	m.convLoading = false
 	if msg.Err != "" {
@@ -3405,24 +2747,12 @@ func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 	}
 	m.convErr = ""
 	m.convLoaded = true
-	// THE LIST'S OWN GROUPINGS COME WITH IT. Applying them here is what keeps the rail's folders current
-	// when the grouping was created in the OTHER client: the shell's cache is loaded once at startup, so
-	// before this the rail could only ever show groupings that existed when the TUI began.
+	// THE LIST'S OWN GROUPINGS COME WITH IT.
 	m.applyCategorySet(apiv1.CategoryTargetType_CATEGORY_TARGET_TYPE_CONVERSATION, msg.Categories, msg.Assignments)
-	// AND THE PROJECT LIST, IF IT NEVER LANDED. The two are fetched together where the shell can arrange it, but
-	// they arrive on separate paths and only ONE of them was wired everywhere: Init() loads conversations
-	// directly, so the project list was never fetched in a normal session and the workspace picker offered
-	// nothing but "All projects". This is the self-healing half — every conversations load retries while the
-	// project list is still missing, whichever path asked for the conversations. (railProjectsLoaded, not
-	// len(railProjects): a tenant with no projects must not re-request on every load forever.)
-	// THE LIST IS ASSIGNED ONCE, AHEAD OF THE BRANCH BELOW, because the scope notice reads it and must fire
-	// on BOTH paths: when the rail's project list has not landed yet this function returns early, and a
-	// scope hiding a newly-arrived row is exactly as true there as anywhere else.
+	// AND THE PROJECT LIST, IF IT NEVER LANDED.
 	m.conversations = msg.Convs
-	// AND AN ACTIVE SCOPE SAYS SO WHEN THIS RELOAD PUT A NEW ROW BEHIND IT. The list is the ONLY place a
-	// conversation created in the other client becomes known, and the scope's own notice is written when the
-	// scope is SET — so without this, a row that arrives later is hidden in silence and the operator cannot
-	// tell a filter from a conversation that never arrived. See noteScopeHidesNewRows.
+	// The list is the ONLY place a conversation created in the other client becomes known, and the
+	// scope's own notice is written when the scope is SET — so without this.
 	m.noteScopeHidesNewRows()
 	if !m.railProjectsLoaded && m.clients != nil {
 		// The composer strip is pushed from the list it derives from (AC 9): the
@@ -3437,30 +2767,17 @@ func (m *App) onConversations(msg chat.ConversationsMsg) tea.Cmd {
 		m.convScroll = 0
 	}
 	// Marks are reconciled against the new list: a reload is the honest reconciliation for a bulk
-	// delete, and a mark on a conversation that no longer exists would overstate the selection and
-	// aim the next bulk action at a row the server would reject.
+	// delete, and a mark on a conversation that no longer exists would overstate the selection and aim.
 	m.pruneConvMarks()
-	// THE COMPOSER STRIP IS PUSHED FROM ITS OWN SOURCE (AC 9). The mode pill reads
-	// currentModeLabel(), which reads THIS list — so the reload that just landed is
-	// exactly when the pill must be re-pushed. dock.Mode's only other writer was a
-	// COMPLETED METRICS READ, so `/mode` left the pill showing the previous mode
-	// until an unrelated turn finished or the conversation was reopened. That is the
-	// operator's report, verbatim: "when you switch a mode, it doesn't update in the
-	// composer unless you move away from the chat and then move back".
+	// THE COMPOSER STRIP IS PUSHED FROM ITS OWN SOURCE (AC 9).
 	m.syncComposerStats()
-	// The detail header reads its title + message count out of THIS list, so a
-	// refresh has to repaint the open pane or the new values sit unrendered
-	// until the next unrelated wake.
+	// The detail header reads its title + message count out of THIS list, so a refresh has to repaint
+	// the open pane or the new values sit unrendered until the next unrelated wake.
 	wake := m.onChatWake()
-	// AND ATTACH TO A TURN THAT STARTED WHILE WE WERE LOOKING — see reattachFromRail. This list is POLLED (the
-	// rolling refresh window, every 5s), so it is the one signal that tells this client a turn is running on the
-	// conversation it is already showing.
+	// AND ATTACH TO A TURN THAT STARTED WHILE WE WERE LOOKING — see reattachFromRail.
 	re := m.reattachFromRail()
-	// The MODEL + STATS fields derive from m.metrics, which a rail reload does NOT
-	// refresh: when the open conversation's row now names a different model (a
-	// `/model` set in the other client), re-read the metrics so those fields follow
-	// it too. Only on divergence — a refresh on every reload would put a metrics
-	// RPC on every list poll.
+	// The MODEL + STATS fields derive from m.metrics, which a rail reload does NOT refresh: when the
+	// open conversation's row now names a different model (a `/model` set in the other client).
 	if m.composerModelDiverged() {
 		return tea.Batch(wake, m.refreshMetrics(), re)
 	}
@@ -3513,49 +2830,23 @@ func (m *App) drainRailCmd() tea.Cmd {
 	return c
 }
 
-// inDockRows reports whether an absolute terminal row is inside the dock
-// (composer) block — the chip/notice strip(s) and the input line. Used by
-// the mouse router: clicking the composer must FOCUS it (finding 7), not
-// just rely on the launch default.
+// inDockRows reports whether an absolute terminal row is inside the dock (composer) block — the
+// chip/notice strip(s) and the input line.
 func (m *App) inDockRows(y int) bool {
 	dockRows := m.dock.Lines()
 	return y >= m.height-1-dockRows && y <= m.height-2
 }
 
-// chatStore guards the per-conversation live item lists (the stream
-// goroutine appends; the tea loop reads). Held by pointer so App keeps
-// its value-receiver tea.Model methods.
+// chatStore guards the per-conversation live item lists (the stream goroutine appends; the tea loop
+// reads).
 type chatStore struct {
 	mu           sync.Mutex
 	items        map[string][]chat.ChatItem
 	reconnecting map[string]bool
-	// toolCalls is the DURABLE tool-call ledger of the open conversation's last transcript page, for
-	// the activity line's rolling counter (internal/toolclass.SummarizeCalls). It mirrors
-	// `reconnecting`: one map, mutex-guarded, keyed by conversation.
-	//
-	// WHOLESALE SET, NEVER APPEND. The ledger column is CUMULATIVE for the turn and the 1s
-	// ListMessages poll is its authority, so each landing REPLACES the slice. Appending would
-	// double-count the same call on every tick and the counter would climb forever.
+	// WHOLESALE SET, NEVER APPEND.
 	toolCalls map[string][]toolclass.Call
-	// orderAt is the ARRIVAL ANCHOR map: convID -> MESSAGE key -> the ordering timestamp every item of that
-	// message must sort by, overriding the timestamp each item was built with.
-	//
-	// WHY IT EXISTS. An item's timestamp is when its ROW was created, and for the acked assistant reply that is
-	// the START of the turn — while every item raised DURING that turn (a permission card, a clarifying
-	// question, a command row) is stamped with the moment IT arrived. Ordered by those two clocks the reply
-	// wins every comparison for the whole turn, so as it grew it stayed pinned ABOVE the cards: the cards sat
-	// at the bottom of the screen with the conversation continuing above them. The operator: "A lot of the
-	// permission/answer logs and even some actual commands ran stays at the bottom of the screen and the
-	// conversation from the model continues above it. This made me think the conversation wasn't going
-	// anywhere."
-	//
-	// The anchor makes a message that is still BEING WRITTEN sort by its LAST ARRIVAL rather than its creation,
-	// so it sinks as new text streams in and the items raised while it was being written float above it — the
-	// operator's "move them up as new text streams in just like any other activity".
-	//
-	// It is keyed by MESSAGE, not by item, so every row derived from one assistant row (its text, each
-	// reasoning part, its recorded ask card) moves as a UNIT and keeps the intra-message ordering those rows
-	// were emitted in.
+	// orderAt is the ARRIVAL ANCHOR map: convID -> MESSAGE key -> the ordering timestamp every item of
+	// that message must sort by, overriding the timestamp each item was built with.
 	orderAt map[string]map[string]int64
 }
 
@@ -3565,9 +2856,7 @@ func (s *chatStore) append(convID string, item chat.ChatItem) {
 	s.mu.Unlock()
 }
 
-// consentState finds a pending ask's live state by id. The pointer is the SAME
-// object the transcript item holds, so a mutation here is what the next repaint
-// draws.
+// consentState finds a pending ask's live state by id.
 func (s *chatStore) consentState(convID, askID string) *chat.ConsentState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3592,32 +2881,8 @@ func (s *chatStore) hasPendingConsent(convID string) bool {
 	return false
 }
 
-// drawConsentAsk puts a pending ask's card into the conversation's transcript, and reports whether it drew
-// one (false = this conversation already holds a card for that ask).
-//
-// IT IS THE ONE PLACE A CARD ENTERS THE TRANSCRIPT, called by both the shell (App.ShowConsentAsk, from the tea
-// loop) and the stream (appEventStore.ShowConsentAsk, from the turn's goroutine), so the two paths cannot
-// disagree about the ask's identity, about the conversation it lands in, or about drawing it twice.
-//
-// A CARD THE SERVER RAISED IS ALWAYS DRAWN. This used to be suppressed by the shell's own grant mirror, and
-// the suppression could only ever swallow a decision the operator needed to make:
-//
-//   - the server consults its grant store BEFORE it raises an ask (permpolicy's SessionGranted input), so an
-//     ask that arrives is one the server genuinely has no consent for. A client that mutes it does not remove
-//     a question — it removes the ANSWER, and the turn parks with nothing on screen to act on. The operator,
-//     watching both clients: "the permission ask card pops up in the GUI but it doesn't pop up in the TUI. It
-//     just sits at 'orchicon is thinking'."
-//   - the mirror's inputs were all unreliable: the server's grants are IN MEMORY and are dropped by every plane
-//     restart (the prod plane restarted 14 times in the two days this was measured); a decision this client
-//     sent may have been REFUSED (Applied=false, Expired=true) while the card was still settled locally; and
-//     the server matches a grant over its whole SUBTREE while the mirror matched the directory EXACTLY.
-//
-// A duplicate card is answerable; a missing one hangs the turn. Where the mirror used to silence a repeat, the
-// SERVER does it correctly — it will not raise the ask again once the grant is applied.
-//
-// Idempotence is kept for the SAME ask, which is not hypothetical: a dropped socket re-dials through
-// WatchTurnStream, whose replay re-emits every pending ask (chat.go), so without this the card the operator
-// already has would be drawn a second time.
+// drawConsentAsk puts a pending ask's card into the conversation's transcript, and reports whether
+// it drew one (false = this conversation already holds a card for that ask).
 func (s *chatStore) drawConsentAsk(convID string, ask chat.PermissionAsk) bool {
 	if convID == "" {
 		return false
@@ -3626,12 +2891,7 @@ func (s *chatStore) drawConsentAsk(convID string, ask chat.PermissionAsk) bool {
 		ask.ID = fmt.Sprintf("ask-%d", time.Now().UnixNano())
 	}
 	if s.hasConsent(convID, ask.ID) {
-		// A HELD ID IS NOT ALWAYS A HELD CHOICE. A card that was settled — by the page's record, by
-		// the other client, or by a local sweep that turned out to be wrong — is a RECORD of an ask,
-		// not a claim on its id. The server is still listing this ask as OPEN (discovery only asks
-		// for open ones, and the wire arm only replays open ones), so the operator must be able to
-		// answer it: the card is re-armed rather than silently refused. Without this, one wrong
-		// settle was PERMANENT for the turn — nothing could ever redraw the card.
+		// A HELD ID IS NOT ALWAYS A HELD CHOICE.
 		if s.rearmSettledConsent(convID, ask.ID) {
 			return true
 		}
@@ -3644,12 +2904,7 @@ func (s *chatStore) drawConsentAsk(convID string, ask chat.PermissionAsk) bool {
 }
 
 // rearmSettledConsent turns a SETTLED card for this ask back into a pending choice, and reports
-// whether it found one to re-arm. A card already PENDING is reported as NOT re-armed, so the caller's
-// draw stays a no-op and the operator cannot end up with two cards for one ask.
-//
-// The decision is cleared back to "" (ConsentState.Pending's own definition) rather than to any
-// particular choice, because this client is not deciding anything: it is admitting the ask is open
-// again and handing the choice back.
+// whether it found one to re-arm.
 func (s *chatStore) rearmSettledConsent(convID, askID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -3671,9 +2926,6 @@ func (s *chatStore) rearmSettledConsent(convID, askID string) bool {
 }
 
 // hasConsent reports whether this conversation already holds a card for the ask.
-//
-// It is what keeps "draw every card the server raises" idempotent: a re-attach replays every still-open ask on
-// WatchTurnStream (chat.go), so without this the card the operator already has would be drawn twice.
 func (s *chatStore) hasConsent(convID, askID string) bool {
 	if askID == "" {
 		return false
@@ -3788,9 +3040,7 @@ func (s *chatStore) mergeHistory(convID string, history []chat.ChatItem) {
 	}
 	kept := make([]chat.ChatItem, 0, len(live))
 	for _, it := range live {
-		// ALREADY MERGED: this row came from a previous pass, so adding it again IS the
-		// duplication. Keyed rather than kind-matched, because it applies to every durable
-		// item — the user message, the reply, and each reasoning part.
+		// ALREADY MERGED: this row came from a previous pass, so adding it again IS the duplication.
 		if it.Key != "" && already[it.Key] {
 			continue
 		}
@@ -3801,20 +3051,6 @@ func (s *chatStore) mergeHistory(convID string, history []chat.ChatItem) {
 		}
 		// THE LIVE HALF OF A REPLY THAT IS ALSO DURABLE — the duplication this function still had, and why
 		// a mid-turn poll showed the reply twice.
-		//
-		// The server mirrors the running turn's collected text and reasoning into the acked assistant row
-		// every 250ms, and the TUI polls for it MID-TURN (that is the whole point of the poll — see
-		// runTurnPoll). But the two halves are keyed in DIFFERENT NAMESPACES: the durable row is "m-<id>"
-		// and a streamed chunk is "st-<seq>", so the identity rule above can never match them, and every
-		// mid-turn merge appended the mirror's copy of the reply to the live copy already on screen.
-		//
-		// MEASURED before this fix, on a send + one chunk + one mid-turn poll:
-		//   [user/m-1 "A"] [text/m-2 "reply1"] [text/st-1 "reply1"]      <- the reply, twice
-		//
-		// So a live chunk is dropped when the mirror ALREADY CARRIES ITS TEXT. That is deliberately a
-		// content test rather than "drop every live chunk once a mirror exists": the mirror is written per
-		// part and can lag, so dropping the live half wholesale would blank the newest text for up to a
-		// poll interval. Comparing text keeps whatever the mirror has not caught up with.
 		if (it.Kind == chat.KindText || it.Kind == chat.KindReasoning) && it.Live {
 			mirror := mirrorText
 			if it.Kind == chat.KindReasoning {
@@ -3826,16 +3062,7 @@ func (s *chatStore) mergeHistory(convID string, history []chat.ChatItem) {
 		}
 		kept = append(kept, it)
 	}
-	// INTERLEAVE by timestamp — never "history then live". Appending the live
-	// buffer after the durable transcript put every live row at the BOTTOM, so
-	// a just-sent user message rendered BELOW the model's reply (the
-	// operator's "user messages are printing AFTER the model's messages").
-	// Any live row the dedupe above does not drop has to land in its real
-	// chronological place.
-	// ANCHOR, THEN INTERLEAVE (see chatStore.orderAt). A reply whose text has GROWN since the last merge is
-	// being written right now, so it sorts by its latest arrival rather than by the turn's start — which is
-	// what keeps the cards and command rows raised during the turn ABOVE it, moving up as new text streams
-	// in, instead of pinned to the bottom of the screen under a conversation that appears to have stopped.
+	// INTERLEAVE by timestamp — never "history then live".
 	s.anchorGrowingMessages(convID, history)
 	merged := append(append([]chat.ChatItem{}, history...), kept...)
 	s.applyOrderAnchors(convID, merged)
@@ -3861,19 +3088,8 @@ func matchesAny(candidates []string, want string) bool {
 	return false
 }
 
-// replace swaps the conversation's items for the durable transcript —
-// the completion authority (GUI semantics: the poll replaces the live
-// buffer once the turn resolves, so nothing renders twice).
-//
-// EXCEPT: a live optimistic user echo (Key "draft-*") that the incoming durable
-// list does NOT yet contain is KEPT. A durable fetch can legitimately land before
-// the user's own row is visible to it — at conversation creation the transcript
-// load races the turn that writes the message — and a blind replace then wiped
-// the operator's just-sent text, leaving a conversation whose FIRST user message
-// never appeared while the reply streamed in normally (the operator's "it is
-// still not showing the initial user message on a new conversation"). The durable
-// copy supersedes the echo as soon as it actually contains it, so this preserves
-// exactly one copy.
+// replace swaps the conversation's items for the durable transcript — the completion authority (GUI
+// semantics: the poll replaces the live buffer once the turn resolves, so nothing renders twice).
 func (s *chatStore) replace(convID string, items []chat.ChatItem) {
 	s.mu.Lock()
 	live := s.items[convID]
@@ -3888,40 +3104,19 @@ func (s *chatStore) replace(convID string, items []chat.ChatItem) {
 		if it.Kind == chat.KindUser && strings.HasPrefix(it.Key, "draft-") && !matchesAny(durableUser, it.Text) {
 			out = append(out, it) // the durable view has not caught up yet
 		}
-		// A PENDING consent card is LIVE-ONLY, so the durable view can never
-		// carry it and this loop is its only chance to survive.
-		//
-		// An in-flight decision has NO durable row by design: the transcript
-		// records the OUTCOME (permission.allow / .deny / .expired), never the open
-		// ask. So a replace dropped the card the moment any poll landed — and a
-		// poll lands on every completion and every liveness ticking. That is why
-		// the permission card flashed and vanished, and why the operator reported
-		// that no card ever appeared: it was drawn, then wiped, before it could be
-		// clicked.
-		//
+		// A PENDING consent card is LIVE-ONLY, so the durable view can never carry it and this loop is its
+		// only chance to survive.
 		if it.Kind == chat.KindConsent && it.Consent != nil && it.Consent.Pending() {
 			out = append(out, it)
 			continue
 		}
-		// A SETTLED card is kept as its own RECORD — "SETTLED, NOT REMOVED" (see settleStaleConsent). It
-		// used to be dropped here, so a card that settled for ANY reason (a real one, or the inference
-		// bug settleStaleConsent now closes) VANISHED on the next poll: a removal where the model says
-		// record. Keeping it costs nothing on the render side — the settled state draws a one-line record,
-		// not a card, and every choice path gates on Pending() (see pendingConsentItem and
-		// transcriptCardOptionAtFrameRow), so a retained record can never be clicked again.
-		//
-		// DE-DUPED against the durable page, or a retained record would render twice. The only ask with a
-		// durable TWIN is a QUESTION: conversationItems emits a recorded ask_user call as a KindAsk card,
-		// so once the page carrying it lands the live copy must go (see durableRendersAsk). A permission
-		// ask has NO durable rendering row at all — the TUI draws no tool-ledger rows (see
-		// TranscriptMsg.SettledAsks) — so its record has no twin and simply persists.
+		// A SETTLED card is kept as its own RECORD — "SETTLED, NOT REMOVED" (see settleStaleConsent).
 		if it.Kind == chat.KindConsent && it.Consent != nil && !durableRendersAsk(items, it) {
 			out = append(out, it)
 		}
 	}
-	// The anchors survive the replace: without applying them here the in-flight reply would JUMP back up to
-	// its row-creation time the moment the turn completed, reordering the transcript under the operator's
-	// eyes at exactly the moment they start reading the finished reply (see chatStore.orderAt).
+	// The anchors survive the replace: without applying them here the in-flight reply would JUMP back
+	// up to its row-creation time the moment the turn completed.
 	s.anchorGrowingMessages(convID, items)
 	s.applyOrderAnchors(convID, out)
 	if len(out) != len(items) || len(s.orderAt[convID]) > 0 {
@@ -3934,13 +3129,8 @@ func (s *chatStore) replace(convID string, items []chat.ChatItem) {
 	s.mu.Unlock()
 }
 
-// durableRendersAsk reports whether the durable page already renders this live consent card's ask, so a
-// retained settled copy would draw it TWICE.
-//
-// ONLY A QUESTION HAS A DURABLE TWIN. conversationItems emits a recorded ask_user call as a KindAsk card,
-// so a retained live question card would sit beside the same question the moment its message goes durable.
-// The two cards are built from the same server string, so the question TEXT is the bridge between them (a
-// permission ask carries no durable rendering row to match on — the TUI renders no tool-ledger rows).
+// durableRendersAsk reports whether the durable page already renders this live consent card's ask,
+// so a retained settled copy would draw it TWICE. ONLY A QUESTION HAS A DURABLE TWIN.
 func durableRendersAsk(items []chat.ChatItem, live chat.ChatItem) bool {
 	if live.Consent == nil || live.Consent.Ask.Kind != chat.AskQuestion {
 		return false
@@ -3957,13 +3147,8 @@ func durableRendersAsk(items []chat.ChatItem, live chat.ChatItem) bool {
 	return false
 }
 
-// settleAsk records a decision that was made SOMEWHERE ELSE, so this client's copy of
-// the card stops being a choice. Nil-safe and idempotent: an ask that is not in this
-// conversation, or is already settled, is left alone.
-//
-// The OUTCOME names what actually happened, which is why it is carried rather than
-// assumed: "allow_once" / "allow_session" / "deny" is what the operator chose, and
-// "answered" / "expired" are the outcomes no client can infer from its own state.
+// settleAsk records a decision that was made SOMEWHERE ELSE, so this client's copy of the card
+// stops being a choice.
 func (s *chatStore) settleAsk(convID, askID, outcome, answer string) {
 	if s == nil || askID == "" {
 		return
@@ -3983,11 +3168,8 @@ func (s *chatStore) settleAsk(convID, askID, outcome, answer string) {
 	}
 }
 
-// consentDecisionFromOutcome maps the wire's outcome name onto the local decision the
-// renderer records. An UNRECOGNISED outcome settles the card WITHOUT claiming a
-// decision, using DecisionSettled — the same value the turn-end sweep uses for "this
-// client no longer knows what happened". Reporting an unknown outcome as "allow once"
-// would claim a permission was granted on the strength of a value we did not understand.
+// consentDecisionFromOutcome maps the wire's outcome name onto the local decision the renderer
+// records.
 func consentDecisionFromOutcome(outcome string) chat.ConsentDecision {
 	switch outcome {
 	case "allow_once":
@@ -3999,9 +3181,7 @@ func consentDecisionFromOutcome(outcome string) chat.ConsentDecision {
 	case "answered":
 		return chat.DecisionAnswer
 	case "unanswered":
-		// A QUESTION NOBODY ANSWERED is not a decision against it. See
-		// chat.DecisionUnanswered — this case is the whole point of the server
-		// publishing `unanswered` separately from `expired`.
+		// A QUESTION NOBODY ANSWERED is not a decision against it.
 		return chat.DecisionUnanswered
 	case "expired":
 		return chat.DecisionDeny
@@ -4012,11 +3192,6 @@ func consentDecisionFromOutcome(outcome string) chat.ConsentDecision {
 
 // reArmAskDraftClaim hands the keyboard back to a RECORDED card's open free-text row, after a click
 // on that row.
-//
-// THE MIRROR OF reArmConsentClaim, for the same gesture and the same reason: the row is an input,
-// ctrl+g can hand the keyboard to the composer, and a click on the row is the operator acting ON the
-// card — so the card takes the keys back. Without it the input row would be drawn while the typing
-// it asks for landed in the composer behind it.
 func (m *App) reArmAskDraftClaim() {
 	s := m.screens[TabAsk]
 	if s == nil {
@@ -4029,15 +3204,70 @@ func (m *App) reArmAskDraftClaim() {
 
 // beginAskDraft opens the free-text row on a RECORDED ask card, by the key of the item under the
 // click.
-//
-// THE CARD'S INPUT ROW IS PART OF ITS RENDER, so "open" means "the item says Drafting" — the same
-// shape the consent card uses (ConsentState.OtherMode), and the reason this needs no repaint channel
-// of its own: the item IS the state, and the render reads it.
-//
-// BY KEY, NOT BY "the newest card": a transcript can hold more than one unanswered question, and
-// opening the input on the wrong one would put the operator's answer on a question they did not
-// click. False when the item is gone, already answered, or never offered free text — so a click
-// resolved against a stale layout opens nothing rather than something wrong.
+func (s *chatStore) askIDForKey(convID, key string) string {
+	if s == nil || key == "" {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items[convID] {
+		it := &s.items[convID][i]
+		if it.Kind != chat.KindAsk || it.Key != key || it.Ask == nil {
+			continue
+		}
+		return it.Ask.ID
+	}
+	return ""
+}
+
+// AskReply answers a RECORDED card through the reply RPC — the same call the GUI makes
+// (askOrchiconClient.replyPermissionAsk).
+func (m *App) AskReply(askID, answer string) tea.Cmd {
+	if m.chat == nil || strings.TrimSpace(askID) == "" {
+		return nil
+	}
+	return m.chat.ReplyPermissionAsk(m.chatConvID, askID,
+		apiv1.PermissionChoice_PERMISSION_CHOICE_UNSPECIFIED, answer)
+}
+
+// selectAskRow moves a RECORDED card's cursor to the row the operator just CLICKED.
+func (s *chatStore) selectAskRow(convID, key, label string) {
+	if s == nil || key == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items[convID] {
+		it := &s.items[convID][i]
+		if it.Kind != chat.KindAsk || it.Key != key || it.Ask == nil {
+			continue
+		}
+		for j, o := range it.Ask.Options {
+			if o.Label == label {
+				it.Ask.Sel = j
+				return
+			}
+		}
+		if it.Ask.AllowOther {
+			// The Other row sits immediately after the options (see renderAskCardSpans).
+			it.Ask.Sel = len(it.Ask.Options)
+		}
+		return
+	}
+}
+
+// reArmAskCardClaim hands the keyboard back to a RECORDED card's cursor after a click on one of its
+// rows — the mirror of reArmAskDraftClaim, and the same reason.
+func (m *App) reArmAskCardClaim() {
+	s := m.screens[TabAsk]
+	if s == nil {
+		return
+	}
+	if c, ok := s.(interface{ ReArmAskCardClaim() }); ok {
+		c.ReArmAskCardClaim()
+	}
+}
+
 func (s *chatStore) beginAskDraft(convID, key string) bool {
 	if s == nil || key == "" {
 		return false
@@ -4059,67 +3289,6 @@ func (s *chatStore) beginAskDraft(convID, key string) bool {
 	return false
 }
 
-// settleStaleConsent resolves every PENDING consent card for a conversation that the SERVER's
-// authoritative open-ask list (ListPendingAsks) NO LONGER CONTAINS.
-//
-// IT IS AN EVIDENCE RULE, NOT AN INFERENCE, and the difference is the whole fix. It used to fire on a
-// CLIENT-SIDE GUESS that the turn was over — `!runningFor(convID)`, itself made of two liveness flags:
-// this client's stream slot, and the POLLED turn_in_flight row. That guess is wrong exactly when it
-// matters:
-//
-//   - a WATCH RE-DIAL is a passive follow that runs through the same consume(), so its graceful close
-//     tears the local slot down — IsStreaming goes false — while the server's turn is STILL running and
-//     its ask is still open;
-//   - the polled turn_in_flight row is stale by construction ("only as fresh as the last list read") and
-//     ABSENT for a conversation off the current rail page (the rail is paginated), so it reads as "no
-//     turn" for a turn that is very much alive.
-//
-// With both false, a still-open card was settled, `replace` then DROPPED it (its retention rule was
-// pending-only), and DiscoverPendingAsks re-added it from the server on the next attach/poll — the
-// add → settle → drop → re-add flicker the operator reported: "a card will still be in this ghost phase
-// where it shows up and then goes away before I can answer ... It forces me to go into the GUI". A card
-// the SERVER still lists must never be settled or dropped by this client's inference about the turn.
-//
-// SO THE INPUT IS THE SERVER'S OWN ANSWER. `open` is the set of ask ids the server's ListPendingAsks
-// just returned for this conversation. A pending card whose id IS in it is left alone (it is answerable,
-// and stays that way); a pending card whose id is NOT is settled. `open == nil` means this client has
-// NO EVIDENCE — the query failed or never ran — and then NOTHING is settled: settling on absence is the
-// very bug this replaces. See DiscoverPendingAsks (the query) and onStreamDone (which asks it on a close
-// rather than inferring from one).
-//
-// THE OTHER HALF OF "settle on evidence" is the recorded outcome: onTranscript settles every ask the
-// durable page records a resolution for (TranscriptMsg.SettledAsks) — the server's ledger row, the
-// "truth" the old doc already named. Together they cover both stopping conditions: the server no longer
-// LISTS the ask, and the server has RECORDED its outcome.
-//
-// SETTLED, NOT REMOVED: a settled card is the record that a permission was asked for and what it covered,
-// which someone scrolling back is entitled to see. It just stops being a choice — and replace now KEEPS
-// it on screen as that record rather than dropping it (see replace's retention rule).
-func (s *chatStore) settleStaleConsent(convID string, open map[string]bool) {
-	if open == nil {
-		// NO EVIDENCE, NO SETTLE. This is the difference between "the server said the ask is gone" and
-		// "this client did not hear back" — only the first may retire a card.
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	items := s.items[convID]
-	for i := range items {
-		it := &items[i]
-		if it.Kind != chat.KindConsent || it.Consent == nil || !it.Consent.Pending() {
-			continue
-		}
-		if open[it.AskID] {
-			// The server still lists this ask as open, so it is answerable and MUST stay a choice —
-			// whatever this client's sockets or conversation row just did.
-			continue
-		}
-		it.Consent.Decision = chat.DecisionSettled
-		it.Consent.Note = ""
-		it.Consent.OtherMode = false
-	}
-}
-
 func (s *chatStore) snapshot(convID string) []chat.ChatItem {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -4129,14 +3298,8 @@ func (s *chatStore) snapshot(convID string) []chat.ChatItem {
 	return out
 }
 
-// messageKeyOf is the MESSAGE an item was derived from, or "" for an item that
-// is not part of a durable message.
-//
-// The server keys a message's parts off its own id: the message row is "m-<id>",
-// each reasoning part "m-<id>-r<j>", and a recorded ask_user call
-// "m-<id>-ask" (see conversationItems). They are one message for ordering
-// purposes — they were written together and must move together — so the suffixes
-// are stripped here rather than at every call site.
+// messageKeyOf is the MESSAGE an item was derived from, or "" for an item that is not part of a
+// durable message.
 func messageKeyOf(key string) string {
 	if !strings.HasPrefix(key, "m-") {
 		return ""
@@ -4147,14 +3310,7 @@ func messageKeyOf(key string) string {
 	return strings.TrimSuffix(key, "-ask")
 }
 
-// anchorGrowingMessages records NOW against every durable MESSAGE whose text has
-// GROWN since the store last saw it, so a reply that is still being written sorts
-// below the items raised while it was written. Call with s.mu held.
-//
-// ONLY A MESSAGE THE STORE HAS ALREADY SEEN IS ANCHORED. A key it has never held
-// is a row arriving for the first time — an older conversation being opened, or a
-// whole transcript loading — and anchoring those would sort every past reply to
-// the bottom of its own history. Growth is the signal that a message is live.
+// ONLY A MESSAGE THE STORE HAS ALREADY SEEN IS ANCHORED.
 func (s *chatStore) anchorGrowingMessages(convID string, items []chat.ChatItem) {
 	grown := map[string]bool{}
 	seen := map[string]int{}
@@ -4208,10 +3364,7 @@ func (s *chatStore) applyOrderAnchors(convID string, items []chat.ChatItem) {
 	}
 }
 
-// onTranscript ingests the durable transcript. When the turn is no
-// longer streaming the transcript REPLACES the live buffer (completion
-// authority — no duplicated reply); mid-turn (reconnect refresh) it
-// merges under the live chunks.
+// onTranscript ingests the durable transcript.
 func (m *App) onTranscript(msg chat.TranscriptMsg) tea.Cmd {
 	if msg.Err != "" {
 		m.setChatErrorPlain(msg.Err)
@@ -4261,30 +3414,17 @@ func (m *App) onTranscript(msg chat.TranscriptMsg) tea.Cmd {
 	// lands here, and its draft was never put back — so the error row's "your message is back in the composer"
 	// line would have been a false claim on exactly the case the operator hit. See restoreDraftForFailedTurn.
 	m.restoreDraftForFailedTurn(msg.ConvID, msg.Items)
-	// THE DURABLE TOOL CALLS LAND WITH THE PAGE THEY CAME ON. The activity line's rolling counter
-	// reads them from the store rather than re-fetching: this is the SAME ListMessages page the
-	// transcript was just built from (chat/pageToolCalls), on the SAME 1s poll, so the counter adds no
-	// RPC of its own. Wholesale set — the ledger column is cumulative for the turn and this page is
-	// its authority.
+	// THE DURABLE TOOL CALLS LAND WITH THE PAGE THEY CAME ON.
 	m.chatStore.setToolCalls(msg.ConvID, msg.ToolCalls)
-	// ASK THE SERVER WHAT THIS CONVERSATION IS ALLOWED, once, when its transcript lands — the grants header
-	// makes a claim about exactly that, and the list is the server's to state. Not on every poll: this is a
-	// fetch, not a subscription (a grant can only change from a decision in a client, and every decision
-	// funnels through a card this shell draws or is told about).
-	// ONE FETCH PER CONVERSATION (permGrantsLoaded latches on success AND on failure, so a failing plane is not
-	// polled once a second). A failure is shown as "unavailable" rather than as an empty list, and reopening
-	// /grants is the retry.
+	// ASK THE SERVER WHAT THIS CONVERSATION IS ALLOWED, once, when its transcript lands — the grants
+	// header makes a claim about exactly that, and the list is the server's to state.
 	if !m.permGrantsLoaded[msg.ConvID] {
 		return tea.Batch(m.onChatWake(), m.loadConsentGrants(msg.ConvID))
 	}
 	return m.onChatWake()
 }
 
-// conversationByID returns the conversations-rail row for id, when the shell
-// holds one. It is the freshest conversation metadata available to the shell: the
-// rail is reloaded after every send, so its row carries the title and message
-// count that a detail pane's one-shot GetConversation may have read before they
-// existed.
+// conversationByID returns the conversations-rail row for id, when the shell holds one.
 func (m *App) conversationByID(id string) (chat.Conversation, bool) {
 	for _, c := range m.conversations {
 		if c.ID == id {
@@ -4295,74 +3435,18 @@ func (m *App) conversationByID(id string) (chat.Conversation, bool) {
 }
 
 // turnInFlight reports whether the PLANE says this conversation has a turn in flight.
-//
-// IT IS THE DURABLE HALF OF "is the model working?", and the activity line needs both halves.
-//
-// THE LIVE HALF is this client's own stream slot (chat.IsStreaming): it is what supplies the watchdog's
-// age — "· last activity 12s ago" — and so what makes the line's countdown mean anything.
-//
-// THE DURABLE HALF IS THIS. A turn can be running with no local slot at all: started in the GUI, or a
-// slot this client lost and has not re-attached. The shell already holds the plane's own answer on the
-// conversation row (turn_in_flight), and it already trusts that field for two other things — the rail
-// marks the row as running from it (rightrail.go) and re-attach is gated on it (reattachRunningTurn).
-// Keying the ACTIVITY LINE to the slot alone was therefore the odd one out, and the operator saw the
-// contradiction: "I am no longer seeing the 'Orchicon is thinking...' and the watchdog countdown in the
-// TUI." while the rail beside it said the conversation was running.
-//
-// The cost of the gap was not only a missing line. The notice takes a row from the body
-// (kit2.Stream.bodyRows), so an empty notice hands the transcript the WHOLE pane and the text runs one
-// row further down — which is the second half of the operator's report, "the conversation text is going
-// to the bottom", and it is the same bug seen from the other side.
 func (m *App) turnInFlight(convID string) bool {
 	c, ok := m.conversationByID(convID)
 	return ok && c.TurnInFly
 }
 
-// runningFor reports whether a conversation's turn is LIVE, from EITHER half the shell already holds:
-// this client's own stream slot (chat.IsStreaming) OR the plane's polled row (TurnInFly).
-//
-// IT IS A UNION BECAUSE THE TWO SURFACES DISAGREED. The rail row read the POLLED field ALONE
-// (conversationRow: `if c.TurnInFly`), while the pane's activity line already read the union — so a
-// conversation THIS client was actively streaming (IsStreaming true, the transcript growing) still read
-// "12 msgs" on the row beside it, because TurnInFly is only as fresh as the last list read and a SEND has
-// no immediate rail refresh. The operator: "the 'running' status on the conversation rail list doesn't
-// always show up on active running conversations." That is the INVERSE of the divergence already fixed at
-// the activity line ("the rail said running while the pane was silent") and it survived because the two
-// surfaces read different fields.
-//
-// BOTH VALUES ALREADY EXIST in the shell; this is a union, not a new source of truth. And it is a UNION,
-// not a LOCAL-ONLY check: a turn started in the OTHER client has no local slot, so TurnInFly must still
-// mark the row — see runningFor's callers and the tests that assert both directions.
+// And it is a UNION, not a LOCAL-ONLY check: a turn started in the OTHER client has no local slot,
+// so TurnInFly must still mark the row.
 func (m *App) runningFor(convID string) bool {
 	return m.chat.IsStreaming(convID) || m.turnInFlight(convID)
 }
 
 // transcriptStatusLine is the Ask pane's fixed footer: the conversation's status line, ONE slot.
-//
-// PRECEDENCE IS THE POINT, and the order is deliberate: a broken CONNECTION outranks a working TURN.
-// Telling the operator "the model is thinking" while the plane is unreachable would claim liveness the
-// connection cannot deliver — the same lie the footer's own disconnected banner exists to prevent.
-//
-// The activity line then runs FOR THE WHOLE TURN, not only before the first token. It used to require
-// `awaitingReply(items)` — the GUI's rule, where the indicator is "visible until any streaming content
-// arrives". That is right for a THINKING indicator and wrong for an ACTIVITY line, and the operator
-// reported the difference as a bug: "After the initial 'Orchicon is thinking...', streaming started and
-// the 'Orchicon is thinking...' went away and never came back."
-//
-// What they lost was the only signal that the stream is ALIVE. Mid-reply is exactly when it matters: a
-// long tool call, a slow provider or a stalled socket look identical from the outside, and with the line
-// gone nothing on screen changes until the reply finishes. So the line tracks the TURN, and the verb
-// ROTATES on the SERVER's clock (chat/verbs.go) so a long quiet stretch reads as live activity rather than
-// one frozen phrase. Both clients draw the same word for the same server time — the stronger form of the
-// "thinking"/"replying" parity this comment used to describe, which rotation deliberately retires.
-//
-// The age comes from the watchdog's own clock (lastActivity), so the line cannot claim a liveness the
-// liveness check would contradict.
-//
-// THE TURN TEST IS EITHER HALF, and both are load-bearing: IsStreaming is this client's own slot (which
-// supplies the age, so the countdown means something), and turnInFlight covers a turn this client is not
-// streaming. turnInFlight reads the CONVERSATION ROW the server computed (turn_in_flight), kept current by
-// the same list reload the rolling refresh already performs — cheap, and never a second source of truth.
 func (m *App) transcriptStatusLine(items []chat.ChatItem) string {
 	if m.chatConvID == "" {
 		return ""
@@ -4372,58 +3456,25 @@ func (m *App) transcriptStatusLine(items []chat.ChatItem) string {
 		return "reconnecting…"
 	case m.planeUnreachable():
 		// THE PANE ITSELF SAYS THE CONNECTION IS DOWN — the operator's ask, verbatim: "if a connection
-		// dies, the GUI tells you, but the TUI conversation does not." The shell footer is easy to miss
-		// when reading a transcript, and it is the TRANSCRIPT that looks broken when a reply cannot arrive.
+		// dies, the GUI tells you.
 		return "⚠ disconnected — replies will resume when the plane returns (r retries now)"
 	}
-	// AN ACTIVE SEARCH OWNS THE FOOTER, once the CONNECTION arms above are settled:
-	// it is a deliberate operator mode, and the match count IS the status they asked
-	// for. It outranks the card/activity arms, whose subject (a turn in progress) is
-	// not what the operator is looking at while searching.
+	// AN ACTIVE SEARCH OWNS THE FOOTER, once the CONNECTION arms above are settled: it is a deliberate
+	// operator mode, and the match count IS the status they asked for.
 	if strings.TrimSpace(m.askSearch) != "" {
 		matches, total := transcriptSearchCount(items, m.askSearch)
 		return transcriptSearchStatus(m.askSearch, matches, total)
 	}
 	// THE CARD IS THE REASON NOTHING IS HAPPENING, AND THE FOOTER MUST SAY SO.
-	//
-	// The activity line below reads the STREAM's silence, so a turn parked on a permission ask rendered as
-	// "Orchicon is contemplating… · no output for 40s — the stream will re-attach if it stays silent": it
-	// blamed the stream and promised a re-attach while the stream was perfectly healthy and the turn was
-	// waiting on the OPERATOR. That is the operator's report, exactly: "I will notice no progress being made
-	// for a long time and if I exit the TUI and relaunch orch, a permissions card is sitting waiting for me
-	// when I relaunch it." The footer never named the card, so there was nothing on the always-visible row
-	// to act on — and the only path that reliably re-presented the card was a fresh attach.
-	//
-	// PRECEDENCE: the CONNECTION still outranks it (a card cannot be answered across a dead plane, which is
-	// why the reconnecting/disconnected arms are settled above), and the card outranks the activity line,
-	// whose entire subject is the turn's progress TOWARDS an answer — progress that cannot happen until the
-	// operator answers.
-	//
-	// IT IS AN `if` AND NOT A `case`, AND THAT IS THE WHOLE POINT: A FOOTER IS NOT TEXT, IT IS A BAND.
-	// `cardWaitingLine` can legitimately come back empty — the ask can be answered or settled on the stream
-	// goroutine between the pending test and the line being built — and returning "" here does NOT mean "say
-	// nothing". `screenkit.Detail.footerRows()` turns "" into ZERO rows and any text into TWO, and
-	// `BodyHeightFor` sizes the scrolling body from it, so an empty return RESIZES THE PANE BY TWO ROWS.
-	// The transcript is then re-clamped against a different height, which is a visible jump up or down — and
-	// when the race lands on alternate repaints it is an oscillation, not a one-off. The operator: "the
-	// screen is jumping up and down very fast and it's very disorienting."
-	//
-	// So an empty card line FALLS THROUGH to the ordinary arms below, which yields the same string they
-	// would have produced anyway. The band keeps its shape unless there is genuinely nothing to say.
 	if m.chatStore.hasPendingConsent(m.chatConvID) {
 		if line := m.cardWaitingLine(); line != "" {
 			return line
 		}
 	}
 	if m.runningFor(m.chatConvID) {
-		// THE SERVER'S CLOCK FEEDS THE ROTATING VERB (see turnActivityNotice). ServerTimeSince returns
-		// (0, false) when no heartbeat has arrived yet, and 0 is the selector's "use the first word"
-		// sentinel — the line stays present from the instant the operator hits send.
+		// THE SERVER'S CLOCK FEEDS THE ROTATING VERB (see turnActivityNotice).
 		serverTime, _ := m.chat.ServerTimeSince(m.chatConvID)
-		// THE COUNTER COMES FROM WHAT THE CLIENT ALREADY POLLS. The durable ledger of this turn's tool
-		// calls arrived on the ListMessages page the transcript was built from (chat/pageToolCalls ->
-		// onTranscript -> chatStore), on the same 1s askTurnPollInterval poll. So the summary costs no
-		// fetch of its own — it is a pure render over data already in hand.
+		// THE COUNTER COMES FROM WHAT THE CLIENT ALREADY POLLS.
 		summary := toolclass.SummarizeCalls(
 			m.chatStore.snapshotToolCalls(m.chatConvID), noticeNow(), toolclass.DefaultWindow)
 		return turnActivityNotice(m.chat.SilenceSince(m.chatConvID), serverTime, summary, m.askWidth())
@@ -4431,24 +3482,11 @@ func (m *App) transcriptStatusLine(items []chat.ChatItem) string {
 	return ""
 }
 
-// noticeNow is the activity line's clock seam. The line's own age comes from the watchdog
-// (chat.SilenceSince) and is passed in; this is the `now` the ROLLING WINDOW is measured against, so a
-// test can place a known set of tool calls inside or outside the window without sleeping. Production
-// never replaces it.
+// noticeNow is the activity line's clock seam.
 var noticeNow = time.Now
 
-// cardWaitingLine is the pane footer while a card is waiting for the operator: WHAT is being asked, in one
-// row, and the fact that the turn cannot move until it is answered.
-//
-// THE SUBJECT COMES FROM chat.ConsentSubject — the same rule the card's own record line uses — so the footer
-// and the card cannot describe one ask two ways.
-//
-// IT GETS ITS OWN FIT RATHER THAN fitNotice, because the priority order differs. fitNotice exists for the
-// activity line, where everything after the verb is the disposable counter, so its first step drops the whole
-// tail. Here the tail is the POINT: an operator looking at a stalled turn needs to know what is being asked
-// about, and "waiting for your approval" with no subject sends them hunting through a transcript for the ask
-// the footer declined to name. So the order is: the whole line, then the subject without the explanation,
-// then the subject TRUNCATED to whatever room is left, and only then the bare label.
+// cardWaitingLine is the pane footer while a card is waiting for the operator: WHAT is being asked,
+// in one row, and the fact that the turn cannot move until it is answered.
 func (m *App) cardWaitingLine() string {
 	_, st, ok := m.pendingConsentItem()
 	if !ok {
@@ -4497,9 +3535,8 @@ func (m *App) cardWaitingLine() string {
 // label alone: a path cut to "wr…" is noise dressed as information.
 const minSubjectCells = 12
 
-// askWidth is the Ask pane's detail render width, read from the same surface askStatusLine reads its
-// footer from. It is what the activity line is fitted to (fitNotice): the pane draws ONE row and clips
-// the tail, so the line has to know how wide that row is.
+// askWidth is the Ask pane's detail render width, read from the same surface askStatusLine reads
+// its footer from.
 func (m *App) askWidth() int {
 	if s := m.screens[TabAsk]; s != nil {
 		if f, ok := s.(interface{ DetailWidth() int }); ok {
@@ -4510,9 +3547,6 @@ func (m *App) askWidth() int {
 }
 
 // askStatusLine reads the Ask pane's fixed footer — where the activity/status line now lives.
-//
-// It exists so a caller (or a test) asks the SURFACE rather than reaching for the stream's old notice
-// field, which is no longer where the line is drawn. See App.transcriptStatusLine.
 func (m *App) askStatusLine() string {
 	if s := m.screens[TabAsk]; s != nil {
 		if f, ok := s.(interface{ DetailFooter() string }); ok {
@@ -4522,20 +3556,11 @@ func (m *App) askStatusLine() string {
 	return ""
 }
 
-// onChatWake repaints the open ask-conversation detail pane with the
-// merged, phase-grouped transcript + live chunks. Cheap (no RPC): the
-// conversation detail's fields render from the last GetConversation —
-// we rebuild the body only.
+// onChatWake repaints the open ask-conversation detail pane with the merged, phase-grouped
+// transcript + live chunks.
 func (m *App) onChatWake() tea.Cmd {
-	// dock-level banner first (any screen): reconnecting state from the
-	// shared store, applied on the tea loop.
-	//
-	// IT NOW ALSO COVERS A DEAD PLANE, not only an interrupted TURN. The two are different failures and the
-	// operator named the second: "if a connection dies, the GUI tells you, but the TUI conversation does
-	// not." A turn going reconnecting means the reply we were streaming lost its socket; a dead plane means
-	// the credential or the host is gone, and EVERY subscription in the registry is failing. Before this,
-	// only the first had a banner — so losing the connection outright left the composer strip silent while
-	// the footer (on any tab that reported its streams) quietly said "disconnected, retrying".
+	// dock-level banner first (any screen): reconnecting state from the shared store, applied on the
+	// tea loop.
 	if m.chatConvID != "" {
 		switch {
 		case m.chatStore.isReconnecting(m.chatConvID):
@@ -4552,8 +3577,7 @@ func (m *App) onChatWake() tea.Cmd {
 	s := m.screens[TabAsk]
 	if s == nil || m.chatConvID == "" {
 		// NO CONVERSATION, NO STATUS: clear the band rather than leaving the previous chat's line sitting
-		// under a fresh transcript, which would be exactly the kind of untrue claim the line exists to
-		// avoid (a "thinking…" over a chat that is doing nothing).
+		// under a fresh transcript.
 		if s != nil {
 			if stf, ok := s.(interface{ SetDetailFooter(string) }); ok {
 				stf.SetDetailFooter("")
@@ -4562,9 +3586,8 @@ func (m *App) onChatWake() tea.Cmd {
 		return nil
 	}
 	type detailIDer interface{ DetailID() string }
-	// The transcript body is ALREADY LAID OUT by the shell (padded bands, collapsible structure), so the
-	// pane is asked for the laid-out form: handing it to the markdown path would JOIN its lines into
-	// paragraphs and flatten the transcript — see screenkit.Detail.bodyLaidOut.
+	// The transcript body is ALREADY LAID OUT by the shell (padded bands, collapsible structure), so
+	// the pane is asked for the laid-out form.
 	type setter interface {
 		SetDetailContentLaidOut(title string, fields []screenkit.Field, body string)
 	}
@@ -4574,24 +3597,6 @@ func (m *App) onChatWake() tea.Cmd {
 		return nil
 	}
 	// A DRIFTED DETAIL ID IS RE-ASSERTED, NOT TREATED AS "SHOWING SOMETHING ELSE".
-	//
-	// This guard used to return nil on a mismatch — painting NOTHING: no transcript update and no
-	// activity line, both at once, until some incidental path restored the id (opening the conversation
-	// again, or clicking away and back). That is the operator's report exactly: "I have to click away
-	// and back again to see updates. No 'Orchicon is thinking...' block."
-	//
-	// AND THE ID REALLY DOES DRIFT. kit2.Base writes it on EVERY detail landing for a source it owns
-	// (base.go: `b.detailID = msg.id`), and the rail's row selection loads that row's detail — so while a
-	// conversation is open, a rail reload (the tick does one every 5s) can stamp the id of whichever row
-	// the cursor happens to be on, which need not be the open conversation.
-	//
-	// Refusing to paint was never the right answer for THIS screen, and it is not a judgement call:
-	// ask.New declares exactly ONE source ("conversations"), sets HideSources, and declares the pane's
-	// body HOST-OWNED (SetDetailBodyHostOwned(true)) — so on this tab the detail pane can only ever be
-	// the open conversation's transcript, and the shell is its painter. "The pane is showing that
-	// conversation" is therefore true whenever a conversation is open, and saying so is the honest
-	// repair rather than a workaround. A screen that genuinely can show something else still returns nil
-	// here, because only this screen carries the host-owned declaration.
 	if dr.DetailID() != m.chatConvID {
 		sid, ok := s.(interface{ SetDetailID(string) })
 		if !ok {
@@ -4603,58 +3608,24 @@ func (m *App) onChatWake() tea.Cmd {
 		RenderTranscript([]chat.ChatItem, chat.Conversation, bool) (title string, fields []screenkit.Field)
 	}); ok {
 		items := m.chatStore.snapshot(m.chatConvID)
-		// AN ACTIVE SEARCH FILTERS WHAT IS RENDERED, not what is COUNTED: the header
-		// and the footer still describe the whole conversation, while the body shows
-		// only the matching items (consent cards are always kept — see
-		// searchVisibleItems).
+		// AN ACTIVE SEARCH FILTERS WHAT IS RENDERED, not what is COUNTED: the header and the footer still
+		// describe the whole conversation.
 		visibleItems := m.searchVisibleItems(items)
-		// The rail's row for this conversation is the freshest header data the
-		// shell holds: it is reloaded after every send, and it carries the title
-		// and the message count, which the screen's cached GetConversation can
-		// predate for a brand-new conversation.
+		// The rail's row for this conversation is the freshest header data the shell holds: it is reloaded
+		// after every send, and it carries the title and the message count.
 		live, haveLive := m.conversationByID(m.chatConvID)
 		title, fields := askS.RenderTranscript(items, live, haveLive)
 		w := s.(interface{ DetailWidth() int }).DetailWidth()
 		// ONE SCROLL ROW ALWAYS, so the field count is STABLE and the pane's body height can be computed
-		// BEFORE the stream is sized (below). A conditional field would make the body height depend on
-		// the stream's own content — circular — and the label is informative even when nothing is hidden.
+		// BEFORE the stream is sized (below).
 		fields = append(fields, screenkit.Field{Key: "scroll", Value: ""})
 
 		// THE ACTIVITY LINE IS THE PANE'S FIXED FOOTER, AND IT IS SET *BEFORE* THE STREAM IS SIZED.
-		//
-		// The operator, on the line disappearing while text ran to the pane's edge: "the model's text is
-		// reach the bottom of the conversation pane and this should never happen" and "The status at the
-		// bottom indicating that actual thinking is occurring ... should NEVER go away unless a turn is
-		// truly done."
-		//
-		// As a STREAM NOTICE it took a row out of the body (kit2.Stream.bodyRows) and was drawn LAST, which
-		// made it the first casualty of every sizing mistake and of every full transcript — and when it was
-		// gone, the transcript simply filled the pane, which is exactly the reported symptom. A FOOTER is
-		// budgeted by the PANE (screenkit.Detail.footerRows), which subtracts it from the body height BEFORE
-		// the stream is measured. So it cannot be squeezed out by content, cannot be clipped by an
-		// off-by-one in the sizing, and cannot be scrolled away.
-		//
-		// It is the same reasoning that put the execution detail's composer in a footer, from that
-		// feature's own note: "a footer is the shape an input needs: always visible, never scrolled away".
-		// The activity line has identical requirements, and it is computed HERE, ahead of the measurement,
-		// because that is what makes the two agree: the pane gives the footer its rows first and the body
-		// gets what is left, so the stream can never be sized into the footer's space.
-		//
-		// ONE STATUS SLOT, like every other status surface here: reconnecting and disconnected take it while
-		// they are true (a dead plane must not be reported as a thinking model), otherwise the turn's own
-		// activity line owns it. It is empty only when there is genuinely nothing to say.
 		if stf, ok := s.(interface{ SetDetailFooter(string) }); ok {
 			stf.SetDetailFooter(m.transcriptStatusLine(items))
 		}
 
 		// THE STREAM IS SIZED TO THE PANE'S BODY, NOT THE CONTENT REGION.
-		//
-		// It was sized to m.contentHeight() — the whole region the screen is given — while the pane
-		// spends rows on its title, its fields and its footer. The stream therefore believed it could
-		// show more rows than the pane draws, and the rows it lost were the NEWEST ones: the operator's
-		// "Once we hit the bottom pane, I no longer see my messages popping up right away". While the
-		// transcript was SHORTER than the pane everything fitted and it looked right, which is why it
-		// only failed once the pane filled up.
 		strH := m.contentHeight()
 		if _, ok := s.(interface{ DetailBodyHeight(int, bool) int }); ok {
 			// LAY OUT BEFORE MEASURING.
@@ -4672,10 +3643,8 @@ func (m *App) onChatWake() tea.Cmd {
 			// remembering to re-measure.
 			m.refreshLayout()
 			bh := s.(interface{ DetailBodyHeight(int, bool) int })
-			// THE FIELD COUNT MUST BE THE PANE'S REAL ONE, not the count implied by the fields the shell
-			// just built. RenderTranscript returns the HEADER the shell overlays (the rail's live row),
-			// which is shorter than the pane's own fetched field set. BodyHeightFor subtracts a row per
-			// field, so too low a count sizes the stream too tall.
+			// THE FIELD COUNT MUST BE THE PANE'S REAL ONE, not the count implied by the fields the shell just
+			// built.
 			fieldRows := len(fields)
 			if fp, ok := s.(interface{ DetailFieldCount() int }); ok {
 				if n := fp.DetailFieldCount(); n > fieldRows {
@@ -4687,36 +3656,16 @@ func (m *App) onChatWake() tea.Cmd {
 		str := m.newTranscriptStream(m.chatConvID, w, strH)
 		m.syncTranscript(m.chatConvID, str, visibleItems, w)
 		// Surface the scroll position when the transcript is taller than the pane.
-		//
-		// The transcript follows the TAIL, so a reply longer than the pane scrolls
-		// the operator's own earlier messages out of view. Nothing on screen said
-		// the transcript was scrolled, and on the Ask tab the rail owned both the
-		// wheel and the keyboard — so a message that was merely OFF-SCREEN read as
-		// a message that was never stored (the operator's "I still do not see my
-		// initial test user message", while the header reported the right count).
-		//
-		// The label names the visible window and the total, so "4-23/35" says
-		// plainly that 22 lines sit above. Same field shape the Work screen's
-		// build log already uses.
 		fields[len(fields)-1].Value = str.ScrollLabel()
 		st.SetDetailContentLaidOut(title, fields, str.View())
 	}
-	// THE PANE RE-EVALUATES ITS OWNER'S LIVENESS ON EVERY WAKE, which is what
-	// makes it follow a turn that starts AFTER it was opened — see
-	// ensureDiffStreamArmed for the operator report this closes.
+	// THE PANE RE-EVALUATES ITS OWNER'S LIVENESS ON EVERY WAKE, which is what makes it follow a turn
+	// that starts AFTER it was opened — see ensureDiffStreamArmed for the operator report this closes.
 	return m.ensureDiffStreamArmed()
 }
 
-// planeUnreachable reports whether the PLANE itself is not answering — as opposed to one turn having lost
-// its socket.
-//
-// It reads the registry's worst status, the same value the footer renders, so the footer and the transcript
-// cannot disagree about whether the connection is up. A single subscription still CONNECTING is not enough
-// to declare the plane down (a freshly-opened tab arms its streams as it is visited); what counts is a
-// subscription that has actually FAILED — closed, errored or reconnecting.
-//
-// Deliberately conservative on the healthy side: an absent status ("") is not failure, so a session whose
-// streams have not reported yet reads as connected rather than flashing a banner on startup.
+// planeUnreachable reports whether the PLANE itself is not answering — as opposed to one turn
+// having lost its socket.
 func (m *App) planeUnreachable() bool {
 	st, _ := m.reg.WorstStatus()
 	switch st {
@@ -4727,18 +3676,13 @@ func (m *App) planeUnreachable() bool {
 }
 
 // isConnBanner reports whether a dock notice is one of the CONNECTION banners this shell writes, so
-// clearing on recovery cannot wipe an unrelated message the operator is being shown (a send ack, a context
-// injection notice, a "reply stopped" confirmation).
+// clearing on recovery cannot wipe an unrelated message the operator is being shown (a send ack.
 func isConnBanner(notice string) bool {
 	return strings.HasPrefix(notice, "connection lost —")
 }
 
-// awaitingReply reports whether the conversation is waiting for the model's first content — i.e. a user
-// message has been sent and NO model text has arrived after it.
-//
-// The comparison is "after the LAST user item" rather than "any model text exists" so a follow-up in a
-// long conversation still shows the indicator, and so it clears the moment the reply starts (the GUI's
-// rule: visible until any streaming content arrives).
+// awaitingReply reports whether the conversation is waiting for the model's first content — i.e. a
+// user message has been sent and NO model text has arrived after it.
 func awaitingReply(items []chat.ChatItem) bool {
 	lastUser := -1
 	for i, it := range items {
@@ -4759,21 +3703,8 @@ func awaitingReply(items []chat.ChatItem) bool {
 	return true
 }
 
-// newTranscriptStream builds the conversation's transcript stream, sized to the
-// pane body, with OVERFLOW WRAPPING ON.
-//
-// THE WRAPPING BELONGS WITH THE CONSTRUCTION, not at the call site — because it
-// is not a preference, it is the difference between showing a line in full and
-// silently losing its tail. A transcript that truncates an over-wide line drops
-// the end of it with no marker and no ellipsis for the operator to notice, which
-// is exactly the "sentences cut mid-word" report this fixes.
-//
-// Putting it inside the builder makes wrapping a property of every transcript
-// stream rather than one line a later edit can delete without any test
-// noticing — and no test WOULD have noticed, because kit2's own tests turn
-// wrapping on themselves and so prove nothing about whether the transcript asks
-// for it. TestTheTranscriptStreamWrapsRatherThanLosingText is that missing
-// guard; it fails if this call is removed.
+// newTranscriptStream builds the conversation's transcript stream, sized to the pane body, with
+// OVERFLOW WRAPPING ON.
 func (m *App) newTranscriptStream(convID string, w, h int) *kit2.Stream {
 	str := m.transcriptStream(convID, w, h)
 	// See kit2.Stream.WrapOverflow — the row count is the price, readability is
@@ -4797,26 +3728,14 @@ func (m *App) transcriptStream(convID string, w, h int) *kit2.Stream {
 	return str
 }
 
-// syncTranscript renders the grouped transcript and folds it into the
-// stream: when the new render EXTENDS the previous one the extra lines are
-// appended (preserving scroll offset / following only at the bottom); any
-// other change replaces the lines (a reload re-pins to the tail).
+// syncTranscript renders the grouped transcript and folds it into the stream: when the new render
+// EXTENDS the previous one the extra lines are appended (preserving scroll offset / following only.
 func (m *App) syncTranscript(convID string, str *kit2.Stream, items []chat.ChatItem, w int) {
 	if m.transcriptLines == nil {
 		m.transcriptLines = map[string][]string{}
 	}
-	// RenderItemsSpansWithCopy, not RenderItemsSpans: the copy glyph marks the two things on THIS surface that
-	// a click copies — the operator's own message and each code block — and this is the Ask transcript, which
-	// is where that gesture is wired. The slide-out strip on the other screens renders the same conversation
-	// with RenderItems and shows no glyph, because a click there does nothing.
-	//
-	// The spans are the CLICK GEOMETRY, and they come from the same render that produced the lines being
-	// drawn — so a click cannot resolve against a layout the screen is not showing. Stored per conversation,
-	// beside transcriptLines.
-	// THE ASK SEARCH TRAVELS WITH THIS RENDER, and only this one: this is the pane the find box belongs to,
-	// so this is the pane whose hits are marked. The slide-out strip on the other screens renders the same
-	// conversation WITHOUT the query (see chatpanel.go) — it has no find box, and marking it would claim a
-	// search control that is not there.
+	// RenderItemsSpansWithCopy, not RenderItemsSpans: the copy glyph marks the two things on THIS
+	// surface that a click copies — the operator's own message and each code block.
 	body, spans := m.renderCache.Render(convID, chat.GroupByPhase(items), w, chat.CopyGlyph, m.foldedReasoning, m.askSearch)
 	if m.transcriptSpans == nil {
 		m.transcriptSpans = map[string][]chat.ItemSpan{}
@@ -4859,40 +3778,11 @@ func linesPrefix(lines, prefix []string) bool {
 // (nil when that conversation has never rendered).
 func (m *App) TranscriptStream(convID string) *kit2.Stream { return m.chatStreams[convID] }
 
-// turnActivityNotice is the transcript's activity line while a turn is streaming: what the turn is doing,
-// plus how long the stream has been quiet.
-//
-// THE VERB ROTATES, INDEXED ON THE SERVER'S CLOCK. It used to be a fixed pair of literals — "thinking"
-// before the first content, "replying" after — so a long quiet phase looked byte-identical for minutes,
-// which is the operator's complaint this answers: "rotating through a series of words that means 'orchicon
-// is thinking' but variations like 'inquisiting, contemplating, planning, etc.' that changes every few
-// seconds. We should have a ton of them." The word now comes from chat.ActivityVerb over the server stamp
-// (see chat/verbs.go), so the rotation says what the turn is DOING to the problem rather than repeating one
-// fixed phrase — and BOTH phases rotate, because the quiet stretch the operator was staring at is not a
-// phase-specific phenomenon (a long tool call mid-reply looks exactly like a slow first token).
-//
-// THE SERVER'S CLOCK, NOT OURS. effectiveServerTimeMs is the server's server_time_unix_ms extrapolated to
-// now by chat.Controller.ServerTimeSince, which adds only the time since THIS client received the last
-// heartbeat. A client whose wall clock is skewed therefore draws the SAME word as every other client at the
-// same server time; the local clock is a delta, never the source. When no heartbeat has arrived yet — the
-// first second after sending, which is exactly when the operator is looking — the caller passes 0 and the
-// selector returns the list's first word, so the line is never empty.
-//
-// IT REPORTS, IT DOES NOT GUESS. The number is the age of the last event received, so it cannot claim
-// activity that is not happening — and as it grows the operator can see the model is genuinely silent
-// rather than merely slow. The wording escalates honestly: silence is EXPECTED during a long reasoning
-// phase (only the server's 15s heartbeat must keep arriving), so "no output for 20s" describes a normal
-// quiet stretch, while the 35s line states the watchdog's imminent verdict so the connection banner that
-// follows reads as the continuation of one story rather than a new fault.
-//
-// silent <= 0 means "no activity recorded" — the moment between sending and the stream's first event — so
-// it shows the bare line rather than an absurd "0s ago".
+// turnActivityNotice is the transcript's activity line while a turn is streaming: what the turn is
+// doing, plus how long the stream has been quiet.
 func turnActivityNotice(silent time.Duration, effectiveServerTimeMs int64, summary string, width int) string {
 	const (
-		// ONE SECOND, not five. The operator asked for the line to be visible immediately — "we should
-		// print the watchdog line right away so users know it's there" — because a line that only appears
-		// after five seconds of silence is invisible during a busy turn, which is exactly when they went
-		// looking for it.
+		// ONE SECOND, not five.
 		showAgeAfter = time.Second
 		// Past the server's heartbeat interval (15s) plus slack, silence is worth stating plainly: a LIVE
 		// stream can never reach it, because the heartbeat keeps arriving.
@@ -4901,38 +3791,21 @@ func turnActivityNotice(silent time.Duration, effectiveServerTimeMs int64, summa
 		// unexplained stall into a stated one.
 		reDialAfter = 35 * time.Second
 	)
-	// ONE WORD, FROM ONE PURE FUNCTION. chat.ActivityVerb holds the reduced-motion off-switch too, so a
-	// rotation the operator turned off and a rotation with no server stamp yet land on the same word
-	// (the list's first) — "the line is present and says something true" either way.
+	// ONE WORD, FROM ONE PURE FUNCTION.
 	verb := "Orchicon is " + chat.ActivityVerb(effectiveServerTimeMs) + "…"
 	secs := int(silent.Round(time.Second) / time.Second)
 	var want string
 	switch {
 	case silent >= reDialAfter:
-		// ESCALATION OUTRANKS THE COUNTER, AND IT IS THE POINT OF THE WHOLE RULE. A turn that made five
-		// calls and then died must escalate, not glow: past 35s the line is the watchdog's verdict, and a
-		// tool tally beside it would read as work still happening. So the summary appears in NO band but
-		// the healthy one — it is not merely outranked here, it is ABSENT.
+		// ESCALATION OUTRANKS THE COUNTER, AND IT IS THE POINT OF THE WHOLE RULE.
 		want = fmt.Sprintf("%s · no output for %ds — the stream will re-attach if it stays silent", verb, secs)
 	case silent >= warnAfter:
 		want = fmt.Sprintf("%s · no output for %ds", verb, secs)
 	case summary != "":
-		// THE HEALTHY BAND, AND THE SUMMARY'S OWN TRAILING "newest call Ns ago" IS THE AGE. It therefore REPLACES
-		// "last activity Ns ago" rather than joining it: one age, one phrase, on one row (the work item's
-		// own example string). The summary is "" when nothing was counted — never "0 modifies" — so this
-		// arm only fires on real work, and it fires IMMEDIATELY rather than waiting out showAgeAfter,
-		// because "3 modifies · 1 read · newest call 0s ago" is a true report while "last activity 0s ago" is not.
+		// THE HEALTHY BAND, AND THE SUMMARY'S OWN TRAILING "newest call Ns ago" IS THE AGE.
 		want = verb + " · " + summary
 	case silent <= 0 || silent < showAgeAfter:
-		// No counted work and no age yet — the moment between sending and the stream's first event. The
-		// bare line, rather than an absurd "0s ago".
-		//
-		// IT STILL GOES THROUGH fitNotice, because the one-row budget is a property of the LINE and not of
-		// the bands: a pane narrower than the verb itself would otherwise WRAP, and a wrapped footer is a
-		// SECOND row, which pushes the notice off the pane — the failure fitNotice exists to prevent. There
-		// is nothing left to degrade on this arm (no summary, no band), so it can only ever truncate; but
-		// leaving it out would make "the line never overflows" true of every state EXCEPT the first second
-		// after send, which is exactly when the operator is looking.
+		// No counted work and no age yet — the moment between sending and the stream's first event.
 		return fitNotice(verb, verb, width)
 	default:
 		want = fmt.Sprintf("%s · last activity %ds ago", verb, secs)
@@ -4959,9 +3832,7 @@ func fitNotice(line, verb string, width int) string {
 	if width <= 0 || ansi.StringWidth(line) <= width {
 		return line
 	}
-	// STEP 1 — the summary goes first. It is everything the line carries beyond the verb's own segment:
-	// the count phrase and its trailing age. The escalation band is recognisable by its wording, so a line
-	// that carries one is not touched here (the band is step 2, not step 1).
+	// STEP 1 — the summary goes first.
 	if strings.HasPrefix(line, verb) {
 		rest := line[len(verb):]
 		if !strings.Contains(rest, "no output for") {
@@ -4976,9 +3847,7 @@ func fitNotice(line, verb string, width int) string {
 	if ansi.StringWidth(verb) <= width {
 		return verb
 	}
-	// STEP 3 — a terminal narrower than the verb itself. The last resort is the widest RUNE prefix that
-	// fits, because a row that wraps is worse than a row that is short and a byte slice could split the
-	// ellipsis into invalid UTF-8. It is never empty.
+	// STEP 3 — a terminal narrower than the verb itself.
 	runes := []rune(verb)
 	if width >= len(runes) {
 		return verb
@@ -5022,6 +3891,48 @@ func (m *App) transcriptUserMessageAtFrameRow(frameRow int) (string, bool) {
 	return "", false
 }
 
+// transcriptUserMessageIDAtFrameRow is transcriptUserMessageAtFrameRow for the edit menu: it
+// returns the message's DURABLE ID as well as its text.
+func (m *App) transcriptUserMessageIDAtFrameRow(frameRow int) (string, string, bool) {
+	str := m.TranscriptStream(m.chatConvID)
+	if str == nil {
+		return "", "", false
+	}
+	line := str.LineAtRow(frameRow - m.transcriptBodyTopRow())
+	if line < 0 {
+		return "", "", false
+	}
+	for _, sp := range m.transcriptSpans[m.chatConvID] {
+		if sp.Kind != chat.KindUser || !sp.Contains(line) {
+			continue
+		}
+		// A SPAN WITH NO MESSAGE ID IS NOT EDITABLE: it is a live fragment, not a persisted row, and the server
+		// could not be told which message to remove. The menu simply does not open there.
+		if sp.MessageID == "" {
+			return "", "", false
+		}
+		return sp.MessageID, sp.Text, true
+	}
+	return "", "", false
+}
+
+// lastEditableUserMessage resolves the MOST RECENT of the operator's own messages, for the slash
+// commands.
+func (m *App) lastEditableUserMessage() (string, string, bool) {
+	if m.chatConvID == "" {
+		return "", "", false
+	}
+	spans := m.transcriptSpans[m.chatConvID]
+	for i := len(spans) - 1; i >= 0; i-- {
+		sp := spans[i]
+		if sp.Kind != chat.KindUser || sp.MessageID == "" || strings.TrimSpace(sp.Text) == "" {
+			continue
+		}
+		return sp.MessageID, sp.Text, true
+	}
+	return "", "", false
+}
+
 // composerTopRow is the frame row of the composer dock's FIRST line: the chrome, then the screen block, then
 // the slide-out strip, then the dock — the same order baseView paints them in.
 func (m *App) composerTopRow() int {
@@ -5029,34 +3940,14 @@ func (m *App) composerTopRow() int {
 }
 
 // composerClickAt routes a click in the composer to the caret, reporting whether it landed there.
-//
-// It converts FRAME coordinates to the dock's own, which is the half only the shell can do: the dock is handed
-// a width and rendered at the bottom of the body, so it has no idea which frame row it starts on.
-//
-// THE LAUNCH PAGE IS A DIFFERENT GEOMETRY, and that is the whole of this fix. When the composer is DOCKED it
-// starts at composerTopRow() and spans the content column. On the launch page (Ask → New, the screen orch
-// opens on) it is CENTERED in the body region and NARROWER than the content column — so composerTopRow()
-// names a row the box is not on, the conversion hands ClickAt a negative row, ClickAt refuses it, and the
-// caret never moves. The operator: "Clicking into the composer at a specific coordinate should move the
-// cursor to that coordinate. This WAS working but is no longer working again." — it worked on the
-// conversation view and not on the page they start from.
-//
-// The geometry comes from welcomeLayout, the SAME computation the paint uses, so the two cannot drift.
 func (m *App) composerClickAt(x, y int) bool {
 	if m.welcomeMode() {
 		_, g := m.welcomeLayout(m.contentWidth(), m.contentHeight()+m.dock.Lines())
 		if !g.contains(x, y) {
-			// Outside the drawn box — the centered margins, or the brand/tagline above and below. A click
-			// there is not a composer click, so it must fall through to the rest of the frame's handling
-			// rather than being swallowed.
+			// Outside the drawn box — the centered margins, or the brand/tagline above and below.
 			return false
 		}
-		// ClickAt measures the box it is placing the caret in (the prompt offset, the input rows, the
-		// textarea's width), so it MUST be given the width the box was DRAWN at rather than the layout
-		// width — otherwise its column arithmetic describes a box that is not on screen. The dock's own
-		// width is restored immediately: outside this paint, the invariant is
-		// m.dock.Width == contentWidth() (see refreshLayout), and a dock left narrow would mis-report
-		// its row count to the layout on the next frame.
+		// ClickAt measures the box it is placing the caret in (the prompt offset.
 		prev := m.dock.Width
 		m.dock.Width = g.Width
 		ok := m.dock.ClickAt(x-g.Left, y-g.Top)
@@ -5079,17 +3970,8 @@ func (m *App) composerClickAt(x, y int) bool {
 	return m.dock.ClickAt(x-left, y-m.composerTopRow())
 }
 
-// transcriptCodeBlockAtFrameRow resolves a click at a FRAME row to the SOURCE of a code block under it.
-//
-// This is the gesture the operator asked for after discovering that selecting a block cannot be made clean:
-// "You can't copy just the block itself with no added ... I also think the click treatment like we did with the
-// user message would be an added bonus." A selection copies CELLS, so it carries the band's one-cell indent on
-// every line — and a leading space cannot be trimmed, because it is indistinguishable from a real code
-// indent. The click copies the fence's exact contents instead: no indent, no border, no fill, no wrap
-// artefacts. It is the one copy path with nothing to strip.
-//
-// Same three coordinate spaces as transcriptUserMessageAtFrameRow (frame row → body row → body line → item),
-// and the same derivation of where the body starts.
+// transcriptCodeBlockAtFrameRow resolves a click at a FRAME row to the SOURCE of a code block under
+// it.
 func (m *App) transcriptCodeBlockAtFrameRow(frameRow int) (string, bool) {
 	str := m.TranscriptStream(m.chatConvID)
 	if str == nil {
@@ -5109,24 +3991,7 @@ func (m *App) transcriptCodeBlockAtFrameRow(frameRow int) (string, bool) {
 	return "", false
 }
 
-// transcriptCardOptionAtFrameRow resolves a click at a FRAME row to the option under it, for EITHER
-// interactive card — the clarifying question AND the permission ask.
-//
-// THE PERMISSION CARD USED TO BE KEYBOARD-ONLY. The question card answered a click here; the
-// permission card could only be driven by clicking into it and then arrowing, which the operator hit
-// immediately: "I couldn't click on it in the TUI. I had to click into the card then use the keyboard
-// to select it." Two cards for the same kind of decision behaved differently, so which gesture works
-// was a coin flip. Both are clickable now, and both still take the keyboard (the consent card's key
-// handler is unchanged).
-//
-// It returns the item KIND, the item KEY and the label, because the three cards DO different things
-// with the answer: a question's label is sent as the next user message, a permission's label is a
-// DECISION, and a free-text row needs to name the CARD it was clicked on so the input opens on that
-// card rather than on whichever one happens to be newest.
-//
-// Same three coordinate spaces as the copy rules (frame row → body row → body line → item), and the
-// same derived body-top row — the geometry comes from the render that drew the card (ItemSpan.Options),
-// so a click cannot resolve against a layout the screen is not showing.
+// THE PERMISSION CARD USED TO BE KEYBOARD-ONLY.
 func (m *App) transcriptCardOptionAtFrameRow(frameRow int) (chat.ItemKind, string, string, bool) {
 	str := m.TranscriptStream(m.chatConvID)
 	if str == nil {
@@ -5147,9 +4012,7 @@ func (m *App) transcriptCardOptionAtFrameRow(frameRow int) (chat.ItemKind, strin
 		if !ok {
 			return "", "", "", false // the card's body or header: not a choice
 		}
-		// A SETTLED card is no longer a choice. For the question that is "a later user message
-		// exists"; for the permission it is "no longer pending". Without this a click on a stale
-		// card would re-send, or re-decide, something already answered.
+		// A SETTLED card is no longer a choice.
 		if sp.Kind == chat.KindAsk && m.askCardSettled(sp.Key) {
 			return "", "", "", false
 		}
@@ -5164,8 +4027,7 @@ func (m *App) transcriptCardOptionAtFrameRow(frameRow int) (chat.ItemKind, strin
 }
 
 // pendingConsentItem finds the open permission/question card in the transcript, with the id and the
-// live state a decision needs. Exactly one can be pending at a time (the screen claims the keyboard
-// for it), so the first is the one.
+// live state a decision needs.
 func (m *App) pendingConsentItem() (string, *chat.ConsentState, bool) {
 	if m.chatStore == nil || m.chatConvID == "" {
 		return "", nil, false
@@ -5178,27 +4040,14 @@ func (m *App) pendingConsentItem() (string, *chat.ConsentState, bool) {
 	return "", nil, false
 }
 
-// consentDecideFromRow applies a CLICK on a card row: a question's label goes through the ordinary send
-// path, a permission's label becomes the decision. Both are the same outcomes the keyboard produces, so
-// the two gestures cannot diverge.
-//
-// THE HIGHLIGHT FOLLOWS THE CLICK. The operator: "when I clicked on the permission to select 'approve all
-// session', it accepted my click but the bar didn't move down to that option to give a visual indication
-// that it was selected." Moving Sel onto the clicked row first means the frame that renders while the
-// reply is in flight shows WHICH row was hit — otherwise a click and a keyboard arrow produced visibly
-// different feedback for the same outcome.
+// consentDecideFromRow applies a CLICK on a card row: a question's label goes through the ordinary
+// send path, a permission's label becomes the decision.
 func (m *App) consentDecideFromRow(label string) tea.Cmd {
 	askID, st, ok := m.pendingConsentItem()
 	if !ok {
 		return nil
 	}
 	// THE ROW IS RESOLVED BY ITS INDEX, AND THE DECISION COMES FROM THE INDEX TOO.
-	//
-	// The label is used only to FIND the row the click landed on. Turning that row into a
-	// decision is DecisionForRow's job, and it keys on the index — never on the label text.
-	// Matching the TEXT was the old shape, with "allow once" as the fall-through; once the
-	// session row names a directory its label can equal no fixed constant, so every click on
-	// it would have become "allow once" with no error anywhere.
 	row := -1
 	for i, l := range st.Ask.OptionLabels() {
 		if l == label {
@@ -5211,34 +4060,12 @@ func (m *App) consentDecideFromRow(label string) tea.Cmd {
 	}
 	st.Sel = row
 	// A QUESTION card rides the same KindConsent item, and a click on it ANSWERS rather than decides.
-	//
-	// It goes through ConsentResolve like every other card row, NOT through the old
-	// AnswerQuestion-as-next-message path: a blocking question is answered by the reply
-	// RPC, which delivers the operator's words as the ask_user tool result and resumes
-	// the PAUSED turn. Sending it as a new user message would leave the blocked call
-	// blocked and start a second turn on top of it.
 	if st.Ask.Kind == chat.AskQuestion {
 		// THE FREE-TEXT ROW IS A PROMPT FOR AN ANSWER, NOT AN ANSWER.
-		//
-		// The operator: "In the GUI, it lets you type in your own response. In the TUI clicking on
-		// it does nothing. You should be able to click on other and type in a response there."
-		// The row's LABEL was being taken as the choice, so a click settled the ask with the
-		// literal text "Other" — the operator's own words replaced by the name of the button they
-		// pressed, and the input row they were promised never drawn.
-		//
-		// BOTH OTHER PATHS ALREADY DO IT CORRECTLY, which is what makes this a divergence rather
-		// than a design question: the GUI's card opens an inline input on click and sends what was
-		// typed (frontend AskCard.tsx, "Other…" → onSelect(typed text)), and THIS card's keyboard
-		// path does exactly the same (ask/consent.go confirmConsent sets OtherMode, and the input
-		// row it grows owns every key until Enter submits). The click rides that mechanism rather
-		// than growing a third one, so a click and Enter on the row cannot disagree about what
-		// "Other" means — the same reason the permission rows resolve through DecisionForRow.
 		if label == chat.ConsentOther {
 			st.OtherMode = true
 			st.OtherInput = ""
-			// THE CLICK IS AN ACT ON THE CARD, so the card takes the keyboard back: a card
-			// whose claim was released by ctrl+g would otherwise draw an input row that
-			// collects nothing while the typing it asks for landed in the composer behind it.
+			// THE CLICK IS AN ACT ON THE CARD, so the card takes the keyboard back.
 			m.reArmConsentClaim()
 			return m.onChatWake()
 		}
@@ -5253,21 +4080,8 @@ func (m *App) consentDecideFromRow(label string) tea.Cmd {
 	return m.ConsentResolve(askID, dec, label)
 }
 
-// transcriptAskOptionAtFrameRow resolves a click at a FRAME row to the LABEL of the clarifying-question
-// option under it, when the click landed on an option of an UNANSWERED card.
-//
-// THE INTERACTIVE HALF OF THE ask_user CARD. The tool RECORDED the question and the turn ended; the operator's
-// answer is the next user message, so a click on an option sends that option's label through the ordinary send
-// path (Controller.AnswerQuestion → Send) — no rendezvous, no second reply channel, no blocking model. The
-// card is a record whose turn is already COMPLETE, so this must never grow a wait.
-//
-// Same three coordinate spaces as the copy rules (frame row → body row → body line → item), and the same
-// derived body-top row — the geometry comes from the render that drew the card (ItemSpan.Options), so a click
-// cannot resolve against a layout the screen is not showing.
-//
-// AN ANSWERED CARD IS SETTLED, and the rule is the web client's: a later USER message exists, so the question
-// has been answered and its options are shown but no longer clickable. Without it, a click on a stale card
-// would re-send a choice the operator already made.
+// transcriptAskOptionAtFrameRow resolves a click at a FRAME row to the LABEL of the
+// clarifying-question option under it, when the click landed on an option of an UNANSWERED card.
 func (m *App) transcriptAskOptionAtFrameRow(frameRow int) (string, bool) {
 	str := m.TranscriptStream(m.chatConvID)
 	if str == nil {
@@ -5294,13 +4108,6 @@ func (m *App) transcriptAskOptionAtFrameRow(frameRow int) (string, bool) {
 }
 
 // askCardSettled reports whether a clarifying-question card has been ANSWERED.
-//
-// IT ASKS THE ASK'S OWN RESULT. It used to ask "has a later USER message appeared?",
-// which was right while answering SENT the choice as the next message — and became
-// permanently false the moment ask_user was made blocking, because the answer now
-// arrives as the tool RESULT and nothing follows the message. The card therefore
-// stayed clickable forever, which the operator reported as "the Orchicon asks card
-// does not go away when you select something".
 func (m *App) askCardSettled(key string) bool {
 	if m.chatStore == nil || key == "" {
 		return false
@@ -5334,22 +4141,28 @@ func (m *App) ScrollTranscript(delta int) {
 	}
 }
 
-// onConversationMutated reconciles the conversations rail after a rename /
-// delete / mode write: a delete drops the row locally (and clears the
-// active conversation when it was the deleted one), then the rail refetches
-// from the live API so it can never drift.
+// onConversationMutated reconciles the conversations rail after a rename / delete / mode write: a
+// delete drops the row locally (and clears the active conversation when it was the deleted one).
 func (m *App) onConversationMutated(msg chat.ConversationMutatedMsg) tea.Cmd {
 	if msg.Err != "" {
 		m.dock.SetError(msg.Op + " failed: " + msg.Err)
 		return m.reloadConversations()
 	}
 	if msg.Op == "compact" {
-		// Compaction rewrites the server-side history, so the transcript the
-		// pane shows is now stale (and the summary is a new assistant message).
-		// Surface the outcome, then re-poll so the collapsed history is visible
-		// instead of the pre-compaction transcript.
+		// Compaction rewrites the server-side history, so the transcript the pane shows is now stale (and
+		// the summary is a new assistant message).
 		if msg.ID == m.chatConvID && msg.Detail != "" {
 			m.dock.SetNotice("compact: " + msg.Detail)
+			return tea.Batch(m.chat.Poll(msg.ID), m.reloadConversations())
+		}
+		return m.reloadConversations()
+	}
+	if msg.Op == "remove" {
+		// A MESSAGE WAS REMOVED: the transcript the pane shows is now stale, so re-poll it.
+		if msg.Detail != "" {
+			m.dock.SetNotice("remove: " + msg.Detail)
+		}
+		if msg.ID == m.chatConvID && m.chat != nil {
 			return tea.Batch(m.chat.Poll(msg.ID), m.reloadConversations())
 		}
 		return m.reloadConversations()
@@ -5390,54 +4203,20 @@ func (m *App) onConversationMutated(msg chat.ConversationMutatedMsg) tea.Cmd {
 // onStreamDone resolves a finished turn: the durable transcript is re-read (the
 // completion authority), the header is refreshed, and the stat strip updates.
 func (m *App) onStreamDone(msg chat.StreamDoneMsg) tea.Cmd {
-	// THE GENERATION IS PASSED THROUGH, and it is what keeps an interjection from ending its own turn: the
-	// superseded stream closes too, and its close must not clear the slot belonging to the turn that replaced
-	// it. See convState.gen.
+	// THE GENERATION IS PASSED THROUGH, and it is what keeps an interjection from ending its own turn:
+	// the superseded stream closes too.
 	ended := m.chat.EndStream(msg.ConvID, msg.Gen)
 	if ended {
 		// A STREAM CLOSE IS NOT EVIDENCE ABOUT AN ASK, SO NOTHING IS SETTLED HERE.
-		//
-		// It used to settle every pending card when `!m.runningFor(msg.ConvID)` — and the close is
-		// exactly the event that makes that inference wrong. A WATCH RE-DIAL is a passive follow through
-		// the SAME consume(), so its graceful close reports `ended` for a turn that is STILL RUNNING and
-		// whose ask is still open; and runningFor's other half (the polled turn_in_flight row) is stale by
-		// construction and ABSENT for a conversation off the current rail page. Settling on that guess
-		// turned a live card into a settled one, `replace` then dropped it, and discovery re-added it —
-		// the add → settle → drop → re-add flicker the operator reported ("it shows up and then goes away
-		// before I can answer ... It forces me to go into the GUI"). See chatStore.settleStaleConsent for
-		// the evidence rule that replaces this.
-		//
-		// THE SERVER SETTLES INSTEAD, by its own answers: the Poll below re-reads the durable page, whose
-		// recorded resolutions settle via TranscriptMsg.SettledAsks; and DiscoverPendingAsks (below, only
-		// when this close really ended the slot) asks the server which asks are still open — settling the
-		// ones it no longer lists and re-arming the ones it does.
 	}
-	// A finished turn is when new usage lands, so this is the LIVE update: the
-	// stat strip re-reads the session's tokens / cache / cost and refreshes.
-	//
-	// The conversations RAIL is refreshed for the same reason, and it is what
-	// repairs the Detail header: that header overlays the rail's row (title +
-	// message count), and for a brand-new conversation the pane's one-shot
-	// GetConversation ran BEFORE the first send had named the conversation and
-	// written any message — so it reported "title —" and "messages 0" until the
-	// rail caught up. Without this the header could stay stale for the whole
-	// turn, showing a blank title and a zero count beside a transcript that
-	// plainly had content (the operator's screenshot: "messages 0" next to a
-	// populated transcript).
-	// The turn slot is gone as of EndStream above, so the stop affordance must go with it (the
-	// affordance is derived from that state, and re-derived here).
+	// A finished turn is when new usage lands, so this is the LIVE update: the stat strip re-reads the
+	// session's tokens / cache / cost and refreshes.
 	m.refreshComposerHint()
-	// AND THE SEND ACK SETTLES WITH THE TURN. The ack means "handed over, nothing back yet", and this is the
-	// one path every completed turn reaches — the graceful close of its stream. It is the second settle (the
-	// first is the TurnStarted ack) because the two cover different failures: a stream whose ack the tea
-	// channel dropped, or a turn that was already acked when the shell attached to it, would otherwise leave
-	// "sending …" on screen for good. Guarded, so a connection banner written before this is not erased.
+	// AND THE SEND ACK SETTLES WITH THE TURN.
 	m.dock.SettleSendingAck()
 	next := []tea.Cmd{m.chat.Poll(msg.ConvID), m.refreshMetrics(), m.chat.LoadConversations()}
 	if ended {
-		// The server's open-ask list is the settle authority (see the note above). Best-effort on
-		// purpose: if the query fails nothing is settled, which is the SAFE direction — a card that
-		// stays is answerable, while one wrongly retired is a decision with no card to make it.
+		// The server's open-ask list is the settle authority (see the note above).
 		next = append(next, m.chat.DiscoverPendingAsks(msg.ConvID))
 	}
 	return tea.Batch(next...)
@@ -5479,8 +4258,7 @@ func (m *App) restoreDraftForFailedTurn(convID string, items []chat.ChatItem) {
 		return
 	}
 	// The text of the user row the current error row belongs to, tracked as the items are walked (they
-	// are chronologically ordered), so each error row is scoped to its own turn rather than to the shell's
-	// most recent send.
+	// are chronologically ordered).
 	turnText := ""
 	for _, it := range items {
 		switch it.Kind {
@@ -5495,9 +4273,8 @@ func (m *App) restoreDraftForFailedTurn(convID string, items []chat.ChatItem) {
 			continue
 		}
 		m.failedTurnRestored[it.Key] = true
-		// Only for the OPEN conversation: a failure in a background chat must not put its text in this one's
-		// composer. The latch is still set, so opening that chat later does not re-restore (the operator has
-		// moved on by then).
+		// Only for the OPEN conversation: a failure in a background chat must not put its text in this
+		// one's composer.
 		if convID != m.chatConvID {
 			continue
 		}
@@ -5511,21 +4288,15 @@ func (m *App) restoreDraftForFailedTurn(convID string, items []chat.ChatItem) {
 	}
 }
 
-// ownFailedTurn reports whether a failed turn is the one THIS client sent — i.e. the turn's own user text is
-// what the dock last sent (suffix-matched through matchesAny, so a prepended context preamble does not defeat
-// it). It is the ONE ownership rule the retry surfaces share: the draft restore (restoreDraftForFailedTurn)
-// and the retry claim (stampRetryAffordance) must agree, or the row would promise a composer state that was
-// never produced.
+// ownFailedTurn reports whether a failed turn is the one THIS client sent — i.e. the turn's own
+// user text is what the dock last sent (suffix-matched through matchesAny.
 func (m *App) ownFailedTurn(turnText string) bool {
 	last := m.dock.LastSent()
 	return last != "" && matchesAny([]string{turnText}, last)
 }
 
-// stampRetryAffordance appends the retry line to the failed-turn rows that are THIS client's own send, on the
-// OPEN conversation. The composer the line names belongs to the open conversation, so a failure in a
-// background chat is drawn WITHOUT the claim; and a historical failure (not this client's send) makes no claim
-// either, since its draft was never put back. It runs on every transcript delivery, before the store write, so
-// a later poll's fresh durable copy is re-stamped rather than losing the line.
+// stampRetryAffordance appends the retry line to the failed-turn rows that are THIS client's own
+// send, on the OPEN conversation.
 func (m *App) stampRetryAffordance(convID string, items []chat.ChatItem) {
 	if convID == "" || convID != m.chatConvID {
 		return
@@ -5543,10 +4314,8 @@ func (m *App) stampRetryAffordance(convID string, items []chat.ChatItem) {
 	}
 }
 
-// modelRefForConv is the model ref the composer's chain would resolve for a SPECIFIC conversation: that
-// conversation's own row from the shell's list, else the pending selection, else the tenant default. It is
-// currentAskModel's chain pointed at a conversation that need not be the open one, so a failure reported for
-// another chat names THAT chat's model rather than the one on screen.
+// modelRefForConv is the model ref the composer's chain would resolve for a SPECIFIC conversation:
+// that conversation's own row from the shell's list, else the pending selection.
 func (m *App) modelRefForConv(convID string) string {
 	if convID != "" {
 		if c, ok := m.conversationByID(convID); ok && c.ModelRef != "" {
@@ -5558,25 +4327,7 @@ func (m *App) modelRefForConv(convID string) string {
 	return m.currentAskModel()
 }
 
-// surfaceTurnFailure puts a PRE-ACK send/turn failure on the TRANSCRIPT, not only on the composer strip.
-//
-// THE ROW-RENDERING FIX COVERS THE FAILED TURN; THIS COVERS THE FAILED SEND. A turn that died AFTER it was
-// acked is persisted as an assistant row with metadata.error set, and conversationItems now draws it as
-// KindError. A failure BEFORE the ack is different and has nothing to draw: the service refuses/aborts
-// before the turn registers, so `startConversationTurn` returns an error and NO durable row is written at
-// all (internal/askorchicon/chat.go's pre-ack path). Left alone, that failure reached only the dock strip —
-// and the operator's report is precisely the transcript reader's view of it: "The TUI just drops with no
-// indication as to why." So the FAILURE IS APPENDED LOCALLY, as a live-only row.
-//
-// ITS SHAPE MIRRORS THE DURABLE ONE (chat.FailedTurnText): the same "turn failed: …", the same model line,
-// the same retry affordance — so a failed send and a failed turn read identically, which is the point. The
-// operator's own message is not repeated here: the shell has already restored the draft into the composer
-// (setChatError → dock.RestoreDraft, plus attachments), and the retry line says so.
-//
-// IT IS LIVE-ONLY BY CONSTRUCTION, and that is correct: there is no server row to reconcile against, and a
-// later successful turn's durable transcript REPLACES the local buffer (chatStore.replace keeps only draft
-// echoes and pending consent cards), so a stale local error cannot linger over a conversation that has
-// since worked.
+// IT IS LIVE-ONLY BY CONSTRUCTION, and that is correct.
 func (m *App) surfaceTurnFailure(convID string, err error) tea.Cmd {
 	if convID == "" || m.chatStore == nil {
 		return nil
@@ -5588,12 +4339,8 @@ func (m *App) surfaceTurnFailure(convID string, err error) tea.Cmd {
 	if strings.TrimSpace(errText) == "" {
 		return nil
 	}
-	// The model the FAILING conversation's send was bound for, NOT the open one's: a failure can belong to a
-	// conversation other than the one on screen (the store keeps it for when that chat is opened), and naming
-	// the open chat's ref there would be a claim about the wrong model. See modelRefForConv.
-	// THE RETRY CLAIM IS MADE ONLY FOR THE OPEN CONVERSATION, whose composer setChatError just put the text
-	// back into. The row is still recorded for a background chat (so opening it shows why the send failed),
-	// but without a claim about a composer it does not own. See chat.RetryAffordanceLine.
+	// THE RETRY CLAIM IS MADE ONLY FOR THE OPEN CONVERSATION, whose composer setChatError just put the
+	// text back into.
 	text := chat.FailedTurnText(errText, m.modelRefForConv(convID))
 	if convID == m.chatConvID {
 		text = chat.WithRetryAffordance(text)
@@ -5616,16 +4363,10 @@ func (m *App) surfaceTurnFailure(convID string, err error) tea.Cmd {
 // setChatError maps a chat failure to the dock error strip (401 gets
 // the re-auth prompt naming the in-place fix; the app keeps running).
 func (m *App) setChatError(where string, err error) {
-	// Settle the composer's send ack. The dock writes "sending …" the instant
-	// Enter fires, so every terminal outcome has to replace it — otherwise a
-	// FAILED send reads as one still in flight, forever (the operator's "it
-	// says sending but nothing ever opens"). The banner/error below IS the
-	// outcome, and it is set after this clear so it wins.
+	// Settle the composer's send ack.
 	m.dock.SetNotice("")
-	// A failed send must not lose the operator's message: put the draft
-	// back in the composer (RestoreDraft never clobbers text typed since).
-	// AND THE ATTACHMENTS WITH IT. A screenshot the operator pasted is not recoverable by retyping — they
-	// would have to re-screenshot it — so a failed turn puts the whole set back rather than only the text.
+	// A failed send must not lose the operator's message: put the draft back in the composer
+	// (RestoreDraft never clobbers text typed since).
 	m.restoreAttachments()
 	if chat.IsAuthExpired(err) {
 		m.setReauthBanner()
@@ -5636,14 +4377,8 @@ func (m *App) setChatError(where string, err error) {
 	m.dock.RestoreDraft()
 }
 
-// restoreAttachments puts the last turn's attachments back into the pending set after a failed send.
-//
-// WHY IT IS NEEDED AT ALL: sendChat CLEARS the pending set when the turn leaves (the operator sees their
-// turn go), so a failure would otherwise drop a screenshot the operator cannot retype. The bytes are kept
-// on lastSentAttachments for exactly this window — one turn — and dropped once it resolves.
-//
-// It does not clobber anything the operator has attached SINCE the failed turn: if they have already queued
-// something new, the older set is not forced back on top of it.
+// restoreAttachments puts the last turn's attachments back into the pending set after a failed
+// send.
 func (m *App) restoreAttachments() {
 	if len(m.lastSentAttachments) == 0 {
 		return
@@ -5671,15 +4406,10 @@ func (m *App) setChatErrorPlain(errText string) {
 	m.dock.SetError(errText)
 }
 
-// reauthBannerText is the ONE global re-auth banner. The re-auth UX is
-// never duplicated: it renders either inline in the pane/rail that hit
-// the 401 or once here above the composer — never both.
+// reauthBannerText is the ONE global re-auth banner.
 const reauthBannerText = "session needs re-authentication — run /connect (esc cancels; the shell reconnects in place)"
 
-// setReauthBanner raises the single global re-auth banner. When an inline
-// retry state is already on screen (the active screen's panes or the
-// conversations rail) the banner is suppressed — that inline state IS the
-// banner, so the operator sees exactly one.
+// setReauthBanner raises the single global re-auth banner.
 func (m *App) setReauthBanner() {
 	if m.authRetryInline() {
 		return
@@ -5690,13 +4420,7 @@ func (m *App) setReauthBanner() {
 // authRetryInline reports whether the shell already renders the re-auth
 // retry state inline (a pane's fetch error the rail's own retry row).
 func (m *App) authRetryInline() bool {
-	// The rail's error only suppresses the shell banner while the rail is
-	// actually ON SCREEN. m.convErr is the CONVERSATIONS RAIL's load failure,
-	// and on the Ask launch page the rail is not rendered at all
-	// (railVisible() is false in welcome mode). Treating it as "the inline
-	// state IS the banner" therefore made the banner suppress ITSELF, and the
-	// operator got neither: an Enter that failed showed a stuck "sending …"
-	// ack with the draft restored into the box and no explanation anywhere.
+	// The rail's error only suppresses the shell banner while the rail is actually ON SCREEN.
 	if m.convErr != "" && isAuthErrText(m.convErr) && m.railVisible() {
 		return true
 	}
@@ -5709,31 +4433,12 @@ func (m *App) authRetryInline() bool {
 	return false
 }
 
-// RepaintTranscript re-sizes and repaints the open conversation's transcript from what the shell already
-// holds. It is onChatWake's cheap half exposed to a SCREEN, which needs it after a detail landing: the
-// landing changes the pane's field count and therefore its body height, so a stream sized before it can end
-// up one row too tall — and the row the pane's viewport clips is the NOTICE, which is drawn last.
+// RepaintTranscript re-sizes and repaints the open conversation's transcript from what the shell
+// already holds.
 func (m *App) RepaintTranscript() tea.Cmd { return m.onChatWake() }
 
-// composerKey is THE way to hand a message to the composer.
-//
-// EVERY caller of dock.Update MUST go through it, and the reason is that the dock's Enter path does TWO
-// things at once: it CLEARS the buffer and it parks the message in a pending slot for the shell to collect.
-// Only the shell can dispatch it (the dock has no client). So a caller that updated the dock and never
-// collected the pending send SWALLOWED THE OPERATOR'S MESSAGE — the composer emptied, nothing was ever
-// sent, no optimistic echo was appended, no turn started, and nothing on screen changed. The operator's
-// words for exactly that: "I don't see the orchicon is thinking and I have to send another message" and
-// "my message does not appear when this happens".
-//
-// THERE WERE FOUR CALLERS OF dock.Update AND EXACTLY ONE COLLECTED. The other three forwarded a key and
-// dropped whatever it produced — and the one that matters is the slash PALETTE, because it forwards every
-// key it does not case itself to the dock: `enter` is cased there but `ctrl+j` is NOT, and ctrl+j is the
-// dock's own second spelling of Enter (see dock.enterKey — some terminals and PTY configurations send LF,
-// which bubbletea reports as KeyCtrlJ). With the palette open, that Enter was a message eater.
-//
-// This fixes the SHAPE rather than that one hole: with one funnel, "a key that produces a send is
-// dispatched" is true by construction, and a future fifth caller cannot reintroduce the bug by forgetting
-// a convention.
+// EVERY caller of dock.Update MUST go through it, and the reason is that the dock's Enter path does
+// TWO things at once.
 func (m *App) composerKey(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 	handled, cmd = m.dock.Update(msg)
 	if text := m.dock.SendRequest(); text != "" {
@@ -5746,11 +4451,6 @@ func (m *App) composerKey(msg tea.Msg) (handled bool, cmd tea.Cmd) {
 }
 
 // sendChat sends text to the conversation with the context preamble AND the pending attachments.
-//
-// The attachments are read from the pending set here, at the single place every send passes through, so the
-// existing-conversation path and the create-conversation path cannot disagree about whether a screenshot
-// goes with the message. The set is CLEARED on the optimistic echo (the operator sees their turn leave) and
-// restored if the send fails, so a failed turn never loses the operator's screenshot.
 func (m *App) sendChat(convID, text, preamble string) tea.Cmd {
 	files := m.wireAttachments()
 	m.lastSentAttachments = files
@@ -5763,35 +4463,15 @@ func (m *App) sendChat(convID, text, preamble string) tea.Cmd {
 func (m *App) createConversationAndSend(text, preamble string) tea.Cmd {
 	cl := m.clients
 	// SEED the model on create, never leave it empty.
-	//
-	// This used `m.chat.PendingModel()`, which is empty unless the operator ran
-	// /models — so a conversation created straight from the New page stored an
-	// EMPTY model_ref. The composer's context window resolves from the ref
-	// (currentAskModel → the model's live metadata), so an empty ref meant no
-	// denominator until the operator picked a model by hand: "It seems I must
-	// first do a /models in new mode before I will see the actual 1 million
-	// context."
-	//
-	// currentAskModel already walks the documented chain — the open
-	// conversation's ref, else the pending selection, else the TENANT DEFAULT —
-	// so a send from the New page now binds the tenant's default Ask model to the
-	// new conversation and the strip is correct from the first render.
 	model := m.currentAskModel()
 	mode := m.chat.PendingMode()
-	// THE ACTIVE WORKSPACE, READ HERE — on the tea loop, where the shell's state is current — and captured by
-	// the command below. The operator: "any conversation you make should be tied to the project that is
-	// currently set across all of orch." A conversation created while a workspace is chosen belongs to it; from
-	// All projects (or No project) it is created unassigned, which is what those scopes mean.
+	// THE ACTIVE WORKSPACE, READ HERE — on the tea loop, where the shell's state is current — and
+	// captured by the command below.
 	projectID := m.activeProjectID()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		// Create EMPTY, then send once through the stream below. Passing
-		// InitialMessage AND then sending persisted the operator's first message
-		// TWICE and started two turns (the operator's "it sent two messages
-		// instead of one on the first message"). This mirrors the GUI, which
-		// calls createConversation({mode}) with no initialMessage and then
-		// sendStreaming(conv.id, text) — see ask-orchicon.tsx.
+		// Create EMPTY, then send once through the stream below.
 		resp, err := cl.Ask.CreateConversation(ctx, connect.NewRequest(&apiv1.CreateConversationRequest{
 			ModelRef:  model,
 			Mode:      mode,
@@ -5813,18 +4493,6 @@ type chatConvCreatedMsg struct {
 }
 
 // pinTranscriptToTail points the open transcript back at its newest line.
-//
-// A SEND IS A NEW, DELIBERATE ACT, and it must show what it sent. The stream's follow intent is
-// cleared by the operator's own scroll (kit2.Stream.follow — deliberately sticky, so an arriving
-// chunk cannot yank a reader out of the history mid-sentence). That stickiness is right for READING
-// and wrong for SENDING: an operator who scrolled back through a long conversation and then asked a
-// question is no longer reading, and leaving the view parked in the history means their own message
-// and the activity line are both appended BELOW the fold.
-//
-// THIS IS THE SIZE-DEPENDENT BUG, and the operator's two example conversations are the proof: a SHORT
-// transcript cannot be scrolled at all, so it is always at the bottom and always works; a LONG one can
-// be scrolled, and once it is, everything sent afterwards is invisible until something else moves the
-// window. "conversation ID 01M4… is working. Your conversation 01M3… is not."
 func (m *App) pinTranscriptToTail() {
 	if m.chatConvID == "" {
 		return
@@ -5849,10 +4517,8 @@ func (m *App) runningExecutionID() (string, bool) {
 	return "", false
 }
 
-// interjectExecution sends a mid-run message into the execution's live
-// session (the TUI equivalent of orchicon_send_execution_message; the
-// same API path the GUI's useSendExecutionMessage uses). Reply streams
-// back through the execution screen's existing ExecutionEvents sub.
+// interjectExecution sends a mid-run message into the execution's live session (the TUI equivalent
+// of orchicon_send_execution_message; the same API path the GUI's useSendExecutionMessage uses).
 func (m *App) interjectExecution(execID, text string) tea.Cmd {
 	cl := m.clients
 	return func() tea.Msg {
@@ -5881,15 +4547,8 @@ func (m *App) setFocus(f focusMode) {
 	} else {
 		m.dock.Blur()
 	}
-	// THE FOOTER'S FOCUS HINT IS DERIVED HERE, at the ONE chokepoint every focus change passes
-	// through, rather than at the handful of call sites somebody remembered.
-	//
-	// It was set in three places in the MOUSE handler and recomputed in passToScreen — neither of
-	// which covers the keyboard. So pressing Tab to the tab bar (or an F-key, which now lands there)
-	// left the footer claiming "composer" while the composer was blurred and typing went nowhere:
-	// the focus indicator said the opposite of the truth at exactly the moment the operator needed
-	// it. It is the only on-screen evidence of where the keyboard is, so a wrong value is worse than
-	// no value.
+	// THE FOOTER'S FOCUS HINT IS DERIVED HERE, at the ONE chokepoint every focus change passes through,
+	// rather than at the handful of call sites somebody remembered.
 	m.footer.ComposerFocus = f == focusComposer
 }
 
@@ -5904,23 +4563,8 @@ const (
 	askPaneConversation
 )
 
-// askPaneKey handles left/right as PANE SELECTION on the Ask tab, reporting whether it
-// owned the key.
-//
-// The operator: "make left/right actually select the full conversation versus the pane and
-// then up/down works accordingly between the rail and conversation". Tab is deliberately
-// NOT used — it belongs to the tab bar — so left/right is the pane gesture on this tab,
-// matching what left/right already mean on every other one ("left+right should move
-// between the two panes below the menus").
-//
-// It also drives the panes' BORDERS through Base.SetPaneFocus, so the selection is VISIBLE. Without
-// that the operator had "no ... highlight [on] the pane letting you know you have focus".
-//
-// THE DIRECTIONS FOLLOW THE LAYOUT, NOT THE NAMES. The rail is joined to the RIGHT of the content
-// (View: JoinHorizontal(body, rail)), so RIGHT selects the rail and LEFT the conversation — the arrow
-// points at the pane. I had this inverted at first and the operator reported it immediately: "the
-// arrows are in reverse. You have to hit right from the rail to focus on the conversation even though
-// the conversation pane is on the left".
+// askPaneKey handles left/right as PANE SELECTION on the Ask tab, reporting whether it owned the
+// key.
 func (m *App) askPaneKey(key string) (bool, tea.Cmd) {
 	if m.active != TabAsk || !m.railVisible() {
 		return false, nil
@@ -5950,13 +4594,8 @@ func (m *App) syncAskPaneFocus() {
 	}
 }
 
-// stopReply interrupts the in-flight reply on the open conversation: the composer's ctrl+y, the TUI's
-// counterpart to the GUI's Stop button (ask-orchicon.tsx: handleStopStreaming -> abortTurn).
-//
-// WHY IT SAYS SO WHEN THERE IS NOTHING TO STOP. A chord that silently does nothing is
-// indistinguishable from a chord that is not bound — the failure mode this TUI keeps paying for (see
-// the composer's "sending …" ack, added for exactly this reason). So an idle ctrl+y names its own
-// reason instead of being inert.
+// stopReply interrupts the in-flight reply on the open conversation: the composer's ctrl+y, the
+// TUI's counterpart to the GUI's Stop button (ask-orchicon.tsx: handleStopStreaming -> abortTurn).
 func (m *App) stopReply() tea.Cmd {
 	if m.chatConvID == "" {
 		m.dock.SetNotice("no conversation open — nothing to stop")
@@ -5972,9 +4611,8 @@ func (m *App) stopReply() tea.Cmd {
 	return m.chat.AbortTurn(m.chatConvID)
 }
 
-// sendFromComposer routes composer text: slash commands dispatch,
-// running-execution context interjects, everything else sends to Ask
-// Orchicon (conversation lazily created on first send).
+// sendFromComposer routes composer text: slash commands dispatch, running-execution context
+// interjects, everything else sends to Ask Orchicon (conversation lazily created on first send).
 func (m *App) sendFromComposer(text string) tea.Cmd {
 	if handled, cmd := m.dispatchSlash(text); handled {
 		return cmd
@@ -5998,16 +4636,14 @@ func (m *App) sendFromComposer(text string) tea.Cmd {
 		Kind: chat.KindUser, Text: text, At: time.Now().UnixMilli(),
 		Key: fmt.Sprintf("draft-%d", time.Now().UnixNano()), Live: true,
 		// The markers ride the echo, so the operator sees "[image]" on their own message the moment it
-		// appears — which is the only on-screen record that the turn carried a file, since the composer is
-		// cleared on send.
+		// appears — which is the only on-screen record that the turn carried a file.
 		Attachments: m.pendingAttachMarkers(),
 	})
 	// SHOW IT. See pinTranscriptToTail: on a long transcript the follow intent may be off, and the echo
 	// plus the activity line would land below the fold.
 	m.pinTranscriptToTail()
 	// The turn is in flight as soon as sendChat is evaluated (chat.Send flips the slot synchronously),
-	// so the composer's stop affordance appears with it — the operator can see HOW to stop before the
-	// first token lands.
+	// so the composer's stop affordance appears with it.
 	m.refreshComposerHint()
 	return tea.Batch(m.sendChat(m.chatConvID, text, preamble), m.onChatWake())
 }
@@ -6049,12 +4685,8 @@ func (m *App) ConsentGrants(convID string) ([]chat.SessionGrant, bool) {
 // ConsentGrantsLoaded reports whether the conversation's grants have been fetched yet (see ConsentGrants).
 func (m *App) ConsentGrantsLoaded(convID string) bool { return m.permGrantsLoaded[convID] }
 
-// ConsentRevoke withdraws a session grant ON THE SERVER (see Controller.RevokePermissionGrant); the refreshed
-// list arrives as a chat.PermissionGrantsMsg.
-//
-// It used to drop the grant from a LOCAL map only, so the row vanished from the operator's list while the server
-// went on honouring the grant: a revoke that revoked nothing, on the surface whose whole job is showing what is
-// allowed.
+// ConsentRevoke withdraws a session grant ON THE SERVER (see Controller.RevokePermissionGrant); the
+// refreshed list arrives as a chat.PermissionGrantsMsg.
 func (m *App) ConsentRevoke(convID, directory string) error {
 	if m.chat == nil || convID == "" || directory == "" {
 		return nil
@@ -6093,9 +4725,8 @@ func (m *App) applyConsentGrants(msg chat.PermissionGrantsMsg) tea.Cmd {
 	return m.onChatWake()
 }
 
-// refreshGrantsOverlay asks the Ask screen to re-read its session-grant rows, through the same narrow type
-// assertion the shell's other screen hooks use — so the shell keeps no second reference to a screen it does not
-// own.
+// refreshGrantsOverlay asks the Ask screen to re-read its session-grant rows, through the same
+// narrow type assertion the shell's other screen hooks use.
 func (m *App) refreshGrantsOverlay() {
 	s := m.screens[TabAsk]
 	if s == nil {
@@ -6110,10 +4741,8 @@ func (m *App) refreshGrantsOverlay() {
 // card's answer).
 func (m *App) ConsentSend(text string) tea.Cmd { return m.SendUserMessage(text) }
 
-// SendUserMessage sends text as the next user message through the COMPOSER'S
-// OWN FUNNEL — the same optimistic echo, the same context preamble, the same
-// stream, the same wake. ONE send path, because a second one would drift from
-// the first in exactly the ways that matter (preamble, attachments, dedupe).
+// SendUserMessage sends text as the next user message through the COMPOSER'S OWN FUNNEL — the same
+// optimistic echo, the same context preamble, the same stream, the same wake.
 func (m *App) SendUserMessage(text string) tea.Cmd {
 	if strings.TrimSpace(text) == "" {
 		return nil
@@ -6134,19 +4763,7 @@ func (m *App) SendUserMessage(text string) tea.Cmd {
 	return tea.Batch(m.sendChat(m.chatConvID, text, preamble), m.onChatWake())
 }
 
-// ShowConsentAsk surfaces a pending ask as a transcript CARD. This is the hook the ask event on the turn
-// stream calls (see the PermissionAsk wire arm in internal/tui/chat) — the TUI models the ask itself
-// (chat.PermissionAsk), so only the adapter that calls this changes.
-//
-// IT IS THE SHELL'S ENTRY POINT ONLY. The stream does NOT come through here any more: it writes the card to
-// the store directly (appEventStore.ShowConsentAsk), because a card delivered as a tea.Cmd through the
-// shell's shared command channel could be dropped in silence. Both paths resolve the conversation and draw
-// through chatStore.drawConsentAsk, so they cannot disagree about where a card belongs or whether it is
-// already up.
-//
-// The conversation fallback here is the shell's own: on the tea loop the LIVE App is in hand, so an ask that
-// names no conversation can be attached to the one on screen. The stream path has no such luxury (it holds a
-// copy from Bind time) and relies on the controller stamping the turn's id, which it always does.
+// ShowConsentAsk surfaces a pending ask as a transcript CARD. IT IS THE SHELL'S ENTRY POINT ONLY.
 func (m *App) ShowConsentAsk(ask chat.PermissionAsk) tea.Cmd {
 	convID := ask.ConvID
 	if convID == "" {
@@ -6161,23 +4778,14 @@ func (m *App) ShowConsentAsk(ask chat.PermissionAsk) tea.Cmd {
 	return m.onChatWake()
 }
 
-// ConsentResolve settles a card: it records a session grant, sends a
-// clarifying answer, notices a denial, and repaints. The screen has already
-// marked the item resolved on the shared state (see ask/consent.go).
+// ConsentResolve settles a card: it records a session grant, sends a clarifying answer, notices a
+// denial, and repaints.
 func (m *App) ConsentResolve(askID string, dec chat.ConsentDecision, choice string) tea.Cmd {
 	cmds := []tea.Cmd{}
 	st := m.chatStore.consentState(m.chatConvID, askID)
 	if st != nil {
 		ask := st.Ask
 		// SETTLE THE CARD HERE, at the ONE place every decision passes through.
-		//
-		// The screen's key handler used to be the only caller that marked the item
-		// decided, so a decision made any other way left the card Pending() forever:
-		// it never stopped claiming the keyboard and never turned into a record. The
-		// operator hit both halves — "clicking does not actually commit unless you hit
-		// enter", and "the card does not go away when you select something". Settling
-		// in ConsentResolve means the keyboard, a click and any future caller cannot
-		// disagree about what a decided card looks like.
 		st.Decision = dec
 		st.Choice = choice
 		st.Note = ""
@@ -6188,28 +4796,13 @@ func (m *App) ConsentResolve(askID string, dec chat.ConsentDecision, choice stri
 			if dir == "" {
 				dir = ask.Target
 			}
-			// THE GRANT IS NOT RECORDED HERE ANY MORE. A session grant is the SERVER's fact — it is what silences
-			// the NEXT ask, and every client reads it (the server's grantStore is what permpolicy consults before
-			// raising one). Recording it on the CLICK meant this client believed a directory was granted even when
-			// the server REFUSED the decision (Applied=false, Expired=true: the ask had already expired, the turn
-			// had ended, another client had answered) — and the mirror then suppressed every later card for that
-			// directory, for the life of the process, while the GUI kept asking. It is recorded on the APPLIED
-			// verdict instead (see ConsentRepliedMsg's handler), where the server has actually granted it.
+			// THE GRANT IS NOT RECORDED HERE ANY MORE.
 			st.Note = "session · " + dir + " (pending)"
 		case chat.DecisionDeny:
 			m.dock.SetNotice("denied · " + strings.TrimSpace(ask.Tool+" "+ask.Target))
 		}
 
-		// TELL THE SERVER. This is the step whose ABSENCE made approving a card do
-		// nothing: the TUI recorded the decision in ITS OWN grant overlay and dock
-		// notice, but never sent it, so the turn's blocked call stayed blocked until
-		// the consent window expired and the transcript recorded an expiry — which
-		// the operator read as "it says I denied it". The GUI, which reads the
-		// server's registry, saw no decision either, so an approval in the TUI was
-		// invisible there.
-		//
-		// A permission is answered with a CHOICE; a question with the operator's
-		// WORDS (which become the ask_user tool result).
+		// TELL THE SERVER.
 		if m.chat != nil && m.chatConvID != "" {
 			var pc apiv1.PermissionChoice
 			answer := ""
@@ -6234,15 +4827,6 @@ func (m *App) ConsentResolve(askID string, dec chat.ConsentDecision, choice stri
 }
 
 // settleConsentScope reconciles a decided card with the SERVER's verdict on it.
-//
-// THE ORDER MATTERS AND IT IS THE WHOLE POINT: a session grant is the server's fact, and this client may only
-// record it once the server has APPLIED the decision. The card's scope note follows the same rule, so a
-// refused ALLOW_SESSION ("the ask is no longer open — nothing was applied") stops reading "session · /dir" —
-// a scope the server never granted, and one this client used to let silence every later ask for that
-// directory (see ShowConsentAsk).
-//
-// appliedPrefix is the note's prefix when the decision WAS applied ("session · "), or "" when the server
-// refused it. Returns the directory a confirmed grant covers, or "" when there is no confirmed grant.
 func (m *App) settleConsentScope(convID, askID, appliedPrefix string) string {
 	if convID == "" || askID == "" {
 		return ""
@@ -6262,26 +4846,13 @@ func (m *App) settleConsentScope(convID, askID, appliedPrefix string) string {
 		}
 		return ""
 	}
-	// NO LOCAL GRANT IS RECORDED — not even on the applied verdict. The server just granted it, and the list the
-	// operator sees is FETCHED from the server (see ConsentGrants): a local copy is the second authority that
-	// made the TUI mute cards the GUI was still asking about. What is kept here is the CARD's own record, which
-	// is this client's business.
+	// NO LOCAL GRANT IS RECORDED — not even on the applied verdict.
 	st.Note = appliedPrefix + dir
 	return dir
 }
 
 // reArmConsentClaim hands the keyboard back to a card that is still pending, after a MOUSE action
 // on it.
-//
-// A card's key claim can be RELEASED without deciding anything — ctrl+g does exactly that, so the
-// operator can reach the composer while a question is up (see ask.Model.DropKeyClaim). A click on
-// the card's own Other row is the operator acting ON the card, so the card claims the keys again:
-// otherwise the free-text row would be drawn on the card while the typing it asks for went into the
-// composer behind it.
-//
-// It reaches the screen through the same narrow type assertion as the shell's other screen hooks
-// (see runAskOverlay), rather than through a field on the App, so the shell keeps no second
-// reference to a screen it does not own.
 func (m *App) reArmConsentClaim() {
 	s := m.screens[TabAsk]
 	if s == nil {
@@ -6305,10 +4876,34 @@ func (m *App) runAskOverlay(kind string) tea.Cmd {
 	m.SwitchTo(TabAsk)
 	cmd := op.OpenAskOverlay(kind)
 	if kind == "grants" {
-		// ALWAYS FETCH ON OPEN. A grant can be created by the GUI, or dropped by a plane restart, without this
-		// client hearing about it (the store is in memory on the plane), so the list the operator opens must be
-		// the server's current answer rather than whatever this shell last happened to see.
+		// ALWAYS FETCH ON OPEN.
 		return tea.Batch(cmd, m.loadConsentGrants(m.chatConvID))
 	}
 	return cmd
+}
+
+// stopRunHint asks the ACTIVE screen whether it is showing something stop­pable, and returns the
+// chord to advertise.
+func (m *App) stopRunHint() string {
+	s := m.screens[m.active]
+	if s == nil {
+		return ""
+	}
+	if h, ok := s.(interface{ StopRunHint() string }); ok {
+		return h.StopRunHint()
+	}
+	return ""
+}
+
+// abortRunHint is the same probe for the RUN-level abort, which the Execution screen answers while
+// the Runs pane holds a live run.
+func (m *App) abortRunHint() string {
+	s := m.screens[m.active]
+	if s == nil {
+		return ""
+	}
+	if h, ok := s.(interface{ AbortRunHint() string }); ok {
+		return h.AbortRunHint()
+	}
+	return ""
 }

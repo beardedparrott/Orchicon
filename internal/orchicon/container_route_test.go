@@ -7,11 +7,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// TestNativeContainerRouteEnabled pins the always-container routing gate
-// (acceptance C + the local-mode contract): native `bash` routes into the
-// run's container only when a daemon client is wired AND the run is
-// workflow-bound AND the run is NOT in local execution mode. A local run
-// has no container lease — it must stay in-process even with a daemon.
+// TestNativeContainerRouteEnabled pins the always-container routing gate (acceptance C + the
+// local-mode contract).
 func TestNativeContainerRouteEnabled(t *testing.T) {
 	cases := []struct {
 		name      string

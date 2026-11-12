@@ -1,17 +1,6 @@
 package execution
 
 // execution_delete_test.go — the Executions pane's DELETE, single and bulk.
-//
-// The operator, mid-live-test: "Executions and Workflow Runs do not have a delete operation (single
-// and bulk)."
-//
-// THE EXECUTIONS HALF WAS A PURE CLIENT GAP. DeleteExecution AND BatchDeleteExecutions have existed in
-// the API all along (proto/orchicon/api/v1/execution_service.proto:52,55, implemented at
-// internal/execution/service.go:226,270) — the TUI simply never called either. Workers and Workflows
-// had delete; Executions did not. So the property worth pinning is NOT "the action exists" (an action
-// in the bar that its chord cannot reach is the failure this pane's own history is made of): it is
-// that the delete chord resolves to a real, runnable delete on this pane, and that its confirm tells
-// the truth about what it destroys.
 
 import (
 	"context"
@@ -92,10 +81,6 @@ func TestExecutionDeleteWritesTheFocusedID(t *testing.T) {
 }
 
 // DELETING A *RUNNING* EXECUTION SAYS SO FIRST.
-//
-// The server cancels a still-running execution before removing it (execution/service.go), so the
-// operator's run dies as a side effect — and an operator who expected it to keep going must not learn
-// that by watching it stop.
 func TestExecutionDeleteWarnsWhenTheRunIsStillLive(t *testing.T) {
 	live := executionsPane(t, screenkit.Item{ID: "exec-live", Title: "wf", Meta: "running · worker"})
 	a := deleteAction(t, live)
@@ -144,10 +129,6 @@ func TestExecutionBulkDeleteAppearsForASelection(t *testing.T) {
 }
 
 // THE BULK WRITE GOES OUT once per id, and a PARTIAL FAILURE is COUNTED rather than swallowed.
-//
-// This is why the pane writes the single-id RPC per row rather than calling BatchDeleteExecutions: the
-// batch returns only a count, so "3 of 5 failed" would arrive as an opaque number. A partial success
-// reported as one is what lets the operator know which rows are still there.
 func TestExecutionBulkDeleteCountsPartialFailures(t *testing.T) {
 	m := executionsPane(t,
 		screenkit.Item{ID: "exec-1", Title: "a", Meta: "succeeded"},

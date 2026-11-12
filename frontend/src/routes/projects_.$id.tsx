@@ -1,7 +1,11 @@
-import { createRoute, useNavigate } from "@tanstack/react-router";
+import { Link, createRoute, useNavigate } from "@tanstack/react-router";
+import { EngineAvailability } from "@/components/EngineAvailability";
+import { LocalModeDisclosure } from "@/components/LocalModeDisclosure";
 import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { ArrowLeft, ArrowUp, Folder } from "lucide-react";
+
+import { RuntimeImageStatus } from "@/api/gen/orchicon/api/v1/runtime_image_pb";
 
 import {
   useActivateProject,
@@ -14,7 +18,7 @@ import {
   projectKeys,
 } from "@/api/projects";
 import { useGetSettings } from "@/api/settings";
-import { useAvailableRuntimeImages } from "@/api/runtimeImages";
+import { useAvailableRuntimeImages, useListRuntimeImages } from "@/api/runtimeImages";
 import { useListExecutions } from "@/api/executions";
 import { useListDirPath, useUpdateProjectDir } from "@/api/projectFiles";
 import { useStreamProjectEvents } from "@/api/projectEvents";
@@ -66,7 +70,7 @@ function ProjectDetailPage() {
   const [savingGitStrategy, setSavingGitStrategy] = useState(false);
   const [savingMaxRuns, setSavingMaxRuns] = useState(false);
   const [draftDefaultImage, setDraftDefaultImage] = useState("");
-  const [draftExecutionMode, setDraftExecutionMode] = useState<"runtime" | "local">("runtime");
+  const [draftExecutionMode, setDraftExecutionMode] = useState<"runtime" | "local">("local");
   const [savingRuntime, setSavingRuntime] = useState(false);
   // The project's skill-file selection is edited through the SAME FileBrowser
   // as context files, but reported back here (onChange) so a skills save does
@@ -74,6 +78,11 @@ function ProjectDetailPage() {
   const [skillDraft, setSkillDraft] = useState<string[]>([]);
   const [skillDirty, setSkillDirty] = useState(false);
   const { data: availableImages } = useAvailableRuntimeImages();
+  // The tenant's runtime image ROWS (spec + status), not just the refs above.
+  // They let the runtime-defaults card say when the selected image is not
+  // downloaded: images are fetched at OPT-IN, never mid-run, so the moment a
+  // project is pointed at a container image is the moment to surface the fetch.
+  const { data: runtimeImageRows } = useListRuntimeImages();
   // The project↔server SELECTION is gone: a definition is OWNED by its scope
   // (mcp_servers.project_id), so there is no reference set to read or save.
   // The scope's own definitions are managed by MCPServersPanel below.
@@ -89,6 +98,15 @@ function ProjectDetailPage() {
   ].filter((img, i, arr) => img && arr.indexOf(img) === i);
   const defaultImageHint =
     (availableImages as { defaultImage?: string } | undefined)?.defaultImage || runtimeOptions[0] || "base image";
+  // The image this project would run (explicit choice, else the inherited
+  // base) and its row, so ABSENT (spec correct, image NOT downloaded locally,
+  // nothing building) can be reported here rather than only as a run that
+  // failed at start.
+  const selectedImageRef =
+    draftDefaultImage || (availableImages as { defaultImage?: string } | undefined)?.defaultImage || "";
+  const selectedImageRow = (runtimeImageRows ?? []).find(
+    (r) => r?.tag && r.tag === selectedImageRef,
+  );
 
   useEffect(() => {
     setDraftMaxRuns(String(project?.maxConcurrentRuns ?? ""));
@@ -516,14 +534,25 @@ function ProjectDetailPage() {
             <CardDescription>
               Default container image copied onto work items at create time
               when they pass no runtime_image. Empty = inherit base
-              ({defaultImageHint}). Mode runtime runs inside the container;
-              local allows in-process with an honest prompt + DSN fence.
+              ({defaultImageHint}). Mode runtime runs inside the container; local
+              runs as a host process with your own filesystem access and is not
+              contained (the note under the mode control spells out what that
+              means).
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="default-runtime-image">Default runtime image</Label>
+                {draftExecutionMode === "local" ? (
+                  // MODE-AWARE, matching the work item's picker. A local project's runs execute
+                  // on the host, so there is no container to give an image to; showing an
+                  // "Inherit base (…)" select here invites an operator to configure something
+                  // that can never apply, and it reads as though a container IS used.
+                  <div className="w-full rounded-xl glass-input px-3 py-1.5 text-sm opacity-70">
+                    No image — local runs execute on the host, not in a container
+                  </div>
+                ) : (
                 <select
                   id="default-runtime-image"
                   disabled={!editing}
@@ -541,6 +570,17 @@ function ProjectDetailPage() {
                     <option value={draftDefaultImage}>{draftDefaultImage} (current)</option>
                   )}
                 </select>
+                )}
+                {/* THE PICKER CAN ONLY OFFER WHAT THE DAEMON ALREADY KNOWS, so an image nobody has
+                    fetched is invisible here — you cannot select it, so you never learn it is
+                    missing, so you never fetch it. This link breaks that loop and is always visible,
+                    not only once the choice has gone wrong. */}
+                <p className="text-xs text-muted-foreground">
+                  <Link to="/runtime-images" className="underline">
+                    Fetch new images
+                  </Link>
+                  {" "}— every image we host is listed there, downloaded or not.
+                </p>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="execution-mode">Execution mode</Label>
@@ -551,9 +591,15 @@ function ProjectDetailPage() {
                   onChange={(e) => setDraftExecutionMode(e.target.value as "runtime" | "local")}
                   className="w-full rounded-xl glass-input px-3 py-1.5 text-sm"
                 >
-                  <option value="runtime">runtime — always-container (default)</option>
-                  <option value="local">local — in-process (fenced)</option>
+                  <option value="local">local — host process, not contained (default)</option>
+                  <option value="runtime">runtime — always-container (opt-in)</option>
                 </select>
+                {/* Containers are what "runtime" MEANS — say whether they are available, and
+                    why not, right where the choice is made (AC5). */}
+                <EngineAvailability />
+                {/* Keyed off the DRAFT mode, so the consequence of choosing local is visible
+                    BEFORE "Save runtime defaults" commits it. */}
+                {draftExecutionMode === "local" && <LocalModeDisclosure />}
               </div>
             </div>
             {editing ? (
@@ -572,8 +618,31 @@ function ProjectDetailPage() {
               </Button>
             ) : (
               <p className="text-xs text-muted-foreground">
-                Current: {draftDefaultImage || `inherit (${defaultImageHint})`} · {draftExecutionMode}
+                Current:{" "}
+                {draftExecutionMode === "local"
+                  ? "no image (local)"
+                  : draftDefaultImage || `inherit (${defaultImageHint})`}{" "}
+                · {draftExecutionMode}
               </p>
+            )}
+            {selectedImageRow?.status === RuntimeImageStatus.ABSENT && (
+              <div
+                role="status"
+                className="rounded-xl border border-amber-500/40 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950/30 dark:text-amber-100"
+              >
+                <strong>{selectedImageRef}</strong> is <strong>not downloaded</strong> on this host, and
+                runtime images are never downloaded inside a run — the next run in <strong>runtime</strong>{" "}
+                mode fails at start until it is present.{" "}
+                <Link
+                  to="/runtime-images/$id"
+                  params={{ id: selectedImageRow.id }}
+                  className="underline"
+                >
+                  Open it and press Fetch
+                </Link>{" "}
+                to download the published image (Deploy instead <em>builds</em> it from the Dockerfile,
+                which is much slower).
+              </div>
             )}
           </CardContent>
         </Card>
@@ -750,9 +819,12 @@ function statusLabel(status: number): string {
   return labels[status] ?? "unknown";
 }
 
+// executionModeLabel renders the project's mode for the header. It DELEGATES to
+// protoToExecutionMode so the UI has ONE mapping: an unreadable/absent value is
+// local (the server and column default), never a second copy of the old
+// runtime fallback that would disagree with the select below.
 function executionModeLabel(mode: number | undefined): string {
-  if (mode === 2) return "local";
-  return "runtime";
+  return protoToExecutionMode(mode);
 }
 
 // effectiveLimit mirrors the server's min(tenant, project) formula where 0

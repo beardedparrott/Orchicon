@@ -8,39 +8,18 @@ import (
 	"github.com/beardedparrott/orchicon/internal/adapter"
 )
 
-// CLIProviderRegistry is the validation registry for legacy 2-segment
-// model refs (e.g. opencode/deepseek/deepseek-v4-flash): the static
-// builtin catalog UNION the live CLI's distinct providerID values. The
-// picker auto-pulls its provider pills from CLI discovery; validation
-// must agree with the picker, or every freshly-selected CLI ref fails
-// validation ("provider not found") at save time.
-//
-// CLI-discovered ids validate under the DEFAULT adapter kind only — the
-// legacy 2-segment grammar infers the default kind, which is the CLI's
-// namespace (the opencode adapter). The static catalog governs every
-// other kind untouched.
-//
-// Deriving the provider ids is in-memory: the discoverer's model list is
-// SWR-cached after its first cold load (the ~1.2s subprocess probe never
-// runs on the validation hot path), so this registry derives per-call
-// from the discoverer rather than keeping its own TTL cache (a cache of
-// a cache only adds staleness). A failed or empty discovery degrades to
-// the static catalog — validation never breaks saves. Thread-safe (the
-// discoverer owns its own locking).
+// CLIProviderRegistry is the validation registry for legacy 2-segment model refs (e.g.
+// opencode/deepseek/deepseek-v4-flash).
 type CLIProviderRegistry struct {
 	static adapter.ProviderRegistry
 	disc   *ModelDiscoverer
 
-	// extra is the additive layer applied on CLONES only (Clone + the
-	// merge seam): kind → additional provider ids unioned over the static
-	// registry. The shared instance never carries state — tenant-custom
-	// merges are copy-on-write.
+	// extra is the additive layer applied on CLONES only (Clone + the merge seam): kind → additional
+	// provider ids unioned over the static registry.
 	extra map[string]map[string]struct{}
 }
 
-// NewCLIProviderRegistry wraps a static registry with live CLI provider
-// discovery. disc may be nil (no CLI binary) — the registry then behaves
-// exactly like the static catalog.
+// NewCLIProviderRegistry wraps a static registry with live CLI provider discovery.
 func NewCLIProviderRegistry(static adapter.ProviderRegistry, disc *ModelDiscoverer) *CLIProviderRegistry {
 	if static == nil {
 		static = adapter.NewBuiltinProviderCatalog()
@@ -51,9 +30,7 @@ func NewCLIProviderRegistry(static adapter.ProviderRegistry, disc *ModelDiscover
 	}
 }
 
-// providerIDs returns the distinct providerID values from discovery. A
-// discovery error (CLI missing, cold load failed, backoff window) yields
-// nil — callers degrade to the static catalog.
+// providerIDs returns the distinct providerID values from discovery.
 func (r *CLIProviderRegistry) providerIDs(ctx context.Context) []string {
 	if r.disc == nil {
 		return nil
@@ -82,17 +59,14 @@ func (r *CLIProviderRegistry) providerIDs(ctx context.Context) []string {
 var _ adapter.ProviderRegistry = (*CLIProviderRegistry)(nil)
 var _ adapter.ProviderKindExtender = (*CLIProviderRegistry)(nil)
 
-// Clone implements adapter.ProviderKindExtender: an independent copy that
-// shares the static registry and discoverer (read-only) and starts with an
-// empty additive layer — AddAdapterKind on the clone never mutates the
-// original.
+// Clone implements adapter.ProviderKindExtender: an independent copy that shares the static
+// registry and discoverer (read-only) and starts with an empty additive layer.
 func (r *CLIProviderRegistry) Clone() adapter.ProviderKindExtender {
 	return &CLIProviderRegistry{static: r.static, disc: r.disc}
 }
 
-// AddAdapterKind implements adapter.ProviderKindExtender: unions provider
-// ids into the clone's additive layer (a shared instance is never
-// mutated; copy-on-write is the caller's contract via Clone).
+// AddAdapterKind implements adapter.ProviderKindExtender: unions provider ids into the clone's
+// additive layer (a shared instance is never mutated.
 func (r *CLIProviderRegistry) AddAdapterKind(kind string, providers ...string) {
 	if r.extra == nil {
 		r.extra = make(map[string]map[string]struct{})
@@ -123,16 +97,13 @@ func (r *CLIProviderRegistry) extraIDs(kind string) []string {
 	return out
 }
 
-// IsKnownAdapter implements ProviderRegistry. The static catalog decides;
-// CLI ids extend the DEFAULT kind's namespace, which the static catalog
-// already knows (the opencode kind) — so no extra adapter kinds exist.
+// IsKnownAdapter implements ProviderRegistry.
 func (r *CLIProviderRegistry) IsKnownAdapter(kind string) bool {
 	return r.static.IsKnownAdapter(kind)
 }
 
-// IsKnownProvider implements ProviderRegistry: the static catalog first,
-// then the live CLI ids under the default kind, then the additive layer
-// (clones carrying tenant customs).
+// IsKnownProvider implements ProviderRegistry: the static catalog first, then the live CLI ids
+// under the default kind, then the additive layer (clones carrying tenant customs).
 func (r *CLIProviderRegistry) IsKnownProvider(adapterKind, provider string) bool {
 	if r.static.IsKnownProvider(adapterKind, provider) {
 		return true
@@ -142,9 +113,8 @@ func (r *CLIProviderRegistry) IsKnownProvider(adapterKind, provider string) bool
 			return true
 		}
 	}
-	// CLI ids validate under the DEFAULT kind only (see Providers): under any
-	// other kind they are not a provider that kind can resolve, so accepting
-	// them would validate a ref that fails at dispatch.
+	// CLI ids validate under the DEFAULT kind only (see Providers): under any other kind they are not a
+	// provider that kind can resolve, so accepting them would validate a ref that fails at dispatch.
 	if !hasCLINamespace(adapterKind) {
 		return false
 	}
@@ -156,9 +126,7 @@ func (r *CLIProviderRegistry) IsKnownProvider(adapterKind, provider string) bool
 	return false
 }
 
-// cliNamespaceKind resolves the adapter kind whose provider namespace the live
-// CLI ids belong to. An empty kind is the legacy/unspecified case and folds to
-// the default kind — the same inference the 2-segment ref grammar makes.
+// cliNamespaceKind resolves the adapter kind whose provider namespace the live CLI ids belong to.
 func cliNamespaceKind(kind string) string {
 	if k := strings.TrimSpace(kind); k != "" {
 		return k
@@ -166,27 +134,14 @@ func cliNamespaceKind(kind string) string {
 	return adapter.DefaultAdapterKind
 }
 
-// hasCLINamespace reports whether CLI-discovered provider ids may extend this
-// kind's provider set.
-//
-// ONLY the default (opencode) kind, because those ids ARE the opencode CLI's
-// namespace. This is the file's stated contract; it was not what the code did.
+// hasCLINamespace reports whether CLI-discovered provider ids may extend this kind's provider set.
+// ONLY the default (opencode) kind, because those ids ARE the opencode CLI's namespace.
 func hasCLINamespace(adapterKind string) bool {
 	return cliNamespaceKind(adapterKind) == adapter.DefaultAdapterKind
 }
 
-// Providers implements ProviderRegistry: the static set, the kind's additive
-// layer (tenant customs), then — for the DEFAULT kind ONLY — the live CLI ids
-// (deduped, sorted).
-//
-// THE KIND GATE IS LOAD-BEARING, not a tidy-up. Unioning the CLI ids into EVERY
-// kind put `commandcode`, `deepseek`, `gufo`, `halogen`, … in the CLAUDE
-// picker's provider tier. Choosing one then failed at the provider layer,
-// because those ids have no builtin profile (only anthropic/openai/openrouter/
-// opencode/opencode-go/commandcode/ollama do), so `EffectiveProfile` returned
-// ErrNotFound and the claude model tier loaded NOTHING — an adapter that looked
-// like it could not source models at all, caused entirely by the provider tier
-// offering ids the model tier could not resolve.
+// Providers implements ProviderRegistry: the static set, the kind's additive layer (tenant
+// customs), then — for the DEFAULT kind ONLY — the live CLI ids (deduped, sorted).
 func (r *CLIProviderRegistry) Providers(adapterKind string) []string {
 	out := r.static.Providers(adapterKind)
 	seen := map[string]struct{}{}

@@ -1,19 +1,6 @@
 package orchicon
 
-// Regression tests for the PR-Reviewer blockers on the session engine
-// (ADR-0007 implementation):
-//   - B2: a panic contained at the session boundary (Session.Run recovers
-//     and fires OnResult(false, ...) then returns ErrPanic) must NOT
-//     double-terminate the execution. NativeBridge.Start must return nil
-//     once the terminal OnResult fired, so the reconciler's
-//     startExecution does not also markFailedToStart + requeue.
-//   - B3: the transcript must live under manifest.ProjectDir (the
-//     authoritative project dir from the execution manifest, ADR-0007),
-//     not under the bridge's construction-time projectDir — a shared
-//     bridge must resolve each execution's transcripts per-execution.
-//   - The ContinueSession tenant check is a real cross-tenant refusal
-//     (the old check compared prior.TenantID against itself — a
-//     tautology that never refused anything).
+// Regression tests for the PR-Reviewer blockers on the session engine ( implementation).
 
 import (
 	"context"
@@ -26,9 +13,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
-// B2: a panicking provider, driven through NativeBridge.Start, fails the
-// execution with OnResult(false, panic) and Start returns nil (the
-// terminal already delivered the verdict — no failed_to_start requeue).
+// B2: a panicking provider, driven through NativeBridge.Start, fails the execution with
+// OnResult(false, panic) and Start returns nil (the terminal already delivered the verdict.
 func TestQABridgeStartPanicReturnsNil(t *testing.T) {
 	dir := t.TempDir()
 	prov := &panicProvider{stream: &panickingStream{panicMsg: "provider callback panicked"}}
@@ -40,9 +26,8 @@ func TestQABridgeStartPanicReturnsNil(t *testing.T) {
 	mf := testManifest("orchicon/mockprov/deepseek-v4-flash")
 	mf.ProjectDir = dir
 
-	// The bridge must fail only this execution: Start returns nil, the
-	// callbacks saw exactly one terminal OnResult(false), and the
-	// transcript is marked failed (resumable, replayable).
+	// The bridge must fail only this execution: Start returns nil, the callbacks saw exactly one
+	// terminal OnResult(false), and the transcript is marked failed (resumable, replayable).
 	cb := &recordedCallback{}
 	err := b.Start(context.Background(), exec, mf, cb)
 	if err != nil {
@@ -78,9 +63,8 @@ func TestQABridgeStartPanicReturnsNil(t *testing.T) {
 	}
 }
 
-// B3: NativeBridge.Start must place the session transcript under
-// manifest.ProjectDir even when the bridge was constructed with a
-// different (or empty) projectDir — the manifest dir is authoritative.
+// B3: NativeBridge.Start must place the session transcript under manifest.ProjectDir even when the
+// bridge was constructed with a different (or empty) projectDir.
 func TestQABridgeStartUsesManifestProjectDir(t *testing.T) {
 	manifestDir := t.TempDir()
 	prov := &mockProvider{turns: []scriptedTurn{
@@ -164,11 +148,8 @@ func TestQAContinueSessionRefusesCrossTenant(t *testing.T) {
 	if reply != "" {
 		t.Fatalf("same-tenant reply = %q, want empty (async follow-up)", reply)
 	}
-	// The follow-up runs fire-and-forget in a detached goroutine: wait for
-	// it to actually finish BEFORE the test ends so t.TempDir() cleanup
-	// never races a still-writing async session (observed: "TempDir RemoveAll
-	// cleanup ... directory not empty" from the async session writing
-	// .orchicon/sessions after the test returned).
+	// The follow-up runs fire-and-forget in a detached goroutine: wait for it to actually finish BEFORE
+	// the test ends so t.TempDir() cleanup never races a still-writing async session (observed.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) && prov.requestCount() < 1 {
 		time.Sleep(10 * time.Millisecond)

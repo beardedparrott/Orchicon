@@ -23,14 +23,8 @@ func pendingConsentItem(id string) chat.ChatItem {
 	}, 1000)
 }
 
-// TestConsentCardSortsToTheBottomAndStaysThere is the operator's symptom as a
-// test: "the card comes up for a fraction of a second and then disappears and
-// then the composer is locked and you can't type anything."
-//
-// One cause. The card was built with NO timestamp, and mergeHistory/replace both
-// re-sort the transcript oldest-first — so the next poll threw it to the very TOP
-// of the conversation, out of view at the bottom, while the screen went on
-// claiming the keyboard because the item was still there.
+// TestConsentCardSortsToTheBottomAndStaysThere is the operator's symptom as a test: "the card comes
+// up for a fraction of a second and then disappears and then the composer is locked and you can't.
 func TestConsentCardSortsToTheBottomAndStaysThere(t *testing.T) {
 	s := newTestChatStore()
 
@@ -56,9 +50,8 @@ func TestConsentCardSortsToTheBottomAndStaysThere(t *testing.T) {
 	}
 }
 
-// TestConsentCardSortsBelowTheReplyItInterrupted: the same rule against the
-// CHRONOLOGY it actually shares with the turn — the card must sit after the text
-// that preceded it, not above it.
+// TestConsentCardSortsBelowTheReplyItInterrupted: the same rule against the CHRONOLOGY it actually
+// shares with the turn — the card must sit after the text that preceded it, not above it.
 func TestConsentCardSortsBelowTheReplyItInterrupted(t *testing.T) {
 	items := []chat.ChatItem{
 		{Kind: chat.KindUser, Text: "do the thing", At: 100, Key: "m-1"},
@@ -81,13 +74,8 @@ func dumpKinds(items []chat.ChatItem) []string {
 	return out
 }
 
-// TestReplaceKeepsAPendingConsentCard is THE bug: the permission card was drawn
-// and then wiped by the next transcript poll, which is why the operator reported
-// that no card ever appeared.
-//
-// A pending ask has NO durable row by design — the transcript records the
-// OUTCOME (permission.allow / .deny / .expired), never the open ask — so the
-// durable view can never carry it, and replace is its only chance to survive.
+// TestReplaceKeepsAPendingConsentCard is THE bug: the permission card was drawn and then wiped by
+// the next transcript poll, which is why the operator reported that no card ever appeared.
 func TestReplaceKeepsAPendingConsentCard(t *testing.T) {
 	s := newTestChatStore()
 	s.append("c1", pendingConsentItem("ask-1"))
@@ -107,12 +95,8 @@ func TestReplaceKeepsAPendingConsentCard(t *testing.T) {
 	}
 }
 
-// TestReplaceKeepsASettledConsentCardAsARecord is the RECORD rule: a card that settles with no durable
-// rendering row stays on screen as a settled record rather than vanishing — "SETTLED, NOT REMOVED", which
-// is what settleStaleConsent's own doc claims. It must also stop being a CHOICE.
-//
-// (The de-dupe against a durable TWIN — a question's recorded ask_user card — is asserted in
-// ask_ghost_card_test.go, so a retained record never draws twice.)
+// TestReplaceKeepsASettledConsentCardAsARecord is the RECORD rule: a card that settles with no
+// durable rendering row stays on screen as a settled record rather than vanishing — "SETTLED.
 func TestReplaceKeepsASettledConsentCardAsARecord(t *testing.T) {
 	s := newTestChatStore()
 	item := pendingConsentItem("ask-1")
@@ -139,9 +123,8 @@ func TestReplaceKeepsASettledConsentCardAsARecord(t *testing.T) {
 	}
 }
 
-// TestReplaceStillKeepsTheDraftEcho: the pre-existing rule must not have been
-// disturbed by the new one — a live optimistic user echo the durable view has not
-// caught up with is still kept.
+// TestReplaceStillKeepsTheDraftEcho: the pre-existing rule must not have been disturbed by the new
+// one — a live optimistic user echo the durable view has not caught up with is still kept.
 func TestReplaceStillKeepsTheDraftEcho(t *testing.T) {
 	s := newTestChatStore()
 	s.append("c1", chat.ChatItem{Kind: chat.KindUser, Text: "my new message", Key: "draft-1"})

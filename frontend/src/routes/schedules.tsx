@@ -48,6 +48,7 @@ import {
 import { RecurringFilter } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { useListProjects } from "@/api/projects";
 import {
+  useDeleteWorkflowRun,
   useListWorkflowRuns,
   useListWorkflows,
 } from "@/api/workflows";
@@ -80,7 +81,9 @@ import {
   ACTIVE_RUNNING_STATUSES,
   historyRunRanAt,
   isHistoryRun,
+  classifyScheduleRemoval,
   queuedSequenceChildren,
+  runToItemIdMap,
   upcomingSortTime,
 } from "@/lib/schedules-model";
 
@@ -126,6 +129,40 @@ function SchedulesPage() {
   const hasProjects = projects && projects.length > 0;
   const cancelScheduled = useDeleteWorkItem(projectId);
   const removeSchedule = useRemoveSchedule(projectId);
+  const deleteRun = useDeleteWorkflowRun();
+  // One cached read for the per-row removal's title and status. The views
+  // already request this list (same key, no extra request); having it here
+  // lets a single-row removal name the row it is about and lets a bulk
+  // removal return a SCHEDULED/RECURRING item to PENDING.
+  const { data: listItems } = useListWorkItems(projectId, {
+    refetchInterval: 5_000,
+  });
+  const itemsById = useMemo(() => {
+    const m = new Map<string, WorkItemProto>();
+    for (const i of listItems ?? []) m.set(i.id, i);
+    return m;
+  }, [listItems]);
+
+  // IDENTICAL PARAMS TO HistoryView's own query, deliberately: React Query keys on them, so this is the
+  // SAME cached request rather than a second one. If those params ever change, change both together.
+  const { data: runsForPage } = useListWorkflowRuns({
+    projectId: projectId || undefined,
+    sortBy: "started_at",
+    sortOrder,
+    pageSize: 1000,
+    refetchInterval: 30_000,
+  });
+
+  // HISTORY ROWS ARE PER RUN, AND THEIR SELECTION KEYS ARE RUN IDS — so a bulk action can arrive here
+  // carrying run ids rather than work item ids. This maps one to the other.
+  //
+  // The alternative was keying the checkbox by work item id, which is the reported bug: two runs of one
+  // item shared a key, so checking one checked both and they could not be recognised as separate records.
+  const runItemId = useMemo(() => runToItemIdMap(runsForPage ?? []), [runsForPage]);
+
+  // resolveRowKey maps a selection key to the WORK ITEM the schedule belongs to. Upcoming/running rows are
+  // already keyed by item id; history rows are keyed by run id.
+  const resolveRowKey = (key: string): string => runItemId.get(key) ?? key;
 
   const goView = (nextView: "upcoming" | "running" | "history") => {
     navigate({ search: (prev) => ({ ...prev, view: nextView }) });
@@ -166,17 +203,49 @@ function SchedulesPage() {
     setSelected(new Set());
   };
 
-  const handleRemoveSchedule = () => {
-    if (selected.size === 0) return;
-    const count = selected.size;
-    if (
-      !window.confirm(
-        `Remove ${count} schedule${count === 1 ? "" : "s"}? The work items will remain unchanged.`,
-      )
-    ) {
+  // REMOVE DISPATCHES ON WHAT THE ROW *IS*, which is the whole bug.
+  //
+  // An UPCOMING/RUNNING row is a WORK ITEM — removing clears its schedule, and the row leaves the list.
+  // A HISTORY row is a WORKFLOW RUN — clearing a schedule is a NO-OP on it (a past run has already consumed
+  // one), so the row never moved and the button read as broken. The row can only disappear when the RUN does,
+  // so those go to DeleteWorkflowRun.
+  //
+  // AND BOTH, when the run's item is still scheduled: deleting the run alone would let a recurring item fire
+  // again and recreate the row, which looks identical to "delete didn't work". So a run whose item still has a
+  // live schedule has that schedule cleared in the same action, and the confirmation says both.
+  const handleRemoveSchedule = (ids: string[] = Array.from(selected)) => {
+    if (ids.length === 0) return;
+    const { runIds: runKeys, itemIds: itemKeys, stillScheduledItemIds: stillScheduled } =
+      classifyScheduleRemoval(ids, runItemId, itemsById);
+
+    const parts: string[] = [];
+    if (runKeys.length > 0) {
+      parts.push(
+        `permanently delete ${runKeys.length} past run${runKeys.length === 1 ? "" : "s"} and their step records`,
+      );
+    }
+    if (itemKeys.length > 0) {
+      parts.push(
+        `clear the schedule on ${itemKeys.length} work item${itemKeys.length === 1 ? "" : "s"} (the item itself is unchanged)`,
+      );
+    }
+    if (stillScheduled.length > 0) {
+      parts.push(
+        `stop the recurrence on ${new Set(stillScheduled).size} still-scheduled item${new Set(stillScheduled).size === 1 ? "" : "s"} so the row does not come back`,
+      );
+    }
+    if (parts.length === 0) return;
+
+    // DELETING A RUN IS IRREVERSIBLE, so the confirmation says so rather than asking a vague question.
+    if (!window.confirm(`This will ${parts.join(", and ")}. Deleting a run cannot be undone. Continue?`)) {
       return;
     }
-    Array.from(selected).forEach((id) => removeSchedule.mutate(id));
+
+    for (const runId of new Set(runKeys)) deleteRun.mutate(runId);
+    // Dedupe AFTER translating: two runs of one item are one schedule.
+    for (const id of new Set([...itemKeys, ...stillScheduled.map(resolveRowKey)])) {
+      removeSchedule.mutate({ id, status: itemsById.get(id)?.status });
+    }
     setSelected(new Set());
   };
 
@@ -300,28 +369,34 @@ function SchedulesPage() {
           <option value="desc">Desc</option>
         </select>
 
-        {selected.size > 0 &&
-          (view === "history" ? (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={handleRemoveSchedule}
-              disabled={removeSchedule.isPending}
-            >
-              <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
-              Remove {selected.size} schedule{selected.size === 1 ? "" : "s"}
-            </Button>
-          ) : (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={handleCancelSelected}
-              disabled={cancelScheduled.isPending}
-            >
-              <Ban aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
-              Cancel {selected.size} selected
-            </Button>
-          ))}
+        {selected.size > 0 && (
+          <>
+            {/* Upcoming and History rows carry a schedule; Running rows are
+                in flight, where the destructive act is the cancel. */}
+            {(view === "history" || view === "upcoming") && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => handleRemoveSchedule()}
+                disabled={removeSchedule.isPending}
+              >
+                <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+                Remove {selected.size} schedule{selected.size === 1 ? "" : "s"}
+              </Button>
+            )}
+            {view !== "history" && (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleCancelSelected}
+                disabled={cancelScheduled.isPending}
+              >
+                <Ban aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+                Cancel {selected.size} selected
+              </Button>
+            )}
+          </>
+        )}
       </div>
 
       {!hasProjects && (
@@ -346,6 +421,8 @@ function SchedulesPage() {
           selected={selected}
           onToggleSelect={toggleSelect}
           onToggleSelectAll={toggleSelectAll}
+          onRemove={handleRemoveSchedule}
+          removing={removeSchedule.isPending}
         />
       )}
 
@@ -372,7 +449,9 @@ function SchedulesPage() {
           projects={projects}
           selected={selected}
           onToggleSelect={toggleSelect}
-          onToggleSelectAll={toggleSelectAll}
+          onToggleSelectAllRuns={(runIds: string[]) => setSelected(new Set(runIds))}
+          onRemove={handleRemoveSchedule}
+          removing={removeSchedule.isPending}
         />
       )}
     </div>
@@ -393,6 +472,12 @@ function UpcomingView({
   selected,
   onToggleSelect,
   onToggleSelectAll,
+  // DECLARED IN THE PROP TYPE AND THEREFORE MUST BE DESTRUCTURED. Their absence was a
+  // hard TS2304 at the two pass-through sites below: the props were typed, the parent
+  // passed them, and nothing bound them here — so `tsc -b` failed and `make fe-typecheck`
+  // (the only gate that can see a type error) went red on develop.
+  onRemove,
+  removing,
 }: {
   projectId: string;
   search: string;
@@ -403,6 +488,8 @@ function UpcomingView({
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
   onToggleSelectAll: (items: WorkItemProto[]) => void;
+  onRemove: (ids: string[]) => void;
+  removing: boolean;
 }) {
   const {
     data: scheduled,
@@ -536,6 +623,8 @@ function UpcomingView({
           projects={projects}
           selected={selected}
           onToggleSelect={onToggleSelect}
+          onRemove={onRemove}
+          removing={removing}
           parentIds={parentIds}
         />
       ))}
@@ -674,6 +763,8 @@ function AgendaGroup({
   projects,
   selected,
   onToggleSelect,
+  onRemove,
+  removing,
   parentIds,
 }: {
   group: { key: string; label: string; items: WorkItemProto[] };
@@ -682,6 +773,8 @@ function AgendaGroup({
   projects?: Project[];
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
+  onRemove: (ids: string[]) => void;
+  removing: boolean;
   parentIds: Set<string>;
 }) {
   return (
@@ -725,6 +818,8 @@ function AgendaGroup({
                   projects={projects}
                   selected={selected.has(item.id)}
                   onToggleSelect={onToggleSelect}
+                  onRemove={onRemove}
+                  removing={removing}
                   isSequenceParent={parentIds.has(item.id)}
                 />
               </div>
@@ -742,6 +837,8 @@ function ScheduleCard({
   projects,
   selected,
   onToggleSelect,
+  onRemove,
+  removing,
   isSequenceParent,
 }: {
   item: WorkItemProto;
@@ -749,6 +846,8 @@ function ScheduleCard({
   projects?: Project[];
   selected: boolean;
   onToggleSelect: (id: string) => void;
+  onRemove: (ids: string[]) => void;
+  removing: boolean;
   isSequenceParent: boolean;
 }) {
   const projectName = projects?.find((p) => p.id === item.projectId)?.name;
@@ -800,6 +899,21 @@ function ScheduleCard({
           </CardContent>
         </Card>
       </Link>
+      {/* THE ROW-LEVEL REMOVE. The bulk gesture (tick, then the bar button)
+          was the ONLY way to remove one schedule — an operator clicking the
+          row got a navigation and no delete at all. This is the same
+          destructive affordance the row offers elsewhere in the GUI. */}
+      <Button
+        variant="ghost"
+        size="sm"
+        aria-label={`Remove schedule from ${item.title}`}
+        title="Remove schedule"
+        disabled={removing}
+        onClick={() => onRemove([item.id])}
+        className="shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+      >
+        <Trash2 aria-hidden="true" className="h-4 w-4" />
+      </Button>
     </div>
   );
 }
@@ -1031,7 +1145,10 @@ function HistoryView({
   projects,
   selected,
   onToggleSelect,
-  onToggleSelectAll,
+  onToggleSelectAllRuns,
+  // Same omission as UpcomingView above — typed, passed, never bound.
+  onRemove,
+  removing,
 }: {
   projectId: string;
   search: string;
@@ -1040,7 +1157,10 @@ function HistoryView({
   projects?: Project[];
   selected: Set<string>;
   onToggleSelect: (id: string) => void;
-  onToggleSelectAll: (items: WorkItemProto[]) => void;
+  /** Select-all over RUN keys, for this view's rows. */
+  onToggleSelectAllRuns: (runIds: string[]) => void;
+  onRemove: (ids: string[]) => void;
+  removing: boolean;
 }) {
   // History is run-driven: enumerate the tenant's workflow runs for the
   // selected scope (project, or all projects when empty) ordered by each
@@ -1142,14 +1262,16 @@ function HistoryView({
       <div className="flex items-center gap-2 px-2 py-1">
         <input
           type="checkbox"
-          checked={selected.size === entries.length}
-          onChange={() => onToggleSelectAll(
-            entries
-              .map((r) => (r.workItemId ? itemsById.get(r.workItemId) : undefined))
-              .filter((i): i is WorkItemProto => !!i),
-          )}
+          checked={entries.length > 0 && selected.size === entries.length}
+          // SELECT-ALL OVER RUNS, because the rows are runs. It used to expand each run to its WORK ITEM, so
+          // the count and the checkboxes disagreed the moment an item had more than one run.
+          onChange={() =>
+            onToggleSelectAllRuns(
+              selected.size === entries.length ? [] : entries.map((r) => r.id),
+            )
+          }
           className="h-4 w-4 rounded border-input"
-          aria-label="Select all history items"
+          aria-label="Select all history runs"
         />
         <span aria-live="polite" className="text-xs text-muted-foreground">
           {selected.size > 0
@@ -1181,8 +1303,12 @@ function HistoryView({
                 item={run.workItemId ? itemsById.get(run.workItemId) : undefined}
                 workflow={workflowsById.get(run.workflowId)}
                 projects={projects}
-                selected={run.workItemId ? selected.has(run.workItemId) : false}
-                onToggleSelect={onToggleSelect}
+                // KEYED BY THE RUN, not the work item. Two runs of one item are two records, and keying
+                // them by the item made one checkbox check both — the reported symptom.
+                selected={selected.has(run.id)}
+                onToggleSelect={() => onToggleSelect(run.id)}
+                onRemove={onRemove}
+                removing={removing}
               />
             </div>
           </li>
@@ -1199,13 +1325,17 @@ function HistoryCard({
   projects,
   selected,
   onToggleSelect,
+  onRemove,
+  removing,
 }: {
   run: WorkflowRun;
   item?: WorkItemProto;
   workflow?: WorkflowProto;
   projects?: Project[];
   selected: boolean;
-  onToggleSelect: (id: string) => void;
+  onToggleSelect: () => void;
+  onRemove: (ids: string[]) => void;
+  removing: boolean;
 }) {
   const projectName = projects?.find((p) => p.id === run.projectId)?.name;
   const ranAt = historyRunRanAt(run);
@@ -1218,7 +1348,7 @@ function HistoryCard({
       <input
         type="checkbox"
         checked={selected}
-        onChange={() => itemId && onToggleSelect(itemId)}
+        onChange={onToggleSelect}
         disabled={!itemId}
         className="h-4 w-4 shrink-0 rounded border-input"
         aria-label={`Select ${title}`}
@@ -1264,6 +1394,27 @@ function HistoryCard({
           </CardContent>
         </Card>
       </Link>
+      {/* THE ROW IS A RUN, SO DELETE REMOVES THE RUN — and the button is always available.
+       *
+       * It used to target the WORK ITEM's schedule, which on a past run is already consumed: the click cleared
+       * nothing, the row stayed, and the operator reported "the delete button does nothing" three times. An
+       * earlier revision then HID the button in that case, which hid the action instead of fixing it.
+       *
+       * The run id is what identifies this row; the page's handler deletes that run and, when the item is
+       * still scheduled, clears the recurrence too so the row cannot come straight back. */}
+      {run.id && (
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label={`Delete run ${run.id} from ${title}`}
+          title="Delete this run"
+          disabled={removing}
+          onClick={() => onRemove([run.id])}
+          className="shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+        >
+          <Trash2 aria-hidden="true" className="h-4 w-4" />
+        </Button>
+      )}
     </div>
   );
 }

@@ -2,30 +2,41 @@ package db
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
 
-// DefaultGitStrategy is the effective git strategy used when neither the
-// workflow nor the project specifies one. `local` means the run's branch is
-// pushed to origin and reclaimed by the prune gate; `pr` adds a PR; `none`
-// ("ephemeral") is a detached-HEAD run that must never create a branch ref
-// locally or remotely.
+// DefaultGitStrategy is the effective git strategy used when neither the workflow nor the project
+// specifies one.
 const DefaultGitStrategy = "local"
 
-// EffectiveGitStrategy resolves the effective git strategy for a workflow
-// run: workflow wins, else project, else DefaultGitStrategy. It is the
-// single source of truth for the strategy so the scheduler's PR gate, the
-// worktree reconciler's detached-HEAD decision, and the runtime daemon's
-// credential gate never disagree about whether a run is `local`, `pr`, or
-// `none`.
-//
-// The precedence is delegated to effectiveGitStrategyValue, which is bit
-// identical to the two pre-existing inline resolution sites (reconciler.go
-// skipPRMarkerStamp and workflow_reconciler.go's step-success gate), so
-// centralizing it here cannot change the effective strategy for
-// `pr`/`local` runs. A `none`-strategy run consistently resolves to "none"
-// everywhere, which is the enforcement guarantee.
+// GitStrategyValues is the closed set a project may be set to.
+var GitStrategyValues = []string{"local", "pr", "none"}
+
+// ParseGitStrategy validates a strategy, returning fallback for the empty string and an error for anything
+// outside GitStrategyValues. Modelled on ParseExecutionMode so the two project fields validate alike.
+func ParseGitStrategy(v, fallback string) (string, error) {
+	v = strings.TrimSpace(strings.ToLower(v))
+	if v == "" {
+		return fallback, nil
+	}
+	for _, ok := range GitStrategyValues {
+		if v == ok {
+			return v, nil
+		}
+	}
+	return "", fmt.Errorf("git_strategy %q is not valid — use one of %s", v, strings.Join(GitStrategyValues, ", "))
+}
+
+// RequiresRepository reports whether a strategy expects a git repository on disk.
+func RequiresRepository(strategy string) bool {
+	return strategy == "local" || strategy == "pr"
+}
+
+// EffectiveGitStrategy resolves the effective git strategy for a workflow run: workflow wins, else
+// project, else DefaultGitStrategy.
 func EffectiveGitStrategy(ctx context.Context, tx pgx.Tx, tenantID, workflowID, projectID string) string {
 	workflowStrategy, projectStrategy := "", ""
 	if workflowID != "" {
@@ -41,11 +52,8 @@ func EffectiveGitStrategy(ctx context.Context, tx pgx.Tx, tenantID, workflowID, 
 	return effectiveGitStrategyValue(workflowStrategy, projectStrategy)
 }
 
-// effectiveGitStrategyValue is the pure precedence decision behind
-// EffectiveGitStrategy: an explicit workflow strategy wins, else an explicit
-// project strategy, else the default ("local"). It is separated so the
-// precedence can be unit-tested without a database and proven bit-identical
-// to the two pre-existing inline resolution sites.
+// effectiveGitStrategyValue is the pure precedence decision behind EffectiveGitStrategy: an
+// explicit workflow strategy wins, else an explicit project strategy, else the default ("local").
 func effectiveGitStrategyValue(workflowStrategy, projectStrategy string) string {
 	if workflowStrategy != "" {
 		return workflowStrategy

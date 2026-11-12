@@ -1,20 +1,6 @@
 package telemetry
 
-// Slog→OTel log bridge. The control plane's structured log records
-// (slog) are the source of truth for runtime observability — workflow
-// step transitions, reconciliation outcomes, dispatch events,
-// recovery progress, adapter lifecycle — but they only land in the
-// local log file by default. To make them visible in the Telemetry
-// logs tab (which queries Loki), we
-// install a slog.Handler that fans every record out to the OTel log
-// provider alongside the existing JSON handler.
-//
-// Why a custom handler instead of otelslog: the OTel Go ecosystem
-// does not ship a first-party slog→log bridge yet, and we need full
-// control over the severity mapping (slog.Level* → otel_log.Severity)
-// plus the attribute conversion (slog.Attr → otel_log.KeyValue). The
-// MultiHandler keeps the existing JSON-to-stderr behaviour intact so
-// `orchicon dev logs` still tails the same stream.
+// Slog→OTel log bridge.
 
 import (
 	"context"
@@ -26,26 +12,15 @@ import (
 	"go.opentelemetry.io/otel/log/global"
 )
 
-// slogMinLevel is the floor for the OTel-side fan-out. We don't want
-// every debug-level record pushed to Loki — the local JSON
-// log file is the right place for that, and Loki is for
-// operator-visible signals.
+// slogMinLevel is the floor for the OTel-side fan-out.
 const slogMinLevel = slog.LevelInfo
 
-// multiHandler fans a record out to every wrapped handler. It's the
-// Glue between the local JSON handler and the OTel handler so a
-// single slog call lands in both places. Errors from the wrapped
-// handlers are returned (first non-nil wins) but never block other
-// handlers from running — a failed OTel emit must not silence the
-// local log line.
+// multiHandler fans a record out to every wrapped handler.
 type multiHandler struct {
 	handlers []slog.Handler
 }
 
-// MultiHandler returns a slog.Handler that writes to every provided
-// handler in order. Useful for the telemetry hot path where the
-// control-plane log file (JSON) and the OTel log provider both
-// need to see the same record.
+// MultiHandler returns a slog.Handler that writes to every provided handler in order.
 func MultiHandler(handlers ...slog.Handler) slog.Handler {
 	return &multiHandler{handlers: handlers}
 }
@@ -88,11 +63,8 @@ func (h *multiHandler) WithGroup(name string) slog.Handler {
 	return &multiHandler{handlers: wrapped}
 }
 
-// otelHandler converts each slog.Record into an OTel log record and
-// emits it through the global LoggerProvider. The OTel SDK is
-// already wired into the same Loki store the embedded Grafana
-// UI reads, so the records appear in the Telemetry logs tab without
-// any extra exporter wiring.
+// otelHandler converts each slog.Record into an OTel log record and emits it through the global
+// LoggerProvider.
 type otelHandler struct {
 	providerMu sync.RWMutex
 	provider   otel_log.LoggerProvider
@@ -100,12 +72,7 @@ type otelHandler struct {
 	scopeMu    sync.Mutex
 }
 
-// NewOtelSlogHandler returns a slog.Handler that emits every record
-// to the OTel log pipeline. The handler captures the global
-// LoggerProvider on construction; if the provider has not been
-// initialised yet (e.g. logs emitted during early boot, before
-// telemetry.Setup runs), the handler is a no-op until a provider is
-// registered.
+// NewOtelSlogHandler returns a slog.Handler that emits every record to the OTel log pipeline.
 func NewOtelSlogHandler() slog.Handler {
 	return &otelHandler{
 		provider: global.GetLoggerProvider(),
@@ -114,9 +81,6 @@ func NewOtelSlogHandler() slog.Handler {
 }
 
 // SetLoggerProvider rebinds the underlying OTel LoggerProvider.
-// Called by telemetry.Setup once the OTLP exporter is wired so the
-// handler begins forwarding records into Loki. Safe to call
-// concurrently with Handle.
 func (h *otelHandler) SetLoggerProvider(p otel_log.LoggerProvider) {
 	h.providerMu.Lock()
 	defer h.providerMu.Unlock()
@@ -131,13 +95,7 @@ func (h *otelHandler) Enabled(_ context.Context, level slog.Level) bool {
 }
 
 func (h *otelHandler) Handle(ctx context.Context, r slog.Record) error {
-	// Look up the provider on every call. The global OTel
-	// LoggerProvider is set by telemetry.Setup AFTER this handler
-	// is constructed (the dev subcommand's logger is wired before
-	// the OTel SDK is), so a one-shot capture at construction
-	// would miss every record. A per-call lookup is cheap (one
-	// atomic read) and lets the handler pick up the real provider
-	// as soon as it's registered.
+	// Look up the provider on every call.
 	provider := h.providerOrGlobal()
 	if provider == nil {
 		// No provider yet (early boot). Drop the record rather than
@@ -158,10 +116,8 @@ func (h *otelHandler) Handle(ctx context.Context, r slog.Record) error {
 	return nil
 }
 
-// providerOrGlobal returns the explicitly-set provider if one was
-// bound via SetLoggerProvider, otherwise the global OTel provider.
-// Always non-nil — global.GetLoggerProvider() returns a no-op
-// default if the SDK has not been initialised.
+// providerOrGlobal returns the explicitly-set provider if one was bound via SetLoggerProvider,
+// otherwise the global OTel provider.
 func (h *otelHandler) providerOrGlobal() otel_log.LoggerProvider {
 	h.providerMu.RLock()
 	p := h.provider
@@ -173,11 +129,8 @@ func (h *otelHandler) providerOrGlobal() otel_log.LoggerProvider {
 }
 
 func (h *otelHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	// For the OTel side, attribute grouping changes the *scope* we
-	// log under (e.g. "orchicon.workflow" for the workflow
-	// reconciler's grouped logger). The simplest correct behaviour is
-	// to keep one global scope and let OTel's per-attribute
-	// filtering do the work — grouping is a presentation detail.
+	// For the OTel side, attribute grouping changes the *scope* we log under (e.g. "orchicon.workflow"
+	// for the workflow reconciler's grouped logger).
 	return h
 }
 
@@ -185,10 +138,7 @@ func (h *otelHandler) WithGroup(_ string) slog.Handler {
 	return h
 }
 
-// loggerFor returns (and caches) an otel_log.Logger for the given
-// scope name. The scope becomes the OTel resource attribute
-// `otel.scope.name` on every emitted record, which lets the
-// Loki-side filter by component.
+// loggerFor returns (and caches) an otel_log.Logger for the given scope name.
 func (h *otelHandler) loggerFor(scope string, provider otel_log.LoggerProvider) otel_log.Logger {
 	h.scopeMu.Lock()
 	defer h.scopeMu.Unlock()
@@ -215,11 +165,7 @@ func slogLevelToOtel(level slog.Level) otel_log.Severity {
 	}
 }
 
-// slogAttrToKeyValue converts a single slog attribute into an OTel
-// log KeyValue. The slog value space is richer than the OTel one
-// (e.g. slog.GroupValue, slog.LogValuer) — we collapse anything we
-// don't recognise into its String() form so the operator can still
-// grep for it in the Telemetry logs tab.
+// slogAttrToKeyValue converts a single slog attribute into an OTel log KeyValue.
 func slogAttrToKeyValue(a slog.Attr) (kv otel_log.KeyValue) {
 	defer func() {
 		if recover() != nil {

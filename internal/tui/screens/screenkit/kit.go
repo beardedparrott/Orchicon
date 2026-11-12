@@ -1,9 +1,5 @@
-// Package screenkit is the shared list+detail scaffolding every orch
-// screen composes: a scrollable list pane, a key-value detail pane,
-// loading/error/empty states, next_page_token pagination, and mouse
-// wiring (wheel scroll + click select). Hand-rolled instead of
-// bubbles/list so mouse + focus behavior stay fully ours (plan §9 risk 2
-// decision).
+// Package screenkit is the shared list+detail scaffolding every orch screen composes: a scrollable
+// list pane, a key-value detail pane, loading/error/empty states, next_page_token pagination.
 package screenkit
 
 import (
@@ -25,9 +21,7 @@ type Item struct {
 	Title string
 	Meta  string // dim right-hand context, e.g. status or timestamp
 
-	// Tree metadata (optional — only a tree view sets these). The list pane
-	// draws the indent and the +/- collapse affordance from them, so a tree
-	// row's Title must NOT pre-indent itself.
+	// Tree metadata (optional — only a tree view sets these).
 	Depth       int    // indent level (0 = root)
 	Parent      string // parent row's ID ("" = root)
 	HasChildren bool   // a parent: draws a toggle and can collapse
@@ -145,10 +139,8 @@ func (l *List) View(focused bool) string {
 	b.WriteString("\n")
 
 	if l.Err != "" {
-		// Human-readable retry state, never a bare "error: unauthenticated"
-		// cascade (Phase 2b — the friendly text already names the fix, e.g.
-		// "run /connect"). The pane stays interactive: existing items are
-		// kept on view and r still refreshes.
+		// Human-readable retry state, never a bare "error: unauthenticated" cascade (Phase 2b — the
+		// friendly text already names the fix, e.g. "run /connect").
 		b.WriteString(theme.ErrorText.Render("⚠ "+l.Err) + "\n")
 		b.WriteString(theme.HintText.Render("  press r to refresh once the issue is resolved") + "\n")
 		return b.String()
@@ -195,63 +187,22 @@ type Detail struct {
 	vp       viewport.Model
 	initOnce bool
 	vpBody   string // body currently loaded into the viewport
-	// vpWidth is the width the loaded body was RENDERED at. Markdown has to be laid out at a concrete
-	// width, so a pane resize invalidates the rendered lines even though the SOURCE has not changed —
-	// without this the pane would keep the old width's line breaks after a resize.
+	// vpWidth is the width the loaded body was RENDERED at.
 	vpWidth int
-	// vpHeight is the HEIGHT the loaded body was laid out for, and it exists for the same reason vpWidth
-	// does — a pane whose height changes must re-load, not just re-viewport.
-	//
-	// WITHOUT IT THE TAIL OF THE BODY IS CLIPPED FOR A FRAME. The height is recomputed every ensureVP from
-	// the field count, and it changes whenever that count does (the Ask pane's header goes from a
-	// two-field fallback to the fetched set as a conversation's detail lands, which is a row). The
-	// staleness check below tracked the body, the width and the title but NOT the height, so with only the
-	// height changed the viewport kept content laid out for the old one and DROPPED ITS LAST ROWS — and the
-	// last row is where the Ask transcript puts its notice, so "Orchicon is thinking…" and "⚠ disconnected"
-	// flickered out for exactly one frame.
-	//
-	// Measured before the fix: after a fetch the pane's body went 22 -> 21 rows, the stream followed to 21,
-	// the notice was still set on the stream, and the painted frame did not contain it. One frame later it
-	// was back, which is why this reads as a flicker rather than as a missing feature.
+	// vpHeight is the HEIGHT the loaded body was laid out for, and it exists for the same reason
+	// vpWidth does — a pane whose height changes must re-load, not just re-viewport.
 	vpHeight int
-	// vpTitle is the TITLE the loaded body belongs to. It is the detail's
-	// IDENTITY: a body that changes under the same title is the same item
-	// updating (a live transcript appending), while a new title is a DIFFERENT
-	// item — and a different item must start at the top.
+	// vpTitle is the TITLE the loaded body belongs to.
 	vpTitle string
 	dirty   bool // Body changed since the viewport last loaded it
-	// bodyLaidOut declares that the CALLER has already laid this body out — wrapped it, styled it,
-	// punctuated it with its own newlines — so the pane must return it verbatim rather than treating it as
-	// markdown source.
-	//
-	// WHY THIS MUST BE DECLARED AND CANNOT BE INFERRED. The pane shares one body slot across every
-	// list+detail screen, and the two kinds of body are indistinguishable by CONTENT:
-	//
-	//   - a work item's description is markdown SOURCE (a blockquote quoting the operator's own wording),
-	//     which must be rendered — that is what the markdown commit was for;
-	//   - an execution's transcript is ALREADY RENDERED (collapsible blocks, a todo list, flow views, a
-	//     build log), where every newline is meaningful.
-	//
-	// The heuristic gate (md.LooksLikeMarkdown) cannot separate them, and it fails LOUDLY when it guesses
-	// wrong: markdown JOINS consecutive non-blank lines into one paragraph, so an already-laid-out body comes
-	// out as a single scrunched line. Measured on a real execution body, the todo list:
-	//
-	//   todo (6/6 done) [x] Read run .orchicon files + verify repo/branch state (!) [x] Delete leftover ...
-	//
-	// — the operator's report exactly ("todo is scrunched and has no newlines"), caused by ONE `**success**`
-	// further down in the same body making the WHOLE thing look like markdown. The collapse markers went with
-	// it, which is why "tools and chats are no longer being collapsed": the blocks were still built, and then
-	// flattened by the renderer.
+	// WHY THIS MUST BE DECLARED AND CANNOT BE INFERRED.
 	bodyLaidOut bool
-	// pendingOffset/pendingOffsetSet pin the viewport to a line offset on the NEXT
-	// render, overriding the usual "keep the reader's scroll" rule. An editor sets
-	// it so the pane follows its cursor; a reader never does.
+	// pendingOffset/pendingOffsetSet pin the viewport to a line offset on the NEXT render, overriding
+	// the usual "keep the reader's scroll" rule.
 	pendingOffset    int
 	pendingOffsetSet bool
 
-	// footer is a FIXED band below the scrolling body (the execution detail's
-	// message box). It is never part of what the viewport scrolls, so an input
-	// placed here is always on screen — see SetFooter.
+	// footer is a FIXED band below the scrolling body (the execution detail's message box).
 	footer string
 
 	// Hero is the centered empty state (the GUI's "Ask Orchicon
@@ -261,13 +212,7 @@ type Detail struct {
 	HeroBody  string
 }
 
-// SetContent replaces the detail content. Scroll state is PRESERVED: the
-// viewport reloads lazily in View() and keeps the operator's offset,
-// following the tail only when they were already at the bottom. The old
-// code reset initOnce/vpBody here, so every live-chunk repaint (the
-// shell calls SetDetailContent on each chat wake) rebuilt the viewport
-// and snapped the transcript back to the top — scrolling a live
-// conversation was effectively dead.
+// SetContent replaces the detail content.
 func (d *Detail) SetContent(title string, fields []Field, body string) {
 	d.setContent(title, fields, body, false)
 }
@@ -282,10 +227,8 @@ func (d *Detail) setContent(title string, fields []Field, body string, laidOut b
 	d.Title, d.Fields, d.Body = title, fields, body
 	d.bodyLaidOut = laidOut
 	d.Hero = false
-	// The IDENTITY changed too, not just the body: a different item must reload
-	// even when its body happens to be byte-identical (two workflows whose flows
-	// render the same, say) — otherwise the pane keeps the previous item's scroll
-	// offset and its stale vpTitle.
+	// The IDENTITY changed too, not just the body: a different item must reload even when its body
+	// happens to be byte-identical (two workflows whose flows render the same, say).
 	if body != d.vpBody || title != d.vpTitle {
 		d.dirty = true
 	}
@@ -297,21 +240,7 @@ func (d *Detail) SetHero(title, body string) {
 	d.Hero, d.HeroTitle, d.HeroBody = true, title, body
 }
 
-// SetFooter installs a FIXED band at the bottom of the pane, outside the
-// scrolling region. An empty string removes it.
-//
-// WHY THIS IS A PANE FEATURE AND NOT ANOTHER BODY SECTION. The execution
-// detail's message box was written into the BODY, at the end of the
-// transcript — which reads correctly and is unusable: a real transcript is
-// taller than the pane, the viewport opens at the TOP, and the input therefore
-// sat ~65 lines below the fold with no way to reach it but scrolling. The
-// operator: "I STILL don't see a chat prompt inside an execution in the TUI".
-// The prompt was there the whole time; it was simply never on screen.
-//
-// A footer is the shape an input needs: always visible, never scrolled away,
-// never part of what the transcript is measured against. The viewport's height
-// is reduced by the band so the LAST line of the body still clears it rather
-// than hiding behind it.
+// SetFooter installs a FIXED band at the bottom of the pane, outside the scrolling region.
 func (d *Detail) SetFooter(s string) {
 	d.footer = s
 }
@@ -327,18 +256,8 @@ func (d *Detail) footerRows() int {
 	return strings.Count(d.footer, "\n") + 2 // one blank separator row + the band
 }
 
-// ensureVP (re)initializes the viewport for the current pane size.
-//
-// THE VIEWPORT MUST FIT WHAT View() ACTUALLY EMITS. The pane is hosted by a Panel that renders
-// exactly `Height-2` content rows and CLIPS anything beyond them — and it clips the TAIL. So content
-// that overflows loses its LAST lines, which is precisely where a footer lives: the message box was
-// installed, correct, and thrown away by the clip. (Before the footer existed the tail was the
-// bottom of the scrollable body, where losing it merely looked like the transcript continuing past
-// the fold.)
-//
-// So the budget is computed from the rows View() will write: the title, the fields, the body's
-// separator + viewport, and the footer's separator + band. The viewport gets what is LEFT, which is
-// what makes the band always visible — the property an input needs.
+// ensureVP (re)initializes the viewport for the current pane size. THE VIEWPORT MUST FIT WHAT
+// View() ACTUALLY EMITS.
 func (d *Detail) ensureVP() {
 	w := d.Width
 	if w < 1 {
@@ -353,14 +272,8 @@ func (d *Detail) ensureVP() {
 	d.vp.Width, d.vp.Height = w, h
 }
 
-// BodyHeightFor is the rows the pane gives its SCROLLING BODY, for the given field count and whether a
-// body is present.
-//
-// Exported because a caller that renders an EXTERNAL widget INTO that body has to size the widget with
-// it. The Ask transcript is one: the shell sizes its kit2.Stream from the pane, and sizing it from the
-// content region instead makes the widget show more rows than the pane draws — and the rows it loses are
-// the NEWEST ones, which is the operator's "Once we hit the bottom pane, I no longer see my messages
-// popping up right away." One implementation, shared with ensureVP, so the two cannot drift.
+// BodyHeightFor is the rows the pane gives its SCROLLING BODY, for the given field count and
+// whether a body is present.
 func (d *Detail) BodyHeightFor(fieldRows int, hasBody bool) int {
 	// Rows View() spends on everything that is not the scrolling body.
 	overhead := 1 + fieldRows // title + fields
@@ -375,12 +288,7 @@ func (d *Detail) BodyHeightFor(fieldRows int, hasBody bool) int {
 	return h
 }
 
-// Wheel scrolls the detail body. Positive delta = scroll down
-// (LineDown), negative = scroll up (LineUp). The old code called
-// LineDown for both directions, so scrolling up in the chat transcript
-// appeared dead.
-// SetScrollOffset pins the viewport to a line offset. Used by an editor whose
-// pane must FOLLOW a cursor rather than preserve a reader's place.
+// Wheel scrolls the detail body.
 func (d *Detail) SetScrollOffset(offset int) {
 	d.ensureVP()
 	d.pendingOffset = offset
@@ -427,14 +335,6 @@ func (d *Detail) View() string {
 		b.WriteString("\n")
 		if d.dirty || d.vpBody != d.Body || d.vpWidth != d.vp.Width || d.vpHeight != d.vp.Height {
 			// Reload the viewport, and decide whether to KEEP the operator's scroll.
-			//
-			// Same title = the same item updating (a live transcript appending), so
-			// the offset is restored — "reading history must not be yanked away by
-			// the next chunk". A DIFFERENT title = a different item, and it must
-			// open at the TOP: preserving the offset across a selection switch
-			// landed the new item wherever the old one happened to be scrolled,
-			// which is why a workflow's FLOW appeared to start at step 3 with an
-			// approval on top (its first two steps were above the fold).
 			sameItem := d.Title == d.vpTitle
 			atBottom := d.vp.AtBottom()
 			offset := d.vp.YOffset
@@ -460,11 +360,8 @@ func (d *Detail) View() string {
 		}
 		b.WriteString(d.vp.View())
 	}
-	// The FIXED band goes last, below the scrolling body and outside it: whatever
-	// the transcript does, the input stays where the operator expects a prompt to
-	// be. It is emitted even when the body is empty, because an execution with no
-	// transcript still accepts a question — that is exactly when a message box
-	// matters most.
+	// The FIXED band goes last, below the scrolling body and outside it: whatever the transcript does,
+	// the input stays where the operator expects a prompt to be.
 	if d.footer != "" {
 		b.WriteString("\n" + d.footer)
 	}
@@ -659,12 +556,7 @@ func listRow(it Item, width int) string {
 }
 
 // truncate shortens s to at most w RUNES, marking the cut with an ellipsis so a shortened value is
-// never mistaken for the whole one. A wide glyph counts as one rune, which is why the row budget is
-// counted in runes throughout (see listRow).
-//
-// TruncateRunes is the same function, EXPORTED, because a screen that composes a field INTO a row — an
-// execution's work-item title, bounded so the row stays scannable — needs the same rule the row itself
-// obeys. The alternative is a screen growing its own byte-slicing shortcut, which cuts UTF-8 in half.
+// never mistaken for the whole one.
 func truncate(s string, w int) string { return TruncateRunes(s, w) }
 
 // TruncateRunes shortens s to at most w runes, ending with an ellipsis when it had to cut. w <= 0
@@ -690,13 +582,8 @@ func max(a, b int) int {
 	return b
 }
 
-// Frame is the screenkit frame helper: it normalizes a screen's composed
-// block into EXACTLY h rows of w cells, painting the opaque theme
-// background on every padding cell (ANSI-aware truncation when the block
-// is wider than the region). Every screen returns Frame(...) from View()
-// so its panes FILL the content region the shell budgeted — never a
-// content-sized box floating at the top-left. A non-positive region is
-// returned unchanged (an unsized screen must not collapse to 1×1).
+// Frame is the screenkit frame helper: it normalizes a screen's composed block into EXACTLY h rows
+// of w cells, painting the opaque theme background on every padding cell (ANSI-aware truncation.
 func Frame(content string, w, h int) string {
 	if w < 1 || h < 1 {
 		return content

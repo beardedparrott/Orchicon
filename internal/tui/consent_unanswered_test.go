@@ -1,13 +1,6 @@
 package tui
 
 // consent_unanswered_test.go — the CLIENT half of `unanswered`.
-//
-// The server now publishes a question that ran out of time as `unanswered` rather than `expired`
-// (see internal/askorchicon/consent_unanswered_test.go). This is why that distinction had to be
-// made: this client folded `expired` into DENY, so a question the operator was away from was
-// recorded as a decision they made against it — under the tool-and-target of a permission they
-// were never asked about — and the question itself, the context they needed to resume, was not in
-// the record at all.
 
 import (
 	"strings"
@@ -69,8 +62,7 @@ func TestAQuestionThatRanOutOfTimeIsUnansweredNotDenied(t *testing.T) {
 }
 
 // AND `expired` STILL MEANS DENIED, the control: for a PERMISSION the serve really was answered
-// `reject`, so the call was refused and the record saying so is true. The two outcomes are
-// deliberately different because the two asks are.
+// `reject`, so the call was refused and the record saying so is true.
 func TestAnExpiredPermissionStillReadsAsDenied(t *testing.T) {
 	m, _ := consentApp(t)
 	m.ShowConsentAsk(chat.PermissionAsk{

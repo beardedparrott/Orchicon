@@ -1,17 +1,6 @@
 package tui
 
 // diff_arm_on_live_test.go — THE PANE MUST RE-ENGAGE WHEN ITS OWNER BECOMES LIVE.
-//
-// The operator: "In the TUI it worked but not while I was actively watching it.
-// I had to hit ctrl+d again to refresh the screen."
-//
-// The pane was armed EXACTLY ONCE — when it was opened. At that moment the turn
-// had not started, so diffOwnerLive said false and no live stream was ever
-// subscribed. Nothing re-evaluated it afterwards: refreshDiffOwner runs on a tab
-// switch and on conversation selection, and it additionally REFUSES while the
-// COMPOSER holds focus — which is precisely where the operator is sitting while
-// watching a turn run. So the pane kept whatever its open-time fetch saw, and
-// only closing and reopening it re-armed the stream and revealed the files.
 
 import "testing"
 
@@ -45,17 +34,15 @@ func TestDiffPaneArmsWhenItsOwnerBecomesLive(t *testing.T) {
 			"diff stays empty until the operator closes and reopens it (the reported ctrl+d workaround)")
 	}
 
-	// IDEMPOTENT, because the wake path calls this on every chat event and
-	// SetOwner fetches: acting unconditionally would re-fetch the ledger
-	// continuously.
+	// IDEMPOTENT, because the wake path calls this on every chat event and SetOwner fetches: acting
+	// unconditionally would re-fetch the ledger continuously.
 	if again := m.ensureDiffStreamArmed(); again != nil {
 		t.Error("a second call acted again — the wake path would re-fetch the ledger on every event")
 	}
 }
 
-// TestAWakeEngagesThePane pins the WIRING, not just the helper: the wake path
-// is what runs while a turn is in flight, so if it stops calling the helper the
-// fix is inert however correct the helper is.
+// TestAWakeEngagesThePane pins the WIRING, not just the helper: the wake path is what runs while a
+// turn is in flight, so if it stops calling the helper the fix is inert however correct the helper.
 func TestAWakeEngagesThePane(t *testing.T) {
 	m, _ := askWithTranscript(t, "c1")
 	m.setFocus(focusComposer)
@@ -70,9 +57,7 @@ func TestAWakeEngagesThePane(t *testing.T) {
 	}
 }
 
-// TestTheOldRepointPathCouldNotDoThis is the CONTRAST: it pins the reason the
-// wake-path helper exists, so a future reader does not "simplify" it back into
-// refreshDiffOwner and reintroduce the bug.
+// TestTheOldRepointPathCouldNotDoThis is the CONTRAST.
 func TestTheOldRepointPathCouldNotDoThis(t *testing.T) {
 	m, _ := askWithTranscript(t, "c1")
 	m.setFocus(focusComposer)

@@ -10,12 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// WorkItemRow is the data-access shape of a work_items table row
-// (docs/02 §2.2, docs/09 §3.2). All four kinds (epic/feature/task/
-// subtask) share this shape. JSON-typed columns (budgets, results,
-// assigned_worker_ref) are stored as raw []byte and validated at the
-// API boundary. The version column powers optimistic concurrency
-// (docs/09 §5).
+// WorkItemRow is the data-access shape of a work_items table row (docs/02 §2.2, docs/09 §3.2).
 type WorkItemRow struct {
 	ID                 string
 	TenantID           string
@@ -25,10 +20,8 @@ type WorkItemRow struct {
 	Title              string
 	Description        string
 	AcceptanceCriteria string
-	// AcceptanceReview is the human-readable summary of the final work
-	// done, auto-populated by the WorkflowReconciler when a bound
-	// workflow run reaches a terminal state (docs/02 §2.2). Markdown;
-	// mirrors acceptance_criteria (bounded, empty until a run completes).
+	// AcceptanceReview is the human-readable summary of the final work done, auto-populated by the
+	// WorkflowReconciler when a bound workflow run reaches a terminal state (docs/02 §2.2).
 	AcceptanceReview  string
 	Status            string
 	AssignedWorkerRef []byte // jsonb: {worker_id, version}
@@ -38,71 +31,40 @@ type WorkItemRow struct {
 	Priority          int
 	Budgets           []byte // jsonb
 	ContextWindow     int
-	// SortOrder is the sibling order within (parent_id) — the sequence
-	// engine's derived cursor (architecture-notes/
-	// sequential-multi-workflow-runs.md §1). Nullable; backfilled by
-	// created_at at migration time, changed only by ReorderWorkItems
-	// (explicit drag), never by display sort. NULL sorts last.
-	//
-	// CONVENTION: 1-based — the first child is 1 (ReorderWorkItems writes
-	// i+1), and 0/NULL means "unset" (sorts last; the frontend's
-	// byChainOrder treats sortOrder===0 as unset). NEVER write 0 as a real
-	// position: it is indistinguishable from unset on the wire (proto
-	// `double sort_order` defaults to 0) and will silently sort last.
+	// NEVER write 0 as a real position: it is indistinguishable from unset on the wire (proto `double
+	// sort_order` defaults to 0) and will silently sort last.
 	SortOrder *float64
 	Results   []byte // jsonb
-	// PromptContext is the composite prompt the worker should see when
-	// dispatched for this work item. Set by the WorkflowReconciler
-	// before dispatch (PR B — context propagation). Read by the opencode
-	// adapter via the TaskReconciler → manifest Goal. JSONB shape:
-	//   {"composite": "# Task\n...\n# Project context\n...\n# Upstream context\n..."}
+	// PromptContext is the composite prompt the worker should see when dispatched for this work item.
 	PromptContext     []byte     // jsonb
 	ScheduledStartAt  *time.Time // scheduled workflow start; nil = immediate
 	AutoStartWorkflow bool       // true = auto-start bound workflow on save
-	// RuntimeImage is the runtime container image tag for this item's
-	// workflow run (empty = base image). Stamped by the backend at
-	// create/update so the value always carries forward to the run.
+	// RuntimeImage is the runtime container image tag for this item's workflow run (empty = base
+	// image).
 	RuntimeImage string
-	// ContextFiles is a JSON array of absolute file/directory paths
-	// provided as worker context, mirroring projects.context_files
-	// (internal/contextfiles). Read-only input, never mutated by the
-	// reconcilers.
+	// ExecutionMode overrides the project's execution_mode for THIS item's executions ("runtime" |
+	// "local").
+	ExecutionMode *string
+	// ContextFiles is a JSON array of absolute file/directory paths provided as worker context,
+	// mirroring projects.context_files (internal/contextfiles).
 	ContextFiles []byte // jsonb
-	// RecurringSchedule is the JSONB recurrence definition
-	// {frequency, interval, days[], start_date, start_time}.
-	// NULL = not recurring. Stored as raw bytes; validated at the API
-	// boundary (validate.go).
+	// RecurringSchedule is the JSONB recurrence definition {frequency, interval, days[], start_date,
+	// start_time}.
 	RecurringSchedule []byte // jsonb
-	// NextRunAt is the computed next occurrence of a recurring item,
-	// used by the scheduler due-scan cursor. NULL = not recurring or
-	// no next occurrence yet.
+	// NextRunAt is the computed next occurrence of a recurring item, used by the scheduler due-scan
+	// cursor.
 	NextRunAt *time.Time
-	// RecurringEnabled is the recurrence on/off flag. false = paused: the
-	// item keeps its recurring_schedule + next_run_at but is excluded from
-	// the due-scan (enable/pause lifecycle), so a pause preserves the
-	// schedule and resume re-arms from it. Default true.
+	// RecurringEnabled is the recurrence on/off flag.
 	RecurringEnabled bool
 	// ArchivedAt is set when the work item is archived (NULL = active).
-	// Every active work-item read filters archived_at IS NULL; the
-	// dedicated archive view opts in via ListWorkItems include_archived
-	// (archived_at IS NOT NULL).
 	ArchivedAt *time.Time
-	// ArchivedFromStatus is the terminal status the item had when
-	// archived. RestoreWorkItem returns the item to this status (not
-	// pending). NULL = never archived.
+	// ArchivedFromStatus is the terminal status the item had when archived.
 	ArchivedFromStatus *string
-	// Ephemeral marks a machine-managed transient item (Ask Orchicon
-	// Quick Work): created to carry one job, hidden from every human
-	// work-item view, and HARD-DELETED when the job ends. It is the second
-	// visibility axis and is deliberately NOT a peer of archived_at —
-	// archived_at partitions a HUMAN view into active/archived, while
-	// ephemeral removes the item from human view entirely, including the
-	// archive view. See ListWorkItemsFilter.EphemeralScope for the gate and
-	// ephemeralPredicate for why the default is exclude-everywhere.
+	// Ephemeral marks a machine-managed transient item (Ask Orchicon Quick Work): created to carry one
+	// job, hidden from every human work-item view, and HARD-DELETED when the job ends.
 	Ephemeral bool
-	// SpawnedByWorkItemID is the recurring item id that produced this
-	// work item (empty = not an automation spawn). Server-stamped from
-	// the recurring fire's run_context; never client-supplied (feature 4.1).
+	// SpawnedByWorkItemID is the recurring item id that produced this work item (empty = not an
+	// automation spawn).
 	SpawnedByWorkItemID *string
 	// SpawnedByRunID is the workflow run id of the recurring fire's run
 	// that produced this work item (empty = not an automation spawn).
@@ -121,11 +83,7 @@ type WorkItemRow struct {
 	UpdatedAt              time.Time
 }
 
-// CreateWorkItem inserts a new work item within the given tenant
-// transaction. The caller controls the transaction so the outbox row
-// can be enqueued in the same atomic unit (docs/09 §6). Version starts
-// at 1. JSON-typed columns (budgets, results) default to "{}" if the
-// caller doesn't provide them.
+// CreateWorkItem inserts a new work item within the given tenant transaction.
 func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow, error) {
 	if w.Budgets == nil {
 		w.Budgets = []byte("{}")
@@ -142,12 +100,13 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 	// New items always start recurrence-enabled: nothing in the create path
 	// represents "create already-paused" — pause is a later UpdateWorkItem.
 	w.RecurringEnabled = true
-	// Always-container runtime: an empty runtime_image inherits the
-	// project's default_runtime_image (future creates inherit; explicit
-	// per-item values win; updating the project default never
-	// retro-mutates existing items). Best-effort — a project-read failure
-	// never fails the create (the arm-site resolution chain falls back to
-	// base).
+	// Ephemeral (Ask Orchicon Quick Work) items get a CONCRETE mode at create instead of inheriting.
+	if w.Ephemeral && w.ExecutionMode == nil {
+		m := EphemeralExecutionMode()
+		w.ExecutionMode = &m
+	}
+	// Always-container runtime: an empty runtime_image inherits the project's default_runtime_image
+	// (future creates inherit; explicit per-item values win.
 	if strings.TrimSpace(w.RuntimeImage) == "" && strings.TrimSpace(w.ProjectID) != "" {
 		if p, perr := GetProject(ctx, tx, w.TenantID, w.ProjectID); perr == nil && p.DefaultRuntimeImage != nil && strings.TrimSpace(*p.DefaultRuntimeImage) != "" {
 			w.RuntimeImage = *p.DefaultRuntimeImage
@@ -158,10 +117,10 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		 acceptance_criteria, status, assigned_worker_ref, workflow_id,
 		 workflow_run_id, workflow_step_id,
 		 priority, budgets, context_window, results, prompt_context,
-		 scheduled_start_at, auto_start_workflow, runtime_image, context_files,
+		 scheduled_start_at, auto_start_workflow, runtime_image, execution_mode, context_files,
 		 recurring_schedule, next_run_at, recurring_enabled, spawned_by_work_item_id, spawned_by_run_id, secret_ids,
 		 ephemeral)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
 		RETURNING ` + WorkItemSelectCols
 	row := w
 	err := tx.QueryRow(ctx, q,
@@ -169,7 +128,7 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 		w.AcceptanceCriteria, w.Status, w.AssignedWorkerRef, w.WorkflowID,
 		w.WorkflowRunID, w.WorkflowStepID,
 		w.Priority, w.Budgets, w.ContextWindow, w.Results, w.PromptContext,
-		w.ScheduledStartAt, w.AutoStartWorkflow, w.RuntimeImage, w.ContextFiles,
+		w.ScheduledStartAt, w.AutoStartWorkflow, w.RuntimeImage, w.ExecutionMode, w.ContextFiles,
 		w.RecurringSchedule, w.NextRunAt, w.RecurringEnabled,
 		w.SpawnedByWorkItemID, w.SpawnedByRunID, w.SecretIDs,
 		w.Ephemeral,
@@ -180,24 +139,21 @@ func CreateWorkItem(ctx context.Context, tx pgx.Tx, w WorkItemRow) (WorkItemRow,
 	return row, nil
 }
 
-// WorkItemSelectCols is the canonical 31-column SELECT / RETURNING list
-// shared by every query that reads a full WorkItemRow. Keeping it in one
-// place prevents the column-list drift that caused UnassignWorker to
-// silently zero-out fields (the original bug that motivated this constant).
+// WorkItemSelectCols is the canonical 31-column SELECT / RETURNING list shared by every query that
+// reads a full WorkItemRow.
 const WorkItemSelectCols = `id, tenant_id, project_id, parent_id, kind, title, description,
 	acceptance_criteria, acceptance_review, status, assigned_worker_ref, workflow_id,
 	workflow_run_id, workflow_step_id,
 	priority, budgets, context_window, sort_order, results, prompt_context,
-	scheduled_start_at, auto_start_workflow, runtime_image, context_files,
+	scheduled_start_at, auto_start_workflow, runtime_image, execution_mode, context_files,
 	recurring_schedule, next_run_at, recurring_enabled,
 	archived_at, archived_from_status, ephemeral,
 	sequence_attempts, sequence_last_attempt_at, sequence_consecutive_scan_errors, sequence_last_progress_at,
 	spawned_by_work_item_id, spawned_by_run_id, secret_ids,
 	version, created_at, updated_at`
 
-// WorkItemScanPtrs returns a slice of Scan pointers matching
-// WorkItemSelectCols for the given WorkItemRow. The positional order must
-// exactly match the column list.
+// WorkItemScanPtrs returns a slice of Scan pointers matching WorkItemSelectCols for the given
+// WorkItemRow.
 func WorkItemScanPtrs(w *WorkItemRow) []any {
 	return []any{
 		&w.ID, &w.TenantID, &w.ProjectID, &w.ParentID, &w.Kind, &w.Title,
@@ -205,7 +161,7 @@ func WorkItemScanPtrs(w *WorkItemRow) []any {
 		&w.WorkflowID, &w.WorkflowRunID, &w.WorkflowStepID,
 		&w.Priority, &w.Budgets, &w.ContextWindow, &w.SortOrder, &w.Results,
 		&w.PromptContext,
-		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ContextFiles,
+		&w.ScheduledStartAt, &w.AutoStartWorkflow, &w.RuntimeImage, &w.ExecutionMode, &w.ContextFiles,
 		&w.RecurringSchedule, &w.NextRunAt, &w.RecurringEnabled,
 		&w.ArchivedAt, &w.ArchivedFromStatus, &w.Ephemeral,
 		&w.SequenceAttempts, &w.SequenceLastAttemptAt, &w.SequenceConsecutiveScanErrors, &w.SequenceLastProgressAt,
@@ -229,13 +185,8 @@ func GetWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemR
 	return w, nil
 }
 
-// SpawnedByTitles resolves the titles of the given work item ids within the
-// tenant — a single batched lookup used to render the "from automation X"
-// badge (feature 5.1). The ids are the spawned_by provenance ids carried by
-// automation-produced idea items. Returns a map of id -> title; ids that no
-// longer exist (the spawning item was deleted) are simply absent, so callers
-// can render an empty badge. An empty id set is a no-op (returns an empty
-// map) so callers never pay a round-trip when nothing is actionable.
+// SpawnedByTitles resolves the titles of the given work item ids within the tenant — a single
+// batched lookup used to render the "from automation X" badge (feature 5.1).
 func SpawnedByTitles(ctx context.Context, tx pgx.Tx, tenantID string, ids []string) (map[string]string, error) {
 	out := make(map[string]string)
 	if len(ids) == 0 {
@@ -270,36 +221,20 @@ type ListWorkItemsFilter struct {
 	SortOrder string  // "asc" or "desc" (default "asc")
 	PageSize  int
 	AfterID   string
-	// IncludeArchived selects which archive partition to return:
-	//   false (default) → ONLY active items (archived_at IS NULL) — every
-	//     normal view (board/tree/list/sequence/workflows/counts).
-	//   true → ONLY archived items (archived_at IS NOT NULL) — the dedicated
-	//     archive view.
+	// IncludeArchived selects which archive partition to return: false (default) → ONLY active items
+	// (archived_at IS NULL) — every normal view (board/tree/list/sequence/workflows/counts).
 	IncludeArchived bool
-	// IdeaScope scopes the idea-state split (feature 4.1): ""/"exclude" =
-	// exclude idea-state items from the normal list; "only" = Idea Cloud
-	// view (status='idea', provenance carried).
+	// IdeaScope scopes the idea-state split (feature 4.1): ""/"exclude" = exclude idea-state items from
+	// the normal list; "only" = Idea Cloud view (status='idea', provenance carried).
 	IdeaScope string
-	// IdeaStateScope selects the idea population for the Idea Cloud
-	// surfaces (ListIdeas): "" (default) = active idea-state items;
-	// "rejected" = dismissed idea spawns (status='cancelled' WITH spawned
-	// provenance — the exact state DismissIdea produces), the rejected
-	// history the automation dedupe gate also reads. Only meaningful when
-	// IdeaScope="only".
+	// IdeaStateScope selects the idea population for the Idea Cloud surfaces (ListIdeas): "" (default)
+	// = active idea-state items.
 	IdeaStateScope string
-	// RecurringFilter scopes the recurring split: ""/"all" = no filter,
-	// "exclude" = only non-recurring (recurring_schedule IS NULL),
-	// "only" = only recurring (recurring_schedule IS NOT NULL).
+	// RecurringFilter scopes the recurring split: ""/"all" = no filter, "exclude" = only non-recurring
+	// (recurring_schedule IS NULL), "only" = only recurring (recurring_schedule IS NOT NULL).
 	RecurringFilter string
-	// EphemeralScope scopes the ephemeral split (Ask Orchicon Quick
-	// Work): ""/"exclude" (the default) = ONLY non-ephemeral items —
-	// every human-facing view (board/tree/list/sequence/workflows/
-	// dependency graph/counts) rides on this query and must not show
-	// machine-managed transients; "only" = only ephemeral items;
-	// "include" = both, for the Quick Work agent managing the items it
-	// created.
-	//
-	// The zero value is the SAFE value on purpose — see ephemeralPredicate.
+	// EphemeralScope scopes the ephemeral split (Ask Orchicon Quick Work): ""/"exclude" (the default) =
+	// ONLY non-ephemeral items.
 	EphemeralScope string
 }
 
@@ -313,9 +248,8 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 		FROM work_items
 		WHERE tenant_id = $1 AND ($2 = '' OR project_id = $2) AND ($3 = '' OR id > $3)`
 	args := []any{f.TenantID, f.ProjectID, f.AfterID}
-	// Archive gate (the single additive, regression-free default): active
-	// reads filter archived_at IS NULL; the archive view opts in with
-	// archived_at IS NOT NULL.
+	// Archive gate (the single additive, regression-free default): active reads filter archived_at IS
+	// NULL; the archive view opts in with archived_at IS NOT NULL.
 	if f.IncludeArchived {
 		q += ` AND archived_at IS NOT NULL`
 	} else {
@@ -328,19 +262,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	case "exclude":
 		q += ` AND recurring_schedule IS NULL`
 	}
-	// Idea-state gate: the normal list excludes idea items; the Idea Cloud
-	// view opts in with "only". The "only" + idea_state_scope="rejected"
-	// combination reads the rejected graveyard instead of the Idea Cloud:
-	// dismissed spawns are status='cancelled' items that still carry
-	// spawned_by provenance — the exact state DismissIdea writes, so the
-	// predicate is retroactive (every rejection ever made is visible with
-	// no backfill) and shares the provenance columns, never a parallel
-	// schema. A generic (human-created) cancelled item never carries
-	// provenance, so the normal cancelled backlog can never leak into the
-	// graveyard — EXCEPT a previously-approved spawn run to completion and
-	// later cancelled; that reads as "tried and killed," exactly the dedupe
-	// signal the gate wants. 'idea'/'cancelled' are literal statuses (not
-	// interpolated).
+	// Idea-state gate: the normal list excludes idea items; the Idea Cloud view opts in with "only".
 	switch {
 	case f.IdeaScope == "only" && f.IdeaStateScope == "rejected":
 		q += ` AND status = 'cancelled' AND spawned_by_work_item_id IS NOT NULL`
@@ -383,32 +305,9 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 		orderDir = "DESC"
 	}
 	// ORDERING, and the cursor must agree with it.
-	//
-	// The default (no explicit sort_by) follows the SEQUENCE CHAIN — sort_order NULLS LAST, created_at,
-	// id — because the tree and board show sibling order by default, and sort_order is never a
-	// display-sort option (the filter bar offers title/priority/created_at, so no control claims to
-	// write it).
-	//
-	// THE CURSOR USED TO CONTRADICT IT, and that is a data-visibility defect, not a paging nicety.
-	// Page 1 was chain-ordered while every page after it was ordered by ID ALONE against a bare
-	// `id > $n` — two different orders. Measured on the live dev tenant (327 matching items, 200/page),
-	// the two pages OVERLAPPED by 9 rows and MISSED 122: the Work Items list was showing 205 of 327.
-	// The duplicates are what an operator notices; the missing rows are the worse half.
-	//
-	// The fix is the same keyset pattern ListExecutions already uses ("This replaces the old bare
-	// `id > $n` cursor, which contradicted the default created_at DESC ordering and re-returned page 1
-	// on page 2"): the cursor compares against the SAME (ordering key, id) TUPLE the ORDER BY uses, so
-	// page N+1 continues exactly where page N stopped — no overlap, no gap, whatever the direction.
-	//
-	// A caller-supplied sort_by still wins, and its cursor follows it, because the tuple is built from
-	// the effective ordering rather than a hardcoded one.
 	switch {
 	case f.SortBy == "":
-		// Chain order. NULLs last in ASC is what `sort_order NULLS LAST` means, and in DESC the same
-		// expression puts them last too — so the tuple comparison needs the SAME null placement, which
-		// PostgreSQL's row comparison does not give for NULLs. The cursor therefore keys on
-		// (sort_order, created_at, id) only when a sort_order value exists; a NULL-tail cursor is
-		// handled by the coalesced form below.
+		// Chain order.
 		if f.AfterID != "" {
 			cmp := ">"
 			if orderDir == "DESC" {
@@ -425,9 +324,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 			q += ` ORDER BY sort_order ASC NULLS LAST, created_at ASC, id ASC`
 		}
 	default:
-		// An explicit display sort. The cursor tuple follows the SAME column, so paging stays exact
-		// under title/priority/created_at too (the old form used the bare id and was wrong whenever the
-		// sort column was not id).
+		// An explicit display sort.
 		if f.AfterID != "" {
 			cmp := ">"
 			if orderDir == "DESC" {
@@ -458,9 +355,7 @@ func ListWorkItems(ctx context.Context, tx pgx.Tx, f ListWorkItemsFilter) ([]Wor
 	return out, rows.Err()
 }
 
-// ListDirectChildren returns the immediate children of a work item within
-// the tenant scope. Used by kind-switch resolution (ADR-WIT-2) to reparent
-// direct children that can no longer sit under a switched item.
+// ListDirectChildren returns the immediate children of a work item within the tenant scope.
 func ListDirectChildren(ctx context.Context, tx pgx.Tx, tenantID, parentID string) ([]WorkItemRow, error) {
 	const q = `SELECT ` + WorkItemSelectCols + `
 		FROM work_items WHERE tenant_id = $1 AND parent_id = $2 AND archived_at IS NULL
@@ -481,15 +376,8 @@ func ListDirectChildren(ctx context.Context, tx pgx.Tx, tenantID, parentID strin
 	return out, rows.Err()
 }
 
-// ListSequenceActiveParents returns the work items that are sequence
-// parents in flight OR halted: status IN ('running','failed'), NO bound
-// workflow run (workflow_run_id empty), and at least one direct child.
-// This is the sequence engine's scan predicate (architecture-notes/
-// sequential-multi-workflow-runs.md §2). It is disjoint from bound-run
-// tickets (which carry a workflow_run_id) and from standalone one-shot
-// running items (which have no children). FAILED parents are included so
-// a retried child (the derived cursor's next sibling) can revive the
-// chain automatically.
+// ListSequenceActiveParents returns the work items that are sequence parents in flight OR halted:
+// status IN ('running','failed'), NO bound workflow run (workflow_run_id empty).
 func ListSequenceActiveParents(ctx context.Context, tx pgx.Tx, tenantID string) ([]WorkItemRow, error) {
 	const q = `SELECT ` + WorkItemSelectCols + `
 		FROM work_items w
@@ -515,17 +403,11 @@ func ListSequenceActiveParents(ctx context.Context, tx pgx.Tx, tenantID string) 
 	return out, rows.Err()
 }
 
-// ListSiblingsForReorder returns the direct children of parentID
-// (empty = top-level) within a project, ordered by sort_order NULLS LAST,
-// created_at — the ReorderWorkItems read (architecture-notes/
-// sequential-multi-workflow-runs.md §1).
+// ListSiblingsForReorder returns the direct children of parentID (empty = top-level) within a
+// project, ordered by sort_order NULLS LAST, created_at.
 func ListSiblingsForReorder(ctx context.Context, tx pgx.Tx, tenantID, projectID, parentID string) ([]WorkItemRow, error) {
-	// Ephemeral items are excluded from BOTH branches, and the top-level
-	// branch is why: ReorderWorkItems requires child_ids to be an exact
-	// permutation of this result, so an invisible ephemeral sibling would
-	// make every top-level reorder fail with "not a permutation" and there
-	// would be nothing on screen to explain why. The filter that hides them
-	// from the board and the filter that builds the permutation must agree.
+	// Ephemeral items are excluded from BOTH branches, and the top-level branch is why:
+	// ReorderWorkItems requires child_ids to be an exact permutation of this result.
 	var q string
 	var args []any
 	if parentID == "" {
@@ -559,9 +441,7 @@ func ListSiblingsForReorder(ctx context.Context, tx pgx.Tx, tenantID, projectID,
 	return out, rows.Err()
 }
 
-// UpdateWorkItemFields is a partial update applied with optimistic
-// concurrency (docs/09 §5). Only non-nil fields are written (field-mask
-// semantics — docs/07 §5.4).
+// UpdateWorkItemFields is a partial update applied with optimistic concurrency (docs/09 §5).
 type UpdateWorkItemFields struct {
 	Title              *string
 	Description        *string
@@ -576,13 +456,8 @@ type UpdateWorkItemFields struct {
 	AssignedWorkerRef *[]byte
 	ProjectID         *string
 	// Kind switches the item's hierarchy kind (epic/feature/task/subtask).
-	// The CHECK constraint on kind is satisfied because the service
-	// normalizes via domain.NormalizeWorkItemKind before calling.
 	Kind *string
-	// PromptContext is set by the WorkflowReconciler before dispatch
-	// (PR B — context propagation). The opencode adapter reads it via
-	// the TaskReconciler → manifest Goal. JSONB payload (see
-	// migration 20260713210000).
+	// PromptContext is set by the WorkflowReconciler before dispatch (PR B — context propagation).
 	PromptContext *[]byte
 	// WorkflowID links a work item to the workflow it's part of (set
 	// when a TASK step dispatches it). Nullable; empty string clears.
@@ -590,13 +465,9 @@ type UpdateWorkItemFields struct {
 	// ParentID reparents the item. Empty string clears (sets NULL);
 	// non-empty sets the new parent. nil = unchanged.
 	ParentID *string
-	// Results is the work item's output JSON. The TaskReconciler
-	// writes _output (raw worker text) and _summary (extracted
-	// summary) here on terminal state (PR B).
+	// Results is the work item's output JSON.
 	Results *[]byte
-	// WorkflowRunID and WorkflowStepID track which workflow run + step
-	// dispatched this work item. Set by the WorkflowReconciler and
-	// propagated to the WorkerExecution by the TaskReconciler.
+	// WorkflowRunID and WorkflowStepID track which workflow run + step dispatched this work item.
 	WorkflowRunID  *string
 	WorkflowStepID *string
 	// ScheduledStartAt and AutoStartWorkflow control template-bound
@@ -606,48 +477,39 @@ type UpdateWorkItemFields struct {
 	// ClearScheduledStartAt, when true, sets scheduled_start_at = NULL.
 	// Used when auto_start_workflow is enabled to clear a prior schedule.
 	ClearScheduledStartAt bool
-	// RuntimeImage is the runtime container image tag; empty string resets
-	// to the base image. Stamped at create/update so the value carries
-	// forward to the workflow run.
+	// RuntimeImage is the runtime container image tag; empty string resets to the base image.
 	RuntimeImage *string
+	// ExecutionMode sets the item-level override ("runtime" | "local").
+	ExecutionMode *string
+	// ClearExecutionMode, when true, sets execution_mode = NULL, i.e. the item inherits its project's
+	// mode again.
+	ClearExecutionMode bool
 	// ClearAssignedWorkerRef, when true, sets assigned_worker_ref = NULL.
-	// Used when switching a work item to a non-schedulable kind
-	// (epic/feature), where a worker binding is meaningless.
 	ClearAssignedWorkerRef bool
 	// ContextFiles updates the item's context_files JSONB. A non-nil
 	// pointer to an empty JSON array ("[]") clears the selection.
 	ContextFiles *[]byte
-	// SortOrder renumbers the sibling order within (parent_id). Set
-	// exclusively by ReorderWorkItems (explicit drag); display sort never
-	// mutates it. The sequence cursor is derived from sort_order at
-	// reconcile time, so a mid-run drag only shifts future arming.
+	// SortOrder renumbers the sibling order within (parent_id).
 	SortOrder *float64
-	// RecurringSchedule is the JSONB recurrence definition
-	// {frequency, interval, days[], start_date, start_time}. nil =
-	// unchanged (field-mask semantics).
+	// RecurringSchedule is the JSONB recurrence definition {frequency, interval, days[], start_date,
+	// start_time}.
 	RecurringSchedule *[]byte
 	// NextRunAt is the computed next occurrence timestamp for a
 	// recurring item. nil = unchanged (field-mask semantics).
 	NextRunAt *time.Time
-	// ClearRecurringSchedule, when true, sets recurring_schedule = NULL
-	// and next_run_at = NULL. Used when status changes to non-recurring
-	// or when the kind switches to a non-schedulable kind.
+	// ClearRecurringSchedule, when true, sets recurring_schedule = NULL and next_run_at = NULL.
 	ClearRecurringSchedule bool
-	// RecurringEnabled toggles the recurrence on/off flag. nil = unchanged
-	// (field-mask semantics). Setting false pauses the recurrence while
-	// preserving the schedule + next_run_at; setting true resumes it.
+	// ClearRuntimeImage, when true, sets runtime_image = ''.
+	ClearRuntimeImage bool
+	// RecurringEnabled toggles the recurrence on/off flag.
 	RecurringEnabled *bool
-	// SpawnedByWorkItemID and SpawnedByRunID stamp automation provenance
-	// (feature 4.1). Set only by the spawn path; never via the generic
-	// update (nil = unchanged).
+	// SpawnedByWorkItemID and SpawnedByRunID stamp automation provenance (feature 4.1).
 	SpawnedByWorkItemID *string
 	SpawnedByRunID      *string
 	SecretIDs           *[]byte
 }
 
 // UpdateWorkItem applies a partial update with optimistic concurrency.
-// The tenant_id is injected into the WHERE clause. Returns ErrNotFound
-// if no row matches the id+tenant+version.
 func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, f UpdateWorkItemFields) (WorkItemRow, error) {
 	q := `UPDATE work_items SET updated_at = now(), version = version + 1`
 	args := []any{tenantID, id, expectedVersion}
@@ -698,9 +560,8 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		setIdx++
 	}
 	if f.ClearAssignedWorkerRef {
-		// A worker binding is meaningless for non-schedulable kinds; the
-		// bytea column cannot encode NULL through the *[]byte pointer, so
-		// clearing is a dedicated flag (mirrors ClearScheduledStartAt).
+		// A worker binding is meaningless for non-schedulable kinds; the bytea column cannot encode NULL
+		// through the *[]byte pointer, so clearing is a dedicated flag (mirrors ClearScheduledStartAt).
 		q += `, assigned_worker_ref = NULL`
 	}
 	if f.Kind != nil {
@@ -763,9 +624,19 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 		args = append(args, *f.AutoStartWorkflow)
 		setIdx++
 	}
+	if f.ClearRuntimeImage {
+		q += `, runtime_image = ''`
+	}
 	if f.RuntimeImage != nil {
 		q += fmt.Sprintf(`, runtime_image = $%d`, setIdx)
 		args = append(args, *f.RuntimeImage)
+		setIdx++
+	}
+	if f.ClearExecutionMode {
+		q += `, execution_mode = NULL`
+	} else if f.ExecutionMode != nil {
+		q += fmt.Sprintf(`, execution_mode = $%d`, setIdx)
+		args = append(args, *f.ExecutionMode)
 		setIdx++
 	}
 	if f.ContextFiles != nil {
@@ -828,21 +699,14 @@ func UpdateWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expecte
 	return w, nil
 }
 
-// isWorkItemVersionConflict probes whether a work item row exists but the
-// version did not match. Used to distinguish a stale version (ErrVersionConflict)
-// from a genuinely missing row (ErrNotFound) inside the same transaction.
+// isWorkItemVersionConflict probes whether a work item row exists but the version did not match.
 func isWorkItemVersionConflict(ctx context.Context, tx pgx.Tx, tenantID, id string) bool {
 	var exists bool
 	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM work_items WHERE tenant_id=$1 AND id=$2 AND archived_at IS NULL)`, tenantID, id).Scan(&exists)
 	return err == nil && exists
 }
 
-// ParkWorkItem parks a work item unconditionally (no version check). It is
-// the tolerant fallback for STOP's optimistic-lock race: parking
-// (status → pending/recurring, schedule cleared, run binding cleared) is
-// idempotent, so an unconditional UPDATE is safe when a bounded retry of
-// the versioned path still races. The caller guards succeeded/skipped at
-// the scheduler layer so this never overwrites terminal-success.
+// ParkWorkItem parks a work item unconditionally (no version check).
 func ParkWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItemRow, error) {
 	const q = `UPDATE work_items
 		SET status = CASE WHEN recurring_schedule IS NOT NULL THEN 'recurring' ELSE 'pending' END,
@@ -863,12 +727,8 @@ func ParkWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) (WorkItem
 	return w, nil
 }
 
-// ArchiveWorkItem marks a work item archived with optimistic concurrency
-// (docs/09 §5): sets status='archived', archived_at=now() and preserves the
-// pre-archive terminal status in archived_from_status. The tenant_id +
-// version are injected into the WHERE clause. Returns ErrNotFound if no row
-// matches id+tenant+version. The caller (ArchiveWorkItem RPC) enforces the
-// terminal-status and no-children preconditions before calling.
+// ArchiveWorkItem marks a work item archived with optimistic concurrency (docs/09 §5): sets
+// status='archived', archived_at=now() and preserves the pre-archive terminal status.
 func ArchiveWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, fromStatus string) (WorkItemRow, error) {
 	const q = `UPDATE work_items
 		SET status = 'archived', archived_at = now(), archived_from_status = $4,
@@ -889,11 +749,8 @@ func ArchiveWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expect
 	return w, nil
 }
 
-// RestoreWorkItem returns an archived work item to the active views with
-// optimistic concurrency: clears archived_at and archived_from_status and
-// returns the item to the terminal status it was archived from. The caller
-// (RestoreWorkItem RPC) enforces the currently-archived invariant before
-// calling. Returns ErrNotFound on a version mismatch.
+// RestoreWorkItem returns an archived work item to the active views with optimistic concurrency:
+// clears archived_at and archived_from_status and returns the item to the terminal status it.
 func RestoreWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string, expectedVersion int, fromStatus string) (WorkItemRow, error) {
 	const q = `UPDATE work_items
 		SET status = $4, archived_at = NULL, archived_from_status = NULL,
@@ -929,11 +786,7 @@ type DependencyRow struct {
 	CreatedAt time.Time
 }
 
-// CreateDependency inserts a new DAG edge within the given tenant
-// transaction. The caller is responsible for cycle detection before
-// calling this (docs/02 §2.2: cycles are rejected at admission); the
-// DB trigger enforce_work_dag_acyclic is the authoritative backstop and
-// aborts the transaction if the edge would close a cycle.
+// CreateDependency inserts a new DAG edge within the given tenant transaction.
 func CreateDependency(ctx context.Context, tx pgx.Tx, d DependencyRow) (DependencyRow, error) {
 	const q = `INSERT INTO work_item_dependencies
 		(id, tenant_id, project_id, from_id, to_id, type)
@@ -1006,9 +859,8 @@ func ListDependencies(ctx context.Context, tx pgx.Tx, tenantID, projectID string
 	return out, rows.Err()
 }
 
-// ListDependenciesForItems returns all dependency edges of the given type
-// whose from_id is in the provided set — the single-query payload
-// population for WorkItem.depends_on (avoids an N+1 per item in List).
+// ListDependenciesForItems returns all dependency edges of the given type whose from_id is in the
+// provided set — the single-query payload population for WorkItem.depends_on (avoids an N+1 per.
 func ListDependenciesForItems(ctx context.Context, tx pgx.Tx, tenantID string, fromIDs []string, depType string) ([]DependencyRow, error) {
 	const q = `SELECT id, tenant_id, project_id, from_id, to_id, type, created_at
 		FROM work_item_dependencies
@@ -1031,11 +883,8 @@ func ListDependenciesForItems(ctx context.Context, tx pgx.Tx, tenantID string, f
 	return out, rows.Err()
 }
 
-// ListDependenciesTargetingItems returns all dependency edges of the given
-// types whose to_id is in the provided set — the to_id-side mirror of
-// ListDependenciesForItems. Used by the sequence engine to classify each
-// child as dependency-governed (any incoming blocking edge) vs a strict
-// sequence child (no incoming edges) in a single query.
+// ListDependenciesTargetingItems returns all dependency edges of the given types whose to_id is in
+// the provided set — the to_id-side mirror of ListDependenciesForItems.
 func ListDependenciesTargetingItems(ctx context.Context, tx pgx.Tx, tenantID string, toIDs []string, depTypes []string) ([]DependencyRow, error) {
 	const q = `SELECT id, tenant_id, project_id, from_id, to_id, type, created_at
 		FROM work_item_dependencies
@@ -1058,13 +907,8 @@ func ListDependenciesTargetingItems(ctx context.Context, tx pgx.Tx, tenantID str
 	return out, rows.Err()
 }
 
-// UnsatisfiedDependencyRow is one blocking edge source that keeps the
-// dependent work item from dispatching: the source is not
-// terminal-success. ToID is the dependent (the edge's to_id), ID/Title/
-// Status belong to the blocker (the edge's from_id) — the batch attach
-// keys rows by ToID so a page of dependents maps to their blockers.
-// Populated at read time for WorkItem.blocked_by so the server names the
-// blocking edges (AGENTS invariant #1: the UI reflects server state).
+// UnsatisfiedDependencyRow is one blocking edge source that keeps the dependent work item from
+// dispatching: the source is not terminal-success.
 type UnsatisfiedDependencyRow struct {
 	ToID   string
 	ID     string
@@ -1072,14 +916,8 @@ type UnsatisfiedDependencyRow struct {
 	Status string
 }
 
-// ListUnsatisfiedDependencies returns the sources of every incoming
-// blocks/depends_on edge whose status is NOT terminal-success (NOT IN
-// terminalSuccessStatuses) for the given work items. The predicate is
-// IDENTICAL to CheckDependenciesSatisfied (relates_to never blocks; only
-// succeeded/skipped unblock), so the read-time blocked_by list and the
-// reconciler's dispatch gate can never disagree.
-// Bounded by the number of edges targeting the items — one indexed join
-// over the dependency edges + work_items.
+// ListUnsatisfiedDependencies returns the sources of every incoming blocks/depends_on edge whose
+// status is NOT terminal-success (NOT IN terminalSuccessStatuses) for the given work items.
 func ListUnsatisfiedDependencies(ctx context.Context, tx pgx.Tx, tenantID string, toIDs []string) ([]UnsatisfiedDependencyRow, error) {
 	const q = `SELECT d.to_id, wi.id, wi.title, wi.status
 		FROM work_item_dependencies d
@@ -1104,9 +942,8 @@ func ListUnsatisfiedDependencies(ctx context.Context, tx pgx.Tx, tenantID string
 	return out, rows.Err()
 }
 
-// DeleteOutgoingDependencies removes every dependency edge of the given
-// type where from_id = fromID within the tenant scope (set-replace
-// support for UpdateWorkItem's depends_on list).
+// DeleteOutgoingDependencies removes every dependency edge of the given type where from_id = fromID
+// within the tenant scope (set-replace support for UpdateWorkItem's depends_on list).
 func DeleteOutgoingDependencies(ctx context.Context, tx pgx.Tx, tenantID, fromID, depType string) error {
 	const q = `DELETE FROM work_item_dependencies WHERE tenant_id = $1 AND from_id = $2 AND type = $3`
 	if _, err := tx.Exec(ctx, q, tenantID, fromID, depType); err != nil {
@@ -1115,10 +952,8 @@ func DeleteOutgoingDependencies(ctx context.Context, tx pgx.Tx, tenantID, fromID
 	return nil
 }
 
-// ItemParticipatesInDependency reports whether the item is on either side
-// of any dependency edge (outgoing or incoming) within the tenant scope —
-// the project-reassignment guard (edges are project-scoped, so an item
-// with edges cannot silently move across projects).
+// ItemParticipatesInDependency reports whether the item is on either side of any dependency edge
+// (outgoing or incoming) within the tenant scope.
 func ItemParticipatesInDependency(ctx context.Context, tx pgx.Tx, tenantID, itemID string) (bool, error) {
 	const q = `SELECT EXISTS(
 		SELECT 1 FROM work_item_dependencies WHERE tenant_id = $1 AND (from_id = $2 OR to_id = $2))`
@@ -1129,21 +964,8 @@ func ItemParticipatesInDependency(ctx context.Context, tx pgx.Tx, tenantID, item
 	return exists, nil
 }
 
-// CheckCycleWithRecursiveCTE checks whether adding an edge from→to
-// would create a cycle in the dependency DAG. It uses WITH RECURSIVE to
-// traverse the existing edges starting from `to` — if `from` is
-// reachable from `to`, adding the edge would close a cycle
-// (docs/09 §11: recursive CTE for dependency traversal).
-//
-// Only DAG edges (`depends_on`, `blocks`) participate in the walk;
-// `relates_to` is a symmetric, non-ordering relationship and is exempt
-// from the DAG invariant (consistent with the DB trigger
-// enforce_work_dag_acyclic). Callers that add a `relates_to` edge must
-// skip this check entirely — the traversal filter alone is not enough
-// (an existing `A depends_on B` would make `B relates_to A` falsely
-// reach B) — the AddDependency service gates the call on edge type.
-//
-// Returns true if adding from→to would create a cycle.
+// CheckCycleWithRecursiveCTE checks whether adding an edge from→to would create a cycle in the
+// dependency DAG.
 func CheckCycleWithRecursiveCTE(ctx context.Context, tx pgx.Tx, tenantID, projectID, fromID, toID string) (bool, error) {
 	// Traverse forward from `to`: follow from_id → to_id edges. If we
 	// reach `from`, then from→to would close a cycle.
@@ -1166,9 +988,8 @@ func CheckCycleWithRecursiveCTE(ctx context.Context, tx pgx.Tx, tenantID, projec
 	return creates, nil
 }
 
-// HardDeleteWorkItem permanently removes a work item and cascades to
-// its dependencies (rows where this item is either the from or to side).
-// Returns ErrNotFound if no row matches the id+tenant.
+// HardDeleteWorkItem permanently removes a work item and cascades to its dependencies (rows where
+// this item is either the from or to side).
 func HardDeleteWorkItem(ctx context.Context, tx pgx.Tx, tenantID, id string) error {
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM work_item_dependencies

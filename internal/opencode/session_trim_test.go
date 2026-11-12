@@ -5,13 +5,8 @@ import (
 	"testing"
 )
 
-// TestTrimCarriedAgentPrompt pins the trim that removes the duplicated prefix on
-// 2.x — and, more importantly, every case where it must REFUSE to trim.
-//
-// The two failures are not equivalent. A trim that does not happen costs tokens
-// (the prefix is sent twice); a trim that lands in the wrong place DELETES the
-// beginning of the worker's task. So every uncertain case must send the full
-// prompt, and that is what this asserts.
+// TestTrimCarriedAgentPrompt pins the trim that removes the duplicated prefix on 2.x — and, more
+// importantly, every case where it must REFUSE to trim.
 func TestTrimCarriedAgentPrompt(t *testing.T) {
 	const prefix = "PLATFORM PROMPT AND WORKER IDENTITY\n\n"
 	const composite = prefix + "# Task\n\nFix the thing.\n\n# Instructions\n\nGo."
@@ -41,9 +36,8 @@ func TestTrimCarriedAgentPrompt(t *testing.T) {
 	})
 
 	t.Run("a length that lands in the WRONG place sends the full prompt", func(t *testing.T) {
-		// The drift case: the recorded length no longer matches the composite's
-		// opening, so the remainder does not begin with the task section. Trimming
-		// here would cut into the worker's instructions.
+		// The drift case: the recorded length no longer matches the composite's opening, so the remainder
+		// does not begin with the task section.
 		for _, n := range []int{3, len(prefix) - 5, len(prefix) + 4} {
 			if got := trimCarriedAgentPrompt(log, "e1", composite, n); got != composite {
 				t.Errorf("n=%d landed mid-text: the full prompt must be sent, got %q", n, got)
@@ -53,16 +47,6 @@ func TestTrimCarriedAgentPrompt(t *testing.T) {
 }
 
 // TestAgentSelectionSupportedIsTheCompositeGate pins the gate the trim depends on.
-//
-// It is BOTH conditions, and combining them is the safety property rather than tidiness:
-//
-//   - the surface must have the agent route (v1 has no agent at all), and
-//   - the serve must actually carry THIS execution's agent, which is only true of a
-//     serve built per RUN — the container path. A HOST serve is shared and bakes none.
-//
-// If either were checked separately at the call site, a session on a host serve would
-// select an agent that cannot exist and then TRIM the run-level prompt off the message
-// — deleting it, since no agent holds it.
 func TestAgentSelectionSupportedIsTheCompositeGate(t *testing.T) {
 	mk := func(s apiShape, agents bool) *SessionClient {
 		c := NewSessionClient("http://127.0.0.1:1", "pw", "")

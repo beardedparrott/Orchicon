@@ -1,14 +1,6 @@
 package tui
 
 // attach_actions.go — THE CHORDS THAT ACQUIRE AN ATTACHMENT.
-//
-// Two gestures, two sources, one outcome: bytes added to the pending set for the next turn. Both are
-// COMMANDS because both do real I/O (a screenshot can be megabytes, a path can be slow), and the tea loop
-// must never block on a file read.
-//
-// EVERY FAILURE IS SPOKEN. The gesture is a keystroke, and a chord that appears to do nothing is
-// indistinguishable from one that is not bound — the failure mode this codebase keeps producing. So each
-// outcome lands in the composer strip with the REASON: what was attached, or precisely why it was not.
 
 import (
 	"errors"
@@ -30,15 +22,8 @@ type attachResultMsg struct {
 	note string
 }
 
-// attachFileFromPrompt reads a file named in the composer's text.
-//
-// IT TAKES THE PROMPT rather than opening a browser, because a terminal cannot browse a filesystem. The
-// operator pastes or types a path — which is also how a path gets into a terminal in the first place (a
-// drag-and-drop, or a shell copy) — and the prompt is cleared so the same path is not sent as text as well.
-//
-// A BRACKETED PASTE THAT IS ONLY A PATH is handled the same way: an operator who copies a file in their file
-// manager and pastes it into the composer produces exactly this text, and attaching it is what they meant.
-// See isProbablyPath.
+// A BRACKETED PASTE THAT IS ONLY A PATH is handled the same way: an operator who copies a file in
+// their file manager and pastes it into the composer produces exactly this text.
 func attachFileFromPrompt(prompt string) tea.Cmd {
 	path := strings.TrimSpace(prompt)
 	return func() tea.Msg {
@@ -56,29 +41,11 @@ type clipboardTextMsg struct {
 }
 
 // attachOrPasteFromClipboard is ctrl+v: an IMAGE on the clipboard ATTACHES, and TEXT is PASTED.
-//
-// The operator: "The new ctrl+v to paste screenshots broke the ability to simply ctrl+v paste normal text. It
-// should detect it and allow both."
-//
-// The attachment work bound ctrl+v to the image reader alone, so a clipboard holding a sentence produced
-// only "the clipboard holds no image" — the chord appeared broken for the case it used to serve, and the
-// operator had no OTHER way to paste text (bracketed paste needs a terminal that sends it, and the textarea's
-// own ctrl+v binding is unreachable because this chord is taken). So the two are detected in ONE gesture:
-// try the image first, because a screenshot is the case with no alternative, then fall back to text.
-//
-// THE SENTINEL IS WHAT MAKES THE FALLBACK SAFE. Only errNoClipboardImage falls through; a real refusal (too
-// large, unsupported format) is REPORTED rather than silently retried as text, which would tell the operator
-// "the clipboard holds no text" about a clipboard that plainly holds a picture they were trying to send.
 func attachOrPasteFromClipboard() tea.Cmd {
 	return clipboardPasteCmd(readClipboardImage, readClipboardText)
 }
 
 // clipboardPasteCmd is the DECISION behind ctrl+v, with the two readers injected.
-//
-// The readers shell out to a clipboard helper, so they cannot be driven from a test; the decision is what
-// matters (an image attaches, text pastes, and a REAL image failure is not retried as text) and it is plain
-// logic over their results. Injecting them is what makes the fallback testable — and the fallback is the half
-// of this feature that was broken, so a test that could not reach it would be worth little.
 func clipboardPasteCmd(
 	readImage func([]attachment) (attachment, error),
 	readText func() (string, error),
@@ -105,13 +72,8 @@ func clipboardPasteCmd(
 	}
 }
 
-// isProbablyPath reports whether a pasted block is a FILE PATH rather than prose, so a paste of a file can
-// attach instead of being inserted as text.
-//
-// DELIBERATELY CONSERVATIVE. Attaching something the operator meant to type is a silent data change to
-// their message; inserting a path they meant to attach is merely unhelpful. So this demands positive
-// evidence: a single line, no spaces in the middle, and either an absolute path or an existing file. A
-// sentence that happens to end in a slash does not qualify.
+// isProbablyPath reports whether a pasted block is a FILE PATH rather than prose, so a paste of a
+// file can attach instead of being inserted as text.
 func isProbablyPath(s string) bool {
 	s = strings.TrimSpace(s)
 	if s == "" || strings.ContainsAny(s, "\n\r") {
@@ -196,8 +158,6 @@ func (m *App) wireAttachments() []*apiv1.AttachmentInput {
 }
 
 // pendingAttachMarkers renders the CURRENT pending set as markers, for the optimistic echo.
-//
-// Read BEFORE the send clears the set, which is why the echo sites call it where they do.
 func (m *App) pendingAttachMarkers() []string {
 	if len(m.pendingAttach) == 0 {
 		return nil

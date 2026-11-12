@@ -26,22 +26,8 @@ func stubAskFileRoot(dir string) func() {
 	})
 }
 
-// canonicalTempDir returns a throwaway directory whose path carries NO symlinked
-// component, so the path a fixture HANDS to the suite and the path the KERNEL
-// reports for that same directory are one string.
-//
-// t.TempDir() cannot promise that on this project: `go test` inherits GOTMPDIR
-// (the Makefile points it at $(DEV_TOOLS)/gotmp) and os.MkdirTemp honours it
-// when $TMPDIR is unset. In a WORKTREE, .dev/tools is a symlink into the main
-// checkout, so the temp dir has two spellings and the fixture holds the
-// worktree one.
-//
-// It matters specifically for bash, and nowhere else in this package: the tool
-// sets cmd.Dir and bash's `pwd` reports the directory as GETCWD sees it, i.e.
-// fully resolved. A fixture that keeps the unresolved spelling is therefore
-// comparing two spellings of the SAME directory and fails in a worktree while
-// passing in a main checkout. Same class as the internal/runtime mount
-// fixtures, fixed the same way.
+// canonicalTempDir returns a throwaway directory whose path carries NO symlinked component, so the
+// path a fixture HANDS to the suite and the path the KERNEL reports for that same directory.
 func canonicalTempDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -52,9 +38,8 @@ func canonicalTempDir(t *testing.T) string {
 	return resolved
 }
 
-// TestNativeAskToolDefsCarryJSONSchema (kept from the pre-parity adapter)
-// still holds with the combined surface: product tools ride the registry
-// schema rendering.
+// TestNativeAskToolDefsCarryJSONSchema (kept from the pre-parity adapter) still holds with the
+// combined surface: product tools ride the registry schema rendering.
 func TestNativeAskToolDefsCarryJSONSchema(t *testing.T) {
 	r := testToolRegistry()
 	r.Add(ToolDefinition{
@@ -98,9 +83,8 @@ func TestNativeAskToolExecuteUnknownErrors(t *testing.T) {
 	}
 }
 
-// TestNativeAskDefsExposeHostSuite is the parity gate: the combined Ask
-// tool surface MUST carry every file/shell tool the worker path serves
-// (HostTools' suite) with the SAME arg shapes, plus the product tools.
+// TestNativeAskDefsExposeHostSuite is the parity gate: the combined Ask tool surface MUST carry
+// every file/shell tool the worker path serves (HostTools' suite) with the SAME arg shapes.
 func TestNativeAskDefsExposeHostSuite(t *testing.T) {
 	r := testToolRegistry()
 	p := (&Service{toolRegistry: r}).NativeAskTools()
@@ -129,18 +113,16 @@ func TestNativeAskDefsExposeHostSuite(t *testing.T) {
 	}
 }
 
-// TestNativeAskExecuteFileSuiteRoundTrip drives the REAL HostTools engine
-// through the Ask provider: write → read → grep → list → edit round trip
-// inside a temp project dir.
+// TestNativeAskExecuteFileSuiteRoundTrip drives the REAL HostTools engine through the Ask provider:
+// write → read → grep → list → edit round trip inside a temp project dir.
 func TestNativeAskExecuteFileSuiteRoundTrip(t *testing.T) {
 	r := testToolRegistry()
 	svc := &Service{toolRegistry: r}
 	p := svc.NativeAskTools()
 	ctx := context.Background()
 
-	// write (thin wrapper) — note the file tools resolve project-relative
-	// against the suite root; the suite root here is wired by swapping the
-	// service root through askFileRootOverride (no DB in this test).
+	// write (thin wrapper) — note the file tools resolve project-relative against the suite root; the
+	// suite root here is wired by swapping the service root through askFileRootOverride (no DB in this.
 	tmp := t.TempDir()
 	restore := stubAskFileRoot(tmp)
 	defer restore()
@@ -194,11 +176,8 @@ func TestNativeAskExecuteFileSuiteRoundTrip(t *testing.T) {
 	}
 }
 
-// TestNativeAskFileSuiteReachesTheRealFilesystem is the INTERACTIVE boundary:
-// the Ask suite's allowed set is the whole filesystem. It supersedes the old
-// TestNativeAskFileSuiteEscapeRefused, which asserted the confined behaviour
-// this change deliberately removes from the Ask path (the confinement now
-// lives ONLY on the worker path — see hosttools_unrestricted_test.go).
+// It supersedes the old TestNativeAskFileSuiteEscapeRefused, which asserted the confined behaviour
+// this change deliberately removes from the Ask path (the confinement now lives ONLY on the worker.
 func TestNativeAskFileSuiteReachesTheRealFilesystem(t *testing.T) {
 	r := testToolRegistry()
 	p := (&Service{toolRegistry: r}).NativeAskTools()
@@ -272,10 +251,8 @@ func jsonString(s string) string {
 	return string(b)
 }
 
-// TestHostSuiteSplitAgreesWithAskmode pins acceptance criterion 6: the
-// read-set and the gate-set come from ONE definition (askmode) and the host
-// suite's partition agrees with it exactly — a name added to the suite that
-// askmode denies, or a gate name missing from the suite, fails here.
+// TestHostSuiteSplitAgreesWithAskmode pins acceptance criterion 6: the read-set and the gate-set
+// come from ONE definition (askmode) and the host suite's partition agrees with it exactly.
 func TestHostSuiteSplitAgreesWithAskmode(t *testing.T) {
 	// The gate-set, derived from askmode (never re-listed as an independent
 	// source of truth beyond this pin).
@@ -355,9 +332,7 @@ func TestNativeAskExecuteProductToolRoutesThroughRegistry(t *testing.T) {
 	}
 }
 
-// TestNativeAskBashGuardBlocksDestructive proves the OS-level guard rides
-// Ask-path bash: `sudo`/`dd`-class binaries are refused even though bash
-// itself runs in-process (the worker path's backstop, now on Ask too).
+// TestNativeAskBashGuardBlocksDestructive proves the OS-level guard rides Ask-path bash.
 func TestNativeAskBashGuardBlocksDestructive(t *testing.T) {
 	r := testToolRegistry()
 	p := (&Service{toolRegistry: r}).NativeAskTools()
@@ -373,12 +348,7 @@ func TestNativeAskBashGuardBlocksDestructive(t *testing.T) {
 	if !strings.Contains(out, "ORCHICON GUARD") {
 		t.Fatalf("bash `sudo` was not guard-refused: out=%q", out)
 	}
-	// rm scoped: a target OUTSIDE the project dir is refused. THE TARGET IS TEMP
-	// SPACE THIS TEST OWNS, never a system path: a guard test's real failure mode
-	// is what happens when a verdict REGRESSES, and asserting the refusal of
-	// `rm /etc/passwd` means a regression tries to delete /etc/passwd — which
-	// SUCCEEDS when the suite runs as root, as it does inside the runtime
-	// container. internal/guard's own tests state this rule; this one now obeys it.
+	// rm scoped: a target OUTSIDE the project dir is refused.
 	outside := t.TempDir()
 	victim := filepath.Join(outside, "victim.txt")
 	if err := os.WriteFile(victim, []byte("x"), 0o644); err != nil {

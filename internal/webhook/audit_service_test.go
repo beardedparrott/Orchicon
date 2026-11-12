@@ -152,10 +152,8 @@ func webhookDeliveriesInState(t *testing.T, pool *db.Pool, tenantID, subID, stat
 	return rows
 }
 
-// TestAuditServiceTestSubscription asserts TestSubscription writes exactly
-// one webhook_subscription.tested row and the delivery row it created
-// committed in the same transaction (a delivered delivery row exists iff
-// the audit row does).
+// TestAuditServiceTestSubscription asserts TestSubscription writes exactly one webhook_subscription.tested
+// row, and that the delivery row it created committed in the same transaction.
 func TestAuditServiceTestSubscription(t *testing.T) {
 	tenantID := "tnt_audit_wk_test_" + strings.ToLower(db.NewID())
 	pool, s, ctx, _, actorID := webhookAuditEnv(t, tenantID)

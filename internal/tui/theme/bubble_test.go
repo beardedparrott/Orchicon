@@ -1,15 +1,7 @@
 package theme
 
-// bubble_test.go — the bubble fills keep their geometry, and the bubble TEXT adapts only when it must.
-//
-// Two promises are pinned here, and they pull in opposite directions:
-//
-//   - THE FILLS ARE UNCHANGED for the palettes that already worked. The operator tuned these by eye (the
-//     lighter operator band over the subtler model panel), so a change to the derivation that silently
-//     re-coloured every existing transcript would be a regression dressed as an improvement.
-//   - THE TEXT ADAPTS, BUT ONLY WHEN IT HAS TO. For a palette whose own foreground has room on the fills,
-//     the bubble text IS the palette's text — byte for byte. It moves only on the palettes where that
-//     foreground is a mid-tone and would be unreadable.
+// bubble_test.go — the bubble fills keep their geometry, and the bubble TEXT adapts only when it
+// must.
 
 import (
 	"testing"
@@ -55,10 +47,7 @@ func TestBubbleTextIsThePaletteTextWhenItFits(t *testing.T) {
 	}
 }
 
-// AND WHERE IT DOES NOT, IT MOVES — enough to be read, and no further than that. A version of this that
-// jumped straight to pure white/black would pass the readability floor while throwing away the palette's
-// colour, so the moved value is asserted to still be a BLEND of the palette's own text rather than a
-// substitute.
+// AND WHERE IT DOES NOT, IT MOVES — enough to be read, and no further than that.
 func TestBubbleTextMovesOutOfTheWayOnlyWhenNeeded(t *testing.T) {
 	midTone := []string{"one-dark", "everforest-dark", "catppuccin-latte", "solarized-light", "rose-pine-dawn"}
 	for _, name := range midTone {

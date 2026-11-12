@@ -46,8 +46,9 @@ func auditCreateConversation(t *testing.T, pool *db.Pool, tenantID string) strin
 		t.Fatalf("begin tx: %v", err)
 	}
 	defer ttx.Rollback(ctx)
+	// A MODEL, OR EVERY DISPATCH FAILS BEFORE IT REACHES WHAT IS UNDER TEST.
 	row, err := db.CreateConversation(ctx, ttx.Tx, db.ConversationRow{
-		ID: db.NewID(), TenantID: tenantID, ModelRef: "",
+		ID: db.NewID(), TenantID: tenantID, ModelRef: testInterjectModelRef,
 	})
 	if err != nil {
 		t.Fatalf("create conversation: %v", err)
@@ -58,9 +59,8 @@ func auditCreateConversation(t *testing.T, pool *db.Pool, tenantID string) strin
 	return row.ID
 }
 
-// auditConvEnv wires the service over a migration-applied pool with the
-// fake session client and seeds the actor identity + a conversation, all in
-// the given tenant.
+// auditConvEnv wires the service over a migration-applied pool with the fake session client and
+// seeds the actor identity + a conversation, all in the given tenant.
 func auditConvEnv(t *testing.T, tenantID string) (*db.Pool, *Service, *fakeSessionClient, string, string, string) {
 	t.Helper()
 	pool := chatDBTestPool(t)
@@ -83,10 +83,8 @@ func auditConvEnv(t *testing.T, tenantID string) (*db.Pool, *Service, *fakeSessi
 	return pool, s, client, tenantID, actor.ID, convID
 }
 
-// auditChatStream drives the REAL ChatStream RPC through a connect handler
-// (httptest + generated client) so the assertion covers the full handler
-// path, not just the dispatch core. The turn is fed to completion so the
-// stream closes and the RPC returns.
+// auditChatStream drives the REAL ChatStream RPC through a connect handler (httptest + generated
+// client) so the assertion covers the full handler path, not just the dispatch core.
 func auditChatStream(t *testing.T, s *Service, client *fakeSessionClient, tenantID, actorID, convID, message string) {
 	t.Helper()
 	handler := connect.NewServerStreamHandler(apiv1connect.AskOrchiconServiceChatStreamProcedure,
@@ -125,9 +123,8 @@ func auditChatStream(t *testing.T, s *Service, client *fakeSessionClient, tenant
 	}
 }
 
-// waitForSendNoFatal polls the fake client for n send calls without
-// failing the test (callable from a goroutine; a stuck turn is caught by
-// the stream-drain deadline instead).
+// waitForSendNoFatal polls the fake client for n send calls without failing the test (callable from
+// a goroutine; a stuck turn is caught by the stream-drain deadline instead).
 func waitForSendNoFatal(client *fakeSessionClient, n int, seconds int) {
 	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
 	for time.Now().Before(deadline) {
@@ -171,14 +168,12 @@ func TestAuditServiceChatStreamMessageSent(t *testing.T) {
 	}
 }
 
-// TestAuditServiceInterjectMessageSent asserts one conversation.message_sent
-// row per InterjectConversationTurn send, with superseded=true in the after
-// snapshot (single implementation point, D8).
+// THE ASSERTION USED TO READ superseded=true, WHICH WAS NEVER TRUE HERE.
 func TestAuditServiceInterjectMessageSent(t *testing.T) {
 	pool, s, client, tenantID, actorID, convID := auditConvEnv(t, "tnt_audit_chat_interj")
 
-	// Interject drives startConversationTurnOpts(supersede=true) — the same
-	// RPC core as ChatStream. Drive through the real handler path.
+	// With no turn running, an interjection takes the same dispatch core as ChatStream (there is nothing to
+	// inject into and nothing to supersede). Drive through the real handler path.
 	handler := connect.NewServerStreamHandler(apiv1connect.AskOrchiconServiceInterjectConversationTurnProcedure,
 		func(ctx context.Context, req *connect.Request[apiv1.InterjectConversationTurnRequest], stream *connect.ServerStream[apiv1.ChatStreamResponse]) error {
 			ctx = tenant.WithID(ctx, tenantID)
@@ -223,8 +218,15 @@ func TestAuditServiceInterjectMessageSent(t *testing.T) {
 	if err := json.Unmarshal(rows[0].After, &after); err != nil {
 		t.Fatalf("unmarshal after: %v", err)
 	}
-	if after["superseded"] != true {
-		t.Fatalf("interject after = %v, want superseded=true", after)
+	// NEITHER FLAG, BECAUSE NOTHING WAS RUNNING: the message started a turn like any other send. Asserting
+	// both is what makes this a statement about the DECISION rather than about one field.
+	if after["injected"] != false {
+		t.Errorf("interject after = %v, want injected=false — no turn was running, so nothing was injected into", after)
+	}
+	if after["superseded"] != false {
+		t.Errorf("interject after = %v, want superseded=false — no turn was running, so nothing was "+
+			"superseded (this used to demand true, which matched an unconditional flag rather than the "+
+			"actual behaviour)", after)
 	}
 }
 

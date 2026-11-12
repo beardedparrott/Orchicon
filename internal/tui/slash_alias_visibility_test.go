@@ -1,19 +1,6 @@
 package tui
 
 // slash_alias_visibility_test.go — a slash command's ALIAS must be visible and findable.
-//
-// The operator: "/quit is an actual slash command that shows up in the list. /exit works but
-// doesn't get displayed in the slash command list as a valid slash command. We should fix
-// that just for consistency."
-//
-// Both halves were broken, and they were broken in DIFFERENT places — which is why the two
-// surfaces disagreed:
-//
-//   * /help DID render aliases (helpLines → aliasSuffix).
-//   * the "/" PALETTE did not: refreshPalette skipped every alias row outright AND matched
-//     the filter against the PRIMARY name only (`strings.Contains(c.Name, query)`), so typing
-//     "/exit" listed "no matching commands" while submitting "/exit" worked perfectly. A
-//     command you can run but cannot see is the inconsistency.
 
 import (
 	"strings"
@@ -24,10 +11,6 @@ import (
 )
 
 // paletteFor opens the palette seeded from the composer text, the way typing "/" does.
-//
-// The size is set the way the shell tests do: the palette clamps its content width, so a 0x0
-// fixture renders a row narrower than any real terminal would and would assert against an
-// artifact rather than against what the operator sees.
 func paletteFor(t *testing.T, value string) *App {
 	t.Helper()
 	m := NewApp(&client.Clients{}, &config.Profile{URL: "http://x", Token: "t"}, "v9.9.9")
@@ -92,9 +75,7 @@ func TestPaletteRowShowsTheAlias(t *testing.T) {
 	if !strings.Contains(view, "/exit") {
 		t.Errorf("the palette row for /quit does not show its /exit alias:\n%s", view)
 	}
-	// AND THE ALIAS MUST COME BEFORE THE DESCRIPTION. The content is truncated to the palette
-	// width, and a long description is common — appending the alias after it would let a wide
-	// row slice the alias off the end, which is the very "doesn't get displayed" this fixes.
+	// AND THE ALIAS MUST COME BEFORE THE DESCRIPTION.
 	row := ""
 	for _, l := range strings.Split(view, "\n") {
 		if strings.Contains(l, "/quit") {

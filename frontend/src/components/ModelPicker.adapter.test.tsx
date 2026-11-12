@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 
-describe("ModelPicker (per-worker adapter selection, ADR-0005)", () => {
+describe("ModelPicker (per-worker adapter selection)", () => {
   const src = fs.readFileSync(path.join(__dirname, "ModelPicker.tsx"), "utf8");
 
   it("seeds the orchicon default for fresh selections when registered (D5)", () => {
@@ -22,7 +22,7 @@ describe("ModelPicker (per-worker adapter selection, ADR-0005)", () => {
   });
 
   it("pins the adapter-change reset contract (D4): switch resets provider+model, no ref written until re-selection", () => {
-    expect(src).toContain("ADR-0005 D4 reset contract");
+    expect(src).toContain(" reset contract");
     expect(src).toContain("function selectAdapter");
     expect(src).toMatch(/setAdapter\(kind\);\s*setProvider\(""\);\s*setSearch\(""\);/);
     // selectAdapter never writes a ref — no onChange call inside it.

@@ -35,20 +35,17 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
-// cliOutputCap bounds how much of a failing CLI's output is put into an error. The message is
-// surfaced in an RPC error and rendered in the TUI, so it has to stay readable; the HEAD is kept
-// because a CLI's first line is the one that names the problem (opencode's usage text opens with
-// the command's own synopsis).
+// cliOutputCap bounds how much of a failing CLI's output is put into an error.
 const cliOutputCap = 2000
 
-// runOpencodeCLI runs the CLI and returns its stdout, with the CLI's own
-// explanation included in any error. dir is the working directory — empty means
-// inherit the caller's, which callers should avoid (see the note at the call sites: the plane's cwd
-// is whatever directory the operator ran the installer from).
+// runOpencodeCLI runs the CLI and returns its stdout, with the CLI's own explanation included in
+// any error.
 func runOpencodeCLI(ctx context.Context, binary, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd := procwin.CommandContext(ctx, binary, args...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -64,13 +61,12 @@ func runOpencodeCLI(ctx context.Context, binary, dir string, args ...string) ([]
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
 		if detail := excerpt(ee.Stderr); detail != "" {
-			return nil, fmt.Errorf("%s: %w: %s", invocation, err, detail)
+			return nil, &cliError{invocation: invocation, err: err, detail: detail}
 		}
-		// Some CLIs report a failure on STDOUT and write nothing to stderr — a bad flag handled by
-		// a wrapper, for instance. Output() captured it, so it is checked before giving up on
-		// explaining anything.
+		// Some CLIs report a failure on STDOUT and write nothing to stderr — a bad flag handled by a
+		// wrapper, for instance.
 		if detail := excerpt(out); detail != "" {
-			return nil, fmt.Errorf("%s: %w (no stderr; stdout said): %s", invocation, err, detail)
+			return nil, &cliError{invocation: invocation, err: err, detail: detail, viaStdout: true}
 		}
 	}
 	// A timeout or a start failure: the status is genuinely all there is, and ctx.Err() names the
@@ -78,7 +74,29 @@ func runOpencodeCLI(ctx context.Context, binary, dir string, args ...string) ([]
 	if cerr := ctx.Err(); cerr != nil {
 		return nil, fmt.Errorf("%s: %w (%v)", invocation, err, cerr)
 	}
-	return nil, fmt.Errorf("%s: %w", invocation, err)
+	// NO DETAIL ATTACHED — the CLI exited without saying anything.
+	return nil, &cliError{invocation: invocation, err: err}
+}
+
+// cliError is a CLI invocation failure that RECORDS whether the CLI explained itself.
+type cliError struct {
+	invocation string
+	err        error
+	detail     string
+	viaStdout  bool
+}
+
+func (e *cliError) Unwrap() error { return e.err }
+
+func (e *cliError) Error() string {
+	switch {
+	case e.detail == "":
+		return e.invocation + ": " + e.err.Error()
+	case e.viaStdout:
+		return e.invocation + ": " + e.err.Error() + " (no stderr; stdout said): " + e.detail
+	default:
+		return e.invocation + ": " + e.err.Error() + ": " + e.detail
+	}
 }
 
 // excerpt trims a CLI's output down to something an error message can carry: whitespace collapsed

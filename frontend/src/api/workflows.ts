@@ -19,7 +19,9 @@ import type { WorkflowRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { WorkflowStepRun } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { WorkflowStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { WorkflowRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
-import type { CreateWorkflowRequest, CreateWorkflowVersionRequest } from "@/api/gen/orchicon/api/v1/workflow_service_pb";
+import type { CreateWorkflowRequest, CreateWorkflowVersionRequest,
+  RunDiagnosis,
+} from "@/api/gen/orchicon/api/v1/workflow_service_pb";
 import type { UpdateWorkflowRequest, UpdateWorkflowVersionRequest } from "@/api/gen/orchicon/api/v1/workflow_service_pb";
 import type { PartialMessage } from "@bufbuild/protobuf";
 
@@ -43,6 +45,7 @@ export const workflowKeys = {
     pageSize?: number;
   }) => [...workflowKeys.all, "runs-list", opts] as const,
   run: (id: string) => [...workflowKeys.all, "run", id] as const,
+  runDiagnosis: (runId: string) => [...workflowKeys.all, "run-diagnosis", runId] as const,
   stepRuns: (runId: string) => [...workflowKeys.all, "step-runs", runId] as const,
 };
 
@@ -278,6 +281,33 @@ export function useAbortWorkflow() {
   });
 }
 
+// useDeleteWorkflowRun hard-deletes ONE run and its step runs.
+//
+// WHY THE SCHEDULES PAGE NEEDS IT. A Schedules history row IS a workflow run, so the row can only disappear when
+// the run does — and until now no client hook existed for DeleteWorkflowRun, even though the RPC has been there
+// all along. "Remove schedule" cleared the work item's schedule instead, which is a NO-OP on a past run: the
+// schedule was already consumed, so nothing changed and the row stayed. Reported as "the delete button does
+// nothing", three times.
+//
+// IRREVERSIBLE, and described as such to the caller: a running run is aborted first (status → aborted, ended_at
+// set) and only then removed, so a live reconciler never writes into a deleted row; terminal runs are removed
+// directly.
+export function useDeleteWorkflowRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (runId: string) => {
+      await workflowClient.deleteWorkflowRun({ runId });
+      return runId;
+    },
+    onSuccess: () => {
+      // Invalidate the RUNS LIST rather than one run's keys: the row is gone, so every listing that could show
+      // it must refetch. The schedules page reads the tenant-wide runs list, which is what "runs-list" covers.
+      qc.invalidateQueries({ queryKey: [...workflowKeys.all, "runs-list"] });
+      qc.invalidateQueries({ queryKey: workflowKeys.all });
+    },
+  });
+}
+
 // useRetryStepRun resets a step run to pending so the reconciler
 // re-dispatches it. Clears the execution and result.
 export function useRetryStepRun() {
@@ -440,5 +470,27 @@ export function useGetWorkflowEditLock(workflowId: string) {
     enabled: !!workflowId,
     // Poll every 10s so other users' lock releases are detected.
     refetchInterval: 10_000,
+  });
+}
+
+// useGetWorkflowRunDiagnosis answers "why is this run not moving?".
+//
+// It exists because a run's blockage is usually RUN-EXTERNAL: the project's
+// dispatch cap, held by unreaped executions, stops every run in the project —
+// and the run view, which loads only this run's step runs and executions, could
+// never see it. The card that renders this is how "waiting for dispatch" stops
+// being a dead end.
+//
+// Polled while the run is live, because a blockage clears on its own the moment
+// a slot frees; `enabled` keeps it off for terminal runs, which cannot block.
+export function useGetWorkflowRunDiagnosis(runId: string, opts?: { pollMs?: number }) {
+  return useQuery({
+    queryKey: workflowKeys.runDiagnosis(runId),
+    queryFn: async () => {
+      const res = await workflowClient.getWorkflowRunDiagnosis({ runId });
+      return res.diagnosis as RunDiagnosis | undefined;
+    },
+    enabled: !!runId,
+    refetchInterval: opts?.pollMs ?? 10000,
   });
 }

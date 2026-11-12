@@ -1,15 +1,7 @@
 package orchicon
 
-// Regression pins for the native-loop file-edit ledger gap: executions
-// dispatching through the native-loop family (ollama, commandcode, …)
-// produced ledger rows for NOTHING while running because no hook was
-// wired into the native path. Session.executeTools is the single shared
-// completion funnel every native-loop provider rides, so the hook fires
-// there — once per COMPLETED registry result, with the PRE-cap output.
-// These tests pin that site (invocation count + gating); the ledger-rule
-// fidelity (engine-payload-first, observer fallback, virtual ignores)
-// stays pinned by internal/server/fileedit_hook_test.go, which exercises
-// the same production constructor wired here.
+// Regression pins for the native-loop file-edit ledger gap: executions dispatching through the
+// native-loop family (ollama, commandcode.
 
 import (
 	"context"
@@ -71,12 +63,8 @@ const nativeEngineBatchOutput = "batch_write: applied 2 write(s): notes/a.txt no
 	`{"path":"notes/b.txt","kind":"modify","unified_diff":"--- a/notes/b.txt\n+++ b/notes/b.txt\n@@ -1 +1 @@\n-hi\n+yo\n",` +
 	`"existed_before":true,"existed_after":true,"size_before":3,"size_after":3}]}`
 
-// recordingEngineHook is the test-side hook: it records every invocation
-// (proving the SITE fires exactly once per completed call) and ledgers
-// engine payloads through the real fileedit.Service — the same
-// RecordEngineOutput call the production hook makes for write/edit/
-// batch_write. Non-mutating tools record the invocation but ledger nothing
-// (production parity: the hook's switch ignores them).
+// recordingEngineHook is the test-side hook: it records every invocation (proving the SITE fires
+// exactly once per completed call) and ledgers engine payloads through the real fileedit.Service.
 type hookCall struct {
 	tool   string
 	output string

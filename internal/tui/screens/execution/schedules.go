@@ -1,36 +1,6 @@
 package execution
 
 // schedules.go — the SCHEDULES pane: what is queued, what is running, and what has run.
-//
-// The operator: "I noticed I don't see any 'Schedules' section in the TUI under Executions. We
-// need to implement this in the TUI. We should be able to see upcoming, running, and finished
-// just like the GUI and we should have delete operations, bulk delete operations, and a key
-// that takes you to the workflow run."
-//
-// The GUI's /schedules page is ONE view with three modes, so this is one SOURCE with three
-// views cycled by `v` — the same shape as the Work Items pane's tree/archive cycle, and
-// deliberately not three submenu entries (three entries would suggest three independent
-// surfaces rather than three lenses on one).
-//
-//   upcoming  work items with status SCHEDULED, PLUS the PENDING children of an active sequence
-//             parent — derived, because only the parent carries a scheduled_start_at, so the
-//             children never match the SCHEDULED query (frontend/src/routes/schedules.tsx:443-452
-//             QueuedSection). Recurring items live on Automation → Recurring Items in the GUI and
-//             are EXCLUDED here for the same reason the GUI excludes them.
-//   running   work items whose bound workflow run is in flight (RUNNING / CHECKPOINTING /
-//             RECOVERING), plus the sequence parents that drive a chain
-//   finished  workflow runs that have actually RUN (a started_at), which is the GUI's history
-//             view
-//
-// MEMBERSHIP IS THE GUI'S, on purpose — the same predicates, so the two clients cannot disagree
-// about what is scheduled. All THREE membership sources live in frontend/src/lib/schedules-model.ts:
-//
-//   upcoming = SCHEDULED ∪ the queued sequence children (queuedSequenceChildren, :80-93)
-//   running  = ACTIVE_RUNNING_STATUSES (:48) plus the sequence-parent extension
-//              (activeSequenceParentIds, :58-71)
-//   finished = a run with a real started_at (isHistoryRun, :104-106)
-//
-// Upcoming is the one that used to be short a source — the queued half above is its fix.
 
 import (
 	"context"
@@ -86,29 +56,18 @@ func (v schedView) label() string {
 
 // schedListCap bounds the tenant-wide BROAD read the two client-derived lenses share: the RUNNING
 // view and upcoming's queued half.
-//
-// Both are derived client-side (the API takes one status filter, and the sequence rules need the
-// parent/child relations), so they read one page of items rather than asking for the exact set.
-// Upcoming's SCHEDULED half and the finished view stay server-filtered and paginated, so the cap
-// applies to those two derivations only — and the pane SAYS it when the cap is reached, naming the
-// lens, rather than silently truncating.
 const schedListCap = 500
 
-// activeRunStatuses are the run-bound statuses that mean "in flight" — the same set as the
-// GUI's ACTIVE_RUNNING_STATUSES (frontend/src/lib/schedules-model.ts), keyed by the proto enum
-// rather than by number so the two cannot drift silently.
+// activeRunStatuses are the run-bound statuses that mean "in flight" — the same set as the GUI's
+// ACTIVE_RUNNING_STATUSES (frontend/src/lib/schedules-model.ts).
 var activeRunStatuses = map[apiv1.WorkItemStatus]bool{
 	apiv1.WorkItemStatus_WORK_ITEM_STATUS_RUNNING:       true,
 	apiv1.WorkItemStatus_WORK_ITEM_STATUS_CHECKPOINTING: true,
 	apiv1.WorkItemStatus_WORK_ITEM_STATUS_RECOVERING:    true,
 }
 
-// scheduleRow is what the pane needs to know about a scheduled thing: the row's identity, and
-// the run it is attached to (for `g`).
-//
-// Kept separately from the display list because the LIST is rebuilt from the plane on every
-// load while the run binding must survive a filter: `g` must work on the row the operator can
-// see, not only on the page they last fetched.
+// scheduleRow is what the pane needs to know about a scheduled thing: the row's identity, and the
+// run it is attached to (for `g`).
 type scheduleRow struct {
 	// itemID is the bound WORK ITEM ("" for a run with no item — a one-shot).
 	itemID string
@@ -131,17 +90,8 @@ func (m *Model) fetchSchedules(ctx context.Context, pageToken string) ([]screenk
 	}
 }
 
-// fetchUpcomingSchedules lists the SCHEDULED work items, server-filtered and paginated, PLUS the
-// queued sequence children derived from the broad read — the TWO membership sources the GUI's
-// Upcoming view unions (frontend/src/routes/schedules.tsx:430-452).
-//
 // The second source is not optional: a sequence parent is the only item that carries a
-// scheduled_start_at (the engine resets its children to PENDING and arms one at a time), so the
-// children NEVER match the SCHEDULED query. Without this read the pane showed "nothing scheduled
-// here" for a tenant whose GUI Upcoming was full of queued children.
-//
-// The derivation runs on the FIRST page only: the queue is a client-derived block with no cursor of
-// its own, so repeating it on every page would duplicate it N times.
+// scheduled_start_at (the engine resets its children to PENDING and arms one at a time).
 func (m *Model) fetchUpcomingSchedules(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
 	status := apiv1.WorkItemStatus_WORK_ITEM_STATUS_SCHEDULED
 	resp, err := m.cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
@@ -160,12 +110,7 @@ func (m *Model) fetchUpcomingSchedules(ctx context.Context, pageToken string) ([
 	seen := map[string]bool{}
 	capRead := len(resp.Msg.GetWorkItems())
 	if pageToken == "" {
-		// THE SECOND MEMBERSHIP SOURCE (see the file header). The same broad, capped read the
-		// RUNNING lens performs — one status-less page of the tenant's items, filtered with the
-		// same RECURRING/IDEA scopes so the two lenses cannot disagree about one tenant.
-		// DECISION (revisitable): the GUI's allItems read passes NEITHER filter and IS
-		// project-scoped (schedules.tsx:433-436); this pane has no project filter, and the
-		// filtered variant is the safe default — a sequence parent is neither recurring nor idea.
+		// THE SECOND MEMBERSHIP SOURCE (see the file header).
 		all, err := m.allWorkItems(ctx)
 		if err != nil {
 			return nil, "", err
@@ -175,15 +120,7 @@ func (m *Model) fetchUpcomingSchedules(ctx context.Context, pageToken string) ([
 		// (schedules.tsx:520), and in CHAIN order (queuedSequenceChildren sorts them).
 		for _, w := range queuedSequenceChildren(all) {
 			seen[w.GetId()] = true
-			// ALWAYS "" — deliberately NOT w.GetWorkflowRunId(). A queued child has not fired, so
-			// registering "" is what makes `g` refuse with "this schedule has not fired yet" and
-			// `x` cancel the child, with no new row type and no second jump/cancel path.
-			//
-			// The item's own run id is NOT empty in every case, so passing it through would be a
-			// real bug: resetSubtree (internal/scheduler/sequence_reconciler.go) resets a
-			// non-terminal descendant to PENDING with a STATUS-ONLY update, so a re-run sequence's
-			// previously-failed child keeps its OLD workflow_run_id. `g` on that row would jump to
-			// a finished run of an earlier attempt while the row says "waits for the current step".
+			// The item's own run id is NOT empty in every case, so passing it through would be a real bug.
 			m.sched.remember(w.GetId(), "")
 			items = append(items, screenkit.Item{
 				ID:    w.GetId(),
@@ -210,11 +147,7 @@ func (m *Model) fetchUpcomingSchedules(ctx context.Context, pageToken string) ([
 }
 
 // allWorkItems is the broad, capped read the two client-derived lenses SHARE (running, and
-// upcoming's queued half). One definition, never two.
-//
-// The API takes one status filter and the sequence rules need the parent/child relations, so this
-// trades exactness for one page — and the pane SAYS so when the cap is reached (schedCapNote)
-// rather than presenting a truncated list as complete.
+// upcoming's queued half).
 func (m *Model) allWorkItems(ctx context.Context) ([]*apiv1.WorkItem, error) {
 	resp, err := m.cl.WorkItems.ListWorkItems(ctx, connect.NewRequest(&apiv1.ListWorkItemsRequest{
 		RecurringFilter: apiv1.RecurringFilter_RECURRING_FILTER_EXCLUDE_RECURRING,
@@ -228,10 +161,6 @@ func (m *Model) allWorkItems(ctx context.Context) ([]*apiv1.WorkItem, error) {
 }
 
 // fetchRunningSchedules derives the in-flight set from one capped read.
-//
-// The predicate is the GUI's, verbatim: an item counts when its bound run is in flight, OR when
-// it is an active SEQUENCE PARENT (no bound run of its own — the chain resets its children to
-// pending and arms one at a time, so only the parent carries the active status).
 func (m *Model) fetchRunningSchedules(ctx context.Context) ([]screenkit.Item, string, error) {
 	all, err := m.allWorkItems(ctx)
 	if err != nil {
@@ -250,9 +179,8 @@ func (m *Model) fetchRunningSchedules(ctx context.Context) ([]screenkit.Item, st
 			running = append(running, w)
 		}
 	}
-	// Order by status so the genuinely RUNNING items (the ones doing work) come first; within a
-	// status the server's order is kept, which is stable and needs no timestamp the pane does
-	// not display.
+	// Order by status so the genuinely RUNNING items (the ones doing work) come first; within a status
+	// the server's order is kept, which is stable and needs no timestamp the pane does not display.
 	sort.SliceStable(running, func(i, j int) bool { return running[i].GetStatus() < running[j].GetStatus() })
 
 	items := make([]screenkit.Item, 0, len(running))
@@ -264,10 +192,7 @@ func (m *Model) fetchRunningSchedules(ctx context.Context) ([]screenkit.Item, st
 			meta += " (sequence)"
 		}
 		// THE RUNNING TIME, on the row (the operator's ask: "apply the current running time … onto
-		// schedules in the schedules section for both run and history"). It is derived from the ITEM's
-		// own timestamps by runningSince — the GUI's rule, so the two clients put the same number on
-		// the same run — and it is measured against `now` at FETCH time, so it advances with the pane's
-		// rolling refresh (5s) rather than on a timer of its own.
+		// schedules in the schedules section for both run and history").
 		if since, _ := runningSince(w); since != nil {
 			if d, ok := screenkit.ElapsedSince(since, now); ok {
 				meta += " · " + screenkit.FmtElapsed(d)
@@ -279,22 +204,8 @@ func (m *Model) fetchRunningSchedules(ctx context.Context) ([]screenkit.Item, st
 	return items, "", nil
 }
 
-// runningSince is WHEN a running work item started, as far as its own record can say — the GUI's rule
-// verbatim (frontend/src/routes/schedules.tsx, runningStartedAt): the scheduled start, else the last
-// update, else creation — plus the NAME of the field it came from, so a detail pane can say what the
-// number is based on rather than presenting a derivation as a stored fact. (nil, "") when the item
-// carries no usable timestamp at all.
-//
-// IT IS DERIVED, AND THAT IS A DELIBERATE SHARING OF THE GUI'S APPROXIMATION. A WorkItem carries no
-// run-start field, so the alternative is a second read of workflow_runs to join against — and then the
-// TUI would print a different number from the GUI's for the same run. One value the two clients agree
-// on is worth more than a second, more precise one they disagree about.
-//
-// THE ONE CASE WHERE THE DERIVATION IS KNOWN TO BE LOOSE: a SEQUENCE PARENT. Its status is re-stamped
-// as each child is armed, so its "since" moves with the chain's current step and the elapsed reads as
-// the current STEP's time, not the whole chain's. The GUI shows the same number for the same reason
-// (and the detail pane spells the derivation out), so this is a shared approximation rather than a
-// second one invented here.
+// runningSince is WHEN a running work item started, as far as its own record can say — the GUI's
+// rule verbatim (frontend/src/routes/schedules.tsx, runningStartedAt): the scheduled start.
 func runningSince(w *apiv1.WorkItem) (*timestamppb.Timestamp, string) {
 	sources := []struct {
 		ts     *timestamppb.Timestamp
@@ -313,31 +224,11 @@ func runningSince(w *apiv1.WorkItem) (*timestamppb.Timestamp, string) {
 }
 
 // fetchFinishedSchedules lists the workflow runs that have RUN — the GUI's history view.
-//
-// A run with no started_at has not run yet, so it is not "finished"; the plain Runs pane is
-// where every run lives, including the ones that never started.
-//
-// MEMBERSHIP matches the GUI's History exactly (a run with a real started_at — isHistoryRun,
-// frontend/src/lib/schedules-model.ts:104-106). This read is tenant-wide, which IS the GUI's
-// History when its project filter is empty (schedules.tsx:1057 "projectId: projectId || undefined"),
-// so there is no scope divergence.
-//
-// ORDER matches too, and it did not before. The GUI passes sortBy: "started_at"
-// (schedules.tsx:1058) while this read took the server default `id DESC` — and both are
-// newest-first for ULID ids, so the order was NEAR-identical rather than identical. "Near" is the
-// problem: a run whose started_at order disagrees with its id order (a long run that began before a
-// short one that was created later, or a run whose row was re-created out of id order by a
-// recovery) sorts differently in the two clients, and the operator sees the transcript of a
-// finished run in one order here and another order in the GUI. The server already supports the
-// same sort with keyset pagination on (started_at, id) (internal/db/workflow.go, ListWorkflowRuns),
-// so this is closed rather than documented as a follow-up.
 func (m *Model) fetchFinishedSchedules(ctx context.Context, pageToken string) ([]screenkit.Item, string, error) {
 	resp, err := m.cl.Workflows.ListWorkflowRuns(ctx, connect.NewRequest(&apiv1.ListWorkflowRunsRequest{
 		PageSize:  100,
 		PageToken: pageToken,
 		// The GUI's own sort, so the two clients cannot disagree about the order of history.
-		// sort_order is left to the server default ("desc" = newest first), which is also the
-		// GUI History view's default.
 		SortBy: "started_at",
 	}))
 	if err != nil {
@@ -355,11 +246,7 @@ func (m *Model) fetchFinishedSchedules(ctx context.Context, pageToken string) ([
 		}
 		m.sched.rememberRun(r.GetId(), r.GetWorkItemId())
 		meta := strings.ToLower(strings.TrimPrefix(r.GetStatus().String(), "WORKFLOW_RUN_STATUS_"))
-		// THE FINISHED TIME (the operator's ask for the history half). A run with an ended_at reports the
-		// span it took; one without is still in flight — History membership is "it has a real started_at"
-		// (frontend/src/lib/schedules-model.ts, isHistoryRun), so a live run belongs here too — and it
-		// reports the time so far. Both come from the RUN's own record, which is exact: this is the half
-		// of the ask that needs no derivation at all.
+		// THE FINISHED TIME (the operator's ask for the history half).
 		if d, ok := screenkit.ElapsedBetween(r.GetStartedAt(), r.GetEndedAt()); ok {
 			meta += " · " + screenkit.FmtElapsed(d)
 		} else if d, ok := screenkit.ElapsedSince(r.GetStartedAt(), now); ok {
@@ -375,8 +262,7 @@ func (m *Model) fetchFinishedSchedules(ctx context.Context, pageToken string) ([
 }
 
 // schedCapNote renders the truncation marker when the current view's broad read hit its cap, so a
-// long list says it was cut instead of looking complete. The message names the LENS it truncated,
-// because both client-derived lenses share the cap.
+// long list says it was cut instead of looking complete.
 func (m *Model) schedCapNote(read int) []screenkit.Item {
 	if read < schedListCap {
 		return nil
@@ -391,10 +277,6 @@ func (m *Model) schedCapNote(read int) []screenkit.Item {
 // --- view state -------------------------------------------------------------
 
 // schedState holds the pane's view choice and the row → run bindings.
-//
-// The ZERO VALUE IS USABLE, like runNames: the maps are created on first write, so a screen
-// that never loads anything (a test, or a screen built before the first fetch) cannot panic on
-// a nil map. Everything here is written from the fetch goroutine and read from Update.
 type schedState struct {
 	mu           sync.Mutex
 	scheduleView schedView
@@ -502,11 +384,6 @@ func (m *Model) handleSchedulesKeys(kstr string) (tea.Cmd, bool) {
 }
 
 // goToScheduleRun is the operator's "key that takes you to the workflow run".
-//
-// It switches to the Runs pane, asks the list to focus the run, AND requests its detail. The
-// detail request matters as much as the selection: the runs list is paginated, so a run older
-// than the first page has no row to highlight — and a jump that silently does nothing is worse
-// than no jump at all. Between the two, the operator always ends up looking at the run.
 func (m *Model) goToScheduleRun() tea.Cmd {
 	it, ok := m.Base.ActiveItem()
 	if !ok {
@@ -532,12 +409,6 @@ func (m *Model) goToScheduleRun() tea.Cmd {
 // --- delete -----------------------------------------------------------------
 
 // scheduleDeleteActions are the destructive operations for the current view.
-//
-// The MEANING of delete differs per view, and it matches the GUI exactly: an upcoming or running
-// schedule is CANCELLED (the work item goes terminal, so it stops being scheduled), while a
-// finished row's action removes the SCHEDULE from its work item without touching the item's own
-// history (frontend/src/routes/schedules.tsx offers "Cancel N" and "Remove N schedules" for the
-// same two cases).
 func (m *Model) scheduleDeleteActions(ids []string) []kit2.Action {
 	if len(ids) > 1 {
 		return m.bulkScheduleDelete(ids)
@@ -622,6 +493,12 @@ func (m *Model) bulkScheduleDelete(ids []string) []kit2.Action {
 				}
 			}
 			if failed > 0 {
+				// NAME THE CAUSE, not just a count: "3 failed" left the operator unable to tell a permission error
+				// from the finished view's unbound-run rows (which have no schedule to remove by definition).
+				if missing > 0 {
+					return fmt.Errorf("%s %d of %d — %d row(s) have no bound work item, so they have no schedule to remove (%d other failure(s))",
+						verb+"d", n-failed, n, missing, failed-missing)
+				}
 				return fmt.Errorf("%s %d of %d — %d failed", verb+"d", n-failed, n, failed)
 			}
 			return nil
@@ -640,37 +517,22 @@ func (m *Model) rpcCancelScheduled(ctx context.Context, itemID string) error {
 }
 
 // rpcRemoveSchedule clears a work item's schedule WITHOUT touching its status.
-//
-// The three fields must move together, which is why this is one UpdateWorkItem and not three:
-// clearing recurring_schedule and the run binding while auto_start_workflow stays true would let
-// the backend re-fire a fresh run immediately (the same rule the GUI's useRemoveSchedule
-// documents).
 func (m *Model) rpcRemoveSchedule(ctx context.Context, itemID string) error {
 	if m.cl == nil || m.cl.WorkItems == nil {
 		return errors.New("no work-item client")
 	}
 	_, err := m.cl.WorkItems.UpdateWorkItem(ctx, connect.NewRequest(&apiv1.UpdateWorkItemRequest{
-		Id:                itemID,
-		RecurringSchedule: &apiv1.RecurringSchedule{},
-		WorkflowRunId:     strPtr(""),
-		AutoStartWorkflow: boolPtr(false),
+		Id:                    itemID,
+		RecurringSchedule:     &apiv1.RecurringSchedule{},
+		ClearScheduledStartAt: true,
+		WorkflowRunId:         strPtr(""),
+		AutoStartWorkflow:     boolPtr(false),
 	}))
 	return err
 }
 
-// runSpanFields is the RUN's own elapsed, as detail rows: "ran for" a finished span, or "running for"
-// one that has not ended yet.
-//
-// IT IS ONE HELPER BECAUSE IT HAS TWO CALLERS AND THEY ARE THE SAME QUESTION: a run opened from the
-// Schedules history view (internal/tui/screens/execution/screen.go, the schedFinished branch) and one
-// opened from the Runs pane. Both show started/ended already, and an operator reading two timestamps to
-// work out "how long did that take?" is the thing the operator asked to stop doing ("apply the current
-// running time and finished time onto schedules … as well as schedule details").
-//
-// Unlike the RUNNING-view row's derived span (see runningSince), both halves here come from the run's
-// own started_at/ended_at — the authoritative record — so nothing is approximated and there is nothing
-// to caveat. An ended_at in the FUTURE of started_at is impossible in practice; a clock disagreement
-// renders as "<1s" (screenkit.FmtElapsed clamps) rather than as a negative.
+// runSpanFields is the RUN's own elapsed, as detail rows: "ran for" a finished span, or "running
+// for" one that has not ended yet.
 func runSpanFields(r *apiv1.WorkflowRun) []screenkit.Field {
 	if d, ok := screenkit.ElapsedBetween(r.GetStartedAt(), r.GetEndedAt()); ok {
 		return []screenkit.Field{{Key: "ran for", Value: screenkit.FmtElapsed(d)}}
@@ -711,11 +573,6 @@ func (m *Model) scheduleItemDetail(ctx context.Context, id string) (string, []sc
 		{Key: "view", Value: view.label()},
 	}
 	// HOW LONG IT HAS BEEN RUNNING — the detail half of the row's elapsed (see fetchRunningSchedules).
-	//
-	// TWO FIELDS, NOT ONE, AND THE SECOND IS THE POINT. The number is DERIVED from the item's own
-	// timestamps (a WorkItem has no run-start field), so the pane says which timestamp it used: an
-	// operator comparing this against a clock, or against the GUI, can see what the span is measured
-	// from instead of taking an approximation for a stored fact.
 	if activeRunStatuses[w.GetStatus()] {
 		if since, source := runningSince(w); since != nil {
 			if d, ok := screenkit.ElapsedSince(since, time.Now()); ok {
@@ -766,9 +623,8 @@ func sequenceParentIDs(items []*apiv1.WorkItem) map[string]bool {
 // member of activeRunStatuses — that set is the PARENT's, i.e. the statuses that mean "in flight".
 const queuedChildStatus = apiv1.WorkItemStatus_WORK_ITEM_STATUS_PENDING
 
-// activeSequenceParentIDs mirrors activeSequenceParentIds (frontend/src/lib/schedules-model.ts:58-71):
-// an in-flight item with NO bound run of its own that is some item's parent — the chain container
-// the engine drives one child at a time.
+// activeSequenceParentIDs mirrors activeSequenceParentIds
+// (frontend/src/lib/schedules-model.ts:58-71).
 func activeSequenceParentIDs(items []*apiv1.WorkItem) map[string]bool {
 	parents := sequenceParentIDs(items)
 	active := map[string]bool{}
@@ -780,10 +636,8 @@ func activeSequenceParentIDs(items []*apiv1.WorkItem) map[string]bool {
 	return active
 }
 
-// queuedSequenceChildren mirrors queuedSequenceChildren (frontend/src/lib/schedules-model.ts:80-93):
-// the PENDING children of an active sequence parent, in CHAIN order. A sequence parent carries the
-// only scheduled_start_at, so its children never match a SCHEDULED query — they are recovered from
-// the broad read, exactly as the GUI's Upcoming view recovers them (schedules.tsx:443-452).
+// queuedSequenceChildren mirrors queuedSequenceChildren
+// (frontend/src/lib/schedules-model.ts:80-93).
 func queuedSequenceChildren(items []*apiv1.WorkItem) []*apiv1.WorkItem {
 	active := activeSequenceParentIDs(items)
 	var queued []*apiv1.WorkItem
@@ -801,8 +655,7 @@ func queuedSequenceChildren(items []*apiv1.WorkItem) []*apiv1.WorkItem {
 }
 
 // chainOrderLess mirrors byChainOrder (frontend/src/components/work-items/sequence-utils.ts:26-31,
-// the GUI's single definition of chain order): sort_order rank (1-based; 0 = unset → LAST, matching
-// the backend's `ORDER BY sort_order NULLS LAST`), then created_at.
+// the GUI's single definition of chain order): sort_order rank (1-based; 0 = unset → LAST.
 func chainOrderLess(a, b *apiv1.WorkItem) bool {
 	ao, bo := a.GetSortOrder(), b.GetSortOrder()
 	if ao == 0 {

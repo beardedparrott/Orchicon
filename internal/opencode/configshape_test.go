@@ -8,15 +8,7 @@ import (
 	"testing"
 )
 
-// TestMain PINS THE CONFIG SHAPE to v1 for every test in this package that does
-// not say otherwise.
-//
-// The shape is a property of the opencode BINARY a machine has installed, and
-// this package's tests assert the injected config document. Without a pin, the
-// suite asserts v1 on a 1.x developer machine and fails on a 2.x one — the same
-// non-hermetic dependence the binary-resolver seam exists to avoid. The v2 tests
-// below set the resolver to v2 explicitly (withShape), so both shapes are covered
-// and neither depends on the host.
+// TestMain PINS THE CONFIG SHAPE to v1 for every test in this package that does not say otherwise.
 func TestMain(m *testing.M) {
 	SetConfigShapeResolver(func(*slog.Logger) ConfigShape { return ConfigShapeV1 })
 	os.Exit(m.Run())
@@ -52,10 +44,7 @@ func decodeDoc(t *testing.T, s string) map[string]any {
 	return m
 }
 
-// TestConfigShapeV1KeepsTheV1Vocabulary is the "1.x MUST NOT CHANGE" guard. The
-// v1 document must carry the v1 keys and NONE of the v2 spellings: a v2 key
-// leaking into a v1 document is a config field opencode 1.x will ignore, which is
-// how a working 1.x install quietly loses its sandbox.
+// TestConfigShapeV1KeepsTheV1Vocabulary is the "1.x MUST NOT CHANGE" guard.
 func TestConfigShapeV1KeepsTheV1Vocabulary(t *testing.T) {
 	doc := decodeDoc(t, BuildConfigContent(workerOptions()))
 
@@ -80,11 +69,8 @@ func TestConfigShapeV1KeepsTheV1Vocabulary(t *testing.T) {
 	}
 }
 
-// TestConfigShapeV2UsesTheV2Vocabulary is the other half: every field we emit
-// must be spelled the way 2.x reads it. Each expectation is a documented rename —
-// `agents`, `system`, `permissions`, `mcp.servers`, `disabled` — and the two
-// dropped keys are on 2.x's accepted-but-IGNORED list, so emitting them would
-// only produce a warning.
+// TestConfigShapeV2UsesTheV2Vocabulary is the other half: every field we emit must be spelled the
+// way 2.x reads it.
 func TestConfigShapeV2UsesTheV2Vocabulary(t *testing.T) {
 	withShape(t, ConfigShapeV2, func() {
 		doc := decodeDoc(t, BuildConfigContent(workerOptions()))
@@ -165,9 +151,8 @@ func TestConfigShapeV2MCPBlock(t *testing.T) {
 	})
 }
 
-// TestV2PermissionRulesRenameActions pins the action vocabulary, which is the
-// security-relevant half: an unrecognised action is a rule that NEVER MATCHES, so
-// a rename missed here silently widens the worker's access instead of failing.
+// TestV2PermissionRulesRenameActions pins the action vocabulary, which is the security-relevant
+// half: an unrecognised action is a rule that NEVER MATCHES.
 func TestV2PermissionRulesRenameActions(t *testing.T) {
 	rules := v2PermissionRules(ProfileWorker, true)
 	seen := map[string]bool{}
@@ -187,10 +172,8 @@ func TestV2PermissionRulesRenameActions(t *testing.T) {
 	}
 }
 
-// TestV2PermissionRulesOrderBroadRuleFirst pins ORDER, which is the semantics in
-// v2 ("the last matching rule wins"). The worker's external_directory intent is
-// "deny everything outside, EXCEPT scratch and the run-state dir" — so the `*`
-// deny must come BEFORE the specific allows, or the exceptions deny themselves.
+// TestV2PermissionRulesOrderBroadRuleFirst pins ORDER, which is the semantics in v2 ("the last
+// matching rule wins").
 func TestV2PermissionRulesOrderBroadRuleFirst(t *testing.T) {
 	rules := v2PermissionRules(ProfileWorker, true)
 	var order []string
@@ -215,9 +198,8 @@ func TestV2PermissionRulesOrderBroadRuleFirst(t *testing.T) {
 	}
 }
 
-// TestV2PermissionRulesDedupeWriteAndEdit pins the non-injective rename: v1 has
-// separate `edit` and `write` keys, v2 has ONE `edit` action, so the interactive
-// profile's two rules must collapse to one rather than be emitted twice.
+// TestV2PermissionRulesDedupeWriteAndEdit pins the non-injective rename: v1 has separate `edit` and
+// `write` keys, v2 has ONE `edit` action.
 func TestV2PermissionRulesDedupeWriteAndEdit(t *testing.T) {
 	rules := v2PermissionRules(ProfileInteractive, false)
 	n := 0
@@ -235,10 +217,7 @@ func TestV2PermissionRulesDedupeWriteAndEdit(t *testing.T) {
 	}
 }
 
-// TestV2PermissionActionsAreInTheDocumentedVocabulary is the DRIFT DETECTOR. The
-// v2 action list is quoted from the permissions reference; if a future change
-// adds a v1 permission key, the translation carries the name through unchanged
-// (it does not invent), and this test is what says so.
+// TestV2PermissionActionsAreInTheDocumentedVocabulary is the DRIFT DETECTOR.
 func TestV2PermissionActionsAreInTheDocumentedVocabulary(t *testing.T) {
 	// V2 built-in actions, per the permissions reference's Actions table.
 	documented := map[string]bool{
@@ -267,9 +246,8 @@ func TestV2PermissionActionsAreInTheDocumentedVocabulary(t *testing.T) {
 	}
 }
 
-// TestAisdkPackageQualification pins the provider-package rename: "AI SDK
-// packages receive the aisdk: prefix", so a scope is only added to a package
-// that is actually an AI SDK one.
+// TestAisdkPackageQualification pins the provider-package rename: "AI SDK packages receive the
+// aisdk: prefix", so a scope is only added to a package that is actually an AI SDK one.
 func TestAisdkPackageQualification(t *testing.T) {
 	for _, c := range []struct{ in, want string }{
 		{"@ai-sdk/openai-compatible", "aisdk:@ai-sdk/openai-compatible"},

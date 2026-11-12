@@ -15,17 +15,8 @@ import (
 	"time"
 )
 
-// SourcingService (D9): model sourcing per provider. LIVE TRUTH ONLY
-// (operator directive: no synthesized model lists — a failing connection
-// must show failure, never a list of models that "seemingly exist"):
-//  1. GET {baseURL}/models probe (per-wire URL derivation; TTL-cached;
-//     non-fatal — a failed probe yields NO models, visibly degraded),
-//  2. manual model entries (operator-added, always served).
-//
-// The vendored catalog is metadata enrichment only: probed entries are
-// enriched by id match (context/output/tools/pricing) — the catalog NEVER
-// contributes model ids. Probed ⊕ manual merge deduped (manual wins),
-// filtered by visibility.
+// LIVE TRUTH ONLY (operator directive: no synthesized model lists — a failing connection must show
+// failure, never a list of models that "seemingly exist"): 1.
 type SourcingService struct {
 	Log  *slog.Logger
 	HTTP *http.Client
@@ -33,11 +24,7 @@ type SourcingService struct {
 	// ProbeTTL is the /models probe cache TTL (default 5 min).
 	ProbeTTL time.Duration
 
-	// The live model-metadata registry (modelregistry.go). RegistryURL empty
-	// resolves ORCHICON_MODEL_REGISTRY_URL, then models.dev; RegistryDisabled
-	// turns it off. RegistryTTL overrides the revalidation interval. CacheDir is
-	// where the fetched body + its ETag are cached across restarts (empty
-	// resolves ORCHICON_DATA_DIR, then /var/lib/orchicon).
+	// The live model-metadata registry (modelregistry.go).
 	RegistryURL string
 	RegistryTTL time.Duration
 	CacheDir    string
@@ -66,13 +53,6 @@ type ListResult struct {
 }
 
 // ListModels resolves models for a provider profile.
-//
-// Bearer (optional): a resolved credential to send on the /models probe
-// (the CredentialResolver's secret-first, env-fallback output). The zero
-// value ("") sends no Authorization header (Ollama, public endpoints, and
-// the registry's own models fn — which has no request tenant at build
-// time). The probe cache key folds the bearer's hash in, so a credential
-// rotation invalidates stale unauthenticated entries.
 func (s *SourcingService) ListModels(ctx context.Context, p Profile, bearer ...string) ListResult {
 	auth := ""
 	if len(bearer) > 0 {
@@ -83,20 +63,9 @@ func (s *SourcingService) ListModels(ctx context.Context, p Profile, bearer ...s
 	var out []ModelInfo
 	degraded := false
 
-	// 1. The vendored catalog is NOT a model SOURCE — live truth only
-	// (operator directive: synthesized lists confuse users during
-	// connection issues). The catalog serves as metadata enrichment:
-	// after a successful probe, entries are enriched by ID match with
-	// catalog context/pricing — never adding ids the endpoint did not
-	// report. Manual entries remain the operator's explicit model list.
+	// 1.
 
-	// 2. probe — THE source for built-ins and customs alike (with manual
-	// entries merged). For built-ins: whenever the operator has
-	// personalized the provider (base-URL override or stored/env
-	// credential) OR always (every built-in has a documented endpoint;
-	// a failed probe is non-fatal and yields an EMPTY list — never the
-	// vendored snapshot, per the no-synthesized-models directive).
-	// Override endpoints stay authoritative for their model list.
+	// 2.
 	probeWanted := true
 	switch {
 	case p.Custom && p.Kind == ProfileKindAnthropic:
@@ -110,26 +79,14 @@ func (s *SourcingService) ListModels(ctx context.Context, p Profile, bearer ...s
 			s.warn("sourcing: probe failed for provider %s — degraded, NO models served (no synthesized fallback); fix the endpoint/token or add manual entries", p.ID)
 		} else {
 			out = append(out, probed...)
-			// REGISTRY FIRST, catalog second. Trust order is
-			// probe > registry > vendored snapshot: the provider's own probe is the
-			// authority on its own models, a maintained registry beats an authored
-			// snapshot for the same field, and every helper below only fills what is
-			// still EMPTY — so a provider-reported value is never overwritten.
-			//
-			// One registry read serves the whole list (map lookups after that), and a
-			// disabled/unavailable registry yields nil so this is a no-op and the
-			// catalog below behaves exactly as it did before the registry existed.
+			// REGISTRY FIRST, catalog second.
 			regModels := s.registryModels(ctx)
 			for i := range out {
 				if rm, ok := registryLookup(regModels, p.ID, out[i].ID); ok {
 					applyRegistryMeta(&out[i], rm)
 				}
 			}
-			// Catalog = metadata enrichment by id match (context/output/
-			// tools/pricing), never new ids. GetModelForProvider is
-			// alias-aware: live ids that differ from catalog keys (e.g.
-			// commandcode's deepseek/deepseek-v4-flash under a newer id
-			// spelling) still enrich when the catalog aliases them.
+			// Catalog = metadata enrichment by id match (context/output/ tools/pricing), never new ids.
 			for i := range out {
 				c, ok := GetModelForProvider(p.ID, out[i].ID)
 				if !ok {
@@ -157,11 +114,8 @@ func (s *SourcingService) ListModels(ctx context.Context, p Profile, bearer ...s
 					out[i].Pricing = c.Pricing
 					used = true
 				}
-				// Provenance names the most-trusted EXTERNAL source that contributed,
-				// so a row reports where its numbers came from. The probe's own
-				// "probe" stamp is the unremarkable default and is only replaced when
-				// something external actually supplied a field — and never when the
-				// registry already claimed the row (it outranks the snapshot).
+				// Provenance names the most-trusted EXTERNAL source that contributed, so a row reports where its
+				// numbers came from.
 				if used && (out[i].Provenance == "" || out[i].Provenance == "probe") {
 					out[i].Provenance = "catalog"
 				}
@@ -256,19 +210,7 @@ func perProbeEntry(models []ModelInfo, ok bool, now time.Time) probeEntry {
 	return probeEntry{models: models, fetchedAt: now, failed: !ok}
 }
 
-// modelsURL derives the /models listing endpoint for a profile, per wire
-// type — each provider's chat client derives its paths from the base, and
-// the probe must derive its listing path the same way:
-//   - commandcode: base is the bare origin (chat derives
-//     /provider/v1/chat/completions and /provider/v1/messages) → probe
-//     /provider/v1/models (their documented models endpoint).
-//   - anthropic: base is the bare origin ("no /v1 — path adds it",
-//     anthropic.go) → probe /v1/models (their documented Models API).
-//   - ollama: base is the host root → probe /v1/models (the OpenAI-compat
-//     listing; native discovery rides /api/tags in the OllamaClient).
-//   - every other OpenAI-compatible profile: the base IS the version root
-//     (e.g. https://api.openai.com/v1, https://opencode.ai/zen/go/v1) →
-//     append /models directly.
+// modelsURL derives the /models listing endpoint for a profile.
 func modelsURL(p Profile) string {
 	base := strings.TrimRight(p.BaseURL, "/")
 	switch p.Kind {
@@ -296,17 +238,12 @@ func (s *SourcingService) fetchModels(ctx context.Context, p Profile, auth strin
 	// SDK/HTTP library names — https://opencode.ai/docs/go/#where-can-i-use-it).
 	req.Header.Set("user-agent", userAgent())
 	// OpenCode Zen/Go require a stable x-opencode-session on requests
-	// (https://opencode.ai/docs/go/#where-can-i-use-it). The /models probe
-	// is a metadata call with no conversation, so it carries a stable
-	// probe-scoped session id.
+	// (https://opencode.ai/docs/go/#where-can-i-use-it).
 	if p.ID == "opencode" || p.ID == "opencode-go" {
 		req.Header.Set("x-opencode-session", "orchicon-probe-"+p.ID)
 	}
-	// Credential: the resolver-resolved bearer first (tenant secret or env
-	// — the value the real client calls will use), then the env fallback.
-	// A missing credential never fails the probe — it stays non-fatal.
-	// Wire-specific auth headers: anthropic uses x-api-key (+ the
-	// required anthropic-version header); everything else Bearer.
+	// Credential: the resolver-resolved bearer first (tenant secret or env — the value the real client
+	// calls will use), then the env fallback.
 	switch {
 	case p.Kind == ProfileKindAnthropic:
 		req.Header.Set("anthropic-version", anthropicVersion)
@@ -338,16 +275,10 @@ func (s *SourcingService) fetchModels(ctx context.Context, p Profile, auth strin
 			// max_model_len (other compat servers).
 			ContextLength int64 `json:"context_length"`
 			MaxModelLen   int64 `json:"max_model_len"`
-			// Anthropic Models API shape: max_input_tokens (+ max_tokens
-			// for output). Extra struct fields for fields a payload lacks
-			// are harmless (decode to zero); anthropic's `data[].id`
-			// matches the OpenAI field name so one decode serves both.
+			// Anthropic Models API shape: max_input_tokens (+ max_tokens for output).
 			MaxInputTokens int64 `json:"max_input_tokens"`
-			// llama.cpp server (/v1/models) reports the model's trained
-			// context under meta.n_ctx_train (and, on some builds, as a
-			// top-level n_ctx_train). Without these the local llama-serve
-			// probe resolved Context=0 → "model window unknown" and the
-			// window-trigger compaction stayed disarmed.
+			// llama.cpp server (/v1/models) reports the model's trained context under meta.n_ctx_train (and, on
+			// some builds, as a top-level n_ctx_train).
 			NCtxTrain int64 `json:"n_ctx_train"`
 			Meta      *struct {
 				NCtxTrain int64 `json:"n_ctx_train"`
@@ -385,12 +316,7 @@ func decodeBody(r io.Reader, dst any) error {
 	return dec.Decode(dst)
 }
 
-// probeKey derives the cache key: provider id ⊕ bearer-hash ⊕ base-URL
-// hash. The bearer folds in so a credential rotation is never served a
-// stale unauthenticated entry; the base URL folds in so a repaired /
-// overridden URL probes fresh instead of hitting the failed entry cached
-// for the previous URL (self-healing probes different candidates under
-// the same provider id).
+// probeKey derives the cache key: provider id ⊕ bearer-hash ⊕ base-URL hash.
 func probeKey(providerID, bearer, baseURL string) string {
 	h := sha256.New()
 	h.Write([]byte(bearer))

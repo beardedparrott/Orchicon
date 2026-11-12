@@ -30,9 +30,7 @@ type Row struct {
 	Actions []Action
 }
 
-// Table is a selectable, sortable, tree-capable table. It is the list pane
-// replacement: it owns the cursor, the scroll window, click hit-testing,
-// sorting, and tree expansion.
+// Table is a selectable, sortable, tree-capable table.
 type Table struct {
 	Columns []Column
 	Title   string
@@ -51,47 +49,18 @@ type Table struct {
 	SortCol  int
 	SortDesc bool
 
-	// HideTitle suppresses the table's own title row. Panels already embed the
-	// source title in their border, so an embedded table must not repeat it —
-	// the duplicate row also shifted every click hit-test by one.
+	// HideTitle suppresses the table's own title row.
 	HideTitle bool
 
-	// Filter narrows the visible rows (case-insensitive substring over the row's
-	// cells, meta and id). It is a DISPLAY concern exactly like the tree's open
-	// state: Rows keeps the FULL set, and Move/Click/counts all operate on the
-	// filtered view, so the operator navigates what they can actually see.
+	// Filter narrows the visible rows (case-insensitive substring over the row's cells, meta and id).
 	Filter string
 
-	// CollapsedByDefault is the OPEN STATE a row takes the FIRST TIME it appears.
-	//
-	// It is false (expanded) by default because the table's other tree is a FOLDER
-	// grouping — a category group whose members are the point of the group — and a
-	// folder that opened collapsed would hide the rows the operator came for. The
-	// work-items views set it TRUE: a deep Epic → Feature → Task → Subtask tree is
-	// unreadable when it opens fully expanded, and the GUI's tree has always
-	// defaulted to collapsed (work-items-tree.tsx: "default collapsed"), so the two
-	// clients disagreed about what the same data looks like on open.
-	//
-	// It applies ONLY to a row with no surviving state (see SetItems). An operator's
-	// own expand/collapse choice is never overridden by it — that is what makes the
-	// rolling refresh safe to leave on.
+	// CollapsedByDefault is the OPEN STATE a row takes the FIRST TIME it appears. It applies ONLY to a
+	// row with no surviving state (see SetItems).
 	CollapsedByDefault bool
 
-	// Marks is the MULTI-SELECTION: row IDs the operator has marked with space, for the
-	// bulk operations every list needs a consistent way to reach.
-	//
-	// The operator: "we need to have a consistent way to handle bulk operations on all
-	// forms. My suggestion would be spacebar can do multi-select and Esc clears the
-	// multi-select and then the bulk options shows up only after you have more than one item
-	// selected."
-	//
-	// It lives on the TABLE, in package kit2, so every list screen gets the same gesture,
-	// the same clearing rule and the same "only at >1" threshold — rather than each screen
-	// inventing its own (one already had dedicated accept-all/reject-all chords, which is
-	// exactly the inconsistency this replaces).
-	//
-	// Keyed by row ID, not index: a reload reorders and filters the rows, and an index would
-	// silently re-point the selection at different items. It is nil until first use.
+	// Marks is the MULTI-SELECTION: row IDs the operator has marked with space, for the bulk operations
+	// every list needs a consistent way to reach.
 	Marks map[string]bool
 }
 
@@ -128,9 +97,8 @@ func (t *Table) ClearMarks() bool {
 	return true
 }
 
-// MarkedIDs returns the marked row IDs in DRAW ORDER (the visible order the operator sees),
-// not map order — a bulk action that reports what it acted on must name them in the sequence
-// on screen.
+// MarkedIDs returns the marked row IDs in DRAW ORDER (the visible order the operator sees), not map
+// order — a bulk action that reports what it acted on must name them in the sequence on screen.
 func (t *Table) MarkedIDs() []string {
 	if len(t.Marks) == 0 {
 		return nil
@@ -145,11 +113,6 @@ func (t *Table) MarkedIDs() []string {
 }
 
 // RowByID returns the row with the given id, and whether it is present.
-//
-// A caller that needs a row's structural fields for a marked id — the archive view orders a
-// bulk restore child-first by each marked row's DEPTH — has only the ids from MarkedIDs,
-// which carry no structure. Rows (not VisibleRows) is the right set to read: a marked row
-// hidden under a collapsed parent is still part of the selection.
 func (t *Table) RowByID(id string) (Row, bool) {
 	for i := range t.Rows {
 		if t.Rows[i].ID == id {
@@ -160,11 +123,6 @@ func (t *Table) RowByID(id string) (Row, bool) {
 }
 
 // PruneMarks drops marks whose rows are no longer present, and reports how many went.
-//
-// A reload can remove rows (a bulk action deletes them, a filter hides them, the plane
-// returns fewer). Leaving the marks behind would let the next bulk action act on items the
-// operator can no longer see — so the selection is reconciled against reality after every
-// load.
 func (t *Table) PruneMarks() int {
 	if len(t.Marks) == 0 {
 		return 0
@@ -191,33 +149,7 @@ func NewTable(title string, cols ...Column) *Table {
 	return &Table{Title: title, Columns: cols, SortCol: -1}
 }
 
-// SetItems seeds the table from list items (single-column display). Tree
-// metadata on an item (Depth/Parent/HasChildren) is carried onto the row, so
-// a fresh tree renders FULLY EXPANDED and collapsing is always an explicit
-// operator action.
-//
-// The CURSOR IS PRESERVED by id when the selected row survives the reload.
-// Reseating it at the top on every refresh threw the operator's selection away
-// after each mutation — the reported "+/- moves it properly but then jumps your
-// focus up to the parent". A genuinely new list still starts at the top.
-//
-// THE OPEN/COLLAPSED STATE IS PRESERVED BY ID TOO, and that is not a nicety: this table is reloaded by
-// the ROLLING REFRESH every few seconds, so re-OPENING every folder on each load would make a collapsed
-// group spring back open under the operator's cursor — collapsing would be impossible to use at all.
-// The GUI's folders stay collapsed across updates, so the two clients would also have felt different.
-// Only rows whose id SURVIVES keep their state; a folder that appears for the first time starts open.
-// ApplyCollapseDefault re-seats every row's open state to the table's CURRENT
-// CollapsedByDefault.
-//
-// SetItems deliberately PRESERVES the open state of a row it has seen before (that is what
-// makes collapse usable under the rolling refresh), so changing CollapsedByDefault alone
-// cannot affect rows that are already loaded — which is exactly the hole the archive view
-// fell into: switching into it changed the default, and every row already built under the
-// tree view kept its collapsed state, so the archive opened showing only its ghost anchor.
-//
-// It is for a VIEW CHANGE, where the rows on screen are about to be replaced by a
-// different set and the new view's default is what the operator should see. It is NOT for
-// a refresh: a refresh must keep the operator's own collapse choices (see SetItems).
+// SetItems seeds the table from list items (single-column display).
 func (t *Table) ApplyCollapseDefault() {
 	for i := range t.Rows {
 		t.Rows[i].Open = !t.CollapsedByDefault
@@ -295,21 +227,7 @@ func (t *Table) visibleRows() int {
 	return h
 }
 
-// Move shifts the cursor by delta over the VISIBLE rows, keeping the window in
-// view. Stepping in visible space is what makes a tree usable: a movement can
-// never land on a row hidden inside a collapsed node. The cursor indexes Rows
-// while visibility is decided by the tree's open/collapsed state, so the two
-// are mapped through VisibleRows rather than assumed to agree.
-//
-// It steps over visible INDICES, never through the row's ID. The ID round trip
-// it used to do (cursorVis → setCursorToID) is not injective when two rows share
-// an ID: visIndexOf returns the FIRST match and setCursorToID seats the cursor on
-// the FIRST match, so a step ONTO the second occurrence landed back on the first
-// and the cursor froze — the operator's "if you move the arrow key down to one of
-// them, it highlights both work items and then will not let you continue to hit
-// the down key to move past them". Distinct work items legitimately share a
-// title, and the fetch layer keys rows by ID, so this had to stop depending on
-// ID uniqueness to move.
+// Move shifts the cursor by delta over the VISIBLE rows, keeping the window in view.
 func (t *Table) Move(delta int) {
 	idxs := t.visibleIndices()
 	if len(idxs) == 0 {
@@ -339,28 +257,14 @@ func (t *Table) Move(delta int) {
 	t.clampOffset()
 }
 
-// visibleIndices returns the Rows indices of the visible rows, in order. It is
-// the ONE visibility rule: VisibleRows, the cursor, the click hit-test and the
-// counts all resolve through it, so the drawn list can never disagree with the
-// set the operator can move onto.
+// visibleIndices returns the Rows indices of the visible rows, in order.
 func (t *Table) visibleIndices() []int {
 	open, parent := t.collapseState()
 	matching, keep := t.filterSets()
 	out := make([]int, 0, len(t.Rows))
 	for i, r := range t.Rows {
 		if t.filterActive() {
-			// A FILTER SUSPENDS COLLAPSE. The operator: "Searching work items in the TUI
-			// does NOT search items that are collapsed. That is a broken design. The search
-			// should most definitely search through collapsed items as well." A collapsed
-			// node hid every descendant from the list while MatchCount (the "n/m" the search
-			// box itself prints) counted them anyway, so the box claimed matches the list
-			// refused to show — and there was no gesture that could reach them.
-			//
-			// A row survives a query for one of two reasons: it MATCHES (wherever it sits in
-			// the tree), or it is an ANCESTOR of a match and is kept so the result keeps its
-			// hierarchy instead of surfacing as an indented orphan. That ancestor rule is the
-			// GUI's ("filtered results keep their ancestors — file-explorer behavior",
-			// frontend/src/routes/work-items.tsx), so the two clients now narrow the same way.
+			// A FILTER SUSPENDS COLLAPSE.
 			if matching[r.ID] || keep[r.ID] {
 				out = append(out, i)
 			}
@@ -388,14 +292,11 @@ func (t *Table) collapseState() (open map[string]bool, parent map[string]string)
 	return open, parent
 }
 
-// filterActive reports whether a narrowing query is in force. A whitespace-only
-// query is not one — matchesFilter trims, so treating " " as a filter would
-// suspend collapse for a query that hides nothing.
+// filterActive reports whether a narrowing query is in force.
 func (t *Table) filterActive() bool { return strings.TrimSpace(t.Filter) != "" }
 
-// filterSets returns the ids that pass the query and the ids that must remain
-// VISIBLE for structure (the ancestors of matches). Both are empty when no query
-// is active, so the uncollapsed whole-set path costs nothing.
+// filterSets returns the ids that pass the query and the ids that must remain VISIBLE for structure
+// (the ancestors of matches).
 func (t *Table) filterSets() (matching, keep map[string]bool) {
 	if !t.filterActive() {
 		return nil, nil
@@ -433,12 +334,8 @@ func (t *Table) VisibleRows() []Row {
 	return out
 }
 
-// cursorVis is the cursor row's position within VisibleRows (-1 when the cursor
-// row is hidden inside a collapsed ancestor).
-//
-// Computed from the cursor INDEX, not from the selected row's ID: with two rows
-// sharing an id, an ID lookup always resolves to the first one and the cursor
-// could never be told apart from its twin.
+// cursorVis is the cursor row's position within VisibleRows (-1 when the cursor row is hidden
+// inside a collapsed ancestor).
 func (t *Table) cursorVis() int {
 	for i, ri := range t.visibleIndices() {
 		if ri == t.Cursor {
@@ -469,10 +366,7 @@ func (t *Table) setCursorToID(id string) {
 	}
 }
 
-// clampOffset keeps the cursor inside the window. Offset is a position in
-// VISIBLE rows (that is what View renders), so the cursor is converted to its
-// visible position first — comparing a Rows index against a visible offset is
-// what let the highlight drift once a node was collapsed.
+// clampOffset keeps the cursor inside the window.
 func (t *Table) clampOffset() {
 	h := t.visibleRows()
 	pos := t.cursorVis()
@@ -505,9 +399,8 @@ func (t *Table) Wheel(delta int) {
 	}
 }
 
-// Click selects the row at body-relative row index (0 = the first VISIBLE
-// body line, which is what View draws), mapping through the tree's visible set
-// so a click can never land on a row hidden inside a collapsed node.
+// Click selects the row at body-relative row index (0 = the first VISIBLE body line, which is what
+// View draws), mapping through the tree's visible set so a click can never land on a row hidden.
 func (t *Table) Click(row int) bool {
 	vis := t.VisibleRows()
 	idx := t.Offset + row
@@ -548,9 +441,7 @@ func cell(r Row, col int) string {
 	return ""
 }
 
-// Toggle expands/collapses the selected tree node. Children are hidden by
-// marking them invisible (Parent set + !Open on the ancestor). The window is
-// re-clamped because collapsing can shrink the visible set under the cursor.
+// Toggle expands/collapses the selected tree node.
 func (t *Table) Toggle() bool {
 	r := t.Selected()
 	if r == nil || !r.Expand {
@@ -561,15 +452,8 @@ func (t *Table) Toggle() bool {
 	return true
 }
 
-// ToggleAt toggles the tree node whose +/- marker sits at pane-relative column
-// x on body row `row` (0 = the first visible body line). It reports whether a
-// marker was hit, so the caller can fall through to a plain selection.
-//
-// The pane draws a 1-cell border, so a row's text starts at column 1: the
-// marker of a depth-d row occupies columns (1 + 2*depth) and (1 + 2*depth + 1)
-// ('+'/'-' plus the space after it). This is what makes the operator's
-// "clicking the minus sign" collapse the parent instead of merely selecting
-// the row.
+// ToggleAt toggles the tree node whose +/- marker sits at pane-relative column x on body row `row`
+// (0 = the first visible body line).
 func (t *Table) ToggleAt(row, x int) bool {
 	vis := t.VisibleRows()
 	idx := t.Offset + row
@@ -588,9 +472,8 @@ func (t *Table) ToggleAt(row, x int) bool {
 	return t.Toggle()
 }
 
-// ExpandAll opens (or closes) every expandable node in one gesture — the
-// operator's "overall collapse and expand". It reports how many nodes CHANGED,
-// so a caller can tell a no-op on a flat list from a real toggle.
+// ExpandAll opens (or closes) every expandable node in one gesture — the operator's "overall
+// collapse and expand".
 func (t *Table) ExpandAll(open bool) int {
 	n := 0
 	for i := range t.Rows {
@@ -625,11 +508,8 @@ func (t *Table) ExpandableCount() int {
 	return n
 }
 
-// ResetCursor parks the cursor BEFORE the first row, so the next SetItems (a
-// reload with no surviving selection) starts at the TOP rather than restoring
-// the previous row. The sort control uses it: after re-ordering, the operator
-// wants to read the list from the top, not have the view jump to wherever the
-// old selection landed.
+// ResetCursor parks the cursor BEFORE the first row, so the next SetItems (a reload with no
+// surviving selection) starts at the TOP rather than restoring the previous row.
 func (t *Table) ResetCursor() {
 	t.Cursor, t.Offset = -1, 0
 }
@@ -641,9 +521,8 @@ func (t *Table) SetFilter(q string) {
 	t.clampOffset()
 }
 
-// matchesFilter reports whether a row satisfies the current filter (a
-// case-insensitive substring over its cells, meta and id). An empty filter
-// matches everything.
+// matchesFilter reports whether a row satisfies the current filter (a case-insensitive substring
+// over its cells, meta and id).
 func (t *Table) matchesFilter(r Row) bool {
 	q := strings.ToLower(strings.TrimSpace(t.Filter))
 	if q == "" {
@@ -665,9 +544,8 @@ func (t *Table) MatchCount() (int, int) {
 	return n, len(t.Rows)
 }
 
-// hiddenUnderCollapsedAncestor walks a row's parent chain and reports whether
-// any ancestor is collapsed. seen bounds the walk so a malformed (cyclic)
-// parent chain can never hang the render.
+// hiddenUnderCollapsedAncestor walks a row's parent chain and reports whether any ancestor is
+// collapsed.
 func hiddenUnderCollapsedAncestor(r Row, parent map[string]string, open map[string]bool) bool {
 	seen := 0
 	for p := r.Parent; p != ""; {
@@ -692,9 +570,7 @@ func (t *Table) TitleRows() int {
 	return 1
 }
 
-// HeaderRows reports whether the table renders a column-header row. An empty
-// header (all column titles blank — the common single-column display) is NOT
-// rendered: it would be a blank row that shifts the hit-test for nothing.
+// HeaderRows reports whether the table renders a column-header row.
 func (t *Table) HeaderRows() int {
 	for _, c := range t.Columns {
 		if strings.TrimSpace(c.Title) != "" {
@@ -708,9 +584,8 @@ func (t *Table) View() string {
 	var b strings.Builder
 	if t.TitleRows() > 0 {
 		title := t.Title
-		// NO "more pages" marker: every source is fetched WHOLE (base.loadSource), so a page token is
-		// never set and there is never anything left unfetched to advertise. The marker's absence is
-		// the point — the operator asked not to have the concept, so it is not mentioned.
+		// NO "more pages" marker: every source is fetched WHOLE (base.loadSource), so a page token is never
+		// set and there is never anything left unfetched to advertise.
 		if t.Focused {
 			b.WriteString(theme.ListTitle.Render(title))
 		} else {
@@ -758,22 +633,17 @@ func (t *Table) View() string {
 	if t.Offset > len(vis) {
 		t.Offset = 0
 	}
-	// Identify the selected row by ID: the cursor is a Rows index while the
-	// rows drawn here are the VISIBLE ones, and the two stop agreeing as soon
-	// as a node is collapsed. A table whose rows carry no IDs falls back to the
-	// positional comparison.
+	// Identify the selected row by ID: the cursor is a Rows index while the rows drawn here are the
+	// VISIBLE ones, and the two stop agreeing as soon as a node is collapsed.
 	cursorID := t.SelectedID()
-	// The MARK gutter appears once anything is marked, and only then: drawing an empty
-	// "[ ]" on every row of every list would spend a gutter on an affordance most panes
-	// never use, while appearing the moment the operator presses space makes the selection
-	// model immediately visible.
+	// The MARK gutter appears once anything is marked, and only then: drawing an empty "[ ]" on every
+	// row of every list would spend a gutter on an affordance most panes never use.
 	showMarks := t.MarkCount() > 0
 	for i := t.Offset; i < end; i++ {
 		r := vis[i]
 		indent := strings.Repeat("  ", r.Depth)
-		// A parent carries a +/- toggle (the operator's "+ sign next to all
-		// parents"): "+" collapsed, "-" expanded. A leaf keeps a blank gutter
-		// so every row's cells line up.
+		// A parent carries a +/- toggle (the operator's "+ sign next to all parents"): "+" collapsed, "-"
+		// expanded.
 		marker := "  "
 		if r.Expand {
 			if r.Open {

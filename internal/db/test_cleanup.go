@@ -1,17 +1,6 @@
 package db
 
 // test_cleanup.go — the shared teardown a DB-backed test registers after creating a project.
-//
-// WHY THIS EXISTS. DeleteProject cascades a project's whole tree (work items, workflows, versions,
-// runs, step runs, dependencies, executions, session parts, usage records, recoveries, continuation
-// plans, recurring history, attachments, mcp references — see DeleteProject's step list). What the
-// tests were missing was not a cascade but a CALL: ~40 DB-backed fixtures created a project and never
-// deleted it, so the dev tenant accumulated 100 fixture projects, 1078 fixture work items and 1264
-// orphaned executions before it was noticed.
-//
-// A fixture that cleans up after itself is the fix, and it needs to be one line at each call site —
-// which is what this helper is for. It is in package db because every DB-backed test already imports
-// db to open its pool, so no fixture has to take on a new dependency to use it.
 
 import (
 	"context"
@@ -45,9 +34,7 @@ func CleanupProject(t *testing.T, pool *Pool, tenantID, projectID string) {
 	})
 }
 
-// DeleteProjectByID runs DeleteProject in its own transaction. Exported for tests that need to tear a
-// project down OUTSIDE a t.Cleanup (a mid-test reset, or a fixture that reuses one project across
-// subtests).
+// DeleteProjectByID runs DeleteProject in its own transaction.
 func DeleteProjectByID(ctx context.Context, pool *Pool, tenantID, projectID string) error {
 	if pool == nil || projectID == "" {
 		return nil

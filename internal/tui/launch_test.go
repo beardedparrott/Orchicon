@@ -1,13 +1,6 @@
 package tui
 
 // launch_test.go — the launch-time project prompt.
-//
-// The operator, after rebuilding: "I then launched orch in a different directory
-// and it went straight to the 'new' screen. I never got a pop-up to create a new
-// project." Nothing was broken — the prompt did not exist. These pin what was
-// built, and in particular the three decisions that are easy to undo by accident:
-// WHEN it asks, that declining is remembered NOWHERE, and that the directory it
-// creates is attached by the second call because the create API has no field for it.
 
 import (
 	"strings"
@@ -19,11 +12,6 @@ import (
 )
 
 // THE QUESTION IS ASKED WHEN THE DIRECTORY IS UNATTACHED, AND NOT OTHERWISE.
-//
-// The boundary case is the reason this is a table: /home/me/project-notes is NOT
-// inside /home/me/project, and a string-prefix test says it is. Getting that wrong
-// silently suppresses the prompt for a whole class of directories whose names
-// merely start the same way.
 func TestDirTiedToProject(t *testing.T) {
 	projects := []*apiv1.Project{
 		{Id: "p1", ProjectDir: "/home/me/projects/orchicon"},
@@ -95,10 +83,6 @@ func TestLaunchPrefillsFromTheDirectory(t *testing.T) {
 }
 
 // THE PROMPT RUNS ITS TWO STEPS IN ORDER: the question alone, then the form.
-//
-// The operator asked for this explicitly — a blank screen carrying the question
-// first, and the create form as a CENTRED MODAL after it. A single-step version
-// would be a different feature, so the ordering is asserted rather than assumed.
 func TestThePromptAsksBeforeItShowsTheForm(t *testing.T) {
 	m := newTestApp()
 	m.launchDir = "/tmp/scratch"
@@ -110,9 +94,8 @@ func TestThePromptAsksBeforeItShowsTheForm(t *testing.T) {
 	if m.launch.Phase != launchAsking {
 		t.Fatalf("the prompt opened in phase %v, want the question first", m.launch.Phase)
 	}
-	// THE QUESTION SCREEN IS BLANK APART FROM THE QUESTION: it must not be the shell
-	// with a box on top, or the first thing the operator sees is an app that looks
-	// like it has already started.
+	// THE QUESTION SCREEN IS BLANK APART FROM THE QUESTION: it must not be the shell with a box on top,
+	// or the first thing the operator sees is an app that looks like it has already started.
 	asking := m.launchView(100, 30)
 	if strings.Contains(asking, "Ask Orchicon") {
 		t.Error("the question screen still shows the shell's tab bar, so it reads as an app that already " +
@@ -139,11 +122,6 @@ func TestThePromptAsksBeforeItShowsTheForm(t *testing.T) {
 }
 
 // DECLINING IS NOT REMEMBERED — ANYWHERE.
-//
-// The operator: "No it just goes into orch then and performs normally." This asserts
-// the second half of that as an ABSENCE, because the tempting "improvement" is to
-// write the refusal somewhere so the prompt stops asking — and that would hide the
-// question from the one person who might now want a different answer.
 func TestDecliningLeavesNoRecordAndNoPrompt(t *testing.T) {
 	m := newTestApp()
 	m.beginLaunchPrompt("/tmp/scratch", true, nil)
@@ -163,10 +141,6 @@ func TestDecliningLeavesNoRecordAndNoPrompt(t *testing.T) {
 }
 
 // ESC ON THE QUESTION AND ESC IN THE FORM BOTH DECLINE.
-//
-// esc reaches the form's HandleKey, which reports handled=false to mean "the caller
-// closes this" — the prompt has to translate that into the same exit as answering
-// no, or esc would dead-end on a screen with no way forward.
 func TestEscDeclinesFromBothSteps(t *testing.T) {
 	// From the question.
 	m := newTestApp()
@@ -190,11 +164,6 @@ func TestEscDeclinesFromBothSteps(t *testing.T) {
 }
 
 // THE CREATE FORM CARRIES THE SHARED FIELDS PLUS A DIRECTORY.
-//
-// The directory field exists on THIS form and not on the Work screen's create form,
-// and the asymmetry is the API's: CreateProject takes no project_dir, so the
-// directory is attached by the UpdateProject that follows. A launch form without the
-// field could not do that at all.
 func TestTheLaunchFormCarriesTheDirectoryField(t *testing.T) {
 	m := newTestApp()
 	m.beginLaunchPrompt("/home/me/projects/thing", true, nil)

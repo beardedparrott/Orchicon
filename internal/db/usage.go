@@ -9,15 +9,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-// UsageRecordRow is the in-memory representation of a usage_records row
-// (docs/08 §5.2, docs/09 §3.7). The AI Gateway writes these as the
-// source of truth; OTel metrics mirror them to VictoriaMetrics for fast
-// telemetry queries.
-//
-// CacheReadTokens / CacheWriteTokens / ReasoningTokens are the canonical
-// usage-sample buckets (docs canonical-usage-sample-contract §1). Reason
-// tokens are a sub-bucket of CompletionTokens and are NOT additive to
-// TotalTokens.
+// UsageRecordRow is the in-memory representation of a usage_records row (docs/08 §5.2, docs/09
+// §3.7).
 type UsageRecordRow struct {
 	ID          string
 	TenantID    string
@@ -25,9 +18,8 @@ type UsageRecordRow struct {
 	TaskID      string
 	ExecutionID string
 	WorkerID    string
-	// AdapterKind is the adapter kind the usage came from (e.g. "opencode",
-	// or a custom adapter's kind for non-opencode Ask sessions). Empty for
-	// legacy rows written before the column existed.
+	// AdapterKind is the adapter kind the usage came from (e.g. "opencode", or a custom adapter's kind
+	// for non-opencode Ask sessions).
 	AdapterKind string
 	// SessionID is the Ask Orchicon conversation/session the usage belongs
 	// to (empty for worker executions, which attribute via ExecutionID).
@@ -50,9 +42,7 @@ type UsageRecordRow struct {
 	WorkflowRunID    string // immutable; survives execution deletion
 }
 
-// CreateUsageRecord inserts a usage record within the given tenant-scoped
-// transaction. The caller is responsible for the outbox event (docs/09 §6)
-// if a streaming projection is needed; this function only writes the row.
+// CreateUsageRecord inserts a usage record within the given tenant-scoped transaction.
 func CreateUsageRecord(ctx context.Context, tx pgx.Tx, row UsageRecordRow) (UsageRecordRow, error) {
 	if row.ID == "" {
 		row.ID = newULID()
@@ -92,9 +82,7 @@ type ListUsageRecordsFilter struct {
 	ExecutionID string // optional
 	Provider    string // optional
 	Model       string // optional
-	// SessionID scopes the query to one Ask Orchicon conversation (the
-	// session_id column). Empty = unscoped, which is the worker-execution
-	// case (worker rows attribute via ExecutionID and leave session_id '').
+	// SessionID scopes the query to one Ask Orchicon conversation (the session_id column).
 	SessionID string // optional
 	StartTime time.Time
 	EndTime   time.Time
@@ -154,15 +142,8 @@ func ListUsageRecords(ctx context.Context, tx pgx.Tx, f ListUsageRecordsFilter) 
 	return out, rows.Err()
 }
 
-// SumUsageForExecution returns the cumulative usage-record totals for one
-// execution (the AI Gateway dual-write source of truth). The
-// worker_executions.token_usage / cost_usd ROW columns are write-never
-// (nothing ever updates them — they sit at their create-time zero), so
-// every consumer that reports per-execution spend must use this sum, never
-// the row. SUM(total_tokens) is the cumulative transport figure (each
-// step_finish row carries the full per-step request size); the peak
-// working-set math lives with the callers that need it (the execution
-// detail sidebar computes it from the rows).
+// SumUsageForExecution returns the cumulative usage-record totals for one execution (the AI Gateway
+// dual-write source of truth).
 func SumUsageForExecution(ctx context.Context, tx pgx.Tx, tenantID, executionID string) (tokens int64, costUSD float64, err error) {
 	if tenantID == "" || executionID == "" {
 		return 0, 0, fmt.Errorf("db: sum usage for execution: tenant_id and execution_id required")
@@ -205,9 +186,8 @@ const (
 	RollupModel     CostRollupLevel = "model"
 )
 
-// GetCostRollup aggregates usage records to the requested drill-down
-// level, scoped to an optional parent (project/task/execution). The
-// tenant_id filter is enforced by RLS + the explicit WHERE.
+// GetCostRollup aggregates usage records to the requested drill-down level, scoped to an optional
+// parent (project/task/execution).
 func GetCostRollup(ctx context.Context, tx pgx.Tx, tenantID string, level CostRollupLevel, projectID, taskID, executionID string, start, end time.Time) ([]CostSummaryRow, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("db: cost rollup: tenant_id required")
@@ -352,11 +332,8 @@ type WorkflowWorkerCostRow struct {
 	ExecutionCount   int32
 }
 
-// GetWorkflowAggregateCosts returns cost grouped by workflow (across all
-// runs). Uses worker_executions.workflow_run_id (immutable, set at creation
-// time) when available, falling back to work_items.workflow_run_id (mutable,
-// latest-run value) for old executions where the column was not populated.
-func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, start, end time.Time) ([]WorkflowAggregateRow, error) {
+// GetWorkflowAggregateCosts returns cost grouped by workflow (across all runs).
+func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID, projectID, workItemID, executionID string, start, end time.Time) ([]WorkflowAggregateRow, error) {
 	const q = `SELECT
 		w.id AS workflow_id,
 		w.name AS workflow_name,
@@ -377,9 +354,12 @@ func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, 
 		WHERE ur.tenant_id = $1
 		  AND ($2::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at >= $2::timestamptz)
 		  AND ($3::timestamptz <= 'epoch'::timestamptz OR ur.occurred_at <  $3::timestamptz)
+		  AND ($4 = '' OR ur.project_id = $4)
+		  AND ($5 = '' OR ur.task_id = $5)
+		  AND ($6 = '' OR ur.execution_id = $6)
 		GROUP BY w.id, w.name
 		ORDER BY total_cost DESC`
-	rows, err := tx.Query(ctx, q, tenantID, start, end)
+	rows, err := tx.Query(ctx, q, tenantID, start, end, projectID, workItemID, executionID)
 	if err != nil {
 		return nil, fmt.Errorf("db: workflow aggregate costs: %w", err)
 	}
@@ -399,9 +379,7 @@ func GetWorkflowAggregateCosts(ctx context.Context, tx pgx.Tx, tenantID string, 
 	return out, rows.Err()
 }
 
-// GetWorkflowRunCosts returns cost grouped by workflow run for a given
-// workflow. Uses COALESCE fallback to work_items.workflow_run_id for old
-// executions where the column was not populated.
+// GetWorkflowRunCosts returns cost grouped by workflow run for a given workflow.
 func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID string, start, end time.Time) ([]WorkflowRunCostRow, error) {
 	const q = `SELECT
 		wr.id AS workflow_run_id,
@@ -449,9 +427,7 @@ func GetWorkflowRunCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowID st
 	return out, rows.Err()
 }
 
-// GetWorkflowWorkerCosts returns cost grouped by worker type within a
-// single workflow run. Uses COALESCE fallback to work_items.workflow_run_id
-// for old executions where the column was not populated.
+// GetWorkflowWorkerCosts returns cost grouped by worker type within a single workflow run.
 func GetWorkflowWorkerCosts(ctx context.Context, tx pgx.Tx, tenantID, workflowRunID string) ([]WorkflowWorkerCostRow, error) {
 	const q = `SELECT
 		COALESCE(we.worker_id, ur.worker_id, '') AS worker_id,
@@ -498,10 +474,7 @@ type ExecutionDisplayInfo struct {
 	TaskTitle   string
 }
 
-// ResolveExecutionDisplayNames returns display info for the given
-// execution IDs. Queries usage_records directly JOINed with workers and
-// work_items (not via worker_executions) so names are always resolved
-// even if the execution row has been cleaned up.
+// ResolveExecutionDisplayNames returns display info for the given execution IDs.
 func ResolveExecutionDisplayNames(ctx context.Context, tx pgx.Tx, tenantID string, execIDs []string) (map[string]ExecutionDisplayInfo, error) {
 	if len(execIDs) == 0 {
 		return nil, nil
@@ -551,22 +524,8 @@ func scanUsageRecord(ctx context.Context, rows pgx.Rows) (UsageRecordRow, error)
 	return r, nil
 }
 
-// ClearUsageSessionIDs de-links usage records from a deleted Ask
-// conversation by clearing their session_id.
-//
-// The records themselves are KEPT. They are the tenant's real spend ledger —
-// Cost Explorer and Telemetry roll up from this table — so deleting them would
-// retroactively rewrite historical cost (a deleted conversation's spend would
-// silently vanish from reports). Clearing the linkage drops the only pointer
-// to the deleted conversation while preserving the money, and it is
-// space-neutral: an in-place UPDATE, no rows added or removed.
-//
-// ids are every identifier an Ask turn may have been attributed under: the
-// conversation id (the canonical Ask attribution — recordTurnUsage passes
-// convID as SessionID) plus the conversation's session id (defensive: a
-// session-ful adapter could attribute by session). Empty ids are ignored, so a
-// legacy conversation with no session id still de-links by conversation id.
-// Returns the number of rows de-linked.
+// ClearUsageSessionIDs de-links usage records from a deleted Ask conversation by clearing their
+// session_id.
 func ClearUsageSessionIDs(ctx context.Context, tx pgx.Tx, tenantID string, ids ...string) (int64, error) {
 	clean := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -586,6 +545,27 @@ func ClearUsageSessionIDs(ctx context.Context, tx pgx.Tx, tenantID string, ids .
 	return tag.RowsAffected(), nil
 }
 
+// ClearUsageExecutionIDs de-links usage rows from executions that are about to be (or have been)
+// deleted, by clearing execution_id.
+func ClearUsageExecutionIDs(ctx context.Context, tx pgx.Tx, tenantID string, executionIDs ...string) (int64, error) {
+	clean := make([]string, 0, len(executionIDs))
+	for _, id := range executionIDs {
+		if id != "" {
+			clean = append(clean, id)
+		}
+	}
+	if len(clean) == 0 {
+		return 0, nil
+	}
+	const q = `UPDATE usage_records SET execution_id = ''
+	            WHERE tenant_id = $1 AND execution_id <> '' AND execution_id = ANY($2)`
+	tag, err := tx.Exec(ctx, q, tenantID, clean)
+	if err != nil {
+		return 0, fmt.Errorf("db: clear usage execution ids: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ExecutionUsageTotals is one execution's summed token/cost totals.
 type ExecutionUsageTotals struct {
 	Tokens  int64
@@ -593,15 +573,6 @@ type ExecutionUsageTotals struct {
 }
 
 // SumUsageForExecutions returns the token and cost totals for MANY executions in ONE query.
-//
-// WHY THIS REPLACES A LOOP. ListExecutions enriched its page by calling SumUsageForExecution once
-// per row — a query per execution, each an index scan plus two aggregates. That was survivable while
-// the list fetched one page of 100; once every list fetched itself WHOLE (the page concept is
-// retired), the executions list pulled 2,959 rows and issued ~5,900 enrichment queries for a single
-// screen load. The operator reported it plainly: "The initial execution page load is pretty slow."
-//
-// One grouped query answers the same question for the whole page, which is what makes the load
-// something the operator does not wait on.
 func SumUsageForExecutions(ctx context.Context, tx pgx.Tx, tenantID string, executionIDs []string) (map[string]ExecutionUsageTotals, error) {
 	out := make(map[string]ExecutionUsageTotals, len(executionIDs))
 	if tenantID == "" || len(executionIDs) == 0 {

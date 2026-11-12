@@ -57,6 +57,9 @@ const (
 	// ExecutionServiceCancelExecutionProcedure is the fully-qualified name of the ExecutionService's
 	// CancelExecution RPC.
 	ExecutionServiceCancelExecutionProcedure = "/orchicon.api.v1.ExecutionService/CancelExecution"
+	// ExecutionServiceReleaseStuckExecutionsProcedure is the fully-qualified name of the
+	// ExecutionService's ReleaseStuckExecutions RPC.
+	ExecutionServiceReleaseStuckExecutionsProcedure = "/orchicon.api.v1.ExecutionService/ReleaseStuckExecutions"
 	// ExecutionServiceCheckpointNowProcedure is the fully-qualified name of the ExecutionService's
 	// CheckpointNow RPC.
 	ExecutionServiceCheckpointNowProcedure = "/orchicon.api.v1.ExecutionService/CheckpointNow"
@@ -109,6 +112,25 @@ type ExecutionServiceClient interface {
 	// CancelExecution transitions an execution to terminated
 	// (docs/03 §6).
 	CancelExecution(context.Context, *connect.Request[v1.CancelExecutionRequest]) (*connect.Response[v1.CancelExecutionResponse], error)
+	// ReleaseStuckExecutions runs the execution-liveness reaper NOW, scoped to
+	// one project, and reports what it released.
+	//
+	// WHY THIS EXISTS, AND WHY IT IS NOT "CANCEL N EXECUTIONS". A project can be
+	// pinned at its max-concurrent-runs cap by executions that are dead but were
+	// never reaped — the field incident was ten of them, the oldest three weeks
+	// old, holding every slot so that each new dispatch was deferred forever and
+	// the run sat "waiting for dispatch". Waiting for the next reaper tick is
+	// fine when it is one execution; it is not fine when the whole project is
+	// blocked and the operator can see why.
+	//
+	// The reaper's OWN predicate decides. This RPC does not choose which
+	// executions are dead — it asks the same liveness probe the background
+	// reaper asks, and applies the same failure action (which transitions the
+	// bound work item, so recovery behaves exactly as if the tick had caught it).
+	// A live execution is therefore never released by this call, however it
+	// looks in the list: only the probe can say otherwise, and it is the probe
+	// that is consulted.
+	ReleaseStuckExecutions(context.Context, *connect.Request[v1.ReleaseStuckExecutionsRequest]) (*connect.Response[v1.ReleaseStuckExecutionsResponse], error)
 	// CheckpointNow requests an immediate checkpoint from the adapter
 	// (docs/04 §5).
 	CheckpointNow(context.Context, *connect.Request[v1.CheckpointNowRequest]) (*connect.Response[v1.CheckpointNowResponse], error)
@@ -194,6 +216,12 @@ func NewExecutionServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(executionServiceMethods.ByName("CancelExecution")),
 			connect.WithClientOptions(opts...),
 		),
+		releaseStuckExecutions: connect.NewClient[v1.ReleaseStuckExecutionsRequest, v1.ReleaseStuckExecutionsResponse](
+			httpClient,
+			baseURL+ExecutionServiceReleaseStuckExecutionsProcedure,
+			connect.WithSchema(executionServiceMethods.ByName("ReleaseStuckExecutions")),
+			connect.WithClientOptions(opts...),
+		),
 		checkpointNow: connect.NewClient[v1.CheckpointNowRequest, v1.CheckpointNowResponse](
 			httpClient,
 			baseURL+ExecutionServiceCheckpointNowProcedure,
@@ -265,6 +293,7 @@ type executionServiceClient struct {
 	pauseExecution           *connect.Client[v1.PauseExecutionRequest, v1.PauseExecutionResponse]
 	resumeExecution          *connect.Client[v1.ResumeExecutionRequest, v1.ResumeExecutionResponse]
 	cancelExecution          *connect.Client[v1.CancelExecutionRequest, v1.CancelExecutionResponse]
+	releaseStuckExecutions   *connect.Client[v1.ReleaseStuckExecutionsRequest, v1.ReleaseStuckExecutionsResponse]
 	checkpointNow            *connect.Client[v1.CheckpointNowRequest, v1.CheckpointNowResponse]
 	approveToolCall          *connect.Client[v1.ApproveToolCallRequest, v1.ApproveToolCallResponse]
 	listPendingApprovals     *connect.Client[v1.ListPendingApprovalsRequest, v1.ListPendingApprovalsResponse]
@@ -305,6 +334,11 @@ func (c *executionServiceClient) ResumeExecution(ctx context.Context, req *conne
 // CancelExecution calls orchicon.api.v1.ExecutionService.CancelExecution.
 func (c *executionServiceClient) CancelExecution(ctx context.Context, req *connect.Request[v1.CancelExecutionRequest]) (*connect.Response[v1.CancelExecutionResponse], error) {
 	return c.cancelExecution.CallUnary(ctx, req)
+}
+
+// ReleaseStuckExecutions calls orchicon.api.v1.ExecutionService.ReleaseStuckExecutions.
+func (c *executionServiceClient) ReleaseStuckExecutions(ctx context.Context, req *connect.Request[v1.ReleaseStuckExecutionsRequest]) (*connect.Response[v1.ReleaseStuckExecutionsResponse], error) {
+	return c.releaseStuckExecutions.CallUnary(ctx, req)
 }
 
 // CheckpointNow calls orchicon.api.v1.ExecutionService.CheckpointNow.
@@ -377,6 +411,25 @@ type ExecutionServiceHandler interface {
 	// CancelExecution transitions an execution to terminated
 	// (docs/03 §6).
 	CancelExecution(context.Context, *connect.Request[v1.CancelExecutionRequest]) (*connect.Response[v1.CancelExecutionResponse], error)
+	// ReleaseStuckExecutions runs the execution-liveness reaper NOW, scoped to
+	// one project, and reports what it released.
+	//
+	// WHY THIS EXISTS, AND WHY IT IS NOT "CANCEL N EXECUTIONS". A project can be
+	// pinned at its max-concurrent-runs cap by executions that are dead but were
+	// never reaped — the field incident was ten of them, the oldest three weeks
+	// old, holding every slot so that each new dispatch was deferred forever and
+	// the run sat "waiting for dispatch". Waiting for the next reaper tick is
+	// fine when it is one execution; it is not fine when the whole project is
+	// blocked and the operator can see why.
+	//
+	// The reaper's OWN predicate decides. This RPC does not choose which
+	// executions are dead — it asks the same liveness probe the background
+	// reaper asks, and applies the same failure action (which transitions the
+	// bound work item, so recovery behaves exactly as if the tick had caught it).
+	// A live execution is therefore never released by this call, however it
+	// looks in the list: only the probe can say otherwise, and it is the probe
+	// that is consulted.
+	ReleaseStuckExecutions(context.Context, *connect.Request[v1.ReleaseStuckExecutionsRequest]) (*connect.Response[v1.ReleaseStuckExecutionsResponse], error)
 	// CheckpointNow requests an immediate checkpoint from the adapter
 	// (docs/04 §5).
 	CheckpointNow(context.Context, *connect.Request[v1.CheckpointNowRequest]) (*connect.Response[v1.CheckpointNowResponse], error)
@@ -458,6 +511,12 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 		connect.WithSchema(executionServiceMethods.ByName("CancelExecution")),
 		connect.WithHandlerOptions(opts...),
 	)
+	executionServiceReleaseStuckExecutionsHandler := connect.NewUnaryHandler(
+		ExecutionServiceReleaseStuckExecutionsProcedure,
+		svc.ReleaseStuckExecutions,
+		connect.WithSchema(executionServiceMethods.ByName("ReleaseStuckExecutions")),
+		connect.WithHandlerOptions(opts...),
+	)
 	executionServiceCheckpointNowHandler := connect.NewUnaryHandler(
 		ExecutionServiceCheckpointNowProcedure,
 		svc.CheckpointNow,
@@ -532,6 +591,8 @@ func NewExecutionServiceHandler(svc ExecutionServiceHandler, opts ...connect.Han
 			executionServiceResumeExecutionHandler.ServeHTTP(w, r)
 		case ExecutionServiceCancelExecutionProcedure:
 			executionServiceCancelExecutionHandler.ServeHTTP(w, r)
+		case ExecutionServiceReleaseStuckExecutionsProcedure:
+			executionServiceReleaseStuckExecutionsHandler.ServeHTTP(w, r)
 		case ExecutionServiceCheckpointNowProcedure:
 			executionServiceCheckpointNowHandler.ServeHTTP(w, r)
 		case ExecutionServiceApproveToolCallProcedure:
@@ -583,6 +644,10 @@ func (UnimplementedExecutionServiceHandler) ResumeExecution(context.Context, *co
 
 func (UnimplementedExecutionServiceHandler) CancelExecution(context.Context, *connect.Request[v1.CancelExecutionRequest]) (*connect.Response[v1.CancelExecutionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ExecutionService.CancelExecution is not implemented"))
+}
+
+func (UnimplementedExecutionServiceHandler) ReleaseStuckExecutions(context.Context, *connect.Request[v1.ReleaseStuckExecutionsRequest]) (*connect.Response[v1.ReleaseStuckExecutionsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.ExecutionService.ReleaseStuckExecutions is not implemented"))
 }
 
 func (UnimplementedExecutionServiceHandler) CheckpointNow(context.Context, *connect.Request[v1.CheckpointNowRequest]) (*connect.Response[v1.CheckpointNowResponse], error) {

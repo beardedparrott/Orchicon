@@ -1,21 +1,5 @@
-// Package mcpsettings implements the tenant-facing MCP server management
-// surface behind Settings → Adapters → MCP: CRUD over OWNER-SCOPED MCP
-// definitions (stdio + streamable HTTP), the curated registry catalog with
-// install specs, explicit-only auto-install (runtime detection + dry-run
-// for CI), and write-only credentials via the tenant secrets store
-// (provider-token pattern, ADR-0006 D5).
-//
-// A definition belongs to EXACTLY ONE owner — a project OR an Ask
-// conversation (mcp_servers.project_id XOR mcp_servers.conversation_id).
-// There is no tenant-wide tier and no selection join table: the owner
-// column IS the selection, so a definition can never be orphaned and the
-// deletion guard that existed only because a definition could be shared is
-// gone with it.
-//
-// Resolution is ONE union, addressed by SCOPE — see Resolver and
-// mcpclient.ScopeResolver. The old three-place precedence chain (worker →
-// project → tenant default → none) is replaced by
-// project-owned ∪ scope-owned, deduped, order-stable.
+// Package mcpsettings implements the tenant-facing MCP server management surface behind Settings →
+// Adapters → MCP: CRUD over OWNER-SCOPED MCP definitions (stdio + streamable HTTP).
 package mcpsettings
 
 import (
@@ -84,16 +68,19 @@ type Entry struct {
 	ID   string
 	Name string
 	// ProjectID / ConversationID are the OWNER — exactly one is non-empty.
-	ProjectID       string
-	ConversationID  string
-	Transport       string
-	Command         string
-	Args            []string
-	Env             map[string]string // values may be ${SECRET_NAME}
-	URL             string
-	Headers         map[string]string
-	Enabled         bool
-	CatalogSlug     string
+	ProjectID      string
+	ConversationID string
+	Transport      string
+	Command        string
+	Args           []string
+	Env            map[string]string // values may be ${SECRET_NAME}
+	URL            string
+	Headers        map[string]string
+	Enabled        bool
+	CatalogSlug    string
+	// ProtocolVersion pins the MCP wire version this server speaks; "" means negotiate. See
+	// mcpclient.ServerSpec.ProtocolVersion.
+	ProtocolVersion string
 	InstallStatus   string
 	InstallResult   InstallResult
 	RequiredSecrets []string
@@ -111,9 +98,8 @@ type InstallResult struct {
 	InstalledAt string `json:"installed_at,omitempty"`
 }
 
-// Service is the MCP settings core: storage over the OWNER-SCOPED
-// mcp_servers table, catalog and auto-install logic, and write-only secret
-// wiring.
+// Service is the MCP settings core: storage over the OWNER-SCOPED mcp_servers table, catalog and
+// auto-install logic, and write-only secret wiring.
 type Service struct {
 	pool *db.Pool
 	kek  []byte
@@ -142,21 +128,22 @@ func (s *Service) begin(ctx context.Context, tenantID string) (*db.TenantTx, err
 
 func entryFromRow(r db.MCPServerRow) Entry {
 	e := Entry{
-		ID:             r.ID,
-		Name:           r.Name,
-		ProjectID:      r.ProjectID,
-		ConversationID: r.ConversationID,
-		Transport:      r.Transport,
-		Command:        r.Command,
-		Args:           r.Args,
-		Env:            r.Env,
-		URL:            r.URL,
-		Headers:        r.Headers,
-		Enabled:        r.Enabled,
-		CatalogSlug:    r.CatalogSlug,
-		InstallStatus:  r.InstallStatus,
-		CreatedAt:      r.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-		UpdatedAt:      r.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		ID:              r.ID,
+		Name:            r.Name,
+		ProjectID:       r.ProjectID,
+		ConversationID:  r.ConversationID,
+		Transport:       r.Transport,
+		Command:         r.Command,
+		Args:            r.Args,
+		Env:             r.Env,
+		URL:             r.URL,
+		Headers:         r.Headers,
+		Enabled:         r.Enabled,
+		CatalogSlug:     r.CatalogSlug,
+		ProtocolVersion: r.ProtocolVersion,
+		InstallStatus:   r.InstallStatus,
+		CreatedAt:       r.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		UpdatedAt:       r.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 	}
 	if e.InstallStatus == "" {
 		e.InstallStatus = InstallUnknown
@@ -209,10 +196,8 @@ func (s *Service) ListForTenant(ctx context.Context, tenantID string) ([]Entry, 
 	return out, nil
 }
 
-// ListForScope returns the definitions VISIBLE to a scope, owner-scoped:
-// project-only when conversationID is empty, project ∪ conversation
-// otherwise; both empty lists the whole tenant (preserving ListForTenant's
-// behaviour for the unscoped callers).
+// ListForScope returns the definitions VISIBLE to a scope, owner-scoped: project-only when
+// conversationID is empty, project ∪ conversation otherwise.
 func (s *Service) ListForScope(ctx context.Context, tenantID, projectID, conversationID string) ([]Entry, error) {
 	projectID = strings.TrimSpace(projectID)
 	conversationID = strings.TrimSpace(conversationID)
@@ -310,10 +295,7 @@ func secretRefName(v string) (string, bool) {
 	return "", false
 }
 
-// SecretNameFor derives the standard tenant-secret name for a server's
-// credential. Format: MCP_<SLUG>_<ENVNAME> where the slug component is the
-// catalog slug uppercased, or the server id (ULID) uppercased for manual
-// entries. Both satisfy ^[A-Z][A-Z0-9_]+$ and ≤ 64 chars.
+// SecretNameFor derives the standard tenant-secret name for a server's credential.
 func SecretNameFor(e Entry, envName string) string {
 	comp := strings.ToUpper(e.CatalogSlug)
 	if comp == "" {
@@ -330,9 +312,8 @@ func validateSecretNameRe(name string) error {
 	return nil
 }
 
-// IT IS A FREE FUNCTION, not a method: it needs no service state (only the tx), and the INLINE half of
-// definition validation (ValidateInlinePermissions, validate_inline.go) applies the same rule to a
-// worker version's specs — which no *Service is involved in validating.
+// IT IS A FREE FUNCTION, not a method: it needs no service state (only the tx), and the INLINE half
+// of definition validation (ValidateInlinePermissions.
 func validateSecretRefs(ctx context.Context, tx pgx.Tx, tenantID string, env, headers map[string]string) error {
 	for k, v := range env {
 		if name, ok := secretRefName(v); ok {
@@ -404,9 +385,7 @@ func validateURL(raw string) error {
 // CreateInput is the writable create payload.
 type CreateInput struct {
 	Name string
-	// ProjectID / ConversationID are the scope the definition is created
-	// in. Exactly ONE must be non-empty (owner XOR); the scope is IMMUTABLE
-	// after create.
+	// ProjectID / ConversationID are the scope the definition is created in.
 	ProjectID      string
 	ConversationID string
 	Transport      string
@@ -417,6 +396,9 @@ type CreateInput struct {
 	Headers        map[string]string
 	Enabled        bool
 	CatalogSlug    string
+	// ProtocolVersion: "" or "auto" negotiates; a pinned version (e.g. "2025-11-25") skips the modern
+	// server/discover probe. Validated by validateProtocolVersion.
+	ProtocolVersion string
 }
 
 func (s *Service) validateCreate(ctx context.Context, tx pgx.Tx, tenantID string, in *CreateInput) error {
@@ -426,6 +408,10 @@ func (s *Service) validateCreate(ctx context.Context, tx pgx.Tx, tenantID string
 	in.Command = strings.TrimSpace(in.Command)
 	in.URL = strings.TrimSpace(in.URL)
 	in.CatalogSlug = strings.TrimSpace(in.CatalogSlug)
+	in.ProtocolVersion = normalizeProtocolVersion(in.ProtocolVersion)
+	if err := validateProtocolVersion(in.ProtocolVersion); err != nil {
+		return invalidf("%s", err.Error())
+	}
 	if in.Name == "" || len(in.Name) > maxNameLen {
 		return invalidf("name must be 1–%d characters", maxNameLen)
 	}
@@ -496,30 +482,28 @@ func (s *Service) Create(ctx context.Context, tenantID string, in CreateInput) (
 	if err := s.validateCreate(ctx, tx.Tx, tenantID, &in); err != nil {
 		return Entry{}, err
 	}
-	// Name-uniqueness pre-check for a clean error. The uniqueness is
-	// OWNER-SCOPED now (two projects may each own a `postgres`), and the
-	// partial unique index is the backstop for the race the pre-check
-	// cannot close.
+	// Name-uniqueness pre-check for a clean error.
 	if _, err := db.GetMCPServerByNameForOwner(ctx, tx.Tx, tenantID, in.ProjectID, in.ConversationID, in.Name); err == nil {
 		return Entry{}, invalidf("an MCP server named %q already exists in this scope", in.Name)
 	} else if !errors.Is(err, db.ErrNotFound) {
 		return Entry{}, err
 	}
 	row, err := db.UpsertMCPServer(ctx, tx.Tx, db.MCPServerRow{
-		ID:             uuid.NewString(),
-		TenantID:       tenantID,
-		Name:           in.Name,
-		ProjectID:      in.ProjectID,
-		ConversationID: in.ConversationID,
-		Transport:      in.Transport,
-		Command:        in.Command,
-		Args:           in.Args,
-		Env:            in.Env,
-		URL:            in.URL,
-		Headers:        in.Headers,
-		Enabled:        in.Enabled,
-		CatalogSlug:    in.CatalogSlug,
-		InstallStatus:  InstallUnknown,
+		ID:              uuid.NewString(),
+		TenantID:        tenantID,
+		Name:            in.Name,
+		ProjectID:       in.ProjectID,
+		ConversationID:  in.ConversationID,
+		Transport:       in.Transport,
+		Command:         in.Command,
+		Args:            in.Args,
+		Env:             in.Env,
+		URL:             in.URL,
+		Headers:         in.Headers,
+		Enabled:         in.Enabled,
+		CatalogSlug:     in.CatalogSlug,
+		ProtocolVersion: normalizeProtocolVersion(in.ProtocolVersion),
+		InstallStatus:   InstallUnknown,
 	})
 	if err != nil {
 		return Entry{}, err
@@ -578,6 +562,9 @@ type UpdateInput struct {
 	ReplaceHeaders bool
 	Enabled        *bool
 	CatalogSlug    *string
+	// ProtocolVersion is a pointer for the same reason as Enabled: "not supplied" must be distinguishable
+	// from "clear it back to auto".
+	ProtocolVersion *string
 }
 
 // Update applies a partial update. The name is immutable after create.
@@ -599,9 +586,8 @@ func (s *Service) Update(ctx context.Context, tenantID string, in UpdateInput) (
 	if in.Name != nil {
 		return Entry{}, invalidf("name is immutable after create; delete + recreate to rename")
 	}
-	// The SCOPE is immutable after create too (like the name): moving a
-	// definition is a different row semantically, and an owner swap would
-	// race the owner-scoped partial unique indexes.
+	// The SCOPE is immutable after create too (like the name): moving a definition is a different row
+	// semantically, and an owner swap would race the owner-scoped partial unique indexes.
 	if strings.TrimSpace(in.ProjectID) != "" && strings.TrimSpace(in.ProjectID) != existing.ProjectID {
 		return Entry{}, invalidf("owner is immutable after create; delete + recreate to move")
 	}
@@ -646,23 +632,24 @@ func (s *Service) Update(ctx context.Context, tenantID string, in UpdateInput) (
 	if in.CatalogSlug != nil {
 		merged.CatalogSlug = strings.TrimSpace(*in.CatalogSlug)
 	}
+	if in.ProtocolVersion != nil {
+		merged.ProtocolVersion = normalizeProtocolVersion(*in.ProtocolVersion)
+	}
 
-	// Re-validate the merged shape through the create validator. The OWNER is
-	// carried through: the validator requires exactly one owner, and the
-	// merged row already has it (it is immutable, so it equals the stored
-	// one).
+	// Re-validate the merged shape through the create validator.
 	chk := CreateInput{
-		Name:           merged.Name,
-		ProjectID:      merged.ProjectID,
-		ConversationID: merged.ConversationID,
-		Transport:      merged.Transport,
-		Command:        merged.Command,
-		Args:           merged.Args,
-		Env:            merged.Env,
-		URL:            merged.URL,
-		Headers:        merged.Headers,
-		Enabled:        merged.Enabled,
-		CatalogSlug:    merged.CatalogSlug,
+		Name:            merged.Name,
+		ProjectID:       merged.ProjectID,
+		ConversationID:  merged.ConversationID,
+		Transport:       merged.Transport,
+		Command:         merged.Command,
+		Args:            merged.Args,
+		Env:             merged.Env,
+		URL:             merged.URL,
+		Headers:         merged.Headers,
+		Enabled:         merged.Enabled,
+		CatalogSlug:     merged.CatalogSlug,
+		ProtocolVersion: merged.ProtocolVersion,
 	}
 	if err := s.validateCreate(ctx, tx.Tx, tenantID, &chk); err != nil {
 		return Entry{}, err
@@ -691,9 +678,7 @@ func (s *Service) Update(ctx context.Context, tenantID string, in UpdateInput) (
 	return e, nil
 }
 
-// Delete removes an entry. There is NO reference guard: an owner-scoped
-// definition cannot be orphaned (its owner IS its only reference, and both
-// owner FKs cascade). Derived secrets are purged in the same tx.
+// Delete removes an entry.
 func (s *Service) Delete(ctx context.Context, tenantID, id string) error {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -708,13 +693,8 @@ func (s *Service) Delete(ctx context.Context, tenantID, id string) error {
 	if err != nil {
 		return err
 	}
-	// NO REFERENCE GUARD: an owner-scoped definition cannot be orphaned —
-	// every reference IS the row's owner (mcp_servers.project_id /
-	// conversation_id, with ON DELETE CASCADE on both FKs). The guard and
-	// its ReferencedError existed only because a definition could be
-	// SHARED, which the owner-scoped model removes.
-	//
-	// Purge derived secrets: delete where name LIKE 'MCP_<slug>_%'.
+	// NO REFERENCE GUARD: an owner-scoped definition cannot be orphaned — every reference IS the row's
+	// owner (mcp_servers.project_id / conversation_id, with ON DELETE CASCADE on both FKs).
 	comp := strings.ToUpper(existing.CatalogSlug)
 	if comp == "" {
 		comp = strings.ToUpper(existing.ID)
@@ -752,9 +732,8 @@ func (s *Service) Delete(ctx context.Context, tenantID, id string) error {
 	return tx.Commit(ctx)
 }
 
-// SetSecret writes/updates a tenant secret for an entry's credential and
-// points the env/headers reference at ${NAME} (write-only; plaintext never
-// returned). name must be an env/header key or a required-secret name.
+// SetSecret writes/updates a tenant secret for an entry's credential and points the env/headers
+// reference at ${NAME} (write-only; plaintext never returned).
 func (s *Service) SetSecret(ctx context.Context, tenantID, id, name, value string) (secretName string, err error) {
 	name = strings.TrimSpace(name)
 	value = strings.TrimSpace(value)
@@ -783,9 +762,8 @@ func (s *Service) SetSecret(ctx context.Context, tenantID, id, name, value strin
 		return "", err
 	}
 	e := entryFromRow(row)
-	// The credential key must be part of the entry: a required secret or an
-	// existing env/header key (manual entries: the operator adds the key to
-	// the form first).
+	// The credential key must be part of the entry: a required secret or an existing env/header key
+	// (manual entries: the operator adds the key to the form first).
 	allowed := false
 	for _, rs := range RequiredSecretsFor(e) {
 		if rs == name {
@@ -925,4 +903,35 @@ func cloneMap(m map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// ProtocolVersionAuto is the explicit "let the client negotiate" value. Empty means the same thing; it
+// exists so an operator can SAY auto in a UI rather than leaving a field blank.
+const ProtocolVersionAuto = "auto"
+
+// normalizeProtocolVersion trims a pin and folds "auto" to the empty string, so the stored form has ONE
+// representation of "negotiate" and the read path never has to compare against two.
+func normalizeProtocolVersion(v string) string {
+	v = strings.TrimSpace(v)
+	if strings.EqualFold(v, ProtocolVersionAuto) {
+		return ""
+	}
+	return v
+}
+
+// validateProtocolVersion bounds a protocol pin to something the client can actually use.
+func validateProtocolVersion(v string) error {
+	if v == "" {
+		return nil
+	}
+	if len(v) > 32 {
+		return fmt.Errorf("protocol_version is too long (%d chars); expected a version like \"2025-11-25\"", len(v))
+	}
+	for _, r := range v {
+		if (r >= '0' && r <= '9') || r == '-' || r == '.' {
+			continue
+		}
+		return fmt.Errorf("protocol_version %q contains %q; expected digits, '-' and '.' (e.g. \"2025-11-25\")", v, string(r))
+	}
+	return nil
 }

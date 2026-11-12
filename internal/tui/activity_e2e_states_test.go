@@ -1,6 +1,5 @@
 // Package tui — activity_e2e_states_test.go — the two live turns (with tools, and with none) that
-// the capstone observes. See activity_e2e_pty_test.go for the harness, the gate, and why ONE
-// provider layer is substituted while every layer above it is the production one.
+// the capstone observes.
 package tui
 
 import (
@@ -15,9 +14,6 @@ import (
 
 // TestActivityLineE2E is the capstone: ONE real turn, driven through the real binary in a real pty,
 // observed on the REPLAYED SCREEN GRID at every state the acceptance criteria name.
-//
-// It is intentionally ONE session driven start-to-finish (no relaunch, no re-entry): AC1 is
-// "observe the line appear, show counters, and rotate its verb WITHOUT leaving the surface".
 func TestActivityLineE2E(t *testing.T) {
 	skipActivityE2E(t)
 
@@ -125,9 +121,8 @@ func TestActivityLineE2E(t *testing.T) {
 		})
 		e2eDumpFrame(t, "tui-06-rotation-before", frame)
 		w0 := verbWord(before)
-		// MOVE THE SERVER CLOCK one full period: the word MUST change, and it must be the word the
-		// selector names for the NEW stamp — evidence that the rotation reads the server's clock
-		// rather than a local timer or a phase literal.
+		// MOVE THE SERVER CLOCK one full period: the word MUST change, and it must be the word the selector
+		// names for the NEW stamp.
 		newStamp := plane.Stamp() + chat.VerbPeriodMS
 		plane.SetStamp(newStamp)
 		wantWord := chat.VerbAt(newStamp)
@@ -210,11 +205,7 @@ func TestActivityLineE2E(t *testing.T) {
 		if !strings.Contains(row, "Orchicon is ") {
 			t.Errorf("the escalated line lost its verb entirely: %q", row)
 		}
-		// THE RE-DIAL BAND (35s), observed live in the SAME stall. It is a distinct state from the
-		// 25s warn band — the watchdog re-dials at 40s and the operator is told the stream will
-		// re-attach BEFORE it happens — and the work item's observation table names it separately, so
-		// asserting only the warn band would leave a named state unproven. It is reached by the same
-		// real clock the first band was, not by a literal.
+		// THE RE-DIAL BAND (35s), observed live in the SAME stall.
 		redial, redialFrame := waitFooter(t, s, cols, rows, 25*time.Second, func(r string) bool {
 			return strings.Contains(r, "will re-attach")
 		})
@@ -266,10 +257,7 @@ func TestActivityLineE2E(t *testing.T) {
 	// observes its `disconnected` banner outranking directly, because that state is a client-side guard
 	// rather than a registry status.
 	t.Run("8_ac5_killed_connection_never_keeps_the_counter", func(t *testing.T) {
-		// FRESH WORK LANDS ON THE TURN. The stall leg above ran past the summarizer's 30s rolling
-		// window, so the earlier calls have honestly aged out and the row is bare again by design.
-		// Re-issuing puts counters back for a reason the feature's own rule permits, so the kill that
-		// follows is observed on a row that was genuinely claiming work.
+		// FRESH WORK LANDS ON THE TURN.
 		plane.SetPhase(activitye2e.PhaseFlight)
 		plane.Reissue()
 		back, _ := waitFooter(t, s, cols, rows, 30*time.Second, func(r string) bool { return hasCounter(r) })
@@ -279,10 +267,7 @@ func TestActivityLineE2E(t *testing.T) {
 		}
 		e2eDumpFrame(t, "tui-11-with-counters-before-the-kill", replay(t, s, cols, rows))
 
-		// STOP THE PLANE MID-TURN. PhaseDown answers every RPC with an error, so the open stream and
-		// the re-dial both fail and no heartbeat can arrive: the silence the watchdog reads grows for
-		// real. A real socket teardown is applied too, so the leg exercises the drop as well as the
-		// unavailability (the plane still listens, but nothing it holds can complete).
+		// STOP THE PLANE MID-TURN.
 		plane.SetPhase(activitye2e.PhaseDown)
 		if _deadPlane != nil {
 			_deadPlane()
@@ -311,10 +296,6 @@ func TestActivityLineE2E(t *testing.T) {
 
 // TestActivityLineE2EZeroToolCalls is AC8 (the "0 tool calls in a turn: no counters, exactly as
 // before the change") AND the second half of AC6: the transcript body keeps its row.
-//
-// It runs a SECOND real turn on a reset plane (no ledger rows at all) and compares the body's own
-// witness row against the with-tools turn's — so the counter's cost to the transcript is a measured
-// delta rather than an assurance.
 func TestActivityLineE2EZeroToolCalls(t *testing.T) {
 	skipActivityE2E(t)
 

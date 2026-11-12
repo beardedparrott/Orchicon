@@ -29,9 +29,8 @@ import (
 
 // --- unit tests (no DB) -----------------------------------------------------
 
-// TestParallelBranchChildIDs verifies the DAG-shape helper: only steps whose
-// depends_on references a `parallel` step are branch children; the parallel
-// marker and serial steps are not.
+// TestParallelBranchChildIDs verifies the DAG-shape helper: only steps whose depends_on references
+// a `parallel` step are branch children; the parallel marker and serial steps are not.
 func TestParallelBranchChildIDs(t *testing.T) {
 	steps := []workflow.StepWire{
 		{ID: "sse", Kind: "task"},
@@ -54,25 +53,67 @@ func TestParallelBranchChildIDs(t *testing.T) {
 	}
 }
 
-// barrierDispatcher is a TaskDispatcher stub that waits until `expected`
-// dispatches are all IN FLIGHT before any returns, so tests can assert
-// bounded concurrency without timing flakes.
+// IT MUST NEVER HANG, and it did — which cost the whole package.
 type barrierDispatcher struct {
 	mu       sync.Mutex
 	expected int
 	calls    []string
 	done     chan struct{}
+	// released records that the barrier gave up rather than reaching `expected`, so a test can assert on the
+	// shortfall instead of hanging.
+	released bool
+	// deadline bounds the wait. Zero means defaultBarrierWait.
+	deadline time.Duration
 }
 
-func (d *barrierDispatcher) DispatchTask(_ context.Context, _ string, stepRunID string) error {
+// defaultBarrierWait bounds how long the barrier will hold a dispatch. Long enough that a slow CI machine
+// cannot trip it, short enough that a mismatch surfaces as a failure rather than a timeout panic.
+const defaultBarrierWait = 20 * time.Second
+
+func (d *barrierDispatcher) DispatchTask(ctx context.Context, _ string, stepRunID string) error {
 	d.mu.Lock()
 	d.calls = append(d.calls, stepRunID)
-	if len(d.calls) == d.expected {
-		close(d.done)
+	if len(d.calls) >= d.expected {
+		select {
+		case <-d.done:
+		default:
+			close(d.done)
+		}
 	}
+	done := d.done
 	d.mu.Unlock()
-	<-d.done
-	return nil
+
+	wait := d.deadline
+	if wait <= 0 {
+		wait = defaultBarrierWait
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		// The expected dispatches never all arrived. Release so the caller cannot deadlock, and record it.
+		d.mu.Lock()
+		d.released = true
+		select {
+		case <-d.done:
+		default:
+			close(d.done)
+		}
+		d.mu.Unlock()
+		return nil
+	}
+}
+
+// shortfall reports whether the barrier released without ever reaching `expected` dispatches — the condition a
+// test should assert on, in place of the deadlock it used to produce.
+func (d *barrierDispatcher) shortfall() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.released || len(d.calls) < d.expected
 }
 
 func (d *barrierDispatcher) stepRuns() []string {
@@ -81,9 +122,8 @@ func (d *barrierDispatcher) stepRuns() []string {
 	return append([]string(nil), d.calls...)
 }
 
-// newInFlightPeak attaches the test-only dispatchOverlap hook to a
-// reconciler and returns a reader for the peak number of DispatchTask calls
-// observed in flight during a fan-out.
+// newInFlightPeak attaches the test-only dispatchOverlap hook to a reconciler and returns a reader
+// for the peak number of DispatchTask calls observed in flight during a fan-out.
 func newInFlightPeak(rec *WorkflowReconciler) func() int {
 	var mu sync.Mutex
 	peak := 0
@@ -101,9 +141,8 @@ func newInFlightPeak(rec *WorkflowReconciler) func() int {
 	}
 }
 
-// TestDispatchInlineConcurrent is the D1 acceptance test: the post-commit
-// inline fan-out runs independent dispatches CONCURRENTLY (all in flight at
-// once) and waits for all of them.
+// TestDispatchInlineConcurrent is the D1 acceptance test: the post-commit inline fan-out runs
+// independent dispatches CONCURRENTLY (all in flight at once) and waits for all of them.
 func TestDispatchInlineConcurrent(t *testing.T) {
 	rec := &WorkflowReconciler{log: slog.New(slog.NewTextHandler(os.Stderr, nil))}
 	const n = 3
@@ -202,11 +241,8 @@ func TestWorkflowSetDispatchConcurrencyClamps(t *testing.T) {
 	}
 }
 
-// TestBranchWorktreeName verifies the branch-worktree branch name: a
-// git-safe sub-branch of the run branch, unique PER STEP RUN (loop
-// iterations re-create step runs for the same step), with the step ID
-// segment slugified so user-authored (git-ref-invalid) IDs never break
-// `git worktree add`.
+// TestBranchWorktreeName verifies the branch-worktree branch name: a git-safe sub-branch of the run
+// branch, unique PER STEP RUN (loop iterations re-create step runs for the same step).
 func TestBranchWorktreeName(t *testing.T) {
 	r := &WorktreeReconciler{log: slog.New(slog.NewTextHandler(os.Stderr, nil))}
 	run := db.WorkflowRunRow{ID: "01J1234567ABCDEFGHJKLMNPQR", WorktreeBranch: "refactor-export-pipeline-abcd1234"}
@@ -266,11 +302,8 @@ func parallelBranchDAG() []workflow.StepWire {
 	}
 }
 
-// branchDispatchEnv is the shared fixture for the concurrent-dispatch
-// integration tests: a git-backed project, a published workflow version with
-// a parallel fan-out, a bound ticket, a running run whose SSE + Parallel
-// steps are already terminal-success and whose two branch steps are READY
-// (so a single reconcileRun pass dispatches them), plus the reconcilers.
+// branchDispatchEnv is the shared fixture for the concurrent-dispatch integration tests: a
+// git-backed project, a published workflow version with a parallel fan-out, a bound ticket.
 type branchDispatchEnv struct {
 	t          *testing.T
 	pool       *db.Pool
@@ -288,17 +321,7 @@ type branchDispatchEnv struct {
 func newBranchDispatchEnv(t *testing.T) *branchDispatchEnv {
 	t.Helper()
 	pool := approvalTestPool(t)
-	// DETERMINISTIC RESIDUE CLEANUP (shared tnt_dev tenant). The
-	// WorktreeReconciler's scan reads a BOUNDED, TENANT-WIDE candidate page
-	// (ListWorktreeStepRunCandidates: non-terminal runs with
-	// worktree_status='pending'), ignoring this fixture's own ids. Leftover
-	// rows from sibling tests accumulate in the shared tenant and starve /
-	// perturb this fixture's dispatch pass — the observed
-	// TestParallelBranchHeldUntilWorktreeReady flake (a SHARED-DB artifact:
-	// it reproduces on a pristine baseline at the same rate and vanishes on a
-	// fresh DB). Mirrors the sibling suites' purgeScanResidue /
-	// purgeWorktreeSweepResidue remedy. Called BEFORE this fixture seeds its
-	// own rows, so it never touches them.
+	// DETERMINISTIC RESIDUE CLEANUP (shared tnt_dev tenant).
 	purgeBranchDispatchResidue(t, pool)
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -324,6 +347,7 @@ func newBranchDispatchEnv(t *testing.T) *branchDispatchEnv {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "Concurrent Dispatch Project", Slug: "concurrent-" + strings.ToLower(db.NewID()),
 		Status: "active", Goals: []byte("[]"), ProjectDir: env.repo,
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -381,9 +405,7 @@ func newBranchDispatchEnv(t *testing.T) *branchDispatchEnv {
 		t.Fatalf("bind ticket to run: %v", err)
 	}
 
-	// Seed step runs. SSE + Parallel are pre-completed so a single pass
-	// reaches the branches; the branch steps are seeded READY (deps
-	// satisfied) so the pass dispatches exactly them.
+	// Seed step runs.
 	seedStatus := map[string]string{
 		"step-sse":      domain.StepRunSucceeded,
 		"step-parallel": domain.StepRunSucceeded,
@@ -436,11 +458,8 @@ func (e *branchDispatchEnv) branchPath(stepID string) string {
 	return filepath.Join(e.repo, worktreeDirName, e.run.ID, e.stepRuns[stepID].ID)
 }
 
-// TestParallelBranchHeldUntilWorktreeReady is the D2 readiness-gate test:
-// a parallel-branch child stays READY (never dispatches) until the
-// WorktreeReconciler provisions its OWN branch worktree; the branch
-// notifier fires post-commit with the "<runID>:<stepRunID>" composite key;
-// and once provisioned, both branches dispatch CONCURRENTLY in one pass.
+// TestParallelBranchHeldUntilWorktreeReady is the D2 readiness-gate test: a parallel-branch child
+// stays READY (never dispatches) until the WorktreeReconciler provisions its OWN branch worktree.
 func TestParallelBranchHeldUntilWorktreeReady(t *testing.T) {
 	env := newBranchDispatchEnv(t)
 	ctx := context.Background()
@@ -501,7 +520,13 @@ func TestParallelBranchHeldUntilWorktreeReady(t *testing.T) {
 	}
 	calls := barrier2.stepRuns()
 	if len(calls) != 2 {
-		t.Fatalf("branches dispatched %d step runs, want 2: %v", len(calls), calls)
+		// A SHORTFALL, reported rather than deadlocked.
+		t.Fatalf("branches dispatched %d step runs, want 2: %v — if this is 1, the pass ran while another "+
+			"test's rows were present in the shared %s tenant", len(calls), calls, approvalTestTenant)
+	}
+	if barrier2.shortfall() {
+		t.Fatalf("the dispatch barrier released without both branches in flight — the concurrency assertion "+
+			"below would be vacuous: %v", calls)
 	}
 	if p := peak(); p < 2 {
 		t.Errorf("peak in-flight branch dispatches = %d, want >= 2 (concurrent)", p)
@@ -513,9 +538,8 @@ func TestParallelBranchHeldUntilWorktreeReady(t *testing.T) {
 	}
 }
 
-// TestBranchWorktreeDistinctPerStepRun is the AC1 filesystem-isolation
-// test: each parallel-branch child records its OWN worktree path + branch
-// (never shared, never the run worktree), and the branches are distinct.
+// TestBranchWorktreeDistinctPerStepRun is the AC1 filesystem-isolation test: each parallel-branch
+// child records its OWN worktree path + branch (never shared, never the run worktree).
 func TestBranchWorktreeDistinctPerStepRun(t *testing.T) {
 	env := newBranchDispatchEnv(t)
 	ctx := context.Background()
@@ -564,9 +588,8 @@ func TestBranchWorktreeDistinctPerStepRun(t *testing.T) {
 	}
 }
 
-// TestBranchWorktreePrunedAtStepRunTerminal verifies the D2 lifecycle: when
-// a branch step run is terminal, the scan reaps its worktree (path cleared,
-// branch retained) and never touches the run worktree or live branches.
+// TestBranchWorktreePrunedAtStepRunTerminal verifies the D2 lifecycle: when a branch step run is
+// terminal, the scan reaps its worktree (path cleared.
 func TestBranchWorktreePrunedAtStepRunTerminal(t *testing.T) {
 	env := newBranchDispatchEnv(t)
 	ctx := context.Background()
@@ -618,10 +641,8 @@ func TestBranchWorktreePrunedAtStepRunTerminal(t *testing.T) {
 	}
 }
 
-// TestBranchExecutionCwd verifies D2's cwd wiring: a branch execution
-// resolves its working directory from the STEP RUN's own branch worktree
-// (manifest.WorktreePath = branch path), and the execution row carries the
-// branch worktree state — not the run worktree's.
+// TestBranchExecutionCwd verifies D2's cwd wiring: a branch execution resolves its working
+// directory from the STEP RUN's own branch worktree (manifest.WorktreePath = branch path).
 func TestBranchExecutionCwd(t *testing.T) {
 	env := newBranchDispatchEnv(t)
 	ctx := context.Background()
@@ -630,9 +651,8 @@ func TestBranchExecutionCwd(t *testing.T) {
 	}
 	srA := env.getStepRun(t, "step-branch-a")
 
-	// Stamp the step run the way dispatchStep would, then dispatch via the
-	// REAL TaskReconciler so the execution row + startExecution cwd both
-	// go through production paths.
+	// Stamp the step run the way dispatchStep would, then dispatch via the REAL TaskReconciler so the
+	// execution row + startExecution cwd both go through production paths.
 	ttx, err := env.pool.BeginTenantTx(ctx, approvalTestTenant)
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
@@ -723,11 +743,8 @@ func executionsForStepRun(t *testing.T, pool *db.Pool, stepRunID string) []db.Ex
 	return []db.ExecutionRow{exec}
 }
 
-// TestD4FailedBranchDoesNotSmearRunningSibling is the AC4 test: when one
-// branch fails while a sibling is still RUNNING, the run stays running and
-// the sibling is never smeared with a shared skipped mark — it reaches its
-// OWN terminal mark, and only then does the run fail. A not-yet-dispatched
-// (pending) step IS still skipped so the failure surfaces immediately.
+// TestD4FailedBranchDoesNotSmearRunningSibling is the AC4 test: when one branch fails while a
+// sibling is still RUNNING.
 func TestD4FailedBranchDoesNotSmearRunningSibling(t *testing.T) {
 	pool := approvalTestPool(t)
 	ctx := context.Background()
@@ -744,6 +761,7 @@ func TestD4FailedBranchDoesNotSmearRunningSibling(t *testing.T) {
 		ID: db.NewID(), TenantID: approvalTestTenant,
 		Name: "D4 Project", Slug: "d4-" + strings.ToLower(db.NewID()),
 		Status: "active", Goals: []byte("[]"), ProjectDir: nonRepoDir(t),
+		ExecutionMode: db.ExecutionModeRuntime,
 	})
 	if err != nil {
 		t.Fatalf("create project: %v", err)
@@ -904,9 +922,8 @@ func TestD4FailedBranchDoesNotSmearRunningSibling(t *testing.T) {
 	}
 }
 
-// purgeBranchDispatchResidue clears the shared tenant's workflow state before a
-// branch-dispatch fixture, so the WorktreeReconciler's bounded, tenant-wide
-// candidate scan sees only the rows this fixture owns. See newBranchDispatchEnv.
+// purgeBranchDispatchResidue clears the shared tenant's workflow state before a branch-dispatch
+// fixture, so the WorktreeReconciler's bounded.
 func purgeBranchDispatchResidue(t *testing.T, pool *db.Pool) {
 	t.Helper()
 	ctx := context.Background()
@@ -918,6 +935,9 @@ func purgeBranchDispatchResidue(t *testing.T, pool *db.Pool) {
 	// Terminal + non-terminal workflow runs and their step runs from prior
 	// tests; the fixture recreates everything it needs.
 	for _, q := range []string{
+		// local_integrations FIRST: it references runs by id, and a stale obligation row would make the queue
+		// this platform now enforces hold a later fixture's run for an owner that no longer exists.
+		`DELETE FROM local_integrations WHERE tenant_id = $1`,
 		`DELETE FROM workflow_step_runs WHERE tenant_id = $1`,
 		`DELETE FROM workflow_runs WHERE tenant_id = $1`,
 	} {

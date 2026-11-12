@@ -1,23 +1,6 @@
 package opencode
 
 // step_files_test.go — PER-STEP FILE ATTRIBUTION on a Code Mode serve.
-//
-// The board's diff viewer showed NOTHING for every opencode execution ever run
-// (measured: 0 ledger rows across 2,398 executions). Two independent captures
-// were both blind on 2.x:
-//
-//   - the LIVE hook in parseEvent keys on a TOOL NAME (write / edit /
-//     batch_write), and on 2.x no MCP tool is ever a tool name: it is called
-//     through `execute`, so the part says `execute` and every case misses;
-//   - the END-OF-RUN git reconcile is defeated separately by the worker
-//     COMMITTING its work — its brief orders a clean `git status`, which is
-//     exactly the state in which `git status` reports nothing (covered in
-//     internal/fileedit/reconcile_runbranch_test.go).
-//
-// So this file covers the remaining signal, and the only one that is a property
-// of the STEP rather than of the call: `session.step.ended.files`, which
-// opencode emits for the paths a step changed. It survives however the tool was
-// invoked, because it is the agent surface reporting its own edit.
 
 import (
 	"context"
@@ -32,9 +15,8 @@ import (
 
 const v2StepEndedWithFiles = `{"type":"session.step.ended","data":{"sessionID":"ses_a","assistantMessageID":"msg_1","finish":"stop","cost":0.01,"tokens":{"input":10,"output":5},"files":["frontend/src/App.tsx","internal/tui/app.go"]}}`
 
-// TestV2StepEndedCarriesTheChangedFiles asserts the mapper does not DISCARD the
-// payload — the original omission was silent, and a dropped field is invisible
-// from the transcript it should have reached.
+// TestV2StepEndedCarriesTheChangedFiles asserts the mapper does not DISCARD the payload — the
+// original omission was silent.
 func TestV2StepEndedCarriesTheChangedFiles(t *testing.T) {
 	legacy, ok := LegacyEventFromBus(v2Bus(t, v2StepEndedWithFiles))
 	if !ok {
@@ -60,10 +42,8 @@ func stepFinishEvt(files ...string) map[string]any {
 	return map[string]any{"type": "step_finish", "part": map[string]any{"files": list}}
 }
 
-// TestStepFilesReachTheFileEditHook is the wiring: the paths a step reports must
-// arrive at the ledger hook, through the SAME "file_diff" arm the diff-event path
-// uses (so the observer's before/after reading and its no-op suppression are
-// shared rather than reimplemented).
+// TestStepFilesReachTheFileEditHook is the wiring: the paths a step reports must arrive at the
+// ledger hook, through the SAME "file_diff" arm the diff-event path uses (so the observer's.
 func TestStepFilesReachTheFileEditHook(t *testing.T) {
 	type call struct{ tool, path string }
 	var got []call
@@ -93,9 +73,8 @@ func TestStepFilesReachTheFileEditHook(t *testing.T) {
 	}
 }
 
-// TestStepFilesSkipEngineCoveredPaths pins the de-duplication: a path the engine
-// already recorded an EXACT diff for must not also get a snapshot row, or one
-// edit renders twice in the viewer.
+// TestStepFilesSkipEngineCoveredPaths pins the de-duplication: a path the engine already recorded
+// an EXACT diff for must not also get a snapshot row, or one edit renders twice in the viewer.
 func TestStepFilesSkipEngineCoveredPaths(t *testing.T) {
 	var got []string
 	a := &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -117,9 +96,8 @@ func TestStepFilesSkipEngineCoveredPaths(t *testing.T) {
 	}
 }
 
-// TestStepWithoutFilesTouchesNoLedger is the CONTROL: a step that reports no
-// files must not reach the hook at all. Otherwise every step would manufacture a
-// row for an empty path, and the ledger would fill with noise.
+// TestStepWithoutFilesTouchesNoLedger is the CONTROL: a step that reports no files must not reach
+// the hook at all.
 func TestStepWithoutFilesTouchesNoLedger(t *testing.T) {
 	calls := 0
 	a := &Adapter{log: slog.New(slog.NewTextHandler(io.Discard, nil))}

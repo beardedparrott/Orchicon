@@ -110,9 +110,7 @@ const (
 type scopeModal struct {
 	// kind is the scope this modal manages. See scopeOwnerKind.
 	kind scopeOwnerKind
-	// convID / projectID identify the surface for the OWNED-ROW scopes. The fetch result is discarded
-	// when it does not match the open surface, so a reply that lands after a switch cannot scope the
-	// wrong thing.
+	// convID / projectID identify the surface for the OWNED-ROW scopes.
 	convID    string
 	projectID string
 	// label names the surface in the modal's title (a project's name, a worker's name + version).
@@ -124,9 +122,7 @@ type scopeModal struct {
 	inherited []*apiv1.MCPServer
 
 	// secrets is the tenant secrets store's NAMES, and secretsNote explains why that list may be
-	// incomplete (the store could not be read, or it is longer than one page). EVERY scope needs them:
-	// a credential is never typed onto a server, so each scope's credential form PICKS from this list —
-	// an owned row as much as an inline spec.
+	// incomplete (the store could not be read, or it is longer than one page).
 	secrets     []mcpforms.SecretChoice
 	secretsNote string
 
@@ -144,10 +140,7 @@ type scopeModal struct {
 	// loading is true until the first fetch lands, and err carries a failed one.
 	loading bool
 	err     string
-	// dirty marks an IN-MEMORY edit that has not been committed yet. The inline form's save callback
-	// cannot return a command (mcpforms.InlineForm's contract), so a worker-version edit is committed when
-	// the FORM CLOSES — and only when something actually changed, so dismissing a form unchanged is not a
-	// write.
+	// dirty marks an IN-MEMORY edit that has not been committed yet.
 	dirty bool
 	// cursor is the index into rows() of the SELECTED row (movement skips non-selectable rows).
 	cursor int
@@ -184,20 +177,13 @@ type scopeDataMsg struct {
 	convID    string
 	mcp       []*apiv1.MCPServer
 	inherited []*apiv1.MCPServer
-	// secrets / secretsNote are the tenant store's NAMES and why that list may be short. They ride along
-	// with the definitions because a credential is SELECTED at every scope now, and this is the read the
-	// open path already makes — a second round trip after `k` would make the picker feel broken rather
-	// than ready.
+	// secrets / secretsNote are the tenant store's NAMES and why that list may be short.
 	secrets     []mcpforms.SecretChoice
 	secretsNote string
 	err         string
 }
 
 // openScopeModal opens the modal for the OPEN conversation and starts its fetch.
-//
-// A conversation is required: the whole surface is per-conversation (a definition belongs to exactly one
-// scope, and the skills belong to the conversation row), so with nothing open there is nothing to edit —
-// and the same refusal the old commands gave is the right one.
 func (m *App) openScopeModal() tea.Cmd {
 	if m.chatConvID == "" {
 		m.dock.SetError("no conversation open — the scope belongs to ONE conversation; /new starts one, " +
@@ -214,10 +200,8 @@ func (m *App) openScopeModal() tea.Cmd {
 	return cmd
 }
 
-// openProjectScopeModal opens the same modal for a PROJECT — its MCP definitions and its skill files.
-//
-// The project is the SOURCE of what its conversations and workers inherit, so nothing is inherited here
-// and the whole surface is writable.
+// openProjectScopeModal opens the same modal for a PROJECT — its MCP definitions and its skill
+// files.
 func (m *App) openProjectScopeModal(projectID, name string) tea.Cmd {
 	if projectID == "" {
 		m.dock.SetError("no project selected")
@@ -227,38 +211,29 @@ func (m *App) openProjectScopeModal(projectID, name string) tea.Cmd {
 	return m.loadScope()
 }
 
-// openWorkerVersionScopeModal opens the modal for a WORKER VERSION — its inline MCP specs and its skill
-// files, both held in the version's own fields.
-//
-// IN MEMORY, because a version has no rows: a published version is immutable, so its specs live in the
-// permissions JSON and are written back THROUGH the version update. The caller supplies that write as
-// saveInline (the Execution screen owns the RPC, and the shell must not re-implement it).
+// openWorkerVersionScopeModal opens the modal for a WORKER VERSION — its inline MCP specs and its
+// skill files, both held in the version's own fields.
 func (m *App) openWorkerVersionScopeModal(label, permissionsJSON, skillFilesJSON string, saveInline func(permJSON, skillsJSON string) tea.Cmd) tea.Cmd {
 	m.scope = &scopeModal{
 		kind:     ownerWorkerVersion,
 		label:    label,
 		inline:   mcpforms.ParseInline(permissionsJSON),
 		permBase: permissionsJSON,
-		// THE VERSION'S FIELD IS A JSON ARRAY, not the newline/comma path list the form uses — decoding
-		// it with the path-list parser left the raw JSON as a single "path" (caught by
-		// TestWorkerVersionSkillsCommitThroughTheSave).
+		// THE VERSION'S FIELD IS A JSON ARRAY, not the newline/comma path list the form uses — decoding it
+		// with the path-list parser left the raw JSON as a single "path" (caught.
 		skills:     decodeSkillFilesJSON(skillFilesJSON),
 		saveInline: saveInline,
 	}
 	return nil
 }
 
-// closeScopeModal closes it. Called when the surface under it changes identity (a different
-// conversation), NOT on every repaint: the modal is the shell's, and it belongs to one conversation —
-// the GUI closes its Scope disclosure on a conversation switch for exactly this reason
-// (ConversationScopeDisclosure: "Switching conversation closes it").
+// closeScopeModal closes it.
 func (m *App) closeScopeModal() {
 	m.scope = nil
 }
 
 // loadScope fetches the scope's owned definitions — and, for a conversation, the project's for the
-// read-only half. A WORKER VERSION fetches nothing: its specs are in the version's own fields, which the
-// opener already put in memory.
+// read-only half.
 func (m *App) loadScope() tea.Cmd {
 	if m.scope == nil {
 		return nil
@@ -295,9 +270,7 @@ func (m *App) loadScope() tea.Cmd {
 		}
 		out := scopeDataMsg{convID: convID, mcp: mine.Msg.GetServers()}
 		// THE STORE'S NAMES RIDE ALONG, at every scope: a credential is SELECTED from the tenant store at
-		// every scope now (mcpforms.OwnedCredentialForm / CredentialForm), so all three scopes need the
-		// list. A FAILED STORE READ IS NOT A FAILED OPEN — the definitions are what the operator came to
-		// edit, and secretsNote is how the picker explains a list it could not fill.
+		// every scope now (mcpforms.OwnedCredentialForm / CredentialForm).
 		out.secrets, out.secretsNote = listSecretChoices(ctx, cl)
 		// A PROJECT scope is the source: it inherits nothing, so there is no second read.
 		if isProject {
@@ -310,9 +283,7 @@ func (m *App) loadScope() tea.Cmd {
 				ProjectId: projectID,
 			}))
 			if err != nil {
-				// The inherited half is CONTEXT, not the subject. A failure here is reported on the modal
-				// but must not hide the conversation's own definitions, which are what the operator came
-				// to edit.
+				// The inherited half is CONTEXT, not the subject.
 				out.err = "the project's definitions could not be read: " + err.Error()
 				return out
 			}
@@ -322,9 +293,7 @@ func (m *App) loadScope() tea.Cmd {
 	}
 }
 
-// onScopeData applies a fetched scope. A reply for a conversation this modal is no longer about is
-// DISCARDED rather than applied: the fetch is asynchronous, and a switch in between would otherwise
-// present one chat's definitions as another's.
+// onScopeData applies a fetched scope.
 func (m *App) onScopeData(msg scopeDataMsg) {
 	if m.scope == nil || m.scope.convID != msg.convID {
 		return
@@ -334,10 +303,7 @@ func (m *App) onScopeData(msg scopeDataMsg) {
 	m.scope.mcp = msg.mcp
 	m.scope.inherited = msg.inherited
 	m.scope.secrets, m.scope.secretsNote = msg.secrets, msg.secretsNote
-	// SEAT THE CURSOR ON A REAL ROW before the first paint. A fresh modal starts at 0, which is the
-	// section heading — and a cursor resting on a heading is both wrong to look at and a trap for every
-	// verb (`enter`, `d`, `i` … all resolve through the selected row). The row list only becomes
-	// knowable once the fetch lands, which is why this happens here rather than in openScopeModal.
+	// SEAT THE CURSOR ON A REAL ROW before the first paint.
 	m.scope.seatCursor(m)
 }
 
@@ -397,12 +363,7 @@ func (m *App) projectForConversation(id string) (railProject, bool) {
 
 // --- the rows ---------------------------------------------------------------
 
-// rows builds the modal's rows from current shell state. See scopeModal's doc for why this is derived
-// per render rather than stored.
-//
-// IT BRANCHES ON THE OWNER, which is the whole point of the generalization: the GUI's panel renders one
-// shape over three persistence targets, and so does this. The two halves that differ are named in
-// scopeOwnerKind.
+// rows builds the modal's rows from current shell state.
 func (s *scopeModal) rows(m *App) []scopeRow {
 	switch s.kind {
 	case ownerWorkerVersion:
@@ -466,8 +427,7 @@ func (s *scopeModal) conversationRows(m *App) []scopeRow {
 }
 
 // projectRows is the PROJECT surface: its own definitions and its own skill files, with nothing
-// inherited — a project is the SOURCE of what its conversations and workers inherit, so there is no
-// outer scope to show.
+// inherited — a project is the SOURCE of what its conversations and workers inherit.
 func (s *scopeModal) projectRows(m *App) []scopeRow {
 	var out []scopeRow
 
@@ -493,12 +453,6 @@ func (s *scopeModal) projectRows(m *App) []scopeRow {
 	}
 	// WHAT CONSUMES THIS SCOPE, named — the same question the conversation surface answers in reverse
 	// ("why is this server available here?"), and the reason the definitions are worth managing here.
-	//
-	// A PROJECT'S DEFINITIONS ARE CONSUMED BY ITS CONVERSATIONS, NOT BY WORKERS. Workers are TENANT-LEVEL
-	// ("Workers are tenant level and not project level"), and a worker version's MCP specs are its OWN
-	// inline list — the GUI's panel resolves a version's specs from the version, and nothing here is read
-	// by a worker. Saying otherwise would send an operator to add a server "for my workers" on a project
-	// page, which would do nothing.
 	out = append(out, scopeRow{kind: scopeRowNote,
 		text: "consumed by this project's conversations"})
 	return out
@@ -575,9 +529,8 @@ func (s *scopeModal) clampCursor(n int) {
 	}
 }
 
-// mcpScopeLine renders one definition the way the GUI's card does: transport, where it points, whether
-// it is enabled, and the two states an operator has to know before using it (installed, credential
-// stored).
+// mcpScopeLine renders one definition the way the GUI's card does: transport, where it points,
+// whether it is enabled, and the two states an operator has to know before using it (installed.
 func mcpScopeLine(s *apiv1.MCPServer) string {
 	transport := "stdio"
 	where := s.GetCommand() + " " + strings.Join(s.GetArgs(), " ")
@@ -616,13 +569,8 @@ func inlineScopeLine(spec mcpforms.InlineSpec) string {
 	return strings.Join(parts, " · ")
 }
 
-// installStateWord names a definition's install status — the one field the GUI renders as a badge (and
-// the one an operator needs before a server silently fails to start).
-//
-// UNKNOWN (1) and UNSPECIFIED (0) render as NOTHING rather than as "not installed": those are the
-// statuses of a definition that was never a catalog entry, so "not installed" would be a claim about a
-// check that never ran (the same distinction the GUI's InstallStatusBadge keeps by defaulting to "not
-// installed" only after the check).
+// installStateWord names a definition's install status — the one field the GUI renders as a badge
+// (and the one an operator needs before a server silently fails to start).
 func installStateWord(st apiv1.MCPInstallStatus) string {
 	switch st {
 	case apiv1.MCPInstallStatus_MCP_INSTALL_STATUS_INSTALLED:
@@ -639,13 +587,7 @@ func installStateWord(st apiv1.MCPInstallStatus) string {
 
 // --- the keys ---------------------------------------------------------------
 
-// scopeKey drives the modal. Like every other shell modal it OWNS every key while it is up, so a
-// keystroke aimed at the list can never reach the composer behind it.
-//
-// THE VERBS ARE NAMES, NOT A GRAMMAR. Movement is up/down (with the project picker's ctrl+p/ctrl+n
-// alternates, so the two shell modals move the same way), and each capability has its own letter with
-// the hint bar spelling all of them out — which is the whole point of replacing
-// "/mcp define|edit|delete|secret|install": nothing here has to be remembered in advance.
+// scopeKey drives the modal.
 func (m *App) scopeKey(k tea.KeyMsg) (*App, tea.Cmd) {
 	if m.scope == nil {
 		return m, nil
@@ -685,9 +627,8 @@ func (m *App) scopeKey(k tea.KeyMsg) (*App, tea.Cmd) {
 	return m, nil
 }
 
-// scopeTarget resolves the selected row and refuses, with a reason, when the key does not apply to it.
-// The refusals are named actions rather than silence: "nothing selected" and "that row is read-only"
-// are different situations, and a key that appears to do nothing reads as broken.
+// scopeTarget resolves the selected row and refuses, with a reason, when the key does not apply to
+// it.
 func (m *App) scopeTarget(verb, needs string) (scopeRow, bool) {
 	row, ok := m.scope.selected(m)
 	if !ok {
@@ -722,13 +663,8 @@ func (m *App) scopeTarget(verb, needs string) (scopeRow, bool) {
 		m.dock.SetError(verb + " applies to an MCP definition — ↑/↓ moves to one")
 		return scopeRow{}, false
 	case "credential":
-		// A DEFINITION ROW *OR* AN INLINE SPEC, because the two attach a credential DIFFERENTLY rather
-		// than one of them not at all: an owned row stores it against its ID (mcpsettings.SetSecret),
-		// while a version's spec has no row and gets the ${SECRET_NAME} reference built INTO its own
-		// config (mcpforms.CredentialForm). The refusal this case replaced — "there is no row to attach
-		// a credential to" — was true about the row and wrong about the capability. The operator: "I
-		// understand that it is inline but that doesn't mean that info can't be built on top and passed
-		// to the config."
+		// A DEFINITION ROW *OR* AN INLINE SPEC, because the two attach a credential DIFFERENTLY rather than
+		// one of them not at all: an owned row stores it against its ID (mcpsettings.SetSecret).
 		switch row.kind {
 		case scopeRowMCP:
 			if owned {
@@ -849,21 +785,18 @@ func (m *App) openScopeMCPDefine(prefill *apiv1.MCPServer) {
 	m.convScopeForm = f
 }
 
-// scopeAddMCPFromCatalog opens the registry picker for this scope, which prefills the same definition
-// form — the TUI's one-click add, mirroring the GUI's Registry catalog grid. A version has no row to
-// create, so this is refused there rather than opening a form whose save would go nowhere.
+// scopeAddMCPFromCatalog opens the registry picker for this scope, which prefills the same
+// definition form — the TUI's one-click add, mirroring the GUI's Registry catalog grid.
 func (m *App) scopeAddMCPFromCatalog() tea.Cmd {
 	cl := m.clients
 	owner := m.scope.scopeMCPOwner()
 	versionScope := m.scope.kind == ownerWorkerVersion
 	save := func(req *apiv1.MCPServerCreateRequest) tea.Cmd {
 		// A WORKER VERSION HAS NO ROW TO CREATE, so the catalog PREFILLS ITS ADD FORM instead — the same
-		// thing the GUI does (handleCatalogAdd fills the form, and the form's save writes the version's
-		// array). The operator confirms before anything is written, and the spec lands inline.
+		// thing the GUI does (handleCatalogAdd fills the form.
 		if versionScope {
-			// A MESSAGE, not a direct call: this runs inside the CATALOG form's OnSubmit, and a form must
-			// be opened on the live model (see versionSpecPrefillMsg). The spec is converted here because
-			// the prefill's shape is the catalog's business.
+			// A MESSAGE, not a direct call: this runs inside the CATALOG form's OnSubmit, and a form must be
+			// opened on the live model (see versionSpecPrefillMsg).
 			spec := mcpforms.InlineSpecFromCreateRequest(req)
 			return func() tea.Msg { return versionSpecPrefillMsg{spec: spec} }
 		}
@@ -912,32 +845,16 @@ func (m *App) scopeAddMCPFromCatalog() tea.Cmd {
 	return nil
 }
 
-// versionSpecPrefillMsg asks the shell to open the INLINE add form on a spec it has just built — the
-// catalog's pick, converted.
-//
-// IT IS A MESSAGE, NOT A DIRECT CALL, and that is this file's own recorded rule (see
-// openWorkerVersionScopeModal: "the modal is opened on the MESSAGE rather than inside the cmd, because a
-// cmd mutates a discarded App copy"). The pick runs inside ANOTHER FORM's OnSubmit, so a direct
-// `m.openInlineSpecForm(...)` would mutate whichever App copy that callback happens to hold — and if it
-// did not reach the live one, the catalog form would still be cleared (it submitted) while the form it
-// was supposed to open never appeared. That is precisely the operator's report: "it just jumps back to
-// the mcp screen and doesn't show that any MCP servers have been added."
+// versionSpecPrefillMsg asks the shell to open the INLINE add form on a spec it has just built —
+// the catalog's pick, converted.
 type versionSpecPrefillMsg struct{ spec mcpforms.InlineSpec }
 
-// openInlineSpecForm opens the add/edit form for ONE inline spec of a worker version, and commits it
-// through the version's own save. There is no RPC per spec: the modal owns the array and writes it back
-// as a whole, which is what keeps a published version's history intact (see scopeOwnerKind).
-//
-// `seed` PREFILLS the form. A CATALOG PICK passes a seed derived from the catalog entry
-// (mcpforms.InlineSpecFromCreateRequest) and isEdit=false, so the two add paths — by hand and from the
-// catalog — are the SAME control, and the operator confirms before anything is written. That is how the
-// GUI works: its catalog Add fills the add form rather than creating anything.
+// openInlineSpecForm opens the add/edit form for ONE inline spec of a worker version, and commits
+// it through the version's own save.
 func (m *App) openInlineSpecForm(src *mcpforms.InlineSpec, isEdit bool) {
 	s := m.scope
 	if s == nil || s.kind != ownerWorkerVersion {
-		// REFUSE OUT LOUD. A silent return here is the worst possible outcome: the caller (another form's
-		// submit, or a message that arrived after the scope changed) is cleared either way, so the
-		// operator sees a modal that closes having added nothing — indistinguishable from a broken key.
+		// REFUSE OUT LOUD.
 		m.dock.SetError("no worker version is open — a version's MCP specs are edited from its own scope")
 		return
 	}
@@ -980,9 +897,8 @@ func (m *App) openInlineSpecForm(src *mcpforms.InlineSpec, isEdit bool) {
 	m.convScopeForm = f
 }
 
-// scopeEditSelected acts on the focused row: an MCP definition opens its edit form, a skill path opens
-// the path list. `enter` and `e` are the same act (the picker's own idiom: enter does the obvious
-// thing), and neither is destructive.
+// scopeEditSelected acts on the focused row: an MCP definition opens its edit form, a skill path
+// opens the path list.
 func (m *App) scopeEditSelected() tea.Cmd {
 	row, ok := m.scope.selected(m)
 	if !ok {
@@ -1018,10 +934,8 @@ func (m *App) scopeEditSelected() tea.Cmd {
 	return nil
 }
 
-// scopeEditSkills opens the typed path list, PREFILLED with what this scope holds — the TUI's control
-// for the skill_files array (the GUI browses with a file tree; the TUI types a path list, the same
-// deliberate asymmetry context_files already has). The form is prefilled so a removal is an edit rather
-// than a retype, and an emptied field clears the list.
+// scopeEditSkills opens the typed path list, PREFILLED with what this scope holds — the TUI's
+// control for the skill_files array (the GUI browses with a file tree; the TUI types a path list.
 func (m *App) scopeEditSkills() tea.Cmd {
 	s := m.scope
 	if s == nil {
@@ -1089,10 +1003,6 @@ func (m *App) scopeSkillsSaver() func([]string) tea.Cmd {
 }
 
 // commitWorkerVersion writes the modal's in-memory edit back through the version's own save.
-//
-// IT MERGES INTO THE BASE PERMISSIONS, never replaces them: the modal OWNS the mcp_servers key of that
-// blob, and the version's other keys (tools, model_providers, …) must survive the edit. The same rule
-// mcpforms.MergeIntoPermissions documents for the form fields.
 func (m *App) commitWorkerVersion() tea.Cmd {
 	s := m.scope
 	if s == nil || s.kind != ownerWorkerVersion || s.saveInline == nil {
@@ -1144,12 +1054,6 @@ func (m *App) scopeInstallSelected() tea.Cmd {
 }
 
 // scopeCredentialForSelected opens the credential form for the focused definition.
-//
-// THE CREDENTIAL IS SELECTED, NOT TYPED — at every scope. The form picks the KEY from what the server
-// declares and already carries, and the SECRET from the tenant store's names; a value is asked for only to
-// CREATE a new secret. What this replaced typed a key and a value straight onto the row and stored the value
-// under a plane-derived name, so nothing about it was visible to, or rotatable from, the secrets store
-// ("we should not allow that option at all").
 func (m *App) scopeCredentialForSelected() tea.Cmd {
 	row, ok := m.scopeTarget("credential", "credential")
 	if !ok {
@@ -1178,9 +1082,7 @@ func (m *App) scopeCredentialForSelected() tea.Cmd {
 	return nil
 }
 
-// scopeServerByID finds one of the scope's OWNED rows by id. Nil when it is gone: the modal can be showing
-// a list the plane has since changed, and a credential form built against a vanished row would write a
-// reference nobody reads.
+// scopeServerByID finds one of the scope's OWNED rows by id.
 func (m *App) scopeServerByID(id string) *apiv1.MCPServer {
 	if m.scope == nil {
 		return nil
@@ -1239,11 +1141,6 @@ func (m *App) openInlineCredentialForm(row scopeRow) {
 }
 
 // attachCredentialCmd stores a NEW credential when one is asked for, then hands the attach onward.
-//
-// THE STORE WRITE IS THE FIRST LINK and a failure stops the chain with the version untouched. The
-// secret NAME is not validated here: the store's own rule (secrets.ValidateName) is the source of
-// truth and it answers with its own message, which reaches the operator as the store's rejection —
-// the same reasoning the Control screen's secret form documents.
 func (m *App) attachCredentialCmd(specID, key, secret, value string) tea.Cmd {
 	cl := m.clients
 	label := ""
@@ -1271,10 +1168,8 @@ func (m *App) attachCredentialCmd(specID, key, secret, value string) tea.Cmd {
 	}
 }
 
-// credentialAttachedMsg reports a credential that is safe to reference (it was already stored, or it
-// has just been). IT IS A MESSAGE, NOT A DIRECT CALL, because the store write is asynchronous and the
-// in-memory edit must not happen until it has landed — and because the form's own submit is the only
-// thing that can hand it onward (see the router's form-guard note).
+// credentialAttachedMsg reports a credential that is safe to reference (it was already stored, or
+// it has just been).
 type credentialAttachedMsg struct {
 	// scopeLabel names the surface it belongs to, so a reply that lands after the operator opened a
 	// DIFFERENT worker version is discarded rather than applied to the wrong spec.
@@ -1400,10 +1295,6 @@ func (m *App) onScopeSecrets(msg scopeSecretsMsg) {
 }
 
 // reloadScope re-reads what the CURRENT scope's rows are built from.
-//
-// A WORKER VERSION HAS NO ROWS TO RE-READ, but its credential picker does: the tenant secrets store is
-// a live thing the operator may have just written to from the Control screen, and `r` is advertised as
-// the refresh — a picker that silently refuses a secret created a minute ago would read as broken.
 func (m *App) reloadScope() tea.Cmd {
 	if m.scope != nil && m.scope.kind == ownerWorkerVersion {
 		return m.loadScopeSecrets()
@@ -1411,13 +1302,8 @@ func (m *App) reloadScope() tea.Cmd {
 	return m.loadScope()
 }
 
-// scopeDeleteSelected removes the focused row's thing: an owned definition, an inline spec, or one skill
-// path.
-//
-// ALL ARE CONFIRMED, through the shell's own confirm dialog, even though the GUI deletes a definition on
-// a single button press: `d` sits one key from the movement keys in a list the operator is scanning, and
-// the write is not undoable from here. The dialog NAMES what goes and what does not, which is the part a
-// bare "are you sure" would leave out.
+// scopeDeleteSelected removes the focused row's thing: an owned definition, an inline spec, or one
+// skill path.
 func (m *App) scopeDeleteSelected() tea.Cmd {
 	row, ok := m.scopeTarget("delete", "writable")
 	if !ok {
@@ -1436,9 +1322,7 @@ func (m *App) scopeDeleteSelected() tea.Cmd {
 			"delete", func() tea.Cmd { return m.scopeDeleteMCP(row.id, row.name) })
 		return nil
 	case scopeRowInlineMCP:
-		// THE COPY SAYS WHAT ACTUALLY HAPPENS. The modal commits to the version as soon as the change is
-		// made (there is no outer "Save" on a shell-hosted modal), so promising "not saved until you save
-		// the version" would be a lie about a write that has already gone out.
+		// THE COPY SAYS WHAT ACTUALLY HAPPENS.
 		m.openBulkConfirm("Remove this MCP spec from the version?",
 			row.name+" will be removed from this worker version's permissions and SAVED immediately.\n"+
 				"The version's other permissions are untouched.",
@@ -1547,9 +1431,7 @@ func (m *App) scopeBody() string {
 	if hi < len(rows) {
 		b.WriteString(theme.HintText.Render(truncateRight("  … more rows below", inner)) + "\n")
 	}
-	// THE HINT WRAPS, it is never truncated — see scopeHintItems. Its final verb (esc: close) is the one
-	// an operator reaches for when the verbs above it did not do what they expected, so it is the last
-	// thing that may be cut.
+	// THE HINT WRAPS, it is never truncated — see scopeHintItems.
 	for _, line := range wrapHintItems(m.scopeHintItems(), inner) {
 		b.WriteString(theme.HintText.Render(line) + "\n")
 	}
@@ -1646,12 +1528,7 @@ func (m *App) scopeHintItems() []string {
 		items = []string{"↑/↓ move", "enter/e: edit list", "d: remove"}
 	}
 
-	// The global verbs. `a` (add by hand) exists at every scope — a version adds an inline spec, the
-	// others add an owned row — and `s` (skill files) likewise.
-	// `c: catalog` APPLIES AT EVERY SCOPE, including a worker version: the catalog PREFILLS the add form
-	// and the form's save writes whichever target the scope has (a row, or an inline spec). The verbs that
-	// genuinely need a ROW — install and credential — are omitted by the row cases above, where they
-	// belong, rather than by a scope-wide flag here.
+	// The global verbs.
 	items = append(items, "a: add", "c: catalog", "s: skill files", "r: refresh", "esc: close")
 	return items
 }
@@ -1659,9 +1536,8 @@ func (m *App) scopeHintItems() []string {
 // scopeHint is the hint on one line (the single-line consumers).
 func (m *App) scopeHint() string { return strings.Join(m.scopeHintItems(), " · ") }
 
-// wrapHintItems packs the items into lines of at most width cells, joined with the " · " the hint has
-// always used. An item WIDER than the whole line is hard-split rather than truncated: a cut-off key
-// label is the defect being fixed, and losing one is worse than an ugly break.
+// wrapHintItems packs the items into lines of at most width cells, joined with the " · " the hint
+// has always used.
 func wrapHintItems(items []string, width int) []string {
 	const sep = " · "
 	if len(items) == 0 {
@@ -1712,8 +1588,7 @@ func (m *App) scopeConversation() string {
 }
 
 // scopeConversationChanged closes the modal when the open conversation is no longer the one it is
-// about. It is the shell's guard rather than a call at each switch site, so a future switch path cannot
-// forget it — the failure it prevents is a modal editing one chat's scope while another is open.
+// about.
 func (m *App) scopeConversationChanged() {
 	if m.scope != nil && m.scope.kind == ownerConversation && m.scope.convID != m.chatConvID {
 		m.closeScopeModal()
@@ -1742,19 +1617,14 @@ type workerVersionScopeMsg struct {
 	permissions string
 	skillFiles  string
 	// secrets (and the note explaining an unreadable or partial list) ride along because THIS scope's
-	// credential form needs something to pick from, and this is the one read the open path already
-	// makes — a second round trip after `k` would make the picker feel broken rather than ready.
+	// credential form needs something to pick.
 	secrets     []mcpforms.SecretChoice
 	secretsNote string
 	err         string
 }
 
-// OpenWorkerMCPModal opens the MCP + skills modal for a worker's version — the surface the Execution
-// screen's Workers pane opens on `m`, matching the panel the GUI mounts on a worker page.
-//
-// IT FETCHES FIRST, because the list row carries neither the version id (which the update needs) nor the
-// version's permissions and skill files (which are what the modal manages). One read of the worker, then
-// the modal owns an in-memory copy until the operator saves.
+// OpenWorkerMCPModal opens the MCP + skills modal for a worker's version — the surface the
+// Execution screen's Workers pane opens on `m`, matching the panel the GUI mounts on a worker page.
 func (m *App) OpenWorkerMCPModal(workerID, workerName string) tea.Cmd {
 	if workerID == "" {
 		m.dock.SetError("no worker selected")
@@ -1820,22 +1690,7 @@ func (m *App) workerVersionSaver(workerID, versionID string, cl *client.Clients)
 				}
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 				defer cancel()
-				// PERMISSIONS AND SKILL FILES TOGETHER, in one update: they are both optional fields on
-				// the request, and writing one without the other would leave the version's two halves
-				// disagreeing about what the modal just showed.
-				//
-				// REPUBLISH IS WHAT MAKES THIS WORK ON A PUBLISHED VERSION, and leaving it unset was a
-				// real bug: the server refuses a non-draft version to update ("status is \"published\",
-				// must be 'draft'"), so the modal would have failed on exactly the versions an operator
-				// is most likely to be editing. With it set, a PUBLISHED version takes the same
-				// revert → update → republish flow the model gets from BulkUpdateWorkerModel, keeping the
-				// version number and the published state. A DRAFT ignores the flag (the server only
-				// consults it for a non-draft status), so it is edited in place and stays a draft.
-				//
-				// The operator's question is what surfaced it: "You can add models to a worker without
-				// modifying a version. Why can't we add MCP servers like that as well?" The model path
-				// edits the version row too (model_ref is a column there) — it just has a dedicated RPC
-				// that does revert→set→republish for you, which is why it never looks like a version edit.
+				// PERMISSIONS AND SKILL FILES TOGETHER, in one update.
 				if _, err := cl.Workers.UpdateWorkerVersion(ctx, connect.NewRequest(&apiv1.UpdateWorkerVersionRequest{
 					WorkerId:    workerID,
 					VersionId:   versionID,

@@ -13,19 +13,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-// TestJetStreamConstantMsgIDIsDeduplicated is the regression guard for the
-// blocking finding that made the per-token execution.text outbox write load
-// bearing: the direct publish used a CONSTANT JetStream MsgID
-// ("direct:<exec>:<event-type>"), and the stream is created with
-// Duplicates: 5m — so JetStream silently stored only the FIRST direct publish
-// per execution per 5 minutes. Every later text chunk reached the GUI only via
-// the outbox relay. Once the per-token outbox write is removed, a unique
-// per-publish MsgID is what keeps live streaming working.
-//
-// The test boots a real nats-server (skipped when the binary is absent) with the
-// exact stream config used in production (see NewNATSPublisher) and asserts:
-//   - the same MsgID published twice is deduplicated (Duplicate=true, one stored)
-//   - unique MsgIDs (the fix) are both stored, with distinct sequences.
+// TestJetStreamConstantMsgIDIsDeduplicated is the regression guard for the blocking finding that
+// made the per-token execution.text outbox write load bearing.
 func TestJetStreamConstantMsgIDIsDeduplicated(t *testing.T) {
 	bin, err := exec.LookPath("nats-server")
 	if err != nil {

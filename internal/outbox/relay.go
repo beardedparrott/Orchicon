@@ -12,13 +12,7 @@ import (
 	otelmetric "go.opentelemetry.io/otel/metric"
 )
 
-// Outbox lag alert thresholds. A relay that stops making progress used to
-// accumulate silently for six weeks (8.4M rows / 8.4 GB, see
-// docs/outbox-retention.md). Depth alone is ambiguous — a busy relay with a
-// short backlog is healthy — so the age of the OLDEST unpublished row is the
-// real stall signal. Either threshold breached on one poll tick raises the
-// alert (metric counter + structured WARN), so a stalled relay is visible
-// within one 5s reporting tick instead of weeks.
+// Outbox lag alert thresholds.
 const (
 	// outboxLagAlertDepth is the unpublished-row count above which the relay
 	// reports a stall alert.
@@ -28,22 +22,12 @@ const (
 	outboxLagAlertAgeSec = 300
 )
 
-// outboxPruneMaxBatchesPerTick bounds how many bounded delete batches one
-// retention pass runs, so a pass cannot monopolise WAL or hold locks for an
-// unbounded time even when millions of rows are eligible.
+// outboxPruneMaxBatchesPerTick bounds how many bounded delete batches one retention pass runs, so a
+// pass cannot monopolise WAL or hold locks for an unbounded time even when millions of rows.
 const outboxPruneMaxBatchesPerTick = 10
 
-// Relay polls the outbox table for unpublished rows and publishes them
-// to NATS via the eventbus Publisher (docs/09_Database_Schema.md §6).
-// Delivery is at-least-once; JetStream deduplication on event_id makes
-// concurrent relays safe. The relay marks rows published only after a
-// successful publish.
-//
-// Phase 3 adds lag metrics: orchicon_outbox_lag (gauge — relay health,
-// docs/08 §5.2) and orchicon_outbox_published_total (counter). Retention
-// (docs/outbox-retention.md) adds a scheduled prune of PUBLISHED rows older
-// than N days plus the orchicon_outbox_oldest_unpublished_seconds gauge and
-// the orchicon_outbox_lag_alerts_total counter.
+// Relay polls the outbox table for unpublished rows and publishes them to NATS via the eventbus
+// Publisher (docs/09_Database_Schema.md §6).
 type Relay struct {
 	pool      *db.Pool
 	publisher eventbus.Publisher
@@ -115,8 +99,6 @@ func NewRelay(pool *db.Pool, pub eventbus.Publisher, log *slog.Logger, opts ...R
 
 	// Register lag gauges (orchicon_outbox_lag — docs/08 §5.2 — and
 	// orchicon_outbox_oldest_unpublished_seconds, the relay stall detector).
-	// No unit on either: the Prometheus exporter appends "_<unit>" to metric
-	// names, which would break the canonical names the dashboards query.
 	gauge, err := telemetry.Meter().Int64ObservableGauge(
 		"orchicon_outbox_lag",
 		otelmetric.WithDescription("Number of unpublished outbox rows (relay health)"),
@@ -155,9 +137,7 @@ func NewRelay(pool *db.Pool, pub eventbus.Publisher, log *slog.Logger, opts ...R
 	return r
 }
 
-// Run polls the outbox until ctx is cancelled. It is safe to run
-// multiple relays concurrently; JetStream dedup on event_id prevents
-// duplicate delivery (docs/09 §6).
+// Run polls the outbox until ctx is cancelled.
 func (r *Relay) Run(ctx context.Context) error {
 	r.log.Info("outbox relay started", "batch_size", r.batchSize, "interval", r.interval)
 	t := time.NewTicker(r.interval)
@@ -194,9 +174,8 @@ func (r *Relay) tick(ctx context.Context) error {
 	for _, row := range rows {
 		subject := eventbus.SubjectFor(row.AggregateType, row.EventType)
 		if err := r.publisher.Publish(ctx, subject, row.EventID, row.Payload); err != nil {
-			// Stop processing this batch on first failure; the row stays
-			// unpublished and will be retried on the next tick. Rows
-			// already published in this batch are marked below.
+			// Stop processing this batch on first failure; the row stays unpublished and will be retried on the
+			// next tick.
 			r.log.Error("outbox publish failed",
 				"event_id", row.EventID, "subject", subject, "error", err)
 			break
@@ -214,11 +193,8 @@ func (r *Relay) tick(ctx context.Context) error {
 	return nil
 }
 
-// lagReporter periodically counts unpublished outbox rows, records the age of
-// the oldest one, and raises the stall alert when either threshold is
-// breached. The count is an approximation (not transactionally consistent
-// with the relay tick) but is sufficient for alerting (docs/08 §8:
-// "orchicon_outbox_lag metric alerts before it harms correctness").
+// lagReporter periodically counts unpublished outbox rows, records the age of the oldest one, and
+// raises the stall alert when either threshold is breached.
 func (r *Relay) lagReporter(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -232,9 +208,8 @@ func (r *Relay) lagReporter(ctx context.Context) {
 	}
 }
 
-// reportLagOnce samples outbox depth + oldest-unpublished age, stores them for
-// the gauges, and raises the stall alert when either threshold is breached.
-// Extracted from the reporter loop so tests can drive exactly one sample.
+// reportLagOnce samples outbox depth + oldest-unpublished age, stores them for the gauges, and
+// raises the stall alert when either threshold is breached.
 func (r *Relay) reportLagOnce(ctx context.Context) {
 	count, oldest, err := r.pool.CountAndOldestUnpublished(ctx)
 	if err != nil {
@@ -290,12 +265,8 @@ func (r *Relay) pruneLoop(ctx context.Context) {
 	}
 }
 
-// PruneOnce runs one bounded retention pass: up to
-// outboxPruneMaxBatchesPerTick delete statements of at most r.pruneBatch rows
-// each, stopping early when a batch comes back short (no more eligible rows).
-// It returns the total rows deleted. It is exported so tests and operators can
-// drive a single pass deterministically. A return of (0, nil) means either
-// retention is disabled or nothing was eligible.
+// PruneOnce runs one bounded retention pass: up to outboxPruneMaxBatchesPerTick delete statements
+// of at most r.pruneBatch rows each.
 func (r *Relay) PruneOnce(ctx context.Context) (int64, error) {
 	if r.retention <= 0 {
 		return 0, nil

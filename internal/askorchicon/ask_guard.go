@@ -11,21 +11,6 @@ import (
 )
 
 // ask_guard.go: the Ask path's destructive-command backstop.
-//
-// The worker path applies the execution guard (internal/guard) by
-// prepending a shim dir to the agent's PATH (internal/runtime/agent.go:
-// guard.MakeGuard + prependGuard): any process the worker spawns resolves
-// `rm`, `sudo`, `dd`, `mkfs`, … through the shim, which refuses
-// destructive or out-of-project targets. The Ask path runs bash
-// IN-PROCESS on the host container (HostTools.execBash with a nil
-// containerExec), so the same shim must ride the bash tool's environment —
-// PATH first — or an Ask conversation could `rm -rf` outside the project
-// while a worker would be refused.
-//
-// The guard is the OS-level backstop, not the primary containment: the
-// file tools stay engine-scoped (worktree.Base), and the persona/prompt
-// rails ride the system prompt. This shim is the hard refuse for the
-// "a subprocess did it" hole the 2026-07-30 /home wipe went through.
 
 // askGuardLog is the package-level logger the guard warns on. Nil-safe.
 var askGuardLog atomic.Pointer[slog.Logger]
@@ -37,17 +22,8 @@ func SetAskGuardLogger(log *slog.Logger) {
 	}
 }
 
-// askGuardState holds the process-wide guard shim: one dir per daemon,
-// created lazily on first Ask bash execution, closed at daemon shutdown.
-//
-// It is built with an EMPTY projectDir (guard.NewExecutionGuard("")) —
-// the shared host-serve mode: every absolute target outside the
-// sanctioned scratch dir is refused (guard.go's blocked_path: empty
-// PROJECT_DIR → every absolute target is outside scope). Ask sessions are
-// not pre-bound to one project dir (the boundary resolves per call via
-// AskFileRoot), and the file tools' engine boundary (worktree.Base)
-// scopes writes to the project dir regardless — the shim is the
-// destructive-binary backstop, not the containment boundary.
+// askGuardState holds the process-wide guard shim: one dir per daemon, created lazily on first Ask
+// bash execution, closed at daemon shutdown.
 var askGuardState = struct {
 	sync.Mutex
 	g    *guard.Guard
@@ -55,9 +31,8 @@ var askGuardState = struct {
 	init bool
 }{}
 
-// askGuardForExec returns the process-wide guard, creating it lazily on
-// first bash execution and retrying after an earlier failure (a temp-dir
-// failure is transient). Never returns (nil, nil).
+// askGuardForExec returns the process-wide guard, creating it lazily on first bash execution and
+// retrying after an earlier failure (a temp-dir failure is transient).
 func askGuardForExec() (*guard.Guard, error) {
 	askGuardState.Lock()
 	defer askGuardState.Unlock()
@@ -78,21 +53,13 @@ func askGuardForExec() (*guard.Guard, error) {
 	return g, err
 }
 
-// AskGuardEnvironFor returns the bash environment for an Ask-path execution:
-// the guard shim dir FIRST on PATH (mirroring internal/runtime/agent.go's
-// prependGuard), then os.Environ(), then the INTERACTIVE profile's
-// ORCHICON_GUARD_* key/values (guard.InteractiveEnviron). The shim reads its
-// policy PER INVOCATION through that env, so a grant withdrawn or a policy
-// edited between two commands takes effect on the next one.
-//
-// An empty policyPath emits no guard vars — the worker profile, byte-for-byte.
+// AskGuardEnvironFor returns the bash environment for an Ask-path execution: the guard shim dir
+// FIRST on PATH (mirroring internal/runtime/agent.go's prependGuard), then os.Environ().
 func AskGuardEnvironFor(policyPath, projectDir string, grants, once []string, fullsend bool) []string {
 	env := os.Environ()
 	g, err := askGuardForExec()
 	if err != nil || g == nil {
-		// No guard → env unchanged. The failure is already warned at
-		// creation; degrading to unguarded bash matches the worker
-		// supervisor's behavior (warn + continue, never block).
+		// No guard → env unchanged.
 		return env
 	}
 	return append(g.Apply(env), guard.InteractiveEnviron(policyPath, projectDir, grants, once, fullsend)...)
@@ -104,17 +71,8 @@ func AskGuardEnviron() []string {
 	return AskGuardEnvironFor(permpolicy.DefaultPath(), "", nil, nil, false)
 }
 
-// askGuardEnviron is the PER-CONVERSATION environment factory handed to the host
-// tool suite (orchicon.HostTools.SetBashEnviron): the shim, plus the
-// conversation's project dir, its session-granted directories, the operator's
-// approved once-targets, and whether the conversation is in FULLSEND. Nil-safe — a
-// Service-less caller (tool definitions) gets the bare shim.
-//
-// THE FACTORY IS A CLOSURE, so it is re-read per invocation and a `/fullsend` toggle
-// takes effect on the very NEXT command — no restart, no cache to invalidate. That is
-// the same contract the grants already rest on ("a grant withdrawn or a policy edited
-// between two commands takes effect on the next one"), and for a permission bypass it
-// matters more, not less: turning it OFF must be immediate.
+// askGuardEnviron is the PER-CONVERSATION environment factory handed to the host tool suite
+// (orchicon.HostTools.SetBashEnviron): the shim, plus the conversation's project dir.
 func (s *Service) askGuardEnviron(scope AskFileScope, convID string) func() []string {
 	return func() []string {
 		var grants, once []string

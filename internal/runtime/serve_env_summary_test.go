@@ -6,11 +6,6 @@ import (
 )
 
 // TestServeEnvSummaryNeverRendersAValue is a CREDENTIAL-LEAK guard.
-//
-// The environment it summarises is the one the daemon hands a runtime serve, which
-// carries provider credentials (OLLAMA_API_KEY and the rest of adapterCredentialEnv's
-// output). The summary is logged at every serve start, permanently, so a value reaching
-// it would put a live credential in the platform's logs.
 func TestServeEnvSummaryNeverRendersAValue(t *testing.T) {
 	env := []string{
 		"HOME=/home/operator",
@@ -35,9 +30,8 @@ func TestServeEnvSummaryNeverRendersAValue(t *testing.T) {
 	}
 }
 
-// TestServeEnvSummaryDistinguishesConfigs pins the one value that IS represented — the
-// serve config — and that it is represented in a form that distinguishes two different
-// configs while reproducing neither.
+// TestServeEnvSummaryDistinguishesConfigs pins the one value that IS represented — the serve config
+// — and that it is represented in a form that distinguishes two different configs.
 func TestServeEnvSummaryDistinguishesConfigs(t *testing.T) {
 	a := serveEnvSummary([]string{"OPENCODE_CONFIG_CONTENT={\"a\":1}"})
 	b := serveEnvSummary([]string{"OPENCODE_CONFIG_CONTENT={\"a\":2}"})

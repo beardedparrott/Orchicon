@@ -10,9 +10,8 @@ import (
 	"github.com/beardedparrott/orchicon/internal/db"
 )
 
-// relayTestPool opens the disposable sandbox-plane DB (ORCHICON_TEST_DSN —
-// set by the runtime container). Retention/lag tests skip when unset, the same
-// gate every DB-backed test in the tree uses.
+// relayTestPool opens the disposable sandbox-plane DB (ORCHICON_TEST_DSN — set by the runtime
+// container).
 func relayTestPool(t *testing.T) *db.Pool {
 	t.Helper()
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
@@ -90,9 +89,8 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
-// TestRelayPruneOnceDeletesPublishedKeepsUnpublished: a retention-enabled relay
-// removes eligible PUBLISHED rows (across batches) and never touches
-// unpublished rows, including an old one.
+// TestRelayPruneOnceDeletesPublishedKeepsUnpublished: a retention-enabled relay removes eligible
+// PUBLISHED rows (across batches) and never touches unpublished rows, including an old one.
 func TestRelayPruneOnceDeletesPublishedKeepsUnpublished(t *testing.T) {
 	pool := relayTestPool(t)
 	ctx := context.Background()
@@ -156,9 +154,8 @@ func TestRelayPruneDisabledIsNoop(t *testing.T) {
 	}
 }
 
-// TestRelayLagAlertFires: the stall detector fires when the oldest unpublished
-// row is older than the age threshold — the 6-week silent backlog this
-// observability exists to prevent.
+// TestRelayLagAlertFires: the stall detector fires when the oldest unpublished row is older than
+// the age threshold — the 6-week silent backlog this observability exists to prevent.
 func TestRelayLagAlertFires(t *testing.T) {
 	pool := relayTestPool(t)
 	ctx := context.Background()
@@ -181,9 +178,8 @@ func TestRelayLagAlertFires(t *testing.T) {
 	if r.lagVal.Load() < 1 {
 		t.Fatalf("unpublished-depth gauge should be at least 1, got %d", r.lagVal.Load())
 	}
-	// The two gauges and the alert counter must actually be registered on the
-	// telemetry pipeline — a stalled relay is only visible if the metrics
-	// exist in the first place.
+	// The two gauges and the alert counter must actually be registered on the telemetry pipeline — a
+	// stalled relay is only visible if the metrics exist in the first place.
 	if r.lagGauge == nil {
 		t.Error("orchicon_outbox_lag gauge was not registered")
 	}

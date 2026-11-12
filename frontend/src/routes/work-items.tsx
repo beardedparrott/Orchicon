@@ -59,6 +59,8 @@ import { useWorkItemsPreferences, parentIds } from "@/components/work-items/work
 import { cn } from "@/lib/utils";
 import { RecurringFilter, IdeaScope } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { isTerminalExecutionStatus, type PrRun } from "@/lib/pr";
+import { useListWorkflowRuns } from "@/api/workflows";
+import { WorkflowRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import { Route as rootRoute } from "@/routes/__root";
 
 export const Route = createRoute({
@@ -169,30 +171,67 @@ function WorkItemsPage() {
   });
   const { data: graph } = useGetDependencyGraph(projectId, { refetchInterval: 5_000 });
 
-  // Run/PR visibility (parallel board view): executions carry the run's
-  // branch/worktree and PR surface (mirrored at dispatch), so group them by
-  // work item (taskId) to render a per-run footer on the board/list cards.
-  // Reuses useListExecutions (MVP path) — no new RPC. Polling matches the
-  // board's 5s rhythm so concurrent runs stay fresh.
+  // Run/PR visibility (parallel board view).
+  //
+  // THE RUN IS THE AUTHORITY, NOT THE EXECUTION. A run's PR lives in its
+  // structured `run_context`, written in the SAME transaction that completes the
+  // run, so it cannot be lost. The execution row carries a best-effort MIRROR of
+  // it ("step-success: update execution PR fields"), and when that mirror write
+  // loses its optimistic-concurrency race the only trace is a WARN — which is
+  // exactly how a completed run with a MERGED PR rendered no chip at all:
+  //
+  //	run 01M54EJY52ZW1NSDAQ5X07JN38 completed with PR #737 merged,
+  //	03:46:43 WARN step-success: update execution PR fields (best-effort)
+  //	         execution=01M54FE48… error="db: not found"
+  //
+  // Reading the run here is also the second check of a merge: `prState` comes
+  // from run_context, which the DevOps step stamps from what `gh pr merge`
+  // actually reported, and which the run reconciler persists as part of
+  // completing the run.
+  //
+  // Executions remain the fallback for items that have NO run (standalone
+  // dispatch), where the execution row is the only PR surface that exists.
   const { data: executions } = useListExecutions({
+    projectId: projectId || undefined,
+  });
+  const { data: workflowRuns } = useListWorkflowRuns({
     projectId: projectId || undefined,
   });
   const runsByItem = useMemo(() => {
     const m = new Map<string, PrRun[]>();
+    // 1. The run — authoritative.
+    for (const r of workflowRuns ?? []) {
+      if (!r.workItemId) continue;
+      const pr: PrRun = {
+        prUrl: r.prUrl || undefined,
+        prState: r.prState || undefined,
+        worktreeBranch: r.worktreeBranch || undefined,
+        // Terminal, not merely "completed": a run that FAILED can still have
+        // authored a PR, and its state is just as settled as a success.
+        completed:
+          r.status === WorkflowRunStatus.COMPLETED ||
+          r.status === WorkflowRunStatus.FAILED ||
+          r.status === WorkflowRunStatus.ABORTED,
+      };
+      const list = m.get(r.workItemId);
+      if (list) list.push(pr);
+      else m.set(r.workItemId, [pr]);
+    }
+    // 2. Executions, ONLY where no run exists. Never override the run: an
+    //    in-flight or mirror-less execution row must not mask the run's own
+    //    settled PR.
     for (const e of executions ?? []) {
-      if (!e.taskId) continue;
+      if (!e.taskId || m.has(e.taskId)) continue;
       const pr: PrRun = {
         prUrl: e.prUrl || undefined,
         prState: e.prState || undefined,
         worktreeBranch: e.worktreeBranch || undefined,
         completed: isTerminalExecutionStatus(e.status),
       };
-      const list = m.get(e.taskId);
-      if (list) list.push(pr);
-      else m.set(e.taskId, [pr]);
+      m.set(e.taskId, [pr]);
     }
     return m;
-  }, [executions]);
+  }, [workflowRuns, executions]);
 
   const blockState = useMemo(
     () => computeBlockState(graph?.nodes, graph?.edges),

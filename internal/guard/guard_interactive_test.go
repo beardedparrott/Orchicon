@@ -8,14 +8,11 @@ import (
 	"testing"
 )
 
-// guard_interactive_test.go pins the interactive (Ask) profile: reads free,
-// gated writes, and the permanent never-allow class. The interactive profile is
-// switched on by ORCHICON_GUARD_POLICY (only the Ask path sets it); every test
-// here except the worker-parity one builds the env through InteractiveEnviron.
+// guard_interactive_test.go pins the interactive (Ask) profile: reads free, gated writes, and the
+// permanent never-allow class.
 
-// runGuardEnv runs the shim for a binary with the interactive profile's
-// environment appended to the ambient one. The shim is a symlink named after
-// the binary pointing at the generated guard script, so argv[0] basename = name.
+// runGuardEnv runs the shim for a binary with the interactive profile's environment appended to the
+// ambient one.
 func runGuardEnv(t *testing.T, g *Guard, env []string, name string, args ...string) (int, string) {
 	t.Helper()
 	cmd := exec.Command(filepath.Join(g.dir, name), args...)
@@ -264,9 +261,8 @@ func TestInteractiveOnceAllowsOnlyTheApprovedPath(t *testing.T) {
 	}
 }
 
-// TestNeverAllowSaysPermanentlyBlocked — AC-3: the never-allow class is refused
-// unconditionally, even after a grant, and the refusal says the class is
-// permanently blocked rather than inviting another prompt.
+// TestNeverAllowSaysPermanentlyBlocked — AC-3: the never-allow class is refused unconditionally,
+// even after a grant, and the refusal says the class is permanently blocked rather than inviting.
 func TestNeverAllowSaysPermanentlyBlocked(t *testing.T) {
 	proj := t.TempDir()
 	grant := t.TempDir()
@@ -285,9 +281,8 @@ func TestNeverAllowSaysPermanentlyBlocked(t *testing.T) {
 		// arguments name is irrelevant to the assertion and must not be a real device.
 		{"sudo", []string{"rm", "-rf", filepath.Join(t.TempDir(), "x")}},
 		{"dd", []string{"if=/dev/zero", "of=/dev/sda"}},
-		// Temp operands, for the reason given on the sudo case above: the class arm refuses on
-		// the BINARY NAME, so these arguments never reach a program, and naming real devices
-		// would be relying on root (and on `sudo` needing a tty) rather than on the guard.
+		// Temp operands, for the reason given on the sudo case above: the class arm refuses on the BINARY
+		// NAME, so these arguments never reach a program.
 		{"mkfs.ext4", []string{filepath.Join(t.TempDir(), "disk")}},
 		{"fdisk", []string{"-l"}},
 		{"parted", []string{filepath.Join(t.TempDir(), "disk"), "print"}},
@@ -297,9 +292,8 @@ func TestNeverAllowSaysPermanentlyBlocked(t *testing.T) {
 	}
 	env := InteractiveEnviron(policy, proj, []string{grant}, nil, false)
 	for _, tc := range cases {
-		// The shim installs a symlink for EVERY never-allow member (scoped=false
-		// links are created whether or not the host has the binary), so the
-		// dispatch is exercised even where the tool is not installed.
+		// The shim installs a symlink for EVERY never-allow member (scoped=false links are created whether
+		// or not the host has the binary).
 		exit, out := runGuardEnv(t, g, env, tc.name, tc.args...)
 		if exit == 0 {
 			t.Errorf("%s: expected the never-allow class to refuse, got exit 0: %s", tc.name, out)
@@ -316,9 +310,8 @@ func TestNeverAllowSaysPermanentlyBlocked(t *testing.T) {
 	}
 }
 
-// TestWorkerProfileIsUnchanged — AC-7: with no ORCHICON_GUARD_* the shim is the
-// worker profile: same shims, same path-scoped policy, same always-block set,
-// and the interactive switch cannot leak into it.
+// TestWorkerProfileIsUnchanged — AC-7: with no ORCHICON_GUARD_* the shim is the worker profile:
+// same shims, same path-scoped policy, same always-block set.
 func TestWorkerProfileIsUnchanged(t *testing.T) {
 	proj := t.TempDir()
 	g, err := NewExecutionGuard(proj)

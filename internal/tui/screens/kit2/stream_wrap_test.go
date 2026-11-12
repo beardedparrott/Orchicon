@@ -1,15 +1,6 @@
 package kit2
 
 // stream_wrap_test.go — AN OVER-WIDE LINE IS WRAPPED, NOT TRUNCATED.
-//
-// The operator, on a live transcript: the text was "scrunch[ed] ... into one block" with sentences cut
-// mid-word. A cut sentence is the visible end of a silent loss: the stream's View pads every line to its
-// width with ansi.Truncate, so a line that arrives WIDER than the stream loses its tail — no marker, no
-// wrap, nothing to tell the operator that words are missing.
-//
-// A caller whose own layout is right never hits this. The point of wrapping is that a caller whose layout is
-// WRONG (a stale width after a reflow, a host that measured differently) shows readable text instead of a
-// lie — and the cost is only that the window holds a row or two fewer.
 
 import (
 	"strings"

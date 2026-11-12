@@ -5,17 +5,8 @@ import (
 	"testing"
 )
 
-// sessionToolShell is the serve-baked agent prompt, inherited by EVERY session on
-// the serve — including Ask Orchicon conversations, which select no agent and so
-// take the serve default. It must therefore be neutral: an inventory of which tool
-// fits which job, and nothing that reads as an identity, a budget, or a quota.
-//
-// The guard exists because the previous shell opened with "You are an autonomous
-// coding agent.", claimed the granular tools were "disabled", and closed with
-// tool-call-economy rules ("every extra tool call re-sends the whole
-// conversation", "prefer the fewest tool calls that complete the task"). Ask
-// conversations read that as a budget and reported being "almost at my budget" in
-// a session with no budget at all.
+// sessionToolShell is the serve-baked agent prompt, inherited by EVERY session on the serve —
+// including Ask Orchicon conversations, which select no agent and so take the serve default.
 func TestSessionToolShellIsNeutral(t *testing.T) {
 	banned := []string{
 		"autonomous coding agent",

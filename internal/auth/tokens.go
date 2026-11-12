@@ -1,18 +1,5 @@
-// Package auth implements Orchicon's authentication: token issuance
-// (Orchicon access + refresh tokens), token verification (local dev
-// HS256 + production OIDC), and identity resolution from a validated
-// token into the request context.
-//
-// In local mode (Issuer="local") the control plane runs a built-in dev
-// IdP that mints short-lived HS256 access tokens + refresh tokens with
-// no external identity provider — the full auth flow is verifiable
-// locally (AGENTS.md verification). In production mode the control
-// plane validates OIDC ID tokens from the configured issuer via the
-// authorization-code flow (docs/07 §6.1) and issues its own access
-// tokens thereafter.
-//
-// API keys (hashed, scoped entitlements) are a separate machine
-// credential path handled by the middleware + AuthService (docs/07 §6.1).
+// Package auth implements Orchicon's authentication: token issuance (Orchicon access + refresh
+// tokens), token verification (local dev HS256 + production OIDC).
 package auth
 
 import (
@@ -32,9 +19,7 @@ import (
 // so apikeys.go and tokens.go share one entropy source.
 func readRand(b []byte) (int, error) { return io.ReadFull(rand.Reader, b) }
 
-// AccessClaims are the claims in an Orchicon access token. These are
-// the canonical identity + tenant + entitlement context the middleware
-// resolves per request (docs/07 §6.3).
+// AccessClaims are the claims in an Orchicon access token.
 type AccessClaims struct {
 	Subject      string   `json:"sub"` // identity id (ULID)
 	TenantID     string   `json:"tid"` // tenant id
@@ -48,9 +33,7 @@ type AccessClaims struct {
 	JTI          string   `json:"jti"` // token id (for revocation tracking)
 }
 
-// RefreshClaims are the claims in an Orchicon refresh token. Refresh
-// tokens are long-lived and stored HttpOnly; they exchange for a new
-// access token without re-authenticating the user (docs/10 §7).
+// RefreshClaims are the claims in an Orchicon refresh token.
 type RefreshClaims struct {
 	Subject   string `json:"sub"`
 	TenantID  string `json:"tid"`
@@ -62,19 +45,15 @@ type RefreshClaims struct {
 	JTI       string `json:"jti"`
 }
 
-// TokenPair is the access + refresh token pair issued on login or
-// refresh. The access token lives in memory (frontend); the refresh
-// token lives in an HttpOnly secure cookie (docs/10 §7).
+// TokenPair is the access + refresh token pair issued on login or refresh.
 type TokenPair struct {
 	AccessToken  string
 	RefreshToken string
 	ExpiresIn    int64 // seconds until the access token expires
 }
 
-// TokenIssuer mints and verifies Orchicon access + refresh tokens. It
-// signs tokens with HMAC-SHA256 using the configured signing key. In
-// production the signing key MUST be a strong random secret (enforced
-// by config.Validate).
+// TokenIssuer mints and verifies Orchicon access + refresh tokens. In production the signing key
+// MUST be a strong random secret (enforced by config.Validate).
 type TokenIssuer struct {
 	signingKey []byte
 	issuer     string
@@ -200,9 +179,7 @@ func (i *TokenIssuer) VerifyRefresh(token string) (RefreshClaims, error) {
 
 // --- minimal HS256 JWT -----------------------------------------------------
 
-// signHS256 builds a compact HS256 JWT (header.payload.signature) from
-// the claims struct. No external JWT library keeps the binary small and
-// the trust surface tight.
+// signHS256 builds a compact HS256 JWT (header.payload.signature) from the claims struct.
 func signHS256(claims any, key []byte) (string, error) {
 	header := map[string]string{"alg": "HS256", "typ": "JWT"}
 	hb, err := json.Marshal(header)

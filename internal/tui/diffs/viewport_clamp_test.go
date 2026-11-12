@@ -45,9 +45,8 @@ func wrapFixtureGroups(t *testing.T) []FileGroup {
 	return GroupByFile(edits)
 }
 
-// bodyIsBlank reports whether the ACTIVE tab's body renders no content at all —
-// the failure mode a stale scroll produces once the list/index tabs share the
-// Diff tab's viewport.
+// bodyIsBlank reports whether the ACTIVE tab's body renders no content at all — the failure mode a
+// stale scroll produces once the list/index tabs share the Diff tab's viewport.
 func bodyIsBlank(m *Model) bool {
 	var body string
 	switch m.Tab {
@@ -61,10 +60,8 @@ func bodyIsBlank(m *Model) bool {
 	return strings.TrimSpace(ansi.Strip(body)) == ""
 }
 
-// TestSetTabClampsStaleScroll pins the regression the shared viewport introduces:
-// scrolling a long Diff and then switching to Tree/Timeline must NOT leave the
-// (much shorter) list scrolled past its end and render a blank body. The shell's
-// restoreDiffPaneState calls SetTab, so this is the path a pane REOPEN takes.
+// TestSetTabClampsStaleScroll pins the regression the shared viewport introduces: scrolling a long
+// Diff and then switching to Tree/Timeline must NOT leave the (much shorter) list scrolled past.
 func TestSetTabClampsStaleScroll(t *testing.T) {
 	m := NewModel(nil, nil)
 	m.Width, m.Height = 48, 6
@@ -81,9 +78,8 @@ func TestSetTabClampsStaleScroll(t *testing.T) {
 		m.Tab = TabDiff
 		m.scroll = m.maxScroll()
 		m.SetTab(tab)
-		// The list's extent is much smaller than the diff's, so the clamp is
-		// what guarantees a visible page — assert the INVARIANT (within the
-		// active tab's extent), not a particular clamp target.
+		// The list's extent is much smaller than the diff's, so the clamp is what guarantees a visible page
+		// — assert the INVARIANT (within the active tab's extent), not a particular clamp target.
 		if m.scroll > m.maxScroll() {
 			t.Errorf("SetTab(%s) left scroll=%d past maxScroll=%d", tab, m.scroll, m.maxScroll())
 		}
@@ -93,9 +89,8 @@ func TestSetTabClampsStaleScroll(t *testing.T) {
 	}
 }
 
-// TestClickTabClampsStaleScroll is the same guarantee for the MOUSE path: a click
-// on a tab label must clamp too (clickTab used to assign m.Tab directly, a
-// separate path from the `h`/`l` keys which did clamp).
+// TestClickTabClampsStaleScroll is the same guarantee for the MOUSE path: a click on a tab label
+// must clamp too (clickTab used to assign m.Tab directly.
 func TestClickTabClampsStaleScroll(t *testing.T) {
 	m := NewModel(nil, nil)
 	m.Width, m.Height = 48, 6
@@ -116,10 +111,8 @@ func TestClickTabClampsStaleScroll(t *testing.T) {
 	if bodyIsBlank(m) {
 		t.Errorf("mouse tab switch rendered a BLANK tree body (scroll=%d, viewH=%d)", m.scroll, m.viewHeight())
 	}
-	// And the body row under the cursor must resolve to the file the viewport is
-	// showing there — group[scroll+bodyRow], the viewport-aware mapping. (Capture
-	// the offset BEFORE the click: a row click selects and re-focuses the Diff
-	// tab, which resets the scroll.)
+	// And the body row under the cursor must resolve to the file the viewport is showing there —
+	// group[scroll+bodyRow], the viewport-aware mapping.
 	shown := m.scroll
 	m.click(5, paneBodyRow)
 	if want := m.groups[shown].Path; m.SelectedPath != want {
@@ -127,9 +120,8 @@ func TestClickTabClampsStaleScroll(t *testing.T) {
 	}
 }
 
-// TestResizeClampsStaleScroll pins that a widening resize (which reduces the
-// wrapped line count) re-clamps: otherwise the pane keeps its old scroll and
-// renders a blank body at the new width.
+// TestResizeClampsStaleScroll pins that a widening resize (which reduces the wrapped line count)
+// re-clamps: otherwise the pane keeps its old scroll and renders a blank body at the new width.
 func TestResizeClampsStaleScroll(t *testing.T) {
 	m := NewModel(nil, nil)
 	m.Width, m.Height = 48, 8
@@ -148,9 +140,8 @@ func TestResizeClampsStaleScroll(t *testing.T) {
 	}
 }
 
-// TestFetchDoneClampsStaleScroll pins that a fetch which replaces the rows with a
-// SHORTER diff re-clamps the scroll, so a new owner (or a file whose latest edit
-// shrank) cannot leave the viewport sliced past its end.
+// TestFetchDoneClampsStaleScroll pins that a fetch which replaces the rows with a SHORTER diff
+// re-clamps the scroll.
 func TestFetchDoneClampsStaleScroll(t *testing.T) {
 	vecs := vecByName(t)
 	m := NewModel(nil, nil)
@@ -175,10 +166,8 @@ func TestFetchDoneClampsStaleScroll(t *testing.T) {
 	}
 }
 
-// TestEveryViewportPathClampsScroll is the guard against the NEXT stale-scroll
-// path: it drives each state change that can alter the rendered line count and
-// asserts the scroll stays within the ACTIVE tab's extent, so a new caller cannot
-// reintroduce the blank-body regression unnoticed.
+// TestEveryViewportPathClampsScroll is the guard against the NEXT stale-scroll path: it drives each
+// state change that can alter the rendered line count and asserts the scroll stays within.
 func TestEveryViewportPathClampsScroll(t *testing.T) {
 	m := NewModel(nil, nil)
 	m.Width, m.Height = 48, 6
@@ -220,9 +209,8 @@ func TestEveryViewportPathClampsScroll(t *testing.T) {
 	}
 }
 
-// TestSelectPathClampsStaleScroll pins the row-click path: selecting a file whose
-// diff is SHORTER than the current scroll must reach a visible body (SelectPath
-// resets the scroll, and this asserts the reset is what the viewport reads).
+// TestSelectPathClampsStaleScroll pins the row-click path: selecting a file whose diff is SHORTER
+// than the current scroll must reach a visible body (SelectPath resets the scroll.
 func TestSelectPathClampsStaleScroll(t *testing.T) {
 	vecs := vecByName(t)
 	m := NewModel(nil, nil)

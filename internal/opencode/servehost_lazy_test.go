@@ -1,8 +1,7 @@
 package opencode
 
-// Tests for the LAZY host serve (AC 1/AC 2/AC 4): the serve is demand-keyed
-// — it starts on the first opencode demand and never as a boot side effect —
-// and the operator kill-switch stays a fail-fast hard override.
+// Tests for the LAZY host serve (AC 1/AC 2/AC 4): the serve is demand-keyed — it starts on the
+// first opencode demand and never as a boot side effect.
 
 import (
 	"context"
@@ -17,9 +16,8 @@ func lazyServeLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// TestEnsureStartedKillSwitchFailsFast: with ORCHICON_OPCODE_SESSION_TRANSPORT=0
-// there is no serve and no silent degradation — the caller gets the loud
-// reason (AC 4). Nothing is spawned (no data dir is even touched).
+// TestEnsureStartedKillSwitchFailsFast: with ORCHICON_OPCODE_SESSION_TRANSPORT=0 there is no serve
+// and no silent degradation — the caller gets the loud reason (AC 4).
 func TestEnsureStartedKillSwitchFailsFast(t *testing.T) {
 	t.Setenv("ORCHICON_OPCODE_SESSION_TRANSPORT", "0")
 	h := NewHostServe(lazyServeLogger(), t.TempDir(), t.TempDir())
@@ -36,10 +34,8 @@ func TestEnsureStartedKillSwitchFailsFast(t *testing.T) {
 	}
 }
 
-// TestEnsureStartedIsIdempotentWhenAlreadyUp: the first demand starts the
-// serve; every later demand takes the fast path — no second process, no
-// re-probe. The serve state is set directly so the test never spawns a
-// binary (the fast path is exactly what is under test).
+// TestEnsureStartedIsIdempotentWhenAlreadyUp: the first demand starts the serve; every later demand
+// takes the fast path — no second process, no re-probe.
 func TestEnsureStartedIsIdempotentWhenAlreadyUp(t *testing.T) {
 	h := NewHostServe(lazyServeLogger(), t.TempDir(), t.TempDir())
 	// Pretend a first demand already brought the serve up.
@@ -55,9 +51,8 @@ func TestEnsureStartedIsIdempotentWhenAlreadyUp(t *testing.T) {
 	}
 }
 
-// TestStopCancelsSupervisionAndClearsState: shutdown must leave nothing
-// running — the supervision cancel is invoked and the serve state is cleared
-// so a later demand starts fresh rather than assuming a dead serve is up.
+// TestStopCancelsSupervisionAndClearsState: shutdown must leave nothing running — the supervision
+// cancel is invoked and the serve state is cleared so a later demand starts fresh rather.
 func TestStopCancelsSupervisionAndClearsState(t *testing.T) {
 	h := NewHostServe(lazyServeLogger(), t.TempDir(), t.TempDir())
 	cancelled := false
@@ -79,12 +74,7 @@ func TestStopCancelsSupervisionAndClearsState(t *testing.T) {
 	}
 }
 
-// TestMarkStartFailedClearsPartialState: a FAILED lazy start must not leave
-// the serve marked ready. startOnce can have armed started + client for a
-// process it then killed (readiness timeout, or a first-demand ctx cancelled
-// during the readiness wait); if that state survived, ready() would report a
-// DEAD serve as up, the next demand would skip the start, and no supervision
-// would ever be armed — the plane would silently never have a serve again.
+// TestMarkStartFailedClearsPartialState: a FAILED lazy start must not leave the serve marked ready.
 func TestMarkStartFailedClearsPartialState(t *testing.T) {
 	h := NewHostServe(lazyServeLogger(), t.TempDir(), t.TempDir())
 	// Simulate a readiness timeout: the process was armed, then killed.

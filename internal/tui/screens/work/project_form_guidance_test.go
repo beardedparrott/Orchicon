@@ -1,12 +1,6 @@
 package work
 
 // project_form_guidance_test.go — THE RUNTIME-IMAGE PICKER AND THE CONTEXT-FILES GUIDANCE.
-//
-// Two operator reports:
-//   "when creating a project, the runtime container [should] be able to be selected from a list.
-//    We do something similar in other areas for workers, workflows, etc."
-//   "how do we handle project context files on the project create/edit form? There isn't really
-//    any guidance here."
 
 import (
 	"strings"
@@ -53,8 +47,7 @@ func TestRuntimeImageIsAPickerWhenTheListLoaded(t *testing.T) {
 }
 
 // A PROJECT'S CURRENT IMAGE IS ALWAYS AN OPTION, even when the fetched list does not contain it —
-// an image that has since been deleted. Without this, opening the form would show no selection and
-// SAVING WOULD CLEAR a setting the operator never touched.
+// an image that has since been deleted.
 func TestTheCurrentImageSurvivesAMissingList(t *testing.T) {
 	f := runtimeImageField("gone:9", imageOpts())
 	var found bool
@@ -93,15 +86,6 @@ func TestRuntimeImageStaysUsableWithoutAList(t *testing.T) {
 }
 
 // THE CONTEXT-FILES FIELD CARRIES ITS GUIDANCE SOMEWHERE THE OPERATOR WILL SEE IT.
-//
-// Asserted over label AND placeholder TOGETHER, deliberately. The earlier version of this test pinned the
-// phrasing ("abs paths inside the project dir" on the label, "one path per line · a directory is read in
-// full" in the placeholder) and broke the moment the wording was shortened to fit the pane — which is a
-// test asserting PROSE rather than behaviour, and prose is exactly what has to change when a label
-// overflows (the operator's next report was that this label ran off the screen).
-//
-// What must hold is that the field tells the operator the things they cannot infer from its name, and how
-// to enter the values.
 func TestContextFilesFieldCarriesItsGuidance(t *testing.T) {
 	f := ProjectFormFields(nil, nil)
 	var got *kit2.FieldSpec

@@ -10,9 +10,8 @@ import (
 // --- OpenAI Chat Completions wire --------------------------------------------
 
 func TestOpenAIStreamTrailingUsageChunk(t *testing.T) {
-	// finish_reason arrives on the last CONTENT chunk; real usage arrives on
-	// a trailing usage-only chunk (choices: []). Finalizing on finish_reason
-	// would zero costs — the fixture pins the drain invariant.
+	// finish_reason arrives on the last CONTENT chunk; real usage arrives on a trailing usage-only
+	// chunk (choices: []).
 	body := sse(
 		`{"choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}`,
 		`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
@@ -63,10 +62,8 @@ func TestOpenAIStreamTrailingUsageChunk(t *testing.T) {
 	}
 }
 
-// Regression for QA bug A: cached_tokens must never be double-counted —
-// normalized InputTokens is the FRESH bucket (prompt − cached), so
-// InputTokens+CacheReadTokens equals the provider's full cache-inclusive
-// prompt exactly once.
+// Regression for QA bug A: cached_tokens must never be double-counted — normalized InputTokens is
+// the FRESH bucket (prompt − cached).
 func TestOpenAICompatUsageNormalizationNoDoubleCount(t *testing.T) {
 	body := sse(
 		`{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":60}}}`,
