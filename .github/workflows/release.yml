@@ -371,17 +371,20 @@ jobs:
           node-version: '22'
       - name: Install webview build dependencies (Linux)
         if: matrix.os == 'ubuntu-latest'
+        shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev
       - name: Build the SPA that the binary embeds
+        shell: bash
         run: |
           set -euo pipefail
           cd frontend
           npm ci
           npm run build
       - name: Install the Wails CLI
+        shell: bash
         run: |
           set -euo pipefail
           go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.0
@@ -393,15 +396,22 @@ jobs:
       # TestDesktopBuildRunsInTheWailsProjectDirectory.
       - name: Build the desktop app
         working-directory: cmd/orchicon-desktop
+        shell: bash
         run: |
           set -euo pipefail
           wails build -tags orchicon_desktop,production,webkit2_41 -clean
       - uses: actions/upload-artifact@v4
         with:
           name: orchicon-desktop-${{ matrix.os }}
+          # WHAT EACH RUNNER ACTUALLY PRODUCES. Wails writes a bare binary on Linux, an
+          # .exe on Windows, and an .app BUNDLE on macOS — so a list naming only the
+          # first two matched nothing on macOS and `if-no-files-found: error` failed that
+          # leg (v0.6.0: "No files were found with the provided path"). Naming the bundle
+          # as well lets all three legs upload what they really built.
           path: |
             cmd/orchicon-desktop/build/bin/orchicon-desktop
             cmd/orchicon-desktop/build/bin/orchicon-desktop.exe
+            cmd/orchicon-desktop/build/bin/orchicon-desktop.app
           if-no-files-found: error
 
   # THE PER-WORKFLOW RUNTIME BASE IMAGE, and the ONLY container image this project
@@ -449,6 +459,7 @@ jobs:
       - name: Build runtime image (base only)
         env:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        shell: bash
         run: |
           docker build --label "org.orchicon.runtime.version=${ORCHICON_VERSION}" -f deploy/runtime/Dockerfile -t "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" deploy/runtime
           docker tag "ghcr.io/beardedparrott/orchicon-runtime:${ORCHICON_VERSION}" ghcr.io/beardedparrott/orchicon-runtime:latest
@@ -456,6 +467,7 @@ jobs:
       - name: Push runtime image (base only)
         env:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        shell: bash
         run: |
           set -eo pipefail
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -501,6 +513,7 @@ jobs:
       - name: Build the desktop app
         env:
           ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
+        shell: bash
         run: |
           set -euo pipefail
           cd cmd/orchicon-desktop
@@ -554,7 +567,16 @@ jobs:
   desktop-macos:
     name: Desktop — macOS (.app, signed + notarised)
     needs: guard
-    if: needs.guard.outputs.proceed == 'true'
+    # GATED ON THE SAME SWITCH AS `sign-macos`. This job ends by uploading a .zip with
+    # `if-no-files-found: error`, and the only thing that produces that .zip is
+    # sign-and-notarize.sh — which correctly REFUSES to run without a certificate
+    # ("MACOS_CERT_P12 is required — refusing to ship an unsigned .app"). Ungated, that
+    # refusal failed the job and took the whole release with it: v0.6.0 built every CLI
+    # binary and published nothing. While signing is off there is no signed .app to ship,
+    # so the job is skipped deliberately rather than failing.
+    if: |
+      needs.guard.outputs.proceed == 'true' &&
+      vars.MACOS_SIGNING_ENABLED == 'true'
     # macos-26, not macos-14 — see the note at the sign-macos job: GitHub retires the macOS 14 runner images
     # on 2 November 2026 and browns them out beforehand, failing jobs that still use the label. Pinned rather
     # than -latest so a release host cannot change without a commit to this file.
