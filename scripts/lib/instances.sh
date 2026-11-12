@@ -192,7 +192,7 @@ plane_env() {
   #
   # An unresolvable bridge is now a WARNING, never fatal: the wildcard bind does
   # not depend on it, and every runtime container is created with
-  # --add-host host.docker.internal:host-gateway (engine.go, ADR-0013 D2.4), so
+  # --add-host host.docker.internal:host-gateway (engine.go, so
   # the stable NAME reaches the plane on both engines even when the numeric
   # bridge address cannot be resolved. That is what keeps a rootless podman host
   # (no docker0, no 172.17.0.1) working instead of refusing to start.
@@ -296,12 +296,12 @@ bridge_bind_env() {
   # AN UNRESOLVABLE BRIDGE IS NOT AN ERROR, AND THIS IS THE ONE PLACE THAT
   # DECIDES IT. It used to `return 1`, which made plane_start refuse to start on
   # a host whose numeric bridge address could not be resolved — and a ROOTLESS
-  # PODMAN host has no docker0 and no 172.17.0.1 at all (ADR-0014), so a
+  # PODMAN host has no docker0 and no 172.17.0.1 at all, so a
   # supported engine could not run the plane over a value it does not need.
   #
   # The fallback is the stable host NAME, not a guess: every runtime container is
   # created with --add-host host.docker.internal:host-gateway (engine.go
-  # CreateBaseArgs, ADR-0013 D2.4), so the name resolves to the host on BOTH
+  # CreateBaseArgs, so the name resolves to the host on BOTH
   # engines and every platform, and only the PORT distinguishes two instances.
   # planePublicURL already documents exactly this as its last-resort branch.
   local ip

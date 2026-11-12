@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package orchicon.api.v1;
 
-// ProviderEntry is one merged provider row (ADR-0006 D4): built-ins render
+// ProviderEntry is one merged provider row: built-ins render
 // read-only (is_custom=false); customs are operator-editable. Plaintext
 // tokens NEVER appear here — only has_token_stored + the secret name.
 message ProviderEntry {
@@ -45,7 +45,7 @@ message ProviderUpdateSettingsRequest {
   optional bool replace_manual_models = 7;
 }
 
-// ProviderManualModel mirrors orchicon.ModelInfo hint fields (ADR-0006 D1).
+// ProviderManualModel mirrors orchicon.ModelInfo hint fields.
 message ProviderManualModel {
   string id = 1;
   int64 context = 2;
@@ -101,7 +101,7 @@ message ProviderClearTokenRequest {
 }
 message ProviderClearTokenResponse {}
 
-// ProviderModel is one sourcing-view row (ADR-0006 D4): source
+// ProviderModel is one sourcing-view row: source
 // distinguishes catalog|probe|manual; warn_no_context is the WARN
 // annotation for selectable models lacking a context hint.
 message ProviderModel {

@@ -1,6 +1,6 @@
 package scheduler
 
-// Unit tests for resolveAdapterRowKind (ADR-0003 single source of truth): the adapter-ROW selection
+// Unit tests for resolveAdapterRowKind ( single source of truth): the adapter-ROW selection
 // kind used by TaskReconciler dispatch derives from the model_ref's parsed adapter kind.
 
 import (

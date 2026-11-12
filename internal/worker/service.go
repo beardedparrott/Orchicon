@@ -37,12 +37,12 @@ func New(pool *db.Pool, log *slog.Logger) *Service {
 }
 
 // SetAdapterKinds wires the Dispatcher's registered adapter kinds for explicit-adapter-input
-// validation (ADR-0005 D2).
+// validation.
 func (s *Service) SetAdapterKinds(fn func() []string) {
 	SetAdapterKinds(fn)
 }
 
-// SetCustomProviderIDs wires the tenant custom-provider source for model-ref validation (ADR-0006
+// SetCustomProviderIDs wires the tenant custom-provider source for model-ref validation
 // D6).
 func (s *Service) SetCustomProviderIDs(fn func(ctx context.Context, tenantID string) ([]string, error)) {
 	SetCustomProviderIDs(fn)
@@ -595,7 +595,7 @@ func (s *Service) applyModelChange(ctx context.Context, tx pgx.Tx, worker db.Wor
 		if _, err := validateModelRef(ctx, worker.TenantID, modelRef); err != nil {
 			return db.WorkerVersionRow{}, err
 		}
-		// ADR-0005 D4: an adapter CHANGE must land on a provider/model pair valid for the NEW adapter.
+		//: an adapter CHANGE must land on a provider/model pair valid for the NEW adapter.
 		if err := validateAdapterChange(ctx, worker.TenantID, latest.ModelRef, modelRef); err != nil {
 			return db.WorkerVersionRow{}, err
 		}
@@ -883,7 +883,7 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 	// Build merged row: apply only non-nil proto fields over current.
 	merged := current
 	if msg.ModelRef != nil || msg.Adapter != nil {
-		// ADR-0005 D2: the explicit adapter input is a consistency affordance — it must be a registered
+		//: the explicit adapter input is a consistency affordance — it must be a registered
 		// kind and must agree with the resulting ref's adapter segment.
 		var adapterSel string
 		if msg.Adapter != nil {
@@ -901,7 +901,7 @@ func (s *Service) UpdateWorkerVersion(ctx context.Context, req *connect.Request[
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)
 			}
 			merged.ModelRef = modelRef
-			// ADR-0005 D4: an adapter CHANGE (parsed segment differs from the current ref's) must land on a
+			//: an adapter CHANGE (parsed segment differs from the current ref's) must land on a
 			// provider/model pair valid for the NEW adapter — provider known for the kind.
 			if err := validateAdapterChange(ctx, tenantID, current.ModelRef, merged.ModelRef); err != nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -1067,7 +1067,7 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 		Labels:              source.Labels,
 	}
 	if msg.ModelRef != nil || msg.Adapter != nil {
-		// ADR-0005 D2: explicit adapter input must be a registered kind and agree with the resulting ref's
+		//: explicit adapter input must be a registered kind and agree with the resulting ref's
 		// adapter segment (the source ref when model_ref is unset).
 		var adapterSel string
 		if msg.Adapter != nil {
@@ -1083,7 +1083,7 @@ func (s *Service) CreateWorkerVersion(ctx context.Context, req *connect.Request[
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)
 			}
 			newVer.ModelRef = modelRef
-			// ADR-0005 D4: adapter-change validation against the source
+			//: adapter-change validation against the source
 			// version's ref (same contract as UpdateWorkerVersion).
 			if err := validateAdapterChange(ctx, tenantID, source.ModelRef, newVer.ModelRef); err != nil {
 				return nil, connect.NewError(connect.CodeInvalidArgument, err)

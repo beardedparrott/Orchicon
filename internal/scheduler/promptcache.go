@@ -8,7 +8,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 )
 
-// Context-section prefix cache (ADR-0009 D5): the rendered context-file sections are the bulk of
+// Context-section prefix cache: the rendered context-file sections are the bulk of
 // the static prompt prefix, and re-rendering them from disk per execution both costs I/O.
 type promptCacheEntry struct {
 	key    string // tenant\x00project\x00fingerprint

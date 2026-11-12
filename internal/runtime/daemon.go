@@ -682,7 +682,7 @@ func (d *Daemon) validateCreate(ctx context.Context, req CreateRequest) error {
 		if m.Source == "" {
 			return fmt.Errorf("mount source required")
 		}
-		// NO NAMED VOLUMES (ADR-0013 §6, BF-3(a)): every mount source must be an ABSOLUTE HOST PATH.
+		// NO NAMED VOLUMES (, BF-3(a)): every mount source must be an ABSOLUTE HOST PATH.
 		if !filepath.IsAbs(m.Source) {
 			return fmt.Errorf("mount source must be an absolute host path, never a named volume (a volume survives the pristine container reset): %s", m.Source)
 		}
@@ -992,7 +992,9 @@ func firstNonEmptyLine(s string) string {
 //	                                             host.docker.internal SPELLING
 //	                                             is kept so planePublicURL's
 //	                                             string stays platform-
-//	                                             independent (ADR-0013 D2.4)
+//
+// independent
+//
 //	--user <uid>:<gid>                           both: PRESERVED — every file
 //	                                             the container writes into a
 //	                                             bind-mounted project is the
@@ -1012,16 +1014,18 @@ func firstNonEmptyLine(s string) string {
 //	                                             container's IP is not host-
 //	                                             routable, so the loopback
 //	                                             publish IS the address the
-//	                                             plane dials (ADR-0013 D2.1);
-//	                                             docker keeps dialing the
-//	                                             bridge IP
+//
+// plane dials;
+//
+//	docker keeps dialing the
+//	bridge IP
 //
 // The published ports are the two FIXED container ports (defaultServePort,
 // sandboxPlanePort), which is what makes publishing at create time possible.
 // Publishing at create rather than on first accept is deliberate: the port
 // must exist before the serve can be reached, and the daemon re-resolves it
 // after startServe and validates it with serveUsableAt before the plane sees it
-// (ADR-0013 D2.2 — ordering answers the proxy race, not luck).
+// ( — ordering answers the proxy race, not luck).
 func (d *Daemon) createFlagArgs(name string, req CreateRequest) []string {
 	workflowLabel := req.WorkflowID
 	if workflowLabel == "" {

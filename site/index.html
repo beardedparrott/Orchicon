@@ -279,12 +279,18 @@ table.fk tbody th{width:auto; min-width:0; white-space:nowrap; padding-right:24p
 .wshot{position:relative; aspect-ratio:1800/1162; background:#11231C}
 .wshot img{position:absolute; inset:0; width:100%; height:100%; object-fit:contain; object-position:top; opacity:0; transition:opacity .25s ease; cursor:zoom-in}
 .wshot img.on{opacity:1}
+.dcap{margin:0; padding:12px 16px 12px; color:var(--ink-2); font-size:15px; border-top:1px solid var(--rule)}
 .bcap{margin:0; padding:12px 16px 12px; color:var(--ink-2); font-size:15px; border-top:1px solid var(--rule)}
 .sub-note{margin:8px 0 0; color:var(--ink-2); font-size:15px}
 table.fk tbody th{vertical-align:top}
 
 
 /* showcase with descriptions */
+.client-switch{display:inline-flex; gap:4px; margin:26px 0 8px; padding:4px; border:1px solid var(--rule); border-radius:999px; background:var(--paper-2)}
+.client-switch button{font:inherit; font-size:15px; font-weight:600; color:var(--ink-2); background:none; border:0; border-radius:999px; padding:8px 20px; cursor:pointer}
+.client-switch button[aria-selected="true"]{background:var(--signal); color:var(--paper)}
+.client-switch button:focus-visible{outline:2px solid var(--signal); outline-offset:2px}
+.client-panel[hidden]{display:none}
 .showcase{display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:36px; align-items:start}
 .showcase>*{min-width:0}
 .explain h3{font-size:24px; line-height:1.15; margin:4px 0 10px; letter-spacing:-.015em}
@@ -432,13 +438,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
       <!-- GROUPED, because nine flat links did not fit: the nav used to hide links by
            nth-child as the viewport narrowed (see the max-width rules). Grouping removes the
            cause instead of trimming the symptom, and keeps every section one click away. -->
-      <div class="navgroup">
-        <button type="button" aria-expanded="false" aria-haspopup="true">Product</button>
-        <div class="navmenu"><div class="navpanel">
-          <a href="#web">Web app</a>
-          <a href="#terminal">Terminal</a>
-        </div></div>
-      </div>
+      <a href="#clients">Product</a>
       <div class="navgroup">
         <button type="button" aria-expanded="false" aria-haspopup="true">How it works</button>
         <div class="navmenu"><div class="navpanel">
@@ -486,20 +486,26 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
         <a class="btn btn-primary" href="#install">Install Orchicon</a>
         <a class="btn btn-quiet" href="https://github.com/beardedparrott/Orchicon/blob/main/USERGUIDE.md">User Guide</a>
       </div>
-      <p class="meta">macOS, Linux and Windows (WSL2). Or one <code>docker run</code>.</p>
-      <p class="hero-tui">Two full clients, one product: work in the <a href="#web">web app</a> or run <code>orch</code> in <a href="#terminal">your terminal</a>.</p>
+      <p class="meta">Desktop, terminal and web clients. Native on macOS, Windows and Linux.</p>
+      <p class="hero-tui">Two full clients, one product: work in the <a href="#clients">web app</a> or run <code>orch</code> in <a href="#clients">your terminal</a>.</p>
     </div>
   </div>
 </section>
 
-<!-- WEB APP -->
-<section class="block web" id="web">
+<!-- CLIENTS — the web app and `orch`, one section with a switcher -->
+<section class="block" id="clients">
   <div class="wrap">
     <div class="term-head">
-      <h2 class="title">The whole product, in your browser</h2>
-      <p class="intro">The web app ships inside the control plane binary, so there is nothing extra to host. Plan with Ask Orchicon, shape the backlog, draw workflows, and watch every run land, with the same data and the same permissions as the terminal client.</p>
+      <h2 class="title">One product, three full clients</h2>
+      <p class="intro">Desktop, terminal and web — every screen, every action, on macOS, Windows and Linux. The <strong>desktop app</strong> is a native shell that launches or connects to your plane; <code>orch</code> is read/write at parity over SSH or in a tmux pane; the <strong>web app</strong> ships inside the binary, so there is nothing else to host. Same data, same permissions, same seven workspaces.</p>
+      <div class="client-switch" role="tablist" aria-label="Client">
+        <button role="tab" aria-selected="true" id="cs-web" data-client="web" aria-controls="pp-web">Web app</button>
+        <button role="tab" aria-selected="false" id="cs-desktop" data-client="desktop" tabindex="-1" aria-controls="pp-desktop">Desktop</button>
+        <button role="tab" aria-selected="false" id="cs-tui" data-client="tui" tabindex="-1" aria-controls="pp-tui">Terminal</button>
+      </div>
     </div>
 
+    <div class="client-panel" id="pp-web" role="tabpanel" aria-labelledby="cs-web">
     <div class="showcase">
     <div class="bframe">
       <div class="bbar">
@@ -528,44 +534,41 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
         <ul id="wx-list"></ul>
       </div>
     </div>
-
-    <div class="term-grid">
-      <div>
-        <h3 class="spot-sub">Seven menus, same seven workspaces</h3>
-        <p class="sub-note">The top bar mirrors the terminal's function keys, so moving between the two costs nothing.</p>
-        <div class="table-scroll" style="margin-top:16px">
-          <table class="fk">
-            <tbody>
-              <tr><th scope="row">Ask Orchicon</th><td>Conversations in folders, with attachments, voice input and one-click compaction.</td></tr>
-              <tr><th scope="row">Work</th><td>Tree, board and archive views, drag-to-reorder, filters and bulk start.</td></tr>
-              <tr><th scope="row">Execution</th><td>Workflow editor, runs, executions and schedules with live step transitions.</td></tr>
-              <tr><th scope="row">Automation</th><td>Recurring items and the Idea Cloud triage board.</td></tr>
-              <tr><th scope="row">Overview, Enforcement, Control</th><td>Status at a glance, policies and approvals, settings and secrets.</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <div>
-        <h3 class="spot-sub">What the browser is best at</h3>
-        <ul class="facts" style="margin-top:16px">
-          <li><b>Drawing workflows.</b> Drag steps from a palette, connect them edge to edge, undo, and publish a locked version.</li>
-          <li><b>Seeing the whole backlog.</b> Hundreds of items with branches, merged PRs and sequence order in one scroll.</li>
-          <li><b>Reading long answers.</b> Rendered tables and code, collapsible replies, raw-text copy and jump to latest.</li>
-          <li><b>Staying live.</b> Live clocks, notifications and status that update as Workers move.</li>
-        </ul>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- TERMINAL -->
-<section class="block term" id="terminal">
-  <div class="wrap">
-    <div class="term-head">
-      <h2 class="title">The whole product, in your terminal</h2>
-      <p class="intro"><code>orch</code> is not a companion viewer. It is a full client with read and write parity: create, edit, publish, approve, cancel, retry and watch Workers stream live without reaching for the mouse. Run it on your laptop, over SSH, or in a tmux pane beside your editor.</p>
     </div>
 
+    <div class="client-panel" id="pp-desktop" role="tabpanel" aria-labelledby="cs-desktop" hidden>
+    <div class="showcase">
+    <div class="bframe">
+      <div class="bbar">
+        <span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="addr" id="daddr">Orchicon · Ask Orchicon</span>
+      </div>
+      <div class="btabs" role="tablist" aria-label="Desktop app screens">
+        <button role="tab" aria-selected="true" data-dsk="ask">Ask Orchicon</button>
+        <button role="tab" aria-selected="false" data-dsk="work" tabindex="-1">Work items</button>
+        <button role="tab" aria-selected="false" data-dsk="flows" tabindex="-1">Workflows</button>
+        <button role="tab" aria-selected="false" data-dsk="sched" tabindex="-1">Schedules</button>
+        <button role="tab" aria-selected="false" data-dsk="ideas" tabindex="-1">Idea Cloud</button>
+      </div>
+      <div class="wshot" id="dshot">
+        <img data-dsk-img="ask" src="assets/web-ask.webp" alt="Ask Orchicon in the desktop app: the same conversation view the web app renders, inside the desktop shell." class="on">
+        <img data-dsk-img="work" src="assets/web-work.webp" alt="Work items in the desktop app: the same tree view, with sequence order, branches and merged PRs." loading="lazy">
+        <img data-dsk-img="flows" src="assets/web-workflows.webp" alt="The workflow editor in the desktop app." loading="lazy">
+        <img data-dsk-img="sched" src="assets/web-schedules.webp" alt="Schedule history in the desktop app." loading="lazy">
+        <img data-dsk-img="ideas" src="assets/web-ideacloud.webp" alt="The Idea Cloud in the desktop app." loading="lazy">
+      </div>
+      <p class="dcap" id="dcap" aria-live="polite"></p>
+    </div>
+      <div class="explain" aria-live="polite">
+        <h3 id="dx-title"></h3>
+        <p id="dx-body"></p>
+        <ul id="dx-list"></ul>
+        <p class="why" id="dx-why"></p>
+      </div>
+    </div>
+    </div>
+
+    <div class="client-panel" id="pp-tui" role="tabpanel" aria-labelledby="cs-tui" hidden>
     <div class="showcase">
     <div class="tframe">
       <div class="fkeys" role="tablist" aria-label="Terminal workspaces">
@@ -589,20 +592,21 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
         <p class="why" id="tx-why"></p>
       </div>
     </div>
+    </div>
 
     <div class="term-grid">
       <div>
-        <h3 class="spot-sub">Seven workspaces, one key each</h3>
+        <h3 class="spot-sub">Seven workspaces in all three — one key each</h3>
         <div class="table-scroll" style="margin-top:16px">
           <table class="fk">
             <tbody>
-              <tr><th scope="row"><kbd>F1</kbd> Ask Orchicon</th><td>Conversations in all three modes, with reasoning, diffs and live cost.</td></tr>
-              <tr><th scope="row"><kbd>F2</kbd> Overview</th><td>Projects, runs and Workers at a glance.</td></tr>
-              <tr><th scope="row"><kbd>F3</kbd> Work</th><td>The work item tree: create, sequence, set status, bulk-bind workflows.</td></tr>
+              <tr><th scope="row"><kbd>F1</kbd> Ask Orchicon</th><td>Conversations in folders, all three modes, with reasoning, diffs and live cost.</td></tr>
+              <tr><th scope="row"><kbd>F2</kbd> Overview</th><td>Dashboard, telemetry and cost at a glance.</td></tr>
+              <tr><th scope="row"><kbd>F3</kbd> Work</th><td>Tree and board views; create, sequence, and bulk-bind workflows.</td></tr>
               <tr><th scope="row"><kbd>F4</kbd> Execution</th><td>Workflows, runs and executions, with a flow view of every step.</td></tr>
               <tr><th scope="row"><kbd>F5</kbd> Automation</th><td>Recurring items, schedules and the Idea Cloud.</td></tr>
               <tr><th scope="row"><kbd>F6</kbd> Enforcement</th><td>Policies, approvals and budgets.</td></tr>
-              <tr><th scope="row"><kbd>F7</kbd> Control</th><td>Settings, secrets and platform administration.</td></tr>
+              <tr><th scope="row"><kbd>F7</kbd> Control</th><td>Servers, adapters, settings and secrets.</td></tr>
             </tbody>
           </table>
         </div>
@@ -612,20 +616,17 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
         <dl class="keys">
           <div><dt><kbd>/</kbd></dt><dd>Slash commands and the command palette</dd></div>
           <div><dt><kbd>ctrl</kbd><kbd>d</kbd></dt><dd>Slide out the file diff sidebar</dd></div>
-          <div><dt><kbd>ctrl</kbd><kbd>g</kbd></dt><dd>Jump between the composer and the content</dd></div>
           <div><dt><kbd>space</kbd></dt><dd>Mark items for a bulk action</dd></div>
           <div><dt><kbd>W</kbd></dt><dd>Set workflow and runtime image on every marked item</dd></div>
-          <div><dt><kbd>enter</kbd></dt><dd>Open details, or the flow view of a workflow</dd></div>
           <div><dt><kbd>ctrl</kbd><kbd>y</kbd></dt><dd>Stop a reply mid-stream</dd></div>
-          <div><dt><kbd>alt</kbd><kbd>enter</kbd></dt><dd>New line in the multi-line composer</dd></div>
         </dl>
       </div>
     </div>
 
     <ul class="facts term-facts">
-      <li><b>43 themes,</b> including true transparency where your terminal shows through and text adapts to stay readable.</li>
+      <li><b>43 themes</b> in the terminal, including true transparency where your terminal shows through.</li>
       <li><b>Mouse when you want it.</b> Click to select, scroll, and click your own message to copy it.</li>
-      <li><b>Always honest about cost.</b> Context, tokens, cache hit rate and dollars sit under the composer as you type.</li>
+      <li><b>Honest about cost.</b> Context, tokens, cache hit rate and dollars sit under the composer.</li>
     </ul>
   </div>
 </section>
@@ -779,7 +780,8 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
           <tr><th scope="row">Workers</th><td>Versioned definitions with system prompt, permissions, gated tools and budgets. Lifecycle runs draft, published, deprecated, retired. The model is pinned by a human, with no silent failover.</td></tr>
           <tr><th scope="row">Workflows</th><td>Step graphs with task, approval, decision, parallel, loop and recover steps. Visual editor, edit locks, immutable versions, retry-in-place and force-progress.</td></tr>
           <tr><th scope="row">Projects &amp; context</th><td><code>project_dir</code> scopes every Worker to a repo. <code>context_files</code> injects files or whole directories into the prompt. Git strategy per project, worktrees always isolated.</td></tr>
-          <tr><th scope="row">Execution</th><td>Reconcilers create executions and dispatch them to runtime adapters, in-process or in a per-run container from a warm pool.</td></tr>
+          <tr><th scope="row">Execution</th><td>Reconcilers create executions and dispatch them to runtime adapters — in-process on the host, or in a per-run container from a warm pool.</td></tr>
+          <tr><th scope="row">Plane control</th><td>A <strong>Servers</strong> page starts, stops and restarts the plane with all four connection states rendered honestly, over the same local mechanism the CLI uses.</td></tr>
           <tr><th scope="row">Runtimes</th><td>A built-in engine that needs nothing installed, plus pluggable adapters over gRPC such as OpenCode. Buildable images from apt packages and toolchains, chosen per work item.</td></tr>
           <tr><th scope="row">Recovery</th><td>Failures are recoverable by default: capture, summarise, preserve, review, plan, resume. Checkpoint replay, bounded auto-relax and L1 to L3 escalation.</td></tr>
           <tr><th scope="row">Governance</th><td>OPA/Rego policy at the dispatch decision, approvals, budgets, a full audit trail, AES-256-GCM secrets and Postgres row-level security per tenant.</td></tr>
@@ -787,7 +789,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
           <tr><th scope="row">Observability</th><td>OpenTelemetry into Tempo traces, Loki logs and VictoriaMetrics metrics. Cost rolls up from execution to tenant, streamed live.</td></tr>
           <tr><th scope="row">Integrations</th><td>A curated MCP catalog (filesystem, GitHub, Postgres, Playwright, Sentry, Slack and more) with one-click install and <code>${SECRET}</code> references.</td></tr>
           <tr><th scope="row">Automation</th><td>Recurring items on interval schedules with day toggles and work windows. A research Worker proposes evidence-backed features into the Idea Cloud for you to approve or dismiss.</td></tr>
-          <tr><th scope="row">Deployment</th><td>The whole stack in one container, or dev and prod as two containers with your data preserved. <code>orchicon install</code> brings it up.</td></tr>
+          <tr><th scope="row">Deployment</th><td>The plane and its services are <strong>host processes</strong> — native on macOS, Linux and Windows, no WSL2 and no Docker for the plane. Containers exist only for workflow runs, on Docker or podman.</td></tr>
         </tbody>
       </table>
     </div>
@@ -866,11 +868,11 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
   <div class="wrap two">
     <div>
       <h2 class="title">Install in one command</h2>
-      <p class="intro" style="margin-bottom:28px">The installer downloads the <code>orchicon</code> binary, pulls the images, starts the runtime daemon and launches a single-container instance. Re-run it to update.</p>
+      <p class="intro" style="margin-bottom:28px">The installer downloads the <code>orchicon</code> binary and brings this machine's plane up as a <strong>host process</strong>: Postgres, NATS and the telemetry backends included. Containers are provisioned for workflow runs, not for the plane. Re-run it to update — it converges an existing instance and refuses a downgrade.</p>
       <div class="tabs" role="tablist" aria-label="Install method" id="install-tabs">
         <button role="tab" aria-selected="true" aria-controls="p-unix" id="t-unix">macOS / Linux</button>
         <button role="tab" aria-selected="false" aria-controls="p-win" id="t-win" tabindex="-1">Windows</button>
-        <button role="tab" aria-selected="false" aria-controls="p-docker" id="t-docker" tabindex="-1">Docker</button>
+        <button role="tab" aria-selected="false" aria-controls="p-desktop" id="t-desktop" tabindex="-1">Desktop app</button>
       </div>
       <div class="panel" role="tabpanel" id="p-unix" aria-labelledby="t-unix">
         <pre><span class="p">$ </span><span id="c-unix">curl -fsSL https://orchicon.dev/install | bash</span></pre>
@@ -881,22 +883,22 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
         <pre><span class="p">PS&gt; </span><span id="c-win">irm https://orchicon.dev/install.ps1 | iex</span></pre>
         <button class="copy" data-copy="c-win">Copy</button>
       </div>
-      <div class="panel" role="tabpanel" id="p-docker" aria-labelledby="t-docker" hidden>
-        <pre><span class="p">$ </span><span id="c-docker">docker run --rm -p 8080:8080 -p 3002:3000 \
-    -v orchicon-data:/var/lib/orchicon ghcr.io/beardedparrott/orchicon</span></pre>
-        <button class="copy" data-copy="c-docker">Copy</button>
+      <div class="panel" role="tabpanel" id="p-desktop" aria-labelledby="t-desktop" hidden>
+        <pre><span class="p">$ </span><span id="c-desktop">curl -fsSL https://orchicon.dev/install | bash -s -- --desktop</span></pre>
+        <button class="copy" data-copy="c-desktop">Copy</button>
+        <p class="intro">A Wails shell around the same web app, packaged for all three platforms: a <code>.deb</code> or <code>.AppImage</code> for Linux, a signed and notarised <code>.app</code> for macOS, an NSIS installer or portable zip for Windows. It is a <strong>client</strong> — it connects to your plane over loopback and tells you the address it tried if none is running.</p>
       </div>
-      <p class="panel-note" id="install-note">Requires <code>curl</code>, <code>tar</code> and Docker.</p>
+      <p class="panel-note" id="install-note">Requires <code>curl</code> and <code>tar</code>. No Docker needed for the plane; a container engine is used only for workflow runs.</p>
       <div class="cmds">
         <p class="cmds-title">Common commands — add them to the line above</p>
         <ul>
-          <li><code>--instance &lt;dev|test|prod&gt;</code> — which stack to act on: each has its own container, ports, data volume and host state. Every command that changes something asks unless you pass this.</li>
+          <li><code>--instance &lt;dev|test|prod&gt;</code> — which stack to act on: each has its own ports, data and host state. Every command that changes something asks unless you pass this.</li>
           <li><code>--version &lt;tag&gt;</code> — a specific released version instead of the latest.</li>
           <li><code>--dry-run</code> — show what would happen. Changes nothing.</li>
-          <li><code>--no-setup</code> — the binary only: no images, no daemon, no container.</li>
+          <li><code>--no-setup</code> — the binary only: no services, no daemon, no plane.</li>
           <li><code>--uninstall</code> — stop this instance and remove the binaries. Your data is kept.</li>
           <li><code>--purge</code> — uninstall and destroy this instance's data. Irreversible.</li>
-          <li><code>--remove-binary</code> — just the <code>orchicon</code> and <code>orch</code> executables; containers, volumes and state are untouched.</li>
+          <li><code>--remove-binary</code> — just the <code>orchicon</code> and <code>orch</code> executables; services, data and state are untouched.</li>
           <li><code>--clean</code> — upgrade: stop, remove the old binary, install the latest. Data kept.</li>
           <li><code>--force-clean</code> — rebuild from scratch for this instance. All of its data is lost.</li>
         </ul>
@@ -909,7 +911,7 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
         <li><span class="n">3</span><div><b>Create a project</b><span>Point it at a repository. Every Worker is scoped to that directory.</span></div></li>
         <li><span class="n">4</span><div><b>Ask, then dispatch</b><span>Brainstorm in Ask Orchicon, turn the result into a work item, bind a workflow and start it. Watch it in the browser or in <code>orch</code>.</span></div></li>
       </ol>
-      <p class="panel-note">Building Orchicon itself? <code>git clone</code>, then <code>make build</code> and <code>make dev-start</code>. Needs Go 1.26+, Node 22+ and Docker.</p>
+      <p class="panel-note">Building Orchicon itself? <code>git clone</code>, then <code>make build</code> and <code>make run</code>. Needs Go 1.26+ and Node 22+; a container engine (podman or Docker) is optional and only used for workflow runtime containers.</p>
     </div>
   </div>
 </section>
@@ -1006,12 +1008,12 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
     flows:["Design the team that builds each task","Every workflow as a readable step list, with each gate and loop spelled out in order.",["<b>Loop decisions</b> with their limits, like max 3 or max 6.","<b>Human gates</b> marked where they wait for you.","<b>Edit, publish, deprecate</b> without leaving the keyboard."],"Review and publish a workflow over SSH on the machine it runs on, with no browser or port forwarding."],
     auto:["Work that keeps happening while you sleep","Recurring items fire on a schedule inside a work window, and can file ideas instead of tasks.",["<b>Interval schedules</b> with day toggles and time windows.","<b>Calendar picker</b> for the start date and time.","<b>Pause and resume</b> with a single flag."],"Set up or pause an automation from the same tmux session you already work in, then get back to your code."]
   };
-  function describe(pre, c){
+  function describe(pre, c, whyLabel){
     document.getElementById(pre+'-title').textContent = c[0];
     document.getElementById(pre+'-body').textContent = c[1];
     document.getElementById(pre+'-list').innerHTML = c[2].map(function(t){return '<li>'+t+'</li>';}).join('');
     var w = document.getElementById(pre+'-why');
-    if (w) w.innerHTML = c[3] ? '<b>Why the terminal:</b> ' + c[3] : '';
+    if (w) w.innerHTML = c[3] ? '<b>' + (whyLabel || 'Why the terminal') + ':</b> ' + c[3] : '';
   }
 
   // web tabs
@@ -1062,6 +1064,59 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
   });
   tsel(ttabs[0]);
   document.getElementById('tshot').addEventListener('click', function(){ var on=document.querySelector('#tshot img.on'); openLb(on.src,on.alt); });
+
+  // desktop panel — the SAME SPA in a native shell, so it reuses the web
+  // screenshots. Its tablist is separate ([data-dsk]) so the two never fight
+  // over which image is 'on'.
+  var dcs = {
+    ask:["Ask Orchicon","The same conversation view, in its own window, with no browser chrome and no port to remember."],
+    work:["Work › Work Items","The backlog tree, unchanged — what differs is that the app launched or found your plane for you."],
+    flows:["Execution › Workflows","The canvas editor, at full window size."],
+    sched:["Execution › Schedules","Run history, with the app's own window controls."],
+    ideas:["Automation › Idea Cloud","Triage, approve and dismiss without leaving the desktop."]
+  };
+  var dkpts = {
+    ask:["A window, not a tab","The desktop app is a Wails shell around the same frontend the browser gets. It talks to your plane over loopback and names the address it tried when none is running.",["<b>Native on all three:</b> a signed and notarised <code>.app</code> for macOS, an NSIS installer or portable zip for Windows, a <code>.deb</code> or <code>.AppImage</code> for Linux.","<b>Launches or connects</b> to the plane, and starts one if none is running.","<b>No webview, no window:</b> a missing runtime prints the one command that installs it instead of opening blank."],"nothing to host, nothing to tunnel — and the plane is still a normal host process you can reach from the CLI."],
+    work:["The backlog, in its own window","Every screen in the web app is here, because it is the same app. The difference is packaging, not features.",["<b>Signed and notarised</b> so Gatekeeper opens it offline, with no bypass.","<b>Everything the web UI does</b>, the desktop app does too — and so does <code>orch</code>.","<b>One installer</b> can place it beside the CLI with <code>--desktop</code>."],"you get a dockable app without giving up the surface you debug from."],
+    flows:["Draw without a browser","Same editor, same canvas, same locked versions.",["<b>Full-window canvas</b> for a wide workflow.","<b>Same versions and runs</b> as everywhere else.","<b>Live step transitions</b> while a run moves."],"a workflow is easier to read at window size than in a tab."],
+    sched:["History in the app","Schedules and recurring items, with their run history.",["<b>Every past run</b> with duration, workflow and run ID.","<b>The same data</b> the terminal shows, from the same plane.","<b>Pause and resume</b> without a reload."],"the thing you check in the morning is one click from your dock."],
+    ideas:["The Idea Cloud, in the app","Research Worker proposals with their cited evidence, ready to triage.",["<b>Approve into a work item</b> or dismiss for good.","<b>Provenance</b> on every idea: the item and run that spawned it.","<b>Evidence inline</b>, so you can check the claim before you commit."],"triage is the kind of reading you want in a real window, not a phone tab."]
+  };
+  var dtabs = document.querySelectorAll('[data-dsk]');
+  function dsel(t){
+    dtabs.forEach(function(x){ var on=x===t; x.setAttribute('aria-selected',on); x.tabIndex=on?0:-1; });
+    document.querySelectorAll('[data-dsk-img]').forEach(function(i){ i.classList.toggle('on', i.dataset.dskImg===t.dataset.dsk); });
+    var c = dcs[t.dataset.dsk];
+    document.getElementById('daddr').textContent = 'Orchicon · ' + c[0];
+    document.getElementById('dcap').textContent = c[1];
+    describe('dx', dkpts[t.dataset.dsk], 'Why the desktop app');
+  }
+  dtabs.forEach(function(t,i){
+    t.addEventListener('click', function(){ dsel(t); });
+    t.addEventListener('keydown', function(e){
+      if(e.key==='ArrowRight'||e.key==='ArrowLeft'){ var n=dtabs[(i+(e.key==='ArrowRight'?1:dtabs.length-1))%dtabs.length]; dsel(n); n.focus(); }
+    });
+  });
+  dsel(dtabs[0]);
+  document.getElementById('dshot').addEventListener('click', function(){ var on=document.querySelector('#dshot img.on'); openLb(on.src,on.alt); });
+
+  // client switcher — one section, two clients. The web and terminal tablists
+  // keep their own [data-web] / [data-tui] wiring; this only decides which
+  // panel is on screen, so neither inner tablist had to change.
+  var ctabs = document.querySelectorAll('[data-client]');
+  function csel(t){
+    ctabs.forEach(function(x){
+      var on = x===t;
+      x.setAttribute('aria-selected', on); x.tabIndex = on ? 0 : -1;
+      document.getElementById(x.getAttribute('aria-controls')).hidden = !on;
+    });
+  }
+  ctabs.forEach(function(t,i){
+    t.addEventListener('click', function(){ csel(t); });
+    t.addEventListener('keydown', function(e){
+      if(e.key==='ArrowRight'||e.key==='ArrowLeft'){ var n=ctabs[(i+(e.key==='ArrowRight'?1:ctabs.length-1))%ctabs.length]; csel(n); n.focus(); }
+    });
+  });
 
   // nav highlight
   var links = document.querySelectorAll('#primary-nav a');
@@ -1140,9 +1195,9 @@ dialog.lb .close{display:block; margin:10px auto 0; font:600 14px var(--sans); c
 
   // install tabs
   var notes = {
-    "t-unix":"Requires <code>curl</code>, <code>tar</code> and Docker.",
-    "t-win":"Runs the whole stack inside WSL2. Needs Windows 10 21H2+ or Windows 11 and Docker Desktop with WSL integration.",
-    "t-docker":"Web app on port 8080. Your data lives in the <code>orchicon-data</code> volume."
+    "t-unix":"Requires <code>curl</code> and <code>tar</code>. No Docker needed for the plane; a container engine is used only for workflow runs.",
+    "t-win":"A native Windows install — <code>orchicon.exe</code> runs as your user. Needs Windows 10 21H2+ or Windows 11. No WSL2 or Docker Desktop for the plane; WSL2 is only the substrate for workflow containers.",
+    "t-desktop":"Downloads the desktop app alongside the CLI. The plane still runs as a host process; the app is a client for it."
   };
   // SCOPED TO THIS TABLIST, and the scoping IS the fix.
   //

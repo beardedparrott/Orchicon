@@ -17,7 +17,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/providers"
 )
 
-// Integration tests for the Providers settings service (ADR-0006): custom
+// Integration tests for the Providers settings service: custom
 // provider CRUD, token auto-write, the deletion guard, and end-to-end
 // credential resolution. Guarded by ORCHICON_TEST_DSN like the db tests:
 //

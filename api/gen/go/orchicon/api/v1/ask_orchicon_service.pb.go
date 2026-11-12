@@ -562,7 +562,7 @@ func (x *SetConversationModeResponse) GetConversation() *Conversation {
 type SetConversationModelRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	// model_ref is canonical adapter/provider/model (ADR-0003); a legacy
+	// model_ref is canonical adapter/provider/model; a legacy
 	// 1/2-segment ref is accepted and infers adapter "opencode". Empty clears
 	// the per-conversation override so the tenant default applies.
 	ModelRef      string `protobuf:"bytes,2,opt,name=model_ref,json=modelRef,proto3" json:"model_ref,omitempty"`

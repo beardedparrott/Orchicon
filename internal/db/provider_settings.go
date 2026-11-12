@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ProviderSettingsRow is the data-access shape of a provider_settings row (ADR-0006 D1).
+// ProviderSettingsRow is the data-access shape of a provider_settings row.
 type ProviderSettingsRow struct {
 	ID              string
 	TenantID        string

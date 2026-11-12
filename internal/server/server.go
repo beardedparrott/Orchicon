@@ -473,7 +473,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		"",
 		log,
 	)
-	// MCP definitions are scope-addressed (ADR-0012): ResolveScope returns the project-owned ∪
+	// MCP definitions are scope-addressed: ResolveScope returns the project-owned ∪
 	// scope-owned union (SetScopeResolver).
 	nativeBridge.SetScopeResolver(mcpsettings.NewResolver(pool))
 	nativeBridge.SetMCPSecretResolver(func(ctx context.Context, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
@@ -510,7 +510,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		})
 		return err
 	})
-	// Session-terminal prefix-cache telemetry (D3, ADR-0009 D6): the native bridge drains the
+	// Session-terminal prefix-cache telemetry (D3: the native bridge drains the
 	// per-session cache rollup to the OTel metrics recorder (hit/miss counters + hit-rate gauge).
 	nativeBridge.SetCacheSink(func(ctx context.Context, exec db.ExecutionRow, st orchicon.CacheStats) {
 		_ = usageRecorder.RecordPrefixCache(ctx, exec.TenantID, exec.ProjectID, exec.WorkerID, exec.ID, st.Turns, st.Hits, st.MissWrites, st.CacheReadTokens, st.CacheWriteTokens)
@@ -837,7 +837,7 @@ func (s *Server) Run(ctx context.Context) error {
 		})
 	}()
 
-	// MCP stdio stale-child sweep (ADR-0008): MCP server subprocesses spawned for sessions carry
+	// MCP stdio stale-child sweep: MCP server subprocesses spawned for sessions carry
 	// ORCHICON_MCP_STDIO=1.
 	go runOnStartupThenEvery(ctx, 1*time.Second, 30*time.Second, func() {
 		mcpclient.SweepStaleChildren(ctx, s.log)

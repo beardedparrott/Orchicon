@@ -858,7 +858,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	}
 	// The system prompt is the full context the model sees on every turn.
 	composite, _ := extractComposite(task.PromptContext)
-	var promptFP string      // context-file fingerprint (ADR-0009 D5)
+	var promptFP string      // context-file fingerprint
 	var agentPromptLen int   // run-level prefix length, for the 2.x message trim
 	var stepRunResult []byte // step run's full result — carries the _recovery_* seed keys
 	if exec.WorkflowRunID != "" && exec.WorkflowStepID != "" {
@@ -976,7 +976,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		return
 	}
 	// Resolve the adapter bridge from the execution's adapter kind — the model_ref grammar
-	// (adapter.AdapterKind) is the SINGLE source of truth (ADR-0003).
+	// (adapter.AdapterKind) is the SINGLE source of truth.
 	modelRef := manifest.ModelRef
 	if modelRef == "" {
 		modelRef = manifest.DefaultModelRef

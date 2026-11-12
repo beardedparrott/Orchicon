@@ -20,7 +20,7 @@ type ToolDef struct {
 	ParamsJSON  string
 }
 
-// Manager owns the MCP client connections for one session/execution (ADR-0008): connections are
+// Manager owns the MCP client connections for one session/execution: connections are
 // established lazily at session start (never at control-plane boot).
 type Manager struct {
 	log *slog.Logger

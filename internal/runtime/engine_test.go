@@ -110,7 +110,7 @@ func TestEngineFlagArgs(t *testing.T) {
 		t.Errorf("docker UsernsArgs = %v, want none (--user is already the host uid)", got)
 	}
 
-	// ADR-0013 D2.1: podman publishes on the host loopback; docker keeps the
+	//: podman publishes on the host loopback; docker keeps the
 	// bridge IP (no publish at all).
 	if got, want := podman.PublishArgs(defaultServePort, sandboxPlanePort),
 		[]string{"-p", "127.0.0.1::4096", "-p", "127.0.0.1::8080"}; !reflect.DeepEqual(got, want) {
@@ -144,7 +144,7 @@ func TestEngineFlagArgs(t *testing.T) {
 	}
 }
 
-// TestEngineNameInUseTokens pins the retry predicate against the REAL wordings (ADR-0013 D5.2) —
+// TestEngineNameInUseTokens pins the retry predicate against the REAL wordings —
 // podman's phrasings are not covered by docker's.
 func TestEngineNameInUseTokens(t *testing.T) {
 	podman := Engine{Name: "podman"}

@@ -166,7 +166,7 @@ function NewWorkerPage() {
   });
 
   const modelRef = watch("modelRef");
-  // Worker-level runtime_ref is retired (ADR-0003 single source of truth):
+  // Worker-level runtime_ref is retired ( single source of truth):
   // the model_ref's adapter segment alone governs dispatch.
   const permissions = watch("permissions");
   const gatedTools = watch("gatedTools");

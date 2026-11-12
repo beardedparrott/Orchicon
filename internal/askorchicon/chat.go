@@ -198,7 +198,7 @@ func askServeDownGrace() time.Duration {
 }
 
 // defaultAskMaxConcurrentTurns bounds how many Ask Orchicon turns may run concurrently across all
-// conversations (ADR-0002 D7 — session admission bound).
+// conversations ( — session admission bound).
 const defaultAskMaxConcurrentTurns = 16
 
 func askMaxConcurrentTurns() int {
@@ -1089,7 +1089,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	}
 
 	// The conversation's adapter is resolved through the shared Dispatcher by its model_ref kind
-	// (ADR-0003 §3/§5).
+	//.
 	if client, cerr := s.resolveChatClient(convID, modelRef); cerr != nil {
 		// The turn was already registered above: release it so the conversation is not wedged behind a turn
 		// that will never run (the TTL sweeper would otherwise hold it for up to 31 minutes).
@@ -1422,7 +1422,7 @@ func buildSystemPrompt(mode string, cfg db.AgentConfigRow, registry *ToolRegistr
 }
 
 // resolveChatClient resolves the ChatTurnClient capability for an Ask conversation from its
-// model_ref adapter kind, routed through the shared Dispatcher (ADR-0003 §3/§5).
+// model_ref adapter kind, routed through the shared Dispatcher.
 func (s *Service) resolveChatClient(convID, modelRef string) (scheduler.ChatTurnClient, error) {
 	if s.dispatcher == nil {
 		if c := s.testServeClient; c != nil {

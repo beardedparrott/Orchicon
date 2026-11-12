@@ -1944,7 +1944,7 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 		// Build the composite prompt from the (read-only) work item + upstream step-run context.
 		var primaryWID string
 		var composite string
-		var promptFP string // context-file fingerprint (ADR-0009 D5)
+		var promptFP string // context-file fingerprint
 		var agentPromptLen int
 		for _, wid := range upstream {
 			wi, err := db.GetWorkItem(ctx, tx, tenantID, wid)
@@ -2504,7 +2504,7 @@ func (r *WorkflowReconciler) failStep(ctx context.Context, tx pgx.Tx, tenantID s
 // dispatched (PR B — context propagation).
 func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow, worker db.WorkerVersionRow, allSteps []workflow.StepWire, runs map[string]db.WorkflowStepRunRow) (string, string, error) {
 	var sb strings.Builder
-	// contextFP is the sha256 over the project + work-item context-file stamps (ADR-0009 D5): unchanged
+	// contextFP is the sha256 over the project + work-item context-file stamps: unchanged
 	// files ⇒ unchanged bytes ⇒ the rendered section is reused verbatim from the prefix cache.
 	contextFP := "none"
 	// Stable prompt prefix first: shared identity + safety rules + efficiency directives + runtime

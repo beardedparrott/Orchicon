@@ -1,6 +1,6 @@
 package runtime
 
-// hostfp_engine_test.go — THE POOL KEY'S ENGINE TERM (ADR-0013 D7.1/D7.2).
+// hostfp_engine_test.go — THE POOL KEY'S ENGINE TERM.
 
 import (
 	"log/slog"

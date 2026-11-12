@@ -11,7 +11,7 @@ import (
 	"connectrpc.com/connect"
 )
 
-// These are DB-backed tests for ADR-0002 AC2/AC4 (refresh survival + the admission bound).
+// These are DB-backed tests for AC2/AC4 (refresh survival + the admission bound).
 
 // TestRefreshKeepsTurnInFlightAndAccurate verifies the AC2 refresh-survival contract against a real
 // DB: after the ChatStream RPC has returned (the client disconnect / page refresh).
@@ -63,7 +63,7 @@ func TestRefreshKeepsTurnInFlightAndAccurate(t *testing.T) {
 	}
 }
 
-// TestStartConversationTurnAdmissionCapBusyError verifies ADR-0002 D7 (AC4): beyond the
+// TestStartConversationTurnAdmissionCapBusyError verifies (AC4): beyond the
 // concurrent-turn cap a new dispatch is rejected with a clear CodeResourceExhausted error.
 func TestStartConversationTurnAdmissionCapBusyError(t *testing.T) {
 	t.Setenv("ORCHICON_ASK_MAX_CONCURRENT_TURNS", "2")
@@ -97,7 +97,7 @@ func TestStartConversationTurnAdmissionCapBusyError(t *testing.T) {
 	}
 }
 
-// TestInterjectRecyclesWedgedSession verifies ADR-0002 D4 (AC3): a mid-run interjection onto a
+// TestInterjectRecyclesWedgedSession verifies (AC3): a mid-run interjection onto a
 // conversation whose in-flight turn wedged on an unresolved tool (MCP wedge) recycles the wedged.
 func TestInterjectRecyclesWedgedSession(t *testing.T) {
 	// THE WEDGE WINDOW NEEDS SLACK OVER THE 150ms SETTLE SLEEP BELOW. At 200ms the margin was 50ms, so

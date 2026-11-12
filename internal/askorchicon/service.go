@@ -39,13 +39,13 @@ type Service struct {
 	toolRegistry  *ToolRegistry
 	runtimeClient *runtime.Client
 	// adapterKinds returns the adapter kinds registered with the
-	// Dispatcher (ADR-0004 D1) — powers the list_adapter_kinds tool.
+	// Dispatcher — powers the list_adapter_kinds tool.
 	adapterKinds func() []string
 	// chatKinds returns the adapter kinds whose bridge implements the ChatTurnClient (Ask chat)
-	// capability (ADR-0004 D1).
+	// capability.
 	chatKinds func() []string
 	// dispatcher is the shared adapter routing substrate the Ask path uses to resolve a conversation's
-	// adapter kind to its ChatTurnClient capability (ADR-0003).
+	// adapter kind to its ChatTurnClient capability.
 	dispatcher *scheduler.Dispatcher
 	// sendMessage injects a mid-run message into a live worker session (Stage 3).
 	sendMessage func(ctx context.Context, execID, message string) error
@@ -77,7 +77,7 @@ type Service struct {
 	// testServeClient is a test-only injection point that bypasses the real host serve so handler tests
 	// can drive ChatStream/Abort with a fake session client.
 	testServeClient scheduler.ChatTurnClient
-	// validationRegistry is the model-ref validation catalog (ADR-0003) threaded into the
+	// validationRegistry is the model-ref validation catalog threaded into the
 	// update_settings tool write path (the Ask-own second write.
 	validationRegistry adapter.ProviderRegistry
 
@@ -193,13 +193,13 @@ func (s *Service) SetSecretKEK(kek []byte) {
 	s.kek = kek
 }
 
-// SetAdapterKinds wires the Dispatcher's registered adapter kinds (ADR-0004 D1) into the
+// SetAdapterKinds wires the Dispatcher's registered adapter kinds into the
 // list_adapter_kinds tool.
 func (s *Service) SetAdapterKinds(fn func() []string) {
 	s.adapterKinds = fn
 }
 
-// SetChatKinds wires the Dispatcher's Ask-capable adapter kinds (ADR-0004 D1) into the
+// SetChatKinds wires the Dispatcher's Ask-capable adapter kinds into the
 // conversation-creation + tenant-default-save guards.
 func (s *Service) SetChatKinds(fn func() []string) {
 	s.chatKinds = fn
@@ -238,7 +238,7 @@ func (s *Service) registry() adapter.ProviderRegistry {
 }
 
 // validateModelRef checks a model ref against the adapter/provider/model
-// grammar (ADR-0003) via the injected registry. Empty means unset — valid.
+// grammar via the injected registry. Empty means unset — valid.
 func (s *Service) validateModelRef(ref string) error {
 	if strings.TrimSpace(ref) == "" {
 		return nil
@@ -246,7 +246,7 @@ func (s *Service) validateModelRef(ref string) error {
 	if _, err := adapter.ParseModelRef(ref, s.registry()); err != nil {
 		return err
 	}
-	// Ask-capability guard (ADR-0004 D1): a ref whose adapter kind is registered but does NOT implement
+	// Ask-capability guard: a ref whose adapter kind is registered but does NOT implement
 	// Ask chat (ChatTurnClient) is rejected here so the tenant-default save path never persists a ref.
 	if s.dispatcher != nil && s.chatKinds != nil {
 		kind := adapter.AdapterKind(ref)
@@ -422,7 +422,7 @@ func (s *Service) CreateConversation(ctx context.Context, req *connect.Request[a
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	// Ask-capability guard (ADR-0004 D1): reject a conversation whose model_ref adapter kind is
+	// Ask-capability guard: reject a conversation whose model_ref adapter kind is
 	// registered but does NOT implement Ask chat (ChatTurnClient) BEFORE the first message send.
 	if req.Msg.ModelRef != "" && s.dispatcher != nil && s.chatKinds != nil {
 		kind := adapter.AdapterKind(req.Msg.ModelRef)

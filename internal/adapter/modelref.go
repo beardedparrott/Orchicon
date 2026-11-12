@@ -64,7 +64,7 @@ const (
 )
 
 // ModelRef is the parsed form of a worker model_ref under the pinned
-// left-greedy grammar (ADR-0003):
+// left-greedy grammar:
 //
 //	<adapter>/<provider>/<model>   3+ segments (explicit adapter kind)
 //	<provider>/<model>             2 segments (legacy — adapter inferred)
@@ -195,7 +195,7 @@ func splitFirst(ref string) (head, rest string) {
 
 // NormalizeRef rewrites a PRE-NAMESPACE legacy model ref into canonical
 // adapter/provider/model form. Legacy refs are free-form provider/<model>
-// entries written before the adapter namespace existed (ADR-0003): their
+// entries written before the adapter namespace existed: their
 // head can be a plain provider id (opencode-go), a slashed model path
 // (commandcode/deepseek/deepseek-v4-flash), or a bare model id. The new
 // left-greedy grammar misreads such refs — head becomes an "adapter kind",

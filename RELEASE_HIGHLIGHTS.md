@@ -28,6 +28,123 @@
 > numbers. The published release reads correctly while this file is wrong —
 > so grep the release log for that warning rather than assuming the two agree.
 
+## v0.6.0
+
+### New: Orchicon runs on your machine, not inside itself
+The plane and its services — the API, Postgres, NATS, the telemetry backends — are now **host processes
+on every platform**, and a container has exactly one job: running a workflow's work. The old shape chose
+its carrier from an unrelated fact, whether a container engine happened to be present, which made an
+instance's *shape* depend on what was installed beside it. That broke two things at once on a real host:
+`orchicon install` created a brand-new empty cluster in a container volume while your migrated database sat
+untouched next to it, and under podman's forwarding the plane could not authenticate to its own database at
+all (`no pg_hba.conf entry for host …` — the rule named the network gateway, and the connection arrived
+with the host's own address). Docker's address happened to match; podman's does not.
+
+So residency is now host, unconditionally. `ORCHICON_PLANE_RESIDENCY=container` is **refused with the
+reason** rather than quietly overridden — silently taking the host shape for someone who asked for a
+container would leave them reading a summary that describes something they never chose. What this buys you
+is that an instance is one thing, on one machine, with its data where you can see it.
+
+### New: podman is a first-class engine, not a Docker-shaped hole
+Orchicon now treats the container engine as a seam with more than one implementation. Podman is **detected,
+provisioned and verified** for you, the runtime daemon drives it through a neutral engine interface, and the
+warm pool is keyed per engine so the two can never be confused for one another. Every place that used to
+assume Docker — image build, the inspect gate, `rmi`, the on-demand stock seeder — works on either.
+
+That also removed the guesswork around paths. A workflow container on a host that has Windows drives, or a
+project directory outside the usual root, used to hand an engine an argument it could not parse. Every
+path-taking flag is now mapped once, at the boundary, and an audit test walks the source to keep the next
+one from slipping through.
+
+### New: Windows is native — WSL2 is for containers only
+`install.ps1` no longer provisions a Linux distro so your control plane can live in it. It installs
+**`orchicon.exe`** as a native Windows process of the user who ran it, and the plane, its services, the
+daemon and the CLI all run there. WSL2 is now needed only for the Linux substrate that *workflow containers*
+run in, so a host that never uses containers needs none of it.
+
+The install itself became a real installer: a Burn bundle owns the wizard on Windows, it asks for the
+instance, the ports and the runtime images without a console window, and it never closes your PowerShell
+session on failure. `orch` and `orchicon` are placed on your user `PATH`, and a saved copy of the script is
+recognised as marked while the documented one-liner writes no file at all.
+
+### New: a desktop app, for all three platforms
+The desktop app is a **Wails shell** around the same frontend the browser gets, and it ships signed and
+packaged: a `.deb` and an `.AppImage` for Linux (the AppImage bundles WebKitGTK for distros that dropped
+4.0), a **signed, notarised and stapled** `.app` for macOS, and an NSIS installer or portable zip for
+Windows. It is a *client*: it talks to a plane over loopback and says which address it tried rather than
+opening on an unexplained blank window. A missing webview produces a sentence and the one command that
+installs it, checked before the window is created on macOS and Windows, and by a POSIX-sh launcher on Linux
+where the loader fails before `main()` ever runs. Install it alongside the CLI with `--desktop`, or from the
+release page; everything it does, the web UI at the same URL does too.
+
+### New: the installer is also the updater
+One command now covers install, update and repair, because they were never really different operations.
+It reports whether you are **fresh, current, or due an upgrade**, refuses a downgrade instead of performing
+one, and re-running it over an existing instance **converges** that instance rather than doing something
+adjacent to it. A present image tag is no longer mistaken for a current one. The destructive verbs are
+separate verbs — `--uninstall` keeps your data, `--purge` destroys it, `--remove-binary` touches neither —
+and each is bound to one instance, because an "Uninstall" that leaves a web server running or takes your
+data with it is not one operation. Every release publishes `SHA256SUMS` and both installers verify against
+it before installing anything.
+
+### New: Ask Orchicon can be edited, and interrupted properly
+A conversation is now something you can revise. Any message can be **undone** or **reverted to**: undo
+removes it from the transcript *and* from the model's context, so the next turn is not quietly arguing with
+something you deleted; revert hands the message back to the composer to rewrite. Right-click a message in
+either client for both, or use `/undo` and `/revert`.
+
+Interjecting during a running turn now **adds** your message to that turn instead of aborting it, and on the
+native bridge an interjection genuinely *joins* the turn rather than racing it. Native tool calls are
+bounded, a stop cannot absorb a send into a turn that has already ended, and a tool call that a mode may not
+use is refused at the point of execution — the boundary is adapter-agnostic, so a new runtime inherits it.
+
+### New: no built-in cost ceilings
+Budgets were meant to be a constraint you set, and had quietly become defaults nobody chose. A 30-turn
+compaction ceiling was killing healthy four-minute sessions mid-deliverable, after which the provider
+rejected the next request — the worker died for a limit it never asked for. **An unset budget field is now
+no limit.** A gate exists only because you set one, here or on the worker; wall clock and tool count remain
+hard aborts when you do set them, while cost, tokens and the compaction interval stay soft triggers that
+compact and continue. An explicit `0` disables a specific gate and is how you clear one you no longer want.
+
+### New: the Servers page, and a git strategy you actually choose
+A **Servers** page puts plane control in the UI — start, stop and restart, with all four connection states
+rendered honestly — backed by one shared local mechanism rather than an API path. Projects and runs now
+**ask** for their git strategy: `local` commits to a branch the platform integrates, `pr` adds a pull
+request, `none` runs in place with no branch at all, and the repository is initialised when you agree to it
+and the result is reported as a notice rather than left for you to discover.
+
+Local-mode runs are labelled for what they are. A project or work item can run **in-process on the host**
+instead of in a container, it is the default, and the UI now says plainly that this mode is not contained.
+
+### Also in this release
+- **Containers work out of the box, with no flag to learn.** They are provisioned by default and an image is
+  fetched only when you choose one; `-NoContainers` exists for a host that must stay engine-free.
+- **Adapters are discovered from your `PATH` — the CLI's real install locations, not a guessed path.**
+  WinGet packages and alias directories included, no shims. What was found is visible on the Adapters page,
+  and a container refuses an adapter it cannot actually run instead of mounting it and failing later.
+- **A project directory is always a mount root**, so a run outside the usual tree still sees its own work.
+- **A run that fails at start records why**, in the row the UI reads — instead of a failed run with nothing
+  to act on, and a persistent scheduler condition no longer re-reports itself on every sweep pass.
+- **A worker's verdict routes to the workflow loop; it is not "recovered"** as though it were an execution
+  failure. Recovery stopped retrying a repeat, and a Claude run keeps the CLI's dying words.
+- **OpenCode 1.x prompts go to the route that starts a turn**, and the session set-model call sends `id`.
+- **The MCP catalog lost its dead servers**, and a legacy server now completes its handshake with the
+  protocol version pinned rather than failing outright.
+- **Local integration is a recorded queue**, integration happens *before* branching, and a dirty worktree is
+  never reaped. A branch ref may only move forward, and every branch-ref move is attributed in the reflog.
+- **A worktree pointer is recognised wherever it was written**, including on Windows — where the doubled
+  registry turned out to be a host path used inside a container.
+- **Cleanup reclaims what it actually promised**: leaked baseline scratch checkouts, stale claims, failed
+  worktrees, stranded detached worktrees — and a no-argument run reports the inventory it found.
+- **The DB pool is sized above the plane's own pinned connections**, so a busy plane cannot starve itself.
+- **CI runs the DB-backed suites, and a silent skip is now impossible** — a test that skips without saying
+  so was reading as a pass.
+- **The desktop and canary paths are gated**: `appimagetool` is pinned and cached so a CDN 504 cannot fail a
+  build, a canary asserts its asset set before publishing, and a Linux desktop app ships so a Linux install
+  really does install one.
+- **Comment hygiene across the tree**: explanatory blocks combed to the constraint that is not visible in the
+  code, with the story moved to the commit message where it belongs.
+
 ## v0.5.44
 
 ### New: an installer you can trust with more than one stack

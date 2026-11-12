@@ -331,7 +331,7 @@ func TestWorkerFormsOfferTheModelPicker(t *testing.T) {
 	if !hasModelField(vf) || vf.OnOpenModelPicker == nil {
 		t.Fatal("the new-version form must offer a model field wired to the picker")
 	}
-	// The EDIT form carries the model too: model_ref is a VERSION field (ADR-0003), and the edit form
+	// The EDIT form carries the model too: model_ref is a VERSION field, and the edit form
 	// is where the version is edited now that the header/version split is gone.
 	hf, err := m.editWorkerForm(w, []*apiv1.WorkerVersion{draftV("v1", 1)}, nil)
 	if err != nil {

@@ -38,10 +38,10 @@ type Service struct {
 	// discovererFactory resolves the pair on first need, when boot could not. nil means "no late
 	// resolution available", which is the headless/test case.
 	discovererFactory DiscovererFactory
-	// adapterKinds returns the adapter kinds registered with the Dispatcher (ADR-0004 D1).
+	// adapterKinds returns the adapter kinds registered with the Dispatcher.
 	adapterKinds func() []string
 	// chatKinds returns the adapter kinds whose bridge implements the ChatTurnClient (Ask chat)
-	// capability (ADR-0004 D1).
+	// capability.
 	chatKinds func() []string
 	apiv1connect.UnimplementedAIGatewayServiceHandler
 }
@@ -67,13 +67,13 @@ func NewService(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber, discov
 	}
 }
 
-// SetChatKinds wires the Dispatcher's Ask-capable adapter kinds (ADR-0004
+// SetChatKinds wires the Dispatcher's Ask-capable adapter kinds
 // D1) into ListAdapterKinds. Nil falls back to the default adapter kind.
 func (s *Service) SetChatKinds(fn func() []string) {
 	s.chatKinds = fn
 }
 
-// ListAdapterKinds returns the adapter kinds currently registered with the Dispatcher (ADR-0004
+// ListAdapterKinds returns the adapter kinds currently registered with the Dispatcher
 // D1).
 func (s *Service) ListAdapterKinds(ctx context.Context, req *connect.Request[apiv1.ListAdapterKindsRequest]) (*connect.Response[apiv1.ListAdapterKindsResponse], error) {
 	kinds := []string{adapter.DefaultAdapterKind}
@@ -89,7 +89,7 @@ func (s *Service) ListAdapterKinds(ctx context.Context, req *connect.Request[api
 		}
 	}
 	// Sourcing kinds: the adapter kinds whose MODEL tier resolves from the providers-sourcing path
-	// rather than opencode-CLI discovery (ADR-0004 D1).
+	// rather than opencode-CLI discovery.
 	sourcing := adapter.CatalogSourcedAdapterKinds()
 	return connect.NewResponse(&apiv1.ListAdapterKindsResponse{
 		AdapterKinds:    kinds,
@@ -441,7 +441,7 @@ type usageMetrics struct {
 	cost       otelmetric.Float64Counter
 	executions otelmetric.Int64Counter
 
-	// prefix-cache session metrics (D3, ADR-0009 D6): emitted once at
+	// prefix-cache session metrics (D3: emitted once at
 	// session terminal from live per-turn usage.
 	prefixHit  otelmetric.Int64Counter
 	prefixMiss otelmetric.Int64Counter
@@ -478,19 +478,19 @@ func (m *usageMetrics) ensure() {
 		}
 		if ph, err := telemetry.Meter().Int64Counter(
 			"orchicon_prefix_cache_hit_total",
-			otelmetric.WithDescription("Total prefix-cache hits per session (ADR-0009 D6)"),
+			otelmetric.WithDescription("Total prefix-cache hits per session "),
 		); err == nil {
 			m.prefixHit = ph
 		}
 		if pm, err := telemetry.Meter().Int64Counter(
 			"orchicon_prefix_cache_miss_total",
-			otelmetric.WithDescription("Total prefix-cache miss-writes per session (ADR-0009 D6)"),
+			otelmetric.WithDescription("Total prefix-cache miss-writes per session "),
 		); err == nil {
 			m.prefixMiss = pm
 		}
 		if pr, err := telemetry.Meter().Float64Gauge(
 			"orchicon_prefix_cache_hit_rate",
-			otelmetric.WithDescription("Session prefix-cache hit rate (hits / turns) (ADR-0009 D6)"),
+			otelmetric.WithDescription("Session prefix-cache hit rate (hits / turns) "),
 		); err == nil {
 			m.prefixRate = pr
 		}

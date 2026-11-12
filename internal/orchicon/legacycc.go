@@ -190,7 +190,7 @@ func legacyUsageToUsage(u *legacyUsage) Usage {
 	if u == nil {
 		return Usage{}
 	}
-	// InputTokens normalizes to noCache = total − cacheRead − cacheWrite (ADR-0003 D6): totalUsage
+	// InputTokens normalizes to noCache = total − cacheRead − cacheWrite: totalUsage
 	// input is cache-INCLUSIVE and normalized Usage prices the cache sub-buckets separately.
 	return Usage{
 		InputTokens:      legacyNoCache(u.InputTokens, u.InputTokenDetails.CacheReadTokens, u.InputTokenDetails.CacheWriteTokens),

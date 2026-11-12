@@ -943,6 +943,12 @@ site-check: ## Assert the landing page's nav and version-stamp invariants
 version-tag-match: ## Assert no version resolution accepts a moving tag (canary)
 	bash scripts/tests/version-tag-match/run.sh
 
+# The README digest is the repository front page. Its source prose is hard-wrapped, and the
+# renderer used to keep only the first line of each paragraph, cutting bullets mid-clause.
+.PHONY: release-notes-digest
+release-notes-digest: ## Assert every README release-digest bullet is a complete sentence
+	bash scripts/tests/release-notes-digest/run.sh
+
 docs-check: ## Validate every Mermaid diagram in the root docs with a real parser
 	@# The prefix is REUSED once installed, so a repeat run is instant rather than re-resolving the
 	@# tree every time; CI passes ORCHICON_MERMAID_PREFIX from its own $RUNNER_TEMP install.

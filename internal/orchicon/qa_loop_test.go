@@ -1,6 +1,6 @@
 package orchicon
 
-// QA acceptance-criterion tests for the session engine agent loop (ADR-0007).
+// QA acceptance-criterion tests for the session engine agent loop.
 
 import (
 	"context"
@@ -224,7 +224,7 @@ func TestQAManifestIdentityInput(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	req := prov.lastRequest()
-	// ADR-0009 two-zone layout: block 0 is the cached static prefix — composite prompt verbatim, then
+	// two-zone layout: block 0 is the cached static prefix — composite prompt verbatim, then
 	// the thin native layer + env facts.
 	if len(req.System) != 1 || !req.System[0].Cache {
 		t.Errorf("system = %+v, want one cache-flagged block", req.System)

@@ -120,7 +120,7 @@ var ErrSessionNotFound = errors.New("opencode serve: session not found")
 // NewSessionClient builds a client for serve at baseURL (e.g. http://127.0.0.1:PORT).
 func NewSessionClient(baseURL, password, directory string) *SessionClient {
 	baseURL = strings.TrimSuffix(baseURL, "/")
-	// Dedicated transport (ADR-0002 D5).
+	// Dedicated transport.
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -207,7 +207,7 @@ func (c *SessionClient) ProbeUsable(ctx context.Context) error {
 	return c.probeServe(ctx)
 }
 
-// MCPHealthy reports whether the serve's MCP-enabled agent session machinery is usable (ADR-0002 D1
+// MCPHealthy reports whether the serve's MCP-enabled agent session machinery is usable
 // — the MCP watchdog).
 func (c *SessionClient) MCPHealthy(ctx context.Context) bool {
 	probeCtx, cancel := context.WithTimeout(ctx, askMCPProbeTimeout())
@@ -381,7 +381,7 @@ func (c *SessionClient) sendMessage(ctx context.Context, sessionID, system, mode
 
 	if modelRef != "" {
 		// Left-greedy split: segment 1 = adapter (consumed by the control plane, dropped before the serve
-		// call), segment 2 = provider, remainder = model verbatim (slashes preserved — ADR-0003).
+		// call), segment 2 = provider, remainder = model verbatim (slashes preserved).
 		if provider, model, ok := adapter.SplitForServe(modelRef); ok {
 			if c.shape.setModelPath != nil {
 				// A surface whose prompt body cannot carry the model sets it on the SESSION.
@@ -630,7 +630,7 @@ func (s *Subscription) read(ctx context.Context, body io.ReadCloser) {
 				case <-s.once:
 					return
 				default:
-					// Bus full — DROP the event (ADR-0002 D6).
+					// Bus full — DROP the event.
 				}
 			}
 		}

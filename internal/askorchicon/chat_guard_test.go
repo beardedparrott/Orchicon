@@ -1,6 +1,6 @@
 package askorchicon
 
-// Ask-capability guard + stub-kind pluggability tests (ADR-0004 D1).
+// Ask-capability guard + stub-kind pluggability tests.
 
 import (
 	"context"

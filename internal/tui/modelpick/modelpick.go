@@ -17,7 +17,7 @@ import (
 )
 
 // NativeAdapterKind is the adapter kind whose models resolve from the providers service rather than
-// CLI discovery (ADR-0004 D1).
+// CLI discovery.
 const NativeAdapterKind = "orchicon"
 
 // catalogSourcedKinds is the set of adapter kinds whose MODEL tier resolves from the providers
@@ -266,7 +266,7 @@ func cliModelContext(ctx context.Context, cl *client.Clients, kind, provider, mo
 // --- display helpers --------------------------------------------------------
 
 // ModelMeta is a model row's dim right-hand context: the context window the compaction math depends
-// on, the reasoning flag, the missing-context warning (ADR-0006 D8.
+// on, the reasoning flag, the missing-context warning
 func ModelMeta(contextTokens int64, reasoning, warnNoContext bool, source string) string {
 	parts := make([]string, 0, 4)
 	switch {

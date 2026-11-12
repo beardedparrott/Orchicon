@@ -13,7 +13,7 @@ import (
 // CreateWorkerInput is the full input for creating a worker header plus its first draft version.
 type CreateWorkerInput struct {
 	TenantID     string
-	Adapter      string // explicit adapter selection (ADR-0005 D2); must agree with ModelRef
+	Adapter      string // explicit adapter selection; must agree with ModelRef
 	Name         string
 	Slug         string // optional; derived from Name when empty
 	Description  string
@@ -41,7 +41,7 @@ type CreateWorkerInput struct {
 	BudgetOverrides string // JSON object
 	Labels          string // JSON object
 
-	// NOTE: worker-level RuntimeRef was retired (ADR-0003 single source of
+	// NOTE: worker-level RuntimeRef was retired ( single source of
 	// truth): the model_ref's adapter segment alone governs dispatch.
 
 	ExecutionPolicyRef  string

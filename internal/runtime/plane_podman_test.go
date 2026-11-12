@@ -30,7 +30,7 @@ func TestPlanePublicURLPodmanHostResidency(t *testing.T) {
 			"ORCHICON_HTTP_ADDR", "127.0.0.1:8091",
 		)
 		if got := planePublicURL(); got != "http://host.docker.internal:8091" {
-			t.Fatalf("podman host mode = %q, want http://host.docker.internal:8091 (ADR-0013 D2.4 maps that name for podman too)", got)
+			t.Fatalf("podman host mode = %q, want http://host.docker.internal:8091 ( maps that name for podman too)", got)
 		}
 	})
 

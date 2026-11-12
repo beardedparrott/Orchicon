@@ -22,7 +22,7 @@ type ExecutionManifest struct {
 	AgentPromptLen int
 	SystemPrompt   string
 	// PromptFingerprint is the sha256 over the project + work-item context-file stamps that produced
-	// this manifest's composite prompt (ADR-0009 D5).
+	// this manifest's composite prompt.
 	PromptFingerprint  string
 	Goal               string
 	AcceptanceCriteria string

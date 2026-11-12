@@ -527,8 +527,8 @@ Orchicon/
 | **Frontend routes** | `frontend/src/routes/` |
 | **Workflow canvas editor** | `frontend/src/components/workflow-editor/` |
 | **Landing page** | `site/index.html` |
-| **Install scripts** | `scripts/install.sh` (Linux/macOS), `scripts/install.ps1` (Windows → provisions WSL2, installs the Linux binary inside the distro) |
-| **Container instance controller** | `scripts/orchicon.sh` |
+| **Install scripts** | `scripts/install.sh` (Linux/macOS), `scripts/install.ps1` (Windows → the NATIVE Windows plane: installs `orchicon.exe` and `orch.exe` as user processes, with WSL2 needed only as the substrate for workflow containers) |
+| **Plane lifecycle controller** | `scripts/orchicon.sh` — host plane, host services and the dev loop (no instance container) |
 | **Instance ports** (per-instance port table) | `scripts/lib/instances.sh` + `scripts/instance-ports.sh` |
 | **CI/CD workflows** | `.github/workflows/` |
 | **Operator's working notes** | `AGENTS.md`, `UPDATES.md`, `worker.md`, `developer.md`, `CLOUDFLARE_SETUP.md` — the maintainer's own files. **Gitignored and not in the repository**: they describe how this project is built rather than what it does, and nothing in the build, the tests or the runtime reads them from disk. (References to an "AGENTS.md" elsewhere in these docs are the per-worker *prompt field* — a database-backed section of the composed worker prompt — which is a different thing.) |

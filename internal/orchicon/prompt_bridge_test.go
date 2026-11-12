@@ -1,7 +1,7 @@
 package orchicon
 
 // Cache metrics through the bridge boundary: recordUsage must fold the session's per-turn cache
-// stats into the UsageRecord (ADR-0009 D6) — replacing the old all-zero placeholder.
+// stats into the UsageRecord — replacing the old all-zero placeholder.
 
 import (
 	"context"

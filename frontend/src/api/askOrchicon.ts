@@ -356,7 +356,7 @@ export function useSetConversationFullsend() {
   });
 }
 
-// useSetConversationModel retargets an OPEN conversation's model (ADR-0004
+// useSetConversationModel retargets an OPEN conversation's model
 // picker → SetConversationModel). The change applies from the NEXT message.
 export function useSetConversationModel() {
   const qc = useQueryClient();

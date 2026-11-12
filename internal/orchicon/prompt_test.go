@@ -1,6 +1,6 @@
 package orchicon
 
-// Tests for ADR-0009 native prompt assembly: composite reuse, the thin authoritative native layer,
+// Tests for native prompt assembly: composite reuse, the thin authoritative native layer,
 // cache-first two-zone ordering, and per-session cache metrics.
 
 import (

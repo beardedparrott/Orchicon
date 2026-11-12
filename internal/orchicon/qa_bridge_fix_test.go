@@ -1,6 +1,6 @@
 package orchicon
 
-// Regression tests for the PR-Reviewer blockers on the session engine (ADR-0007 implementation).
+// Regression tests for the PR-Reviewer blockers on the session engine ( implementation).
 
 import (
 	"context"

@@ -99,16 +99,16 @@ all_decls() {
 echo "page under test: ${PAGE}"
 echo
 
-# --- the nav must have exactly TEN primary links (the count is the trigger) ---
+# --- the nav must have exactly NINE primary links (the count is the trigger) ---
 #
-# IT WAS NINE. Contact is the tenth: the operator asked for a contact link in the bar,
-# and it earns its place there because it is the one link a visitor looks for by reflex.
-# The count is asserted AT ALL because it is the trigger for the layout invariant below
-# — a link added without checking the row's budget is exactly how this header broke
-# twice. Note the added link is FLAT, so it takes `.nav nav a` in full: unsplittable and
-# unshrinkable, and it lands in the gap budget rather than beside it.
+# IT WAS TEN: Web app and Terminal were separate links. They are now ONE flat link
+# (#clients), because the product ships three clients over one API — web app, desktop and
+# TUI — and two nav entries for "the thing you look at" overstated them. Product is flat
+# too, so it takes `.nav nav a` in full: unsplittable and unshrinkable.
+# The count is asserted AT ALL because it is the trigger for the layout invariant below —
+# a link added without checking the row's budget is exactly how this header broke twice.
 COUNT="$(awk '/<nav aria-label="Primary"/{f=1} f; /<\/nav>/{if(f)exit}' "$PAGE" | grep -c '<a href')"
-eq "primary nav link count" "10" "$COUNT"
+eq "primary nav link count" "9" "$COUNT"
 
 # --- LINK INVARIANT: a label is never split and never shrunk below its text ---
 LINK_DECLS="$(all_decls '\.nav nav a')"
@@ -296,18 +296,23 @@ eq "every install tab has a note (no 'undefined' note line)" "" "$UNNOTED"
 # asserting is a DUPLICATED panel: copy the macOS/Linux block to save typing and a Windows
 # visitor is handed a bash one-liner. So each command is checked for its own shape, and the
 # three are checked to be DISTINCT — a duplicate cannot pass both.
+#
+# THE THIRD METHOD IS THE DESKTOP APP, NOT DOCKER. The Docker tab was removed: the plane
+# runs as host processes, no image is published for it, and a `docker run` line would
+# install nothing. The desktop installer is a real, distinct command, so the coverage the
+# original three-way check was written for still holds.
 # The `id="c-x">` marker is STRIPPED before comparing: left on, the three strings differ
 # by their own id and a duplicated command would still look "distinct" — the assertion
 # would pass while asserting nothing. (Found by mutation-testing this very check.)
 cmd_of() { printf '%s' "$INSTALL" | grep -o "id=\"$1\">[^<]*" | sed "s/^id=\"$1\">//"; }
 CUNIX="$(cmd_of c-unix)"
 CWIN="$(cmd_of c-win)"
-CDOCK="$(cmd_of c-docker)"
+CDESK="$(cmd_of c-desktop)"
 has    "macOS/Linux shows the shell installer"      "install | bash" "$CUNIX"
 has    "Windows shows the PowerShell installer"     "install.ps1"    "$CWIN"
-has    "Docker shows a docker run"                  "docker run"     "$CDOCK"
+has    "Desktop app shows the desktop installer flag" "--desktop"    "$CDESK"
 absent "the Windows panel does not show the bash one-liner" "bash"    "$CWIN"
-eq "each method shows a distinct command" "3" "$(printf '%s\n%s\n%s\n' "$CUNIX" "$CWIN" "$CDOCK" | sort -u | wc -l | tr -d ' ')"
+eq "each method shows a distinct command" "3" "$(printf '%s\n%s\n%s\n' "$CUNIX" "$CWIN" "$CDESK" | sort -u | wc -l | tr -d ' ')"
 
 # --- and the hero must NOT carry a second copy of the command ---
 # The command lives in the install section, where each method gets its own; the hero's copy

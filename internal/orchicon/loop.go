@@ -303,7 +303,7 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			s.closeDoneCh()
 			return nil
 		}
-		// Per-turn cache metrics (ADR-0009 D6): classify the turn (hit /
+		// Per-turn cache metrics: classify the turn (hit /
 		// miss-write / none) and accumulate cached tokens.
 		s.recordTurnUsage(usage)
 		// Price this turn's LIVE usage for the budget cost gate through the session model's resolved
@@ -726,7 +726,7 @@ func nativeToolName(name string) bool {
 	return name == "todowrite" || name == memoryNoteToolDef().Name || isMemoryTool(name)
 }
 
-// stashMutableToolCall folds a turn's tool calls into the session's mutable zone state (ADR-0009
+// stashMutableToolCall folds a turn's tool calls into the session's mutable zone state
 // D2): the latest todowrite payload is stashed for the todo digest.
 func (s *Session) stashMutableToolCall(calls []ToolCall) {
 	for _, c := range calls {
@@ -754,7 +754,7 @@ func (s *Session) stashMutableToolCall(calls []ToolCall) {
 // independent by construction) with a bounded worker pool.
 func (s *Session) executeTools(ctx context.Context, callbacks scheduler.ExecutionCallbacks, calls []ToolCall) []toolResult {
 	results := make([]toolResult, len(calls))
-	// Mutable-zone state capture (ADR-0009 D2): the latest todowrite payload and memory notes are
+	// Mutable-zone state capture: the latest todowrite payload and memory notes are
 	// folded into the session BEFORE the calls execute.
 	s.stashMutableToolCall(calls)
 	var pending []int // indices routed to the registry

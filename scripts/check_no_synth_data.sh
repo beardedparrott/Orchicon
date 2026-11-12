@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# No-synthesized-data CI gate (ADR-0010).
+# No-synthesized-data CI gate.
 #
 # Fails if any NON-TEST source (Go/TS/TSX) carries a synthesized-data
 # fallback marker: a mock model/MCP discoverer, a "mockModels" catalog
 # list, or a "MockProvider" double leaked into shipped code. This is the
-# standing guarantee behind ADR-0010 (no synthesized data planes): a probe
+# standing guarantee behind (no synthesized data planes): a probe
 # failure must degrade visibly to ZERO rows — never serve a model list that
 # "seemingly exists".
 #
-# The ONE sanctioned simulation switch, ORCHICON_SIMULATE_ADAPTER (ADR-0010
+# The ONE sanctioned simulation switch, ORCHICON_SIMULATE_ADAPTER
 # D2; opencode offline-dev opt-in), is deliberately NOT flagged — it is an
 # explicit operator opt-in, never a fallback.
 #
@@ -60,7 +60,7 @@ fi
 if [ "${#hits[@]}" -gt 0 ]; then
   echo "No-synthesized-data audit FAILED — synthesized data-plane marker(s) found in non-test source:" >&2
   printf '%s\n' "${hits[@]}" >&2
-  echo "A probe failure must yield a visibly-degraded EMPTY list, never a model list that 'seemingly exists' (ADR-0010)." >&2
+  echo "A probe failure must yield a visibly-degraded EMPTY list, never a model list that 'seemingly exists'." >&2
   exit 1
 fi
 

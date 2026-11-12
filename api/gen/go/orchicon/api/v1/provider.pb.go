@@ -21,7 +21,7 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// ProviderEntry is one merged provider row (ADR-0006 D4): built-ins render
+// ProviderEntry is one merged provider row: built-ins render
 // read-only (is_custom=false); customs are operator-editable. Plaintext
 // tokens NEVER appear here — only has_token_stored + the secret name.
 type ProviderEntry struct {
@@ -352,7 +352,7 @@ func (x *ProviderUpdateSettingsRequest) GetReplaceManualModels() bool {
 	return false
 }
 
-// ProviderManualModel mirrors orchicon.ModelInfo hint fields (ADR-0006 D1).
+// ProviderManualModel mirrors orchicon.ModelInfo hint fields.
 type ProviderManualModel struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -1013,7 +1013,7 @@ func (*ProviderClearTokenResponse) Descriptor() ([]byte, []int) {
 	return file_orchicon_api_v1_provider_proto_rawDescGZIP(), []int{16}
 }
 
-// ProviderModel is one sourcing-view row (ADR-0006 D4): source
+// ProviderModel is one sourcing-view row: source
 // distinguishes catalog|probe|manual; warn_no_context is the WARN
 // annotation for selectable models lacking a context hint.
 type ProviderModel struct {

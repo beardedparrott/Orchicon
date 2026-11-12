@@ -11,7 +11,7 @@ import (
 
 // Per-run container BOOT PROFILE.
 
-// nativeAdapterKind is the dispatcher-registered native bridge kind (ADR-0004): its sessions
+// nativeAdapterKind is the dispatcher-registered native bridge kind: its sessions
 // execute INSIDE the run's container through the supervisor's one-shot exec path.
 const nativeAdapterKind = "orchicon"
 
@@ -301,7 +301,7 @@ func adapterHostMounts(home string, kinds ...string) []string {
 			if !in.dir && st.IsDir() {
 				continue
 			}
-			// No `,z` relabel yet — ADR-0013 D3.2 lands it with the ingress slice (architecture note D-4); see
+			// No `,z` relabel yet lands it with the ingress slice (architecture note D-4); see
 			// the same note at the daemon's -v loop in daemon.go createContainer.
 			mode := ":ro"
 			if in.rw {

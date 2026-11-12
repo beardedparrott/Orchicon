@@ -98,12 +98,12 @@ type Session struct {
 	writtenSet   map[string]bool
 	writtenPaths []string
 	// envFacts is the per-run environment-facts block, rendered once at construction from manifest
-	// fields (constant within a run, so it lives INSIDE the cached static prefix — ADR-0009 D2).
+	// fields (constant within a run, so it lives INSIDE the cached static prefix
 	envFacts string
 	// prefixFingerprint is the sha256 (hex, first 16) of the composite prompt bytes this session's
-	// static prefix starts from — logged on change (a prefix change costs a cache miss, ADR-0009 D5).
+	// static prefix starts from — logged on change (a prefix change costs a cache miss
 	prefixFingerprint string
-	// mutable session-zone state (ADR-0009 D2): memory notes (insertion order) and the latest todowrite
+	// mutable session-zone state: memory notes (insertion order) and the latest todowrite
 	// payload.
 	noteMu      sync.Mutex
 	notes       []string
@@ -132,7 +132,7 @@ type Session struct {
 	windowResolved bool
 	windowHint     ContextWindowHint
 	windowModel    *ModelInfo
-	// cacheStats accumulates per-session prefix-cache metrics (ADR-0009
+	// cacheStats accumulates per-session prefix-cache metrics
 	// D6): cache hit/miss classification per turn + cached tokens.
 	cacheMu    sync.Mutex
 	cacheStats CacheStats
@@ -178,7 +178,7 @@ type Session struct {
 	contextWindowFallback int64
 }
 
-// CacheStats is the session's prefix-cache metric rollup (ADR-0009 D6).
+// CacheStats is the session's prefix-cache metric rollup.
 type CacheStats struct {
 	Turns             int64
 	Hits              int64
@@ -222,7 +222,7 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 		projectDir = cfg.Manifest.ProjectDir
 	}
 	// Parse the model ref: orchicon/<provider>/<model> (verbatim model
-	// remainder, internal slashes preserved — ADR-0003).
+	// remainder, internal slashes preserved).
 	providerID, model, ok := adapter.SplitForServe(cfg.Manifest.ModelRef)
 	if !ok || providerID == "" {
 		return nil, fmt.Errorf("session: model ref %q has no provider/model (expected orchicon/<provider>/<model>)", cfg.Manifest.ModelRef)
@@ -302,7 +302,7 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 	// Work-item-declared context window (parity input): used only as the
 	// compaction hint fallback when the live provider resolution fails.
 	s.contextWindowFallback = int64(cfg.Manifest.ContextWindow)
-	// Static-prefix env facts (ADR-0009 D2): rendered once at construction from manifest fields —
+	// Static-prefix env facts: rendered once at construction from manifest fields —
 	// constant within a run, so the cached prefix is byte-identical across turns.
 	s.envFacts = envFactsBlock(envFactsFields{
 		ProjectDir:   cfg.Manifest.ProjectDir,

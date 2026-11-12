@@ -35,7 +35,7 @@ type NativeBridge struct {
 	// usage records per-execution usage at terminal (step_finish parity).
 	usageRecorder scheduler.UsageRecorderFunc
 	// cacheSink drains the session's terminal prefix-cache rollup for OTel
-	// metrics (D3, ADR-0009 D6). Nil → no cache metric is emitted.
+	// metrics (D3 Nil → no cache metric is emitted.
 	cacheSink func(ctx context.Context, exec db.ExecutionRow, stats CacheStats)
 	// sessionStore persists transcript entries to the DB (best-effort).
 	sessionStore scheduler.SessionStoreFunc
@@ -48,7 +48,7 @@ type NativeBridge struct {
 	// rtClient routes native bash into the run's container when the run is container-backed
 	// (always-container runtime mode).
 	rtClient scheduler.RuntimeClient
-	// mcpResolver resolves the session's MCP definitions by SCOPE (ADR-0008, owner-scoped union).
+	// mcpResolver resolves the session's MCP definitions by SCOPE (, owner-scoped union).
 	mcpResolver mcpclient.ScopeResolver
 	// mcpSecretResolver replaces ${SECRET_NAME} refs in resolved MCP server env/headers with stored
 	// tenant-secret plaintext at session time.
@@ -142,7 +142,7 @@ func (b *NativeBridge) Kind() string { return "orchicon" }
 // session ids.
 func (b *NativeBridge) SessionOwnerKind() string { return "orchicon" }
 
-// SetScopeResolver sets the MCP scope resolver for sessions (ADR-0008).
+// SetScopeResolver sets the MCP scope resolver for sessions.
 // Absent → no MCP tools (sessions unaffected).
 func (b *NativeBridge) SetScopeResolver(src mcpclient.ScopeResolver) {
 	b.mcpResolver = src
@@ -166,7 +166,7 @@ func (f ProviderResolverFunc) Get(ctx context.Context, tenantID, providerID stri
 // union), host tools (worktree-scoped bash/file), memory store, and the provider-bound session.
 func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, manifest scheduler.ExecutionManifest, forFollowUp bool) (*Session, func(), error) {
 	// The transcript lives under the execution's true project dir: manifest.ProjectDir is authoritative
-	// (set from the project row at dispatch, ADR-0007).
+	// (set from the project row at dispatch).
 	pd := b.projectDir
 	if manifest.ProjectDir != "" {
 		pd = manifest.ProjectDir
@@ -174,7 +174,7 @@ func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, m
 	if pd == "" {
 		return nil, nil, fmt.Errorf("orchicon bridge: no project dir (manifest.ProjectDir and bridge projectDir are both empty)")
 	}
-	// MCP tool resolution (ADR-0008): ONE scope-addressed union (project-owned ∪ the scope's own
+	// MCP tool resolution: ONE scope-addressed union (project-owned ∪ the scope's own
 	// definitions), no precedence chain.
 	mt, terr := b.mcpResolveAndStart(ctx, exec, manifest)
 	if terr != nil {
@@ -310,7 +310,7 @@ func (b *NativeBridge) Start(ctx context.Context, exec db.ExecutionRow, manifest
 		sess.SetUsageSink(func(ctx context.Context, u Usage) { b.emitTurnUsage(ctx, exec, manifest, u) })
 	}
 	err = sess.Run(runCtx, terminal)
-	// Terminal prefix-cache rollup (D3, ADR-0009 D6): log the session's per-turn cache stats and, when
+	// Terminal prefix-cache rollup (D3: log the session's per-turn cache stats and, when
 	// a cache sink is wired (the server attaches the OTel prefix-cache metrics recorder).
 	stats := sess.CacheStats()
 	b.log.Info("orchicon: session cache stats",
@@ -572,7 +572,7 @@ func (b *NativeBridge) SetAskFileEditHook(fn opencode.FileEditHookFunc) {
 	b.askFileEditHook = fn
 }
 
-// SetCacheSink wires the session-terminal prefix-cache rollup drain (D3, ADR-0009 D6).
+// SetCacheSink wires the session-terminal prefix-cache rollup drain (D3
 func (b *NativeBridge) SetCacheSink(fn func(ctx context.Context, exec db.ExecutionRow, stats CacheStats)) {
 	b.cacheSink = fn
 }
@@ -628,7 +628,7 @@ func (c *combinedRegistry) Execute(ctx context.Context, name, argsJSON string) (
 	return c.secondary.Execute(ctx, name, argsJSON)
 }
 
-// mcpTools adapts the per-session MCP client manager to the loop's ToolRegistry (ADR-0008).
+// mcpTools adapts the per-session MCP client manager to the loop's ToolRegistry.
 type mcpTools struct {
 	mgr   *mcpclient.Manager
 	close func() error

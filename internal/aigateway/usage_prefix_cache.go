@@ -8,14 +8,14 @@ import (
 )
 
 // RecordPrefixCache records a session's prefix-cache hit/miss breakdown and the derived hit rate to
-// the OTel metrics pipeline (D3, ADR-0009 D6).
+// the OTel metrics pipeline (D3
 func (u *UsageRecorder) RecordPrefixCache(ctx context.Context, tenantID, projectID, workerID, executionID string, turns, hits, misses, cacheRead, cacheWrite int64) error {
 	u.metrics.emitPrefixCache(ctx, tenantID, projectID, workerID, executionID, turns, hits, misses, cacheRead, cacheWrite)
 	return nil
 }
 
 // emitPrefixCache records the per-session prefix-cache hit/miss counters and the hit-rate gauge
-// (D3, ADR-0009 D6).
+// (D3
 func (m *usageMetrics) emitPrefixCache(ctx context.Context, tenantID, projectID, workerID, executionID string, turns, hits, misses, cacheRead, cacheWrite int64) {
 	if m == nil || turns <= 0 {
 		return

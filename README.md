@@ -40,20 +40,28 @@ The documentation lives at the project root:
 
 ## Last Release Changes
 
-- **an installer you can trust with more than one stack**: The installer grew a real vocabulary and a measure of consent.
-- **a canary install path on `develop`**: The installer could only be tested after it shipped, which is how two releases carried a broken one.
-- **one profile per instance, and one instance per process**: `orch` is meant to run more than once at a time; it could not.
-- **in-transcript search, in both clients**: Find a phrase in a long conversation and step through the matches with `n`/`N` (TUI) or prev/next (GUI),
-- **the Ask pane is live as it is written**: A reply now streams into the transcript as the model writes it, instead of appearing only when the turn
-- **A payload-too-large refusal recovers instead of wedging.** A `413` from the gateway matched none of the
-- **A restart can no longer lose your conversation.** The history reducer knew about images and nothing else,
-- **Freeing `ctrl+f` for search.** It had been "attach a file by path" in the TUI and nothing in the GUI;
-- **A permission card settles on the server's answer**, not on a guess about whether a turn is still running.
-- **The release pruner had been a silent no-op its whole life** — the cap it exists to enforce was never
-- **The GUI's default theme is Teal Depths again**, three points lighter, and the app background is a solid
-- **A canary binary no longer ships without a frontend**, which had made a canary install serve an auth error
-- **The footer band stops jumping.** An empty card line was collapsing it, and the screen bounced.
-- **The installer's common commands are in the install docs**, rather than only in the README's flags.
+- **Orchicon runs on your machine, not inside itself**: The plane and its services — the API, Postgres, NATS, the telemetry backends — are now **host processes
+- **podman is a first-class engine, not a Docker-shaped hole**: Orchicon now treats the container engine as a seam with more than one implementation.
+- **Windows is native**: `install.ps1` no longer provisions a Linux distro so your control plane can live in it.
+- **a desktop app, for all three platforms**: The desktop app is a **Wails shell** around the same frontend the browser gets, and it ships signed and
+- **the installer is also the updater**: One command now covers install, update and repair, because they were never really different operations.
+- **Ask Orchicon can be edited, and interrupted properly**: A conversation is now something you can revise.
+- **no built-in cost ceilings**: Budgets were meant to be a constraint you set, and had quietly become defaults nobody chose.
+- **the Servers page, and a git strategy you actually choose**: A **Servers** page puts plane control in the UI — start, stop and restart, with all four connection states
+- **Containers work out of the box, with no flag to learn.** They are provisioned by default and an image is
+- **Adapters are discovered from your `PATH` — the CLI's real install locations, not a guessed path.**
+- **A project directory is always a mount root**, so a run outside the usual tree still sees its own work.
+- **A run that fails at start records why**, in the row the UI reads — instead of a failed run with nothing
+- **A worker's verdict routes to the workflow loop; it is not "recovered"** as though it were an execution
+- **OpenCode 1.x prompts go to the route that starts a turn**, and the session set-model call sends `id`.
+- **The MCP catalog lost its dead servers**, and a legacy server now completes its handshake with the
+- **Local integration is a recorded queue**, integration happens *before* branching, and a dirty worktree is
+- **A worktree pointer is recognised wherever it was written**, including on Windows — where the doubled
+- **Cleanup reclaims what it actually promised**: leaked baseline scratch checkouts, stale claims, failed
+- **The DB pool is sized above the plane's own pinned connections**, so a busy plane cannot starve itself.
+- **CI runs the DB-backed suites, and a silent skip is now impossible** — a test that skips without saying
+- **The desktop and canary paths are gated**: `appimagetool` is pinned and cached so a CDN 504 cannot fail a
+- **Comment hygiene across the tree**: explanatory blocks combed to the constraint that is not visible in the
 
 Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchicon/releases).
 

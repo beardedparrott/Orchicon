@@ -1,6 +1,6 @@
 package scheduler
 
-// Tests for ADR-0009 D5: context-file fingerprinting + the rendered context-section prefix cache
+// Tests for: context-file fingerprinting + the rendered context-section prefix cache
 // (hit → verbatim reuse; miss → re-render with an attributable per-path diff).
 
 import (
