@@ -31,7 +31,12 @@ func Run(args []string) error {
 		baseURL     = fs.String("url", "", "plane base URL (default: the resolved profile's, else $ORCHICON_URL)")
 		token       = fs.String("token", "", "bearer token (default: the resolved profile's, else $ORCHICON_TOKEN)")
 		projectID   = fs.String("project", "", "reuse this project (default: create a throwaway one)")
-		runtimeImg  = fs.String("runtime-image", "orchicon-runtime:orchicon-dev", "image for runtime-mode tasks")
+		// NO DEFAULT TAG, DELIBERATELY — see resolveRuntimeImage. A literal here is a tag that exists on ONE
+		// machine: the harness defaulted to "orchicon-runtime:orchicon-dev", which is what a Linux dev host
+		// happens to build, while a Windows plane's catalogue row for the same variant is
+		// "orchicon-runtime:dev". On Windows every runtime task then failed at image lookup — and before
+		// failRunAtStart recorded its reason, with NO error in the UI at all.
+		runtimeImg  = fs.String("runtime-image", "", "image for runtime-mode tasks (default: this plane's own dev-variant tag, resolved from ListRuntimeImages)")
 		localOnly   = fs.Bool("local-only", false, "skip runtime-mode tasks (no container engine, e.g. a cloud Mac)")
 		cleanupAfter = fs.Bool("cleanup", false,
 			"REMOVE everything this run created (default: leave the project, workers and tasks in place)")
@@ -95,6 +100,21 @@ func Run(args []string) error {
 	fmt.Printf("token    : %s\n", redact(c.token))
 	if err := probe(ctx, cs); err != nil {
 		return fmt.Errorf("plane not reachable — is it running and the credential valid? (%w)", err)
+	}
+
+	// THE RUNTIME IMAGE IS THE PLANE'S OWN TAG, NOT A LITERAL — resolved AFTER probe, because it needs a
+	// reachable plane, and BEFORE anything binds a task to a workflow.
+	if !c.localOnly {
+		tag, why, err := resolveRuntimeImage(ctx, cs, c.runtimeImage)
+		if err != nil {
+			return err
+		}
+		c.runtimeImage = tag
+		if why != "" {
+			fmt.Printf("image    : %s (%s)\n", tag, why)
+		} else {
+			fmt.Printf("image    : %s\n", tag)
+		}
 	}
 
 	adapters := c.adapters()

@@ -739,3 +739,51 @@ func cleanupConversations(ctx context.Context, cs *client.Clients, rep *report, 
 		fmt.Printf("cleanup  : removed %d ask conversation(s)\n", removed)
 	}
 }
+
+// resolveRuntimeImage picks the image runtime-mode tasks run in.
+//
+// A LITERAL DEFAULT IS A TAG THAT EXISTS ON ONE MACHINE. This harness shipped with
+// "orchicon-runtime:orchicon-dev" — what a Linux dev host happens to build — while a Windows plane's
+// catalogue row for the SAME variant is "orchicon-runtime:dev". On Windows every runtime task therefore failed
+// at image lookup, and (before failRunAtStart recorded its reason) with no error in the UI at all. The variant
+// is the identity; the tag is how a particular instance addresses it, and only the instance knows that.
+//
+// So the plane is asked. ListRuntimeImages is the same call on every host, and the row whose tag belongs to the
+// dev variant carries whatever name that host actually uses.
+//
+// An explicit -runtime-image always wins — an operator may be testing a custom image, and a harness that
+// overrode that would be worse than the bug it fixes.
+func resolveRuntimeImage(ctx context.Context, cs *client.Clients, override string) (tag, why string, err error) {
+	if strings.TrimSpace(override) != "" {
+		return override, "", nil
+	}
+	resp, lerr := cs.Images.ListRuntimeImages(ctx, connect.NewRequest(&apiv1.ListRuntimeImagesRequest{}))
+	if lerr != nil {
+		return "", "", fmt.Errorf("resolve the runtime image: could not list this plane's images (%w) — pass "+
+			"-runtime-image if the plane cannot answer", lerr)
+	}
+	var ready, anyDev []string
+	for _, img := range resp.Msg.GetRuntimeImages() {
+		// THE VARIANT IS THE IDENTITY. Both spellings name the dev variant: the catalogue's ":dev" and the
+		// historical ":orchicon-dev" that local builds and the seeded worker prompts still use.
+		slug := strings.ToLower(img.GetSlug() + " " + img.GetTag())
+		if !strings.Contains(slug, "dev") || strings.Contains(slug, "devops") {
+			continue
+		}
+		anyDev = append(anyDev, img.GetTag())
+		if img.GetStatus() == apiv1.RuntimeImageStatus_RUNTIME_IMAGE_STATUS_READY {
+			ready = append(ready, img.GetTag())
+		}
+	}
+	switch {
+	case len(ready) > 0:
+		return ready[0], "this plane's dev image", nil
+	case len(anyDev) > 0:
+		// NOT READY is still a better answer than a guess: the run will fail on an image the operator can see
+		// and build, rather than on a name this host has never heard of.
+		return anyDev[0], "dev image (not built yet — build it before the runtime tasks)", nil
+	}
+	return "", "", errors.New("this plane has no dev runtime image in its catalogue, so runtime-mode tasks " +
+		"cannot run. Create or download one (Settings → Runtime Images), or pass -runtime-image with a tag " +
+		"this host's engine has")
+}
