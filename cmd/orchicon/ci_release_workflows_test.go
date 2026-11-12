@@ -1271,3 +1271,64 @@ func TestNoWorkflowDotsAHyphenatedNeedsJob(t *testing.T) {
 			"so this guard is not covering what it thinks it is", checked)
 	}
 }
+
+// TestReleaseJobSurvivesASkippedNeed — a job whose `needs` includes a job that is normally SKIPPED
+// must use `always()` in its `if:`.
+//
+// `if:` on a job is implicitly ANDed with `success()`, and `success()` is false when ANY needed job
+// was skipped — not failed, skipped. So an explicit `|| needs.x.result == 'skipped'` arm is DEAD
+// CODE: the implicit gate has already made the whole condition false before that arm is reached.
+//
+// This is exactly how `Create Release` was skipped at five consecutive releases while every other
+// job was green and `guard` output proceed=true. `sign-macos` is skipped whenever signing is off,
+// which is the normal case, so the release job needed `always()` — and nothing in the repo used
+// that pattern, so there was no example to copy and no test to catch it.
+func TestReleaseJobSurvivesASkippedNeed(t *testing.T) {
+	b, err := os.ReadFile(releaseWorkflowPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", releaseWorkflowPath, err)
+	}
+	src := string(b)
+
+	// Locate the Create Release job block: from its name line to the next top-level job key.
+	lines := strings.Split(src, "\n")
+	start, end := -1, len(lines)
+	for i, l := range lines {
+		if strings.Contains(l, "name: Create Release") {
+			start = i
+			continue
+		}
+		if start >= 0 && i > start && len(l) > 2 && l[0] == ' ' && l[1] == ' ' && l[2] != ' ' &&
+			strings.HasSuffix(strings.TrimSpace(l), ":") {
+			end = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatal("release.yml has no `Create Release` job — this guard is checking the wrong thing")
+	}
+	// STRIP COMMENT LINES BEFORE ASSERTING. The block's explanatory comments mention `always()` and
+	// `sign-macos` in prose, and an assertion satisfied by prose is worthless — it passes whether or not
+	// the workflow actually does it. (Found by mutation: removing the real `always()` still passed.)
+	var code []string
+	for _, l := range lines[start:end] {
+		if strings.HasPrefix(strings.TrimSpace(l), "#") {
+			continue
+		}
+		code = append(code, l)
+	}
+	block := strings.Join(code, "\n")
+
+	if !strings.Contains(block, "sign-macos") {
+		t.Fatalf("the Create Release job no longer references `sign-macos`.\nIf the signing job was "+
+			"dropped from its `needs`, this guard must be revisited rather than silently passing.\njob block:\n%s", block)
+	}
+	if !strings.Contains(block, "always()") {
+		t.Error("the Create Release job depends on `sign-macos` — a job that is SKIPPED whenever " +
+			"MACOS_SIGNING_ENABLED is not 'true' — but its `if:` does not say `always()`.\n" +
+			"A job `if:` is implicitly ANDed with success(), which is FALSE when a needed job is " +
+			"skipped, so an explicit `|| result == 'skipped'` arm can never be reached and the job " +
+			"is skipped on every unsigned release. This is what kept the release unpublished at five " +
+			"consecutive tags.\nExpected the job's if: to begin with `always() &&`.")
+	}
+}
