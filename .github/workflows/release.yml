@@ -647,10 +647,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: orchicon-desktop-darwin
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: orchicon-desktop-darwin
           path: dist/desktop/*.zip
           if-no-files-found: error
 
