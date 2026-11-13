@@ -48,15 +48,49 @@ cp -f "${SCRIPTS_DIR}/install.sh"  "${SITE_DIR}/install"
 cp -f "${SCRIPTS_DIR}/install.ps1" "${SITE_DIR}/install.ps1"
 
 # --- the footer version stamp ----------------------------------------------
-# The SAME resolution the binary uses, so the two agree by construction. The
-# canonical tags are created on GitHub at merge time, and a CI clone may not
-# have them yet — the Makefile documents the same hazard ("`git pull` does NOT
-# fetch tags") — so a best-effort fetch precedes the resolve. Offline, the
-# fetch fails harmlessly and a local tag list still resolves.
-SITE_VERSION="$(git -C "${REPO_ROOT}" describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
-if [ -z "${SITE_VERSION}" ]; then
-  git -C "${REPO_ROOT}" fetch --tags --quiet 2>/dev/null || true
-  SITE_VERSION="$(git -C "${REPO_ROOT}" describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo dev)"
+#
+# THE FOOTER MUST NEVER FALL BACK TO SOMETHING MEANINGLESS. orchicon.dev served a
+# footer reading "dev" after v0.6.1 shipped, because:
+#
+#   1. Cloudflare Pages clones with --no-tags, so `git describe` finds no tag and
+#      prints nothing;
+#   2. the recovery `git fetch --tags` below can fail in that environment, and its
+#      stderr was sent to /dev/null — so the failure was invisible;
+#   3. with no tag and no error, the last resort was a literal `dev`.
+#
+# A silent `dev` on the public front page is worse than a build failure: it looks
+# like we do not know what we shipped. So the order is now: resolve from git; if
+# that fails, recover the version from a file the clone DOES have (the release
+# note heading in RELEASE_HIGHLIGHTS.md, which is tracked and shallow-safe); and
+# only then fail the build loudly.
+resolve_version() {
+  local v
+  v="$(git -C "${REPO_ROOT}" describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
+  if [ -n "${v}" ]; then printf '%s' "${v}"; return 0; fi
+
+  # A no-tags CI clone cannot describe. Say so rather than swallowing it.
+  if ! git -C "${REPO_ROOT}" fetch --tags --quiet; then
+    echo "build-site: WARNING — \`git fetch --tags\` failed; no tags are available in this clone" >&2
+  fi
+  v="$(git -C "${REPO_ROOT}" describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
+  if [ -n "${v}" ]; then printf '%s' "${v}"; return 0; fi
+
+  # LAST RESORT THAT IS STILL TRUE: the newest release heading in a TRACKED file.
+  # RELEASE_HIGHLIGHTS.md's first `## vX.Y.Z` is the version this tree is for, and
+  # reading it needs no tags, no history and no network.
+  v="$(grep -m1 -oE '^## v[0-9]+\.[0-9]+\.[0-9]+' "${REPO_ROOT}/RELEASE_HIGHLIGHTS.md" 2>/dev/null | sed 's/^## //' || true)"
+  if [ -n "${v}" ]; then
+    echo "build-site: NOTE — resolved ${v} from RELEASE_HIGHLIGHTS.md (no tags in this clone)" >&2
+    printf '%s' "${v}"; return 0
+  fi
+  return 1
+}
+
+if ! SITE_VERSION="$(resolve_version)"; then
+  echo "build-site: ERROR — could not resolve a version for the footer." >&2
+  echo "  No tag, tags cannot be fetched, and RELEASE_HIGHLIGHTS.md has no '## vX.Y.Z' heading." >&2
+  echo "  Refusing to publish a page whose footer says nothing true about what this is." >&2
+  exit 1
 fi
 
 # Rewrite whatever the span currently holds — the placeholder OR a version a
