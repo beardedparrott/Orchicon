@@ -911,7 +911,20 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build, guard, sign-macos]
+    # THE DESKTOP JOBS ARE IN `needs` BECAUSE THE RELEASE UPLOADS THEIR ARTIFACTS.
+    #
+    # They used to be absent, so Create Release started as soon as `build` finished and
+    # DOWNLOADED WHATEVER EXISTED AT THAT MOMENT. v0.6.1 shipped with 9 assets instead of
+    # 13: the Windows desktop job uploaded its artifact at 07:47:05, and Create Release had
+    # already run at 07:46:06–07:46:30. The CLI archives for Windows were present, so
+    # nothing looked wrong — the MSI, the NSIS installer and the two Windows desktop zips
+    # were simply missing from a release that reported success.
+    #
+    # `always()` keeps the property established below: these jobs may be SKIPPED (a desktop
+    # platform failing must not withhold the CLI release), and the download step is already
+    # `continue-on-error: true`. Waiting for them costs nothing when they succeed and
+    # everything when they are slow.
+    needs: [build, guard, sign-macos, desktop, desktop-linux, desktop-macos, desktop-windows]
     # `sign-macos` IS IN `needs` so the signed archives are the ones downloaded — but it is SKIPPED while
     # signing is off, and the release must go ahead on an unsigned build (the normal case today).
     #
@@ -927,6 +940,11 @@ jobs:
     #
     # The fix is `always()`: it overrides the implicit success() gate so the explicit arms decide. The
     # condition still refuses to run on a FAILED or CANCELLED dependency, which is the behaviour wanted.
+    #
+    # THE DESKTOP JOBS ARE DELIBERATELY NOT IN THE CONDITION. They are in `needs` only so this job
+    # waits for their artifacts (see above), and a desktop platform that failed or was skipped must
+    # NOT withhold the CLI release — that is the same rule the desktop download step enforces with
+    # `continue-on-error: true`. So the guard checks `proceed` and the signing job, and nothing else.
     if: |
       always() &&
       needs.guard.outputs.proceed == 'true' &&
