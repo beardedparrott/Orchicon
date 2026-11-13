@@ -4,8 +4,10 @@ package askorchicon
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/askmode"
@@ -40,18 +42,50 @@ type askMCPEntry struct {
 	provenance string
 	// projectID is the project the entry was resolved for.
 	projectID string
-	// fingerprint is what this entry WAS RESOLVED FOR: the project id and the resolved server ids.
+	// fingerprint is what this entry WAS RESOLVED FOR: the project id, the resolved server ids, the
+	// disabled set, and a hash of the resolved credential bytes the client was handed. See
+	// askMCPFingerprint — the hash half is what makes a rotated secret rebuild the client.
 	fingerprint string
 }
 
 // askMCPFingerprint is the ONE rendering of "which servers this conversation resolves, in which
-// project": the project id and the resolved server ids.
-func askMCPFingerprint(projectID string, servers []mcpclient.ScopedServer) string {
-	names := make([]string, 0, len(servers))
-	for _, ss := range servers {
-		names = append(names, ss.Spec.ID)
+// project, SENDING WHAT": the project id, the resolved server ids, the set that resolved to nothing
+// (disabled), and a hash of the RESOLVED bytes each server will be given.
+//
+// WHY THE SENT BYTES ARE IN IT. The fingerprint used to stop at the server ids, and a live client is
+// kept when its fingerprint is unchanged — so editing a header, or ROTATING A SECRET, produced an
+// identical fingerprint and the client went on holding the previous credential. The symptom was the
+// one the operator hit: the correct header stored, has_secret_stored true, and every call still 401
+// until the plane was restarted. Config edits and rotations both move the resolved bytes, so covering
+// them covers both, with no invalidation hook and no new plumbing in mcpsettings.
+//
+// HASHED, NOT STORED: the value is a sha256 of the resolved env+headers, so a fingerprint that ends up
+// in a log line (they do: see the refresh path) cannot carry a credential.
+//
+// The DISABLED set and the header/env NAMES are in it so disabling a server, or renaming a key, also
+// rebuilds: both change what is sent, but a hash of values alone would miss a rename that happens to
+// keep the same value count.
+func askMCPFingerprint(projectID string, specs []mcpclient.ServerSpec, disabled []string) string {
+	names := make([]string, 0, len(specs))
+	h := sha256.New()
+	for _, ss := range specs {
+		names = append(names, ss.ID)
+		// A stable order per server: the maps are Go maps, so their iteration order is not.
+		for _, m := range []map[string]string{ss.Env, ss.Headers} {
+			keys := make([]string, 0, len(m))
+			for k := range m {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				fmt.Fprintf(h, "%s\x00%s\x00%s\x01", ss.ID, k, m[k])
+			}
+		}
 	}
-	return projectID + ";" + strings.Join(names, ",")
+	off := append([]string{}, disabled...)
+	sort.Strings(off)
+	return fmt.Sprintf("%s;%s;off=%s;cfg=%x",
+		projectID, strings.Join(names, ","), strings.Join(off, ","), h.Sum(nil))
 }
 
 // resolveAskMCPRaw performs the conversation's SCOPE resolution and returns the raw result WITHOUT
@@ -87,9 +121,9 @@ func (s *Service) resolveAndStartAskMCP(ctx context.Context) (*askMCPEntry, erro
 }
 
 // startAskMCPEntry turns a RAW resolution into a live entry: it logs what was resolved (with
-// provenance, BEFORE secret expansion mutates the specs), expands ${SECRET_NAME} references.
+// provenance, BEFORE secret expansion mutates the specs), expands ${SECRET_NAME} references, and
+// records the fingerprint OF THE RESOLVED SPECS.
 func (s *Service) startAskMCPEntry(ctx context.Context, scope askmode.ConversationScope, res mcpclient.Resolution) (*askMCPEntry, error) {
-	fp := askMCPFingerprint(scope.ProjectID, res.Servers)
 	if len(res.Missing) > 0 {
 		return nil, fmt.Errorf("ask mcp: MCP server(s) selected but not configured (project / conversation): %v — fix the project's or this conversation's MCP definitions", res.Missing)
 	}
@@ -101,7 +135,8 @@ func (s *Service) startAskMCPEntry(ctx context.Context, scope askmode.Conversati
 				"project", scope.ProjectID,
 				"disabled", strings.Join(res.Disabled, ","))
 		}
-		return &askMCPEntry{projectID: scope.ProjectID, fingerprint: fp}, nil
+		return &askMCPEntry{projectID: scope.ProjectID,
+			fingerprint: askMCPFingerprint(scope.ProjectID, nil, res.Disabled)}, nil
 	}
 	// LOG WHAT WAS RESOLVED, WITH PROVENANCE, BEFORE the secret expansion below mutates the specs'
 	// Env/Headers in place.
@@ -127,6 +162,10 @@ func (s *Service) startAskMCPEntry(ctx context.Context, scope askmode.Conversati
 		// failure is scope-annotated exactly like a connect failure.
 		return nil, mcpclient.DescribeFailedServer(err, res.Servers)
 	}
+	// THE FINGERPRINT IS OF THE RESOLVED SPECS, taken HERE and not at the top of this function: the
+	// hash has to cover the credential the client is about to send, and that only exists after the
+	// expansion above. (The provenance log deliberately stays BEFORE the expansion — see its comment.)
+	fp := askMCPFingerprint(scope.ProjectID, specs, res.Disabled)
 	mgr, failures, err := askMCPConnect(context.WithoutCancel(ctx), s.log, specs)
 	// REPORT THE PARTIAL FAILURE EVEN WHEN THE START SUCCEEDED.
 	if s.log != nil {
@@ -144,14 +183,22 @@ func (s *Service) startAskMCPEntry(ctx context.Context, scope askmode.Conversati
 	return &askMCPEntry{mgr: mgr, servers: res.Servers, provenance: prov, projectID: scope.ProjectID, fingerprint: fp}, nil
 }
 
-// resolveAskMCPSecrets expands ${SECRET_NAME} references in each spec's env/headers in place, using
-// the same mcpsettings resolver every other path uses.
-func (s *Service) resolveAskMCPSecrets(ctx context.Context, tenantID string, specs []mcpclient.ServerSpec) error {
+// askMCPExpandRefs is the secret-expansion SEAM: the real implementation is
+// mcpsettings.ResolveSecretRefs (the same one every other path uses), and it is a package variable so a
+// test can drive a ROTATION — the store's value changing between two turns — without a database. The
+// fingerprint's whole subject is "the bytes the client is handed", so a test of it has to be able to
+// change those bytes at the seam they come from.
+var askMCPExpandRefs = func(ctx context.Context, s *Service, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
 	if s.pool == nil {
-		return nil
+		return env, headers, nil
 	}
+	return mcpsettings.ResolveSecretRefs(ctx, s.pool, s.kek, tenantID, env, headers)
+}
+
+// resolveAskMCPSecrets expands ${SECRET_NAME} references in each spec's env/headers in place.
+func (s *Service) resolveAskMCPSecrets(ctx context.Context, tenantID string, specs []mcpclient.ServerSpec) error {
 	for i := range specs {
-		env, headers, err := mcpsettings.ResolveSecretRefs(ctx, s.pool, s.kek, tenantID, specs[i].Env, specs[i].Headers)
+		env, headers, err := askMCPExpandRefs(ctx, s, tenantID, specs[i].Env, specs[i].Headers)
 		if err != nil {
 			return fmt.Errorf("MCP server %q: %w", specs[i].ID, err)
 		}
@@ -220,7 +267,23 @@ func (s *Service) refreshAskMCP(ctx context.Context) {
 		}
 		return
 	}
-	fp := askMCPFingerprint(scope.ProjectID, res.Servers)
+	// FINGERPRINT WHAT WOULD BE SENT NOW, on the same basis the entry was recorded with: the specs are
+	// expanded from the CURRENT secrets store, so a rotated secret changes the hash and the client is
+	// rebuilt. A resolve-only fingerprint would keep the stale client — that was the bug.
+	specs := make([]mcpclient.ServerSpec, 0, len(res.Servers))
+	for _, ss := range res.Servers {
+		specs = append(specs, ss.Spec)
+	}
+	if err := s.resolveAskMCPSecrets(ctx, tenant.FromContext(ctx), specs); err != nil {
+		// The config is broken RIGHT NOW (a deleted secret, say): keep the previous client rather than
+		// tearing it down, and say so — the same reasoning as the two failures below.
+		if s.log != nil {
+			s.log.Warn("ask: MCP refresh could not expand the conversation's secrets — keeping the previous client",
+				"conversation", convID, "error", err)
+		}
+		return
+	}
+	fp := askMCPFingerprint(scope.ProjectID, specs, res.Disabled)
 	s.askMCPMu.Lock()
 	cur, ok := s.askMCP[convID]
 	s.askMCPMu.Unlock()

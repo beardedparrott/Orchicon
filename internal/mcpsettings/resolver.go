@@ -341,18 +341,9 @@ func workerPermissions(ctx context.Context, tx pgx.Tx, tenantID, workerID string
 // canonical `Authorization: Bearer ${TOKEN}` header of every documented remote server reached the far
 // end unexpanded and came back as a 401 that looked like a bad credential.
 //
-// It reports the expanded NAME SET as well as the maps, because the caller that matters — the native
-// Ask client's fingerprint (internal/askorchicon/ask_mcp.go) — has to rebuild its live client when a
-// ROTATED secret changes the bytes it sends, and a hash of the expansion alone cannot distinguish "the
-// same secrets, different order" from "different secrets".
+// All names are resolved in ONE transaction, and every one of them is collected from BOTH maps before
+// the first lookup: an unresolvable reference is an error here, never a pass-through.
 func ResolveSecretRefs(ctx context.Context, pool *db.Pool, kek []byte, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
-	envOut, headOut, _, err := ResolveSecretRefsWithNames(ctx, pool, kek, tenantID, env, headers)
-	return envOut, headOut, err
-}
-
-// ResolveSecretRefsWithNames is ResolveSecretRefs plus the resolved name set. See it for the expansion
-// rule; this is the same walk with the names kept.
-func ResolveSecretRefsWithNames(ctx context.Context, pool *db.Pool, kek []byte, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, []string, error) {
 	resolved := map[string]string{}
 	names := map[string]bool{}
 	// collect gathers every referenced name across BOTH maps, so one transaction answers for the entry.
@@ -366,7 +357,7 @@ func ResolveSecretRefsWithNames(ctx context.Context, pool *db.Pool, kek []byte, 
 	collect(env)
 	collect(headers)
 	if len(names) == 0 {
-		return env, headers, nil, nil
+		return env, headers, nil
 	}
 	ordered := make([]string, 0, len(names))
 	for name := range names {
@@ -376,20 +367,20 @@ func ResolveSecretRefsWithNames(ctx context.Context, pool *db.Pool, kek []byte, 
 
 	tx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // read-only
 	for _, name := range ordered {
 		row, err := db.GetSecretByName(ctx, tx.Tx, tenantID, name)
 		if errors.Is(err, db.ErrNotFound) {
-			return nil, nil, nil, fmt.Errorf("secret %q referenced by the server is not stored", name)
+			return nil, nil, fmt.Errorf("secret %q referenced by the server is not stored", name)
 		}
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, nil, err
 		}
 		pt, err := secretcrypto.Decrypt(row.Ciphertext, kek)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("decrypt secret %q: %w", name, err)
+			return nil, nil, fmt.Errorf("decrypt secret %q: %w", name, err)
 		}
 		resolved[name] = string(pt)
 	}
@@ -419,11 +410,11 @@ func ResolveSecretRefsWithNames(ctx context.Context, pool *db.Pool, kek []byte, 
 	}
 	envOut, err := expand(env)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	headOut, err := expand(headers)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	return envOut, headOut, ordered, nil
+	return envOut, headOut, nil
 }
