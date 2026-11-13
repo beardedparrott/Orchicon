@@ -302,11 +302,29 @@ func TestReleaseDownloadsDesktopArtifactsOptional(t *testing.T) {
 	if needs == "" {
 		t.Fatal("the release job has no needs: line")
 	}
+	// THE DESKTOP JOBS ARE NOW REQUIRED, AND THAT IS SAFE — because of `always()`.
+	//
+	// This assertion used to be the INVERSE: a desktop job in `needs` meant a failed webkit
+	// or signing build would SKIP the release, taking the CLI binaries with it (AC6). That
+	// reasoning holds only with the implicit success() gate. With `always()` in the job's
+	// `if:`, a FAILED dependency does not skip the job — so the release still goes ahead and
+	// the desktop download stays `continue-on-error: true`. The AC6 guarantee is preserved by
+	// `always()`, not by the absence of `needs`.
+	//
+	// Requiring them fixes the opposite defect: v0.6.1 published 9 assets against v0.6.0's
+	// 13 because Create Release started as soon as `build` finished and downloaded whatever
+	// existed then — the Windows desktop artifact landed 35 seconds later. Nothing failed;
+	// the release simply shipped fewer files than it should have.
+	if !strings.Contains(release.body, "always()") {
+		t.Error("the release job needs the desktop jobs but has no `always()` in its `if:`. Without " +
+			"it, a single failed desktop platform SKIPS the entire release and takes the CLI " +
+			"binaries with it (AC6)")
+	}
 	for _, desktop := range []string{"desktop-linux", "desktop-macos", "desktop-windows"} {
-		if strings.Contains(needs, desktop) {
-			t.Errorf("the release job needs %q (%q): a failed desktop build would then SKIP the whole "+
-				"release, so a webkit or signing problem could stop the CLI binaries from shipping (AC6)",
-				desktop, needs)
+		if !strings.Contains(needs, desktop) {
+			t.Errorf("the release job does not need %q (%q), yet it uploads that job's artifacts — it "+
+				"will race their upload and publish fewer assets with nothing failing (this is exactly "+
+				"how v0.6.1 shipped 9 assets instead of 13)", desktop, needs)
 		}
 	}
 	for _, want := range []string{"build", "guard"} {
@@ -1474,6 +1492,77 @@ func TestDevelopBumpHonoursNoDevBumpMarker(t *testing.T) {
 			t.Errorf("the ride and bump steps do not gate on OPPOSITE conditions:\n"+
 				"  ride: %s\n  bump: %s\nExpected `ride == 'true'` and `ride != 'true'`, or a "+
 				"marked merge could both ride the current tag and mint a new one.", rideGate, bumpGate)
+		}
+	}
+}
+
+// TestReleaseWaitsForEveryDesktopJobItUploads — Create Release must NEED the desktop
+// jobs whose artifacts it uploads.
+//
+// WHY. It uploaded their artifacts but did not depend on them, so it started as soon as
+// `build` finished and downloaded whatever happened to exist at that moment. v0.6.1
+// shipped with 9 assets against v0.6.0's 13: the Windows desktop job uploaded at
+// 07:47:05, and Create Release had already run 07:46:06–07:46:30. The Windows CLI zip
+// was there, so nothing looked wrong — the MSI, the NSIS installer and the two Windows
+// desktop zips were simply absent from a release that reported success.
+//
+// A missing-asset release is the hardest kind of defect to notice from the pipeline: every
+// job is green, the release exists, and only a human counting files would see it.
+func TestReleaseWaitsForEveryDesktopJobItUploads(t *testing.T) {
+	b, err := os.ReadFile(releaseWorkflowPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", releaseWorkflowPath, err)
+	}
+	src := string(b)
+
+	// Every job whose artifact the release downloads must be in its `needs`.
+	// The download step uses the pattern `orchicon-desktop-*`, which is fed by these
+	// producers; the per-OS jobs are named here so a rename shows up as a failure.
+	producers := []string{"desktop", "desktop-linux", "desktop-macos", "desktop-windows"}
+
+	lines := strings.Split(src, "\n")
+	start, end := -1, len(lines)
+	for i, l := range lines {
+		if strings.Contains(l, "name: Create Release") {
+			start = i
+			continue
+		}
+		if start >= 0 && i > start && len(l) > 2 && l[0] == ' ' && l[1] == ' ' && l[2] != ' ' &&
+			strings.HasSuffix(strings.TrimSpace(l), ":") {
+			end = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatal("release.yml has no `Create Release` job")
+	}
+	block := strings.Join(lines[start:end], "\n")
+
+	// The `needs:` line, whatever shape it takes.
+	var needsLine string
+	for _, l := range lines[start:end] {
+		if t := strings.TrimSpace(l); strings.HasPrefix(t, "needs:") {
+			needsLine = t
+			break
+		}
+	}
+	if needsLine == "" {
+		t.Fatalf("the Create Release job has no `needs:` — it will race every artifact it uploads")
+	}
+
+	// It must survive a skipped dependency (the whole reason always() went in), so assert
+	// that too rather than only the list membership.
+	if !strings.Contains(block, "always()") {
+		t.Error("the Create Release job no longer uses `always()`; with desktop jobs in `needs` a " +
+			"single skipped platform would now skip the entire release")
+	}
+
+	for _, p := range producers {
+		if !strings.Contains(needsLine, p) {
+			t.Errorf("`needs:` does not include %q, but the release uploads that job's artifacts.\n"+
+				"It will download whatever exists when `build` finishes instead of waiting, and the "+
+				"missing files will not fail anything — the release simply publishes fewer assets than "+
+				"it should.\\n  needs: %s", p, needsLine)
 		}
 	}
 }
