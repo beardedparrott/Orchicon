@@ -1334,18 +1334,23 @@ func TestReleaseJobSurvivesASkippedNeed(t *testing.T) {
 }
 
 // TestDevelopBumpHonoursNoDevBumpMarker — the [NoDevBump] opt-out must exist, must
-// gate the tagging step, and must read the commit's whole message.
+// make the merge RIDE the current tag rather than mint a new one, and must read the
+// commit's whole message.
 //
 // WHY THIS MATTERS. develop-bump tags EVERY merge to develop, and auto-release
 // computes the release number from the same pool. So intermediate work burns release
 // numbers before the release exists: v0.6.1, v0.6.3 and v0.6.4 were all minted by fix
 // PRs, were never published, and pushed the real release onto a number nobody chose.
-// The last merge before a release is usually documentation, which ships with the
-// release anyway — tagging it is pure cost.
 //
-// The three assertions below are the three ways this could regress without anyone
-// noticing, because a bump workflow that tags when asked not to looks exactly like
-// one that works.
+// RIDING, NOT SKIPPING. next_tag refuses to reuse a tag that sits on a different
+// commit and bumps past it, so merely NOT tagging makes the NEXT merge climb anyway.
+// The opt-out has to make the merge SHARE the current tag: two commits, one version,
+// no number consumed. A test that only checked "no new tag is created" would pass
+// against a workflow that still burned numbers one merge later.
+//
+// The assertions below are the ways this regresses without anyone noticing, because a
+// bump workflow that does the wrong thing on a marked merge looks exactly like one
+// that works.
 func TestDevelopBumpHonoursNoDevBumpMarker(t *testing.T) {
 	const path = "../../.github/workflows/develop-bump.yml"
 	b, err := os.ReadFile(path)
@@ -1368,26 +1373,54 @@ func TestDevelopBumpHonoursNoDevBumpMarker(t *testing.T) {
 			"MERGE COMMIT, so a PR merged that way would still be tagged")
 	}
 
-	// And the tagging step must actually be gated, not merely preceded by a check.
-	// Keyed on the step name rather than on an index, so reordering cannot quietly
-	// detach the condition from the thing it guards.
+	// The RIDE step must exist: the merge has to share the current tag, not merely be
+	// left untagged. next_tag bumps past a tag on a different commit, so "untagged"
+	// still consumes a number on the next merge.
+	if !strings.Contains(src, "Ride the current version tag") {
+		t.Error("develop-bump.yml has no 'Ride the current version tag' step. Leaving a marked " +
+			"merge merely UNTAGGED does not hold the number: next_tag bumps past a tag that sits " +
+			"on a different commit, so the following merge mints one anyway")
+	}
+	if !strings.Contains(src, "git tag -f") {
+		t.Error("the ride step does not MOVE the current tag (expected `git tag -f`), so the tag " +
+			"would still point at the previous commit and `git describe` on the new tree resolves " +
+			"to a stale version")
+	}
+
+	// Both branches must be gated on the SAME flag, or the two paths collide: a marked
+	// merge could ride AND mint. Keyed on step names, not indices, so reordering
+	// cannot silently detach a condition from the step it guards.
 	lines := strings.Split(src, "\n")
-	bumpAt, condAt := -1, -1
-	for i, l := range lines {
-		if strings.Contains(l, "name: Bump version tag") {
-			bumpAt = i
+	gateOf := func(stepName string) string {
+		for i, l := range lines {
+			if !strings.Contains(l, stepName) {
+				continue
+			}
+			for j := i + 1; j < len(lines) && j <= i+4; j++ {
+				if t := strings.TrimSpace(lines[j]); strings.HasPrefix(t, "if:") {
+					return t
+				}
+			}
+			return ""
 		}
-		if bumpAt >= 0 && i > bumpAt && i <= bumpAt+4 && strings.Contains(l, "if: steps.skip.outputs.skip") {
-			condAt = i
-			break
+		return ""
+	}
+
+	rideGate := gateOf("name: Ride the current version tag")
+	bumpGate := gateOf("name: Bump version tag")
+	if rideGate == "" {
+		t.Error("the 'Ride the current version tag' step carries no `if:`")
+	}
+	if bumpGate == "" {
+		t.Error("the 'Bump version tag' step carries no `if:` — the [NoDevBump] check runs and is " +
+			"then ignored, so every merge still mints a version")
+	}
+	// They must be mutually exclusive expressions over the same output.
+	if rideGate != "" && bumpGate != "" {
+		if !strings.Contains(rideGate, "ride == 'true'") || !strings.Contains(bumpGate, "ride != 'true'") {
+			t.Errorf("the ride and bump steps do not gate on OPPOSITE conditions:\n"+
+				"  ride: %s\n  bump: %s\nExpected `ride == 'true'` and `ride != 'true'`, or a "+
+				"marked merge could both ride the current tag and mint a new one.", rideGate, bumpGate)
 		}
-	}
-	if bumpAt < 0 {
-		t.Fatal("develop-bump.yml has no 'Bump version tag' step — this guard is checking the wrong thing")
-	}
-	if condAt < 0 {
-		t.Error("the 'Bump version tag' step carries no `if: steps.skip.outputs.skip != 'true'` " +
-			"within its first few lines, so the [NoDevBump] check runs and is then ignored — " +
-			"every merge is still tagged")
 	}
 }
