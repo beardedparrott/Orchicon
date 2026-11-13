@@ -26,6 +26,36 @@
 # Version continuity with releases: auto-release bumps from the highest tag
 # too, so a human release lands one past the last develop bump and develop
 # resumes from there — one monotonic v0.1.x sequence.
+#
+# --- RIDING THE CURRENT TAG: [NoDevBump] --------------------------------------
+#
+# A merge whose commit message contains `[NoDevBump]` does NOT mint a NEW version.
+# It rides whatever tag is already highest.
+#
+# WHY. This workflow tags EVERY merge to develop, and auto-release computes the
+# release number from the same pool of tags. So intermediate work consumes release
+# numbers before the release exists: v0.6.1, v0.6.3 and v0.6.4 were all minted by
+# fix PRs and never published, which is why the actual release kept landing on a
+# number nobody wanted.
+#
+# NOT TAGGING AT ALL WOULD NOT HAVE HELPED. next_tag refuses to reuse a tag that
+# sits on a different commit — it bumps past it — so an untagged merge simply makes
+# the NEXT merge climb anyway. One opt-out has to cover every merge between
+# releases, or the counter keeps moving.
+#
+# So the marker makes the merge SHARE the current tag instead. Two commits, one
+# version, no number consumed. That is safe here because the tag means "which
+# version is this tree", not "which commit": local builds report it, auto-release
+# computes from it, and release builds get it passed explicitly via -ldflags rather
+# than read from tag placement.
+#
+# Put `[NoDevBump]` in the PR TITLE for any merge that should ride the current
+# version: documentation-only PRs, and post-release fixes that will ship with the
+# next release rather than as their own.
+#
+# THE MARKER MUST BE IN THE TITLE, because the title is what survives both ways a
+# PR lands here: a SQUASH merge uses it as the commit subject, a MERGE COMMIT puts
+# it in the body. Matching the whole commit message covers both.
 
 name: Develop Bump
 
@@ -49,8 +79,57 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # THE OPT-OUT IS CHECKED FIRST, so a skipped merge cannot tag and leave a
+      # half-written state behind. It reads the merge commit's FULL message: a squash
+      # merge carries the PR title as its subject, a merge commit carries it in the body.
+      - name: Check for [NoDevBump]
+        id: skip
+        run: |
+          set -euo pipefail
+          MSG="$(git log -1 --format='%B' "${GITHUB_SHA}")"
+          if printf '%s' "$MSG" | grep -qF '[NoDevBump]'; then
+            latest="$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)"
+            if [ -z "$latest" ]; then
+              # Nothing to ride. Tagging this commit is strictly better than leaving the
+              # whole history untagged.
+              echo "ride=false" >> "$GITHUB_OUTPUT"
+              echo "::warning::[NoDevBump] found but there is no version tag to ride — tagging normally."
+            else
+              echo "ride=true" >> "$GITHUB_OUTPUT"
+              echo "ride_tag=${latest}" >> "$GITHUB_OUTPUT"
+              echo "::notice::[NoDevBump] — this merge rides ${latest} instead of minting a new version."
+              printf '%s\n' "$MSG" | head -3
+            fi
+          else
+            echo "ride=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # THE MERGE RIDES THE CURRENT TAG: point that tag at this commit, moving it
+      # forward so `git describe` resolves for a build of the current tree. The tag
+      # MOVES, which is why this is a force-push of a tag — safe here because the
+      # old commit keeps the same version by definition (it was the same release
+      # cycle) and nothing keys on tag-to-commit identity. If the force-push is
+      # rejected, the version is still correct; only `git describe` is staler.
+      - name: Ride the current version tag
+        if: steps.skip.outputs.ride == 'true'
+        env:
+          RIDE_TAG: ${{ steps.skip.outputs.ride_tag }}
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -f "${RIDE_TAG}" "${GITHUB_SHA}"
+          if git push --force origin "refs/tags/${RIDE_TAG}"; then
+            echo "Moved ${RIDE_TAG} to ${GITHUB_SHA:0:12} — this merge rides it."
+          else
+            echo "::warning::could not move ${RIDE_TAG}; the version is unchanged and still correct, " \
+                 "only \`git describe\` reports the previous commit."
+          fi
+
       - name: Bump version tag
         id: bump
+        if: steps.skip.outputs.ride != 'true'
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
