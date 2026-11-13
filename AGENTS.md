@@ -99,9 +99,10 @@ unit-level handler test is supporting evidence only.
 
 ## Release train
 
-`develop` is the integration branch; `main` is release-only. The develop→main
-PR's label picks the bump — `release` / `release-minor` / `release-major` —
-computed by `.github/workflows/auto-release.yml` from the highest existing tag
+`develop` is the integration branch; `main` is release-only. Merging
+`develop` → `main` puts the code there; **publishing is a separate act** — run
+`scripts/release.sh patch|minor|major`, which tags and dispatches the release
+workflow and computes the version from published releases, not from every tag
 of any kind. The GitHub release body comes from `RELEASE_HIGHLIGHTS.md` via
 `scripts/gen-release-notes.sh`; `README.md`'s "Last Release Changes" gets the
 compact digest of the same story via `--sync-readme`, so it is never hand-edited.
