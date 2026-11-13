@@ -533,6 +533,38 @@ function Write-PathHint {
     } catch {
         Write-Warn "could not add $InstallDir to your user PATH — add it by hand to run 'orchicon' from any terminal"
     }
+
+    # --- A STALE orch EARLIER ON PATH WINS, SILENTLY --------------------------------
+    #
+    # THIS IS WHAT MADE AN UPGRADE LOOK LIKE IT DID NOTHING. Measured on a Windows host
+    # after installing the release:
+    #
+    #   > orchicon.exe version   -> orchicon dev (commit=none build=unknown ...)
+    #   > where.exe orch         -> C:\Users\<user>\.local\bin\orch.exe      <-- FIRST
+    #                               C:\Users\<user>\AppData\Local\Programs\Orchicon\orch.exe
+    #
+    # The new binaries were installed correctly. But `orch` resolved to an orphaned copy
+    # in ~/.local/bin — written by an older install path that no longer exists — and that
+    # copy was stamped `canary`, so the TUI reported "drift: client canary" forever no
+    # matter how many times the operator re-ran the installer.
+    #
+    # Report it, and name both files, because the operator cannot see this from the
+    # symptom: they ran the installer, it said "Install complete", and the version never
+    # changed. Never delete anything — the shadowing file may be a deliberate local build.
+    foreach ($name in @("orch.exe", "orchicon.exe")) {
+        $fresh = Join-Path $InstallDir $name
+        $cmds = @(Get-Command $name -All -ErrorAction SilentlyContinue)
+        if ($cmds.Count -eq 0) { continue }
+        $first = $cmds[0]
+        if ($first.Source -and ($first.Source.TrimEnd('\') -ine $fresh)) {
+            Write-Warn "'$name' resolves to a DIFFERENT file than the one just installed"
+            Write-Host "    runs:      $($first.Source)" -ForegroundColor DarkGray
+            Write-Host "    installed: $fresh" -ForegroundColor DarkGray
+            Write-Host "  That first file shadows the new install, so '$name' will keep reporting ITS version" -ForegroundColor DarkGray
+            Write-Host "  (a build stamped 'canary' keeps saying 'canary'). Remove or rename it if it is stale:" -ForegroundColor DarkGray
+            Write-Host "    Remove-Item `"$($first.Source)`"" -ForegroundColor DarkGray
+        }
+    }
 }
 
 # --- The container engine ----------------------------------------------------

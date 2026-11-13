@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -156,15 +158,48 @@ func (s *Shell) handleControl(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // UsePlane retargets the window at another instance's CONTROL PORT.
+//
+// AN ARBITRARY PORT IS LEGITIMATE. This used to accept only the three names in controlport.Defaults()
+// and reject everything else, so a plane running on any other port could not be reached from the app
+// at all — there was no launch flag reachable from a packaged GUI either. A raw http(s) URL (or a
+// bare host:port, which is taken as http) is now accepted alongside the instance names.
 func (s *Shell) UsePlane(instance string) (Info, error) {
 	instance = strings.TrimSpace(instance)
-	port, ok := controlport.Defaults()[instance]
-	if !ok || instance == "" {
-		return Info{}, errors.New("unknown instance " + strconv.Quote(instance) + " — expected dev, prod or test")
+	if instance == "" {
+		return Info{}, errors.New("no plane given — name an instance (dev, prod, test) or a host:port")
 	}
-	u, err := planeURLFromString("http://127.0.0.1:" + strconv.Itoa(port))
-	if err != nil {
-		return Info{}, err
+
+	var u *url.URL
+	if port, ok := controlport.Defaults()[instance]; ok {
+		var err error
+		u, err = planeURLFromString("http://127.0.0.1:" + strconv.Itoa(port))
+		if err != nil {
+			return Info{}, err
+		}
+	} else {
+		// Not a known instance: treat it as an address. Reject anything that is not a
+		// well-formed http(s) URL with a host, so a typo fails here rather than becoming a
+		// window pointed at nothing.
+		// A BARE WORD IS A TYPO, NOT AN ADDRESS. "nope" would otherwise become
+		// http://nope and point the window at a host that cannot resolve, which is the
+		// silent nonsense the old refusal existed to prevent. An address must carry a
+		// port or a dot — something that could plausibly be a machine.
+		hasPort := strings.Contains(instance, ":")
+		hasDot := strings.Contains(instance, ".")
+		hasScheme := strings.Contains(instance, "://")
+		if !hasScheme && !hasPort && !hasDot {
+			return Info{}, fmt.Errorf("%q is neither a known instance (dev, prod, test) nor an address "+
+				"(expected host:port or a URL)", instance)
+		}
+		raw := instance
+		if !hasScheme {
+			raw = "http://" + raw
+		}
+		parsed, err := planeURLFromString(raw)
+		if err != nil {
+			return Info{}, fmt.Errorf("%q is neither a known instance (dev, prod, test) nor a reachable address: %w", instance, err)
+		}
+		u = parsed
 	}
 
 	// Refetch the version OUTSIDE the lock: it is a network call with a bound, and
@@ -183,8 +218,14 @@ func (s *Shell) UsePlane(instance string) (Info, error) {
 
 	// Best-effort: a read-only config dir must not undo the switch the operator
 	// just asked for. The in-memory switch already happened.
-	if err := SaveChosenInstance(prefsPath, instance); err != nil {
-		s.logMessage("desktop: could not remember the chosen instance: %v", err)
+	//
+	// ONLY NAMED INSTANCES ARE REMEMBERED. The remembered value is fed back into the
+	// instance lookup at startup, so persisting a raw address there would make the next
+	// launch fail to resolve it.
+	if _, named := controlport.Defaults()[instance]; named {
+		if err := SaveChosenInstance(prefsPath, instance); err != nil {
+			s.logMessage("desktop: could not remember the chosen instance: %v", err)
+		}
 	}
 	return info, nil
 }
