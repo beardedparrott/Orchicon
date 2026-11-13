@@ -932,6 +932,16 @@ site-check: ## Assert the landing page's nav and version-stamp invariants
 	@# dependency-free, because no browser can run in the CI container.
 	bash scripts/tests/site-nav-layout/run.sh
 
+# site-version-stamp — the footer must never silently become "dev".
+#
+# The nav-layout check above asserts the page carries a version MARKER; this asserts the
+# marker RESOLVES to a real version in the environment that actually deploys (a depth-1,
+# no-tags Cloudflare Pages clone whose `git fetch --tags` can fail). Those are different
+# failures: v0.6.1 shipped a valid marker whose value was "dev".
+.PHONY: site-version-stamp
+site-version-stamp: ## Assert the footer resolves to a real version with no tags available
+	bash scripts/tests/site-version-stamp/run.sh
+
 # version-tag-match — every version resolution must restrict itself to version-shaped tags.
 #
 # `canary` is a real tag and it MOVES (the canary build re-points it at develop's tip), so a bare
@@ -1630,7 +1640,7 @@ CI_GO_GATES := lint gen-check vet test synth-data no-operator-paths rls-check ad
 ci-go-base: $(CI_GO_GATES) ## The Go gate WITHOUT cross-compile (CI runs that as a parallel job)
 
 ci-go: ci-go-base cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
-ci: ci-go fe-lint fe-typecheck fe-test site-check version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
+ci: ci-go fe-lint fe-typecheck fe-test site-check site-version-stamp version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate
 tui-pty-gate: ## Standing real-pty TUI verification gate (smoke + mouse + /connect)

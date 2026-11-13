@@ -209,6 +209,14 @@ jobs:
       - name: Assert the landing page's nav + version invariants
         run: bash scripts/tests/site-nav-layout/run.sh
 
+      # AND THE VERSION THAT MARKER RESOLVES TO. The nav-layout check above proves the page
+      # carries a version marker; it says nothing about whether the marker resolves. v0.6.1
+      # shipped a perfectly valid marker whose value was "dev", because a no-tags Pages clone
+      # could not describe a tag and the script's last resort was that literal. This builds the
+      # exact environment (depth-1, no tags, unreachable remote) and asserts a real version.
+      - name: Assert the footer resolves to a real version with no tags available
+        run: bash scripts/tests/site-version-stamp/run.sh
+
   # windows-installer — the Windows (WSL2) installer's invariants.
   #
   # THE WINDOWS INSTALLER HAD NO DETECTOR EITHER, and its two worst defects were silent on
