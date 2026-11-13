@@ -53,6 +53,17 @@ if [ ! -f "${TMP}/clone/RELEASE_HIGHLIGHTS.md" ]; then
   exit 1
 fi
 
+# USE THE WORKING-TREE SCRIPTS, NOT THE COMMITTED ONES.
+# The clone is built from a commit, so it carries the COMMITTED build-site.sh — which
+# made this test pass against a broken working tree (it was always exercising the
+# committed version, whatever the developer had in front of them). Copying the
+# current scripts over the clone is what makes the test test the code under review.
+cp -R "${ROOT}/scripts/." "${TMP}/clone/scripts/" 2>/dev/null || {
+  echo "could not copy the working-tree scripts into the test clone"
+  exit 1
+}
+cp "${ROOT}/RELEASE_HIGHLIGHTS.md" "${TMP}/clone/RELEASE_HIGHLIGHTS.md" 2>/dev/null || true
+
 cd "${TMP}/clone"
 
 if [ "$(git tag --list | wc -l | tr -d ' ')" != "0" ]; then
@@ -60,7 +71,13 @@ if [ "$(git tag --list | wc -l | tr -d ' ')" != "0" ]; then
   exit 1
 fi
 
-# Break the remote so `git fetch --tags` fails exactly as it did on Pages.
+# NO TAGS AT ALL, which is the Pages condition: `git describe` returns nothing, so
+# build-site.sh must fall back. A --no-tags clone guarantees that (asserted below).
+#
+# AND NO WAY TO GET THEM. This line is load-bearing: with a working `origin`, the
+# script's own `git fetch --tags` succeeds and recovers a version — so the test
+# passes against the BROKEN script and proves nothing. Breaking the remote makes
+# the fetch fail, which is the real Pages condition.
 git remote set-url origin "${TMP}/definitely-not-here" 2>/dev/null || true
 
 OUT="$(bash scripts/build-site.sh 2>&1)"
