@@ -1566,3 +1566,51 @@ func TestReleaseWaitsForEveryDesktopJobItUploads(t *testing.T) {
 		}
 	}
 }
+
+// TestOnlyDevelopMayOpenAPRIntoMain — the integration rule must be ENFORCED, not prose.
+//
+// "Branch off develop and PR into develop — never main" was written in developer.md the
+// whole time, and it was broken four times in one day by an agent that reasoned past it:
+// "release.yml only runs on main, so the fix has to be there". That reasoning is wrong —
+// release.yml runs on workflow_dispatch with --ref main and requires only the TAG to be
+// reachable from main, which a tag cut from develop's tip satisfies.
+//
+// Prose did not stop it. This asserts the enforcement exists, is scoped to main, and
+// rejects anything that is not develop.
+func TestOnlyDevelopMayOpenAPRIntoMain(t *testing.T) {
+	const path = "../../.github/workflows/integration-guard.yml"
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v\n\nThe integration guard is GONE. Without it nothing prevents a "+
+			"fix from being merged straight into main, which is how develop ended up two "+
+			"backfills behind on one day.", path, err)
+	}
+	src := string(b)
+
+	// It must trigger on PRs into main, or it never runs.
+	if !strings.Contains(src, "branches: [main]") {
+		t.Error("integration-guard.yml no longer triggers on pull requests into main")
+	}
+	// It must compare the HEAD branch, not just the base.
+	if !strings.Contains(src, "github.head_ref") {
+		t.Error("integration-guard.yml does not read github.head_ref, so it cannot tell which " +
+			"branch is opening the PR")
+	}
+	// And it must actually fail, not merely warn.
+	if !strings.Contains(src, "exit 1") {
+		t.Error("integration-guard.yml never exits non-zero — a guard that always passes is " +
+			"the same as no guard, which is exactly what this defect was")
+	}
+	if !strings.Contains(src, `"develop"`) {
+		t.Error("integration-guard.yml does not name develop as the permitted head branch")
+	}
+
+	// It must be a required check on main, or a red result cannot block a merge. This is
+	// asserted against the live API by the release process rather than here (a unit test
+	// cannot reach GitHub), so what is checked is that the NEED is documented beside the
+	// workflow — the operator has to add it to branch protection once.
+	if !strings.Contains(src, "required") && !strings.Contains(src, "branch protection") {
+		t.Error("integration-guard.yml does not mention that it must be a REQUIRED check on " +
+			"main — an unrequired check reports red and blocks nothing")
+	}
+}

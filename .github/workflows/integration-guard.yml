@@ -1,0 +1,75 @@
+# integration-guard.yml — the ONLY branch allowed to open a PR into main is develop.
+#
+# WHY THIS EXISTS. "Branch off develop and PR into develop — never main" has been
+# written in developer.md the whole time, and it was broken four times in one day
+# (#962, #963, #964, #970) by an agent that reasoned its way past it: "release.yml
+# only runs on main, so the fix has to be there". That reasoning was WRONG —
+# release.yml runs on workflow_dispatch with --ref main and only requires the TAG to
+# be reachable from main, which a tag cut from develop's tip satisfies.
+#
+# Prose did not stop it. A red check does.
+#
+# WHAT IT REJECTS. A PR whose base is main and whose head is anything other than
+# develop. That is the whole rule: fixes land on develop, develop lands on main.
+#
+# WHY NOT A LABEL CHECK TOO. The release label belongs on the develop -> main PR, and
+# the `release` / `release-minor` / `release-major` vocabulary is already enforced by
+# auto-release.yml (which only acts on those labels). This guard is about WHO may open
+# the PR, which is the part nothing was checking.
+#
+# IT MUST BE A REQUIRED CHECK ON main. A status check that is not required reports red
+# and blocks nothing — set it once, in Settings -> Branches -> main -> Require status
+# checks -> "Only develop may open a PR into main". Until that is done this workflow is
+# advisory, which is barely better than the prose it replaces.
+name: Integration Guard
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, edited, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  only-develop-may-target-main:
+    name: Only develop may open a PR into main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the source branch
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          echo "PR #${PR_NUMBER}: ${HEAD_REF} -> ${BASE_REF}"
+
+          if [ "${BASE_REF}" != "main" ]; then
+            # Not this guard's business; the trigger already scopes it, and saying so
+            # beats failing for a reason nobody expects.
+            echo "base is ${BASE_REF}, not main — nothing to check."
+            exit 0
+          fi
+
+          if [ "${HEAD_REF}" = "develop" ]; then
+            echo "✓ develop -> main: this is the release path."
+            exit 0
+          fi
+
+          echo "::error::PRs into main must come from develop, but this one is from '${HEAD_REF}'."
+          echo ""
+          echo "main is release-only. A fix belongs on develop first:"
+          echo ""
+          echo "  1. branch off develop, make the fix"
+          echo "  2. PR it into DEVELOP and merge it there"
+          echo "  3. open develop -> main (this PR) to release everything that has landed"
+          echo ""
+          echo "Merging a fix straight into main leaves develop without it, so the next"
+          echo "release is cut from a tree that is missing the fix — and the two branches"
+          echo "diverge, which then has to be backfilled by hand."
+          echo ""
+          echo "If this PR is genuinely a hotfix that cannot wait for develop, retarget it at"
+          echo "develop and let the release PR carry it. There is no path into main except"
+          echo "through develop, and that is deliberate."
+          exit 1

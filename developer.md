@@ -28,6 +28,9 @@ A **worker running inside Orchicon** operates autonomously: it PRs into `develop
 ## Git workflow
 
 - `develop` is the integration branch; `main` is release-only and managed by the human. Branch off `develop` and PR into `develop` — never `main`.
+- **THE ONLY PR INTO `main` IS `develop` → `main`.** This is not advice, it is enforced by `.github/workflows/integration-guard.yml`, which fails any pull request targeting `main` whose head branch is not `develop`. Fixes land on `develop`; `develop` lands on `main`; the release PR carries everything that has been merged since the last release.
+  - The reasoning that gets past this rule, and why it is wrong: *"`release.yml` only runs on `main`, so the fix must be merged there."* It does not. `release.yml` runs on `workflow_dispatch` with `--ref main`, and its guard only requires the **tag** to be reachable from `main` — which a tag cut from `develop`'s tip after the release PR merges already satisfies. Nothing needs a fix committed to `main` directly.
+  - Merging a fix straight into `main` leaves `develop` without it, so the next release is cut from a tree that is missing the fix, and the branches diverge until somebody backfills by hand. That backfill happened twice in one day.
 - ALWAYS create a new branch before starting work. Never commit directly to `main` or `develop`.
 - Branch naming: `<type>/<short-description>` (`feat/`, `fix/`, `chore/`, `refactor/`, `docs/`, `test/`).
 - The version tag is bumped automatically on every merge to `develop` (`.github/workflows/develop-bump.yml`), so local builds report the current version. `git fetch --tags` before rebuilding to pick up the latest tag — `git pull` does not fetch tags.
