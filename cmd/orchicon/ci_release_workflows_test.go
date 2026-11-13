@@ -1587,9 +1587,29 @@ func TestOnlyDevelopMayOpenAPRIntoMain(t *testing.T) {
 	}
 	src := string(b)
 
-	// It must trigger on PRs into main, or it never runs.
-	if !strings.Contains(src, "branches: [main]") {
-		t.Error("integration-guard.yml no longer triggers on pull requests into main")
+	// IT MUST RUN ON EVERY PR, NOT ONLY ONES TARGETING MAIN.
+	//
+	// A required status check has to have RUN recently or GitHub cannot offer it in the
+	// "Require status checks" picker — the list contains only checks it has seen. Scoped
+	// to `branches: [main]`, the workflow fires only when someone opens a PR into main,
+	// which can be weeks apart, so between releases the check cannot be made required at
+	// all. That is the opposite of the intent: the guard must exist BEFORE the next PR
+	// into main, not appear with it.
+	// ASSERT ON CODE, NOT PROSE. The file explains this mistake in a comment that quotes
+	// `branches: [main]`, so a naive substring check fails on the documentation of the fix.
+	var code strings.Builder
+	for _, l := range strings.Split(src, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "#") {
+			continue
+		}
+		code.WriteString(l)
+		code.WriteString("\n")
+	}
+	if strings.Contains(code.String(), "branches: [main]") {
+		t.Error("integration-guard.yml is scoped to `branches: [main]`. Then it only runs when a " +
+			"PR into main is opened — potentially weeks apart — and GitHub cannot offer it as a " +
+			"required check in between, because the picker lists only checks that have run. Scope " +
+			"it to ALL pull requests so the check exists continuously and reports green on develop")
 	}
 	// It must compare the HEAD branch, not just the base.
 	if !strings.Contains(src, "github.head_ref") {

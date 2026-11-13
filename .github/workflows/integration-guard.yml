@@ -23,9 +23,22 @@
 # advisory, which is barely better than the prose it replaces.
 name: Integration Guard
 
+# IT RUNS ON EVERY PULL REQUEST, NOT JUST THE ONES TARGETING MAIN.
+#
+# A required status check must have RUN at least once in the last 7 days, or GitHub
+# cannot offer it in Settings -> Branches -> "Require status checks" — the dropdown
+# lists only checks it has seen. Scoped to `branches: [main]`, this workflow fires
+# only when somebody opens a PR into main, which may be weeks apart. So between
+# releases the check does not exist as far as the settings UI is concerned, and it
+# cannot be made required in the first place.
+#
+# Running on every PR solves that: the check exists continuously, reports GREEN on
+# every PR into develop (where it has no objection), and reports RED on a PR into
+# main from anything other than develop — which is the only case it exists to catch.
+#
+# The cost is one trivial job per PR. That is cheaper than a rule nobody can switch on.
 on:
   pull_request:
-    branches: [main]
     types: [opened, reopened, edited, synchronize]
 
 permissions:
@@ -46,8 +59,10 @@ jobs:
           echo "PR #${PR_NUMBER}: ${HEAD_REF} -> ${BASE_REF}"
 
           if [ "${BASE_REF}" != "main" ]; then
-            # Not this guard's business; the trigger already scopes it, and saying so
-            # beats failing for a reason nobody expects.
+            # NOT THIS GUARD'S BUSINESS — AND IT MUST REPORT GREEN, NOT SKIP.
+            # Skipping would leave the check perpetually absent on develop PRs, and a
+            # required check that never reports is a PR nobody can merge. Exiting 0 keeps
+            # the check present and green everywhere except the case it exists to catch.
             echo "base is ${BASE_REF}, not main — nothing to check."
             exit 0
           fi
