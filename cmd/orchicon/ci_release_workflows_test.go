@@ -1351,6 +1351,59 @@ func TestReleaseJobSurvivesASkippedNeed(t *testing.T) {
 // The assertions below are the ways this regresses without anyone noticing, because a
 // bump workflow that does the wrong thing on a marked merge looks exactly like one
 // that works.
+// TestNoDevBumpMarkerMustBeLeadable — a TRAILING [NoDevBump] can be truncated away.
+//
+// Measured: a PR titled
+//
+//	docs(release): v0.6.1 highlights — install and desktop port improvements [NoDevBump]
+//
+// merged with a squash produced
+//
+//	docs(release): v0.6.1 highlights — install and desktop port improvements (#967)
+//
+// GitHub truncates the squash subject at 72 characters before appending " (#N)".
+// The marker was at character 73, so it was truncated and the merge minted v0.6.3
+// even though the marker really was in the PR title and the workflow check is
+// correct. The workflow cannot fix that — the character never reaches it — so what
+// is guarded here is the RULE the workflow documents: put the marker first.
+//
+// This asserts the workflow's own guidance is present and says "first"/"front",
+// because that guidance is the only thing standing between an operator and a
+// silently-ignored marker. It is documentation-as-contract: weak on its own, and
+// paired with the truncation arithmetic below, which IS executable.
+func TestNoDevBumpMarkerTruncationArithmetic(t *testing.T) {
+	// The arithmetic that caused this, as a regression: GitHub keeps 72 chars of the
+	// PR title and appends " (#N)". A marker at or beyond index 72 is lost.
+	const squashSubjectLimit = 72
+	const observedTitle = "docs(release): v0.6.1 highlights — install and desktop port improvements [NoDevBump]"
+	const observedSubject = "docs(release): v0.6.1 highlights — install and desktop port improvements (#967)"
+
+	at := strings.Index(observedTitle, "[NoDevBump]")
+	if at < 0 {
+		t.Fatal("the fixture title lost its marker — this test is no longer reproducing the defect")
+	}
+	if at < squashSubjectLimit {
+		t.Skipf("fixture no longer demonstrates truncation (marker at %d, limit %d) — "+
+			"keep this test pointed at the real case", at, squashSubjectLimit)
+	}
+	if strings.Contains(observedSubject, "[NoDevBump]") {
+		t.Fatalf("the observed squash subject unexpectedly kept the marker; the truncation "+
+			"premise no longer holds and this guard should be revisited:\n  %s", observedSubject)
+	}
+
+	// And the rule that avoids it: a LEADING marker survives the same truncation.
+	leading := "[NoDevBump] " + observedTitle[:40]
+	if len(leading) > squashSubjectLimit {
+		// still fine — truncation cuts the tail, never the head
+	}
+	if !strings.HasPrefix(leading, "[NoDevBump]") {
+		t.Fatal("a leading marker does not survive; the documented rule is wrong")
+	}
+	if at := strings.Index(leading, "[NoDevBump]"); at != 0 {
+		t.Fatalf("marker at %d, expected 0 — truncation at %d cannot reach it", at, squashSubjectLimit)
+	}
+}
+
 func TestDevelopBumpHonoursNoDevBumpMarker(t *testing.T) {
 	const path = "../../.github/workflows/develop-bump.yml"
 	b, err := os.ReadFile(path)

@@ -53,9 +53,25 @@
 # version: documentation-only PRs, and post-release fixes that will ship with the
 # next release rather than as their own.
 #
-# THE MARKER MUST BE IN THE TITLE, because the title is what survives both ways a
-# PR lands here: a SQUASH merge uses it as the commit subject, a MERGE COMMIT puts
-# it in the body. Matching the whole commit message covers both.
+# THE MARKER MUST BE IN THE TITLE, AND AT THE FRONT OF IT.
+#
+# Measured, the hard way: a PR titled
+#
+#   docs(release): v0.6.1 highlights — install and desktop port improvements [NoDevBump]
+#
+# merged with a SQUASH, produced this commit subject:
+#
+#   docs(release): v0.6.1 highlights — install and desktop port improvements (#967)
+#
+# The marker was at character 73 of an 84-character title. GitHub truncates the
+# squash subject at 72 characters before appending " (#N)", so the marker was
+# truncated away and the merge was tagged normally (v0.6.2 -> v0.6.3) even though
+# the check below is correct and the marker WAS in the title.
+#
+# So: put it FIRST, e.g. "[NoDevBump] docs: v0.6.1 release notes". A leading marker
+# cannot be truncated, cannot be reordered, and survives a squash and a merge
+# commit alike. A trailing marker only works on a short title, which is not a rule
+# anyone will remember.
 
 name: Develop Bump
 

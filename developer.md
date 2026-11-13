@@ -46,7 +46,12 @@ Put **`[NoDevBump]`** in a PR's **title** when its merge should share the curren
 
 That is safe because the tag means *"which version is this tree"*, not *"which commit"*. Local builds report it, `auto-release` computes from it, and release builds get the version passed explicitly through `-ldflags` rather than read from tag placement.
 
-**The marker must be in the title.** That is what reaches the commit either way a PR lands here: a squash merge uses the title as the commit subject, a merge commit puts it in the body. The workflow matches the full commit message, so both work — but a marker only in the *body* of a squash-merged PR is lost.
+**Put the marker at the FRONT of the title**, e.g. `[NoDevBump] docs: v0.6.1 release notes`.
+
+Two reasons, both measured:
+
+1. The title is what reaches the commit either way a PR lands here — a squash merge uses it as the subject, a merge commit puts it in the body. A marker only in the *body* of a squash-merged PR is lost.
+2. **GitHub truncates the squash subject at 72 characters** before appending ` (#N)`. A trailing marker on a long title is silently cut: a PR titled `docs(release): v0.6.1 highlights — install and desktop port improvements [NoDevBump]` merged as `… improvements (#967)` — the marker was at character 73 and never reached the commit, so the merge was tagged normally even though the marker *was* in the title. A leading marker cannot be truncated.
 
 `TestDevelopBumpHonoursNoDevBumpMarker` guards this: it fails if the marker disappears, if the match drops to subject-only, if the ride step is removed or stops moving the tag, or if the ride and bump steps stop being mutually exclusive.
 - Commit early and often on your branch. Write clear present-tense messages (`Add project CRUD service and data-access layer`). Stage only the files relevant to the commit.
