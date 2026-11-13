@@ -20,6 +20,22 @@ func TestBuildInfoMismatchRule(t *testing.T) {
 		{"v1.2.0", PlaneUnreachable, false}, // a plane that is down is a different failure
 		{"", "v1.2.0", false},
 		{"v1.2.0", "", false},
+
+		// A LEADING `v` IS NOT A MISMATCH. Reported from Windows: the desktop window said
+		// "this window's UI is v0.6.1 but the plane is 0.6.1" — the SAME release, stamped
+		// differently by two build paths. The banner is meant to signal a real API drift,
+		// and firing it on one character teaches people to ignore it.
+		{"v0.6.1", "0.6.1", false},
+		{"0.6.1", "v0.6.1", false},
+
+		// ...but a real difference still reports, with or without the prefix.
+		{"v0.6.1", "0.6.2", true},
+		{"0.6.1", "v0.6.2", true},
+		{"0.6.1", "0.6.1", false},
+
+		// And the prefix rule is not a licence to ignore other differences: a pre-release
+		// suffix is a different build and must still report.
+		{"v0.6.1", "v0.6.1-rc1", true},
 	}
 	for _, c := range cases {
 		got := BuildInfo("http://127.0.0.1:8080", c.app, c.plane)
