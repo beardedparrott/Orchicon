@@ -61,8 +61,8 @@ jobs:
         id: check
         run: |
           set -e
-          # Manual dispatches (from auto-release.yml, which runs with
-          # --ref main) are always legitimate releases.
+          # Manual dispatches (`scripts/release.sh`, which runs with --ref main)
+          # are always legitimate releases.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "proceed=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -1019,8 +1019,8 @@ jobs:
             exit 1
           fi
           # Ensure the tag exists locally and points at HEAD — the
-          # auto-release workflow creates the tag in its own job, but
-          # manual dispatches (workflow_dispatch) don't always have
+          # `scripts/release.sh` pushes the tag before dispatching, so it
+          # normally exists — but workflow_dispatch does not always have
           # fetch-tags: true for tags created in a separate run. Pull
           # the tag from origin if we don't have it, or recreate it
           # pointing at the merge commit.

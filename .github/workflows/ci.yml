@@ -40,7 +40,7 @@ on:
     # CI ran only for PRs into `develop`, so the ONE PR that actually ships a release — `develop` ->
     # `main` — was the one PR CI never tested. #603 was therefore never compiled on Windows; the break
     # (`undefined: syscall.Kill` in a file with no build constraint) surfaced only in release.yml,
-    # AFTER `auto-release.yml` had already created the tag, so v0.4.0 was tagged and then produced no
+    # AFTER the tag had already been created, so v0.4.0 was tagged and then produced no
     # release at all. Every gate was green; the artefact could not be built.
     #
     # The gate that catches it is `make cross-compile` (now part of `ci-go`), which compiles the exact

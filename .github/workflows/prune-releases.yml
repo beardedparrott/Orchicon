@@ -5,7 +5,7 @@
 # dispatches it after creating a release (workflow_dispatch). The explicit
 # dispatch is required because a release created inside release.yml via
 # GITHUB_TOKEN does not fire a `release: published` event (the same
-# recursive-trigger limitation documented in auto-release.yml).
+# recursive-trigger limitation documented in release.yml).
 #
 # Deleting the oldest ones beyond the cap. Tags are left intact — only the
 # Release (and its assets) is removed, so `git describe --tags` still
