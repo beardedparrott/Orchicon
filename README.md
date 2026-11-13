@@ -40,28 +40,12 @@ The documentation lives at the project root:
 
 ## Last Release Changes
 
-- **Orchicon runs on your machine, not inside itself**: The plane and its services — the API, Postgres, NATS, the telemetry backends — are now **host processes
-- **podman is a first-class engine, not a Docker-shaped hole**: Orchicon now treats the container engine as a seam with more than one implementation.
-- **Windows is native**: `install.ps1` no longer provisions a Linux distro so your control plane can live in it.
-- **a desktop app, for all three platforms**: The desktop app is a **Wails shell** around the same frontend the browser gets, and it ships signed and
-- **the installer is also the updater**: One command now covers install, update and repair, because they were never really different operations.
-- **Ask Orchicon can be edited, and interrupted properly**: A conversation is now something you can revise.
-- **no built-in cost ceilings**: Budgets were meant to be a constraint you set, and had quietly become defaults nobody chose.
-- **the Servers page, and a git strategy you actually choose**: A **Servers** page puts plane control in the UI — start, stop and restart, with all four connection states
-- **Containers work out of the box, with no flag to learn.** They are provisioned by default and an image is
-- **Adapters are discovered from your `PATH` — the CLI's real install locations, not a guessed path.**
-- **A project directory is always a mount root**, so a run outside the usual tree still sees its own work.
-- **A run that fails at start records why**, in the row the UI reads — instead of a failed run with nothing
-- **A worker's verdict routes to the workflow loop; it is not "recovered"** as though it were an execution
-- **OpenCode 1.x prompts go to the route that starts a turn**, and the session set-model call sends `id`.
-- **The MCP catalog lost its dead servers**, and a legacy server now completes its handshake with the
-- **Local integration is a recorded queue**, integration happens *before* branching, and a dirty worktree is
-- **A worktree pointer is recognised wherever it was written**, including on Windows — where the doubled
-- **Cleanup reclaims what it actually promised**: leaked baseline scratch checkouts, stale claims, failed
-- **The DB pool is sized above the plane's own pinned connections**, so a busy plane cannot starve itself.
-- **CI runs the DB-backed suites, and a silent skip is now impossible** — a test that skips without saying
-- **The desktop and canary paths are gated**: `appimagetool` is pinned and cached so a CDN 504 cannot fail a
-- **Comment hygiene across the tree**: explanatory blocks combed to the constraint that is not visible in the
+- **The desktop app can reach a plane on any port**: The desktop app resolves its plane from an **instance** — `dev`, `prod` or `test` — and that was the only thing it would accept.
+- **An install tells you when an older copy is shadowing it**: On Windows, `orch` could resolve to a file from an earlier era of the installer — one written into `~/.local/bin` back when the stack ran inside WSL — while the current binaries were installed correctly to `%LOCALAPPDATA%/Programs/Orchicon`.
+- **The Windows binaries carry their version.** The `.exe` files inside the MSI were built without the version stamp every other artifact gets, so the installed `orchicon.exe` reported `dev` — and the desktop app, which compares its own version against the plane's, showed a permanent mismatch banner on Windows only. They are stamped now, and the release fails if the stamp does not take.
+- **The Linux desktop package is named after the version it is.** The AppImage shipped as `orchicon_desktop_0.0.0-dev_linux_amd64.AppImage`, because that packaging step was the only one not passed the version. An asset nobody can request by name is not an asset.
+- **The site footer resolves the version it is serving.** With no tags in the build clone, `orchicon.dev` served a footer reading `dev`. It now falls back to the release recorded in the repo, and refuses to publish rather than stamp something untrue.
+- **`[NoDevBump]` keeps release numbers meaningful.** A merge marked with it rides the current version instead of consuming the next one, so documentation merges and post-release fixes no longer push the real release onto a number nobody chose.
 
 Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchicon/releases).
 

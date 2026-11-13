@@ -28,6 +28,46 @@
 > numbers. The published release reads correctly while this file is wrong —
 > so grep the release log for that warning rather than assuming the two agree.
 
+## v0.6.1
+
+### New: The desktop app can reach a plane on any port
+The desktop app resolves its plane from an **instance** — `dev`, `prod` or `test` — and that was the only
+thing it would accept. Anything else was refused, so a plane on any other port could not be reached from the
+app at all, and a packaged GUI has no command line to pass a flag on. If yours ran on a port outside those
+three, the app was simply pinned and there was nothing to do about it.
+
+You can now give it an **address**: `host:port`, or a full URL. An explicit address sits alongside the
+instance names rather than replacing them, `https` is preserved rather than quietly downgraded, and only the
+named instances are remembered — a raw address stored as the "remembered instance" would fail to resolve on
+the next launch, so it is deliberately not persisted. A bare word is still refused: `nope` must not become
+`http://nope` and point a window at a host that cannot resolve.
+
+### New: An install tells you when an older copy is shadowing it
+On Windows, `orch` could resolve to a file from an earlier era of the installer — one written into
+`~/.local/bin` back when the stack ran inside WSL — while the current binaries were installed correctly to
+`%LOCALAPPDATA%/Programs/Orchicon`. The install reported success, the version never changed, and nothing
+told you why: the shadowing file won on `PATH` and was the one that ran.
+
+The installer now checks, for both `orch.exe` and `orchicon.exe`, whether the command that will actually
+resolve is the file it just installed. If it is not, it prints **both** paths, says plainly that the first one
+shadows the new install, and gives you the command to remove it. It never deletes anything itself — a
+shadowing binary may be a deliberate local build.
+
+### Also in this release
+- **The Windows binaries carry their version.** The `.exe` files inside the MSI were built without the version
+  stamp every other artifact gets, so the installed `orchicon.exe` reported `dev` — and the desktop app, which
+  compares its own version against the plane's, showed a permanent mismatch banner on Windows only. They are
+  stamped now, and the release fails if the stamp does not take.
+- **The Linux desktop package is named after the version it is.** The AppImage shipped as
+  `orchicon_desktop_0.0.0-dev_linux_amd64.AppImage`, because that packaging step was the only one not passed
+  the version. An asset nobody can request by name is not an asset.
+- **The site footer resolves the version it is serving.** With no tags in the build clone, `orchicon.dev`
+  served a footer reading `dev`. It now falls back to the release recorded in the repo, and refuses to publish
+  rather than stamp something untrue.
+- **`[NoDevBump]` keeps release numbers meaningful.** A merge marked with it rides the current version instead
+  of consuming the next one, so documentation merges and post-release fixes no longer push the real release
+  onto a number nobody chose.
+
 ## v0.6.0
 
 ### New: Orchicon runs on your machine, not inside itself
