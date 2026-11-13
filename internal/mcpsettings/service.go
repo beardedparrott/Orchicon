@@ -228,28 +228,21 @@ func (s *Service) ListForScope(ctx context.Context, tenantID, projectID, convers
 	return out, nil
 }
 
-// anySecretStored reports whether ANY of the entry's credential refs
-// (${NAME} in env/headers) resolves to an existing tenant secret.
+// anySecretStored reports whether ANY of the entry's credential refs resolves to an existing tenant
+// secret. IT SCANS EMBEDDED REFERENCES, not only whole-value ones: "Bearer ${TOKEN}" carries a
+// reference just as "${TOKEN}" does, and reporting has_secret_stored=false for the shape every remote
+// server's documentation uses was half of the bug this scanner exists to prevent.
 func anySecretStored(ctx context.Context, tx pgx.Tx, tenantID string, e Entry) (bool, error) {
-	for _, v := range e.Env {
-		if name, ok := secretRefName(v); ok {
-			exists, err := secretExists(ctx, tx, tenantID, name)
-			if err != nil {
-				return false, err
-			}
-			if exists {
-				return true, nil
-			}
-		}
-	}
-	for _, v := range e.Headers {
-		if name, ok := secretRefName(v); ok {
-			exists, err := secretExists(ctx, tx, tenantID, name)
-			if err != nil {
-				return false, err
-			}
-			if exists {
-				return true, nil
+	for _, m := range []map[string]string{e.Env, e.Headers} {
+		for _, v := range m {
+			for _, name := range secretRefNames(v) {
+				exists, err := secretExists(ctx, tx, tenantID, name)
+				if err != nil {
+					return false, err
+				}
+				if exists {
+					return true, nil
+				}
 			}
 		}
 	}
@@ -271,29 +264,27 @@ func RequiredSecretsFor(e Entry) []string {
 			}
 		}
 	}
-	for _, v := range e.Env {
-		if name, ok := secretRefName(v); ok && !seen[name] {
-			seen[name] = true
-			out = append(out, name)
-		}
-	}
-	for _, v := range e.Headers {
-		if name, ok := secretRefName(v); ok && !seen[name] {
-			seen[name] = true
-			out = append(out, name)
+	// Embedded references count here too: an entry whose header reads "Bearer ${TOKEN}" requires
+	// TOKEN, and under-reporting it left required_secrets empty for the documented configuration.
+	for _, m := range []map[string]string{e.Env, e.Headers} {
+		for _, v := range m {
+			for _, name := range secretRefNames(v) {
+				if !seen[name] {
+					seen[name] = true
+					out = append(out, name)
+				}
+			}
 		}
 	}
 	sort.Strings(out)
 	return out
 }
 
-// secretRefName extracts the secret name from a ${NAME} reference.
-func secretRefName(v string) (string, bool) {
-	if len(v) >= 3 && strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") {
-		return v[2 : len(v)-1], true
-	}
-	return "", false
-}
+// secretRefName is RETIRED. The grammar lives in secretrefs.go (scanSecretRefs / expandSecretRefs),
+// because a single whole-value predicate is what made "Bearer ${TOKEN}" invisible to every reader and
+// to the expander at once. It survives only as the narrow write-back question — "is this value purely
+// a reference?" — under the name that says so.
+func secretRefName(v string) (string, bool) { return wholeSecretRefName(v) }
 
 // SecretNameFor derives the standard tenant-secret name for a server's credential.
 func SecretNameFor(e Entry, envName string) string {
@@ -315,25 +306,21 @@ func validateSecretNameRe(name string) error {
 // IT IS A FREE FUNCTION, not a method: it needs no service state (only the tx), and the INLINE half
 // of definition validation (ValidateInlinePermissions.
 func validateSecretRefs(ctx context.Context, tx pgx.Tx, tenantID string, env, headers map[string]string) error {
-	for k, v := range env {
-		if name, ok := secretRefName(v); ok {
-			exists, err := secretExists(ctx, tx, tenantID, name)
-			if err != nil {
-				return err
-			}
-			if !exists {
-				return invalidf("env %q references secret %q which does not exist in the tenant secrets store", k, name)
-			}
-		}
-	}
-	for k, v := range headers {
-		if name, ok := secretRefName(v); ok {
-			exists, err := secretExists(ctx, tx, tenantID, name)
-			if err != nil {
-				return err
-			}
-			if !exists {
-				return invalidf("header %q references secret %q which does not exist in the tenant secrets store", k, name)
+	// EVERY reference in the value, wherever it sits: a header reading "Bearer ${TOKEN}" is a promise
+	// the store has to keep exactly as much as "${TOKEN}" is.
+	for _, kv := range []struct {
+		what string
+		m    map[string]string
+	}{{"env", env}, {"header", headers}} {
+		for k, v := range kv.m {
+			for _, name := range secretRefNames(v) {
+				exists, err := secretExists(ctx, tx, tenantID, name)
+				if err != nil {
+					return err
+				}
+				if !exists {
+					return invalidf("%s %q references secret %q which does not exist in the tenant secrets store", kv.what, k, name)
+				}
 			}
 		}
 	}

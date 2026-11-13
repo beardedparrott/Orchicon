@@ -397,14 +397,50 @@ func CredentialForm(title string, spec InlineSpec, choices []SecretChoice, onSav
 	return f
 }
 
-// secretRefName reads the ${NAME} reference a value carries, mirroring the plane's own
-// mcpsettings.secretRefName.
+// secretRefName reads the FIRST ${NAME} reference a value carries, mirroring the plane's own grammar
+// (mcpsettings.scanSecretRefs). It reads the reference WHEREVER it sits — "Bearer ${TOKEN}" is one —
+// because the plane expands it there too: a whole-value-only mirror showed an entry whose header was
+// "Bearer ${TOKEN}" as having no credential attached, which is precisely the configuration the plane
+// now resolves.
 func secretRefName(v string) string {
-	v = strings.TrimSpace(v)
-	if len(v) >= 3 && strings.HasPrefix(v, "${") && strings.HasSuffix(v, "}") {
-		return v[2 : len(v)-1]
+	if name := secretRefNamesIn(v); len(name) > 0 {
+		return name[0]
 	}
 	return ""
+}
+
+// secretRefNamesIn lists every ${NAME} reference in v, in order, mirroring the plane's
+// mcpsettings.secretRefNames. The name grammar is the tenant secret-name rule, so a brace expression
+// in ordinary text ("${5}", "{}") is not a reference here any more than it is plane-side.
+func secretRefNamesIn(v string) []string {
+	var out []string
+	for i := 0; i < len(v); i++ {
+		if v[i] != '$' || i+2 >= len(v) || v[i+1] != '{' {
+			continue
+		}
+		j := i + 2
+		if !secretRefNameStart(v[j]) {
+			continue
+		}
+		j++
+		for j < len(v) && secretRefNameByte(v[j]) {
+			j++
+		}
+		if j >= len(v) || v[j] != '}' {
+			continue
+		}
+		out = append(out, v[i+2:j])
+		i = j
+	}
+	return out
+}
+
+func secretRefNameStart(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+func secretRefNameByte(b byte) bool {
+	return secretRefNameStart(b) || (b >= '0' && b <= '9')
 }
 
 // attachedReference reports which key a server ALREADY points at a stored secret, and at which

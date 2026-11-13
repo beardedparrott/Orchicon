@@ -6,6 +6,7 @@ import {
   existingReference,
   inlineSpecIsHTTP,
   referenceName,
+  referenceNames,
   type InlineSpecLike,
 } from "@/lib/mcpInlineCredential";
 
@@ -110,16 +111,24 @@ describe("mcpInlineCredential", () => {
 // slate.
 describe("reading an existing credential reference", () => {
   it("recognises exactly the values the plane resolves", () => {
-    // It MIRRORS mcpsettings.secretRefName (a "${" prefix and a "}" suffix), so the client cannot recognise
-    // a value the server would not resolve, or miss one it would.
+    // It MIRRORS mcpsettings.secretRefNames (a "${"…"}" span around an identifier), so the client cannot
+    // recognise a value the server would not resolve, or miss one it would.
     expect(referenceName("${MCP_GITHUB_TOKEN}")).toBe("MCP_GITHUB_TOKEN");
     expect(referenceName("  ${SPACED}  ")).toBe("SPACED");
+    // EMBEDDED REFERENCES ARE REFERENCES. `Authorization: Bearer ${TOKEN}` is the canonical shape in
+    // every remote server's docs, and the plane expands it — so the picker has to see it, or it shows a
+    // blank slate for a server whose credential is set.
+    expect(referenceName("Bearer ${PIXELLAB_API_KEY}")).toBe("PIXELLAB_API_KEY");
+    expect(referenceNames("Bearer ${A} and ${B}")).toEqual(["A", "B"]);
     // Not references: a bare name, a plain value, an unterminated one, or the empty case.
     expect(referenceName("MCP_GITHUB_TOKEN")).toBeUndefined();
     expect(referenceName("ghp_literal_token")).toBeUndefined();
     expect(referenceName("${UNCLOSED")).toBeUndefined();
-    expect(referenceName("${}")).toBe(""); // mirrors the plane's grammar: a reference with an empty name
-    expect(existingReference({ BROKEN: "${}" }, undefined, false)).toBeUndefined(); // …but not an attachment
+    // The plane's grammar needs an identifier-shaped name, so these are ordinary text — and NOT an
+    // attachment (an empty name was the old whole-value rule's one oddity, now gone).
+    expect(referenceName("${}")).toBeUndefined();
+    expect(referenceName("${5}")).toBeUndefined();
+    expect(existingReference({ BROKEN: "${}" }, undefined, false)).toBeUndefined();
     expect(referenceName("")).toBeUndefined();
     expect(referenceName(undefined)).toBeUndefined();
   });
