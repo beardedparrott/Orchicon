@@ -156,10 +156,11 @@ GIT_COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 BUILD_DATE  := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 # Version tag resolution. An explicit override wins (e.g. `make build VERSION=v0.1.183`);
 # otherwise the nearest reachable tag is used. `git pull` does NOT fetch tags, and the
-# develop-bump + auto-release workflows create the canonical tags on GitHub at merge time
-# (develop-bump: one v0.1.x tag per merge to develop; auto-release: the release tag when
-# the human merges develop → main with the release label), so a stale local tag view would
-# embed an older version (a rebuild could report v0.1.181 for merged v0.1.183 code).
+# develop-bump creates a tag on every develop merge; scripts/release.sh creates the
+# canonical RELEASE tag when you decide to publish
+# (develop-bump: one tag per merge to develop; scripts/release.sh: the release tag when
+# you publish), so a stale local tag view would embed an older version (a rebuild could
+# report v0.1.181 for merged v0.1.183 code).
 # Recursive (`=` + `?=`) so the tag is resolved at recipe time, AFTER the fetch-tags
 # prerequisite has synced the local tags.
 # `--match 'v[0-9]*'` KEEPS A MOVING PRERELEASE TAG OUT OF THE VERSION. `git describe --tags` accepts ANY
@@ -261,8 +262,8 @@ gen-check: ## CI drift gate: regenerate and fail on any diff in generated code
 
 # --- Go control plane ------------------------------------------------------
 # fetch-tags syncs local tags with origin before a build. `git pull` does
-# not fetch tags, but the auto-release workflow creates the canonical
-# release tag on GitHub at merge time — without this, a local rebuild would
+# not fetch tags, but scripts/release.sh creates the canonical release
+# tag on GitHub when you publish — without this, a local rebuild would
 # embed a stale version (git describe falls back to the nearest tag the
 # local repo already knows). Best-effort: offline builds fall back to local
 # tags and never fail.

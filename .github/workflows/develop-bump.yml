@@ -15,28 +15,28 @@
 # Why this does NOT publish a release:
 #   - A tag pushed via the default GITHUB_TOKEN does not re-trigger the
 #     `push: tags` workflow (the same GITHUB_TOKEN-recursion limitation
-#     auto-release.yml documents — it is why that workflow uses
-#     workflow_dispatch). So `release.yml` does not run from this push.
+#     release.yml documents — it is why release.yml uses workflow_dispatch).
+#     So `release.yml` does not run from this push.
 #   - `release.yml`'s guard independently skips any tag not reachable from
 #     `main`, so a develop bump tag pushed before the human cuts a release is
 #     never treated as a release.
-#   - Only the human's `develop` → `main` merge carrying the `release` label
-#     (auto-release.yml) publishes a release.
+#   - Only a deliberate run of `scripts/release.sh` publishes a release. Merging
+#     `develop` → `main` is what puts the code there; releasing is a separate act.
 #
-# Version continuity with releases: auto-release bumps from the highest tag
-# too, so a human release lands one past the last develop bump and develop
-# resumes from there — one monotonic v0.1.x sequence.
+# Version continuity with releases: `scripts/release.sh` bumps from the highest
+# PUBLISHED release, so develop's bump tags cannot inflate a release number.
 #
 # --- RIDING THE CURRENT TAG: [NoDevBump] --------------------------------------
 #
 # A merge whose commit message contains `[NoDevBump]` does NOT mint a NEW version.
 # It rides whatever tag is already highest.
 #
-# WHY. This workflow tags EVERY merge to develop, and auto-release computes the
-# release number from the same pool of tags. So intermediate work consumes release
-# numbers before the release exists: v0.6.1, v0.6.3 and v0.6.4 were all minted by
-# fix PRs and never published, which is why the actual release kept landing on a
-# number nobody wanted.
+# WHY. This workflow tags EVERY merge to develop. When the release number was
+# computed from the same pool, intermediate work consumed release numbers before the
+# release existed: v0.6.1, v0.6.3 and v0.6.4 were all minted by fix PRs and never
+# published, pushing the real release onto a number nobody chose. The release number
+# now comes from `scripts/release.sh`, which reads PUBLISHED releases — so the marker
+# is no longer load-bearing for numbering, only for keeping develop's tag tidy.
 #
 # NOT TAGGING AT ALL WOULD NOT HAVE HELPED. next_tag refuses to reuse a tag that
 # sits on a different commit — it bumps past it — so an untagged merge simply makes
@@ -45,9 +45,9 @@
 #
 # So the marker makes the merge SHARE the current tag instead. Two commits, one
 # version, no number consumed. That is safe here because the tag means "which
-# version is this tree", not "which commit": local builds report it, auto-release
-# computes from it, and release builds get it passed explicitly via -ldflags rather
-# than read from tag placement.
+# version is this tree", not "which commit": local builds report it, and release
+# builds get the version passed explicitly via -ldflags rather than read from tag
+# placement.
 #
 # Put `[NoDevBump]` in the PR TITLE for any merge that should ride the current
 # version: documentation-only PRs, and post-release fixes that will ship with the
