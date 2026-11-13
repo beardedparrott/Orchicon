@@ -749,15 +749,35 @@ jobs:
       # produce something else.
       - name: Build the Windows CLI binaries (they go IN the MSI)
         shell: bash
+        env:
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
         run: |
           set -euo pipefail
+          # THESE BINARIES MUST CARRY THE VERSION, and for a while they did not.
+          #
+          # A plain `go build` leaves internal/version.gitTag at its default "dev", so the
+          # orchicon.exe INSIDE the MSI reported "dev" forever — and the desktop app, which
+          # compares its own tag against the plane's /versionz, showed a permanent
+          # "Version mismatch: this window's UI is v0.6.0 but the plane is dev" banner on
+          # Windows only. The `build` job stamps the archives with ldflags; this step built
+          # its own copies without them and nothing compared the two.
+          VERSION="${ORCHICON_VERSION#v}"
+          LDFLAGS="-X github.com/beardedparrott/orchicon/internal/version.gitTag=${VERSION} \
+                   -X github.com/beardedparrott/orchicon/internal/version.gitCommit=$(git rev-parse --short HEAD) \
+                   -X github.com/beardedparrott/orchicon/internal/version.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           mkdir -p bin
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orchicon.exe ./cmd/orchicon
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orch.exe ./cmd/orch
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o bin/orchicon.exe ./cmd/orchicon
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o bin/orch.exe ./cmd/orch
           # THE LINUX BINARY THE RUNTIME CONTAINER RUNS. Built HERE, in the same step and with the
           # same flags as the exe above it, so the daemon and the supervisor it mounts are the same
           # build by construction — a Linux container cannot execute the Windows binary.
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/orchicon-linux-amd64 ./cmd/orchicon
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o bin/orchicon-linux-amd64 ./cmd/orchicon
+          # FAIL LOUDLY IF THE STAMP DID NOT TAKE. A binary that reports "dev" is exactly the
+          # defect this fixes, and it is invisible until someone runs the app on Windows.
+          if ./bin/orchicon.exe version 2>/dev/null | grep -q '\bdev\b'; then
+            echo "::error::bin/orchicon.exe reports version dev — the ldflags stamp did not apply"
+            exit 1
+          fi
 
       # WIX IS A .NET GLOBAL TOOL, which is why this job (and the release) is where
       # the MSI is built: no other host in this project has dotnet. Pinned in spirit

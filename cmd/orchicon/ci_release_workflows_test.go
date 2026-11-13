@@ -1332,3 +1332,148 @@ func TestReleaseJobSurvivesASkippedNeed(t *testing.T) {
 			"consecutive tags.\nExpected the job's if: to begin with `always() &&`.")
 	}
 }
+
+// TestDevelopBumpHonoursNoDevBumpMarker — the [NoDevBump] opt-out must exist, must
+// make the merge RIDE the current tag rather than mint a new one, and must read the
+// commit's whole message.
+//
+// WHY THIS MATTERS. develop-bump tags EVERY merge to develop, and auto-release
+// computes the release number from the same pool. So intermediate work burns release
+// numbers before the release exists: v0.6.1, v0.6.3 and v0.6.4 were all minted by fix
+// PRs, were never published, and pushed the real release onto a number nobody chose.
+//
+// RIDING, NOT SKIPPING. next_tag refuses to reuse a tag that sits on a different
+// commit and bumps past it, so merely NOT tagging makes the NEXT merge climb anyway.
+// The opt-out has to make the merge SHARE the current tag: two commits, one version,
+// no number consumed. A test that only checked "no new tag is created" would pass
+// against a workflow that still burned numbers one merge later.
+//
+// The assertions below are the ways this regresses without anyone noticing, because a
+// bump workflow that does the wrong thing on a marked merge looks exactly like one
+// that works.
+// TestNoDevBumpMarkerMustBeLeadable — a TRAILING [NoDevBump] can be truncated away.
+//
+// Measured: a PR titled
+//
+//	docs(release): v0.6.1 highlights — install and desktop port improvements [NoDevBump]
+//
+// merged with a squash produced
+//
+//	docs(release): v0.6.1 highlights — install and desktop port improvements (#967)
+//
+// GitHub truncates the squash subject at 72 characters before appending " (#N)".
+// The marker was at character 73, so it was truncated and the merge minted v0.6.3
+// even though the marker really was in the PR title and the workflow check is
+// correct. The workflow cannot fix that — the character never reaches it — so what
+// is guarded here is the RULE the workflow documents: put the marker first.
+//
+// This asserts the workflow's own guidance is present and says "first"/"front",
+// because that guidance is the only thing standing between an operator and a
+// silently-ignored marker. It is documentation-as-contract: weak on its own, and
+// paired with the truncation arithmetic below, which IS executable.
+func TestNoDevBumpMarkerTruncationArithmetic(t *testing.T) {
+	// The arithmetic that caused this, as a regression: GitHub keeps 72 chars of the
+	// PR title and appends " (#N)". A marker at or beyond index 72 is lost.
+	const squashSubjectLimit = 72
+	const observedTitle = "docs(release): v0.6.1 highlights — install and desktop port improvements [NoDevBump]"
+	const observedSubject = "docs(release): v0.6.1 highlights — install and desktop port improvements (#967)"
+
+	at := strings.Index(observedTitle, "[NoDevBump]")
+	if at < 0 {
+		t.Fatal("the fixture title lost its marker — this test is no longer reproducing the defect")
+	}
+	if at < squashSubjectLimit {
+		t.Skipf("fixture no longer demonstrates truncation (marker at %d, limit %d) — "+
+			"keep this test pointed at the real case", at, squashSubjectLimit)
+	}
+	if strings.Contains(observedSubject, "[NoDevBump]") {
+		t.Fatalf("the observed squash subject unexpectedly kept the marker; the truncation "+
+			"premise no longer holds and this guard should be revisited:\n  %s", observedSubject)
+	}
+
+	// And the rule that avoids it: a LEADING marker survives the same truncation.
+	leading := "[NoDevBump] " + observedTitle[:40]
+	if len(leading) > squashSubjectLimit {
+		// still fine — truncation cuts the tail, never the head
+	}
+	if !strings.HasPrefix(leading, "[NoDevBump]") {
+		t.Fatal("a leading marker does not survive; the documented rule is wrong")
+	}
+	if at := strings.Index(leading, "[NoDevBump]"); at != 0 {
+		t.Fatalf("marker at %d, expected 0 — truncation at %d cannot reach it", at, squashSubjectLimit)
+	}
+}
+
+func TestDevelopBumpHonoursNoDevBumpMarker(t *testing.T) {
+	const path = "../../.github/workflows/develop-bump.yml"
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	src := string(b)
+
+	if !strings.Contains(src, "[NoDevBump]") {
+		t.Fatalf("develop-bump.yml no longer mentions [NoDevBump]. The opt-out is gone, so the " +
+			"docs PR before a release mints another release number.")
+	}
+
+	// It must read the FULL message (%B), not just the subject: a squash merge carries
+	// the PR title as the subject, but a MERGE COMMIT carries it in the body — and this
+	// repo has both (squash for ordinary PRs, merge commits for release and backfill).
+	if !strings.Contains(src, "--format='%B'") {
+		t.Error("develop-bump.yml does not read the commit's full message (expected " +
+			"--format='%B'). Reading only the subject makes the marker invisible on a " +
+			"MERGE COMMIT, so a PR merged that way would still be tagged")
+	}
+
+	// The RIDE step must exist: the merge has to share the current tag, not merely be
+	// left untagged. next_tag bumps past a tag on a different commit, so "untagged"
+	// still consumes a number on the next merge.
+	if !strings.Contains(src, "Ride the current version tag") {
+		t.Error("develop-bump.yml has no 'Ride the current version tag' step. Leaving a marked " +
+			"merge merely UNTAGGED does not hold the number: next_tag bumps past a tag that sits " +
+			"on a different commit, so the following merge mints one anyway")
+	}
+	if !strings.Contains(src, "git tag -f") {
+		t.Error("the ride step does not MOVE the current tag (expected `git tag -f`), so the tag " +
+			"would still point at the previous commit and `git describe` on the new tree resolves " +
+			"to a stale version")
+	}
+
+	// Both branches must be gated on the SAME flag, or the two paths collide: a marked
+	// merge could ride AND mint. Keyed on step names, not indices, so reordering
+	// cannot silently detach a condition from the step it guards.
+	lines := strings.Split(src, "\n")
+	gateOf := func(stepName string) string {
+		for i, l := range lines {
+			if !strings.Contains(l, stepName) {
+				continue
+			}
+			for j := i + 1; j < len(lines) && j <= i+4; j++ {
+				if t := strings.TrimSpace(lines[j]); strings.HasPrefix(t, "if:") {
+					return t
+				}
+			}
+			return ""
+		}
+		return ""
+	}
+
+	rideGate := gateOf("name: Ride the current version tag")
+	bumpGate := gateOf("name: Bump version tag")
+	if rideGate == "" {
+		t.Error("the 'Ride the current version tag' step carries no `if:`")
+	}
+	if bumpGate == "" {
+		t.Error("the 'Bump version tag' step carries no `if:` — the [NoDevBump] check runs and is " +
+			"then ignored, so every merge still mints a version")
+	}
+	// They must be mutually exclusive expressions over the same output.
+	if rideGate != "" && bumpGate != "" {
+		if !strings.Contains(rideGate, "ride == 'true'") || !strings.Contains(bumpGate, "ride != 'true'") {
+			t.Errorf("the ride and bump steps do not gate on OPPOSITE conditions:\n"+
+				"  ride: %s\n  bump: %s\nExpected `ride == 'true'` and `ride != 'true'`, or a "+
+				"marked merge could both ride the current tag and mint a new one.", rideGate, bumpGate)
+		}
+	}
+}

@@ -273,3 +273,85 @@ func TestBootstrapDocumentCannotBeBrokenByTheOrigin(t *testing.T) {
 		t.Error("the origin was not escaped for a JS string literal")
 	}
 }
+
+// TestUsePlaneAcceptsAnArbitraryPort — a plane on any port must be reachable.
+//
+// The app used to accept ONLY the three names in controlport.Defaults(), so a plane on
+// 8092-that-is-not-"test", or any other port an operator chose, could not be reached from
+// the desktop app at all. There was also no launch flag that helped, because a packaged
+// GUI has no command line. An explicit address is now a first-class answer.
+func TestUsePlaneAcceptsAnArbitraryPort(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		given string
+		want  string
+	}{
+		{"a named instance still resolves through the shared table", "prod", "http://127.0.0.1:8091"},
+		{"a bare host:port is taken as http", "127.0.0.1:9999", "http://127.0.0.1:9999"},
+		{"a full URL is accepted as given", "http://localhost:7777", "http://localhost:7777"},
+		{"https is preserved, not downgraded to http", "https://plane.example:8443", "https://plane.example:8443"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shell := newPlaneShell(t, "http://127.0.0.1:8092", "")
+			if _, err := shell.UsePlane(tc.given); err != nil {
+				t.Fatalf("UsePlane(%q) refused a legitimate address: %v", tc.given, err)
+			}
+			if got := shell.PlaneURL(); got != tc.want {
+				t.Errorf("UsePlane(%q) pointed the window at %q, want %q", tc.given, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestUsePlaneRejectsNonsense — and a typo must fail here, not become a window pointed at nothing.
+func TestUsePlaneRejectsNonsense(t *testing.T) {
+	for _, given := range []string{"", "   "} {
+		shell := newPlaneShell(t, "http://127.0.0.1:8092", "")
+		if _, err := shell.UsePlane(given); err == nil {
+			t.Errorf("UsePlane(%q) was accepted; an empty target must be refused", given)
+		}
+	}
+}
+
+// TestUsePlaneOnlyRemembersNamedInstances — the remembered value is replayed into the
+// instance lookup at startup, so a raw address stored there would fail to resolve on the
+// next launch. Only real instance names may be persisted.
+func TestUsePlaneOnlyRemembersNamedInstances(t *testing.T) {
+	prefs := filepath.Join(t.TempDir(), "prefs.json")
+	shell := newPlaneShell(t, "http://127.0.0.1:8092", prefs)
+
+	if _, err := shell.UsePlane("127.0.0.1:9999"); err != nil {
+		t.Fatalf("UsePlane(address): %v", err)
+	}
+	if got := LoadChosenInstance(prefs); got != "" {
+		t.Errorf("an arbitrary address was remembered as %q; startup cannot resolve that and the "+
+			"next launch would fail to find its plane", got)
+	}
+
+	if _, err := shell.UsePlane("test"); err != nil {
+		t.Fatalf("UsePlane(test): %v", err)
+	}
+	if got := LoadChosenInstance(prefs); got != "test" {
+		t.Errorf("a real instance was not remembered: got %q, want \"test\"", got)
+	}
+}
+
+// newPlaneShell builds a shell for UsePlane tests. No plane is dialled: FetchPlaneTag
+// fails fast against 127.0.0.1:1 and the tag degrades to "unreachable", which is not
+// what these tests assert about.
+func newPlaneShell(t *testing.T, planeURL, prefsPath string) *Shell {
+	t.Helper()
+	if prefsPath == "" {
+		prefsPath = filepath.Join(t.TempDir(), "prefs.json")
+	}
+	shell, err := New(Config{
+		PlaneURL:     planeURL,
+		FrontendFS:   testSPA(),
+		ControlToken: "tok",
+		PrefsPath:    prefsPath,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return shell
+}
