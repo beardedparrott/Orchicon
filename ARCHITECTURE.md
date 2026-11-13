@@ -491,7 +491,7 @@ Orchicon/
 └── .github/
     ├── CODEOWNERS               # @beardedparrott owns everything
     └── workflows/
-        ├── auto-release.yml     # Auto-bumps version when release-labeled PR merges
+        ├── release.sh           # Cut a release deliberately (tag + dispatch release.yml)
         └── release.yml          # Builds binaries for 5 platforms, creates GitHub Release
 ```
 
@@ -1629,7 +1629,8 @@ Runner strategy and the local `make desktop-*` targets are documented in
 ### Release Workflow
 
 1. Create a PR with the `release` label
-2. Merge to `main` — `auto-release.yml` bumps the version tag
+2. Merge to `main`, then run `scripts/release.sh` — it creates the version tag and
+   dispatches the release workflow
 3. `release.yml` builds and publishes binaries
 
 ---
