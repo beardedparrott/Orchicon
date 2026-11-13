@@ -882,13 +882,22 @@ jobs:
     name: Create Release
     needs: [build, guard, sign-macos]
     # `sign-macos` IS IN `needs` so the signed archives are the ones downloaded — but it is SKIPPED while
-    # signing is off, and a skipped dependency skips its dependents. Hence the explicit `skipped` arm: the
-    # release must go ahead on an unsigned build, which is the normal case today.
-    # `needs.sign-macos.result` is parsed as `needs.sign MINUS macos.result`, not as property
-    # access: a hyphenated job id has to be indexed, `needs['sign-macos']`. That mis-parse made
-    # this condition false on EVERY run, so Create Release never executed — v0.6.0, v0.6.2 and
-    # v0.6.4 all reached a fully green pipeline and published nothing.
+    # signing is off, and the release must go ahead on an unsigned build (the normal case today).
+    #
+    # TWO THINGS HAD TO BE RIGHT, and only the second one was.
+    #
+    # 1. A hyphenated job id is indexed, `needs['sign-macos']`, never dotted — `needs.sign-macos` parses as
+    #    `needs.sign MINUS macos`. (That was a real bug, fixed earlier.)
+    # 2. `if:` IS IMPLICITLY ANDed WITH `success()`, and `success()` is FALSE when any needed job is
+    #    SKIPPED — not failed, skipped. So an explicit `|| result == 'skipped'` arm is DEAD CODE: the
+    #    implicit success() has already made the whole condition false before it is reached. That is why
+    #    Create Release was skipped at v0.6.0, v0.6.2, v0.6.4 AND v0.6.0's replacement, with every other
+    #    job green and the guard outputting proceed=true.
+    #
+    # The fix is `always()`: it overrides the implicit success() gate so the explicit arms decide. The
+    # condition still refuses to run on a FAILED or CANCELLED dependency, which is the behaviour wanted.
     if: |
+      always() &&
       needs.guard.outputs.proceed == 'true' &&
       (needs['sign-macos'].result == 'success' || needs['sign-macos'].result == 'skipped')
     runs-on: ubuntu-latest
