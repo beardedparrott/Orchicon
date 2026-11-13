@@ -552,11 +552,22 @@ jobs:
 
       - name: Package the AppImage
         env:
+          # ORCHICON_VERSION IS REQUIRED HERE. deploy/desktop/appimage/build.sh reads
+          # VERSION="${ORCHICON_VERSION:-0.0.0-dev}", so omitting it (as this step did)
+          # silently names the asset orchicon_desktop_0.0.0-dev_linux_amd64.AppImage —
+          # v0.6.1 shipped exactly that. Every sibling packaging step sets this.
+          ORCHICON_VERSION: ${{ inputs.version || github.ref_name }}
           APPIMAGETOOL_SHA256: e8c1169c4af66c3184d7ee110713d4be04befe671fa358e2c1591ee840553b03
         run: |
           set -euo pipefail
           bash deploy/desktop/appimage/build.sh
           ls -l dist/desktop
+          # Prove the version reached the filename rather than trusting the env var:
+          # a placeholder here is a release that publishes an unrequestable asset.
+          if ls dist/desktop/*0.0.0-dev* >/dev/null 2>&1; then
+            echo "::error::the AppImage was named with the 0.0.0-dev placeholder — ORCHICON_VERSION did not reach build.sh"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
