@@ -1332,3 +1332,62 @@ func TestReleaseJobSurvivesASkippedNeed(t *testing.T) {
 			"consecutive tags.\nExpected the job's if: to begin with `always() &&`.")
 	}
 }
+
+// TestDevelopBumpHonoursNoDevBumpMarker — the [NoDevBump] opt-out must exist, must
+// gate the tagging step, and must read the commit's whole message.
+//
+// WHY THIS MATTERS. develop-bump tags EVERY merge to develop, and auto-release
+// computes the release number from the same pool. So intermediate work burns release
+// numbers before the release exists: v0.6.1, v0.6.3 and v0.6.4 were all minted by fix
+// PRs, were never published, and pushed the real release onto a number nobody chose.
+// The last merge before a release is usually documentation, which ships with the
+// release anyway — tagging it is pure cost.
+//
+// The three assertions below are the three ways this could regress without anyone
+// noticing, because a bump workflow that tags when asked not to looks exactly like
+// one that works.
+func TestDevelopBumpHonoursNoDevBumpMarker(t *testing.T) {
+	const path = "../../.github/workflows/develop-bump.yml"
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	src := string(b)
+
+	if !strings.Contains(src, "[NoDevBump]") {
+		t.Fatalf("develop-bump.yml no longer mentions [NoDevBump]. The opt-out is gone, so the " +
+			"docs PR before a release mints another release number.")
+	}
+
+	// It must read the FULL message (%B), not just the subject: a squash merge carries
+	// the PR title as the subject, but a MERGE COMMIT carries it in the body — and this
+	// repo has both (squash for ordinary PRs, merge commits for release and backfill).
+	if !strings.Contains(src, "--format='%B'") {
+		t.Error("develop-bump.yml does not read the commit's full message (expected " +
+			"--format='%B'). Reading only the subject makes the marker invisible on a " +
+			"MERGE COMMIT, so a PR merged that way would still be tagged")
+	}
+
+	// And the tagging step must actually be gated, not merely preceded by a check.
+	// Keyed on the step name rather than on an index, so reordering cannot quietly
+	// detach the condition from the thing it guards.
+	lines := strings.Split(src, "\n")
+	bumpAt, condAt := -1, -1
+	for i, l := range lines {
+		if strings.Contains(l, "name: Bump version tag") {
+			bumpAt = i
+		}
+		if bumpAt >= 0 && i > bumpAt && i <= bumpAt+4 && strings.Contains(l, "if: steps.skip.outputs.skip") {
+			condAt = i
+			break
+		}
+	}
+	if bumpAt < 0 {
+		t.Fatal("develop-bump.yml has no 'Bump version tag' step — this guard is checking the wrong thing")
+	}
+	if condAt < 0 {
+		t.Error("the 'Bump version tag' step carries no `if: steps.skip.outputs.skip != 'true'` " +
+			"within its first few lines, so the [NoDevBump] check runs and is then ignored — " +
+			"every merge is still tagged")
+	}
+}

@@ -26,6 +26,24 @@
 # Version continuity with releases: auto-release bumps from the highest tag
 # too, so a human release lands one past the last develop bump and develop
 # resumes from there — one monotonic v0.1.x sequence.
+#
+# --- OPTING OUT: [NoDevBump] --------------------------------------------------
+#
+# A merge whose commit message contains `[NoDevBump]` does NOT get a version tag.
+#
+# WHY. This workflow tags EVERY merge to develop, and auto-release computes the
+# release number from the same pool of tags. So intermediate work consumes release
+# numbers before the release exists: v0.6.1, v0.6.3 and v0.6.4 were all minted by
+# fix PRs and never published, which is why the actual release kept landing on a
+# number nobody wanted.
+#
+# The last PR before a release is typically documentation only, and tagging it is
+# pure cost — it moves the counter for a change that ships with the release anyway.
+# Put `[NoDevBump]` in that PR's TITLE and the merge is untagged.
+#
+# THE MARKER MUST BE IN THE TITLE, because the title is what survives both ways a
+# PR lands here: a SQUASH merge uses it as the commit subject, a MERGE COMMIT puts
+# it in the body. Matching the whole commit message covers both.
 
 name: Develop Bump
 
@@ -49,8 +67,25 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
+      # THE OPT-OUT IS CHECKED FIRST, so a skipped merge cannot tag and leave a
+      # half-written state behind. It reads the merge commit's FULL message: a squash
+      # merge carries the PR title as its subject, a merge commit carries it in the body.
+      - name: Check for [NoDevBump]
+        id: skip
+        run: |
+          set -euo pipefail
+          MSG="$(git log -1 --format='%B' "${GITHUB_SHA}")"
+          if printf '%s' "$MSG" | grep -qF '[NoDevBump]'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::[NoDevBump] found in the merge commit — no version tag will be created."
+            printf '%s\n' "$MSG" | head -3
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Bump version tag
         id: bump
+        if: steps.skip.outputs.skip != 'true'
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE"
