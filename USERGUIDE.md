@@ -2028,6 +2028,26 @@ is resolved at session time. At the project and conversation scopes the credenti
 is stored against the entry; on a worker version there is no row to attach it to,
 so the reference is built into the version's own env/headers.
 
+**A reference may be embedded in a larger value**, which is what almost every remote
+server's documentation specifies:
+
+```text
+Authorization: Bearer ${PIXELLAB_API_KEY}
+DATABASE_URL:  postgres://app:${PG_PASSWORD}@db.internal:5432/app
+```
+
+Each `${NAME}` is replaced in place and the surrounding text is kept, so the header
+above is sent as `Authorization: Bearer <token>`. A name must be
+`[A-Za-z_][A-Za-z0-9_]*`; a brace expression in ordinary text (`${5}`, `{}`) is left
+alone. **A reference — embedded or whole-value — must name a stored secret**: the
+save is refused if it does not, rather than surfacing later as a 401 from the server.
+Note this means a literal `${HOME}` in an env value is a reference, not something a
+child process expands.
+
+**Saving a credential takes effect immediately.** A conversation's live MCP client is
+rebuilt on its next turn when the resolved configuration changes — a config edit or a
+rotated secret value alike — so there is no restart needed after saving a token.
+
 **Resolution is ONE union** — a scope resolves to the **project-owned ∪ the scope's
 own** definitions, deduped and order-stable. There is no tenant default and no
 precedence chain.
