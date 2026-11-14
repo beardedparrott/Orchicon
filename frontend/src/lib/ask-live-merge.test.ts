@@ -248,3 +248,66 @@ describe("anchorLiveReply", () => {
     expect(live.map((m) => m.id)).toEqual(["live-1"]);
   });
 });
+
+// --- THE LIVE REPLY'S TRANSCRIPT POSITION ---------------------------------------------------------
+//
+// REPORTED: "When you are watching the live stream, the reasoning and assistant text is being printed
+// ABOVE the user message already sent. If you refresh the page, it puts it in the right order."
+//
+// THE MECHANISM. anchorLiveReply merges the streaming reply into the durable list by IDENTITY — right
+// after the anchor row — which is the correct decision. But it merges CHAT MESSAGES: the live blocks are
+// built from stream chunks, so they carry no createdAt at all. The route then stamps every row from
+// `createdAt`, so every live block sorts at epoch 0, and interleave's sort floats the whole streaming
+// reply to the TOP of the transcript — above messages sent before it. A refresh has no live items, so no
+// epoch-0 blocks, so the order looks right: exactly the reported asymmetry.
+import { interleave } from "./ask-consent";
+import { liveBlockAt } from "./ask-live-merge";
+
+type LiveRow = { id: string; at: number };
+
+describe("a live reply must sort at its ANCHOR, not at epoch 0", () => {
+  // The literal shapes the route produces: a real user row, the acked assistant row (server createdAt),
+  // and a live block (stream chunk — no createdAt, so stamped 0).
+  const userLiveRow: LiveRow = { id: "user-goal", at: 1_000 };
+  const ackedLiveRow: LiveRow = { id: "msg-acked", at: 2_000 };
+  const liveLiveRow: LiveRow = { id: "live-st-1", at: 0 };
+
+  it("the ANCHORED order survives interleave: the reply stays after its anchor", () => {
+    // anchorLiveReply put live-st-1 immediately after msg-acked, by identity. interleave preserves that
+    // order now, so the in-flight reply can no longer be floated above the operator's message by a key.
+    const slots = interleave([userLiveRow, ackedLiveRow, liveLiveRow], []);
+    expect(slots.map((s) => (s.block as LiveRow).id)).toEqual(["user-goal", "msg-acked", "live-st-1"]);
+  });
+
+  it("a card raised MID-TURN lands at the point it was asked, live reply or not", () => {
+    // `at` is what a card is INSERTED against, so a live block carrying a lie (0) would compare wrongly
+    // against it. With the block's key stamped from its anchor, the card lands after the live reply — the
+    // point it was actually asked — and does so whether or not the live block was stamped, because
+    // interleave preserves the anchored order.
+    const asks = [{ key: "per_1", at: 3_000 }] as unknown as Parameters<typeof interleave>[1];
+
+    const unstamped = interleave([userLiveRow, ackedLiveRow, liveLiveRow], asks);
+    expect(unstamped.map((s) => (s.isAsk ? "ASK" : (s.block as LiveRow).id))).toEqual([
+      "user-goal",
+      "msg-acked",
+      "live-st-1",
+      "ASK",
+    ]);
+
+    const stamped = interleave(
+      [userLiveRow, ackedLiveRow, { ...liveLiveRow, at: liveBlockAt(ackedLiveRow.at, liveLiveRow.at) }],
+      asks,
+    );
+    expect(stamped.map((s) => (s.isAsk ? "ASK" : (s.block as LiveRow).id))).toEqual([
+      "user-goal",
+      "msg-acked",
+      "live-st-1",
+      "ASK",
+    ]);
+  });
+
+  it("falls back to the block's own arrival when no anchor timestamp is known", () => {
+    // A live turn whose anchor row carried no createdAt (0) must not lose its position entirely.
+    expect(liveBlockAt(0, 500)).toBe(500);
+  });
+});
