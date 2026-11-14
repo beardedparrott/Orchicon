@@ -121,26 +121,68 @@ export function blockAt(block: { kind: "ask" } | { at: number }): number {
 }
 
 /**
- * interleave merges the durable/renderable transcript with the conversation's
- * consent cards, ordered by time.
+ * interleave merges the conversation's consent cards into the transcript, WHILE
+ * PRESERVING THE BLOCK ORDER IT IS GIVEN.
  *
- * A card whose arrival time is unknown (0 — a shape from an older client) sorts
- * FIRST, which is the same wrong end the missing timestamp produced. That is
- * deliberate: it makes the failure visible in a test rather than silently pinning
- * the card to the bottom.
+ * THE BUG THIS FIXES — THE BLOCK LIST IS NOT OURS TO RE-SORT.
+ *
+ * This used to sort every block and every card together by `at`. That looks
+ * correct while `at` happens to agree with reading order, and it is WRONG the
+ * moment the caller has deliberately established an order that `at` cannot
+ * express. Two such orders exist, and the sort silently undid both:
+ *
+ *   1. THE LIVE REPLY (lib/ask-live-merge.anchorLiveReply). The streaming reply is
+ *      merged immediately after the assistant row it belongs to — by IDENTITY,
+ *      because the stream carries no timestamp at all and the mirror row is
+ *      identified by id. Its blocks therefore arrive with no createdAt and were
+ *      stamped 0, so this sort floated the whole in-flight reply to the TOP of
+ *      the transcript, ABOVE the operator's own message. Reported as: "when you
+ *      are watching the live stream, the reasoning and assistant text is being
+ *      printed ABOVE the user message already sent. If you refresh the page, it
+ *      puts it in the right order" — a refresh has no live items, hence no
+ *      epoch-0 blocks, hence the right order. (The route now also stamps live
+ *      blocks with their anchor's clock; see liveBlockAt. This function must not
+ *      depend on that being enough.)
+ *
+ *   2. AN INTERJECTION (lib/ask-live-merge.orderInjectedBeforeReply). An injected
+ *      message is persisted MID-TURN, so its created_at is AFTER the assistant row
+ *      of the turn it joined; the reorder places it BEFORE that row, which is
+ *      what makes it read as a message the model then answered. Sorting by `at`
+ *      put it straight back underneath.
+ *
+ * So blocks keep the order they are given, and each card is INSERTED at the point
+ * in that sequence where it happened: immediately before the first block whose
+ * `at` is later than the card's. Cards are inserted in ascending `at` order, so
+ * they stay ordered among themselves, and the sequence is stable for a given
+ * input — a poll re-runs this on every tick.
+ *
+ * A card whose arrival time is unknown (0 — a shape from an older client) inserts
+ * before the first block, which is the same wrong end the missing timestamp
+ * produced. That is deliberate: it makes the failure visible in a test rather than
+ * silently pinning the card to the bottom.
  */
 export function interleave<T extends { at: number }>(
   blocks: T[],
   asks: AskItem[] | undefined,
 ): Array<{ seq: number; at: number; block: T | AskItem; isAsk: boolean }> {
-  const out: Array<{ seq: number; at: number; block: T | AskItem; isAsk: boolean }> = [];
-  blocks.forEach((b, seq) => out.push({ seq, at: b.at, block: b, isAsk: false }));
-  (asks ?? []).forEach((a, seq) =>
-    out.push({ seq, at: a.at, block: a, isAsk: true }),
-  );
-  // Stable by construction: the seq tiebreak keeps same-instant blocks in their
-  // source order, so a message and a card at the same ms do not swap on a poll.
-  out.sort((x, y) => x.at - y.at || (x.isAsk === y.isAsk ? x.seq - y.seq : x.isAsk ? 1 : -1));
+  const out: Array<{ seq: number; at: number; block: T | AskItem; isAsk: boolean }> =
+    blocks.map((b, seq) => ({ seq, at: b.at, block: b as T | AskItem, isAsk: false }));
+  const cards = (asks ?? [])
+    .map((a, seq) => ({ seq, at: a.at, block: a as T | AskItem, isAsk: true }))
+    .sort((x, y) => x.at - y.at || x.seq - y.seq);
+
+  for (const card of cards) {
+    // The insertion point: AFTER everything that happened at or before this card, so
+    //   - a card lands between the messages it happened between, and
+    //   - cards stay in their own ascending order (scanning past a card inserted
+    //     moments ago at the same instant is what keeps two same-ms cards from
+    //     coming out reversed), and
+    //   - a card at the same instant as a block sorts AFTER it, which is the
+    //     tiebreak the old sort applied.
+    let at = 0;
+    while (at < out.length && out[at].at <= card.at) at++;
+    out.splice(at, 0, card);
+  }
   return out;
 }
 

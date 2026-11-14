@@ -85,19 +85,39 @@ export function credentialKeyCandidates(
   return out;
 }
 
-// referenceName reads the ${SECRET_NAME} reference a value carries, MIRRORING the plane's own
-// mcpsettings.secretRefName (a "${" prefix and a "}" suffix) so the client recognises exactly the values the
-// server resolves — no more and no fewer.
+// referenceNames lists every ${SECRET_NAME} reference a value carries, MIRRORING the plane's own
+// mcpsettings.secretRefNames: the same ${ … } span, the same identifier-shaped name
+// ([A-Za-z_][A-Za-z0-9_]*), anywhere in the value.
 //
-// ONE CONSEQUENCE OF MIRRORING IT: `${}` is a reference with an EMPTY name, because the plane's own check is
-// length-and-affixes only (and then looks up a secret named "", which cannot exist). So this returns "" for
-// it rather than pretending the grammar is stricter than it is. Callers that need a real name test for truth
-// — existingReference does, so an empty reference is not reported as an attachment.
+// IT IS NOT WHOLE-VALUE ANY MORE, AND THAT MATTERS. The plane expands a reference wherever it sits, so
+// `Authorization: Bearer ${TOKEN}` is a real attachment — and a whole-value mirror reported it as none,
+// showing an empty picker for a server whose credential was demonstrably set. The identifier rule is
+// mirrored for the same reason: the plane does not treat `${5}` or `{}` as a reference, so neither does
+// this, and a value of ordinary text cannot be mistaken for an attachment.
+export function referenceNames(value: string | undefined): string[] {
+  if (!value) return [];
+  const out: string[] = [];
+  const isStart = (c: string) => /[A-Za-z_]/.test(c);
+  const isPart = (c: string) => /[A-Za-z0-9_]/.test(c);
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] !== "$" || value[i + 1] !== "{" || i + 2 >= value.length) continue;
+    let j = i + 2;
+    if (!isStart(value[j])) continue;
+    j++;
+    while (j < value.length && isPart(value[j])) j++;
+    if (j >= value.length || value[j] !== "}") continue;
+    out.push(value.slice(i + 2, j));
+    i = j;
+  }
+  return out;
+}
+
+// referenceName reads the FIRST ${SECRET_NAME} reference a value carries — the shape the picker opens
+// with. Its predecessor required the reference to be the WHOLE value; see referenceNames for why that
+// was wrong.
 export function referenceName(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  const v = value.trim();
-  if (v.length >= 3 && v.startsWith("${") && v.endsWith("}")) return v.slice(2, -1);
-  return undefined;
+  const names = referenceNames(value);
+  return names.length > 0 ? names[0] : undefined;
 }
 
 // existingReference finds the credential a server ALREADY carries: the first key whose value is a ${NAME}

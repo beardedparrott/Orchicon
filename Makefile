@@ -156,10 +156,11 @@ GIT_COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 BUILD_DATE  := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 # Version tag resolution. An explicit override wins (e.g. `make build VERSION=v0.1.183`);
 # otherwise the nearest reachable tag is used. `git pull` does NOT fetch tags, and the
-# develop-bump + auto-release workflows create the canonical tags on GitHub at merge time
-# (develop-bump: one v0.1.x tag per merge to develop; auto-release: the release tag when
-# the human merges develop → main with the release label), so a stale local tag view would
-# embed an older version (a rebuild could report v0.1.181 for merged v0.1.183 code).
+# develop-bump creates a tag on every develop merge; scripts/release.sh creates the
+# canonical RELEASE tag when you decide to publish
+# (develop-bump: one tag per merge to develop; scripts/release.sh: the release tag when
+# you publish), so a stale local tag view would embed an older version (a rebuild could
+# report v0.1.181 for merged v0.1.183 code).
 # Recursive (`=` + `?=`) so the tag is resolved at recipe time, AFTER the fetch-tags
 # prerequisite has synced the local tags.
 # `--match 'v[0-9]*'` KEEPS A MOVING PRERELEASE TAG OUT OF THE VERSION. `git describe --tags` accepts ANY
@@ -261,8 +262,8 @@ gen-check: ## CI drift gate: regenerate and fail on any diff in generated code
 
 # --- Go control plane ------------------------------------------------------
 # fetch-tags syncs local tags with origin before a build. `git pull` does
-# not fetch tags, but the auto-release workflow creates the canonical
-# release tag on GitHub at merge time — without this, a local rebuild would
+# not fetch tags, but scripts/release.sh creates the canonical release
+# tag on GitHub when you publish — without this, a local rebuild would
 # embed a stale version (git describe falls back to the nearest tag the
 # local repo already knows). Best-effort: offline builds fall back to local
 # tags and never fail.
@@ -955,6 +956,17 @@ version-tag-match: ## Assert no version resolution accepts a moving tag (canary)
 
 # The README digest is the repository front page. Its source prose is hard-wrapped, and the
 # renderer used to keep only the first line of each paragraph, cutting bullets mid-clause.
+# release-anchor — the release version must be computed from a PUBLISHED VERSION.
+#
+# `release.sh` used `gh release list --limit 1`, which takes the newest release of ANY kind —
+# and this repo publishes a `canary` PRE-RELEASE that re-points at develop's tip on every merge.
+# Once canary is newest, the bump arithmetic parses "canary" as a version and every release fails
+# on a tag nobody can type, from a clean main, for a reason unrelated to the code. Same defect
+# class as version-tag-match (a moving tag resolving a version), so it gets the same kind of gate.
+.PHONY: release-anchor
+release-anchor: ## Assert the release version anchor is never the canary pre-release
+	bash scripts/tests/release-anchor/run.sh
+
 .PHONY: release-notes-digest
 release-notes-digest: ## Assert every README release-digest bullet is a complete sentence
 	bash scripts/tests/release-notes-digest/run.sh
@@ -1640,7 +1652,7 @@ CI_GO_GATES := lint gen-check vet test synth-data no-operator-paths rls-check ad
 ci-go-base: $(CI_GO_GATES) ## The Go gate WITHOUT cross-compile (CI runs that as a parallel job)
 
 ci-go: ci-go-base cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
-ci: ci-go fe-lint fe-typecheck fe-test site-check site-version-stamp version-tag-match ## Run the full CI gate locally (Go + frontend + landing page)
+ci: ci-go fe-lint fe-typecheck fe-test site-check site-version-stamp version-tag-match release-notes-digest release-anchor ## Run the full CI gate locally (Go + frontend + landing page)
 
 .PHONY: tui-pty-gate
 tui-pty-gate: ## Standing real-pty TUI verification gate (smoke + mouse + /connect)

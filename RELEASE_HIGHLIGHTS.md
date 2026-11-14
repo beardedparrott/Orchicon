@@ -28,6 +28,40 @@
 > numbers. The published release reads correctly while this file is wrong —
 > so grep the release log for that warning rather than assuming the two agree.
 
+## v0.6.5
+
+### New: Every message in the transcript carries its time
+The transcript now stamps **every block** with when it happened — your own messages, the model's replies,
+its reasoning, and platform notices — in **both** the web GUI and the TUI. Each stamp is local wall clock
+with its zone (`14:30:05 CDT`), so a transcript you screenshot today still reads unambiguously in another
+time zone next month.
+
+It is deliberately small and dim: a time is evidence you reach for occasionally, not a column you read
+across, so it sits beside the existing label rather than on its own row and does not compete with the
+message. In the GUI, hovering a stamp gives the full date and time. A block with no known instant shows no
+stamp at all rather than inventing one.
+
+### New: MCP credentials can be embedded inside a larger value
+A secret reference had to be the *entire* value of an MCP server's env or header. Anything with text around
+it — `Bearer ${GITHUB_TOKEN}`, a connection URL with the password in the middle — was passed through
+literally, so the server received the reference text instead of a credential and rejected it, with nothing
+in the UI explaining why. References are now resolved wherever they appear in a value.
+
+Saving a credential also takes effect **immediately** rather than on the next plane restart: the running
+client notices the change and reconnects with the new value, which closes the "I saved it and it still says
+unauthorized" gap on the Claude and OpenCode adapters.
+
+### Fix: the streaming reply no longer prints above your own message
+While a turn streamed, the model's reasoning and text were painted **above** the message you had just sent;
+refreshing the page put them in the right order, which made it look like a display glitch. The live reply is
+now anchored to the turn it belongs to, so it stays below the message that prompted it — and stays there
+once the turn completes. Reasoning streams in its proper place too, instead of disappearing mid-turn.
+
+### Fix: releases can be cut again
+The release script computed the next version from the newest GitHub release of *any* kind, and the moving
+`canary` pre-release became that anchor — so the version arithmetic parsed "canary" and refused every
+release from a clean `main`. Versions now come from published releases only.
+
 ## v0.6.1
 
 ### New: The desktop app can reach a plane on any port

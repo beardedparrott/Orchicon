@@ -44,8 +44,19 @@ func BuildInfo(planeURL, appTag, planeTag string) Info {
 	if i, ok := controlport.InstanceForURL(planeURL); ok {
 		instance = i
 	}
+	// A LEADING `v` IS NOT A VERSION DIFFERENCE.
+	//
+	// Both tags come from the same `internal/version.gitTag`, which is `v0.6.1` when the
+	// release stamps it — but one build path once stamped `0.6.1`, and the app then
+	// announced a mismatch against ITSELF ("this window's UI is v0.6.1 but the plane is
+	// 0.6.1"). That is one character, not an API incompatibility, and warning a user about
+	// it is worse than saying nothing: the banner exists to signal a real drift.
+	//
+	// The stamp is fixed at its source, but this comparison is the second half of the
+	// repair. It is deliberately narrow — only the leading `v`, only on both sides — so a
+	// genuine difference ("0.6.1" vs "0.6.2", or "dev" vs "v0.6.1") still reports.
 	mismatch := appTag != "" && planeTag != "" &&
-		planeTag != PlaneUnreachable && appTag != planeTag
+		planeTag != PlaneUnreachable && normalizeTag(appTag) != normalizeTag(planeTag)
 	return Info{
 		PlaneURL:        planeURL,
 		Instance:        instance,
@@ -53,6 +64,14 @@ func BuildInfo(planeURL, appTag, planeTag string) Info {
 		PlaneTag:        planeTag,
 		VersionMismatch: mismatch,
 	}
+}
+
+// normalizeTag strips a single leading `v` so `v0.6.1` and `0.6.1` compare equal.
+//
+// It is NOT a general version normalizer: it does not touch case, pre-release suffixes or
+// build metadata. Those are real differences and the banner should report them.
+func normalizeTag(tag string) string {
+	return strings.TrimPrefix(tag, "v")
 }
 
 // planeVersionTimeout bounds the startup /versionz read. A slow plane must not

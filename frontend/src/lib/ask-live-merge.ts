@@ -227,3 +227,26 @@ export function anchorLiveReply<T extends { id: string }>(
     inserted: true,
   };
 }
+
+/**
+ * liveBlockAt is the epoch-ms a LIVE (streamed) reply block sorts by: its ANCHOR's clock.
+ *
+ * THE BUG THIS FIXES. A live block is built from a stream chunk, and the stream carries no timestamp at
+ * all (`TextChunk` is `{content}`), so a live block has no createdAt. The route derives every row's sort
+ * key from createdAt, which gave every live block `at: 0` — epoch zero — and lib/ask-consent.interleave
+ * then sorted the whole streaming reply to the TOP of the transcript, ABOVE messages the operator sent
+ * before it. Reported as: "when you are watching the live stream, the reasoning and assistant text is
+ * being printed ABOVE the user message already sent. If you refresh the page, it puts it in the right
+ * order" — a refresh has no live items, so no epoch-0 blocks, so the order looked right.
+ *
+ * An inner order (anchorLiveReply places the live blocks by IDENTITY) is not enough on its own: the sort
+ * key is what a consent card is INSERTED against, so an epoch-0 live turn would also pull a mid-turn card
+ * to the top. Stamping the live copy with its anchor's clock makes the block's `at` agree with where it
+ * already is, so both the order and the card placement are right.
+ *
+ * A fallback is kept for the anchor row arriving without a timestamp: epoch 0 would put the reply back at
+ * the top, so the block's own arrival instant is used instead.
+ */
+export function liveBlockAt(anchorAt: number, fallbackAt: number): number {
+  return anchorAt > 0 ? anchorAt : fallbackAt;
+}

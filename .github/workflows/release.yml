@@ -61,8 +61,8 @@ jobs:
         id: check
         run: |
           set -e
-          # Manual dispatches (from auto-release.yml, which runs with
-          # --ref main) are always legitimate releases.
+          # Manual dispatches (`scripts/release.sh`, which runs with --ref main)
+          # are always legitimate releases.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "proceed=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -761,7 +761,18 @@ jobs:
           # "Version mismatch: this window's UI is v0.6.0 but the plane is dev" banner on
           # Windows only. The `build` job stamps the archives with ldflags; this step built
           # its own copies without them and nothing compared the two.
-          VERSION="${ORCHICON_VERSION#v}"
+          # KEEP THE `v`. Every other stamp in this file passes ORCHICON_VERSION through
+          # unchanged, so the tag reads "v0.6.1" — and `version.Current().Tag` is compared
+          # verbatim against the plane's /versionz by the desktop app. Stripping the `v`
+          # here made the MSI's orchicon.exe report "0.6.1" while its own desktop window
+          # reported "v0.6.1", and the app announced a VERSION MISMATCH against itself:
+          #
+          #   Version mismatch: this window's UI is v0.6.1 but the plane ... is 0.6.1
+          #
+          # Same release. One character. A user-facing warning that the API may be
+          # incompatible. The `#v` was cargo-culted from the packaging steps below, where
+          # a bare number is what the artifact FILENAME needs — not what the tag is.
+          VERSION="${ORCHICON_VERSION}"
           LDFLAGS="-X github.com/beardedparrott/orchicon/internal/version.gitTag=${VERSION} \
                    -X github.com/beardedparrott/orchicon/internal/version.gitCommit=$(git rev-parse --short HEAD) \
                    -X github.com/beardedparrott/orchicon/internal/version.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -1019,8 +1030,8 @@ jobs:
             exit 1
           fi
           # Ensure the tag exists locally and points at HEAD — the
-          # auto-release workflow creates the tag in its own job, but
-          # manual dispatches (workflow_dispatch) don't always have
+          # `scripts/release.sh` pushes the tag before dispatching, so it
+          # normally exists — but workflow_dispatch does not always have
           # fetch-tags: true for tags created in a separate run. Pull
           # the tag from origin if we don't have it, or recreate it
           # pointing at the merge commit.

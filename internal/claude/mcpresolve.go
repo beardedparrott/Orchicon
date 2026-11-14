@@ -41,8 +41,10 @@ package claude
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/beardedparrott/orchicon/internal/askmode"
@@ -128,14 +130,11 @@ func logMCPResolution(where string, servers []MCPServer, provenance string) {
 
 // --- the conversation's MCP set, and why it is fingerprinted ----------------
 
-// mcpServerNames renders a RAW resolution's server ids as a stable join: the
-// fingerprint of the set, independent of provenance or transport.
-func mcpServerNames(servers []mcpclient.ScopedServer) string {
-	names := make([]string, 0, len(servers))
-	for _, s := range servers {
-		names = append(names, s.Spec.ID)
-	}
-	return strings.Join(names, ",")
+// askMCPBuiltin is the ONE construction of the built-in Orchicon sidecar entry for this session, so the
+// argv render and the staleness comparison cannot disagree about what the child was launched with.
+func (s *askSession) askMCPBuiltin(convID, projectID string) (MCPServer, error) {
+	// The sidecar is a CHILD PROCESS, so the conversation's scope has to travel in its ENVIRONMENT.
+	return OrchiconMCPServer(HookBinaryPath(), s.tenantID, OrchiconMCPConversationEnv(convID, projectID)), nil
 }
 
 // recordMCPFingerprint stores the resolved set the child is being launched with.
@@ -163,13 +162,61 @@ func (s *askSession) sessionMCPStale() bool {
 	if err != nil {
 		return false
 	}
-	return mcpFingerprint(askmode.MayAct(mode), res.Servers) != fp
+	// RENDER, not just resolve: the fingerprint is over the RENDERED servers, because that is where the
+	// credential is. A resolution whose secrets cannot be expanded is not a reason to tear down a working
+	// child — the previous set stays until the config is fixed.
+	//
+	// THE BUILTIN MUST BE THE SAME ONE argv() RENDERS WITH, or this compares two different sets and every
+	// turn respawns the child (measured: a session whose set was unchanged rebuilt on its second turn).
+	// Both halves are therefore read off one function: askMCPRenderInputs.
+	builtin, err := s.askMCPBuiltin(convID, projectID)
+	if err != nil {
+		return false
+	}
+	mayAct := askmode.MayAct(mode)
+	servers, err := s.b.renderMCP(context.Background(), tenantID, res, builtin)
+	if err != nil {
+		return false
+	}
+	if !mayAct {
+		servers = withholdOpaqueMCP(servers)
+	}
+	return mcpFingerprint(mayAct, servers) != fp
 }
 
-// mcpFingerprint is the ONE rendering of "what the child was launched with": the may-act flag
-// (which decides whether the operator's opaque servers were offered) and the resolved server ids.
-func mcpFingerprint(mayAct bool, servers []mcpclient.ScopedServer) string {
-	return fmt.Sprintf("mayact=%v;%s", mayAct, mcpServerNames(servers))
+// mcpFingerprint is the ONE rendering of "what the child was launched with": the may-act flag (which
+// decides whether the operator's opaque servers were offered) and a hash of the RENDERED servers — the
+// argv half that carries the credential.
+//
+// IT HASHES THE SERVERS THAT GO INTO ARGV, NOT THE RAW RESOLUTION. The raw resolution still holds
+// ${SECRET_NAME} REFERENCES (they are expanded during renderMCP), so fingerprinting it could not see a
+// rotated secret at all: the value changed underneath a string that never did. The child's --mcp-config
+// is fixed at fork/exec, so a rotation can only be applied by RESPAWNING — and this is what decides
+// whether to.
+//
+// HASHED, NOT STORED: this value is compared, logged in the respawn line, and held on the session for
+// its life. A resolved credential must not travel in it (the same rule ProvenanceString states).
+func mcpFingerprint(mayAct bool, servers []MCPServer) string {
+	h := sha256.New()
+	for _, s := range servers {
+		// A stable order per server: the maps are Go maps, so their iteration order is not.
+		_, _ = fmt.Fprintf(h, "name=%q\ncmd=%q\n", s.Name, s.Command)
+		for _, a := range s.Args {
+			_, _ = fmt.Fprintf(h, "arg=%q\n", a)
+		}
+		_, _ = fmt.Fprintf(h, "url=%q\n", s.URL)
+		for _, m := range []map[string]string{s.Env, s.Headers} {
+			keys := make([]string, 0, len(m))
+			for k := range m {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				_, _ = fmt.Fprintf(h, "%s=%q\x00", k, m[k])
+			}
+		}
+	}
+	return fmt.Sprintf("mayact=%v;%x", mayAct, h.Sum(nil))
 }
 
 // withholdOpaqueMCP drops every server from an Ask render EXCEPT the platform's own Orchicon

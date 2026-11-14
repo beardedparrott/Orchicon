@@ -31,7 +31,7 @@ A **worker running inside Orchicon** operates autonomously: it PRs into `develop
 - ALWAYS create a new branch before starting work. Never commit directly to `main` or `develop`.
 - Branch naming: `<type>/<short-description>` (`feat/`, `fix/`, `chore/`, `refactor/`, `docs/`, `test/`).
 - The version tag is bumped automatically on every merge to `develop` (`.github/workflows/develop-bump.yml`), so local builds report the current version. `git fetch --tags` before rebuilding to pick up the latest tag — `git pull` does not fetch tags.
-- PRs must target `develop` explicitly (`gh pr create --base develop`) — `main` is the default branch. PRs must NOT carry the release labels (`release`, `release-minor`, `release-major`): those belong only on the human's `develop` → `main` release PR, where they select the next patch / minor / major bump, computed by `.github/workflows/auto-release.yml` from the highest existing tag.
+- PRs must target `develop` explicitly (`gh pr create --base develop`) — `main` is the default branch. Nothing publishes a release automatically: `develop` → `main` puts the code there, and `scripts/release.sh` publishes it when the human decides to.
 
 ### `[NoDevBump]` — ride the current version instead of minting a new one
 
@@ -40,11 +40,11 @@ Put **`[NoDevBump]`** in a PR's **title** when its merge should share the curren
 - **documentation-only PRs** — the last merge before a release
 - **post-release fixes** — work that will ship with the next release rather than as its own
 
-**Why this exists.** `develop-bump` tags every merge and `auto-release` computes the release number from the same pool, so intermediate merges consume release numbers before a release exists. `v0.6.1`, `v0.6.3` and `v0.6.4` were all minted by fix PRs, were never published, and pushed the real release onto `v0.6.4` — a number nobody chose.
+**Why this exists.** `develop-bump` tags every merge to `develop`. When the release number was computed from that same pool, intermediate merges consumed release numbers before a release existed: `v0.6.1`, `v0.6.3` and `v0.6.4` were all minted by fix PRs, never published, and pushed the real release onto a number nobody chose. Release numbers now come from `scripts/release.sh`, which reads **published releases** — so the marker is no longer load-bearing for numbering, only for keeping `develop`'s tags honest.
 
 **Why it rides rather than skips.** `next_tag` refuses to reuse a tag that sits on a different commit and bumps past it, so merely *not* tagging a merge makes the **next** one climb anyway. One opt-out therefore has to cover every merge between releases, or the counter keeps moving. The marker makes the merge **share** the current tag instead: two commits, one version, no number consumed.
 
-That is safe because the tag means *"which version is this tree"*, not *"which commit"*. Local builds report it, `auto-release` computes from it, and release builds get the version passed explicitly through `-ldflags` rather than read from tag placement.
+That is safe because the tag means *"which version is this tree"*, not *"which commit"*. Local builds report it, and release builds get the version passed explicitly through `-ldflags` rather than read from tag placement.
 
 **Put the marker at the FRONT of the title**, e.g. `[NoDevBump] docs: v0.6.1 release notes`.
 
@@ -144,7 +144,7 @@ Interactive TUI changes (`internal/tui/**`, `cmd/orch`) need the real-PTY gate �
 
 ## Install scripts & release
 
-`scripts/install.sh` / `scripts/install.ps1` are the one-line installers published at orchicon.dev, each a single source of truth for its platform. Windows installs the **native** build and runs the plane as host processes — no WSL2, no Docker Desktop. `site/` and the install scripts are staged on `develop` and only reach orchicon.dev when the human merges `develop` → `main` (CloudFlare Pages is pinned to `main`). The release workflow builds binaries for linux/darwin/windows × amd64/arm64 on tag push, attaches them plus the desktop packages to the GitHub Release, and publishes the runtime images. Releases are capped at 5 (`prune-releases.yml`); the release body is the curated narrative from `RELEASE_HIGHLIGHTS.md` rendered by `scripts/gen-release-notes.sh`, and README's "Last Release Changes" gets a compact digest of the same story via `--sync-readme`. Release versioning: the develop→main PR's label picks the bump — `release` (next patch), `release-minor` (next minor), `release-major` (next major). Verify an installer against a draft release before trusting it (`bash scripts/install.sh --version vX.Y.Z --dry-run`, or `--uninstall` to test cleanup).
+`scripts/install.sh` / `scripts/install.ps1` are the one-line installers published at orchicon.dev, each a single source of truth for its platform. Windows installs the **native** build and runs the plane as host processes — no WSL2, no Docker Desktop. `site/` and the install scripts are staged on `develop` and only reach orchicon.dev when the human merges `develop` → `main` (CloudFlare Pages is pinned to `main`). The release workflow builds binaries for linux/darwin/windows × amd64/arm64 on tag push, attaches them plus the desktop packages to the GitHub Release, and publishes the runtime images. Releases are capped at 5 (`prune-releases.yml`); the release body is the curated narrative from `RELEASE_HIGHLIGHTS.md` rendered by `scripts/gen-release-notes.sh`, and README's "Last Release Changes" gets a compact digest of the same story via `--sync-readme`. **Releasing is a separate, deliberate act**: merge `develop` → `main`, then run `scripts/release.sh patch|minor|major` (or `--dry-run` first). It refuses off-`main`, on a dirty tree, when `main` is behind origin, when the tag exists, or when `RELEASE_HIGHLIGHTS.md` lacks the `## <version>` section — and it computes the next version from **published releases**, so `develop`'s bump tags cannot inflate it. Verify an installer against a draft release before trusting it (`bash scripts/install.sh --version vX.Y.Z --dry-run`, or `--uninstall` to test cleanup).
 
 ## E2E & data preservation
 

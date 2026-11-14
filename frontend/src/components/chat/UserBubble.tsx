@@ -5,6 +5,14 @@ import { Markdown } from "@/components/markdown";
 interface UserBubbleProps {
   text: string;
   source?: string;
+  /**
+   * at is the moment this message was sent, in epoch ms — drawn small and dim beside the label.
+   *
+   * OPTIONAL, and absent means NO time rather than epoch 0, which would render "1/1/1970" and claim the
+   * operator sent it then. The transcript passes the row's createdAt; a caller that has no instant (an
+   * unstamped live fragment) simply omits it.
+   */
+  at?: number;
   className?: string;
   /** The active transcript-search query, so hits are marked where they are. */
   highlight?: string;
@@ -19,7 +27,7 @@ interface UserBubbleProps {
   actions?: ReactNode;
 }
 
-export function UserBubble({ text, source = "you", className, highlight = "", actions }: UserBubbleProps) {
+export function UserBubble({ text, source = "you", at, className, highlight = "", actions }: UserBubbleProps) {
   const label =
     source === "nudge"
       ? "liveness check"
@@ -37,6 +45,17 @@ export function UserBubble({ text, source = "you", className, highlight = "", ac
           <span className="text-[10px] font-medium uppercase tracking-wide text-user-bubble-foreground/70">
             {label}
           </span>
+          {/* THE STAMP SITS IN THE LABEL ROW, beside whose-message-this-is — the same place the assistant
+              bubble puts it, so both sides of the conversation read the same way. dim + tabular figures, so a
+              transcript of times forms a readable column instead of jittering as digits change width. */}
+          {at ? (
+            <span
+              className="shrink-0 text-[10px] tabular-nums text-user-bubble-foreground/50"
+              title={new Date(at).toLocaleString()}
+            >
+              {new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short" })}
+            </span>
+          ) : null}
         </div>
         <div className="break-words [overflow-wrap:anywhere]">
           {/* preserveBreaks: this is the operator's OWN text. The line breaks they typed are the line breaks

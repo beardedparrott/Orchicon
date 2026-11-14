@@ -41,8 +41,12 @@ export function AssistantBubble({
             {label}
           </span>
           {at && (
-            <span className="shrink-0 text-xs text-muted-foreground/60">
-              {new Date(at).toLocaleTimeString()}
+            // LOCAL + ZONED, to match the TUI. screenkit/format.go carries the operator's rule ("all times in
+            // orch to actually show local time and print the time zone by the time") because a bare clock
+            // reading was misread across time zones. The TUI honors it via FmtClock; this is the browser's
+            // equivalent, so the two clients stamp a transcript the same way.
+            <span className="shrink-0 text-xs tabular-nums text-muted-foreground/60">
+              {new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short" })}
             </span>
           )}
           <span className="ml-auto shrink-0 text-xs text-muted-foreground/60">
