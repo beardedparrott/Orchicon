@@ -69,12 +69,38 @@ ok "up to date with origin/main"
 # only honest anchor.
 command -v gh >/dev/null 2>&1 || die "gh is required (it reads published releases and dispatches the workflow)"
 
-LATEST="$(gh release list --limit 1 --json tagName --jq '.[0].tagName // empty' 2>/dev/null || true)"
+# THE ANCHOR MUST BE A PUBLISHED VERSION, and this query used to take whatever came first.
+#
+# `gh release list --limit 1` returns the newest release of ANY kind, and this repo publishes a
+# `canary` PRE-RELEASE that re-points at develop's tip on every merge. Once canary is the newest
+# entry it becomes the anchor, and the arithmetic below parses "canary" as a version: MAJ="canary",
+# MIN="", PAT="" — so a patch bump computes vcanary.1.1 and every bump mode dies on a tag name
+# nobody can type. The release then cannot be cut at all, from a clean main, for a reason that has
+# nothing to do with the code being released.
+#
+# This is the same defect class the Makefile's `version-tag-match` gate exists to prevent for
+# `git describe` ("canary is a real tag and it MOVES … a bare `git describe --tags` can resolve a
+# local rebuild's version to 'canary'"). Releases are decided by PUBLISHED versions, so the query
+# asks for exactly that: exclude pre-releases, and exclude the moving tags by name in case one is
+# ever published as a full release.
+LATEST="$(gh release list --limit 100 --json tagName,isPrerelease,isDraft \
+  --jq '[.[] | select((.isPrerelease|not) and (.isDraft|not)) | .tagName
+         | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))
+         | select(. != "canary")] | .[0] // empty' 2>/dev/null || true)"
 if [ -z "$LATEST" ]; then
   warn "no published release found; anchoring on the highest tag instead"
   LATEST="$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
 fi
 [ -n "$LATEST" ] || die "no version tag to bump from — create the first release with an explicit tag, e.g. scripts/release.sh v0.1.0"
+
+# AND THE ANCHOR MUST PARSE. Guarding here rather than trusting the query means any future anchor
+# defect fails with a sentence that names the culprit, instead of minting "vcanary.1.1" and dying on
+# a tag nobody can type.
+if ! printf '%s' "$LATEST" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+  die "the latest published release ('$LATEST') is not a version tag, so the next version cannot be
+  computed from it. A pre-release or a moving tag has become the anchor.
+  Pass an explicit version instead:  scripts/release.sh vX.Y.Z"
+fi
 
 case "$BUMP" in
   patch|minor|major)
