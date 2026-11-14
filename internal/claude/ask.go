@@ -583,7 +583,11 @@ func (s *askSession) argv() []string {
 	s.mu.Unlock()
 
 	// THE SIDECAR IS A CHILD PROCESS, so the conversation's scope has to travel in its ENVIRONMENT.
-	builtin := OrchiconMCPServer(HookBinaryPath(), s.tenantID, OrchiconMCPConversationEnv(convID, projID))
+	// ONE construction of it (askMCPBuiltin), shared with the staleness comparison.
+	builtin, berr := s.askMCPBuiltin(convID, projID)
+	if berr != nil {
+		slog.Default().Warn("claude ask: the built-in Orchicon MCP server could not be built", "error", berr)
+	}
 	res, rerr := s.b.resolveMCP(context.Background(), s.tenantID, projRef)
 	var servers []MCPServer
 	err = rerr
@@ -613,7 +617,12 @@ func (s *askSession) argv() []string {
 	}
 	// Record the set's FINGERPRINT (WITH the may-act flag) so a later turn whose set or mode differs
 	// can respawn and apply it (a live child holds its servers as fixed argv).
-	s.recordMCPFingerprint(mcpFingerprint(mayAct, res.Servers))
+	//
+	// OVER THE RENDERED SERVERS — the ones going into argv below — and not over res.Servers, which still
+	// holds ${SECRET_NAME} references and therefore could not see a ROTATED SECRET. With servers withheld
+	// by the mode, argv carries only the sidecar, so that is what is fingerprinted.
+	fpServers := servers
+	s.recordMCPFingerprint(mcpFingerprint(mayAct, fpServers))
 	logMCPResolution("ask", servers, provenance)
 	argv = append(argv, MCPArgs(servers)...)
 	return argv

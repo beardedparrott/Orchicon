@@ -169,3 +169,66 @@ func TestHostServePoolKeyIsTheSetAlone(t *testing.T) {
 	// vary.
 	var _ func(PermissionProfile, mcpclient.Resolution) string = hostServeSetKey
 }
+
+// TestHostServePoolKeysOnTheResolvedCredential is the INVARIANT that makes a saved secret reach this
+// adapter at all: the pool key hashes the RESOLVED env/header VALUES, so a rotation produces a different
+// key, a different serve, and therefore fresh bytes — a pooled serve bakes its config once, at creation.
+//
+// It is pinned because the opposite is a tempting refactor: serverFingerprint carries plaintext
+// credentials, and "trim it to ids so nothing sensitive is hashed" would silently restore the
+// stale-credential bug for opencode ask and the local worker population, with no test failing.
+func TestHostServePoolKeysOnTheResolvedCredential(t *testing.T) {
+	withHeader := func(header string) mcpclient.Resolution {
+		return mcpclient.Resolution{
+			Servers: []mcpclient.ScopedServer{{Spec: mcpclient.ServerSpec{
+				ID:      "pixellab",
+				URL:     "https://api.pixellab.ai/mcp",
+				Headers: map[string]string{"Authorization": header},
+			}}},
+			SelectedIDs: []string{"pixellab"},
+		}
+	}
+
+	ctx := context.Background()
+	p := NewHostServePool(slog.Default(), t.TempDir(), "", ProfileWorker)
+
+	first, err := p.ServeFor(ctx, withHeader("Bearer first-token"))
+	if err != nil {
+		t.Fatalf("ServeFor (first): %v", err)
+	}
+	// The SAME set hands back the SAME serve: no respawn per turn.
+	same, err := p.ServeFor(ctx, withHeader("Bearer first-token"))
+	if err != nil {
+		t.Fatalf("ServeFor (unchanged): %v", err)
+	}
+	if same != first {
+		t.Fatal("an unchanged MCP set produced a different serve — every turn would start a new opencode")
+	}
+	// THE ROTATION: only the resolved credential changed.
+	rotated, err := p.ServeFor(ctx, withHeader("Bearer second-token"))
+	if err != nil {
+		t.Fatalf("ServeFor (rotated): %v", err)
+	}
+	if rotated == first {
+		t.Fatal("a rotated credential produced the SAME serve — its baked config still carries the old token, " +
+			"and it would keep sending it (the stale-credential bug, silently reintroduced if the pool key " +
+			"stops hashing resolved values)")
+	}
+	if rotated.dataDir == first.dataDir {
+		t.Fatal("the rotated serve reused the unrotated serve's data dir")
+	}
+	// A header RENAME changes what is sent, so it changes the key too.
+	renamed := mcpclient.Resolution{
+		Servers: []mcpclient.ScopedServer{{Spec: mcpclient.ServerSpec{
+			ID:      "pixellab",
+			URL:     "https://api.pixellab.ai/mcp",
+			Headers: map[string]string{"X-Api-Key": "Bearer first-token"},
+		}}},
+		SelectedIDs: []string{"pixellab"},
+	}
+	if other, err := p.ServeFor(ctx, renamed); err != nil {
+		t.Fatalf("ServeFor (renamed): %v", err)
+	} else if other == first {
+		t.Fatal("renaming the header produced the same serve")
+	}
+}
