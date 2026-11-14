@@ -85,6 +85,7 @@ import {
   anchorLiveReply,
   dropSupersededMirror,
   hasLiveTextItems,
+  liveBlockAt,
   mirrorRowProseLifted,
   orderInjectedBeforeReply,
 } from "@/lib/ask-live-merge";
@@ -251,7 +252,14 @@ type TranscriptSlot = {
 function slotSearchText(slot: TranscriptSlot): string {
   if (slot.isAsk) return "";
   const block = slot.block as TranscriptBlock;
-  return block.kind === "optimistic" ? block.text : block.message.content;
+  if (block.kind === "optimistic") return block.text;
+  // Reasoning is part of what the operator can see on screen (a live turn now draws it as a real transcript
+  // block, see liveBlocks), so a find that skips it would report "No matches" over visible text — the same
+  // defect the live text had before it was made searchable.
+  const reasoning = block.message.reasoning ?? [];
+  return reasoning.length > 0
+    ? `${block.message.content}\n${reasoning.join("\n")}`
+    : block.message.content;
 }
 const EMPTY_STREAM: ConvStream = {
   isStreaming: false,
@@ -683,16 +691,28 @@ function AskOrchiconPage() {
   // DECLARED HERE, ABOVE ITS FIRST CONSUMER: this file's own rule is that a `const` used above its declaration
   // is a TDZ error the production build rejects — and `tsc -b` DOES reject it where `tsc --noEmit` does not,
   // which is how this shipped green from a check that was not the one the build runs.
+  // REASONING RIDES HERE TOO, and that is a fix rather than a tidy-up.
+  //
+  // Only text/user chunks were mapped, so a live turn's REASONING had no transcript block at all: it could
+  // be drawn only by the trailing live section, which is suppressed the moment the anchor takes. So the
+  // reasoning bubble vanished from the middle of a turn — the operator watched it appear, then disappear
+  // once the first text chunk arrived — and it could never sit in its proper place relative to the text it
+  // preceded. Mapping it into the same anchored list puts reasoning and text in ARRIVAL ORDER at the turn's
+  // anchor, which is what "reasoning then the answer" means.
+  //
+  // It is carried on the message's `reasoning` field (one entry per bubble, boundaries preserved) and an
+  // EMPTY content, so MessageBubble draws a ReasoningBubble and no empty assistant shell.
   const liveBlocks: TranscriptBlock[] = hasLive
     ? groupedStream
-        .filter((it) => it.kind === "text" || it.kind === "user")
+        .filter((it) => it.kind === "text" || it.kind === "user" || it.kind === "reasoning")
         .map((it) => ({
           kind: "message" as const,
           at: it.at,
           message: {
             id: `live-${it.key}`,
             role: "assistant",
-            content: it.text,
+            content: it.kind === "reasoning" ? "" : it.text,
+            ...(it.kind === "reasoning" ? { reasoning: [it.text] } : {}),
           } as ChatMessage,
         }))
     : [];
@@ -746,11 +766,35 @@ function AskOrchiconPage() {
   const inFlightMsg = durableMessages.find((m) => m.id === pendingReplyId);
   const liftedCard = hasLive && inFlightMsg ? askCardOf(activeConvId ?? "", inFlightMsg) : null;
 
+  // A LIVE BLOCK HAS NO createdAt, so it must borrow its ANCHOR's clock.
+  //
+  // The stream carries no timestamp at all (`TextChunk` is `{content}`), so a live block is built with the
+  // client's arrival instant and no server createdAt. Deriving `at` from `createdAt` therefore stamped every
+  // live block 0 — epoch zero — and interleave sorted the whole in-flight reply to the TOP of the
+  // transcript, ABOVE the operator's own message:
+  //
+  //   "when you are watching the live stream, the reasoning and assistant text is being printed ABOVE the
+  //    user message already sent. If you refresh the page, it puts it in the right order"
+  //
+  // A refresh has no live items, hence no epoch-0 blocks, hence the order that looked right. See
+  // liveBlockAt: the live copy takes the anchor row's clock, so its sort key agrees with the position
+  // anchorLiveReply already gave it — and a consent card arriving mid-turn is inserted against a truthful
+  // time rather than against zero.
+  const liveAtById = new Map<string, number>();
+  for (const b of liveBlocks) {
+    if (b.kind === "message") liveAtById.set(b.message.id, b.at);
+  }
+  const anchorAt = Number(inFlightMsg?.createdAt?.seconds ?? 0) * 1000;
+
   const transcriptBlocks: TranscriptBlock[] = [];
   for (const msg of durableMessages) {
+    const liveAt = liveAtById.get(msg.id);
     transcriptBlocks.push({
       kind: "message",
-      at: Number(msg.createdAt?.seconds ?? 0) * 1000,
+      at:
+        liveAt === undefined
+          ? Number(msg.createdAt?.seconds ?? 0) * 1000
+          : liveBlockAt(anchorAt, liveAt),
       message: msg,
     });
   }
@@ -775,6 +819,14 @@ function AskOrchiconPage() {
   // transcript (for its card and tool calls), but its text is drawn — and therefore searched — from the
   // live copy. Left in, a live turn would report every match twice and next/prev would step onto the
   // same words in two invisible copies.
+  // THE LIVE COPY IS APPENDED ONLY WHEN THE ANCHOR DID NOT PLACE IT.
+  //
+  // This appended `liveBlocks` unconditionally, which was harmless while the anchor was a separate
+  // trailing section — but once anchoring took, `transcriptBlocks` ALREADY contains those same blocks
+  // (durableMessages is the anchored list). The search therefore received every streaming bubble twice:
+  // each match counted twice, and next/prev stepped onto the same words in two copies, one of which is
+  // drawn nowhere. Tied to the same `anchored.inserted` flag the trailing section uses, so there is one
+  // copy in the search exactly when there is one copy on screen.
   const searchBlocks = searchActive
     ? [
         ...transcriptBlocks.filter(
@@ -784,7 +836,7 @@ function AskOrchiconPage() {
               mirrorRowProseLifted(b.message, pendingReplyId, isStreaming, liveItemsPresent)
             ),
         ),
-        ...liveBlocks,
+        ...(anchored.inserted ? [] : liveBlocks),
       ]
     : transcriptBlocks;
 
@@ -2457,11 +2509,15 @@ function AskOrchiconPage() {
                             }
                           />
                         ) : block.kind === "optimistic" ? (
-                          <UserBubble text={block.text} source="you" />
+                          // The echo is not durable yet, so it carries the moment it was SENT (the same
+                          // Date.now() the block was stamped with) — which is what the operator wants to see
+                          // while the send is in flight anyway.
+                          <UserBubble text={block.text} source="you" at={block.at} />
                         ) : (
                           <MessageBubble
                             convId={activeConvId ?? ""}
                             message={block.message}
+                            at={block.at || undefined}
                             onRetry={handleRetry}
                             // ANSWERING A RECORDED CARD IS A REPLY, not a message. It goes through the
                             // SAME handler the consent card uses (handleAskDecision →
@@ -2525,9 +2581,14 @@ function AskOrchiconPage() {
                     switch (item.kind) {
                       case "text":
                         return (
+                          // A LIVE block carries the CLIENT's arrival instant (the stream has no timestamp),
+                          // which is the honest answer to "when did this appear" for text still being written.
+                          // It is not the server's createdAt — that lands on the row at finalize, and this
+                          // block is replaced by the row once it does.
                           <AssistantBubble
                             key={item.key}
                             text={item.text}
+                            at={item.at}
                           />
                         );
                       case "reasoning":
@@ -3114,6 +3175,7 @@ function MessageBubble({
   highlight = "",
   cardLifted = false,
   proseLifted = false,
+  at: atOverride,
 }: {
   /**
    * convId scopes a recorded ask's settled state to this conversation. A card's "already answered" memory is
@@ -3146,6 +3208,16 @@ function MessageBubble({
    */
   cardLifted?: boolean;
   /**
+   * at is this row's instant in epoch ms, when the CALLER already knows it.
+   *
+   * The transcript block carries it (built from the block's own `at`), and for an ANCHORED LIVE block that
+   * value is the anchor row's clock — so a streaming reply shows the same time it will show once the turn
+   * finalizes and the durable row replaces it. Deriving it from `message.createdAt` instead would leave a
+   * live block with no time at all (the stream has no timestamp) and then make the time appear from nowhere
+   * at the end of the turn.
+   */
+  at?: number;
+  /**
    * proseLifted tells this bubble its TEXT and REASONING are being drawn by the live stream and it
    * must not draw its own copy.
    *
@@ -3165,7 +3237,13 @@ function MessageBubble({
 
   if (kind === "user") {
     return (
-      <UserBubble text={message.content} source="you" highlight={highlight} actions={messageActions} />
+      <UserBubble
+        text={message.content}
+        source="you"
+        highlight={highlight}
+        actions={messageActions}
+        at={atOverride}
+      />
     );
   }
 
@@ -3222,10 +3300,15 @@ function MessageBubble({
       {/* A running turn's mirrored partial row can hold reasoning but no text
           yet (the model is still thinking) — skip the empty bubble shell. */}
       {message.content && !proseLifted && (
+        // THE ROW'S OWN TIME. AssistantBubble has always been able to draw `at` (AssistantBubble.tsx) and
+        // this call never passed it, so the model's replies were the only blocks in the transcript with no
+        // time on them. `createdAt` is the SERVER's instant for the row, so a reloaded transcript and a live
+        // one agree; a row with none omits it rather than claiming epoch 0.
         <AssistantBubble
           text={message.content}
           label="Orchicon"
           highlight={highlight}
+          at={atOverride}
         />
       )}
       {/* THE QUESTION CARD IS THE LAST THING IN THE MESSAGE.

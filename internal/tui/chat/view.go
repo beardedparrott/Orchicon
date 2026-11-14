@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
@@ -11,6 +12,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/tui/md"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
@@ -181,6 +183,12 @@ func renderItem(it ChatItem, maxWidth int, fold bool, copyGlyph string, searchQ 
 		// THE AFFORDANCE RIDES THE BAND LABEL. The operator's own message is the one the operator can
 		// click to get back, so the marker belongs beside the label that already says whose it is.
 		label := userBandLabel
+		// THE STAMP RIDES THE LABEL, so it shares the band's own furniture rather than adding a row.
+		// Plain text, not styled: the label is already inside the band's style, and nesting a second
+		// render here would break the width arithmetic labelW is computed from.
+		if stamp := blockStamp(it.At); stamp != "" {
+			label = label + " · " + stamp
+		}
 		if copyGlyph != "" {
 			// THE GLYPH IS BOLD, the same weight change the code block's affordance got.
 			label = label + " \x1b[1m" + copyGlyph + "\x1b[22m"
@@ -189,7 +197,11 @@ func renderItem(it ChatItem, maxWidth int, fold bool, copyGlyph string, searchQ 
 		b.WriteString(body)
 		code = cs
 	case KindText:
-		body, cs := renderChatMessageSpansOpts(it.Text, theme.BubbleModel, maxWidth, false, "", copyGlyph, false, searchQ)
+		// THE MODEL'S REPLY HAD NO LABEL AT ALL, which is why the stamp needs one: renderChatMessageSpansOpts
+		// draws a label at the band's left edge and nothing when the label is empty. The label is the stamp
+		// alone (no "Orchicon", which the band's colour already says), so the row reads
+		// " 15:04:05 EDT  the reply…" and the message keeps its full width.
+		body, cs := renderChatMessageSpansOpts(it.Text, theme.BubbleModel, maxWidth, false, blockStamp(it.At), copyGlyph, false, searchQ)
 		b.WriteString(body)
 		code = cs
 	case KindReasoning:
@@ -198,7 +210,7 @@ func renderItem(it ChatItem, maxWidth int, fold bool, copyGlyph string, searchQ 
 	case KindError:
 		b.WriteString(renderBubble("error", it.Text, theme.ErrorText, maxWidth))
 	case KindNotice:
-		b.WriteString(renderNotice(it.Text, maxWidth))
+		b.WriteString(renderNoticeAt(it.Text, it.At, maxWidth))
 	case KindTool:
 		b.WriteString(renderToolRow(it.Tool, maxWidth))
 	case KindAsk:
@@ -232,6 +244,27 @@ const chatBandGap = 3
 
 // userBandLabel names the operator's own messages at the band's left edge.
 const userBandLabel = "You"
+
+// blockStamp is WHEN a transcript block happened, drawn on every block beside its label:
+// "15:04:05 EDT".
+//
+// THE ZONE IS NOT OPTIONAL HERE, and this repo already learned that the hard way.
+// screenkit/format.go carries the operator's rule — "all times in orch to actually show local time and
+// print the time zone by the time so people truly know what timezone it is reporting in" — because a
+// bare "22:30" told an operator on the wrong coast that a run started at the wrong hour and gave them
+// no cue that they needed to convert it. A transcript is worse than a detail pane in that respect: it
+// is what an operator screenshots and reads back days later, when the ambient context is gone. So the
+// stamp goes through screenkit.FmtClock, which is the SAME formatter every other TUI time uses — one
+// layout for the whole client, by construction, rather than a second Format() call drifting from it.
+//
+// A block with no instant (At == 0 — a live fragment that has not been stamped, or an older row) gets
+// NO stamp rather than "00:00:00 UTC", which would be a fabricated time.
+func blockStamp(at int64) string {
+	if at <= 0 {
+		return ""
+	}
+	return screenkit.FmtClock(time.UnixMilli(at))
+}
 
 // renderChatMessage renders one message as a FULL-WIDTH background band: every
 // line is padded to the pane's width and painted with the speaker's fill, so
@@ -447,6 +480,11 @@ func renderReasoningBlock(it ChatItem, maxWidth int, folded bool) string {
 		arrow = "▸"
 	}
 	header := theme.ReasoningLabel.Render(arrow + " reasoning")
+	// THE STAMP SITS WITH THE BLOCK'S OTHER METADATA (live/done, size), which is where an operator
+	// scanning the turn's shape already looks.
+	if stamp := blockStamp(it.At); stamp != "" {
+		header += theme.ListMeta.Render(" · " + stamp)
+	}
 	if it.Live {
 		header += theme.ReasoningLabel.Render(" · thinking…")
 	} else {
@@ -555,12 +593,20 @@ const noticeLabel = "notice"
 
 // renderNotice draws a platform notice — a `system` row, i.e. a record ABOUT the conversation
 // rather than something either party said in it.
-func renderNotice(text string, maxWidth int) string {
+func renderNotice(text string, maxWidth int) string { return renderNoticeAt(text, 0, maxWidth) }
+
+// renderNoticeAt is renderNotice with the block's own instant, so a notice carries its stamp like every
+// other block. The no-instant form is kept for callers that have only text (and the tests that pin it).
+func renderNoticeAt(text string, noticeAt int64, maxWidth int) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(theme.ListMeta.Render(noticeLabel) + "\n")
+	noticeHead := noticeLabel
+	if stamp := blockStamp(noticeAt); stamp != "" {
+		noticeHead += " · " + stamp
+	}
+	b.WriteString(theme.ListMeta.Render(noticeHead) + "\n")
 	for _, para := range strings.Split(text, "\n\n") {
 		para = strings.TrimSpace(para)
 		if para == "" {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -334,59 +335,84 @@ func workerPermissions(ctx context.Context, tx pgx.Tx, tenantID, workerID string
 
 // ResolveSecretRefs replaces ${SECRET_NAME} references in a server's env/header values with the
 // stored tenant-secret plaintext (never baked, never stored inline).
+//
+// REFERENCES ARE EXPANDED WHEREVER THEY SIT, not only when they are the whole value: "Bearer ${TOKEN}"
+// becomes "Bearer <plaintext>". The old whole-value rule transmitted the literal string instead, so the
+// canonical `Authorization: Bearer ${TOKEN}` header of every documented remote server reached the far
+// end unexpanded and came back as a 401 that looked like a bad credential.
+//
+// All names are resolved in ONE transaction, and every one of them is collected from BOTH maps before
+// the first lookup: an unresolvable reference is an error here, never a pass-through.
 func ResolveSecretRefs(ctx context.Context, pool *db.Pool, kek []byte, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
-	resolve := func(m map[string]string) (map[string]string, error) {
-		if len(m) == 0 {
-			return m, nil
-		}
-		// Collect unique referenced secret names.
-		names := map[string]bool{}
+	resolved := map[string]string{}
+	names := map[string]bool{}
+	// collect gathers every referenced name across BOTH maps, so one transaction answers for the entry.
+	collect := func(m map[string]string) {
 		for _, v := range m {
-			if name, ok := secretRefName(v); ok {
+			for _, name := range secretRefNames(v) {
 				names[name] = true
 			}
 		}
-		if len(names) == 0 {
-			return m, nil
-		}
-		values := map[string]string{}
-		tx, err := pool.BeginTenantTx(ctx, tenantID)
-		if err != nil {
-			return nil, err
-		}
-		for name := range names {
-			row, err := db.GetSecretByName(ctx, tx.Tx, tenantID, name)
-			if errors.Is(err, db.ErrNotFound) {
-				_ = tx.Rollback(ctx)
-				return nil, fmt.Errorf("secret %q referenced by the server is not stored", name)
-			}
-			if err != nil {
-				_ = tx.Rollback(ctx)
-				return nil, err
-			}
-			pt, err := secretcrypto.Decrypt(row.Ciphertext, kek)
-			if err != nil {
-				_ = tx.Rollback(ctx)
-				return nil, fmt.Errorf("decrypt secret %q: %w", name, err)
-			}
-			values[name] = string(pt)
-		}
-		_ = tx.Rollback(ctx) // read-only
-		out := make(map[string]string, len(m))
-		for k, v := range m {
-			if name, ok := secretRefName(v); ok {
-				out[k] = values[name]
-			} else {
-				out[k] = v
-			}
-		}
-		return out, nil
 	}
-	envOut, err := resolve(env)
+	collect(env)
+	collect(headers)
+	if len(names) == 0 {
+		return env, headers, nil
+	}
+	ordered := make([]string, 0, len(names))
+	for name := range names {
+		ordered = append(ordered, name)
+	}
+	sort.Strings(ordered)
+
+	tx, err := pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return nil, nil, err
 	}
-	headOut, err := resolve(headers)
+	defer func() { _ = tx.Rollback(ctx) }() // read-only
+	for _, name := range ordered {
+		row, err := db.GetSecretByName(ctx, tx.Tx, tenantID, name)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, nil, fmt.Errorf("secret %q referenced by the server is not stored", name)
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		pt, err := secretcrypto.Decrypt(row.Ciphertext, kek)
+		if err != nil {
+			return nil, nil, fmt.Errorf("decrypt secret %q: %w", name, err)
+		}
+		resolved[name] = string(pt)
+	}
+
+	lookup := func(name string) (string, error) {
+		val, ok := resolved[name]
+		if !ok {
+			// Unreachable: every name in the value was collected above. Kept as an error rather than a
+			// pass-through so a future second walk cannot silently reintroduce the 401.
+			return "", fmt.Errorf("not resolved")
+		}
+		return val, nil
+	}
+	expand := func(m map[string]string) (map[string]string, error) {
+		if len(m) == 0 {
+			return m, nil
+		}
+		out := make(map[string]string, len(m))
+		for k, v := range m {
+			nv, _, err := expandSecretRefs(v, lookup)
+			if err != nil {
+				return nil, err
+			}
+			out[k] = nv
+		}
+		return out, nil
+	}
+	envOut, err := expand(env)
+	if err != nil {
+		return nil, nil, err
+	}
+	headOut, err := expand(headers)
 	if err != nil {
 		return nil, nil, err
 	}

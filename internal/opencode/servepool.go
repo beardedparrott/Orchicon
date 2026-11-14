@@ -143,6 +143,15 @@ func hostServeSetKey(profile PermissionProfile, set mcpclient.Resolution) string
 
 // It is NEVER logged — it carries resolved env/headers values; only the server IDS (describeSet /
 // ProvenanceString) are ever logged.
+//
+// THE RESOLVED VALUES ARE LOAD-BEARING, NOT DECORATION. This is the pool key, so a credential that
+// changes has to change the key — that is how a ROTATED SECRET reaches the next turn on this adapter
+// (a pooled serve bakes its config once, at creation). Trimming this to ids/url/command "because the
+// values are sensitive" would silently restore the stale-credential bug for opencode ask and the local
+// worker population: the key would not move, the old serve would be handed back, and every call would
+// keep sending the previous token. Sensitive is handled by never logging it, not by not hashing it.
+//
+// Pinned by TestHostServePoolKeysOnTheResolvedCredential.
 func serverFingerprint(s mcpclient.ServerSpec) string {
 	envKeys := make([]string, 0, len(s.Env))
 	for k := range s.Env {
