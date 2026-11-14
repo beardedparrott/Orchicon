@@ -2509,11 +2509,15 @@ function AskOrchiconPage() {
                             }
                           />
                         ) : block.kind === "optimistic" ? (
-                          <UserBubble text={block.text} source="you" />
+                          // The echo is not durable yet, so it carries the moment it was SENT (the same
+                          // Date.now() the block was stamped with) — which is what the operator wants to see
+                          // while the send is in flight anyway.
+                          <UserBubble text={block.text} source="you" at={block.at} />
                         ) : (
                           <MessageBubble
                             convId={activeConvId ?? ""}
                             message={block.message}
+                            at={block.at || undefined}
                             onRetry={handleRetry}
                             // ANSWERING A RECORDED CARD IS A REPLY, not a message. It goes through the
                             // SAME handler the consent card uses (handleAskDecision →
@@ -2577,9 +2581,14 @@ function AskOrchiconPage() {
                     switch (item.kind) {
                       case "text":
                         return (
+                          // A LIVE block carries the CLIENT's arrival instant (the stream has no timestamp),
+                          // which is the honest answer to "when did this appear" for text still being written.
+                          // It is not the server's createdAt — that lands on the row at finalize, and this
+                          // block is replaced by the row once it does.
                           <AssistantBubble
                             key={item.key}
                             text={item.text}
+                            at={item.at}
                           />
                         );
                       case "reasoning":
@@ -3166,6 +3175,7 @@ function MessageBubble({
   highlight = "",
   cardLifted = false,
   proseLifted = false,
+  at: atOverride,
 }: {
   /**
    * convId scopes a recorded ask's settled state to this conversation. A card's "already answered" memory is
@@ -3198,6 +3208,16 @@ function MessageBubble({
    */
   cardLifted?: boolean;
   /**
+   * at is this row's instant in epoch ms, when the CALLER already knows it.
+   *
+   * The transcript block carries it (built from the block's own `at`), and for an ANCHORED LIVE block that
+   * value is the anchor row's clock — so a streaming reply shows the same time it will show once the turn
+   * finalizes and the durable row replaces it. Deriving it from `message.createdAt` instead would leave a
+   * live block with no time at all (the stream has no timestamp) and then make the time appear from nowhere
+   * at the end of the turn.
+   */
+  at?: number;
+  /**
    * proseLifted tells this bubble its TEXT and REASONING are being drawn by the live stream and it
    * must not draw its own copy.
    *
@@ -3217,7 +3237,13 @@ function MessageBubble({
 
   if (kind === "user") {
     return (
-      <UserBubble text={message.content} source="you" highlight={highlight} actions={messageActions} />
+      <UserBubble
+        text={message.content}
+        source="you"
+        highlight={highlight}
+        actions={messageActions}
+        at={atOverride}
+      />
     );
   }
 
@@ -3274,10 +3300,15 @@ function MessageBubble({
       {/* A running turn's mirrored partial row can hold reasoning but no text
           yet (the model is still thinking) — skip the empty bubble shell. */}
       {message.content && !proseLifted && (
+        // THE ROW'S OWN TIME. AssistantBubble has always been able to draw `at` (AssistantBubble.tsx) and
+        // this call never passed it, so the model's replies were the only blocks in the transcript with no
+        // time on them. `createdAt` is the SERVER's instant for the row, so a reloaded transcript and a live
+        // one agree; a row with none omits it rather than claiming epoch 0.
         <AssistantBubble
           text={message.content}
           label="Orchicon"
           highlight={highlight}
+          at={atOverride}
         />
       )}
       {/* THE QUESTION CARD IS THE LAST THING IN THE MESSAGE.
