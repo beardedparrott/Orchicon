@@ -91,6 +91,45 @@ describe("interleave", () => {
     );
   });
 
+  // THE BLOCK ORDER IS THE CALLER'S, NOT OURS TO RE-SORT. This function used to sort every block by `at`,
+  // which silently undid two orders a caller had deliberately established: the live reply, which is merged
+  // after its anchor row BY IDENTITY (the stream carries no timestamp, so it sorted at epoch 0 and floated
+  // ABOVE the operator's own message), and an interjection, which is moved BEFORE the reply it joined (then
+  // sorted straight back after it). See lib/ask-live-merge.
+  it("PRESERVES the block order it is given, even when `at` disagrees with it", () => {
+    // The anchorLiveReply shape: the live block carries epoch 0 but belongs after msg-acked by identity.
+    const blocks = [msg("user-goal", 1000), msg("msg-acked", 2000), msg("live-1", 0)];
+    const out = interleave(blocks, undefined);
+    expect(out.map((s) => (s.block as Msg).id)).toEqual(["user-goal", "msg-acked", "live-1"]);
+  });
+
+  it("keeps an INJECTED message before the reply it joined, even though its created_at is later", () => {
+    // orderInjectedBeforeReply's shape: the interjection is persisted mid-turn, so its `at` is later.
+    const blocks = [msg("goal", 1000), msg("interjection", 5000), msg("acked", 2000)];
+    const out = interleave(blocks, undefined);
+    expect(out.map((s) => (s.block as Msg).id)).toEqual(["goal", "interjection", "acked"]);
+  });
+
+  it("keeps several cards in their own order at the SAME instant", () => {
+    // Insertion must scan PAST a card inserted at the same instant, or two cards raised in the same
+    // millisecond come out reversed.
+    let asks = applyAskChunk([], ask("per_1"), 150);
+    asks = applyAskChunk(asks, ask("per_2"), 150);
+    const out = interleave([msg("m1", 100), msg("m2", 200)], asks);
+    expect(out.map((s) => (s.isAsk ? (s.block as AskItem).key : (s.block as Msg).id))).toEqual([
+      "m1",
+      "per_1",
+      "per_2",
+      "m2",
+    ]);
+  });
+
+  it("places a card AFTER a block at the same instant, as the old tiebreak did", () => {
+    const asks = applyAskChunk([], ask("per_1"), 100) as AskItem[];
+    const out = interleave([msg("m1", 100)], asks);
+    expect(out.map((s) => (s.isAsk ? "ASK" : (s.block as Msg).id))).toEqual(["m1", "ASK"]);
+  });
+
   it("returns the messages untouched when there are no asks", () => {
     const out = interleave([msg("m1", 100), msg("m2", 200)], undefined);
     expect(out.map((s) => (s.block as Msg).id)).toEqual(["m1", "m2"]);

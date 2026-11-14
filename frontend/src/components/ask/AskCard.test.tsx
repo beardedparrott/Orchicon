@@ -241,6 +241,11 @@ describe("card keyboard model and wiring", () => {
     //   the operator: "The Ask card is on TOP of the text. A question shouldn't come before the
     //   information. It goes information -> Question. It should be at the bottom of the screen."
     expect(routeSrc).toContain("interleave(searchBlocks, settledAsks)");
+    // AND THE SEARCH SEES THE LIVE COPY EXACTLY ONCE. Once anchoring takes, `transcriptBlocks` already
+    // contains the live blocks (durableMessages IS the anchored list), so appending liveBlocks
+    // unconditionally handed the filter every streaming bubble twice — double-counted matches, and
+    // next/prev stepping onto words drawn nowhere. Gated on the same flag the trailing section uses.
+    expect(routeSrc).toContain("...(anchored.inserted ? [] : liveBlocks),");
     // The OPEN asks are drawn last instead — and the split keys on OUTCOME, not on the tool name, so a
     // permission card gets the same treatment as a clarifying question: both are `outcome === null` while
     // the operator still has to act on them.
