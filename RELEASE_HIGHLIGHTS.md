@@ -28,7 +28,7 @@
 > numbers. The published release reads correctly while this file is wrong —
 > so grep the release log for that warning rather than assuming the two agree.
 
-## v0.6.5
+## v0.6.6
 
 ### New: Every message in the transcript carries its time
 The transcript now stamps **every block** with when it happened — your own messages, the model's replies,
