@@ -40,12 +40,8 @@ The documentation lives at the project root:
 
 ## Last Release Changes
 
-- **The desktop app can reach a plane on any port**: The desktop app resolves its plane from an **instance** — `dev`, `prod` or `test` — and that was the only thing it would accept.
-- **An install tells you when an older copy is shadowing it**: On Windows, `orch` could resolve to a file from an earlier era of the installer — one written into `~/.local/bin` back when the stack ran inside WSL — while the current binaries were installed correctly to `%LOCALAPPDATA%/Programs/Orchicon`.
-- **The Windows binaries carry their version.** The `.exe` files inside the MSI were built without the version stamp every other artifact gets, so the installed `orchicon.exe` reported `dev` — and the desktop app, which compares its own version against the plane's, showed a permanent mismatch banner on Windows only. They are stamped now, and the release fails if the stamp does not take.
-- **The Linux desktop package is named after the version it is.** The AppImage shipped as `orchicon_desktop_0.0.0-dev_linux_amd64.AppImage`, because that packaging step was the only one not passed the version. An asset nobody can request by name is not an asset.
-- **The site footer resolves the version it is serving.** With no tags in the build clone, `orchicon.dev` served a footer reading `dev`. It now falls back to the release recorded in the repo, and refuses to publish rather than stamp something untrue.
-- **`[NoDevBump]` keeps release numbers meaningful.** A merge marked with it rides the current version instead of consuming the next one, so documentation merges and post-release fixes no longer push the real release onto a number nobody chose.
+- **Every message in the transcript carries its time**: The transcript now stamps **every block** with when it happened — your own messages, the model's replies, its reasoning, and platform notices — in **both** the web GUI and the TUI.
+- **MCP credentials can be embedded inside a larger value**: A secret reference had to be the *entire* value of an MCP server's env or header.
 
 Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchicon/releases).
 

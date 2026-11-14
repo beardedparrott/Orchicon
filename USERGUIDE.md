@@ -987,7 +987,11 @@ the work itself, and dispatch it — depending on the **mode** you select.
 
 - **Transcript** (centre) — the conversation, with streaming replies, reasoning
   bubbles, tool-call cards, and an **activity line** that reports what is happening
-  while a turn runs.
+  while a turn runs. Every block is stamped with **when it happened** — local wall
+  clock with its zone (`14:30:05 CDT`), dim and small beside the block's label, with
+  the full date and time on hover. Your messages, the model's replies, its reasoning
+  and platform notices all carry one; a block with no known instant shows none rather
+  than inventing a time. The TUI shows the same stamps, formatted identically.
 - **Conversations panel** (right) — your history. Switch, resume, rename or
   delete conversations. A **pulsing dot and Stop button** appear on any
   conversation with a turn running, so a turn is stoppable even when you are
