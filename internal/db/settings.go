@@ -34,11 +34,18 @@ type TenantSettingsRow struct {
 	LogMaxSizeMB                     int64        // max log file size before rotation (MB); 0 = default
 	LogRollIntervalHours             int64        // time-based roll interval (hours); 0 = default
 	LogRetentionDays                 int32        // days rotated logs are kept; 0 = default
-	LogMaxFiles                      int32        // max rotated log files kept; 0 = default
-	MaxConcurrentRuns                int          // tenant-wide cap on concurrently running executions; 0 = no cap
-	MaxConcurrentRunsSet             bool         // true when the update explicitly sets max_concurrent_runs (0 is meaningful)
-	SessionAccessTokenTtlSeconds     int64        // access-token TTL in seconds; 0 = leave unchanged on update
-	SessionRefreshTokenTtlSeconds    int64        // refresh-token TTL in seconds; 0 = leave unchanged on update
+	// Execution-history retention (scheduled prune + vacuum). Ships OFF: a background
+	// destructive job must not be how an operator discovers a feature exists.
+	ExecutionRetentionEnabled        bool   // true = a scheduled pass prunes old executions
+	ExecutionRetentionKeep           *int64 // newest N to keep; nil = built-in default (150)
+	ExecutionRetentionVacuum         bool   // run VACUUM after a prune that removed rows
+	ExecutionRetentionTimeoutSeconds int32  // wall-clock budget for one pass
+	OutboxRetentionDays              int32  // published-outbox retention; 0 = env/code default
+	LogMaxFiles                      int32  // max rotated log files kept; 0 = default
+	MaxConcurrentRuns                int    // tenant-wide cap on concurrently running executions; 0 = no cap
+	MaxConcurrentRunsSet             bool   // true when the update explicitly sets max_concurrent_runs (0 is meaningful)
+	SessionAccessTokenTtlSeconds     int64  // access-token TTL in seconds; 0 = leave unchanged on update
+	SessionRefreshTokenTtlSeconds    int64  // refresh-token TTL in seconds; 0 = leave unchanged on update
 	// ContextCompactionEnabled / ContextCompactionPressureFrac / ContextRecentTurns / MemoryEnabled /
 	// MemoryDigestEntries are the typed compaction + memory policy columns (migration 20260916000000.
 	ContextCompactionEnabled      bool
@@ -74,6 +81,9 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
 		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
+		execution_retention_enabled, execution_retention_keep,
+		execution_retention_vacuum, execution_retention_timeout_seconds,
+		outbox_retention_days,
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
 		stall_tool_hang_seconds,
@@ -113,6 +123,9 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
 		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
+		execution_retention_enabled, execution_retention_keep,
+		execution_retention_vacuum, execution_retention_timeout_seconds,
+		outbox_retention_days,
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
 		stall_tool_hang_seconds,
@@ -168,6 +181,9 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		backup_schedule, backup_retention_days, backup_directory,
 		log_directory, log_max_size_mb, log_roll_interval_hours,
 		log_retention_days, log_max_files, max_concurrent_runs,
+		execution_retention_enabled, execution_retention_keep,
+		execution_retention_vacuum, execution_retention_timeout_seconds,
+		outbox_retention_days,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
 		budget_tokens, budget_cost_usd, budget_tool_call_count,
 		budget_wall_clock_seconds, budget_compact_max_turns,
@@ -184,7 +200,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
 		updated_at
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, now())
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, now())
 	ON CONFLICT (tenant_id) DO UPDATE SET
 		default_worker_model = CASE WHEN $2 <> '' THEN $2 ELSE tenant_settings.default_worker_model END,
 		default_ask_orchicon_model = CASE WHEN $3 <> '' THEN $3 ELSE tenant_settings.default_ask_orchicon_model END,
@@ -248,6 +264,11 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		context_recent_turns = $62,
 		memory_enabled = $63,
 		memory_digest_entries = $64,
+		execution_retention_enabled = $65,
+		execution_retention_keep = $66,
+		execution_retention_vacuum = $67,
+		execution_retention_timeout_seconds = $68,
+		outbox_retention_days = $69,
 		updated_at = now()
 	RETURNING tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
@@ -270,6 +291,9 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
 		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
+		execution_retention_enabled, execution_retention_keep,
+		execution_retention_vacuum, execution_retention_timeout_seconds,
+		outbox_retention_days,
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
 		stall_tool_hang_seconds,
@@ -303,6 +327,9 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		in.StallToolHangSeconds,
 		in.ContextCompactionEnabled, in.ContextCompactionPressureFrac,
 		in.ContextRecentTurns, in.MemoryEnabled, in.MemoryDigestEntries,
+		in.ExecutionRetentionEnabled, in.ExecutionRetentionKeep,
+		in.ExecutionRetentionVacuum, in.ExecutionRetentionTimeoutSeconds,
+		in.OutboxRetentionDays,
 	)
 	if err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: update tenant settings: %w", err)
@@ -352,6 +379,9 @@ func scanTenantSettings(row pgx.Rows) (TenantSettingsRow, error) {
 		&r.StallToolHangSeconds,
 		&r.ContextCompactionEnabled, &r.ContextCompactionPressureFrac,
 		&r.ContextRecentTurns, &r.MemoryEnabled, &r.MemoryDigestEntries,
+		&r.ExecutionRetentionEnabled, &r.ExecutionRetentionKeep,
+		&r.ExecutionRetentionVacuum, &r.ExecutionRetentionTimeoutSeconds,
+		&r.OutboxRetentionDays,
 		&r.CreatedAt, &r.UpdatedAt,
 	); err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: scan tenant settings: %w", err)
@@ -391,13 +421,18 @@ func (r TenantSettingsRow) AuditFields() map[string]any {
 		"memory_enabled":                   r.MemoryEnabled,
 		"memory_digest_entries":            r.MemoryDigestEntries,
 
-		"backup_schedule":         r.BackupSchedule,
-		"backup_retention_days":   r.BackupRetentionDays,
-		"backup_directory":        r.BackupDirectory,
-		"log_directory":           r.LogDirectory,
-		"log_max_size_mb":         r.LogMaxSizeMB,
-		"log_roll_interval_hours": r.LogRollIntervalHours,
-		"log_retention_days":      r.LogRetentionDays,
-		"log_max_files":           r.LogMaxFiles,
+		"backup_schedule":                     r.BackupSchedule,
+		"backup_retention_days":               r.BackupRetentionDays,
+		"backup_directory":                    r.BackupDirectory,
+		"log_directory":                       r.LogDirectory,
+		"log_max_size_mb":                     r.LogMaxSizeMB,
+		"log_roll_interval_hours":             r.LogRollIntervalHours,
+		"log_retention_days":                  r.LogRetentionDays,
+		"log_max_files":                       r.LogMaxFiles,
+		"execution_retention_enabled":         r.ExecutionRetentionEnabled,
+		"execution_retention_keep":            r.ExecutionRetentionKeep,
+		"execution_retention_vacuum":          r.ExecutionRetentionVacuum,
+		"execution_retention_timeout_seconds": r.ExecutionRetentionTimeoutSeconds,
+		"outbox_retention_days":               r.OutboxRetentionDays,
 	}
 }

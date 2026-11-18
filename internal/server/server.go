@@ -37,6 +37,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 	"github.com/beardedparrott/orchicon/internal/recovery"
+	"github.com/beardedparrott/orchicon/internal/retention"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/runtimeimage"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
@@ -856,6 +857,11 @@ func (s *Server) Run(ctx context.Context) error {
 	// amcheck and rebuild any corrupted ones.
 	go s.indexHealthLoop(ctx)
 
+	// Execution-history retention: at boot and every ExecutionRetentionInterval, run the configured
+	// prune + vacuum for every tenant that has enabled it. The pass is a NO-OP for a tenant that
+	// has not opted in, so starting it unconditionally is safe.
+	go s.executionRetentionLoop(ctx)
+
 	// Container mode: keep the project-mounts manifest (on the data volume) in sync with the projects
 	// table so scripts/container.sh can mount the project dirs/files the user selected.
 	if dataDir := os.Getenv("ORCHICON_DATA_DIR"); dataDir != "" {
@@ -1053,6 +1059,46 @@ func (s *Server) indexHealthLoop(ctx context.Context) {
 		return
 	}
 	ticker := time.NewTicker(s.cfg.IndexCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runOnce()
+		}
+	}
+}
+
+// executionRetentionLoop runs a bounded execution-history retention pass (prune, then VACUUM) for
+// every tenant that has enabled retention, at boot and every cfg.ExecutionRetentionInterval.
+//
+// IT IS DELIBERATELY INERT BY DEFAULT. internal/retention RUNS NOTHING unless the tenant's own
+// tenant_settings row says execution_retention_enabled, so a freshly-upgraded plane schedules a
+// no-op once a day rather than discovering a destructive feature on the operator's behalf.
+//
+// The VACUUM is what makes this worth doing at all: without it a prune frees space INSIDE the
+// relation and returns nothing to the OS (see internal/retention for the measurements).
+func (s *Server) executionRetentionLoop(ctx context.Context) {
+	if s.cfg.ExecutionRetentionInterval <= 0 {
+		s.log.Info("execution retention scheduler disabled",
+			"reason", "ORCHICON_EXECUTION_RETENTION_INTERVAL <= 0")
+		return
+	}
+	runner := retention.NewRunner(s.pool, s.log)
+	runner.Apply = true
+	runOnce := func() {
+		// Its own deadline: this runs beside the API, and a slow prune must not be able to wedge a
+		// shutdown that is waiting on the server context.
+		pctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+		defer cancel()
+		results := runner.RunAll(pctx, nil, s.cfg.DeploymentTenantID)
+		if len(results) == 0 {
+			s.log.Debug("execution retention: no tenant opted in")
+		}
+	}
+	runOnce()
+	ticker := time.NewTicker(s.cfg.ExecutionRetentionInterval)
 	defer ticker.Stop()
 	for {
 		select {
