@@ -186,20 +186,31 @@ func (r *Runner) policy(ctx context.Context, tenantID string) (policy, error) {
 	if !row.ExecutionRetentionEnabled {
 		return policy{skipped: "execution retention is disabled for this tenant"}, nil
 	}
-	keep := DefaultKeepExecutions
-	if row.ExecutionRetentionKeep != nil {
-		keep = int(*row.ExecutionRetentionKeep)
-	}
-	if keep < 0 {
-		// Constant-safe rather than a hard error: a negative keep is meaningless, and treating it as
-		// 0 would silently discard the whole history.
-		keep = DefaultKeepExecutions
-	}
+	keep := resolveKeep(row.ExecutionRetentionKeep)
 	vacuum := row.ExecutionRetentionVacuum
 	if r.Vacuum != nil {
 		vacuum = *r.Vacuum
 	}
 	return policy{keep: keep, vacuum: vacuum}, nil
+}
+
+// resolveKeep turns a nullable keep count into the number the prune will use.
+//
+// THE THREE STATES ARE THE POINT, and collapsing any two of them is a silent data-loss bug:
+//
+//	nil  → unset. The tenant has never chosen a count, so the built-in default applies.
+//	0    → a REAL setting: keep nothing, discarding all finished history.
+//	N    → keep the newest N.
+//	< 0  → nonsense. Treated as unset rather than clamped to 0, because clamping would respond to bad
+//	       input with the most destructive possible action.
+func resolveKeep(keep *int64) int {
+	if keep == nil {
+		return DefaultKeepExecutions
+	}
+	if *keep < 0 {
+		return DefaultKeepExecutions
+	}
+	return int(*keep)
 }
 
 // vacuumAfterPrune runs a plain VACUUM over the tables the prune touched, and reports which it managed.
