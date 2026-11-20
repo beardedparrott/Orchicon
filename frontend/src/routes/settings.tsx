@@ -496,6 +496,11 @@ function DefaultsTab() {
   const [draftLogRetention, setDraftLogRetention] = useState("");
   const [draftLogMaxFiles, setDraftLogMaxFiles] = useState("");
   const [draftMaxConcurrentRuns, setDraftMaxConcurrentRuns] = useState("");
+  const [draftRetentionEnabled, setDraftRetentionEnabled] = useState(false);
+  const [draftRetentionKeep, setDraftRetentionKeep] = useState("");
+  const [draftRetentionVacuum, setDraftRetentionVacuum] = useState(true);
+  const [draftRetentionTimeout, setDraftRetentionTimeout] = useState("");
+  const [draftOutboxRetentionDays, setDraftOutboxRetentionDays] = useState("");
   const [saving, setSaving] = useState(false);
   // Save errors MUST surface (QA round 3: try/finally with no catch
   // swallowed them — a rejected save looked identical to a successful one,
@@ -531,6 +536,19 @@ function DefaultsTab() {
       setDraftLogRetention(settings.logRetentionDays ? String(settings.logRetentionDays) : "");
       setDraftLogMaxFiles(settings.logMaxFiles ? String(settings.logMaxFiles) : "");
       setDraftMaxConcurrentRuns(String(settings.maxConcurrentRuns ?? ""));
+      setDraftRetentionEnabled(settings.executionRetentionEnabled ?? false);
+      setDraftRetentionKeep(
+        settings.executionRetentionKeep != null ? String(settings.executionRetentionKeep) : "",
+      );
+      setDraftRetentionVacuum(settings.executionRetentionVacuum ?? true);
+      setDraftRetentionTimeout(
+        settings.executionRetentionTimeoutSeconds
+          ? String(settings.executionRetentionTimeoutSeconds)
+          : "",
+      );
+      setDraftOutboxRetentionDays(
+        settings.outboxRetentionDays ? String(settings.outboxRetentionDays) : "",
+      );
     }
   }, [settings]);
 
@@ -567,6 +585,14 @@ function DefaultsTab() {
         logRetentionDays: parseInt(draftLogRetention) || 0,
         logMaxFiles: parseInt(draftLogMaxFiles) || 0,
         maxConcurrentRuns: parseInt(draftMaxConcurrentRuns) || 0,
+        executionRetentionEnabled: draftRetentionEnabled,
+        // An EMPTY field must reach the wire as undefined so the DB stores NULL and the
+        // built-in default (150) applies. Sending 0 would mean "keep nothing".
+        executionRetentionKeep:
+          draftRetentionKeep.trim() === "" ? undefined : BigInt(parseInt(draftRetentionKeep) || 0),
+        executionRetentionVacuum: draftRetentionVacuum,
+        executionRetentionTimeoutSeconds: parseInt(draftRetentionTimeout) || 0,
+        outboxRetentionDays: parseInt(draftOutboxRetentionDays) || 0,
       });
     } catch (e) {
       // Surface the rejection (validation errors included) — never swallow.
@@ -818,6 +844,75 @@ function DefaultsTab() {
               placeholder="0"
             />
           </CardContent>
+        </Card>
+      )}
+
+      {!isLoading && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Data retention</CardTitle>
+              <CardDescription>
+                Prune old execution history on a schedule and VACUUM the tables it shrank. Deleting rows
+                alone does not return disk to the OS — PostgreSQL only marks the space reusable inside the
+                table — so a deployment that prunes without a vacuum keeps growing.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-4">
+              <label className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={draftRetentionEnabled}
+                  onChange={(e) => setDraftRetentionEnabled(e.target.checked)}
+                />
+                <span>
+                  <span className="font-medium">Prune old execution history automatically</span>
+                  <span className="block text-xs text-muted-foreground">
+                    Off by default. While off, nothing is deleted and history grows without bound.
+                  </span>
+                </span>
+              </label>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <StallField
+                  label="Executions to keep"
+                  description="Keep the newest N executions; older finished ones are removed with their session transcripts. Empty = default (150). 0 = discard all finished history."
+                  value={draftRetentionKeep}
+                  onChange={setDraftRetentionKeep}
+                  placeholder="150"
+                />
+                <StallField
+                  label="Pass timeout (seconds)"
+                  description="Wall-clock budget for one prune pass. Empty = default (300)."
+                  value={draftRetentionTimeout}
+                  onChange={setDraftRetentionTimeout}
+                  placeholder="300"
+                />
+                <StallField
+                  label="Outbox retention (days)"
+                  description="How long published outbox events are kept after delivery. Empty = default (7)."
+                  value={draftOutboxRetentionDays}
+                  onChange={setDraftOutboxRetentionDays}
+                  placeholder="7"
+                />
+              </div>
+
+              <label className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={draftRetentionVacuum}
+                  onChange={(e) => setDraftRetentionVacuum(e.target.checked)}
+                />
+                <span>
+                  <span className="font-medium">VACUUM after pruning</span>
+                  <span className="block text-xs text-muted-foreground">
+                    Recommended. Runs a plain VACUUM (never VACUUM FULL, which would lock readers) so the
+                    freed space is reusable and autovacuum can hand it back.
+                  </span>
+                </span>
+              </label>
+            </CardContent>
         </Card>
       )}
 

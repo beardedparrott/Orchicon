@@ -148,11 +148,28 @@ type TenantSettings struct {
 	// Refresh-token TTL in seconds (how long a refresh token is valid).
 	// Zero = leave unchanged on update. Default is 86400 (24 hours).
 	// Range: [300, 31536000].
-	SessionRefreshTokenTtlSeconds int64                  `protobuf:"varint,30,opt,name=session_refresh_token_ttl_seconds,json=sessionRefreshTokenTtlSeconds,proto3" json:"session_refresh_token_ttl_seconds,omitempty"`
-	CreatedAt                     *timestamppb.Timestamp `protobuf:"bytes,100,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt                     *timestamppb.Timestamp `protobuf:"bytes,101,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields                 protoimpl.UnknownFields
-	sizeCache                     protoimpl.SizeCache
+	SessionRefreshTokenTtlSeconds int64 `protobuf:"varint,30,opt,name=session_refresh_token_ttl_seconds,json=sessionRefreshTokenTtlSeconds,proto3" json:"session_refresh_token_ttl_seconds,omitempty"`
+	// Whether the scheduled retention pass prunes at all. Default false.
+	ExecutionRetentionEnabled bool `protobuf:"varint,35,opt,name=execution_retention_enabled,json=executionRetentionEnabled,proto3" json:"execution_retention_enabled,omitempty"`
+	// How many of the newest executions survive a pass; everything older and terminal is removed.
+	// Optional so that 0 remains a REAL setting ("discard all terminal history") distinct from
+	// unset (absent = built-in default 150). A negative value is treated as the default.
+	ExecutionRetentionKeep *int64 `protobuf:"varint,36,opt,name=execution_retention_keep,json=executionRetentionKeep,proto3,oneof" json:"execution_retention_keep,omitempty"`
+	// Run VACUUM after a pass that actually removed rows. Default true — without it the prune reclaims
+	// no disk, which makes the whole feature pointless. Plain VACUUM, never VACUUM FULL: the latter
+	// takes an ACCESS EXCLUSIVE lock and would block every reader for the duration.
+	ExecutionRetentionVacuum bool `protobuf:"varint,37,opt,name=execution_retention_vacuum,json=executionRetentionVacuum,proto3" json:"execution_retention_vacuum,omitempty"`
+	// Wall-clock budget for one pass, in seconds. A prune that runs long enough to matter is a prune
+	// holding locks the API needs. Default 300. Zero = default.
+	ExecutionRetentionTimeoutSeconds int32 `protobuf:"varint,38,opt,name=execution_retention_timeout_seconds,json=executionRetentionTimeoutSeconds,proto3" json:"execution_retention_timeout_seconds,omitempty"`
+	// --- Published-outbox retention ---
+	// The outbox relay prunes published rows on its own ticker, but only within ORCHICON_OUTBOX_RETENTION_DAYS.
+	// This makes the window a tenant setting. Zero = inherit the env-var/code default (7 days).
+	OutboxRetentionDays int32                  `protobuf:"varint,39,opt,name=outbox_retention_days,json=outboxRetentionDays,proto3" json:"outbox_retention_days,omitempty"`
+	CreatedAt           *timestamppb.Timestamp `protobuf:"bytes,100,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt           *timestamppb.Timestamp `protobuf:"bytes,101,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *TenantSettings) Reset() {
@@ -360,6 +377,41 @@ func (x *TenantSettings) GetSessionRefreshTokenTtlSeconds() int64 {
 	return 0
 }
 
+func (x *TenantSettings) GetExecutionRetentionEnabled() bool {
+	if x != nil {
+		return x.ExecutionRetentionEnabled
+	}
+	return false
+}
+
+func (x *TenantSettings) GetExecutionRetentionKeep() int64 {
+	if x != nil && x.ExecutionRetentionKeep != nil {
+		return *x.ExecutionRetentionKeep
+	}
+	return 0
+}
+
+func (x *TenantSettings) GetExecutionRetentionVacuum() bool {
+	if x != nil {
+		return x.ExecutionRetentionVacuum
+	}
+	return false
+}
+
+func (x *TenantSettings) GetExecutionRetentionTimeoutSeconds() int32 {
+	if x != nil {
+		return x.ExecutionRetentionTimeoutSeconds
+	}
+	return 0
+}
+
+func (x *TenantSettings) GetOutboxRetentionDays() int32 {
+	if x != nil {
+		return x.OutboxRetentionDays
+	}
+	return 0
+}
+
 func (x *TenantSettings) GetCreatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreatedAt
@@ -378,7 +430,7 @@ var File_orchicon_api_v1_settings_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\n" +
-	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x85\x0f\n" +
+	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe2\x11\n" +
 	"\x0eTenantSettings\x120\n" +
 	"\x14default_worker_model\x18\x01 \x01(\tR\x12defaultWorkerModel\x12;\n" +
 	"\x1adefault_ask_orchicon_model\x18\x02 \x01(\tR\x17defaultAskOrchiconModel\x12K\n" +
@@ -405,7 +457,13 @@ const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\rlog_max_files\x18\x1b \x01(\x05R\vlogMaxFiles\x123\n" +
 	"\x13max_concurrent_runs\x18\x1c \x01(\x05H\tR\x11maxConcurrentRuns\x88\x01\x01\x12F\n" +
 	" session_access_token_ttl_seconds\x18\x1d \x01(\x03R\x1csessionAccessTokenTtlSeconds\x12H\n" +
-	"!session_refresh_token_ttl_seconds\x18\x1e \x01(\x03R\x1dsessionRefreshTokenTtlSeconds\x129\n" +
+	"!session_refresh_token_ttl_seconds\x18\x1e \x01(\x03R\x1dsessionRefreshTokenTtlSeconds\x12>\n" +
+	"\x1bexecution_retention_enabled\x18# \x01(\bR\x19executionRetentionEnabled\x12=\n" +
+	"\x18execution_retention_keep\x18$ \x01(\x03H\n" +
+	"R\x16executionRetentionKeep\x88\x01\x01\x12<\n" +
+	"\x1aexecution_retention_vacuum\x18% \x01(\bR\x18executionRetentionVacuum\x12M\n" +
+	"#execution_retention_timeout_seconds\x18& \x01(\x05R executionRetentionTimeoutSeconds\x122\n" +
+	"\x15outbox_retention_days\x18' \x01(\x05R\x13outboxRetentionDays\x129\n" +
 	"\n" +
 	"created_at\x18d \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
@@ -419,7 +477,8 @@ const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"!_stall_nudge_reply_window_secondsB\x1f\n" +
 	"\x1d_stall_nudge_cooldown_secondsB\x1a\n" +
 	"\x18_stall_tool_hang_secondsB\x16\n" +
-	"\x14_max_concurrent_runsB\xc7\x01\n" +
+	"\x14_max_concurrent_runsB\x1b\n" +
+	"\x19_execution_retention_keepB\xc7\x01\n" +
 	"\x13com.orchicon.api.v1B\rSettingsProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
 var (

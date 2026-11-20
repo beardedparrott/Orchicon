@@ -250,3 +250,47 @@ remains.**
   (`TestListIdeasRejectedScope`, `TestControlSequenceRejectsNonSequenceParent/bound-run ticket`).
 - Step 5 (DevOps) should run the full suite in CI (not time-boxed) against a freshly seeded plane;
   the six scheduler failures above and `internal/workitem` need their own work items.
+
+## 7. The half this left undone: deleting rows reclaims no disk
+
+§1 and §2 fixed *row* accumulation, and the OP's follow-up question ("why is this 19 GB?") showed the
+other half was still open. Retention that only DELETEs is not retention; it is a row-count control.
+
+Measured on the same live tenant (2026-11-18), after the §2 work had been deleting rows for weeks:
+
+| Table | Size | Rows | Dead space (`pgstattuple free_percent`) |
+|---|---|---|---|
+| `execution_session_parts` | 3154 MB (1482 MB heap + **1672 MB index**) | 30 474 | **98.3 %** |
+| `outbox` | 2102 MB (175 MB heap + **1927 MB index**) | **1** | **99.59 %** |
+
+Two things this shows that the row counts could not:
+
+1. **The space was already dead.** The rows were gone and the files had not shrunk, because a Postgres
+   `DELETE` marks space reusable *inside* the relation and returns nothing to the OS. Autovacuum cannot
+   fix this either — it reclaims for reuse, not for the filesystem.
+2. **The bloat lives in the INDEXES, not the heap.** `outbox` carried two 912 MB indexes around a single
+   336-byte `project.updated` event. Any retention metric that counts rows (or heap bytes) will report
+   this table as empty and healthy.
+
+`VACUUM FULL outbox; VACUUM FULL execution_session_parts;` reclaimed **5.2 GB in 0.7 s**, taking the
+`orchicon` database from 5732 MB to 518 MB. `VACUUM FULL` is safe as a one-off maintenance action but
+takes `ACCESS EXCLUSIVE`, so it is NOT what the scheduled path runs.
+
+### What is now scheduled
+
+`internal/retention` runs a pass at boot and every `ORCHICON_EXECUTION_RETENTION_INTERVAL` (default
+24 h), for each tenant that has enabled it in Settings (`execution_retention_enabled`, off by default).
+The pass prunes through the existing `db.PruneExecutionHistory` and then runs a **plain `VACUUM
+(ANALYZE)`** over the tables it touched — never `VACUUM FULL`, which would block every reader for the
+duration. Plain `VACUUM` updates the visibility map and lets the next autovacuum return the space.
+
+Three states are preserved deliberately, because a single nullable column cannot express them:
+`enabled=false` (prune nothing), `enabled=true` + `keep=0` (discard all finished history), and
+`enabled=true` + `keep=N` (keep the newest N). `keep` is NULL for "unset", so the built-in default of
+150 applies rather than collapsing to 0.
+
+### Still not automated
+
+`VACUUM FULL` stays manual, and that is why a heavily bloated deployment needs one pass by hand the
+first time — see the numbers above. Any future "reclaim disk" button should call it with an explicit
+maintenance window, not from a ticker.

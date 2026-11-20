@@ -993,6 +993,8 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "log dir", Value: s.GetLogDirectory()},
 			{Key: "log max size", Value: screenkit.FmtInt64(s.GetLogMaxSizeMb()) + "MB"},
 			{Key: "log retention", Value: screenkit.FmtInt(int(s.GetLogRetentionDays())) + "d"},
+			{Key: "execution retention", Value: execRetentionSummary(s)},
+			{Key: "outbox retention", Value: screenkit.FmtInt(int(s.GetOutboxRetentionDays())) + "d"},
 			{Key: "session token ttl", Value: screenkit.FmtInt64(s.GetSessionAccessTokenTtlSeconds()) + "s"},
 			{Key: "session refresh ttl", Value: screenkit.FmtInt64(s.GetSessionRefreshTokenTtlSeconds()) + "s"},
 			{Key: "actions", Value: "e: edit & save"},
@@ -1449,6 +1451,13 @@ func (m *Model) settingsForm() *kit2.Form {
 		}
 		return fallback
 	}
+	// keepStr PRESERVES AN EXPLICIT 0: num()/i32() render 0 as blank, but for the keep count 0 is a
+	// real setting ("discard all finished history") distinct from unset (built-in 150). This is the
+	// same three-state distinction the column makes with a NULL.
+	keepStr := ""
+	if k := s.GetExecutionRetentionKeep(); s.ExecutionRetentionKeep != nil {
+		keepStr = strconv.FormatInt(k, 10)
+	}
 	f := kit2.NewForm("Edit tenant settings",
 		// Model refs are CHOSEN, not typed: a kit2.KModel field opens the three-tier ModelPicker (adapter →
 		// provider → model) and then DISPLAYS the committed ref.
@@ -1510,6 +1519,11 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "log_directory", Label: "Log directory", Kind: kit2.KText, Initial: s.GetLogDirectory()},
 		kit2.FieldSpec{Name: "log_max_size_mb", Label: "Log max size (MB)", Kind: kit2.KNumber, Initial: num(s.GetLogMaxSizeMb())},
 		kit2.FieldSpec{Name: "log_retention_days", Label: "Log retention (days)", Kind: kit2.KNumber, Initial: i32(s.GetLogRetentionDays())},
+		kit2.FieldSpec{Name: "execution_retention_enabled", Label: "Prune old execution history", Kind: kit2.KCheckbox, Initial: bi("execution_retention_enabled", "")},
+		kit2.FieldSpec{Name: "execution_retention_keep", Label: "Executions to keep (blank = 150, 0 = none)", Kind: kit2.KNumber, Initial: keepStr, Placeholder: "150"},
+		kit2.FieldSpec{Name: "execution_retention_vacuum", Label: "VACUUM after pruning", Kind: kit2.KCheckbox, Initial: bi("execution_retention_vacuum", "true")},
+		kit2.FieldSpec{Name: "execution_retention_timeout_seconds", Label: "Retention pass timeout (s)", Kind: kit2.KNumber, Initial: i32(s.GetExecutionRetentionTimeoutSeconds()), Placeholder: "300"},
+		kit2.FieldSpec{Name: "outbox_retention_days", Label: "Outbox retention (days)", Kind: kit2.KNumber, Initial: i32(s.GetOutboxRetentionDays()), Placeholder: "7"},
 		kit2.FieldSpec{Name: "session_access_token_ttl_seconds", Label: "Session access TTL (s)", Kind: kit2.KNumber, Initial: num(s.GetSessionAccessTokenTtlSeconds())},
 		kit2.FieldSpec{Name: "session_refresh_token_ttl_seconds", Label: "Session refresh TTL (s)", Kind: kit2.KNumber, Initial: num(s.GetSessionRefreshTokenTtlSeconds())},
 	)
@@ -1546,6 +1560,19 @@ func (m *Model) settingsForm() *kit2.Form {
 		out.LogDirectory = v["log_directory"]
 		out.LogMaxSizeMb = i64Of0(v["log_max_size_mb"])
 		out.LogRetentionDays = int32(i64Of0(v["log_retention_days"]))
+		out.ExecutionRetentionEnabled = v["execution_retention_enabled"] == "true"
+		out.ExecutionRetentionVacuum = v["execution_retention_vacuum"] == "true"
+		out.ExecutionRetentionTimeoutSeconds = int32(i64Of0(v["execution_retention_timeout_seconds"]))
+		out.OutboxRetentionDays = int32(i64Of0(v["outbox_retention_days"]))
+		// A BLANK FIELD MUST STAY NIL so the column stores NULL and the built-in default (150)
+		// applies. Parsing it to 0 would mean "keep nothing" — the opposite of the operator's
+		// intent when they simply left the box empty.
+		if raw := strings.TrimSpace(v["execution_retention_keep"]); raw == "" {
+			out.ExecutionRetentionKeep = nil
+		} else {
+			k := i64Of0(raw)
+			out.ExecutionRetentionKeep = &k
+		}
 		out.SessionAccessTokenTtlSeconds = i64Of0(v["session_access_token_ttl_seconds"])
 		out.SessionRefreshTokenTtlSeconds = i64Of0(v["session_refresh_token_ttl_seconds"])
 		return m.Mutate(mutate.Request{
@@ -2268,6 +2295,19 @@ func int32Of(s string, def int32) int32 {
 func i64Of(s string) (int64, bool) {
 	n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 	return n, err == nil
+}
+
+// execRetentionSummary renders the retention state in ONE cell, because the interesting information is
+// the three-way distinction — off, on with the default, on with an explicit count — and three
+// separate rows for it would bury the one thing an operator needs to see at a glance.
+func execRetentionSummary(s *apiv1.TenantSettings) string {
+	if s == nil || !s.GetExecutionRetentionEnabled() {
+		return "off"
+	}
+	if s.ExecutionRetentionKeep == nil {
+		return "on, keep default"
+	}
+	return "on, keep " + strconv.FormatInt(s.GetExecutionRetentionKeep(), 10)
 }
 
 func i64Of0(s string) int64 {

@@ -83,9 +83,18 @@ RUN curl -fsSL https://mise.run | sh \
 # the recursive chown of /etc is best-effort (those two stay root-owned,
 # which is fine — docker manages them).
 RUN useradd -m -u 1000 -s /bin/bash orchicon \
- && (chown -R 1000:1000 /usr /etc /opt /var /home /root 2>/dev/null || true) \
  && rm -rf /home/orchicon/.profile /home/orchicon/.bashrc \
  && mkdir -p /home/orchicon && chown 1000:1000 /home/orchicon
+
+# THE ONE RECURSIVE CHOWN, AND IT IS LAST IN THE FILE ON PURPOSE.
+#
+# Docker layers are copy-on-write: a recursive chown rewrites the metadata of every file it
+# touches, so each such RUN materializes a fresh full copy of the tree in the image. Running it
+# here — after every step that writes into /usr, /etc, /opt, /var, /home and /root — means one
+# pass covers all of them instead of one pass per install step. The useradd above deliberately
+# no longer carries it, so the account creation and the ownership fix are separate layers with
+# separate, honest sizes in `podman history`.
+RUN chown -R 1000:1000 /usr /etc /opt /var /home /root 2>/dev/null || true
 
 # Host-home skeleton. Docker creates a missing bind-mount parent as ROOT, which the runtime uid could
 # not then write, and `.local/share/opencode` / `.config/opencode` are overlaid by the daemon's mounts
