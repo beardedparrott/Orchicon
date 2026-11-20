@@ -81,14 +81,14 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
 		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
-		execution_retention_enabled, execution_retention_keep,
-		execution_retention_vacuum, execution_retention_timeout_seconds,
-		outbox_retention_days,
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
 		stall_tool_hang_seconds,
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
+		execution_retention_enabled, execution_retention_keep,
+		execution_retention_vacuum, execution_retention_timeout_seconds,
+		outbox_retention_days,
 		created_at, updated_at
 		FROM tenant_settings WHERE tenant_id = $1`
 	row, err := tx.Query(ctx, q, tenantID)
@@ -123,14 +123,14 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
 		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
-		execution_retention_enabled, execution_retention_keep,
-		execution_retention_vacuum, execution_retention_timeout_seconds,
-		outbox_retention_days,
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
 		stall_tool_hang_seconds,
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
+		execution_retention_enabled, execution_retention_keep,
+		execution_retention_vacuum, execution_retention_timeout_seconds,
+		outbox_retention_days,
 		created_at, updated_at`
 	ins, err := tx.Query(ctx, insertQ, tenantID)
 	if err != nil {
@@ -181,9 +181,6 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		backup_schedule, backup_retention_days, backup_directory,
 		log_directory, log_max_size_mb, log_roll_interval_hours,
 		log_retention_days, log_max_files, max_concurrent_runs,
-		execution_retention_enabled, execution_retention_keep,
-		execution_retention_vacuum, execution_retention_timeout_seconds,
-		outbox_retention_days,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
 		budget_tokens, budget_cost_usd, budget_tool_call_count,
 		budget_wall_clock_seconds, budget_compact_max_turns,
@@ -199,6 +196,9 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		stall_tool_hang_seconds,
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
+		execution_retention_enabled, execution_retention_keep,
+		execution_retention_vacuum, execution_retention_timeout_seconds,
+		outbox_retention_days,
 		updated_at
 	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, now())
 	ON CONFLICT (tenant_id) DO UPDATE SET
@@ -291,14 +291,14 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		COALESCE(backup_schedule, ''), COALESCE(backup_retention_days, 0), COALESCE(backup_directory, ''),
 		COALESCE(log_directory, ''), COALESCE(log_max_size_mb, 0), COALESCE(log_roll_interval_hours, 0),
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
-		execution_retention_enabled, execution_retention_keep,
-		execution_retention_vacuum, execution_retention_timeout_seconds,
-		outbox_retention_days,
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
 		stall_tool_hang_seconds,
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
+		execution_retention_enabled, execution_retention_keep,
+		execution_retention_vacuum, execution_retention_timeout_seconds,
+		outbox_retention_days,
 		created_at, updated_at`
 	row, err := tx.Query(ctx, q,
 		tenantID, in.DefaultWorkerModel, in.DefaultAskOrchiconModel,

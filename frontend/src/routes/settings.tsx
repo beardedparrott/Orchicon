@@ -849,9 +849,8 @@ function DefaultsTab() {
 
       {!isLoading && (
         <Card>
-          <Card>
-            <CardHeader>
-              <CardTitle>Data retention</CardTitle>
+          <CardHeader>
+            <CardTitle>Data retention</CardTitle>
               <CardDescription>
                 Prune old execution history on a schedule and VACUUM the tables it shrank. Deleting rows
                 alone does not return disk to the OS — PostgreSQL only marks the space reusable inside the
@@ -914,8 +913,11 @@ function DefaultsTab() {
                 </span>
               </label>
             </CardContent>
-          </Card>
+        </Card>
+      )}
 
+      {!isLoading && (
+        <Card>
           <CardHeader>
             <CardTitle>Log management</CardTitle>
             <CardDescription>
