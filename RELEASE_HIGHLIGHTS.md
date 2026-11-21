@@ -62,6 +62,19 @@ Configuring a remote MCP server rejected any header containing a hyphen — `X-A
 unhyphenated names such as `Authorization` were accepted, which ruled out most real servers. Header names
 now use the HTTP token grammar, while environment keys keep the strict rule they need.
 
+### Fix: The FULLSEND chip is readable in every theme
+The **FULLSEND** control, the one whose whole job is to be unmistakable at a glance, was rendering its
+label over a translucent glass wash instead of over its own red fill — near-white on dark navy in dark
+mode, near-white on pale grey in light mode. A CSS shorthand in the glass input style was silently
+resetting the chip's background colour, so the fill never appeared. The chip now paints solid in both
+light and dark families, with the theme's own contrast colour for the label.
+
+### Fix: Ask cards always offer a free-text option
+Ask cards used to arrive as a closed list, so if your real answer was not one of the choices you could
+only pick something untrue or abandon the card. Every card with options now includes a free-text row
+alongside them, in **all three modes** — Brainstorm, Iteration and Quick Work. The options are a
+shortcut, not a cage.
+
 ### Fix: Stopping a turn whose question went unanswered no longer reports an unrecognised outcome
 A turn stopped while a question was on screen rendered `unrecognised outcome "unanswered"` in the
 transcript. The server had always emitted that outcome deliberately and the TUI always understood it;
