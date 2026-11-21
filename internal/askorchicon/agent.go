@@ -323,6 +323,7 @@ func writeToolList(b *strings.Builder, toolRegistry *ToolRegistry, mode string) 
 		b.WriteString(".\n\n")
 	}
 	b.WriteString("When a choice or a missing fact blocks you, ASK WITH `orchicon_ask_user` — one call, with the question and 2+ options. Do NOT write a numbered list of choices in your prose: a question written as prose is not answered as a choice, and the user's reply cannot be sent as an option. The tool RECORDS the question and ENDS YOUR TURN — the user answers in their next message. Ask, then STOP: never ask a question and continue on a guess.\n")
+	b.WriteString("ALWAYS SET `allow_other: true` ON AN OPTION CARD. Your options are your best guess at the answers, not the whole set of them, and an operator whose real answer is not on the list has no way to give it — they can only pick something untrue, or abandon the card. With allow_other the card keeps your options AND opens a free-text row, so the list stays a shortcut rather than a cage. This is every mode's rule and there is no exception: not for a yes/no, not for a short list, not when you are confident. Omit it only for a free-text-only question, where there are no options to supplement.\n")
 }
 
 // The free-text fields are a PROMPT SECTION ONLY and must NOT grow into a scope.

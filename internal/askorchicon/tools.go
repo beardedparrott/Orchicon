@@ -160,14 +160,14 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"Optionally scaffold subdirectories (src, docs, tests, workflows) and initialise a git repository " +
 				"(init_git) — which a local/pr project needs before its runs can branch. init_git is a no-op when " +
 				"the directory already has a repository, and the project's strategy none means it never runs.",
-			Mutating:    true,
-			Fn:          toolCreateProjectDir,
+			Mutating: true,
+			Fn:       toolCreateProjectDir,
 			Properties: map[string]PropertySchema{
 				"project_id": {Type: "string", Description: "Project ID"},
 				"scaffold":   {Type: "boolean", Description: "Whether to create scaffold subdirectories"},
 				"init_git":   {Type: "boolean", Description: "Run the platform's git setup on the new directory (git init + initial commit + integration branch when a remote exists). Only after the user agrees; no-op when a repository already exists."},
 			},
-			Required:    []string{"project_id"},
+			Required: []string{"project_id"},
 		},
 		{
 			Name:        "archive_project",
@@ -214,15 +214,16 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Name: "ask_user",
 			Description: "Ask the user a clarifying question and END YOUR TURN. Use this instead of writing a numbered " +
 				"list of choices in prose. Provide `question` and 2+ choice-shaped `options` (each {label, description?} " +
-				"or a plain string); set allow_other=true only to also accept a free-text answer, or to ask a " +
-				"free-text-only question (no options, allow_other=true). It RECORDS the question and returns immediately: " +
+				"or a plain string), and set allow_other=true so the operator can also answer in their own words — " +
+				"ALWAYS, for an option card, because your options cannot be the whole set of possible answers. Omit " +
+				"options entirely (with allow_other=true) for a free-text-only question. It RECORDS the question and returns immediately: " +
 				"the user answers in their NEXT message, so ask it and stop — never guess the answer or keep working.",
 			Mutating: false,
 			Fn:       toolAskUser,
 			Properties: map[string]PropertySchema{
 				"question":    {Type: "string", Description: "The clarifying question to put to the user, in one or two sentences."},
 				"options":     {Type: "array", Description: "Two or more choice options. Each is either an object {label, description?} or a plain string label. Omit only for a free-text-only question (then set allow_other=true)."},
-				"allow_other": {Type: "boolean", Description: "Also accept a free-text answer in addition to (or instead of) the options. Required true when options is empty."},
+				"allow_other": {Type: "boolean", Description: "Also accept a free-text answer in addition to the options. SET THIS TRUE ON EVERY OPTION CARD: your options are a shortcut, not the whole set of answers, and without this an operator whose answer is not listed can only pick something untrue or abandon the card. Required true when options is empty (a free-text-only question)."},
 			},
 			Required: []string{"question"},
 		},
@@ -445,7 +446,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Properties: map[string]PropertySchema{
 				"name":          {Type: "string", Description: "Worker name"},
 				"purpose":       {Type: "string", Description: "Worker purpose"},
-				"model_ref": {Type: "string", Description: "Model reference (adapter/provider/model, e.g. opencode/opencode-go/deepseek-v4-flash, or the legacy provider/model e.g. opencode-go/deepseek-v4-flash). Segment 1 selects and routes the per-worker adapter: fresh selections default to the orchicon adapter (e.g. orchicon/commandcode/deepseek/deepseek-v4-flash); legacy 2-segment refs (provider/model) infer and keep dispatching to opencode — existing workers are never repointed. The ref's adapter segment is the single source of truth for dispatch; there is no separate runtime_ref."},
+				"model_ref":     {Type: "string", Description: "Model reference (adapter/provider/model, e.g. opencode/opencode-go/deepseek-v4-flash, or the legacy provider/model e.g. opencode-go/deepseek-v4-flash). Segment 1 selects and routes the per-worker adapter: fresh selections default to the orchicon adapter (e.g. orchicon/commandcode/deepseek/deepseek-v4-flash); legacy 2-segment refs (provider/model) infer and keep dispatching to opencode — existing workers are never repointed. The ref's adapter segment is the single source of truth for dispatch; there is no separate runtime_ref."},
 				"description":   {Type: "string", Description: "Optional human-readable description"},
 				"version_note":  {Type: "string", Description: "Optional note describing draft version 1"},
 				"role":          {Type: "string", Description: "Optional role section for the composed system prompt"},

@@ -24,6 +24,26 @@ describe("FullsendToggle", () => {
     expect(on).toContain("bg-destructive");
   });
 
+  // THE BUG THIS PINS. `.glass-input` sets the `background` SHORTHAND (index.css:1302), which
+  // resets background-color — and being a `background` declaration in @layer components it
+  // outranked Tailwind's `bg-destructive` background-color utility. The ON chip therefore painted
+  // destructive-foreground text over a translucent GLASS wash instead of over red: near-white on
+  // dark navy in dark mode, near-white on 60%-white in light mode. Unreadable in both.
+  //
+  // The fix is the `!` variants, and they are what this asserts: without the important flag the
+  // solid fill loses to .glass-input again and the regression is silent (it looks like styling).
+  it("fills the ON state solidly, overriding the glass-input background", () => {
+    const on = html(true);
+    // The background must beat .glass-input's shorthand, or the red never appears.
+    expect(on).toContain("!bg-destructive");
+    // ...and the abbreviation-of-transparency must be switched off, or the glass blur and inset
+    // wash still sit on top of the fill and lighten it.
+    expect(on).toContain("!backdrop-blur-none");
+    expect(on).toContain("!shadow-none");
+    // The label rides on the theme's destructive-foreground, which both families define gainfully.
+    expect(on).toContain("text-destructive-foreground");
+  });
+
   it("is quiet when off, and still names the state", () => {
     const off = html(false);
     expect(off).not.toContain("bg-destructive");
