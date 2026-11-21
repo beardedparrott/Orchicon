@@ -62,6 +62,20 @@ Configuring a remote MCP server rejected any header containing a hyphen — `X-A
 unhyphenated names such as `Authorization` were accepted, which ruled out most real servers. Header names
 now use the HTTP token grammar, while environment keys keep the strict rule they need.
 
+### New: Recurring work items from Ask Orchicon
+You can now have an Ask session create a **_recurring_** work item — "every morning at nine", "hourly while
+I am debugging", "each Monday" — in **Brainstorm** and **Iteration**, not just a one-shot item.
+
+Recurrence itself was never missing: the platform has had schedules, per-fire run history and timezone-aware
+wall-clock rules for a while. What was missing was the ability for the agent to reach them — the work-item
+tools had no recurrence parameter, so an Ask session could only *describe* a schedule, which schedules
+nothing. Both the create and update tools now carry it, so an agent can set a recurrence, change it, or stop
+it.
+
+Two rules are enforced rather than merely suggested, because a fire with nothing to start is not a schedule:
+a recurring item must be a flat top-level task, and it must be bound to a workflow. Say "stop the daily
+digest" and the agent clears the recurrence instead of leaving it running forever.
+
 ### Fix: The FULLSEND chip is readable in every theme
 The **FULLSEND** control, the one whose whole job is to be unmistakable at a glance, was rendering its
 label over a translucent glass wash instead of over its own red fill — near-white on dark navy in dark
