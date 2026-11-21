@@ -610,7 +610,10 @@ func (m *Model) actionsForSelection() []kit2.Action {
 			},
 			{
 				Label: "delete", Key: "x", Danger: true, Source: srcRecurring,
-				Confirm:  "Delete " + title + "?\nThe recurring item is cancelled (soft delete) and stops firing. Its fire history is kept.",
+				Confirm: "Permanently delete " + title + "?\n\n" +
+					"This removes the schedule and the item for good — it cannot be undone.\n" +
+					"Its past fires stay in the run history. To stop it firing but keep it, use\n" +
+					"pause/resume (p) instead.",
 				Apply:    func() { m.RemoveRow(srcRecurring, id) },
 				Rollback: func() { m.Refresh(srcRecurring) },
 				Do:       func(ctx context.Context) error { return m.rpcDelete(ctx, id) },
@@ -695,8 +698,18 @@ func (m *Model) rpcTogglePause(ctx context.Context, id string) error {
 	return err
 }
 
+// rpcDelete HARD-deletes a recurring item.
+//
+// IT USED TO BE A SOFT DELETE (DeleteWorkItem -> status cancelled), which meant the same word
+// destroyed different amounts in the two clients: the GUI's Work Items page hard-deletes. An operator
+// who removed a schedule from the TUI and then found it still present (merely cancelled) has been
+// told something untrue about what the key did.
+//
+// Hard delete is also the only verb that makes sense for a SCHEDULE: cancelling leaves a cancelled
+// recurring row behind, invisible to the recurring list (which is status-independent) and still
+// occupying its workflow binding.
 func (m *Model) rpcDelete(ctx context.Context, id string) error {
-	_, err := m.cl.WorkItems.DeleteWorkItem(ctx, connect.NewRequest(&apiv1.DeleteWorkItemRequest{Id: id}))
+	_, err := m.cl.WorkItems.HardDeleteWorkItem(ctx, connect.NewRequest(&apiv1.HardDeleteWorkItemRequest{Id: id}))
 	return err
 }
 
@@ -731,6 +744,8 @@ func (m *Model) Update(msg tea.Msg) (screenkit.Screen, tea.Cmd) {
 
 	case ideaBulkDoneMsg:
 		return m, m.onIdeaBulkDone(msg)
+	case recurrenceBulkDoneMsg:
+		return m, m.onRecurrenceBulkDone(msg)
 
 	case formReadyMsg:
 		if msg.err != nil {
@@ -831,7 +846,16 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 		if src == srcIdeas {
 			return m.rejectAllIdeas(), true
 		}
-	case "p", "x":
+	case "x":
+		// A MARKED SELECTION IS A BULK DELETE. Checked before the single-row action so 'x' with rows
+		// marked never silently deletes only the focused one.
+		if src == srcRecurring && len(m.Base.MarkedIDs()) > 0 {
+			return m.deleteMarkedRecurring(), true
+		}
+		if a, ok := m.actionByKey(msg.String()); ok {
+			return m.openAction(a), true
+		}
+	case "p":
 		if a, ok := m.actionByKey(msg.String()); ok {
 			return m.openAction(a), true
 		}
@@ -893,7 +917,7 @@ func (m *Model) refreshActionBar() {
 func (m *Model) HintLine() string {
 	switch m.ActiveSourceName() {
 	case srcRecurring:
-		return theme.HintText.Render("n: new recurring item · e: edit · p: pause/resume · x: delete (confirm) · enter: detail (run history)")
+		return theme.HintText.Render("n: new recurring item · e: edit · p: pause/resume · x: delete (confirm) · space: mark · x with rows marked: delete the marked set · enter: detail (run history)")
 	case srcIdeas:
 		return theme.HintText.Render("p: promote (→ work item) " + theme.DetailKey.Render("·") + " x: dismiss (confirm) " + theme.DetailKey.Render("·") +
 			" A: accept ALL " + theme.DetailKey.Render("·") + " R: reject ALL (confirm) " + theme.DetailKey.Render("·") + " ←/→: pane · enter: detail · r: refresh")
@@ -920,6 +944,59 @@ func (m *Model) acceptAllIdeas() tea.Cmd {
 		return m.refuseAutomation("no ideas awaiting triage")
 	}
 	return m.bulkIdeaDecision(items, true)
+}
+
+// deleteMarkedRecurring hard-deletes every MARKED recurring item, after one confirm naming the count.
+//
+// THE BULK GESTURE IS THE ONE THE REST OF THE TUI ALREADY USES: space marks rows (kit2.Base has done
+// that all along — sources are markable by default) and the pane's delete chord acts on the marked set.
+// This screen simply had no bulk verb wired to it, so marks accumulated with nothing to do.
+//
+// It REFUSES rather than retargets when nothing is marked, because silently deleting the focused row
+// instead of a selection is how an operator loses the item they were only browsing.
+func (m *Model) deleteMarkedRecurring() tea.Cmd {
+	ids := m.Base.MarkedIDs()
+	if len(ids) == 0 {
+		return m.refuseAutomation("mark rows with space first, then x deletes the marked set")
+	}
+	d := kit2.Confirm("Delete recurring items",
+		fmt.Sprintf("Permanently delete %d recurring item(s)?\n\n"+
+			"This removes their schedules and the items for good — it cannot be undone.\n"+
+			"Past fires stay in the run history. To stop them firing but keep them, use\n"+
+			"pause/resume (p) instead.", len(ids)),
+		"delete all")
+	d.Danger = true
+	m.Open = d
+	m.OnDialog = func(choice string) tea.Cmd {
+		m.OnDialog = nil
+		if choice == "" {
+			m.notice = "cancelled"
+			return nil
+		}
+		return m.bulkDeleteRecurring(ids)
+	}
+	return nil
+}
+
+// bulkDeleteRecurring deletes the given ids, reporting partial success honestly.
+func (m *Model) bulkDeleteRecurring(ids []string) tea.Cmd {
+	cl := m.cl
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		var failed int
+		var firstErr error
+		for _, id := range ids {
+			if _, err := cl.WorkItems.HardDeleteWorkItem(ctx,
+				connect.NewRequest(&apiv1.HardDeleteWorkItemRequest{Id: id})); err != nil {
+				failed++
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+		return recurrenceBulkDoneMsg{deleted: len(ids) - failed, failed: failed, err: firstErr}
+	}
 }
 
 // rejectAllIdeas dismisses every idea currently listed.
@@ -978,6 +1055,28 @@ func (m *Model) bulkIdeaDecision(items []screenkit.Item, accept bool) tea.Cmd {
 		}
 		return ideaBulkDoneMsg{accept: accept, total: len(ids), failed: failed}
 	}
+}
+
+// recurrenceBulkDoneMsg reports a finished bulk delete of recurring items.
+type recurrenceBulkDoneMsg struct {
+	deleted int
+	failed  int
+	err     error
+}
+
+// onRecurrenceBulkDone surfaces the outcome and reloads. The reload is the point: a partial failure must
+// leave the list showing what ACTUALLY survived, not what the keystroke hoped for.
+func (m *Model) onRecurrenceBulkDone(msg recurrenceBulkDoneMsg) tea.Cmd {
+	switch {
+	case msg.failed == 0:
+		m.notice = fmt.Sprintf("deleted %d recurring item(s)", msg.deleted)
+	case msg.deleted == 0:
+		m.notice = fmt.Sprintf("could not delete: %v", msg.err)
+	default:
+		m.notice = fmt.Sprintf("deleted %d, %d failed: %v", msg.deleted, msg.failed, msg.err)
+	}
+	m.Base.ClearMarks()
+	return m.Load()
 }
 
 // ideaBulkDoneMsg reports a finished bulk triage.
