@@ -16,6 +16,12 @@ import { useListProjects } from "@/api/projects";
 import { useListWorkflows } from "@/api/workflows";
 import { FileBrowser } from "@/components/FileBrowser";
 import { SecretsPicker } from "@/components/SecretsPicker";
+import {
+  ExecutionModeSelect,
+  executionModeToProto,
+  executionModeValueOf,
+  type ExecutionModeChoice,
+} from "@/components/ExecutionModeSelect";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { RecurringScheduleForm } from "@/components/work-items/RecurringScheduleForm";
 import { RecurringSchedule } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -68,6 +74,14 @@ function NewRecurringItemPage() {
   const { data: projects } = useListProjects();
   const { data: workflows } = useListWorkflows({ status: 2, templatesOnly: true }); // published templates only
 
+  // WHERE THIS AUTOMATION'S FIRES RUN. A recurring item is a work item, so it carries the same
+  // per-item override a regular item does — and the choice is meaningful here precisely because a
+  // schedule fires unattended: a local fire runs as a host process with the operator's own filesystem
+  // access, which is often exactly what a nightly audit of their own machine needs.
+  //
+  // The form asked for an IMAGE but never for a MODE, so every automation was created with no override
+  // and silently inherited its project's mode.
+  const [executionMode, setExecutionMode] = useState<ExecutionModeChoice>("inherit");
   const [runtimeImage, setRuntimeImage] = useState("");
   const [secretIds, setSecretIds] = useState<string[]>([]);
   const [contextFiles, setContextFiles] = useState<string[]>([]);
@@ -117,6 +131,7 @@ function NewRecurringItemPage() {
       acceptanceCriteria: values.acceptanceCriteria || undefined,
       workflowId: values.workflowId,
       runtimeImage: runtimeImage || undefined,
+      executionMode: executionModeToProto(executionMode),
       secretIds: secretIds.length > 0 ? secretIds : undefined,
       contextFiles: contextFiles.length > 0 ? contextFiles : undefined,
       recurringSchedule: schedule,
@@ -205,6 +220,18 @@ function NewRecurringItemPage() {
             </div>
 
             <SecretsPicker value={secretIds} onChange={setSecretIds} />
+
+            <div className="space-y-2">
+              <ExecutionModeSelect
+                value={executionMode}
+                inherited={executionModeValueOf(selectedProject)}
+                onChange={setExecutionMode}
+              />
+              <p className="text-xs text-muted-foreground">
+                Where every fire of this automation runs: a host process on your
+                own machine, or a container. Inheriting follows the project.
+              </p>
+            </div>
 
             <div className="space-y-2">
               <Label htmlFor="runtimeImage">Runtime image</Label>
