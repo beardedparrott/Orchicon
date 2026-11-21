@@ -36,6 +36,16 @@ type ToolRegistry struct {
 }
 
 // NewToolRegistry creates the registry with all available tools.
+// recurrenceToolDescription is the ONE description of the recurrence object, shared by create_work_item
+// and update_work_item so the two cannot describe the same argument differently.
+const recurrenceToolDescription = "A RECURRING work item. An object with frequency " +
+	"(minute|hourly|daily|weekly|monthly), interval (>= 1), start_date (YYYY-MM-DD) and start_time (HH:MM), " +
+	"plus optional days (Mon..Sun, meaningful for weekly), timezone (an IANA zone such as America/Chicago — " +
+	"REQUIRED for a new schedule, because a recurrence is a WALL-CLOCK rule and \"09:00\" is a different " +
+	"instant in summer and winter), outputs_mode (standard | idea | none) and window_start/window_end " +
+	"(HH:MM, set together). A recurring item MUST be a flat top-level task (kind=task, no parent) and MUST " +
+	"be bound to a workflow, or the fire has nothing to start. Omit the field entirely for a one-shot item."
+
 func NewToolRegistry(pool *db.Pool, log *slog.Logger, secretsKEK []byte) *ToolRegistry {
 	// Package-level logger for tools whose post-commit side effects (e.g. auto-starting a workflow)
 	// need a logger but receive none via the ToolFn signature.
@@ -306,6 +316,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"runtime_image":       {Type: "string", Description: "Runtime container image tag; empty = base image"},
 				"context_files":       {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files)"},
 				"ephemeral":           {Type: "boolean", Description: "Mark the item machine-managed and transient (Quick Work): hidden from every human view and meant to be hard-deleted when the job ends. Default false. Top-level only — rejected with a parent_id."},
+				"recurrence":          {Type: "object", Description: recurrenceToolDescription},
 			},
 			Required: []string{"title", "project_id"},
 		},
@@ -328,6 +339,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"workflow_id":         {Type: "string", Description: "Bind/unbind to a workflow template ID (empty string clears the binding)"},
 				"parent_id":           {Type: "string", Description: "New parent work item ID (reparent). Must be the same project and a strictly higher-level kind (epic > feature > task > subtask). Empty string clears the parent (epic only)."},
 				"scheduled_start_at":  {Type: "string", Description: "Scheduled start time (ISO 8601 or 'N minutes from now'). Setting this flips the item to scheduled unless it has an active run."},
+				"recurrence":          {Type: "object", Description: recurrenceToolDescription},
+				"clear_recurrence":    {Type: "boolean", Description: "Remove the item's recurrence, turning it back into a one-shot item."},
 				"auto_start_workflow": {Type: "boolean", Description: "Start the bound workflow immediately on save. true with no scheduled_start_at clears any existing schedule."},
 				"workflow_run_id":     {Type: "string", Description: "The workflow run ID this item is bound to; empty string allows re-scheduling"},
 				"runtime_image":       {Type: "string", Description: "Runtime container image tag; empty string resets to the base image"},

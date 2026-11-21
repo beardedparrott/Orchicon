@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/contextfiles"
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -133,6 +134,54 @@ func toolGetWorkItemRunHistory(ctx context.Context, pool *db.Pool, args json.Raw
 	return json.Marshal(entries)
 }
 
+// recurrenceArg is the tool-surface shape of a recurrence.
+//
+// WHY A NESTED OBJECT rather than a dozen flat `recurrence_*` parameters: a recurrence is one
+// decision with fields that must agree (window_start with window_end, days only for weekly), and
+// flat parameters make it possible to set half of it. Nesting it means "no recurrence" is the
+// absence of one field instead of a dozen "empty means null" conventions.
+type recurrenceArg struct {
+	Frequency   string   `json:"frequency"`    // minute | hourly | daily | weekly | monthly
+	Interval    int32    `json:"interval"`     // >= 1 (e.g. every 2 hours)
+	Days        []string `json:"days"`         // Mon..Sun; empty = every day
+	StartDate   string   `json:"start_date"`   // YYYY-MM-DD, first occurrence
+	StartTime   string   `json:"start_time"`   // HH:MM, time of day
+	Timezone    string   `json:"timezone"`     // IANA zone; REQUIRED for a new schedule
+	OutputsMode string   `json:"outputs_mode"` // standard (default) | idea | none
+	WindowStart string   `json:"window_start"` // HH:MM inclusive; must accompany window_end
+	WindowEnd   string   `json:"window_end"`   // HH:MM exclusive
+}
+
+// toProto converts the tool's argument shape into the proto message the shared validators take.
+//
+// THE CONVERSION EXISTS SO THERE IS ONE SET OF RULES. internal/workitem owns ValidateRecurringSchedule,
+// ComputeNextRunAt and the flatness/binding invariants, and the Connect API already goes through them.
+// Re-implementing those checks here would give the MCP path a second, slowly-diverging opinion about
+// what a valid recurrence is — exactly the drift the shared validators exist to prevent.
+func (r *recurrenceArg) toProto(tenantTimezone string) *apiv1.RecurringSchedule {
+	if r == nil {
+		return nil
+	}
+	tz := strings.TrimSpace(r.Timezone)
+	if tz == "" {
+		// An empty zone means UTC to the domain, so a caller that omits it would silently schedule in
+		// the wrong wall clock. The tenant's zone is the only honest default available to us; the
+		// prompt tells the agent to send one explicitly.
+		tz = strings.TrimSpace(tenantTimezone)
+	}
+	return &apiv1.RecurringSchedule{
+		Frequency:   r.Frequency,
+		Interval:    r.Interval,
+		Days:        r.Days,
+		StartDate:   r.StartDate,
+		StartTime:   r.StartTime,
+		Timezone:    tz,
+		OutputsMode: r.OutputsMode,
+		WindowStart: r.WindowStart,
+		WindowEnd:   r.WindowEnd,
+	}
+}
+
 func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
 		ProjectID          string   `json:"project_id"`
@@ -158,6 +207,8 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		// Empty = inherit from the project (NEVER silently omitted-but-forced: an omitted field means
 		// inherit, which is a real, documented choice.
 		ExecutionMode string `json:"execution_mode"`
+		// Recurrence makes this a RECURRING work item. Omitted = one-shot, which is the ordinary case.
+		Recurrence *recurrenceArg `json:"recurrence"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -228,10 +279,41 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 			}
 		}
 	}
+	// THE RECURRENCE IS VALIDATED BEFORE HIERARCHY, exactly as the Connect Create handler does, because
+	// a recurring item is EXEMPT from the "only epics are top-level" rule and its flat shape has to be
+	// known before ValidateParent runs. Validating after would reject a flat recurring task.
+	var recurringScheduleJSON []byte
+	if params.Recurrence != nil {
+		rec := params.Recurrence
+		if workitem.IsRecurringScheduleEmpty(rec.toProto("")) {
+			// An object present but carrying nothing is the caller saying "not recurring". Treating it
+			// as an error would be pedantic; treating it as a schedule would be wrong.
+			params.Recurrence = nil
+		} else {
+			sched := rec.toProto("")
+			validated, verr := workitem.ValidateRecurringSchedule(sched)
+			if verr != nil {
+				return nil, fmt.Errorf("recurrence: %w", verr)
+			}
+			recurringScheduleJSON = validated
+		}
+	}
+	isRecurring := recurringScheduleJSON != nil
+
 	// Enforce hierarchy depth, shared with the Create path. Its top-level ONLY shape is enforced just
 	// above, before the transaction opens, by validateEphemeralPlacement.
-	if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, params.ParentID, kind, params.ProjectID, false, params.Ephemeral); err != nil {
+	if err := workitem.ValidateParent(ctx, ttx.Tx, tenantID, params.ParentID, kind, params.ProjectID, isRecurring, params.Ephemeral); err != nil {
 		return nil, err
+	}
+	// THE SAME TWO INVARIANTS THE API ENFORCES, from the same functions: a recurring item is a FLAT
+	// top-level task, and it must be bound to a workflow or the fire has nothing to start.
+	if isRecurring {
+		if err := workitem.ValidateRecurringFlatness(true, kind, params.ParentID); err != nil {
+			return nil, err
+		}
+		if err := workitem.ValidateRecurringWorkflowBinding(true, false, params.WorkflowID); err != nil {
+			return nil, err
+		}
 	}
 	var parentID *string
 	if params.ParentID != "" {
@@ -253,6 +335,12 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	status := domain.WorkItemPending
 	if scheduledStartAt != nil {
 		status = domain.WorkItemScheduled
+	}
+	// A recurrence wins the status, as in the API: recurring outranks scheduled.
+	var nextRunAt *time.Time
+	if isRecurring {
+		status = domain.WorkItemRecurring
+		nextRunAt = workitem.ComputeNextRunAt(params.Recurrence.toProto(""), time.Now().UTC())
 	}
 	// Trim the runtime image; the MCP stdio process has no daemon resolver, so empty stays empty and
 	// the WorkflowReconciler resolves base at run start (functionally identical to the API's eager.
@@ -287,6 +375,8 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		ContextFiles:       contextFiles,
 		Ephemeral:          params.Ephemeral,
 		ExecutionMode:      executionModePtr,
+		RecurringSchedule:  recurringScheduleJSON,
+		NextRunAt:          nextRunAt,
 	}
 	if workflowID == "" {
 		row.WorkflowID = nil
@@ -356,6 +446,11 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		ClearExecutionMode *bool     `json:"clear_execution_mode"`
 		Kind               *string   `json:"kind"`
 		ContextFiles       *[]string `json:"context_files"`
+		// Recurrence sets or REPLACES this item's recurrence. Omitted = leave unchanged.
+		Recurrence *recurrenceArg `json:"recurrence"`
+		// ClearRecurrence turns the item back into a one-shot. An explicit flag rather than "send an
+		// empty object", which would be indistinguishable from an omitted field.
+		ClearRecurrence *bool `json:"clear_recurrence"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -392,6 +487,29 @@ func toolUpdateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		}
 	}
 	update := db.UpdateWorkItemFields{}
+	// RECURRENCE: set/replace, or clear.
+	//
+	// BOTH PATHS ARE VALIDATED BY internal/workitem's own functions, so the MCP surface cannot write a
+	// recurrence the Connect API would refuse — flat top-level task, bound to a workflow. A recurring
+	// item that only the agent could create would be a second-class item the UI then fails to save.
+	if params.ClearRecurrence != nil && *params.ClearRecurrence {
+		update.ClearRecurringSchedule = true
+	}
+	if params.Recurrence != nil {
+		if workitem.IsRecurringScheduleEmpty(params.Recurrence.toProto("")) {
+			// An object with nothing in it means "not recurring", the same reading the create path takes.
+			update.ClearRecurringSchedule = true
+			params.Recurrence = nil
+		} else {
+			sched := params.Recurrence.toProto("")
+			validated, verr := workitem.ValidateRecurringSchedule(sched)
+			if verr != nil {
+				return nil, fmt.Errorf("recurrence: %w", verr)
+			}
+			update.RecurringSchedule = &validated
+			update.NextRunAt = workitem.ComputeNextRunAt(sched, time.Now().UTC())
+		}
+	}
 	if params.Title != nil {
 		title, err := workitem.ValidateTitle(*params.Title)
 		if err != nil {
