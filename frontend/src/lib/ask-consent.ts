@@ -18,6 +18,11 @@ export type AskOutcome =
   | { kind: "allow_once" }
   | { kind: "allow_session" }
   | { kind: "deny" }
+  // UNANSWERED is a question nobody answered, NOT a refusal and NOT an expiry. The server
+  // distinguishes them (internal/askorchicon/consent.go records "unanswered" for a question and
+  // "expired" for a permission), and so must the card: telling an operator their grant expired or
+  // that they declined something they were never shown is a lie about their own consent.
+  | { kind: "unanswered"; detail?: string }
   | { kind: "expired"; detail?: string };
 
 /** One ask as the transcript holds it: the wire ask plus its settlement. */
@@ -261,6 +266,12 @@ export function outcomeFromWire(outcome: string): AskOutcome {
       return { kind: "allow_once" };
     case "expired":
       return { kind: "expired" };
+    case "unanswered":
+      // THE SERVER'S OWN WORD for a QUESTION whose turn ended before the operator answered
+      // (consent.go emits it, and the TUI has handled it since app.go's consentDecisionFromOutcome).
+      // It used to fall through to `default`, so the GUI rendered `unrecognised outcome
+      // "unanswered"` — a client-visible error naming an outcome the server produced deliberately.
+      return { kind: "unanswered" };
     default:
       return { kind: "expired", detail: `unrecognised outcome "${outcome}"` };
   }
@@ -296,6 +307,9 @@ export function outcomeLabel(ask: PermissionAsk, outcome: AskOutcome): string {
         : `Never asking again this session — ${target}`;
     case "deny":
       return `Denied — ${target}`;
+    case "unanswered":
+      // A question nobody answered. NOT "expired": nothing lapsed, the turn simply ended first.
+      return `Not answered — ${target} (the turn ended first)`;
     default:
       return outcome.detail
         ? `Expired unanswered — ${target} (${outcome.detail})`

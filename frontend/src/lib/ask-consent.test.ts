@@ -92,6 +92,16 @@ describe("outcomeLabel", () => {
     );
   });
 
+  // An unanswered QUESTION is not an expiry. Nothing lapsed — the turn ended first — and the card
+  // must not claim otherwise, because an operator reading back their own consent history is the
+  // whole audience for this string.
+  it("says a question went unanswered instead of claiming it expired", () => {
+    const label = outcomeLabel(ask("per_1"), { kind: "unanswered" });
+    expect(label).toBe("Not answered — write /p/sibling/notes.md (the turn ended first)");
+    expect(label).not.toContain("Expired");
+    expect(label).not.toContain("Denied");
+  });
+
   it("names the command for a bash ask rather than an opaque id", () => {
     const bash = ask("per_9", {
       tool: "bash",
@@ -132,6 +142,34 @@ describe("outcomeFromWire", () => {
 
   it("settles a question's answer without calling it a permission", () => {
     expect(outcomeFromWire("answered")).toEqual({ kind: "allow_once" });
+  });
+
+  // THE SERVER'S OWN WORD, and it used to fall through to `default`. consent.go emits
+  // "unanswered" when a turn ends while waiting on a QUESTION; the TUI has always handled it
+  // (app.go's consentDecisionFromOutcome), but the GUI rendered
+  // `unrecognised outcome "unanswered"` — a client-visible error naming a value the server
+  // produced deliberately. Stopping a turn while sitting on an ask is the common way to see it.
+  it("understands the server's 'unanswered' outcome for a question", () => {
+    expect(outcomeFromWire("unanswered")).toEqual({ kind: "unanswered" });
+  });
+
+  // It must NOT be confused with a refusal or an expiry: the operator was shown a card and never
+  // acted. Reading it as deny would claim they declined something; reading it as expired would
+  // claim something lapsed.
+  it("does not read 'unanswered' as a denial or an expiry", () => {
+    const got = outcomeFromWire("unanswered");
+    expect(got.kind).not.toBe("deny");
+    expect(got.kind).not.toBe("expired");
+    // and above all it is never a grant
+    expect(got.kind).not.toBe("allow_once");
+    expect(got.kind).not.toBe("allow_session");
+  });
+
+  it("still fails closed for genuinely unknown outcomes after adding 'unanswered'", () => {
+    expect(outcomeFromWire("unanswered_at_end")).toEqual({
+      kind: "expired",
+      detail: 'unrecognised outcome "unanswered_at_end"',
+    });
   });
 
   // The one failure a consent surface must not have: an outcome we did not
