@@ -85,6 +85,16 @@ Both the create and update tools now take `execution_mode`, and it applies to ev
 If you want the daily digest to run in-process on your machine while the rest of the project runs in
 containers, you can now say so.
 
+### Fix: Deleting a recurring item — in both clients, singly and in bulk
+Recurring items were effectively undeletable from the web GUI, and it was a matter of reach rather than a
+missing capability: the Work Items page filters recurring items out, and the one page that shows them —
+Recurring Items — offered only Pause. A schedule could be stopped but never removed.
+
+Both clients can now delete them. **Recurring Items** gets a per-card delete plus select-all and a
+"Delete selected" action. The TUI's Automation pane gains the same bulk gesture — mark rows with space,
+press `x` to delete the marked set — and its single delete is now **permanent**, matching the GUI, where
+it previously only cancelled the item and left a stopped-but-present schedule behind.
+
 ### Fix: The FULLSEND chip is readable in every theme
 The **FULLSEND** control, the one whose whole job is to be unmistakable at a glance, was rendering its
 label over a translucent glass wash instead of over its own red fill — near-white on dark navy in dark
