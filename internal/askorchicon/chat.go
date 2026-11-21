@@ -1184,15 +1184,16 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 				switch {
 				case errors.Is(terr, errTurnSuperseded):
 					if content := strings.TrimSpace(reply); content != "" {
-						s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, content, sid, "", reasoning, finalLedger)
+						s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, content, sid, "", false, reasoning, finalLedger)
 					} else if finalLedger.hasCalls() {
 						// The turn was interrupted between a tool call and its result: nothing arrived as text, but the
 						// partial mirror already wrote the row.
-						s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, "", reasoning, finalLedger)
+						s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", sid, "", false, reasoning, finalLedger)
 					}
 				case errors.Is(terr, errUserStop):
-					// KEEP THE PARTIAL TEXT.
-					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "Turn stopped by the user.", reasoning, finalLedger)
+					// KEEP THE PARTIAL TEXT. stopped=true marks this as a deliberate stop rather than a
+					// failure, so the transcript keeps the text instead of being replaced by an error shell.
+					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "Turn stopped by the user.", true, reasoning, finalLedger)
 				default:
 					errText := terr.Error()
 					// Surface the failure verbatim on the stream (the TUI dock notice) as well as in the persisted
@@ -1206,10 +1207,10 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 						s.persistConversationSessionID(detached, tenantID, convID, "")
 					}
 					// KEEP WHAT THE TURN PRODUCED.
-					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, errText, reasoning, finalLedger)
+					s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, errText, false, reasoning, finalLedger)
 				}
 			} else {
-				s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "", reasoning, finalLedger)
+				s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, strings.TrimSpace(reply), sid, "", false, reasoning, finalLedger)
 			}
 			// AN INJECTED MESSAGE THIS ADAPTER COULD NOT QUEUE IS ANSWERED HERE.
 			if terr == nil {
@@ -1223,7 +1224,7 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 		releaseTurn()
 		s.hubs.remove(convID)
 		s.persistConversationReply(detached, tenantID, convID, assistantID, modelRef, "", conv.SessionID,
-			"Ask Orchicon is temporarily unavailable — the opencode serve is starting. Please try again in a moment.", []string{}, nil)
+			"Ask Orchicon is temporarily unavailable — the opencode serve is starting. Please try again in a moment.", false, []string{}, nil)
 		close(streamEventCh)
 	}
 
@@ -2302,7 +2303,7 @@ func toTurnInt64(v any) int64 {
 
 // persistConversationReply persists the collected assistant message for a turn under the acked
 // message id and bumps the conversation timestamp.
-func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID, assistantMsgID, modelRef, content, sid, errText string, reasoning []string, ledger *toolLedger) {
+func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID, assistantMsgID, modelRef, content, sid, errText string, stopped bool, reasoning []string, ledger *toolLedger) {
 	if s.pool == nil {
 		return
 	}
@@ -2310,8 +2311,21 @@ func (s *Service) persistConversationReply(ctx context.Context, tenantID, convID
 	if sid != "" {
 		metadata["session_id"] = sid
 	}
+	// A USER-STOPPED TURN IS NOT A FAILURE, and it must not be recorded as one.
+	//
+	// `error` drives the GUI's error shell, which renders the error text INSTEAD of the reply — so
+	// persisting "Turn stopped by the user." under `error` threw away the partial text the turn had
+	// already produced. The operator stopped a turn and watched everything vanish; the content was in
+	// the row the whole time. It also fired a "Reply failed" toast for a deliberate action.
+	//
+	// So a stop gets its own flag. The content still round-trips, the GUI draws it as a reply followed
+	// by a "stopped" note, and a genuine failure is still an error.
 	if errText != "" {
-		metadata["error"] = errText
+		if stopped {
+			metadata["stopped"] = errText
+		} else {
+			metadata["error"] = errText
+		}
 	}
 	metaJSON, _ := json.Marshal(metadata)
 

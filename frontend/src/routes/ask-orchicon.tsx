@@ -1186,7 +1186,7 @@ function AskOrchiconPage() {
     const acked = messages.find((m) => m.id === pendingReplyId);
     if (!acked) return;
     if (serverTurnInFlight) return;
-    if (acked.metadata?.error) {
+    if (acked.metadata?.error && !acked.metadata?.stopped) {
       // Reply failed after the message was acked. The composer already cleared
       // on send (the message is persisted in history), but copy the sent text
       // to the clipboard AND signal the composer to put it back in the box so
@@ -3272,6 +3272,22 @@ function MessageBubble({
     return (
       <div className="flex justify-start">
         <div className="max-w-[88%] rounded-2xl rounded-tl-sm border border-destructive/50 bg-destructive/10 px-4 py-3">
+          {/* THE PARTIAL REPLY COMES FIRST, WHEN THERE IS ONE.
+              A turn that streamed text and THEN failed still has that text persisted — the server
+              keeps it under the turn's own row. Rendering only the error discarded it, so a long
+              reply that died at the end read as an empty turn. The same mistake, in its worst form,
+              deleted a whole stopped turn from the screen. Content is the turn's output; the error
+              is a note about how it ended, not a replacement for what it produced. */}
+          {message.content ? (
+            <div className="mb-2">
+              <AssistantBubble
+                text={message.content}
+                label="Orchicon"
+                highlight={highlight}
+                at={atOverride}
+              />
+            </div>
+          ) : null}
           <p className="text-sm text-destructive mb-1">
             {message.metadata?.error}
           </p>
@@ -3326,6 +3342,12 @@ function MessageBubble({
           highlight={highlight}
           at={atOverride}
         />
+      )}
+      {/* A STOPPED TURN SAYS SO, beside the reply it kept. The text above is the turn's real output up
+          to the stop; this is the note about how it ended. Kept as prose rather than the error shell
+          because nothing failed — the operator chose it. */}
+      {message.metadata?.stopped && (
+        <p className="mt-1 text-xs text-muted-foreground italic">{message.metadata.stopped}</p>
       )}
       {/* THE QUESTION CARD IS THE LAST THING IN THE MESSAGE.
 

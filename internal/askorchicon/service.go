@@ -1171,6 +1171,11 @@ func messageRowToProto(r db.MessageRow) *apiv1.ChatMessage {
 			if v, ok := raw["error"].(string); ok {
 				meta.Error = v
 			}
+			// A user stop is NOT an error: it travels in its own field so the client draws the
+			// partial reply plus a "stopped" note, instead of replacing the reply with a failure.
+			if v, ok := raw["stopped"].(string); ok {
+				meta.Stopped = v
+			}
 			if v, ok := raw["injected"].(bool); ok {
 				injected = v
 			}
