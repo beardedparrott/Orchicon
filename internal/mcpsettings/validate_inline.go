@@ -102,10 +102,10 @@ func validateInlineSpec(ctx context.Context, tx pgx.Tx, tenantID string, s db.In
 	}
 	// BOTH MAPS ARE CHECKED, whichever the transport reads: a spec carrying headers it will never send
 	// is odd but harmless, while a key the transport cannot hand to a child process is not.
-	if err := validateMapKeys(s.Env, "env", 64); err != nil {
+	if err := validateMapKeys(s.Env, "env", 64, envKeys); err != nil {
 		return invalidContext(fmt.Sprintf("inline server %q", id), err)
 	}
-	if err := validateMapKeys(s.Headers, "headers", 32); err != nil {
+	if err := validateMapKeys(s.Headers, "headers", 32, headerKeys); err != nil {
 		return invalidContext(fmt.Sprintf("inline server %q", id), err)
 	}
 	// EVERY REFERENCE MUST RESOLVE.
