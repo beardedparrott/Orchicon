@@ -12,7 +12,7 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { useCreateWorkItem } from "@/api/workItems";
-import { useListProjects } from "@/api/projects";
+import { protoToExecutionMode, useListProjects } from "@/api/projects";
 import { useListWorkflows } from "@/api/workflows";
 import { FileBrowser } from "@/components/FileBrowser";
 import { SecretsPicker } from "@/components/SecretsPicker";
@@ -22,6 +22,7 @@ import {
   executionModeValueOf,
   type ExecutionModeChoice,
 } from "@/components/ExecutionModeSelect";
+import { LocalModeDisclosure } from "@/components/LocalModeDisclosure";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { RecurringScheduleForm } from "@/components/work-items/RecurringScheduleForm";
 import { RecurringSchedule } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -235,12 +236,31 @@ function NewRecurringItemPage() {
 
             <div className="space-y-2">
               <Label htmlFor="runtimeImage">Runtime image</Label>
-              <RuntimeImageSelect value={runtimeImage} onChange={setRuntimeImage} />
+              <RuntimeImageSelect
+                value={runtimeImage}
+                onChange={setRuntimeImage}
+                // THE MODE DECIDES WHETHER AN IMAGE MEANS ANYTHING. A local run has no container, so
+                // the picker would otherwise show an image for a run that will never create one — and
+                // worse, coerce a value into a field the server clears for local items.
+                mode={
+                  executionMode === "inherit"
+                    ? protoToExecutionMode(selectedProject?.executionMode)
+                    : executionMode
+                }
+              />
               <p className="text-xs text-muted-foreground">
                 The container image workers run in for this automation&apos;s
                 workflow. Defaults to the base image.
               </p>
             </div>
+
+            {/* Local mode is a CHOICE made on this form — explicitly, or by inheriting a local
+                project — so the consequences are disclosed here rather than only on the project. */}
+            {(executionMode === "local" ||
+              (executionMode === "inherit" &&
+                protoToExecutionMode(selectedProject?.executionMode) === "local")) && (
+              <LocalModeDisclosure />
+            )}
 
             {selectedProject?.projectDir ? (
               <FileBrowser

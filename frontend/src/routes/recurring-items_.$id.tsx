@@ -23,7 +23,7 @@ import {
   useUpdateWorkItem,
 } from "@/api/workItems";
 import { useListWorkflows } from "@/api/workflows";
-import { useListProjects } from "@/api/projects";
+import { protoToExecutionMode, useListProjects } from "@/api/projects";
 import { FileBrowser } from "@/components/FileBrowser";
 import { SecretsPicker } from "@/components/SecretsPicker";
 import {
@@ -34,6 +34,7 @@ import {
   executionModeValueOf,
   type ExecutionModeChoice,
 } from "@/components/ExecutionModeSelect";
+import { LocalModeDisclosure } from "@/components/LocalModeDisclosure";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { RecurringScheduleForm, formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
 import { RecurringBadge, RunStatusBadge } from "@/components/work-items/work-item-badges";
@@ -282,8 +283,28 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
 
               <div className="space-y-2">
                 <Label htmlFor="runtimeImage">Runtime image</Label>
-                <RuntimeImageSelect value={runtimeImage} onChange={setRuntimeImage} />
+                <RuntimeImageSelect
+                  value={runtimeImage}
+                  onChange={setRuntimeImage}
+                  // Same rule as the regular work-item form: the mode this item will actually have,
+                  // resolving "inherit" against the project. A local run has no container, so the
+                  // picker must not offer — or silently coerce — an image for it.
+                  mode={
+                    executionMode === "inherit"
+                      ? protoToExecutionMode(
+                          projects?.find((p) => p.id === item.projectId)?.executionMode,
+                        )
+                      : executionMode
+                  }
+                />
               </div>
+
+              {/* Local mode is a CHOICE made on this form, so its consequences are disclosed here. */}
+              {(executionMode === "local" ||
+                (executionMode === "inherit" &&
+                  protoToExecutionMode(
+                    projects?.find((p) => p.id === item.projectId)?.executionMode,
+                  ) === "local")) && <LocalModeDisclosure />}
 
               {projectDir ? (
                 <FileBrowser
