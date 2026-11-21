@@ -76,7 +76,7 @@ Two rules are enforced rather than merely suggested, because a fire with nothing
 a recurring item must be a flat top-level task, and it must be bound to a workflow. Say "stop the daily
 digest" and the agent clears the recurrence instead of leaving it running forever.
 
-### Fix: A recurring item can run locally
+### Fix: A recurring item can run locally — from the agent and from the forms
 Recurring work items could not be told to run **locally** — they silently inherited their project's execution
 mode. The capability was there the whole time; the work-item tools simply never offered the setting, so a
 recurring item was always created with no override of its own.
@@ -84,6 +84,11 @@ recurring item was always created with no override of its own.
 Both the create and update tools now take `execution_mode`, and it applies to every fire of a recurring item.
 If you want the daily digest to run in-process on your machine while the rest of the project runs in
 containers, you can now say so.
+
+The **create and edit forms** now offer the same execution-mode control regular work items have — they
+previously showed a runtime image and nothing else, so every automation was created with no override and
+quietly inherited its project. A local automation is a host process with your own filesystem access,
+which is often exactly what a nightly sweep of your own machine wants.
 
 ### Fix: Deleting a recurring item — in both clients, singly and in bulk
 Recurring items were effectively undeletable from the web GUI, and it was a matter of reach rather than a
