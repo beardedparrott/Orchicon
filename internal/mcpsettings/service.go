@@ -49,10 +49,32 @@ const maxArgs = 64
 // maxURLValueLen bounds URLs.
 const maxURLValueLen = 2048
 
-// envKeyRE is the env/header key grammar.
+// THE TWO MAPS DO NOT SHARE A GRAMMAR, and conflating them was a real defect.
+//
+// envKeyPattern is the ENVIRONMENT-VARIABLE grammar. A child process inherits env by name, and POSIX
+// names cannot contain hyphens, so this stays strict.
 const envKeyPattern = `^[A-Za-z_][A-Za-z0-9_]*$`
 
 var envKeyRE = regexp.MustCompile(envKeyPattern)
+
+// headerKeyPattern is the HTTP HEADER-NAME grammar: RFC 7230's token, whose allowed characters are the
+// "tchar" set — ALPHA / DIGIT / "!#$%&'*+-.^_`|~".
+//
+// WHY IT MUST DIFFER FROM envKeyPattern. Env keys and header names were validated by ONE regex, so the
+// env grammar was enforced on headers. That rejected every semantically prefixed header, which is the
+// NORMAL shape for the streamable-HTTP transport this validates: X-Pair, X-Api-Key, X-Request-Id,
+// X-Goog-Api-Key. The feature only accepted unhyphenated names such as "Authorization", so most real
+// remote MCP servers could not be configured at all.
+//
+// The hyphen is the whole point of the difference, but tchar also admits '.', '+', '~', '^', '`', '|'
+// and the other token characters, so the rule is expressed as the actual token grammar rather than as
+// "env plus a hyphen" — a narrower rule would need amending again for the next legal name.
+//
+// Colons and whitespace are excluded BY CONSTRUCTION: they are not tchar and would let a caller smuggle
+// a second header or a request line through one map entry.
+const headerKeyPattern = "^[A-Za-z0-9!#$%&'*+\\-.^_`|~]+$"
+
+var headerKeyRE = regexp.MustCompile(headerKeyPattern)
 
 // errInvalidArgument marks validation failures (handler maps to
 // connect.CodeInvalidArgument — no error-string sniffing).
@@ -327,14 +349,28 @@ func validateSecretRefs(ctx context.Context, tx pgx.Tx, tenantID string, env, he
 	return nil
 }
 
-// validateEnvKeys enforces the env/header key grammar + bounds.
-func validateMapKeys(m map[string]string, what string, maxEntries int) error {
+// keyGrammar is one name rule plus the pattern text used in the error, so a failure always quotes the
+// rule that actually rejected the key rather than a neighbouring one.
+type keyGrammar struct {
+	re      *regexp.Regexp
+	pattern string
+}
+
+var envKeys = keyGrammar{re: envKeyRE, pattern: envKeyPattern}
+var headerKeys = keyGrammar{re: headerKeyRE, pattern: headerKeyPattern}
+
+// validateMapKeys enforces a key grammar + bounds.
+//
+// THE GRAMMAR IS A PARAMETER ON PURPOSE. When this took no grammar it silently applied the env rule to
+// headers, which is the bug that made every hyphenated header invalid. Requiring the caller to name the
+// grammar makes that mistake impossible to repeat by accident.
+func validateMapKeys(m map[string]string, what string, maxEntries int, g keyGrammar) error {
 	if len(m) > maxEntries {
 		return invalidf("%s too many entries (max %d)", what, maxEntries)
 	}
 	for k, v := range m {
-		if !envKeyRE.MatchString(k) {
-			return invalidf("%s key %q must match %s", what, k, envKeyPattern)
+		if !g.re.MatchString(k) {
+			return invalidf("%s key %q must match %s", what, k, g.pattern)
 		}
 		if len(v) > maxCommandLen {
 			return invalidf("%s value for %q too long (max %d)", what, k, maxCommandLen)
@@ -428,10 +464,10 @@ func (s *Service) validateCreate(ctx context.Context, tx pgx.Tx, tenantID string
 	if err := validateArgs(in.Args); err != nil {
 		return err
 	}
-	if err := validateMapKeys(in.Env, "env", 64); err != nil {
+	if err := validateMapKeys(in.Env, "env", 64, envKeys); err != nil {
 		return err
 	}
-	if err := validateMapKeys(in.Headers, "headers", 32); err != nil {
+	if err := validateMapKeys(in.Headers, "headers", 32, headerKeys); err != nil {
 		return err
 	}
 	if in.Transport == TransportStdio {
