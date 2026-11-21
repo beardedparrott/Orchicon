@@ -1430,6 +1430,22 @@ function AskOrchiconPage() {
           sentText: null,
           items: [],
         }));
+        // RE-READ THE TRANSCRIPT, EXACTLY AS A COMPLETED TURN DOES.
+        //
+        // `items` above is only the LIVE stream buffer; the transcript an operator sees is the
+        // durable `messages` query. Dropping the items without invalidating messages left the pane
+        // showing an empty conversation plus the stopped-turn error until a manual reload — the
+        // client threw away its own copy of text the server had already preserved.
+        //
+        // The server does keep it: chat.go persists the partial reply with "Turn stopped by the
+        // user." under the errUserStop arm, commented "KEEP THE PARTIAL TEXT". The dispatch
+        // stream's own finally block invalidates this same key for this same reason (see "ONE FINAL
+        // DURABLE FETCH, after the turn ends"); stopping is just the other way a turn ends, and it
+        // was the one path that skipped the re-read.
+        //
+        // The STOPPED TURN'S ROW is written server-side by the abort, so this must land AFTER it —
+        // hence invalidate once the mutation has resolved, not before.
+        qc.invalidateQueries({ queryKey: askKeys.messages(convId) });
         qc.invalidateQueries({ queryKey: askKeys.conversations });
       } catch {
         toast.error("Failed to stop the reply", { title: "Error" });
