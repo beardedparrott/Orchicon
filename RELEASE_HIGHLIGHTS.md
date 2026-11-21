@@ -76,6 +76,15 @@ Two rules are enforced rather than merely suggested, because a fire with nothing
 a recurring item must be a flat top-level task, and it must be bound to a workflow. Say "stop the daily
 digest" and the agent clears the recurrence instead of leaving it running forever.
 
+### Fix: A recurring item can run locally
+Recurring work items could not be told to run **locally** — they silently inherited their project's execution
+mode. The capability was there the whole time; the work-item tools simply never offered the setting, so a
+recurring item was always created with no override of its own.
+
+Both the create and update tools now take `execution_mode`, and it applies to every fire of a recurring item.
+If you want the daily digest to run in-process on your machine while the rest of the project runs in
+containers, you can now say so.
+
 ### Fix: The FULLSEND chip is readable in every theme
 The **FULLSEND** control, the one whose whole job is to be unmistakable at a glance, was rendering its
 label over a translucent glass wash instead of over its own red fill — near-white on dark navy in dark
