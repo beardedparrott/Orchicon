@@ -28,6 +28,47 @@
 > numbers. The published release reads correctly while this file is wrong —
 > so grep the release log for that warning rather than assuming the two agree.
 
+## v0.6.10
+
+### New: Data retention you configure, and it actually gives disk back
+Orchicon keeps a bounded history instead of growing forever, and the Settings screen now says how much
+to keep. Pruning execution history was possible before but never scheduled, and — the part that
+mattered — deleting rows returned no disk: PostgreSQL only marks space reusable *inside* the table, so
+a deployment pruned diligently and watched its data directory climb anyway.
+
+Measured on a long-lived instance before this shipped, one table held 3,154 MB across 30,474 rows at
+**98.3% dead space**, and another held 2,102 MB of index bloat around a *single* row. A pass that prunes
+and then VACUUMs reclaimed 5.2 GB in under a second.
+
+The pass runs on a schedule, is **off until you turn it on**, and is configurable in both the web GUI
+and the TUI: how many executions to keep, whether to vacuum afterwards, a timeout per pass, and how long
+delivered outbox events are retained. Retention deletes history only — usage records are de-linked, not
+removed, because they are your spend ledger.
+
+### Fix: Stopping a turn keeps what the model already said
+Stopping a turn used to empty the conversation and show a failure with a Retry button. The reply was
+never lost — the server had been saving it all along — but a stop was recorded as an *error*, and the
+error view draws the error text **instead of** the message. Your partial reply was in the row and the
+screen discarded it.
+
+A stop is now recorded as a stop, not a failure. The reply you had so far stays in the transcript with a
+quiet *Turn stopped by the user.* beneath it, and no failure toast appears for an action you chose. The
+same fix means a reply that streamed and *then* failed keeps its text too, instead of reading as an
+empty turn.
+
+### Fix: Remote MCP servers with hyphenated headers work
+Configuring a remote MCP server rejected any header containing a hyphen — `X-Api-Key`, `X-Request-Id`,
+`Content-Type` — because header names were being validated with the environment-variable rule. Only
+unhyphenated names such as `Authorization` were accepted, which ruled out most real servers. Header names
+now use the HTTP token grammar, while environment keys keep the strict rule they need.
+
+### Fix: Stopping a turn whose question went unanswered no longer reports an unrecognised outcome
+A turn stopped while a question was on screen rendered `unrecognised outcome "unanswered"` in the
+transcript. The server had always emitted that outcome deliberately and the TUI always understood it;
+the web GUI did not. The card now reads *Not answered — … (the turn ended first)*, which is what
+actually happened: nothing lapsed and nothing was declined.
+
+---
 ## v0.6.6
 
 ### New: Every message in the transcript carries its time
