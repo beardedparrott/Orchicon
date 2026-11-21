@@ -93,6 +93,18 @@ shows *"No image — a local run executes on the host, not in a container"* in p
 dropdown, exactly as a regular work item does — the image picker only had that behaviour where a form
 told it the mode.
 
+### New: Find and bulk-manage conversations, in both clients
+The conversations rail can now **search** — by title *and* by the last message, which matters because most
+titles here are generated, so the line you actually remember is usually in the message, not the name.
+
+Search is the setup for the rest: turn on **Select**, hit **Select all** and you have exactly the matched
+set, then **Delete** it, **move it to a project**, or **categorize** it in one go. That turns "clear out
+every conversation named like this" from a scroll-and-click exercise into three gestures. The same
+capability is in the web GUI and the TUI.
+
+Both clients follow one rule: a bulk action only ever touches what is currently **visible**, so a delete
+can never reach a conversation the search or the project filter has hidden.
+
 ### Fix: Deleting a recurring item — in both clients, singly and in bulk
 Recurring items were effectively undeletable from the web GUI, and it was a matter of reach rather than a
 missing capability: the Work Items page filters recurring items out, and the one page that shows them —
