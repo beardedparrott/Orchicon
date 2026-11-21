@@ -88,7 +88,10 @@ containers, you can now say so.
 The **create and edit forms** now offer the same execution-mode control regular work items have — they
 previously showed a runtime image and nothing else, so every automation was created with no override and
 quietly inherited its project. A local automation is a host process with your own filesystem access,
-which is often exactly what a nightly sweep of your own machine wants.
+which is often exactly what a nightly sweep of your own machine wants. Choosing **local** now also
+shows *"No image — a local run executes on the host, not in a container"* in place of the runtime-image
+dropdown, exactly as a regular work item does — the image picker only had that behaviour where a form
+told it the mode.
 
 ### Fix: Deleting a recurring item — in both clients, singly and in bulk
 Recurring items were effectively undeletable from the web GUI, and it was a matter of reach rather than a
