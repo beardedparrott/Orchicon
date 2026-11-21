@@ -22,6 +22,8 @@ import {
   composerProjectChoices,
   effectiveComposerProject,
   filterConversationsByScope,
+  conversationMatchesSearch,
+  filterConversationsBySearch,
   isArchivedProject,
   projectStatusWord,
   scopeLabel,
@@ -296,5 +298,59 @@ describe("composerProjectChoices", () => {
       { value: "", label: "No project", count: 0, archived: false },
     ]);
     expect(got).toHaveLength(1);
+  });
+});
+
+describe("conversationMatchesSearch", () => {
+  const conv = (title: string, lastMessagePreview = "") => ({ id: title, title, lastMessagePreview });
+
+  it("matches nothing-special when the query is empty", () => {
+    // The "no filter" state must not empty the rail the moment the box is focused.
+    expect(conversationMatchesSearch(conv("Anything"), "")).toBe(true);
+    expect(conversationMatchesSearch(conv("Anything"), "   ")).toBe(true);
+  });
+
+  it("matches a title substring, case-insensitively", () => {
+    expect(conversationMatchesSearch(conv("Fix MCP tokens"), "mcp")).toBe(true);
+    expect(conversationMatchesSearch(conv("Fix MCP tokens"), "MCP")).toBe(true);
+    expect(conversationMatchesSearch(conv("Fix MCP tokens"), "tokens")).toBe(true);
+    // A fragment mid-word, because an operator types what they remember, not whole words.
+    expect(conversationMatchesSearch(conv("Fix MCP tokens"), "ok")).toBe(true);
+  });
+
+  it("matches the last-message preview, which is where untitled chats live", () => {
+    const c = conv("New conversation", "let's talk about the weather app");
+    expect(conversationMatchesSearch(c, "weather")).toBe(true);
+  });
+
+  it("does not match a query that appears in neither", () => {
+    expect(conversationMatchesSearch(conv("Fix MCP tokens", "about headers"), "kubernetes")).toBe(false);
+  });
+
+  it("ANDs multiple terms across title and preview", () => {
+    const c = conv("MCP work", "the token store is broken");
+    expect(conversationMatchesSearch(c, "mcp token")).toBe(true);
+    // Both terms must be present somewhere — one missing is not a match.
+    expect(conversationMatchesSearch(c, "mcp kubernetes")).toBe(false);
+  });
+});
+
+describe("filterConversationsBySearch", () => {
+  const list = [
+    { id: "c1", title: "Weatherapp ideas" },
+    { id: "c2", title: "MCP token fix" },
+    { id: "c3", title: "Weatherapp bug" },
+  ];
+
+  it("narrows to matching titles", () => {
+    expect(filterConversationsBySearch(list, "weatherapp").map((c) => c.id)).toEqual(["c1", "c3"]);
+  });
+
+  it("returns everything for an empty query", () => {
+    expect(filterConversationsBySearch(list, "")).toHaveLength(3);
+  });
+
+  it("returns nothing when nothing matches — an honest empty, not the whole list", () => {
+    expect(filterConversationsBySearch(list, "nonexistent")).toHaveLength(0);
   });
 });

@@ -190,6 +190,9 @@ type App struct {
 	// renameConv is the conversation-rename modal (nil = closed), hosted here for the same reason as
 	// the model picker: the surface it names (the conversations rail) belongs to the SHELL.
 	renameConv *kit2.Form
+	// convSearchForm is the rail's SEARCH modal (nil = closed), hosted here for the same reason as
+	// renameConv: the surface it filters is the conversations rail, which belongs to the SHELL.
+	convSearchForm *kit2.Form
 	// convScopeForm is the conversation-scope MCP modal (/mcp define|edit|secret|install), hosted here
 	// for the same reason: the surface it edits belongs to the SHELL's open conversation.
 	convScopeForm *kit2.Form
@@ -215,6 +218,11 @@ type App struct {
 	// convMarked is the rail's multi-selection, keyed by conversation ID (never by index: the rolling
 	// refresh re-seats rows by id.
 	convMarked map[string]bool
+	// convSearch is the rail's free-text filter over conversation titles and last-message previews.
+	// Applied inside scopedConversations (railrows.go) so it narrows the ROWS and "select all of what
+	// is visible" together — which is what makes "delete every conversation matching this name" possible
+	// rather than a scroll-and-mark exercise.
+	convSearch string
 	// convCollapsed is the conversations rail's collapsed folders, keyed by category id.
 	convCollapsed map[string]bool
 
@@ -991,6 +999,40 @@ func widestLineWidth(s string) int {
 	return w
 }
 
+// convSearchKey drives the rail's search modal.
+func (m *App) convSearchKey(k tea.KeyMsg) (*App, tea.Cmd) {
+	if m.convSearchForm == nil {
+		return m, nil
+	}
+	switch k.String() {
+	case "esc", "ctrl+s":
+		// EITHER CHORD CLOSES. esc is the universal dismiss; ctrl+s is the toggle that opened it, and a
+		// toggle that cannot close itself is the kind of thing an operator tries twice.
+		m.convSearchForm = nil
+		m.refreshComposerHint()
+		return m, nil
+	case "ctrl+c":
+		m.quitting = true
+		return m, tea.Quit
+	}
+	cmd, _ := m.convSearchForm.HandleKey(k)
+	if m.convSearchForm != nil && m.convSearchForm.Submitted {
+		m.convSearchForm = nil
+		m.refreshComposerHint()
+	}
+	return m, cmd
+}
+
+// convSearchView composes the search modal over the base view, inside a SOLID panel — the same host the
+// rename modal uses.
+func (m *App) convSearchView(base string, w, h int) string {
+	if m.convSearchForm == nil {
+		return base
+	}
+	m.convSearchForm.Width = m.modalInnerWidth()
+	return m.overlayCentered(base, m.modalPanel(m.convSearchForm.View(), m.modalWidth()))
+}
+
 // renameConvKey drives the rename modal.
 func (m *App) renameConvKey(k tea.KeyMsg) (*App, tea.Cmd) {
 	if m.renameConv == nil {
@@ -1429,7 +1471,7 @@ func (m *App) refreshComposerHint() {
 		// THE FIND BOX OWNS THE KEYBOARD TOO, and it is checked FIRST because it is claimed FIRST in
 		// dispatch: whatever takes the keys is what the row has to describe.
 		ctx = findComposerHint
-	} else if m.renameConv != nil || m.assignForm != nil || m.bulkConfirm != nil || m.catForm != nil {
+	} else if m.renameConv != nil || m.convSearchForm != nil || m.assignForm != nil || m.bulkConfirm != nil || m.catForm != nil {
 		ctx = formComposerHint
 	} else if s := m.screens[m.active]; s != nil {
 		// AN OPEN FORM OWNS THE KEYBOARD, SO THE HINT MUST DESCRIBE THE FORM.
@@ -2123,6 +2165,10 @@ func (m App) viewFrame() string {
 	// The rename modal goes in the same layer.
 	if m.renameConv != nil {
 		base = m.renameConvView(base, w, h)
+	}
+	// The rail's search modal goes in the same layer.
+	if m.convSearchForm != nil {
+		base = m.convSearchView(base, w, h)
 	}
 	// THE MESSAGE EDIT MENU, drawn above the transcript it edits and centred by the same compositor
 	// every other overlay uses — so it cannot change the frame's row count.

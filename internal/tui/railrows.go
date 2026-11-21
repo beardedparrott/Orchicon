@@ -36,9 +36,19 @@ func (m *App) railConvID(r railRow) string {
 	return m.conversations[r.conv].ID
 }
 
-// scopedConversations are the conversations the ACTIVE PROJECT shows.
+// scopedConversations are the conversations the ACTIVE PROJECT shows, narrowed by the rail's SEARCH.
+//
+// BOTH FILTERS LIVE HERE, at the one choke point every consumer reads — railRows, the mark helpers,
+// select-all and the hint count. That is deliberate: putting the query at this choke point means search
+// applies to the ROWS and to "everything currently visible" at once, so a bulk delete can act on exactly
+// what the operator sees rather than on a set that silently includes filtered-out conversations.
+//
+// Scope first, then search: a search must never surface a chat from a project you have scoped away.
 func (m *App) scopedConversations() []chat.Conversation {
-	return filterConversationsByScope(m.conversations, m.projectScope)
+	return filterConversationsBySearch(
+		filterConversationsByScope(m.conversations, m.projectScope),
+		m.convSearch,
+	)
 }
 
 // railRows builds the rail's VISIBLE lines: a folder per category (in the server's order), its

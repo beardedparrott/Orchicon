@@ -422,6 +422,14 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// The rail's SEARCH modal owns every key while it is up, for the same reason: it is layered above
+	// the composer.
+	if m.convSearchForm != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			return m.convSearchKey(k)
+		}
+		return m, nil
+	}
 	// THE MESSAGE EDIT MENU OWNS EVERY KEY WHILE IT IS OPEN, and it is checked here, beside the other
 	// App-level overlays, because it is opened by a CLICK rather than a chord.
 	if m.msgMenuBlocksKeys() {

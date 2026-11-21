@@ -15,6 +15,18 @@ import (
 // The rail's item chords.
 const (
 	conversationBulkDeleteChord = "ctrl+x"
+	// conversationSearchChord filters the rail by free text. ctrl+s rather than ctrl+f because ctrl+f is
+	// already FIND IN TRANSCRIPT (router.go) — a different search, in a different pane, and overloading
+	// it would leave the operator unsure which one they opened.
+	conversationSearchChord = "ctrl+s"
+	// conversationSelectAllChord marks every conversation CURRENTLY VISIBLE, which after a search is
+	// exactly the matched set. This is what turns "delete every chat named like this" into one gesture
+	// instead of a scroll-and-space exercise.
+	//
+	// NOT ctrl+a: that is the composer's SELECT ALL (a global route, so it would win before the rail saw
+	// it) and overloading it would leave the operator unsure whether they had selected a chat or their
+	// own typed text.
+	conversationSelectAllChord = "ctrl+l"
 )
 
 // toggleConvMark marks or unmarks the highlighted conversation and advances one row.
@@ -207,6 +219,13 @@ func (m *App) railItemKey(k string) (bool, tea.Cmd) {
 		m.dock.SetError("no conversation selected in the rail")
 		return true, nil
 
+	case conversationSearchChord:
+		m.openConvSearch()
+		return true, nil
+
+	case conversationSelectAllChord:
+		return true, m.selectAllVisibleConversations()
+
 	case conversationBulkDeleteChord:
 		if ids := m.convBulkIDs(); len(ids) > 0 {
 			m.openBulkConfirm(
@@ -328,4 +347,84 @@ func (m *App) railHintLine() string {
 		parts = append(parts, "esc: clear")
 	}
 	return strings.Join(parts, " · ")
+}
+
+// openConvSearch opens the rail's search box, prefilled with the active query so ctrl+s edits rather
+// than silently discarding what is already narrowing the list.
+func (m *App) openConvSearch() {
+	f := kit2.NewForm("Search conversations", kit2.FieldSpec{
+		Name:  "query",
+		Label: "Match title or last message",
+		Kind:  kit2.KText,
+		// NOT Required: an empty query is the meaningful "clear the filter" answer, and a Required field
+		// would make clearing it a validation error.
+		Initial: m.convSearch,
+	})
+	f.OnSubmit = func(vals map[string]string, _ map[string][]string) (tea.Cmd, error) {
+		m.convSearch = strings.TrimSpace(vals["query"])
+		// Marks for rows the filter just hid would be INVISIBLE but still deleted by a bulk action, so
+		// the selection is pruned to what is actually on screen.
+		m.pruneConvMarks()
+		if m.convSearch == "" {
+			m.dock.SetNotice("search cleared")
+		} else {
+			m.dock.SetNotice("searching: " + m.convSearch)
+		}
+		m.refreshStreamStatus()
+		return nil, nil
+	}
+	f.Width = m.modalWidth()
+	m.convSearchForm = f
+	m.refreshComposerHint()
+}
+
+// clearConvSearch drops the filter, reporting whether there was one. Bound to esc, which clears a
+// selection FIRST and keeps its established meaning when there is nothing to clear.
+func (m *App) clearConvSearch() bool {
+	if m.convSearch == "" {
+		return false
+	}
+	m.convSearch = ""
+	m.pruneConvMarks()
+	m.refreshStreamStatus()
+	return true
+}
+
+// selectAllVisibleConversations marks every conversation the rail is CURRENTLY showing.
+//
+// VISIBLE, NOT EVERY CONVERSATION. After a search this is precisely the matched set — the whole point —
+// and it also means the project scope is respected, so "select all" can never quietly reach across
+// projects the operator has filtered out. Pressing it again clears, which is the toggle every list in
+// this client uses.
+func (m *App) selectAllVisibleConversations() tea.Cmd {
+	visible := m.scopedConversations()
+	if len(visible) == 0 {
+		m.dock.SetError("nothing visible to select")
+		return nil
+	}
+	// Already fully marked -> clear (a toggle, not an accumulating trap).
+	if len(m.convMarked) == len(visible) {
+		allMarked := true
+		for _, c := range visible {
+			if !m.convMarked[c.ID] {
+				allMarked = false
+				break
+			}
+		}
+		if allMarked {
+			m.convMarked = nil
+			m.dock.SetNotice("selection cleared")
+			m.refreshStreamStatus()
+			return nil
+		}
+	}
+	if m.convMarked == nil {
+		m.convMarked = map[string]bool{}
+	}
+	for _, c := range visible {
+		m.convMarked[c.ID] = true
+	}
+	m.dock.SetNotice(fmt.Sprintf("%d conversations marked", len(visible)))
+	m.refreshStreamStatus()
+	return nil
 }
