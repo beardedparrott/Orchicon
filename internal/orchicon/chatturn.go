@@ -1452,6 +1452,11 @@ var ConsentReadOnlyTools = []string{
 // ConsentMutatingTools are the host-suite tools that DO ask before they run.
 var ConsentMutatingTools = []string{
 	"write", "edit", "batch_write", "bash",
+	// set_workdir is MUTATING by this list's definition: it changes WHERE writes and shell commands
+	// land. It writes no file itself, but a rebind redirects every subsequent relative write, so it
+	// must not run unattended — and classifying it read-only would let a model move the session's
+	// anchor with no approval at all.
+	"set_workdir",
 }
 
 // consentGatedTool reports whether a native Ask tool call must be APPROVED before it runs.

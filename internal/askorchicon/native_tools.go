@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/beardedparrott/orchicon/internal/askmode"
 	"github.com/beardedparrott/orchicon/internal/db"
@@ -26,6 +28,7 @@ var hostSuiteToolNames = []string{
 	"read", "grep", "write", "edit",
 	"list", "glob", "bash",
 	"todoread", "todowrite",
+	"set_workdir",
 }
 
 // isHostSuiteTool reports whether name is part of the file/shell suite
@@ -201,6 +204,14 @@ func AskFileRoot(ctx context.Context, pool *db.Pool) (string, error) {
 // interactive boundary — any absolute path the operator can reach).
 func askHostToolsForRoot(svc *Service, scope AskFileScope, convID string) *orchicon.HostTools {
 	h := orchicon.NewHostToolsUnrestricted(scope.Dir)
+	// The session's WORKTREE is an additional default root alongside the project dir, restored if this
+	// conversation already rebound via set_workdir. ADDITIVE: worktree.Base.ExtraRoots is consulted only
+	// under AllowAnyPath (the interactive path), so the confined worker suite that uses NewHostTools is
+	// unaffected, and the consent layer's PRE-APPROVED set stays the project dir — rebinding moves the
+	// default anchor, never the consent boundary.
+	root, extra := askWorkdirFor(convID, scope.Dir)
+	h.SetExtraRoots(extra)
+	h.SetWorkdir(root)
 	h.SetBashEnviron(svc.askGuardEnviron(scope, convID))
 	// The operator's DURABLE permission policy, consulted through the ONE shared accessor
 	// (permpolicy.Store) before any call in the suite is dispatched.
@@ -363,7 +374,21 @@ func (a *nativeAskTools) ExecuteAskTool(ctx context.Context, name, argsJSON stri
 		if argsJSON == "" {
 			argsJSON = "{}"
 		}
-		return askHostToolsForRoot(a.service, scope, askConversationFromContext(ctx)).Execute(ctx, name, argsJSON)
+		convID := askConversationFromContext(ctx)
+		host := askHostToolsForRoot(a.service, scope, convID)
+		out, err := host.Execute(ctx, name, argsJSON)
+		// PERSIST a rebind. The suite is rebuilt on the next call, so without this the anchor would
+		// silently revert to the project dir one call after set_workdir reported success — the worst
+		// possible outcome, because the tool would have told the operator it worked.
+		if name == "set_workdir" && err == nil {
+			anchor := host.Anchor()
+			if anchor == scope.Dir {
+				setAskWorkdir(convID, "") // restored to the project dir: clear the override
+			} else {
+				setAskWorkdir(convID, anchor)
+			}
+		}
+		return out, err
 	}
 	// Product tools through the registry.
 	if a.service.toolRegistry == nil {
@@ -406,4 +431,61 @@ func toolParamsSchema(d ToolDefinition) string {
 		return `{"type":"object"}`
 	}
 	return string(b)
+}
+
+// --- session workdir (set_workdir) -----------------------------------------
+//
+// The anchor must SURVIVE turns. The host suite is rebuilt on every tool call
+// (askHostToolsForRoot), so a rebind stored only on the instance would be discarded the moment the
+// next call constructed a fresh suite — the operator would rebind to a worktree and the very next
+// read would silently land back in the project dir. This is per-conversation state, kept in the
+// same in-memory style the grants/once/fullsend stores already use.
+var askWorkdirs = struct {
+	sync.Mutex
+	byConv map[string]string
+}{byConv: map[string]string{}}
+
+// setAskWorkdir records a conversation's rebound anchor ("" clears it).
+func setAskWorkdir(convID, dir string) {
+	if convID == "" {
+		return
+	}
+	askWorkdirs.Lock()
+	defer askWorkdirs.Unlock()
+	if dir == "" {
+		delete(askWorkdirs.byConv, convID)
+		return
+	}
+	askWorkdirs.byConv[convID] = dir
+}
+
+// askWorkdirFor returns the anchor to build the suite with, plus the extra default roots.
+//
+// The returned root is the conversation's rebound worktree when it still exists, else the project
+// dir. Extra roots always include BOTH the project dir and the .orchicon-worktrees entries, so a
+// relative path still resolves to a project file when that is where it lives — the rebind changes
+// the DEFAULT, never the reach.
+func askWorkdirFor(convID, projectDir string) (root string, extra []string) {
+	extra = append(extra, projectDir)
+	wtBase := filepath.Join(projectDir, ".orchicon-worktrees")
+	if entries, err := os.ReadDir(wtBase); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				extra = append(extra, filepath.Join(wtBase, e.Name()))
+			}
+		}
+	}
+	askWorkdirs.Lock()
+	rebound := askWorkdirs.byConv[convID]
+	askWorkdirs.Unlock()
+	if rebound == "" {
+		return projectDir, extra
+	}
+	// A rebound worktree that has been removed must not become a dead anchor: every relative
+	// operation would fail against a directory that no longer exists.
+	if fi, err := os.Stat(rebound); err != nil || !fi.IsDir() {
+		setAskWorkdir(convID, "")
+		return projectDir, extra
+	}
+	return rebound, extra
 }
