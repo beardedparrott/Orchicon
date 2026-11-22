@@ -105,6 +105,14 @@ capability is in the web GUI and the TUI.
 Both clients follow one rule: a bulk action only ever touches what is currently **visible**, so a delete
 can never reach a conversation the search or the project filter has hidden.
 
+Search filters **as you type**, not on a submit. In the TUI it is an inline box (`ctrl+s`) with a live count,
+and select-all is on `ctrl+l` — both now named in the rail's own hint. In the web GUI every row simply has a
+checkbox, with a **Select all** box above the list, so there is no mode to enter and leave.
+
+Conversations with no title — which the rail draws as *"New conversation"* — are searchable too. Previously
+the filter read only the stored title, so those rows could not be found at all even though that is exactly
+what is written on them.
+
 ### Fix: Deleting a recurring item — in both clients, singly and in bulk
 Recurring items were effectively undeletable from the web GUI, and it was a matter of reach rather than a
 missing capability: the Work Items page filters recurring items out, and the one page that shows them —
