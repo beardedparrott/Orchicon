@@ -28,6 +28,56 @@
 > numbers. The published release reads correctly while this file is wrong —
 > so grep the release log for that warning rather than assuming the two agree.
 
+## v0.6.13
+
+### New: the Idea Cloud has a home, and promoting an idea is now a real move
+Automation-spawned ideas used to land parented to whatever the research run invented — often an epic it
+created itself, and sometimes nothing at all. That produced a trap: the Idea Cloud is a flat triage list,
+so approving ONE idea flipped that row's status and left it pointed at a parent every normal list query
+hides. The result was work visible on the board, invisible in the tree, and rendering a bare ULID where
+its parent's title belonged.
+
+Every project now gets a single durable **Idea Cloud** epic — created on first use, reused forever after.
+Spawned ideas land as tasks beneath it, and approving one is a structural move rather than a status flip:
+the epic is resolved-or-created, the item becomes a task, and it is parented there, all in one
+transaction so a promotion is never half-applied. Both the epic and the promoted task appear in your
+work items, which is where you manage them from then on.
+
+An idea that arrives parented under a container a run invented no longer strands it: the fire's children
+are claimed by the Idea Cloud epic and the emptied container is retired. One run's output cannot split
+across two parents, and a run-specific epic name cannot survive as backlog noise.
+
+### Fix: an item whose parent isn't on screen is shown, not swallowed
+The tree built its roots from "no parent at all" and reached every other row through its parent, so an
+item whose parent was missing from the fetched list belonged to neither set — it existed and rendered
+nowhere. Those rows now surface as roots. A row appearing one level off is a far smaller problem than
+real work going missing.
+
+### Fix: the parent picker
+The dropdown was clipped underneath the card below it — the card's blur establishes a stacking context a
+child's z-index cannot escape — so the menu is now portaled. Opening it also threw the page to the
+bottom: it was briefly painted in normal flow at the end of the document, and the focus on its search box
+scrolled that into view. Both are fixed, and the menu measures the room on the side it opens toward
+instead of applying a fixed height.
+
+### Changed: Tree is the default Work Items view
+The board flattens every item into a column, so a promoted feature appeared with no visible relationship
+to its epic. The tree is the only view that shows the hierarchy. Your own choice still persists once you
+make it.
+
+### New: Ask Orchicon can follow you into a worktree
+The file and shell tools were anchored at the project directory, so work done in a session worktree
+silently wrote to the main checkout instead. `set_workdir` rebinds the relative-path anchor and the shell
+working directory to a worktree — additively: the project directory stays readable, writable and
+pre-approved, and a relative path that exists in both still means the project's file.
+
+### Also in this release
+- **`scripts/reset-idea.sh`** returns a promoted item to the Idea Cloud, for rehearsing a demo run.
+- The **auth** suite no longer hangs: a leaked transaction made `pool.Close` wait forever, turning a
+  one-line assertion failure into a five-minute timeout. Each test now seeds its own tenant.
+- The **scheduler** reconciler tests assert on their own items rather than on global call counts, which
+  had made them fail against any shared database holding scheduled work.
+
 ## v0.6.10
 
 ### New: Data retention you configure, and it actually gives disk back
