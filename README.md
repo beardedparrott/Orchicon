@@ -40,8 +40,9 @@ The documentation lives at the project root:
 
 ## Last Release Changes
 
-- **Every message in the transcript carries its time**: The transcript now stamps **every block** with when it happened — your own messages, the model's replies, its reasoning, and platform notices — in **both** the web GUI and the TUI.
-- **MCP credentials can be embedded inside a larger value**: A secret reference had to be the *entire* value of an MCP server's env or header.
+- **Data retention you configure, and it actually gives disk back**: Orchicon keeps a bounded history instead of growing forever, and the Settings screen now says how much to keep.
+- **Recurring work items from Ask Orchicon**: You can now have an Ask session create a **_recurring_** work item — "every morning at nine", "hourly while I am debugging", "each Monday" — in **Brainstorm** and **Iteration**, not just a one-shot item.
+- **Find and bulk-manage conversations, in both clients**: The conversations rail can now **search** — by title *and* by the last message, which matters because most titles here are generated, so the line you actually remember is usually in the message, not the name.
 
 Full details: [release notes on GitHub](https://github.com/beardedparrott/Orchicon/releases).
 
