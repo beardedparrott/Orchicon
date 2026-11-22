@@ -261,7 +261,9 @@ func TestHostSuiteSplitAgreesWithAskmode(t *testing.T) {
 	for _, n := range gateNames {
 		gate[n] = true
 	}
-	wantGate := map[string]bool{"bash": true, "batch_write": true, "edit": true, "write": true}
+	// set_workdir joins the gate: it is a host-suite action that changes WHERE work lands, so every
+	// mode that may not write must not reposition the anchor its writes would use.
+	wantGate := map[string]bool{"bash": true, "batch_write": true, "edit": true, "write": true, "set_workdir": true}
 	if len(gate) != len(wantGate) {
 		t.Fatalf("askmode gate-set = %v, want %v", gateNames, wantGate)
 	}
