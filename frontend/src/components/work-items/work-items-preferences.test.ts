@@ -46,10 +46,33 @@ describe("work-items preferences (localStorage envelopes)", () => {
     localStorage.clear();
   });
 
-  it("view defaults to board and round-trips tree/board", () => {
+  it("view defaults to TREE and round-trips tree/board", () => {
+    // The tree is the default view: it is the only view that shows the
+    // parent/child hierarchy, and the board flattens every item into a status
+    // column with no visible relationship to its epic.
+    expect(loadViewPreference()).toBe("tree");
+    saveViewPreference("board");
     expect(loadViewPreference()).toBe("board");
     saveViewPreference("tree");
     expect(loadViewPreference()).toBe("tree");
+  });
+
+  it("a v3 envelope (explicit view:board) falls back to the TREE default", () => {
+    // THE POINT OF THE VERSION BUMP. Every existing operator has a stored
+    // `{v:3, view:"board"}` written by the old constructor default. Changing
+    // DEFAULT_VIEW alone would not change what they see, because the stored
+    // value wins — the catalog of settings would keep opening on the board and
+    // the fix would look like it did nothing.
+    localStorage.setItem(
+      "orchicon.workItems.view",
+      JSON.stringify({ v: 3, view: "board" }),
+    );
+    expect(loadViewPreference()).toBe("tree");
+  });
+
+  it("a CURRENT-version explicit board choice still sticks", () => {
+    // The bump must not make the operator's own choice un-persistable: only a
+    // STALE envelope is discarded, and a fresh board pick round-trips above.
     saveViewPreference("board");
     expect(loadViewPreference()).toBe("board");
   });
@@ -152,7 +175,7 @@ describe("work-items preferences (localStorage envelopes)", () => {
     localStorage.setItem("orchicon.workItems.view", "{not json");
     localStorage.setItem("orchicon.workItems.filters.proj-1", "garbage");
     localStorage.setItem("orchicon.workItems.boardCollapsed.proj-1", "42");
-    expect(loadViewPreference()).toBe("board");
+    expect(loadViewPreference()).toBe("tree");
     expect(loadFiltersPreference("proj-1")).toEqual(DEFAULT_FILTERS);
     expect(loadCollapsedPreference("proj-1", "board").size).toBe(0);
   });
@@ -162,7 +185,7 @@ describe("work-items preferences (localStorage envelopes)", () => {
       "orchicon.workItems.view",
       JSON.stringify({ v: 0, view: "tree" }),
     );
-    expect(loadViewPreference()).toBe("board");
+    expect(loadViewPreference()).toBe("tree");
   });
 
   it("v2 envelopes (created_at desc) migrate to the chain-order default", () => {

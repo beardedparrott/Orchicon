@@ -24,6 +24,11 @@ const (
 var (
 	modifyTools = map[string]bool{
 		"write": true, "edit": true, "batch_write": true,
+		// set_workdir MODIFIES session state rather than the filesystem: it rebinds the anchor every
+		// subsequent relative write and shell command resolves against. It belongs in Modify (not Bash)
+		// because nothing about it runs a shell, and it must not be Ignore — a ledger that omitted it
+		// would report a session whose writes went somewhere with no record of why they moved.
+		"set_workdir": true,
 	}
 	readTools = map[string]bool{
 		"read": true, "batch_read": true, "grep": true, "batch_grep": true,

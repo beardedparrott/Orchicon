@@ -26,6 +26,9 @@ type HostTools struct {
 	base worktree.Base
 	// containerExec routes bash into the run container; nil = in-process.
 	containerExec func(ctx context.Context, command string, env []string, cwd string) (stdout, stderr string, exitCode int, err error)
+	// homeDir is the ORIGINAL working directory (the conversation's project_dir), captured on first
+	// rebind so use_project_dir can restore it. Empty until set_workdir is first called.
+	homeDir string
 	// envForBash, when set, REPLACES the inherited environment for in-process bash (cmd.Env).
 	envForBash func() []string
 	// pathPolicy, when set, is consulted with every path-like argument of every call BEFORE the call is
@@ -120,6 +123,15 @@ var hostToolDefs = []ToolDef{
 		ParamsJSON:  `{"type":"object","properties":{"pattern":{"type":"string","description":"Doublestar glob pattern (e.g. **/*.go)."},"path":{"type":"string","description":"Root the glob at this project-relative subdir (default \".\")."},"max_matches":{"type":"integer","description":"Bounded match cap (default 500)."}},"required":["pattern"]}`,
 	},
 	{
+		Name: "set_workdir",
+		Description: "Rebind this session's relative-path anchor and bash working directory — typically to " +
+			"a git worktree under .orchicon-worktrees/, so relative reads/writes and bare bash commands " +
+			"operate inside it instead of the main checkout. ADDITIVE, never narrowing: the project " +
+			"directory stays readable/writable and pre-approved, and use_project_dir restores the " +
+			"original anchor. No arguments reports the current anchor and available roots.",
+		ParamsJSON: `{"type":"object","properties":{"path":{"type":"string","description":"Absolute path, or a path relative to the project directory. It must lie inside the project directory or a configured worktree root."},"use_project_dir":{"type":"boolean","description":"Restore the project directory as the anchor (takes precedence over path)."}}}`,
+	},
+	{
 		Name:        "bash",
 		Description: "Run a shell command in the execution's working directory. Use for builds, tests, git, and anything the file tools cannot express. Output is capped; long-running commands are bounded by a timeout. Prefer the file tools for pure reads/writes — they are faster and capped deterministically.",
 		ParamsJSON:  `{"type":"object","properties":{"command":{"type":"string","description":"The shell command to run (bash -c)."},"timeout_seconds":{"type":"integer","description":"Hard timeout in seconds (default 120, max 600). The command is killed on expiry."}},"required":["command"]}`,
@@ -182,6 +194,8 @@ func (h *HostTools) Execute(ctx context.Context, name, argsJSON string) (string,
 		return h.execList(argsJSON)
 	case "glob":
 		return h.execGlob(argsJSON)
+	case "set_workdir":
+		return h.execSetWorkdir(argsJSON)
 	case "bash":
 		return h.execBash(ctx, argsJSON)
 	case "todoread":
@@ -608,3 +622,159 @@ func doublestarGlob(root, pattern string, max int) ([]string, error) {
 	}
 	return abs, nil
 }
+
+// execSetWorkdir rebinds the session's relative-path anchor and bash cwd.
+//
+// WHY IT EXISTS. The Ask suite's base.Worktree is the conversation's project_dir, which is the right
+// default but the wrong anchor for a session working in a git worktree: a relative `read`/`write` and
+// every bare `bash` command silently operated on the main checkout while the work was supposed to be
+// isolated. That failure is silent — edits land in the user's working tree, the tool reports success,
+// and only a `git status` in the other tree reveals it.
+//
+// THE SAFETY STORY, which is why this cannot over-grant. The candidate must lie INSIDE the project
+// directory (or one of the base's already-configured roots). A worktree at
+// <project>/.orchicon-worktrees/<id> is therefore inside the PRE-APPROVED project directory, so
+// rebinding to it grants no new consent — it is the same tree the operator already approved. Because
+// containment is required, this tool can never be used to walk the session's scope to another
+// project, and the consent layer's pre-approval set is untouched by it.
+//
+// ADDITIVE, NEVER NARROWING. The project directory remains readable and writable, and it remains the
+// pre-approved root (the consent layer derives that from the conversation's scope, not from this
+// base). Only the DEFAULT for relative paths and the bash cwd moves — which is exactly the ambiguity
+// that caused the bug.
+func (h *HostTools) execSetWorkdir(argsJSON string) (string, error) {
+	var a struct {
+		Path          string `json:"path"`
+		UseProjectDir bool   `json:"use_project_dir"`
+	}
+	if err := worktree.MarshalArgs([]byte(argsJSON), &a); err != nil {
+		return "", fmt.Errorf("set_workdir: %w", err)
+	}
+	// The original anchor, captured once so it survives repeated rebinds.
+	if h.homeDir == "" {
+		h.homeDir = h.base.Worktree
+	}
+	projectDir := h.homeDir
+	available := h.workdirRoots()
+
+	if strings.TrimSpace(a.Path) == "" && !a.UseProjectDir {
+		return workdirReport(projectDir, h.base.Worktree, available), nil
+	}
+	if a.UseProjectDir {
+		h.base.Worktree = projectDir
+		return workdirReport(projectDir, h.base.Worktree, available), nil
+	}
+
+	candidate := strings.TrimSpace(a.Path)
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(h.base.Worktree, candidate)
+	}
+	abs, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", fmt.Errorf("set_workdir: resolve %q: %w", a.Path, err)
+	}
+	// Resolve links before the containment check so a symlink cannot name a directory
+	// outside the allowed roots while appearing to be inside one.
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("set_workdir: %q does not exist (%v)", abs, err)
+	}
+	fi, err := os.Stat(real)
+	if err != nil {
+		return "", fmt.Errorf("set_workdir: stat %q: %w", real, err)
+	}
+	if !fi.IsDir() {
+		return "", fmt.Errorf("set_workdir: %q is not a directory", real)
+	}
+	if !h.withinWorkdirRoots(real) {
+		return "", fmt.Errorf("set_workdir: %q is outside the allowed roots (%s) — a session may rebind only "+
+			"inside its project directory or a configured worktree root", real, strings.Join(available, ", "))
+	}
+	h.base.Worktree = real
+	return workdirReport(projectDir, h.base.Worktree, h.workdirRoots()), nil
+}
+
+// workdirRoots lists the directories a rebind may target: the project directory plus whatever extra
+// roots the Ask path configured (its own project dir, and one level of .orchicon-worktrees entries).
+func (h *HostTools) workdirRoots() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			p = r
+		}
+		if seen[p] {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	add(h.homeDir)
+	for _, r := range h.base.ExtraRoots {
+		add(r)
+	}
+	// Worktrees are always UNDER the project dir in this platform's convention
+	// (.orchicon-worktrees/<id>), so they are discovered rather than enumerated by the caller.
+	if h.homeDir != "" {
+		base := filepath.Join(h.homeDir, ".orchicon-worktrees")
+		if entries, err := os.ReadDir(base); err == nil {
+			for _, e := range entries {
+				if e.IsDir() {
+					add(filepath.Join(base, e.Name()))
+				}
+			}
+		}
+	}
+	return out
+}
+
+// withinWorkdirRoots reports whether target lies inside any allowed rebind root.
+func (h *HostTools) withinWorkdirRoots(target string) bool {
+	for _, root := range h.workdirRoots() {
+		if target == root || strings.HasPrefix(target, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// workdirReport is the tool's "say what the state now is" payload — the operator and the model both
+// need to see the anchor, not infer it.
+func workdirReport(projectDir, current string, available []string) string {
+	b, err := json.MarshalIndent(map[string]any{
+		"project_dir": projectDir,
+		"anchor":      current,
+		"available":   available,
+		"note": "Relative reads/writes and bare bash commands now resolve against " + current +
+			". Absolute paths are unaffected, the project directory stays readable and writable, " +
+			"and set_workdir with use_project_dir=true restores the project directory.",
+	}, "", "  ")
+	if err != nil {
+		return "anchor: " + current
+	}
+	return string(b)
+}
+
+// SetExtraRoots configures additional read+write default roots (the interactive path's per-session
+// worktree). Consulted only under AllowAnyPath, so a confined worker base is unaffected.
+func (h *HostTools) SetExtraRoots(roots []string) { h.base.ExtraRoots = roots }
+
+// SetWorkdir rebinds the relative-path anchor and bash cwd, and records the ORIGINAL anchor as
+// homeDir so use_project_dir can restore it. Unlike the set_workdir TOOL it performs no containment
+// check — it is the host's own restore path, called from the code that already resolved the root.
+func (h *HostTools) SetWorkdir(dir string) {
+	if strings.TrimSpace(dir) == "" {
+		return
+	}
+	if h.homeDir == "" {
+		h.homeDir = h.base.Worktree
+	}
+	h.base.Worktree = dir
+}
+
+// Anchor reports the current relative-path anchor (the bash cwd and the base for relative paths).
+func (h *HostTools) Anchor() string { return h.base.Worktree }

@@ -37,13 +37,20 @@ import {
 } from "@/components/work-items/work-item-meta";
 
 const PREFIX = "orchicon.workItems.";
+// VERSION 4: the default VIEW became TREE. A v3 envelope carries an explicit
+// `view: "board"` written by the constructor default, so changing DEFAULT_VIEW
+// alone would not change what any EXISTING operator sees — the stored value
+// wins over the constant. Bumping the version makes stale v3 view state fall
+// back to the new default, so the tree actually becomes the default on the
+// next load rather than only for a cleared profile.
+//
 // VERSION 3: the default display sort became CHAIN ORDER (empty sort_by,
 // ascending) so the tree/board default to sort_order — the sequence order.
 // V2 envelopes stored `sortBy: "created_at", sortOrder: "desc"`, which
 // silently disabled the server's sort_order default and made tree drags
 // no-ops. Bumping the version makes stale v2 filter/view state fall back to
 // the new defaults instead of pinning an explicit created_at sort.
-const VERSION = 3;
+const VERSION = 4;
 
 export interface WorkItemFilters {
   /** OR-composed status filter; empty = nothing matches */
@@ -71,7 +78,13 @@ export const DEFAULT_FILTERS: WorkItemFilters = {
   sortOrder: "asc",
 };
 
-export const DEFAULT_VIEW: WorkItemsView = "board";
+// TREE is the default view: the work hierarchy (Epic → Feature → Task →
+// Subtask) is the primary mental model of a backlog, and the tree is the only
+// view that shows parent/child structure at all — the board flattens every
+// item into a status column, so a promoted idea or a freshly created feature
+// appears with no visible relationship to its epic. An operator who prefers
+// the board still switches once and the choice persists (saveViewPreference).
+export const DEFAULT_VIEW: WorkItemsView = "tree";
 
 // ---------------------------------------------------------------------------
 // Low-level safe storage helpers

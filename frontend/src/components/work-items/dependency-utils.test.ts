@@ -22,6 +22,7 @@ import {
   buildTreeData,
   computeBlockState,
   filterItemsByKindStatus,
+  findOrphanIds,
   matchesSearch,
 } from "@/components/work-items/dependency-utils";
 import {
@@ -263,5 +264,71 @@ describe("bottomUpOrder", () => {
     const byId = new Map([e, f, t].map((i) => [i.id, i]));
     expect(bottomUpOrder(["e", "f", "t"], byId)).toEqual(["t", "f", "e"]);
     expect(bottomUpOrder(["t", "e", "f"], byId)).toEqual(["t", "f", "e"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Orphans — items whose parent is NOT in the rendered set (regression:
+// a promoted Idea Cloud item was visible on the board and INVISIBLE in
+// the tree).
+// ---------------------------------------------------------------------------
+
+describe("findOrphanIds (regression: promoted idea vanished from the tree)", () => {
+  it("flags an item whose parent is absent from the set", () => {
+    // Exactly the reported shape: the promoted feature is pending, but its
+    // parent epic is still idea-state and every normal list query excludes
+    // idea rows — so the parent is genuinely missing from the fetched set.
+    const promoted = item({
+      id: "01M8283GN6D37PE3JS23J1H8NK",
+      title: "Metric rows: dew point, pressure and visibility",
+      kind: WorkItemKind.FEATURE,
+      parentId: "01M82837C7BKK8VT58PQACYZ1D", // the idea-state epic
+    });
+    const orphans = findOrphanIds([promoted]);
+    expect(orphans.has("01M8283GN6D37PE3JS23J1H8NK")).toBe(true);
+  });
+
+  it("does not flag an item whose parent IS present", () => {
+    const epic = item({ id: "e", title: "Epic", kind: WorkItemKind.EPIC });
+    const feat = item({ id: "f", title: "Feature", kind: WorkItemKind.FEATURE, parentId: "e" });
+    expect(findOrphanIds([epic, feat]).size).toBe(0);
+  });
+
+  it("does not flag a legitimate top-level item", () => {
+    expect(findOrphanIds([item({ id: "e", title: "Top epic", kind: WorkItemKind.EPIC })]).size).toBe(
+      0,
+    );
+  });
+
+  it("every non-root item is either parented-in-set or flagged an orphan", () => {
+    // The invariant that makes the tree total: nothing can be present and
+    // also unreachable. Either its parent is in the set (reachable via
+    // childrenOf) or it is flagged and rendered as a root.
+    const items = [
+      item({ id: "ghost-child", title: "Orphan", parentId: "missing-parent" }),
+      item({ id: "e", title: "Epic", kind: WorkItemKind.EPIC }),
+      item({ id: "c", title: "Child", kind: WorkItemKind.FEATURE, parentId: "e" }),
+    ];
+    const orphans = findOrphanIds(items);
+    const present = new Set(items.map((i) => i.id));
+    for (const i of items) {
+      if (!i.parentId) continue; // a root is reachable by definition
+      const reachable = present.has(i.parentId) || orphans.has(i.id);
+      expect(reachable).toBe(true);
+    }
+  });
+
+  it("an orphan survives a filter that excludes nothing", () => {
+    const promoted = item({
+      id: "p",
+      title: "Promoted",
+      kind: WorkItemKind.FEATURE,
+      parentId: "idea-epic",
+    });
+    const data = buildTreeData([promoted], ALL_KIND_VALUES, ALL_STATUS_VALUES, "");
+    // buildTreeData cannot conjure the absent parent; the orphan set is what
+    // lets the tree render the row instead of dropping it.
+    expect(data.treeItems.map((i) => i.id)).toEqual(["p"]);
+    expect(findOrphanIds(data.treeItems).has("p")).toBe(true);
   });
 });

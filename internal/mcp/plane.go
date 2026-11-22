@@ -119,12 +119,12 @@ func (p *planeRegistry) List() []ToolDef {
 		},
 		{
 			Name:        "orchicon_plane_create_idea_item",
-			Description: "SPAWNS an idea-state work item in the REAL instance (the sanctioned automation write surface). IDEA landing is forced by the tool, not by parameters — provenance is stamped from the run's trusted run_context, never from call arguments. The response envelope self-verifies: it reports landed_status (\"idea\"), idea_state: true, and spawned provenance. A missing or non-idea run context makes the spawn REFUSE loudly (never a silent plain-pending landing).",
+			Description: "SPAWNS an idea-state work item in the REAL instance (the sanctioned automation write surface). IDEA landing is forced by the tool, not by parameters — provenance is stamped from the run's trusted run_context, never from call arguments. THE HIERARCHY IS ALSO FORCED: the item lands as kind=task under the project's single 'Idea Cloud' epic regardless of the kind/parent_id you pass, so spawn flat (title + description) and do not create your own epic. The response envelope self-verifies: it reports landed_status (\"idea\"), idea_state: true, and spawned provenance. A missing or non-idea run context makes the spawn REFUSE loudly (never a silent plain-pending landing).",
 			Properties: map[string]propertySchema{
 				"title":               {Type: "string", Description: "Work item title"},
 				"project_id":          {Type: "string", Description: "Project ID"},
-				"kind":                {Type: "string", Description: "epic, feature, task, or subtask (default task)"},
-				"parent_id":           {Type: "string", Description: "Parent work item ID (optional; only 'epic' may be top-level)"},
+				"kind":                {Type: "string", Description: "IGNORED for idea spawns — the item always lands as kind=task under the Idea Cloud epic (the operator picks the real kind at promotion)"},
+				"parent_id":           {Type: "string", Description: "IGNORED for idea spawns — the item is always parented to the project's Idea Cloud epic (do not create an epic of your own)"},
 				"description":         {Type: "string", Description: "Markdown description (optional)"},
 				"acceptance_criteria": {Type: "string", Description: "Markdown acceptance criteria (optional)"},
 				"priority":            {Type: "string", Description: "Priority 1-5 (optional)"},

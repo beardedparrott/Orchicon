@@ -53,6 +53,9 @@ type Policy struct {
 func theWorkTools() map[string]bool {
 	return map[string]bool{
 		"write": true, "edit": true, "batch_write": true, "bash": true,
+		// set_workdir is work-adjacent: it changes WHERE work lands. Brainstorm plans and does not act,
+		// so a mode that may not write must not reposition the anchor its writes would use either.
+		"set_workdir": true,
 	}
 }
 

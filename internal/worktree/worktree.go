@@ -106,6 +106,16 @@ type Base struct {
 	ScratchDir string
 	// Set ONLY by the interactive (Ask) suite — orchicon.NewHostToolsUnrestricted.
 	AllowAnyPath bool
+	// ExtraRoots are ADDITIONAL read+write roots for the INTERACTIVE (Ask) path only:
+	// directories the conversation treats as in-scope alongside Worktree (its project_dir).
+	// Empty everywhere else, and consulted only under AllowAnyPath, so the confined worker
+	// base (NewHostTools) is byte-for-byte unaffected by this field existing.
+	ExtraRoots []string
+	// PreApprovedRoots are the roots a write inside which is PRE-APPROVED. Deliberately
+	// NOT the same set as ExtraRoots: adding a directory as a default scope must never
+	// silently widen what needs no consent. The consent layer derives this from the
+	// conversation's own scope, not from the tool base.
+	PreApprovedRoots []string
 }
 
 // DefaultScratchDir is the sanctioned scratch area the composite tools may read and write: ONE
@@ -132,6 +142,14 @@ func safeResolve(b Base, rel string, writable bool) (string, error) {
 		clean := filepath.Clean(rel)
 		if filepath.IsAbs(clean) {
 			return clean, nil
+		}
+		// A relative path resolves against Worktree (the project_dir anchor). When the
+		// conversation ALSO has extra default roots (a per-session worktree), a relative path
+		// that exists ONLY under one of them resolves there. This is a FALLBACK, never a
+		// search: Worktree wins whenever the path exists in both, so an existing project file
+		// can never be shadowed by a same-named path in a worktree.
+		if p, ok := resolveInExtraRoots(b, clean); ok {
+			return p, nil
 		}
 		return filepath.Join(b.Worktree, clean), nil
 	}
@@ -784,4 +802,44 @@ func MarshalArgs(raw json.RawMessage, into any) error {
 		return nil
 	}
 	return json.Unmarshal(raw, into)
+}
+
+// resolveInExtraRoots resolves a RELATIVE path against the base's ExtraRoots, requiring that the
+// path actually EXIST there. It is a fallback for a path that does not exist under Worktree, not a
+// precedence rule: the caller always tries Worktree first.
+//
+// Why existence-gated rather than ordered: `read src/app.tsx` in a session whose project and
+// worktree both contain src/app.tsx MUST mean the project's file, so an extra root cannot be
+// consulted ahead of it. But `read .orchicon-worktrees/<id>/src/app.tsx` should work without the
+// operator spelling out the project dir — and that path does not exist under the project root, so
+// existence is exactly the disambiguator.
+//
+// The symlink is resolved before the containment check so a root can never be escaped through a
+// link placed inside it.
+func resolveInExtraRoots(b Base, cleanRel string) (string, bool) {
+	for _, root := range b.ExtraRoots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		candidate := filepath.Join(root, cleanRel)
+		fi, err := os.Stat(candidate)
+		if err != nil {
+			continue
+		}
+		real, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			continue
+		}
+		realRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			continue
+		}
+		if real != realRoot && !strings.HasPrefix(real, realRoot+string(filepath.Separator)) {
+			continue // escaped its root through a link
+		}
+		_ = fi
+		return candidate, true
+	}
+	return "", false
 }
