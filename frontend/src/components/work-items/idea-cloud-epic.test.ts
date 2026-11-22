@@ -1,9 +1,10 @@
-// The Idea Cloud container must not appear in the active work-item views, and hiding it
-// must NOT hide a promoted child whose parent it is.
+// The Idea Cloud container is VISIBLE in the active work-item views, and a promoted child
+// hangs from it.
 //
-// This is the regression the operator hit twice: first a promoted item vanished from the
-// tree, then — with the anchor in place — the container itself became the un-actionable
-// row nobody expects to see in a project's hierarchy.
+// Two earlier iterations of this file encoded the opposite belief — first that a promoted
+// child vanished, then that the container should be hidden. The operator's requirement is
+// explicit and is the one asserted here: after approving an idea, BOTH the "Idea Cloud" epic
+// and the promoted task are visible in the active work items, with the task under the epic.
 
 import { describe, expect, it } from "vitest";
 
@@ -22,88 +23,67 @@ function item(partial: Record<string, unknown> & { id: string; title: string }) 
   } as never;
 }
 
-// Mirrors routes/work-items.tsx's predicate exactly.
-function isIdeaCloudContainer(i: { kind: number; title: string; parentId?: string }) {
-  return (
-    i.kind === WorkItemKind.EPIC &&
-    !i.parentId &&
-    i.title.trim().toLowerCase() === IDEA_CLOUD_EPIC_TITLE.toLowerCase()
-  );
-}
-
 describe("Idea Cloud container identity", () => {
   it("matches the server's title exactly (Go: workitem.IdeaCloudEpicTitle)", () => {
-    // A drift here would make the filter target a different row than the one the
-    // server resolves-or-creates, which is how a container re-appears in the list.
+    // The identity the frontend mirrors must be the one the server resolves-or-creates,
+    // or a rename silently changes which row the UI treats as the container.
     expect(IDEA_CLOUD_EPIC_TITLE).toBe("Idea Cloud");
-  });
-
-  it("recognizes the container only as a TOP-LEVEL EPIC with that title", () => {
-    const container = item({
-      id: "ic",
-      title: IDEA_CLOUD_EPIC_TITLE,
-      kind: WorkItemKind.EPIC,
-    });
-    expect(isIdeaCloudContainer(container)).toBe(true);
-
-    // A real epic that happens to be top-level is NOT the container.
-    expect(
-      isIdeaCloudContainer(item({ id: "e", title: "Checkout rewrite", kind: WorkItemKind.EPIC })),
-    ).toBe(false);
-    // A task named "Idea Cloud" is not the container.
-    expect(
-      isIdeaCloudContainer(item({ id: "t", title: IDEA_CLOUD_EPIC_TITLE, kind: WorkItemKind.TASK })),
-    ).toBe(false);
-    // An epic with that title but PARENTED is not the container (the container is top-level).
-    expect(
-      isIdeaCloudContainer(
-        item({ id: "x", title: IDEA_CLOUD_EPIC_TITLE, kind: WorkItemKind.EPIC, parentId: "p" }),
-      ),
-    ).toBe(false);
-    // Case/whitespace tolerant, matching the server's EqualFold+TrimSpace.
-    expect(
-      isIdeaCloudContainer(item({ id: "y", title: "  idea cloud ", kind: WorkItemKind.EPIC })),
-    ).toBe(true);
   });
 });
 
-describe("hiding the container keeps promoted children visible", () => {
-  const container = item({ id: "ic", title: IDEA_CLOUD_EPIC_TITLE, kind: WorkItemKind.EPIC });
-  const promoted = item({ id: "p", title: "Promoted idea", parentId: "ic" });
-  const realEpic = item({ id: "e", title: "Real epic", kind: WorkItemKind.EPIC });
-  const realChild = item({ id: "c", title: "Real child", parentId: "e" });
-  const all = [container, promoted, realEpic, realChild];
-
-  const backlog = all.filter((i) => !isIdeaCloudContainer(i as never));
-
-  it("drops the container but keeps its promoted child", () => {
-    const ids = backlog.map((i) => (i as { id: string }).id);
-    expect(ids).not.toContain("ic");
-    expect(ids).toContain("p");
+describe("after promotion, both rows are visible and correctly linked", () => {
+  // The shape PromoteIdea now writes: the promoted item is a pending TASK parented to a
+  // pending top-level EPIC titled "Idea Cloud".
+  const container = item({
+    id: "ic",
+    title: IDEA_CLOUD_EPIC_TITLE,
+    kind: WorkItemKind.EPIC,
+    status: WorkItemStatus.PENDING,
   });
-
-  it("the promoted child becomes an ORPHAN — rendered as a root, never dropped", () => {
-    // Hiding the container is exactly the situation the orphan rule exists for: the
-    // child's parent is absent from the rendered set, so without findOrphanIds the tree
-    // would lose it again (roots were `!parentId` and nothing else).
-    const orphans = findOrphanIds(backlog as never);
-    expect(orphans.has("p")).toBe(true);
-    // A genuinely parented child of a VISIBLE epic is not an orphan.
-    expect(orphans.has("c")).toBe(false);
+  const promoted = item({
+    id: "p",
+    title: "Promoted idea",
+    kind: WorkItemKind.TASK,
+    status: WorkItemStatus.PENDING,
+    parentId: "ic",
   });
+  const items = [container, promoted];
 
-  it("the tree still renders the promoted item as a reachable row", () => {
-    const data = buildTreeData(backlog as never, ALL_KIND_VALUES, ALL_STATUS_VALUES, "");
+  it("the container is NOT filtered out of the active views", () => {
+    // Requirement: the epic shows up in work items alongside the task.
+    const data = buildTreeData(items as never, ALL_KIND_VALUES, ALL_STATUS_VALUES, "");
     const ids = data.treeItems.map((i) => (i as { id: string }).id);
+    expect(ids).toContain("ic");
     expect(ids).toContain("p");
-    expect(ids).toContain("c");
-    expect(ids).not.toContain("ic");
-    // Nothing is present-but-unreachable.
-    const present = new Set(ids);
-    const orphans = findOrphanIds(data.treeItems as never);
-    for (const i of data.treeItems as unknown as { id: string; parentId?: string }[]) {
-      if (!i.parentId) continue;
-      expect(present.has(i.parentId) || orphans.has(i.id)).toBe(true);
-    }
+  });
+
+  it("the promoted task is reachable UNDER the epic (not an orphan root)", () => {
+    const orphans = findOrphanIds(items as never);
+    // Its parent is present, so it must not be treated as an orphan.
+    expect(orphans.has("p")).toBe(false);
+    expect(orphans.size).toBe(0);
+  });
+
+  it("the tree renders the promoted task as a child of the container", () => {
+    const data = buildTreeData(items as never, ALL_KIND_VALUES, ALL_STATUS_VALUES, "");
+    const roots = data.treeItems.filter((i) => !(i as { parentId?: string }).parentId);
+    const rootIds = roots.map((i) => (i as { id: string }).id);
+    // The epic is the only root; the task is nested beneath it.
+    expect(rootIds).toEqual(["ic"]);
+    const child = data.treeItems.find((i) => (i as { id: string }).id === "p") as {
+      parentId?: string;
+    };
+    expect(child?.parentId).toBe("ic");
+  });
+});
+
+describe("legacy ideas with no parent still render (regression guard)", () => {
+  it("an idea-state orphan promoted before the container existed is a root, not dropped", () => {
+    // Ideas spawned before the container existed have parent_id NULL. If one of those is
+    // promoted and the server's anchoring is bypassed, it must still be VISIBLE rather than
+    // silently missing — the failure the operator reported first.
+    const lonely = item({ id: "l", title: "Legacy promoted", parentId: "" });
+    const data = buildTreeData([lonely] as never, ALL_KIND_VALUES, ALL_STATUS_VALUES, "");
+    expect(data.treeItems.map((i) => (i as { id: string }).id)).toContain("l");
   });
 });

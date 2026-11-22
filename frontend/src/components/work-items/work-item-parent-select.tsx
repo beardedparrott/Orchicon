@@ -182,11 +182,30 @@ export function WorkItemParentSelect({
     };
   }, [open]);
 
-  // Keep the highlighted option in view when the selection moves.
+  // Keep the highlighted option in view when the selection moves — by scrolling THE LIST,
+  // never the page.
+  //
+  // `el.scrollIntoView()` was the reported "the dropdown throws me to the bottom of the
+  // screen" bug: it walks every scrollable ancestor AND the window to bring the element into
+  // view, and because this menu is PORTALED and `position: fixed`, that walk ends at the document.
+  // So highlighting the first option on open scrolled the page itself — the menu stayed put,
+  // the form moved, and the operator had to scroll back up to use the list they had just opened.
+  //
+  // Adjusting the list's own scrollTop touches exactly one scroll container and cannot move
+  // the document.
   useEffect(() => {
     if (!open) return;
-    const el = listRef.current?.querySelector<HTMLElement>("[data-highlighted='true']");
-    el?.scrollIntoView({ block: "nearest" });
+    const list = listRef.current;
+    if (!list) return;
+    const el = list.querySelector<HTMLElement>("[data-highlighted='true']");
+    if (!el) return;
+    const top = el.offsetTop;
+    const bottom = top + el.offsetHeight;
+    if (top < list.scrollTop) {
+      list.scrollTop = top;
+    } else if (bottom > list.scrollTop + list.clientHeight) {
+      list.scrollTop = bottom - list.clientHeight;
+    }
   }, [open, highlighted]);
 
   // Reset the query whenever the popover reopens.

@@ -632,7 +632,38 @@ func (s *Service) PromoteIdea(ctx context.Context, req *connect.Request[apiv1.Pr
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("only idea-state work items can be promoted; approve it via PromoteIdea, or discard it via DismissIdea"))
 	}
-	fields := db.UpdateWorkItemFields{Status: strPtr(domain.WorkItemPending)}
+	// PROMOTION IS A STRUCTURAL MOVE, NOT A STATUS FLIP.
+	//
+	// The operator's expectation, stated plainly: approving an idea must land it in the
+	// backlog UNDER a visible "Idea Cloud" epic — creating that epic if this is the first
+	// promotion in the project, reusing it if it already exists. Flipping only the status
+	// left the promoted item wherever the spawn happened to put it: parented to nothing (a
+	// root, with "A task requires a parent" on its own edit page) or to a container the
+	// next fire had not settled yet.
+	//
+	// So: resolve-or-create the container, force the promoted item to a task (the flat kind
+	// the operator then retypes), and parent it to the container. All three in the same
+	// transaction as the status change, so a promotion is never half-applied.
+	epic, err := ResolveIdeaCloudEpic(ctx, ttx.Tx, tenantID, current.ProjectID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if epic.ID == current.ID {
+		// The container is never promoted onto itself (it is created pending, so this is
+		// defensive rather than reachable).
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("the Idea Cloud container cannot be promoted"))
+	}
+	// A promoted idea is not allowed to remain inside the triage container's own children
+	// while pointing at it as a parent — the row leaves idea state here, so the container
+	// becomes its parent in the ordinary, visible hierarchy.
+	epicID := epic.ID
+	kind := domain.WorkItemKindTask
+	fields := db.UpdateWorkItemFields{
+		Status:   strPtr(domain.WorkItemPending),
+		Kind:     &kind,
+		ParentID: &epicID,
+	}
 	updated, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, req.Msg.Id, current.Version, fields)
 	if err != nil {
 		return nil, mapDBError(err)

@@ -361,3 +361,114 @@ func TestAnchorAdoptsTheFiresEarlierChildren(t *testing.T) {
 		t.Fatalf("speculative container status = %q, want cancelled (superseded)", runEpicNow.Status)
 	}
 }
+
+func TestPromoteIdeaCreatesContainerAndParentsTheTask(t *testing.T) {
+	// THE OPERATOR'S REQUIREMENT, end to end:
+	//   1. approving an idea creates the "Idea Cloud" epic if it does not exist
+	//   2. ... reuses it if it does
+	//   3. the promoted item becomes a TASK
+	//   4. ... parented to that epic
+	//   5. both are visible in the active (non-idea) views
+	pool, s, ctx, tenantID, projectID := ideaEnv(t)
+
+	// An idea from before the container existed: no parent at all.
+	orphan := createIdeaItem(t, pool, tenantID, projectID, "Legacy idea", "", "")
+
+	got, err := s.PromoteIdea(ctx, connect.NewRequest(&apiv1.PromoteIdeaRequest{Id: orphan.ID}))
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	promoted := got.Msg.GetWorkItem()
+
+	// (1) the container was created.
+	epic := resolveEpic(t, pool, tenantID, projectID)
+	if epic.Title != IdeaCloudEpicTitle {
+		t.Fatalf("container title = %q, want %q", epic.Title, IdeaCloudEpicTitle)
+	}
+	// (3) the promoted item is a task.
+	if promoted.GetKind() != apiv1.WorkItemKind_WORK_ITEM_KIND_TASK {
+		t.Fatalf("promoted kind = %v, want TASK", promoted.GetKind())
+	}
+	// (4) parented to the container.
+	if promoted.GetParentId() != epic.ID {
+		t.Fatalf("promoted parent = %q, want the container %s", promoted.GetParentId(), epic.ID)
+	}
+
+	// (5) BOTH appear in the active scope — the query the work-items page issues.
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	active, err := db.ListWorkItems(ctx, ttx.Tx, db.ListWorkItemsFilter{
+		TenantID: tenantID, ProjectID: projectID, PageSize: 1000, IdeaScope: "exclude",
+	})
+	if err != nil {
+		t.Fatalf("list active: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, w := range active {
+		seen[w.ID] = true
+	}
+	if !seen[epic.ID] {
+		t.Fatal("the Idea Cloud epic is NOT in the active work items — the operator cannot see the parent")
+	}
+	if !seen[promoted.GetId()] {
+		t.Fatal("the promoted task is NOT in the active work items")
+	}
+
+	// (2) a SECOND promotion reuses the same container rather than creating another.
+	second := createIdeaItem(t, pool, tenantID, projectID, "Second idea", "", "")
+	got2, err := s.PromoteIdea(ctx, connect.NewRequest(&apiv1.PromoteIdeaRequest{Id: second.ID}))
+	if err != nil {
+		t.Fatalf("promote second: %v", err)
+	}
+	if got2.Msg.GetWorkItem().GetParentId() != epic.ID {
+		t.Fatalf("second promotion parented to %q, want the SAME container %s",
+			got2.Msg.GetWorkItem().GetParentId(), epic.ID)
+	}
+	again := resolveEpic(t, pool, tenantID, projectID)
+	if again.ID != epic.ID {
+		t.Fatal("a second promotion created a SECOND idea cloud epic")
+	}
+}
+
+func TestPromoteIdeaIsVisibleInTheTreeShape(t *testing.T) {
+	// The tree needs the parent present in the SAME list it renders, or the child becomes an
+	// orphan root. This asserts the shape the frontend's buildTreeData sees: a parentless
+	// epic plus a task pointing at it.
+	pool, s, ctx, tenantID, projectID := ideaEnv(t)
+	idea := createIdeaItem(t, pool, tenantID, projectID, "Promote me", "", "")
+	got, err := s.PromoteIdea(ctx, connect.NewRequest(&apiv1.PromoteIdeaRequest{Id: idea.ID}))
+	if err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	parentID := got.Msg.GetWorkItem().GetParentId()
+
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	active, err := db.ListWorkItems(ctx, ttx.Tx, db.ListWorkItemsFilter{
+		TenantID: tenantID, ProjectID: projectID, PageSize: 1000, IdeaScope: "exclude",
+	})
+	if err != nil {
+		t.Fatalf("list active: %v", err)
+	}
+	var parentFound, childFound bool
+	for _, w := range active {
+		if w.ID == parentID {
+			parentFound = true
+			if w.ParentID != nil {
+				t.Fatalf("the container is not top-level (parent %v)", *w.ParentID)
+			}
+		}
+		if w.ID == idea.ID {
+			childFound = true
+		}
+	}
+	if !parentFound || !childFound {
+		t.Fatalf("tree shape incomplete: parent present=%v child present=%v", parentFound, childFound)
+	}
+}
