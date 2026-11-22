@@ -12,8 +12,24 @@
 // Enter), consistent with the existing Radix-based MultiSelect. No
 // business logic lives here — the caller decides which items are
 // candidates (depth rule) and the component only filters/sorts them.
+//
+// THE MENU IS PORTALED, AND THAT IS A BUG FIX, NOT A STYLE CHOICE.
+//
+// The menu is anchored with `absolute` inside the Parent card. The card is a
+// `Card`, whose class set includes `glass-panel` — and `backdrop-filter`
+// establishes a STACKING CONTEXT. So the menu's `z-50` was scoped INSIDE the
+// Parent card and could not outrank the sibling Workflow card below it, which
+// paints later in DOM order: the option list rendered UNDERNEATH the next card
+// and the operator could see only its top edge.
+//
+// Escaping one stacking context from inside is not possible; the element has to
+// leave the subtree. `createPortal` lifts it to document.body, which this
+// codebase already does for exactly this class of clipping in ProjectScopeSelect,
+// mode-toggle, fullsend-toggle and AskModelChip — so the picker now behaves like
+// every other menu rather than being the one that does not.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronDown, Search } from "lucide-react";
 
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -76,6 +92,8 @@ export function WorkItemParentSelect({
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuStyle, setMenuStyle] = useState<React.CSSProperties>({});
 
   // Only items strictly shallower than the child are valid parents
   // (epic > feature > task > subtask). Self-exclusion is the caller's
@@ -95,19 +113,72 @@ export function WorkItemParentSelect({
     ? items.find((i) => i.id === value && depthForKind(i.kind) < childDepth)
     : undefined;
 
-  // Close on outside click.
+  // Close on outside click. The MENU IS PORTALED, so it is not a DOM descendant
+  // of rootRef — treating "not inside the trigger" as outside would close the
+  // menu on the very click that picks an option.
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (e: MouseEvent | TouchEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      const target = e.target as Node;
+      if (rootRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", onPointerDown);
     document.addEventListener("touchstart", onPointerDown);
     return () => {
       document.removeEventListener("mousedown", onPointerDown);
       document.removeEventListener("touchstart", onPointerDown);
+    };
+  }, [open]);
+
+  // PLACEMENT. A fixed-position menu must be positioned in VIEWPORT coordinates,
+  // measured from the trigger's own box — and re-measured while it is open,
+  // because the card it belongs to scrolls with the page and a `fixed` menu does
+  // not follow it on its own. It opens DOWNWARD unless there is no room below and
+  // more room above, and its height cap is the room actually available on the
+  // side it chose (never a fixed max-height that guarantees overflow).
+  useEffect(() => {
+    if (!open) return;
+    const MARGIN = 8;
+    const GAP = 4;
+    const place = () => {
+      const trigger = rootRef.current?.getBoundingClientRect();
+      if (!trigger) return;
+      const menu = menuRef.current?.getBoundingClientRect();
+      const vh = window.innerHeight;
+      const vw = window.innerWidth;
+      const menuH = menu?.height ?? Math.min(300, vh - 2 * MARGIN);
+      const roomBelow = vh - trigger.bottom - GAP - MARGIN;
+      const roomAbove = trigger.top - GAP - MARGIN;
+      const openDown = roomBelow >= menuH || roomBelow >= roomAbove;
+      const style: React.CSSProperties = {
+        position: "fixed",
+        left: `${Math.max(MARGIN, trigger.left)}px`,
+        minWidth: `${trigger.width}px`,
+        // Never wider than the viewport, and anchored left-of-trigger if needed.
+        maxWidth: `${Math.max(160, vw - Math.max(MARGIN, trigger.left) - MARGIN)}px`,
+        maxHeight: `${Math.max(120, openDown ? roomBelow : roomAbove)}px`,
+      };
+      if (openDown) style.top = `${trigger.bottom + GAP}px`;
+      else style.bottom = `${vh - trigger.top + GAP}px`;
+      setMenuStyle(style);
+    };
+    place();
+    // A second pass once the portal has laid out and the menu has its real height.
+    const raf = requestAnimationFrame(place);
+    window.addEventListener("resize", place);
+    // Capture phase so a scrolling ANCESTOR counts, not just the window.
+    window.addEventListener("scroll", place, true);
+    let ro: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(place);
+      if (menuRef.current) ro.observe(menuRef.current);
+    }
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+      ro?.disconnect();
     };
   }, [open]);
 
@@ -179,8 +250,13 @@ export function WorkItemParentSelect({
         <ChevronDown aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       </button>
 
-      {open && (
-        <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-xl glass-menu glass-menu text-popover-foreground shadow-md">
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            style={menuStyle}
+            className="z-50 overflow-hidden rounded-xl glass-menu text-popover-foreground shadow-md"
+          >
           <div className="flex items-center gap-2 border-b px-2 py-1.5">
             <Search
               aria-hidden="true"
@@ -203,7 +279,7 @@ export function WorkItemParentSelect({
             ref={listRef}
             role="listbox"
             aria-label="Parent work items"
-            className="max-h-[220px] overflow-y-auto p-1"
+            className="max-h-[220px] overflow-y-auto overscroll-contain p-1"
           >
             {candidates.length === 0 ? (
               <li className="px-2 py-3 text-center text-xs text-muted-foreground">
@@ -234,8 +310,9 @@ export function WorkItemParentSelect({
               })
             )}
           </ul>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
 
       {error && (
         <p role="alert" className="mt-1 text-xs text-destructive">

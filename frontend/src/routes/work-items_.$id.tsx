@@ -255,6 +255,23 @@ function WorkItemDetailPage() {
   // The item's parent, resolved from the already-loaded project graph.
   const parentItem = item.parentId ? itemsById.get(item.parentId) : undefined;
 
+  // FALLBACK PARENT LOOKUP — for a parent the project graph cannot resolve.
+  //
+  // GetDependencyGraph's node list passes no idea scope, so it inherits the
+  // server default (`status <> 'idea'`, internal/db/work_item.go). A promoted
+  // Idea Cloud item's parent is frequently an idea-state epic, so the graph does
+  // not contain it and `parentItem` is undefined — and the Parent card then
+  // rendered `item.parentId` verbatim, which is how a bare ULID appeared where a
+  // title belongs.
+  //
+  // GetWorkItem is the item-scoped RPC: it resolves ONE row by id with no list
+  // scope, so it succeeds precisely where the graph list cannot. Hook order is
+  // safe because every hook above runs unconditionally before the early returns
+  // below, and this one is keyed on the parent id so it only fires when the graph
+  // genuinely could not resolve it.
+  const { data: fallbackParent } = useGetWorkItem(parentItem ? "" : (item.parentId ?? ""));
+  const resolvedParent = parentItem ?? fallbackParent;
+
   // Direct children — used by the kind-switch confirmation (children that
   // can no longer sit under the item after a switch move to its parent).
   const directChildren = graph?.nodes?.filter((n) => n.parentId === id) ?? [];
@@ -778,18 +795,26 @@ function WorkItemDetailPage() {
                         : undefined
                     }
                   />
-                ) : parentItem ? (
+                ) : resolvedParent ? (
                   <Link
                     to="/work-items/$id"
                     params={{ id: item.parentId }}
                     className="inline-flex min-w-0 max-w-full items-center gap-2 font-medium hover:underline"
-                    title={parentItem.title}
+                    title={resolvedParent.title}
                   >
-                    <KindPill kind={parentItem.kind} />
-                    <span className="min-w-0 truncate">{parentItem.title}</span>
+                    <KindPill kind={resolvedParent.kind} />
+                    <span className="min-w-0 truncate">{resolvedParent.title}</span>
                   </Link>
                 ) : (
-                  item.parentId
+                  // NEVER render the bare id. A GUID where a title belongs reads
+                  // as data corruption; the honest statement is that the parent
+                  // exists on the row but is not resolvable from here — which is
+                  // exactly the idea-state-parent case, since this card's lookup
+                  // paths both exclude idea-state rows from their LIST scopes.
+                  <span className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+                    <span className="font-mono text-xs">{item.parentId}</span>
+                    <span>— parent not shown here</span>
+                  </span>
                 )}
               </CardTitle>
             </CardHeader>
