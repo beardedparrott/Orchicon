@@ -28,7 +28,7 @@
 // mode-toggle, fullsend-toggle and AskModelChip — so the picker now behaves like
 // every other menu rather than being the one that does not.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, Search } from "lucide-react";
 
@@ -76,6 +76,50 @@ export function filterParentOptions(
     .sort((a, b) => a.title.localeCompare(b.title));
 }
 
+/**
+ * Compute a portaled menu's fixed position from the trigger's viewport rect and the viewport.
+ *
+ * PURE and exported so the placement rules are asserted in a test rather than only observed by
+ * eye: which side it opens on, that it never exceeds the room it chose, and that the first
+ * returned style is already out of flow (the bug that made the page jump was a menu painted in
+ * normal flow at the end of document.body for one frame).
+ *
+ * `menuHeight` is optional because placement runs before the menu has a measured height on the
+ * first pass; the fallback caps the menu to the viewport rather than to a fixed number that may
+ * not fit.
+ */
+export function placeMenu(
+  trigger: { top: number; bottom: number; left: number; width: number; height?: number },
+  viewport: { width: number; height: number },
+  menuHeight?: number,
+): React.CSSProperties {
+  const MARGIN = 8;
+  const GAP = 4;
+  const roomBelow = viewport.height - trigger.bottom - GAP - MARGIN;
+  const roomAbove = trigger.top - GAP - MARGIN;
+  const menuH = menuHeight ?? Math.min(300, viewport.height - 2 * MARGIN);
+  // Open DOWNWARD whenever the menu fits below OR below is at least as roomy as above: a menu
+  // that flips upward with room to spare below is disorienting next to a control near the top.
+  const openDown = roomBelow >= menuH || roomBelow >= roomAbove;
+  const style: React.CSSProperties = {
+    position: "fixed",
+    left: `${Math.max(MARGIN, trigger.left)}px`,
+    minWidth: `${trigger.width}px`,
+    // Never wider than the viewport, and anchored left-of-trigger if needed.
+    maxWidth: `${Math.max(160, viewport.width - Math.max(MARGIN, trigger.left) - MARGIN)}px`,
+    // THE CAP IS THE ROOM ON THE SIDE IT CHOSE, never a fixed max-height — a fixed cap is what
+    // pushed a long list off the top of the screen in the sibling scope selector.
+    maxHeight: `${Math.max(120, openDown ? roomBelow : roomAbove)}px`,
+    visibility: "visible",
+    // Out of flow from the FIRST painted frame: a menu in normal flow at the end of <body>
+    // grows the document, which is what made the autofocus scroll the page.
+    zIndex: 50,
+  };
+  if (openDown) style.top = `${trigger.bottom + GAP}px`;
+  else style.bottom = `${viewport.height - trigger.top + GAP}px`;
+  return style;
+}
+
 export function WorkItemParentSelect({
   items,
   childKind,
@@ -93,7 +137,23 @@ export function WorkItemParentSelect({
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const [menuStyle, setMenuStyle] = useState<React.CSSProperties>({});
+  // THE INITIAL STYLE IS NOT EMPTY, AND THAT IS THE OTHER HALF OF THE "JUMPS TO THE BOTTOM" BUG.
+  //
+  // The placement effect ran AFTER paint, so for the first frame the portaled menu was appended
+  // to document.body with NO inline position — i.e. `position: static`, in normal flow at the
+  // very END of the body. On a page taller than the viewport that puts it below the fold, and it
+  // momentarily grows the document. The autofocus then scrolled that into view: the page shot to
+  // the bottom, and by the time placement made the menu `fixed` the viewport had already moved,
+  // leaving the operator stranded at the bottom of the page with the menu up where they clicked.
+  //
+  // So the FIRST render is already `fixed` (out of flow — it cannot affect page height) and
+  // invisible, and placement both measures and reveals it before the browser paints.
+  const [menuStyle, setMenuStyle] = useState<React.CSSProperties>({
+    position: "fixed",
+    top: -9999,
+    left: -9999,
+    visibility: "hidden",
+  });
 
   // Only items strictly shallower than the child are valid parents
   // (epic > feature > task > subtask). Self-exclusion is the caller's
@@ -137,31 +197,27 @@ export function WorkItemParentSelect({
   // not follow it on its own. It opens DOWNWARD unless there is no room below and
   // more room above, and its height cap is the room actually available on the
   // side it chose (never a fixed max-height that guarantees overflow).
-  useEffect(() => {
+  // useLayoutEffect, NOT useEffect: this both measures the trigger and REVEALS the menu, and it
+  // must happen after DOM mutation but BEFORE the browser paints. With useEffect the menu was
+  // briefly painted in its pre-placement state — the frame that made it visible below the fold.
+  useLayoutEffect(() => {
     if (!open) return;
-    const MARGIN = 8;
-    const GAP = 4;
     const place = () => {
       const trigger = rootRef.current?.getBoundingClientRect();
       if (!trigger) return;
       const menu = menuRef.current?.getBoundingClientRect();
-      const vh = window.innerHeight;
-      const vw = window.innerWidth;
-      const menuH = menu?.height ?? Math.min(300, vh - 2 * MARGIN);
-      const roomBelow = vh - trigger.bottom - GAP - MARGIN;
-      const roomAbove = trigger.top - GAP - MARGIN;
-      const openDown = roomBelow >= menuH || roomBelow >= roomAbove;
-      const style: React.CSSProperties = {
-        position: "fixed",
-        left: `${Math.max(MARGIN, trigger.left)}px`,
-        minWidth: `${trigger.width}px`,
-        // Never wider than the viewport, and anchored left-of-trigger if needed.
-        maxWidth: `${Math.max(160, vw - Math.max(MARGIN, trigger.left) - MARGIN)}px`,
-        maxHeight: `${Math.max(120, openDown ? roomBelow : roomAbove)}px`,
-      };
-      if (openDown) style.top = `${trigger.bottom + GAP}px`;
-      else style.bottom = `${vh - trigger.top + GAP}px`;
-      setMenuStyle(style);
+      setMenuStyle(
+        placeMenu(
+          {
+            top: trigger.top,
+            bottom: trigger.bottom,
+            left: trigger.left,
+            width: trigger.width,
+            height: menu?.height,
+          },
+          { width: window.innerWidth, height: window.innerHeight },
+        ),
+      );
     };
     place();
     // A second pass once the portal has laid out and the menu has its real height.
@@ -213,8 +269,24 @@ export function WorkItemParentSelect({
     if (open) {
       setQuery("");
       setHighlighted(0);
-      // Focus the search box after the panel renders.
-      requestAnimationFrame(() => inputRef.current?.focus());
+      // Re-hide until this open is placed; a stale style from the previous open would
+      // otherwise paint at the old coordinates for a frame.
+      setMenuStyle({ position: "fixed", top: -9999, left: -9999, visibility: "hidden" });
+      // Focus the search box after the panel renders, WITHOUT scrolling anything.
+      //
+      // `inputRef.current.focus()` was the "the parent dropdown throws me to the bottom of
+      // the page" bug, and it is the second half of it — the earlier scrollIntoView fix only
+      // addressed the list's own highlight. focus() performs a "scroll into view" on the
+      // focused element as part of focusing it, and this input lives in a menu that is
+      // PORTALED to document.body with `position: fixed`. A browser brings a fixed element
+      // into view by scrolling THE DOCUMENT to its position, so opening the menu scrolled the
+      // page — the menu stayed where it was placed, the form moved out from under the
+      // operator, and they had to scroll back up.
+      //
+      // `preventScroll: true` keeps the focus (so typing still filters immediately, which is
+      // the reason to autofocus at all) and suppresses the scroll. This is the documented
+      // purpose of the option.
+      requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
     }
   }, [open]);
 
