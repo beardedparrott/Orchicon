@@ -167,6 +167,26 @@ function WorkItemDetailPage() {
     [graph, id],
   );
 
+  // The item's parent, resolved from the already-loaded project graph. Declared HERE
+  // (above the early returns) because the fallback query below keys on it.
+  const parentItem = item?.parentId ? itemsById.get(item.parentId) : undefined;
+
+  // FALLBACK PARENT LOOKUP — for a parent the project graph cannot resolve.
+  //
+  // GetDependencyGraph's node list passes no idea scope, so it inherits the server
+  // default (`status <> 'idea'`, internal/db/work_item.go). A promoted Idea Cloud
+  // item's parent is frequently an idea-state epic, so the graph does not contain it
+  // and `parentItem` is undefined — the Parent card then rendered `item.parentId`
+  // verbatim, which is how a bare ULID appeared where a title belongs.
+  //
+  // GetWorkItem is the item-scoped RPC: it resolves ONE row by id with no list scope,
+  // so it succeeds precisely where the graph list cannot. It is ENABLED only when the
+  // graph failed to resolve the parent, and `enabled: !!id` means an absent/empty
+  // parent id fires no request — which is why this can be declared here, above the
+  // early returns, where every other hook lives. (Declaring it after them would make
+  // it a conditional hook, and React requires the same hook order on every render.)
+  const { data: fallbackParent } = useGetWorkItem(parentItem ? "" : (item?.parentId ?? ""));
+
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading…</p>;
   }
@@ -252,24 +272,7 @@ function WorkItemDetailPage() {
     (n) => n.id !== id && n.projectId === item.projectId,
   );
 
-  // The item's parent, resolved from the already-loaded project graph.
-  const parentItem = item.parentId ? itemsById.get(item.parentId) : undefined;
-
-  // FALLBACK PARENT LOOKUP — for a parent the project graph cannot resolve.
-  //
-  // GetDependencyGraph's node list passes no idea scope, so it inherits the
-  // server default (`status <> 'idea'`, internal/db/work_item.go). A promoted
-  // Idea Cloud item's parent is frequently an idea-state epic, so the graph does
-  // not contain it and `parentItem` is undefined — and the Parent card then
-  // rendered `item.parentId` verbatim, which is how a bare ULID appeared where a
-  // title belongs.
-  //
-  // GetWorkItem is the item-scoped RPC: it resolves ONE row by id with no list
-  // scope, so it succeeds precisely where the graph list cannot. Hook order is
-  // safe because every hook above runs unconditionally before the early returns
-  // below, and this one is keyed on the parent id so it only fires when the graph
-  // genuinely could not resolve it.
-  const { data: fallbackParent } = useGetWorkItem(parentItem ? "" : (item.parentId ?? ""));
+  // The graph could not resolve the parent, so the FALLBACK query above supplies it.
   const resolvedParent = parentItem ?? fallbackParent;
 
   // Direct children — used by the kind-switch confirmation (children that
