@@ -113,6 +113,10 @@ Conversations with no title — which the rail draws as *"New conversation"* —
 the filter read only the stored title, so those rows could not be found at all even though that is exactly
 what is written on them.
 
+And the list now loads **everything**, not the newest page. Searching for a name and deleting all of it used
+to come back in waves — delete nineteen, find five more, delete those, find three — because the rail was
+only ever shown one page of history and each deletion pulled the next page into view.
+
 ### Fix: Deleting a recurring item — in both clients, singly and in bulk
 Recurring items were effectively undeletable from the web GUI, and it was a matter of reach rather than a
 missing capability: the Work Items page filters recurring items out, and the one page that shows them —
