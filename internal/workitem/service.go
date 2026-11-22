@@ -296,6 +296,19 @@ func (s *Service) CreateWorkItem(ctx context.Context, req *connect.Request[apiv1
 		rc = RunContextFrom(ctx)
 	}
 	ApplyAutomationProvenance(&row, rc)
+	// IDEA ANCHOR: an automation-spawned idea is parented to the project's Idea Cloud
+	// epic rather than to whatever the spawning run invented.
+	//
+	// This runs AFTER ApplyAutomationProvenance on purpose — that call is what sets
+	// status=idea, and the anchoring decision keys off it. Anchoring here (in the
+	// shared create path) rather than in the MCP tool means EVERY spawn transport
+	// gets it: the plane tool, a sandboxed worker's direct API call, and any future
+	// one. A per-transport rule is how the original orphan bug survived.
+	if row.Status == domain.WorkItemIdea {
+		if err := AnchorIdeaToCloudEpic(ctx, ttx.Tx, &row); err != nil {
+			return nil, mapParentError(err)
+		}
+	}
 	// Stamp the runtime image: the caller's choice wins; empty = the base image (resolved from the
 	// daemon).
 	runtimeImage := strings.TrimSpace(msg.RuntimeImage)

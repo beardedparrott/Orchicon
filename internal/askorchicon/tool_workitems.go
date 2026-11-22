@@ -388,6 +388,17 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		rc = workitem.RunContextFrom(ctx)
 	}
 	workitem.ApplyAutomationProvenance(&row, rc)
+	// IDEA ANCHOR, same rule as the Connect create path: an idea-state spawn is a task
+	// under the project's Idea Cloud epic, never parented to whatever the run invented.
+	// This path calls db.CreateWorkItem DIRECTLY (it does not go through the service), so
+	// the anchoring has to be applied here too — the two create paths share the
+	// provenance stamp but not the write, and a rule applied in only one of them is
+	// precisely how the original orphan bug survived on the other transport.
+	if row.Status == domain.WorkItemIdea {
+		if err := workitem.AnchorIdeaToCloudEpic(ctx, ttx.Tx, &row); err != nil {
+			return nil, err
+		}
+	}
 	created, err := db.CreateWorkItem(ctx, ttx.Tx, row)
 	if err != nil {
 		return nil, err
