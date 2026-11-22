@@ -172,6 +172,36 @@ export function buildTreeData(
   };
 }
 
+/**
+ * Ids that claim a parent which is NOT in the rendered set — an "orphan".
+ *
+ * WHY THIS EXISTS. The tree rendered `treeItems.filter((i) => !i.parentId)` as
+ * its roots and then reached every other row only through its parent's
+ * `childrenOf`. An item whose parent is missing from the set is therefore in
+ * treeItems but is NOT a root (it has a parentId) and is never visited by a
+ * `childrenOf` call — it silently disappears from the view entirely.
+ *
+ * The common way to hit this is Idea Cloud promotion: a spawned idea's parent
+ * is an idea-state epic, and every normal work-items query excludes idea-state
+ * rows. Promoting ONE child leaves it pending-under-idea, so its parent is
+ * genuinely absent from the list — the promoted item vanished from the tree
+ * while still appearing on the (flat) board.
+ *
+ * An orphan is rendered as a ROOT row rather than hidden: showing it at the
+ * wrong depth is a cosmetic imperfection, whereas dropping it makes real work
+ * invisible. The row still carries its real parentId, so fixing the parent (by
+ * promoting it, or by moving the item) restores the hierarchy with no
+ * migration.
+ */
+export function findOrphanIds(items: WorkItem[]): Set<string> {
+  const present = new Set(items.map((i) => i.id));
+  const orphans = new Set<string>();
+  for (const item of items) {
+    if (item.parentId && !present.has(item.parentId)) orphans.add(item.id);
+  }
+  return orphans;
+}
+
 export type BlockState = ReturnType<typeof computeBlockState>;
 export type { DependencyGraph };
 

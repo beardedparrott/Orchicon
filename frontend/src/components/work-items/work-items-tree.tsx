@@ -49,7 +49,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { KindBadge, PositionBadge, RecurringBadge, StatusPill } from "@/components/work-items/work-item-badges";
-import type { BlockState } from "@/components/work-items/dependency-utils";
+import { findOrphanIds, type BlockState } from "@/components/work-items/dependency-utils";
 import { computeSequencePositions, sortByChainOrder } from "@/components/work-items/sequence-utils";
 import { SequenceControls } from "@/components/work-items/sequence-controls";
 import { BlockedChip, PrLinkChip } from "@/components/work-items/work-item-card";
@@ -145,6 +145,20 @@ export function WorkItemsTree({
     () => computeSequencePositions(allItems ?? treeItems),
     [allItems, treeItems],
   );
+  // ROOTS ARE "no parent" PLUS "parent not in this set".
+  //
+  // The root list used to be `!i.parentId` alone, and every other row was only
+  // reachable through its parent's `childrenOf`. An item whose parent is absent
+  // from treeItems (an idea-state parent excluded from the normal list, a parent
+  // filtered out, an item whose project left scope) is therefore neither a root
+  // nor any root's child — it existed in treeItems and rendered NOWHERE. That is
+  // how a promoted Idea Cloud item was visible on the flat board and invisible in
+  // the tree. Rendering such an orphan as a root keeps real work on screen; its
+  // real parentId is untouched, so resolving the parent restores the depth.
+  //
+  // Computed HERE, above the loading/error/empty early returns: a hook below them
+  // is conditional, and React requires the same hook order on every render.
+  const orphans = useMemo(() => findOrphanIds(treeItems), [treeItems]);
 
   const handleDragStart = (event: DragStartEvent) => {
     if (hasQuery) return; // reorder only without an active filter (see below)
@@ -235,7 +249,7 @@ export function WorkItemsTree({
 
   const childrenOf = (parentId: string) =>
     treeItems.filter((i) => i.parentId === parentId);
-  const roots = treeItems.filter((i) => !i.parentId);
+  const roots = treeItems.filter((i) => !i.parentId || orphans.has(i.id));
 
   return (
     <DndContext

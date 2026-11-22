@@ -14,7 +14,10 @@ import (
 func TestHostToolsDefsShape(t *testing.T) {
 	h := NewHostTools(t.TempDir(), "")
 	defs := h.Defs()
-	want := []string{"batch_read", "batch_grep", "batch_write", "read", "grep", "write", "edit", "list", "glob", "bash", "todoread", "todowrite"}
+	// set_workdir sits immediately before bash: it rebinds exactly what bash's cwd and every relative
+	// path resolve against, so the model should see the two together rather than discover the rebind
+	// tool after the shell it already used.
+	want := []string{"batch_read", "batch_grep", "batch_write", "read", "grep", "write", "edit", "list", "glob", "set_workdir", "bash", "todoread", "todowrite"}
 	if len(defs) != len(want) {
 		t.Fatalf("Defs = %d tools, want %d", len(defs), len(want))
 	}
