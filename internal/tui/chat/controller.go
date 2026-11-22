@@ -117,6 +117,10 @@ type Conversation struct {
 	// PendingReplyID is the acked assistant message id of a turn the SERVER reports as still running,
 	// or "".
 	PendingReplyID string
+	// LastMessagePreview is the trailing snippet the rail draws under the title. It is here so the
+	// rail's SEARCH can reach it: most conversations carry an auto-generated title, so a title-only
+	// search would fail to find the chat whose opening line the operator actually remembers.
+	LastMessagePreview string
 }
 
 // Registrar is the minimal subscription hook the controller needs (*subs.Registry satisfies it) —
@@ -583,15 +587,16 @@ func (c *Controller) LoadConversations() tea.Cmd {
 			}
 			for _, cv := range resp.Msg.GetConversations() {
 				convs = append(convs, Conversation{
-					ID:         cv.GetId(),
-					Title:      cv.GetTitle(),
-					TurnInFly:  cv.GetTurnInFlight(),
-					MessageN:   cv.GetMessageCount(),
-					ModelRef:   cv.GetModelRef(),
-					Mode:       cv.GetMode(),
-					Fullsend:   cv.GetFullsend(),
-					ProjectID:  cv.GetProjectId(),
-					SkillFiles: cv.GetSkillFiles(),
+					ID:                 cv.GetId(),
+					Title:              cv.GetTitle(),
+					LastMessagePreview: cv.GetLastMessagePreview(),
+					TurnInFly:          cv.GetTurnInFlight(),
+					MessageN:           cv.GetMessageCount(),
+					ModelRef:           cv.GetModelRef(),
+					Mode:               cv.GetMode(),
+					Fullsend:           cv.GetFullsend(),
+					ProjectID:          cv.GetProjectId(),
+					SkillFiles:         cv.GetSkillFiles(),
 					// Read at list time, so a conversation the server reports as mid-turn is recognisable as
 					// such the moment the rail loads — which is what the re-attach on open needs.
 					PendingReplyID: cv.GetPendingAssistantMessageId(),

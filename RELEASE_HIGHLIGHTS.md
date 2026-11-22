@@ -28,6 +28,125 @@
 > numbers. The published release reads correctly while this file is wrong —
 > so grep the release log for that warning rather than assuming the two agree.
 
+## v0.6.10
+
+### New: Data retention you configure, and it actually gives disk back
+Orchicon keeps a bounded history instead of growing forever, and the Settings screen now says how much
+to keep. Pruning execution history was possible before but never scheduled, and — the part that
+mattered — deleting rows returned no disk: PostgreSQL only marks space reusable *inside* the table, so
+a deployment pruned diligently and watched its data directory climb anyway.
+
+Measured on a long-lived instance before this shipped, one table held 3,154 MB across 30,474 rows at
+**98.3% dead space**, and another held 2,102 MB of index bloat around a *single* row. A pass that prunes
+and then VACUUMs reclaimed 5.2 GB in under a second.
+
+The pass runs on a schedule, is **off until you turn it on**, and is configurable in both the web GUI
+and the TUI: how many executions to keep, whether to vacuum afterwards, a timeout per pass, and how long
+delivered outbox events are retained. Retention deletes history only — usage records are de-linked, not
+removed, because they are your spend ledger.
+
+### Fix: Stopping a turn keeps what the model already said
+Stopping a turn used to empty the conversation and show a failure with a Retry button. The reply was
+never lost — the server had been saving it all along — but a stop was recorded as an *error*, and the
+error view draws the error text **instead of** the message. Your partial reply was in the row and the
+screen discarded it.
+
+A stop is now recorded as a stop, not a failure. The reply you had so far stays in the transcript with a
+quiet *Turn stopped by the user.* beneath it, and no failure toast appears for an action you chose. The
+same fix means a reply that streamed and *then* failed keeps its text too, instead of reading as an
+empty turn.
+
+### Fix: Remote MCP servers with hyphenated headers work
+Configuring a remote MCP server rejected any header containing a hyphen — `X-Api-Key`, `X-Request-Id`,
+`Content-Type` — because header names were being validated with the environment-variable rule. Only
+unhyphenated names such as `Authorization` were accepted, which ruled out most real servers. Header names
+now use the HTTP token grammar, while environment keys keep the strict rule they need.
+
+### New: Recurring work items from Ask Orchicon
+You can now have an Ask session create a **_recurring_** work item — "every morning at nine", "hourly while
+I am debugging", "each Monday" — in **Brainstorm** and **Iteration**, not just a one-shot item.
+
+Recurrence itself was never missing: the platform has had schedules, per-fire run history and timezone-aware
+wall-clock rules for a while. What was missing was the ability for the agent to reach them — the work-item
+tools had no recurrence parameter, so an Ask session could only *describe* a schedule, which schedules
+nothing. Both the create and update tools now carry it, so an agent can set a recurrence, change it, or stop
+it.
+
+Two rules are enforced rather than merely suggested, because a fire with nothing to start is not a schedule:
+a recurring item must be a flat top-level task, and it must be bound to a workflow. Say "stop the daily
+digest" and the agent clears the recurrence instead of leaving it running forever.
+
+### Fix: A recurring item can run locally — from the agent and from the forms
+Recurring work items could not be told to run **locally** — they silently inherited their project's execution
+mode. The capability was there the whole time; the work-item tools simply never offered the setting, so a
+recurring item was always created with no override of its own.
+
+Both the create and update tools now take `execution_mode`, and it applies to every fire of a recurring item.
+If you want the daily digest to run in-process on your machine while the rest of the project runs in
+containers, you can now say so.
+
+The **create and edit forms** now offer the same execution-mode control regular work items have — they
+previously showed a runtime image and nothing else, so every automation was created with no override and
+quietly inherited its project. A local automation is a host process with your own filesystem access,
+which is often exactly what a nightly sweep of your own machine wants. Choosing **local** now also
+shows *"No image — a local run executes on the host, not in a container"* in place of the runtime-image
+dropdown, exactly as a regular work item does — the image picker only had that behaviour where a form
+told it the mode.
+
+### New: Find and bulk-manage conversations, in both clients
+The conversations rail can now **search** — by title *and* by the last message, which matters because most
+titles here are generated, so the line you actually remember is usually in the message, not the name.
+
+Search is the setup for the rest: turn on **Select**, hit **Select all** and you have exactly the matched
+set, then **Delete** it, **move it to a project**, or **categorize** it in one go. That turns "clear out
+every conversation named like this" from a scroll-and-click exercise into three gestures. The same
+capability is in the web GUI and the TUI.
+
+Both clients follow one rule: a bulk action only ever touches what is currently **visible**, so a delete
+can never reach a conversation the search or the project filter has hidden.
+
+Search filters **as you type**, not on a submit. In the TUI it is an inline box (`ctrl+s`) with a live count,
+and select-all is on `ctrl+l` — both now named in the rail's own hint. In the web GUI every row simply has a
+checkbox, with a **Select all** box above the list, so there is no mode to enter and leave.
+
+Conversations with no title — which the rail draws as *"New conversation"* — are searchable too. Previously
+the filter read only the stored title, so those rows could not be found at all even though that is exactly
+what is written on them.
+
+And the list now loads **everything**, not the newest page. Searching for a name and deleting all of it used
+to come back in waves — delete nineteen, find five more, delete those, find three — because the rail was
+only ever shown one page of history and each deletion pulled the next page into view.
+
+### Fix: Deleting a recurring item — in both clients, singly and in bulk
+Recurring items were effectively undeletable from the web GUI, and it was a matter of reach rather than a
+missing capability: the Work Items page filters recurring items out, and the one page that shows them —
+Recurring Items — offered only Pause. A schedule could be stopped but never removed.
+
+Both clients can now delete them. **Recurring Items** gets a per-card delete plus select-all and a
+"Delete selected" action. The TUI's Automation pane gains the same bulk gesture — mark rows with space,
+press `x` to delete the marked set — and its single delete is now **permanent**, matching the GUI, where
+it previously only cancelled the item and left a stopped-but-present schedule behind.
+
+### Fix: The FULLSEND chip is readable in every theme
+The **FULLSEND** control, the one whose whole job is to be unmistakable at a glance, was rendering its
+label over a translucent glass wash instead of over its own red fill — near-white on dark navy in dark
+mode, near-white on pale grey in light mode. A CSS shorthand in the glass input style was silently
+resetting the chip's background colour, so the fill never appeared. The chip now paints solid in both
+light and dark families, with the theme's own contrast colour for the label.
+
+### Fix: Ask cards always offer a free-text option
+Ask cards used to arrive as a closed list, so if your real answer was not one of the choices you could
+only pick something untrue or abandon the card. Every card with options now includes a free-text row
+alongside them, in **all three modes** — Brainstorm, Iteration and Quick Work. The options are a
+shortcut, not a cage.
+
+### Fix: Stopping a turn whose question went unanswered no longer reports an unrecognised outcome
+A turn stopped while a question was on screen rendered `unrecognised outcome "unanswered"` in the
+transcript. The server had always emitted that outcome deliberately and the TUI always understood it;
+the web GUI did not. The card now reads *Not answered — … (the turn ended first)*, which is what
+actually happened: nothing lapsed and nothing was declined.
+
+---
 ## v0.6.6
 
 ### New: Every message in the transcript carries its time

@@ -185,6 +185,27 @@ func (p *fakePlane) DeleteWorkItem(_ context.Context, req *connect.Request[apiv1
 	return connect.NewResponse(&apiv1.DeleteWorkItemResponse{WorkItem: w}), nil
 }
 
+// HardDeleteWorkItem removes the row entirely, exactly like the plane. The recurring pane's delete is
+// PERMANENT, so the fake must model removal rather than a status change — otherwise a test could pass
+// while the real client left a cancelled row behind.
+func (p *fakePlane) HardDeleteWorkItem(_ context.Context, req *connect.Request[apiv1.HardDeleteWorkItemRequest]) (*connect.Response[apiv1.HardDeleteWorkItemResponse], error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	id := req.Msg.GetId()
+	if _, ok := p.items[id]; !ok {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("work item not found"))
+	}
+	p.deleted = append(p.deleted, id)
+	delete(p.items, id)
+	for i, existing := range p.order {
+		if existing == id {
+			p.order = append(p.order[:i], p.order[i+1:]...)
+			break
+		}
+	}
+	return connect.NewResponse(&apiv1.HardDeleteWorkItemResponse{}), nil
+}
+
 func (p *fakePlane) ListWorkItems(_ context.Context, req *connect.Request[apiv1.ListWorkItemsRequest]) (*connect.Response[apiv1.ListWorkItemsResponse], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -627,12 +648,83 @@ func TestRecurringItemsDeleteIsConfirmed(t *testing.T) {
 	if len(p.deleted) != 1 || p.deleted[0] != "rec-1" {
 		t.Fatalf("deleted = %v", p.deleted)
 	}
-	if st := p.itemStatus("rec-1"); st != apiv1.WorkItemStatus_WORK_ITEM_STATUS_CANCELLED {
-		t.Fatalf("soft delete must cancel the item, got %v", st)
+	// HARD delete: the row is gone, not merely cancelled. A TUI delete that only cancelled would mean
+	// the same key destroyed different amounts in the two clients (the GUI's Work Items delete is hard).
+	if _, still := p.items["rec-1"]; still {
+		t.Fatalf("hard delete must remove the row; it survived with status %v", p.itemStatus("rec-1"))
 	}
 	load(t, m, "recurring-items")
 	if hasTitle(itemsOf(m, "recurring-items"), "Nightly sweep") {
 		t.Fatal("a deleted recurring item must leave the Recurring Items pane")
+	}
+}
+
+// TestRecurringItemsBulkDeleteOnTheMarkedSet pins the bulk gesture: space marks, x deletes the MARKED
+// set after one confirm naming the count. Before this the marks accumulated with nothing to act on.
+func TestRecurringItemsBulkDeleteOnTheMarkedSet(t *testing.T) {
+	p := newPlane()
+	p.seedRecurring("rec-1", "Nightly sweep", true)
+	p.seedRecurring("rec-2", "Hourly digest", true)
+	p.seedRecurring("rec-3", "Keep me", true)
+	m := newModel(t, p)
+	m.SelectSource("recurring-items")
+	load(t, m, "recurring-items")
+
+	// Mark two of the three.
+	press(t, m, "down")
+	press(t, m, " ")
+	press(t, m, "down")
+	press(t, m, " ")
+	if got := len(m.Base.MarkedIDs()); got != 2 {
+		t.Fatalf("marked = %d, want 2 — space must mark rows on the recurring pane", got)
+	}
+	if len(p.deleted) != 0 {
+		t.Fatal("marking must not delete anything")
+	}
+
+	// x on a marked set opens ONE confirm naming the count.
+	press(t, m, "x")
+	if !m.DialogOpen() {
+		t.Fatal("bulk delete must confirm before acting")
+	}
+	if len(p.deleted) != 0 {
+		t.Fatal("no delete may be sent before confirmation")
+	}
+	marked := append([]string(nil), m.Base.MarkedIDs()...)
+	run(t, m, press(t, m, "enter"))
+
+	if len(p.deleted) != 2 {
+		t.Fatalf("deleted = %v, want exactly the 2 marked items", p.deleted)
+	}
+	// EXACTLY the marked set was deleted — bulk acts on the SELECTION, not the whole list, and not
+	// whichever row happened to be focused.
+	for _, id := range marked {
+		if _, still := p.items[id]; still {
+			t.Errorf("marked item %s survived the bulk delete", id)
+		}
+	}
+	// And something survived, so the delete did not simply wipe the pane.
+	if len(p.items) != 1 {
+		t.Fatalf("%d items remain, want 1 unmarked survivor", len(p.items))
+	}
+}
+
+// TestRecurringBulkRefusesWithoutMarks: x with nothing marked must NOT silently fall back to deleting
+// the focused row — that is how an operator loses the item they were only browsing.
+func TestRecurringBulkRefusesWithoutMarks(t *testing.T) {
+	p := newPlane()
+	p.seedRecurring("rec-1", "Nightly sweep", true)
+	m := newModel(t, p)
+	m.SelectSource("recurring-items")
+	load(t, m, "recurring-items")
+
+	// No marks: x deletes the FOCUSED row via the normal action, which still confirms first.
+	press(t, m, "x")
+	if !m.DialogOpen() {
+		t.Fatal("single-row delete must still confirm")
+	}
+	if len(p.deleted) != 0 {
+		t.Fatal("nothing may be deleted before confirmation")
 	}
 }
 

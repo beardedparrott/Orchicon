@@ -403,3 +403,55 @@ func (m *App) onRailProjectsApplied() {
 		m.projectPick.sel = 0
 	}
 }
+
+// convMatchesSearch answers whether a conversation matches the rail's free-text query.
+//
+// MIRRORS conversationMatchesSearch in the GUI (frontend/src/lib/conversationProjects.ts), deliberately:
+// the two rails are one feature seen through two clients, and a search that behaves differently in each
+// is worse than one that is merely limited. Title FIRST, then the last-message preview, case-insensitive
+// SUBSTRING (an operator types the fragment they remember, not whole words), every term must appear
+// somewhere, and an empty query matches everything because that is the no-filter state.
+func convMatchesSearch(c chat.Conversation, query string) bool {
+	terms := strings.Fields(strings.ToLower(strings.TrimSpace(query)))
+	if len(terms) == 0 {
+		return true
+	}
+	// THE LABEL THE RAIL DRAWS, not just the stored title — see convDisplayTitle. A conversation with an
+	// empty title renders as "New conversation", so that is what the operator types, and a search that
+	// skipped it would look broken for a large share of a real tenant's history.
+	haystack := strings.ToLower(c.Title + "\n" + convDisplayTitle(c) + "\n" + c.LastMessagePreview)
+	for _, t := range terms {
+		if !strings.Contains(haystack, t) {
+			return false
+		}
+	}
+	return true
+}
+
+// filterConversationsBySearch narrows a list to those matching the query.
+//
+// Composed AFTER the scope filter, never instead of it: search narrows what you are already looking at,
+// so it can never surface a conversation from a project you have scoped away.
+func filterConversationsBySearch(convs []chat.Conversation, query string) []chat.Conversation {
+	if strings.TrimSpace(query) == "" {
+		return convs
+	}
+	out := make([]chat.Conversation, 0, len(convs))
+	for _, c := range convs {
+		if convMatchesSearch(c, query) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// convDisplayTitle is the label the rail draws for a conversation.
+//
+// MIRRORS conversationDisplayTitle in the GUI: one label, drawn and searched, so a row that SAYS
+// "New conversation" always MATCHES "new". Empty/whitespace titles get the same placeholder the rail uses.
+func convDisplayTitle(c chat.Conversation) string {
+	if strings.TrimSpace(c.Title) == "" {
+		return "New conversation"
+	}
+	return c.Title
+}

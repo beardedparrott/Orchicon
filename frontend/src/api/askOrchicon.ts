@@ -16,12 +16,55 @@ export const askKeys = {
   grants: (id: string) => ["ask", "grants", id] as const,
 };
 
+// CONVERSATION_PAGE_SIZE is what one request asks for; the server clamps to 100.
+const CONVERSATION_PAGE_SIZE = 100;
+
+// CONVERSATION_MAX_PAGES bounds the paging loop. 40 pages x 100 = 4,000 conversations, far past any
+// real tenant, and a hard stop so a server that always returns a token cannot spin forever.
+const CONVERSATION_MAX_PAGES = 40;
+
+/**
+ * listAllConversations pages a listConversations endpoint to EXHAUSTION.
+ *
+ * Extracted so the loop is testable without a query client — and because the bug it fixes was invisible
+ * from the hook: one page of 50 looked like "the conversations", and everything downstream (the rail's
+ * search, select-all, bulk delete) treated a WINDOW as the whole set. Deleting the visible matches then
+ * pulled the next page into view, so the same search appeared to find more every time.
+ *
+ * Terminates on an empty token, and hard-stops at CONVERSATION_MAX_PAGES so a server that always returns
+ * a token cannot spin forever.
+ */
+export async function listAllConversations(
+  fetchPage: (req: { pageSize: number; pageToken: string }) => Promise<{
+    conversations?: unknown;
+    nextPageToken?: string;
+  }>,
+): Promise<Conversation[]> {
+  const all: Conversation[] = [];
+  let token = "";
+  for (let page = 0; page < CONVERSATION_MAX_PAGES; page++) {
+    const res = await fetchPage({ pageSize: CONVERSATION_PAGE_SIZE, pageToken: token });
+    all.push(...((res.conversations ?? []) as Conversation[]));
+    token = res.nextPageToken ?? "";
+    if (token === "") break;
+  }
+  return all;
+}
+
 export function useListConversations(opts?: { refetchInterval?: number | false }) {
   return useQuery({
     queryKey: askKeys.conversations,
     queryFn: async () => {
-      const res = await askOrchiconClient.listConversations({ pageSize: 50 });
-      return (res.conversations ?? []) as Conversation[];
+      // PAGE TO EXHAUSTION — the list is NOT "the newest 50 conversations".
+      //
+      // This used to ask for a single page of 50 and stop. Everything downstream then believed it was
+      // looking at all of them: the rail's search filtered those 50, "select all" selected those 50, and
+      // a bulk delete removed those 50 — at which point the next 50 arrived and the same query matched
+      // MORE rows. The operator: "I search hello, select all, delete 19, and then 5 more appear, I delete
+      // those, and then 3." The search was never wrong; it was only ever shown a window.
+      //
+      // The TUI has always paged to exhaustion (convRailMaxPages); this is the same rule on this side.
+      return listAllConversations((req) => askOrchiconClient.listConversations(req));
     },
     // The caller polls while any conversation has a running turn so running
     // state (sidebar indicators + Stop affordances) stays fresh across tabs

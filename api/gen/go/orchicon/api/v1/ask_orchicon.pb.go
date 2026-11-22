@@ -708,10 +708,19 @@ type MessageMetadata struct {
 	CompletionTokens int64                  `protobuf:"varint,3,opt,name=completion_tokens,json=completionTokens,proto3" json:"completion_tokens,omitempty"`
 	CostUsd          float64                `protobuf:"fixed64,4,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
 	LatencyMs        int64                  `protobuf:"varint,5,opt,name=latency_ms,json=latencyMs,proto3" json:"latency_ms,omitempty"`
-	// error is set when the turn failed (timeout, session error, user stop,
-	// or serve loss). The message content is empty in that case; the
-	// frontend renders an error bubble with a retry affordance.
-	Error         string `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"`
+	// error is set when the turn FAILED (timeout, session error, serve loss). The frontend renders an
+	// error bubble with a retry affordance, and ALSO renders any content the turn produced before it
+	// failed — a reply that streamed and then died keeps its text.
+	Error string `protobuf:"bytes,6,opt,name=error,proto3" json:"error,omitempty"`
+	// stopped is set when the OPERATOR stopped the turn, and carries the note ("Turn stopped by the
+	// user."). It is NOT an error: a deliberate stop is not a failure, and conflating the two meant
+	// the content was persisted but then replaced on screen by an error bubble — the turn's partial
+	// reply was thrown away in the UI even though the row held it. A stopped turn renders as a reply
+	// followed by this note.
+	//
+	// (This comment previously claimed "The message content is empty in that case", which was never
+	// true of a stopped turn: the server has always kept the partial text.)
+	Stopped       string `protobuf:"bytes,7,opt,name=stopped,proto3" json:"stopped,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -784,6 +793,13 @@ func (x *MessageMetadata) GetLatencyMs() int64 {
 func (x *MessageMetadata) GetError() string {
 	if x != nil {
 		return x.Error
+	}
+	return ""
+}
+
+func (x *MessageMetadata) GetStopped() string {
+	if x != nil {
+		return x.Stopped
 	}
 	return ""
 }
@@ -1428,7 +1444,7 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\tmime_type\x18\x02 \x01(\tR\bmimeType\x12\x12\n" +
 	"\x04size\x18\x03 \x01(\x03R\x04size\x12\x10\n" +
 	"\x03url\x18\x04 \x01(\tR\x03url\x12'\n" +
-	"\x0fattachment_type\x18\x05 \x01(\tR\x0eattachmentType\"\xd0\x01\n" +
+	"\x0fattachment_type\x18\x05 \x01(\tR\x0eattachmentType\"\xea\x01\n" +
 	"\x0fMessageMetadata\x12\x1b\n" +
 	"\tmodel_ref\x18\x01 \x01(\tR\bmodelRef\x12#\n" +
 	"\rprompt_tokens\x18\x02 \x01(\x03R\fpromptTokens\x12+\n" +
@@ -1436,7 +1452,8 @@ const file_orchicon_api_v1_ask_orchicon_proto_rawDesc = "" +
 	"\bcost_usd\x18\x04 \x01(\x01R\acostUsd\x12\x1d\n" +
 	"\n" +
 	"latency_ms\x18\x05 \x01(\x03R\tlatencyMs\x12\x14\n" +
-	"\x05error\x18\x06 \x01(\tR\x05error\"\x89\x03\n" +
+	"\x05error\x18\x06 \x01(\tR\x05error\x12\x18\n" +
+	"\astopped\x18\a \x01(\tR\astopped\"\x89\x03\n" +
 	"\vAgentConfig\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12#\n" +
 	"\rsystem_prompt\x18\x02 \x01(\tR\fsystemPrompt\x12\x12\n" +

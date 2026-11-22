@@ -1775,6 +1775,46 @@ volume cannot grow unbounded:
 
 The three values are **asserted** by `TestRetentionPreserved` (`cmd/orchicon/host_services_test.go`), not merely documented: a silently lost retention setting is invisible until the disk fills, which is the opposite of what it is for.
 
+### Application data retention (execution history + outbox)
+
+The telemetry values above bound the OBSERVABILITY volume. The control plane's own performance tables
+are bounded separately, and by a different mechanism, because deleting rows is not the same as
+returning disk.
+
+**Deleting rows reclaims nothing by itself.** A Postgres `DELETE` marks space reusable *inside* the
+relation and hands nothing back to the OS, and autovacuum cannot close that gap either — it reuses, it
+does not shrink. Measured on a long-lived instance whose history had been pruned for weeks:
+
+| Table | Size | Rows | Dead space (`pgstattuple free_percent`) |
+|---|---|---|---|
+| `execution_session_parts` | 3154 MB (1482 MB heap + **1672 MB index**) | 30 474 | **98.3 %** |
+| `outbox` | 2102 MB (175 MB heap + **1927 MB index**) | **1** | **99.59 %** |
+
+Two things the row counts hide: the space was already dead, and **the bloat was in the INDEXES** — the
+outbox carried two 912 MB indexes around a single 336-byte event. A retention metric that counts rows,
+or heap bytes, reports that table as empty and healthy. `VACUUM FULL` reclaimed 5.2 GB in 0.7 s, and
+stays a MANUAL action: it takes `ACCESS EXCLUSIVE`, so it must never run on a ticker.
+
+`internal/retention` runs the scheduled half. At boot and every
+`ORCHICON_EXECUTION_RETENTION_INTERVAL` (default 24 h) it prunes terminal executions through
+`db.PruneExecutionHistory`, then runs a **plain `VACUUM (ANALYZE)`** — never `VACUUM FULL` — over the
+relations it shrank.
+
+It is **inert unless a tenant enables it** (`execution_retention_enabled`, default false): a background
+job that deletes history must not be how an operator discovers a feature exists. The policy lives in
+`tenant_settings` and is editable in both the GUI and the TUI Settings screens:
+
+| Setting | Meaning |
+|---|---|
+| `execution_retention_enabled` | whether the scheduled pass prunes at all (default false) |
+| `execution_retention_keep` | newest N executions to keep; NULL = built-in default 150, `0` = keep none |
+| `execution_retention_vacuum` | run VACUUM after a pass that removed rows (default true) |
+| `execution_retention_timeout_seconds` | wall-clock budget for one pass |
+| `outbox_retention_days` | published-outbox retention; 0 = inherit `ORCHICON_OUTBOX_RETENTION_DAYS` |
+
+`keep` is nullable on purpose: `0` ("discard all finished history") is a real setting and must stay
+distinct from unset. Usage records are **de-linked, not deleted** — they are the tenant's spend ledger.
+
 ---
 
 ## Troubleshooting

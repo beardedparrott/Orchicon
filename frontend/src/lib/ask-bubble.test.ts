@@ -18,6 +18,31 @@ describe("bubbleKindFor", () => {
     expect(bubbleKindFor({ role: "assistant", metadata: { error: "reply timed out" } })).toBe("error");
   });
 
+  // THE BUG THIS PINS. The error shell renders the error text INSTEAD of the message content, so
+  // routing a stopped turn there deleted a reply the server had already persisted. Stopping a turn
+  // wiped the operator's whole visible turn.
+  it("keeps a STOPPED turn's reply rather than routing it to the error shell", () => {
+    expect(
+      bubbleKindFor({ role: "assistant", metadata: { stopped: "Turn stopped by the user." } }),
+    ).toBe("assistant");
+  });
+
+  it("still routes a genuine failure to the error shell", () => {
+    expect(bubbleKindFor({ role: "assistant", metadata: { error: "provider status 429" } })).toBe(
+      "error",
+    );
+  });
+
+  it("prefers the stopped shell over error if a row somehow carries both", () => {
+    // A stopped turn must never be presented as a failure; the stop is the operator's own action.
+    expect(
+      bubbleKindFor({
+        role: "assistant",
+        metadata: { error: "Turn stopped by the user.", stopped: "Turn stopped by the user." },
+      }),
+    ).toBe("assistant");
+  });
+
   it("routes a plain assistant reply to the assistant shell", () => {
     expect(bubbleKindFor({ role: "assistant" })).toBe("assistant");
     expect(bubbleKindFor({ role: "assistant", metadata: { error: "" } })).toBe("assistant");

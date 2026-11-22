@@ -422,6 +422,16 @@ func (m *App) dispatch(msg tea.Msg) (*App, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// The rail's SEARCH BOX owns every key while it is up, for the same reason: it is layered above the
+	// composer. convSearchKey reports handled=false for the hard escapes so those stay reachable.
+	if m.convSearchBox != nil {
+		if k, ok := msg.(tea.KeyMsg); ok {
+			if handled, cmd := m.convSearchKey(k); handled {
+				return m, cmd
+			}
+		}
+		return m, nil
+	}
 	// THE MESSAGE EDIT MENU OWNS EVERY KEY WHILE IT IS OPEN, and it is checked here, beside the other
 	// App-level overlays, because it is opened by a CLICK rather than a chord.
 	if m.msgMenuBlocksKeys() {
