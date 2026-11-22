@@ -274,3 +274,90 @@ func TestAnchorLeavesAnIdeaStateParentAlone(t *testing.T) {
 	}
 	_ = epic
 }
+
+func TestAnchorAdoptsTheFiresEarlierChildren(t *testing.T) {
+	// THE ORDERING HAZARD. A spawning run creates its OWN parent first and its ideas under
+	// it, so by the time any idea is anchored there are already siblings sitting under the
+	// run's parent. Anchoring only the current row would split one fire's output across two
+	// containers. The Idea Cloud epic must end up authoritative for the whole fire.
+	pool, _, _, tenantID, projectID := ideaEnv(t)
+	spawn := db.NewID()
+
+	ctx := context.Background()
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx.Rollback(ctx)
+	// The run's own speculative parent, created first.
+	runEpic, err := db.CreateWorkItem(ctx, ttx.Tx, db.WorkItemRow{
+		ID: db.NewID(), TenantID: tenantID, ProjectID: projectID,
+		Kind: domain.WorkItemKindEpic, Title: "Weatherapp: close the market-capability gap",
+		Status: domain.WorkItemIdea, SpawnedByWorkItemID: &spawn,
+	})
+	if err != nil {
+		t.Fatalf("create run epic: %v", err)
+	}
+	runEpicID := runEpic.ID
+	// Two earlier ideas already parented under it.
+	for _, title := range []string{"Earlier idea 1", "Earlier idea 2"} {
+		if _, err := db.CreateWorkItem(ctx, ttx.Tx, db.WorkItemRow{
+			ID: db.NewID(), TenantID: tenantID, ProjectID: projectID,
+			Kind: domain.WorkItemKindFeature, Title: title,
+			Status: domain.WorkItemIdea, ParentID: &runEpicID, SpawnedByWorkItemID: &spawn,
+		}); err != nil {
+			t.Fatalf("create earlier idea: %v", err)
+		}
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Now anchor a THIRD idea of the same fire.
+	row := db.WorkItemRow{
+		ID: db.NewID(), TenantID: tenantID, ProjectID: projectID,
+		Kind: "feature", Title: "Third idea", Status: domain.WorkItemIdea,
+		ParentID: &runEpicID, SpawnedByWorkItemID: &spawn,
+	}
+	created := anchor(t, pool, tenantID, &row)
+	epic := resolveEpic(t, pool, tenantID, projectID)
+
+	if created.ParentID == nil || *created.ParentID != epic.ID {
+		t.Fatalf("current idea parent = %v, want the container", created.ParentID)
+	}
+	// THE ASSERTION: the earlier two moved too, so the whole fire sits in one container.
+	ttx2, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	defer ttx2.Rollback(ctx)
+	sibs, err := db.ListWorkItems(ctx, ttx2.Tx, db.ListWorkItemsFilter{
+		TenantID: tenantID, ProjectID: projectID, PageSize: 1000, IdeaScope: "only",
+	})
+	if err != nil {
+		t.Fatalf("list ideas: %v", err)
+	}
+	var underContainer int
+	for _, it := range sibs {
+		if it.ParentID != nil && *it.ParentID == epic.ID {
+			underContainer++
+		}
+	}
+	if underContainer != 3 {
+		t.Fatalf("ideas under the container = %d, want 3 (the fire's whole output, not just the current row)", underContainer)
+	}
+	// And nothing idea-state is still parked under the run's own parent.
+	for _, it := range sibs {
+		if it.ParentID != nil && *it.ParentID == runEpic.ID {
+			t.Fatalf("idea %q still parented to the run's own epic; the fire was split", it.Title)
+		}
+	}
+	// The emptied speculative container is retired, not left as a husk.
+	runEpicNow, err := db.GetWorkItem(ctx, ttx2.Tx, tenantID, runEpic.ID)
+	if err != nil {
+		t.Fatalf("get run epic: %v", err)
+	}
+	if runEpicNow.Status != domain.WorkItemCancelled {
+		t.Fatalf("speculative container status = %q, want cancelled (superseded)", runEpicNow.Status)
+	}
+}

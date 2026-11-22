@@ -172,11 +172,27 @@ func AnchorIdeaToCloudEpic(ctx context.Context, tx pgx.Tx, row *db.WorkItemRow) 
 	}
 	// The durable shape: an idea is a task under the container.
 	row.Kind = domain.WorkItemKindTask
+	spawnedBy := ""
+	if row.SpawnedByWorkItemID != nil {
+		spawnedBy = *row.SpawnedByWorkItemID
+	}
 	if row.ParentID != nil && *row.ParentID != "" {
 		if *row.ParentID != epic.ID {
-			if err := reparentSpeculativeAncestor(ctx, tx, row.TenantID, *row.ParentID, epic.ID); err != nil {
+			if err := reparentSpeculativeAncestor(ctx, tx, row.TenantID, *row.ParentID, epic.ID, spawnedBy); err != nil {
 				return err
 			}
+		}
+	}
+	// THE CONTAINER MUST CLAIM THIS FIRE'S EARLIER CHILDREN.
+	//
+	// A spawning run usually creates a parent FIRST and its ideas under it, so by the
+	// time this idea is anchored there are already siblings sitting under the run's own
+	// parent — and re-parenting only THIS row would split one fire's output across two
+	// containers. Adopting every idea of the same spawn that has not yet been anchored
+	// makes the container authoritative for the whole fire, whoever created what first.
+	if spawnedBy != "" {
+		if err := adoptSpawnSiblings(ctx, tx, epic.ID, row.TenantID, row.ProjectID, spawnedBy); err != nil {
+			return err
 		}
 	}
 	epicID := epic.ID
@@ -184,11 +200,32 @@ func AnchorIdeaToCloudEpic(ctx context.Context, tx pgx.Tx, row *db.WorkItemRow) 
 	return nil
 }
 
+// adoptSpawnSiblings re-points every idea-state item of the same automation spawn onto the
+// Idea Cloud epic. Scoped to one spawn (spawned_by_work_item_id) and to rows that are
+// already idea-state, so it can never touch a human's work or another fire's output.
+//
+// It runs in the same transaction as the anchoring, so a fire's ideas are never left
+// half-adopted.
+func adoptSpawnSiblings(ctx context.Context, tx pgx.Tx, epicID, tenantID, projectID, spawnedBy string) error {
+	const q = `UPDATE work_items
+		SET parent_id = $1, kind = $2, updated_at = now()
+		WHERE tenant_id = $3 AND project_id = $4
+		  AND spawned_by_work_item_id = $5
+		  AND status = $6
+		  AND id <> $1
+		  AND (parent_id IS NULL OR parent_id <> $1)`
+	if _, err := tx.Exec(ctx, q, epicID, domain.WorkItemKindTask,
+		tenantID, projectID, spawnedBy, domain.WorkItemIdea); err != nil {
+		return fmt.Errorf("adopt spawn siblings: %w", err)
+	}
+	return nil
+}
+
 // reparentSpeculativeAncestor moves a spawn-time parent that the automation run
 // invented under the Idea Cloud epic. Only a NON-idea row is touched: an idea-state
 // parent is simply left alone (it is triage material itself — the report's epic was
 // one, and flattening it would destroy the run's grouping before anyone saw it).
-func reparentSpeculativeAncestor(ctx context.Context, tx pgx.Tx, tenantID, ancestorID, epicID string) error {
+func reparentSpeculativeAncestor(ctx context.Context, tx pgx.Tx, tenantID, ancestorID, epicID, spawnedBy string) error {
 	if ancestorID == "" || ancestorID == epicID {
 		return nil
 	}
@@ -200,7 +237,26 @@ func reparentSpeculativeAncestor(ctx context.Context, tx pgx.Tx, tenantID, ances
 		return fmt.Errorf("resolve spawn parent: %w", err)
 	}
 	if ancestor.Status == domain.WorkItemIdea {
-		return nil // idea-state: not a structural claim, leave the grouping intact
+		if ancestor.SpawnedByWorkItemID != nil && *ancestor.SpawnedByWorkItemID == spawnedBy {
+			// An IDEA-STATE container this same fire invented to group its ideas. It moved
+			// every one of its children onto the Idea Cloud epic, so leaving it under its
+			// own nothing would strand it as an empty husk — and one named after the
+			// subject at hand ("Weatherapp: close the market-capability gap"), which is
+			// the confusing artefact the operator sees instead of the one durable
+			// "IDEA CLOUD" container. Cancelled rather than deleted: its children keep a
+			// resolvable parent, and the cancellation records why it exists.
+			reason := `{"cancelled_reason":"superseded by the Idea Cloud epic — its children were re-parented to the durable container"}`
+			cancelled := domain.WorkItemCancelled
+			results := []byte(reason)
+			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, ancestorID, ancestor.Version,
+				db.UpdateWorkItemFields{Status: &cancelled, Results: &results}); err != nil {
+				return fmt.Errorf("retire speculative container %s: %w", ancestorID, err)
+			}
+			return nil
+		}
+		// An idea-state item from ANOTHER fire or a human grouping: not a structural
+		// claim, leave it alone.
+		return nil
 	}
 	if ancestor.ParentID != nil && *ancestor.ParentID == epicID {
 		return nil // already anchored

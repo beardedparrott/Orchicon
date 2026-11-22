@@ -59,6 +59,8 @@ import { useWorkItemsPreferences, parentIds } from "@/components/work-items/work
 import { cn } from "@/lib/utils";
 import { RecurringFilter, IdeaScope } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { isTerminalExecutionStatus, type PrRun } from "@/lib/pr";
+import { IDEA_CLOUD_EPIC_TITLE } from "@/components/work-items/idea-cloud-epic";
+import { WorkItemKind } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { useListWorkflowRuns } from "@/api/workflows";
 import { WorkflowRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import { Route as rootRoute } from "@/routes/__root";
@@ -241,13 +243,32 @@ function WorkItemsPage() {
   // Client-side filtering (design §5.4): kind + status + search compose
   // over the full fetched set so the tree hierarchy stays intact. OR
   // within kind/status groups, AND across groups, empty = all (ADR-WI-6).
+  // THE IDEA CLOUD CONTAINER IS NOT BACKLOG WORK.
+  //
+  // It exists so that promoting an idea cannot orphan it — its children are the idea-state
+  // items awaiting triage, and the epic itself is a container with a lifetime nobody
+  // manages. Surfacing it would put one un-actionable row at the top of every project's
+  // hierarchy ("IDEA CLOUD" with an idea count but no planned work), so the active views
+  // exclude it while keeping its ROOT-STATE-VISIBLE purpose intact: a promoted child still
+  // resolves its parent, because the parent row is fetched and simply not listed here.
+  //
+  // Matched by title AND kind AND top-level, which is the same identity ResolveIdeaCloudEpic
+  // uses server-side, so the two cannot drift onto different rows.
+  const isIdeaCloudContainer = (i: { kind: number; title: string; parentId?: string }) =>
+    i.kind === WorkItemKind.EPIC &&
+    !i.parentId &&
+    i.title.trim().toLowerCase() === IDEA_CLOUD_EPIC_TITLE.toLowerCase();
+  const backlogItems = useMemo(
+    () => (items ?? []).filter((i) => !isIdeaCloudContainer(i)),
+    [items],
+  );
   const filteredItems = useMemo(
-    () => filterItemsByKindStatus(items, kinds, statuses, debouncedSearch),
-    [items, kinds, statuses, debouncedSearch],
+    () => filterItemsByKindStatus(backlogItems, kinds, statuses, debouncedSearch),
+    [backlogItems, kinds, statuses, debouncedSearch],
   );
   const treeData = useMemo(
-    () => buildTreeData(items, kinds, statuses, debouncedSearch),
-    [items, kinds, statuses, debouncedSearch],
+    () => buildTreeData(backlogItems, kinds, statuses, debouncedSearch),
+    [backlogItems, kinds, statuses, debouncedSearch],
   );
 
   // A filter is "active" only when the selection differs from the full
