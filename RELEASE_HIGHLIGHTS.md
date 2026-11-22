@@ -28,7 +28,7 @@
 > numbers. The published release reads correctly while this file is wrong —
 > so grep the release log for that warning rather than assuming the two agree.
 
-## v0.6.15
+## v0.6.16
 
 ### New: the Idea Cloud has a home, and promoting an idea is now a real move
 Automation-spawned ideas used to land parented to whatever the research run invented — often an epic it
