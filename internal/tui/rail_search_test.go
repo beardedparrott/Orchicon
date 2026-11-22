@@ -10,6 +10,7 @@ package tui
 // the two clients cannot drift into searching differently.
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -257,5 +258,32 @@ func TestEmptyTitlesMatchThePlaceholder(t *testing.T) {
 	}
 	if d := convDisplayTitle(conv("u1", "", "")); d != "New conversation" {
 		t.Errorf("display title = %q, want the rail's placeholder", d)
+	}
+}
+
+// TestConvSearchPanelIsNotTruncated pins the reported defect: the keys hint was cut off mid-word
+// ("· typi…") so the operator never read what typing does. Every line the box draws must fit WITHOUT
+// truncation, and no ellipsis may appear.
+func TestConvSearchPanelIsNotTruncated(t *testing.T) {
+	m := newTestApp()
+	m.active = TabAsk
+	m.conversations = []chat.Conversation{conv("c1", "alpha", "")}
+	m.openConvSearch()
+	if m.convSearchBox == nil {
+		t.Fatal("box did not open")
+	}
+	inner := convSearchModalWidth - 2
+	body := m.convSearchBody(inner)
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, "…") {
+			t.Errorf("panel line is TRUNCATED: %q", line)
+		}
+		if w := len([]rune(stripANSI(line))); w > inner {
+			t.Errorf("panel line is %d wide, inner width is %d: %q", w, inner, line)
+		}
+	}
+	// The critical instruction must survive intact.
+	if !strings.Contains(stripANSI(body), "typing filters live") {
+		t.Error("the panel dropped 'typing filters live' — the one thing that explains the box")
 	}
 }

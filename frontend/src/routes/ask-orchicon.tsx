@@ -3022,54 +3022,59 @@ function AskOrchiconPage() {
             {/* THE BULK ACTIONS APPEAR ONLY WHEN SOMETHING IS SELECTED, so the rail stays quiet until
                 there is something to act on. */}
             {visibleSelectedConvIds.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1 rounded-md border border-border/60 p-1">
+              <div className="space-y-1.5 rounded-md border border-border/60 p-1.5">
+                {/* THE TWO DROPDOWNS SHARE ONE LINE — they are the same kind of choice (where does this
+                    go), and stacking them made a three-row block for what is two decisions. */}
+                <div className="flex items-center gap-1">
+                  <select
+                    aria-label="Move the selected conversations to a project"
+                    className="h-7 min-w-0 flex-1 rounded border border-border/60 bg-transparent px-1 text-[11px]"
+                    value=""
+                    onChange={(e) => {
+                      if (e.target.value === "__pick__") return;
+                      handleBulkSetProject(e.target.value);
+                    }}
+                  >
+                    <option value="__pick__">Move to project…</option>
+                    <option value="">No project</option>
+                    {(projects ?? [])
+                      .filter((p) => String(p.status) !== "PROJECT_STATUS_ARCHIVED")
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                  </select>
+                  <select
+                    aria-label="Move the selected conversations to a category"
+                    className="h-7 min-w-0 flex-1 rounded border border-border/60 bg-transparent px-1 text-[11px]"
+                    value=""
+                    onChange={(e) => {
+                      if (e.target.value === "__pick__") return;
+                      handleBulkCategorize(e.target.value);
+                    }}
+                  >
+                    <option value="__pick__">Categorize…</option>
+                    <option value="">Uncategorized</option>
+                    {convPrefs.state.categories.map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {cat.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {/* DELETE LAST, full width and clearly destructive: it is the irreversible one, so it
+                    must not sit first where a stray click lands. */}
                 <Button
                   size="sm"
                   variant="destructive"
-                  className="h-6 px-2 text-[11px]"
+                  className="h-7 w-full justify-center text-[11px]"
                   onClick={handleBulkDeleteConvs}
                 >
                   <Trash2 aria-hidden="true" className="mr-1 h-3 w-3" />
-                  Delete
+                  Delete {visibleSelectedConvIds.length} conversation
+                  {visibleSelectedConvIds.length === 1 ? "" : "s"}
                 </Button>
-                {/* MOVE TO PROJECT — the same operation the row's control performs, over the set. */}
-                <select
-                  aria-label="Move the selected conversations to a project"
-                  className="h-6 rounded border border-border/60 bg-transparent px-1 text-[11px]"
-                  value=""
-                  onChange={(e) => {
-                    if (e.target.value === "__pick__") return;
-                    handleBulkSetProject(e.target.value);
-                  }}
-                >
-                  <option value="__pick__">Move to project…</option>
-                  <option value="">No project</option>
-                  {(projects ?? [])
-                    .filter((p) => String(p.status) !== "PROJECT_STATUS_ARCHIVED")
-                    .map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.name}
-                      </option>
-                    ))}
-                </select>
-                {/* CATEGORIZE — into one of this scope's folders, or out of all of them. */}
-                <select
-                  aria-label="Move the selected conversations to a category"
-                  className="h-6 rounded border border-border/60 bg-transparent px-1 text-[11px]"
-                  value=""
-                  onChange={(e) => {
-                    if (e.target.value === "__pick__") return;
-                    handleBulkCategorize(e.target.value);
-                  }}
-                >
-                  <option value="__pick__">Categorize…</option>
-                  <option value="">Uncategorized</option>
-                  {convPrefs.state.categories.map((cat) => (
-                    <option key={cat.id} value={cat.id}>
-                      {cat.name}
-                    </option>
-                  ))}
-                </select>
               </div>
             )}
           </div>
@@ -3144,6 +3149,8 @@ function AskOrchiconPage() {
                     activeDragId={activeDragId}
                     renderMoveControl={renderMoveControl}
                     runningIds={runningIds}
+                    selectedConvIds={convSelected}
+                    toggleConvSelected={toggleConvSelected}
                   />
                 );
               })}
@@ -3169,6 +3176,8 @@ function AskOrchiconPage() {
                 hasFolders={visibleCategories.length > 0}
                 renderMoveControl={renderMoveControl}
                 runningIds={runningIds}
+                selectedConvIds={convSelected}
+                toggleConvSelected={toggleConvSelected}
               />
             </SortableContext>
             <DragOverlay dropAnimation={null}>

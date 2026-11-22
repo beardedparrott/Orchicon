@@ -41,9 +41,19 @@ type convSearchBox struct {
 
 const (
 	convSearchPrompt = "filter > "
-	// convSearchKeysHint names the keys the box actually has. It does NOT say "save", because nothing is
-	// being saved: the filter is already applied to every keystroke.
-	convSearchKeysHint = "esc: cancel · enter: keep the filter · ↑/↓: move the selection · typing filters live"
+	// THE KEYS HINT IS TWO LINES, DELIBERATELY.
+	//
+	// One line was TRUNCATED in the panel ("… · typi…"), so the box silently dropped the half that said
+	// what typing does — the single most important thing about it. A hint that gets cut is worse than a
+	// shorter hint: the operator reads a broken sentence and assumes that is all there is. Two short lines
+	// fit inside convSearchModalWidth without the terminal deciding what to keep.
+	//
+	// It also never says "save", because nothing is saved: the filter applies to every keystroke.
+	convSearchKeysHintLine1 = "esc: cancel · enter: keep the filter"
+	convSearchKeysHintLine2 = "↑/↓: move the selection · typing filters live"
+	// convSearchModalWidth is WIDER than a confirmation dialog, because this panel is a text field with
+	// prose under it rather than a one-sentence question.
+	convSearchModalWidth = 64
 )
 
 // toggleConvMark marks or unmarks the highlighted conversation and advances one row.
@@ -472,13 +482,21 @@ func (m *App) convSearchView(base string, w, h int) string {
 	if m.convSearchBox == nil {
 		return base
 	}
-	return m.overlayCentered(base, m.modalPanel(m.convSearchBody(m.modalInnerWidth()), m.modalWidth()))
+	// INNER WIDTH IS THE PANEL WIDTH MINUS ITS BORDERS, computed here rather than from modalInnerWidth,
+	// because this panel is deliberately wider than the shared modal width.
+	inner := convSearchModalWidth - 2
+	if inner < 8 {
+		inner = 8
+	}
+	return m.overlayCentered(base, m.modalPanel(m.convSearchBody(inner), convSearchModalWidth))
 }
 
 // convSearchBody renders the box: the query with its caret, a LIVE count of what it matches, and the
 // keys. The count is the feedback that makes typing feel connected to the list.
 func (m *App) convSearchBody(inner int) string {
-	m.convSearchBox.input.Width = max(inner-lipgloss.Width(convSearchPrompt), 8)
+	// -1: bubbles' textinput renders its prompt AND a caret past the value, so a Width that fills the
+	// interior exactly still overflows by the cursor cell.
+	m.convSearchBox.input.Width = max(inner-lipgloss.Width(convSearchPrompt)-1, 8)
 	visible := m.scopedConversations()
 	total := len(m.conversations)
 	var count string
@@ -494,7 +512,8 @@ func (m *App) convSearchBody(inner int) string {
 		theme.DetailKey.Render("search conversations"),
 		m.convSearchBox.input.View(),
 		theme.HintText.Render(truncateRight(count, inner)),
-		theme.HintText.Render(truncateRight(convSearchKeysHint, inner)),
+		theme.HintText.Render(truncateRight(convSearchKeysHintLine1, inner)),
+		theme.HintText.Render(truncateRight(convSearchKeysHintLine2, inner)),
 	}, "\n")
 }
 

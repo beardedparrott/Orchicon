@@ -9,6 +9,8 @@
 // a set that could include conversations the filter has hidden.
 
 import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import {
   conversationMatchesSearch,
   filterConversationsBySearch,
@@ -129,5 +131,33 @@ describe("empty titles are searchable by the label the rail draws", () => {
     expect(conversationDisplayTitle({ title: "" })).toBe("New conversation");
     expect(conversationDisplayTitle({ title: "   " })).toBe("New conversation");
     expect(conversationDisplayTitle({ title: "Real name" })).toBe("Real name");
+  });
+});
+
+describe("the desktop rail renders a checkbox on every row", () => {
+  // THE REPORTED BUG. Selection was wired only into the MOBILE sheet's rows. The desktop panel — the
+  // rail an operator actually uses — was never given selectedConvIds/toggleConvSelected, so its rows
+  // drew no checkbox and the only way to select was "all of what is filtered". Asserted from source
+  // because the rail is a 4900-line route component with no render harness.
+  const SRC = fs.readFileSync(
+    path.resolve(__dirname, "../routes/ask-orchicon.tsx"),
+    "utf8",
+  );
+
+  it("passes selection into BOTH the desktop FolderItem and DropZone", () => {
+    // Two panels each need it: the categorized folder rail and the Uncategorized zone.
+    const passes = SRC.match(/selectedConvIds=\{convSelected\}/g) ?? [];
+    // 2 desktop + 2 mobile sheet call sites.
+    expect(passes.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("renders a checkbox in the row component", () => {
+    expect(SRC).toMatch(/aria-label=\{`Select \$\{title\}`\}/);
+    expect(SRC).toMatch(/type="checkbox"[\s\S]{0,200}onChange=\{selection\.onToggle\}/);
+  });
+
+  it("keeps the row body opening the conversation, so the checkbox is not the only click target", () => {
+    // Clicking the row must still navigate; only the checkbox toggles selection.
+    expect(SRC).toMatch(/onClick=\{onSelect\}/);
   });
 });
