@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/db"
-	"github.com/beardedparrott/orchicon/internal/verify"
 	"github.com/beardedparrott/orchicon/internal/procwin"
+	"github.com/beardedparrott/orchicon/internal/verify"
 )
 
 // verifyOutputLimit bounds what a failure's message carries: enough to name the cause, small enough
@@ -660,9 +660,9 @@ func isMalformedWorktreePath(p string) bool {
 // registers a worktree at a path that exists only in its own namespace.
 //
 // TWO THINGS IT COSTS, beyond a confusing `git worktree list`:
-//   1. the stray tree (`<project>/C:/...`) is an UNTRACKED entry, and `C:` is not one of ours — so after the
-//      readiness fix it would block the operator's checkout refresh again, as `?? C:/`;
-//   2. a registration naming a path makes `git worktree add` refuse if a later run computes the same path.
+//  1. the stray tree (`<project>/C:/...`) is an UNTRACKED entry, and `C:` is not one of ours — so after the
+//     readiness fix it would block the operator's checkout refresh again, as `?? C:/`;
+//  2. a registration naming a path makes `git worktree add` refuse if a later run computes the same path.
 //
 // SO THIS REPAIRS RATHER THAN ONLY REPORTS. It prunes the stale registrations and removes the stray trees, but
 // ONLY when both are provably ours: the recorded path must not exist on disk (git already calls such an entry

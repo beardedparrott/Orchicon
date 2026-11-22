@@ -50,11 +50,11 @@ func TestVerdictDowngradeOnlyLowersTheOutcome(t *testing.T) {
 	const failed = "Work.\n\nORCHICON WORKER SUMMARY: failure — the layout is broken.\n"
 	const ok = "Work.\n\nORCHICON WORKER SUMMARY: success — shipped.\n"
 	for _, tc := range []struct {
-		name      string
-		adapter   bool
-		output    string
-		want      string
-	} {
+		name    string
+		adapter bool
+		output  string
+		want    string
+	}{
 		{"clean process, failure verdict", true, failed, "failure"},
 		{"clean process, success verdict", true, ok, ""},
 		{"crashed process, failure verdict", false, failed, ""}, // never double-counts a crash as a verdict

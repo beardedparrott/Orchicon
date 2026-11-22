@@ -158,10 +158,14 @@ func TestWorkflowLessItemCannotFireScheduled(t *testing.T) {
 		t.Fatalf("scanAndFire: %v", res.Error)
 	}
 	rec.mu.Lock()
-	starts := rec.startCalls
+	// ONLY this test's tenant is the subject. scanAndFire has no tenant predicate (it scans every
+	// tenant by design), so a global `startCalls == 0` also counts other tenants' due rows and made
+	// this test fail against a shared database. The claim under test is that THIS workflow-less item
+	// starts nothing.
+	mine := filterByTenantPrefix(rec.started, approvalTestTenant+":")
 	rec.mu.Unlock()
-	if starts != 0 {
-		t.Fatalf("scheduled run started %d workflow(s), want 0", starts)
+	if len(mine) != 0 {
+		t.Fatalf("scheduled run started %d workflow(s) in %s, want 0: %v", len(mine), approvalTestTenant, mine)
 	}
 	got := mustGet(t, env.pool, item.ID)
 	if got.Status != domain.WorkItemFailed {
@@ -236,4 +240,15 @@ func TestWorkflowLessItemCannotJoinSequence(t *testing.T) {
 	if started != 0 {
 		t.Fatalf("sequence arm started %d workflow(s) for a workflow-less child, want 0", started)
 	}
+}
+
+// filterByTenantPrefix returns the entries beginning with prefix ("tenant:").
+func filterByTenantPrefix(entries []string, prefix string) []string {
+	var out []string
+	for _, e := range entries {
+		if strings.HasPrefix(e, prefix) {
+			out = append(out, e)
+		}
+	}
+	return out
 }

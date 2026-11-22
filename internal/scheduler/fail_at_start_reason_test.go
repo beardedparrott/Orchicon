@@ -61,10 +61,10 @@ func TestFailRunAtStartRecordsTheReasonOnTheRun(t *testing.T) {
 func TestStartFailureKindClassifiesTheKnownCauses(t *testing.T) {
 	cases := map[string]string{
 		`runtime container could not be created (image "x", then base "y")`: "runtime",
-		`the runtime image "orchicon-runtime:dev" is not downloaded`:       "runtime",
-		`workflow version 3 not found`:                                     "preflight",
-		`the workflow has no steps`:                                        "preflight",
-		`something else entirely`:                                          "start",
+		`the runtime image "orchicon-runtime:dev" is not downloaded`:        "runtime",
+		`workflow version 3 not found`:                                      "preflight",
+		`the workflow has no steps`:                                         "preflight",
+		`something else entirely`:                                           "start",
 	}
 	for reason, want := range cases {
 		if got := startFailureKind(reason); got != want {

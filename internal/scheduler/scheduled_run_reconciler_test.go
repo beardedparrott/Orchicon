@@ -120,11 +120,39 @@ func TestScheduledRunFiresSequenceParentAndBoundItem(t *testing.T) {
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	if rec.sequenceCalls != 1 || len(rec.sequences) != 1 || rec.sequences[0] != approvalTestTenant+":"+parent.ID {
-		t.Errorf("sequence starter calls = %v, want exactly [%s:%s]", rec.sequences, approvalTestTenant, parent.ID)
+	// ASSERT ON THIS TEST'S ITEMS, NOT ON GLOBAL CALL COUNTS.
+	//
+	// scanAndFire has NO tenant predicate by design — it is a background reconciler that scans every
+	// tenant's due items. A `startCalls == 1` assertion therefore also counts the scheduled items any
+	// OTHER tenant left behind, which is why this test failed against a shared database (the shared
+	// test DB had 20 due `tnt_dev` rows and 24 from another package's tenant). The behaviour under test
+	// is "did THIS parent start a sequence, and did THIS bound item start its workflow while the
+	// sequence parent did not" — so assert exactly that, in both directions.
+	if !sliceContains(rec.sequences, approvalTestTenant+":"+parent.ID) {
+		t.Errorf("sequence starter calls = %v, want it to include %s:%s",
+			rec.sequences, approvalTestTenant, parent.ID)
 	}
-	if rec.startCalls != 1 || len(rec.started) != 1 || rec.started[0] != approvalTestTenant+":"+wfID+":"+bound.ID {
-		t.Errorf("workflow start calls = %v, want exactly [%s:%s:%s]",
+	if !sliceContains(rec.started, approvalTestTenant+":"+wfID+":"+bound.ID) {
+		t.Errorf("workflow start calls = %v, want it to include %s:%s:%s",
 			rec.started, approvalTestTenant, wfID, bound.ID)
 	}
+	// The suppression this test exists for: the SEQUENCE parent must not start a workflow of its own.
+	// Previously implied by the global count being exactly 1; asserted directly so it survives the
+	// presence of unrelated tenants' rows.
+	for _, started := range rec.started {
+		if started == approvalTestTenant+":"+parent.ID || strings.HasSuffix(started, ":"+parent.ID) {
+			t.Errorf("the sequence parent started a workflow of its own (%q); it must only sequence",
+				started)
+		}
+	}
+}
+
+// sliceContains reports whether want is in have.
+func sliceContains(have []string, want string) bool {
+	for _, h := range have {
+		if h == want {
+			return true
+		}
+	}
+	return false
 }

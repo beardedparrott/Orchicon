@@ -249,7 +249,7 @@ func (r *TaskReconciler) parseGateOutput(decl verify.Declaration, dir, out strin
 		return nil, fmt.Errorf("the project declares no gate")
 	}
 	if !decl.Format.ParsesResults() {
-		return nil, fmt.Errorf("the project declares no machine-readable result format, so its gate's per-check "+
+		return nil, fmt.Errorf("the project declares no machine-readable result format, so its gate's per-check " +
 			"results are not available (add `format = junit|tap|sarif|json` to .orchicon/verify)")
 	}
 	body := out
