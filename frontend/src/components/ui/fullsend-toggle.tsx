@@ -154,7 +154,22 @@ export function FullsendToggle({
           on
             ? // LOUD: a filled destructive chip, not a tint. This is the one control whose
               // "on" state has to survive a glance.
-              "border-destructive/60 bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              //
+              // `!` VARIANTS, BECAUSE `.glass-input` WAS SILENTLY REPAINTING THIS.
+              //
+              // .glass-input sets the `background` SHORTHAND (index.css:1302) —
+              // `background: hsla(var(--glass-input-bg) / <alpha>)` — which resets background-color
+              // as part of the shorthand. That is a `background` declaration in @layer components, so
+              // it outranks Tailwind's `bg-destructive` (a background-color utility), and the ON chip
+              // rendered as destructive-foreground text over a translucent GLASS wash instead of over
+              // red. Measured contrast: dark navy under a near-white label in dark mode, and white at
+              // 60% under a near-white label in light mode — unreadable in both, which is exactly what
+              // the operator reported.
+              //
+              // So the ON state wins explicitly: no glass background, a solid destructive fill at full
+              // weight, and the theme's own destructive-foreground on top. Both themes define that pair
+              // gainfully (light: red 45% on near-white fg; dark: pink 72% on deep red fg).
+              "!bg-destructive text-destructive-foreground border-destructive/60 hover:!bg-destructive/90 !backdrop-blur-none !shadow-none"
             : "hover:bg-accent hover:text-accent-foreground",
         )}
         data-testid="fullsend-toggle"

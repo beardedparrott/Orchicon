@@ -241,3 +241,76 @@ export function effectiveComposerProject(
   if (candidate === "") return "";
   return (projects ?? []).some((p) => p.id === candidate) ? candidate : "";
 }
+
+// ---------------------------------------------------------------------------
+// Text search over the conversations rail.
+// ---------------------------------------------------------------------------
+
+/** The minimum a conversation must expose to be searched. */
+export interface SearchableConversation {
+  id: string;
+  title?: string;
+  /**
+   * lastMessagePreview is the trailing snippet the rail already renders under the title. Searching it
+   * is what makes "find the chats about X" work when the title is an auto-generated stub — which, for
+   * this product, is most of them.
+   */
+  lastMessagePreview?: string;
+}
+
+/**
+ * conversationMatchesSearch answers whether a conversation matches a free-text query.
+ *
+ * TITLE FIRST, THEN THE PREVIEW, both case-insensitively, as a SUBSTRING rather than a token match: an
+ * operator hunting "weatherarp" or "mcp token" types fragments of what they remember, not words.
+ *
+ * An EMPTY/whitespace query matches everything — that is the "no filter" state, and returning nothing
+ * there (the mathematically tidy answer) would empty the rail the moment the box is focused.
+ *
+ * Multi-term queries are ANDed across the joined haystack, so "mcp token" finds a conversation whose
+ * title says one and whose preview says the other. That is the behaviour an operator expects from a
+ * search box that looks like every other search box.
+ */
+export function conversationMatchesSearch(
+  conv: SearchableConversation,
+  query: string,
+): boolean {
+  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length === 0) return true;
+  // THE LABEL THE RAIL DRAWS, not just the stored title.
+  //
+  // A large share of conversations in a real tenant have an EMPTY title (the auto-naming pass never ran,
+  // or the conversation was created and abandoned). The rail draws those as "New conversation", so that
+  // is what an operator sees and therefore what they type — and before this, a search for "new" matched
+  // none of them, which read as the filter being broken. Searching the DISPLAYED label is searching what
+  // is on screen.
+  const haystack =
+    `${conv.title ?? ""}\n${conversationDisplayTitle(conv)}\n${conv.lastMessagePreview ?? ""}`.toLowerCase();
+  return terms.every((t) => haystack.includes(t));
+}
+
+/**
+ * conversationDisplayTitle is the label the rail draws for a conversation.
+ *
+ * ONE PLACE, because the rail and the search must agree: a row that SAYS "New conversation" and does not
+ * MATCH "new" is the bug this exists to prevent. Empty/whitespace titles fall back to the same placeholder
+ * the rail renders.
+ */
+export function conversationDisplayTitle(conv: { title?: string }): string {
+  const t = (conv.title ?? "").trim();
+  return t === "" ? "New conversation" : t;
+}
+
+/**
+ * filterConversationsBySearch narrows a list to those matching the query.
+ *
+ * Composed AFTER the scope filter, never instead of it: search narrows what you are already looking at,
+ * so a search can never surface a conversation from a project you have scoped away.
+ */
+export function filterConversationsBySearch<T extends SearchableConversation>(
+  conversations: readonly T[],
+  query: string,
+): T[] {
+  if (query.trim() === "") return [...conversations];
+  return conversations.filter((c) => conversationMatchesSearch(c, query));
+}

@@ -11,9 +11,14 @@
 
 import { createRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { CalendarClock, Pause, Play, Repeat } from "lucide-react";
+import { CalendarClock, Pause, Play, Repeat, Trash2 } from "lucide-react";
 
-import { useListWorkItems, useUpdateWorkItem } from "@/api/workItems";
+import {
+  useBatchDeleteWorkItems,
+  useHardDeleteWorkItem,
+  useListWorkItems,
+  useUpdateWorkItem,
+} from "@/api/workItems";
 import { useListProjects } from "@/api/projects";
 import { useListWorkflowRuns } from "@/api/workflows";
 import { Button } from "@/components/ui/button";
@@ -42,6 +47,14 @@ export const Route = createRoute({
 function RecurringItemsPage() {
   const { data: projects } = useListProjects();
   const [projectId, setProjectId] = useState<string>("");
+
+  // BULK SELECTION. Recurring items are invisible to the Work Items page (which queries
+  // EXCLUDE_RECURRING), so that page's bulk toolbar can never act on them — this list is their only
+  // home, and a schedule that accumulates (a daily digest per project, say) needs a way to be cleared
+  // in one gesture rather than one confirm-dialog at a time.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const batchDelete = useBatchDeleteWorkItems();
+  const toast = useToast();
 
   // The ONE list query the page owns: recurring items only, auto-refreshed.
   const { data: items, isLoading, error } = useListWorkItems(projectId, {
@@ -113,6 +126,56 @@ function RecurringItemsPage() {
         </select>
       </div>
 
+      {(items ?? []).length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl glass-panel px-3 py-2">
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              aria-label="Select all recurring items"
+              checked={selected.size > 0 && selected.size === (items ?? []).length}
+              onChange={(e) => {
+                const all = items ?? [];
+                setSelected(e.target.checked ? new Set(all.map((i) => i.id)) : new Set());
+              }}
+            />
+            <span className="text-muted-foreground">
+              {selected.size > 0 ? `${selected.size} selected` : "Select all"}
+            </span>
+          </label>
+          {selected.size > 0 && (
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={batchDelete.isPending}
+              onClick={() => {
+                const chosen = (items ?? []).filter((i) => selected.has(i.id));
+                const preview =
+                  chosen.length === 1
+                    ? `"${chosen[0].title}"`
+                    : `${chosen.length} recurring items`;
+                const ok = window.confirm(
+                  `Permanently delete ${preview}?\n\n` +
+                    "The schedules and the items are removed for good — this cannot be undone.\n" +
+                    "Past fires stay in the run history. To stop them firing but keep them, Pause them instead.",
+                );
+                if (!ok) return;
+                const ids = chosen.map((i) => i.id);
+                batchDelete.mutate(ids, {
+                  onSuccess: () => {
+                    toast.success(`Deleted ${ids.length} recurring item${ids.length === 1 ? "" : "s"}`);
+                    setSelected(new Set());
+                  },
+                  onError: (e) => toast.error(`Failed to delete: ${String(e)}`),
+                });
+              }}
+            >
+              <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
+              Delete selected ({selected.size})
+            </Button>
+          )}
+        </div>
+      )}
+
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : error ? (
@@ -129,6 +192,15 @@ function RecurringItemsPage() {
               item={item}
               now={now}
               lastRun={lastRunByItem.get(item.id)}
+              selected={selected.has(item.id)}
+              onSelect={(next) =>
+                setSelected((prev) => {
+                  const copy = new Set(prev);
+                  if (next) copy.add(item.id);
+                  else copy.delete(item.id);
+                  return copy;
+                })
+              }
             />
           ))}
         </div>
@@ -148,10 +220,14 @@ function RecurringItemCard({
   item,
   now,
   lastRun,
+  selected,
+  onSelect,
 }: {
   item: WorkItem;
   now: number;
   lastRun?: WorkflowRun;
+  selected: boolean;
+  onSelect: (next: boolean) => void;
 }) {
   const updateWorkItem = useUpdateWorkItem(item.projectId);
   const toast = useToast();
@@ -176,6 +252,29 @@ function RecurringItemCard({
     );
   };
 
+  // DELETE LIVES HERE BECAUSE NOTHING ELSE CAN REACH IT.
+  //
+  // The Work Items page queries with EXCLUDE_RECURRING and the TUI does the same, so a recurring item
+  // never appears in a list that has a delete action. This card list is the ONLY surface that shows
+  // them, which made recurring items effectively undeletable from either client.
+  //
+  // Hard delete, matching the Work Items page's own Delete (the TUI labels the same RPC "delete" and
+  // calls it permanent). A recurring item with children is refused server-side, so the failure is
+  // reported rather than guessed at.
+  const hardDelete = useHardDeleteWorkItem(item.projectId);
+  const handleDelete = () => {
+    const ok = window.confirm(
+      `Permanently delete "${item.title}"?\n\n` +
+        "This removes the schedule and the item for good — it cannot be undone.\n" +
+        "Its past fires stay in the run history. To stop it firing but keep it, use Pause instead.",
+    );
+    if (!ok) return;
+    hardDelete.mutate(item.id, {
+      onSuccess: () => toast.success(`Deleted "${item.title}"`),
+      onError: (e) => toast.error(`Failed to delete: ${String(e)}`),
+    });
+  };
+
   return (
     <Card className="group border-l-2 border-l-fuchsia-500 transition-colors hover:border-l-fuchsia-600">
       <CardHeader className="pb-2">
@@ -193,7 +292,15 @@ function RecurringItemCard({
               {item.title}
             </Link>
           </CardTitle>
-          <RecurringBadge />
+          <div className="flex shrink-0 items-center gap-2">
+            <input
+              type="checkbox"
+              aria-label={`Select ${item.title}`}
+              checked={selected}
+              onChange={(e) => onSelect(e.target.checked)}
+            />
+            <RecurringBadge />
+          </div>
         </div>
           <CardDescription className="flex flex-wrap items-center gap-x-3 gap-y-1 pt-1">
             <span className="inline-flex items-center gap-1 font-medium text-foreground">
@@ -244,6 +351,17 @@ function RecurringItemCard({
                   Resume
                 </>
               )}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleDelete}
+              disabled={hardDelete.isPending}
+              aria-label={`Delete ${item.title}`}
+              title="Delete this recurring item permanently"
+              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+            >
+              <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
             </Button>
           </div>
 

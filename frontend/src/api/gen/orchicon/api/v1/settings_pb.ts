@@ -260,6 +260,48 @@ export class TenantSettings extends Message<TenantSettings> {
   sessionRefreshTokenTtlSeconds = protoInt64.zero;
 
   /**
+   * Whether the scheduled retention pass prunes at all. Default false.
+   *
+   * @generated from field: bool execution_retention_enabled = 35;
+   */
+  executionRetentionEnabled = false;
+
+  /**
+   * How many of the newest executions survive a pass; everything older and terminal is removed.
+   * Optional so that 0 remains a REAL setting ("discard all terminal history") distinct from
+   * unset (absent = built-in default 150). A negative value is treated as the default.
+   *
+   * @generated from field: optional int64 execution_retention_keep = 36;
+   */
+  executionRetentionKeep?: bigint;
+
+  /**
+   * Run VACUUM after a pass that actually removed rows. Default true — without it the prune reclaims
+   * no disk, which makes the whole feature pointless. Plain VACUUM, never VACUUM FULL: the latter
+   * takes an ACCESS EXCLUSIVE lock and would block every reader for the duration.
+   *
+   * @generated from field: bool execution_retention_vacuum = 37;
+   */
+  executionRetentionVacuum = false;
+
+  /**
+   * Wall-clock budget for one pass, in seconds. A prune that runs long enough to matter is a prune
+   * holding locks the API needs. Default 300. Zero = default.
+   *
+   * @generated from field: int32 execution_retention_timeout_seconds = 38;
+   */
+  executionRetentionTimeoutSeconds = 0;
+
+  /**
+   * --- Published-outbox retention ---
+   * The outbox relay prunes published rows on its own ticker, but only within ORCHICON_OUTBOX_RETENTION_DAYS.
+   * This makes the window a tenant setting. Zero = inherit the env-var/code default (7 days).
+   *
+   * @generated from field: int32 outbox_retention_days = 39;
+   */
+  outboxRetentionDays = 0;
+
+  /**
    * @generated from field: google.protobuf.Timestamp created_at = 100;
    */
   createdAt?: Timestamp;
@@ -302,6 +344,11 @@ export class TenantSettings extends Message<TenantSettings> {
     { no: 28, name: "max_concurrent_runs", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
     { no: 29, name: "session_access_token_ttl_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 30, name: "session_refresh_token_ttl_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 35, name: "execution_retention_enabled", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 36, name: "execution_retention_keep", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
+    { no: 37, name: "execution_retention_vacuum", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 38, name: "execution_retention_timeout_seconds", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 39, name: "outbox_retention_days", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 100, name: "created_at", kind: "message", T: Timestamp },
     { no: 101, name: "updated_at", kind: "message", T: Timestamp },
   ]);

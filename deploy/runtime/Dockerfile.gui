@@ -24,9 +24,7 @@ RUN apt-get update \
       xvfb xauth \
       python3-tk tk tcl \
  && rm -rf /var/lib/apt/lists/*
-# Keep the writable-rootfs property: the runtime user must be able to
-# write anywhere in the ephemeral filesystem (rootless installs).
-RUN chown -R 1000:1000 /usr /opt /var 2>/dev/null || true
+# THE RECURSIVE CHOWN HAPPENS ONCE, AT THE END OF THE FILE — see the note there.
 
 # ===================== RUNTIME CLI ADAPTERS =====================
 # BOTH ADAPTERS ARE INSTALLED HERE, IN THE IMAGE, AND THAT IS A DELIBERATE REVERSAL.
@@ -75,6 +73,12 @@ RUN if [ -n "${ORCHICON_ADAPTERS}" ]; then \
       done; \
       chown -R 1000:1000 /usr/local/lib/node_modules /usr/local/bin 2>/dev/null || true; \
     fi
+
+
+# THE ONE RECURSIVE CHOWN, LAST IN THE FILE. A recursive chown rewrites the metadata of every file it
+# touches, and a Docker layer is copy-on-write, so each one materializes a fresh full copy of the tree.
+# Running it after every install step means one pass instead of one copy of /usr per package group.
+RUN chown -R 1000:1000 /usr /opt /var 2>/dev/null || true
 
 USER orchicon
 WORKDIR /home/orchicon

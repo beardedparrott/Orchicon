@@ -17,7 +17,16 @@ export type BubbleKind = "user" | "notice" | "error" | "assistant";
  */
 export interface RoutableMessage {
   role: string;
-  metadata?: { error?: string };
+  metadata?: {
+    error?: string;
+    /**
+     * stopped is set when the operator stopped the turn. The server records "Turn stopped by the
+     * user." here rather than under `error`, because a deliberate stop is NOT a failure — and
+     * because `error` selects the error shell, which renders the error INSTEAD of the reply and so
+     * discarded the partial text the turn had already produced.
+     */
+    stopped?: string;
+  };
 }
 
 /**
@@ -32,6 +41,11 @@ export interface RoutableMessage {
 export function bubbleKindFor(message: RoutableMessage): BubbleKind {
   if (message.role === "user") return "user";
   if (message.role === "system") return "notice";
+  // A STOPPED TURN KEEPS ITS REPLY. It takes the assistant shell — the partial text is the turn's
+  // output and must be drawn — and the renderer appends a "stopped" note. Selecting the error shell
+  // here is what made stopping a turn delete it from the screen: the error branch renders the error
+  // string instead of the content, so the persisted text was never shown.
+  if (message.metadata?.stopped) return "assistant";
   if (message.metadata?.error) return "error";
   return "assistant";
 }

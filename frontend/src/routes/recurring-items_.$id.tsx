@@ -23,9 +23,18 @@ import {
   useUpdateWorkItem,
 } from "@/api/workItems";
 import { useListWorkflows } from "@/api/workflows";
-import { useListProjects } from "@/api/projects";
+import { protoToExecutionMode, useListProjects } from "@/api/projects";
 import { FileBrowser } from "@/components/FileBrowser";
 import { SecretsPicker } from "@/components/SecretsPicker";
+import {
+  ExecutionModeSelect,
+  effectiveExecutionModeOf,
+  executionModeChoiceOf,
+  executionModeToProto,
+  executionModeValueOf,
+  type ExecutionModeChoice,
+} from "@/components/ExecutionModeSelect";
+import { LocalModeDisclosure } from "@/components/LocalModeDisclosure";
 import { RuntimeImageSelect } from "@/components/RuntimeImageSelect";
 import { RecurringScheduleForm, formatRecurrence } from "@/components/work-items/RecurringScheduleForm";
 import { RecurringBadge, RunStatusBadge } from "@/components/work-items/work-item-badges";
@@ -89,6 +98,10 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
   const [acceptanceCriteria, setAcceptanceCriteria] = useState("");
   const [workflowId, setWorkflowId] = useState("");
   const [runtimeImage, setRuntimeImage] = useState("");
+  // WHERE THIS AUTOMATION'S FIRES RUN — the same per-item override a regular work item carries. The
+  // form offered an IMAGE but no MODE, so an automation could be pointed at a container while having no
+  // way to say "actually, run this on my machine".
+  const [executionMode, setExecutionMode] = useState<ExecutionModeChoice>("inherit");
   const [contextFiles, setContextFiles] = useState<string[]>([]);
   const [recurringSchedule, setRecurringSchedule] = useState<RecurringSchedule | undefined>(undefined);
   const [secretIds, setSecretIds] = useState<string[]>([]);
@@ -103,6 +116,7 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
     setAcceptanceCriteria(item.acceptanceCriteria ?? "");
     setWorkflowId(item.workflowId ?? "");
     setRuntimeImage(item.runtimeImage ?? "");
+    setExecutionMode(executionModeChoiceOf(item));
     setContextFiles(item.contextFiles ?? []);
     setSecretIds(item.secretIds ?? []);
     setRecurringSchedule(
@@ -120,6 +134,7 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
         acceptanceCriteria: acceptanceCriteria || undefined,
         workflowId: workflowId || undefined,
         runtimeImage: runtimeImage || undefined,
+        executionMode: executionModeToProto(executionMode),
         // UpdateWorkItemRequest.context_files is a ContextFiles wrapper (an
         // empty list clears the selection), not the repeated array CREATE uses.
         contextFiles: { files: contextFiles },
@@ -251,10 +266,45 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
               </div>
 
               <SecretsPicker value={secretIds} onChange={setSecretIds} />
+
+              <div className="space-y-2">
+                <ExecutionModeSelect
+                  value={executionMode}
+                  inherited={executionModeValueOf(
+                    projects?.find((p) => p.id === item.projectId),
+                  )}
+                  onChange={setExecutionMode}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Where every fire of this automation runs: a host process on your
+                  own machine, or a container. Inheriting follows the project.
+                </p>
+              </div>
+
               <div className="space-y-2">
                 <Label htmlFor="runtimeImage">Runtime image</Label>
-                <RuntimeImageSelect value={runtimeImage} onChange={setRuntimeImage} />
+                <RuntimeImageSelect
+                  value={runtimeImage}
+                  onChange={setRuntimeImage}
+                  // Same rule as the regular work-item form: the mode this item will actually have,
+                  // resolving "inherit" against the project. A local run has no container, so the
+                  // picker must not offer — or silently coerce — an image for it.
+                  mode={
+                    executionMode === "inherit"
+                      ? protoToExecutionMode(
+                          projects?.find((p) => p.id === item.projectId)?.executionMode,
+                        )
+                      : executionMode
+                  }
+                />
               </div>
+
+              {/* Local mode is a CHOICE made on this form, so its consequences are disclosed here. */}
+              {(executionMode === "local" ||
+                (executionMode === "inherit" &&
+                  protoToExecutionMode(
+                    projects?.find((p) => p.id === item.projectId)?.executionMode,
+                  ) === "local")) && <LocalModeDisclosure />}
 
               {projectDir ? (
                 <FileBrowser
@@ -403,10 +453,38 @@ function RecurringItemDetail({ item }: { item: WorkItem }) {
                   <span className="italic text-muted-foreground/70">none (unbound)</span>
                 )}
               </div>
+              {/* THE MODE COMES BEFORE THE IMAGE, because it decides whether the image means
+                  anything: a local run has no container, so "default (base)" beside it would describe
+                  a container that is never created. */}
+              <div>
+                <div className="text-xs text-muted-foreground">Execution mode</div>
+                <div className="break-words [overflow-wrap:anywhere]">
+                  {(() => {
+                    const projectMode = executionModeValueOf(
+                      projects?.find((p) => p.id === item.projectId),
+                    );
+                    const effective = effectiveExecutionModeOf(item, projectMode);
+                    const own = executionModeValueOf(item);
+                    if (effective === "local") {
+                      return own === "local"
+                        ? "local (set on this item) — runs as a host process, not in a container"
+                        : "local (inherited from the project) — runs as a host process, not in a container";
+                    }
+                    return own === "runtime"
+                      ? "runtime (set on this item) — runs in a container"
+                      : "runtime (inherited from the project) — runs in a container";
+                  })()}
+                </div>
+              </div>
               <div>
                 <div className="text-xs text-muted-foreground">Runtime image</div>
                 <div className="break-words [overflow-wrap:anywhere]">
-                  {item.runtimeImage || "default (base)"}
+                  {effectiveExecutionModeOf(
+                    item,
+                    executionModeValueOf(projects?.find((p) => p.id === item.projectId)),
+                  ) === "local"
+                    ? "not used — a local run executes on the host, not in a container"
+                    : item.runtimeImage || "default (base)"}
                 </div>
               </div>
               <div>

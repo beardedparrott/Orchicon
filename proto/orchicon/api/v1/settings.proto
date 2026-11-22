@@ -191,6 +191,40 @@ message TenantSettings {
   // Range: [300, 31536000].
   int64 session_refresh_token_ttl_seconds = 30;
 
+  // --- Execution-history retention ---
+  // A scheduled pass that prunes old terminal executions and then VACUUMS the relations it shrank.
+  //
+  // WHY THE VACUUM IS PART OF THIS, not a separate concern: a Postgres DELETE marks space reusable
+  // INSIDE the relation and returns nothing to the OS. Measured on a long-lived deployment before this
+  // existed, execution_session_parts held 3154 MB at 98.3% dead space and outbox 2102 MB of index bloat
+  // around ONE row — the rows had been deleted, and the data directory grew anyway. Pruning without
+  // VACUUM is the bug this feature exists to fix.
+  //
+  // SHIPS OFF. A background job that deletes history must never be how an operator discovers the
+  // feature exists, so a tenant that has never configured this prunes nothing.
+
+  // Whether the scheduled retention pass prunes at all. Default false.
+  bool execution_retention_enabled = 35;
+
+  // How many of the newest executions survive a pass; everything older and terminal is removed.
+  // Optional so that 0 remains a REAL setting ("discard all terminal history") distinct from
+  // unset (absent = built-in default 150). A negative value is treated as the default.
+  optional int64 execution_retention_keep = 36;
+
+  // Run VACUUM after a pass that actually removed rows. Default true — without it the prune reclaims
+  // no disk, which makes the whole feature pointless. Plain VACUUM, never VACUUM FULL: the latter
+  // takes an ACCESS EXCLUSIVE lock and would block every reader for the duration.
+  bool execution_retention_vacuum = 37;
+
+  // Wall-clock budget for one pass, in seconds. A prune that runs long enough to matter is a prune
+  // holding locks the API needs. Default 300. Zero = default.
+  int32 execution_retention_timeout_seconds = 38;
+
+  // --- Published-outbox retention ---
+  // The outbox relay prunes published rows on its own ticker, but only within ORCHICON_OUTBOX_RETENTION_DAYS.
+  // This makes the window a tenant setting. Zero = inherit the env-var/code default (7 days).
+  int32 outbox_retention_days = 39;
+
   google.protobuf.Timestamp created_at = 100;
   google.protobuf.Timestamp updated_at = 101;
 }

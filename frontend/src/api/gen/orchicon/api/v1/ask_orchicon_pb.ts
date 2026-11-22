@@ -619,13 +619,27 @@ export class MessageMetadata extends Message<MessageMetadata> {
   latencyMs = protoInt64.zero;
 
   /**
-   * error is set when the turn failed (timeout, session error, user stop,
-   * or serve loss). The message content is empty in that case; the
-   * frontend renders an error bubble with a retry affordance.
+   * error is set when the turn FAILED (timeout, session error, serve loss). The frontend renders an
+   * error bubble with a retry affordance, and ALSO renders any content the turn produced before it
+   * failed — a reply that streamed and then died keeps its text.
    *
    * @generated from field: string error = 6;
    */
   error = "";
+
+  /**
+   * stopped is set when the OPERATOR stopped the turn, and carries the note ("Turn stopped by the
+   * user."). It is NOT an error: a deliberate stop is not a failure, and conflating the two meant
+   * the content was persisted but then replaced on screen by an error bubble — the turn's partial
+   * reply was thrown away in the UI even though the row held it. A stopped turn renders as a reply
+   * followed by this note.
+   *
+   * (This comment previously claimed "The message content is empty in that case", which was never
+   * true of a stopped turn: the server has always kept the partial text.)
+   *
+   * @generated from field: string stopped = 7;
+   */
+  stopped = "";
 
   constructor(data?: PartialMessage<MessageMetadata>) {
     super();
@@ -641,6 +655,7 @@ export class MessageMetadata extends Message<MessageMetadata> {
     { no: 4, name: "cost_usd", kind: "scalar", T: 1 /* ScalarType.DOUBLE */ },
     { no: 5, name: "latency_ms", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 6, name: "error", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 7, name: "stopped", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): MessageMetadata {

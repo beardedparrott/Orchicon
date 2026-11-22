@@ -204,10 +204,20 @@ message MessageMetadata {
   int64 completion_tokens = 3;
   double cost_usd = 4;
   int64 latency_ms = 5;
-  // error is set when the turn failed (timeout, session error, user stop,
-  // or serve loss). The message content is empty in that case; the
-  // frontend renders an error bubble with a retry affordance.
+  // error is set when the turn FAILED (timeout, session error, serve loss). The frontend renders an
+  // error bubble with a retry affordance, and ALSO renders any content the turn produced before it
+  // failed — a reply that streamed and then died keeps its text.
   string error = 6;
+
+  // stopped is set when the OPERATOR stopped the turn, and carries the note ("Turn stopped by the
+  // user."). It is NOT an error: a deliberate stop is not a failure, and conflating the two meant
+  // the content was persisted but then replaced on screen by an error bubble — the turn's partial
+  // reply was thrown away in the UI even though the row held it. A stopped turn renders as a reply
+  // followed by this note.
+  //
+  // (This comment previously claimed "The message content is empty in that case", which was never
+  // true of a stopped turn: the server has always kept the partial text.)
+  string stopped = 7;
 }
 
 // AgentConfig defines Orchicon's agent identity, skills, tools, and

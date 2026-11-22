@@ -127,6 +127,12 @@ type Config struct {
 	// default 1h).
 	OutboxPruneInterval time.Duration
 
+	// ExecutionRetentionInterval is how often the control plane runs a scheduled execution-history
+	// retention pass (ORCHICON_EXECUTION_RETENTION_INTERVAL, default 24h). The pass itself does
+	// NOTHING unless a tenant has enabled it in Settings — this knob only says how often to look.
+	// 0 or negative disables the scheduler entirely.
+	ExecutionRetentionInterval time.Duration
+
 	// DispatchConcurrency bounds how many ready work items the TaskReconciler scan pass dispatches
 	// CONCURRENTLY in one pass (ORCHICON_DISPATCH_CONCURRENCY, default 4).
 	DispatchConcurrency int
@@ -192,15 +198,16 @@ func Default() Config {
 			S3Region:   env("ORCHICON_S3_REGION", ""),
 			S3Endpoint: env("ORCHICON_S3_ENDPOINT", ""),
 		},
-		ReadHeaderTimeout:   10 * time.Second,
-		ShutdownTimeout:     15 * time.Second,
-		IndexCheckInterval:  envDuration("ORCHICON_INDEX_CHECK_INTERVAL", 6*time.Hour),
-		OutboxRetentionDays: envInt("ORCHICON_OUTBOX_RETENTION_DAYS", 7),
-		OutboxPruneBatch:    envInt("ORCHICON_OUTBOX_PRUNE_BATCH", 10000),
-		OutboxPruneInterval: envDuration("ORCHICON_OUTBOX_PRUNE_INTERVAL", time.Hour),
-		DispatchConcurrency: envInt("ORCHICON_DISPATCH_CONCURRENCY", 4),
-		SecretsKEK:          env("ORCHICON_SECRETS_KEK", ""),
-		DataDir:             dataDir,
+		ReadHeaderTimeout:          10 * time.Second,
+		ShutdownTimeout:            15 * time.Second,
+		IndexCheckInterval:         envDuration("ORCHICON_INDEX_CHECK_INTERVAL", 6*time.Hour),
+		OutboxRetentionDays:        envInt("ORCHICON_OUTBOX_RETENTION_DAYS", 7),
+		OutboxPruneBatch:           envInt("ORCHICON_OUTBOX_PRUNE_BATCH", 10000),
+		OutboxPruneInterval:        envDuration("ORCHICON_OUTBOX_PRUNE_INTERVAL", time.Hour),
+		ExecutionRetentionInterval: envDuration("ORCHICON_EXECUTION_RETENTION_INTERVAL", 24*time.Hour),
+		DispatchConcurrency:        envInt("ORCHICON_DISPATCH_CONCURRENCY", 4),
+		SecretsKEK:                 env("ORCHICON_SECRETS_KEK", ""),
+		DataDir:                    dataDir,
 		PermissionPolicyPath: env("ORCHICON_PERMISSION_POLICY",
 			filepath.Join(dataDir, "permission-policy.yaml")),
 	}

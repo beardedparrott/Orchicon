@@ -36,6 +36,16 @@ type ToolRegistry struct {
 }
 
 // NewToolRegistry creates the registry with all available tools.
+// recurrenceToolDescription is the ONE description of the recurrence object, shared by create_work_item
+// and update_work_item so the two cannot describe the same argument differently.
+const recurrenceToolDescription = "A RECURRING work item. An object with frequency " +
+	"(minute|hourly|daily|weekly|monthly), interval (>= 1), start_date (YYYY-MM-DD) and start_time (HH:MM), " +
+	"plus optional days (Mon..Sun, meaningful for weekly), timezone (an IANA zone such as America/Chicago — " +
+	"REQUIRED for a new schedule, because a recurrence is a WALL-CLOCK rule and \"09:00\" is a different " +
+	"instant in summer and winter), outputs_mode (standard | idea | none) and window_start/window_end " +
+	"(HH:MM, set together). A recurring item MUST be a flat top-level task (kind=task, no parent) and MUST " +
+	"be bound to a workflow, or the fire has nothing to start. Omit the field entirely for a one-shot item."
+
 func NewToolRegistry(pool *db.Pool, log *slog.Logger, secretsKEK []byte) *ToolRegistry {
 	// Package-level logger for tools whose post-commit side effects (e.g. auto-starting a workflow)
 	// need a logger but receive none via the ToolFn signature.
@@ -160,14 +170,14 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"Optionally scaffold subdirectories (src, docs, tests, workflows) and initialise a git repository " +
 				"(init_git) — which a local/pr project needs before its runs can branch. init_git is a no-op when " +
 				"the directory already has a repository, and the project's strategy none means it never runs.",
-			Mutating:    true,
-			Fn:          toolCreateProjectDir,
+			Mutating: true,
+			Fn:       toolCreateProjectDir,
 			Properties: map[string]PropertySchema{
 				"project_id": {Type: "string", Description: "Project ID"},
 				"scaffold":   {Type: "boolean", Description: "Whether to create scaffold subdirectories"},
 				"init_git":   {Type: "boolean", Description: "Run the platform's git setup on the new directory (git init + initial commit + integration branch when a remote exists). Only after the user agrees; no-op when a repository already exists."},
 			},
-			Required:    []string{"project_id"},
+			Required: []string{"project_id"},
 		},
 		{
 			Name:        "archive_project",
@@ -214,15 +224,16 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Name: "ask_user",
 			Description: "Ask the user a clarifying question and END YOUR TURN. Use this instead of writing a numbered " +
 				"list of choices in prose. Provide `question` and 2+ choice-shaped `options` (each {label, description?} " +
-				"or a plain string); set allow_other=true only to also accept a free-text answer, or to ask a " +
-				"free-text-only question (no options, allow_other=true). It RECORDS the question and returns immediately: " +
+				"or a plain string), and set allow_other=true so the operator can also answer in their own words — " +
+				"ALWAYS, for an option card, because your options cannot be the whole set of possible answers. Omit " +
+				"options entirely (with allow_other=true) for a free-text-only question. It RECORDS the question and returns immediately: " +
 				"the user answers in their NEXT message, so ask it and stop — never guess the answer or keep working.",
 			Mutating: false,
 			Fn:       toolAskUser,
 			Properties: map[string]PropertySchema{
 				"question":    {Type: "string", Description: "The clarifying question to put to the user, in one or two sentences."},
 				"options":     {Type: "array", Description: "Two or more choice options. Each is either an object {label, description?} or a plain string label. Omit only for a free-text-only question (then set allow_other=true)."},
-				"allow_other": {Type: "boolean", Description: "Also accept a free-text answer in addition to (or instead of) the options. Required true when options is empty."},
+				"allow_other": {Type: "boolean", Description: "Also accept a free-text answer in addition to the options. SET THIS TRUE ON EVERY OPTION CARD: your options are a shortcut, not the whole set of answers, and without this an operator whose answer is not listed can only pick something untrue or abandon the card. Required true when options is empty (a free-text-only question)."},
 			},
 			Required: []string{"question"},
 		},
@@ -305,6 +316,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"runtime_image":       {Type: "string", Description: "Runtime container image tag; empty = base image"},
 				"context_files":       {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files)"},
 				"ephemeral":           {Type: "boolean", Description: "Mark the item machine-managed and transient (Quick Work): hidden from every human view and meant to be hard-deleted when the job ends. Default false. Top-level only — rejected with a parent_id."},
+				"recurrence":          {Type: "object", Description: recurrenceToolDescription},
+				"execution_mode":      {Type: "string", Description: "Where this item's runs execute: local (in-process on the host, the default) or runtime (inside a container). Omit to inherit the project's mode. THIS APPLIES TO RECURRING ITEMS TOO — a recurring item set to local fires locally every time. Set it explicitly when the operator asks for a local run."},
 			},
 			Required: []string{"title", "project_id"},
 		},
@@ -314,24 +327,28 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Mutating:    true,
 			Fn:          toolUpdateWorkItem,
 			Properties: map[string]PropertySchema{
-				"id":                  {Type: "string", Description: "Work item ID"},
-				"title":               {Type: "string", Description: "New title"},
-				"description":         {Type: "string", Description: "New description (markdown)"},
-				"acceptance_criteria": {Type: "string", Description: "New acceptance criteria (markdown)"},
-				"acceptance_review":   {Type: "string", Description: "New acceptance review (markdown); empty string clears it (auto-populated by the WorkflowReconciler when a bound run completes)"},
-				"status":              {Type: "string", Description: "New status (pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering, skipped). Skipped tells the sequence engine to pass over this item and arm the next sibling."},
-				"priority":            {Type: "number", Description: "New priority (1-5)"},
-				"budgets":             {Type: "string", Description: "Budgets as a JSON object (e.g. {\"tool_call_count\": 100, \"max_cost_usd\": 5})"},
-				"context_window":      {Type: "number", Description: "Context window size for the run"},
-				"project_id":          {Type: "string", Description: "Reassign to a different project (target must be active)"},
-				"workflow_id":         {Type: "string", Description: "Bind/unbind to a workflow template ID (empty string clears the binding)"},
-				"parent_id":           {Type: "string", Description: "New parent work item ID (reparent). Must be the same project and a strictly higher-level kind (epic > feature > task > subtask). Empty string clears the parent (epic only)."},
-				"scheduled_start_at":  {Type: "string", Description: "Scheduled start time (ISO 8601 or 'N minutes from now'). Setting this flips the item to scheduled unless it has an active run."},
-				"auto_start_workflow": {Type: "boolean", Description: "Start the bound workflow immediately on save. true with no scheduled_start_at clears any existing schedule."},
-				"workflow_run_id":     {Type: "string", Description: "The workflow run ID this item is bound to; empty string allows re-scheduling"},
-				"runtime_image":       {Type: "string", Description: "Runtime container image tag; empty string resets to the base image"},
-				"context_files":       {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files); an empty list clears the selection"},
-				"kind":                {Type: "string", Description: "New kind (epic, feature, task, subtask). The parent/child hierarchy is resolved automatically (see description)."},
+				"id":                   {Type: "string", Description: "Work item ID"},
+				"title":                {Type: "string", Description: "New title"},
+				"description":          {Type: "string", Description: "New description (markdown)"},
+				"acceptance_criteria":  {Type: "string", Description: "New acceptance criteria (markdown)"},
+				"acceptance_review":    {Type: "string", Description: "New acceptance review (markdown); empty string clears it (auto-populated by the WorkflowReconciler when a bound run completes)"},
+				"status":               {Type: "string", Description: "New status (pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering, skipped). Skipped tells the sequence engine to pass over this item and arm the next sibling."},
+				"priority":             {Type: "number", Description: "New priority (1-5)"},
+				"budgets":              {Type: "string", Description: "Budgets as a JSON object (e.g. {\"tool_call_count\": 100, \"max_cost_usd\": 5})"},
+				"context_window":       {Type: "number", Description: "Context window size for the run"},
+				"project_id":           {Type: "string", Description: "Reassign to a different project (target must be active)"},
+				"workflow_id":          {Type: "string", Description: "Bind/unbind to a workflow template ID (empty string clears the binding)"},
+				"parent_id":            {Type: "string", Description: "New parent work item ID (reparent). Must be the same project and a strictly higher-level kind (epic > feature > task > subtask). Empty string clears the parent (epic only)."},
+				"scheduled_start_at":   {Type: "string", Description: "Scheduled start time (ISO 8601 or 'N minutes from now'). Setting this flips the item to scheduled unless it has an active run."},
+				"recurrence":           {Type: "object", Description: recurrenceToolDescription},
+				"clear_recurrence":     {Type: "boolean", Description: "Remove the item's recurrence, turning it back into a one-shot item."},
+				"execution_mode":       {Type: "string", Description: "Where this item's runs execute: local (in-process on the host) or runtime (inside a container). Applies to SUBSEQUENT runs, including every future fire of a recurring item. Omit to leave unchanged."},
+				"clear_execution_mode": {Type: "boolean", Description: "Drop this item's override and inherit the project's execution mode again."},
+				"auto_start_workflow":  {Type: "boolean", Description: "Start the bound workflow immediately on save. true with no scheduled_start_at clears any existing schedule."},
+				"workflow_run_id":      {Type: "string", Description: "The workflow run ID this item is bound to; empty string allows re-scheduling"},
+				"runtime_image":        {Type: "string", Description: "Runtime container image tag; empty string resets to the base image"},
+				"context_files":        {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files); an empty list clears the selection"},
+				"kind":                 {Type: "string", Description: "New kind (epic, feature, task, subtask). The parent/child hierarchy is resolved automatically (see description)."},
 			},
 			Required: []string{"id"},
 		},
@@ -445,7 +462,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Properties: map[string]PropertySchema{
 				"name":          {Type: "string", Description: "Worker name"},
 				"purpose":       {Type: "string", Description: "Worker purpose"},
-				"model_ref": {Type: "string", Description: "Model reference (adapter/provider/model, e.g. opencode/opencode-go/deepseek-v4-flash, or the legacy provider/model e.g. opencode-go/deepseek-v4-flash). Segment 1 selects and routes the per-worker adapter: fresh selections default to the orchicon adapter (e.g. orchicon/commandcode/deepseek/deepseek-v4-flash); legacy 2-segment refs (provider/model) infer and keep dispatching to opencode — existing workers are never repointed. The ref's adapter segment is the single source of truth for dispatch; there is no separate runtime_ref."},
+				"model_ref":     {Type: "string", Description: "Model reference (adapter/provider/model, e.g. opencode/opencode-go/deepseek-v4-flash, or the legacy provider/model e.g. opencode-go/deepseek-v4-flash). Segment 1 selects and routes the per-worker adapter: fresh selections default to the orchicon adapter (e.g. orchicon/commandcode/deepseek/deepseek-v4-flash); legacy 2-segment refs (provider/model) infer and keep dispatching to opencode — existing workers are never repointed. The ref's adapter segment is the single source of truth for dispatch; there is no separate runtime_ref."},
 				"description":   {Type: "string", Description: "Optional human-readable description"},
 				"version_note":  {Type: "string", Description: "Optional note describing draft version 1"},
 				"role":          {Type: "string", Description: "Optional role section for the composed system prompt"},
