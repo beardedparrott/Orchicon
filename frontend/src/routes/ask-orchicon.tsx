@@ -45,6 +45,7 @@ import {
   effectiveComposerProject,
   filterConversationsByScope,
   filterConversationsBySearch,
+  conversationDisplayTitle,
   scopeLabel,
   scopeOptions,
   type ScopeOption,
@@ -663,9 +664,8 @@ function AskOrchiconPage() {
   // searches over two different things; sharing one box would mean typing a conversation name filtered
   // nothing while highlighting matches inside whichever chat happened to be open.
   const [convSearch, setConvSearch] = useState("");
-  // RAIL SELECTION — the bulk-selection set, keyed by conversation id. Absent unless select mode is on,
-  // so the rail looks exactly as it did until the operator asks for it.
-  const [convSelectMode, setConvSelectMode] = useState(false);
+  // RAIL SELECTION — the bulk-selection set, keyed by conversation id. There is no select MODE: every row
+  // always carries a checkbox, so this is simply "what is ticked right now".
   const [convSelected, setConvSelected] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
   const [activeMatch, setActiveMatch] = useState(0);
@@ -2172,10 +2172,9 @@ function AskOrchiconPage() {
     });
   }, [scopedConversations]);
 
-  // Leaving select mode drops the selection: a set that outlived its mode would be acted on later by a
-  // bulk action the operator no longer associates with it.
+  // After a bulk action the selection is dropped: leaving it ticked would let a second action land on rows
+  // the operator has stopped thinking about.
   const exitConvSelectMode = useCallback(() => {
-    setConvSelectMode(false);
     setConvSelected(new Set());
   }, []);
 
@@ -2991,35 +2990,38 @@ function AskOrchiconPage() {
               )}
             </div>
 
-            <div className="flex items-center justify-between gap-1">
-              <button
-                onClick={() => (convSelectMode ? exitConvSelectMode() : setConvSelectMode(true))}
-                className="rounded px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
-                aria-pressed={convSelectMode}
-              >
-                {convSelectMode ? "Done" : "Select"}
-              </button>
-              {convSelectMode && (
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={selectAllVisibleConversations}
-                    className="rounded px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
-                    // "Select all" means all of WHAT IS SHOWN — after a search, the matched set.
-                    title="Select every conversation currently shown"
-                  >
-                    {scopedConversations.length > 0 &&
+            {/* SELECT ALL — a checkbox, not a mode. There is no "Select mode" to enter and leave: every
+                row always carries its own checkbox, so selecting is just clicking one. This box does the
+                same thing for every conversation the search is currently showing. */}
+            <div className="flex items-center justify-between gap-2 px-0.5">
+              <label className="flex cursor-pointer items-center gap-2 text-[11px] text-muted-foreground">
+                <input
+                  type="checkbox"
+                  aria-label="Select all conversations currently shown"
+                  checked={
+                    scopedConversations.length > 0 &&
                     scopedConversations.every((c) => convSelected.has(c.id))
-                      ? "Clear all"
-                      : `Select all (${scopedConversations.length})`}
-                  </button>
-                  <span className="text-[11px] text-muted-foreground">
-                    {visibleSelectedConvIds.length} selected
+                  }
+                  // Tri-state look would need a ref; the count beside it already says "some".
+                  onChange={selectAllVisibleConversations}
+                />
+                Select all
+                {convSearch.trim() !== "" && scopedConversations.length > 0 && (
+                  <span className="text-muted-foreground/70">
+                    ({scopedConversations.length} shown)
                   </span>
-                </div>
+                )}
+              </label>
+              {visibleSelectedConvIds.length > 0 && (
+                <span className="text-[11px] font-medium text-foreground">
+                  {visibleSelectedConvIds.length} selected
+                </span>
               )}
             </div>
 
-            {convSelectMode && visibleSelectedConvIds.length > 0 && (
+            {/* THE BULK ACTIONS APPEAR ONLY WHEN SOMETHING IS SELECTED, so the rail stays quiet until
+                there is something to act on. */}
+            {visibleSelectedConvIds.length > 0 && (
               <div className="flex flex-wrap items-center gap-1 rounded-md border border-border/60 p-1">
                 <Button
                   size="sm"
@@ -3172,7 +3174,7 @@ function AskOrchiconPage() {
             <DragOverlay dropAnimation={null}>
               {activeDragId ? (
                 <div className="rounded-md bg-background border shadow-md px-3 py-2 text-sm text-foreground max-w-[200px] truncate">
-                  {convById.get(activeDragId)?.title || "New conversation"}
+                  {conversationDisplayTitle({ title: convById.get(activeDragId)?.title })}
                 </div>
               ) : null}
             </DragOverlay>
@@ -3242,13 +3244,13 @@ function AskOrchiconPage() {
                     const isOver = overFolderId === category.id;
                     const isRenaming = renamingFolderId === category.id;
                     return (
-                      <FolderItem key={category.id} id={category.id} name={category.name} isCollapsed={isCollapsed} isOver={isOver} isRenaming={isRenaming} renameValue={folderRenameValue} renameInputRef={folderRenameInputRef} onToggle={() => convPrefs.toggleCollapsed(category.id)} onStartRename={() => startRenameFolder(category.id, category.name)} onSaveRename={() => saveRenameFolder(category.id)} onCancelRename={cancelRenameFolder} onRenameChange={setFolderRenameValue} onDelete={() => convPrefs.deleteCategory(category.id)} convIds={folderConvIds} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} convRenameValue={renameValue} convRenameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} renderMoveControl={renderMoveControl} runningIds={runningIds} selectionMode={convSelectMode} selectedConvIds={convSelected} toggleConvSelected={toggleConvSelected} />
+                      <FolderItem key={category.id} id={category.id} name={category.name} isCollapsed={isCollapsed} isOver={isOver} isRenaming={isRenaming} renameValue={folderRenameValue} renameInputRef={folderRenameInputRef} onToggle={() => convPrefs.toggleCollapsed(category.id)} onStartRename={() => startRenameFolder(category.id, category.name)} onSaveRename={() => saveRenameFolder(category.id)} onCancelRename={cancelRenameFolder} onRenameChange={setFolderRenameValue} onDelete={() => convPrefs.deleteCategory(category.id)} convIds={folderConvIds} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} convRenameValue={renameValue} convRenameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} renderMoveControl={renderMoveControl} runningIds={runningIds}  selectedConvIds={convSelected} toggleConvSelected={toggleConvSelected} />
                     );
                   })}
-                  <UncategorizedDropZone id="__uncategorized__" convIds={categorizedConversations.uncategorized} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} renameValue={renameValue} renameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} isOver={overFolderId === "__uncategorized__"} hasFolders={visibleCategories.length > 0} renderMoveControl={renderMoveControl} runningIds={runningIds} selectionMode={convSelectMode} selectedConvIds={convSelected} toggleConvSelected={toggleConvSelected} />
+                  <UncategorizedDropZone id="__uncategorized__" convIds={categorizedConversations.uncategorized} convById={convById} activeConvId={activeConvId} renamingConvId={renamingConvId} renameValue={renameValue} renameInputRef={renameInputRef} onSelectConv={(id) => { setMobileSheetOpen(false); setActiveConvId(id); }} onStartRenameConv={startRenameConv} onSaveRenameConv={saveRenameConv} onCancelRenameConv={cancelRenameConv} onRenameConvChange={setRenameValue} onDeleteConv={handleDeleteConv} onStopConv={handleStopConversation} activeDragId={activeDragId} isOver={overFolderId === "__uncategorized__"} hasFolders={visibleCategories.length > 0} renderMoveControl={renderMoveControl} runningIds={runningIds}  selectedConvIds={convSelected} toggleConvSelected={toggleConvSelected} />
                 </SortableContext>
                 <DragOverlay dropAnimation={null}>
-                  {activeDragId ? <div className="rounded-md bg-background border shadow-md px-3 py-2 text-sm text-foreground max-w-[200px] truncate">{convById.get(activeDragId)?.title || "New conversation"}</div> : null}
+                  {activeDragId ? <div className="rounded-md bg-background border shadow-md px-3 py-2 text-sm text-foreground max-w-[200px] truncate">{conversationDisplayTitle({ title: convById.get(activeDragId)?.title })}</div> : null}
                 </DragOverlay>
               </DndContext>
             </div>
@@ -4537,7 +4539,10 @@ function ConversationItem({
       <button
         // IN SELECT MODE A CLICK TOGGLES MEMBERSHIP rather than opening the conversation: the operator
         // is building a set, and having a click navigate away mid-selection would lose it.
-        onClick={selection ? selection.onToggle : onSelect}
+        // THE ROW STILL OPENS ON CLICK — only the checkbox toggles selection. A row whose whole body
+        // became a selection toggle would make opening a conversation impossible once a checkbox was
+        // present.
+        onClick={onSelect}
         className={cn(
           "w-full text-left rounded-xl p-2.5 text-sm transition border",
           isActive && !selection
@@ -4591,7 +4596,7 @@ function ConversationItem({
                   </span>
                 )}
                 <span className="truncate block flex-1 min-w-0">
-                  {title || "New conversation"}
+                  {conversationDisplayTitle({ title })}
                 </span>
                 {isRunning && onStop && (
                   <span
@@ -4656,6 +4661,9 @@ function ConversationItem({
   );
 }
 
+/** A shared empty set, so a row list with no selection state still reads safely. */
+const EMPTY_CONV_SELECTION: ReadonlySet<string> = new Set<string>();
+
 interface FolderItemProps {
   id: string;
   name: string;
@@ -4697,7 +4705,6 @@ interface FolderItemProps {
    * down rather than read from context, because these components are MODULE-LEVEL: they cannot close
    * over the page's state, and a checkbox that silently could not toggle would be worse than none.
    */
-  selectionMode?: boolean;
   selectedConvIds?: ReadonlySet<string>;
   toggleConvSelected?: (id: string) => void;
 }
@@ -4732,8 +4739,7 @@ function FolderItem({
   activeDragId,
   renderMoveControl,
   runningIds,
-  selectionMode,
-  selectedConvIds,
+  selectedConvIds = EMPTY_CONV_SELECTION,
   toggleConvSelected,
 }: FolderItemProps) {
   const { setNodeRef } = useDroppable({ id });
@@ -4816,7 +4822,9 @@ function FolderItem({
                 renameInputRef={convRenameInputRef}
                 onSelect={() => onSelectConv(convId)}
                 selection={
-                  selectionMode && selectedConvIds && toggleConvSelected
+                  // ALWAYS ON. There is no select MODE to enter: every row carries a checkbox, so
+                  // selecting is a click rather than a state the operator has to discover and remember.
+                  toggleConvSelected
                     ? {
                         checked: selectedConvIds.has(convId),
                         onToggle: () => toggleConvSelected(convId),
@@ -4865,7 +4873,6 @@ interface UncategorizedDropZoneProps {
    * down rather than read from context, because these components are MODULE-LEVEL: they cannot close
    * over the page's state, and a checkbox that silently could not toggle would be worse than none.
    */
-  selectionMode?: boolean;
   selectedConvIds?: ReadonlySet<string>;
   toggleConvSelected?: (id: string) => void;
 }
@@ -4890,8 +4897,7 @@ function UncategorizedDropZone({
   hasFolders,
   renderMoveControl,
   runningIds,
-  selectionMode,
-  selectedConvIds,
+  selectedConvIds = EMPTY_CONV_SELECTION,
   toggleConvSelected,
 }: UncategorizedDropZoneProps) {
   const { setNodeRef } = useDroppable({ id });
@@ -4931,7 +4937,9 @@ function UncategorizedDropZone({
             renameInputRef={renameInputRef}
             onSelect={() => onSelectConv(convId)}
                 selection={
-                  selectionMode && selectedConvIds && toggleConvSelected
+                  // ALWAYS ON. There is no select MODE to enter: every row carries a checkbox, so
+                  // selecting is a click rather than a state the operator has to discover and remember.
+                  toggleConvSelected
                     ? {
                         checked: selectedConvIds.has(convId),
                         onToggle: () => toggleConvSelected(convId),

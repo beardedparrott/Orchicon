@@ -277,8 +277,28 @@ export function conversationMatchesSearch(
 ): boolean {
   const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (terms.length === 0) return true;
-  const haystack = `${conv.title ?? ""}\n${conv.lastMessagePreview ?? ""}`.toLowerCase();
+  // THE LABEL THE RAIL DRAWS, not just the stored title.
+  //
+  // A large share of conversations in a real tenant have an EMPTY title (the auto-naming pass never ran,
+  // or the conversation was created and abandoned). The rail draws those as "New conversation", so that
+  // is what an operator sees and therefore what they type — and before this, a search for "new" matched
+  // none of them, which read as the filter being broken. Searching the DISPLAYED label is searching what
+  // is on screen.
+  const haystack =
+    `${conv.title ?? ""}\n${conversationDisplayTitle(conv)}\n${conv.lastMessagePreview ?? ""}`.toLowerCase();
   return terms.every((t) => haystack.includes(t));
+}
+
+/**
+ * conversationDisplayTitle is the label the rail draws for a conversation.
+ *
+ * ONE PLACE, because the rail and the search must agree: a row that SAYS "New conversation" and does not
+ * MATCH "new" is the bug this exists to prevent. Empty/whitespace titles fall back to the same placeholder
+ * the rail renders.
+ */
+export function conversationDisplayTitle(conv: { title?: string }): string {
+  const t = (conv.title ?? "").trim();
+  return t === "" ? "New conversation" : t;
 }
 
 /**

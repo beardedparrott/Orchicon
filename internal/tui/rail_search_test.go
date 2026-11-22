@@ -12,6 +12,8 @@ package tui
 import (
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 )
 
@@ -160,5 +162,100 @@ func TestSearchNarrowsWhatSelectAllReaches(t *testing.T) {
 	m.selectAllVisibleConversations()
 	if len(m.convMarked) != 2 || m.convMarked["c3"] {
 		t.Fatalf("select-all reached beyond the search: %v", m.convMarked)
+	}
+}
+
+// TestTypingFiltersLive is the specific defect: the first attempt used a SUBMIT FORM, so the rail only
+// narrowed when the operator pressed enter, and the dialog told them "hit ctrl+s to save" — which is not
+// what a search box does. This drives the box keystroke by keystroke and asserts the list narrows on
+// EVERY key, without any commit.
+func TestTypingFiltersLive(t *testing.T) {
+	m := newTestApp()
+	m.active = TabAsk
+	m.projectScope = projectScopeAll
+	m.conversations = []chat.Conversation{
+		conv("c1", "Weatherapp ideas", ""),
+		conv("c2", "MCP token fix", ""),
+		conv("c3", "Weatherapp bug", ""),
+	}
+	m.openConvSearch()
+	if m.convSearchBox == nil {
+		t.Fatal("ctrl+s did not open the search box")
+	}
+
+	// Type "wea" one key at a time — no enter, no submit.
+	for _, r := range "wea" {
+		handled, _ := m.convSearchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		if !handled {
+			t.Fatalf("the box did not consume %q", r)
+		}
+		if got := len(m.scopedConversations()); got != 2 {
+			t.Fatalf("after typing %q the rail shows %d conversations, want 2 (filtering must be LIVE)",
+				string(r), got)
+		}
+	}
+	// The box is still open — nothing was committed.
+	if m.convSearchBox == nil {
+		t.Error("typing closed the box; a search box stays open while the query is being built")
+	}
+
+	// Narrow further: "weatherapp" leaves the two, and "mcp" would leave one.
+	handled, _ := m.convSearchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("therapp")})
+	if !handled {
+		t.Fatal("multi-char input was not consumed")
+	}
+	if got := len(m.scopedConversations()); got != 2 {
+		t.Fatalf("rail shows %d, want 2", got)
+	}
+
+	// Enter keeps the filter and closes the box.
+	m.convSearchKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.convSearchBox != nil {
+		t.Error("enter must close the box")
+	}
+	if m.convSearch != "weatherapp" {
+		t.Errorf("filter = %q, want weatherapp to survive the commit", m.convSearch)
+	}
+	if got := len(m.scopedConversations()); got != 2 {
+		t.Error("committing must leave the filter applied")
+	}
+}
+
+// TestEscRestoresThePreviousFilter: an accidental ctrl+s must not lose the query in force.
+func TestEscRestoresThePreviousFilter(t *testing.T) {
+	m := newTestApp()
+	m.active = TabAsk
+	m.projectScope = projectScopeAll
+	m.conversations = []chat.Conversation{
+		conv("c1", "alpha", ""), conv("c2", "beta", ""),
+	}
+	m.convSearch = "alpha"
+	m.openConvSearch()
+	m.convSearchKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("zzz")})
+	m.convSearchKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.convSearch != "alpha" {
+		t.Fatalf("esc left filter = %q, want the original alpha", m.convSearch)
+	}
+}
+
+// TestEmptyTitlesMatchThePlaceholder is the TUI half of the reported bug: a conversation with an empty
+// stored title draws as "New conversation", so a search for that visible text must find it.
+func TestEmptyTitlesMatchThePlaceholder(t *testing.T) {
+	list := []chat.Conversation{
+		conv("u1", "", ""),
+		conv("u2", "   ", ""),
+		conv("n1", "MCP token fix", ""),
+	}
+	got := filterConversationsBySearch(list, "new conversation")
+	if len(got) != 2 {
+		t.Fatalf("matched %d, want the 2 untitled conversations", len(got))
+	}
+	for _, c := range got {
+		if c.ID == "n1" {
+			t.Error("a titled conversation was matched by the placeholder")
+		}
+	}
+	if d := convDisplayTitle(conv("u1", "", "")); d != "New conversation" {
+		t.Errorf("display title = %q, want the rail's placeholder", d)
 	}
 }

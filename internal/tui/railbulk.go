@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
+	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
 
 // The rail's item chords.
@@ -27,6 +30,20 @@ const (
 	// it) and overloading it would leave the operator unsure whether they had selected a chat or their
 	// own typed text.
 	conversationSelectAllChord = "ctrl+l"
+)
+
+// convSearchBox is the rail's INLINE search state: a text field plus the query it opened with, so esc
+// can put it back.
+type convSearchBox struct {
+	input textinput.Model
+	prev  string
+}
+
+const (
+	convSearchPrompt = "filter > "
+	// convSearchKeysHint names the keys the box actually has. It does NOT say "save", because nothing is
+	// being saved: the filter is already applied to every keystroke.
+	convSearchKeysHint = "esc: cancel · enter: keep the filter · ↑/↓: move the selection · typing filters live"
 )
 
 // toggleConvMark marks or unmarks the highlighted conversation and advances one row.
@@ -323,9 +340,26 @@ func (m *App) railHintLine() string {
 		return ""
 	}
 	parts := []string{"space: mark"}
+	if q := strings.TrimSpace(m.convSearch); q != "" {
+		// A FILTER THAT IS ON MUST BE VISIBLE, or a half-empty rail reads as lost conversations.
+		parts = []string{fmt.Sprintf("filter: %q", q)}
+	}
 	if n := m.convMarkedCount(); n > 0 {
 		parts = []string{fmt.Sprintf("%d marked", n)}
 	}
+	// SEARCH AND SELECT-ALL ARE ALWAYS ADVERTISED, not only after something is marked: they are how an
+	// operator FINDS something to mark, and a chord nobody is told about is a chord nobody uses. The
+	// first attempt bound ctrl+l for select-all and never mentioned it anywhere, which is exactly why it
+	// looked "not to exist".
+	parts = append(parts,
+		conversationSearchChord+": search",
+		conversationSelectAllChord+": select all"+func() string {
+			if n := len(m.scopedConversations()); n > 0 {
+				return fmt.Sprintf(" (%d)", n)
+			}
+			return ""
+		}(),
+	)
 	parts = append(parts,
 		conversationRenameChord+": rename",
 		conversationCategorizeChord+": categorize",
@@ -349,33 +383,119 @@ func (m *App) railHintLine() string {
 	return strings.Join(parts, " · ")
 }
 
-// openConvSearch opens the rail's search box, prefilled with the active query so ctrl+s edits rather
-// than silently discarding what is already narrowing the list.
+// openConvSearch opens the rail's INLINE search box and filters as the operator types.
+//
+// IT IS A TEXT BOX, NOT A FORM. The first attempt used kit2.NewForm, which is a SUBMIT dialog: it
+// filtered only on Enter and told the operator "hit ctrl+s to save", which is not a thing a search box
+// does. A search is applied PER KEYSTROKE — that is what makes seeing the list narrow feel like
+// searching rather than like filling in a form.
 func (m *App) openConvSearch() {
-	f := kit2.NewForm("Search conversations", kit2.FieldSpec{
-		Name:  "query",
-		Label: "Match title or last message",
-		Kind:  kit2.KText,
-		// NOT Required: an empty query is the meaningful "clear the filter" answer, and a Required field
-		// would make clearing it a validation error.
-		Initial: m.convSearch,
-	})
-	f.OnSubmit = func(vals map[string]string, _ map[string][]string) (tea.Cmd, error) {
-		m.convSearch = strings.TrimSpace(vals["query"])
-		// Marks for rows the filter just hid would be INVISIBLE but still deleted by a bulk action, so
-		// the selection is pruned to what is actually on screen.
-		m.pruneConvMarks()
-		if m.convSearch == "" {
-			m.dock.SetNotice("search cleared")
-		} else {
-			m.dock.SetNotice("searching: " + m.convSearch)
-		}
-		m.refreshStreamStatus()
-		return nil, nil
-	}
-	f.Width = m.modalWidth()
-	m.convSearchForm = f
+	in := textinput.New()
+	in.Prompt = convSearchPrompt
+	in.PromptStyle = theme.DetailKey
+	in.Cursor.Style = theme.ComposerCursor
+	in.TextStyle = lipgloss.NewStyle().Foreground(theme.Text)
+	in.SetValue(m.convSearch)
+	in.CursorEnd()
+	blink := in.Focus()
+	m.convSearchBox = &convSearchBox{input: in, prev: m.convSearch}
+	m.pendingConvSearchCmd = blink
+	m.dock.SetError("")
 	m.refreshComposerHint()
+}
+
+// convSearchKey routes a key while the rail's search box is up. handled=false lets the key continue
+// through the dispatch chain so the shell's hard escapes stay reachable.
+func (m *App) convSearchKey(k tea.KeyMsg) (bool, tea.Cmd) {
+	if m.convSearchBox == nil {
+		return false, nil
+	}
+	switch k.String() {
+	case "esc":
+		m.cancelConvSearch()
+		return true, nil
+	case "enter", "ctrl+j":
+		// Enter KEEPS the filter and hands the keyboard back — the list stays narrowed, which is what
+		// an operator expects after typing a query they can see working.
+		m.commitConvSearch()
+		return true, nil
+	case "up", "down", "ctrl+p", "ctrl+n":
+		// Move in the list WITHOUT leaving the box, so the filtered rows can be browsed and marked while
+		// the query still stands. The box keeps the keyboard.
+		if step := railSelectionStep(k.String()); step != 0 {
+			m.selectRailConversation(step)
+			m.refreshStreamStatus()
+		}
+		return true, nil
+	case "ctrl+c":
+		m.cancelConvSearch()
+		return false, nil
+	}
+	before := m.convSearchBox.input.Value()
+	next, cmd := m.convSearchBox.input.Update(k)
+	m.convSearchBox.input = next
+	if m.convSearchBox.input.Value() != before {
+		// THE LIVE FILTER. Every keystroke re-narrows the rail, and marks are pruned to what survives so
+		// a bulk action cannot act on rows the box has just hidden.
+		m.convSearch = m.convSearchBox.input.Value()
+		m.pruneConvMarks()
+		m.refreshStreamStatus()
+	}
+	return true, cmd
+}
+
+// commitConvSearch keeps the query and hands the keyboard back.
+func (m *App) commitConvSearch() {
+	if m.convSearchBox == nil {
+		return
+	}
+	m.convSearch = m.convSearchBox.input.Value()
+	m.convSearchBox = nil
+	m.refreshComposerHint()
+	m.refreshStreamStatus()
+}
+
+// cancelConvSearch restores the query the box opened with, so an accidental ctrl+s loses nothing.
+func (m *App) cancelConvSearch() {
+	if m.convSearchBox == nil {
+		return
+	}
+	m.convSearch = m.convSearchBox.prev
+	m.convSearchBox = nil
+	m.pruneConvMarks()
+	m.refreshComposerHint()
+	m.refreshStreamStatus()
+}
+
+// convSearchView composes the search box over the frame.
+func (m *App) convSearchView(base string, w, h int) string {
+	if m.convSearchBox == nil {
+		return base
+	}
+	return m.overlayCentered(base, m.modalPanel(m.convSearchBody(m.modalInnerWidth()), m.modalWidth()))
+}
+
+// convSearchBody renders the box: the query with its caret, a LIVE count of what it matches, and the
+// keys. The count is the feedback that makes typing feel connected to the list.
+func (m *App) convSearchBody(inner int) string {
+	m.convSearchBox.input.Width = max(inner-lipgloss.Width(convSearchPrompt), 8)
+	visible := m.scopedConversations()
+	total := len(m.conversations)
+	var count string
+	switch {
+	case strings.TrimSpace(m.convSearch) == "":
+		count = fmt.Sprintf("%d conversations — type to filter", total)
+	case len(visible) == 0:
+		count = fmt.Sprintf("no conversations match in %d", total)
+	default:
+		count = fmt.Sprintf("%d of %d conversations", len(visible), total)
+	}
+	return strings.Join([]string{
+		theme.DetailKey.Render("search conversations"),
+		m.convSearchBox.input.View(),
+		theme.HintText.Render(truncateRight(count, inner)),
+		theme.HintText.Render(truncateRight(convSearchKeysHint, inner)),
+	}, "\n")
 }
 
 // clearConvSearch drops the filter, reporting whether there was one. Bound to esc, which clears a

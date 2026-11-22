@@ -14,6 +14,7 @@ import {
   filterConversationsBySearch,
   ALL_PROJECTS,
   filterConversationsByScope,
+  conversationDisplayTitle,
 } from "./conversationProjects";
 
 interface RailConv {
@@ -95,5 +96,38 @@ describe("select-all-of-what-is-shown", () => {
       "junk",
     );
     expect(visible.map((c) => c.id)).toEqual(["c1", "c2", "c4"]);
+  });
+});
+
+describe("empty titles are searchable by the label the rail draws", () => {
+  // THE REPORTED BUG. A large share of conversations in a real tenant have an EMPTY stored title, and
+  // the rail draws those as "New conversation". A search for that visible text matched NONE of them, so
+  // the filter looked broken for exactly the rows an operator was trying to clean up.
+  const untitled = [
+    { id: "u1", title: "", lastMessagePreview: "" },
+    { id: "u2", title: "", lastMessagePreview: "something unrelated" },
+    { id: "u3", title: "   ", lastMessagePreview: "" },
+    { id: "n1", title: "MCP token fix", lastMessagePreview: "" },
+  ];
+
+  it("matches an empty title on the placeholder the rail shows", () => {
+    const got = filterConversationsBySearch(untitled, "new").map((c) => c.id);
+    expect(got).toEqual(["u1", "u2", "u3"]);
+  });
+
+  it("matches the full placeholder phrase", () => {
+    const got = filterConversationsBySearch(untitled, "new conversation").map((c) => c.id);
+    expect(got).toEqual(["u1", "u2", "u3"]);
+  });
+
+  it("still matches titled conversations and does not sweep them into the placeholder set", () => {
+    const got = filterConversationsBySearch(untitled, "token").map((c) => c.id);
+    expect(got).toEqual(["n1"]);
+  });
+
+  it("the display label is the one the rail renders", () => {
+    expect(conversationDisplayTitle({ title: "" })).toBe("New conversation");
+    expect(conversationDisplayTitle({ title: "   " })).toBe("New conversation");
+    expect(conversationDisplayTitle({ title: "Real name" })).toBe("Real name");
   });
 });

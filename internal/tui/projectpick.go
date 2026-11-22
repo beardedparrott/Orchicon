@@ -416,7 +416,10 @@ func convMatchesSearch(c chat.Conversation, query string) bool {
 	if len(terms) == 0 {
 		return true
 	}
-	haystack := strings.ToLower(c.Title + "\n" + c.LastMessagePreview)
+	// THE LABEL THE RAIL DRAWS, not just the stored title — see convDisplayTitle. A conversation with an
+	// empty title renders as "New conversation", so that is what the operator types, and a search that
+	// skipped it would look broken for a large share of a real tenant's history.
+	haystack := strings.ToLower(c.Title + "\n" + convDisplayTitle(c) + "\n" + c.LastMessagePreview)
 	for _, t := range terms {
 		if !strings.Contains(haystack, t) {
 			return false
@@ -440,4 +443,15 @@ func filterConversationsBySearch(convs []chat.Conversation, query string) []chat
 		}
 	}
 	return out
+}
+
+// convDisplayTitle is the label the rail draws for a conversation.
+//
+// MIRRORS conversationDisplayTitle in the GUI: one label, drawn and searched, so a row that SAYS
+// "New conversation" always MATCHES "new". Empty/whitespace titles get the same placeholder the rail uses.
+func convDisplayTitle(c chat.Conversation) string {
+	if strings.TrimSpace(c.Title) == "" {
+		return "New conversation"
+	}
+	return c.Title
 }
