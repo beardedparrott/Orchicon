@@ -373,7 +373,9 @@ test: ## Run Go tests (NEVER point ORCHICON_TEST_DSN at prod — see README §Te
 	@# (make services) must stay reachable, which is what the opt-in variables are for. The isolation
 	@# that matters — config, live plane, guard — is unchanged.
 	@for v in ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_ONCE ORCHICON_GUARD_PROJECT \
-	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR ORCHICON_DATA_DIR; do unset "$$v"; done; \
+	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR ORCHICON_DATA_DIR \
+	         ORCHICON_CLAUDE_PROJECT_DIR ORCHICON_CLAUDE_HOOK_PROFILE ORCHICON_CLAUDE_ASK_DIR \
+	         ORCHICON_CLAUDE_CONSENT_SOCK ORCHICON_CLAUDE_ASK_MODE_FILE; do unset "$$v"; done; \
 	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test $(TEST_PARALLEL) $(PKGS)
 
 vet: ## Run go vet
