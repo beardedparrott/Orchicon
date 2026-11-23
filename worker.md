@@ -70,8 +70,11 @@ This file is injected into every Orchicon worker session. Your role, task, accep
 
 ## Environment baseline (established facts — do not re-verify)
 
+> **These are `runtime`-mode facts, not host facts.** Your `## Runtime environment` prompt block says which mode the run uses. On a `local` (in-process) run there is no container: the container facts below do not apply, `localhost:8080` is the LIVE plane, and the per-run block carries the host-truth that replaces them.
+
 - The runtime container's `/tmp` is a private **exec-capable** tmpfs: Go's default TMPDIR there works, so `go test`/`make ci` run without relocation. It is wiped at run end — keep durable work in the project/worktree, and point `GOCACHE`/`GOTMPDIR` inside the worktree only to keep scratch tidy (never under `.orchicon/`).
 - `:orchicon-dev` runtime containers boot a sandbox plane at `http://localhost:8080` with Postgres on `localhost:5432` (user `orchicon`) and `ORCHICON_TELEMETRY=none`. Base/`:gui` images boot no plane.
+- **`:orchicon-dev` ships Playwright + headless Chromium** (`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`, global Node `playwright`) for UI verification, launched with `args: ["--no-sandbox"]` because the container has no root process. **On a `local` run this does NOT exist** — there is no container and no Node `playwright` package; use PYTHON Playwright instead, whose Chromium is already downloaded under `~/.cache/ms-playwright`. A run that reported "no GUI to screenshot" against a local-mode host was reading the container recipe.
 - The runtime supervisor runs the daemon self-copy present at container start — a container started before a feature landed runs the pre-feature binary.
 - Stall/verdict thresholds are the platform's, not yours to tune mid-run: the native engine's no-progress window is 300s and its no-file-diff window 120s (`internal/claude/progress.go`). An omitted execution-budget gate means NO LIMIT — there is no built-in wall-clock ceiling.
 - Pre-existing gofmt drift and whole-repo semgrep findings exist at base. Only NEW findings introduced by your change matter. Verify against the base (`git diff origin/develop`) once; do not fix unrelated files. Scope semgrep to the files you touched:

@@ -79,6 +79,43 @@ const deliverableBlock = "\n## Your work is checked against the repository\n" +
 	"**If the project declares no `.orchicon/verify`, nothing about your step can be confirmed** — the step is recorded UNVERIFIED. When you are the step that changes behaviour and no gate is declared, say so in your summary and, if the project has an obvious full check command, propose it explicitly so the operator can declare it. Do not invent a command and silently rely on it.\n\n" +
 	"**If you finish and the evidence contradicts your `success`, the step is recorded as a FAILURE.** Report what you actually did. Partial and honest beats complete and claimed: a `failure` that names what broke is recoverable, whereas a `success` the repository disproves costs a full extra cycle everywhere downstream.\n\n"
 
+// LocalBrowserBlock is the LOCAL-mode counterpart of playwrightBlock, and it exists because the
+// static one was FALSE for a local run.
+//
+// WHAT WENT WRONG. playwrightBlock is seeded into the QA worker's AGENTS.md once and can never vary by
+// execution mode, yet every instruction in it was container-specific: use the :orchicon-dev image,
+// PLAYWRIGHT_BROWSERS_PATH=/ms-playwright, require("playwright"), "the app must be running inside this
+// container". A LOCAL-mode QA worker therefore read a recipe for an image it had no container for, tried
+// Node `require()`, got a throw, and correctly-but-wrongly reported that visual verification was
+// impossible. It said "no GUI to screenshot" on a host where headless Chromium works.
+//
+// VERIFIED ON THIS HOST (not assumed): python3 can import playwright (1.65.2 at
+// /usr/lib/python3.14/site-packages/playwright), browsers are already downloaded under
+// ~/.cache/ms-playwright, and a launch + screenshot round trip succeeds. The Node package is NOT
+// installed and NODE_PATH is unset, so require() genuinely fails — which is precisely the path the
+// static block was telling it to take.
+func LocalBrowserBlock() string {
+	var sb strings.Builder
+	sb.WriteString("\n## Browser automation (Playwright) — VISUAL verification (this run is IN-PROCESS on the host)\n")
+	sb.WriteString("- **There is no `:orchicon-dev` image and no `/ms-playwright` here.** Those belong to `runtime` mode; ignore any instruction that names them. Visual verification is still possible and is still required when a criterion names something a user can see.\n")
+	sb.WriteString("- **Use PYTHON Playwright, not Node.** Python Playwright is installed with its Chromium already downloaded (browsers under `~/.cache/ms-playwright`). The Node `playwright` package is NOT installed on this host and `NODE_PATH` is unset, so `require(\"playwright\")` throws — that dead end is why a run reported it could not screenshot.\n")
+	sb.WriteString("- Verified launch + screenshot recipe (adapt the URL to the app you started):\n\n")
+	sb.WriteString("    ```python\n")
+	sb.WriteString("    from playwright.sync_api import sync_playwright\n")
+	sb.WriteString("    with sync_playwright() as p:\n")
+	sb.WriteString("        b = p.chromium.launch(args=['--no-sandbox'])\n")
+	sb.WriteString("        pg = b.new_page(viewport={'width': 1280, 'height': 800})\n")
+	sb.WriteString("        pg.goto('http://localhost:5173', wait_until='networkidle')\n")
+	sb.WriteString("        pg.screenshot(path='/tmp/orchicon/home.png')\n")
+	sb.WriteString("        b.close()\n")
+	sb.WriteString("    ```\n\n")
+	sb.WriteString("- `--no-sandbox` is harmless here and is the flag that was verified; drop it only if a normal launch works for you.\n")
+	sb.WriteString("- **Start the app on the host first** (e.g. `npm run dev`), wait until the port answers, then navigate. Screenshot into `/tmp/orchicon/` and **read the PNG back with your Read tool** — inspecting the pixels is the verification, not the DOM alone. Iterate at a desktop viewport (1280x800) and a mobile one (~375x667).\n")
+	sb.WriteString("- **`localhost:8080`/`:5432` on the host is the LIVE Orchicon plane** (this run is in-process, not sandboxed). Point a browser at the app you started, never at the real plane's data; use a disposable DSN for anything DB-backed.\n")
+	sb.WriteString("- If the page needs a backend, run it locally too, or note the CORS/cross-origin caveat in your report rather than silently skipping the check.\n")
+	return sb.String()
+}
+
 // RuntimeEnvironmentBlock is the machine-generated "## Runtime environment" section of the stable
 // prompt prefix.
 func RuntimeEnvironmentBlock(image, mode string) string {
@@ -122,7 +159,8 @@ func localEnvironmentBlock() string {
 	sb.WriteString("- **LIVE plane warning:** `127.0.0.1:5432`, `localhost:5432`, and `172.17.0.1:8080` are the LIVE Orchicon plane. NEVER point `ORCHICON_TEST_DSN` at them and never write test rows there — the dispatcher refuses those DSNs and fails the execution closed. Use a disposable database (or run with no DSN) for DB-backed tests.\n")
 	sb.WriteString("- **Scratch directory:** `/tmp/orchicon` is the ONE place outside the project you may read and write. Put ephemeral files there (screenshots, logs, downloaded artifacts you need to inspect). Always save final outputs to the project directory.\n")
 	sb.WriteString("- You run as the host user: do not attempt `sudo`.\n")
-	sb.WriteString("- There is no X server and usually no offscreen graphics libs. Prefer headless modes for GUI toolkits (e.g. `QT_QPA_PLATFORM=offscreen`).\n")
+	sb.WriteString("- A display may or may not exist: this host reports DISPLAY=:0 and a live X socket, but do not rely on one — prefer headless/offscreen modes for repeatability (e.g. `QT_QPA_PLATFORM=offscreen`). A toolkit that needs a display fails the moment one is not attached.\n")
+	sb.WriteString(LocalBrowserBlock())
 	return sb.String()
 }
 

@@ -3,6 +3,7 @@ package db
 // seed_rollforward_test.go — A PROMPT CHANGE THAT NEVER REACHES A WORKER IS NOT A CHANGE.
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -213,5 +214,133 @@ func TestTheMarkerWasBumpedForThisChange(t *testing.T) {
 	}
 	if !strings.Contains(seedAgentsMD(quickCanned(t)), seedSafetyMarker) {
 		t.Fatalf("the seeded AGENTS.md does not contain the marker %q", seedSafetyMarker)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MODE-CORRECTNESS OF THE PROMPT TEXT (v26)
+//
+// A canned worker's AGENTS.md is seeded ONCE and can never vary by execution mode — the mode is only
+// known per RUN, and only RuntimeEnvironmentBlock receives it. So any static block that asserts
+// container facts is a block that LIES to every local-mode run.
+//
+// THAT IS NOT HYPOTHETICAL. The QA Engineer carried playwrightBlock, which instructed it to use the
+// :orchicon-dev image, look in /ms-playwright and call require("playwright"). A local-mode QA run read
+// a recipe for a container it did not have, tried Node require(), got a throw, and reported that
+// visual verification was impossible — "no GUI to screenshot" — on a host where headless Chromium
+// works. The item was recorded as a failure for a defect that existed only in its instructions.
+//
+// These pin both directions: the static text must be MODE-NEUTRAL (or explicitly scoped), and the
+// per-run block must carry the host-true replacement.
+// ---------------------------------------------------------------------------
+
+// TestNoStaticBlockAssertsAContainerUnconditionally is the sweep. It runs over EVERY canned worker, so a
+// new worker (or a new block) that hard-codes container-only facts is caught here rather than in a run.
+func TestNoStaticBlockAssertsAContainerUnconditionally(t *testing.T) {
+	// Phrases that were only true inside a container, and were stated as absolutes.
+	banned := []string{
+		"You ONLY work inside the runtime container",
+		"You run inside an isolated workflow runtime container",
+	}
+	for _, w := range CannedWorkers() {
+		agents := seedAgentsMD(w)
+		for _, b := range banned {
+			if strings.Contains(agents, b) {
+				t.Errorf("%s (%s) asserts %q unconditionally. A local-mode run has no container, and this "+
+					"text cannot vary by mode (it is seeded once) — say \"in a runtime-mode run\" instead.",
+					w.Name, w.ID, b)
+			}
+		}
+		// The old local X-server absolute is gone from the per-run block too.
+	}
+	if strings.Contains(localEnvironmentBlock(), "There is no X server") {
+		t.Error("the local runtime block still claims there is no X server. A launch was observed on a " +
+			"host with DISPLAY=:0 and a live X socket — say a display may or may not exist.")
+	}
+}
+
+// TestTheQAWorkerScopesItsBrowserBlockToRuntimeMode — the playwrightBlock is container truth; it must say
+// so, because the QA worker is the one that carries it and the one that was misled.
+func TestTheQAWorkerScopesItsBrowserBlockToRuntimeMode(t *testing.T) {
+	var qa cannedWorker
+	var found bool
+	for _, w := range CannedWorkers() {
+		if w.ID == "w_se_qa_engineer" {
+			qa, found = w, true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("the QA Engineer is not in the canned set")
+	}
+	agents := seedAgentsMD(qa)
+	if !strings.Contains(agents, "runtime`-mode") && !strings.Contains(agents, "runtime mode only") {
+		t.Error("the QA worker's browser block does not scope itself to runtime mode, so a local run reads " +
+			"/ms-playwright and require(\"playwright\") as instructions that apply to it")
+	}
+}
+
+// TestTheLocalBlockCarriesTheHostBrowserPath — the replacement must be REAL and match what was measured
+// on the host: Python Playwright present with browsers downloaded, Node absent.
+func TestTheLocalBlockCarriesTheHostBrowserPath(t *testing.T) {
+	block := localEnvironmentBlock()
+	for _, want := range []string{
+		"PYTHON Playwright",      // the route that works
+		"playwright.sync_api",    // the concrete import
+		"--no-sandbox",           // the flag that was verified
+		"~/.cache/ms-playwright", // where host browsers actually are
+		"require(",               // names the dead end explicitly
+		"LIVE Orchicon plane",    // the safety half, which remains true
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("the local runtime block does not mention %q. A local run needs the route that "+
+				"actually works on the host, or it will report visual verification as impossible again.",
+				want)
+		}
+	}
+	// And it must not SEND a local run to container paths. NAMING them to deny them is the point (a
+	// local worker may also have read the static block), so this checks the instruction forms rather
+	// than mere mention.
+	for _, banned := range []string{
+		"Use the `:orchicon-dev`",
+		"PLAYWRIGHT_BROWSERS_PATH=/ms-playwright",
+		"require(\"playwright\") from any directory",
+	} {
+		if strings.Contains(block, banned) {
+			t.Errorf("the LOCAL runtime block instructs an in-process run with %q, which does not exist "+
+				"without a container", banned)
+		}
+	}
+}
+
+// TestRuntimeModeStillGetsTheContainerRecipe — the fix must not strip the container instructions that
+// runtime-mode workers genuinely need.
+func TestRuntimeModeStillGetsTheContainerRecipe(t *testing.T) {
+	block := containerEnvironmentBlock("orchicon-dev:latest")
+	for _, want := range []string{"ephemeral, rootless Linux container", "not root", "/tmp/orchicon"} {
+		if !strings.Contains(block, want) {
+			t.Errorf("the container runtime block lost %q — the local fix must not degrade runtime mode", want)
+		}
+	}
+	if strings.Contains(block, "PYTHON Playwright") {
+		t.Error("the CONTAINER block now carries the local host recipe — the two must stay distinct")
+	}
+}
+
+// TestWorkerMDStatesTheBaselineIsRuntimeModeTruth — worker.md is injected into EVERY adapter's worker, so
+// a wrong baseline there misleads the whole population, not just one role.
+func TestWorkerMDStatesTheBaselineIsRuntimeModeTruth(t *testing.T) {
+	body, err := os.ReadFile("../../worker.md")
+	if err != nil {
+		t.Fatalf("read worker.md: %v", err)
+	}
+	md := string(body)
+	if !strings.Contains(md, "runtime`-mode facts, not host facts") {
+		t.Error("worker.md's environment baseline does not say it is runtime-mode truth. It is injected " +
+			"into every adapter's worker, so an unscoped container fact is wrong for every local run.")
+	}
+	if !strings.Contains(md, "PYTHON Playwright") {
+		t.Error("worker.md never mentions the host (Python) Playwright route, so a local-mode worker that " +
+			"reads only the baseline concludes there is no browser at all")
 	}
 }
