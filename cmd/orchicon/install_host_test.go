@@ -773,7 +773,10 @@ func TestPgIsReadyPrefersTheRecordedBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 	// No record yet: PATH fallback.
-	if got := pgIsReadyBin("dev"); got != "pg_isready" {
+	// realPgIsReadyBin, NOT pgIsReadyBin: services_health_isolate_test.go stubs the seam for the whole
+	// binary so the readiness probes stay off the operator's machine, and this test is the one that
+	// keeps the RESOLVER itself honest behind that stub.
+	if got := realPgIsReadyBin("dev"); got != "pg_isready" {
 		t.Fatalf("with no record = %q, want the PATH fallback", got)
 	}
 	// With a record: the recorded absolute path.
@@ -784,7 +787,7 @@ func TestPgIsReadyPrefersTheRecordedBinary(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := pgIsReadyBin("dev"); got != want {
+	if got := realPgIsReadyBin("dev"); got != want {
 		t.Fatalf("pgIsReadyBin = %q, want the recorded %q", got, want)
 	}
 }
