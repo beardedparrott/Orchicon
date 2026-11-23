@@ -127,3 +127,91 @@ func TestTheQuickProfileDoesNotAssertThePRFlowUnconditionally(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// THE MODEL-COST RULE (v25)
+//
+// The rule used to be "Free models ONLY … you cannot use it for testing", which made a whole class of
+// acceptance criterion permanently unsatisfiable: an AC that names a live conversation on a paid model
+// could not be met, so the worker correctly reported `failure` and the item reported failure on EVERY
+// run no matter how good the code was. It is now a cheapest-model rule plus an explicit prohibition on
+// spending tokens to TEST a model — the prohibition is the half that actually bounds cost.
+//
+// These pin the TEXT, because it is prompt-only: nothing in the platform enforces a model allowlist at
+// dispatch (there is no free-model gate anywhere in internal/), so the prompt IS the whole mechanism.
+// ---------------------------------------------------------------------------
+
+// TestTheModelRuleNoLongerForbidsPaidModels — the hard prohibition is what made criteria unusatisfiable.
+func TestTheModelRuleNoLongerForbidsPaidModels(t *testing.T) {
+	for _, banned := range []string{
+		"Free models ONLY",             // the absolute rule that was removed
+		"cannot use it for testing",    // the clause that made a paid-model AC impossible
+		"ABSOLUTELY never use a cloud", // its emphatic form
+	} {
+		if strings.Contains(safetyBlock, banned) {
+			t.Errorf("safetyBlock still carries the old absolute prohibition (%q). It makes any acceptance "+
+				"criterion naming a paid model permanently unsatisfiable, which is how an item reports "+
+				"failure on every run regardless of the code.", banned)
+		}
+	}
+}
+
+// TestTheModelRuleStatesBothHalves — cheapest model AND no model testing. Dropping either half breaks it:
+// without the first the worker reaches for a premium model, without the second it burns tokens proving a
+// model works.
+func TestTheModelRuleStatesBothHalves(t *testing.T) {
+	for _, want := range []string{
+		"Prefer a free model",
+		"LOWEST-COST", // the escalation rule
+		"NEVER spend tokens testing a model",
+		"NOT VERIFIED", // what to do with a criterion only an expensive run could satisfy
+	} {
+		if !strings.Contains(safetyBlock, want) {
+			t.Errorf("safetyBlock does not state %q. The rule has two halves — cheapest model, and never "+
+				"spend tokens testing one — and a missing half is a rule that permits what it exists to stop.",
+				want)
+		}
+	}
+}
+
+// TestEveryWorkerCarriesTheModelRule — and the mechanism is NOT the AGENTS.md.
+//
+// seedAgentsMDBase REPLACES safetyBlock with the bare marker comment, so the rules are delivered once,
+// through the stable prompt prefix (StablePromptPrefix in prompt.go) rather than duplicated into every
+// worker's AGENTS.md. This pins BOTH halves of that: the rule rides safetyBlock (so every adapter's
+// system prompt carries it), and the seeded AGENTS.md carries the MARKER (so roll-forward reaches an
+// existing published version). Asserting the rule's text inside the AGENTS.md would be asserting a
+// duplicate the design deliberately does not have — which is what this test originally got wrong.
+func TestEveryWorkerCarriesTheModelRule(t *testing.T) {
+	if !strings.Contains(safetyBlock, "NEVER spend tokens testing a model") {
+		t.Error("safetyBlock does not carry the no-model-testing rule, so no adapter's system prompt does — " +
+			"the rule reaches every execution ONLY through the stable prompt prefix")
+	}
+	for _, w := range CannedWorkers() {
+		agents := seedAgentsMD(w)
+		// The safety block must NOT be duplicated into the AGENTS.md (that is the de-duplication).
+		if strings.Contains(agents, safetyBlock) {
+			t.Errorf("%s (%s) duplicates the whole safety block into its AGENTS.md — the rules are delivered "+
+				"via the prompt prefix, and a second copy is prompt weight that can drift", w.Name, w.ID)
+		}
+		// The marker must be there, or the seeder won't roll this worker forward to the new rules.
+		if !strings.Contains(agents, seedSafetyMarker) {
+			t.Errorf("%s (%s) does not carry the current safety marker %q — the seeder will not roll an "+
+				"existing published version forward to this content", w.Name, w.ID, seedSafetyMarker)
+		}
+	}
+}
+
+// TestTheMarkerWasBumpedForThisChange is the anti-drift witness for the bump itself. Editing safetyBlock
+// without bumping seedSafetyMarker is the failure mode: the content fingerprint may still roll it
+// forward, but the marker is what a truncated or hand-edited stored copy is detected by, and it is the
+// version an operator reads to know which rules a worker has.
+func TestTheMarkerWasBumpedForThisChange(t *testing.T) {
+	if seedSafetyMarker == "orchicon.safety=v24" {
+		t.Fatal("seedSafetyMarker is still v24 after safetyBlock's text changed. Bump it — a rule edited " +
+			"under an unchanged marker is a rule whose rollout cannot be read")
+	}
+	if !strings.Contains(seedAgentsMD(quickCanned(t)), seedSafetyMarker) {
+		t.Fatalf("the seeded AGENTS.md does not contain the marker %q", seedSafetyMarker)
+	}
+}

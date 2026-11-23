@@ -360,6 +360,52 @@ func (h *HostServe) Stop() {
 	h.started = false
 }
 
+// RotateStore MOVES the serve's on-disk store aside and leaves an empty directory in its place, so the
+// next start builds a fresh store.
+//
+// MOVED, NEVER DELETED. The previous store is renamed to `opencode.db.broken-<unix>` in the same parent
+// directory: an operator can inspect it or put it back by hand, and a rotation that turned out to be
+// unnecessary costs nothing but disk. Deleting it would destroy every prior session on the plane with
+// no way back — an unrecoverable action taken automatically, which is the wrong default for a repair.
+//
+// The serve MUST be stopped first (see Stop): rotating files under a live SQLite connection leaves the
+// process writing to an unlinked inode.
+func (h *HostServe) RotateStore() error {
+	if h.dataDir == "" {
+		return fmt.Errorf("host serve has no data dir to rotate")
+	}
+	// The store lives at <XDG_DATA_HOME>/opencode/opencode.db (plus -wal/-shm), which is what
+	// seedAuth and startOnce already resolve.
+	dir := filepath.Join(h.dataDir, "opencode")
+	base := filepath.Join(dir, "opencode.db")
+	stamp := time.Now().Unix()
+	moved := 0
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		src := base + suffix
+		if _, err := os.Stat(src); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("stat %s: %w", src, err)
+		}
+		dst := fmt.Sprintf("%s.broken-%d%s", base, stamp, suffix)
+		if err := os.Rename(src, dst); err != nil {
+			return fmt.Errorf("rotate %s: %w", src, err)
+		}
+		moved++
+	}
+	if moved == 0 {
+		return fmt.Errorf("no store found at %s (nothing to rotate)", base)
+	}
+	h.log.Warn("host serve store rotated aside", "from", base, "suffix", fmt.Sprintf(".broken-%d", stamp))
+	// An empty data dir must still EXIST: the CLI creates its store on start, but it will not create
+	// the parent chain for an XDG_DATA_HOME it was handed.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("recreate %s: %w", dir, err)
+	}
+	return nil
+}
+
 func (h *HostServe) pid() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()

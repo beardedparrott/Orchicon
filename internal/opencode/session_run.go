@@ -1028,9 +1028,18 @@ func (r *sessionRun) recordStreamError(evt BusEvent) {
 	}
 	r.mu.Unlock()
 	r.callbacks.OnHealth(r.parentCtx, r.execRow.ID, "unhealthy")
-	if isInfraModelTurnError(msg) {
+	switch {
+	case isInfraModelTurnError(msg):
 		r.recycleOnInfraModelTurn(msg)
-	} else {
+	case isSessionStoreFailure(msg):
+		// A BROKEN STORE IS NOT TRANSIENT. Every session operation against it faults, so waiting for a
+		// streak of consecutive errors only guarantees more failed dispatches before the repair runs —
+		// and on a local-mode run the old path could not repair it at all. Treat it like the infra class
+		// it is: repair on first sight.
+		r.a.log.Warn("session store failure — repairing the serve that owns the store",
+			"execution", r.execRow.ID, "error", msg)
+		r.recycleOnWedgedServe(msg)
+	default:
 		r.recycleOnWedgedServe(msg)
 	}
 	r.finish(false, "opencode_session_error: "+msg)
@@ -1151,27 +1160,116 @@ func (r *sessionRun) retryStreamTurn(reason string) {
 	r.recordPart(db.SessionPartUserMessage, map[string]any{"text": streamRetryText, "source": "stream_retry"})
 }
 
-// recycleOnWedgedServe recycles the workflow's runtime container after a run of CONSECUTIVE
-// model-layer session errors.
+// recycleOnWedgedServe recycles whatever serve this run is actually talking to, after a run of
+// CONSECUTIVE model-layer session errors.
+//
+// IT USED TO BE CONTAINER-ONLY, and that made a whole execution mode unrepairable. The guard demanded
+// `RuntimeWorkflowID != "" && rt != nil`, so a LOCAL-mode run — which has no container at all
+// (runtimeContainerRouteEnabled, adapter.go:307) and talks to the shared HOST serve — fell straight out
+// of the function. Nothing recycled the process that had actually wedged, every retry re-hit the same
+// bad store, and the run died in ~46ms with zero tokens on each attempt. That is the observed incident.
 func (r *sessionRun) recycleOnWedgedServe(msg string) {
 	threshold := sessionErrorRecycleThreshold()
-	if threshold < 1 || r.manifest.RuntimeWorkflowID == "" || r.a.rt == nil {
+	if threshold < 1 {
 		return
 	}
 	if !r.a.countSessionError() {
 		return
 	}
 	sessionRecycleMetricsSingleton.recordWedgedConsecutive()
-	r.a.log.Warn("recycling wedged runtime container after consecutive session errors",
+	r.a.log.Warn("recycling wedged serve after consecutive session errors",
 		"run", r.manifest.RuntimeWorkflowID, "execution", r.execRow.ID,
-		"threshold", threshold, "error", msg)
-	// Kill removes the container; the next dispatch's Create rebuilds it
-	// with a fresh serve. Best-effort — a failed recycle is just a log.
+		"threshold", threshold, "store_failure", isSessionStoreFailure(msg), "error", msg)
+	if r.a.recycleContainerServe(r.manifest.RuntimeWorkflowID) {
+		return
+	}
+	// No container to kill: this execution is served by the shared HOST serve, which is the process
+	// that is actually wedged. Repairing it is the only thing that changes the state causing the
+	// failure.
+	r.a.repairHostServe(msg)
+}
+
+// recycleContainerServe kills the run's runtime container so the next dispatch's Create rebuilds it
+// with a fresh serve AND a fresh store. Returns false when this execution is not container-served.
+func (a *Adapter) recycleContainerServe(runtimeWorkflowID string) bool {
+	if !runtimeContainerRouteEnabled(a.rt != nil, scheduler.ExecutionManifest{RuntimeWorkflowID: runtimeWorkflowID}) {
+		return false
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := r.a.rt.Kill(ctx, r.manifest.RuntimeWorkflowID); err != nil {
-		r.a.log.Warn("runtime container recycle failed", "run", r.manifest.RuntimeWorkflowID, "error", err)
+	if err := a.rt.Kill(ctx, runtimeWorkflowID); err != nil {
+		a.log.Warn("runtime container recycle failed", "run", runtimeWorkflowID, "error", err)
 	}
+	return true
+}
+
+// repairHostServe stops and restarts the shared host serve, ROTATING ITS STORE ASIDE.
+//
+// ROTATION IS THE POINT, NOT HOUSEKEEPING. ARCHITECTURE.md:1212 states the reason the container path
+// kills the container rather than restarting the serve: "a poisoned session store lives on disk in the
+// container's stable XDG data dir, so restarting the serve process in place (the watchdog) reuses the
+// poison". The host serve has exactly the same shape — its store is a stable on-disk SQLite database in
+// its XDG_DATA_HOME (~/.local/share/orchicon/opencode) — so an in-place restart would reopen the same
+// bad file and change nothing.
+//
+// The store is MOVED, never deleted: the operator keeps the previous sessions, and a store that turned
+// out to be fine is recoverable by hand.
+func (a *Adapter) repairHostServe(msg string) {
+	hs := a.activeHostServe()
+	if hs == nil {
+		a.log.Warn("session errors on an execution with no host serve to repair — nothing to recycle",
+			"execution", "", "error", msg)
+		return
+	}
+	a.mu.Lock()
+	if a.hostServeRepairs >= sessionRepairBudget() {
+		a.mu.Unlock()
+		a.log.Warn("not repairing the host serve — repair budget exhausted",
+			"budget", sessionRepairBudget(), "store_failure", isSessionStoreFailure(msg), "error", msg)
+		sessionRecycleMetricsSingleton.recordHostServeRepair(true)
+		return
+	}
+	a.hostServeRepairs++
+	attempt := a.hostServeRepairs
+	a.mu.Unlock()
+
+	sessionRecycleMetricsSingleton.recordHostServeRepair(false)
+	// 1. Take it down. Stop() kills the process and clears the supervision + guard.
+	hs.Stop()
+
+	// 2. Move the store aside. Best-effort and deliberately NON-fatal: a rotation that fails must not
+	//    prevent the restart, because a restarted serve on a possibly-bad store still beats a dead one.
+	if storeFailure := isSessionStoreFailure(msg); storeFailure {
+		if err := hs.RotateStore(); err != nil {
+			a.log.Warn("host serve store rotation failed — restarting on the existing store",
+				"error", err)
+		} else {
+			a.log.Warn("host serve store rotated aside (recoverable by hand) after a session-store failure",
+				"repair_attempt", attempt)
+		}
+	}
+
+	// 3. Bring it back. A background context: the failing execution's ctx may already be dying, and the
+	//    plane needs this serve for every OTHER in-process execution too.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := hs.EnsureStarted(ctx); err != nil {
+		a.log.Error("host serve repair could not restart the serve — in-process executions will fail "+
+			"until it is up", "error", err, "repair_attempt", attempt)
+		return
+	}
+	a.log.Warn("host serve repaired and restarted", "repair_attempt", attempt, "url", hs.URL())
+}
+
+// activeHostServe returns the host serve an in-process execution is drawing on: the pool's default
+// serve when a pool is wired, else the single host serve.
+func (a *Adapter) activeHostServe() *HostServe {
+	if a.hostPool != nil {
+		if hs := a.hostPool.DefaultServe(); hs != nil {
+			return hs
+		}
+	}
+	return a.host
 }
 
 // recycleOnInfraModelTurn recycles the workflow's runtime container on the FIRST model-turn failure
