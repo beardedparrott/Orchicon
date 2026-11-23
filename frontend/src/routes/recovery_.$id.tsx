@@ -12,6 +12,7 @@ import {
   useRejectContinuationPlan,
 } from "@/api/recovery";
 import { useStreamRecoveryEvents } from "@/api/recoveryEvents";
+import { recordStreamEnabled, recoveryIsTerminal } from "@/lib/debouncedInvalidation";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
@@ -46,8 +47,12 @@ function RecoveryDetailPage() {
   const markSucceeded = useMarkTaskSucceeded();
 
   const [liveEvents, setLiveEvents] = useState<RecoveryEvent[]>([]);
+  // GATED: a resumed/failed/cancelled recovery is finished, so its page must not hold a connection.
+  // ESCALATED and BLOCKED stay live — both await a human, and those are exactly the pages an operator
+  // leaves open while deciding.
   useStreamRecoveryEvents({
     recoveryId: id,
+    enabled: recordStreamEnabled(id, recoveryIsTerminal(recovery?.status)),
     onEvent: (evt) => setLiveEvents((prev) => [...prev.slice(-49), evt]),
   });
 
