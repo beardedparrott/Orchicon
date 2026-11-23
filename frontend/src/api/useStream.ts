@@ -42,6 +42,7 @@ export interface UseStreamOptions<
   // The Connect-ES server-stream method (from a generated client).
   stream: (
     request: PartialMessage<Req>,
+    options?: { signal?: AbortSignal },
   ) => AsyncIterable<Resp>;
   // The request message (without from_sequence — managed internally).
   request: PartialMessage<Req>;
@@ -98,6 +99,9 @@ export function useStream<
   const reconnectAttempt = useRef(0);
   const cancelledRef = useRef(false);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // abortRef is what actually CLOSES the HTTP connection (see the cleanup note below). Held in a ref so
+  // both the effect cleanup and reconnect() can reach the CURRENT subscription's controller.
+  const abortRef = useRef<AbortController | null>(null);
 
   const pushEvent = useCallback(
     (resp: Resp) => {
@@ -134,6 +138,12 @@ export function useStream<
   const connect = useCallback(async () => {
     if (cancelledRef.current) return;
 
+    // ONE subscription at a time. A reconnect must close the previous connection, or a flapping stream
+    // leaks one held connection per attempt until the browser's per-origin cap is gone.
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+
     setStatus(reconnectAttempt.current > 0 ? "reconnecting" : "connecting");
 
     try {
@@ -145,7 +155,7 @@ export function useStream<
             : undefined,
       };
 
-      const iter = stream(req);
+      const iter = stream(req, { signal: ac.signal });
 
       setStatus("open");
       setError(null);
@@ -191,6 +201,8 @@ export function useStream<
   const reconnect = useCallback(() => {
     reconnectAttempt.current = 0;
     if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+    // connect() aborts the in-flight subscription itself, so this reuses one code path rather than
+    // opening a second connection beside the first.
     connect();
   }, [connect]);
 
@@ -207,8 +219,17 @@ export function useStream<
     connect();
 
     return () => {
+      // THE FLAG ALONE DOES NOT CLOSE THE CONNECTION, and that was the bug. `for await` only sees
+      // cancelledRef when the server sends ANOTHER event; a quiet stream parks in the iterator holding
+      // its HTTP/1.1 connection open indefinitely. Each route is a separate tab that holds one, the
+      // plane serves no HTTP/2 (no h2c in internal/server), so a browser's ~6 connections per origin
+      // are exhausted after a handful of tabs and every later navigation hangs on a white screen —
+      // which "recovered" only once the execution was closed, because that finally released its socket.
+      // Aborting the request is the only thing that actually frees it.
       cancelledRef.current = true;
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+      abortRef.current?.abort();
+      abortRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, name]);
