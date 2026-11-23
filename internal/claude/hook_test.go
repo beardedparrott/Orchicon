@@ -252,8 +252,10 @@ func TestTheBoundaryCarveOutIsAComponentNotAPrefix(t *testing.T) {
 // project and refuses it. This asserts the test is now immune either way: the env is scrubbed by the
 // package's testfixtures init, and the project is built inside the carve-out regardless.
 func TestRunHookIgnoresAnInheritedClaudeProjectDir(t *testing.T) {
-	// Simulate the leak AFTER the fixture scrub, exactly as an inherited shell would.
-	t.Setenv(ProjectDirEnv, "/home/somewhere/else/entirely")
+	// A DECOY root, built here rather than written as a literal: this repo's no-operator-paths guard
+	// rejects hardcoded host paths in source, and a fabricated one is not a real location anyway.
+	decoy := t.TempDir()
+	t.Setenv(ProjectDirEnv, decoy)
 	project := boundaryProject(t)
 
 	payload, _ := json.Marshal(map[string]any{
@@ -264,9 +266,9 @@ func TestRunHookIgnoresAnInheritedClaudeProjectDir(t *testing.T) {
 	})
 	var out bytes.Buffer
 	if code := RunHook(bytes.NewReader(payload), &out, func(k string) string {
-		// The scrub is what a real run gets; this fn models a process that DID export it.
+		// Models a process that DID export the variable (the worker's condition).
 		if k == ProjectDirEnv {
-			return "/home/somewhere/else/entirely"
+			return decoy
 		}
 		return ""
 	}); code != 0 {
