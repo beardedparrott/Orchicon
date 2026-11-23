@@ -127,7 +127,13 @@ func servicesProbeableFromHost(ports map[string]int) bool {
 
 // pgIsReadyBin resolves the `pg_isready` to probe with — the one belonging to the PostgreSQL the
 // install actually resolved (recorded in the instance's infra-binaries.json), falling back to PATH.
-func pgIsReadyBin(instance string) string {
+//
+// A VAR, so tests can stub it — the same seam, for the same reason, as postgresVolumeExists. This is
+// the one place a READINESS PROBE reaches the operator's real machine: the recorded path is absolute,
+// so it beats any PATH a test sets, and a test that stubs PATH alone still ran the operator's own
+// pg_isready against their own postgres. See services_health_isolate_test.go. The resolution itself
+// stays covered by TestPgIsReadyPrefersTheRecordedBinary, which calls the real function directly.
+var pgIsReadyBin = func(instance string) string {
 	rec, err := loadInfraBinaries(hostDataDirFor(instance))
 	if err == nil && rec.PgIsReady != "" {
 		return rec.PgIsReady

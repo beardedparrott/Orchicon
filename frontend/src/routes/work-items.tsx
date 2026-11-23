@@ -267,6 +267,28 @@ function WorkItemsPage() {
   const visibleIds = useMemo(() => visibleItems.map((i) => i.id), [visibleItems]);
   const visibleIdsSet = useMemo(() => new Set(visibleIds), [visibleIds]);
 
+  // THE ARCHIVE VIEW'S SELECTABLE SET IS THE ARCHIVED ITEMS, NOT THE FILTER MATCHES.
+  //
+  // The archive view renders buildArchiveTreeData(items, activeItems) — it does NOT apply the
+  // kind/status/search filter, because filtering an archive by a status vocabulary is not what an
+  // operator wants from it. But `visibleItems` above is the FILTER result, and archived rows carry
+  // status='archived', which matched nothing in STATUS_FILTER_OPTIONS. So in the archive view
+  // `visibleIds` was EMPTY: the header said "0 work items", select-all
+  // (`toggleAll` → `new Set(visibleIdsArr)`) selected nothing at all, and a single row check
+  // cascaded through `childrenOf` — which walks the ACTIVE tree — so one click could mark exactly
+  // one item. Reported from a real archive of 81 items: "the bulk select said 1 work item only".
+  //
+  // `items` IS the archived set here and nothing else: the list query passes include_archived=true,
+  // which db.ListWorkItems turns into `AND archived_at IS NOT NULL` — the partition, not a union. The
+  // active ancestors the view draws (ghost anchors) come from a SEPARATE `activeItemsForArchive` query
+  // and are never in `items`, so they cannot leak into a bulk action through this set.
+  const archiveSelectableIds = useMemo(
+    () => (view !== "archive" ? [] : (items ?? []).map((i) => i.id)),
+    [view, items],
+  );
+  const selectableIds = view === "archive" ? archiveSelectableIds : visibleIds;
+  const selectableIdsSet = useMemo(() => new Set(selectableIds), [selectableIds]);
+
   // Selection (design §5.1): cascade selection — when a filter is active
   // the parent toggle is scoped to the currently-viewable descendants
   // only (visibleIdsSet + hasQuery), so hidden items are never selected.
@@ -280,10 +302,17 @@ function WorkItemsPage() {
     (parentId: string) => (items ?? []).filter((i) => i.parentId === parentId),
     [items],
   );
-  const { selected, toggle, toggleAll, setSelected } = useWorkItemSelection(childrenOf, visibleIdsSet, hasQuery, resetKey);
-  const { allChecked, allIndeterminate } = visibleSelectionState(visibleIds, selected);
+  // IN THE ARCHIVE VIEW THE FILTER IS INERT, so hasQuery must be too: it is what makes `toggle`
+  // scope a cascade to `visibleIds`, and there the only correct scope is the whole archived set.
+  const { selected, toggle, toggleAll, setSelected } = useWorkItemSelection(
+    childrenOf,
+    selectableIdsSet,
+    view === "archive" ? false : hasQuery,
+    resetKey,
+  );
+  const { allChecked, allIndeterminate } = visibleSelectionState(selectableIds, selected);
 
-  const handleToggleAll = () => toggleAll(visibleIds);
+  const handleToggleAll = () => toggleAll(selectableIds);
 
   const handleBatchDelete = () => {
     if (selected.size === 0) return;
@@ -344,6 +373,44 @@ function WorkItemsPage() {
           toast.success(`Restored ${res.restored}`);
         }
       },
+    });
+  };
+
+  // Bulk "Delete selected" (archive view only): PERMANENT, and it mirrors handleBatchDelete —
+  // except for ORDERING, which is the whole difference.
+  //
+  // The server refuses to delete a work item that still has children (hard_delete is blocked for a
+  // parent), so a fan-out in arbitrary order would have a parent rejected while its children were
+  // fine, and Promise.all would reject the batch. bottomUpOrder deletes descendants FIRST, which is
+  // the same ordering Restore uses for the same reason in reverse. This is not defensive coding: with
+  // a selected subtree it is the only order that works.
+  const handleArchiveBatchDelete = () => {
+    if (selected.size === 0) return;
+    const ids = bottomUpOrder(Array.from(selected), itemsById);
+    const count = ids.length;
+    if (
+      !window.confirm(
+        `Permanently delete ${count} archived work item${count === 1 ? "" : "s"}? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    batchDelete.mutate(ids, {
+      onSuccess: () => setSelected(new Set()),
+    });
+  };
+
+  // Per-row permanent delete from the archive. A single item still confirms, and still names it,
+  // because the title is what tells the operator which of 81 rows they are about to destroy.
+  const handleRestoreViewDelete = (id: string) => {
+    const title = itemsById.get(id)?.title ?? id;
+    if (!window.confirm(`Permanently delete "${title}"? This cannot be undone.`)) return;
+    batchDelete.mutate([id], {
+      onSuccess: () => setSelected((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      }),
     });
   };
 
@@ -536,6 +603,10 @@ function WorkItemsPage() {
                 onToggleSelect={toggle}
                 onRestoreSelected={handleRestoreSelected}
                 restoreSelectedPending={batchRestore.isPending}
+                onDelete={handleRestoreViewDelete}
+                deletePending={batchDelete.isPending}
+                onDeleteSelected={handleArchiveBatchDelete}
+                deleteSelectedPending={batchDelete.isPending}
                 collapsedIds={archiveCollapsed}
                 onToggleCollapse={toggleArchiveCollapsed}
               />

@@ -18,7 +18,7 @@
 // existing cascade selection — that IS the consent mechanism, mirrors Bulk
 // Archive).
 
-import { ChevronRight, Archive as ArchiveIcon, RotateCcw } from "lucide-react";
+import { ChevronRight, Archive as ArchiveIcon, RotateCcw, Trash2 } from "lucide-react";
 
 import type { WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { Button } from "@/components/ui/button";
@@ -44,6 +44,16 @@ export interface WorkItemsArchiveViewProps {
   onToggleSelect: (id: string) => void;
   onRestoreSelected: () => void;
   restoreSelectedPending: boolean;
+  /**
+   * PERMANENTLY delete one archived item. Not a reversible twin of Restore:
+   * the row is gone and its dependencies with it, which is why every call
+   * site confirms with the count named first.
+   */
+  onDelete: (id: string) => void;
+  deletePending: boolean;
+  /** Permanently delete every selected archived item. */
+  onDeleteSelected: () => void;
+  deleteSelectedPending: boolean;
   /**
    * Rows the operator has explicitly collapsed (parents only).
    *
@@ -82,6 +92,10 @@ export function WorkItemsArchiveView({
   onToggleSelect,
   onRestoreSelected,
   restoreSelectedPending,
+  onDelete,
+  deletePending,
+  onDeleteSelected,
+  deleteSelectedPending,
   collapsedIds,
   onToggleCollapse,
 }: WorkItemsArchiveViewProps) {
@@ -114,15 +128,30 @@ export function WorkItemsArchiveView({
       {selected.size > 0 && (
         <div className="flex items-center justify-between gap-3 rounded-2xl glass-panel px-4 py-2.5">
           <p className="text-sm text-muted-foreground">{selected.size} selected</p>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onRestoreSelected}
-            disabled={restoreSelectedPending}
-          >
-            <RotateCcw aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
-            Restore selected
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onRestoreSelected}
+              disabled={restoreSelectedPending || deleteSelectedPending}
+            >
+              <RotateCcw aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+              Restore selected
+            </Button>
+            {/* DELETE IS SECOND AND VISUALLY DISTINCT, because the two buttons sit side by side and
+                only one of them can be undone. Outlined-danger rather than a solid destructive fill:
+                this is a maintenance action on an archive, not the page's primary verb. */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onDeleteSelected}
+              disabled={deleteSelectedPending || restoreSelectedPending}
+              className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+            >
+              <Trash2 aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+              Delete selected
+            </Button>
+          </div>
         </div>
       )}
       <div className="min-w-[640px] space-y-0.5">
@@ -140,6 +169,8 @@ export function WorkItemsArchiveView({
             onToggleSelect={onToggleSelect}
             onRestore={onRestore}
             restorePending={restorePending}
+            onDelete={onDelete}
+            deletePending={deletePending}
           />
         ))}
       </div>
@@ -159,6 +190,8 @@ function ArchiveTreeNode({
   onToggleSelect,
   onRestore,
   restorePending,
+  onDelete,
+  deletePending,
 }: {
   item: WorkItem;
   depth: number;
@@ -171,6 +204,8 @@ function ArchiveTreeNode({
   onToggleSelect: (id: string) => void;
   onRestore: (id: string) => void;
   restorePending: boolean;
+  onDelete: (id: string) => void;
+  deletePending: boolean;
 }) {
   const isGhost = activeAnchorIds.has(item.id);
   const children = treeItems.filter((i) => i.parentId === item.id);
@@ -257,16 +292,33 @@ function ArchiveTreeNode({
           <span className="hidden text-xs text-muted-foreground md:inline">{formatArchivedAt(item.archivedAt)}</span>
         )}
         {!isGhost && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onRestore(item.id)}
-            disabled={restorePending}
-            title="Restore this work item to the active views"
-          >
-            <RotateCcw aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
-            Restore
-          </Button>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onRestore(item.id)}
+              disabled={restorePending || deletePending}
+              title="Restore this work item to the active views"
+            >
+              <RotateCcw aria-hidden="true" className="mr-1 h-3.5 w-3.5" />
+              Restore
+            </Button>
+            {/* PER-ROW PERMANENT DELETE. The archive is where finished work accumulates, so an item
+                that was archived by mistake AND is no longer wanted has to be removable from here —
+                the active views cannot reach it, and archiving is not a bin the UI could empty.
+                Confirmation is the page shell's job (it owns the count); this only reports intent. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onDelete(item.id)}
+              disabled={deletePending || restorePending}
+              title="Permanently delete this work item — cannot be undone"
+              aria-label={`Permanently delete ${item.title}`}
+              className="px-2 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+            >
+              <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
+            </Button>
+          </div>
         )}
       </div>
       {expanded &&
@@ -284,6 +336,8 @@ function ArchiveTreeNode({
             onToggleSelect={onToggleSelect}
             onRestore={onRestore}
             restorePending={restorePending}
+            onDelete={onDelete}
+            deletePending={deletePending}
           />
         ))}
     </div>

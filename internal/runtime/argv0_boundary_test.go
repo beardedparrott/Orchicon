@@ -4,6 +4,8 @@ package runtime
 // that broke.
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -46,11 +48,31 @@ func TestStdioAcceptsTheNameAContainerDispatchSends(t *testing.T) {
 			"dispatch sends, so every claude container worker would be refused before spawn")
 	}
 	// A bare name must get past the allowlist gate.
+	//
+	// THE BINARY IS A STAND-IN, AND IT HAS TO BE. This asserts ONE thing — that the allowlist gate lets the
+	// name "claude" through — and it must not reach a real CLI to prove it. The hazard is invisible from
+	// here: runStdio spawns req.Argv[0] by BARE NAME, and os/exec resolves it at Start via LookPath against
+	// the TEST PROCESS's PATH. The Env override below therefore cannot constrain the lookup; it only sets
+	// the PATH the child would run under.
+	//
+	// So on a developer's machine (where /usr/bin or ~/.local/bin really has claude) this test STARTED the
+	// operator's own claude CLI. Measured before the fix: it rewrote ~/.claude.json and dropped a fresh
+	// ~/.claude/backups/.claude.json.backup.<ms> — in 0.30s, while reporting PASS. On an authenticated host
+	// that same path is a billed session.
+	//
+	// Substituting the PATH ENTRY, not the argv, is what keeps the assertion honest: the name under test is
+	// still "claude", the allowlist gate under test is still the real one, and the child that would run is a
+	// binary that does nothing at all.
+	//
+	// t.Setenv, NOT a request Env, because the lookup happens in THIS process before any child exists:
+	// stdioEvents overwrites the request's PATH with the ambient one anyway (shimFreePath), so pinning it
+	// through the request could never have constrained the resolution. Or the stand-in dir leaves the name
+	// "claude" resolving — to a binary that does nothing.
+	t.Setenv("PATH", harmlessClaudeDir(t))
 	events := stdioEvents(t, AgentRequest{
 		Cmd:    "stdio",
 		ExecID: "exec-argv0-ok",
 		Argv:   []string{"claude", "-p"},
-		Env:    []string{"PATH=/nonexistent-so-exec-fails-fast"},
 	})
 	for _, ev := range events {
 		if ev.Event == "error" && strings.Contains(ev.Error, "not allowlisted") {
@@ -58,4 +80,22 @@ func TestStdioAcceptsTheNameAContainerDispatchSends(t *testing.T) {
 				"be attemptable, or no container claude worker can ever start", ev.Error)
 		}
 	}
+}
+
+// harmlessClaudeDir is a directory containing an executable named "claude" that does nothing, for tests
+// that need the adapter name to RESOLVE without the real CLI being started.
+//
+// A stand-in is necessary rather than merely tidy: the supervisor resolves argv[0] by bare name against
+// the test process's PATH (see the note in TestStdioAcceptsTheNameAContainerDispatchSends), so a test
+// cannot prevent a real `claude` from being found by pinning the CHILD's environment.
+func harmlessClaudeDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	// Sleeping briefly rather than exiting instantly keeps the shape of a real spawn (the supervisor opens
+	// pipes and reads the session) while producing no output and touching no state.
+	script := "#!/bin/sh\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write stand-in claude: %v", err)
+	}
+	return dir
 }

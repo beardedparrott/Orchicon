@@ -92,6 +92,19 @@ func TestPostgresUIDGIDIsInvokingUser(t *testing.T) {
 // initPostgres is idempotent via the PG_VERSION gate: an already-initialized dir
 // returns nil without invoking initdb.
 func TestInitPostgresIdempotent(t *testing.T) {
+	// THE HOST'S CONTAINER ENGINE MUST NOT BE PROBED FROM A UNIT TEST.
+	//
+	// initPostgres calls guardContainerEraPostgresCluster, which asks the real `podman`/`docker` whether
+	// a container-era volume exists. Running that engine CLI was not free: on a host with podman
+	// installed, the probe INITIALISED ~/.local/share/containers/storage (db.sql + every overlay/netavark
+	// lock) inside the developer's home — a unit test for an already-initialised data dir, creating the
+	// operator's container store as a side effect.
+	//
+	// The guard-side behaviour is covered by the postgres_legacy_volume tests, which stub this var
+	// deliberately. Here the subject is idempotence, so "no container-era volume" is the boring,
+	// no-engine-on-this-host answer and the one that keeps the test hermetic.
+	stubNoContainerEraVolume(t)
+
 	s := &supervisor{log: testLogger(), dataDir: t.TempDir()}
 	dir := filepath.Join(s.dataDir, "postgres")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -103,6 +116,16 @@ func TestInitPostgresIdempotent(t *testing.T) {
 	if err := s.initPostgres(); err != nil {
 		t.Fatalf("initPostgres on an initialized dir: %v", err)
 	}
+}
+
+// stubNoContainerEraVolume makes the engine probe answer "no such volume" without starting a container
+// engine, and restores the real probe when the test ends. It also pins the instance so the volume NAME
+// is deterministic, and clears the allow-fresh override so the guard's own path is exercised as CI sees it.
+func stubNoContainerEraVolume(t *testing.T) {
+	t.Helper()
+	orig := postgresVolumeExists
+	t.Cleanup(func() { postgresVolumeExists = orig })
+	postgresVolumeExists = func(engineBin, name string) bool { return false }
 }
 
 // The supervisor's ports ARE host ports, so every knob is honoured: two instances

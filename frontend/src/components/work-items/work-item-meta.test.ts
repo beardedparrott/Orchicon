@@ -28,7 +28,10 @@ import {
   showRecurringBadge,
   MANUALLY_UNMOVABLE_STATUSES,
   STATUS_FILTER_OPTIONS,
+  ALL_STATUS_VALUES,
+  ALL_KIND_VALUES,
 } from "@/components/work-items/work-item-meta";
+import { filterItemsByKindStatus } from "@/components/work-items/dependency-utils";
 
 describe("kind meta palette variants", () => {
   // The proto enum includes UNSPECIFIED=0, which falls back to token
@@ -273,3 +276,39 @@ describe("skipped status (terminal-success, skip-status/depends_on interplay)", 
 // Auto-start requires a bound workflow — the GUI half of the workflow-first rule.
 // The route imports THIS predicate and refuses the save with it, so the unit test
 // covers the rule that ships rather than a re-implementation of it.
+
+// THE ARCHIVE FILTER-VOCABULARY REGRESSION.
+//
+// db.ArchiveWorkItem sets `status = 'archived'`, so every archived row carries ARCHIVED. Leaving it
+// out of STATUS_FILTER_OPTIONS meant filterItemsByKindStatus ("statuses.includes(i.status)") matched
+// NONE of them, and the Work Items page derives its visible/selectable set from that filter.
+//
+// Reported from an archive of 81 items: the toolbar said 1 work item was selectable and header
+// select-all selected nothing at all. These assertions pin the vocabulary, because a status the
+// database writes must not be one the UI cannot name.
+describe("archived status is in the filter vocabulary", () => {
+  it("offers ARCHIVED as a filter option", () => {
+    expect(STATUS_FILTER_OPTIONS.map((o) => o.value)).toContain(WorkItemStatus.ARCHIVED);
+  });
+
+  it("names it, rather than rendering an unlabelled pill", () => {
+    const meta = statusMeta(WorkItemStatus.ARCHIVED);
+    expect(meta.titleLabel).toBe("Archived");
+    expect(meta.label).not.toBe("");
+  });
+
+  it("keeps the default filter selecting it, so archived rows are not filtered out by default", () => {
+    // ALL_STATUS_VALUES is the default selection ("all selected = show everything").
+    expect(ALL_STATUS_VALUES).toContain(WorkItemStatus.ARCHIVED);
+  });
+
+  it("matches an archived row instead of filtering it out", () => {
+    const archived = { kind: WorkItemKind.TASK, status: WorkItemStatus.ARCHIVED, title: "done" };
+    const matched = filterItemsByKindStatus(
+      [archived as never],
+      ALL_KIND_VALUES,
+      ALL_STATUS_VALUES,
+    );
+    expect(matched).toHaveLength(1);
+  });
+});
