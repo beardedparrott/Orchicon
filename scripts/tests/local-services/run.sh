@@ -243,8 +243,11 @@ for t in instance-rebuild full-rebuild; do
   check_contains "make $t instance=prod still proceeds" 'test -n "command line"' "$(make_n "$t" instance=prod 2>&1 | grep -m1 'test -n' || true)"
 done
 
-# The list spans two recipe lines (a trailing backslash), so both are joined.
-UNSET_LINE="$(printf '%s\n' "$TEST" | grep -A1 -m1 'for v in ORCHICON_GUARD_POLICY' | tr '\n' ' ' || true)"
+# The list spans SEVERAL recipe lines (each ending in a trailing backslash), so join until the
+# terminator rather than assuming a fixed count. It used to join exactly two, which silently truncated
+# the list the moment a third continuation line was added — the same class of brittleness the note below
+# describes, one line further along.
+UNSET_LINE="$(printf '%s\n' "$TEST" | awk '/for v in ORCHICON_GUARD_POLICY/{f=1} f{printf "%s ", $0} f && /; do unset/{exit}' || true)"
 # ASSERT EACH NAME, NOT THE ORDERING. This used to require the literal "ORCHICON_SERVE_STATE_DIR; do
 # unset" — the loop's TAIL — so APPENDING a variable to a correct list failed it. That is a gate that
 # fails on a right change, and it did: adding ORCHICON_DATA_DIR (a real leak) turned this red. The
@@ -253,7 +256,9 @@ UNSET_LINE="$(printf '%s\n' "$TEST" | grep -A1 -m1 'for v in ORCHICON_GUARD_POLI
 # loop is present, syntactically intact, and still names each variable.
 check_contains "make test still unsets the ambient config/plane vars" "; do unset" "$UNSET_LINE"
 for v in ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_ONCE ORCHICON_GUARD_PROJECT \
-         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR ORCHICON_DATA_DIR; do
+         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR ORCHICON_DATA_DIR \
+         ORCHICON_CLAUDE_PROJECT_DIR ORCHICON_CLAUDE_HOOK_PROFILE ORCHICON_CLAUDE_ASK_DIR \
+         ORCHICON_CLAUDE_CONSENT_SOCK ORCHICON_CLAUDE_ASK_MODE_FILE; do
   check_contains "make test unsets $v" "$v" "$UNSET_LINE"
 done
 check_lacks    "ORCHICON_TEST_DSN is not unset (opt-in stays reachable)" "ORCHICON_TEST_DSN" "$UNSET_LINE"
