@@ -1069,14 +1069,19 @@ func (s *askSession) emitAsk(ev StreamEvent) {
 	})
 }
 
-// askTargets lists the paths an ask names, from claude's own `blocked_path` and the call's
-// arguments.
+// askTargets lists what an ask is ABOUT, from claude's own `blocked_path` and the call's arguments:
+// the paths a path-carrying tool names, and the URL or query a web tool names.
+//
+// THE WEB KEYS ARE LOAD-BEARING FOR THE CARD. `WebFetch`/`WebSearch` name no path, so with only the
+// path keys the consent card for a fetch arrived with EMPTY Targets and the operator was asked to
+// approve "WebFetch" with no idea which page. `url` (WebFetch) and `query` (WebSearch) are the
+// call's own subject, so the target IS the thing being consented to.
 func askTargets(ev StreamEvent) []string {
 	var out []string
 	if p := strings.TrimSpace(ev.ControlBlockedPath); p != "" {
 		out = append(out, p)
 	}
-	for _, k := range []string{"file_path", "notebook_path", "path"} {
+	for _, k := range []string{"file_path", "notebook_path", "path", "url", "query"} {
 		if v := stringInput(ev.ControlInput, k); v != "" && !containsString(out, v) {
 			out = append(out, v)
 		}

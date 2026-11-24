@@ -158,10 +158,26 @@ var TodoTrackToolNames = []string{
 }
 
 // AskPermissionToolNames are the tools the ASK profile must PROMPT about, expressed as
-// `permissions.ask` entries in the settings document.
+// `permissions.ask` entries in the settings document. This ONE list drives both halves of the
+// card: `permissions.ask` (BuildSettings) and the `PermissionRequest` matcher
+// (askHookToolMatcher), so a name added here reaches a human.
+//
+// `WebSearch`/`WebFetch` BELONG HERE, and leaving them out was a silent denial. They were not in
+// this list, so `permissions.ask` never prompted and the `PermissionRequest` matcher never covered
+// them; claude fell back to its own permission flow, which in a `-p` session has nobody to grant.
+// The operator saw, for every search and every fetch, with no card to answer:
+//
+//	"Claude requested permissions to use WebSearch, but you haven't granted it yet."
+//
+// THE ASK LIST IS ASK-PROFILE ONLY, and the web tools must NOT be added to the worker's settings.
+// BuildSettings sets `permissions.ask` only when Profile == ProfileAskEnvValue, and that is the
+// correct home for them: a non-interactive worker has nobody to answer, so an ask there resolves as
+// an unanswerable REFUSAL. A worker keeps the web tools governed by the PreToolUse hook's worker
+// rules — allowed unless the operator's policy denies them (DecideTool allows an unrecognised tool).
 var AskPermissionToolNames = []string{
 	"Write", "Edit", "MultiEdit", "NotebookEdit",
 	"Bash",
+	"WebSearch", "WebFetch",
 }
 
 // HookToolMatcher is the PreToolUse matcher: the tools whose input can name a
@@ -188,7 +204,13 @@ var AskPermissionToolNames = []string{
 // what each tool gets. The Ask profile allows the platform's own `mcp__orchicon__*`
 // and ASKS about third-party ones; the worker profile defers to claude's default,
 // so an operator-configured server is usable.
-const HookToolMatcher = "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep|Task|Agent|TodoWrite|TaskCreate|TaskUpdate|TaskList|TaskGet|TaskOutput|mcp__.*"
+//
+// `WebSearch|WebFetch` ARE NAMED FOR THE SAME REASON as `mcp__.*`: a tool the matcher omits never
+// reaches the hook, so claude's own flow decides it — and in `-p` mode that is a silent denial
+// ("you haven't granted it yet"). Naming them here means the hook's verdict applies in BOTH profiles:
+// the worker ALLOWS them (DecideTool's catch-all, so an operator policy deny can still refuse one)
+// and the Ask profile defers them to the `PermissionRequest` card (askHookToolMatcher).
+const HookToolMatcher = "Bash|Read|Write|Edit|MultiEdit|NotebookEdit|Glob|Grep|Task|Agent|TodoWrite|TaskCreate|TaskUpdate|TaskList|TaskGet|TaskOutput|WebSearch|WebFetch|mcp__.*"
 
 // bypassLaunchFlags are the LAUNCH spellings that would discard the restrictions.
 var bypassLaunchFlags = []string{

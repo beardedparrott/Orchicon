@@ -737,7 +737,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			}
 			// D3 rule 4 — hold-at-PENDING.
 			if step.Kind == domain.StepKindLoopDecision && sr.Iteration > 0 &&
-				r.loopDecisionUpstreamFailed(step, runByID) {
+				r.loopDecisionUpstreamFailed(ctx, ttx.Tx, tenantID, step, runByID) {
 				continue
 			}
 			if r.depsSatisfied(step, runByID) {
@@ -1824,14 +1824,64 @@ func upstreamFaultedByInfra(status, verdict string) bool {
 }
 
 // loopDecisionUpstreamFailed reports whether ANY upstream dependency of a loop_decision step is
-// terminal-FAILED.
-func (r *WorkflowReconciler) loopDecisionUpstreamFailed(step workflow.StepWire, runs map[string]db.WorkflowStepRunRow) bool {
+// terminal-FAILED — the D3 rule-4 hold-at-PENDING gate.
+//
+// WHY THE VERDICT MATTERS, AND WHY THIS WAS A REGRESSION. The D3 pass (#... 6f6c21aa3) introduced this
+// gate when the only way an upstream reached `failed` was an infrastructure fault, so "failed upstream
+// => hold the loop" was right. #940 (d7587a3c6) then established, and taught the recovery path, that a
+// worker's own `ORCHICON WORKER SUMMARY: failure` is a DELIVERED JUDGEMENT rather than a fault — but it
+// did not touch this gate. From then on a Reviewer that REJECTED work failed its step, the gate held the
+// loop_decision at PENDING, and the run died with the work never routed back to the engineer:
+//
+//	run 01M85764NHHH69ACHZ5BDFR6K9 — PR Reviewer reported failure (AC1-3 pass, AC5 gate red),
+//	step-9gfybwnv (loop_branch: step-sse) never fired, SSE stayed at 1 of 6 attempts.
+//
+// A REJECTED REVIEW IS EXACTLY THE THING THE LOOP EXISTS FOR. Suppressing it inverts the loop: the
+// branch fired only when the reviewer was happy, which is the one case that does not need it.
+//
+// A genuine fault (crash, stall, tool error) still holds: verdict == "" is upstreamFaultedByInfra's
+// signal, and recovery owns that failure.
+func (r *WorkflowReconciler) loopDecisionUpstreamFailed(ctx context.Context, tx pgx.Tx, tenantID string, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow) bool {
 	for _, dep := range step.DependsOn {
-		if up, ok := runs[dep]; ok && up.SupersededBy == "" && up.Status == domain.StepRunFailed {
-			return true
+		up, ok := runs[dep]
+		if !ok || up.SupersededBy != "" || up.Status != domain.StepRunFailed {
+			continue
 		}
+		// A DELIVERED VERDICT MUST ROUTE, NOT HOLD. Same predicate the recovery path uses, so the two
+		// cannot disagree about what "failed" means.
+		if !upstreamFaultedByInfra(up.Status, loopDecisionUpstreamVerdict(ctx, tx, tenantID, up)) {
+			continue
+		}
+		return true
 	}
 	return false
+}
+
+// loopDecisionUpstreamVerdict reads the worker's own decision for a FAILED upstream step, or "" when the
+// failure was not a judgement.
+//
+// It mirrors the resolution in pollLoopDecisionChain: the marker is written on the WORK ITEM's results
+// (that is where the task reconciler records it), so a failed upstream is asked directly. Only the
+// failure path pays the extra query, which is why this is not read for every dependency.
+func loopDecisionUpstreamVerdict(ctx context.Context, tx pgx.Tx, tenantID string, up db.WorkflowStepRunRow) string {
+	var result struct {
+		WorkItemID string `json:"_work_item_id"`
+		Verdict    string `json:"_verdict"`
+	}
+	_ = json.Unmarshal(up.Result, &result)
+	if result.Verdict != "" || result.WorkItemID == "" {
+		return result.Verdict
+	}
+	wi, err := db.GetWorkItem(ctx, tx, tenantID, result.WorkItemID)
+	if err != nil || len(wi.Results) == 0 {
+		return ""
+	}
+	var wiResult map[string]any
+	if json.Unmarshal(wi.Results, &wiResult) != nil {
+		return ""
+	}
+	v, _ := wiResult["_verdict"].(string)
+	return v
 }
 
 // evaluateGate evaluates the step's gate_policy_ref (docs/02 §2.5 Tier 1).

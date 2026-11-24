@@ -21,6 +21,8 @@ package main
 
 import (
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -36,6 +38,19 @@ func TestPortOwnerLabel(t *testing.T) {
 // The decision function must be conservative: an unidentified holder is NOT ours. Over-claiming would keep
 // a port that something else owns (and then fail to bind); under-claiming only costs a re-resolve.
 func TestPortHeldByThisInstanceIsConservative(t *testing.T) {
+	// THE HOST'S CONTAINER ENGINE MUST NOT BE PROBED FROM A UNIT TEST.
+	//
+	// portHeldByThisInstance asks every installed engine whether `orchicon-cnt-<instance>` is running and
+	// publishing the port. On a machine with podman installed, running that CLI INITIALISED
+	// ~/.local/share/containers/storage inside the developer's home — db.sql, the overlay/netavark lock
+	// files and all — as a side effect of a test asserting that a free port is not ours. On a machine
+	// whose engine has never been started it is also the slowest thing in the package.
+	//
+	// Stubbing the ENGINE is the honest containment: the confinement rules this test exists for
+	// (a free port is not ours; a foreign process is not ours) are still evaluated by the real
+	// portHeldByThisInstance over a default portHolders and a real /proc, and only the container-engine
+	// branch — which cannot have an answer on a test host — is taken away.
+	stubNoContainerEngines(t)
 	if portHeldByThisInstance(1, "dev") {
 		t.Error("portHeldByThisInstance claimed a free port belongs to dev")
 	}
@@ -89,4 +104,23 @@ func TestLifecycleStripsInheritedBootMarkers(t *testing.T) {
 				"inherited it becomes a foreground plane with no PID file, or writes a sibling's log", marker)
 		}
 	}
+}
+
+// stubNoContainerEngines hides every container engine from the port-ownership probes for one test, and
+// restores the resolved engine afterwards.
+//
+// engineCLI is the product's own seam for "which engine do we talk to" (install_engine.go), and pointing it
+// at a path that does not exist makes every engine probe fail fast WITHOUT a LookPath having to be
+// intercepted — the same effect as no engine being installed, which is the situation a unit test is in.
+func stubNoContainerEngines(t *testing.T) {
+	t.Helper()
+	origCLI, origResolved := engineCLI, engineResolved
+	t.Cleanup(func() {
+		engineCLI, engineResolved = origCLI, origResolved
+	})
+	engineCLI = filepath.Join(t.TempDir(), "no-such-container-engine")
+	engineResolved = engineCLI
+	origLookPath := lookPathEngine
+	t.Cleanup(func() { lookPathEngine = origLookPath })
+	lookPathEngine = func(string) (string, error) { return "", exec.ErrNotFound }
 }

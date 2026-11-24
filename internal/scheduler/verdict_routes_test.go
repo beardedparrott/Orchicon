@@ -117,3 +117,83 @@ func stripCommentsForGate(src string) string {
 	}
 	return b.String()
 }
+
+// ---------------------------------------------------------------------------
+// THE SAME RULE, APPLIED TO THE LOOP GATE (run 01M85764NHHH69ACHZ5BDFR6K9)
+//
+// #940 fixed the RECOVERY path: a delivered verdict routes instead of being recovered. It did not touch
+// the D3 hold-at-PENDING gate, which still read raw status:
+//
+//	if step.Kind == StepKindLoopDecision && sr.Iteration > 0 &&
+//		r.loopDecisionUpstreamFailed(step, runByID) { continue }
+//
+// So a Reviewer that REJECTED work failed its step, the loop_decision was held at PENDING forever, and
+// the run died with the work never handed back to the engineer:
+//
+//	PR Reviewer: "The code change is correct and AC1-AC3 pass ... I'm reporting failure only because
+//	             AC5 (the full gate) fails on one test"
+//	-> step-9gfybwnv (loop_branch: step-sse) never fired. SSE stayed at 1 of 6 attempts. QA and DevOps
+//	   never ran. The run was marked failed with the code unmerged.
+//
+// That INVERTS the loop: the branch fired only when the reviewer was happy, which is the one case that
+// does not need it. The assertions below are source-level for the WIRING (the call site must pass what
+// the decision needs) plus unit-level for the DECISION, because the gate's own body is only reachable
+// through a live reconciler pass.
+// ---------------------------------------------------------------------------
+
+// THE WIRING: the gate must be given the run context it needs to resolve a verdict at all. Before this
+// change it was a pure-status predicate, so it could not distinguish a rejection from a crash.
+func TestTheLoopGateConsultsTheVerdictNotJustTheStatus(t *testing.T) {
+	raw, err := os.ReadFile("workflow_reconciler.go")
+	if err != nil {
+		t.Fatalf("read workflow_reconciler.go: %v", err)
+	}
+	src := string(raw)
+
+	// The gate signature carries the context a verdict lookup requires.
+	if !strings.Contains(src, "func (r *WorkflowReconciler) loopDecisionUpstreamFailed(ctx context.Context, tx pgx.Tx, tenantID string, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow) bool") {
+		t.Error("loopDecisionUpstreamFailed no longer takes the run context. Without ctx/tx/tenant it cannot " +
+			"read a failed upstream's _verdict, which is the only thing that separates a REJECTION (route " +
+			"the loop) from a CRASH (hold for recovery).")
+	}
+	// And it must actually use the shared predicate rather than re-deriving "failed means hold".
+	body := src[strings.Index(src, "func (r *WorkflowReconciler) loopDecisionUpstreamFailed"):]
+	body = body[:strings.Index(body, "\n}\n")+3]
+	if !strings.Contains(body, "upstreamFaultedByInfra") {
+		t.Error("the loop gate does not consult upstreamFaultedByInfra, so it is back to treating every " +
+			"failed upstream as a fault — the regression that killed run 01M85764NHHH69ACHZ5BDFR6K9")
+	}
+	// The verdict resolution lives beside it and reads the work item's marker on the failure path only.
+	if !strings.Contains(src, "func loopDecisionUpstreamVerdict(") {
+		t.Error("loopDecisionUpstreamVerdict is gone — the gate has no way to obtain a verdict, and would " +
+			"have to fall back to bare status")
+	}
+}
+
+// THE DECISION, stated as the incident: a rejecting reviewer must ROUTE, a crashed one must HOLD.
+func TestARejectionRoutesAndACrashHolds(t *testing.T) {
+	// The reviewer's own words, from the run that died.
+	const rejected = domain.StepRunFailed
+	if upstreamFaultedByInfra(rejected, "failure") {
+		t.Error("a rejecting reviewer is still classified as an infrastructure fault, so the loop is held " +
+			"and the run dies instead of handing the work back — exactly run 01M85764NHHH69ACHZ5BDFR6K9")
+	}
+	if !upstreamFaultedByInfra(rejected, "") {
+		t.Error("a crash with no verdict is no longer a fault, so recovery would never pick up a genuine " +
+			"environment failure")
+	}
+}
+
+// THE CALL SITE still passes the context through — a refactor that drops it fails to compile, but this
+// catches a future caller reintroducing a status-only variant beside the real one.
+func TestTheLoopGateCallSitePassesTheContext(t *testing.T) {
+	raw, err := os.ReadFile("workflow_reconciler.go")
+	if err != nil {
+		t.Fatalf("read workflow_reconciler.go: %v", err)
+	}
+	src := string(raw)
+	if !strings.Contains(src, "r.loopDecisionUpstreamFailed(ctx, ttx.Tx, tenantID, step, runByID)") {
+		t.Error("the loop gate call site no longer passes ctx/tx/tenantID, so a failed upstream's verdict " +
+			"cannot be resolved and every failure holds the loop again")
+	}
+}
