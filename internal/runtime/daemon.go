@@ -1346,6 +1346,22 @@ func (d *Daemon) hostInputsFingerprint() string {
 	return hostFp + "|" + binFp + "|" + d.engineInputFingerprint()
 }
 
+// serveHandshakeHint turns the container engine's own words into the thing to fix.
+//
+// The binary is DELIBERATELY not baked into the runtime image — the daemon bind-mounts its own
+// executable at /usr/local/bin/orchicon when it creates a runtime container (see
+// deploy/runtime/Dockerfile). So "executable file not found" means the exec reached a container that
+// was NOT created by that path, never that the image is missing something.
+func serveHandshakeHint(engineStderr string) string {
+	if strings.Contains(engineStderr, "executable file not found") ||
+		strings.Contains(engineStderr, "no such file or directory") {
+		return " — the container has no /usr/local/bin/orchicon, so it was not created by the daemon " +
+			"(the binary is bind-mounted at create time, never baked into the image). Re-create the " +
+			"container rather than treating this as an image defect."
+	}
+	return ""
+}
+
 // startServe asks the in-container supervisor to bring up `opencode serve` (idempotent.
 func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, bool, error) {
 	reqJSON, err := json.Marshal(AgentRequest{
@@ -1364,9 +1380,27 @@ func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, 
 	}
 	cmd := procwin.Command(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
 	cmd.Stdin = bytes.NewReader(reqJSON)
+	// CAPTURE THE ENGINE'S OWN STDERR. `cmd.Output()` discards it, and the discarded text is the whole
+	// diagnosis: when the container has no orchicon binary the engine says
+	//
+	//	OCI runtime exec failed: exec failed: unable to start container process:
+	//	exec: "orchicon": executable file not found in $PATH
+	//
+	// and all that surfaced was "serve handshake: exit status 1". That single line sent a production
+	// investigation to the store, the image and the runtime daemon, when the binary was simply not
+	// mounted into the container being exec'd. An exit status with no cause is not an error message.
+	var engineErr bytes.Buffer
+	cmd.Stderr = &engineErr
 	out, perr := cmd.Output()
 	if perr != nil {
-		return 0, "", false, fmt.Errorf("serve handshake: %v", perr)
+		if detail := strings.TrimSpace(engineErr.String()); detail != "" {
+			return 0, "", false, fmt.Errorf("serve handshake: %v — engine said: %s%s",
+				perr, detail, serveHandshakeHint(detail))
+		}
+		return 0, "", false, fmt.Errorf("serve handshake: %v — the container engine produced no stderr, so the "+
+			"cause is not visible here; check that this runtime container was created by the daemon (the "+
+			"orchicon binary is BIND-MOUNTED at /usr/local/bin/orchicon at create time and is never baked "+
+			"into the image)", perr)
 	}
 	// The supervisor answers {event:"serve", port:4096, password:...} when
 	// ready.
