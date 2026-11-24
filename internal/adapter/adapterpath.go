@@ -23,13 +23,29 @@ func BinEnv(kind string) string {
 		return "ORCHICON_OPENCODE_BIN"
 	case KindClaude:
 		return "ORCHICON_CLAUDE_BIN"
+	case KindAntigravity:
+		return "ORCHICON_AGY_BIN"
 	}
 	return ""
 }
 
+// binStem is the executable's NAME for a kind — which is NOT always the kind itself.
+//
+// THE TWO ARE THE SAME FOR opencode AND claude, and that coincidence is why the original resolver
+// could get away with deriving one from the other. antigravity breaks it: the kind is
+// "antigravity" and Google's CLI is `agy`. Every place that turns a kind into a file name goes
+// through HERE so the mapping is stated once instead of being re-guessed at each call site (the
+// "installed but not found" failure mode this file exists to prevent).
+func binStem(kind string) string {
+	if canonicalKind(kind) == KindAntigravity {
+		return "agy"
+	}
+	return canonicalKind(kind)
+}
+
 // binaryName is the executable's file name for a kind on a platform.
 func binaryName(goos, kind string) string {
-	base := canonicalKind(kind)
+	base := binStem(kind)
 	if goos == "windows" {
 		return base + ".exe"
 	}
@@ -44,6 +60,9 @@ func declaredBinDir(home, kind string) string {
 		return filepath.Join(home, ".opencode", "bin")
 	case KindClaude:
 		return filepath.Join(home, ".local", "bin")
+	case KindAntigravity:
+		// Google's documented default install location for `agy`.
+		return filepath.Join(home, ".local", "bin")
 	}
 	return ""
 }
@@ -51,7 +70,14 @@ func declaredBinDir(home, kind string) string {
 // extraBinDirs are the kind-specific directories worth probing beyond the declared one.
 func extraBinDirs(goos, home, kind string, getenv func(string) string) []string {
 	if goos != "windows" {
-		return nil
+		// THE POSIX SYSTEM LOCATIONS. Historically this returned nil for every non-Windows host
+		// because opencode and claude both install under the home directory; `agy` is also shipped
+		// into /usr/local/bin, /usr/bin and the Homebrew prefix, and a declared-dir-only search is
+		// exactly the "installed but not found" bug. Other kinds keep the historical nil.
+		if canonicalKind(kind) != KindAntigravity {
+			return nil
+		}
+		return []string{"/usr/local/bin", "/usr/bin", "/opt/homebrew/bin"}
 	}
 	env := func(k string) string {
 		if getenv == nil {
@@ -86,6 +112,13 @@ func extraBinDirs(goos, home, kind string, getenv func(string) string) []string 
 		add(env("ProgramFiles"), "Claude")
 		add(env("APPDATA"), "npm")
 		add(env("USERPROFILE"), "scoop", "shims")
+	case KindAntigravity:
+		add(env("LOCALAPPDATA"), "Microsoft", "WinGet", "Links")
+		// The installer's per-user program directory, plus the product-named subdirectory variant.
+		// DECISION (revisitable): no upstream install doc is vendored here, so these are the two
+		// shapes that pattern produces; `agy.exe` on PATH is still found by DiscoverKind regardless.
+		add(env("LOCALAPPDATA"), "Programs", "agy")
+		add(env("LOCALAPPDATA"), "Programs", "Antigravity", "bin")
 	}
 	return dirs
 }
@@ -204,11 +237,11 @@ func resolveKnownInner(goos, home, kind string, getenv func(string) string) (str
 		candidates = append(candidates, filepath.Join(dir, binaryName(goos, kind)))
 		// The declared dir is also scanned for a differently-named launcher, because a fixed name per
 		// directory is the assumption that produced "installed but not found" in the first place.
-		candidates = append(candidates, exesIn(dir, canonicalKind(kind))...)
+		candidates = append(candidates, exesIn(dir, binStem(kind))...)
 	}
 	for _, dir := range extraBinDirs(goos, home, kind, getenv) {
 		candidates = append(candidates, filepath.Join(dir, binaryName(goos, kind)))
-		candidates = append(candidates, exesIn(dir, canonicalKind(kind))...)
+		candidates = append(candidates, exesIn(dir, binStem(kind))...)
 	}
 	candidates = append(candidates, winGetPackageExes(goos, home, kind, getenv)...)
 
@@ -284,7 +317,7 @@ func ShimHint(goos, home, kind string, getenv func(string) string) string {
 		{env("LOCALAPPDATA"), []string{"pnpm"}},
 		{env("USERPROFILE"), []string{"scoop", "shims"}},
 	}
-	base := canonicalKind(kind)
+	base := binStem(kind)
 	for _, spec := range specs {
 		if spec.base == "" {
 			continue
@@ -313,8 +346,8 @@ func ContainerUsable(hostPath, containerGOOS string) (bool, string) {
 	if strings.EqualFold(filepath.Ext(hostPath), ".exe") {
 		return false, "the resolved adapter is a Windows executable (" + hostPath + "); runtime containers " +
 			"are Linux and cannot execute it. Install the adapter's Linux build and point " +
-			"ORCHICON_OPENCODE_BIN / ORCHICON_CLAUDE_BIN at it — Orchicon does not download or redistribute " +
-			"an adapter CLI for licensing reasons"
+			"ORCHICON_OPENCODE_BIN / ORCHICON_CLAUDE_BIN / ORCHICON_AGY_BIN at it — Orchicon does not " +
+			"download or redistribute an adapter CLI for licensing reasons"
 	}
 	return true, ""
 }
