@@ -25,6 +25,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/beardedparrott/orchicon/internal/gitenv"
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
@@ -1379,6 +1380,10 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitCmdTimeout)
 	defer cancel()
 	cmd := procwin.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	// NEVER INHERIT A REPOSITORY POINTER. -C names the target; GIT_DIR/GIT_WORK_TREE would silently
+	// override it, and this function runs `reset --hard` and `clean -fd` (restoreWorkTree) — the most
+	// destructive git in the codebase. Redirected, they run against the wrong tree.
+	cmd.Env = gitenv.Clean(os.Environ())
 	// CombinedOutput is the point: git writes the sentence that names a fatal failure — `fatal: invalid
 	// reference`, `fatal: not a git repository`, an auth prompt rejected — to stderr.
 	out, err := cmd.CombinedOutput()

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/beardedparrott/orchicon/internal/gitenv"
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
@@ -87,15 +89,33 @@ func isGitRepo(dir string) bool {
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return false
 	}
-	cmd := procwin.Command("git", "-C", dir, "rev-parse", "--is-inside-work-tree")
+	cmd := gitScoped(dir, "rev-parse", "--is-inside-work-tree")
 	out, err := cmd.Output()
 	return err == nil && strings.TrimSpace(string(out)) == "true"
+}
+
+// gitCmd builds a git command scoped to dir with a CLEANED environment.
+//
+// `-C dir` does not override GIT_DIR/GIT_WORK_TREE; those win. A worker's environment carries both, so
+// an inherited pointer makes every query here describe the WRONG repository — which shows up as a
+// clean checkout reporting another tree's changes, and as a diff ledger attributing another tree's
+// files to this execution. See internal/gitenv.
+func gitScoped(dir string, args ...string) *exec.Cmd {
+	cmd := procwin.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = gitenv.Clean(os.Environ())
+	return cmd
+}
+
+func gitScopedCtx(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	cmd := procwin.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = gitenv.Clean(os.Environ())
+	return cmd
 }
 
 // gitChangedPaths lists the worktree-changed paths from `git status --porcelain=v1` (tracked +
 // untracked, renames surfaced as delete+add of their old/new paths).
 func gitChangedPaths(dir, mergeBase string) ([]string, error) {
-	cmd := procwin.Command("git", "-C", dir, "status", "--porcelain=v1", "-z")
+	cmd := gitScoped(dir, "status", "--porcelain=v1", "-z")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -163,7 +183,7 @@ func gitEntryFor(worktreeDir, relPath, mergeBase string) (Entry, bool) {
 // committedPaths lists the paths this branch changed relative to the merge base — the changes `git
 // status` cannot report because they are committed.
 func committedPaths(dir, mergeBase string) ([]string, error) {
-	cmd := procwin.Command("git", "-C", dir, "diff", "--name-only", "-z", "--no-renames", mergeBase, "HEAD")
+	cmd := gitScoped(dir, "diff", "--name-only", "-z", "--no-renames", mergeBase, "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -180,7 +200,7 @@ func committedPaths(dir, mergeBase string) ([]string, error) {
 // gitShowAt returns a file's content at rev, or nil when it does not exist there (a new file) or
 // the ref cannot be read.
 func gitShowAt(dir, rev, rel string) []byte {
-	cmd := procwin.Command("git", "-C", dir, "show", rev+":"+rel)
+	cmd := gitScoped(dir, "show", rev+":"+rel)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -191,7 +211,7 @@ func gitShowAt(dir, rev, rel string) []byte {
 // mergeBaseRef resolves the fork point of HEAD and base, or "" when it cannot be resolved (unknown
 // ref, no history, not a repo).
 func mergeBaseRef(dir, base string) string {
-	cmd := procwin.Command("git", "-C", dir, "merge-base", "HEAD", base)
+	cmd := gitScoped(dir, "merge-base", "HEAD", base)
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
@@ -202,16 +222,16 @@ func mergeBaseRef(dir, base string) string {
 // BaseRefFor resolves the ref a RUN's worktree branch was cut from.
 func BaseRefFor(dir string) string {
 	for _, ref := range []string{"develop", "origin/develop"} {
-		if procwin.Command("git", "-C", dir, "rev-parse", "--verify", "--quiet", ref).Run() == nil {
+		if gitScoped(dir, "rev-parse", "--verify", "--quiet", ref).Run() == nil {
 			return ref
 		}
 	}
-	if out, err := procwin.Command("git", "-C", dir, "symbolic-ref", "refs/remotes/origin/HEAD").Output(); err == nil {
+	if out, err := gitScoped(dir, "symbolic-ref", "refs/remotes/origin/HEAD").Output(); err == nil {
 		if ref := strings.TrimPrefix(strings.TrimSpace(string(out)), "refs/remotes/"); ref != "" {
 			return ref
 		}
 	}
-	if out, err := procwin.Command("git", "-C", dir, "symbolic-ref", "--short", "HEAD").Output(); err == nil {
+	if out, err := gitScoped(dir, "symbolic-ref", "--short", "HEAD").Output(); err == nil {
 		if ref := strings.TrimSpace(string(out)); ref != "" {
 			return ref
 		}
