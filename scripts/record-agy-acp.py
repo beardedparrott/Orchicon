@@ -15,8 +15,9 @@ Scenarios are driven by scripts/agy_acp_scenarios.py (see SCENARIOS there) so
 this file stays a transport + redaction layer.
 
 Redaction is applied on write: OAuth tokens, token-named keys and
-`GEMINI_API_KEY=...` are replaced with `<redacted>`, and the recorder's home
-directory is replaced with /home/USER. No other rewriting happens.
+`GEMINI_API_KEY=...` are replaced with `<redacted>`, the checkout root is
+replaced with `<repo>`, and the recorder's own home directory is replaced with
+a portable placeholder (see HOME_PLACEHOLDER). No other rewriting happens.
 """
 
 import argparse
@@ -31,6 +32,14 @@ import time
 
 REDACTED = "<redacted>"
 
+# The whole checkout is normalised to <repo>, and the user's home to /home/user,
+# so a fixture is portable. /home/user is a DOCUMENTATION PLACEHOLDER (it is in the
+# allowlist of scripts/check_no_operator_paths.sh) and belongs to nobody -- a
+# fixture pinned to one machine's layout is a test that can only pass there.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_PLACEHOLDER = "<repo>"
+HOME_PLACEHOLDER = "/home/user"
+
 # OAuth bearer tokens, Google API keys, and anything named like a token.
 TOKEN_VALUE_RE = re.compile(r"ya29\.[A-Za-z0-9._\-]+|AIza[0-9A-Za-z_\-]{20,}")
 SENSITIVE_KEY_RE = re.compile(
@@ -42,8 +51,11 @@ ENV_KEY_RE = re.compile(r"(GEMINI_API_KEY|GOOGLE_API_KEY|GEMINI_API_KEY=)\s*=\s*
 
 
 def _redact_string(s, home):
-    if home and home != "/home/USER":
-        s = s.replace(home, "/home/USER")
+    # The repo root lies UNDER the home directory, so it is replaced first.
+    if REPO_ROOT and REPO_ROOT in s:
+        s = s.replace(REPO_ROOT, REPO_PLACEHOLDER)
+    if home and home != HOME_PLACEHOLDER:
+        s = s.replace(home, HOME_PLACEHOLDER)
     s = TOKEN_VALUE_RE.sub(REDACTED, s)
     s = ENV_KEY_RE.sub(lambda m: m.group(1) + "=" + REDACTED, s)
     return s
