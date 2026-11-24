@@ -15,6 +15,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/worktree"
 	"github.com/bmatcuk/doublestar/v4"
 
+	"github.com/beardedparrott/orchicon/internal/gitenv"
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
@@ -95,6 +96,25 @@ func sandboxedBashEnviron(base []string, scratchDir string) []string {
 			// Dropped; re-pointed below at the worker's scratch.
 			continue
 		}
+		// AND THE GIT REPOSITORY POINTERS, FOR THE SAME REASON AND BY THE SAME ARGUMENT.
+		//
+		// The worker's environment carries GIT_DIR/GIT_WORK_TREE aimed at ITS worktree
+		// (internal/runtime/agent.go: gitEnvFor). A bash command inherits them, and so does every child
+		// it spawns — including `go test`, whose fixtures run `git init` and `git config` in a
+		// t.TempDir(). Those variables override `-C` AND ordinary discovery, so such a fixture does not
+		// touch its temp dir: it writes into the MAIN repository's .git/config. That is how a test run
+		// left `core.worktree = <worker worktree>` in the operator's checkout, which then redirected
+		// every git command they ran — `git pull` included — into a worker's worktree, and how their
+		// commit identity became worktree-test@orchicon.dev.
+		//
+		// Scrubbing here covers EVERY bash invocation at once, which is the only coverage that holds: the
+		// fixtures that do this live in worktrees cut from before any source fix, and a worktree's
+		// contents are not something this plane controls. Unlike the state root, these are REMOVED rather
+		// than redirected: a worker acting in its own repository discovers it from cwd, so nothing
+		// legitimate needs them, and pointing them anywhere else would be a different lie.
+		if isGitRepoPointerEnvKey(key) {
+			continue
+		}
 		out = append(out, kv)
 	}
 	if strings.TrimSpace(scratchDir) != "" {
@@ -106,6 +126,18 @@ func sandboxedBashEnviron(base []string, scratchDir string) []string {
 		)
 	}
 	return out
+}
+
+// isGitRepoPointerEnvKey reports whether key is one of git's repository pointers, which override `-C`
+// and repository discovery. Mirrors internal/gitenv's list; kept as a key test because the loop above
+// needs to decide per entry while building its output.
+func isGitRepoPointerEnvKey(key string) bool {
+	for _, k := range gitenv.RepoPointerKeys() {
+		if strings.EqualFold(key, k) {
+			return true
+		}
+	}
+	return false
 }
 
 // bashEnviron is the environment in-process bash actually gets: the caller's factory (when wired),

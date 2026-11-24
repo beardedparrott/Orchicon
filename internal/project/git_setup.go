@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/beardedparrott/orchicon/internal/gitenv"
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
@@ -314,7 +315,14 @@ func gitOut(ctx context.Context, dir string, args ...string) (string, error) {
 	}
 	cmd := procwin.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	// A worker or the planner must never block on an interactive credential prompt during project setup.
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	//
+	// AND THE ENVIRONMENT MUST NOT CARRY A REPOSITORY POINTER. `-C dir` sets the working directory; it does
+	// NOT override GIT_DIR/GIT_WORK_TREE, which win over both -C and discovery. A worker's environment
+	// carries both (internal/runtime/agent.go: gitEnvFor), so without this every setup command ran against
+	// the MAIN repo instead of the directory named here: `git init` wrote `worktree = …` into the shared
+	// .git/config and left the intended directory empty, and the identity below was written as
+	// worktree-test@orchicon.dev into the operator's own config. See internal/gitenv.
+	cmd.Env = append(gitenv.Clean(os.Environ()), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))

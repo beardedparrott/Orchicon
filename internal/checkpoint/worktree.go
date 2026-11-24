@@ -30,10 +30,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/gitenv"
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
@@ -95,6 +97,9 @@ func checkpointIn(ctx context.Context, dir, reason string) (CheckpointWorktreeRe
 func gitIn(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := procwin.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	// cmd.Dir is a working directory, not a scope: an inherited GIT_DIR/GIT_WORK_TREE would override it
+	// and this would commit the WRONG tree to the run's branch.
+	cmd.Env = gitenv.Clean(os.Environ())
 	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError
