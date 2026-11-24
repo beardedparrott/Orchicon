@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -27,9 +28,10 @@ const cannedWorkerIdentity = "You are an autonomous worker running inside the Or
 // rule that never reaches an existing worker: the content key below would catch it, but the marker is
 // what a truncated/edited copy is detected by, and it is the version an operator reads.
 // v25: the free-models-only rule became a cheapest-model rule + an explicit no-model-testing rule.
+// v27: no canned worker carries a wall-clock budget any more; the budget block no longer claims a fixed ceiling.
 // v26: container-only claims scoped to runtime mode (browser/sandbox/prod-instance), so a local-mode
 // worker is no longer handed a recipe for a container it does not have.
-const seedSafetyMarker = "orchicon.safety=v26"
+const seedSafetyMarker = "orchicon.safety=v27"
 
 // safetyBlock is the shared safety-rules block delivered to every worker via the stable prompt
 // prefix (StablePromptPrefix in prompt.go).
@@ -65,7 +67,7 @@ func seedAgentsMDBase(w cannedWorker) string {
 // version.
 func cannedSeedFingerprint(w cannedWorker) string {
 	h := sha256.New()
-	for _, part := range []string{w.ID, w.Role, w.Skills, w.Behavior, seedAgentsMDBase(w), strconv.Itoa(w.ConcurrencyLimit)} {
+	for _, part := range []string{w.ID, w.Role, w.Skills, w.Behavior, seedAgentsMDBase(w), strconv.Itoa(w.ConcurrencyLimit), string(w.BudgetOverrides)} {
 		_, _ = h.Write([]byte(part))
 		_, _ = h.Write([]byte{0})
 	}
@@ -130,6 +132,11 @@ type cannedWorker struct {
 	RoleRef     string // RBAC role binding (plane-channel entitlements); empty = none
 	// NOTE: worker-level RuntimeRef is retired ( single source of truth) — the model_ref's
 	// adapter segment alone governs dispatch.
+	// BudgetOverrides is the worker's own budget JSON, layered over the tenant default by
+	// mergeBudgets (internal/scheduler/reconciler.go). NIL means "no worker-level gate": the run
+	// inherits the tenant default and, where the tenant sets none, has no ceiling at all.
+	// No canned worker carries one — a hard wall-clock gate killed runs that were still making
+	// progress, mid-deliverable. Leave this nil unless an operator asks for a per-worker gate.
 	BudgetOverrides []byte
 	// RecreateSlugOwner deletes any worker that owns the canned slug but is NOT the canned ID, then
 	// recreates fresh under the canned ID.
@@ -202,7 +209,7 @@ var SDLCWorkhorseMarker = sdlcWorkhorseMarker
 // workBudgetBlock replaces the old "## Hard time-box: N minutes" section in every worker that
 // carried one.
 const workBudgetBlock = "## Your time and how to spend it\n" +
-	"Your run has a wall-clock budget enforced by the platform. That budget is real: if it is exhausted mid-work the session is stopped and anything uncommitted is lost. Work accordingly, but understand what it is FOR — it exists to bound a run, not to license an unfinished deliverable.\n\n" +
+	"The platform enforces a wall-clock budget on your run only when one is configured. When it is not, nothing stops the session on a clock — but the run is still bounded by the value of finishing, so do not treat the absence of a ceiling as licence to wander. If a budget IS in force, understand what it is FOR: it exists to bound a run, not to license an unfinished deliverable.\n\n" +
 	"- **Do the work the acceptance criteria require, in the order that gets the deliverable standing first.** If you must choose what to leave undone, leave the optional polish undone, never a criterion.\n" +
 	"- **Commit as you go.** Committed work survives a stopped session; uncommitted work does not. This matters more than any other time-related habit.\n" +
 	"- **If you genuinely cannot finish, stop and say so honestly.** Commit what works, report `failure`, and name exactly what remains. A partial result reported as `failure` is recoverable and costs one loop. A partial result reported as `success` costs a full cycle in every environment downstream, and it is the specific thing the platform now checks against the repository.\n\n"
@@ -278,7 +285,6 @@ var cannedWorkers = []cannedWorker{
 			"6. **Before finishing**: run the project's test suite for the packages you touched, review your own diff, then commit ALL changes to the run branch; push to origin when the project has a remote (a `git_strategy=local` project integrates locally — `## Git discipline` states which case this run is). Verify `git status --porcelain` is clean (modulo gitignored scratch). Downstream steps run in pristine sibling worktrees and only see committed + pushed work — uncommitted changes are invisible and cause loops.\n\n" +
 			"## Completion\n" +
 			"**Never report success with failing build, failing tests, or unpushed work.** End with `ORCHICON WORKER SUMMARY: success` when the change is implemented, green (pre-existing failures remedied by you, per step 5), and pushed; `failure` only if the plan itself proved unimplementable (say exactly where it broke down).",
-		BudgetOverrides:  []byte(`{"wall_clock_seconds":3600}`),
 		RollMarker:       preExistingRemedyMarker,
 		ConcurrencyLimit: 0,
 	},
@@ -313,7 +319,6 @@ var cannedWorkers = []cannedWorker{
 			"- `failure` — anything does not pass. Cite the exact file and line, the criterion it violates, and what you observed when you ran the gate. Never soften a real defect into a `success` with a note; the note is not read by the routing, and the defect ships.\n\n" +
 			"A change you did not personally verify is not a success. If you ran out of budget before finishing, report `failure` and say exactly what you did not get to — that is honest and recoverable, whereas an unverified `success` is not.\n\n" +
 			"Only report issues you actually observed. Do not speculate.",
-		BudgetOverrides:  []byte(`{"wall_clock_seconds":2400}`),
 		ConcurrencyLimit: 0,
 	},
 	{
@@ -347,7 +352,6 @@ var cannedWorkers = []cannedWorker{
 			"- `failure` — anything does not pass, or you could not verify a criterion. Give reproduction steps, what you expected, and what actually happened. Never soften a real defect into a success with a note.\n\n" +
 			"A criterion you did not exercise is not verified. If you ran out of budget, report `failure` and name what you did not reach — honest and recoverable, unlike a `success` nobody confirmed.\n\n" +
 			"Only report issues you actually observed. Do not speculate or pad reports." + playwrightBlock,
-		BudgetOverrides:  []byte(`{"wall_clock_seconds":2400}`),
 		ConcurrencyLimit: 0,
 	},
 	{
@@ -375,7 +379,6 @@ var cannedWorkers = []cannedWorker{
 			"- **Numbered step list**: the closing section is a numbered, mechanically executable implementation list the SSE can follow without re-planning. Implementation must be able to start with zero blocking questions.\n\n" +
 			"## Completion\n" +
 			"End with `ORCHICON WORKER SUMMARY: success` once the plan exists with the plan contract satisfied; `failure` only if you could not produce a grounded plan at all. Note where the plan lives and that implementation can start from it.",
-		BudgetOverrides:  []byte(`{"wall_clock_seconds":1500}`),
 		RollMarker:       sdlcWorkhorseMarker,
 		ConcurrencyLimit: 0,
 	},
@@ -680,7 +683,6 @@ var cannedWorkers = []cannedWorker{
 			"created and merged by you, OR already merged by an earlier attempt of this same run (the " +
 			"idempotency check above; a resume that re-enters shipping and finds the PR merged is a SUCCESS, " +
 			"not a reason to re-ship).",
-		BudgetOverrides:  []byte(`{"wall_clock_seconds":2400}`),
 		RollMarker:       quickWorkerMarker,
 		ConcurrencyLimit: 0,
 	},
@@ -808,6 +810,42 @@ var errSeedSkipWorker = errors.New("canned worker skipped (slug owned by a custo
 
 // cannedSeedNeedsSync reports whether this canned worker's current PUBLISHED version must be
 // re-synced from the seed.
+// cannedBudgetNeedsSync reports whether the stored budget_overrides has drifted from the seed's.
+//
+// It is a SEPARATE check from the content fingerprint, and deliberately so: a fingerprint is
+// computed from the SEED, so it can only ever describe what the seed currently says. A worker whose
+// stored budget drifted away from the seed still carries the fingerprint of the seed's (nil) budget
+// and would therefore look current forever — which is exactly how a 3600s wall-clock gate survived
+// its own removal from the seed and kept guillotining runs at one hour. Comparing the stored value
+// to the seed's is the only thing that can detect it.
+func cannedBudgetNeedsSync(seedBudget []byte, storedJSON string) bool {
+	want := "{}"
+	if len(seedBudget) > 0 {
+		var wantMap map[string]any
+		if json.Unmarshal(seedBudget, &wantMap) != nil {
+			return false // an unparseable seed budget is not evidence of drift
+		}
+		b, err := json.Marshal(wantMap)
+		if err != nil {
+			return false
+		}
+		want = string(b)
+	}
+	have := "{}"
+	if strings.TrimSpace(storedJSON) != "" {
+		var haveMap map[string]any
+		if json.Unmarshal([]byte(storedJSON), &haveMap) != nil {
+			return true // unreadable stored budget: re-sync it
+		}
+		b, err := json.Marshal(haveMap)
+		if err != nil {
+			return true
+		}
+		have = string(b)
+	}
+	return have != want
+}
+
 func cannedSeedNeedsSync(w cannedWorker, storedAgentsMD string, draftCurrent bool) bool {
 	if draftCurrent {
 		return false
@@ -856,12 +894,12 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	).Scan(&curVer); err != nil {
 		return fmt.Errorf("seed worker %s: current version: %w", w.ID, err)
 	}
-	var pubID, curAgents string
+	var pubID, curAgents, curBudget string
 	verErr := ttx.QueryRow(ctx,
-		`SELECT id, agents_md FROM worker_versions
+		`SELECT id, agents_md, COALESCE(budget_overrides::text, '{}') FROM worker_versions
 		  WHERE worker_id = $1 AND tenant_id = current_setting('app.tenant_id') AND version = $2`,
 		targetID, curVer,
-	).Scan(&pubID, &curAgents)
+	).Scan(&pubID, &curAgents, &curBudget)
 
 	// The seed is the source of truth for canned-worker prompt context.
 	draftCurrent := false
@@ -896,10 +934,10 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 			verErr = nil
 			draftCurrent = bestStatus != "published"
 			if err := ttx.QueryRow(ctx,
-				`SELECT id, agents_md FROM worker_versions
+				`SELECT id, agents_md, COALESCE(budget_overrides::text, '{}') FROM worker_versions
 				  WHERE worker_id = $1 AND tenant_id = current_setting('app.tenant_id') AND version = $2`,
 				targetID, curVer,
-			).Scan(&pubID, &curAgents); err != nil {
+			).Scan(&pubID, &curAgents, &curBudget); err != nil {
 				return fmt.Errorf("seed worker %s: reload repaired version: %w", w.ID, err)
 			}
 		case errors.Is(berr, pgx.ErrNoRows):
@@ -933,7 +971,8 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 	}
 
 	// The seed is the source of truth for canned-worker prompt context.
-	needSync := verErr == nil && cannedSeedNeedsSync(w, curAgents, draftCurrent)
+	needSync := verErr == nil && (cannedSeedNeedsSync(w, curAgents, draftCurrent) ||
+		cannedBudgetNeedsSync(w.BudgetOverrides, curBudget))
 
 	if needSync {
 		// Every statement below is checked: a swallowed error poisons the seed transaction — it aborts and
@@ -947,13 +986,18 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 		}
 		if curVer == 1 {
 			// v1 is the canonical seed version — sync it in place.
+			var budgetParam any
+			if len(w.BudgetOverrides) > 0 {
+				budgetParam = string(w.BudgetOverrides)
+			}
 			if _, err := ttx.Exec(ctx,
 				`UPDATE worker_versions
 				    SET role = $1, skills = $2, behavior = $3, agents_md = $4,
-				        concurrency_limit = $5
-				  WHERE worker_id = $6 AND tenant_id = current_setting('app.tenant_id')
+				        concurrency_limit = $5,
+				        budget_overrides = COALESCE($6::jsonb, '{}'::jsonb)
+				  WHERE worker_id = $7 AND tenant_id = current_setting('app.tenant_id')
 				    AND version = 1`,
-				w.Role, w.Skills, w.Behavior, seedAgentsMD(w), w.ConcurrencyLimit, targetID,
+				w.Role, w.Skills, w.Behavior, seedAgentsMD(w), w.ConcurrencyLimit, budgetParam, targetID,
 			); err != nil {
 				return fmt.Errorf("seed worker %s: sync v1: %w", w.ID, err)
 			}
@@ -976,7 +1020,7 @@ func seedWorker(ctx context.Context, ttx *TenantTx, w cannedWorker) error {
 				        'published', COALESCE(NULLIF(model_ref,''), ''),
 				        $3, $4, $5, $6,
 				        context_sources, permissions, gated_tools,
-				        COALESCE(NULLIF($8::jsonb, 'null'::jsonb), budget_overrides),
+				        COALESCE($8::jsonb, '{}'::jsonb),
 				        execution_policy_ref,
 				        CASE WHEN $9 >= 0 THEN $9 ELSE concurrency_limit END,
 				        recovery_workflow_ref,
