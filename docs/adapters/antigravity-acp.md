@@ -14,7 +14,8 @@ on this host, the doc says so instead of guessing.
 | Auth method | `oauth-personal`, existing token in the OS keyring (Linux Secret Service) |
 | Tier | `Google AI Pro` (`g1-pro-tier`) |
 | Recorded | 2026-11-24 |
-| Recorder | `scripts/record-agy-acp.py` (stdlib only, run with `python3 -I`) |
+| Recorder (ACP transcripts) | `scripts/record-agy-acp.py` (stdlib only, run with `python3 -I`) |
+| Recorder (off-wire probes) | `scripts/probe-agy-acp-offwire.py` → `offwire-probes.jsonl` |
 
 Every fixture's **first line** is a header that records `agy_version`, `os`,
 `kernel`, `arch`, `auth_method`, `scenario`, `recorded` and the exact `argv`, so a
@@ -23,6 +24,13 @@ produced it. Lines after the header are `{"dir":"c2s"|"s2c"|"meta","line":…}`
 where `c2s` is client→server, `s2c` is server→client and `meta` is a recorder
 annotation about something that happened off the ACP wire (e.g. what the model
 did after a permission answer).
+
+Two facts in section 3 **cannot** appear in an ACP transcript by construction:
+the MCP handshake is a *second*, agy-initiated JSON-RPC channel, and the
+`agy acp` startup flags change process topology rather than wire traffic. Those
+two are recorded separately, as real observations, in
+`internal/antigravity/testdata/acp/offwire-probes.jsonl` (header line 1, zero
+model turns spent), and cited from there.
 
 `auth_required` was recorded against an **isolated profile**
 (`--app-data-dir empty-appdata --gemini-dir empty-gemini`, relative paths under
@@ -54,7 +62,7 @@ the scenario cwd) so the real keyring credentials were never touched.
 
 | Method | Params | Evidence |
 | --- | --- | --- |
-| `session/cancel` | `{sessionId}` | `cancel_midturn.jsonl:22` |
+| `session/cancel` | `{sessionId}` | `cancel_midturn.jsonl:20` |
 
 ### 2.3 Server → client requests
 
@@ -87,9 +95,10 @@ step (`gemini-3.8-flash-high`, "What is 17*23? Think step by step") produced
 
 Evidence: `thinking_turn.jsonl:26` —
 `{"stopReason": "end_turn", "usage": {"inputTokens": 9080, "outputTokens": 433, …, "thoughtTokens": 237, "totalTokens": 9513}}`
-and the recorder's own accounting at `thinking_turn.jsonl:29` —
+and the recorder's own accounting at `thinking_turn.jsonl:28` —
 `session/update variants seen: ["agent_message_chunk","available_commands_update","config_option_update","session_info_update","usage_update"]`
-(no `agent_thought_chunk`).
+(no `agent_thought_chunk`), with the explicit check at `thinking_turn.jsonl:29` —
+`{"note":"agent_thought_chunk present: false"}`.
 
 ### 3.2 Shape of `tool_call` / `tool_call_update`
 
@@ -123,9 +132,17 @@ must echo back `optionId`, never a literal `"allow_once"`. `allow_always` and
 
 Answer envelope: `{"outcome":{"outcome":"selected","optionId":"allow"}}`
 (evidence: `tool_run_command_permission_allow.jsonl:21`). `optionId:"deny"`
-(evidence: `tool_permission_reject.jsonl:21`). `{"outcome":{"outcome":"cancelled"}}`
-was sent in `cancel_midturn.jsonl` (second turn) and ended the turn with
-`stopReason:"cancelled"` — `cancel_midturn.jsonl:28`.
+(evidence: `tool_permission_reject.jsonl:21`).
+
+The third ACP outcome, `{"outcome":{"outcome":"cancelled"}}`, is **not
+reachable as the first answer to a live request** — `session/cancel` ends the
+turn before the client gets to answer. The recorded sequence is: the request
+arrives and is deliberately left **outstanding** (`cancel_midturn.jsonl:28`,
+options again `allow`/`deny`), `session/cancel` is sent (`:30`), the pending
+tool flips to `status:"failed"` (`:32`), the turn ends `stopReason:"cancelled"`
+(`:33`), and the still-unanswered request is *then* answered with
+`{"outcome":{"outcome":"cancelled"}}` (`:35`) — which the server accepts
+silently, with **no** JSON-RPC error and no re-opened turn.
 
 **On `deny` the turn continues**: the tool goes `status:"failed"` with an empty
 `content` text, and the agent receives the turn again. Evidence:
@@ -171,10 +188,16 @@ Evidence: `mcp_tool_call.jsonl:6` (the `session/new` request) and
 `mcp_tool_call.jsonl:19` —
 `{"sessionUpdate":"tool_call","toolCallId":"call_5019695473337414840","name":"mcp_echo_echo","args":{"text":"hi","toolSummary":"Echo hi"},"status":"in_progress","kind":"other","title":"Run mcp_echo_echo"}`.
 
-The MCP handshake itself happens off the ACP wire (agy ↔ MCP server), so it is
-not in the transcript; the tool call above is the observable proof of connection.
-agy also issues `server/discover` before `initialize` and negotiates
-`protocolVersion:"2025-11-25"` — recorded in the recorder's meta notes.
+The MCP handshake itself happens off the ACP wire (agy ↔ MCP server), so no
+`session/update` line can ever show it; the tool call above is the observable
+proof of connection *on* the ACP wire. The handshake itself is recorded on its
+own channel by `scripts/probe-agy-acp-offwire.py` into
+`offwire-probes.jsonl`: agy issues `server/discover` **before** `initialize`
+(`offwire-probes.jsonl:5`, `"method":"server/discover"` with
+`_meta.io.modelcontextprotocol.clientCapabilities`), then `initialize` with
+`protocolVersion:"2025-11-25"` and `clientInfo.name:"antigravity-client"`
+(`:7`), then `notifications/initialized` (`:9`) and `tools/list` (`:10`). The
+probe spent zero model turns (header, `:1`).
 
 An **http** (streamable/SSE) `mcpServers` entry was **not exercised** — no
 cheap recording target was available on this host, so its shape is unverified.
@@ -224,18 +247,20 @@ rebuilds history from the same handler it already has.
 
 Evidence: `load_session.jsonl:10` (`user_message_chunk`, replaying the original
 prompt text) and `load_session.jsonl:11` (`agent_message_chunk` replaying
-`"OK"`); the recorder counted 5 replay notifications (`:17`). `session/resume`
+`"OK"`); the recorder counted 5 replay notifications (`:18`). `session/resume`
 returns the same shape as `session/load` (sessionId + models + modes +
-configOptions) and replays nothing (`load_session.jsonl:19`). `session/list`
+configOptions) and replays nothing (`load_session.jsonl:19-21`). `session/list`
 returns `{sessions:[{sessionId,cwd,title,updatedAt}]}` (`load_session.jsonl:7`).
 
 `session/cancel` is a **notification**, and it ends the in-flight turn with
 `stopReason:"cancelled"` — including when a permission request is still pending.
 
-Evidence: `cancel_midturn.jsonl:22` (the `session/cancel`) →
-`cancel_midturn.jsonl:24` `{"stopReason":"cancelled","usage":{…}}`; and
-`cancel_midturn.jsonl:27` → `:28` `{"stopReason":"cancelled"}` for the
-pending-permission case.
+Evidence: `cancel_midturn.jsonl:20` (the `session/cancel`) →
+`cancel_midturn.jsonl:22` `{"stopReason":"cancelled","usage":{…}}`. The
+pending-permission case is recorded for real rather than asserted: the
+permission request arrives at `:28` and is left **outstanding**, the
+`session/cancel` goes out at `:30`, the tool flips to `status:"failed"` at
+`:32`, and the turn ends `{"stopReason":"cancelled"}` at `:33`.
 
 ### 3.10 `/compact` via `available_commands`
 
@@ -246,15 +271,21 @@ conversation and returns `stopReason:"end_turn"` with a fresh, smaller usage.
 
 Evidence: `compact.jsonl:13` (the `available_commands_update`) and
 `compact.jsonl:22` (the `session/prompt` whose text is `/compact`), with the
-recorder noting a drop from 9064 to 2942 input tokens in the turn itself.
+recorder noting a drop from 9063 to 2942 input tokens in the turn itself
+(`compact.jsonl:20` before, `:24` after).
 
 ### 3.11 Flags: `--process-per-session`, `--disable-telemetry`, `--app-data-dir`, `--sandbox`
 
 All four are **accepted** on `agy acp` and none changes the ACP handshake.
 `--process-per-session`, `--disable-telemetry` and `--sandbox` each produced an
-identical `initialize` + `authenticate` + `session/new` triplet with 27 available
-models. `--app-data-dir` / `--gemini-dir` isolate the profile but **must be
-relative** (`auth_required.jsonl:15`).
+identical `initialize` + `session/new` pair with **27** available models and
+`currentModelId:"gemini-4-neon-high"` — recorded in `offwire-probes.jsonl:12`
+(no flag), `:13` (`--process-per-session`), `:14` (`--disable-telemetry`) and
+`:15` (`--sandbox`). These flags change process topology and telemetry, not wire
+traffic, so they cannot appear in an ACP transcript; the probe records the
+handshake under each flag instead (zero model turns). `--app-data-dir` /
+`--gemini-dir` isolate the profile but **must be relative**
+(`auth_required.jsonl:15`).
 
 Sandbox **is available on Linux** (kernel namespaces) per the docs, and
 `agy acp --sandbox` starts normally here; containment itself was not exercised.
@@ -311,36 +342,47 @@ with `status:"failed"`.
 
 ## 6. Per-OS facts (from Google's docs)
 
-Source: <https://antigravity.google/docs/getting-started>,
+Source: <https://antigravity.google/docs/getting-started?tab=cli> (the CLI tab is
+the one that documents the binary path),
 <https://antigravity.google/docs/cli/reference>,
-<https://antigravity.google/docs/install>, <https://antigravity.google/docs/sandbox>.
+<https://antigravity.google/docs/install?tab=cli>, <https://antigravity.google/docs/sandbox>.
+All four were re-fetched while writing this section; the quoted strings below are
+taken from those pages.
 
 | Fact | Value | Source |
 | --- | --- | --- |
-| Install (macOS/Linux) | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` | getting-started |
-| Default binary path (macOS/Linux) | **`~/.local/bin/agy`** | getting-started, "Default binary location" |
+| Install (macOS/Linux) | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` | getting-started?tab=cli |
+| Default binary path (macOS/Linux) | **`~/.local/bin/agy`** (literal: "Default binary location: `~/.local/bin/agy`") | getting-started?tab=cli |
 | Binary path on THIS host | **`/usr/bin/agy`** — installed via the distro package, not the installer | observed, all fixture headers |
-| Install (Windows) | `PowerShell` / `CMD` installer variant of the install script; the `.exe` wizard ships the App, the CLI uses the install script tab | getting-started |
+| Install (Windows) | the CLI install page offers **Windows (PowerShell)** and **Windows (CMD)** tabs alongside macOS/Linux; the `.exe` wizard on the same page is the **App**, not the CLI | getting-started?tab=cli |
 | Config dir | **`~/.gemini/antigravity-cli/`** (`settings.json` lives there) | cli/reference, "Configuration keys" |
 | App data dir | `--app-data-dir` default `antigravity-cli`; on this host resolved to `~/.gemini/antigravity-cli` | cli/reference + agy log |
 | Credentials | OS native keyring: Apple Keychain, Linux Secret Service/dbus, Windows Credential Manager. Silent sign-in if a token profile is present | install, "Local silent keyring sign-in" |
 | Plugin secrets | a **file** at `~/.config/antigravity/plugin-secrets.json`, not the keyring | agy log (`auth_store.go:199`) |
-| Headless auth | `GEMINI_API_KEY` **plus** `{"modelProvider":"gemini"}` in `settings.json` (the env var alone has no effect); or ADC via `AGY_ADC_AUTH=true` | install |
+| Headless auth | `GEMINI_API_KEY` **plus** `{"modelProvider":"gemini"}` in `~/.gemini/antigravity-cli/settings.json` (literal: "Only setting a `GEMINI_API_KEY` environment variable on its own has no effect"); or ADC via `AGY_ADC_AUTH=true` | install?tab=cli |
 | Sandbox | Linux = kernel namespaces, macOS = `sandbox-exec`/Seatbelt. **Windows requires Windows 11 24H2 or later with the August 2026 update** | sandbox doc |
 | Remote/SSH auth | manual URL + code loop when no browser is available | install, "Remote SSH OAuth flow" |
 
 **Unverified on this host: only Linux was run.** Windows and macOS binary paths,
-keyring behaviour and sandbox availability are doc-sourced, not observed.
+keyring behaviour and sandbox availability are doc-sourced, not observed. Note
+what *was* observed on Linux contradicts the installer default: the binary here
+is `/usr/bin/agy` from the distro package, **not** `~/.local/bin/agy`
+(`ls ~/.local/bin/agy` → *No such file or directory*; `which agy` →
+`/usr/bin/agy`). An adapter must therefore resolve `agy` from `PATH` and not
+hard-code the installer path. Likewise `~/.gemini/antigravity-cli/settings.json`
+exists here but carries only `colorScheme` and `trustedWorkspaces` — no
+`modelProvider` — which is why this host is OAuth-signed-in rather than
+API-key-authenticated.
 
 ## 7. GAP TABLE vs the Claude bridge
 
-Baseline: `internal/claude/capabilities.go:51-53` — the claude bridge advertises
-`execution: [cancellation, resume, mid_run_injection, context_compaction]` and
-`telemetry: [tool_calls_streamed, file_diffs, transcript_jsonl]`.
+Baseline: `internal/claude/capabilities.go:41-44` — the claude bridge advertises
+`execution: [cancellation, resume, mid_run_injection, context_compaction]` (`:42`)
+and `telemetry: [tool_calls_streamed, file_diffs, transcript_jsonl]` (`:44`).
 
 | Capability | Claude bridge | agy ACP 1.5.13 | Workaround / gap |
 | --- | --- | --- | --- |
-| **cancellation** | `Aborter` — SIGINT then SIGTERM | **supported** — `session/cancel` notification → `stopReason:"cancelled"` (`cancel_midturn.jsonl:22-24`) | none needed |
+| **cancellation** | `Aborter` — SIGINT then SIGTERM | **supported** — `session/cancel` notification → `stopReason:"cancelled"` (`cancel_midturn.jsonl:20-22`, and with a permission left outstanding at `:28-33`) | none needed |
 | **resume** | `SessionContinuer` — `--resume <id>` | **supported** — `session/load` replays the transcript; `session/resume` re-attaches (`load_session.jsonl:9,19`) | none needed; `session/list` even enumerates sessions |
 | **mid_run_injection** | `MessageInjector` — writes a turn to live stdin | **not supported** — no ACP method injects a message into a running turn; a second `session/prompt` while one is in flight is not defined by the recording | must queue the message and send it after `stopReason`; cannot interrupt |
 | **context_compaction** | Claude-native compact turn | **supported** — prompt the literal `/compact` from `available_commands_update` (`compact.jsonl:22`) | none needed, but it costs a turn |
@@ -364,7 +406,7 @@ Baseline: `internal/claude/capabilities.go:51-53` — the claude bridge advertis
 | 10 | **tool calls** | **supported** — `tool_call`/`tool_call_update`, kinds `read|edit|execute|other`, MCP tools named `mcp_<server>_<tool>` (`mcp_tool_call.jsonl:19`) | none |
 | 11 | **GUI/TUI** | **not supported** — `agy acp` is a stdio JSON-RPC server only; there is no GUI or TUI channel in the protocol | Orchicon renders its own UI from `session/update`; the agy TUI is a separate, unrelated surface |
 | 12 | **3 OSes** | **supported with workaround** — the CLI ships for macOS, Linux and Windows. macOS/Linux binary `~/.local/bin/agy`; Windows via the PowerShell/CMD install script. Auth is the OS keyring on all three (Apple Keychain / Secret Service / Credential Manager) | **only Linux was run here**; macOS and Windows are doc-sourced. Windows `auto` mode and the terminal sandbox need **Windows 11 24H2 + the Aug 2026 update** — ship `default` mode where the sandbox is unavailable |
-| 13 | **resume / cancel** (parity with the claude bridge) | **supported** — `session/cancel` ends a turn with `stopReason:"cancelled"` (`cancel_midturn.jsonl:22-24`, including with a pending permission at `:27-28`); `session/load` replays history and `session/resume` re-attaches (`load_session.jsonl:9,19`) | none; the one gap against Claude is **mid-run injection**, which agy has no channel for (see the GAP TABLE) |
+| 13 | **resume / cancel** (parity with the claude bridge) | **supported** — `session/cancel` ends a turn with `stopReason:"cancelled"` (`cancel_midturn.jsonl:20-22`, including with a permission request left outstanding at `:28-33`); `session/load` replays history and `session/resume` re-attaches (`load_session.jsonl:9,19`) | none; the one gap against Claude is **mid-run injection**, which agy has no channel for (see the GAP TABLE) |
 
 The 13 rows above are the 12 requirements named in the work item — Ask, worker,
 permission cards, ask cards, skills/context, model listing, context, cost,
@@ -395,4 +437,15 @@ python3 -I scripts/record-agy-acp.py --scenario auth_required \
 # scenarios that cost one cheap turn each (--model pins the cheapest available)
 python3 -I scripts/record-agy-acp.py --scenario simple_turn --model gemini-3.8-flash-low
 python3 -I scripts/record-agy-acp.py --scenario tool_read_file --model gemini-3.8-flash-low --mode accept-edits
+python3 -I scripts/record-agy-acp.py --scenario cancel_midturn --model gemini-3.8-flash-low
+
+# the facts that cannot live on the ACP wire (MCP handshake, acp startup flags).
+# Free: both probes stop after initialize + session/new, no model turn.
+python3 -I scripts/probe-agy-acp-offwire.py
 ```
+
+The `cancel_midturn` scenario needs the recorder to hold a
+`session/request_permission` **unanswered** so the cancel genuinely lands while
+the permission is outstanding; `scripts/record-agy-acp.py` does that via
+`Recorder.defer_permission`, then answers the orphaned request with
+`{"outcome":{"outcome":"cancelled"}}` after the turn has already ended.

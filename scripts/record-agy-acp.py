@@ -96,6 +96,11 @@ class Recorder:
         self._fh = None
         self._stop = threading.Event()
         self._perm_answers = 0
+        # When set, a permission request is RECORDED but not answered, so the
+        # scenario can do something else first (e.g. session/cancel) and observe
+        # what the server does while the request is still outstanding.
+        self.defer_permission = False
+        self.deferred_perms = []
 
     # -- transcript -------------------------------------------------------
 
@@ -209,6 +214,10 @@ class Recorder:
         params = msg.get("params") or {}
         if method == "session/request_permission":
             self._perm_answers += 1
+            if self.defer_permission:
+                # Leave it outstanding: the caller answers it later (or never).
+                self.deferred_perms.append(msg)
+                return
             option_id = self._pick_option(params)
             if option_id is None:
                 result = {"outcome": {"outcome": "cancelled"}}
@@ -791,11 +800,25 @@ def s_cancel_midturn(rec, args):
     resp = rec.request_wait_handle(req_id, 180)
     time.sleep(0.5)
     note(rec, "session/prompt result after cancel: " + json.dumps(resp.get("result") or resp.get("error"))[:600])
-    # Second attempt: cancel while a permission request is pending.
-    before2 = len(rec.notifications)
+    # Second attempt: cancel while a permission request is genuinely OUTSTANDING.
+    # The recorder holds the request unanswered so the cancel really does arrive
+    # with a permission pending; only then is the outcome envelope sent.
+    rec.defer_permission = True
     rec.perm_policy = "cancelled"
     req2 = do_prompt(rec, sid, "Run the shell command `echo still-here` and show me the output.", wait=False)
-    time.sleep(1.0)
+    pending = None
+    for _ in range(600):
+        if rec.deferred_perms:
+            pending = rec.deferred_perms[0]
+            break
+        time.sleep(0.05)
+    if pending is None:
+        note(rec, "no permission request arrived on the 2nd prompt within 30s; "
+                  "cannot record a pending-permission cancel")
+    else:
+        pparams = pending.get("params") or {}
+        note(rec, "permission request OUTSTANDING when cancel is sent: "
+             + json.dumps(pparams)[:1200])
     rec.notify("session/cancel", {"sessionId": sid})
     try:
         resp2 = rec.request_wait_handle(req2, 180)
@@ -803,6 +826,14 @@ def s_cancel_midturn(rec, args):
              + json.dumps(resp2.get("result") or resp2.get("error"))[:600])
     except RuntimeError as exc:
         note(rec, "2nd prompt while-cancel did not settle: %s" % exc)
+    if pending is not None:
+        # Answer the outstanding request AFTER the turn ended, to learn whether the
+        # server still accepts an outcome envelope once the turn is cancelled.
+        rec._reply(pending["id"], {"outcome": {"outcome": "cancelled"}})
+        note(rec, "answered the outstanding permission with "
+                  "{\"outcome\":{\"outcome\":\"cancelled\"}} after the turn ended")
+        time.sleep(1.0)
+    rec.defer_permission = False
 
 
 @scenario("load_session")
