@@ -15,6 +15,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
+	"github.com/beardedparrott/orchicon/internal/antigravity"
 	"github.com/beardedparrott/orchicon/internal/api"
 	"github.com/beardedparrott/orchicon/internal/askorchicon"
 	"github.com/beardedparrott/orchicon/internal/auth"
@@ -81,6 +82,10 @@ type Server struct {
 	askServePool  *opencode.HostServePool
 	// claudeBridge is the claude adapter, held so plane shutdown can retire its Ask sessions.
 	claudeBridge *claude.Bridge
+	// antigravityBridge is the antigravity (agy) adapter. A STUB today (Start refuses with
+	// ErrNotImplemented); held here because the server wiring — registration, the ready adapter row
+	// and the runtime client — must already be correct when children 5/6 give it session behaviour.
+	antigravityBridge *antigravity.Bridge
 	// askService is the Ask Orchicon service, held so plane shutdown can close its per-conversation MCP
 	// clients.
 	askService *askorchicon.Service
@@ -564,6 +569,15 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	})
 	dispatcher.Register(adapter.KindClaude, claudeBridge)
 
+	// Antigravity (agy) bridge (kind "antigravity", provider "google"). The bridge is a STUB today:
+	// Start refuses with ErrNotImplemented. It is registered ANYWAY, and that is the point — an
+	// unregistered kind produces `no ready adapters of kind "antigravity"`, which is the opaque
+	// failure this platform has hit three times (opencode, orchicon, claude). A registered stub
+	// makes the kind discoverable and routable so children 5/6 fill in behaviour behind a boundary
+	// that already exists.
+	agyBridge := antigravity.New(log)
+	dispatcher.Register(adapter.KindAntigravity, agyBridge)
+
 	// Per-adapter enable/disable (AC 3): every kind named in ORCHICON_DISABLED_ADAPTER_KINDS is
 	// switched OFF for this plane.
 	for _, kind := range strings.Split(os.Getenv("ORCHICON_DISABLED_ADAPTER_KINDS"), ",") {
@@ -590,7 +604,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		blobs: blobs, authH: authHandler, webhookD: webhookDisp, logWriter: logWriter,
 		hostServe: hostServe, askHostServe: askServe,
 		hostServePool: hostServePool, askServePool: askServePool,
-		claudeBridge: claudeBridge}
+		claudeBridge: claudeBridge, antigravityBridge: agyBridge}
 	if deps.AskService != nil {
 		// The Ask service holds the per-conversation MCP clients, so it is the
 		// object plane shutdown must reach; keep the reference.
@@ -640,6 +654,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			// The claude adapter routes its streaming session into the run's
 			// container over the daemon's duplex stdio transport.
 			claudeBridge.SetRuntimeClient(rtClient)
+			// The antigravity adapter will route its session into the run's container the same way;
+			// wired now so the stub's replacement inherits a correct server.
+			agyBridge.SetRuntimeClient(rtClient)
 			// Execution liveness: fail executions orphaned by a plane restart or a lost runtime container so
 			// recovery re-dispatches.
 			s.reaper = scheduler.NewExecutionReaper(pool, activeProbe(dispatcher, pool, log), taskRec.FailLostExecution, log)
@@ -1176,6 +1193,7 @@ func devAdapterSeeds() []devAdapterSeed {
 		{"adp_opencode_dev", adapter.KindOpencode, opencode.BuildCapabilitiesJSON},
 		{"adp_orchicon_dev", adapter.KindOrchicon, orchicon.BuildCapabilitiesJSON},
 		{"adp_claude_dev", adapter.KindClaude, claude.BuildCapabilitiesJSON},
+		{"adp_antigravity_dev", adapter.KindAntigravity, antigravity.BuildCapabilitiesJSON},
 	}
 }
 

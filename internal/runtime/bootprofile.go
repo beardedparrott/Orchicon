@@ -200,6 +200,25 @@ func classifyAdapter(home, kind string) (adapterClass, bool) {
 			runUnionAtServe: false,
 			note:            nativeNoServeNote,
 		}, true
+	case adapter.KindAntigravity:
+		return adapterClass{
+			installs: []adapterInstall{
+				// Google's documented default: the `agy` launcher in ~/.local/bin. A LAUNCHER FILE, not a
+				// directory, exactly like claude's ~/.local/bin/claude.
+				{probe: join(".local", "bin", "agy"),
+					fingerprint: []string{join(".local", "bin", "agy")}},
+				// agy's own state home. PRIVATE for the same reason ~/.claude is: the CLI writes it, but an
+				// operator's credential/session store must not become writable from a worker.
+				{probe: join(".gemini", "antigravity-cli"), dir: true, private: true,
+					fingerprint: []string{join(".gemini", "antigravity-cli")}},
+			},
+			// BOTH AXES NEGATIVE AND EXPLAINED — see antigravityNoServeNote. The bridge is a stub, so
+			// there is no resolving path to witness yet; children 5/6 flip this on with witnesses.
+			perSessionBundle: false,
+			runUnionAtServe:  false,
+			note:             antigravityNoServeNote,
+		}, true
+	}
 	return adapterClass{}, false
 }
 
