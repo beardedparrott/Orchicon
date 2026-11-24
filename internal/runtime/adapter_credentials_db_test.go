@@ -11,6 +11,27 @@ import (
 )
 
 // writeCredentialDB creates a minimal opencode 2.x credential store.
+// credDBPathFor resolves the store path for a test's OWN temp home, and REFUSES to hand back a path
+// that is not inside it.
+//
+// THE GUARD IS THE POINT. This file once called credDBPathFor(t, home) and got the AMBIENT store back
+// whenever its `home` candidate was not the most recently written one — so CREATE TABLE and, in the
+// "corrupt database" case, os.WriteFile("this is not a sqlite database") landed on the operator's live
+// 39 MB database. Every opencode serve has failed since with "database disk image is malformed".
+// A test that writes to a path may not trust a resolver that consults the environment.
+func credDBPathFor(t *testing.T, home string) string {
+	t.Helper()
+	p := openCodeDBPathForTest(home)
+	if !storePathUnderStateRoot(p, home) {
+		t.Fatalf("refusing to write to %q: it is not inside this test's home %q. A resolver that consults "+
+			"the ambient environment must never be used for a path a test will write to.", p, home)
+	}
+	return p
+}
+
+// openCodeDBPathForTest resolves the store under EXACTLY `home`, ignoring XDG_DATA_HOME and friends.
+func openCodeDBPathForTest(home string) string { return openCodeDBPathForHome(home) }
+
 func writeCredentialDB(t *testing.T, path string, rows map[string]string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -37,7 +58,7 @@ func writeCredentialDB(t *testing.T, path string, rows map[string]string) {
 func TestCredentialDBOverridesStaleAuthJSON(t *testing.T) {
 	home := t.TempDir()
 	writeAuthStore(t, home, `{"ollama-cloud":{"type":"api","key":"STALE-FROM-AUTH-JSON"}}`)
-	writeCredentialDB(t, openCodeDBPath(home), map[string]string{"ollama-cloud": "CURRENT-FROM-DB"})
+	writeCredentialDB(t, credDBPathFor(t, home), map[string]string{"ollama-cloud": "CURRENT-FROM-DB"})
 
 	env, _ := adapterCredentialEnv(home, "opencode")
 	if !contains(env, "OLLAMA_API_KEY=CURRENT-FROM-DB") {
@@ -65,7 +86,7 @@ func TestCredentialFallbacksAreBestEffort(t *testing.T) {
 	t.Run("2.x: database present but no credential table", func(t *testing.T) {
 		home := t.TempDir()
 		writeAuthStore(t, home, `{"deepseek":{"type":"api","key":"FROM-AUTH-JSON"}}`)
-		p := openCodeDBPath(home)
+		p := credDBPathFor(t, home)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -86,7 +107,7 @@ func TestCredentialFallbacksAreBestEffort(t *testing.T) {
 	t.Run("corrupt database", func(t *testing.T) {
 		home := t.TempDir()
 		writeAuthStore(t, home, `{"deepseek":{"type":"api","key":"FROM-AUTH-JSON"}}`)
-		p := openCodeDBPath(home)
+		p := credDBPathFor(t, home)
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -104,7 +125,7 @@ func TestCredentialFallbacksAreBestEffort(t *testing.T) {
 // with no `key`, and a row whose value is not JSON at all.
 func TestCredentialDBIgnoresUnusableRows(t *testing.T) {
 	home := t.TempDir()
-	p := openCodeDBPath(home)
+	p := credDBPathFor(t, home)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)
 	}
