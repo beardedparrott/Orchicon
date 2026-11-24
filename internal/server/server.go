@@ -1254,35 +1254,73 @@ func seedDevAdapterKind(ctx context.Context, pool *db.Pool, log *slog.Logger, ad
 }
 
 // activeProbe returns the execution-reaper liveness probe for the dispatcher.
+// adapterIDOf renders the execution's adapter id for a log field.
+func adapterIDOf(exec db.ExecutionRow) string {
+	if exec.AdapterID == nil {
+		return ""
+	}
+	return *exec.AdapterID
+}
+
 func activeProbe(dispatcher *scheduler.Dispatcher, pool *db.Pool, log *slog.Logger) func(exec db.ExecutionRow) bool {
 	return func(exec db.ExecutionRow) bool {
 		ctx := context.Background()
 		tx, err := pool.BeginTenantTx(ctx, "tnt_dev")
 		if err != nil {
-			log.Warn("liveness probe: begin tx failed", "execution", exec.ID, "error", err)
-			return false
+			log.Warn("liveness probe: begin tx failed — verdict UNKNOWN, not dead", "execution", exec.ID, "error", err)
+			// UNKNOWN IS NOT DEAD. Only a bridge that positively says "I do not have this execution" may
+			// authorize a kill; a database hiccup or an unregistered bridge must not.
+			return true
 		}
 		defer tx.Rollback(ctx)
-		ver, err := db.GetLatestWorkerVersion(ctx, tx.Tx, "tnt_dev", exec.WorkerID, true)
-		if err != nil {
-			log.Warn("liveness probe: worker version lookup failed", "execution", exec.ID, "error", err)
-			return false
+		// PROBE THE BRIDGE THE EXECUTION ACTUALLY RAN ON — NOT THE ONE ITS WORKER IS PINNED TO NOW.
+		//
+		// This used to resolve the kind from the worker's CURRENT published model_ref and probe that
+		// bridge. The two can differ, and when they do the probe asks the WRONG bridge whether an
+		// execution is alive: that bridge has never heard of it, answers "not active", and the reaper
+		// kills a run that is working perfectly.
+		//
+		// MEASURED (prod run 01M87T2BG0TV1XZ6HSEYEC9KCB, 22:18): execution 01M87T75ZX ran on
+		// adp_orchicon_dev and the worker's model_ref was opencode/... , so the probe asked the OPENCODE
+		// bridge, which returned false. The reaper failed the execution as "execution lost: control plane
+		// restarted or runtime container gone" — 217 seconds in, while that session went on to log
+		// StopLength continuation turns at 22:32 and 22:38. It was alive the whole time.
+		//
+		// The execution row records the adapter it was dispatched against. That is the authority.
+		kind := ""
+		if exec.AdapterID != nil && *exec.AdapterID != "" {
+			if arow, aerr := db.GetAdapter(ctx, tx.Tx, "tnt_dev", *exec.AdapterID); aerr == nil && arow.Kind != "" {
+				kind = arow.Kind
+			} else if aerr != nil {
+				// A missing adapter row is not automatically "not alive": fall through to the worker's
+				// pinned kind rather than reaping on a bookkeeping gap.
+				log.Warn("liveness probe: execution adapter row unavailable — falling back to the worker's kind",
+					"execution", exec.ID, "adapter_id", *exec.AdapterID, "error", aerr)
+			}
 		}
-		kind := adapter.AdapterKind(ver.ModelRef)
 		if kind == "" {
-			// Same fallback the reconciler applies at dispatch time: an empty/malformed model_ref dispatches
-			// under the legacy default kind.
-			kind = adapter.DefaultAdapterKind
+			ver, err := db.GetLatestWorkerVersion(ctx, tx.Tx, "tnt_dev", exec.WorkerID, true)
+			if err != nil {
+				log.Warn("liveness probe: worker version lookup failed", "execution", exec.ID, "error", err)
+				// NOT ALIVE IS NOT THE SAME AS UNKNOWN. A bookkeeping failure must not authorize a kill.
+				return true
+			}
+			kind = adapter.AdapterKind(ver.ModelRef)
+			if kind == "" {
+				kind = adapter.DefaultAdapterKind
+			}
 		}
 		bridge, err := dispatcher.Resolve(kind)
 		if err != nil {
-			log.Warn("liveness probe: no bridge for kind", "execution", exec.ID, "kind", kind, "error", err)
-			return false
+			log.Warn("liveness probe: no bridge for kind — verdict UNKNOWN, not dead",
+				"execution", exec.ID, "kind", kind, "adapter_id", adapterIDOf(exec), "error", err)
+			return true
 		}
 		rep, ok := bridge.(scheduler.LivenessReporter)
 		if !ok {
-			log.Warn("liveness probe: bridge does not support liveness", "execution", exec.ID, "kind", kind)
-			return false
+			log.Warn("liveness probe: bridge does not support liveness — verdict UNKNOWN, not dead",
+				"execution", exec.ID, "kind", kind)
+			return true
 		}
 		return rep.IsExecutionActive(exec.ID)
 	}
