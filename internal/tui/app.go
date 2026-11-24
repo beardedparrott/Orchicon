@@ -3234,6 +3234,53 @@ func (s *chatStore) askIDForKey(convID, key string) string {
 	return ""
 }
 
+// askExistsByID reports whether the conversation currently holds a RECORDED clarifying-question card
+// for askID. It exists so the reply verdict can tell a question card from a permission card WITHOUT
+// settling anything: an errored reply must leave the card answerable.
+func (s *chatStore) askExistsByID(convID, askID string) bool {
+	if s == nil || askID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items[convID] {
+		it := &s.items[convID][i]
+		if it.Kind == chat.KindAsk && it.Ask != nil && it.Ask.ID == askID {
+			return true
+		}
+	}
+	return false
+}
+
+// settleAskByID marks the RECORDED card that asked askID as ANSWERED, in place, and reports whether
+// it found one.
+//
+// AN ANSWERED CARD'S STATE IS DERIVED FROM THE TRANSCRIPT (ParsedAsk.Answered), and the transcript is
+// only re-read on open and by the streaming poll. A recorded ask's turn is OVER by the time the
+// operator answers, so nothing re-read it and the card stayed drawn open until the operator left the
+// conversation and came back — the reported symptom. The reply verdict is the authority on what was
+// answered, so the card is settled from it and the transcript poll only has to catch up.
+func (s *chatStore) settleAskByID(convID, askID, answer string) bool {
+	if s == nil || askID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.items[convID] {
+		it := &s.items[convID][i]
+		if it.Kind != chat.KindAsk || it.Ask == nil || it.Ask.ID != askID {
+			continue
+		}
+		it.Ask.Answered = true
+		it.Ask.AnswerText = answer
+		// An open free-text row and a cursor belong to a question that is no longer open.
+		it.Ask.Drafting = false
+		it.Ask.Draft = ""
+		return true
+	}
+	return false
+}
+
 // AskReply answers a RECORDED card through the reply RPC — the same call the GUI makes
 // (askOrchiconClient.replyPermissionAsk).
 func (m *App) AskReply(askID, answer string) tea.Cmd {
