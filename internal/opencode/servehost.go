@@ -269,6 +269,22 @@ func (h *HostServe) EnsureStarted(ctx context.Context) error {
 		h.mu.Unlock()
 		return err
 	}
+	// PRE-FLIGHT, BEFORE THE PROCESS EXISTS.
+	//
+	// The readiness-timeout repair below is a fallback for a surprise; it is not the primary defence, and
+	// it is too late to be a good one: the serve has already been spawned, burned the 90s readiness window,
+	// and — because the pool rebuilds a serve per MCP set — a failure can be paid once per serve. Probing
+	// the store HERE costs one 100-byte read and starts nothing when the store is unusable.
+	//
+	// It is not a staleness check, deliberately. A store being OLD says nothing about whether it OPENS
+	// (a quiet plane legitimately has an old store), and rotating on age alone would discard sessions that
+	// are perfectly readable. The predicate is the same one SQLite applies: can it open the file.
+	if repaired, rerr := h.repairUnopenableStore(); rerr != nil {
+		h.log.Warn("host serve: pre-flight store probe failed — continuing", "error", rerr, "data_dir", h.dataDir)
+	} else if repaired {
+		h.log.Warn("host serve: session store was UNOPENABLE — rotated aside before starting",
+			"data_dir", h.dataDir)
+	}
 	if err := h.Start(ctx); err != nil {
 		h.markStartFailed(err)
 		h.log.Warn("host opencode serve lazy start failed", "error", err)
