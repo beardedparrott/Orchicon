@@ -115,6 +115,9 @@ const (
 
 	// nativeNoServeNote: the native bridge execs one-shot, no serve.
 	nativeNoServeNote = "the native (orchicon) bridge execs sessions ONE-SHOT inside the run container through the supervisor's exec path with no opencode serve (bootprofile.go nativeAdapterKind), so there is no once-per-run serve to receive the run-level union. The native bridge receives the per-session worker scope (project-owned ∪ own) via ResolveExecutionMCP (internal/orchicon/mcptools.go), which it starts its MCP manager from."
+
+	// antigravityNoServeNote: agy has no in-container serve and the bridge is a stub.
+	antigravityNoServeNote = "antigravity (agy) has NO in-container HTTP serve — its CLI is a stdio process and nothing about this kind dials a port, so there is no once-per-run serve to receive the run-level union. It also consumes NO MCP definitions yet: the bridge (internal/antigravity/bridge.go) is a deliberate STUB whose Start returns ErrNotImplemented, so there is no resolving path to witness. Both axes are negative BY CONSTRUCTION rather than by omission — children 5/6 build the session behaviour and must then flip perSessionBundle on, adding the witnesses that prove it."
 )
 
 // adapterClass is the ONE classification of an adapter kind.
@@ -196,6 +199,24 @@ func classifyAdapter(home, kind string) (adapterClass, bool) {
 			},
 			runUnionAtServe: false,
 			note:            nativeNoServeNote,
+		}, true
+	case adapter.KindAntigravity:
+		return adapterClass{
+			installs: []adapterInstall{
+				// Google's documented default: the `agy` launcher in ~/.local/bin. A LAUNCHER FILE, not a
+				// directory, exactly like claude's ~/.local/bin/claude.
+				{probe: join(".local", "bin", "agy"),
+					fingerprint: []string{join(".local", "bin", "agy")}},
+				// agy's own state home. PRIVATE for the same reason ~/.claude is: the CLI writes it, but an
+				// operator's credential/session store must not become writable from a worker.
+				{probe: join(".gemini", "antigravity-cli"), dir: true, private: true,
+					fingerprint: []string{join(".gemini", "antigravity-cli")}},
+			},
+			// BOTH AXES NEGATIVE AND EXPLAINED — see antigravityNoServeNote. The bridge is a stub, so
+			// there is no resolving path to witness yet; children 5/6 flip this on with witnesses.
+			perSessionBundle: false,
+			runUnionAtServe:  false,
+			note:             antigravityNoServeNote,
 		}, true
 	}
 	return adapterClass{}, false
@@ -376,6 +397,8 @@ func adapterBinDirs(home, kind string) []string {
 		dirs = append(dirs, filepath.Join(home, ".opencode", "bin"))
 	case adapter.KindClaude:
 		dirs = append(dirs, filepath.Join(home, ".local", "bin"))
+	case adapter.KindAntigravity:
+		dirs = append(dirs, filepath.Join(home, ".local", "bin"))
 	}
 	return dirs
 }
@@ -395,7 +418,7 @@ func adapterPathPrefixFor(home, hostGOOS string, kinds ...string) []string {
 	var out []string
 	for _, kind := range kinds {
 		switch normalizedKind(kind) {
-		case adapter.KindClaude, adapter.DefaultAdapterKind:
+		case adapter.KindClaude, adapter.KindAntigravity, adapter.DefaultAdapterKind:
 			// THE HOST'S CLI IS WHAT THE CONTAINER RUNS, so its bin dir must be on the PATH that precedes
 			// /usr/local/bin — where an image-installed CLI lives.
 			if ok, _ := adapter.PreferHostAdapterInContainer(hostGOOS, adapter.ResolveBinary(hostGOOS, home, kind, os.Getenv)); !ok {
@@ -476,6 +499,7 @@ func containerAdapterProblems(resolveBin func(kind string) (string, error),
 	}
 	return problems
 }
+
 // CheckAdaptersForContainer reports, for the run's demanded adapter kinds, any adapter that CANNOT
 // execute inside a runtime container — and says why for each.
 func CheckAdaptersForContainer(home string, kinds ...string) []string {

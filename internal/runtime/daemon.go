@@ -802,6 +802,13 @@ func (d *Daemon) createContainerInner(name string, req CreateRequest) (*CreateRe
 	if demandsKind(req, "claude") && !d.claudeAuthAvailable(req) {
 		return nil, fmt.Errorf(adapter.ClaudeAuthRequiredMessage)
 	}
+	// THE SAME FAST PREFLIGHT for antigravity, and STRICTER IN CONTAINER MODE: agy's personal OAuth
+	// credential lives in the HOST OS KEYRING, which cannot be bind-mounted, so a signed-in host is
+	// not enough for a container session — it needs GEMINI_API_KEY. Refused here, ACTIONABLY, rather
+	// than hanging on. (Local/in-process mode has its own host keyring and is not gated here.)
+	if demandsKind(req, adapter.KindAntigravity) && !d.antigravityAuthAvailable(req) {
+		return nil, errors.New(adapter.AntigravityAuthRequiredMessage)
+	}
 	d.createMu.Lock()
 	defer d.createMu.Unlock()
 	// A stopped/crashed container with this name blocks recreation ("name already in use").
@@ -1245,6 +1252,25 @@ func (d *Daemon) claudeAuthAvailable(req CreateRequest) bool {
 	}
 	_, ok := req.Secrets["ANTHROPIC_API_KEY"]
 	return ok
+}
+
+// antigravityAuthAvailable reports whether a CONTAINER can reach an Antigravity credential.
+//
+// IT NEVER READS A KEYRING, AND THAT IS THE WHOLE POINT. agy's personal OAuth credential is stored
+// in the host OS keyring (Secret Service / macOS Keychain / Windows Credential Manager), which is a
+// live IPC channel to the host session — it cannot be bind-mounted into a runtime container, and
+// there is no file under $HOME to mount instead. A container session therefore needs a
+// GEMINI_API_KEY, supplied to the plane's environment or to this run's secrets. Probing for a
+// keyring would produce the exact failure this gate exists to prevent: a create that looks healthy
+// and then hangs or dies opaquely inside the container.
+func (d *Daemon) antigravityAuthAvailable(req CreateRequest) bool {
+	if strings.TrimSpace(os.Getenv("GEMINI_API_KEY")) != "" {
+		return true
+	}
+	if v, ok := req.Secrets["GEMINI_API_KEY"]; ok && strings.TrimSpace(v) != "" {
+		return true
+	}
+	return false
 }
 
 // hostGHToken resolves the operator's effective GitHub CLI token (`gh auth token`), which may live

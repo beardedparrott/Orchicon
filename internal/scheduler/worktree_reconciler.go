@@ -1996,7 +1996,7 @@ func (r *WorktreeReconciler) addWorktreeOrFreeStale(ctx context.Context, project
 	if err == nil {
 		return nil
 	}
-	if !strings.Contains(err.Error(), "is already used by worktree") {
+	if !branchClaimRefusal(err) {
 		return err
 	}
 	r.log.Warn("worktree: the branch is claimed by a stale registration — pruning and retrying once",
@@ -2009,6 +2009,24 @@ func (r *WorktreeReconciler) addWorktreeOrFreeStale(ctx context.Context, project
 		return rerr
 	}
 	return nil
+}
+
+// branchClaimRefusal reports whether a `git worktree add <path> -b <branch>` was refused because the
+// BRANCH IS ALREADY CHECKED OUT SOMEWHERE, which is the one refusal the stale-registration recovery
+// can act on.
+//
+// TWO WORDINGS, ONE CONDITION, and matching only one of them is a silent regression: git changed this
+// message at 2.39 ("is already used by worktree" → "is already checked out at"), so a single literal
+// made the recovery dead code on every newer git while the refusal itself kept happening. The symptom
+// is a branch that can never be reclaimed and a worktree that never provisions, with no error naming
+// the reason. Both spellings are matched for exactly that reason.
+func branchClaimRefusal(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "is already used by worktree") ||
+		strings.Contains(msg, "is already checked out at")
 }
 
 // isAlreadyTrackedErr reports whether a worktree-add failure is the
