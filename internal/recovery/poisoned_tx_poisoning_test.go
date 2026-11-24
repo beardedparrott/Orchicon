@@ -151,3 +151,51 @@ func errFromString(s string) error { return strErr(s) }
 
 var _ = json.Marshal
 var _ = domain.RecoveryBlocked
+
+// ---------------------------------------------------------------------------
+// THE RETRY BUDGET MUST BE TUNABLE, because a chain's recovery HISTORY is permanent.
+//
+// The budget counts TERMINAL recoveries across the whole ancestor chain. Once a chain's count reaches
+// it, every new recovery is born at L3 — the ceiling — so the item cannot recover at all until either
+// the budget is raised or its history is cleared. Task 01M84X6FD9X2N5FQ534GK91THR sat at 8 terminal
+// recoveries against a budget of 5 and was permanently unrecoverable for a reason that had nothing to
+// do with the code being run. A const with no override left the operator no lever but data deletion.
+// ---------------------------------------------------------------------------
+
+func TestTheRetryBudgetIsOperatorTunable(t *testing.T) {
+	t.Setenv("ORCHICON_RECOVERY_MAX_RETRIES", "")
+	if got := recoveryMaxRetries(); got != defaultMaxRetries {
+		t.Fatalf("recoveryMaxRetries() with no override = %d, want the default %d", got, defaultMaxRetries)
+	}
+	t.Setenv("ORCHICON_RECOVERY_MAX_RETRIES", "12")
+	if got := recoveryMaxRetries(); got != 12 {
+		t.Fatalf("recoveryMaxRetries() = %d with the override set to 12 — an operator cannot raise the "+
+			"ceiling without a rebuild, which is exactly what this exists to allow", got)
+	}
+	// A garbage or non-positive value falls back rather than disabling recovery entirely.
+	for _, bad := range []string{"nonsense", "0", "-3", "  "} {
+		t.Setenv("ORCHICON_RECOVERY_MAX_RETRIES", bad)
+		if got := recoveryMaxRetries(); got != defaultMaxRetries {
+			t.Errorf("recoveryMaxRetries() = %d for %q, want the default %d — a bad value must not make "+
+				"the budget zero (which would send every recovery straight to L3)", got, bad, defaultMaxRetries)
+		}
+	}
+}
+
+// AND THE BUDGET IS ACTUALLY CONSULTED BY THE TRIGGER. A tunable that nothing reads is the dead-knob
+// trap this repo already documents.
+func TestTheTriggerUsesTheTunableBudget(t *testing.T) {
+	raw, err := os.ReadFile("engine.go")
+	if err != nil {
+		t.Fatalf("read engine.go: %v", err)
+	}
+	src := string(raw)
+	if !strings.Contains(src, "maxRetries := recoveryMaxRetries()") {
+		t.Error("the trigger still reads the bare const — ORCHICON_RECOVERY_MAX_RETRIES would parse and " +
+			"do nothing")
+	}
+	if !strings.Contains(src, "MaxRetries:         recoveryMaxRetries(),") {
+		t.Error("the recovery row still records the const, so the operator cannot see the budget that " +
+			"was actually applied")
+	}
+}

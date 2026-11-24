@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,25 @@ const (
 	// Default retry budget: max 5 recovery attempts for the same task chain.
 	defaultMaxRetries = 5
 )
+
+// recoveryMaxRetries is the retry budget for ONE task chain, overridable with
+// ORCHICON_RECOVERY_MAX_RETRIES (the same shape as ORCHICON_RECOVERING_STALL_TIMEOUT, so an operator
+// tunes it without a rebuild).
+//
+// WHY AN OPERATOR NEEDS THIS LEVER. The budget counts TERMINAL recoveries across the whole ancestor
+// chain, and a chain's history is permanent. Once the count reaches the budget every new recovery is
+// created at L3 — the ladder's ceiling — so an item whose history is over budget cannot recover at all
+// until the budget is raised or its recovery rows are cleared. Task 01M84X6FD9X2N5FQ534GK91THR reached
+// 8 terminal recoveries against a budget of 5 and was permanently unrecoverable, for a code defect that
+// had nothing to do with its own history.
+func recoveryMaxRetries() int {
+	if v := strings.TrimSpace(os.Getenv("ORCHICON_RECOVERY_MAX_RETRIES")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultMaxRetries
+}
 
 // strategyForWorkItem maps a work item's kind to the recovery strategy that should run when a
 // worker fails on a task it is associated with.
@@ -356,7 +376,7 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 	}
 
 	// Bounded retry: count how many previous recovery attempts exist across this task's ancestor chain.
-	maxRetries := defaultMaxRetries
+	maxRetries := recoveryMaxRetries()
 	retryCount, err := countTaskChainRecoveries(ctx, ttx.Tx, tenantID, taskID)
 	if err != nil {
 		e.log.Warn("recovery trigger: count retries", "task", taskID, "error", err)
@@ -395,7 +415,7 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		ResumptionPath:     resumptionPath,
 		BudgetTokensLimit:  budgetTokensLimit,
 		BudgetCostLimitUSD: budgetCostLimit,
-		MaxRetries:         defaultMaxRetries,
+		MaxRetries:         recoveryMaxRetries(),
 		TriggeredAt:        now,
 	}
 	created, err := db.CreateRecoveryExecution(ctx, ttx.Tx, row)
