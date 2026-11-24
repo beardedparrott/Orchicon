@@ -18,24 +18,25 @@ import (
 )
 
 type opts struct {
-	baseURL      string
-	token        string
-	refreshToken string
-	insecureTLS  bool
-	projectID    string
-	projectDir   string
-	runtimeImage string
-	localOnly    bool
-	cleanup      bool
-	launch       bool
-	launchOnly   bool
-	cleanupOnly  bool
-	out          string
-	askTimeout   time.Duration
-	taskTimeout  time.Duration
-	orchiconRef  string
-	claudeRef    string
-	opencodeRef  string
+	baseURL        string
+	token          string
+	refreshToken   string
+	insecureTLS    bool
+	projectID      string
+	projectDir     string
+	runtimeImage   string
+	localOnly      bool
+	cleanup        bool
+	launch         bool
+	launchOnly     bool
+	cleanupOnly    bool
+	out            string
+	askTimeout     time.Duration
+	taskTimeout    time.Duration
+	orchiconRef    string
+	claudeRef      string
+	opencodeRef    string
+	antigravityRef string
 }
 
 type adapter struct{ kind, ref string }
@@ -91,6 +92,7 @@ func (c opts) adapters() []adapter {
 	for _, a := range []adapter{
 		{kind: "orchicon", ref: c.orchiconRef},
 		{kind: "claude", ref: c.claudeRef},
+		{kind: "antigravity", ref: c.antigravityRef},
 		{kind: "opencode", ref: c.opencodeRef},
 	} {
 		if strings.TrimSpace(a.ref) != "" {

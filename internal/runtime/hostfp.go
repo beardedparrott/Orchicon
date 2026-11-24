@@ -88,7 +88,7 @@ func adapterFingerprintRoots(home string) []string {
 	}
 	seen := make(map[string]struct{})
 	var out []string
-	for _, kind := range []string{adapter.DefaultAdapterKind, adapter.KindClaude} {
+	for _, kind := range []string{adapter.DefaultAdapterKind, adapter.KindClaude, adapter.KindAntigravity} {
 		installs, declared := adapterInstalls(home, kind)
 		if !declared {
 			continue

@@ -55,7 +55,9 @@ func BuiltinAdapterKinds() map[string]struct{} {
 
 // CatalogSourcedAdapterKinds returns the adapter kinds whose MODEL tier resolves from the
 // providers-sourcing path (the vendored catalog ⊕ probe ⊕ manual view served.
-func CatalogSourcedAdapterKinds() []string { return []string{KindOrchicon, KindClaude, KindAntigravity} }
+func CatalogSourcedAdapterKinds() []string {
+	return []string{KindOrchicon, KindClaude, KindAntigravity}
+}
 
 // ProviderKindExtender is the optional seam for registries that can be extended with provider ids
 // per adapter kind without mutating the shared instance.
