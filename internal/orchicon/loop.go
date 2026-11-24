@@ -201,11 +201,14 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 	for {
 		select {
 		case <-ctx.Done():
-			// Cancellation (or the wall-clock deadline): mark cancelled, leave resumable, no new provider call.
+			// Cancellation — OR the wall-clock deadline — leaves the run resumable and makes no further
+			// provider call. THE TWO ARE NOT THE SAME REASON and must not share a label: a deadline that
+			// reports "cancelled" is indistinguishable from a human stopping the run, which is how a 3600s
+			// gate looked like a mysterious cancellation three runs in a row.
 			s.recordUndeliveredNudges()
 			_ = s.markState(ctx, "cancelled")
 			s.markNudgeFinished()
-			s.fireTerminalOnce(callbacks, s.id, false, "cancelled")
+			s.fireTerminalOnce(callbacks, s.id, false, contextEndReason(ctx))
 			s.closeDoneCh()
 			return nil
 		case <-s.stallCh:
@@ -1163,3 +1166,14 @@ var (
 	_ = errors.Is
 	_ = slog.LevelInfo
 )
+
+// contextEndReason names WHY the session context ended. A deadline and a cancellation both land on
+// ctx.Done(), but they mean opposite things to the operator reading the execution: one is "the
+// platform ran out of the time it allowed you", the other is "somebody stopped this". Reporting the
+// deadline as "cancelled" hid a wall-clock gate that was killing runs mid-deliverable.
+func contextEndReason(ctx context.Context) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "wall_clock_timeout"
+	}
+	return "cancelled"
+}
