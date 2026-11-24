@@ -207,6 +207,12 @@ func classifyAdapter(home, kind string) (adapterClass, bool) {
 				// directory, exactly like claude's ~/.local/bin/claude.
 				{probe: join(".local", "bin", "agy"),
 					fingerprint: []string{join(".local", "bin", "agy")}},
+				// AND THE SYSTEM INSTALL. Google's launcher lands in ~/.local/bin on a user install and in
+				// /usr/bin on a system one — measured on the reference host, where `agy` is /usr/bin/agy and
+				// ~/.local/bin/agy does not exist. Declaring only the home path made the adapter
+				// "unresolvable, not mountable" and it never worked in a runtime container. Only the
+				// DECLARED path is mounted, so naming a system directory here mounts nothing but agy itself.
+				{probe: "/usr/bin/agy", fingerprint: []string{"/usr/bin/agy"}},
 				// agy's own state home. PRIVATE for the same reason ~/.claude is: the CLI writes it, but an
 				// operator's credential/session store must not become writable from a worker.
 				{probe: join(".gemini", "antigravity-cli"), dir: true, private: true,
@@ -289,6 +295,16 @@ func adapterHostMounts(home string, kinds ...string) []string {
 			continue
 		}
 		dir := filepath.Dir(bin)
+		// NEVER MOUNT A SYSTEM DIRECTORY BY THE PARENT-DIRECTORY RULE.
+		//
+		// This pass falls back to mounting whatever holds the resolved binary, which for a binary under
+		// $HOME is the right grain. For one outside it — /usr/bin, /usr/local/bin — it would mount the
+		// entire system bin directory read-only into a worker's container: hundreds of unrelated tools,
+		// and a much wider surface than the adapter needs. A system install is declared explicitly in
+		// classifyAdapter (see agy and claude), and that declaration mounts the BINARY.
+		if !pathWithin(dir, home) {
+			continue
+		}
 		// SKIP WHEN THE DECLARED TABLE ALREADY MOUNTS IT.
 		if alreadyDeclaredMounts(bin, home, kind) {
 			continue
@@ -312,7 +328,7 @@ func adapterHostMounts(home string, kinds ...string) []string {
 			if src == "" {
 				src = in.probe
 			}
-			st, err := os.Stat(in.probe)
+			st, err := os.Stat(in.probe) // follows symlinks
 			if err != nil {
 				continue
 			}
@@ -329,9 +345,38 @@ func adapterHostMounts(home string, kinds ...string) []string {
 				mode = ":rw"
 			}
 			args = append(args, "-v", src+":"+src+mode)
+			// A SYMLINKED ADAPTER NEEDS ITS TARGET TOO.
+			//
+			// `st, err := os.Stat` above FOLLOWS the link, but the mount is made at the LINK'S path — and
+			// a bind mount of a symlink does not carry what it points at. `claude` is exactly that shape:
+			//   ~/.local/bin/claude -> ~/.local/share/claude/versions/2.1.319
+			// so the container received a link into a directory that was never mounted, and running
+			// `claude` failed with "not found" — the adapter was present on the host, declared in the
+			// install table, and unusable in every runtime container.
+			//
+			// Mounting the resolved target at its own absolute path makes the existing link work. It is
+			// mounted as the resolved directory, so a version bump needs no new declaration here.
+			if real, rerr := filepath.EvalSymlinks(in.probe); rerr == nil && real != in.probe {
+				if _, serr := os.Stat(real); serr == nil {
+					args = append(args, "-v", real+":"+real+mode)
+				}
+			}
 		}
 	}
 	return args
+}
+
+// pathWithin reports whether p is home itself or a descendant of it.
+func pathWithin(p, home string) bool {
+	if home == "" {
+		return false
+	}
+	cp, ch := filepath.Clean(p), filepath.Clean(home)
+	if cp == ch {
+		return true
+	}
+	rel, err := filepath.Rel(ch, cp)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // privateHome is one adapter install's PRIVATE, writable container directory: the path to give the

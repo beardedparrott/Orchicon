@@ -263,8 +263,14 @@ func claudeMountHome(t *testing.T) (home, launcher, versionedBinary string) {
 // not need them, but an operator who named a host binary still gets it).
 func TestAdapterHostMountsClaudeRW(t *testing.T) {
 	home, _, _ := claudeMountHome(t)
+	// THE SYMLINK'S TARGET IS IN THE LIST ON PURPOSE. `~/.local/bin/claude` is a link into
+	// ~/.local/share/claude/versions/<v>; a bind mount of a symlink does not carry what it points at, so
+	// mounting only the link gave the container a DANGLING entry and `claude` failed with "not found".
+	// The target is mounted at its own resolved path, which is also why a version bump needs no new
+	// declaration here.
 	want := []string{
 		"-v", filepath.Join(home, ".local", "bin", "claude") + ":" + filepath.Join(home, ".local", "bin", "claude") + ":ro",
+		"-v", filepath.Join(home, ".local", "share", "claude", "versions", "9.9.9") + ":" + filepath.Join(home, ".local", "share", "claude", "versions", "9.9.9") + ":ro",
 		"-v", filepath.Join(home, ".local", "share", "claude") + ":" + filepath.Join(home, ".local", "share", "claude") + ":ro",
 	}
 	if got := adapterHostMounts(home, "claude"); !reflect.DeepEqual(got, want) {
