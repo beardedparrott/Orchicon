@@ -243,6 +243,9 @@ def main(argv=None):
             "os": platform.system().lower(),
             "kernel": platform.release(),
             "arch": platform.machine(),
+            "auth_method": "oauth-personal",
+            "auth_note": "interactive OAuth token already present in the OS keyring; "
+                         "no model call is made by these probes",
             "recorded": time.strftime("%Y-%m-%d"),
             "recorder": "scripts/probe-agy-acp-offwire.py",
             "why": "the MCP handshake is off the ACP wire and the acp startup "
