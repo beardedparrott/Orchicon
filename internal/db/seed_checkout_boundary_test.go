@@ -34,6 +34,12 @@ func TestSafetyBlockStatesTheSharedCheckoutBoundary(t *testing.T) {
 			"the distinction matters — local runs must keep /tmp, installs and reads"},
 		{"never on `develop`",
 			"the branch half of the rule"},
+		{"When your run has a branch",
+			"the branch rule must be CONDITIONAL: it rides the prompt prefix into every run, including a " +
+				"git_strategy=none project that has no branch or worktree, where telling a worker to 'use " +
+				"the branch recorded for this run' is an instruction it cannot follow"},
+		{"nothing to commit to",
+			"a non-repo run must be told what to do instead, not left to reconcile the two"},
 	} {
 		if !strings.Contains(safetyBlock, want.fragment) {
 			t.Errorf("safetyBlock does not state %q — %s", want.fragment, want.why)
