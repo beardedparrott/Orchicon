@@ -670,6 +670,9 @@ def s_mcp_tool_call(rec, args):
     do_authenticate(rec, args.auth_method)
     server = {"name": "echo", "command": args.mcp_stdio.split()[0],
               "args": args.mcp_stdio.split()[1:]}
+    # The MCP handshake happens off the ACP wire (agy <-> MCP server), so also
+    # run this scenario with --agy-arg=--log-file=<path> and copy the relevant
+    # agy log lines into meta notes as corroboration.
     resp = do_new_session(rec, args.cwd, mcp_servers=[server])
     sid = session_id_of(resp)
     note(rec, "session/new result (mcp section): " + json.dumps(resp.get("result") or {})[:1200])
@@ -685,6 +688,27 @@ def s_mcp_tool_call(rec, args):
                 note(rec, "tool update: " + json.dumps(u)[:1200])
     note(rec, "session/update variants seen: " + json.dumps(sorted({k for k in kinds if k})))
     note(rec, "s2c client requests seen: " + json.dumps(sorted({m.get("method") for m in rec.server_requests})))
+    mcp_notes = [m for m in rec.notifications
+                 if ((m.get("params") or {}).get("update") or {}).get("sessionUpdate") == "tool_call"
+                 and "mcp" in json.dumps(m).lower()]
+    note(rec, "tool_call updates mentioning mcp: " + json.dumps(mcp_notes)[:1200])
+    log_notes = []
+    for arg in args.agy_arg:
+        if arg.startswith("--log-file=") or arg.startswith("--log-file"):
+            pass
+    for i, arg in enumerate(args.agy_arg):
+        if arg == "--log-file" and i + 1 < len(args.agy_arg):
+            log_notes.append(args.agy_arg[i + 1])
+        elif arg.startswith("--log-file="):
+            log_notes.append(arg.split("=", 1)[1])
+    for path in log_notes:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                kept = [ln.strip() for ln in fh
+                        if any(t in ln for t in ("MCP", "mcp", "tools/list", "Preloading"))]
+            note(rec, "agy log (%s) MCP lines: %s" % (path, json.dumps(kept[-25:])[:2500]))
+        except OSError as exc:
+            note(rec, "agy log unreadable: %s" % exc)
 
 
 @scenario("cancel_midturn")
