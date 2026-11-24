@@ -2,9 +2,11 @@ package opencode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/procwin"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
@@ -1540,6 +1543,63 @@ func (r *sessionRun) abortForLadder(d budgetDimension) {
 }
 
 // onStall is the progress monitor's stall callback.
+// checkpointWorktree commits whatever the worker already wrote, so a stall cannot destroy it.
+//
+// IT IS DELIBERATELY BEST-EFFORT AND SILENT ON FAILURE. A checkpoint that errors must not turn a stall
+// into a different, more confusing failure: the caller is already failing the execution and the reason
+// it reports must stay the stall. Every error is logged and swallowed.
+//
+// It commits on the EXECUTION'S OWN BRANCH, which the run already owns — no merge, no push, no PR. The
+// scheduler's integration path is untouched; this only makes the work durable on disk so a retry can
+// find it.
+func (r *sessionRun) checkpointWorktree(reason string) {
+	dir := executionDir(r.manifest)
+	if dir == "" || r.manifest.WorktreePath == "" {
+		// In place in the project dir, or no worktree at all: there is no isolated branch to commit to,
+		// and committing into the operator's checkout on a stall is not ours to do.
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	status, err := gitIn(ctx, dir, "status", "--porcelain")
+	if err != nil {
+		r.a.log.Warn("stall checkpoint: git status failed", "execution", r.execRow.ID, "error", err)
+		return
+	}
+	if strings.TrimSpace(status) == "" {
+		r.a.log.Info("stall checkpoint: nothing to commit", "execution", r.execRow.ID)
+		return
+	}
+	if _, err := gitIn(ctx, dir, "add", "-A"); err != nil {
+		r.a.log.Warn("stall checkpoint: git add failed", "execution", r.execRow.ID, "error", err)
+		return
+	}
+	msg := "checkpoint: work in progress preserved at stall (" + reason + ")"
+	if _, err := gitIn(ctx, dir, "-c", "user.name=Orchicon", "-c", "user.email=orchicon@localhost",
+		"commit", "--no-verify", "-m", msg); err != nil {
+		r.a.log.Warn("stall checkpoint: git commit failed", "execution", r.execRow.ID, "error", err)
+		return
+	}
+	r.a.log.Warn("stall checkpoint: committed the worker's in-progress work so it survives the stall",
+		"execution", r.execRow.ID, "reason", reason)
+}
+
+// gitIn runs one git command in dir and returns its trimmed stdout.
+func gitIn(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := procwin.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+			return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(ee.Stderr)))
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 func (r *sessionRun) onStall(reason string) {
 	fatal := isFatalStall(reason)
 	r.callbacks.OnStall(r.parentCtx, r.execRow.ID, reason, fatal)
@@ -1553,6 +1613,18 @@ func (r *sessionRun) onStall(reason string) {
 	}
 	if fatal {
 		r.a.log.Warn("fatal stall — aborting session", "execution", r.execRow.ID, "reason", reason)
+		// COMMIT WHAT THE WORKER ALREADY WROTE, BEFORE THE SESSION DIES.
+		//
+		// A stall is a LIVENESS judgement, not a verdict on the work. A run observed at 01:27 had
+		// 4,081,202 tokens spent and a complete test file already on disk — and it was thrown away,
+		// because a stalled session's edits stayed uncommitted in a worktree that the next dispatch
+		// overwrote. Orchicon's whole claim is that work is delivered regardless; discarding a finished
+		// artefact because the MODEL stopped talking is the opposite of that.
+		//
+		// The checkpoint is best-effort and never changes the outcome: the run still fails, and the
+		// failure still names the stall. What changes is that the next attempt (a recovery, a retry, or
+		// an operator) finds the work on the branch instead of an empty worktree.
+		r.checkpointWorktree(reason)
 		// Record the terminal reason FIRST so the true cause survives the `session.error: Aborted` echo
 		// that the serve emits when Abort lands below — finish() is first-arrival-wins.
 		r.finish(false, reason)
