@@ -54,7 +54,53 @@ type askAction struct {
 // askActionResolved reports whether the ask carries something to KEY a decision on: real target
 // path(s) or a command.
 func askActionResolved(a askAction) bool {
-	return len(realTargets(a.Targets)) > 0 || strings.TrimSpace(a.Command) != ""
+	return len(pathTargets(a)) > 0 || strings.TrimSpace(a.Command) != ""
+}
+
+// isWebTool reports whether a tool's consent subject is a URL or a search query rather than a
+// filesystem path.
+//
+// THE CLAUDE ADAPTER'S WEB TOOLS BELONG IN THIS LIST. `WebFetch`/`WebSearch` raise a consent card
+// whose Targets are the URL and the query (internal/claude askTargets) so the operator can see WHAT
+// they are approving. Those strings are NOT paths, and every path rule below would invent one from
+// them: `absAskTarget`/`decisionTargets` join a relative target onto the scope dir, so
+// `https://antigravity.google/docs` became `/p/project/https:/antigravity.google/docs`. That
+// fabricated path then prints as the card's grant directory, claims to be INSIDE the project, and
+// becomes the key a "never ask again in this directory" grant is stored under — a directory no
+// later fetch can ever match. A web tool's consent is not file consent, so it resolves to no path
+// at all and the card names no directory.
+func isWebTool(tool string) bool {
+	switch strings.ToLower(strings.TrimSpace(tool)) {
+	case "webfetch", "websearch", "web_fetch", "web_search":
+		return true
+	}
+	return false
+}
+
+// isNonPathTarget reports whether a single target is not a filesystem path at all — a URL, or a
+// scheme-relative spelling that only LOOKS absolute (`//host/path`). commandPaths already refuses
+// these for the same reason; this is the typed-target half of that rule.
+func isNonPathTarget(t string) bool {
+	s := strings.TrimSpace(t)
+	if s == "" {
+		return false
+	}
+	return strings.Contains(s, "://") || strings.HasPrefix(s, "//")
+}
+
+// pathTargets is a.Targets WITHOUT the targets that are not paths. a.Targets itself is untouched:
+// the card still SHOWS the URL or the query, it is only the path machinery that ignores it.
+func pathTargets(a askAction) []string {
+	if isWebTool(a.Tool) {
+		return nil
+	}
+	out := make([]string, 0, len(a.Targets))
+	for _, t := range a.Targets {
+		if !isNonPathTarget(t) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // isWildcardPattern reports whether a permission pattern is opencode's "everything" rule rather
@@ -374,7 +420,7 @@ func resolveAskKey(a askAction, dir string) string {
 	if abs == "" {
 		return ""
 	}
-	if isBashAsk(a.Tool) || len(a.Targets) == 0 {
+	if isBashAsk(a.Tool) || len(pathTargets(a)) == 0 {
 		return filepath.Clean(dir)
 	}
 	return grantScopeKey(abs)
@@ -413,10 +459,11 @@ func isFilesystemRoot(p string) bool {
 // absAskTarget returns the absolute path the policy is consulted on for the action's KEY target:
 // the first target for a file action (resolved against the scope dir when relative).
 func absAskTarget(a askAction, dir string) string {
-	if len(a.Targets) == 0 || isBashAsk(a.Tool) {
+	paths := pathTargets(a)
+	if len(paths) == 0 || isBashAsk(a.Tool) {
 		return filepath.Clean(dir)
 	}
-	t := filepath.Clean(a.Targets[0])
+	t := filepath.Clean(paths[0])
 	if !filepath.IsAbs(t) {
 		t = filepath.Join(filepath.Clean(dir), t)
 	}
@@ -739,12 +786,13 @@ func decisionTargets(a askAction, dir string) []decisionTarget {
 		}
 		return out
 	}
-	if len(a.Targets) == 0 {
+	paths := pathTargets(a)
+	if len(paths) == 0 {
 		d := filepath.Clean(dir)
 		return []decisionTarget{{abstarget: d, key: d}}
 	}
-	out := make([]decisionTarget, 0, len(a.Targets))
-	for _, t := range a.Targets {
+	out := make([]decisionTarget, 0, len(paths))
+	for _, t := range paths {
 		t = filepath.Clean(t)
 		if !filepath.IsAbs(t) {
 			t = filepath.Join(filepath.Clean(dir), t)
