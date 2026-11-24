@@ -144,6 +144,12 @@ type Session struct {
 	// execDir is the execution's working directory (manifest.WorktreePath when provisioned, else the
 	// project dir) — the observer-fallback root for the file-edit ledger hook (opencode executionDir.
 	execDir string
+	// worktreePath is the run's OWN worktree (manifest.WorktreePath), EMPTY when the run has none.
+	//
+	// The distinction matters on a failure: execDir falls back to the project dir, and checking out or
+	// committing into the operator's own checkout is never ours to do. Only a run that owns a branch
+	// may be checkpointed.
+	worktreePath string
 	// fileEdits is the diff-pipeline ledger hook, fired once per completed registry tool result in
 	// executeTools (the single funnel every native-loop provider shares).
 	fileEdits opencode.FileEditHookFunc
@@ -261,18 +267,20 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 	if execDir == "" {
 		execDir = projectDir
 	}
+	worktreePath := cfg.Manifest.WorktreePath
 	s := &Session{
-		id:         cfg.ExecRow.ID,
-		identity:   ident,
-		provider:   prov,
-		tools:      cfg.Tools,
-		dir:        filepath.Join(projectDir, ".orchicon", "sessions"),
-		log:        cfg.Log,
-		output:     &strings.Builder{},
-		projectDir: projectDir,
-		execDir:    execDir,
-		memStore:   cfg.MemoryStore,
-		startedAt:  time.Now(),
+		id:           cfg.ExecRow.ID,
+		identity:     ident,
+		provider:     prov,
+		tools:        cfg.Tools,
+		dir:          filepath.Join(projectDir, ".orchicon", "sessions"),
+		log:          cfg.Log,
+		output:       &strings.Builder{},
+		projectDir:   projectDir,
+		execDir:      execDir,
+		worktreePath: worktreePath,
+		memStore:     cfg.MemoryStore,
+		startedAt:    time.Now(),
 	}
 	s.mp = DefaultMemoryPolicy()
 	s.cp = DefaultCompactPolicy()

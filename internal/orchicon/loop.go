@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/checkpoint"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
 
@@ -208,12 +209,14 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			s.recordUndeliveredNudges()
 			_ = s.markState(ctx, "cancelled")
 			s.markNudgeFinished()
+			s.checkpointOnAbort(contextEndReason(ctx))
 			s.fireTerminalOnce(callbacks, s.id, false, contextEndReason(ctx))
 			s.closeDoneCh()
 			return nil
 		case <-s.stallCh:
 			// Fatal monitor stall (no_progress / liveness timeout): the monitor handler already fired the
 			// terminal OnResult and the reconciler's OnStall marked the execution unhealthy.
+			s.checkpointOnAbort("stalled")
 			_ = s.markState(ctx, "failed")
 			s.markNudgeFinished()
 			s.closeDoneCh()
@@ -1166,6 +1169,34 @@ var (
 	_ = errors.Is
 	_ = slog.LevelInfo
 )
+
+// checkpointOnAbort commits the worktree when a session ends WITHOUT a success verdict, so the work
+// survives. BEST-EFFORT AND NEVER FATAL: the caller is already failing the execution and the reason it
+// reports must stay the real cause, so every outcome here is logged and nothing is returned.
+//
+// A NO-OP when the run has no worktree of its own (a local, in-place run): committing into the
+// operator's checkout on a failure is not ours to do. The opencode adapter has done this on a stall
+// since #1015; this gives the native path the same durability instead of leaving the edits for the
+// worktree reconciler to `git stash` away.
+func (s *Session) checkpointOnAbort(reason string) {
+	if s == nil || s.worktreePath == "" {
+		return
+	}
+	res, err := checkpoint.CheckpointWorktree(context.Background(), s.worktreePath, s.projectDir, reason)
+	if err != nil {
+		s.log.Warn("checkpoint on abort: could not preserve the worktree",
+			"execution", s.id, "reason", reason, "worktree", s.worktreePath, "error", err)
+		return
+	}
+	switch {
+	case res.Committed:
+		s.log.Warn("checkpoint on abort: committed the worker's in-progress work so it survives",
+			"execution", s.id, "reason", reason)
+	case res.Skipped != "":
+		s.log.Info("checkpoint on abort: nothing to preserve",
+			"execution", s.id, "reason", reason, "why", res.Skipped)
+	}
+}
 
 // contextEndReason names WHY the session context ended. A deadline and a cancellation both land on
 // ctx.Done(), but they mean opposite things to the operator reading the execution: one is "the
