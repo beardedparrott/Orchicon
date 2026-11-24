@@ -11,8 +11,11 @@ package server
 // so a hand-written checklist was never going to hold; the check has to be driven by the catalog.
 
 import (
-	"os"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -70,44 +73,59 @@ func TestAdapterKindTotalityServerRegistration(t *testing.T) {
 	}
 }
 
-// registeredDispatcherKinds reads the server source and returns the set of kinds passed to
+// registeredDispatcherKinds parses the server source and returns the set of kinds passed to
 // dispatcher.Register as a first argument, resolving either a string literal or an adapter.Kind*
 // constant.
+//
+// IT PARSES THE AST RATHER THAN SCANNING FOR THE STRING, and that distinction is not pedantry: the
+// first version of this test matched `dispatcher.Register(` textually, so COMMENTING OUT the
+// antigravity registration left a `// ... dispatcher.Register(adapter.KindAntigravity, agyBridge)`
+// line behind and the test still passed. The check that was supposed to catch a missing enumeration
+// was satisfied by a COMMENT DESCRIBING the enumeration — the exact quiet vacuity this file exists to
+// prevent. Comments are not in the AST, so a commented-out call now fails.
 func registeredDispatcherKinds(t *testing.T, path string) map[string]bool {
 	t.Helper()
-	body, err := os.ReadFile(path)
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, 0)
 	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
+		t.Fatalf("parse %s: %v", path, err)
 	}
 	out := map[string]bool{}
-	const needle = "dispatcher.Register("
-	rest := string(body)
-	for {
-		i := strings.Index(rest, needle)
-		if i < 0 {
-			break
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			return true
 		}
-		rest = rest[i+len(needle):]
-		arg := rest
-		if j := strings.IndexByte(arg, ','); j >= 0 {
-			arg = arg[:j]
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || sel.Sel == nil || sel.Sel.Name != "Register" {
+			return true
 		}
-		arg = strings.TrimSpace(arg)
-		switch {
-		case strings.HasPrefix(arg, `"`):
-			out[strings.Trim(arg, `"`)] = true
-		case strings.HasPrefix(arg, "adapter.Kind"):
-			name := strings.TrimPrefix(arg, "adapter.")
-			kind, ok := kindConstName[name]
-			if !ok {
+		// Only `dispatcher.Register(...)`: another Register method is a different decision point.
+		if id, ok := sel.X.(*ast.Ident); !ok || id.Name != "dispatcher" {
+			return true
+		}
+		switch arg := call.Args[0].(type) {
+		case *ast.BasicLit:
+			if arg.Kind == token.STRING {
+				if lit, err := strconv.Unquote(arg.Value); err == nil {
+					out[lit] = true
+				}
+			}
+		case *ast.SelectorExpr:
+			if pkg, ok := arg.X.(*ast.Ident); !ok || pkg.Name != "adapter" {
+				return true
+			}
+			kind, known := kindConstName[arg.Sel.Name]
+			if !known {
 				// LOUD, not silent: a new kind constant the table does not know about means the author
 				// must extend kindConstName. Reporting the raw token keeps the message actionable.
-				out[name] = true
-				continue
+				out[arg.Sel.Name] = true
+				return true
 			}
 			out[kind] = true
 		}
-	}
+		return true
+	})
 	return out
 }
 
