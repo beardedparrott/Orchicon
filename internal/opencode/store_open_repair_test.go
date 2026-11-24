@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func quietServe(t *testing.T) (*HostServe, string) {
@@ -168,4 +169,69 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// THE PRE-FLIGHT, WHICH IS THE PRIMARY DEFENCE.
+//
+// The readiness-timeout repair is a fallback for a surprise and it is too late to be a good one: the
+// serve has already spawned, burned the 90s readiness window, and — because the pool builds a serve PER
+// MCP SET — a broken store can be paid once per serve. The pre-flight costs one 100-byte read and starts
+// nothing when the store is unusable.
+func TestTheStoreIsProbedBeforeTheServeIsSpawned(t *testing.T) {
+	raw, err := os.ReadFile("servehost.go")
+	if err != nil {
+		t.Fatalf("read servehost.go: %v", err)
+	}
+	src := string(raw)
+
+	i := strings.Index(src, "func (h *HostServe) EnsureStarted(ctx context.Context) error {")
+	if i < 0 {
+		t.Fatal("EnsureStarted is gone")
+	}
+	body := src[i:]
+	body = body[:strings.Index(body, "\n}\n")]
+
+	probe := strings.Index(body, "repairUnopenableStore")
+	start := strings.Index(body, "h.Start(ctx)")
+	if probe < 0 {
+		t.Fatal("EnsureStarted does not probe the store — a stubbed store would spawn a serve, burn the " +
+			"90s readiness window, and repeat that once per MCP-set serve")
+	}
+	if start < 0 {
+		t.Fatal("EnsureStarted no longer calls h.Start(ctx)")
+	}
+	if probe > start {
+		t.Error("the store probe runs AFTER the serve is spawned — at that point the 90s window is " +
+			"already spent, which is the cost this exists to avoid")
+	}
+}
+
+// AND A STALE BUT READABLE STORE IS LEFT ALONE. A quiet plane legitimately has an old store; rotating on
+// AGE would discard sessions that are perfectly readable. The predicate must be "can SQLite open it",
+// never "is it old".
+func TestAnOldButReadableStoreIsKept(t *testing.T) {
+	hs, dir := quietServe(t)
+	db := filepath.Join(dir, "opencode.db")
+	hdr := make([]byte, 100)
+	copy(hdr, []byte("SQLite format 3\x00"))
+	if err := os.WriteFile(db, hdr, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Make it unmistakably OLD — a month in the past.
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(db, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	repaired, err := hs.repairUnopenableStore()
+	if err != nil {
+		t.Fatalf("repairUnopenableStore: %v", err)
+	}
+	if repaired {
+		t.Fatal("a 30-day-old but READABLE store was rotated. Age is not corruption — this would discard " +
+			"the session history of any plane that had simply been quiet.")
+	}
+	if _, err := os.Stat(db); err != nil {
+		t.Error("the old-but-valid store disappeared")
+	}
 }
