@@ -3620,6 +3620,54 @@ var recoveryResultKeys = []string{
 	"_failed_execution_id", "_failed_worker_id", "_recovery_strategy",
 }
 
+// stepResumableFaultReason reports WHY a failed step execution is a LIVENESS fault (a stall or a
+// wall-clock timeout) rather than a failed attempt — or "" when it is not one.
+//
+// It re-reads the execution because the caller's row is out of scope, and it is only reached on the
+// failure path, so the extra query costs nothing on the happy one.
+func (r *WorkflowReconciler) stepResumableFaultReason(ctx context.Context, tx pgx.Tx, tenantID, execID string) string {
+	if execID == "" {
+		return ""
+	}
+	exec, err := db.GetExecution(ctx, tx, tenantID, execID)
+	if err != nil {
+		return ""
+	}
+	return resumableFaultReason(exec.ErrorMessage)
+}
+
+// resumableFaultReason classifies an execution's error message as a liveness fault.
+//
+// ONLY LIVENESS SIGNALS QUALIFY, and they are matched by PREFIX so a worker's own verdict can never
+// masquerade as one: a delivered `ORCHICON WORKER SUMMARY: failure` is recorded as "worker reported
+// failure in its own ORCHICON WORKER SUMMARY: …" and must always be routed as a judgement, not
+// recovered. Recovery re-runs the same review against unchanged work, which is why a verdict must
+// reach a loop branch instead.
+//
+// The signals themselves are written by the adapters' terminal paths:
+//
+//	"stalled:no_progress"                    opencode/internal orchicon monitor, fatal stall
+//	"stalled:…:nudge_budget_spent"           escalated advisory stall (same, after its nudges)
+//	"claude session stalled: …"              internal/claude stall watchdog
+//	"wall_clock_timeout"                     a deadline, reported by every adapter since the fix that
+//	                                         stopped labelling a deadline "cancelled"
+func resumableFaultReason(errorMessage string) string {
+	msg := strings.TrimSpace(errorMessage)
+	if msg == "" {
+		return ""
+	}
+	switch {
+	case strings.HasPrefix(msg, "stalled:"):
+		return msg
+	case strings.HasPrefix(msg, "claude session stalled:"):
+		return msg
+	case msg == "wall_clock_timeout", strings.HasPrefix(msg, "wall_clock_timeout"),
+		strings.HasSuffix(msg, ": wall_clock_timeout"):
+		return "wall_clock_timeout"
+	}
+	return ""
+}
+
 // recoveringStepResult builds the result JSON written when a step run transitions to recovering.
 func recoveringStepResult(ctx context.Context, tx pgx.Tx, tenantID, workItemID, failedExecID, strategy string, prevResult []byte) []byte {
 	if strategy == "" {
@@ -4027,8 +4075,14 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 				}
 				return true, false, nil
 
-			case domain.ExecutionFailed, domain.ExecutionFailedToStart, domain.ExecutionTerminated:
+			case domain.ExecutionFailed, domain.ExecutionFailedToStart, domain.ExecutionTerminated,
+				domain.ExecutionUnhealthy:
 				// fall through to the recovery block below.
+				//
+				// `unhealthy` is in this set because executions STARTED BY THE PREVIOUSLY-DEPLOYED PLANE were
+				// terminated as `unhealthy` on a fatal stall. Without it those rows are invisible to this
+				// switch, fall to `default: return false, false` (still in flight), and wedge their step in
+				// `recovering` with no recovery ever triggered — the "marked failed, never resumed" defect.
 			default:
 				return false, false, nil
 			}
@@ -4041,9 +4095,32 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 		ephemeralDefaultStepRecovery := wi.Ephemeral && sr.StepKind != domain.StepKindApproval
 		rc := resolveStepRecoveryConfig(stepConfig, ephemeralDefaultStepRecovery)
 
+		// A STALL OR A WALL-CLOCK TIMEOUT IS A LIVENESS FAULT, NOT A FAILED ATTEMPT.
+		//
+		// It says nothing about whether the work is achievable — the worker was stopped for being slow or
+		// quiet, and it had already committed its progress (see internal/checkpoint). Charging it against
+		// the step's max_attempts meant three timeouts consumed a 3-attempt budget and the run died
+		// WITHOUT RECOVERY EVER BEING TRIGGERED, which is the other half of "marked failed, not resumed".
+		//
+		// Reaching recovery is the point: recovery has its OWN bound (recovery/engine.go,
+		// defaultMaxRetries = 5 per workflow run), and on exhaustion it escalates to L3, which BLOCKS for
+		// a human rather than failing terminally. That ladder is the ceiling — this must not add a second
+		// one, or a run would have two different budgets disagreeing about when to give up.
+		resumable := r.stepResumableFaultReason(ctx, tx, tenantID, sr.WorkerExecutionID)
+
 		if sr.Attempt >= rc.MaxAttempts-1 {
-			return true, true, nil
+			if resumable == "" {
+				return true, true, nil
+			}
+			r.log.Info("task step exhausted its attempt budget on a LIVENESS fault — routing to recovery instead of failing",
+				"run", run.ID, "step", sr.StepID, "work_item", wi.ID,
+				"attempt", sr.Attempt, "max_attempts", rc.MaxAttempts, "reason", resumable)
 		}
+		// NOTE: no separate resume counter is enforced here. The bound is the RECOVERY engine's per-run
+		// retry budget (defaultMaxRetries = 5), which already counts every resumption of this run and
+		// escalates to L3 — a human block, not a terminal failure — when it is exhausted. Adding a second
+		// budget here would give one run two ceilings that disagree about when to stop, which is how a
+		// recoverable stall turns into a hard failure at a number nobody can explain.
 
 		newAttempt := sr.Attempt + 1
 		r.log.Info("task step failed, running recovery strategy",
