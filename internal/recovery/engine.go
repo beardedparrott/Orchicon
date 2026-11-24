@@ -705,9 +705,15 @@ func (r *Reconciler) quarantineRecovery(ctx context.Context, tenantID, recoveryI
 	}
 	now := time.Now().UTC()
 	status := domain.RecoveryFailed
+	// THE CAUSE IS RECORDED, NOT JUST LOGGED. This row used to end with an EMPTY summary and no step
+	// result, so a quarantined recovery was indistinguishable from a recovery that never ran — the
+	// operator saw a failed item with nothing to act on, and the only copy of the reason was one WARN
+	// line in the plane log. The whole chain is preserved here because the trx is already dead by the
+	// time we know it: the poisoning statement's error is the interesting one.
 	if _, err := db.UpdateRecoveryExecution(ctx, ttx.Tx, tenantID, recoveryID, rec.Version, db.UpdateRecoveryExecutionFields{
 		Status:  &status,
 		EndedAt: &now,
+		Summary: strPtr("recovery quarantined: " + cause.Error()),
 	}); err != nil {
 		return fmt.Errorf("quarantine update: %w", err)
 	}
@@ -1024,6 +1030,14 @@ func (r *Reconciler) runStep(ctx context.Context, tx pgx.Tx, tenantID string, re
 		if stepResult == nil {
 			stepResult = []byte("{}")
 		}
+		// A POISONED TRANSACTION IS ITS OWN DIAGNOSIS, and it is worth recording loudly: the step never
+		// failed on its own merits, an EARLIER statement did, and this write is the one that finds out.
+		// Without this the step run's result is "{}" and the cause lives only in a log line.
+		if isPoisonedRecoveryTx(stepErr) {
+			stepResult = []byte(`{"error":"step could not be recorded: the transaction was already aborted by an earlier statement (SQLSTATE 25P02)"}`)
+			r.log.Error("recovery step blocked by an ALREADY-POISONED transaction — the real failure is an earlier statement in this pass",
+				"recovery", rec.ID, "step", sr.StepID, "error", stepErr)
+		}
 		failed, err := db.UpdateRecoveryStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateRecoveryStepRunFields{
 			Status:  strPtr(domain.RecoveryStepFailed),
 			EndedAt: &endNow,
@@ -1053,6 +1067,21 @@ func (r *Reconciler) runStep(ctx context.Context, tx pgx.Tx, tenantID string, re
 	return nil
 }
 
+// sumUsageOffTx reads an execution's usage sum on its OWN connection, never the caller's transaction.
+//
+// A soft telemetry read has no business sharing a transaction with the recovery DAG's writes: any
+// failure aborts the tx, and the writes that MARK the failure then fail too, which is how a recoverable
+// telemetry hiccup became a quarantined recovery with no recorded cause. Isolation is the fix, not
+// better error handling — the transaction cannot be un-aborted.
+func (r *Reconciler) sumUsageOffTx(ctx context.Context, tenantID, executionID string) (int64, float64, error) {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("sum usage: begin: %w", err)
+	}
+	defer func() { _ = ttx.Rollback(ctx) }()
+	return db.SumUsageForExecution(ctx, ttx.Tx, tenantID, executionID)
+}
+
 // stepCapture snapshots the failed execution's state + recent telemetry
 // and marks the original execution recovering (docs/06 §3 step 1).
 func (r *Reconciler) stepCapture(ctx context.Context, tx pgx.Tx, tenantID string, rec db.RecoveryExecutionRow) ([]byte, error) {
@@ -1062,8 +1091,24 @@ func (r *Reconciler) stepCapture(ctx context.Context, tx pgx.Tx, tenantID string
 	}
 	// Spend comes from the usage-records sum (the worker_executions row columns are write-never and
 	// always read zero); fall back to the row on query failure so capture never fails for telemetry.
+	//
+	// IT MUST NOT RUN ON THIS TRANSACTION. This was the poisoning bug: the error was deliberately
+	// swallowed here, but a FAILED STATEMENT ABORTS THE POSTGRES TRANSACTION no matter what Go does with
+	// the error. Every later statement in progressRecovery — including `mark step failed` — then returns
+	// SQLSTATE 25P02, and the reconciler responds by QUARANTINING the recovery as terminally failed.
+	// One soft read error destroyed the recovery and discarded its own cause:
+	//
+	//   "recovery reconcile failed", error="mark step failed: ... current transaction is aborted
+	//    (SQLSTATE 25P02)"  ->  "recovery quarantined (poisoned tx)"
+	//
+	// Measured: the identical read on a plain connection succeeds, and the same statement after any
+	// failure inside a tx returns 25P02. So the soft read is MOVED OFF the write transaction and given
+	// its own connection: a telemetry failure can no longer poison the DAG.
 	tokens, cost := exec.TokenUsage, exec.CostUSD
-	if t, c, uerr := db.SumUsageForExecution(ctx, tx, tenantID, exec.ID); uerr == nil {
+	if t, c, uerr := r.sumUsageOffTx(ctx, tenantID, exec.ID); uerr != nil {
+		r.log.Warn("recovery capture: usage sum unavailable — using the execution row's own figures",
+			"recovery", rec.ID, "execution", exec.ID, "error", uerr)
+	} else {
 		tokens, cost = t, c
 	}
 	snapshot := map[string]any{
@@ -1243,15 +1288,35 @@ func (r *Reconciler) escalate(ctx context.Context, tx pgx.Tx, tenantID string, r
 		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventEscalated, updated, "", "", rec.TriggerReason, "escalated L2→L3 (human approval required; task paused)", "")
 		r.log.Warn("recovery escalated L2→L3 (human approval required)", "recovery", rec.ID, "task", rec.TaskID)
 	default:
-		// L3 already — cannot escalate further. Mark failed.
+		// L3 IS THE CEILING OF THE LADDER, NOT A TERMINAL FAILURE.
+		//
+		// This used to mark the recovery FAILED, which made L3 a dead end: once a task's recovery reached
+		// L3, every later attempt escalated into "cannot escalate further" and died, so the item could
+		// never recover again no matter what changed. Observed on task 01M84X6FD9X2N5FQ534GK91THR: six
+		// recoveries, all failed, ending at L3.
+		//
+		// L3 means HUMAN ESCALATION (docs/06 §7) — the same state the L2→L3 arm above creates, and the
+		// one progressRecovery already knows to park on. Failing instead of blocking threw away the only
+		// remaining route (an operator's decision) and did it silently: the recovery row carried an empty
+		// summary, so the failure had no recorded cause.
+		//
+		// The cause travels in the summary, which is what an operator actually reads.
+		cause := strings.TrimSpace(rec.Summary)
+		if cause == "" {
+			cause = "see the recovery's step runs and the plane log for the originating error"
+		}
 		updated, err := db.UpdateRecoveryExecution(ctx, tx, tenantID, rec.ID, rec.Version, db.UpdateRecoveryExecutionFields{
-			Status:  strPtr(domain.RecoveryFailed),
-			EndedAt: &now,
+			Status:             strPtr(domain.RecoveryBlocked),
+			NeedsHumanApproval: boolPtr(true),
+			Summary:            strPtr("blocked at L3 — the escalation ladder is exhausted, a human must decide. Cause: " + cause),
 		})
 		if err != nil {
-			return fmt.Errorf("escalate L3 fail: %w", err)
+			return fmt.Errorf("escalate L3 block: %w", err)
 		}
-		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventFailed, updated, "", "", rec.TriggerReason, "recovery failed at L3", "")
+		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventBlocked, updated, "", "", rec.TriggerReason,
+			"L3 reached — blocked for human approval (was a terminal failure before)", "")
+		r.log.Warn("recovery reached L3 and is now BLOCKED for human approval rather than failed",
+			"recovery", rec.ID, "task", rec.TaskID)
 	}
 	return nil
 }
