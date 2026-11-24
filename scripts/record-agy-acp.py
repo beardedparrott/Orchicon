@@ -418,13 +418,33 @@ def do_authenticate(rec, method_id="oauth-personal"):
     return rec.request("authenticate", {"methodId": method_id})
 
 
+CURRENT_ARGS = None  # set by main(); lets every scenario honour --model and --mode
+
+
+def apply_model_and_mode(rec, sid):
+    """Pin the cheapest model before any prompt so a fixture never costs premium tokens."""
+    args = CURRENT_ARGS
+    if args is None:
+        return
+    if args.model:
+        r = rec.request("session/set_model", {"sessionId": sid, "modelId": args.model}, expect_error=True)
+        note(rec, "set_model(%s) -> %s" % (args.model, json.dumps(r.get("result") or r.get("error"))[:300]))
+    if args.mode:
+        r = rec.request("session/set_mode", {"sessionId": sid, "modeId": args.mode}, expect_error=True)
+        note(rec, "set_mode(%s) -> %s" % (args.mode, json.dumps(r.get("result") or r.get("error"))[:300]))
+
+
 def do_new_session(rec, cwd, mcp_servers=None, system_prompt_append=None, additional_directories=None):
     params = {"cwd": cwd, "mcpServers": mcp_servers if mcp_servers is not None else []}
     if additional_directories:
         params["additionalDirectories"] = additional_directories
     if system_prompt_append:
         params["_meta"] = {"antigravity": {"systemPrompt": {"append": system_prompt_append}}}
-    return rec.request("session/new", params)
+    resp = rec.request("session/new", params)
+    sid = (resp.get("result") or {}).get("sessionId")
+    if sid:
+        apply_model_and_mode(rec, sid)
+    return resp
 
 
 def session_id_of(resp):
@@ -772,6 +792,8 @@ def main(argv=None):
     ap.add_argument("--auth-note", default="interactive OAuth token already present in the OS keyring")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args(argv)
+    global CURRENT_ARGS
+    CURRENT_ARGS = args
 
     if not args.cwd:
         args.cwd = "/tmp/orchicon/acp/%s" % args.scenario
