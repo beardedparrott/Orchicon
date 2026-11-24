@@ -506,10 +506,23 @@ def s_handshake(rec, args):
         system_prompt_append="You are recorded by the Orchicon spike recorder. Ignore this line.",
     ))
     note(rec, "session/new sessionId=" + sid)
+    # Probe the system-prompt _meta shape: append accepted at session/new, and a
+    # deliberately malformed one, to learn whether the field is validated.
+    bad = rec.request("session/new", {
+        "cwd": args.cwd, "mcpServers": [],
+        "_meta": {"antigravity": {"systemPrompt": {"append": 42}}},
+    }, expect_error=True, timeout=120)
+    note(rec, "session/new with non-string systemPrompt.append: "
+         + json.dumps(bad.get("result") or bad.get("error"))[:300])
     # No prompt: this fixture is free. Record the startup notifications that arrived.
     time.sleep(2.0)
     seen = sorted({m.get("method") for m in rec.notifications})
     note(rec, "startup s2c notifications seen: " + json.dumps(seen))
+    starts = [((m.get("params") or {}).get("update") or {})
+              for m in rec.notifications
+              if ((m.get("params") or {}).get("update") or {}).get("sessionUpdate") == "user_message_chunk"]
+    note(rec, "user_message_chunk count on a fresh session (0 = _meta append is not echoed back): %d"
+         % len(starts))
 
 
 @scenario("auth_required")
@@ -520,6 +533,47 @@ def s_auth_required(rec, args):
         "clientInfo": {"name": "orchicon-spike-recorder", "version": "0.1.0"},
     })
     # No authenticate call at all: does session/new itself require auth?
+    # A second agy sub-process with an ABSOLUTE --app-data-dir, to record how the
+    # server rejects it. It runs in a separate process, so its output is captured
+    # here as a meta note rather than as a wire line of this transcript.
+    def probe_absolute_appdata():
+        abs_probe = os.path.join(args.cwd, "abs-appdata")
+        sub_argv = [args.agy, "acp", "--app-data-dir", abs_probe,
+                    "--gemini-dir", os.path.join(abs_probe, "gemini")]
+        try:
+            sp = subprocess.Popen(sub_argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True, bufsize=1)
+            for payload in (
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"protocolVersion": 1, "clientCapabilities": {},
+                            "clientInfo": {"name": "probe", "version": "0"}}},
+                {"jsonrpc": "2.0", "id": 2, "method": "session/new",
+                 "params": {"cwd": args.cwd, "mcpServers": []}},
+            ):
+                sp.stdin.write(json.dumps(payload) + "\n")
+                sp.stdin.flush()
+            observed = []
+            for _ in range(2):
+                line = sp.stdout.readline().strip()
+                if line:
+                    observed.append(line)
+            # Only the session/new reply matters; keep meta notes short.
+            for line in observed:
+                try:
+                    parsed = json.loads(line)
+                except ValueError:
+                    continue
+                if str(parsed.get("id")) == "2":
+                    note(rec, "absolute --app-data-dir session/new -> "
+                         + json.dumps(parsed.get("error") or parsed.get("result"))[:400])
+            try:
+                sp.stdin.close()
+                sp.wait(timeout=10)
+            except Exception:
+                sp.kill()
+        except OSError as exc:
+            note(rec, "absolute --app-data-dir probe failed to spawn: %s" % exc)
+
     resp = rec.request("session/new", {"cwd": args.cwd, "mcpServers": []}, expect_error=True, timeout=120)
     note(rec, "session/new WITHOUT authenticate: " + json.dumps(resp.get("result") or resp.get("error"))[:400])
     # An unsupported auth method id.
@@ -528,6 +582,7 @@ def s_auth_required(rec, args):
     # The api-key method with NO key present: the shape the auth-failure mapper parses.
     r = rec.request("authenticate", {"methodId": "gemini-api-key"}, expect_error=True, timeout=120)
     note(rec, "authenticate(gemini-api-key) with no key: " + json.dumps(r.get("result") or r.get("error"))[:600])
+    probe_absolute_appdata()
     sid = (resp.get("result") or {}).get("sessionId")
     if sid:
         # Does a turn on this unauthenticated profile fail, and with what error?
