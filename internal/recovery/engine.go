@@ -114,7 +114,9 @@ func recoveryStrategyFor(ctx context.Context, tx pgx.Tx, tenantID, taskID, faile
 	// AN EVIDENCE REJECTION GETS EXACTLY ONE MORE ATTEMPT — and only because that attempt now carries
 	// the reason.
 	if exec != nil && isEvidenceRejection(exec.ErrorMessage) {
-		if prior, _ := countTaskChainRecoveries(ctx, tx, tenantID, taskID); prior >= 1 {
+		// Scoped to the same run as the budget: an evidence rejection gets one more attempt WITHIN a
+		// run, and a fresh run gets its own — consistent with the per-run attempt budget.
+		if prior, _ := countTaskChainRecoveries(ctx, tx, tenantID, taskID, workflowRunIDOfExecution(exec)); prior >= 1 {
 			return RecoveryStrategyStop
 		}
 		return RecoveryStrategySummarizeRestart
@@ -375,9 +377,11 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		return fmt.Errorf("recovery trigger: get execution: %w", err)
 	}
 
-	// Bounded retry: count how many previous recovery attempts exist across this task's ancestor chain.
+	// Bounded retry: count how many previous recovery attempts THIS RUN has already spent across the
+	// task's ancestor chain. Scoped to the run so a fresh run starts with a full budget, exactly like
+	// the per-run step attempt budget does.
 	maxRetries := recoveryMaxRetries()
-	retryCount, err := countTaskChainRecoveries(ctx, ttx.Tx, tenantID, taskID)
+	retryCount, err := countTaskChainRecoveries(ctx, ttx.Tx, tenantID, taskID, workflowRunIDOfExecution(&exec))
 	if err != nil {
 		e.log.Warn("recovery trigger: count retries", "task", taskID, "error", err)
 	}
@@ -1461,9 +1465,33 @@ func strPtr(s string) *string { return &s }
 func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 
-// countTaskChainRecoveries walks the work item's parent chain to find all ancestor task IDs, then
-// counts terminal recovery executions for any task in the chain.
-func countTaskChainRecoveries(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (int, error) {
+// workflowRunIDOfExecution returns the run an execution belongs to, or "" for a standalone one.
+func workflowRunIDOfExecution(e *db.ExecutionRow) string {
+	if e == nil {
+		return ""
+	}
+	return e.WorkflowRunID
+}
+
+// countTaskChainRecoveries counts the terminal recoveries that belong to ONE workflow run across a
+// task's ancestor chain — the retry budget's input.
+//
+// SCOPED TO THE RUN, DELIBERATELY. This used to count every terminal recovery in the chain forever,
+// which is the wrong unit: the per-run attempt budget (a step's max_attempts) resets on every fresh
+// run, so the recovery budget has to reset with it. Counting history instead meant a task's PAST
+// failures permanently disarmed its future ones —
+//
+//	chain 01M84X6FD9X2N5FQ534GK91THR: 8 terminal recoveries vs a budget of 5
+//	-> every NEW recovery created at L3 (the ceiling) on the first failure of a FRESH run
+//	-> L3 could not escalate, so it failed instantly and the step recorded attempt 1
+//
+// which is why re-running looked like it had not reset the retries at all: the attempts DID reset to
+// 1, and the recovery was refused before it could use any of them.
+//
+// A past run's recoveries stay in the table and stay visible — they are audit history. They simply no
+// longer tax a run that has nothing to do with them. A run that genuinely fails six times still
+// exhausts its budget exactly as before, because those recoveries carry its own run id.
+func countTaskChainRecoveries(ctx context.Context, tx pgx.Tx, tenantID, taskID, workflowRunID string) (int, error) {
 	// Collect all task IDs in the chain.
 	taskIDs := []string{taskID}
 	cur := taskID
@@ -1481,13 +1509,21 @@ func countTaskChainRecoveries(ctx context.Context, tx pgx.Tx, tenantID, taskID s
 		taskIDs = append(taskIDs, *parentID)
 		cur = *parentID
 	}
-	// Count terminal recovery executions for any task in the chain.
+	// Count terminal recoveries belonging to THIS RUN, reached through each recovery's failed
+	// execution (recovery_executions has no run column; worker_executions does). An empty
+	// workflowRunID scopes the count to nothing, so a standalone execution cannot inherit a chain's
+	// history either.
+	if workflowRunID == "" {
+		return 0, nil
+	}
 	var count int
 	err := tx.QueryRow(ctx,
-		`SELECT COUNT(*) FROM recovery_executions
-		 WHERE tenant_id = $1 AND task_id = ANY($2)
-		   AND status IN ('resumed', 'failed')`,
-		tenantID, taskIDs).Scan(&count)
+		`SELECT COUNT(*)
+		   FROM recovery_executions r
+		   JOIN worker_executions e ON e.id = r.failed_execution_id AND e.tenant_id = r.tenant_id
+		  WHERE r.tenant_id = $1 AND r.task_id = ANY($2) AND e.workflow_run_id = $3
+		    AND r.status IN ('resumed', 'failed')`,
+		tenantID, taskIDs, workflowRunID).Scan(&count)
 	if err != nil {
 		return 0, err
 	}

@@ -32,6 +32,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 )
 
@@ -197,5 +198,86 @@ func TestTheTriggerUsesTheTunableBudget(t *testing.T) {
 	if !strings.Contains(src, "MaxRetries:         recoveryMaxRetries(),") {
 		t.Error("the recovery row still records the const, so the operator cannot see the budget that " +
 			"was actually applied")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// THE RECOVERY BUDGET IS PER-RUN, LIKE THE ATTEMPT BUDGET IT SITS BESIDE
+//
+// The operator's report: "max retries are at 6 currently. We should be able to re-run it and have
+// those retries reset — keep the past recoveries but just reset the count on a fresh run."
+//
+// Exactly right, and there were TWO budgets with different scopes. The per-run attempt budget
+// (max_attempts: 6) DID reset — every fresh run started at attempt=1 (measured across six runs of
+// 01M84X6FD9X2N5FQ534GK91THR). But countTaskChainRecoveries counted EVERY terminal recovery in the
+// task's ancestor chain, forever, with no run bound: 8 vs a budget of 5. So every new recovery was
+// created at L3 on the FIRST failure of a fresh run, L3 could not escalate, and it failed instantly —
+// which is why re-running looked like the retries never reset. The attempts reset; the recovery was
+// refused before it could spend one.
+// ---------------------------------------------------------------------------
+
+func TestTheRecoveryBudgetIsScopedToTheRun(t *testing.T) {
+	raw, err := os.ReadFile("engine.go")
+	if err != nil {
+		t.Fatalf("read engine.go: %v", err)
+	}
+	src := string(raw)
+
+	i := strings.Index(src, "func countTaskChainRecoveries(")
+	if i < 0 {
+		t.Fatal("countTaskChainRecoveries is gone")
+	}
+	body := src[i:]
+	body = body[:strings.Index(body, "\n}\n")]
+
+	// The count must be joined to the run, or a chain's permanent history taxes every future run.
+	if !strings.Contains(body, "workflow_run_id") {
+		t.Error("the retry count is not scoped to a workflow run, so a task's PAST recoveries disarm its " +
+			"FUTURE runs: the budget is consumed by history and every fresh run is born at L3")
+	}
+	if !strings.Contains(body, "failed_execution_id") {
+		t.Error("the run scope is not resolved through failed_execution_id, so the join is not the one " +
+			"that reaches worker_executions.workflow_run_id")
+	}
+	// A standalone execution (no run) must not inherit chain history either.
+	if !strings.Contains(body, `workflowRunID == ""`) {
+		t.Error("an empty run id does not short-circuit to a zero count, so a standalone execution would " +
+			"inherit the chain's history")
+	}
+}
+
+// The signature carries the scope, so a caller cannot silently fall back to the chain-wide count.
+func TestTheBudgetCountRequiresARunScope(t *testing.T) {
+	raw, err := os.ReadFile("engine.go")
+	if err != nil {
+		t.Fatalf("read engine.go: %v", err)
+	}
+	src := string(raw)
+	if !strings.Contains(src, "func countTaskChainRecoveries(ctx context.Context, tx pgx.Tx, tenantID, taskID, workflowRunID string) (int, error)") {
+		t.Error("countTaskChainRecoveries no longer takes a workflowRunID — a chain-wide count is exactly " +
+			"the defect that made re-running pointless")
+	}
+	// And both call sites must pass a run, not a placeholder.
+	n := strings.Count(src, "countTaskChainRecoveries(ctx, tx, tenantID,")
+	withRun := strings.Count(src, "countTaskChainRecoveries(ctx, tx, tenantID, taskID, workflowRunIDOfExecution(")
+	if withRun < 2 && n >= 2 {
+		t.Errorf("only %d of %d countTaskChainRecoveries call sites pass a run id — a chain-wide count "+
+			"reintroduced anywhere brings the dead end back", withRun, n)
+	}
+}
+
+// THE RUN RESOLVER is total: a nil execution and a standalone one both yield "", never a panic and
+// never a placeholder that would silently scope to the wrong thing.
+func TestTheRunResolverIsTotal(t *testing.T) {
+	if got := workflowRunIDOfExecution(nil); got != "" {
+		t.Errorf("workflowRunIDOfExecution(nil) = %q, want empty", got)
+	}
+	standalone := &db.ExecutionRow{}
+	if got := workflowRunIDOfExecution(standalone); got != "" {
+		t.Errorf("a standalone execution resolved to run %q, want empty", got)
+	}
+	withRun := &db.ExecutionRow{WorkflowRunID: "run-1"}
+	if got := workflowRunIDOfExecution(withRun); got != "run-1" {
+		t.Errorf("workflowRunIDOfExecution = %q, want run-1", got)
 	}
 }
