@@ -19,17 +19,25 @@
 //     headsUpStatic.test.ts still forbids streams and timers in them;
 //   - closing it unmounts the pane, and useStream aborts on unmount, so the socket is released rather
 //     than left behind the page the operator navigates to next;
-//   - the stream is gated on liveness (executionStreamEnabled), so a finished execution holds nothing.
+//   - the stream is gated on liveness (executionStreamEnabled), so a finished execution holds nothing;
+//   - the STATISTICS PANEL (ExecutionContextSidebar, the same one /executions/$id renders) is fed by the
+//     events this modal's ONE stream already delivers plus two plain queries (usage records, the work
+//     item's declared context window). It opens no subscription of its own, and the usage query is the
+//     one scheduleInvalidation already refreshes;
+//   - "Open full page" is a real anchor to /executions/<id> in a NEW TAB, like the tile's: it cannot
+//     leave this modal's socket alive behind the page being opened, which was the original complaint.
 
 import { useEffect, useState } from "react";
-import { X } from "lucide-react";
+import { ExternalLink, X } from "lucide-react";
 
 import { executionKeys, useGetExecution, useStreamExecutionEvents } from "@/api/executions";
-import { usageKeys } from "@/api/aigateway";
+import { usageKeys, useGetUsage } from "@/api/aigateway";
+import { useGetWorkItem } from "@/api/workItems";
 import { useDebouncedInvalidation } from "@/lib/useDebouncedInvalidation";
 import { executionStreamEnabled } from "@/lib/debouncedInvalidation";
 import type { StreamStatus } from "@/api/useStream";
 import { SessionChatPane } from "@/components/executions/SessionChatPane";
+import { ExecutionContextSidebar } from "@/components/executions/ExecutionContextSidebar";
 import { Button } from "@/components/ui/button";
 import { LiveDuration } from "@/components/ui/live-duration";
 import type { HeadsUpTileData } from "./headsUp";
@@ -82,6 +90,15 @@ export function HeadsUpExpandedModal({ tile, onClose }: HeadsUpExpandedModalProp
   });
   useEffect(() => setStreamStatus(status), [status]);
 
+  // The statistics panel's inputs — the same two the full page gives it. The work item's declared context
+  // window is the fallback when the model is not in opencode model discovery (custom local providers).
+  const { data: usage } = useGetUsage({ executionId: execId }, !!execId);
+  const { data: workItem } = useGetWorkItem(exec?.taskId ?? "");
+  const declaredContextWindow =
+    workItem?.contextWindow && Number(workItem.contextWindow) > 0
+      ? Number(workItem.contextWindow)
+      : undefined;
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-2 sm:p-4"
@@ -103,21 +120,58 @@ export function HeadsUpExpandedModal({ tile, onClose }: HeadsUpExpandedModalProp
           </div>
           <ExecStatusBadge status={execStatus} />
           {isRunning ? <LiveDuration startedAt={exec?.startedAt} /> : null}
+          {execId ? (
+            <Button variant="outline" size="sm" asChild>
+              <a
+                href={`/executions/${execId}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={`Open the full execution page for ${tile.stepName} in a new tab`}
+              >
+                <ExternalLink className="mr-1.5 h-3.5 w-3.5" aria-hidden="true" />
+                Open full page
+              </a>
+            </Button>
+          ) : null}
           <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close">
             <X className="h-4 w-4" aria-hidden="true" />
           </Button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          <SessionChatPane
-            executionId={execId}
-            events={events}
-            streamStatus={status}
-            storedOutput={exec?.output}
-            workerName={exec?.workerName || exec?.workerId}
-            systemPrompt={exec?.systemPrompt}
-            isRunning={isRunning}
-            isTerminal={isTerminal}
-          />
+        {/* Two columns from `lg` up, each scrolling on its own (chat left, statistics right — the
+            /executions/$id arrangement); stacked below it, where the whole body scrolls instead. */}
+        <div className="grid min-h-0 flex-1 gap-3 overflow-y-auto p-3 lg:grid-cols-[minmax(0,1fr)_320px] lg:overflow-hidden">
+          <div className="min-h-0 min-w-0 lg:overflow-y-auto">
+            <SessionChatPane
+              executionId={execId}
+              events={events}
+              streamStatus={status}
+              storedOutput={exec?.output}
+              workerName={exec?.workerName || exec?.workerId}
+              systemPrompt={exec?.systemPrompt}
+              isRunning={isRunning}
+              isTerminal={isTerminal}
+            />
+          </div>
+          <div className="min-h-0 lg:overflow-y-auto">
+            {exec ? (
+              <ExecutionContextSidebar
+                exec={exec}
+                events={events}
+                usage={usage ?? []}
+                contextWindow={declaredContextWindow}
+                streamStatus={status}
+                executionId={execId}
+              />
+            ) : (
+              // Not yet loaded (or no execution behind this tile): say so instead of an empty column.
+              <div
+                className="rounded-2xl glass-panel p-4 text-sm text-muted-foreground"
+                role="status"
+              >
+                {execId ? "Loading statistics…" : "No execution has started for this step."}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>

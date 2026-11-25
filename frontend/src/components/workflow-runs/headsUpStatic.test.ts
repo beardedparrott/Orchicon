@@ -103,6 +103,29 @@ describe("liveness is confined to the one open quick-look", () => {
     expect(grid).toMatch(/expandedTile\?\.execution\?\.id \?/);
   });
 
+  // THE QUICK LOOK CARRIES THE SAME STATISTICS AS THE FULL PAGE, AND A WAY TO GET THERE. It was a bare
+  // chat pane: no cost/token/context panel and no jump to /executions/<id>. The panel is fed by the one
+  // stream the modal already holds plus two plain queries — it must not open a second subscription.
+  it("the modal shows the execution statistics panel and links to the full page", () => {
+    const modal = code(read("src/components/workflow-runs/HeadsUpExpandedModal.tsx"));
+    // The same panel /executions/$id renders, given the same inputs.
+    expect(modal).toContain("<ExecutionContextSidebar");
+    expect(modal).toContain("useGetUsage");
+    expect(modal).toContain("contextWindow={declaredContextWindow}");
+    // A real anchor to the execution page in a NEW TAB (never a click handler that navigates in place,
+    // which is what left the stream alive behind the opened page), with the noopener guard.
+    expect(modal).toContain("href={`/executions/${execId}`}");
+    expect(modal).toContain('target="_blank"');
+    expect(modal).toContain('rel="noopener noreferrer"');
+  });
+
+  it("the modal opens exactly ONE execution stream — the panel reuses its events", () => {
+    const modal = code(read("src/components/workflow-runs/HeadsUpExpandedModal.tsx"));
+    expect(modal.match(/useStreamExecutionEvents\(/g)).toHaveLength(1);
+    expect(modal).toContain("events={events}");
+    expect(modal).not.toContain("setInterval");
+  });
+
   it("a tile is a BUTTON that opens the quick look — never a stream of its own", () => {
     const c = code(read(TILE));
     // The tile is a thumbnail: it holds no stream and no timer (asserted above), and its click opens the
