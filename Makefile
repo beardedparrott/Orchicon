@@ -277,10 +277,30 @@ fetch-tags:
 # UI — exactly how the Ask Orchicon full-viewport fix stayed invisible after
 # a "rebuild". fe-build is stamp-checked, so an unchanged frontend adds no
 # cost to the Go-only iteration loop.
-build: fetch-tags fe-build ## Build the control-plane + TUI client binaries into bin/
+# force-build=1 rebuilds even when the tree looks unchanged. instance-rebuild sets it, for the same reason
+# it sets force-fe=1 — see the fe-build note above about a stamp check silently shipping stale output.
+force-build ?= 0
+build: fetch-tags fe-build ## Build the control-plane + TUI client binaries into bin/ (skipped when unchanged; force-build=1 to always)
 	@mkdir -p $(BIN_DIR)
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orch ./cmd/orch
+	@# A BUILD THAT CHANGES NOTHING STILL BREAKS RUNNING PLANES, so it is skipped.
+	@#
+	@# LDFLAGS embeds $(BUILD_DATE), so EVERY build produces a different file — verified by experiment: same
+	@# source with a different buildDate gives a NEW INODE, and any process executing the previous one is left
+	@# on "bin/orchicon (deleted)". bin/orchicon is one path shared by dev, prod and test, so
+	@# `make rebuild-prod` after `make rebuild-dev` used to re-execute a byte-different binary underneath the
+	@# dev plane that was already running, while that plane reported healthy and kept serving the old code.
+	@#
+	@# THE STAMP IS THE NEWEST TRACKED SOURCE, NOT A HASH OF THE TREE, and it deliberately asks git rather than
+	@# comparing mtimes across the working tree: an untracked scratch file or a checkout whose files are older
+	@# than the last build must not force a build, and a REVERTED source file must. git ls-files names exactly
+	@# the inputs that become the binary.
+	@if [ "$(force-build)" = "1" ] || [ ! -x "$(BIN_DIR)/orchicon" ] || 	    { git ls-files -z -- cmd internal api/go go.mod go.sum 2>/dev/null 	        | xargs -0 -r stat -c '%Y %n' 2>/dev/null 	        | awk -v bt="$$(stat -c %Y $(BIN_DIR)/orchicon 2>/dev/null || echo 0)" '$$1 > bt { found=1 } END { exit !found }' ; }; then \
+	  echo "==> building control-plane + TUI binaries"; \
+	  $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon; \
+	  $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orch ./cmd/orch; \
+	else \
+	  echo "==> control-plane + TUI binaries up to date (force-build=1 to rebuild)"; \
+	fi
 	@# THE LINUX CONTAINER BINARY, BESIDE THE BINARY THAT WILL MOUNT IT. A runtime container is Linux
 	@# and runs `orchicon runtime-supervisor`, so a daemon built on Windows or macOS needs a
 	@# linux/amd64 build to put in it — and the daemon looks beside its own executable first. Without
@@ -1024,7 +1044,11 @@ docs-check: ## Validate every Mermaid diagram in the root docs with a real parse
 INSTANCE_SH := scripts/orchicon.sh
 
 instance-build: ## Build the binaries an instance runs (bin/orchicon + bin/orch)
-	$(MAKE) build
+	@# FORCED, like force-fe=1 alongside it. `make rebuild-<instance>` is the operator saying "I want this
+	@# instance on the current source"; a stamp check that decides otherwise silently hands them a binary it
+	@# chose not to rebuild. The stamp check belongs to plain `make build` (the fast iteration loop), not to an
+	@# explicit rebuild request.
+	$(MAKE) build force-build=1
 
 instance-up: ## Start this instance on the host (services + plane; instance=dev default)
 	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — run 'make instance-build' first"; exit 1; }

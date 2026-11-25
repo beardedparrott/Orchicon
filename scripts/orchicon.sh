@@ -479,46 +479,6 @@ instances_running_from_binary() {
   done | sort -u
 }
 
-# build_is_stale reports whether bin/orchicon needs rebuilding from the current tree.
-#
-# IT CANNOT COMPARE BYTES: LDFLAGS embeds $(BUILD_DATE), so every build produces a different file even from
-# identical source. What it can answer is whether any SOURCE is newer than the binary — which is the only
-# question that matters, because that is when the binary's behaviour can differ.
-#
-# A missing binary is stale by definition. Untracked scratch is ignored: `git status` is not consulted, so a
-# dirty tree with no source change does not force a build.
-build_is_stale() {
-  local bin="$ROOT/bin/orchicon"
-  [ -x "$bin" ] || return 0
-  local bt
-  bt="$(stat -c %Y "$bin" 2>/dev/null || echo 0)"
-  # THE LIST AND THE COMPARISON LIVE IN ONE PYTHON CALL, deliberately. The shell pipeline this replaces
-  # (git ls-files -z | xargs stat | awk) reported "current" for a tree whose newest source was measurably
-  # two seconds newer than the binary: the pipeline swallowed its own failure, and an EMPTY list reads as
-  # "nothing newer", silently disabling the guard. A check that fails OPEN is the wrong shape for a decision
-  # that determines whether running instances get stopped.
-  python3 - "$ROOT" "$bt" <<'PYEOF'
-import os, subprocess, sys
-root, bt = sys.argv[1], int(sys.argv[2])
-try:
-    out = subprocess.run(["git", "-C", root, "ls-files", "-z", "--", "cmd", "internal", "api/go",
-                          "go.mod", "go.sum"], capture_output=True, check=True).stdout
-except subprocess.CalledProcessError:
-    sys.exit(0)  # cannot enumerate the source -> stale, so the caller rebuilds rather than skipping
-newest = 0
-for rel in out.split(b"\0"):
-    if not rel:
-        continue
-    try:
-        m = int(os.stat(os.path.join(root, rel.decode())).st_mtime)
-    except OSError:
-        continue
-    if m > newest:
-        newest = m
-sys.exit(0 if newest > bt else 1)
-PYEOF
-}
-
 rebuild_host() {
   local inst="$1"
   command -v make >/dev/null 2>&1 || {
@@ -582,23 +542,10 @@ rebuild_host() {
     also+=("$running")
   done < <(instances_running_from_binary)
 
-  # DOES THE BUILD ACTUALLY REPLACE ANYTHING? If the tree has not changed since bin/orchicon was built, it
-  # does not — and then stopping anyone is pure cost.
-  #
-  # THIS IS THE OPERATOR'S OWN WORKFLOW: "a full rebuild of the code for dev and then the shorter route for
-  # prod given the code itself is already built". `rebuild-dev` compiles; `rebuild prod` afterwards has
-  # nothing to compile, so it must not cycle dev to produce a byte-identical binary.
-  local needs_build=0
-  build_is_stale && needs_build=1
-
-  if [ "$needs_build" = "0" ]; then
-    echo "note: bin/orchicon is already current for this tree — no build, so nothing is stopped"
-    # Still make sure the NAMED instance ends up running the current binary: if it is already up on it,
-    # there is nothing to do at all.
-    start_host "$inst" >/dev/null 2>&1 || true
-    return 0
-  fi
-
+  # THE BUILD DECIDES WHETHER ANYTHING IS STOPPED, and that decision now lives in Makefile:build (a stamp
+  # check over tracked sources) rather than being duplicated here. Duplicating it meant the two could
+  # disagree — and this file is only ONE of the callers: `make rebuild-<instance>` goes through
+  # instance-rebuild -> instance-build -> `make build`, which never passed through here at all.
   if [ "${#also[@]}" -gt 0 ]; then
     echo "note: bin/orchicon is shared — also stopping: ${also[*]}"
     echo "      (this build replaces the binary they are executing)"
