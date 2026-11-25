@@ -1362,6 +1362,19 @@ func serveHandshakeHint(engineStderr string) string {
 	return ""
 }
 
+// supervisorErrorFrom returns the Error of the first {"event":"error"} line in runtime-client's stdout,
+// or "" when there is none.
+func supervisorErrorFrom(out []byte) string {
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	for sc.Scan() {
+		var ev AgentEvent
+		if json.Unmarshal(sc.Bytes(), &ev) == nil && ev.Event == "error" && ev.Error != "" {
+			return ev.Error
+		}
+	}
+	return ""
+}
+
 // startServe asks the in-container supervisor to bring up `opencode serve` (idempotent.
 func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, bool, error) {
 	reqJSON, err := json.Marshal(AgentRequest{
@@ -1393,6 +1406,14 @@ func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, 
 	cmd.Stderr = &engineErr
 	out, perr := cmd.Output()
 	if perr != nil {
+		// THE SUPERVISOR'S OWN REFUSAL RIDES STDOUT. runtime-client relays the supervisor's {"event":"error"}
+		// line to stdout and exits 1, so a refusal ("argv[0] not allowlisted", a failed chdir, "serve did
+		// not become ready") leaves the engine's stderr EMPTY and the whole diagnosis in `out`, which
+		// Output() returns alongside the error. Dropping it produced "exit status 1 — no stderr" with the
+		// cause in hand.
+		if sup := supervisorErrorFrom(out); sup != "" {
+			return 0, "", false, fmt.Errorf("serve handshake: %v — supervisor said: %s", perr, sup)
+		}
 		if detail := strings.TrimSpace(engineErr.String()); detail != "" {
 			return 0, "", false, fmt.Errorf("serve handshake: %v — engine said: %s%s",
 				perr, detail, serveHandshakeHint(detail))
