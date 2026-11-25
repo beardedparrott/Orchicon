@@ -361,6 +361,12 @@ func RuntimeServeConfig(imageTag, projectDir, workflowRunID string, planeEnv map
 		projectRoot = filepath.Dir(filepath.Dir(projectDir))
 	}
 	opts.ProjectDir = projectRoot
+	// The step workers' prompts ride FILES under the run-state directory (<project>/.orchicon/<run>/,
+	// gitignored, inside the project mount at the same path), not the config text: the config is one
+	// env string and five full prompts overflowed Linux's 128 KiB per-string limit.
+	if projectRoot != "" && workflowRunID != "" {
+		opts.AgentFilesDir = filepath.Join(projectRoot, ".orchicon", workflowRunID, "agents")
+	}
 	opts.WorktreeDir = projectDir
 	if opts.WorktreeDir == "" {
 		opts.WorktreeDir = os.Getenv("ORCHICON_WORKTREE_DIR")

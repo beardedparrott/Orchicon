@@ -1375,8 +1375,20 @@ func supervisorErrorFrom(out []byte) string {
 	return ""
 }
 
+// maxServeConfigBytes is the ceiling for the serve config, which is exec'd as ONE environment string.
+// Linux's MAX_ARG_STRLEN is 131072 including the "NAME=" prefix and the NUL; the margin keeps clear of it.
+const maxServeConfigBytes = 120000
+
 // startServe asks the in-container supervisor to bring up `opencode serve` (idempotent.
 func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, bool, error) {
+	// THE CONFIG TRAVELS IN ONE ENV STRING, and Linux refuses to exec a process with a single env string
+	// over MAX_ARG_STRLEN (128 KiB): the failure is "fork/exec …: argument list too long", which names
+	// neither the variable nor its size. Say it here, where the size is known.
+	if len(req.ServeConfig) > maxServeConfigBytes {
+		return 0, "", false, fmt.Errorf("serve config is %d bytes, over the %d-byte limit for one environment string "+
+			"(Linux MAX_ARG_STRLEN): opencode cannot be exec'd with it. Large content (worker prompts) must be "+
+			"referenced as files rather than inlined", len(req.ServeConfig), maxServeConfigBytes)
+	}
 	reqJSON, err := json.Marshal(AgentRequest{
 		Cmd: "serve",
 		// The demanded adapter kind whose serve this starts.
