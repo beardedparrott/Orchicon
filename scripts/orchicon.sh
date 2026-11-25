@@ -454,8 +454,21 @@ rebuild_host() {
     echo "orchicon.sh: no 'make' on PATH — cannot rebuild. Build with your toolchain, then: scripts/orchicon.sh restart $inst" >&2
     return 1
   }
-  make -C "$ROOT" build
+  # STOP FIRST, THEN BUILD, THEN START — and refresh the runtime daemon after.
+  #
+  # THE OLD ORDER WAS build -> stop -> start, and it is what leaves processes on DELETED INODES. Replacing
+  # bin/orchicon while the plane is still running means the running process keeps the OLD inode mapped
+  # (correct POSIX behaviour — the file it is executing no longer has a name). `stop_host` then kills it
+  # and `start_host` starts the new one, so the PLANE is fine — but the RUNTIME DAEMON is host-wide and is
+  # not touched here at all, so it keeps serving the pre-build binary indefinitely. Two planes and the
+  # daemon were all found serving `bin/orchicon (deleted)` after rebuilds that reported success.
+  #
+  # Stopping first also means the new binary is never written while a process is executing it.
   stop_host "$inst"
+  make -C "$ROOT" build
+  # The daemon AFTER the build, deliberately: refreshing it earlier compares it against a binary that has
+  # not been rebuilt yet, which correctly answers "fresh" and then changes underneath it.
+  make -C "$ROOT" runtime-daemon-refresh
   start_host "$inst"
 }
 

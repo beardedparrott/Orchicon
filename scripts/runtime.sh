@@ -174,6 +174,32 @@ daemon_healthy() {
 daemon_is_stale() {
   local stable="$SOCKET_DIR/orchicon" fresh="$ROOT/bin/orchicon"
   [ -f "$fresh" ] || return 1
+  # A DAEMON EXECUTING A DELETED INODE IS STALE, AND NOTHING ELSE NOTICES.
+  #
+  # Everything below this line compares FILES ON DISK: bin/orchicon against the stable copy. Both can be
+  # current while the running process still holds the OLD inode — POSIX keeps a replaced executable alive
+  # for whoever already has it mapped. That is not hypothetical: after a rebuild, the daemon was found
+  # serving `bin/orchicon (deleted)` while this function reported it fresh, because the two files it
+  # compares had already converged. A rebuild then "restarted" nothing and the plane kept using a daemon
+  # from before the build.
+  #
+  # So ask the PROCESS, not the directory. /proc/<pid>/exe resolves to the inode actually mapped; the
+  # kernel appends " (deleted)" to it when that path no longer names the file being executed. procps is
+  # not required — /proc is the same fallback daemon_pid already uses for slim images.
+  local pid
+  pid="$(daemon_pid || true)"
+  if [ -n "$pid" ] && [ -r "/proc/$pid/exe" ]; then
+    case "$(readlink "/proc/$pid/exe" 2>/dev/null)" in
+      *" (deleted)") return 0 ;;
+    esac
+    # Also stale when the mapped file is simply not the one we just built — a daemon started from the
+    # stable copy is fine, one started from an older bin/orchicon is not.
+    local mapped
+    mapped="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+    if [ -n "$mapped" ] && [ -f "$mapped" ] && [ -f "$fresh" ] && ! cmp -s "$mapped" "$fresh"; then
+      return 0
+    fi
+  fi
   [ -f "$stable" ] || return 0
   ! cmp -s "$fresh" "$stable"
 }

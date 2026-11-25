@@ -508,6 +508,18 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 	return nil
 }
 
+// baseRepo strips a tag from an image ref, leaving the repository: "ghcr.io/x/y:dev-latest" -> "ghcr.io/x/y".
+func baseRepo(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if i := strings.LastIndexByte(ref, ':'); i >= 0 {
+		// Only a ':' AFTER the last '/' is a tag separator; a registry port (host:5000/repo) is not.
+		if j := strings.LastIndexByte(ref, '/'); i > j {
+			return ref[:i]
+		}
+	}
+	return ref
+}
+
 // seedAction is the canned-row reconciliation decision: what the seeder must
 // do with one stock row this boot.
 type seedAction int
@@ -554,9 +566,29 @@ func decideSeedAction(row db.RuntimeImageRow, info runtime.ImageInfo, variant st
 		return seedMarkReady
 	}
 	if !info.Present {
-		// THE TRAP, CLOSED. Nothing is downloaded for this tag, so there is nothing to reconcile: mark the
-		// row absent and DO NOT BUILD.
-		return seedMarkAbsent
+		// ABSENT IS TWO DIFFERENT SITUATIONS, and conflating them cost weeks.
+		//
+		//   PUBLISHED variant (the base): its tag is a ref SOMEONE ELSE BUILDS and the daemon pulls. There
+		//   is nothing to build here, so marking it absent is correct — and it is what keeps an install
+		//   from getting SLOWER (AC 10/11, the criterion this branch was written for).
+		//
+		//   LOCAL variant (dev, gui, web-research): its tag is a BUILD TARGET — LocalTag() is exactly
+		//   what scripts/runtime.sh produces. Absent therefore means "we have not built it yet", not
+		//   "nobody can", and skipping the build means it NEVER exists.
+		//
+		// THE COST, MEASURED: the stock-dev row pointed at `orchicon-runtime:orchicon-dev`, a tag the
+		// builder never emits (it builds `orchicon-runtime:dev`). The image was absent, the seed marked the
+		// row absent and skipped the build on every boot, and every runtime run died with "serve handshake:
+		// exit status 1" because the image lacked the adapters PR #882 added. An operator sees none of that
+		// chain — only the bare exit status.
+		//
+		// The build stays bounded: the guards above skip tenant-owned and user-diverged rows, `failed` is
+		// never auto-retried (so this cannot become a rebuild loop), and the build is asynchronous so plane
+		// boot is not blocked.
+		if _, published := variant.PublishedTag(baseRepo(row.Tag)); published {
+			return seedMarkAbsent
+		}
+		return seedBuild
 	}
 	// Present but not current: a stale seed (roll-forward) or a locally-built image carrying no version
 	// label.
