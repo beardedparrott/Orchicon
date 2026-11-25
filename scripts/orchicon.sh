@@ -558,6 +558,11 @@ rebuild_host() {
   done
 
   make -C "$ROOT" build
+  # RUNTIME IMAGES, before anything restarts. Same reasoning as full-rebuild: a rebuild that leaves the
+  # images behind reports success while every runtime run dispatches into the previous image. The stamp
+  # check inside scripts/runtime.sh makes this a no-op when the tree has not changed, so it costs nothing on
+  # the short route the operator uses for prod.
+  make -C "$ROOT" runtime-images
 
   # Bring the others back BEFORE the named instance, so a slow start on the one the operator asked for does
   # not leave the rest down. Each is reported: a rebuild must never quietly leave a plane stopped.
