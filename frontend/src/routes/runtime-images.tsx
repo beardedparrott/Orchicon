@@ -240,6 +240,14 @@ function RuntimeImagesPage() {
                     stock
                   </span>
                 )}
+                {img.source === "stock" && img.dockerfileOverride && (
+                  <span
+                    className="shrink-0 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800"
+                    title="This stock image has a customised Dockerfile and no longer receives updates shipped with Orchicon."
+                  >
+                    customised
+                  </span>
+                )}
                 {img.status === 4 && (img.failureReason || img.error) && (
                   <span className="flex max-w-64 items-center gap-1 truncate text-xs text-amber-700 dark:text-amber-300" role="alert">
                     <AlertTriangle className="h-3 w-3 shrink-0" aria-hidden="true" />

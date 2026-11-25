@@ -11,6 +11,7 @@ import {
   useResetRuntimeImage,
   useUpdateRuntimeImage,
   useDeleteRuntimeImage,
+  useStockImageTemplate,
 } from "@/api/runtimeImages";
 import { Button } from "@/components/ui/button";
 import {
@@ -52,6 +53,12 @@ function RuntimeImageDetailPage() {
   const { id } = Route.useParams();
   const navigate = useNavigate();
   const { data: img, isLoading, error } = useGetRuntimeImage(id);
+  // A STOCK ROW THAT STORES NO DOCKERFILE FOLLOWS THE ONE SHIPPED WITH THIS VERSION. Show that file — the
+  // generated-from-fields preview below describes a different image and would mislead.
+  const followsTemplate = img?.source === "stock" && !img?.dockerfileOverride;
+  const { data: shipped } = useStockImageTemplate(followsTemplate ? img?.tag ?? "" : "");
+  // A stock row WITH a stored Dockerfile has been customised: it no longer receives template updates.
+  const customisedStock = img?.source === "stock" && !!img?.dockerfileOverride;
   const buildImage = useBuildRuntimeImage();
   const fetchImage = useFetchRuntimeImage();
   const updateImage = useUpdateRuntimeImage();
@@ -131,6 +138,16 @@ function RuntimeImageDetailPage() {
         version: img.version,
       });
       setEditMode(false);
+    } catch (e) {
+      setBuildError(String(e));
+    }
+  };
+
+  const handleResetToShipped = async () => {
+    if (!img) return;
+    setBuildError("");
+    try {
+      await updateImage.mutateAsync({ id: img.id, dockerfileOverride: "", version: img.version });
     } catch (e) {
       setBuildError(String(e));
     }
@@ -218,6 +235,11 @@ function RuntimeImageDetailPage() {
                   stock
                 </span>
               )}
+              {customisedStock && (
+                <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+                  customised
+                </span>
+              )}
             </p>
           </div>
         </div>
@@ -302,12 +324,30 @@ function RuntimeImageDetailPage() {
             <CardHeader>
               <CardTitle>Dockerfile</CardTitle>
               <CardDescription>
-                The exact build input (base FROM rewritten by the daemon on build).
+                {followsTemplate
+                  ? "Follows the Dockerfile shipped with this version of Orchicon — it updates automatically when you upgrade."
+                  : "The exact build input (base FROM rewritten by the daemon on build)."}
               </CardDescription>
             </CardHeader>
             <CardContent>
+              {customisedStock && (
+                <div
+                  role="alert"
+                  className="mb-3 flex items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100"
+                >
+                  <span>
+                    This stock image has a customised Dockerfile, so it no longer receives updates shipped with
+                    Orchicon.
+                  </span>
+                  <Button size="sm" variant="outline" onClick={handleResetToShipped} disabled={updateImage.isPending}>
+                    Reset to shipped
+                  </Button>
+                </div>
+              )}
               <pre className="max-h-96 overflow-auto rounded-md bg-muted p-3 text-xs">
-                {d.dockerfileOverride || generateDockerfile(img.baseImageRef, d.apt, d.toolchains, d.env, d.includeAdapters)}
+                {d.dockerfileOverride ||
+                  (followsTemplate && shipped?.dockerfile) ||
+                  generateDockerfile(img.baseImageRef, d.apt, d.toolchains, d.env, d.includeAdapters)}
               </pre>
             </CardContent>
           </Card>
