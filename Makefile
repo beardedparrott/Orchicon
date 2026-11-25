@@ -1100,6 +1100,10 @@ runtime-status: ## Show whether the runtime daemon is answering, and its socket
 # a rebuild calls. Separated from runtime-daemon because the caller's intent differs: `make
 # runtime-daemon` is an operator saying "start it", while this is a build saying "make sure what is
 # running is what I just built" — and a build must never START a daemon the operator did not have.
+.PHONY: runtime-images
+runtime-images: ## Build the runtime container images IF the tree warrants it (no-op when unchanged)
+	@$(RUNTIME_SH) build
+
 .PHONY: runtime-daemon-refresh
 runtime-daemon-refresh: ## Restart the runtime daemon if (and only if) it serves a stale binary
 	@$(RUNTIME_SH) daemon-refresh
@@ -1172,6 +1176,19 @@ full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + i
 	# BEFORE the instance restart, so the plane comes up against the daemon it will actually use, and
 	# so any disruption lands while the plane is going down anyway.
 	$(MAKE) instance-rebuild instance=$(instance)
+	# RUNTIME IMAGES ARE PART OF A REBUILD — AND ONLY WHEN A CHANGE WARRANTS ONE.
+	#
+	# They were never part of it. `make rebuild-dev` rebuilt bin/orchicon and left the container images
+	# untouched, so a change to deploy/runtime/Dockerfile.* (the adapters PR #882 downloads into the image,
+	# for one) sat unreachable until somebody remembered `scripts/runtime.sh build`. That is how a runtime
+	# image stayed three weeks stale while the code moved on, and every run died in the serve handshake
+	# for want of an adapter the image was supposed to have.
+	#
+	# NOT UNCONDITIONALLY, because the base build is minutes and nothing else here is. `runtime-images`
+	# delegates the decision to scripts/runtime.sh, which already answers the only question that matters:
+	# image_needs_rebuild compares the image's version LABEL — a hash of the Dockerfile plus its inherited
+	# base — against the tree. An unchanged tree is a no-op with a log line; FORCE_RUNTIME=1 overrides.
+	$(MAKE) runtime-images
 	# THE DAEMON REFRESH GOES **AFTER** THE BUILD, AND THAT ORDER IS THE WHOLE FIX.
 	#
 	# It used to run BEFORE instance-rebuild — and instance-rebuild is what compiles bin/orchicon. So
