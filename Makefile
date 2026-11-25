@@ -1171,8 +1171,19 @@ full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + i
 	#
 	# BEFORE the instance restart, so the plane comes up against the daemon it will actually use, and
 	# so any disruption lands while the plane is going down anyway.
-	$(MAKE) runtime-daemon-refresh
 	$(MAKE) instance-rebuild instance=$(instance)
+	# THE DAEMON REFRESH GOES **AFTER** THE BUILD, AND THAT ORDER IS THE WHOLE FIX.
+	#
+	# It used to run BEFORE instance-rebuild — and instance-rebuild is what compiles bin/orchicon. So
+	# daemon_is_stale compared the running daemon against a binary that had not been rebuilt yet, correctly
+	# answered "fresh", and the build then replaced the binary underneath it. Every rebuild left the runtime
+	# daemon executing a DELETED inode, which is why two planes and the daemon were all found on deleted
+	# inodes after a rebuild that reported success.
+	#
+	# After the build, the comparison is against the binary that actually exists — and daemon_is_stale now
+	# also asks /proc/<pid>/exe, so a daemon holding the old inode is caught even when the on-disk files
+	# have converged.
+	$(MAKE) runtime-daemon-refresh
 	# THE DESKTOP APP IS PART OF A REBUILD, and it goes LAST for a reason: it is the slowest
 	# step, and it must not stand between a failing test and the operator hearing about it. A
 	# rebuild that reported a stale window as success — while the plane was rebuilt four times
