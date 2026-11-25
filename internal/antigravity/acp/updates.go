@@ -45,8 +45,10 @@ const (
 // The interface is sealed by the unexported isUpdate method: the set of variants is the set
 // decodeUpdate can produce, so a consumer's type switch over it is exhaustive.
 type Update interface {
-	// Kind is the sessionUpdate discriminator agy sent.
-	Kind() string
+	// SessionUpdate is the sessionUpdate discriminator agy sent (its WIRE kind). It is not
+	// called Kind() because a tool call's own `kind` field ("execute", "read", "edit") is a
+	// different thing and would collide with the accessor on ToolCall/ToolCallUpdate.
+	SessionUpdate() string
 	// SessionID is the session the update belongs to.
 	SessionID() string
 	// Raw is the update object exactly as agy sent it, for fields this package does not model.
@@ -81,7 +83,7 @@ type AgentMessageChunk struct {
 	Content ContentBlock
 }
 
-func (AgentMessageChunk) Kind() string { return KindAgentMessageChunk }
+func (AgentMessageChunk) SessionUpdate() string { return KindAgentMessageChunk }
 
 // AgentThoughtChunk is streamed reasoning text. agy 1.5.13 never emits it (docs 3.1), but the
 // task requires the type and a future agy may expose it.
@@ -90,7 +92,7 @@ type AgentThoughtChunk struct {
 	Content ContentBlock
 }
 
-func (AgentThoughtChunk) Kind() string { return KindAgentThoughtChunk }
+func (AgentThoughtChunk) SessionUpdate() string { return KindAgentThoughtChunk }
 
 // UserMessageChunk is a replayed user turn, seen on `session/load`.
 type UserMessageChunk struct {
@@ -98,7 +100,7 @@ type UserMessageChunk struct {
 	Content ContentBlock
 }
 
-func (UserMessageChunk) Kind() string { return KindUserMessageChunk }
+func (UserMessageChunk) SessionUpdate() string { return KindUserMessageChunk }
 
 // Location is one path a tool call touched.
 type Location struct {
@@ -157,7 +159,7 @@ type ToolCall struct {
 	ToolCallInfo
 }
 
-func (ToolCall) Kind() string { return KindToolCall }
+func (ToolCall) SessionUpdate() string { return KindToolCall }
 
 // ToolCallUpdate is a later state of an existing tool call, including diff content.
 type ToolCallUpdate struct {
@@ -165,7 +167,7 @@ type ToolCallUpdate struct {
 	ToolCallInfo
 }
 
-func (ToolCallUpdate) Kind() string { return KindToolCallUpdate }
+func (ToolCallUpdate) SessionUpdate() string { return KindToolCallUpdate }
 
 // PlanEntry is one step of a plan.
 type PlanEntry struct {
@@ -180,7 +182,7 @@ type Plan struct {
 	Entries []PlanEntry
 }
 
-func (Plan) Kind() string { return KindPlan }
+func (Plan) SessionUpdate() string { return KindPlan }
 
 // UsageUpdate is the context-window gauge agy emits around a turn (`used` of `size`).
 type UsageUpdate struct {
@@ -195,7 +197,7 @@ type UsageUpdate struct {
 	TotalTokens   *int64 `json:"totalTokens,omitempty"`
 }
 
-func (UsageUpdate) Kind() string { return KindUsageUpdate }
+func (UsageUpdate) SessionUpdate() string { return KindUsageUpdate }
 
 // Command is one slash command agy offers.
 type Command struct {
@@ -209,7 +211,7 @@ type AvailableCommands struct {
 	Commands []Command
 }
 
-func (AvailableCommands) Kind() string { return KindAvailableCommands }
+func (AvailableCommands) SessionUpdate() string { return KindAvailableCommands }
 
 // CurrentModeUpdate reports the session's mode (default / accept-edits / auto / plan).
 type CurrentModeUpdate struct {
@@ -217,7 +219,7 @@ type CurrentModeUpdate struct {
 	ModeID string
 }
 
-func (CurrentModeUpdate) Kind() string { return KindCurrentModeUpdate }
+func (CurrentModeUpdate) SessionUpdate() string { return KindCurrentModeUpdate }
 
 // ConfigOptionUpdate carries the current config options (model family, thought level, mode).
 type ConfigOptionUpdate struct {
@@ -225,7 +227,7 @@ type ConfigOptionUpdate struct {
 	Options json.RawMessage
 }
 
-func (ConfigOptionUpdate) Kind() string { return KindConfigOptionUpdate }
+func (ConfigOptionUpdate) SessionUpdate() string { return KindConfigOptionUpdate }
 
 // SessionInfoUpdate carries the conversation title agy derives from the first prompt.
 type SessionInfoUpdate struct {
@@ -233,7 +235,7 @@ type SessionInfoUpdate struct {
 	Title string
 }
 
-func (SessionInfoUpdate) Kind() string { return KindSessionInfoUpdate }
+func (SessionInfoUpdate) SessionUpdate() string { return KindSessionInfoUpdate }
 
 // Unknown is an update this package does not model, or one whose payload did not decode. It is
 // logged at debug level and otherwise ignored; the session continues.
@@ -246,9 +248,9 @@ type Unknown struct {
 	Err error
 }
 
-// Kind implements Update. It is a method here (while the value lives in UpdateKind) so a caller
-// can distinguish "agy invented a kind" from "agy changed a known one".
-func (u Unknown) Kind() string { return u.UpdateKind }
+// SessionUpdate implements Update. The wire kind lives in UpdateKind so a caller can tell "agy
+// invented a kind" (Err == nil) from "agy changed a known one" (Err != nil).
+func (u Unknown) SessionUpdate() string { return u.UpdateKind }
 
 // updateHeader is the discriminator-only view of an update object.
 type updateHeader struct {

@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,14 +31,26 @@ type Session struct {
 	// done closes when the session or client ends; it releases the queue pump.
 	done     chan struct{}
 	doneOnce sync.Once
+	closed   atomic.Bool
 
 	// promptMu serialises turns: agy defines no behaviour for a second session/prompt while one
 	// is in flight (docs, GAP TABLE), so a caller has to queue behind the current turn.
 	promptMu sync.Mutex
 }
 
-// newSession builds and registers a session.
+// newSession returns the Session for id, building and registering one if there is not already a
+// live one.
+//
+// REUSE, NOT REPLACE, IS THE POINT: `session/resume` re-attaches the SAME agy conversation, so its
+// updates keep arriving with the same sessionId. Registering a second Session object for that id
+// would silently orphan the first one's Events() channel — the caller holding it would wait
+// forever. One id, one Session.
 func (c *conn) newSession(id string) *Session {
+	c.sessMu.Lock()
+	if existing, ok := c.sessions[id]; ok && existing.isLive() {
+		c.sessMu.Unlock()
+		return existing
+	}
 	s := &Session{
 		conn:   c,
 		id:     id,
@@ -46,6 +59,7 @@ func (c *conn) newSession(id string) *Session {
 		done:   make(chan struct{}),
 	}
 	go s.queue.pump(s.events, s.done)
+	c.sessMu.Unlock()
 	c.registerSession(s)
 	return s
 }
@@ -63,10 +77,14 @@ func (s *Session) push(u Update) { s.queue.push(u) }
 // closeEvents ends the events stream exactly once.
 func (s *Session) closeEvents() {
 	s.doneOnce.Do(func() {
+		s.closed.Store(true)
 		s.queue.close()
 		close(s.done)
 	})
 }
+
+// isLive reports whether this session can still receive updates.
+func (s *Session) isLive() bool { return !s.closed.Load() }
 
 // NewSession opens a conversation (`session/new`).
 func (c *Client) NewSession(ctx context.Context, p NewSessionParams) (*Session, *SessionState, error) {
