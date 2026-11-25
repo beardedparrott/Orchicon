@@ -1996,7 +1996,7 @@ func (r *WorktreeReconciler) addWorktreeOrFreeStale(ctx context.Context, project
 	if err == nil {
 		return nil
 	}
-	if !strings.Contains(err.Error(), "is already used by worktree") {
+	if !isBranchClaimedErr(err) {
 		return err
 	}
 	r.log.Warn("worktree: the branch is claimed by a stale registration — pruning and retrying once",
@@ -2009,6 +2009,23 @@ func (r *WorktreeReconciler) addWorktreeOrFreeStale(ctx context.Context, project
 		return rerr
 	}
 	return nil
+}
+
+// isBranchClaimedErr reports whether a worktree-add failure is git refusing because the BRANCH is
+// already attached to another worktree's registration.
+//
+// TWO WORDINGS, AND THE DIFFERENCE IS GIT'S, NOT OURS. Newer git says "is already used by worktree
+// at <path>"; git 2.39 (and the older releases still shipping on many hosts) says "is already
+// checked out at <path>". Matching only the newer wording meant the stale-registration repair below
+// never ran on those hosts, so a registration the host could not satisfy held the branch
+// permanently — the exact failure this repair exists to clear.
+func isBranchClaimedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "is already used by worktree") ||
+		strings.Contains(msg, "is already checked out at")
 }
 
 // isAlreadyTrackedErr reports whether a worktree-add failure is the
