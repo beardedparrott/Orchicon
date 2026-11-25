@@ -1197,33 +1197,25 @@ full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + i
 	# unconditionally would disturb a sibling instance's in-flight work every time anyone rebuilt.
 	# Staleness is the only condition worth acting on, and it is always available to compare.
 	#
-	# BEFORE the instance restart, so the plane comes up against the daemon it will actually use, and
-	# so any disruption lands while the plane is going down anyway.
-	$(MAKE) instance-rebuild instance=$(instance)
-	# RUNTIME IMAGES ARE PART OF A REBUILD — AND ONLY WHEN A CHANGE WARRANTS ONE.
+	# RUNTIME IMAGES FIRST — BEFORE THE INSTANCE IS REBUILT AND RESTARTED.
 	#
-	# They were never part of it. `make rebuild-dev` rebuilt bin/orchicon and left the container images
-	# untouched, so a change to deploy/runtime/Dockerfile.* (the adapters PR #882 downloads into the image,
-	# for one) sat unreachable until somebody remembered `scripts/runtime.sh build`. That is how a runtime
-	# image stayed three weeks stale while the code moved on, and every run died in the serve handshake
-	# for want of an adapter the image was supposed to have.
+	# They used to run AFTER instance-rebuild, which meant the plane had already been restarted onto a world
+	# whose images it had not yet built. Measured on this host: after a `make rebuild-dev` the images were
+	# still twelve hours old and labelled v0.6.37 against a tree at v0.6.39, and only a manual
+	# `scripts/runtime.sh build` corrected them. A rebuild reported success while every runtime run would
+	# have used the previous image.
 	#
-	# NOT UNCONDITIONALLY, because the base build is minutes and nothing else here is. `runtime-images`
-	# delegates the decision to scripts/runtime.sh, which already answers the only question that matters:
-	# image_needs_rebuild compares the image's version LABEL — a hash of the Dockerfile plus its inherited
-	# base — against the tree. An unchanged tree is a no-op with a log line; FORCE_RUNTIME=1 overrides.
+	# ORDERING COSTS NOTHING HERE BECAUSE THE DECISION IS A STAMP CHECK. `runtime-images` delegates to
+	# scripts/runtime.sh, whose image_needs_rebuild compares the image's version label — a hash of the
+	# Dockerfile plus its inherited base — against the tree. An unchanged tree is one log line and no work, so
+	# it can run first without slowing the common case; FORCE_RUNTIME=1 overrides.
+	#
+	# THE DAEMON, by contrast, is refreshed AFTER the build: it compares itself against bin/orchicon, so
+	# refreshing it earlier compares against a binary that has not been rebuilt yet, correctly answers
+	# "fresh", and then has the binary replaced underneath it. That is how every rebuild used to leave the
+	# daemon on a deleted inode.
 	$(MAKE) runtime-images
-	# THE DAEMON REFRESH GOES **AFTER** THE BUILD, AND THAT ORDER IS THE WHOLE FIX.
-	#
-	# It used to run BEFORE instance-rebuild — and instance-rebuild is what compiles bin/orchicon. So
-	# daemon_is_stale compared the running daemon against a binary that had not been rebuilt yet, correctly
-	# answered "fresh", and the build then replaced the binary underneath it. Every rebuild left the runtime
-	# daemon executing a DELETED inode, which is why two planes and the daemon were all found on deleted
-	# inodes after a rebuild that reported success.
-	#
-	# After the build, the comparison is against the binary that actually exists — and daemon_is_stale now
-	# also asks /proc/<pid>/exe, so a daemon holding the old inode is caught even when the on-disk files
-	# have converged.
+	$(MAKE) instance-rebuild instance=$(instance)
 	$(MAKE) runtime-daemon-refresh
 	# THE DESKTOP APP IS PART OF A REBUILD, and it goes LAST for a reason: it is the slowest
 	# step, and it must not stand between a failing test and the operator hearing about it. A
