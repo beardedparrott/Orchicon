@@ -70,6 +70,10 @@ func EnsureCatalogRows(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 			_ = ttx.Rollback(ctx)
 			continue
 		}
+		if tagHeldByTenantRow(ctx, ttx.Tx, tag) {
+			_ = ttx.Rollback(ctx)
+			continue
+		}
 		if _, err := db.CreateRuntimeImage(ctx, ttx.Tx, cannedRowRow(variant, tag, content, base)); err != nil {
 			_ = ttx.Rollback(ctx)
 			if log != nil {
@@ -89,6 +93,21 @@ func EnsureCatalogRows(ctx context.Context, pool *db.Pool, log *slog.Logger) {
 	}
 }
 
+// tagHeldByTenantRow reports whether a tenant-created (non-stock) image already owns tag. A stock row on the
+// same tag would be a second, contradictory entry for one image — the "two web-research rows" report.
+func tagHeldByTenantRow(ctx context.Context, tx pgx.Tx, tag string) bool {
+	rows, err := db.ListRuntimeImages(ctx, tx, db.RuntimeImageFilter{TenantID: cannedTenant})
+	if err != nil {
+		return false
+	}
+	for _, r := range rows {
+		if r.Source != "stock" && r.Tag == tag {
+			return true
+		}
+	}
+	return false
+}
+
 // cannedRowRow is the row a shipped variant is created with: source='stock', the pristine template
 // plus its seed marker, and the NOT-DOWNLOADED status.
 func cannedRowRow(v stockVariant, ref string, content []byte, baseRef string) db.RuntimeImageRow {
@@ -102,7 +121,7 @@ func cannedRowRow(v stockVariant, ref string, content []byte, baseRef string) db
 		AptPackages:        []byte("[]"),
 		Toolchains:         []byte("[]"),
 		Env:                []byte("{}"),
-		DockerfileOverride: string(content) + fmt.Sprintf("# %s=%s\n", cannedSeedMarker, seedVersion(content)),
+		DockerfileOverride: "", // FOLLOWS THE SHIPPED TEMPLATE — see seedState
 		Tag:                ref,
 		Status:             RuntimeImageStatusAbsent,
 		Source:             "stock",
@@ -201,7 +220,7 @@ func SeedCannedImages(ctx context.Context, pool *db.Pool, log *slog.Logger, rt *
 			continue // operator-added daemon-only image; no shipped template to seed
 		}
 		covered[stockSlug(variant)] = true
-		if err := seedOneCannedImage(ctx, svc, ref, variant, infos[ref], imgs.Default); err != nil {
+		if err := seedOneCannedImage(ctx, svc, ref, variant, infos[ref], imgs.Default, true); err != nil {
 			log.Warn("canned runtime image seed failed", "tag", ref, "error", err)
 		}
 	}
@@ -214,7 +233,7 @@ func SeedCannedImages(ctx context.Context, pool *db.Pool, log *slog.Logger, rt *
 		}
 		// An all-empty ImageInfo means "no local evidence" — the row keeps built_version stale, so the
 		// presence check reports it as not downloaded and the fetch button appears.
-		if err := seedOneCannedImage(ctx, svc, tag, variant, runtime.ImageInfo{}, base); err != nil {
+		if err := seedOneCannedImage(ctx, svc, tag, variant, runtime.ImageInfo{}, base, true); err != nil {
 			log.Warn("canned runtime image seed failed", "tag", tag, "error", err)
 		}
 	}
@@ -233,7 +252,7 @@ func seedPublishedCatalog(ctx context.Context, pool *db.Pool, log *slog.Logger, 
 		}
 		// An all-empty ImageInfo means "no local evidence" — the row keeps built_version stale, so
 		// the presence check reports it as not downloaded and the fetch button appears.
-		if err := seedOneCannedImage(ctx, svc, tag, variant, runtime.ImageInfo{}, base); err != nil {
+		if err := seedOneCannedImage(ctx, svc, tag, variant, runtime.ImageInfo{}, base, false); err != nil {
 			log.Warn("canned runtime image seed failed", "tag", tag, "error", err)
 		}
 	}
@@ -387,14 +406,23 @@ func stockRowForVariant(ctx context.Context, tx pgx.Tx, variant stockVariant, re
 }
 
 // seedOneCannedImage creates or reconciles one canned stock row for a tag.
-func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant stockVariant, info runtime.ImageInfo, defaultRef string) error {
+//
+// reconcileTag says whether this pass may MOVE an existing row's tag to ref. It is false when ref was derived
+// from the published catalogue because the daemon could not be asked: the tag the daemon reports (a local
+// build) and the catalogue's (a registry ref) differ for the base, and moving the row to whichever answer this
+// boot happened to get made stock-base flip on every restart.
+func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant stockVariant, info runtime.ImageInfo, defaultRef string, reconcileTag bool) error {
 	content, err := assets.RuntimeImageTemplatesFS.ReadFile(variant.File)
 	if err != nil {
 		return fmt.Errorf("read stock template %s: %w", variant.File, err)
 	}
 	// The shipped Dockerfiles end with a newline, so the marker forms its own final line: `...# \n#
 	// orchicon.seed=<sha12-of-content>\n`.
-	seedDockerfile := string(content) + fmt.Sprintf("# %s=%s\n", cannedSeedMarker, seedVersion(content))
+	// A STOCK ROW STORES NO DOCKERFILE. An empty override means "build from the template shipped in this
+	// binary" (generatedDockerfile), so the row can never fall behind the template. It used to store a copy
+	// plus a hash marker; one accidental edit made the seeder treat the row as operator-owned forever, and
+	// a stale copy kept building a 14 GB image after the template had been fixed.
+	seedDockerfile := ""
 
 	ttx, err := svc.pool.BeginTenantTx(ctx, cannedTenant)
 	if err != nil {
@@ -405,6 +433,10 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 	// LOOK UP BY VARIANT (slug), NOT BY TAG — and that is the fix for the duplicated rows.
 	row, duplicatesRemoved, err := stockRowForVariant(ctx, ttx.Tx, variant, ref, svc.log)
 	if errors.Is(err, db.ErrNotFound) {
+		if tagHeldByTenantRow(ctx, ttx.Tx, ref) {
+			svc.log.Info("canned runtime image not seeded: a tenant-created image already holds this tag", "tag", ref)
+			return nil
+		}
 		row, err = db.CreateRuntimeImage(ctx, ttx.Tx, db.RuntimeImageRow{
 			ID:                 db.NewID(),
 			TenantID:           cannedTenant,
@@ -435,7 +467,11 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 
 	pristine, current := seedState(row.DockerfileOverride, content)
 	if !pristine {
-		// User-diverged (edited the body or removed the marker) — never touch.
+		// User-diverged (edited the body or removed the marker) — never touch, but SAY SO: this row no longer
+		// follows the shipped template, and nothing else tells the operator that.
+		svc.log.Warn("stock runtime image has a customised Dockerfile — it is NOT receiving template updates; "+
+			"reset it to the shipped template in the Runtime Images page to follow it again",
+			"slug", row.Slug, "tag", row.Tag)
 		return nil
 	}
 
@@ -444,7 +480,7 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 	reconciled := false
 
 	// RECONCILE THE TAG, so one row tracks whichever tag this variant is known by NOW.
-	if row.Tag != ref {
+	if reconcileTag && row.Tag != ref {
 		newTag := ref
 		moved, terr := db.UpdateRuntimeImage(ctx, ttx.Tx, cannedTenant, row.ID, row.Version,
 			db.UpdateRuntimeImageFields{Tag: &newTag, StatusOnly: true})
@@ -454,6 +490,19 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 		svc.log.Info("canned runtime image: tag reconciled to this host's", "slug", row.Slug, "from", row.Tag, "to", ref)
 		row = moved
 		reconciled = true
+	}
+
+	// A LEGACY ROW still carries a stored copy that matches today's template: drop the copy, keep the build.
+	// StatusOnly, so the spec version does not move and an image that is already built is not rebuilt.
+	migrated := false
+	if current && row.DockerfileOverride != "" {
+		empty := ""
+		row, err = db.UpdateRuntimeImage(ctx, ttx.Tx, cannedTenant, row.ID, row.Version,
+			db.UpdateRuntimeImageFields{DockerfileOverride: &empty, StatusOnly: true})
+		if err != nil {
+			return fmt.Errorf("migrate canned image %s to follow the template: %w", ref, err)
+		}
+		migrated = true
 	}
 
 	rolledForward := false
@@ -472,7 +521,7 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 	switch decideSeedAction(row, info, variant, pristine, current) {
 	case seedSkip:
 		// Nothing to reconcile.
-		if rolledForward || reconciled || duplicatesRemoved > 0 {
+		if rolledForward || reconciled || migrated || duplicatesRemoved > 0 {
 			if err := ttx.Commit(ctx); err != nil {
 				return err
 			}
@@ -603,6 +652,10 @@ func decideSeedAction(row db.RuntimeImageRow, info runtime.ImageInfo, variant st
 //	                  roll forward + rebuild.
 //	pristine=true,  current=true  → the current seed: reconcile in place.
 func seedState(override string, currentContent []byte) (pristine, current bool) {
+	// NO STORED COPY = FOLLOWS THE SHIPPED TEMPLATE: nothing to diverge, always current.
+	if strings.TrimSpace(override) == "" {
+		return true, true
+	}
 	idx := strings.LastIndex(override, "# "+cannedSeedMarker+"=")
 	if idx < 0 {
 		return false, false
