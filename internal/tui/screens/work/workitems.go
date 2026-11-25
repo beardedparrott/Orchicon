@@ -688,7 +688,27 @@ func (m *Model) itemActions() []kit2.Action {
 				_, err := m.cl.WorkItems.RestoreWorkItem(ctx, connect.NewRequest(&apiv1.RestoreWorkItemRequest{Id: id}))
 				return err
 			},
-		}}
+		},
+			// THE ARCHIVE IS WHERE FINISHED WORK ACCUMULATES, so it must be emptyable from here.
+			//
+			// This pane returned restore ALONE, which left an archived item with no way out at all:
+			// the active views cannot reach it (the list query filters archived_at IS NULL), and
+			// restore only puts it back. An item archived by mistake and no longer wanted could only
+			// be deleted by leaving the TUI for the GUI.
+			{
+				Label: "delete", Key: kit2.DeleteChord, Danger: true, Source: srcWorkItems,
+				Confirm: "Permanently delete " + title + "?\n" +
+					"This removes it and its dependencies for good — it cannot be undone, and unlike\n" +
+					"restore there is no way back. An item with children is refused (delete the children\n" +
+					"first).",
+				Apply:    func() { m.RemoveRow(srcWorkItems, id) },
+				Rollback: func() { m.Refresh(srcWorkItems) },
+				Do: func(ctx context.Context) error {
+					_, err := m.cl.WorkItems.HardDeleteWorkItem(ctx, connect.NewRequest(&apiv1.HardDeleteWorkItemRequest{Id: id}))
+					return err
+				},
+			},
+		}
 	}
 	// A RUNNING ITEM CAN BE STOPPED HERE, WITHOUT finding its execution first.
 	return []kit2.Action{

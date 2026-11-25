@@ -363,6 +363,19 @@ export const STATUS_FILTER_OPTIONS = [
   { value: WorkItemStatus.RECURRING, label: "Recurring" },
   { value: WorkItemStatus.BLOCKED, label: "Blocked" },
   { value: WorkItemStatus.SKIPPED, label: "Skipped" },
+  // ARCHIVED IS A REAL STATUS THE SERVER WRITES, and leaving it out of this
+  // list was a live bug rather than a tidy-up: db.ArchiveWorkItem sets
+  // status='archived', so every archived row carries this value, and
+  // filterItemsByKindStatus (which is `statuses.includes(i.status)`) matched
+  // NONE of them. The archive view counted 0 visible items and its header
+  // select-all therefore selected nothing — the operator saw "1 work item"
+  // with 81 archived rows on screen.
+  //
+  // It belongs here even though the archive view does not apply the filter
+  // (buildArchiveTreeData reads the archived set directly): the filter
+  // vocabulary is the set of statuses this UI knows about, and a status the
+  // database can return must not be one the UI cannot name.
+  { value: WorkItemStatus.ARCHIVED, label: "Archived" },
 ];
 
 /** Every status value offered by the status filter — the default

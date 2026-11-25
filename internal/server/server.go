@@ -15,6 +15,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
+	"github.com/beardedparrott/orchicon/internal/antigravity"
 	"github.com/beardedparrott/orchicon/internal/api"
 	"github.com/beardedparrott/orchicon/internal/askorchicon"
 	"github.com/beardedparrott/orchicon/internal/auth"
@@ -81,6 +82,10 @@ type Server struct {
 	askServePool  *opencode.HostServePool
 	// claudeBridge is the claude adapter, held so plane shutdown can retire its Ask sessions.
 	claudeBridge *claude.Bridge
+	// antigravityBridge is the antigravity (agy) adapter. A STUB today (Start refuses with
+	// ErrNotImplemented); held here because the server wiring — registration, the ready adapter row
+	// and the runtime client — must already be correct when children 5/6 give it session behaviour.
+	antigravityBridge *antigravity.Bridge
 	// askService is the Ask Orchicon service, held so plane shutdown can close its per-conversation MCP
 	// clients.
 	askService *askorchicon.Service
@@ -564,6 +569,15 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	})
 	dispatcher.Register(adapter.KindClaude, claudeBridge)
 
+	// Antigravity (agy) bridge (kind "antigravity", provider "google"). The bridge is a STUB today:
+	// Start refuses with ErrNotImplemented. It is registered ANYWAY, and that is the point — an
+	// unregistered kind produces `no ready adapters of kind "antigravity"`, which is the opaque
+	// failure this platform has hit three times (opencode, orchicon, claude). A registered stub
+	// makes the kind discoverable and routable so children 5/6 fill in behaviour behind a boundary
+	// that already exists.
+	agyBridge := antigravity.New(log)
+	dispatcher.Register(adapter.KindAntigravity, agyBridge)
+
 	// Per-adapter enable/disable (AC 3): every kind named in ORCHICON_DISABLED_ADAPTER_KINDS is
 	// switched OFF for this plane.
 	for _, kind := range strings.Split(os.Getenv("ORCHICON_DISABLED_ADAPTER_KINDS"), ",") {
@@ -590,7 +604,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		blobs: blobs, authH: authHandler, webhookD: webhookDisp, logWriter: logWriter,
 		hostServe: hostServe, askHostServe: askServe,
 		hostServePool: hostServePool, askServePool: askServePool,
-		claudeBridge: claudeBridge}
+		claudeBridge: claudeBridge, antigravityBridge: agyBridge}
 	if deps.AskService != nil {
 		// The Ask service holds the per-conversation MCP clients, so it is the
 		// object plane shutdown must reach; keep the reference.
@@ -640,6 +654,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			// The claude adapter routes its streaming session into the run's
 			// container over the daemon's duplex stdio transport.
 			claudeBridge.SetRuntimeClient(rtClient)
+			// The antigravity adapter will route its session into the run's container the same way;
+			// wired now so the stub's replacement inherits a correct server.
+			agyBridge.SetRuntimeClient(rtClient)
 			// Execution liveness: fail executions orphaned by a plane restart or a lost runtime container so
 			// recovery re-dispatches.
 			s.reaper = scheduler.NewExecutionReaper(pool, activeProbe(dispatcher, pool, log), taskRec.FailLostExecution, log)
@@ -1176,6 +1193,7 @@ func devAdapterSeeds() []devAdapterSeed {
 		{"adp_opencode_dev", adapter.KindOpencode, opencode.BuildCapabilitiesJSON},
 		{"adp_orchicon_dev", adapter.KindOrchicon, orchicon.BuildCapabilitiesJSON},
 		{"adp_claude_dev", adapter.KindClaude, claude.BuildCapabilitiesJSON},
+		{"adp_antigravity_dev", adapter.KindAntigravity, antigravity.BuildCapabilitiesJSON},
 	}
 }
 
@@ -1236,35 +1254,73 @@ func seedDevAdapterKind(ctx context.Context, pool *db.Pool, log *slog.Logger, ad
 }
 
 // activeProbe returns the execution-reaper liveness probe for the dispatcher.
+// adapterIDOf renders the execution's adapter id for a log field.
+func adapterIDOf(exec db.ExecutionRow) string {
+	if exec.AdapterID == nil {
+		return ""
+	}
+	return *exec.AdapterID
+}
+
 func activeProbe(dispatcher *scheduler.Dispatcher, pool *db.Pool, log *slog.Logger) func(exec db.ExecutionRow) bool {
 	return func(exec db.ExecutionRow) bool {
 		ctx := context.Background()
 		tx, err := pool.BeginTenantTx(ctx, "tnt_dev")
 		if err != nil {
-			log.Warn("liveness probe: begin tx failed", "execution", exec.ID, "error", err)
-			return false
+			log.Warn("liveness probe: begin tx failed — verdict UNKNOWN, not dead", "execution", exec.ID, "error", err)
+			// UNKNOWN IS NOT DEAD. Only a bridge that positively says "I do not have this execution" may
+			// authorize a kill; a database hiccup or an unregistered bridge must not.
+			return true
 		}
 		defer tx.Rollback(ctx)
-		ver, err := db.GetLatestWorkerVersion(ctx, tx.Tx, "tnt_dev", exec.WorkerID, true)
-		if err != nil {
-			log.Warn("liveness probe: worker version lookup failed", "execution", exec.ID, "error", err)
-			return false
+		// PROBE THE BRIDGE THE EXECUTION ACTUALLY RAN ON — NOT THE ONE ITS WORKER IS PINNED TO NOW.
+		//
+		// This used to resolve the kind from the worker's CURRENT published model_ref and probe that
+		// bridge. The two can differ, and when they do the probe asks the WRONG bridge whether an
+		// execution is alive: that bridge has never heard of it, answers "not active", and the reaper
+		// kills a run that is working perfectly.
+		//
+		// MEASURED (prod run 01M87T2BG0TV1XZ6HSEYEC9KCB, 22:18): execution 01M87T75ZX ran on
+		// adp_orchicon_dev and the worker's model_ref was opencode/... , so the probe asked the OPENCODE
+		// bridge, which returned false. The reaper failed the execution as "execution lost: control plane
+		// restarted or runtime container gone" — 217 seconds in, while that session went on to log
+		// StopLength continuation turns at 22:32 and 22:38. It was alive the whole time.
+		//
+		// The execution row records the adapter it was dispatched against. That is the authority.
+		kind := ""
+		if exec.AdapterID != nil && *exec.AdapterID != "" {
+			if arow, aerr := db.GetAdapter(ctx, tx.Tx, "tnt_dev", *exec.AdapterID); aerr == nil && arow.Kind != "" {
+				kind = arow.Kind
+			} else if aerr != nil {
+				// A missing adapter row is not automatically "not alive": fall through to the worker's
+				// pinned kind rather than reaping on a bookkeeping gap.
+				log.Warn("liveness probe: execution adapter row unavailable — falling back to the worker's kind",
+					"execution", exec.ID, "adapter_id", *exec.AdapterID, "error", aerr)
+			}
 		}
-		kind := adapter.AdapterKind(ver.ModelRef)
 		if kind == "" {
-			// Same fallback the reconciler applies at dispatch time: an empty/malformed model_ref dispatches
-			// under the legacy default kind.
-			kind = adapter.DefaultAdapterKind
+			ver, err := db.GetLatestWorkerVersion(ctx, tx.Tx, "tnt_dev", exec.WorkerID, true)
+			if err != nil {
+				log.Warn("liveness probe: worker version lookup failed", "execution", exec.ID, "error", err)
+				// NOT ALIVE IS NOT THE SAME AS UNKNOWN. A bookkeeping failure must not authorize a kill.
+				return true
+			}
+			kind = adapter.AdapterKind(ver.ModelRef)
+			if kind == "" {
+				kind = adapter.DefaultAdapterKind
+			}
 		}
 		bridge, err := dispatcher.Resolve(kind)
 		if err != nil {
-			log.Warn("liveness probe: no bridge for kind", "execution", exec.ID, "kind", kind, "error", err)
-			return false
+			log.Warn("liveness probe: no bridge for kind — verdict UNKNOWN, not dead",
+				"execution", exec.ID, "kind", kind, "adapter_id", adapterIDOf(exec), "error", err)
+			return true
 		}
 		rep, ok := bridge.(scheduler.LivenessReporter)
 		if !ok {
-			log.Warn("liveness probe: bridge does not support liveness", "execution", exec.ID, "kind", kind)
-			return false
+			log.Warn("liveness probe: bridge does not support liveness — verdict UNKNOWN, not dead",
+				"execution", exec.ID, "kind", kind)
+			return true
 		}
 		return rep.IsExecutionActive(exec.ID)
 	}

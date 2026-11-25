@@ -25,6 +25,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/beardedparrott/orchicon/internal/gitenv"
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
@@ -1379,6 +1380,10 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitCmdTimeout)
 	defer cancel()
 	cmd := procwin.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	// NEVER INHERIT A REPOSITORY POINTER. -C names the target; GIT_DIR/GIT_WORK_TREE would silently
+	// override it, and this function runs `reset --hard` and `clean -fd` (restoreWorkTree) — the most
+	// destructive git in the codebase. Redirected, they run against the wrong tree.
+	cmd.Env = gitenv.Clean(os.Environ())
 	// CombinedOutput is the point: git writes the sentence that names a fatal failure — `fatal: invalid
 	// reference`, `fatal: not a git repository`, an auth prompt rejected — to stderr.
 	out, err := cmd.CombinedOutput()
@@ -1996,7 +2001,7 @@ func (r *WorktreeReconciler) addWorktreeOrFreeStale(ctx context.Context, project
 	if err == nil {
 		return nil
 	}
-	if !isBranchClaimedErr(err) {
+	if !branchClaimRefusal(err) {
 		return err
 	}
 	r.log.Warn("worktree: the branch is claimed by a stale registration — pruning and retrying once",
@@ -2011,15 +2016,16 @@ func (r *WorktreeReconciler) addWorktreeOrFreeStale(ctx context.Context, project
 	return nil
 }
 
-// isBranchClaimedErr reports whether a worktree-add failure is git refusing because the BRANCH is
-// already attached to another worktree's registration.
+// branchClaimRefusal reports whether a `git worktree add <path> -b <branch>` was refused because the
+// BRANCH IS ALREADY CHECKED OUT SOMEWHERE, which is the one refusal the stale-registration recovery
+// can act on.
 //
-// TWO WORDINGS, AND THE DIFFERENCE IS GIT'S, NOT OURS. Newer git says "is already used by worktree
-// at <path>"; git 2.39 (and the older releases still shipping on many hosts) says "is already
-// checked out at <path>". Matching only the newer wording meant the stale-registration repair below
-// never ran on those hosts, so a registration the host could not satisfy held the branch
-// permanently — the exact failure this repair exists to clear.
-func isBranchClaimedErr(err error) bool {
+// TWO WORDINGS, ONE CONDITION, and matching only one of them is a silent regression: git changed this
+// message at 2.39 ("is already used by worktree" → "is already checked out at"), so a single literal
+// made the recovery dead code on every newer git while the refusal itself kept happening. The symptom
+// is a branch that can never be reclaimed and a worktree that never provisions, with no error naming
+// the reason. Both spellings are matched for exactly that reason.
+func branchClaimRefusal(err error) bool {
 	if err == nil {
 		return false
 	}

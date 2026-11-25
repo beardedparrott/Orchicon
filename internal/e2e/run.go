@@ -10,8 +10,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -26,18 +26,18 @@ import (
 func Run(args []string) error {
 	fs := flag.NewFlagSet("orchicon e2e", flag.ContinueOnError)
 	var (
-		instance    = fs.String("instance", "", "dev|test|prod — target that instance's control port and ITS saved credential")
-		profile     = fs.String("profile", "", "orch profile to use (default: $ORCHICON_PROFILE, else the active profile)")
-		baseURL     = fs.String("url", "", "plane base URL (default: the resolved profile's, else $ORCHICON_URL)")
-		token       = fs.String("token", "", "bearer token (default: the resolved profile's, else $ORCHICON_TOKEN)")
-		projectID   = fs.String("project", "", "reuse this project (default: create a throwaway one)")
+		instance  = fs.String("instance", "", "dev|test|prod — target that instance's control port and ITS saved credential")
+		profile   = fs.String("profile", "", "orch profile to use (default: $ORCHICON_PROFILE, else the active profile)")
+		baseURL   = fs.String("url", "", "plane base URL (default: the resolved profile's, else $ORCHICON_URL)")
+		token     = fs.String("token", "", "bearer token (default: the resolved profile's, else $ORCHICON_TOKEN)")
+		projectID = fs.String("project", "", "reuse this project (default: create a throwaway one)")
 		// NO DEFAULT TAG, DELIBERATELY — see resolveRuntimeImage. A literal here is a tag that exists on ONE
 		// machine: the harness defaulted to "orchicon-runtime:orchicon-dev", which is what a Linux dev host
 		// happens to build, while a Windows plane's catalogue row for the same variant is
 		// "orchicon-runtime:dev". On Windows every runtime task then failed at image lookup — and before
 		// failRunAtStart recorded its reason, with NO error in the UI at all.
-		runtimeImg  = fs.String("runtime-image", "", "image for runtime-mode tasks (default: this plane's own dev-variant tag, resolved from ListRuntimeImages)")
-		localOnly   = fs.Bool("local-only", false, "skip runtime-mode tasks (no container engine, e.g. a cloud Mac)")
+		runtimeImg   = fs.String("runtime-image", "", "image for runtime-mode tasks (default: this plane's own dev-variant tag, resolved from ListRuntimeImages)")
+		localOnly    = fs.Bool("local-only", false, "skip runtime-mode tasks (no container engine, e.g. a cloud Mac)")
 		cleanupAfter = fs.Bool("cleanup", false,
 			"REMOVE everything this run created (default: leave the project, workers and tasks in place)")
 		launch = fs.Bool("launch", false,
@@ -51,6 +51,7 @@ func Run(args []string) error {
 		taskTimeout = fs.Duration("task-timeout", 20*time.Minute, "per-task dispatch timeout")
 		orchRef     = fs.String("orchicon-model", "orchicon/deepseek/deepseek-v4-flash", "model_ref for the orchicon adapter")
 		claudeRef   = fs.String("claude-model", "", "model_ref for the claude adapter, e.g. claude/anthropic/claude-sonnet-4 (empty: skip)")
+		agyRef      = fs.String("antigravity-model", "", "model_ref for the antigravity adapter, e.g. antigravity/google/gemini-3.8-flash-medium (empty: skip)")
 		openRef     = fs.String("opencode-model", "opencode/deepseek/deepseek-v4-flash", "model_ref for the opencode adapter (empty: skip)")
 	)
 	if err := fs.Parse(args); err != nil {
@@ -64,7 +65,7 @@ func Run(args []string) error {
 		projectID: *projectID, runtimeImage: *runtimeImg, localOnly: *localOnly, cleanup: *cleanupAfter,
 		launch: *launch, launchOnly: *launchOnly, cleanupOnly: *cleanupOnly,
 		out: *out, askTimeout: *askTimeout, taskTimeout: *taskTimeout,
-		orchiconRef: *orchRef, claudeRef: *claudeRef, opencodeRef: *openRef,
+		orchiconRef: *orchRef, claudeRef: *claudeRef, opencodeRef: *openRef, antigravityRef: *agyRef,
 	}
 
 	// CREDENTIALS COME FROM THE SAME PLACE `orch` USES, because that is what is already configured on an

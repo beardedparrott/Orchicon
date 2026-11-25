@@ -32,7 +32,10 @@ func NewBuiltinProviderCatalog() *BuiltinProviderCatalog {
 	}
 	c.AddAdapterKind(DefaultAdapterKind,
 		"anthropic", "openai", "local", "opencode", "opencode-go")
-	c.AddAdapterKind("claude", "anthropic")
+	c.AddAdapterKind(KindClaude, "anthropic")
+	// antigravity serves Gemini AND claude-* models under ONE Google account, so `google` is its only
+	// provider — see KindAntigravity's doc comment for why those claude-* models stay provider google.
+	c.AddAdapterKind(KindAntigravity, "google")
 	c.AddAdapterKind("orchicon",
 		"anthropic", "openai", "openrouter", "opencode", "opencode-go",
 		"commandcode", "ollama", "local-models")
@@ -52,7 +55,9 @@ func BuiltinAdapterKinds() map[string]struct{} {
 
 // CatalogSourcedAdapterKinds returns the adapter kinds whose MODEL tier resolves from the
 // providers-sourcing path (the vendored catalog ⊕ probe ⊕ manual view served.
-func CatalogSourcedAdapterKinds() []string { return []string{KindOrchicon, KindClaude} }
+func CatalogSourcedAdapterKinds() []string {
+	return []string{KindOrchicon, KindClaude, KindAntigravity}
+}
 
 // ProviderKindExtender is the optional seam for registries that can be extended with provider ids
 // per adapter kind without mutating the shared instance.

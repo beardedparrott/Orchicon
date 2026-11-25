@@ -69,14 +69,17 @@ func execUsable(p string) bool {
 // DiscoverKind returns every USABLE binary for a kind that the OS's PATH knows about, deduplicated,
 // in search order.
 func DiscoverKind(goos, home, kind string, getenv func(string) string) []string {
-	base := canonicalKind(kind)
-	if base == "" {
+	canonical := canonicalKind(kind)
+	if canonical == "" {
 		return nil
 	}
 	// THE NATIVE ADAPTER IS ORCHICON ITSELF, and it must never be discovered.
-	if base == "orchicon" {
+	if canonical == "orchicon" {
 		return nil
 	}
+	// THE EXECUTABLE'S NAME IS NOT ALWAYS THE KIND (`agy` for antigravity) — binStem is the ONE
+	// mapping, and both names are searched so an operator who installed it as either is found.
+	base := binStem(kind)
 	// THE OVERRIDE IS NOT A DISCOVERY. An explicit ORCHICON_*_BIN is a decision, reported by ResolveBinary,
 	// and mixing it in here would make "what did the OS find" unanswerable.
 	path := searchPath(getenv)

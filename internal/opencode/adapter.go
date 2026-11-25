@@ -85,6 +85,11 @@ type Adapter struct {
 	// (guarded by mu).
 	consecutiveSessionErrors int
 
+	// hostServeRepairs counts host-serve repairs within this process's life, bounded by
+	// sessionRepairBudget. The HOST serve is shared by every in-process execution, so an unbounded
+	// recycle loop here would restart the plane's only serve indefinitely.
+	hostServeRepairs int
+
 	// infraModelTurnRecycles counts runtime-container recycles performed for the infra-model-turn class
 	// (a model call that couldn't reach the model API at the socket/transport layer) within a SINGLE.
 	infraModelTurnRecycles int
@@ -1400,6 +1405,41 @@ func isInfraModelTurnError(msg string) bool {
 	return false
 }
 
+// isSessionStoreFailure reports whether a model-turn failure is the opencode SESSION STORE failing to
+// execute a statement — the serve is UP (its /global/health answers) but its SQLite store is unusable,
+// so every session operation faults.
+//
+// WHY ITS OWN CLASS. isInfraModelTurnError deliberately matches only socket/transport terms, because a
+// provider status/auth/quota rejection must never be read as infra. A store failure is neither: it is a
+// BROKEN LOCAL STORE, which no amount of retrying the same serve can fix. Leaving it in the generic
+// (recycleOnWedgedServe) path is what made it unrepairable: that path is container-only, so on a LOCAL
+// run it killed nothing and every retry re-hammered the same bad store — the observed 46ms / 0-token
+// executions on this plane.
+//
+// This is the field class ARCHITECTURE.md:1212 names ("a session store that errored with `Failed to
+// execute statement`"), so the signature is not invented here.
+func isSessionStoreFailure(msg string) bool {
+	if msg == "" {
+		return false
+	}
+	m := strings.ToLower(msg)
+	for _, term := range []string{
+		"failed to execute statement",
+		"database is locked",
+		"database disk image is malformed",
+		"sqlite_constraint",
+		"no such table",
+		"no such column",
+		"disk i/o error",
+		"sqlite_busy",
+	} {
+		if strings.Contains(m, term) {
+			return true
+		}
+	}
+	return false
+}
+
 // sessionRecycleMetrics holds the OTel counter for runtime-container recycles by reason.
 type sessionRecycleMetrics struct {
 	ensureOnce sync.Once
@@ -1427,9 +1467,10 @@ func (m *sessionRecycleMetrics) record(reason string, exhausted bool) {
 	}
 }
 
-func (m *sessionRecycleMetrics) recordInfraSessionCreate()   { m.record("infra_session_create", false) }
-func (m *sessionRecycleMetrics) recordWedgedConsecutive()    { m.record("wedged_consecutive", false) }
-func (m *sessionRecycleMetrics) recordInfraModelTurn(v bool) { m.record("infra_model_turn", v) }
+func (m *sessionRecycleMetrics) recordInfraSessionCreate()    { m.record("infra_session_create", false) }
+func (m *sessionRecycleMetrics) recordWedgedConsecutive()     { m.record("wedged_consecutive", false) }
+func (m *sessionRecycleMetrics) recordInfraModelTurn(v bool)  { m.record("infra_model_turn", v) }
+func (m *sessionRecycleMetrics) recordHostServeRepair(v bool) { m.record("host_serve_repair", v) }
 
 // sessionRecycleMetricsSingleton is the shared instance for the recycle counters (single instrument
 // instance avoids duplicate-instrument churn on the OTel Meter).

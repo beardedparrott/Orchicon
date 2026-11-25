@@ -16,9 +16,9 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
-	"github.com/beardedparrott/orchicon/internal/chatlimits"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/auth"
+	"github.com/beardedparrott/orchicon/internal/chatlimits"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/eventbus"
@@ -43,6 +43,9 @@ type Service struct {
 	pool       *db.Pool
 	log        *slog.Logger
 	subscriber eventbus.Subscriber
+	// hub is the single-consumer fan-out every StreamExecutionEvents caller attaches to. See hub.go for
+	// why this replaced a per-RPC broker consumer.
+	hub *executionHub
 	apiv1connect.UnimplementedExecutionServiceHandler
 
 	// sendExecMessage routes a mid-run human message into a live session execution (Stage 3).
@@ -107,12 +110,17 @@ var _ apiv1connect.ExecutionServiceHandler = (*Service)(nil)
 
 // New constructs an ExecutionService handler.
 func New(pool *db.Pool, log *slog.Logger, sub eventbus.Subscriber) *Service {
-	return &Service{
+	svc := &Service{
 		pool:       pool,
 		log:        log,
 		subscriber: sub,
 		approvals:  make(map[string]*pendingApproval),
+		hub:        newExecutionHub(log),
 	}
+	// ONE broker consumer for the plane, for the life of the service. Started here rather than at first
+	// attach so the fan-out is warm when the first tab opens, and stopped when the service is closed.
+	svc.hub.start(context.Background(), sub)
+	return svc
 }
 
 // GetExecution returns a single execution by id.
@@ -310,43 +318,76 @@ func (s *Service) BatchDeleteExecutions(ctx context.Context, req *connect.Reques
 	return connect.NewResponse(&apiv1.BatchDeleteExecutionsResponse{DeletedCount: deleted}), nil
 }
 
-// StreamExecutionEvents is the server-stream RPC that fans out execution events from NATS to
-// connected clients (docs/07 §4, docs/10 §4).
+// StreamExecutionEvents is the server-stream RPC that fans out execution events to connected clients
+// (docs/07 §4, docs/10 §4).
+//
+// IT NO LONGER CREATES A BROKER CONSUMER PER CALL. This used to call s.subscriber.Subscribe per RPC,
+// and that call does js.CreateOrUpdateConsumer — so every open execution tab registered its OWN
+// JetStream consumer on ORCHICON_EVENTS, filtered to the entire `orchicon.events.execution.>` firehose,
+// and then threw away every event belonging to another execution inside a Go loop. Six tabs meant six
+// server-side consumers each processing every execution event in the tenant; that is what saturated the
+// plane and left a newly-opened page stuck on "Loading…" until the execution tab was closed.
+//
+// Now there is ONE consumer for the plane (executionHub), and this RPC ATTACHES to the fan-out for one
+// execution. A hub exists only while someone is watching, and it is RETIRED when the execution reaches a
+// terminal status — so this handler RETURNS and the client's socket is released. The stream ends with
+// the work, which is the property the Ask turn stream always had and this one did not.
+//
+// The request keeps its existing shape: `execution_id` selects the hub, `from_sequence` resumes from the
+// hub's retained ring (no broker round-trip), and an EMPTY execution_id still streams every execution —
+// which is what the TUI's tenant-wide subscriber uses. That last case attaches to a wildcard entry, so
+// it costs one in-process subscriber rather than one consumer per execution.
 func (s *Service) StreamExecutionEvents(ctx context.Context, req *connect.Request[apiv1.StreamExecutionEventsRequest], stream *connect.ServerStream[apiv1.StreamExecutionEventsResponse]) error {
 	if s.subscriber == nil {
 		return connect.NewError(connect.CodeUnavailable, errors.New("event streaming is unavailable (NATS subscriber not connected)"))
 	}
-	filter := "orchicon.events.execution.>"
-	var fromSeq uint64
+	var fromSequence int64
 	if req.Msg.FromSequence != nil && *req.Msg.FromSequence > 0 {
-		fromSeq = uint64(*req.Msg.FromSequence)
+		fromSequence = *req.Msg.FromSequence
 	}
-	ch, err := s.subscriber.Subscribe(ctx, filter, fromSeq)
-	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("subscribe to execution events: %w", err))
+
+	// An empty execution_id means "every execution" (the TUI's tenant-wide subscription). It attaches to
+	// the wildcard hub, which is fed by the same single consumer.
+	execID := req.Msg.ExecutionId
+	if execID == "" {
+		execID = hubAllExecutions
 	}
+
+	sub, replay := s.hub.attach(execID, fromSequence)
+	defer s.hub.detach(execID, sub)
+
+	send := func(ev execEvent) error {
+		evt, err := parseExecutionEvent(ev.data)
+		if err != nil {
+			s.log.Warn("failed to parse execution event", "execution", ev.execID, "error", err)
+			return nil
+		}
+		return stream.Send(&apiv1.StreamExecutionEventsResponse{
+			Event:    evt,
+			Sequence: ev.sequence,
+		})
+	}
+
+	// The retained window first: a tab that opens mid-run is not blind to what it missed since the
+	// transcript's last flush. The durable transcript supplies everything older, and the frontend merges
+	// the two (SessionChatPane: transcript history + only the live events newer than it).
+	for _, ev := range replay {
+		if err := send(ev); err != nil {
+			return err
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case msg, ok := <-ch:
+		case ev, ok := <-sub.ch:
 			if !ok {
+				// The hub retired (terminal status, or this subscriber fell behind). Returning ENDS the
+				// RPC, which is what releases the tab's socket without anyone closing the tab.
 				return nil
 			}
-			evt, err := parseExecutionEvent(msg.Data)
-			if err != nil {
-				s.log.Warn("failed to parse execution event", "subject", msg.Subject, "error", err)
-				continue
-			}
-			// Filter by execution_id if specified.
-			if req.Msg.ExecutionId != "" && evt.ExecutionId != req.Msg.ExecutionId {
-				continue
-			}
-			resp := &apiv1.StreamExecutionEventsResponse{
-				Event:    evt,
-				Sequence: int64(msg.Seq),
-			}
-			if err := stream.Send(resp); err != nil {
+			if err := send(ev); err != nil {
 				return err
 			}
 		}

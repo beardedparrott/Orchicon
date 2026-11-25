@@ -747,6 +747,34 @@ func (m *Model) bulkArchiveActions(ids []string) []kit2.Action {
 			return nil
 		},
 	}
+	// PERMANENT DELETE OF THE SELECTION, and the ORDER is load-bearing rather than cosmetic.
+	//
+	// hard_delete is refused for an item that still has children, so a fan-out in selection order
+	// would have a PARENT rejected while its descendants were fine — the batch fails and nothing
+	// goes. restoreOrder already returns the marked ids child-first by row depth, which is exactly
+	// the order deletion needs (the reverse of why restore wants it: restore builds a hierarchy
+	// upwards, delete dismantles one downwards), so it is reused rather than reimplemented.
+	//
+	// Kept as a count-named confirm with the irreversibility stated, because this is the one action
+	// in the pane that no keypress can undo.
+	deleteSel := kit2.Action{
+		Label: "delete " + count + " selected", Key: kit2.DeleteChord, Danger: true, Source: srcWorkItems,
+		Confirm: "PERMANENTLY delete " + count + " archived item(s)?\n" +
+			"This cannot be undone. Children are deleted before their parents so the hierarchy\n" +
+			"dismantles cleanly, and the run reports how many were refused.",
+		Do: func(ctx context.Context) error {
+			failed := 0
+			for _, id := range ordered {
+				if _, err := cl.HardDeleteWorkItem(ctx, connect.NewRequest(&apiv1.HardDeleteWorkItemRequest{Id: id})); err != nil {
+					failed++
+				}
+			}
+			if failed > 0 {
+				return fmt.Errorf("deleted %d of %d — %d were refused (an item with children cannot be deleted)", n-failed, n, failed)
+			}
+			return nil
+		},
+	}
 	clear := kit2.Action{
 		Label: "clear selection", Key: "esc", Source: srcWorkItems,
 		Do: func(context.Context) error { return nil },
@@ -755,7 +783,7 @@ func (m *Model) bulkArchiveActions(ids []string) []kit2.Action {
 			m.notice = "selection cleared"
 		},
 	}
-	return []kit2.Action{restore, clear}
+	return []kit2.Action{restore, deleteSel, clear}
 }
 
 // restoreOrder returns the marked ids CHILD-FIRST, by each row's depth in the archive tree.
@@ -1324,8 +1352,10 @@ func (m *Model) HintLine() string {
 		// THE BULK SET IS NAMED HERE, AND IT WAS NAMED NOWHERE.
 		if n := m.Base.MarkCount(); n > 1 {
 			if m.ViewMode() == viewArchive {
+				// DELETE IS NAMED HERE TOO. A chord that exists but is not advertised is a chord
+				// nobody presses — and this one is the only way to empty the archive from the TUI.
 				return theme.HintText.Render(fmt.Sprintf("%d marked", n) + " · " +
-					"R: restore · esc: clear · ↑↓: move · enter: detail")
+					"R: restore · " + kit2.DeleteChord + ": delete · esc: clear · ↑↓: move · enter: detail")
 			}
 			return theme.HintText.Render(fmt.Sprintf("%d marked", n) + " · " +
 				keyBulkSet + ": set workflow & image · esc: clear · ↑↓: move · enter: detail")
@@ -1333,8 +1363,8 @@ func (m *Model) HintLine() string {
 		// THE ARCHIVE VIEW GETS ITS OWN LINE, because half of the tree line's chords do not exist there and
 		// the one chord that DOES was named nowhere.
 		if m.ViewMode() == viewArchive {
-			return theme.HintText.Render("R: restore · /: search · enter: detail · " +
-				"v: view (archive ⇄ tree) · o/O: collapse · ↑↓: move")
+			return theme.HintText.Render("R: restore · " + kit2.DeleteChord + ": delete · /: search · " +
+				"enter: detail · v: view (archive ⇄ tree) · o/O: collapse · ↑↓: move")
 		}
 		// THE STOP CHORD IS ADVERTISED ONLY WHEN THERE IS SOMETHING TO STOP.
 		stop := ""

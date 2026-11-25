@@ -373,7 +373,9 @@ test: ## Run Go tests (NEVER point ORCHICON_TEST_DSN at prod — see README §Te
 	@# (make services) must stay reachable, which is what the opt-in variables are for. The isolation
 	@# that matters — config, live plane, guard — is unchanged.
 	@for v in ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_ONCE ORCHICON_GUARD_PROJECT \
-	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR ORCHICON_DATA_DIR; do unset "$$v"; done; \
+	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR ORCHICON_DATA_DIR \
+	         ORCHICON_CLAUDE_PROJECT_DIR ORCHICON_CLAUDE_HOOK_PROFILE ORCHICON_CLAUDE_ASK_DIR \
+	         ORCHICON_CLAUDE_CONSENT_SOCK ORCHICON_CLAUDE_ASK_MODE_FILE; do unset "$$v"; done; \
 	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test $(TEST_PARALLEL) $(PKGS)
 
 vet: ## Run go vet
@@ -967,6 +969,10 @@ version-tag-match: ## Assert no version resolution accepts a moving tag (canary)
 release-anchor: ## Assert the release version anchor is never the canary pre-release
 	bash scripts/tests/release-anchor/run.sh
 
+.PHONY: release-bump-skips-tags
+release-bump-skips-tags: ## Assert a release bump skips bump tags already in use
+	bash scripts/tests/release-bump-skips-tags/run.sh
+
 .PHONY: release-notes-digest
 release-notes-digest: ## Assert every README release-digest bullet is a complete sentence
 	bash scripts/tests/release-notes-digest/run.sh
@@ -1147,7 +1153,10 @@ runtime-daemon-refresh: ## Restart the runtime daemon if (and only if) it serves
 full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + instance restart (usage: make full-rebuild instance=dev|prod|test)
 	@test -n "$(instance_given)" || { echo "usage: make full-rebuild instance=dev|prod|test"; exit 1; }
 	$(MAKE) build
-	$(MAKE) ci
+	# ci-dev, NOT ci: a rebuild is an ITERATION step, and `ci` includes the two pre-merge checks
+	# (cross-compile 144 s, install-path-test 80 s) that cannot depend on what just changed — 72% of
+	# a 312 s rebuild. Run `make pre-merge` (or `make ci`) before merging. See ci-dev above.
+	$(MAKE) ci-dev
 	$(MAKE) migrate-hash
 	# THE RUNTIME DAEMON IS PART OF A REBUILD, for the same reason the desktop app is: it is a
 	# long-lived host process holding an image of the binary we just replaced, so a rebuild that
@@ -1647,12 +1656,38 @@ cross-compile: ## Compile the shipped binaries for every release platform plus w
 # plane-control-e2e-assertions-test, published-archive-e2e-assertions-test and desktop-e2e-assertions-test.
 # They are independent, so neither side may be dropped — a gate quietly retired by a merge conflict is the
 # worst possible outcome for a file whose whole purpose is to catch what nobody looked at.
-CI_GO_GATES := lint gen-check vet test synth-data no-operator-paths rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test published-archive-e2e-assertions-test desktop-e2e-assertions-test cache-trim-test version-tag-match
+CI_GO_GATES := lint gen-check vet test synth-data no-operator-paths rls-check adapter-bake-guard install-ps1-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test published-archive-e2e-assertions-test desktop-e2e-assertions-test cache-trim-test version-tag-match
 
 ci-go-base: $(CI_GO_GATES) ## The Go gate WITHOUT cross-compile (CI runs that as a parallel job)
 
-ci-go: ci-go-base cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
-ci: ci-go fe-lint fe-typecheck fe-test site-check site-version-stamp version-tag-match release-notes-digest release-anchor ## Run the full CI gate locally (Go + frontend + landing page)
+# PRE-MERGE: THE TWO SLOW CHECKS THAT CANNOT DEPEND ON WHAT YOU CHANGED.
+#
+# cross-compile and install-path-test are the two most expensive things in the gate and neither has
+# anything to say about an ordinary source edit: one compiles the shipped binaries for six platforms
+# so a WINDOWS-only break is caught before a release, the other runs the REAL installer end to end
+# against a locally served artifact. Both belong to "is this mergeable", not to "did my change work".
+#
+# MEASURED, on a 32-core developer host: they are 144 s and 80 s of a 312 s `make rebuild-dev` — 72%
+# of a rebuild that a developer pays on every iteration, while changing neither a released binary nor
+# an installer. That is the cost this split removes.
+#
+# THEY ARE NOT DROPPED, AND THE SPLIT IS NOT A SOFTENING:
+#   * CI already runs both as their OWN jobs (ci.yml: `cross-compile` and `install-path`), in
+#     parallel. `go-ci` ran install-path-test a SECOND time through ci-go-base — a genuine duplicate,
+#     which removing it from the gate list deletes rather than relocates.
+#   * `make ci` still includes both, so the one-command complete gate is unchanged.
+#   * `make pre-merge` runs exactly these two, so the pre-merge check has a name of its own.
+pre-merge: cross-compile install-path-test ## The slow, change-independent checks: all platforms compile, the real installer works
+
+ci-go: ci-go-base pre-merge ## Run the Go control-plane CI gate (mirrors the go-ci + cross-compile + install-path jobs)
+ci: ci-go fe-lint fe-typecheck fe-test site-check site-version-stamp version-tag-match release-notes-digest release-anchor release-bump-skips-tags ## Run the full CI gate locally (Go + frontend + landing page)
+
+# ci-dev is what a REBUILD runs: the gate minus the two pre-merge checks above.
+#
+# It exists as its own target rather than as `ci` with the slow parts removed inline, so there is one
+# place that says what a rebuild checks, and so `full-rebuild` cannot quietly drift closer to `ci`
+# again. Everything here is something a source change can actually break.
+ci-dev: ci-go-base fe-lint fe-typecheck fe-test site-check site-version-stamp version-tag-match release-notes-digest release-anchor release-bump-skips-tags ## The gate a local rebuild runs: everything except cross-compile and install-path-test
 
 .PHONY: tui-pty-gate
 tui-pty-gate: ## Standing real-pty TUI verification gate (smoke + mouse + /connect)

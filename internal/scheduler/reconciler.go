@@ -1997,10 +1997,43 @@ func (r *TaskReconciler) OnStall(ctx context.Context, execID, reason string, fat
 	if !fatal {
 		return
 	}
-	// Terminate the execution and fail the work item so the downstream
-	// recover step (if any) activates on the next reconcile pass.
-	r.updateExecStatus(ctx, execID, domain.ExecutionUnhealthy, domain.HealthUnhealthy, "", reason)
+	// TERMINATE THE EXECUTION AS FAILED, NOT "unhealthy".
+	//
+	// This is the whole of "a stalled run is marked failed and never resumed". The step poller
+	// (workflow_reconciler.go, pollTaskStep) recognises a step's execution as terminal-to-recovery only
+	// for ExecutionFailed / FailedToStart / Terminated. `unhealthy` is not in that set, so it fell to
+	// `default: return false, false` — "still in flight" — and the step WEDGED in `recovering` forever
+	// while recoveryDispatchReady held it with "no dead-execution identity". No recovery ever ran. The
+	// work item was then failed underneath it by transitionWorkItemOnResult below, which is exactly the
+	// symptom: marked failed, never resumed.
+	//
+	// A stall that has been declared fatal IS a failed execution. Saying so is what lets recovery — and
+	// its own bounded retry budget — take over.
+	//
+	// The guard matters because OnResult may already have delivered a terminal verdict for this
+	// execution in the same window: OnStall must not overwrite a success with a failure.
+	if r.executionReachedTerminalStatus(ctx, execID) {
+		r.log.Info("execution stall: a terminal verdict already landed — leaving the outcome to OnResult",
+			"execution", execID, "reason", reason)
+		return
+	}
+	r.updateExecStatus(ctx, execID, domain.ExecutionFailed, domain.HealthUnhealthy, "", reason)
 	r.transitionWorkItemOnResult(ctx, execID, false, reason, "")
+}
+
+// executionReachedTerminalStatus reports whether the execution already has a terminal status, so a
+// late stall signal cannot rewrite an outcome that has been decided.
+func (r *TaskReconciler) executionReachedTerminalStatus(ctx context.Context, execID string) bool {
+	ttx, err := r.pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		return false
+	}
+	defer ttx.Rollback(ctx)
+	current, err := db.GetExecution(ctx, ttx.Tx, "tnt_dev", execID)
+	if err != nil {
+		return false
+	}
+	return terminalExecutionStatus(current.Status)
 }
 
 // OnRecovered is called by the adapter bridge's progress monitor when an advisory stall clears.

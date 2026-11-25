@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"fmt"
@@ -268,6 +269,22 @@ func (h *HostServe) EnsureStarted(ctx context.Context) error {
 		h.mu.Unlock()
 		return err
 	}
+	// PRE-FLIGHT, BEFORE THE PROCESS EXISTS.
+	//
+	// The readiness-timeout repair below is a fallback for a surprise; it is not the primary defence, and
+	// it is too late to be a good one: the serve has already been spawned, burned the 90s readiness window,
+	// and — because the pool rebuilds a serve per MCP set — a failure can be paid once per serve. Probing
+	// the store HERE costs one 100-byte read and starts nothing when the store is unusable.
+	//
+	// It is not a staleness check, deliberately. A store being OLD says nothing about whether it OPENS
+	// (a quiet plane legitimately has an old store), and rotating on age alone would discard sessions that
+	// are perfectly readable. The predicate is the same one SQLite applies: can it open the file.
+	if repaired, rerr := h.repairUnopenableStore(); rerr != nil {
+		h.log.Warn("host serve: pre-flight store probe failed — continuing", "error", rerr, "data_dir", h.dataDir)
+	} else if repaired {
+		h.log.Warn("host serve: session store was UNOPENABLE — rotated aside before starting",
+			"data_dir", h.dataDir)
+	}
 	if err := h.Start(ctx); err != nil {
 		h.markStartFailed(err)
 		h.log.Warn("host opencode serve lazy start failed", "error", err)
@@ -358,6 +375,89 @@ func (h *HostServe) Stop() {
 	}
 	h.client = nil
 	h.started = false
+}
+
+// repairUnopenableStore rotates the store aside if SQLite cannot OPEN it, and reports whether it did.
+//
+// This is the missing half of the repair story. RotateStore handles a store that breaks MID-SESSION; this
+// handles one that is already broken when a serve starts — the case that actually wedges a plane, because
+// it produces no session and therefore no session error for any other path to notice.
+//
+// The probe is a real read, not a file-size heuristic: `PRAGMA schema_version` forces SQLite to parse the
+// header, which is exactly what opencode does and exactly what fails on a truncated or stub file.
+func (h *HostServe) repairUnopenableStore() (bool, error) {
+	if h.dataDir == "" {
+		return false, nil
+	}
+	dbPath := filepath.Join(h.dataDir, "opencode", "opencode.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		// No store at all: a fresh one will be created. Nothing to repair.
+		return false, nil
+	}
+	if storeOpens(dbPath) {
+		return false, nil
+	}
+	h.log.Warn("host serve: session store is unopenable — SQLite rejects it", "path", dbPath)
+	if err := h.RotateStore(); err != nil {
+		return false, fmt.Errorf("rotate unopenable store: %w", err)
+	}
+	return true, nil
+}
+
+// storeOpens reports whether SQLite can read this database's header and schema version.
+func storeOpens(path string) bool {
+	// A SQLite database begins with this 16-byte magic; anything shorter or different cannot open.
+	b, err := os.ReadFile(path)
+	if err != nil || len(b) < 100 || !bytes.HasPrefix(b, []byte("SQLite format 3\x00")) {
+		return false
+	}
+	return true
+}
+
+// RotateStore MOVES the serve's on-disk store aside and leaves an empty directory in its place, so the
+// next start builds a fresh store.
+//
+// MOVED, NEVER DELETED. The previous store is renamed to `opencode.db.broken-<unix>` in the same parent
+// directory: an operator can inspect it or put it back by hand, and a rotation that turned out to be
+// unnecessary costs nothing but disk. Deleting it would destroy every prior session on the plane with
+// no way back — an unrecoverable action taken automatically, which is the wrong default for a repair.
+//
+// The serve MUST be stopped first (see Stop): rotating files under a live SQLite connection leaves the
+// process writing to an unlinked inode.
+func (h *HostServe) RotateStore() error {
+	if h.dataDir == "" {
+		return fmt.Errorf("host serve has no data dir to rotate")
+	}
+	// The store lives at <XDG_DATA_HOME>/opencode/opencode.db (plus -wal/-shm), which is what
+	// seedAuth and startOnce already resolve.
+	dir := filepath.Join(h.dataDir, "opencode")
+	base := filepath.Join(dir, "opencode.db")
+	stamp := time.Now().Unix()
+	moved := 0
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		src := base + suffix
+		if _, err := os.Stat(src); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("stat %s: %w", src, err)
+		}
+		dst := fmt.Sprintf("%s.broken-%d%s", base, stamp, suffix)
+		if err := os.Rename(src, dst); err != nil {
+			return fmt.Errorf("rotate %s: %w", src, err)
+		}
+		moved++
+	}
+	if moved == 0 {
+		return fmt.Errorf("no store found at %s (nothing to rotate)", base)
+	}
+	h.log.Warn("host serve store rotated aside", "from", base, "suffix", fmt.Sprintf(".broken-%d", stamp))
+	// An empty data dir must still EXIST: the CLI creates its store on start, but it will not create
+	// the parent chain for an XDG_DATA_HOME it was handed.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("recreate %s: %w", dir, err)
+	}
+	return nil
 }
 
 func (h *HostServe) pid() int {
@@ -509,6 +609,23 @@ func (h *HostServe) startOnce(ctx context.Context) error {
 		}
 	}
 	h.kill()
+	// A STORE THAT CANNOT OPEN NEVER HEALS ITSELF, SO REPAIR IT HERE.
+	//
+	// RotateStore only fired on a SESSION-store failure, which needs a live session. But the failure that
+	// actually wedges a plane happens EARLIER: opencode dies 200ms after start with
+	// "SQLiteError: database disk image is malformed", so no session is ever created, no session error is
+	// ever recorded, and the store is never rotated. The serve then retries forever against the same
+	// unopenable file — observed for six hours, every ~95s, with every work item failing on it.
+	//
+	// A serve that cannot become ready is therefore checked for a poisoned store and repaired once. If the
+	// store is fine, the original error is returned unchanged.
+	if repaired, rerr := h.repairUnopenableStore(); rerr != nil {
+		h.log.Warn("host serve: store probe failed — not rotating", "error", rerr, "data_dir", h.dataDir)
+	} else if repaired {
+		h.log.Warn("host serve store was UNOPENABLE — rotated it aside and will retry", "data_dir", h.dataDir)
+		return fmt.Errorf("host serve did not become ready within 90s; its session store was unopenable and "+
+			"has been rotated aside (%s) — the next start builds a fresh one", h.dataDir)
+	}
 	return fmt.Errorf("host serve did not become ready within 90s")
 }
 

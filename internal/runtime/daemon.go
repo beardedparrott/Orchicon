@@ -802,6 +802,13 @@ func (d *Daemon) createContainerInner(name string, req CreateRequest) (*CreateRe
 	if demandsKind(req, "claude") && !d.claudeAuthAvailable(req) {
 		return nil, fmt.Errorf(adapter.ClaudeAuthRequiredMessage)
 	}
+	// THE SAME FAST PREFLIGHT for antigravity, and STRICTER IN CONTAINER MODE: agy's personal OAuth
+	// credential lives in the HOST OS KEYRING, which cannot be bind-mounted, so a signed-in host is
+	// not enough for a container session — it needs GEMINI_API_KEY. Refused here, ACTIONABLY, rather
+	// than hanging on. (Local/in-process mode has its own host keyring and is not gated here.)
+	if demandsKind(req, adapter.KindAntigravity) && !d.antigravityAuthAvailable(req) {
+		return nil, errors.New(adapter.AntigravityAuthRequiredMessage)
+	}
 	d.createMu.Lock()
 	defer d.createMu.Unlock()
 	// A stopped/crashed container with this name blocks recreation ("name already in use").
@@ -1247,6 +1254,25 @@ func (d *Daemon) claudeAuthAvailable(req CreateRequest) bool {
 	return ok
 }
 
+// antigravityAuthAvailable reports whether a CONTAINER can reach an Antigravity credential.
+//
+// IT NEVER READS A KEYRING, AND THAT IS THE WHOLE POINT. agy's personal OAuth credential is stored
+// in the host OS keyring (Secret Service / macOS Keychain / Windows Credential Manager), which is a
+// live IPC channel to the host session — it cannot be bind-mounted into a runtime container, and
+// there is no file under $HOME to mount instead. A container session therefore needs a
+// GEMINI_API_KEY, supplied to the plane's environment or to this run's secrets. Probing for a
+// keyring would produce the exact failure this gate exists to prevent: a create that looks healthy
+// and then hangs or dies opaquely inside the container.
+func (d *Daemon) antigravityAuthAvailable(req CreateRequest) bool {
+	if strings.TrimSpace(os.Getenv("GEMINI_API_KEY")) != "" {
+		return true
+	}
+	if v, ok := req.Secrets["GEMINI_API_KEY"]; ok && strings.TrimSpace(v) != "" {
+		return true
+	}
+	return false
+}
+
 // hostGHToken resolves the operator's effective GitHub CLI token (`gh auth token`), which may live
 // in the OS keyring rather than hosts.yml.
 func hostGHToken() string {
@@ -1320,6 +1346,22 @@ func (d *Daemon) hostInputsFingerprint() string {
 	return hostFp + "|" + binFp + "|" + d.engineInputFingerprint()
 }
 
+// serveHandshakeHint turns the container engine's own words into the thing to fix.
+//
+// The binary is DELIBERATELY not baked into the runtime image — the daemon bind-mounts its own
+// executable at /usr/local/bin/orchicon when it creates a runtime container (see
+// deploy/runtime/Dockerfile). So "executable file not found" means the exec reached a container that
+// was NOT created by that path, never that the image is missing something.
+func serveHandshakeHint(engineStderr string) string {
+	if strings.Contains(engineStderr, "executable file not found") ||
+		strings.Contains(engineStderr, "no such file or directory") {
+		return " — the container has no /usr/local/bin/orchicon, so it was not created by the daemon " +
+			"(the binary is bind-mounted at create time, never baked into the image). Re-create the " +
+			"container rather than treating this as an image defect."
+	}
+	return ""
+}
+
 // startServe asks the in-container supervisor to bring up `opencode serve` (idempotent.
 func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, bool, error) {
 	reqJSON, err := json.Marshal(AgentRequest{
@@ -1338,9 +1380,27 @@ func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, 
 	}
 	cmd := procwin.Command(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
 	cmd.Stdin = bytes.NewReader(reqJSON)
+	// CAPTURE THE ENGINE'S OWN STDERR. `cmd.Output()` discards it, and the discarded text is the whole
+	// diagnosis: when the container has no orchicon binary the engine says
+	//
+	//	OCI runtime exec failed: exec failed: unable to start container process:
+	//	exec: "orchicon": executable file not found in $PATH
+	//
+	// and all that surfaced was "serve handshake: exit status 1". That single line sent a production
+	// investigation to the store, the image and the runtime daemon, when the binary was simply not
+	// mounted into the container being exec'd. An exit status with no cause is not an error message.
+	var engineErr bytes.Buffer
+	cmd.Stderr = &engineErr
 	out, perr := cmd.Output()
 	if perr != nil {
-		return 0, "", false, fmt.Errorf("serve handshake: %v", perr)
+		if detail := strings.TrimSpace(engineErr.String()); detail != "" {
+			return 0, "", false, fmt.Errorf("serve handshake: %v — engine said: %s%s",
+				perr, detail, serveHandshakeHint(detail))
+		}
+		return 0, "", false, fmt.Errorf("serve handshake: %v — the container engine produced no stderr, so the "+
+			"cause is not visible here; check that this runtime container was created by the daemon (the "+
+			"orchicon binary is BIND-MOUNTED at /usr/local/bin/orchicon at create time and is never baked "+
+			"into the image)", perr)
 	}
 	// The supervisor answers {event:"serve", port:4096, password:...} when
 	// ready.

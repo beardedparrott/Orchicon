@@ -83,24 +83,33 @@ describe("the grid holds no liveness at all", () => {
   });
 });
 
-describe("liveness moved OFF the run view entirely", () => {
-  it("the live modal is GONE — clicking a tile opens the execution page", () => {
-    // The modal hosted a second live stream (plus five fetches) on a route that already polls,
-    // and clicking through to the execution page left that stream alive behind it — the
-    // non-responsive page the operator hit. A tile is a link now, so there is nothing to
-    // unmount and nothing running behind the page you open.
-    expect(() => read("src/components/workflow-runs/HeadsUpExpandedModal.tsx")).toThrow();
-    expect(code(read("src/routes/workflows_.$id_.runs.$runId.tsx"))).not.toContain("HeadsUpExpandedModal");
+describe("liveness is confined to the one open quick-look", () => {
+  // THE MODAL CAME BACK, AND ONLY BECAUSE THE REASON IT LEFT IS GONE.
+  //
+  // It was removed because every open execution view created its own JetStream consumer fed the whole
+  // execution firehose, so a modal left a stream alive behind the page being opened and the operator got
+  // a page that never became responsive. That is fixed at the source: internal/execution/hub.go runs ONE
+  // plane-wide consumer with per-execution in-process fan-out, and the stream ENDS at terminal status.
+  //
+  // What must stay true is the part that made this view cheap in the first place: the TILE and the GRID
+  // hold no liveness, and the modal exists only while it is open. Those are the two assertions below.
+  it("the modal exists but is rendered ONLY while open, and only by the grid", () => {
+    // It exists…
+    const modal = code(read("src/components/workflow-runs/HeadsUpExpandedModal.tsx"));
+    expect(modal).toContain("SessionChatPane");
+    // …and the grid mounts it CONDITIONALLY, which is what makes closing it release the socket.
+    const grid = code(read(GRID));
+    expect(grid).toContain("HeadsUpExpandedModal");
+    expect(grid).toMatch(/expandedTile\?\.execution\?\.id \?/);
   });
 
-  it("a tile is an ANCHOR to the execution page, not a click handler", () => {
+  it("a tile is a BUTTON that opens the quick look — never a stream of its own", () => {
     const c = code(read(TILE));
-    expect(c).toContain("`/executions/${execId}`");
-    expect(c).toContain('target: "_blank"');
-    // A handler would make it a JS-only affordance; an href keeps middle-click and
-    // cmd-click, which is what an operator opens a page with.
-    expect(c).not.toContain("onOpenExecution");
-    expect(c).not.toContain("onExpand");
+    // The tile is a thumbnail: it holds no stream and no timer (asserted above), and its click opens the
+    // modal rather than navigating away.
+    expect(c).toContain("onExpand");
+    expect(c).not.toContain("useStreamExecutionEvents");
+    expect(c).not.toContain("setInterval");
   });
 
   it("the route no longer passes a suspended step to the grid", () => {

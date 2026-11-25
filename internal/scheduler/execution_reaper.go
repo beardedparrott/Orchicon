@@ -2,9 +2,11 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -102,10 +104,51 @@ func (r *ExecutionReaper) reapOne(ctx context.Context, exec db.ExecutionRow, gra
 			return false
 		}
 	}
-	r.log.Warn("reaping lost execution", "execution", exec.ID, "run", exec.WorkflowRunID, "task", exec.TaskID, "status", exec.Status)
-	r.fail(ctx, exec.ID, "execution lost: control plane restarted or runtime container gone")
+	msg := reapFailureMessage(exec, threshold)
+	r.log.Warn("reaping lost execution",
+		"execution", exec.ID, "run", exec.WorkflowRunID, "task", exec.TaskID,
+		"status", exec.Status, "health", exec.HealthState, "adapter", adapterIDForReap(exec),
+		"probes", threshold, "reason", msg)
+	r.fail(ctx, exec.ID, msg)
 	r.forget(exec.ID)
 	return true
+}
+
+// reapFailureMessage names WHY the reaper concluded an execution was lost, from what it actually
+// observed — never a fixed guess.
+//
+// THE OLD STRING WAS "execution lost: control plane restarted or runtime container gone", and it was
+// emitted for every reap regardless of cause. It named a container for executions that never had one
+// and a restart that had not happened, and it was the reason a misdirected liveness probe stayed
+// undiagnosed for days: every reap looked like infrastructure, so nobody looked at the probe. An error
+// message that states one possible cause is worse than no detail — it actively misdirects.
+//
+// It reports only what the reaper knows: the execution's own last recorded state, its adapter, and the
+// number of consecutive failed liveness probes. It deliberately does NOT claim which of the possible
+// causes applied, because the reaper cannot see that; the probe's own WARN lines carry the specifics.
+func reapFailureMessage(exec db.ExecutionRow, probes int) string {
+	adapter := adapterIDForReap(exec)
+	if adapter == "" {
+		adapter = "unknown adapter"
+	}
+	health := strings.TrimSpace(exec.HealthState)
+	state := ""
+	if health != "" && health != domain.HealthHealthy {
+		state = "; last recorded health " + health
+	}
+	return fmt.Sprintf(
+		"execution lost: no live session in its adapter (%s) after %d consecutive liveness probes — the "+
+			"session process is gone (plane restarted, runtime container recycled, or the run never "+
+			"registered)%s. The liveness probe's own WARN lines name which",
+		adapter, probes, state)
+}
+
+// adapterIDForReap renders the execution's adapter id for a log field or message.
+func adapterIDForReap(exec db.ExecutionRow) string {
+	if exec.AdapterID == nil {
+		return ""
+	}
+	return *exec.AdapterID
 }
 
 // Reap scans running executions and fails the ones whose process is gone.

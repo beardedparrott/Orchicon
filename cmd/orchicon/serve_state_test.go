@@ -93,3 +93,47 @@ func TestServeStatePathsShape(t *testing.T) {
 		t.Errorf("serveLogFile() = %q, want %q (the pre-change value)", serveLogFile(), want)
 	}
 }
+
+// TestASandboxDataDirNeverWritesIntoAnotherInstance is the leak that produced an eight-hour orphan.
+//
+// A worker's sandbox plane pinned its own data dir and inherited ORCHICON_INSTANCE=prod. The instance
+// name won, so the sandbox wrote its log into the operator's PRODUCTION log file and stayed there for
+// eight hours, reparented to systemd, appending `127.0.0.1:55432 connection refused` into the evidence
+// an operator reads when something breaks.
+func TestASandboxDataDirNeverWritesIntoAnotherInstance(t *testing.T) {
+	t.Setenv("ORCHICON_INSTANCE", "prod")
+	t.Setenv("ORCHICON_DATA_DIR", "/tmp/orchicon/qa/data")
+	t.Setenv(serveStateDirEnv, "")
+
+	got := serveStateDir()
+	if strings.Contains(got, "orchicon-prod") {
+		t.Fatalf("serveStateDir() = %q — a sandbox with its OWN data dir is writing into the prod "+
+			"instance's state. This is the leak that put a foreign plane's failures in the operator's "+
+			"production log for eight hours.", got)
+	}
+	if !strings.HasPrefix(got, "/tmp/orchicon/qa/data") {
+		t.Fatalf("serveStateDir() = %q, want the sandbox's own data dir", got)
+	}
+	for name, path := range map[string]string{"pid": servePIDFile(), "log": serveLogFile()} {
+		if strings.Contains(path, "orchicon-prod") {
+			t.Errorf("serve %s file = %q — the sandbox is writing the operator's prod state", name, path)
+		}
+	}
+}
+
+// AND A REAL PLANE STILL OBEYS ITS INSTANCE, even with a data dir set to that same instance's root.
+// The narrow rule must not weaken the original collision guard.
+func TestARealPlaneStillFollowsItsInstanceName(t *testing.T) {
+	t.Setenv("ORCHICON_INSTANCE", "dev")
+	t.Setenv("ORCHICON_DATA_DIR", hostDataDirFor("dev"))
+	t.Setenv(serveStateDirEnv, "/home/op/.local/share/orchicon-prod/serve")
+
+	got := serveStateDir()
+	if strings.Contains(got, "orchicon-prod") {
+		t.Errorf("serveStateDir() = %q — an ambient override for ANOTHER instance still decides where this "+
+			"instance writes", got)
+	}
+	if !strings.Contains(got, "orchicon-dev") {
+		t.Errorf("serveStateDir() = %q, want the dev instance's own state dir", got)
+	}
+}

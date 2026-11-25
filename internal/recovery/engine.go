@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,25 @@ const (
 	// Default retry budget: max 5 recovery attempts for the same task chain.
 	defaultMaxRetries = 5
 )
+
+// recoveryMaxRetries is the retry budget for ONE task chain, overridable with
+// ORCHICON_RECOVERY_MAX_RETRIES (the same shape as ORCHICON_RECOVERING_STALL_TIMEOUT, so an operator
+// tunes it without a rebuild).
+//
+// WHY AN OPERATOR NEEDS THIS LEVER. The budget counts TERMINAL recoveries across the whole ancestor
+// chain, and a chain's history is permanent. Once the count reaches the budget every new recovery is
+// created at L3 — the ladder's ceiling — so an item whose history is over budget cannot recover at all
+// until the budget is raised or its recovery rows are cleared. Task 01M84X6FD9X2N5FQ534GK91THR reached
+// 8 terminal recoveries against a budget of 5 and was permanently unrecoverable, for a code defect that
+// had nothing to do with its own history.
+func recoveryMaxRetries() int {
+	if v := strings.TrimSpace(os.Getenv("ORCHICON_RECOVERY_MAX_RETRIES")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultMaxRetries
+}
 
 // strategyForWorkItem maps a work item's kind to the recovery strategy that should run when a
 // worker fails on a task it is associated with.
@@ -94,7 +114,9 @@ func recoveryStrategyFor(ctx context.Context, tx pgx.Tx, tenantID, taskID, faile
 	// AN EVIDENCE REJECTION GETS EXACTLY ONE MORE ATTEMPT — and only because that attempt now carries
 	// the reason.
 	if exec != nil && isEvidenceRejection(exec.ErrorMessage) {
-		if prior, _ := countTaskChainRecoveries(ctx, tx, tenantID, taskID); prior >= 1 {
+		// Scoped to the same run as the budget: an evidence rejection gets one more attempt WITHIN a
+		// run, and a fresh run gets its own — consistent with the per-run attempt budget.
+		if prior, _ := countTaskChainRecoveries(ctx, tx, tenantID, taskID, workflowRunIDOfExecution(exec)); prior >= 1 {
 			return RecoveryStrategyStop
 		}
 		return RecoveryStrategySummarizeRestart
@@ -355,9 +377,11 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		return fmt.Errorf("recovery trigger: get execution: %w", err)
 	}
 
-	// Bounded retry: count how many previous recovery attempts exist across this task's ancestor chain.
-	maxRetries := defaultMaxRetries
-	retryCount, err := countTaskChainRecoveries(ctx, ttx.Tx, tenantID, taskID)
+	// Bounded retry: count how many previous recovery attempts THIS RUN has already spent across the
+	// task's ancestor chain. Scoped to the run so a fresh run starts with a full budget, exactly like
+	// the per-run step attempt budget does.
+	maxRetries := recoveryMaxRetries()
+	retryCount, err := countTaskChainRecoveries(ctx, ttx.Tx, tenantID, taskID, workflowRunIDOfExecution(&exec))
 	if err != nil {
 		e.log.Warn("recovery trigger: count retries", "task", taskID, "error", err)
 	}
@@ -395,7 +419,7 @@ func (e *Engine) trigger(ctx context.Context, tenantID, taskID, failedExecID, st
 		ResumptionPath:     resumptionPath,
 		BudgetTokensLimit:  budgetTokensLimit,
 		BudgetCostLimitUSD: budgetCostLimit,
-		MaxRetries:         defaultMaxRetries,
+		MaxRetries:         recoveryMaxRetries(),
 		TriggeredAt:        now,
 	}
 	created, err := db.CreateRecoveryExecution(ctx, ttx.Tx, row)
@@ -705,9 +729,15 @@ func (r *Reconciler) quarantineRecovery(ctx context.Context, tenantID, recoveryI
 	}
 	now := time.Now().UTC()
 	status := domain.RecoveryFailed
+	// THE CAUSE IS RECORDED, NOT JUST LOGGED. This row used to end with an EMPTY summary and no step
+	// result, so a quarantined recovery was indistinguishable from a recovery that never ran — the
+	// operator saw a failed item with nothing to act on, and the only copy of the reason was one WARN
+	// line in the plane log. The whole chain is preserved here because the trx is already dead by the
+	// time we know it: the poisoning statement's error is the interesting one.
 	if _, err := db.UpdateRecoveryExecution(ctx, ttx.Tx, tenantID, recoveryID, rec.Version, db.UpdateRecoveryExecutionFields{
 		Status:  &status,
 		EndedAt: &now,
+		Summary: strPtr("recovery quarantined: " + cause.Error()),
 	}); err != nil {
 		return fmt.Errorf("quarantine update: %w", err)
 	}
@@ -1024,6 +1054,14 @@ func (r *Reconciler) runStep(ctx context.Context, tx pgx.Tx, tenantID string, re
 		if stepResult == nil {
 			stepResult = []byte("{}")
 		}
+		// A POISONED TRANSACTION IS ITS OWN DIAGNOSIS, and it is worth recording loudly: the step never
+		// failed on its own merits, an EARLIER statement did, and this write is the one that finds out.
+		// Without this the step run's result is "{}" and the cause lives only in a log line.
+		if isPoisonedRecoveryTx(stepErr) {
+			stepResult = []byte(`{"error":"step could not be recorded: the transaction was already aborted by an earlier statement (SQLSTATE 25P02)"}`)
+			r.log.Error("recovery step blocked by an ALREADY-POISONED transaction — the real failure is an earlier statement in this pass",
+				"recovery", rec.ID, "step", sr.StepID, "error", stepErr)
+		}
 		failed, err := db.UpdateRecoveryStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateRecoveryStepRunFields{
 			Status:  strPtr(domain.RecoveryStepFailed),
 			EndedAt: &endNow,
@@ -1053,6 +1091,21 @@ func (r *Reconciler) runStep(ctx context.Context, tx pgx.Tx, tenantID string, re
 	return nil
 }
 
+// sumUsageOffTx reads an execution's usage sum on its OWN connection, never the caller's transaction.
+//
+// A soft telemetry read has no business sharing a transaction with the recovery DAG's writes: any
+// failure aborts the tx, and the writes that MARK the failure then fail too, which is how a recoverable
+// telemetry hiccup became a quarantined recovery with no recorded cause. Isolation is the fix, not
+// better error handling — the transaction cannot be un-aborted.
+func (r *Reconciler) sumUsageOffTx(ctx context.Context, tenantID, executionID string) (int64, float64, error) {
+	ttx, err := r.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("sum usage: begin: %w", err)
+	}
+	defer func() { _ = ttx.Rollback(ctx) }()
+	return db.SumUsageForExecution(ctx, ttx.Tx, tenantID, executionID)
+}
+
 // stepCapture snapshots the failed execution's state + recent telemetry
 // and marks the original execution recovering (docs/06 §3 step 1).
 func (r *Reconciler) stepCapture(ctx context.Context, tx pgx.Tx, tenantID string, rec db.RecoveryExecutionRow) ([]byte, error) {
@@ -1062,8 +1115,24 @@ func (r *Reconciler) stepCapture(ctx context.Context, tx pgx.Tx, tenantID string
 	}
 	// Spend comes from the usage-records sum (the worker_executions row columns are write-never and
 	// always read zero); fall back to the row on query failure so capture never fails for telemetry.
+	//
+	// IT MUST NOT RUN ON THIS TRANSACTION. This was the poisoning bug: the error was deliberately
+	// swallowed here, but a FAILED STATEMENT ABORTS THE POSTGRES TRANSACTION no matter what Go does with
+	// the error. Every later statement in progressRecovery — including `mark step failed` — then returns
+	// SQLSTATE 25P02, and the reconciler responds by QUARANTINING the recovery as terminally failed.
+	// One soft read error destroyed the recovery and discarded its own cause:
+	//
+	//   "recovery reconcile failed", error="mark step failed: ... current transaction is aborted
+	//    (SQLSTATE 25P02)"  ->  "recovery quarantined (poisoned tx)"
+	//
+	// Measured: the identical read on a plain connection succeeds, and the same statement after any
+	// failure inside a tx returns 25P02. So the soft read is MOVED OFF the write transaction and given
+	// its own connection: a telemetry failure can no longer poison the DAG.
 	tokens, cost := exec.TokenUsage, exec.CostUSD
-	if t, c, uerr := db.SumUsageForExecution(ctx, tx, tenantID, exec.ID); uerr == nil {
+	if t, c, uerr := r.sumUsageOffTx(ctx, tenantID, exec.ID); uerr != nil {
+		r.log.Warn("recovery capture: usage sum unavailable — using the execution row's own figures",
+			"recovery", rec.ID, "execution", exec.ID, "error", uerr)
+	} else {
 		tokens, cost = t, c
 	}
 	snapshot := map[string]any{
@@ -1243,15 +1312,35 @@ func (r *Reconciler) escalate(ctx context.Context, tx pgx.Tx, tenantID string, r
 		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventEscalated, updated, "", "", rec.TriggerReason, "escalated L2→L3 (human approval required; task paused)", "")
 		r.log.Warn("recovery escalated L2→L3 (human approval required)", "recovery", rec.ID, "task", rec.TaskID)
 	default:
-		// L3 already — cannot escalate further. Mark failed.
+		// L3 IS THE CEILING OF THE LADDER, NOT A TERMINAL FAILURE.
+		//
+		// This used to mark the recovery FAILED, which made L3 a dead end: once a task's recovery reached
+		// L3, every later attempt escalated into "cannot escalate further" and died, so the item could
+		// never recover again no matter what changed. Observed on task 01M84X6FD9X2N5FQ534GK91THR: six
+		// recoveries, all failed, ending at L3.
+		//
+		// L3 means HUMAN ESCALATION (docs/06 §7) — the same state the L2→L3 arm above creates, and the
+		// one progressRecovery already knows to park on. Failing instead of blocking threw away the only
+		// remaining route (an operator's decision) and did it silently: the recovery row carried an empty
+		// summary, so the failure had no recorded cause.
+		//
+		// The cause travels in the summary, which is what an operator actually reads.
+		cause := strings.TrimSpace(rec.Summary)
+		if cause == "" {
+			cause = "see the recovery's step runs and the plane log for the originating error"
+		}
 		updated, err := db.UpdateRecoveryExecution(ctx, tx, tenantID, rec.ID, rec.Version, db.UpdateRecoveryExecutionFields{
-			Status:  strPtr(domain.RecoveryFailed),
-			EndedAt: &now,
+			Status:             strPtr(domain.RecoveryBlocked),
+			NeedsHumanApproval: boolPtr(true),
+			Summary:            strPtr("blocked at L3 — the escalation ladder is exhausted, a human must decide. Cause: " + cause),
 		})
 		if err != nil {
-			return fmt.Errorf("escalate L3 fail: %w", err)
+			return fmt.Errorf("escalate L3 block: %w", err)
 		}
-		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventFailed, updated, "", "", rec.TriggerReason, "recovery failed at L3", "")
+		_ = enqueueRecoveryEvent(ctx, tx, domain.RecoveryEventBlocked, updated, "", "", rec.TriggerReason,
+			"L3 reached — blocked for human approval (was a terminal failure before)", "")
+		r.log.Warn("recovery reached L3 and is now BLOCKED for human approval rather than failed",
+			"recovery", rec.ID, "task", rec.TaskID)
 	}
 	return nil
 }
@@ -1376,9 +1465,33 @@ func strPtr(s string) *string { return &s }
 func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 
-// countTaskChainRecoveries walks the work item's parent chain to find all ancestor task IDs, then
-// counts terminal recovery executions for any task in the chain.
-func countTaskChainRecoveries(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (int, error) {
+// workflowRunIDOfExecution returns the run an execution belongs to, or "" for a standalone one.
+func workflowRunIDOfExecution(e *db.ExecutionRow) string {
+	if e == nil {
+		return ""
+	}
+	return e.WorkflowRunID
+}
+
+// countTaskChainRecoveries counts the terminal recoveries that belong to ONE workflow run across a
+// task's ancestor chain — the retry budget's input.
+//
+// SCOPED TO THE RUN, DELIBERATELY. This used to count every terminal recovery in the chain forever,
+// which is the wrong unit: the per-run attempt budget (a step's max_attempts) resets on every fresh
+// run, so the recovery budget has to reset with it. Counting history instead meant a task's PAST
+// failures permanently disarmed its future ones —
+//
+//	chain 01M84X6FD9X2N5FQ534GK91THR: 8 terminal recoveries vs a budget of 5
+//	-> every NEW recovery created at L3 (the ceiling) on the first failure of a FRESH run
+//	-> L3 could not escalate, so it failed instantly and the step recorded attempt 1
+//
+// which is why re-running looked like it had not reset the retries at all: the attempts DID reset to
+// 1, and the recovery was refused before it could use any of them.
+//
+// A past run's recoveries stay in the table and stay visible — they are audit history. They simply no
+// longer tax a run that has nothing to do with them. A run that genuinely fails six times still
+// exhausts its budget exactly as before, because those recoveries carry its own run id.
+func countTaskChainRecoveries(ctx context.Context, tx pgx.Tx, tenantID, taskID, workflowRunID string) (int, error) {
 	// Collect all task IDs in the chain.
 	taskIDs := []string{taskID}
 	cur := taskID
@@ -1396,13 +1509,21 @@ func countTaskChainRecoveries(ctx context.Context, tx pgx.Tx, tenantID, taskID s
 		taskIDs = append(taskIDs, *parentID)
 		cur = *parentID
 	}
-	// Count terminal recovery executions for any task in the chain.
+	// Count terminal recoveries belonging to THIS RUN, reached through each recovery's failed
+	// execution (recovery_executions has no run column; worker_executions does). An empty
+	// workflowRunID scopes the count to nothing, so a standalone execution cannot inherit a chain's
+	// history either.
+	if workflowRunID == "" {
+		return 0, nil
+	}
 	var count int
 	err := tx.QueryRow(ctx,
-		`SELECT COUNT(*) FROM recovery_executions
-		 WHERE tenant_id = $1 AND task_id = ANY($2)
-		   AND status IN ('resumed', 'failed')`,
-		tenantID, taskIDs).Scan(&count)
+		`SELECT COUNT(*)
+		   FROM recovery_executions r
+		   JOIN worker_executions e ON e.id = r.failed_execution_id AND e.tenant_id = r.tenant_id
+		  WHERE r.tenant_id = $1 AND r.task_id = ANY($2) AND e.workflow_run_id = $3
+		    AND r.status IN ('resumed', 'failed')`,
+		tenantID, taskIDs, workflowRunID).Scan(&count)
 	if err != nil {
 		return 0, err
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/worktree"
 	"github.com/bmatcuk/doublestar/v4"
 
+	"github.com/beardedparrott/orchicon/internal/gitenv"
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
@@ -68,6 +69,85 @@ func NewContainerHostTools(workingDir, projectRoot string, execFn func(ctx conte
 	h := NewHostTools(workingDir, projectRoot)
 	h.containerExec = execFn
 	return h
+}
+
+// planeStateRootEnvPOISON is what a worker's bash is told about the plane's own state root.
+//
+// WHY A WORKER MUST NOT SEE IT. The plane's state root holds the live opencode stores, the instance
+// data and the backups. Nothing a worker does needs to read or write it, and a worker that CAN reach it
+// will: a test suite resolves a store path from the environment and writes to whatever it finds. That is
+// not hypothetical — an unguarded `go test ./internal/runtime/` in a worker's worktree overwrote four
+// live opencode stores with a 29-byte stub reading "this is not a sqlite database", which killed every
+// serve start and every recovery pass for six hours.
+//
+// A SOURCE FIX IS NOT ENOUGH, and that is the point of doing it here. The source fix (#1008) protects
+// worktrees cut from a CURRENT develop. Eight worktrees predating it still carry the unguarded test and
+// keep re-poisoning the store every time a worker runs their suite. Scrubbing the variable in the
+// worker's ENVIRONMENT protects every worktree at once, whatever its source version.
+//
+// The variable is REDIRECTED rather than removed: a test that needs a store still gets one, in the
+// worker's own scratch, so this hides nothing and breaks no fixture.
+func sandboxedBashEnviron(base []string, scratchDir string) []string {
+	out := make([]string, 0, len(base)+2)
+	for _, kv := range base {
+		key, _, _ := strings.Cut(kv, "=")
+		switch key {
+		case "XDG_DATA_HOME", "ORCHICON_DATA_DIR", "ORCHICON_SERVE_STATE_DIR", "ORCHICON_SERVE_LOG_FILE":
+			// Dropped; re-pointed below at the worker's scratch.
+			continue
+		}
+		// AND THE GIT REPOSITORY POINTERS, FOR THE SAME REASON AND BY THE SAME ARGUMENT.
+		//
+		// The worker's environment carries GIT_DIR/GIT_WORK_TREE aimed at ITS worktree
+		// (internal/runtime/agent.go: gitEnvFor). A bash command inherits them, and so does every child
+		// it spawns — including `go test`, whose fixtures run `git init` and `git config` in a
+		// t.TempDir(). Those variables override `-C` AND ordinary discovery, so such a fixture does not
+		// touch its temp dir: it writes into the MAIN repository's .git/config. That is how a test run
+		// left `core.worktree = <worker worktree>` in the operator's checkout, which then redirected
+		// every git command they ran — `git pull` included — into a worker's worktree, and how their
+		// commit identity became worktree-test@orchicon.dev.
+		//
+		// Scrubbing here covers EVERY bash invocation at once, which is the only coverage that holds: the
+		// fixtures that do this live in worktrees cut from before any source fix, and a worktree's
+		// contents are not something this plane controls. Unlike the state root, these are REMOVED rather
+		// than redirected: a worker acting in its own repository discovers it from cwd, so nothing
+		// legitimate needs them, and pointing them anywhere else would be a different lie.
+		if isGitRepoPointerEnvKey(key) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	if strings.TrimSpace(scratchDir) != "" {
+		mine := filepath.Join(scratchDir, "xdg")
+		_ = os.MkdirAll(mine, 0o700)
+		out = append(out,
+			"XDG_DATA_HOME="+mine,
+			"ORCHICON_DATA_DIR="+filepath.Join(scratchDir, "data"),
+		)
+	}
+	return out
+}
+
+// isGitRepoPointerEnvKey reports whether key is one of git's repository pointers, which override `-C`
+// and repository discovery. Mirrors internal/gitenv's list; kept as a key test because the loop above
+// needs to decide per entry while building its output.
+func isGitRepoPointerEnvKey(key string) bool {
+	for _, k := range gitenv.RepoPointerKeys() {
+		if strings.EqualFold(key, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// bashEnviron is the environment in-process bash actually gets: the caller's factory (when wired),
+// passed through the plane-state scrub.
+func (h *HostTools) bashEnviron() []string {
+	base := os.Environ()
+	if h.envForBash != nil {
+		base = h.envForBash()
+	}
+	return sandboxedBashEnviron(base, h.base.ScratchDir)
 }
 
 // SetBashEnviron wires the environment factory for IN-PROCESS bash (cmd.Env).
@@ -552,9 +632,9 @@ func (h *HostTools) execBash(ctx context.Context, argsJSON string) (string, erro
 	}
 	cmd := procwin.CommandContext(cctx, "bash", "-c", a.Command)
 	cmd.Dir = h.base.Worktree
-	if h.envForBash != nil {
-		cmd.Env = h.envForBash()
-	}
+	// ALWAYS SET, and always through the scrub: an unwired factory must not fall back to the plane's
+	// own environment either (a worker inheriting ORCHICON_DATA_DIR is the bug this closes).
+	cmd.Env = h.bashEnviron()
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
