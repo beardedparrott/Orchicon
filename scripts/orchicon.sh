@@ -448,12 +448,68 @@ logs_host() {
 
 # rebuild_host is the QUICK path: compile then restart, with no test suite. The
 # gated path is `make rebuild-<instance>` (build → ci → migrate-hash → restart).
+# instances_running_from_binary prints the ORCHICON_INSTANCE of every plane process whose executable IS
+# $ROOT/bin/orchicon, one per line.
+#
+# IT ASKS THE PROCESS TABLE, NOT A LIST OF KNOWN NAMES. The question is "who will be orphaned if I replace
+# this file", and only the processes themselves can answer it: an instance this script does not know about
+# (a sandbox, a QA plane, a hand-started serve with ORCHICON_INSTANCE set) is exactly the one a hard-coded
+# list would miss. /proc/<pid>/exe is also the only thing that reports a REPLACED binary, which is the
+# condition being prevented.
+#
+# argv is matched, not command text: `pgrep -f 'orchicon serve'` matches any shell whose command line
+# mentions it, and this result decides what gets STOPPED.
+instances_running_from_binary() {
+  local target exe pid inst
+  target="$(readlink -f "$ROOT/bin/orchicon" 2>/dev/null || printf '%s' "$ROOT/bin/orchicon")"
+  for pid in /proc/[0-9]*; do
+    pid="${pid#/proc/}"
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null)" || continue
+    # A DELETED inode still names the same file; strip the kernel's marker before comparing.
+    exe="${exe% (deleted)}"
+    [ "$exe" = "$target" ] && [ "$(basename "$exe")" = "orchicon" ] || continue
+    # Only a PLANE runs under an instance identity; the runtime daemon is host-wide and refreshed
+    # separately (it must not be stopped here or every instance loses its containers).
+    tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | sed -n '2p' | grep -qx serve || continue
+    inst=""
+    while IFS= read -r kv; do
+      case "$kv" in ORCHICON_INSTANCE=*) inst="${kv#ORCHICON_INSTANCE=}";; esac
+    done < <(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null)
+    [ -n "$inst" ] && printf '%s\n' "$inst"
+  done | sort -u
+}
+
 rebuild_host() {
   local inst="$1"
   command -v make >/dev/null 2>&1 || {
     echo "orchicon.sh: no 'make' on PATH — cannot rebuild. Build with your toolchain, then: scripts/orchicon.sh restart $inst" >&2
     return 1
   }
+  # REFUSE TO REBUILD FROM A WORKTREE, OR FROM ANYTHING THAT IS NOT THE INSTANCE ROOT.
+  #
+  # ROOT is derived from THIS SCRIPT's location, so running `scripts/orchicon.sh rebuild` from a git
+  # worktree happily builds into that worktree: it installs node_modules there, writes its own bin/orchicon,
+  # and stops instances whose real binary is somewhere else entirely. Measured while writing this change —
+  # a test run from .orchicon-worktrees/<id> installed 594 frontend packages into the worktree and left the
+  # host's planes untouched, which reads on screen as a rebuild that did nothing.
+  #
+  # The instances exec exactly one binary, and this script can only be trusted to replace it when it is
+  # running from the tree that owns it.
+  # `rev-parse --show-toplevel` CANNOT answer this: inside a linked worktree it prints the WORKTREE, so
+  # comparing it to ROOT is always equal and the check never fires (measured — the first version of this
+  # guard was dead code for exactly that reason). The git dir is the discriminator: a primary checkout
+  # reports ".git", a linked worktree reports ".../.git/worktrees/<id>".
+  local gitdir
+  gitdir="$(git -C "$ROOT" rev-parse --git-dir 2>/dev/null || true)"
+  case "$gitdir" in
+    */.git/worktrees/*|.git/worktrees/*)
+      echo "orchicon.sh: refusing to rebuild from $ROOT" >&2
+      echo "  that is a git WORKTREE ($gitdir), not an instance root." >&2
+      echo "  A rebuild writes THIS tree's bin/orchicon; no instance runs it, so nothing would change" >&2
+      echo "  and this tree would be left polluted with node_modules and a build." >&2
+      return 1
+      ;;
+  esac
   # STOP FIRST, THEN BUILD, THEN START — and refresh the runtime daemon after.
   #
   # THE OLD ORDER WAS build -> stop -> start, and it is what leaves processes on DELETED INODES. Replacing
@@ -464,8 +520,52 @@ rebuild_host() {
   # daemon were all found serving `bin/orchicon (deleted)` after rebuilds that reported success.
   #
   # Stopping first also means the new binary is never written while a process is executing it.
+  #
+  # AND IT IS NOT ENOUGH TO STOP ONLY THE INSTANCE I WAS ASKED TO REBUILD.
+  #
+  # bin/orchicon is ONE PATH SHARED BY EVERY INSTANCE (dev, prod, test all exec it), while
+  # `rebuild-<instance>` names only one. So `make rebuild-dev` stopped dev, built, started dev — and then
+  # `make rebuild-prod` rebuilt the SAME file underneath the dev plane that was already running, orphaning
+  # its inode. Measured on this host: dev started 10:15:06 from the 10:14:15 build, rebuild-prod rewrote
+  # bin/orchicon at 10:19:45, and dev was left serving "bin/orchicon (deleted)" while prod started cleanly on
+  # the new inode. The order fix was correct and still could not help, because the damage was done by the
+  # OTHER instance's rebuild.
+  #
+  # So the set to stop is "everything currently executing this binary", which the system can answer
+  # exactly — not "the instance whose name I typed". Instances are restarted afterwards in the same pass,
+  # so nothing is left down; a failure to restart one is reported, never silent.
+  local also=()
+  local running
+  while IFS= read -r running; do
+    [ -z "$running" ] && continue
+    [ "$running" = "$inst" ] && continue
+    also+=("$running")
+  done < <(instances_running_from_binary)
+
+  # THE BUILD DECIDES WHETHER ANYTHING IS STOPPED, and that decision now lives in Makefile:build (a stamp
+  # check over tracked sources) rather than being duplicated here. Duplicating it meant the two could
+  # disagree — and this file is only ONE of the callers: `make rebuild-<instance>` goes through
+  # instance-rebuild -> instance-build -> `make build`, which never passed through here at all.
+  if [ "${#also[@]}" -gt 0 ]; then
+    echo "note: bin/orchicon is shared — also stopping: ${also[*]}"
+    echo "      (this build replaces the binary they are executing)"
+  fi
+
   stop_host "$inst"
+  local other
+  for other in "${also[@]}"; do
+    stop_host "$other" || echo "orchicon.sh: WARNING could not stop $other before the rebuild" >&2
+  done
+
   make -C "$ROOT" build
+
+  # Bring the others back BEFORE the named instance, so a slow start on the one the operator asked for does
+  # not leave the rest down. Each is reported: a rebuild must never quietly leave a plane stopped.
+  local rc=0
+  for other in "${also[@]}"; do
+    start_host "$other" || { echo "orchicon.sh: ERROR $other did not restart after the rebuild" >&2; rc=1; }
+  done
+  # fall through to the caller's start_host "$inst" below; returning here would skip it
   # The daemon AFTER the build, deliberately: refreshing it earlier compares it against a binary that has
   # not been rebuilt yet, which correctly answers "fresh" and then changes underneath it.
   make -C "$ROOT" runtime-daemon-refresh
