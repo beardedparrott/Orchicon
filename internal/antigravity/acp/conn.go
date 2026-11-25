@@ -179,13 +179,6 @@ func (c *conn) write(v any) error {
 	return nil
 }
 
-// writeRaw writes an already-encoded document.
-func (c *conn) writeRaw(b []byte) error {
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	return c.proc.WriteLine(b)
-}
-
 // notify sends a JSON-RPC notification (no id, no response).
 func (c *conn) notify(method string, params any) error {
 	return c.write(rpcNotification{JSONRPC: "2.0", Method: method, Params: params})

@@ -62,12 +62,6 @@ type Base struct {
 	RawBytes json.RawMessage `json:"-"`
 }
 
-// NewBase builds the embedded part of an update. Exported so a synthetic update can be
-// constructed in a test without going through the wire.
-func NewBase(sessionID string, raw json.RawMessage) Base {
-	return Base{SID: sessionID, RawBytes: raw}
-}
-
 // SessionID implements Update.
 func (b Base) SessionID() string { return b.SID }
 

@@ -18,7 +18,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -47,16 +46,6 @@ func sessionUpdateMsg(sessionID, kind string, fields map[string]any) string {
 // resultMsg builds one JSON-RPC response line.
 func resultMsg(id any, result any) string {
 	doc := map[string]any{"jsonrpc": "2.0", "id": id, "result": result}
-	b, err := json.Marshal(doc)
-	if err != nil {
-		panic(err)
-	}
-	return string(b)
-}
-
-// errorMsg builds one JSON-RPC error response line.
-func errorMsg(id any, code int, msg string) string {
-	doc := map[string]any{"jsonrpc": "2.0", "id": id, "error": map[string]any{"code": code, "message": msg}}
 	b, err := json.Marshal(doc)
 	if err != nil {
 		panic(err)
@@ -1051,6 +1040,3 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 		time.Sleep(2 * time.Millisecond)
 	}
 }
-
-// TestMainIsNotRequired documents that this package's tests need no live agy.
-var _ = os.Getenv
