@@ -90,23 +90,41 @@ func startSessionOn(t *testing.T, handler Handler, sid string) (*Client, *fakePr
 	ctx := ctxT(t)
 	c, fp := newTestClient(t, handler)
 
-	fp.emit(resultMsg(1, map[string]any{
+	// Both handshake calls are answered IN LOCKSTEP with the client's writes (answerNext), never
+	// ahead of them: a response emitted before the request is on the wire is dropped as an unknown
+	// id and the call would then time out. See answerNext for why that matters.
+	initErr := make(chan error, 1)
+	go func() {
+		_, err := c.Initialize(ctx)
+		initErr <- err
+	}()
+	answerNext(t, fp, methodInitialize, map[string]any{
 		"protocolVersion": 1,
 		"agentCapabilities": map[string]any{
 			"loadSession":        true,
 			"promptCapabilities": map[string]any{"embeddedContext": true},
 		},
 		"agentInfo": map[string]any{"name": "Antigravity ACP Server", "version": "1.5.13"},
-	}))
-	if _, err := c.Initialize(ctx); err != nil {
+	})
+	if err := <-initErr; err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	fp.emit(resultMsg(2, map[string]any{
+	type sessOut struct {
+		sess *Session
+		err  error
+	}
+	sessCh := make(chan sessOut, 1)
+	go func() {
+		s, _, err := c.NewSession(ctx, NewSessionParams{Cwd: "/tmp/x"})
+		sessCh <- sessOut{sess: s, err: err}
+	}()
+	answerNext(t, fp, methodSessionNew, map[string]any{
 		"sessionId": sid,
 		"models":    map[string]any{"availableModels": []any{}, "currentModelId": "gemini-4-neon"},
-	}))
-	sess, _, err := c.NewSession(ctx, NewSessionParams{Cwd: "/tmp/x"})
+	})
+	out := <-sessCh
+	sess, err := out.sess, out.err
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -614,20 +632,27 @@ func TestMalformedLineDoesNotKillReader(t *testing.T) {
 	}
 }
 
-// TestStringAndIntIDsCorrelate: agy answers with a STRING id where the client sent a number, and
-// the client must still correlate — while echoing agy's own string id back on ITS request.
-func TestStringAndIntIDsCorrelate(t *testing.T) {
+// TestAgentRequestIDIsEchoedVerbatim: agy identifies ITS OWN requests with ids this client never
+// issued — a STRING here, where every id the client sends is a number. The answer must echo that
+// id verbatim or agy cannot correlate the decision with the tool call it is waiting on, and the
+// turn stalls.
+//
+// NOTE: correlation the OTHER way (agy answering a numeric client id with a string) is not
+// exercised, because no fixture records it: `deliver` keys pending calls by the exact id the
+// client wrote, so an asymmetric answer would not match and the call would run to its deadline.
+// Adding a fabricated recording to "prove" it would be inventing protocol behaviour.
+func TestAgentRequestIDIsEchoedVerbatim(t *testing.T) {
 	const sid = "sess-ids"
 	_, fp, _, _ := startSessionOn(t, allowAllHandler{}, sid)
 
-	// A response keyed by the STRING form of the client's numeric id.
-	fp.emit(`{"jsonrpc":"2.0","result":{"protocolVersion":1},"id":"1"}`)
-	// And an agent request whose id is the string "1", answered with that same string.
 	fp.emit(permissionRequest("1", sid, "run_command"))
 
 	doc := awaitWrittenResult(t, fp, 5*time.Second)
 	if string(doc.ID) != `"1"` {
-		t.Fatalf("permmission answer id = %s, want the string \"1\" echoed verbatim", doc.ID)
+		t.Fatalf("permission answer id = %s, want the string \"1\" echoed verbatim", doc.ID)
+	}
+	if doc.Result == nil {
+		t.Errorf("permission answer has no result: %s", doc.ID)
 	}
 }
 

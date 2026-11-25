@@ -215,6 +215,38 @@ func (p *fakeProc) writtenDocs() []json.RawMessage {
 	return append([]json.RawMessage(nil), p.tail...)
 }
 
+// answerNext registers the fake child's answer to the client's NEXT request, in lockstep: it
+// waits for the client to actually write the request before emitting the response.
+//
+// This is not tidiness. The transport correlates a response to the id it issued, and a response
+// that arrives BEFORE the request is written is (correctly) dropped as an unknown id — the client
+// has not registered the pending entry yet. A test that emits first therefore races the client's
+// own goroutine and fails with "context deadline exceeded" roughly once in a few hundred runs.
+// Answering in lockstep removes the race instead of hiding it behind a retry.
+func answerNext(t *testing.T, fp *fakeProc, method string, result any) {
+	t.Helper()
+	deadline := time.Now().Add(writeTimeout)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("acp test: no %q request within %s", method, writeTimeout)
+		}
+		raw, err := fp.awaitWrite(remaining)
+		if err != nil {
+			t.Fatalf("acp test: awaiting %q: %v", method, err)
+		}
+		var doc c2sDoc
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatalf("acp test: client wrote invalid JSON: %v", err)
+		}
+		if method != "" && doc.Method != method {
+			continue
+		}
+		fp.emit(resultMsg(doc.ID, result))
+		return
+	}
+}
+
 // c2sDoc is the decoded view of a client-written document.
 type c2sDoc struct {
 	JSONRPC string          `json:"jsonrpc"`

@@ -547,6 +547,17 @@ func (c *conn) finish() {
 	c.doneOnce.Do(func() {
 		c.exitCode = code
 		c.exitErr = werr
+		// SETTLE THE DIAGNOSTIC BEFORE ANYONE CAN READ IT. The stderr drain is a separate
+		// goroutine, so "stdout ended" (which is what drives this function) does not imply the
+		// drain has consumed the lines the child wrote just before it died — they can still be
+		// sitting in the process's stderr buffer. Every closed error is rendered from that ring
+		// (closedErr -> stderrRing.Tail), so without this wait a pending call could be failed with
+		// an EMPTY Stderr and the child's own fatal line lost. Waiting here, before `close(c.done)`,
+		// is what establishes the happens-before edge: a caller that observes the closed
+		// connection is guaranteed to observe the drained tail. The wait is bounded by
+		// stderrStopGrace and returns as soon as the pump ends, which for every Proc
+		// implementation happens when the child exits.
+		c.stderr.stop()
 		// Handlers currently blocked fail closed before the connection is marked done.
 		c.serveCancel(errTeardown)
 
