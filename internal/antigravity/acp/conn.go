@@ -557,15 +557,14 @@ func (c *conn) finish() {
 		// Handlers currently blocked fail closed before the connection is marked done.
 		c.serveCancel(errTeardown)
 
+		// Pending calls are woken by `close(c.done)` below, which makes conn.call return
+		// c.closedErr() — carrying the exit code AND the stderr tail. Pushing a synthesised
+		// RPCError onto each of their channels instead would RACE that path and, worse, would be
+		// the error a caller actually saw: a bare "-32099 agy process exited" with no diagnostic,
+		// which is the unactionable shape this package exists to avoid. So the map is only
+		// cleared here.
 		c.pmu.Lock()
-		closedErr := &RPCError{Code: CodeClientClosed, Message: "agy process exited"}
-		for key, ch := range c.pending {
-			select {
-			case ch <- rpcMessage{Error: closedErr}:
-			default:
-			}
-			delete(c.pending, key)
-		}
+		c.pending = make(map[string]chan rpcMessage)
 		c.pmu.Unlock()
 
 		c.sessMu.Lock()

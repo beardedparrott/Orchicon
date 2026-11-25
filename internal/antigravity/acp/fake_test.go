@@ -196,6 +196,18 @@ func (p *fakeProc) awaitWrite(d time.Duration) ([]byte, error) {
 	}
 }
 
+// drainWrites discards everything the client has already written, so a test that inspects the
+// NEXT write sees the one it caused rather than a leftover handshake request.
+func (p *fakeProc) drainWrites() {
+	for {
+		select {
+		case <-p.written:
+		default:
+			return
+		}
+	}
+}
+
 // written returns every document the client has written so far.
 func (p *fakeProc) writtenDocs() []json.RawMessage {
 	p.mu.Lock()
