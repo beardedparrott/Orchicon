@@ -35,6 +35,6 @@ RUN npm install -g playwright@latest
 # The recursive chown gets its OWN layer, AFTER every install, so it runs once. Combined with the
 # npm line above it still works — but it then re-copies the tree it just modified in the same
 # layer, and `podman history` reports a single opaque size instead of two honest ones.
-RUN chown -R 1000:1000 /usr /opt /var 2>/dev/null || true
+RUN find /usr /opt /var -xdev ! -uid 1000 -exec chown -h 1000:1000 {} + 2>/dev/null || true
 
 USER orchicon

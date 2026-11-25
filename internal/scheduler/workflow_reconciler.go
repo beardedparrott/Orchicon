@@ -3428,9 +3428,9 @@ func (r *WorkflowReconciler) resolveRuntimeImage(ctx context.Context, tx pgx.Tx,
 			return "", fmt.Errorf("get bound work item: %w", err)
 		}
 		if img := strings.TrimSpace(wi.RuntimeImage); img != "" {
-			return img, nil
+			return db.CanonicalRuntimeImage(img), nil
 		}
-		return resolveProjectDefaultImage(ctx, tx, tenantID, run.ProjectID), nil
+		return db.CanonicalRuntimeImage(resolveProjectDefaultImage(ctx, tx, tenantID, run.ProjectID)), nil
 	}
 	// One-shot: collect WORK_ITEM markers' images; all must agree.
 	values := []string{}
@@ -3450,7 +3450,7 @@ func (r *WorkflowReconciler) resolveRuntimeImage(ctx context.Context, tx pgx.Tx,
 			return "", fmt.Errorf("get marker work item %s: %w", wid, err)
 		}
 		if img := strings.TrimSpace(wi.RuntimeImage); img != "" {
-			values = append(values, img)
+			values = append(values, db.CanonicalRuntimeImage(img))
 		}
 	}
 	chosen, err := resolveImageFromValues(values)
@@ -3462,7 +3462,7 @@ func (r *WorkflowReconciler) resolveRuntimeImage(ctx context.Context, tx pgx.Tx,
 	}
 	// One-shot with no explicit image: fall back to the run's project
 	// default, else the base image.
-	return resolveProjectDefaultImage(ctx, tx, tenantID, run.ProjectID), nil
+	return db.CanonicalRuntimeImage(resolveProjectDefaultImage(ctx, tx, tenantID, run.ProjectID)), nil
 }
 
 // resolveProjectDefaultImage returns the project's default_runtime_image when set, else the base

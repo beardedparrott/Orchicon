@@ -1318,7 +1318,7 @@ func (s *Service) GetStockImageTemplate(ctx context.Context, req *connect.Reques
 		desc = "Base image plus headless GUI libraries (Qt offscreen via PySide6/PyQt, tkinter, X11) for GUI toolchain work."
 	case strings.HasSuffix(suffix, "dev") || strings.HasSuffix(suffix, "orchicon-dev"):
 		file = "deploy/runtime/Dockerfile.dev"
-		name = "Orchicon development image (:orchicon-dev)"
+		name = "Orchicon development image (:dev)"
 		desc = "Go, Node, buf, atlas, and a baked PostgreSQL 15 for building and DB-testing the Orchicon repo in-sandbox."
 	default:
 		file = "deploy/runtime/Dockerfile"
@@ -1378,7 +1378,29 @@ func withAdapterInstallBlock(override, block string) string {
 	return sb.String()
 }
 
+// stockTemplateForRow returns the Dockerfile shipped in this binary for a stock row whose own override is
+// empty (it follows the template), and false for anything else.
+func stockTemplateForRow(row db.RuntimeImageRow) (string, bool) {
+	if row.Source != "stock" || strings.TrimSpace(row.DockerfileOverride) != "" {
+		return "", false
+	}
+	for _, v := range stockVariants {
+		if stockSlug(v) != row.Slug {
+			continue
+		}
+		content, err := assets.RuntimeImageTemplatesFS.ReadFile(v.File)
+		if err != nil {
+			return "", false
+		}
+		return string(content), true
+	}
+	return "", false
+}
+
 func generatedDockerfile(row db.RuntimeImageRow, base string) string {
+	if tmpl, ok := stockTemplateForRow(row); ok {
+		row.DockerfileOverride = tmpl
+	}
 	if strings.TrimSpace(row.DockerfileOverride) != "" {
 		// THE OVERRIDE IS KEPT, AND THE ADAPTERS ARE STILL ADDED.
 		if block := adapterInstallBlock(row); block != "" {

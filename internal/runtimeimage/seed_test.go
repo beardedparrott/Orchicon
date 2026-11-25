@@ -74,7 +74,7 @@ func TestSeedState(t *testing.T) {
 		{name: "edited body, marker dropped", override: editedDroppedMarker, wantPri: false, wantCur: false},
 		{name: "content after marker", override: appendedAfterMarker, wantPri: false, wantCur: false},
 		{name: "no marker", override: string(content), wantPri: false, wantCur: false},
-		{name: "empty", override: "", wantPri: false, wantCur: false},
+		{name: "empty (follows the shipped template)", override: "", wantPri: true, wantCur: true},
 	}
 	for _, c := range cases {
 		pri, cur := seedState(c.override, content)

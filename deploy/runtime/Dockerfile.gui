@@ -66,11 +66,20 @@ RUN if [ -n "${ORCHICON_ADAPTERS}" ]; then \
       set -eux; \
       for a in ${ORCHICON_ADAPTERS}; do \
         case "$a" in \
-          opencode) npm install -g "@opencode/cli@latest" ;; \
-          claude)   npm install -g "@anthropic-ai/claude-code@latest" ;; \
+          opencode) npm install -g "@opencode/cli@${ORCHICON_OPENCODE_VERSION}" ;; \
+          claude)   npm install -g "@anthropic-ai/claude-code@${ORCHICON_CLAUDE_VERSION}" ;; \
           *) echo "unknown adapter in ORCHICON_ADAPTERS: $a" >&2; exit 1 ;; \
         esac; \
       done; \
+      # TRIM WHAT THE IMAGE CAN NEVER RUN, IN THIS SAME LAYER (a later RUN cannot shrink an earlier one).\
+      # Measured on a built image: both CLIs ship every libc/CPU variant as an optional dependency. This\
+      # image is Debian (glibc), so the *-musl builds (~350 MB claude, ~490 MB opencode) are dead weight, and\
+      # npm leaves its download cache in /root/.npm (~810 MB). The -baseline builds (non-AVX2 CPUs) are KEPT.\
+      npm cache clean --force; \
+      rm -rf /root/.npm /root/.cache /tmp/*; \
+      root="$(npm root -g)"; \
+      rm -rf "$root"/@anthropic-ai/claude-code/node_modules/@anthropic-ai/*-musl \
+             "$root"/@opencode/cli/node_modules/@opencode/*-musl; \
       chown -R 1000:1000 /usr/local/lib/node_modules /usr/local/bin 2>/dev/null || true; \
     fi
 
@@ -78,7 +87,10 @@ RUN if [ -n "${ORCHICON_ADAPTERS}" ]; then \
 # THE ONE RECURSIVE CHOWN, LAST IN THE FILE. A recursive chown rewrites the metadata of every file it
 # touches, and a Docker layer is copy-on-write, so each one materializes a fresh full copy of the tree.
 # Running it after every install step means one pass instead of one copy of /usr per package group.
-RUN chown -R 1000:1000 /usr /opt /var 2>/dev/null || true
+# `! -uid 1000`: files the base image already chowned are NOT touched again. On overlayfs even a
+# same-owner chown copies the file up into this layer, so a blanket `chown -R /usr` re-materialized the
+# whole base toolchain (a 4.6 GB layer in the measured :dev image).
+RUN find /usr /opt /var -xdev ! -uid 1000 -exec chown -h 1000:1000 {} + 2>/dev/null || true
 
 USER orchicon
 WORKDIR /home/orchicon

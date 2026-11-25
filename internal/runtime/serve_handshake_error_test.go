@@ -102,3 +102,17 @@ func funcBodyText(t *testing.T, src, decl string) string {
 
 var _ = errors.New
 var _ = exec.Command
+
+// runtime-client exits 1 after relaying the supervisor's {"event":"error"} line on STDOUT, so the engine's
+// stderr is empty. The handshake error must carry that line.
+func TestSupervisorErrorFromStdout(t *testing.T) {
+	out := []byte(`{"event":"error","error":"chdir /x: no such file or directory"}` + "\n")
+	if got := supervisorErrorFrom(out); got != "chdir /x: no such file or directory" {
+		t.Errorf("got %q", got)
+	}
+	for _, none := range []string{"", `{"event":"serve","port":4096}`, "not json"} {
+		if got := supervisorErrorFrom([]byte(none)); got != "" {
+			t.Errorf("%q: unexpected %q", none, got)
+		}
+	}
+}
