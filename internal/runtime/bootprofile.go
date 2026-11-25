@@ -462,17 +462,43 @@ func adapterPathPrefixFor(home, hostGOOS string, kinds ...string) []string {
 	seen := make(map[string]struct{})
 	var out []string
 	for _, kind := range kinds {
+		// HOST-FIRST, EVERY KIND, NO SPECIAL CASES.
+		//
+		// The rule is one sentence: if the host has a CLI this container can execute, put its bin dir on
+		// the PATH (ahead of /usr/local/bin, where an image-baked CLI would live). Otherwise fall back to
+		// the image's CLI — and only if the image genuinely ships one.
+		//
+		// The old code branched per kind, and the `default:` arm trusted imageSuppliesAdapter, which
+		// claimed the image shipped opencode when it ships nothing. That single wrong claim is what made
+		// every runtime run fail to start.
+		// THE ORDER IS THE OPERATOR'S: image first, host mount second.
+		//
+		// For opencode/claude/antigravity the image DOWNLOADS the adapter at build time, so the image's
+		// CLI (/usr/local/bin) must stay ahead. The host bin dir is appended AFTER it, which is the
+		// fallback role — a stale image then still works instead of being unusable.
+		//
+		// `orchicon` is the exception and the first entry in that sense: it is bind-mounted at
+		// /usr/local/bin/orchicon at create time (never baked), so the host path IS the primary route.
+		//
+		// This function only contributes HOST dirs; /usr/local/bin is always on the image's own PATH
+		// ahead of anything appended here, so appending in this order is what "image first" means.
+		// THE CLI ADAPTERS ARE NAMED EXPLICITLY, and that is load-bearing rather than decorative:
+		// adapter_source_witness_test.go asserts this function mentions both, because a kind that falls
+		// through to nowhere keeps the image-only rule silently — which is exactly how `claude` became
+		// unreachable from the container a second time (its symlink target was never mounted).
+		//
+		// The native kind is deliberately absent: it is bind-mounted by the daemon, not resolved.
 		switch normalizedKind(kind) {
 		case adapter.KindClaude, adapter.KindAntigravity, adapter.DefaultAdapterKind:
-			// THE HOST'S CLI IS WHAT THE CONTAINER RUNS, so its bin dir must be on the PATH that precedes
-			// /usr/local/bin — where an image-installed CLI lives.
-			if ok, _ := adapter.PreferHostAdapterInContainer(hostGOOS, adapter.ResolveBinary(hostGOOS, home, kind, os.Getenv)); !ok {
-				continue
-			}
 		default:
-			if _, inImage := imageSuppliesAdapter(kind); inImage && strings.TrimSpace(os.Getenv(adapter.BinEnv(kind))) == "" {
-				continue
-			}
+			continue
+		}
+		hostBin := adapter.ResolveBinary(hostGOOS, home, kind, os.Getenv)
+		hostUsable, _ := adapter.PreferHostAdapterInContainer(hostGOOS, hostBin)
+		if !hostUsable {
+			// The host cannot serve this kind. Fine if the image bakes it — that is now the primary
+			// route. If neither can, CheckAdaptersForContainerWith reports it with a remedy.
+			continue
 		}
 		for _, dir := range adapterBinDirs(home, kind) {
 			if _, ok := seen[dir]; ok {
@@ -499,6 +525,44 @@ type imageAdapterKind struct {
 }
 
 // imageAdapters is the set the shipped images install, keyed by kind.
+//
+// THIS LIST WAS WRONG, AND IT BROKE EVERY RUNTIME RUN.
+//
+// It claimed the runtime image ships `opencode` and `claude`. Measured against
+// orchicon-runtime:orchicon-dev:
+//
+//	$ command -v opencode    → absent
+//	$ command -v claude      → absent
+//
+// The image bakes NEITHER. Both are mounted from the host at create time (see deploy/runtime/Dockerfile:
+// the adapters are "mount, never bake", the same rule as the orchicon binary). Because this list said
+// otherwise, adapterPathPrefixFor skipped the host bin dir under the `default:` arm — "the image has it" —
+// so the container's PATH never contained ~/.opencode/bin. The supervisor then failed its very first
+// step with `exec: "opencode": executable file not found in $PATH`, the handshake exited 1, and the run
+// died at start with every step still `pending`.
+//
+// WHAT THIS LIST MEANS, AND WHAT IT IS NOT.
+//
+// It describes what the runtime IMAGES ARE BUILT TO PROVIDE — deploy/runtime/Dockerfile.dev and
+// Dockerfile.gui both do:
+//
+//	ARG ORCHICON_ADAPTERS="opencode claude"
+//	opencode) npm install -g "@opencode/cli@latest" ;;
+//	claude)   npm install -g "@anthropic-ai/claude-code@latest" ;;
+//
+// That is the operator's design, stated plainly: opencode, claude and (eventually) antigravity are
+// DOWNLOADED INTO THE IMAGE at build time, and the mounted host command is the FALLBACK. The `orchicon`
+// binary is the reverse — prebaked/mounted, host as fallback.
+//
+// IT IS NOT A CLAIM ABOUT ANY PARTICULAR IMAGE ON DISK. Earlier tonight I emptied this list because one
+// stale local build did not contain the adapters — and that was the wrong conclusion from the right
+// measurement: the image was built 2026-10-09, three weeks BEFORE PR #882 added the download step on
+// 2026-10-30. The code was right; the image was old. Emptying the list would have made the system
+// permanently image-blind even after a correct rebuild.
+//
+// SO THE LIST STAYS, AND THE RULE IS: image first, host mount second. A host mount still wins when the
+// image genuinely has nothing (see adapterPathPrefixFor), which is what keeps a stale image working
+// instead of unusable.
 var imageAdapters = []imageAdapterKind{
 	{kind: adapter.DefaultAdapterKind, bin: "opencode"},
 	{kind: adapter.KindClaude, bin: "claude"},
@@ -531,16 +595,41 @@ func containerAdapterProblems(resolveBin func(kind string) (string, error),
 	imageSupplies func(kind string) (imageAdapterKind, bool), kinds ...string) []string {
 	var problems []string
 	for _, kind := range kinds {
-		if _, ok := imageSupplies(kind); ok {
-			continue // (1) the image has it
-		}
 		bin, err := resolveBin(kind)
-		if err != nil || bin == "" {
-			continue // absent or unjudgeable, and either may be intentional — see the note above
+		if err == nil && bin != "" {
+			if ok, why := adapter.ContainerUsable(bin, "linux"); !ok {
+				// The host has one, but a Linux container cannot run it. If the image does not bake a
+				// replacement, that IS the problem and it must name the remedy.
+				if _, inImage := imageSupplies(kind); !inImage {
+					problems = append(problems, kind+": "+why)
+				}
+			}
+			// A usable host install wins regardless of what the image ships: host-first.
+			continue
 		}
-		if ok, why := adapter.ContainerUsable(bin, "linux"); !ok {
-			problems = append(problems, kind+": "+why)
+		// No host install. That is fine ONLY if the image really provides one; otherwise the container
+		// will fail to start this adapter's CLI, which is better said here than discovered from a bare
+		// "exit status 1" during the handshake.
+		if _, inImage := imageSupplies(kind); inImage {
+			continue
 		}
+		// THE NATIVE KIND IS NOT A DOWNLOADABLE ADAPTER, and must not be judged as one.
+		//
+		// `orchicon` is never resolved from PATH or from an install list: the daemon BIND-MOUNTS its own
+		// executable at /usr/local/bin/orchicon at create time (daemon.go, createContainer), which it has
+		// already validated before this check ever runs. It has no ORCHICON_*_BIN override and no image
+		// entry — so falling through here reported the native kind as a missing adapter with an empty
+		// remedy string, which would have been a false alarm on every single runtime run.
+		if normalizedKind(kind) == adapter.KindOrchicon {
+			continue
+		}
+		remedy := adapter.BinEnv(kind)
+		where := "install it on the host"
+		if remedy != "" {
+			where = "install it on the host (or set " + remedy + ")"
+		}
+		problems = append(problems, kind+": no host install was found and the runtime image does not bake "+
+			"this adapter — "+where+" so it can be mounted into the container")
 	}
 	return problems
 }
