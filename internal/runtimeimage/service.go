@@ -1318,7 +1318,7 @@ func (s *Service) GetStockImageTemplate(ctx context.Context, req *connect.Reques
 		desc = "Base image plus headless GUI libraries (Qt offscreen via PySide6/PyQt, tkinter, X11) for GUI toolchain work."
 	case strings.HasSuffix(suffix, "dev") || strings.HasSuffix(suffix, "orchicon-dev"):
 		file = "deploy/runtime/Dockerfile.dev"
-		name = "Orchicon development image (:orchicon-dev)"
+		name = "Orchicon development image (:dev)"
 		desc = "Go, Node, buf, atlas, and a baked PostgreSQL 15 for building and DB-testing the Orchicon repo in-sandbox."
 	default:
 		file = "deploy/runtime/Dockerfile"

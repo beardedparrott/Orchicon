@@ -15,6 +15,9 @@ import (
 	"github.com/beardedparrott/orchicon/internal/runtime"
 )
 
+// legacyDevStockName is the dev row's old display name; see the rename in seedOneCannedImage.
+const legacyDevStockName = "Orchicon development image (:orchicon-dev)"
+
 // cannedTenant is where canned (stock) runtime image rows are seeded.
 const cannedTenant = "tnt_dev"
 
@@ -188,7 +191,7 @@ var stockVariants = []stockVariant{
 		Desc: "The lean runtime base: system toolchain, user-space package managers (pip/npm/mise/uv/bun), no-root chowned-rootfs model."},
 	{File: "deploy/runtime/Dockerfile.gui", Variant: "gui", Name: "Runtime GUI image (:gui)",
 		Desc: "Base image plus headless GUI libraries (Qt offscreen via PySide6/PyQt, tkinter, X11) for GUI toolchain work."},
-	{File: "deploy/runtime/Dockerfile.dev", Variant: "dev", Name: "Orchicon development image (:orchicon-dev)",
+	{File: "deploy/runtime/Dockerfile.dev", Variant: "dev", Name: "Orchicon development image (:dev)",
 		Desc: "Go, Node, buf, atlas, baked PostgreSQL 15 + nats-server: the supervisor boots a full disposable Orchicon control plane in the container at start (Postgres -> NATS -> orchicon serve), so workers get the orchicon_* MCP tools, localhost:5432 DB tests, and http://localhost:8080 — all isolated from the host plane."},
 	{File: "deploy/runtime/Dockerfile.web-research", Variant: "web-research", Name: "Runtime web-research image (:web-research)",
 		Desc: "Base image plus a headless browser research toolchain (Playwright + Chromium, extraction helpers) for work that has to read the web."},
@@ -503,6 +506,18 @@ func seedOneCannedImage(ctx context.Context, svc *Service, ref string, variant s
 			return fmt.Errorf("migrate canned image %s to follow the template: %w", ref, err)
 		}
 		migrated = true
+	}
+
+	// A RETIRED DISPLAY NAME: the dev image was shown as "(:orchicon-dev)" long after its tag became :dev, which
+	// is what sent work items to a tag that no longer exists. Rename only an untouched legacy name.
+	if row.Name == legacyDevStockName && variant.Variant == "dev" {
+		newName := variant.Name
+		renamed, nerr := db.UpdateRuntimeImage(ctx, ttx.Tx, cannedTenant, row.ID, row.Version,
+			db.UpdateRuntimeImageFields{Name: &newName, StatusOnly: true})
+		if nerr == nil {
+			row = renamed
+			migrated = true
+		}
 	}
 
 	rolledForward := false
