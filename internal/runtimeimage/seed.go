@@ -13,7 +13,6 @@ import (
 	assets "github.com/beardedparrott/orchicon"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/runtime"
-	"github.com/beardedparrott/orchicon/internal/version"
 )
 
 // cannedTenant is where canned (stock) runtime image rows are seeded.
@@ -684,22 +683,43 @@ func sha12Of(file string) string {
 
 // stockImageCurrent reports whether the local image `info` describes already matches the runtime
 // version container.sh / the release workflow would build for this variant.
+// isLegacyCurrentLabel reports whether label is the PRE-SPLIT form of want: "<app-version>-<want>".
+//
+// It exists so that adopting the content-only label does not itself trigger one rebuild of every image on
+// every host. An image built under the old convention whose Dockerfile hashes match is genuinely current —
+// only the label's spelling changed — so it is accepted until the next real content change rewrites it.
+func isLegacyCurrentLabel(label, want string) bool {
+	if label == "" || want == "" {
+		return false
+	}
+	// The app-version prefix never contains the sha separator pattern we care about, so a suffix match on
+	// "-<want>" is unambiguous.
+	return strings.HasSuffix(label, "-"+want)
+}
+
 func stockImageCurrent(info runtime.ImageInfo, variant stockVariant) bool {
 	if info.RuntimeVersion == "" {
 		return false
 	}
-	app := version.Current().Tag
-	if app == "" {
-		app = "dev"
-	}
+	// CONTENT ONLY — the app version is NOT part of this decision.
+	//
+	// It used to be: the label read "<app-version>-<sha12>", so cutting a release tag marked every stock
+	// image stale and a rebuild rebuilt 12.7 GB of byte-identical image. Measured: images labelled v0.6.37
+	// against a tree at v0.6.39 with every Dockerfile hash unchanged. The release a build happened to
+	// accompany says nothing about whether the image contents match the tree.
+	//
+	// The app version is still recorded (org.orchicon.runtime.app-version -> info.AppVersion) for an operator
+	// asking "which release was this built with"; it is simply not compared here.
 	baseSha := sha12Of(stockVariants[0].File)
 	mySha := sha12Of(variant.File)
 	switch variant.Variant {
 	case "base":
-		return info.RuntimeVersion == app || info.RuntimeVersion == app+"-"+baseSha
+		// Bare hash, plus the pre-split form "<app>-<sha12>" so an image built by the previous convention
+		// is still recognised as current rather than rebuilt once for no reason.
+		return info.RuntimeVersion == baseSha || isLegacyCurrentLabel(info.RuntimeVersion, baseSha)
 	case "gui", "dev", "web-research":
-		return info.RuntimeVersion == app+"-"+variant.Variant ||
-			info.RuntimeVersion == app+"-"+baseSha+"-"+mySha
+		return info.RuntimeVersion == baseSha+"-"+mySha ||
+			isLegacyCurrentLabel(info.RuntimeVersion, baseSha+"-"+mySha)
 	}
 	return false
 }

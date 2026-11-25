@@ -31,8 +31,12 @@ var imageTagPattern = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+
 type ImageList struct {
 	Default string   `json:"default"`
 	Images  []string `json:"images"`
-	// Infos carries per-image version labels, aligned with Images by index: RuntimeVersion =
-	// org.orchicon.runtime.version (stock builds: "<app-version>-<dockerfile-sha12>").
+	// Infos carries per-image version labels, aligned with Images by index.
+	//
+	// RuntimeVersion is the CONTENT label (org.orchicon.runtime.version): a hash of the Dockerfile chain
+	// that produced the image, and the ONLY thing staleness is decided on. AppVersion is provenance
+	// (org.orchicon.runtime.app-version): which release the image was built alongside. The two are separate
+	// because they answer different questions — a release tag must not make a byte-identical image stale.
 	Infos []ImageInfo `json:"infos"`
 }
 
@@ -40,7 +44,10 @@ type ImageList struct {
 type ImageInfo struct {
 	Ref            string `json:"ref"`
 	RuntimeVersion string `json:"runtime_version,omitempty"`
-	SpecVersion    string `json:"spec_version,omitempty"`
+	// AppVersion is the release the image was built alongside. PROVENANCE ONLY — never compared when
+	// deciding whether an image is current.
+	AppVersion  string `json:"app_version,omitempty"`
+	SpecVersion string `json:"spec_version,omitempty"`
 	// Present reports whether the image exists LOCALLY.
 	Present bool `json:"present"`
 }
@@ -106,16 +113,20 @@ func (d *Daemon) imageReport(ref string) ImageInfo {
 	// The label template comes from the ENGINE: docker reports image labels at .Config.Labels and
 	// podman at .Labels, so a hardcoded template reads "" under the other engine.
 	format := d.Engine.ImageLabelFormat("org.orchicon.runtime.version") + "|" +
-		d.Engine.ImageLabelFormat("org.orchicon.runtime.spec-version")
+		d.Engine.ImageLabelFormat("org.orchicon.runtime.spec-version") + "|" +
+		d.Engine.ImageLabelFormat("org.orchicon.runtime.app-version")
 	out, err := d.engine("image", "inspect", "--format", format, ref)
 	if err != nil {
 		return info
 	}
 	info.Present = true
-	parts := strings.SplitN(out, "|", 2)
+	parts := strings.SplitN(out, "|", 3)
 	info.RuntimeVersion = strings.TrimSpace(parts[0])
-	if len(parts) == 2 {
+	if len(parts) >= 2 {
 		info.SpecVersion = strings.TrimSpace(parts[1])
+	}
+	if len(parts) == 3 {
+		info.AppVersion = strings.TrimSpace(parts[2])
 	}
 	return info
 }
