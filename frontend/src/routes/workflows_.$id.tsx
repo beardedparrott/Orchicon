@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { createRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft } from "lucide-react";
+import { WorkflowRunStatus } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import ReactFlow, {
   Background,
   Controls,
@@ -21,6 +22,8 @@ import ReactFlow, {
 
 import {
   useAbortWorkflow,
+  usePauseWorkflowRun,
+  useResumeWorkflowRun,
   useAcquireWorkflowEditLock,
   useCreateWorkflow,
   useCreateWorkflowVersion,
@@ -122,6 +125,8 @@ function EditorInner({ workflowId }: { workflowId: string }) {
   const deprecateWorkflow = useDeprecateWorkflow();
   const startWorkflow = useStartWorkflow();
   const abortWorkflow = useAbortWorkflow();
+  const pauseWorkflow = usePauseWorkflowRun();
+  const resumeWorkflow = useResumeWorkflowRun();
   const deleteMutation = useDeleteWorkflow();
   const deleteVersion = useDeleteWorkflowVersion();
   const createVersion = useCreateWorkflowVersion();
@@ -880,18 +885,42 @@ function EditorInner({ workflowId }: { workflowId: string }) {
                 {createWorkflow.isPending ? "Cloning…" : "Clone"}
               </Button>
             )}
-            {/* PR D: inline Stop for the most recent active run. The
-                button is destructive (Stop halts steps + marks the run
-                aborted) so it's a red outline. Disabled when the run
-                has already terminal'd. */}
+            {/* RUN CONTROL — PAUSE FIRST, BECAUSE IT KEEPS THE WORK.
+                This page used to offer a single destructive "Stop", so wanting to stop a run for
+                a while was the same gesture as throwing the work away: Stop aborts, and an
+                aborted run could not be retried. The pair is now explicit:
+                  Pause   keeps the worktree, branch and succeeded steps; Resume continues it
+                  Stop    ends the run (destructive, red outline, confirm-gated)
+                Resume is also offered on a PAUSED run, which is the only thing that makes Pause
+                worth having. */}
             {latestRunActive && latestRun && (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => pauseWorkflow.mutate({ runId: latestRun.id, reason: "paused from the run page" })}
+                  disabled={pauseWorkflow.isPending}
+                  title={`Pause run ${latestRun.id.slice(0, 12)}… — keeps the worktree, branch and every succeeded step`}
+                >
+                  {pauseWorkflow.isPending ? "Pausing…" : `Pause ${latestRun.id.slice(0, 12)}…`}
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={handleStop}
+                  disabled={abortWorkflow.isPending}
+                  title={`Stop run ${latestRun.id.slice(0, 12)}… — ends the run. Prefer Pause if you want to continue later.`}
+                >
+                  {abortWorkflow.isPending ? "Stopping…" : `Stop ${latestRun.id.slice(0, 12)}…`}
+                </Button>
+              </>
+            )}
+            {latestRun?.status === WorkflowRunStatus.PAUSED && (
               <Button
-                variant="destructive"
-                onClick={handleStop}
-                disabled={abortWorkflow.isPending}
-                title={`Stop run ${latestRun.id.slice(0, 12)}…`}
+                variant="default"
+                onClick={() => resumeWorkflow.mutate({ runId: latestRun.id })}
+                disabled={resumeWorkflow.isPending}
+                title="Continue this paused run on the same worktree and branch — nothing is replayed"
               >
-                {abortWorkflow.isPending ? "Stopping…" : `Stop ${latestRun.id.slice(0, 12)}…`}
+                {resumeWorkflow.isPending ? "Resuming…" : `Resume ${latestRun.id.slice(0, 12)}…`}
               </Button>
             )}
             <Button
