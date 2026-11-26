@@ -27,7 +27,7 @@ import { SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { WorkItemStatus, type WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
-import { RUN_CONTROL_META, runControlsFor } from "./run-controls";
+import { RUN_CONTROL_META, restartLabel, restartTitle, runControlsFor } from "./run-controls";
 
 /**
  * Which gestures to show. THE RULE LIVES IN run-controls.ts so the work item page, the run page
@@ -67,6 +67,21 @@ const ACTION_META: Record<
   },
   [SequenceAction.UNSPECIFIED]: { label: "", icon: Play, title: "" },
 };
+
+
+/**
+ * isFiredOnce reports whether a status implies the item has been dispatched at least once.
+ *
+ * The RESTART label needs this because a `pending` item can be either "created, never fired" or
+ * "fired, subsequently reset". A bound run id settles it; failing that, any status beyond pending
+ * proves it ran.
+ */
+function isFiredOnce(status: WorkItemStatus): boolean {
+  return (
+    status !== WorkItemStatus.PENDING &&
+    status !== WorkItemStatus.UNSPECIFIED
+  );
+}
 
 export function SequenceControls({
   item,
@@ -125,6 +140,11 @@ export function SequenceControls({
     >
       {actions.map((action) => {
         const meta = ACTION_META[action];
+        // START VS RESTART: the same call, but the honest word depends on whether anything has run.
+        // An item that has never been dispatched has nothing to restart and nothing to discard.
+        const hasRun = item.workflowRunId !== "" || !isFiredOnce(item.status);
+        const label = action === SequenceAction.RESTART ? restartLabel(hasRun) : meta.label;
+        const titleText = action === SequenceAction.RESTART ? restartTitle(hasRun) : meta.title;
         const Icon = meta.icon;
         const destructive = action === SequenceAction.RESTART || action === SequenceAction.STOP;
         return (
@@ -132,8 +152,8 @@ export function SequenceControls({
             key={action}
             type="button"
             disabled={isPending}
-            aria-label={`${meta.label} "${item.title}"`}
-            title={meta.title}
+            aria-label={`${label} "${item.title}"`}
+            title={titleText}
             onClick={() => {
               if (destructive) {
                 if (confirming === action) {
