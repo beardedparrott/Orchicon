@@ -94,14 +94,19 @@ var policies = map[string]Policy{
 		MayAct: false,
 	},
 	Iteration: {
-		Mode:   Iteration,
-		Denied: thePlanTools(),
-		Why: "Iteration is the hands: it cuts the branch, edits the code, runs the tests and commits. It does " +
-			"not author the plan or dispatch the pipeline — a working session that turns into a planning " +
-			"session is exactly what this mode exists to avoid.",
-		SwitchTo: Brainstorm,
-		// MayAct is TRUE: the table does not deny the work tools, so this is the ONE mode that may act, and
-		// therefore the ONE mode offered (and allowed to execute) an opaque MCP action tool.
+		Mode: Iteration,
+		// Iteration denies NOTHING: it is the hands AND the planner. It can edit the code, run the tests and
+		// commit, and it can also author and dispatch work (work items, schedules, sequences, runs) — the set
+		// Brainstorm owns. Making an operator switch modes back and forth to do both in one working session
+		// was the friction this removes. Brainstorm and Quick Work keep their own refusals.
+		Denied: map[string]bool{},
+		Why: "Iteration is the hands and the planner: it cuts the branch, edits the code, runs the tests and " +
+			"commits, and it also authors and dispatches work — work items, schedules, sequences and runs.",
+		// Nothing is refused here, so there is no refusal to redirect. QuickWork is the mode for work that
+		// must be DISPATCHED to an ephemeral worker without appearing in the console.
+		SwitchTo: QuickWork,
+		// MayAct is TRUE: nothing is denied, and this remains the mode offered (and allowed to execute) an
+		// opaque MCP action tool.
 		MayAct: true,
 	},
 }

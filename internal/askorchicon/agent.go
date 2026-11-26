@@ -29,7 +29,7 @@ type SystemPromptParts struct {
 // ACTION rather than in what they know.
 //
 //	Brainstorm — open systems thinking; proposes work items as the actionable outcome.
-//	Iteration  — hands-on work on the project; NEVER proposes work items or workflows.
+//	Iteration  — hands-on work on the project; the hands AND the planner (it may also author and run work items).
 //	Quick Work — dispatches the work to ephemeral workers/workflows; does not do it itself.
 //
 // EVERY MODE IS TOLD WHICH MODE IT IS IN, and what the others are for, because
@@ -77,7 +77,7 @@ type modeInfo struct {
 
 var modeGuide = []modeInfo{
 	{modeBrainstorm, "Brainstorm", "the open systems-thinking partner: design, architecture, trade-offs, research, and planning. It answers the question first, then offers the actionable next step — a work item, or a mode switch when the work itself is wanted."},
-	{modeIteration, "Iteration", "the hands-on agent: it works on the project alongside you — in its own git worktree on its own branch, editing code, running the tests, committing as it goes. It does the work itself and never dispatches it."},
+	{modeIteration, "Iteration", "the hands-on agent: it works on the project alongside you — in its own git worktree on its own branch, editing code, running the tests, committing as it goes. It does the work itself, and can also author and run work items and workflows when the user wants that, so one session covers both."},
 	{modeQuickWork, "Quick Work", "the dispatcher: for a task that is ready to be done, it creates an ephemeral worker, workflow and work item, fires the run, and reports back. Nothing it creates appears in the console, and it cleans up after itself."},
 }
 
@@ -416,9 +416,9 @@ func writeCapabilityBlock(b *strings.Builder, mode string) {
 
 You are not a read-only assistant — direct action is what this mode IS.
 - **Repo / code changes** — use the file/shell suite (ask_file_root, read, write, edit, bash, glob, grep) to edit real source code, run builds and the test suite, and drive git locally.
-- **Platform data** — orchicon_* tools reach the live platform, always after user confirmation.
+- **Platform data and planning** — orchicon_* tools reach the live platform, always after user confirmation.
 
-DO NOT propose creating work items in this mode, and do NOT propose firing workflows or schedules. Those are other modes' jobs, and offering them here would turn a working session into a planning session. If the user asks for tracked, dispatched work, that is a MODE mismatch — offer to switch (Brainstorm to shape it, Quick Work to dispatch it) rather than doing it here. THE PLATFORM ENFORCES THIS: creating or updating a work item, scheduling, reordering or driving a sequence, and firing or advancing a run are all refused here, so do not call them — and note that driving a sequence is a PLAN action even though its subject is work you may be running.
+You can ALSO plan and dispatch from here: create and update work items, schedule and reorder them, drive a sequence, and fire or advance a run — everything Brainstorm can do — so a working session never needs a mode switch just to author the work. Follow the work-item drafting rules below when you do, and confirm before each mutating call. Quick Work remains the mode for a defined task the user wants DISPATCHED to an ephemeral worker without it appearing in the console; offer it only when that is what they want, not to avoid planning here.
 
 Confirm-before-mutate discipline is retained unchanged: you confirm before running any mutating tool.
 `)
@@ -440,7 +440,8 @@ Confirm-before-mutate discipline is retained unchanged: you confirm before runni
 	}
 }
 
-// writeWorkItemDraftingRules is the work-item authoring contract, and it is BRAINSTORM-ONLY.
+// writeWorkItemDraftingRules is the work-item authoring contract. It rides every mode that may AUTHOR
+// work items: Brainstorm and Iteration.
 func writeWorkItemDraftingRules(b *strings.Builder) {
 	b.WriteString("## Workflow & runtime prompt\n")
 	b.WriteString("Whenever the user asks you to create work items (orchicon_create_work_item / orchicon_update_work_item / bulk creation):\n")
@@ -542,7 +543,7 @@ Your architect, developer, designer, researcher, and colleague. You work on the 
 8. When something fails, read the failure instead of retrying blindly: name the cause, fix it, and say what it was. A loop of identical retries is the one behaviour this mode must never exhibit.
 9. Make suggestions from what you see. If the code tells you the approach is wrong, say so — with the evidence.
 10. Be a colleague: direct about problems, honest about uncertainty, and pleasant to work with. Never overstate what you have verified, and never claim a result you did not observe.
-11. When the user asks for tracked or dispatched work — a work item to run later, a workflow to fire — that is not this mode. Say so and offer the switch rather than quietly either doing it by hand or refusing.
+11. When the user asks for tracked or dispatched work — a work item to run later, a workflow to fire — you may do it here, with confirmation, following the work-item drafting rules. Offer Quick Work only when they want it run by an ephemeral worker that stays out of the console.
 
 ## Research before you build
 Most problems are not new, and the expensive way to solve one is to re-derive it from scratch. BEFORE you write a debugging loop, a workaround, or a bespoke implementation, check whether the answer already exists:
@@ -575,8 +576,10 @@ Answer at the length of the QUESTION, not the length of the work behind it. Deta
 	writeSessionContract(&b)
 	writeIntegrationMapBlock(&b)
 	writeIntegrationMapInOpenWork(&b)
+	writeIntegrationMapInWorkItems(&b)
 	writePlatformPrimer(&b, modeIteration)
 	writeToolList(&b, toolRegistry, modeIteration)
+	writeWorkItemDraftingRules(&b)
 	writeSkillsManifest(&b, skillsSection)
 	writeAdditionalInstructions(&b, cfg)
 

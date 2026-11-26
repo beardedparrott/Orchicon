@@ -9,7 +9,7 @@ import (
 )
 
 // THE TWO SETS, and the modes that own them. This is the boundary in one assertion: the doers are refused by
-// everything that is not the hands, and the planners are refused by the hands.
+// everything that is not the hands. Iteration is the hands AND the planner, so it refuses neither set.
 func TestTheBoundaryTable(t *testing.T) {
 	work := []string{"write", "edit", "batch_write", "bash"}
 	plan := []string{
@@ -31,9 +31,11 @@ func TestTheBoundaryTable(t *testing.T) {
 		}
 	}
 
+	// ITERATION IS THE HANDS AND THE PLANNER: it may author and dispatch work as well as do it, so an operator
+	// never has to switch modes mid-session to create a work item or fire a run.
 	for _, tool := range plan {
-		if Allows(Iteration, tool) {
-			t.Errorf("iteration may run %q — authoring the plan or firing the pipeline is not this mode's job", tool)
+		if !Allows(Iteration, tool) {
+			t.Errorf("iteration may not run %q — it is the planner as well as the hands", tool)
 		}
 	}
 	for _, tool := range work {
@@ -128,7 +130,7 @@ func TestEveryPolicyNamesADifferentTarget(t *testing.T) {
 func TestDeniedNamesIsSortedAndComplete(t *testing.T) {
 	for _, mode := range []string{Brainstorm, Iteration, QuickWork} {
 		names := DeniedNames(mode)
-		if len(names) == 0 {
+		if len(names) == 0 && mode != Iteration {
 			t.Errorf("DeniedNames(%q) is empty", mode)
 		}
 		for i := 1; i < len(names); i++ {
@@ -140,6 +142,10 @@ func TestDeniedNamesIsSortedAndComplete(t *testing.T) {
 		if denied := DeniedNames("not-a-mode"); denied != nil {
 			t.Errorf("DeniedNames of an unknown mode returned %v, want nil", denied)
 		}
+	}
+	// Iteration refuses NOTHING — the hands and the planner.
+	if got := DeniedNames(Iteration); len(got) != 0 {
+		t.Errorf("iteration denies %v — it is meant to refuse nothing", got)
 	}
 	// Brainstorm and Quick Work refuse THE SAME SET — the table's shape, asserted rather than assumed.
 	if got, want := strings.Join(DeniedNames(Brainstorm), ","), strings.Join(DeniedNames(QuickWork), ","); got != want {

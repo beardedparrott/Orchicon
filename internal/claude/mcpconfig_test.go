@@ -145,19 +145,15 @@ func TestClaudeToolToPolicyNameMapsMCPTools(t *testing.T) {
 
 // END TO END through the gate, and the mapping above is what makes it possible.
 //
-// WHICH MODE REFUSES WHAT, because I got this backwards first and the test is
-// what corrected me: the policy is per-mode, not one denylist.
+// WHICH MODE REFUSES WHAT: the policy is per-mode, not one denylist.
 //
-//	brainstorm  denies theWorkTools  {write, edit, batch_write, bash}
-//	            — it is WHERE YOU PLAN, so it MAY create and schedule work items
-//	iteration   denies thePlanTools  {create_work_item, update_work_item,
-//	            schedule_work_item, reorder_work_items, control_sequence, …}
-//	            — it is the HANDS, so authoring and dispatch are the other modes' job
+//	brainstorm  denies theWorkTools  {write, edit, batch_write, bash} — it is WHERE YOU PLAN
+//	iteration   denies nothing       — it is the hands AND the planner
 //
-// So a planner tool is refused in ITERATION and allowed in brainstorm, and a
-// work tool is the reverse. Asserting only one direction would pass against an
-// implementation that hard-coded a single denylist.
-func TestModeGateAppliesThePlannerDenyToMCPTools(t *testing.T) {
+// So a work tool is refused in brainstorm and allowed in iteration, and a planner tool is allowed in
+// both. The work-tool direction is asserted through the MCP-prefixed spelling, because without the name
+// mapping that is ALLOWED and the boundary is silently inert.
+func TestModeGateAppliesTheWorkDenyToMCPTools(t *testing.T) {
 	dir := t.TempDir()
 	iterPath := filepath.Join(dir, "iter.mode.json")
 	brainPath := filepath.Join(dir, "brain.mode.json")
@@ -168,29 +164,28 @@ func TestModeGateAppliesThePlannerDenyToMCPTools(t *testing.T) {
 		t.Fatalf("writeAskModeFile(brainstorm): %v", err)
 	}
 
-	// The planner deny, via an MCP-named tool. Without the name mapping this is
-	// ALLOWED and the boundary is inert.
-	denied, msg := askModeDenial(iterPath, "mcp__orchicon__create_work_item")
+	denied, msg := askModeDenial(brainPath, "mcp__orchicon__bash")
 	if !denied {
-		t.Fatal("iteration did NOT refuse mcp__orchicon__create_work_item — the MCP name mapping is not applied, so the planner deny is silently inert")
+		t.Fatal("brainstorm did NOT refuse mcp__orchicon__bash — the MCP name mapping is not applied, so the work deny is silently inert")
 	}
 	if !strings.Contains(msg, "REFUSED BY THE PLATFORM") {
 		t.Errorf("refusal does not read as a platform refusal: %q", msg)
 	}
-	if !strings.Contains(msg, askmode.Brainstorm) {
-		t.Errorf("the refusal does not direct the model to the mode that DOES plan: %q", msg)
+	if !strings.Contains(msg, askmode.Iteration) {
+		t.Errorf("the refusal does not direct the model to the mode that DOES the work: %q", msg)
 	}
 
-	// ...and brainstorm ALLOWS it, because planning is what brainstorm is for.
-	if denied, m := askModeDenial(brainPath, "mcp__orchicon__create_work_item"); denied {
-		t.Fatalf("brainstorm refused a planner tool it is supposed to have: %q", m)
+	// A planner tool is allowed in BOTH modes now.
+	for name, path := range map[string]string{"iteration": iterPath, "brainstorm": brainPath} {
+		if denied, m := askModeDenial(path, "mcp__orchicon__create_work_item"); denied {
+			t.Errorf("%s refused a planner tool it is supposed to have: %q", name, m)
+		}
 	}
 	// A read-only orchicon tool is refused by neither mode.
 	if denied, _ := askModeDenial(brainPath, "mcp__orchicon__get_current_conversation"); denied {
 		t.Error("a read-only orchicon tool was refused by the mode gate")
 	}
-	// And a WORK tool (a normal claude tool name) is refused by brainstorm, which
-	// is the other direction of the same table.
+	// And a WORK tool (a normal claude tool name) is refused by brainstorm, the other direction of the table.
 	if denied, _ := askModeDenial(brainPath, "Write"); !denied {
 		t.Error("brainstorm did not refuse Write")
 	}
