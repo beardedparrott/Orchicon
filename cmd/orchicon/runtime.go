@@ -211,14 +211,14 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 
 	baseImage := env("ORCHICON_RUNTIME_IMAGE", "ghcr.io/beardedparrott/orchicon-runtime:latest")
 	d := &runtime.Daemon{
-		SocketPath:    socketPath,
-		Engine:        eng,
-		Image:         baseImage,
-		Images:        runtimeImagesAllowlist(env("ORCHICON_RUNTIME_IMAGES", "")),
-		UserID:        hostUID,
-		GroupID:       hostGID,
-		HostHome:      hostHome,
-		AllowedRoots:  allowedRoots,
+		SocketPath:   socketPath,
+		Engine:       eng,
+		Image:        baseImage,
+		Images:       runtimeImagesAllowlist(env("ORCHICON_RUNTIME_IMAGES", "")),
+		UserID:       hostUID,
+		GroupID:      hostGID,
+		HostHome:     hostHome,
+		AllowedRoots: allowedRoots,
 		// EVERY ACTIVE PROJECT'S project_dir IS MOUNTABLE, read live so a directory set a moment ago works
 		// now.
 		AllowedRootsSource: func(ctx context.Context) ([]string, error) {
@@ -228,7 +228,7 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 			}
 			return projectDirRoots(ctx, pool, daemonCfg.DeploymentTenantID, log)
 		},
-		ExePath:       exePath,
+		ExePath: exePath,
 		// WHICH FILE THE CONTAINER RUNS — resolved above, never the daemon's own executable on Windows.
 		ContainerExe: containerExe,
 		// WHERE A DURABLE LINUX BINARY WOULD GO, so a refusal names a path that survives a temp cleaner
@@ -237,10 +237,13 @@ func runRuntimeDaemon(args []string, log *slog.Logger) error {
 		// ON A HOST WHOSE OWN BINARY THE CONTAINER CANNOT RUN, an empty ContainerExe must REFUSE rather than
 		// fall back. Set from the same fact the resolver used, so the two cannot disagree.
 		ContainerExeRequired: runtime.GOOS() == "windows" || runtime.GOOS() == "darwin",
-		CPUs:          env("ORCHICON_RUNTIME_CPUS", "4"),
-		Memory:        env("ORCHICON_RUNTIME_MEMORY", "4g"),
+		CPUs:                 env("ORCHICON_RUNTIME_CPUS", "4"),
+		// "0" = NO memory limit (the default): the container uses host memory as it needs it.
+		Memory:        env("ORCHICON_RUNTIME_MEMORY", "0"),
 		TmpfsSize:     env("ORCHICON_RUNTIME_TMPFS", "2g"),
 		HomeTmpfsSize: env("ORCHICON_RUNTIME_HOME_TMPFS", "2g"),
+		// The session store's own tmpfs (see Daemon.StoreTmpfsSize).
+		StoreTmpfsSize: env("ORCHICON_RUNTIME_STORE_TMPFS", "1g"),
 		// PATH MAPPING (internal/runtime/pathmap.go).
 		Paths:         runtime.NewPathMapperFromEnv(runtime.GOOS()),
 		MaxAge:        envDur("ORCHICON_RUNTIME_MAX_AGE", 24*time.Hour),

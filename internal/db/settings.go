@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/antigravity/authmethod"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -41,11 +42,16 @@ type TenantSettingsRow struct {
 	ExecutionRetentionVacuum         bool   // run VACUUM after a prune that removed rows
 	ExecutionRetentionTimeoutSeconds int32  // wall-clock budget for one pass
 	OutboxRetentionDays              int32  // published-outbox retention; 0 = env/code default
-	LogMaxFiles                      int32  // max rotated log files kept; 0 = default
-	MaxConcurrentRuns                int    // tenant-wide cap on concurrently running executions; 0 = no cap
-	MaxConcurrentRunsSet             bool   // true when the update explicitly sets max_concurrent_runs (0 is meaningful)
-	SessionAccessTokenTtlSeconds     int64  // access-token TTL in seconds; 0 = leave unchanged on update
-	SessionRefreshTokenTtlSeconds    int64  // refresh-token TTL in seconds; 0 = leave unchanged on update
+	// Antigravity (agy) adapter: how the ACP server authenticates, and whether Google may
+	// receive usage telemetry. The JSON tags are part of the MCP `get_settings` surface: that
+	// tool marshals this struct DIRECTLY, so these keys are the literal names an operator sees.
+	AntigravityAuthMethod         string `json:"antigravity_auth_method"`     // one of authmethod.Methods(); "" = unchanged on update
+	AntigravityShareTelemetry     bool   `json:"antigravity_share_telemetry"` // false = pass --disable-telemetry
+	LogMaxFiles                   int32  // max rotated log files kept; 0 = default
+	MaxConcurrentRuns             int    // tenant-wide cap on concurrently running executions; 0 = no cap
+	MaxConcurrentRunsSet          bool   // true when the update explicitly sets max_concurrent_runs (0 is meaningful)
+	SessionAccessTokenTtlSeconds  int64  // access-token TTL in seconds; 0 = leave unchanged on update
+	SessionRefreshTokenTtlSeconds int64  // refresh-token TTL in seconds; 0 = leave unchanged on update
 	// ContextCompactionEnabled / ContextCompactionPressureFrac / ContextRecentTurns / MemoryEnabled /
 	// MemoryDigestEntries are the typed compaction + memory policy columns (migration 20260916000000.
 	ContextCompactionEnabled      bool
@@ -89,6 +95,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		execution_retention_enabled, execution_retention_keep,
 		execution_retention_vacuum, execution_retention_timeout_seconds,
 		outbox_retention_days,
+		antigravity_auth_method, antigravity_share_telemetry,
 		created_at, updated_at
 		FROM tenant_settings WHERE tenant_id = $1`
 	row, err := tx.Query(ctx, q, tenantID)
@@ -131,6 +138,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		execution_retention_enabled, execution_retention_keep,
 		execution_retention_vacuum, execution_retention_timeout_seconds,
 		outbox_retention_days,
+		antigravity_auth_method, antigravity_share_telemetry,
 		created_at, updated_at`
 	ins, err := tx.Query(ctx, insertQ, tenantID)
 	if err != nil {
@@ -146,6 +154,12 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 
 // UpdateTenantSettings upserts the tenant settings row with the provided values.
 func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in TenantSettingsRow) (TenantSettingsRow, error) {
+	// A bad auth method must not surface as a raw CHECK-constraint driver error: name the allowed
+	// values instead. "" is legal here — the SET clause reads it as "leave unchanged" and a fresh
+	// INSERT defaults it.
+	if err := authmethod.Validate(in.AntigravityAuthMethod); err != nil {
+		return TenantSettingsRow{}, fmt.Errorf("db: update tenant settings: %w", err)
+	}
 	// The INSERT branch supplies a value for default_budget_overrides, which is jsonb NOT NULL.
 	if len(in.DefaultBudgetOverrides) == 0 {
 		in.DefaultBudgetOverrides = []byte("{}")
@@ -199,8 +213,9 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		execution_retention_enabled, execution_retention_keep,
 		execution_retention_vacuum, execution_retention_timeout_seconds,
 		outbox_retention_days,
+		antigravity_auth_method, antigravity_share_telemetry,
 		updated_at
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, now())
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, COALESCE(NULLIF($70, ''), 'oauth-personal'), $71, now())
 	ON CONFLICT (tenant_id) DO UPDATE SET
 		default_worker_model = CASE WHEN $2 <> '' THEN $2 ELSE tenant_settings.default_worker_model END,
 		default_ask_orchicon_model = CASE WHEN $3 <> '' THEN $3 ELSE tenant_settings.default_ask_orchicon_model END,
@@ -269,6 +284,10 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		execution_retention_vacuum = $67,
 		execution_retention_timeout_seconds = $68,
 		outbox_retention_days = $69,
+		-- '' = "leave unchanged" (an old client, or the MCP tool with the key omitted). A fresh
+		-- INSERT has no row to inherit, so the VALUES expression above defaults it instead.
+		antigravity_auth_method = CASE WHEN $70 <> '' THEN $70 ELSE tenant_settings.antigravity_auth_method END,
+		antigravity_share_telemetry = $71,
 		updated_at = now()
 	RETURNING tenant_id, default_worker_model, default_ask_orchicon_model,
 		stall_no_progress_window_seconds, stall_no_file_diff_window_seconds,
@@ -299,6 +318,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		execution_retention_enabled, execution_retention_keep,
 		execution_retention_vacuum, execution_retention_timeout_seconds,
 		outbox_retention_days,
+		antigravity_auth_method, antigravity_share_telemetry,
 		created_at, updated_at`
 	row, err := tx.Query(ctx, q,
 		tenantID, in.DefaultWorkerModel, in.DefaultAskOrchiconModel,
@@ -330,6 +350,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		in.ExecutionRetentionEnabled, in.ExecutionRetentionKeep,
 		in.ExecutionRetentionVacuum, in.ExecutionRetentionTimeoutSeconds,
 		in.OutboxRetentionDays,
+		in.AntigravityAuthMethod, in.AntigravityShareTelemetry,
 	)
 	if err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: update tenant settings: %w", err)
@@ -382,6 +403,7 @@ func scanTenantSettings(row pgx.Rows) (TenantSettingsRow, error) {
 		&r.ExecutionRetentionEnabled, &r.ExecutionRetentionKeep,
 		&r.ExecutionRetentionVacuum, &r.ExecutionRetentionTimeoutSeconds,
 		&r.OutboxRetentionDays,
+		&r.AntigravityAuthMethod, &r.AntigravityShareTelemetry,
 		&r.CreatedAt, &r.UpdatedAt,
 	); err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: scan tenant settings: %w", err)
@@ -434,5 +456,8 @@ func (r TenantSettingsRow) AuditFields() map[string]any {
 		"execution_retention_vacuum":          r.ExecutionRetentionVacuum,
 		"execution_retention_timeout_seconds": r.ExecutionRetentionTimeoutSeconds,
 		"outbox_retention_days":               r.OutboxRetentionDays,
+
+		"antigravity_auth_method":     r.AntigravityAuthMethod,
+		"antigravity_share_telemetry": r.AntigravityShareTelemetry,
 	}
 }

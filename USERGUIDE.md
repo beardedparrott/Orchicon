@@ -1058,12 +1058,11 @@ not requested in prose.
 | Mode | Disposition | What it does |
 |---|---|---|
 | **Brainstorm** | plans and decides | Does **everything in Orchicon that a human can do through the GUI** — it creates and edits projects, workers, work items and workflows; schedules and re-schedules work; fires runs and sequences; approves, retries and cancels; and reads and updates your settings. What it will not do is **act on your filesystem**: no writing files, no running commands. It investigates, designs, asks clarifying questions, and authors the work. |
-| **Iteration** | does the work | Cuts the branch, edits files, runs the tests, commits — working alongside you in this session. It **cannot** author work items or dispatch runs: it is refused the plan and dispatch tools, because doing the work and planning the work are different jobs. |
+| **Iteration** | does the work and plans it | Cuts the branch, edits files, runs the tests, commits — working alongside you in this session — and **can also** author work items and dispatch runs, so one session covers both. It is refused nothing. Quick Work remains the mode for work you want handed to an ephemeral worker without it appearing in the console. |
 | **Quick Work** | dispatches it | Creates an ephemeral worker, workflow and work item, fires the run, and cleans up after itself. The hands-off path: it hands the task over rather than doing it in front of you. |
 
-Each mode **refuses** the tools its disposition does not own. Brainstorm and Quick
-Work are withheld `write`, `edit` and `bash`; Iteration is refused the plan and
-dispatch tools. The refusal arrives as the tool's result, so the model relays it
+Brainstorm and Quick Work are withheld `write`, `edit` and `bash`; Iteration is the
+hands and the planner, so it is refused nothing. The refusal arrives as the tool's result, so the model relays it
 rather than silently failing. **Only you can change the mode**: the model has no tool
 for it, and the mode selector is the only route — so when it asks you to switch, it
 is genuinely asking.
@@ -1961,6 +1960,26 @@ there is no separate runtime reference.
 - **Execution transport resilience** — a broken stream does **not** fail the
   execution: the client retries and the supervisor keeps the child running for the
   grace period so a re-attach can resume. Only exhausted retries fail it.
+
+**Antigravity (Google `agy`), in detail.** Orchicon's Antigravity adapter runs
+Google's own `agy` binary and **never reads or stores your Google credentials** —
+no `~/.gemini/**` files, no keyring access. Two settings shape every `agy acp`
+launch:
+
+- **Auth method** — `oauth-personal` (default), `oauth-business`,
+  `gemini-api-key`, or `agent-platform`. The choice is sent to agy's ACP
+  `authenticate` call, so it is what actually decides which credential is used.
+  **`oauth-personal` cannot work inside a runtime container**: that credential
+  lives in the host OS keyring, which is a live IPC channel and cannot be
+  bind-mounted. A container item dispatched with `oauth-personal` is refused
+  immediately with an actionable error — switch the tenant to **Gemini API key**
+  (which reads the tenant secret `GEMINI_API_KEY`, passed to the child as an
+  environment variable only) or run the item locally.
+- **Share agy telemetry with Google** — off by default; `agy` is launched with
+  `--disable-telemetry` unless you opt in.
+- Selecting personal sign-in shows the Antigravity terms notice. It is worth
+  reading: Google's Antigravity terms restrict using the service with third-party
+  products, and enabling the method is your acceptance of them.
 
 **Providers, in detail.** The Providers tab is the tenant's model-provider
 configuration:

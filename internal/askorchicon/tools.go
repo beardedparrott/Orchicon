@@ -848,7 +848,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- Settings ---
 		{
 			Name:        "get_settings",
-			Description: "Get the current tenant settings (default models, stall parameters).",
+			Description: "Get the current tenant settings (default models, stall parameters, Antigravity auth method + ToS notice). antigravity_tos_notice is read-only text to show wherever oauth-personal is selected.",
 			Mutating:    false,
 			Fn:          toolGetSettings,
 		},
@@ -872,6 +872,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"default_budget_overrides":            {Type: "string", Description: "JSON object of default execution-budget gates. An OMITTED gate means NO LIMIT — there are no built-in ceilings, so each one exists only because an operator set it. Example: {\"cost_usd\":10,\"wall_clock_seconds\":7200,\"compact_max_turns\":30}. Empty string = leave unchanged."},
 				"execution_reap_grace_seconds":        {Type: "number", Description: "Liveness reaper grace before a stuck running execution is reaped (0 = leave unchanged)"},
 				"execution_reap_consecutive_failures": {Type: "number", Description: "Liveness probe failures before the reaper acts (0 = leave unchanged)"},
+				"antigravity_auth_method":             {Type: "string", Description: "Antigravity (agy) ACP auth method: oauth-personal (default) | oauth-business | gemini-api-key | agent-platform. gemini-api-key is the only method that works inside a runtime container (it reads the tenant secret GEMINI_API_KEY; the personal credential lives in the host keyring). Empty = leave unchanged. In a container, oauth-personal is refused up front."},
+				"antigravity_share_telemetry":         {Type: "boolean", Description: "Whether Google may receive agy usage telemetry (default false). Omitted = leave unchanged."},
 			},
 		},
 

@@ -91,12 +91,24 @@ app_version() {
   git -C "$ROOT" describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || echo dev
 }
 
-# image_version computes the desired label for one variant: the Dockerfile's hash,
-# under the version its base carries ("" means "this IS the base").
+# image_version computes the CONTENT label for one variant: a hash of the Dockerfile,
+# under the hash its base carries ("" means "this IS the base").
+#
+# NO APP VERSION IN HERE, and that is the fix. It used to be "<app-version>-<sha12>", so a RELEASE TAG
+# changed the label while nothing that goes into the image had changed — and a `make rebuild-dev` after a
+# version bump rebuilt 12.7 GB of byte-identical image. Measured: images labelled v0.6.37 against a tree at
+# v0.6.39 with every Dockerfile hash identical.
+#
+# The app version is still RECORDED, as its own label (app_version_label below), so "which release was this
+# built alongside" stays answerable. It is simply not COMPARED: staleness is about content.
 image_version() { # <dockerfile> <version-prefix>
   local dockerfile="$1" prefix="$2"
   [ -f "$dockerfile" ] || { printf ''; return; }
-  printf '%s-%s' "$prefix" "$(sha12 "$dockerfile")"
+  if [ -n "$prefix" ]; then
+    printf '%s-%s' "$prefix" "$(sha12 "$dockerfile")"
+  else
+    printf '%s' "$(sha12 "$dockerfile")"
+  fi
 }
 
 image_label() { # <tag> <label-key>
@@ -118,21 +130,23 @@ image_needs_rebuild() { # <tag> <desired-version>
 build_variant() { # <dockerfile> <tag> <desired-version> [base-tag]
   local dockerfile="$1" tag="$2" want="$3" base="${4:-}"
   if ! image_needs_rebuild "$tag" "$want"; then
-    log_dim "image $tag up to date (runtime v$want) — skipping"
+    log_dim "image $tag up to date ($want) — skipping"
     return 0
   fi
-  local -a args=(build --label "org.orchicon.runtime.version=$want")
+  # THE CONTENT LABEL DECIDES STALENESS; THE APP LABEL IS PROVENANCE ONLY and is never compared.
+  local -a args=(build --label "org.orchicon.runtime.version=$want" \
+                       --label "org.orchicon.runtime.app-version=$(app_version)")
   [ -n "$base" ] && args+=(--build-arg "BASE_IMAGE=$base")
-  log "building $tag from ${dockerfile#"$ROOT"/} (runtime v$want${base:+, base $base})"
+  log "building $tag from ${dockerfile#"$ROOT"/} ($want${base:+, base $base})"
   "$ENGINE" "${args[@]}" -f "$dockerfile" -t "$tag" "$RUNTIME_CONTEXT"
   log_dim "image $tag built"
 }
 
 cmd_build() {
   require_engine
-  local app base_version
-  app="$(app_version)"
-  base_version="$(image_version "$RUNTIME_CONTEXT/Dockerfile" "$app")"
+  local base_version
+  # "" prefix for the base: its content label is its Dockerfile hash alone.
+  base_version="$(image_version "$RUNTIME_CONTEXT/Dockerfile" "")"
   [ -n "$base_version" ] || die "missing $RUNTIME_CONTEXT/Dockerfile — nothing to build from"
 
   build_variant "$RUNTIME_CONTEXT/Dockerfile" "$BASE_IMAGE" "$base_version"
@@ -174,6 +188,32 @@ daemon_healthy() {
 daemon_is_stale() {
   local stable="$SOCKET_DIR/orchicon" fresh="$ROOT/bin/orchicon"
   [ -f "$fresh" ] || return 1
+  # A DAEMON EXECUTING A DELETED INODE IS STALE, AND NOTHING ELSE NOTICES.
+  #
+  # Everything below this line compares FILES ON DISK: bin/orchicon against the stable copy. Both can be
+  # current while the running process still holds the OLD inode — POSIX keeps a replaced executable alive
+  # for whoever already has it mapped. That is not hypothetical: after a rebuild, the daemon was found
+  # serving `bin/orchicon (deleted)` while this function reported it fresh, because the two files it
+  # compares had already converged. A rebuild then "restarted" nothing and the plane kept using a daemon
+  # from before the build.
+  #
+  # So ask the PROCESS, not the directory. /proc/<pid>/exe resolves to the inode actually mapped; the
+  # kernel appends " (deleted)" to it when that path no longer names the file being executed. procps is
+  # not required — /proc is the same fallback daemon_pid already uses for slim images.
+  local pid
+  pid="$(daemon_pid || true)"
+  if [ -n "$pid" ] && [ -r "/proc/$pid/exe" ]; then
+    case "$(readlink "/proc/$pid/exe" 2>/dev/null)" in
+      *" (deleted)") return 0 ;;
+    esac
+    # Also stale when the mapped file is simply not the one we just built — a daemon started from the
+    # stable copy is fine, one started from an older bin/orchicon is not.
+    local mapped
+    mapped="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+    if [ -n "$mapped" ] && [ -f "$mapped" ] && [ -f "$fresh" ] && ! cmp -s "$mapped" "$fresh"; then
+      return 0
+    fi
+  fi
   [ -f "$stable" ] || return 0
   ! cmp -s "$fresh" "$stable"
 }

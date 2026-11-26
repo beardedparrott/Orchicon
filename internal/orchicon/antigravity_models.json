@@ -1,0 +1,37 @@
+{
+  "_meta": {
+    "description": "Vendored Antigravity (agy) model snapshot — the FALLBACK the providers model tier lists when the live `agy acp` handshake is unavailable for a non-auth reason (binary not wired, handshake timeout). agy exposes no `models` subcommand: the catalogue is the `models.availableModels` array of the `session/new` result, so the only live source is a full initialize → authenticate → session/new handshake (internal/antigravity/modellist.go). Auth failures are NEVER answered from this file — they surface adapter.AntigravityAuthRequiredMessage instead.",
+    "source": "agy 1.5.13 `session/new` result models.availableModels, verbatim from internal/antigravity/testdata/acp/handshake_auth.jsonl:8 (27 models)",
+    "captured": "2026-11",
+    "note": "ids are the BARE agy modelId. The picker composes the 3-segment ref antigravity/google/<id> itself, so an id must never contain a '/'."
+  },
+  "models": [
+    { "id": "gemini-4-neon-high", "name": "Gemini 4 Neon (High)", "reasoning_efforts": ["high"] },
+    { "id": "gemini-4-neon-xhigh", "name": "Gemini 4 Neon (XHigh)", "reasoning_efforts": ["xhigh"] },
+    { "id": "gemini-4-neon-medium", "name": "Gemini 4 Neon (Medium)", "reasoning_efforts": ["medium"] },
+    { "id": "gemini-4-neon-low", "name": "Gemini 4 Neon (Low)", "reasoning_efforts": ["low"] },
+    { "id": "gemini-4-carbon-medium", "name": "Gemini 4 Carbon (Medium)", "reasoning_efforts": ["medium"] },
+    { "id": "gemini-4-carbon-high", "name": "Gemini 4 Carbon (High)", "reasoning_efforts": ["high"] },
+    { "id": "gemini-4-carbon-low", "name": "Gemini 4 Carbon (Low)", "reasoning_efforts": ["low"] },
+    { "id": "gemini-4-argon-medium", "name": "Gemini 4 Argon (Medium)", "reasoning_efforts": ["medium"] },
+    { "id": "gemini-4-argon-high", "name": "Gemini 4 Argon (High)", "reasoning_efforts": ["high"] },
+    { "id": "gemini-4-argon-low", "name": "Gemini 4 Argon (Low)", "reasoning_efforts": ["low"] },
+    { "id": "gemini-4-hydrogen-high", "name": "Gemini 4 Hydrogen (High)", "reasoning_efforts": ["high"] },
+    { "id": "gemini-4-hydrogen-xhigh", "name": "Gemini 4 Hydrogen (XHigh)", "reasoning_efforts": ["xhigh"] },
+    { "id": "gemini-4-hydrogen-medium", "name": "Gemini 4 Hydrogen (Medium)", "reasoning_efforts": ["medium"] },
+    { "id": "gemini-4-hydrogen-low", "name": "Gemini 4 Hydrogen (Low)", "reasoning_efforts": ["low"] },
+    { "id": "gemini-pro-orchestrator-neon", "name": "Orchestrator (Neon)" },
+    { "id": "gemini-pro-orchestrator", "name": "Orchestrator (Carbon)" },
+    { "id": "gemini-pro-orchestrator-argon", "name": "Orchestrator (Argon)" },
+    { "id": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash (High)", "reasoning_efforts": ["high"] },
+    { "id": "gemini-3.8-flash-medium", "name": "Gemini 3.8 Flash (Medium)", "reasoning_efforts": ["medium"] },
+    { "id": "gemini-3.8-flash-low", "name": "Gemini 3.8 Flash (Low)", "reasoning_efforts": ["low"] },
+    { "id": "claude-opus-5-5-low", "name": "Claude Opus 5.5 (Low)", "reasoning_efforts": ["low"] },
+    { "id": "claude-opus-5-5-medium", "name": "Claude Opus 5.5 (Medium)", "reasoning_efforts": ["medium"] },
+    { "id": "claude-opus-5-5-high", "name": "Claude Opus 5.5 (High)", "reasoning_efforts": ["high"] },
+    { "id": "claude-sonnet-5-5-low", "name": "Claude Sonnet 5.5 (Low)", "reasoning_efforts": ["low"] },
+    { "id": "claude-sonnet-5-5-medium", "name": "Claude Sonnet 5.5 (Medium)", "reasoning_efforts": ["medium"] },
+    { "id": "claude-sonnet-5-5-high", "name": "Claude Sonnet 5.5 (High)", "reasoning_efforts": ["high"] },
+    { "id": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)", "reasoning_efforts": ["medium"] }
+  ]
+}

@@ -61,6 +61,14 @@ const (
 	KindOrchicon = "orchicon"
 	// KindClaude is the Claude Code CLI adapter ("claude").
 	KindClaude = "claude"
+	// KindAntigravity is the Google Antigravity CLI adapter ("antigravity"), whose executable is
+	// named `agy` — NOT `antigravity`. Its model refs are antigravity/google/<agy-model-id>.
+	//
+	// THE PROVIDER SEGMENT IS ALWAYS `google`, INCLUDING FOR claude-* MODELS. agy serves both Gemini
+	// and Claude models under ONE Google login, so the ACCOUNT is Google and `google` is the provider
+	// that resolves the model tier; a claude-* model id appearing under provider `anthropic` would
+	// claim an Anthropic account Orchicon does not have for this kind.
+	KindAntigravity = "antigravity"
 )
 
 // ModelRef is the parsed form of a worker model_ref under the pinned

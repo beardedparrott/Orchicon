@@ -737,7 +737,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			}
 			// D3 rule 4 — hold-at-PENDING.
 			if step.Kind == domain.StepKindLoopDecision && sr.Iteration > 0 &&
-				r.loopDecisionUpstreamFailed(step, runByID) {
+				r.loopDecisionUpstreamFailed(ctx, ttx.Tx, tenantID, step, runByID) {
 				continue
 			}
 			if r.depsSatisfied(step, runByID) {
@@ -879,7 +879,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			if s, ok := stepByID[sr.StepID]; ok {
 				stepCfg = s.Config
 			}
-			terminal, failed, err := r.pollTaskStep(ctx, ttx.Tx, tenantID, &run, sr, stepCfg, runByID, &recoveryTriggers)
+			terminal, failed, err := r.pollTaskStep(ctx, ttx.Tx, tenantID, &run, sr, stepCfg, runByID, &recoveryTriggers, steps)
 			if err != nil {
 				return err
 			}
@@ -1034,8 +1034,22 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// If the run has failed, skip the not-yet-dispatched steps so the UI accurately reflects the run
 	// state instead of showing them as "pending" forever.
 	if anyFailed {
+		// A LOOP THAT HAS NOT ROUTED YET IS NOT "NOT-YET-DISPATCHED" — IT IS DUE.
+		//
+		// This sweep is what actually killed the loop. Relaxing the hold gate (see
+		// loopDecisionUpstreamFailed) let a verdict-failed upstream through it, but by then this pass had
+		// already marked every pending step run `skipped`, the loop_decision included, and flipped the run
+		// to failed. The loop never got the turn it was waiting for.
+		//
+		// Runs whose loops have all decided return an empty set here and keep today's behaviour exactly.
+		oweLoop := loopDesiredDownstreams(steps, r.stepRunsOf(ctx, ttx.Tx, tenantID, runID))
 		for _, cur := range nonTerminal {
 			if cur.Status == domain.StepRunRunning {
+				continue
+			}
+			if oweLoop[cur.StepID] {
+				r.log.Info("run has a failed step but a loop_decision still has to route it — leaving its steps dispatchable",
+					"run", runID, "step", cur.StepID, "status", cur.Status)
 				continue
 			}
 			now2 := time.Now().UTC()
@@ -1105,7 +1119,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunCompleted, run, ""); err != nil {
 			return fmt.Errorf("enqueue run_completed: %w", err)
 		}
-	} else if anyFailed && !anyRunning {
+	} else if anyFailed && !anyRunning && !r.loopOwesRouting(ctx, ttx.Tx, tenantID, runID, steps) {
 		now := time.Now().UTC()
 		// Update the linked work item to failed, carrying the run-level
 		// narrative.
@@ -1823,15 +1837,131 @@ func upstreamFaultedByInfra(status, verdict string) bool {
 	return verdict == ""
 }
 
-// loopDecisionUpstreamFailed reports whether ANY upstream dependency of a loop_decision step is
-// terminal-FAILED.
-func (r *WorkflowReconciler) loopDecisionUpstreamFailed(step workflow.StepWire, runs map[string]db.WorkflowStepRunRow) bool {
-	for _, dep := range step.DependsOn {
-		if up, ok := runs[dep]; ok && up.SupersededBy == "" && up.Status == domain.StepRunFailed {
+// stepDeliveredVerdict returns the worker's OWN decision for a failed step, or "" when the failure was
+// not a judgement (a crash, a stall, a tool error, a dispatch fault).
+//
+// It reads the marker where the task reconciler writes it — on the WORK ITEM's results
+// (`internal/scheduler/reconciler.go`, `results["_verdict"]`) — and falls back to the copy the loop
+// chain leaves on the step run. Sharing ONE reader with loopDecisionUpstreamVerdict would be tidier,
+// but that one keys off the step run's `_work_item_id`; a step run marked terminal in the same pass may
+// not carry it yet, and losing the verdict here is what costs the whole attempt budget.
+func (r *WorkflowReconciler) stepDeliveredVerdict(ctx context.Context, tx pgx.Tx, tenantID string, sr db.WorkflowStepRunRow) string {
+	var stepResult struct {
+		Verdict string `json:"_verdict"`
+	}
+	_ = json.Unmarshal(sr.Result, &stepResult)
+	if stepResult.Verdict != "" {
+		return stepResult.Verdict
+	}
+	if wid := stepRunWorkItemID(sr); wid != "" {
+		if wi, err := db.GetWorkItem(ctx, tx, tenantID, wid); err == nil && len(wi.Results) > 0 {
+			var wiResult map[string]any
+			if json.Unmarshal(wi.Results, &wiResult) == nil {
+				if v, ok := wiResult["_verdict"].(string); ok {
+					return v
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// stepRunWorkItemID reads the bound work item id a step run recorded at dispatch. The step run column
+// set has no work-item field, so the dispatch-time result key is the only place it lives (the same key
+// loopDecisionUpstreamVerdict reads).
+func stepRunWorkItemID(sr db.WorkflowStepRunRow) string {
+	var result struct {
+		WorkItemID string `json:"_work_item_id"`
+	}
+	_ = json.Unmarshal(sr.Result, &result)
+	return result.WorkItemID
+}
+
+// loopOwesRouting reports whether any loop_decision in this run still has to route on a failure.
+//
+// It is the run-settle gate: while a loop is owed its turn, a run must not be declared failed, because
+// failing it is what stops the loop from ever firing. Once every loop has decided, this returns false
+// and a failing run fails exactly as before.
+func (r *WorkflowReconciler) loopOwesRouting(ctx context.Context, tx pgx.Tx, tenantID, runID string, allSteps []workflow.StepWire) bool {
+	runsOf := r.stepRunsOf(ctx, tx, tenantID, runID)
+	for _, ld := range allSteps {
+		if loopStillRouting(ld, runsOf) {
 			return true
 		}
 	}
 	return false
+}
+
+// stepRunsOf returns a lister for every step run of a step id in this run, for the verdict-routing
+// rules. Superseded iterations are included; the rules decide what that means.
+// THE TRANSACTION IS REQUIRED, NOT OPTIONAL: db.ListWorkflowStepRuns dereferences it, so passing nil
+// panics on the first call. Every call site below is already inside the reconcile pass's transaction,
+// which is also the only place these rules need to read.
+func (r *WorkflowReconciler) stepRunsOf(ctx context.Context, tx pgx.Tx, tenantID, runID string) stepRunsByStepIDFunc {
+	return func(stepID string) ([]db.WorkflowStepRunRow, error) {
+		return listStepRunsByStepID(ctx, tx, tenantID, runID, stepID)
+	}
+}
+
+// loopDecisionUpstreamFailed reports whether ANY upstream dependency of a loop_decision step is
+// terminal-FAILED — the D3 rule-4 hold-at-PENDING gate.
+//
+// WHY THE VERDICT MATTERS, AND WHY THIS WAS A REGRESSION. The D3 pass (#... 6f6c21aa3) introduced this
+// gate when the only way an upstream reached `failed` was an infrastructure fault, so "failed upstream
+// => hold the loop" was right. #940 (d7587a3c6) then established, and taught the recovery path, that a
+// worker's own `ORCHICON WORKER SUMMARY: failure` is a DELIVERED JUDGEMENT rather than a fault — but it
+// did not touch this gate. From then on a Reviewer that REJECTED work failed its step, the gate held the
+// loop_decision at PENDING, and the run died with the work never routed back to the engineer:
+//
+//	run 01M85764NHHH69ACHZ5BDFR6K9 — PR Reviewer reported failure (AC1-3 pass, AC5 gate red),
+//	step-9gfybwnv (loop_branch: step-sse) never fired, SSE stayed at 1 of 6 attempts.
+//
+// A REJECTED REVIEW IS EXACTLY THE THING THE LOOP EXISTS FOR. Suppressing it inverts the loop: the
+// branch fired only when the reviewer was happy, which is the one case that does not need it.
+//
+// A genuine fault (crash, stall, tool error) still holds: verdict == "" is upstreamFaultedByInfra's
+// signal, and recovery owns that failure.
+func (r *WorkflowReconciler) loopDecisionUpstreamFailed(ctx context.Context, tx pgx.Tx, tenantID string, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow) bool {
+	for _, dep := range step.DependsOn {
+		up, ok := runs[dep]
+		if !ok || up.SupersededBy != "" || up.Status != domain.StepRunFailed {
+			continue
+		}
+		// A DELIVERED VERDICT MUST ROUTE, NOT HOLD. Same predicate the recovery path uses, so the two
+		// cannot disagree about what "failed" means.
+		if !upstreamFaultedByInfra(up.Status, loopDecisionUpstreamVerdict(ctx, tx, tenantID, up)) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// loopDecisionUpstreamVerdict reads the worker's own decision for a FAILED upstream step, or "" when the
+// failure was not a judgement.
+//
+// It mirrors the resolution in pollLoopDecisionChain: the marker is written on the WORK ITEM's results
+// (that is where the task reconciler records it), so a failed upstream is asked directly. Only the
+// failure path pays the extra query, which is why this is not read for every dependency.
+func loopDecisionUpstreamVerdict(ctx context.Context, tx pgx.Tx, tenantID string, up db.WorkflowStepRunRow) string {
+	var result struct {
+		WorkItemID string `json:"_work_item_id"`
+		Verdict    string `json:"_verdict"`
+	}
+	_ = json.Unmarshal(up.Result, &result)
+	if result.Verdict != "" || result.WorkItemID == "" {
+		return result.Verdict
+	}
+	wi, err := db.GetWorkItem(ctx, tx, tenantID, result.WorkItemID)
+	if err != nil || len(wi.Results) == 0 {
+		return ""
+	}
+	var wiResult map[string]any
+	if json.Unmarshal(wi.Results, &wiResult) != nil {
+		return ""
+	}
+	v, _ := wiResult["_verdict"].(string)
+	return v
 }
 
 // evaluateGate evaluates the step's gate_policy_ref (docs/02 §2.5 Tier 1).
@@ -3378,9 +3508,9 @@ func (r *WorkflowReconciler) resolveRuntimeImage(ctx context.Context, tx pgx.Tx,
 			return "", fmt.Errorf("get bound work item: %w", err)
 		}
 		if img := strings.TrimSpace(wi.RuntimeImage); img != "" {
-			return img, nil
+			return db.CanonicalRuntimeImage(img), nil
 		}
-		return resolveProjectDefaultImage(ctx, tx, tenantID, run.ProjectID), nil
+		return db.CanonicalRuntimeImage(resolveProjectDefaultImage(ctx, tx, tenantID, run.ProjectID)), nil
 	}
 	// One-shot: collect WORK_ITEM markers' images; all must agree.
 	values := []string{}
@@ -3400,7 +3530,7 @@ func (r *WorkflowReconciler) resolveRuntimeImage(ctx context.Context, tx pgx.Tx,
 			return "", fmt.Errorf("get marker work item %s: %w", wid, err)
 		}
 		if img := strings.TrimSpace(wi.RuntimeImage); img != "" {
-			values = append(values, img)
+			values = append(values, db.CanonicalRuntimeImage(img))
 		}
 	}
 	chosen, err := resolveImageFromValues(values)
@@ -3412,7 +3542,7 @@ func (r *WorkflowReconciler) resolveRuntimeImage(ctx context.Context, tx pgx.Tx,
 	}
 	// One-shot with no explicit image: fall back to the run's project
 	// default, else the base image.
-	return resolveProjectDefaultImage(ctx, tx, tenantID, run.ProjectID), nil
+	return db.CanonicalRuntimeImage(resolveProjectDefaultImage(ctx, tx, tenantID, run.ProjectID)), nil
 }
 
 // resolveProjectDefaultImage returns the project's default_runtime_image when set, else the base
@@ -3568,6 +3698,54 @@ var recoveryResultKeys = []string{
 	"_recovery_worker_version", "_recovery_adapter",
 	"_recovery_failure_reason",
 	"_failed_execution_id", "_failed_worker_id", "_recovery_strategy",
+}
+
+// stepResumableFaultReason reports WHY a failed step execution is a LIVENESS fault (a stall or a
+// wall-clock timeout) rather than a failed attempt — or "" when it is not one.
+//
+// It re-reads the execution because the caller's row is out of scope, and it is only reached on the
+// failure path, so the extra query costs nothing on the happy one.
+func (r *WorkflowReconciler) stepResumableFaultReason(ctx context.Context, tx pgx.Tx, tenantID, execID string) string {
+	if execID == "" {
+		return ""
+	}
+	exec, err := db.GetExecution(ctx, tx, tenantID, execID)
+	if err != nil {
+		return ""
+	}
+	return resumableFaultReason(exec.ErrorMessage)
+}
+
+// resumableFaultReason classifies an execution's error message as a liveness fault.
+//
+// ONLY LIVENESS SIGNALS QUALIFY, and they are matched by PREFIX so a worker's own verdict can never
+// masquerade as one: a delivered `ORCHICON WORKER SUMMARY: failure` is recorded as "worker reported
+// failure in its own ORCHICON WORKER SUMMARY: …" and must always be routed as a judgement, not
+// recovered. Recovery re-runs the same review against unchanged work, which is why a verdict must
+// reach a loop branch instead.
+//
+// The signals themselves are written by the adapters' terminal paths:
+//
+//	"stalled:no_progress"                    opencode/internal orchicon monitor, fatal stall
+//	"stalled:…:nudge_budget_spent"           escalated advisory stall (same, after its nudges)
+//	"claude session stalled: …"              internal/claude stall watchdog
+//	"wall_clock_timeout"                     a deadline, reported by every adapter since the fix that
+//	                                         stopped labelling a deadline "cancelled"
+func resumableFaultReason(errorMessage string) string {
+	msg := strings.TrimSpace(errorMessage)
+	if msg == "" {
+		return ""
+	}
+	switch {
+	case strings.HasPrefix(msg, "stalled:"):
+		return msg
+	case strings.HasPrefix(msg, "claude session stalled:"):
+		return msg
+	case msg == "wall_clock_timeout", strings.HasPrefix(msg, "wall_clock_timeout"),
+		strings.HasSuffix(msg, ": wall_clock_timeout"):
+		return "wall_clock_timeout"
+	}
+	return ""
 }
 
 // recoveringStepResult builds the result JSON written when a step run transitions to recovering.
@@ -3817,7 +3995,7 @@ func (r *WorkflowReconciler) stepRunResultWithVerdict(ctx context.Context, tx pg
 	return raw, nil
 }
 
-func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenantID string, run *db.WorkflowRunRow, sr db.WorkflowStepRunRow, stepConfig string, runByID map[string]db.WorkflowStepRunRow, recoveryTriggers *[]recoveryTriggerReq) (bool, bool, error) {
+func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenantID string, run *db.WorkflowRunRow, sr db.WorkflowStepRunRow, stepConfig string, runByID map[string]db.WorkflowStepRunRow, recoveryTriggers *[]recoveryTriggerReq, allSteps []workflow.StepWire) (bool, bool, error) {
 	var parsed struct {
 		WorkItemID string `json:"_work_item_id"`
 	}
@@ -3977,11 +4155,36 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 				}
 				return true, false, nil
 
-			case domain.ExecutionFailed, domain.ExecutionFailedToStart, domain.ExecutionTerminated:
+			case domain.ExecutionFailed, domain.ExecutionFailedToStart, domain.ExecutionTerminated,
+				domain.ExecutionUnhealthy:
 				// fall through to the recovery block below.
+				//
+				// `unhealthy` is in this set because executions STARTED BY THE PREVIOUSLY-DEPLOYED PLANE were
+				// terminated as `unhealthy` on a fatal stall. Without it those rows are invisible to this
+				// switch, fall to `default: return false, false` (still in flight), and wedge their step in
+				// `recovering` with no recovery ever triggered — the "marked failed, never resumed" defect.
 			default:
 				return false, false, nil
 			}
+		}
+	}
+
+	// A DELIVERED VERDICT IS A DECISION, NOT A FAULT — AND THE LOOP MUST GET IT.
+	//
+	// This check sits ABOVE the attempt budget on purpose. The budget below is what charged a QA verdict
+	// against `max_attempts` and, with `summarize_restart`, resumed the same step on the same work item
+	// until it was gone: six executions on run 01M8B2A33SB9, 15 seconds apart, no checkpoint, no
+	// worktree, an identical `Output` each time. The judgement never changed, so no attempt could.
+	//
+	// Same predicate the loop's hold gate and the loop chain already use (upstreamFaultedByInfra), so all
+	// three now agree on what "failed" means. Scoped to a step that a live loop_decision will actually
+	// route on; see verdict_routing.go for why that walk is transitive.
+	if routedLoop, ok := verdictRoutedLoop(sr.StepID, allSteps, r.stepRunsOf(ctx, tx, tenantID, run.ID)); ok {
+		if verdict := r.stepDeliveredVerdict(ctx, tx, tenantID, sr); verdict != "" {
+			r.log.Info("task step delivered a verdict — routing to the loop instead of recovering",
+				"run", run.ID, "step", sr.StepID, "work_item", wi.ID,
+				"loop_decision", routedLoop, "verdict", verdict, "attempt", sr.Attempt)
+			return true, true, nil
 		}
 	}
 
@@ -3991,9 +4194,32 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 		ephemeralDefaultStepRecovery := wi.Ephemeral && sr.StepKind != domain.StepKindApproval
 		rc := resolveStepRecoveryConfig(stepConfig, ephemeralDefaultStepRecovery)
 
+		// A STALL OR A WALL-CLOCK TIMEOUT IS A LIVENESS FAULT, NOT A FAILED ATTEMPT.
+		//
+		// It says nothing about whether the work is achievable — the worker was stopped for being slow or
+		// quiet, and it had already committed its progress (see internal/checkpoint). Charging it against
+		// the step's max_attempts meant three timeouts consumed a 3-attempt budget and the run died
+		// WITHOUT RECOVERY EVER BEING TRIGGERED, which is the other half of "marked failed, not resumed".
+		//
+		// Reaching recovery is the point: recovery has its OWN bound (recovery/engine.go,
+		// defaultMaxRetries = 5 per workflow run), and on exhaustion it escalates to L3, which BLOCKS for
+		// a human rather than failing terminally. That ladder is the ceiling — this must not add a second
+		// one, or a run would have two different budgets disagreeing about when to give up.
+		resumable := r.stepResumableFaultReason(ctx, tx, tenantID, sr.WorkerExecutionID)
+
 		if sr.Attempt >= rc.MaxAttempts-1 {
-			return true, true, nil
+			if resumable == "" {
+				return true, true, nil
+			}
+			r.log.Info("task step exhausted its attempt budget on a LIVENESS fault — routing to recovery instead of failing",
+				"run", run.ID, "step", sr.StepID, "work_item", wi.ID,
+				"attempt", sr.Attempt, "max_attempts", rc.MaxAttempts, "reason", resumable)
 		}
+		// NOTE: no separate resume counter is enforced here. The bound is the RECOVERY engine's per-run
+		// retry budget (defaultMaxRetries = 5), which already counts every resumption of this run and
+		// escalates to L3 — a human block, not a terminal failure — when it is exhausted. Adding a second
+		// budget here would give one run two ceilings that disagree about when to stop, which is how a
+		// recoverable stall turns into a hard failure at a number nobody can explain.
 
 		newAttempt := sr.Attempt + 1
 		r.log.Info("task step failed, running recovery strategy",

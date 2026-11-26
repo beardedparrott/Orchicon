@@ -501,6 +501,11 @@ function DefaultsTab() {
   const [draftRetentionVacuum, setDraftRetentionVacuum] = useState(true);
   const [draftRetentionTimeout, setDraftRetentionTimeout] = useState("");
   const [draftOutboxRetentionDays, setDraftOutboxRetentionDays] = useState("");
+  // Antigravity (agy): which Google credential agy authenticates with, and whether it may send
+  // usage telemetry. Both are sent on EVERY save — the telemetry column is written
+  // unconditionally server-side, so a client that omitted it would silently turn it off.
+  const [draftAntigravityAuthMethod, setDraftAntigravityAuthMethod] = useState("oauth-personal");
+  const [draftAntigravityShareTelemetry, setDraftAntigravityShareTelemetry] = useState(false);
   const [saving, setSaving] = useState(false);
   // Save errors MUST surface (QA round 3: try/finally with no catch
   // swallowed them — a rejected save looked identical to a successful one,
@@ -549,6 +554,8 @@ function DefaultsTab() {
       setDraftOutboxRetentionDays(
         settings.outboxRetentionDays ? String(settings.outboxRetentionDays) : "",
       );
+      setDraftAntigravityAuthMethod(settings.antigravityAuthMethod || "oauth-personal");
+      setDraftAntigravityShareTelemetry(settings.antigravityShareTelemetry ?? false);
     }
   }, [settings]);
 
@@ -593,6 +600,8 @@ function DefaultsTab() {
         executionRetentionVacuum: draftRetentionVacuum,
         executionRetentionTimeoutSeconds: parseInt(draftRetentionTimeout) || 0,
         outboxRetentionDays: parseInt(draftOutboxRetentionDays) || 0,
+        antigravityAuthMethod: draftAntigravityAuthMethod,
+        antigravityShareTelemetry: draftAntigravityShareTelemetry,
       });
     } catch (e) {
       // Surface the rejection (validation errors included) — never swallow.
@@ -843,6 +852,60 @@ function DefaultsTab() {
               onChange={setDraftMaxConcurrentRuns}
               placeholder="0"
             />
+          </CardContent>
+        </Card>
+      )}
+
+      {!isLoading && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Antigravity (Google agy)</CardTitle>
+            <CardDescription>
+              How Orchicon's Antigravity adapter signs in to Google's own <code>agy</code> binary, and
+              whether agy may send usage telemetry. Orchicon runs agy; it never reads or stores your
+              Google credentials.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4">
+            <label className="grid gap-2">
+              <span className="font-medium">Auth method</span>
+              <select
+                className="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                value={draftAntigravityAuthMethod}
+                onChange={(e) => setDraftAntigravityAuthMethod(e.target.value)}
+              >
+                <option value="oauth-personal">Personal Google sign-in (oauth-personal)</option>
+                <option value="oauth-business">Google Workspace (oauth-business)</option>
+                <option value="gemini-api-key">Gemini API key (gemini-api-key)</option>
+                <option value="agent-platform">Agent platform (agent-platform)</option>
+              </select>
+              <span className="text-xs text-muted-foreground">
+                Personal sign-in reuses the CLI&apos;s cached login. It cannot be used inside a
+                runtime container — a container run needs the Gemini API key, read from the tenant
+                secret <code>GEMINI_API_KEY</code>.
+              </span>
+            </label>
+
+            {draftAntigravityAuthMethod === "oauth-personal" && settings?.antigravityTosNotice ? (
+              <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
+                {settings.antigravityTosNotice}
+              </p>
+            ) : null}
+
+            <label className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={draftAntigravityShareTelemetry}
+                onChange={(e) => setDraftAntigravityShareTelemetry(e.target.checked)}
+              />
+              <span>
+                <span className="font-medium">Share agy usage telemetry with Google</span>
+                <span className="block text-xs text-muted-foreground">
+                  Off by default: agy is launched with <code>--disable-telemetry</code> unless you opt in.
+                </span>
+              </span>
+            </label>
           </CardContent>
         </Card>
       )}

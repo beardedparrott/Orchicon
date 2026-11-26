@@ -277,10 +277,30 @@ fetch-tags:
 # UI — exactly how the Ask Orchicon full-viewport fix stayed invisible after
 # a "rebuild". fe-build is stamp-checked, so an unchanged frontend adds no
 # cost to the Go-only iteration loop.
-build: fetch-tags fe-build ## Build the control-plane + TUI client binaries into bin/
+# force-build=1 rebuilds even when the tree looks unchanged. instance-rebuild sets it, for the same reason
+# it sets force-fe=1 — see the fe-build note above about a stamp check silently shipping stale output.
+force-build ?= 0
+build: fetch-tags fe-build ## Build the control-plane + TUI client binaries into bin/ (skipped when unchanged; force-build=1 to always)
 	@mkdir -p $(BIN_DIR)
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon
-	$(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orch ./cmd/orch
+	@# A BUILD THAT CHANGES NOTHING STILL BREAKS RUNNING PLANES, so it is skipped.
+	@#
+	@# LDFLAGS embeds $(BUILD_DATE), so EVERY build produces a different file — verified by experiment: same
+	@# source with a different buildDate gives a NEW INODE, and any process executing the previous one is left
+	@# on "bin/orchicon (deleted)". bin/orchicon is one path shared by dev, prod and test, so
+	@# `make rebuild-prod` after `make rebuild-dev` used to re-execute a byte-different binary underneath the
+	@# dev plane that was already running, while that plane reported healthy and kept serving the old code.
+	@#
+	@# THE STAMP IS THE NEWEST TRACKED SOURCE, NOT A HASH OF THE TREE, and it deliberately asks git rather than
+	@# comparing mtimes across the working tree: an untracked scratch file or a checkout whose files are older
+	@# than the last build must not force a build, and a REVERTED source file must. git ls-files names exactly
+	@# the inputs that become the binary.
+	@if [ "$(force-build)" = "1" ] || [ ! -x "$(BIN_DIR)/orchicon" ] || 	    { git ls-files -z -- cmd internal api/go go.mod go.sum 2>/dev/null 	        | xargs -0 -r stat -c '%Y %n' 2>/dev/null 	        | awk -v bt="$$(stat -c %Y $(BIN_DIR)/orchicon 2>/dev/null || echo 0)" '$$1 > bt { found=1 } END { exit !found }' ; }; then \
+	  echo "==> building control-plane + TUI binaries"; \
+	  $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orchicon ./cmd/orchicon; \
+	  $(GO) build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/orch ./cmd/orch; \
+	else \
+	  echo "==> control-plane + TUI binaries up to date (force-build=1 to rebuild)"; \
+	fi
 	@# THE LINUX CONTAINER BINARY, BESIDE THE BINARY THAT WILL MOUNT IT. A runtime container is Linux
 	@# and runs `orchicon runtime-supervisor`, so a daemon built on Windows or macOS needs a
 	@# linux/amd64 build to put in it — and the daemon looks beside its own executable first. Without
@@ -373,7 +393,9 @@ test: ## Run Go tests (NEVER point ORCHICON_TEST_DSN at prod — see README §Te
 	@# (make services) must stay reachable, which is what the opt-in variables are for. The isolation
 	@# that matters — config, live plane, guard — is unchanged.
 	@for v in ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_ONCE ORCHICON_GUARD_PROJECT \
-	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR ORCHICON_DATA_DIR; do unset "$$v"; done; \
+	         ORCHICON_GUARD_FULLSEND ORCHICON_SERVE_STATE_DIR ORCHICON_DATA_DIR \
+	         ORCHICON_CLAUDE_PROJECT_DIR ORCHICON_CLAUDE_HOOK_PROFILE ORCHICON_CLAUDE_ASK_DIR \
+	         ORCHICON_CLAUDE_CONSENT_SOCK ORCHICON_CLAUDE_ASK_MODE_FILE; do unset "$$v"; done; \
 	ORCHICON_CONFIG_DIR="$$(mktemp -d)" $(GO) test $(TEST_PARALLEL) $(PKGS)
 
 vet: ## Run go vet
@@ -967,6 +989,10 @@ version-tag-match: ## Assert no version resolution accepts a moving tag (canary)
 release-anchor: ## Assert the release version anchor is never the canary pre-release
 	bash scripts/tests/release-anchor/run.sh
 
+.PHONY: release-bump-skips-tags
+release-bump-skips-tags: ## Assert a release bump skips bump tags already in use
+	bash scripts/tests/release-bump-skips-tags/run.sh
+
 .PHONY: release-notes-digest
 release-notes-digest: ## Assert every README release-digest bullet is a complete sentence
 	bash scripts/tests/release-notes-digest/run.sh
@@ -1018,7 +1044,11 @@ docs-check: ## Validate every Mermaid diagram in the root docs with a real parse
 INSTANCE_SH := scripts/orchicon.sh
 
 instance-build: ## Build the binaries an instance runs (bin/orchicon + bin/orch)
-	$(MAKE) build
+	@# FORCED, like force-fe=1 alongside it. `make rebuild-<instance>` is the operator saying "I want this
+	@# instance on the current source"; a stamp check that decides otherwise silently hands them a binary it
+	@# chose not to rebuild. The stamp check belongs to plain `make build` (the fast iteration loop), not to an
+	@# explicit rebuild request.
+	$(MAKE) build force-build=1
 
 instance-up: ## Start this instance on the host (services + plane; instance=dev default)
 	@test -x $(BIN_DIR)/orchicon || { echo "ERROR: $(BIN_DIR)/orchicon not found — run 'make instance-build' first"; exit 1; }
@@ -1094,6 +1124,10 @@ runtime-status: ## Show whether the runtime daemon is answering, and its socket
 # a rebuild calls. Separated from runtime-daemon because the caller's intent differs: `make
 # runtime-daemon` is an operator saying "start it", while this is a build saying "make sure what is
 # running is what I just built" — and a build must never START a daemon the operator did not have.
+.PHONY: runtime-images
+runtime-images: ## Build the runtime container images IF the tree warrants it (no-op when unchanged)
+	@$(RUNTIME_SH) build
+
 .PHONY: runtime-daemon-refresh
 runtime-daemon-refresh: ## Restart the runtime daemon if (and only if) it serves a stale binary
 	@$(RUNTIME_SH) daemon-refresh
@@ -1147,7 +1181,10 @@ runtime-daemon-refresh: ## Restart the runtime daemon if (and only if) it serves
 full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + instance restart (usage: make full-rebuild instance=dev|prod|test)
 	@test -n "$(instance_given)" || { echo "usage: make full-rebuild instance=dev|prod|test"; exit 1; }
 	$(MAKE) build
-	$(MAKE) ci
+	# ci-dev, NOT ci: a rebuild is an ITERATION step, and `ci` includes the two pre-merge checks
+	# (cross-compile 144 s, install-path-test 80 s) that cannot depend on what just changed — 72% of
+	# a 312 s rebuild. Run `make pre-merge` (or `make ci`) before merging. See ci-dev above.
+	$(MAKE) ci-dev
 	$(MAKE) migrate-hash
 	# THE RUNTIME DAEMON IS PART OF A REBUILD, for the same reason the desktop app is: it is a
 	# long-lived host process holding an image of the binary we just replaced, so a rebuild that
@@ -1160,10 +1197,26 @@ full-rebuild: ## One command: binary build + all checks/tests + migrate-hash + i
 	# unconditionally would disturb a sibling instance's in-flight work every time anyone rebuilt.
 	# Staleness is the only condition worth acting on, and it is always available to compare.
 	#
-	# BEFORE the instance restart, so the plane comes up against the daemon it will actually use, and
-	# so any disruption lands while the plane is going down anyway.
-	$(MAKE) runtime-daemon-refresh
+	# RUNTIME IMAGES FIRST — BEFORE THE INSTANCE IS REBUILT AND RESTARTED.
+	#
+	# They used to run AFTER instance-rebuild, which meant the plane had already been restarted onto a world
+	# whose images it had not yet built. Measured on this host: after a `make rebuild-dev` the images were
+	# still twelve hours old and labelled v0.6.37 against a tree at v0.6.39, and only a manual
+	# `scripts/runtime.sh build` corrected them. A rebuild reported success while every runtime run would
+	# have used the previous image.
+	#
+	# ORDERING COSTS NOTHING HERE BECAUSE THE DECISION IS A STAMP CHECK. `runtime-images` delegates to
+	# scripts/runtime.sh, whose image_needs_rebuild compares the image's version label — a hash of the
+	# Dockerfile plus its inherited base — against the tree. An unchanged tree is one log line and no work, so
+	# it can run first without slowing the common case; FORCE_RUNTIME=1 overrides.
+	#
+	# THE DAEMON, by contrast, is refreshed AFTER the build: it compares itself against bin/orchicon, so
+	# refreshing it earlier compares against a binary that has not been rebuilt yet, correctly answers
+	# "fresh", and then has the binary replaced underneath it. That is how every rebuild used to leave the
+	# daemon on a deleted inode.
+	$(MAKE) runtime-images
 	$(MAKE) instance-rebuild instance=$(instance)
+	$(MAKE) runtime-daemon-refresh
 	# THE DESKTOP APP IS PART OF A REBUILD, and it goes LAST for a reason: it is the slowest
 	# step, and it must not stand between a failing test and the operator hearing about it. A
 	# rebuild that reported a stale window as success — while the plane was rebuilt four times
@@ -1647,12 +1700,38 @@ cross-compile: ## Compile the shipped binaries for every release platform plus w
 # plane-control-e2e-assertions-test, published-archive-e2e-assertions-test and desktop-e2e-assertions-test.
 # They are independent, so neither side may be dropped — a gate quietly retired by a merge conflict is the
 # worst possible outcome for a file whose whole purpose is to catch what nobody looked at.
-CI_GO_GATES := lint gen-check vet test synth-data no-operator-paths rls-check adapter-bake-guard install-ps1-test install-path-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test published-archive-e2e-assertions-test desktop-e2e-assertions-test cache-trim-test version-tag-match
+CI_GO_GATES := lint gen-check vet test synth-data no-operator-paths rls-check adapter-bake-guard install-ps1-test host-residency-test local-services-test orchicon-cli-test no-engine-e2e-assertions-test runtime-e2e-assertions-test plane-control-e2e-assertions-test published-archive-e2e-assertions-test desktop-e2e-assertions-test cache-trim-test version-tag-match
 
 ci-go-base: $(CI_GO_GATES) ## The Go gate WITHOUT cross-compile (CI runs that as a parallel job)
 
-ci-go: ci-go-base cross-compile ## Run the Go control-plane CI gate (mirrors the go-ci workflow job)
-ci: ci-go fe-lint fe-typecheck fe-test site-check site-version-stamp version-tag-match release-notes-digest release-anchor ## Run the full CI gate locally (Go + frontend + landing page)
+# PRE-MERGE: THE TWO SLOW CHECKS THAT CANNOT DEPEND ON WHAT YOU CHANGED.
+#
+# cross-compile and install-path-test are the two most expensive things in the gate and neither has
+# anything to say about an ordinary source edit: one compiles the shipped binaries for six platforms
+# so a WINDOWS-only break is caught before a release, the other runs the REAL installer end to end
+# against a locally served artifact. Both belong to "is this mergeable", not to "did my change work".
+#
+# MEASURED, on a 32-core developer host: they are 144 s and 80 s of a 312 s `make rebuild-dev` — 72%
+# of a rebuild that a developer pays on every iteration, while changing neither a released binary nor
+# an installer. That is the cost this split removes.
+#
+# THEY ARE NOT DROPPED, AND THE SPLIT IS NOT A SOFTENING:
+#   * CI already runs both as their OWN jobs (ci.yml: `cross-compile` and `install-path`), in
+#     parallel. `go-ci` ran install-path-test a SECOND time through ci-go-base — a genuine duplicate,
+#     which removing it from the gate list deletes rather than relocates.
+#   * `make ci` still includes both, so the one-command complete gate is unchanged.
+#   * `make pre-merge` runs exactly these two, so the pre-merge check has a name of its own.
+pre-merge: cross-compile install-path-test ## The slow, change-independent checks: all platforms compile, the real installer works
+
+ci-go: ci-go-base pre-merge ## Run the Go control-plane CI gate (mirrors the go-ci + cross-compile + install-path jobs)
+ci: ci-go fe-lint fe-typecheck fe-test site-check site-version-stamp version-tag-match release-notes-digest release-anchor release-bump-skips-tags ## Run the full CI gate locally (Go + frontend + landing page)
+
+# ci-dev is what a REBUILD runs: the gate minus the two pre-merge checks above.
+#
+# It exists as its own target rather than as `ci` with the slow parts removed inline, so there is one
+# place that says what a rebuild checks, and so `full-rebuild` cannot quietly drift closer to `ci`
+# again. Everything here is something a source change can actually break.
+ci-dev: ci-go-base fe-lint fe-typecheck fe-test site-check site-version-stamp version-tag-match release-notes-digest release-anchor release-bump-skips-tags ## The gate a local rebuild runs: everything except cross-compile and install-path-test
 
 .PHONY: tui-pty-gate
 tui-pty-gate: ## Standing real-pty TUI verification gate (smoke + mouse + /connect)

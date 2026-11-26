@@ -72,6 +72,21 @@ var AmbientConfigEnv = []string{
 	"ORCHICON_SERVE_STATE_DIR",
 	// The plane's STATE DIRECTORY.
 	"ORCHICON_DATA_DIR",
+	// The claude adapter's per-session project root. A CLAUDE WORKER EXPORTS THIS, so without it a
+	// test that drives RunHook here inherits the OPERATOR'S project dir instead of the one it built,
+	// and the hook's project boundary then judges the test's own temp path as external:
+	//
+	//   hook_test.go:156: an allowed tool should be reported as allow:
+	//   "...permissionDecision":"deny","permissionDecisionReason":"refused:
+	//    /tmp/orchicon-claude-tmp-.../TestRunHookProtocol.../001/main.go is outside the project"
+	//
+	// Measured: with this variable set the pre-fix suite fails; unset it passes. That asymmetry is
+	// why it looked "pre-existing" on a worker and green on the operator's host.
+	"ORCHICON_CLAUDE_PROJECT_DIR",
+	"ORCHICON_CLAUDE_HOOK_PROFILE",
+	"ORCHICON_CLAUDE_ASK_DIR",
+	"ORCHICON_CLAUDE_CONSENT_SOCK",
+	"ORCHICON_CLAUDE_ASK_MODE_FILE",
 }
 
 // UnsetAmbientConfigEnv removes the ambient plane configuration from this test binary's

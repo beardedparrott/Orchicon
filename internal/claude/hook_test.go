@@ -102,8 +102,52 @@ func TestPolicyLoadFailureNamesTheFile(t *testing.T) {
 
 // RunHook is the `orchicon claude-hook` entry point: one PreToolUse document in,
 // one decision document out, exit 0.
+// boundaryProject creates a temp project INSIDE the hook boundary's sanctioned carve-out
+// (workerrestrict.ScratchDir, "/tmp/orchicon").
+//
+// WHY IT IS NOT JUST t.TempDir(), AND WHY THIS TEST FAILED FOR WORKERS WHILE PASSING LOCALLY.
+//
+// This package's TestMain (guard_leak_test.go) mints a private TMPDIR at
+// "/tmp/orchicon-claude-tmp-<rand>" and exports it, so t.TempDir() normally resolves under THAT —
+// e.g. /tmp/orchicon-claude-tmp-1464883825/TestRunHookProtocol.../001. The boundary accepts exactly
+// one root outside the project, "/tmp/orchicon" (workerrestrict.OutsideProject -> insideDir, a
+// path-COMPONENT prefix), and "/tmp/orchicon-claude-tmp-…" is a SIBLING that merely shares the
+// string "orchicon" as a prefix. So the Read below is correctly refused:
+//
+//	--- FAIL: TestRunHookProtocol
+//	    hook_test.go:156: an allowed tool should be reported as allow:
+//	    "permissionDecision":"deny","permissionDecisionReason":"refused:
+//	     /tmp/orchicon-claude-tmp-1464883825/TestRunHookProtocol.../001/main.go is outside the
+//	     project and outside every carve-out (/tmp/orchicon and .orchicon run metadata)"
+//
+// Whether that happens depends on where t.TempDir() lands relative to the harness TMPDIR. On a host
+// that sets GOTMPDIR (scratch outside /tmp) the temp project lands OUTSIDE the harness TMPDIR, the
+// refusal never triggers, and the test PASSES FOR THE WRONG REASON — measured:
+//
+//	TMPDIR(harness) = /tmp/orchicon-claude-tmp-3745924625
+//	t.TempDir()     = /home/.../.gotmp-wt/TestProbe.../001   -> allow
+//
+// A worker has GOTMPDIR unset, its temp project lands INSIDE the harness TMPDIR, and it fails. That
+// is how this surfaced as a "pre-existing" red gate that a PR Reviewer then held against an unrelated
+// change, in runs 01M850F172NXRPTEVYH4REXGWX and 01M85764NHHH69ACHZ5BDFR6K9.
+//
+// Building the project under ScratchDir makes the ALLOW case true by the rule the boundary actually
+// enforces, on every host, independently of TMPDIR and GOTMPDIR.
+func boundaryProject(t *testing.T) string {
+	t.Helper()
+	if err := os.MkdirAll(workerrestrict.ScratchDir, 0o700); err != nil {
+		t.Fatalf("create scratch root %s: %v", workerrestrict.ScratchDir, err)
+	}
+	dir, err := os.MkdirTemp(workerrestrict.ScratchDir, "hooktest-*")
+	if err != nil {
+		t.Fatalf("mkdtemp under %s: %v", workerrestrict.ScratchDir, err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 func TestRunHookProtocol(t *testing.T) {
-	project := t.TempDir()
+	project := boundaryProject(t)
 
 	payload, _ := json.Marshal(map[string]any{
 		"hook_event_name": "PreToolUse",
@@ -168,5 +212,70 @@ func TestRunHookToleratesMalformedInput(t *testing.T) {
 		if strings.TrimSpace(out.String()) != "" {
 			t.Errorf("RunHook(%q) emitted a decision %q, want none", in, out.String())
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// THE CARVE-OUT IS A PATH COMPONENT, NOT A STRING PREFIX
+//
+// The lesson from runs 01M850F172NXRPTEVYH4REXGWX and 01M85764NHHH69ACHZ5BDFR6K9, where this
+// package's own suite reported a red gate for a change unrelated to it. Three things had to be true at
+// once, and each is pinned below so the next person does not rediscover them one round trip at a time.
+// ---------------------------------------------------------------------------
+
+// TestTheBoundaryCarveOutIsAComponentNotAPrefix states the rule the failure exposed: "/tmp/orchicon"
+// is the sanctioned scratch root, and a directory that merely STARTS with that string is not inside it.
+func TestTheBoundaryCarveOutIsAComponentNotAPrefix(t *testing.T) {
+	project := boundaryProject(t)
+	for _, tc := range []struct {
+		target string
+		allow  bool
+		why    string
+	}{
+		{project + "/main.go", true, "the project's own file"},
+		{workerrestrict.ScratchDir + "/scratch.txt", true, "the sanctioned scratch root"},
+		{"/tmp/orchicon-claude-tmp-1/TestX/001/main.go", false,
+			"a SIBLING sharing the literal prefix — the refusal that broke the gate"},
+	} {
+		h := HookInput{ToolName: "Read", ToolInput: map[string]any{"file_path": tc.target}}
+		got := DecideTool(h, project, "")
+		if got.Allow != tc.allow {
+			t.Errorf("DecideTool(%q) allow = %v, want %v — %s", tc.target, got.Allow, tc.allow, tc.why)
+		}
+	}
+}
+
+// TestRunHookIgnoresAnInheritedClaudeProjectDir — the leak that made the gate host-dependent.
+//
+// A CLAUDE WORKER exports ORCHICON_CLAUDE_PROJECT_DIR. When it leaks into this test binary, RunHook
+// honours it over the payload's cwd, so the boundary judges the TEST's temp path against the WORKER's
+// project and refuses it. This asserts the test is now immune either way: the env is scrubbed by the
+// package's testfixtures init, and the project is built inside the carve-out regardless.
+func TestRunHookIgnoresAnInheritedClaudeProjectDir(t *testing.T) {
+	// A DECOY root, built here rather than written as a literal: this repo's no-operator-paths guard
+	// rejects hardcoded host paths in source, and a fabricated one is not a real location anyway.
+	decoy := t.TempDir()
+	t.Setenv(ProjectDirEnv, decoy)
+	project := boundaryProject(t)
+
+	payload, _ := json.Marshal(map[string]any{
+		"hook_event_name": "PreToolUse",
+		"tool_name":       "Read",
+		"tool_input":      map[string]any{"file_path": project + "/main.go"},
+		"cwd":             project,
+	})
+	var out bytes.Buffer
+	if code := RunHook(bytes.NewReader(payload), &out, func(k string) string {
+		// Models a process that DID export the variable (the worker's condition).
+		if k == ProjectDirEnv {
+			return decoy
+		}
+		return ""
+	}); code != 0 {
+		t.Fatalf("RunHook exit = %d, want 0", code)
+	}
+	if !strings.Contains(out.String(), `"permissionDecision":"allow"`) {
+		t.Fatalf("an inherited %s changed the verdict for a file inside the build project: %q — a leaked "+
+			"worker variable must not decide this test's outcome", ProjectDirEnv, out.String())
 	}
 }

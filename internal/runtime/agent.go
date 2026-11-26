@@ -119,12 +119,19 @@ func IsDevImageTag(tag string) bool {
 }
 
 // runtimeBinAllowlist is the set of binaries the runtime supervisor may exec (argv[0] basenames).
+//
+// KEYED BY BASENAME, NOT BY KIND, and that distinction bites the first adapter whose executable is
+// not named after its kind: `agy` (kind "antigravity") would be refused as "not allowlisted" while
+// the kind was registered everywhere else. Both spellings are listed so neither the binary name nor
+// the kind can be the thing that is missing.
 var runtimeBinAllowlist = map[string]bool{
-	"opencode": true,
-	"claude":   true,
-	"orchicon": true,
-	"bash":     true,
-	"sh":       true,
+	"opencode":    true,
+	"claude":      true,
+	"agy":         true,
+	"antigravity": true,
+	"orchicon":    true,
+	"bash":        true,
+	"sh":          true,
 }
 
 // guestArgv0Refusal is the single explanation for a refused argv[0], and it names the HOST-PATH

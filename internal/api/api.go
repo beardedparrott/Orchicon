@@ -160,6 +160,9 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 		providerSvc.OnProviderChange = deps.ModelDiscoverer.Invalidate
 	}
 	providerSvc.Service().RegisterSubstrateLoader()
+	// NOTE: deps.ProvidersService is the handle the server uses to inject the antigravity model lister
+	// (internal/providers/antigravity.go). It is a LATE setter rather than a Dependencies field because the
+	// agy bridge — the only thing that can answer that listing — is constructed after Mount returns.
 	deps.ProvidersService = providerSvc.Service()
 	mux.Handle(apiv1connect.NewProviderServiceHandler(providerSvc, interceptorOpt))
 

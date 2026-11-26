@@ -165,11 +165,39 @@ type TenantSettings struct {
 	// --- Published-outbox retention ---
 	// The outbox relay prunes published rows on its own ticker, but only within ORCHICON_OUTBOX_RETENTION_DAYS.
 	// This makes the window a tenant setting. Zero = inherit the env-var/code default (7 days).
-	OutboxRetentionDays int32                  `protobuf:"varint,39,opt,name=outbox_retention_days,json=outboxRetentionDays,proto3" json:"outbox_retention_days,omitempty"`
-	CreatedAt           *timestamppb.Timestamp `protobuf:"bytes,100,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	UpdatedAt           *timestamppb.Timestamp `protobuf:"bytes,101,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	OutboxRetentionDays int32 `protobuf:"varint,39,opt,name=outbox_retention_days,json=outboxRetentionDays,proto3" json:"outbox_retention_days,omitempty"`
+	// --- Antigravity (agy) adapter ---
+	//
+	// HOW THE ACP SERVER AUTHENTICATES. agy's ACP server requires an explicit
+	// `authenticate {methodId}` before `session/new`; which method is right is a
+	// PER-OPERATOR decision, so it is a tenant setting and not a product constant:
+	//
+	//	oauth-personal    (DEFAULT) reuse the CLI's cached interactive Google login.
+	//	                  The operator accepts Google's Antigravity terms — which
+	//	                  restrict using the service with third-party products — by
+	//	                  enabling this; see antigravity_tos_notice below.
+	//	oauth-business    Google Workspace / enterprise OAuth.
+	//	gemini-api-key    the ONLY method that works inside a runtime container: the
+	//	                  personal credential lives in the host OS keyring and cannot
+	//	                  be bind-mounted. Reads the tenant secret GEMINI_API_KEY and
+	//	                  passes it to the child as an env var only, never on argv.
+	//	agent-platform    the Google agent-platform credential plane.
+	//
+	// Empty on update = leave unchanged. An unknown value is InvalidArgument.
+	AntigravityAuthMethod string `protobuf:"bytes,40,opt,name=antigravity_auth_method,json=antigravityAuthMethod,proto3" json:"antigravity_auth_method,omitempty"`
+	// Whether Google may receive agy usage telemetry. Default FALSE: the Antigravity
+	// terms treat telemetry as a separate grant, so nothing is shared without an
+	// explicit opt-in. When false, the spawn spec passes `--disable-telemetry`.
+	AntigravityShareTelemetry bool `protobuf:"varint,41,opt,name=antigravity_share_telemetry,json=antigravityShareTelemetry,proto3" json:"antigravity_share_telemetry,omitempty"`
+	// READ-ONLY. The exact Antigravity terms notice to show wherever oauth-personal is
+	// selected (and in the adapter detail). Filled by the server from the single
+	// exported constant in internal/antigravity/authmethod, so web, TUI and desktop
+	// render the same words; a value sent on update is ignored.
+	AntigravityTosNotice string                 `protobuf:"bytes,42,opt,name=antigravity_tos_notice,json=antigravityTosNotice,proto3" json:"antigravity_tos_notice,omitempty"`
+	CreatedAt            *timestamppb.Timestamp `protobuf:"bytes,100,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt            *timestamppb.Timestamp `protobuf:"bytes,101,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *TenantSettings) Reset() {
@@ -412,6 +440,27 @@ func (x *TenantSettings) GetOutboxRetentionDays() int32 {
 	return 0
 }
 
+func (x *TenantSettings) GetAntigravityAuthMethod() string {
+	if x != nil {
+		return x.AntigravityAuthMethod
+	}
+	return ""
+}
+
+func (x *TenantSettings) GetAntigravityShareTelemetry() bool {
+	if x != nil {
+		return x.AntigravityShareTelemetry
+	}
+	return false
+}
+
+func (x *TenantSettings) GetAntigravityTosNotice() string {
+	if x != nil {
+		return x.AntigravityTosNotice
+	}
+	return ""
+}
+
 func (x *TenantSettings) GetCreatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreatedAt
@@ -430,7 +479,7 @@ var File_orchicon_api_v1_settings_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\n" +
-	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe2\x11\n" +
+	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x90\x13\n" +
 	"\x0eTenantSettings\x120\n" +
 	"\x14default_worker_model\x18\x01 \x01(\tR\x12defaultWorkerModel\x12;\n" +
 	"\x1adefault_ask_orchicon_model\x18\x02 \x01(\tR\x17defaultAskOrchiconModel\x12K\n" +
@@ -463,7 +512,10 @@ const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"R\x16executionRetentionKeep\x88\x01\x01\x12<\n" +
 	"\x1aexecution_retention_vacuum\x18% \x01(\bR\x18executionRetentionVacuum\x12M\n" +
 	"#execution_retention_timeout_seconds\x18& \x01(\x05R executionRetentionTimeoutSeconds\x122\n" +
-	"\x15outbox_retention_days\x18' \x01(\x05R\x13outboxRetentionDays\x129\n" +
+	"\x15outbox_retention_days\x18' \x01(\x05R\x13outboxRetentionDays\x126\n" +
+	"\x17antigravity_auth_method\x18( \x01(\tR\x15antigravityAuthMethod\x12>\n" +
+	"\x1bantigravity_share_telemetry\x18) \x01(\bR\x19antigravityShareTelemetry\x124\n" +
+	"\x16antigravity_tos_notice\x18* \x01(\tR\x14antigravityTosNotice\x129\n" +
 	"\n" +
 	"created_at\x18d \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +

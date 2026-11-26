@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/antigravity/authmethod"
 
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
@@ -54,10 +55,19 @@ type Daemon struct {
 	AllowedRootsSource func(ctx context.Context) ([]string, error)
 	// ExePath is the daemon's own executable, bind-mounted read-only into every runtime container at
 	// /usr/local/bin/orchicon so the container can exec `orchicon runtime-supervisor` /.
-	ExePath   string
-	CPUs      string
+	ExePath string
+	CPUs    string
+	// Memory is the per-container memory limit handed to the engine's --memory. "0" or "" means NO LIMIT:
+	// the container uses host memory as it needs it (the default; see unlimitedMemory).
 	Memory    string
 	TmpfsSize string
+	// StoreTmpfsSize sizes the PRIVATE tmpfs mounted at serveDataDir, which holds the container's opencode
+	// session store. It is a mount of its own, not a directory of /tmp, because a worker's scratch (Go test
+	// binaries, build output) shares /tmp's 2 GiB: when that fills, the store cannot write and opencode
+	// reports "Failed to execute statement" for every turn that follows. Measured: with /tmp full, a SQLite
+	// write in the store dir fails ("database or disk is full") when it is part of /tmp and succeeds when it
+	// is its own tmpfs.
+	StoreTmpfsSize string
 	// HomeTmpfsSize sizes the uid-owned tmpfs mounted at the runtime uid's $HOME, and at a private
 	// adapter data home.
 	HomeTmpfsSize string
@@ -120,6 +130,11 @@ type CreateRequest struct {
 	// AdapterKinds is the run's BOOT PROFILE: the set of adapter kinds its step workers resolve to
 	// (adapter.AdapterKind over each step worker's model_ref), sorted and deduped by the plane.
 	AdapterKinds []string `json:"adapter_kinds"`
+	// AntigravityAuthMethod is the tenant's Antigravity (agy) ACP auth method, sent by the plane
+	// because the container preflight must refuse `oauth-personal` UP FRONT: that credential lives in
+	// the HOST OS keyring and cannot be bind-mounted. Empty (an older client) is treated as the
+	// default — oauth-personal — because that is what such a client would have used anyway.
+	AntigravityAuthMethod string `json:"antigravity_auth_method,omitempty"`
 }
 
 // CreateResponse is returned by POST /v1/runtimes.
@@ -802,6 +817,14 @@ func (d *Daemon) createContainerInner(name string, req CreateRequest) (*CreateRe
 	if demandsKind(req, "claude") && !d.claudeAuthAvailable(req) {
 		return nil, fmt.Errorf(adapter.ClaudeAuthRequiredMessage)
 	}
+	// THE SAME FAST PREFLIGHT for antigravity, and STRICTER IN CONTAINER MODE: agy's personal OAuth
+	// credential lives in the HOST OS KEYRING, which cannot be bind-mounted, so a signed-in host is
+	// not enough for a container session — and oauth-personal is refused outright. Refused here,
+	// ACTIONABLY, rather than hanging on. (Local/in-process mode has its own host keyring and is not
+	// gated here.)
+	if err := d.antigravityPreflight(req); err != nil {
+		return nil, err
+	}
 	d.createMu.Lock()
 	defer d.createMu.Unlock()
 	// A stopped/crashed container with this name blocks recreation ("name already in use").
@@ -1034,14 +1057,35 @@ func (d *Daemon) createFlagArgs(name string, req CreateRequest) []string {
 	args := d.Engine.CreateBaseArgs(name, workflowLabel, instanceID(req.InstanceID))
 	args = append(args, "--user", fmt.Sprintf("%d:%d", d.UserID, d.GroupID))
 	args = append(args, d.Engine.UsernsArgs()...)
+	args = append(args, "--cpus", d.CPUs)
+	args = append(args, memoryArgs(d.Memory)...)
 	args = append(args,
-		"--cpus", d.CPUs,
-		"--memory", d.Memory,
 		// A private tmpfs sized to TmpfsSize, mountable exec.
 		"--tmpfs", fmt.Sprintf("/tmp:rw,size=%s,exec", d.TmpfsSize),
 	)
+	// THE SESSION STORE'S OWN MOUNT, after /tmp's: the engine mounts by path depth, so this nests inside it
+	// and survives /tmp filling up. uid-owned for the same reason the HOME tmpfs is (see tmpfsOwned).
+	if size := strings.TrimSpace(d.StoreTmpfsSize); size != "" && size != "0" {
+		args = append(args, "--tmpfs", d.tmpfsOwned(serveDataDir, size))
+	}
 	args = append(args, d.Engine.PublishArgs(defaultServePort, sandboxPlanePort)...)
 	return args
+}
+
+// unlimitedMemory is the Memory value that means "no limit".
+const unlimitedMemory = "0"
+
+// memoryArgs renders the engine's memory flag. NO LIMIT IS THE DEFAULT, and that is a decision, not an
+// omission: a cap set below what a Go build and its tmpfs need made every run on a large host thrash against
+// its own limit (15,764 memory-limit hits in one run) and then fail. A container's memory is the host's to
+// give; operators who want a ceiling set ORCHICON_RUNTIME_MEMORY (for example 16g). "0" and "" both mean
+// unlimited, and the flag is then OMITTED rather than passed as 0, so no engine has to interpret it.
+func memoryArgs(mem string) []string {
+	m := strings.TrimSpace(mem)
+	if m == "" || m == unlimitedMemory {
+		return nil
+	}
+	return []string{"--memory", m}
 }
 
 // standardHostMountArgs returns the daemon-appended host-home arg block for a create request: the
@@ -1247,6 +1291,49 @@ func (d *Daemon) claudeAuthAvailable(req CreateRequest) bool {
 	return ok
 }
 
+// antigravityPreflight decides whether an antigravity-demanding container dispatch can
+// authenticate at all. It runs BEFORE anything is created, and it is the only place the
+// container-mode auth policy lives, so it can be unit-tested without an engine.
+//
+// TWO REFUSALS, DELIBERATELY DIFFERENT:
+//
+//   - oauth-personal (the default) is refused with the exact actionable message, because personal
+//     Google sign-in lives in the HOST keyring: no mount, no file, no environment variable can carry
+//     it into a container. Telling the operator to "sign in on the host" would be a lie here.
+//   - every other method needs a usable credential the container can actually see; without one the
+//     shared AntigravityAuthRequiredMessage explains the keyring limit and how to supply a key.
+func (d *Daemon) antigravityPreflight(req CreateRequest) error {
+	if !demandsKind(req, adapter.KindAntigravity) {
+		return nil
+	}
+	if authmethod.Normalize(req.AntigravityAuthMethod) == authmethod.MethodOAuthPersonal {
+		return errors.New(authmethod.ContainerOAuthPersonalRefusal)
+	}
+	if !d.antigravityAuthAvailable(req) {
+		return errors.New(adapter.AntigravityAuthRequiredMessage)
+	}
+	return nil
+}
+
+// antigravityAuthAvailable reports whether a CONTAINER can reach an Antigravity credential.
+//
+// IT NEVER READS A KEYRING, AND THAT IS THE WHOLE POINT. agy's personal OAuth credential is stored
+// in the host OS keyring (Secret Service / macOS Keychain / Windows Credential Manager), which is a
+// live IPC channel to the host session — it cannot be bind-mounted into a runtime container, and
+// there is no file under $HOME to mount instead. A container session therefore needs a
+// GEMINI_API_KEY, supplied to the plane's environment or to this run's secrets. Probing for a
+// keyring would produce the exact failure this gate exists to prevent: a create that looks healthy
+// and then hangs or dies opaquely inside the container.
+func (d *Daemon) antigravityAuthAvailable(req CreateRequest) bool {
+	if strings.TrimSpace(os.Getenv("GEMINI_API_KEY")) != "" {
+		return true
+	}
+	if v, ok := req.Secrets["GEMINI_API_KEY"]; ok && strings.TrimSpace(v) != "" {
+		return true
+	}
+	return false
+}
+
 // hostGHToken resolves the operator's effective GitHub CLI token (`gh auth token`), which may live
 // in the OS keyring rather than hosts.yml.
 func hostGHToken() string {
@@ -1320,8 +1407,49 @@ func (d *Daemon) hostInputsFingerprint() string {
 	return hostFp + "|" + binFp + "|" + d.engineInputFingerprint()
 }
 
+// serveHandshakeHint turns the container engine's own words into the thing to fix.
+//
+// The binary is DELIBERATELY not baked into the runtime image — the daemon bind-mounts its own
+// executable at /usr/local/bin/orchicon when it creates a runtime container (see
+// deploy/runtime/Dockerfile). So "executable file not found" means the exec reached a container that
+// was NOT created by that path, never that the image is missing something.
+func serveHandshakeHint(engineStderr string) string {
+	if strings.Contains(engineStderr, "executable file not found") ||
+		strings.Contains(engineStderr, "no such file or directory") {
+		return " — the container has no /usr/local/bin/orchicon, so it was not created by the daemon " +
+			"(the binary is bind-mounted at create time, never baked into the image). Re-create the " +
+			"container rather than treating this as an image defect."
+	}
+	return ""
+}
+
+// supervisorErrorFrom returns the Error of the first {"event":"error"} line in runtime-client's stdout,
+// or "" when there is none.
+func supervisorErrorFrom(out []byte) string {
+	sc := bufio.NewScanner(bytes.NewReader(out))
+	for sc.Scan() {
+		var ev AgentEvent
+		if json.Unmarshal(sc.Bytes(), &ev) == nil && ev.Event == "error" && ev.Error != "" {
+			return ev.Error
+		}
+	}
+	return ""
+}
+
+// maxServeConfigBytes is the ceiling for the serve config, which is exec'd as ONE environment string.
+// Linux's MAX_ARG_STRLEN is 131072 including the "NAME=" prefix and the NUL; the margin keeps clear of it.
+const maxServeConfigBytes = 120000
+
 // startServe asks the in-container supervisor to bring up `opencode serve` (idempotent.
 func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, bool, error) {
+	// THE CONFIG TRAVELS IN ONE ENV STRING, and Linux refuses to exec a process with a single env string
+	// over MAX_ARG_STRLEN (128 KiB): the failure is "fork/exec …: argument list too long", which names
+	// neither the variable nor its size. Say it here, where the size is known.
+	if len(req.ServeConfig) > maxServeConfigBytes {
+		return 0, "", false, fmt.Errorf("serve config is %d bytes, over the %d-byte limit for one environment string "+
+			"(Linux MAX_ARG_STRLEN): opencode cannot be exec'd with it. Large content (worker prompts) must be "+
+			"referenced as files rather than inlined", len(req.ServeConfig), maxServeConfigBytes)
+	}
 	reqJSON, err := json.Marshal(AgentRequest{
 		Cmd: "serve",
 		// The demanded adapter kind whose serve this starts.
@@ -1338,9 +1466,35 @@ func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, 
 	}
 	cmd := procwin.Command(d.engineBin(), "exec", "-i", name, "orchicon", "runtime-client")
 	cmd.Stdin = bytes.NewReader(reqJSON)
+	// CAPTURE THE ENGINE'S OWN STDERR. `cmd.Output()` discards it, and the discarded text is the whole
+	// diagnosis: when the container has no orchicon binary the engine says
+	//
+	//	OCI runtime exec failed: exec failed: unable to start container process:
+	//	exec: "orchicon": executable file not found in $PATH
+	//
+	// and all that surfaced was "serve handshake: exit status 1". That single line sent a production
+	// investigation to the store, the image and the runtime daemon, when the binary was simply not
+	// mounted into the container being exec'd. An exit status with no cause is not an error message.
+	var engineErr bytes.Buffer
+	cmd.Stderr = &engineErr
 	out, perr := cmd.Output()
 	if perr != nil {
-		return 0, "", false, fmt.Errorf("serve handshake: %v", perr)
+		// THE SUPERVISOR'S OWN REFUSAL RIDES STDOUT. runtime-client relays the supervisor's {"event":"error"}
+		// line to stdout and exits 1, so a refusal ("argv[0] not allowlisted", a failed chdir, "serve did
+		// not become ready") leaves the engine's stderr EMPTY and the whole diagnosis in `out`, which
+		// Output() returns alongside the error. Dropping it produced "exit status 1 — no stderr" with the
+		// cause in hand.
+		if sup := supervisorErrorFrom(out); sup != "" {
+			return 0, "", false, fmt.Errorf("serve handshake: %v — supervisor said: %s", perr, sup)
+		}
+		if detail := strings.TrimSpace(engineErr.String()); detail != "" {
+			return 0, "", false, fmt.Errorf("serve handshake: %v — engine said: %s%s",
+				perr, detail, serveHandshakeHint(detail))
+		}
+		return 0, "", false, fmt.Errorf("serve handshake: %v — the container engine produced no stderr, so the "+
+			"cause is not visible here; check that this runtime container was created by the daemon (the "+
+			"orchicon binary is BIND-MOUNTED at /usr/local/bin/orchicon at create time and is never baked "+
+			"into the image)", perr)
 	}
 	// The supervisor answers {event:"serve", port:4096, password:...} when
 	// ready.

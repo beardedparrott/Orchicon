@@ -37,8 +37,9 @@ import { ExecStatusBadge } from "./status";
 interface HeadsUpTileProps {
   tile: HeadsUpTileData;
   runId: string;
-  /** Mount the execution event stream. The grid sets this on exactly one
-   *  tile (the first running step with an execution) — the perf guard. */
+  /** onExpand opens the ONE live view for this step. The TILE stays static — it holds no stream and
+   *  no timer; liveness lives only in the modal the operator has open. */
+  onExpand?: () => void;
 }
 
 
@@ -58,7 +59,7 @@ function TileUsage({ executionId }: { executionId: string }) {
   );
 }
 
-export function HeadsUpTile({ tile, runId }: HeadsUpTileProps) {
+export function HeadsUpTile({ tile, runId, onExpand }: HeadsUpTileProps) {
   const execId = tile.execution?.id ?? "";
   // THE TAIL, NOT THE TRANSCRIPT. This tile renders one line — the last thing the worker
   // said (extractLastTextBlock scans backwards and stops at the first text part). Asking the
@@ -89,24 +90,23 @@ export function HeadsUpTile({ tile, runId }: HeadsUpTileProps) {
       extractLastTextBlock(session, 600) || resultSummaryLine(tile.stepRun)
     );
   }, [session, tile.stepRun, tile.isUpcoming]);
-  // A TILE OPENS THE EXECUTION PAGE — it does not expand into a live view.
+  // A TILE OPENS THE QUICK-LOOK MODAL — and the tile itself stays a STATIC THUMBNAIL.
   //
-  // It used to open HeadsUpExpandedModal, which hosted the full SessionChatPane: a live event
-  // STREAM plus five fetches, mounted on top of a run route that already polls. Clicking from
-  // there to the execution page then left that stream alive behind the page being opened, on an
-  // HTTP/1.1 origin with ~6 connections — which is the non-responsive page the operator hit
-  // ("as soon as I clicked 'launch live execution page'"). The modal's only unique offering was
-  // hosting the transcript, which is the execution page's own job, and the tile already carries
-  // inline Approve/Reject/Retry for approval steps — so removing it costs no capability.
+  // The modal was removed once, because it hosted a live SessionChatPane on top of a run route that
+  // already polls, and every open execution view created its own JetStream consumer fed the whole
+  // execution firehose. That is fixed at the source (internal/execution/hub.go: one consumer,
+  // per-execution fan-out, stream ends at terminal status), so the quick look costs an in-process attach
+  // instead of a consumer — and it releases on close.
   //
-  // An ANCHOR rather than a JS handler: a real link gives middle-click and cmd-click for free,
-  // works before hydration, and cannot silently break the way a handler can.
-  const Container = expandable ? "a" : "div";
-  const href = expandable ? `/executions/${execId}` : undefined;
+  // The TILE must remain static for the modal to be worth it: it still fetches its tail ONCE and holds
+  // no stream and no timer (headsUpStatic.test.ts enforces both), so N tiles cost N one-shot fetches and
+  // liveness exists only in the one modal the operator has open.
+  const Container = expandable ? "button" : "div";
+  const onClick = expandable ? () => onExpand?.() : undefined;
   return (
     <Container
-      {...(expandable ? { href, target: "_blank", rel: "noopener noreferrer" } : {})}
-      aria-label={expandable ? `Open the execution page for step ${tile.stepName}` : undefined}
+      {...(expandable ? { type: "button" as const, onClick } : {})}
+      aria-label={expandable ? `Open a live view of step ${tile.stepName}` : undefined}
       className={cn(
         "flex min-h-[190px] flex-col gap-2 rounded-xl border bg-card p-3 text-left shadow-sm",
         tile.isActive && "ring-2 ring-emerald-500 shadow-lg",

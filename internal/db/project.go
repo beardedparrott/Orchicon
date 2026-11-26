@@ -113,6 +113,24 @@ func RuntimeBaseImage() string {
 	return BaseRuntimeImage
 }
 
+// legacyRuntimeImageTags maps image tags the platform USED to emit to the tag that replaced them. The stock
+// dev image was built as `orchicon-runtime:orchicon-dev` and is now `orchicon-runtime:dev`; work items, projects
+// and worker prompts written against the old name kept pointing at a stale, adapter-less image and every run
+// died with a bare "serve handshake: exit status 1".
+var legacyRuntimeImageTags = map[string]string{
+	"orchicon-runtime:orchicon-dev":           "orchicon-runtime:dev",
+	"localhost/orchicon-runtime:orchicon-dev": "localhost/orchicon-runtime:dev",
+}
+
+// CanonicalRuntimeImage rewrites a retired image tag to its current name and returns every other ref
+// unchanged. Apply it wherever a stored image ref is turned into a container to start.
+func CanonicalRuntimeImage(ref string) string {
+	if cur, ok := legacyRuntimeImageTags[strings.TrimSpace(ref)]; ok {
+		return cur
+	}
+	return ref
+}
+
 // ErrNotFound is returned when a single-row query matches no rows.
 var ErrNotFound = errors.New("db: not found")
 

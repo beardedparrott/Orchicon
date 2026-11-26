@@ -63,8 +63,8 @@ func TestModeDeniesEveryWriteShapedTool(t *testing.T) {
 	}
 }
 
-// The gate is POLICY-driven, not "writes are always refused": iteration denies the PLANNER tools,
-// so a write is legitimate there.
+// The gate is POLICY-driven, not "writes are always refused": iteration denies nothing, so a write is
+// legitimate there.
 func TestIterationModeDoesNotDenyClaudesTools(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "conv.mode.json")
 	if err := writeAskModeFile(path, askmode.Iteration); err != nil {
@@ -75,14 +75,31 @@ func TestIterationModeDoesNotDenyClaudesTools(t *testing.T) {
 			t.Errorf("%s was denied in iteration mode: %q", tool, msg)
 		}
 	}
-	// ...while the file DOES record iteration's own denial set, so the policy is
-	// being read rather than ignored.
-	st, ok := readAskModeFile(path)
-	if !ok {
-		t.Fatal("the iteration mode file is missing")
+	// Iteration denies nothing AND may act, so it writes NO file (absence and "denies nothing" mean the same
+	// to the reader).
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the iteration mode file exists (%v) — a mode that denies nothing must leave no gate behind", err)
 	}
-	if st.Mode != askmode.Iteration || len(st.Denied) == 0 {
-		t.Fatalf("mode file = %+v, want the iteration policy recorded", st)
+}
+
+// A GATE LEFT BEHIND BY AN EARLIER TURN MUST NOT OUTLIVE A SWITCH TO ITERATION. Brainstorm writes a file that
+// denies the work tools; a conversation switched to Iteration must have it CLEARED, or the operator's switch
+// would change the prompt and leave the old refusals in force.
+func TestSwitchingToIterationClearsAStaleBrainstormGate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conv.mode.json")
+	if err := writeAskModeFile(path, askmode.Brainstorm); err != nil {
+		t.Fatalf("write brainstorm: %v", err)
+	}
+	if denied, _ := askModeDenial(path, "Write"); !denied {
+		t.Fatal("test premise broken: brainstorm did not refuse Write")
+	}
+	if err := writeAskModeFile(path, askmode.Iteration); err != nil {
+		t.Fatalf("write iteration: %v", err)
+	}
+	for _, tool := range []string{"Write", "Edit", "Bash", "mcp__orchicon__create_work_item", "mcp__github__create_issue"} {
+		if denied, msg := askModeDenial(path, tool); denied {
+			t.Errorf("%s still refused after the switch to iteration: %q — the stale gate survived", tool, msg)
+		}
 	}
 }
 

@@ -110,8 +110,12 @@ func engineCommandOn(engineBin string, args ...string) error {
 	return nil
 }
 
-// lookPathEngine resolves an engine binary by name.
-func lookPathEngine(name string) (string, error) { return exec.LookPath(name) }
+// lookPathEngine resolves an engine binary by name. A var, like postgresVolumeExists above, so a test can
+// stand in for "no container engine on this host" — which is what a unit-test machine is, and what a
+// developer's machine is NOT. Leaving it a plain function meant a real `podman` was executed from unit
+// tests, and podman INITIALISES ~/.local/share/containers/storage on any invocation: the operator's
+// container store appeared as a side effect of asserting that a free port is not ours.
+var lookPathEngine = func(name string) (string, error) { return exec.LookPath(name) }
 
 // isOurBinary reports whether an executable path is an orchicon binary (the plane, a supervisor, or the TUI
 // client). Used only to decide whether a process is plausibly ours before the instance name confirms it.

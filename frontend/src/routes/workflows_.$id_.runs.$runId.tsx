@@ -28,6 +28,7 @@ import {
 } from "@/api/workflows";
 import { useListExecutions } from "@/api/executions";
 import { useStreamWorkflowEvents } from "@/api/workflowEvents";
+import { recordStreamEnabled, workflowRunIsTerminal } from "@/lib/debouncedInvalidation";
 import { useDebouncedInvalidation } from "@/lib/useDebouncedInvalidation";
 import { workflowKeys } from "@/api/workflows";
 import { PrLinkChip } from "@/components/work-items/work-item-card";
@@ -194,8 +195,12 @@ function RunViewInner({ workflowId, runId }: { workflowId: string; runId: string
   // Live event stream (docs/10 §4). Subscribes to StreamWorkflowEvents
   // filtered to this run; invalidates the run + step-runs queries so the
   // canvas and feed refresh on each transition.
+  // GATED, and it was not before: a finished run's page kept a stream open for as long as the tab
+  // lived. `run` may still be undefined on the first render, so the gate reads as "not terminal" and
+  // closes once the terminal status arrives.
   const { events, status } = useStreamWorkflowEvents({
     workflowRunId: runId,
+    enabled: recordStreamEnabled(runId, workflowRunIsTerminal(run?.status)),
     onEvent: scheduleRunInvalidation,
   });
 

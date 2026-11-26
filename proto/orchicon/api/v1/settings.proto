@@ -225,6 +225,37 @@ message TenantSettings {
   // This makes the window a tenant setting. Zero = inherit the env-var/code default (7 days).
   int32 outbox_retention_days = 39;
 
+  // --- Antigravity (agy) adapter ---
+  //
+  // HOW THE ACP SERVER AUTHENTICATES. agy's ACP server requires an explicit
+  // `authenticate {methodId}` before `session/new`; which method is right is a
+  // PER-OPERATOR decision, so it is a tenant setting and not a product constant:
+  //
+  //   oauth-personal    (DEFAULT) reuse the CLI's cached interactive Google login.
+  //                     The operator accepts Google's Antigravity terms — which
+  //                     restrict using the service with third-party products — by
+  //                     enabling this; see antigravity_tos_notice below.
+  //   oauth-business    Google Workspace / enterprise OAuth.
+  //   gemini-api-key    the ONLY method that works inside a runtime container: the
+  //                     personal credential lives in the host OS keyring and cannot
+  //                     be bind-mounted. Reads the tenant secret GEMINI_API_KEY and
+  //                     passes it to the child as an env var only, never on argv.
+  //   agent-platform    the Google agent-platform credential plane.
+  //
+  // Empty on update = leave unchanged. An unknown value is InvalidArgument.
+  string antigravity_auth_method = 40;
+
+  // Whether Google may receive agy usage telemetry. Default FALSE: the Antigravity
+  // terms treat telemetry as a separate grant, so nothing is shared without an
+  // explicit opt-in. When false, the spawn spec passes `--disable-telemetry`.
+  bool antigravity_share_telemetry = 41;
+
+  // READ-ONLY. The exact Antigravity terms notice to show wherever oauth-personal is
+  // selected (and in the adapter detail). Filled by the server from the single
+  // exported constant in internal/antigravity/authmethod, so web, TUI and desktop
+  // render the same words; a value sent on update is ignored.
+  string antigravity_tos_notice = 42;
+
   google.protobuf.Timestamp created_at = 100;
   google.protobuf.Timestamp updated_at = 101;
 }
