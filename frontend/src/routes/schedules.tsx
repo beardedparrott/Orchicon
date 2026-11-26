@@ -1509,6 +1509,20 @@ function HistoryCard({
           </CardContent>
         </Card>
       </Link>
+      {/* RUN CONTROL FROM A HISTORY ROW.
+          A history row IS a run, which is exactly the thing these three gestures act on — so this
+          is where they belong, and where the operator expected them.
+          The earlier change put them on the UPCOMING card only, so this page — the one an operator
+          lands on after a fire — showed no controls at all.
+          Offered against the row's bound ITEM: the actions are work-item gestures, and the run id
+          identifies the row while the item identifies the run it should act on. */}
+      {item && (
+        <SequenceControls
+          item={item}
+          hasChildren={false}
+          className="shrink-0"
+        />
+      )}
       {/* THE ROW IS A RUN, SO DELETE REMOVES THE RUN — and the button is always available.
        *
        * It used to target the WORK ITEM's schedule, which on a past run is already consumed: the click cleared

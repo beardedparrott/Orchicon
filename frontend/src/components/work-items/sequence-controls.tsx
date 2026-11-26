@@ -27,7 +27,7 @@ import { SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { WorkItemStatus, type WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
-import { RUN_CONTROL_META, restartLabel, restartTitle, runControlsFor } from "./run-controls";
+import { RUN_CONTROL_META, controlLabelFor, hasEverRun, restartTitle, runControlsFor } from "./run-controls";
 
 /**
  * Which gestures to show. THE RULE LIVES IN run-controls.ts so the work item page, the run page
@@ -69,19 +69,6 @@ const ACTION_META: Record<
 };
 
 
-/**
- * isFiredOnce reports whether a status implies the item has been dispatched at least once.
- *
- * The RESTART label needs this because a `pending` item can be either "created, never fired" or
- * "fired, subsequently reset". A bound run id settles it; failing that, any status beyond pending
- * proves it ran.
- */
-function isFiredOnce(status: WorkItemStatus): boolean {
-  return (
-    status !== WorkItemStatus.PENDING &&
-    status !== WorkItemStatus.UNSPECIFIED
-  );
-}
 
 export function SequenceControls({
   item,
@@ -142,9 +129,19 @@ export function SequenceControls({
         const meta = ACTION_META[action];
         // START VS RESTART: the same call, but the honest word depends on whether anything has run.
         // An item that has never been dispatched has nothing to restart and nothing to discard.
-        const hasRun = item.workflowRunId !== "" || !isFiredOnce(item.status);
-        const label = action === SequenceAction.RESTART ? restartLabel(hasRun) : meta.label;
-        const titleText = action === SequenceAction.RESTART ? restartTitle(hasRun) : meta.title;
+        //
+        // THE `!` HERE WAS INVERTED and shipped: `!isFiredOnce(status)` is true for a PENDING item,
+        // so every never-run item was labelled "Restart". The unit test called restartLabel(false)
+        // directly and never exercised this wiring — which is why a green suite showed the wrong
+        // word on every row. Fixed to the plain reading: has run if it has a run id OR has ever been
+        // dispatched.
+        // ONE PURE DECISION, in run-controls.ts, so a test can assert what this row RENDERS. The
+        // previous inline version had an inverted negation that no helper-level test could see.
+        const label = controlLabelFor(action, item.status, item.workflowRunId, meta.label);
+        const titleText =
+          action === SequenceAction.RESTART
+            ? restartTitle(hasEverRun(item.status, item.workflowRunId))
+            : meta.title;
         const Icon = meta.icon;
         const destructive = action === SequenceAction.RESTART || action === SequenceAction.STOP;
         return (

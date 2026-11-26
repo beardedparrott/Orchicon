@@ -2,7 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import { SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
-import { RUN_CONTROL_META, bulkControlsFor, restartLabel, restartTitle, runControlsFor } from "./run-controls";
+import {
+  RUN_CONTROL_META,
+  bulkControlsFor,
+  controlLabelFor,
+  hasEverRun,
+  restartLabel,
+  restartTitle,
+  runControlsFor,
+} from "./run-controls";
 
 /**
  * WHY THESE ASSERTIONS EXIST.
@@ -100,5 +108,54 @@ describe("bulkControlsFor", () => {
   it("offers nothing for an empty selection", () => {
     const a = bulkControlsFor([]);
     expect(a.canPause || a.canResume || a.canFire).toBe(false);
+  });
+});
+
+/**
+ * THE WIRING TEST THAT WAS MISSING, AND THE BUG IT WOULD HAVE CAUGHT.
+ *
+ * The shipped call site read `hasRun = workflowRunId !== "" || !isFiredOnce(status)`. The negation
+ * was inverted, so a PENDING item that had never been dispatched evaluated to hasRun === true and
+ * every row in the tree said "Restart". The suite was green throughout, because the tests above call
+ * restartLabel(false)/restartLabel(true) DIRECTLY and never asked what the component computes.
+ *
+ * controlLabelFor is the whole decision in one pure place, so these assertions are about what a row
+ * actually renders rather than what a helper returns in isolation.
+ */
+describe("controlLabelFor (the decision a row actually renders)", () => {
+  it("says Start for a pending item that has never been dispatched", () => {
+    // THE EXACT CASE THAT SHIPPED WRONG: pending, no run id. It must NOT say Restart.
+    expect(controlLabelFor(SequenceAction.RESTART, WorkItemStatus.PENDING, "", "Restart")).toBe("Start");
+    expect(controlLabelFor(SequenceAction.RESTART, WorkItemStatus.PENDING, undefined, "Restart")).toBe("Start");
+  });
+
+  it("says Restart once the item has a bound run", () => {
+    expect(controlLabelFor(SequenceAction.RESTART, WorkItemStatus.PENDING, "01M8CSC92", "Restart")).toBe("Restart");
+  });
+
+  it("says Restart for an item whose status proves it ran", () => {
+    for (const status of [
+      WorkItemStatus.FAILED,
+      WorkItemStatus.SUCCEEDED,
+      WorkItemStatus.CANCELLED,
+      WorkItemStatus.RUNNING,
+      WorkItemStatus.CHECKPOINTING,
+    ]) {
+      expect(controlLabelFor(SequenceAction.RESTART, status, "", "Restart")).toBe("Restart");
+    }
+  });
+
+  it("leaves the other gestures alone", () => {
+    expect(controlLabelFor(SequenceAction.RESUME, WorkItemStatus.PENDING, "", "Resume")).toBe("Resume");
+    expect(controlLabelFor(SequenceAction.PAUSE, WorkItemStatus.RUNNING, "", "Pause")).toBe("Pause");
+  });
+});
+
+describe("hasEverRun", () => {
+  it("is false exactly for a never-dispatched pending item", () => {
+    expect(hasEverRun(WorkItemStatus.PENDING, "")).toBe(false);
+    expect(hasEverRun(WorkItemStatus.UNSPECIFIED, "")).toBe(false);
+    expect(hasEverRun(WorkItemStatus.PENDING, "run-1")).toBe(true);
+    expect(hasEverRun(WorkItemStatus.FAILED, "")).toBe(true);
   });
 });

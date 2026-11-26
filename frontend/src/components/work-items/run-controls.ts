@@ -166,3 +166,35 @@ export function bulkControlsFor(statuses: WorkItemStatus[]): BulkControlAvailabi
     total,
   };
 }
+
+/**
+ * controlLabelFor decides what a row's button actually SAYS, given the item and the action.
+ *
+ * THIS FUNCTION EXISTS BECAUSE THE DECISION SHIPPED WRONG WHILE ITS UNIT TEST PASSED.
+ *
+ * The call site had `hasRun = workflowRunId !== "" || !isFiredOnce(status)` — an inverted negation
+ * — so every never-run `pending` item was labelled "Restart". The test asserted `restartLabel(false)`
+ * and `restartLabel(true)` directly and never asked what the COMPONENT computes, so a green suite
+ * shipped the wrong word onto every row in the tree.
+ *
+ * Keeping the whole decision here, in one pure place, means the test can assert what the component
+ * actually renders rather than what a helper would return in isolation.
+ */
+export function controlLabelFor(
+  action: SequenceAction,
+  status: WorkItemStatus,
+  workflowRunId: string | undefined,
+  fallbackLabel: string,
+): string {
+  if (action !== SequenceAction.RESTART) return fallbackLabel;
+  return restartLabel(hasEverRun(status, workflowRunId));
+}
+
+/** hasEverRun: a bound run id proves it; failing that, any status beyond "not yet dispatched". */
+export function hasEverRun(
+  status: WorkItemStatus,
+  workflowRunId: string | undefined,
+): boolean {
+  if (workflowRunId) return true;
+  return status !== WorkItemStatus.PENDING && status !== WorkItemStatus.UNSPECIFIED;
+}
