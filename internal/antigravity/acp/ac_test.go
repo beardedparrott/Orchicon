@@ -856,6 +856,14 @@ func TestLaunchOptionsArgv(t *testing.T) {
 			AppDataDir: "/tmp/appdata", Sandbox: true,
 		}, []string{"agy-dev", "acp", "--disable-telemetry", "--process-per-session", "--app-data-dir", "/tmp/appdata", "--sandbox"}},
 		{"telemetry only", LaunchOptions{DisableTelemetry: true}, []string{"agy", "acp", "--disable-telemetry"}},
+		// `--settings` is a TOP-LEVEL flag and must sit BETWEEN the binary and the `acp` subcommand.
+		// Verified against agy 1.5.13: `agy acp --settings X` exits 1 with the acp usage text, while
+		// `agy --settings X acp` exits 0. The flag is absent from `agy acp --help` for that reason.
+		{"settings precede the subcommand", LaunchOptions{Settings: `{"permissions":{"deny":["run_command"]}}`},
+			[]string{"agy", "--settings", `{"permissions":{"deny":["run_command"]}}`, "acp"}},
+		{"settings with everything", LaunchOptions{
+			Binary: "agy-dev", DisableTelemetry: true, Settings: `{"permissions":{"deny":["ask_question"]}}`,
+		}, []string{"agy-dev", "--settings", `{"permissions":{"deny":["ask_question"]}}`, "acp", "--disable-telemetry"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

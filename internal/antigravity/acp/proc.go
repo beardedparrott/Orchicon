@@ -80,6 +80,14 @@ type LaunchOptions struct {
 	ProcessPerSession bool
 	Sandbox           bool
 	AppDataDir        string
+	// Settings is a `--settings` JSON document: agy's own "Settings for this session only, never
+	// saved". It is how an Ask mode's denied tools are ALSO refused before agy runs them
+	// (internal/antigravity/modegate.go) — defence in depth behind the in-handler gate that is the
+	// actual authority.
+	//
+	// IT IS ONE ARGV ELEMENT, never shell-quoted into a single string: ProcSpec.Argv is an execve
+	// vector, so the JSON travels as ONE argument exactly as written and nothing re-parses it.
+	Settings string
 }
 
 // Argv renders the child command line. Flag order is fixed so the same options always produce
@@ -89,7 +97,17 @@ func (o LaunchOptions) Argv() []string {
 	if bin == "" {
 		bin = "agy"
 	}
-	argv := []string{bin, "acp"}
+	// `--settings` IS A TOP-LEVEL FLAG AND MUST PRECEDE THE SUBCOMMAND. Verified against agy 1.5.13:
+	//
+	//	agy acp --settings '{"permissions":{"deny":["run_command"]}}'  -> exit 1, prints `agy acp --help`
+	//	agy --settings '{"permissions":{"deny":["run_command"]}}' acp  -> exit 0
+	//
+	// It is absent from `agy acp --help` for exactly that reason: it belongs to the parent command.
+	argv := []string{bin}
+	if o.Settings != "" {
+		argv = append(argv, "--settings", o.Settings)
+	}
+	argv = append(argv, "acp")
 	if o.DisableTelemetry {
 		argv = append(argv, "--disable-telemetry")
 	}

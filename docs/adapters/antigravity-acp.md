@@ -552,3 +552,116 @@ deliberately ABSENT: `transcript_jsonl` (agy advertises no transcript file, and
 the bridge keeps its own durable transcript instead) and `reasoning` (agy never
 streams reasoning text — only `usage.thoughtTokens`; the mapper still handles
 `agent_thought_chunk` for a future agy).
+
+## 12. Ask (interactive) conversations (child 6) — decisions
+
+The same `agy acp` client drives an Ask Orchicon conversation. The transport is a SECOND use of the contract
+above, not a second contract: the bridge implements `scheduler.ChatTurnClient`, which is the only thing
+`Dispatcher.ChatKinds()` reads, so `antigravity` appears in `AIGatewayService.ListAdapterKinds.ask_capable_kinds`
+and in `askorchicon.SetChatKinds` with no registry entry anywhere. `CloseAsk()` in the server's shutdown path
+(beside `claudeBridge.CloseAsk()`) retires the children, which the plane's exit does not reap.
+
+### 12.1 The session id is agy's, so the session is created eagerly
+
+claude's Ask transport CHOOSES its session id (`--session-id`). agy allocates it in `session/new`, so the id
+exists only after spawn + authenticate + session/new. `CreateConversationSession` therefore spawns eagerly and
+returns **agy's own id** — because askorchicon persists whatever it returns, and a placeholder id would make the
+next restart's resume name a conversation agy has never heard of. That is why the "open the session" step is
+separate from "send a turn".
+
+### 12.2 Resume, in place, across a plane restart
+
+`SendTurnMessage` with a session id the bridge is not holding does `session/resume` (which replays nothing),
+falling back to `session/load` (which replays the history as updates the mapper ignores for user chunks) on a
+build without resume. It logs:
+
+	antigravity ask: resumed agy session conversation=<conv> session=<agy session id>
+
+which is the log line a restart's recall is provable from. A model change is `session/set_model` on the LIVE
+conversation, so the context survives; a project change or an MCP-set change respawns the child but resumes the
+same agy session.
+
+### 12.3 cwd is the conversation's project directory
+
+claude's Ask profile runs in `<askRoot>/<convID>` (`Cwd = askDir`). An agy Ask conversation ASSIGNED to a
+project runs **in that project** (`Bridge.SetProjectDirResolver`, wired in the server from `db.GetProject`), with
+the worker carve-outs (`/tmp/orchicon`, `.orchicon/`) as additional readable roots; an unassigned one runs in
+`$ORCHICON_ANTIGRAVITY_ASK_ROOT/<convID>` (default `$TMPDIR/orchicon-agy-ask`). That is what makes "approving a
+write writes the file into the project" true rather than aspirational.
+
+### 12.4 Permission cards, and the order that makes them a boundary
+
+Every `session/request_permission` goes through `askPermissionHandler.RequestPermission`, in this order:
+
+1. **Mode gate** (`modegate.go`). A tool the turn's mode refuses is answered with the reject option and **no
+   card is raised** — the platform has already decided, and a card would invite a per-call override of a
+   decision that is not the operator's to make. Because ACP carries no reason on a rejection, the refusal is
+   ALSO published as an `IsError` `tool_result` (so the operator sees it inline where the call was) and
+   prepended to the next prompt as `[platform] …` (so the model learns the rule instead of retrying).
+2. **Never-allow + boundary**, still without a card: `claude.DecideToolForAsk` runs the never-allow command
+   class, the protected roots, the operator's policy file and the `workerrestrict` boundary — the SAME rules
+   claude's Ask hook runs, called rather than copied.
+3. **Auto-allow** the tools nobody needs to be asked about: agy's reads, greps and lists, and the platform's own
+   MCP tools. The carded set is claude's Ask set translated: `run_command`, the write/edit family, `search_web`,
+   `read_url_content`, and third-party MCP tools.
+4. **The card**, as the identical `permission` bus event the claude path raises (`Kind:"permission"`,
+   `PermissionID`, `Tool` = the raw agy name, `Command` = `CommandLine`, `Targets`, `InputJSON`), blocking with
+   **no timeout by default** (`ORCHICON_ANTIGRAVITY_CONSENT_WAIT` shortens it for tests/an operator who wants a
+   leash). Answers map to the option ids agy actually OFFERED (`allow`/`deny` today), never to literals:
+   `once|allow|approve` → allow, `always|permanent` → allow_always if offered else allow_once,
+   `reject|deny` → reject. **The bridge records no grant** — the grant store lives in askorchicon, exactly as on
+   the claude path.
+
+**Teardown answers reject.** Parked cards are settled before the child goes, and the handlers are given a
+bounded window to write their decision, so a shutdown produces a refusal rather than a call left hanging.
+
+### 12.5 Mode gating, twice
+
+The in-handler gate above is the authority (the mode can change between turns while argv is fixed at spawn).
+The mode's denied tools are ALSO passed to agy as `--settings '{"permissions":{"deny":[…]}}'` — session-only,
+never saved — as defence in depth. **The flag is a TOP-LEVEL agy flag and must precede the subcommand**:
+`agy --settings '<json>' acp` works; `agy acp --settings '<json>'` exits 1 with the acp usage text (verified on
+1.5.13; it is absent from `agy acp --help` for that reason). `LaunchOptions.Argv()` emits it in the right place and
+`assertSettingsNotBypass` refuses a document naming any auto-approve key, so the feature cannot be turned into a
+bypass.
+
+A mode that may not ACT (Brainstorm, Quick Work) is also not OFFERED a third-party MCP server at all
+(`withholdOpaqueMCP`), which is the offered half of `askmode.MayAct`.
+
+### 12.6 `ask_question` cannot be answered — document it, deny it, route it
+
+agy's native multiple-choice tool is a `tool_call` that agy renders as its own assistant text and then ends the
+turn. There is **no permission request and no answer channel**, so there is no way to send the operator's choice
+back. The decision, in three parts:
+
+* **Deny it** via `--settings` in every mode, so a model that tries it gets a tool error it can see rather than a
+  question that goes nowhere.
+* **Tell the model what to use instead**: the first prompt of every conversation carries `[platform] To ask the
+  user a multiple-choice question, call the Orchicon MCP tool orchicon_ask_user … Do NOT use agy's own
+  ask_question`.
+* **Document it here** (this section). The platform's `orchicon_ask_user` works as it does on any MCP-served
+  adapter: it is a tool on the Orchicon MCP sidecar, registered in `mcpServers` with the CONVERSATION scope.
+  askorchicon intercepts the call and renders the option card; the operator's answer arrives as the next turn.
+
+Agy's spelling of the platform's tools is `mcp_orchicon_orchicon_ask_user` (single underscores, tool keeps its
+own `orchicon_` prefix). `askorchicon.isAskToolName` accepts it and `toolclass.Classify` folds it to the ask card,
+so it neither vanishes from the transcript nor inflates the activity line.
+
+### 12.7 Streaming, and the honest gap
+
+`agent_message_chunk` → `delta{text}`, coalesced into ONE `part{text}` at turn end. `tool_call` →
+`part{tool_use}`; the terminal `tool_call_update` → `tool_result` with its output. `usage_update` is the CONTEXT
+GAUGE; the prompt result's `usage` is the billable accounting, recorded under owner kind `ask_conversation`
+(`SessionID` = the conversation id, with `ExecutionID`/`TaskID`/`WorkerID` empty — a conversation has none).
+
+**Reasoning text does not exist on agy 1.5.13.** It never emits `agent_thought_chunk` (only
+`usage.thoughtTokens`), so an Ask turn shows no reasoning text. The arm is implemented for a future agy and is
+**never fabricated** — the reasoning TOKENS still reach the usage row, and a client that shows an empty
+reasoning block is showing the truth.
+
+### 12.8 The Ask diff ledger
+
+A conversation's file edits go to the ASK ledger (`SetDiffLedger`'s second argument, owner kind
+`ask_conversation`, owner id = the conversation id), never the execution ledger — a conversation has no
+execution to attribute an edit to. The ledger fires on the TERMINAL `tool_call_update`, because the hook diffs
+the file's fresh on-disk state and an `in_progress` call has not written anything yet.

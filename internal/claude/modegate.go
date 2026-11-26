@@ -147,6 +147,15 @@ func askModeDenial(path, tool string) (bool, string) {
 	return true, askModeRefusal(tool, st.Mode)
 }
 
+// AskModeRefusal is the EXPORTED spelling of askModeRefusal, for the OTHER adapters that enforce the
+// same Ask boundary through their own mechanism.
+//
+// WHY A WRAPPER RATHER THAN A COPY. The antigravity bridge (
+// State. The refusal text is the MODEL-FACING half of the boundary: it is what tells the model the call
+// was refused by the platform, that it cannot override it, and that only the user can switch modes. Two
+// copies would drift, and the drifted one would be a boundary the model is told it may negotiate with.
+func AskModeRefusal(tool, mode string) string { return askModeRefusal(tool, mode) }
+
 // askModeRefusal builds the refusal both denial kinds hand back.
 func askModeRefusal(tool, mode string) string {
 	p, _ := askmode.PolicyFor(mode)

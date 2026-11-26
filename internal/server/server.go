@@ -571,7 +571,10 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	})
 	dispatcher.Register(adapter.KindClaude, claudeBridge)
 
-	// Antigravity (agy) bridge (kind "antigravity", provider "google"). It gets the SAME four wirings the
+	// Antigravity (agy) bridge (kind "antigravity", provider "google"), now Ask-capable as well as
+	// execution-capable: its bridge implements scheduler.ChatTurnClient, which is the ONLY thing
+	// Dispatcher.ChatKinds() reads, so no separate registry entry adds it to Ask. It gets the SAME four
+	// wirings the
 	// claude bridge receives — usage recorder, session store, the shared MCP scope resolver and its secret
 	// expander — because those are the seams the platform owns rather than per-adapter decisions. The
 	// dispatcher installs the diff ledger itself (scheduler/dispatcher.go's Register calls SetDiffLedger on
@@ -589,6 +592,13 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	// that burns its whole budget before failing, so the operator is told now.
 	agyBridge.SetSettingsResolver(func(ctx context.Context, tenantID string) (antigravity.SpawnSettings, string, error) {
 		return resolveAntigravitySpawn(ctx, pool, secretsKEK, tenantID)
+	})
+	// THE CONVERSATION'S PROJECT DIRECTORY, which is what makes an Ask conversation run IN the project it is
+	// about — and therefore what makes an approved write land there. It is a closure over the pool so the
+	// adapter never opens a transaction of its own, and it FAILS LOUD: a conversation that silently ran
+	// somewhere else would look fine and report work it did in the wrong tree.
+	agyBridge.SetProjectDirResolver(func(ctx context.Context, tenantID, projectID string) (string, error) {
+		return resolveAntigravityAskProjectDir(ctx, pool, tenantID, projectID)
 	})
 	dispatcher.Register(adapter.KindAntigravity, agyBridge)
 
@@ -1007,6 +1017,12 @@ func (s *Server) Run(ctx context.Context) error {
 		if s.claudeBridge != nil {
 			s.claudeBridge.CloseAsk()
 		}
+		// AND THE ANTIGRAVITY ASK CHILDREN, for exactly the same reason: an `agy acp` child is a host
+		// process the plane's exit does not reap, so without this a restart leaves every conversation's child
+		// running, holding its session and its stdin — and the next `session/resume` would race a live writer.
+		if s.antigravityBridge != nil {
+			s.antigravityBridge.CloseAsk()
+		}
 		// Ask Orchicon's per-conversation MCP clients: their stdio children are host children too, so a
 		// plane restart must close them here beside the claude Ask sessions.
 		if s.askService != nil {
@@ -1021,6 +1037,11 @@ func (s *Server) Run(ctx context.Context) error {
 		s.authH.CloseEmbeddedOP()
 		if s.claudeBridge != nil {
 			s.claudeBridge.CloseAsk()
+		}
+		// BESIDE THE CLAUDE ASK SESSIONS, and for the same reason: an unclosed `agy acp` child survives the
+		// plane's exit.
+		if s.antigravityBridge != nil {
+			s.antigravityBridge.CloseAsk()
 		}
 		// Ask Orchicon's per-conversation MCP clients: their stdio children are host children too, so a
 		// plane restart must close them here beside the claude Ask sessions.
