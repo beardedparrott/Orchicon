@@ -1,0 +1,52 @@
+# Orchicon — Antigravity no-token-handling ruleset (semgrep mirror of the Go guard).
+#
+# The ENFORCED gate is the Go test in this directory (notokens_test.go, which runs inside
+# `go test ./internal/...`). This file exists so an operator or CI job that already runs semgrep
+# catches the same class with the same message, and so the rule is readable as a rule rather than
+# only as code.
+#
+# WHY THE ADAPTER MUST NOT TOUCH A GOOGLE CREDENTIAL. The personal sign-in path works by running
+# Google's own `agy` binary, which owns the credential (an interactive OAuth token in the OS
+# keyring). Orchicon's guarantee to the operator is that it never reads, copies or stores that
+# credential — a claim the product makes in its ToS notice. Reading ~/.gemini/** or querying a
+# keyring would turn "we never store your Google credentials" into a half-truth, and would put a
+# live host credential into a process that every container run can reach.
+#
+# Run with:  semgrep scan --config internal/antigravity/semgrep_antigravity.yml internal/antigravity
+#
+# pattern-regex uses Rust regex syntax. Rules are restricted to Go sources in this package; test
+# files and testdata are excluded because the self-test in notokens_test.go must be able to SPELL
+# a forbidden path in order to prove the guard detects it.
+rules:
+  - id: orchicon-antigravity-gemini-dir
+    languages: [go]
+    severity: ERROR
+    message: >-
+      Antigravity code names a Google credential path (.gemini / oauth_creds). Orchicon launches
+      agy and never reads or copies Google credentials — see internal/antigravity/notokens_test.go.
+    paths:
+      include: [internal/antigravity]
+      exclude: ["*_test.go", "*/testdata/*"]
+    pattern-regex: '.gemini|oauth_creds|oauth-creds'
+
+  - id: orchicon-antigravity-keyring
+    languages: [go]
+    severity: ERROR
+    message: >-
+      Antigravity code imports or calls a keyring/credential-store client. The personal sign-in
+      credential stays inside agy's own process; Orchicon must never query the host keyring.
+    paths:
+      include: [internal/antigravity]
+      exclude: ["*_test.go", "*/testdata/*"]
+    pattern-regex: '(?i)keyring|libsecret|secret-service|find-generic-password|CredRead|CredWrite'
+
+  - id: orchicon-antigravity-keyring-cli
+    languages: [regex]
+    severity: ERROR
+    message: >-
+      A keyring command-line accessor (secret-tool / security find-generic-password) in the
+      Antigravity adapter. Credentials are agy's business, not Orchicon's.
+    paths:
+      include: [internal/antigravity]
+      exclude: ["*_test.go", "*/testdata/*", "*.yml", "*.yaml"]
+    pattern-regex: 'secret-tool|security find-generic'

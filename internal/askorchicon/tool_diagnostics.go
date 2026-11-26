@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/beardedparrott/orchicon/internal/antigravity/authmethod"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/tenant"
@@ -159,7 +160,19 @@ func toolGetSettings(ctx context.Context, pool *db.Pool, args json.RawMessage) (
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(settings)
+	// The row is marshalled directly (its field tags are the API keys), and the ToS notice is
+	// ADDED here: it is a read-only constant, not a column, and an agent deciding whether to
+	// select oauth-personal must be able to read the same notice an operator sees.
+	b, err := json.Marshal(settings)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	out["antigravity_tos_notice"] = authmethod.ToSNotice
+	return json.Marshal(out)
 }
 
 func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
@@ -180,6 +193,10 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		ExecutionReapConsecutiveFailures int32   `json:"execution_reap_consecutive_failures"`
 		SessionAccessTokenTtlSeconds     int64   `json:"session_access_token_ttl_seconds"`
 		SessionRefreshTokenTtlSeconds    int64   `json:"session_refresh_token_ttl_seconds"`
+		// Pointer, not value: "the key was absent" and "the operator sent false" are different
+		// answers, and the telemetry column is written unconditionally.
+		AntigravityAuthMethod     *string `json:"antigravity_auth_method"`
+		AntigravityShareTelemetry *bool   `json:"antigravity_share_telemetry"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
 		return nil, fmt.Errorf("invalid args: %w", err)
@@ -191,6 +208,13 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 	}
 	if err := toolValidateModelRef(params.DefaultWorkerModel); err != nil {
 		return nil, fmt.Errorf("default_worker_model: %w", err)
+	}
+	// Parity with SettingsService.UpdateSettings: reject an unknown method BEFORE the DB, naming
+	// the allowed values instead of surfacing a CHECK-constraint error.
+	if params.AntigravityAuthMethod != nil {
+		if err := authmethod.Validate(*params.AntigravityAuthMethod); err != nil {
+			return nil, err
+		}
 	}
 	var budget []byte
 	if params.DefaultBudgetOverrides != nil {
@@ -226,6 +250,16 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		ExecutionReapConsecutiveFailures: params.ExecutionReapConsecutiveFailures,
 		SessionAccessTokenTtlSeconds:     params.SessionAccessTokenTtlSeconds,
 		SessionRefreshTokenTtlSeconds:    params.SessionRefreshTokenTtlSeconds,
+	}
+	// Both Antigravity columns are written unconditionally on upsert, so start from the stored
+	// values and overlay only what the caller actually sent.
+	inRow.AntigravityAuthMethod = cur.AntigravityAuthMethod
+	inRow.AntigravityShareTelemetry = cur.AntigravityShareTelemetry
+	if params.AntigravityAuthMethod != nil {
+		inRow.AntigravityAuthMethod = *params.AntigravityAuthMethod
+	}
+	if params.AntigravityShareTelemetry != nil {
+		inRow.AntigravityShareTelemetry = *params.AntigravityShareTelemetry
 	}
 	inRow.Budget = cur.Budget
 	// Preserve the current compaction/memory policy columns when the client's budget JSON omits the

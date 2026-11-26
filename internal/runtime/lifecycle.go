@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/antigravity/authmethod"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -314,6 +315,21 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 	// against the RUN'S WORKTREE, not the project root.
 	demand := l.adapterDemandFor(ctx, run)
 	req.AdapterKinds = demand.Kinds()
+	// ANTIGRAVITY AUTH. The method is a tenant setting, and the daemon's container preflight refuses
+	// `oauth-personal` outright (its credential is in the host keyring, not in any mountable file).
+	// For the API-key method the tenant secret named GEMINI_API_KEY is resolved here too: a work item
+	// only carries the secrets it selects, so a tenant-level method would otherwise do nothing on
+	// every item that had not been hand-wired. The value rides req.Secrets like any other secret.
+	if demand.Has(adapter.KindAntigravity) {
+		method, apiKey := l.antigravityAuthFor(ctx, run.TenantID)
+		req.AntigravityAuthMethod = method
+		if apiKey != "" {
+			if req.Secrets == nil {
+				req.Secrets = map[string]string{}
+			}
+			req.Secrets[authmethod.APIKeySecretName] = apiKey
+		}
+	}
 	if demand.Has(opencodeAdapterKind) {
 		req.ServeConfig = l.serveConfigFor(run.RuntimeImage, runWorktreeBase(ctx, projectDir, run.ID), run.ID, planeEnv,
 			l.resolveRunUnion(ctx, run), l.runContainerProviders(ctx, run.TenantID), l.resolveRunWorkers(ctx, run))

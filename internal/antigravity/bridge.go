@@ -55,6 +55,11 @@ func New(log *slog.Logger) *Bridge {
 // opencode's and claude's). Nil keeps the bridge in-process.
 func (b *Bridge) SetRuntimeClient(rt *runtime.Client) { b.rt = rt }
 
+// SPAWNING RULE for the session path that replaces this stub: build the child invocation with
+// BuildSpawnSpec (procspec.go), never by appending flags at the call site. It is the one place the
+// tenant's auth method, the GEMINI_API_KEY environment variable and the --disable-telemetry policy
+// are applied, and its String/LogValue redact the key.
+//
 // Start implements scheduler.AdapterBridge. It REFUSES with ErrNotImplemented: no shim, no network
 // call, no partial session. A half-started session would be indistinguishable from a working one to
 // the reconciler and would burn a run's budget before failing.

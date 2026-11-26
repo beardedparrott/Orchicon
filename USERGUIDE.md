@@ -1961,6 +1961,26 @@ there is no separate runtime reference.
   execution: the client retries and the supervisor keeps the child running for the
   grace period so a re-attach can resume. Only exhausted retries fail it.
 
+**Antigravity (Google `agy`), in detail.** Orchicon's Antigravity adapter runs
+Google's own `agy` binary and **never reads or stores your Google credentials** —
+no `~/.gemini/**` files, no keyring access. Two settings shape every `agy acp`
+launch:
+
+- **Auth method** — `oauth-personal` (default), `oauth-business`,
+  `gemini-api-key`, or `agent-platform`. The choice is sent to agy's ACP
+  `authenticate` call, so it is what actually decides which credential is used.
+  **`oauth-personal` cannot work inside a runtime container**: that credential
+  lives in the host OS keyring, which is a live IPC channel and cannot be
+  bind-mounted. A container item dispatched with `oauth-personal` is refused
+  immediately with an actionable error — switch the tenant to **Gemini API key**
+  (which reads the tenant secret `GEMINI_API_KEY`, passed to the child as an
+  environment variable only) or run the item locally.
+- **Share agy telemetry with Google** — off by default; `agy` is launched with
+  `--disable-telemetry` unless you opt in.
+- Selecting personal sign-in shows the Antigravity terms notice. It is worth
+  reading: Google's Antigravity terms restrict using the service with third-party
+  products, and enabling the method is your acceptance of them.
+
 **Providers, in detail.** The Providers tab is the tenant's model-provider
 configuration:
 
