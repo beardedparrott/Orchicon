@@ -96,6 +96,10 @@ type Bridge struct {
 	mcpSecretResolver MCPSecretResolver
 	// settings resolves the tenant's spawn settings at launch time.
 	settings SettingsResolver
+
+	// models is the per-tenant catalogue cache behind ListModels (modellist.go). It is a VALUE, not a
+	// pointer, so a zero Bridge (a test constructing one literally) still has a usable cache.
+	models modelCache
 }
 
 // Compile-time assertions: the bridge must satisfy the FULL parity set. An adapter that silently stopped

@@ -36,6 +36,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/outbox"
 	"github.com/beardedparrott/orchicon/internal/policy"
 	"github.com/beardedparrott/orchicon/internal/project"
+	"github.com/beardedparrott/orchicon/internal/providers"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 	"github.com/beardedparrott/orchicon/internal/recovery"
 	"github.com/beardedparrott/orchicon/internal/repoguard"
@@ -590,6 +591,42 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		return resolveAntigravitySpawn(ctx, pool, secretsKEK, tenantID)
 	})
 	dispatcher.Register(adapter.KindAntigravity, agyBridge)
+
+	// PROVIDER `google`'s MODEL TIER. Selecting the antigravity provider pill in either picker calls
+	// ProviderService.ListProviderModels(provider_id="google"), which cannot resolve through a profile (there
+	// is no `google` built-in and no catalog rows) — it must come from agy itself. This closure is the only
+	// place the two halves meet, because internal/providers cannot import internal/antigravity.
+	//
+	// THE AUTH CLASSIFICATION IS HERE ON PURPOSE: only this closure can recognise *acp.AuthError and the
+	// missing-binary failure, and it maps both onto providers.ErrAntigravityAuth, which is the sentinel
+	// handler.mapErr turns into CodeFailedPrecondition carrying AntigravityAuthRequiredMessage. Any OTHER
+	// failure stays a plain error, so the service falls back to its vendored snapshot instead of telling the
+	// operator to sign in when the real problem is a wedged child.
+	//
+	// IT IS SET WITH A LATE SETTER, NOT THROUGH api.Dependencies, because of the BOOT ORDER: api.Mount ran
+	// above (it is what CONSTRUCTS the providers service, exposing it as deps.ProvidersService), and the agy
+	// bridge cannot exist before the dispatcher and the tenant-secret resolver do. A value placed in
+	// api.Dependencies here would be read by a Mount that has already returned.
+	lister := func(ctx context.Context, tenantID string) ([]providers.AgyModel, error) {
+		rows, err := agyBridge.ListModelRows(ctx, tenantID)
+		if err != nil {
+			if errors.Is(err, antigravity.ErrModelListAuthRequired) {
+				return nil, providers.ErrAntigravityAuth
+			}
+			return nil, err
+		}
+		out := make([]providers.AgyModel, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, providers.AgyModel{ID: r[0], Name: r[1]})
+		}
+		return out, nil
+	}
+	if deps.ProvidersService != nil {
+		deps.ProvidersService.SetAntigravityModelLister(lister)
+	} else {
+		log.Warn("antigravity: the providers service was not constructed — the `google` model tier lists its " +
+			"vendored snapshot only")
+	}
 
 	// Per-adapter enable/disable (AC 3): every kind named in ORCHICON_DISABLED_ADAPTER_KINDS is
 	// switched OFF for this plane.
