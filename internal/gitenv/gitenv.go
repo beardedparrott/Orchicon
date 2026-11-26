@@ -21,6 +21,12 @@
 //	git status          → writes nothing, and still LIES: GIT_WORK_TREE alone changes what it
 //	                      reports, so a clean checkout shows another tree's dirty files.
 //
+// WHAT ELSE STANDS BETWEEN A WORKER AND THE OPERATOR'S CONFIG. The vectors above are closed one at a time, which
+// is never complete, so two layers do not depend on finding the next one: containers mount the project's own
+// .git/config READ-ONLY (internal/runtime/repoconfig_mount.go), and internal/repoguard heals a poisoned config
+// within seconds and names the run the value pointed at. The injected pointers themselves are kept on purpose:
+// they also redirect a worker's `git -C <operator's checkout> commit` into the worker's own repository.
+//
 // THE RULE THIS PACKAGE EXISTS TO ENFORCE: anything that is not the worker acting on its OWN repo must
 // drop these variables. Orchicon's own repositories (the project dir, the run worktree, a project being
 // set up) are reached by an explicit path, never by inheriting an ambient pointer.
