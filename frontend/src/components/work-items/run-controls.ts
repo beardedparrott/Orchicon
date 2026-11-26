@@ -100,7 +100,6 @@ export const RUN_CONTROL_META: Record<
 export function runControlsFor(
   status: WorkItemStatus,
   hasChildren: boolean,
-  hasRun = true,
 ): SequenceAction[] {
   const out: SequenceAction[] = [];
 
