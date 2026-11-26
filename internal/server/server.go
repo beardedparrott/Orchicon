@@ -38,6 +38,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/project"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 	"github.com/beardedparrott/orchicon/internal/recovery"
+	"github.com/beardedparrott/orchicon/internal/repoguard"
 	"github.com/beardedparrott/orchicon/internal/retention"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/runtimeimage"
@@ -855,6 +856,15 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		})
 	}()
+
+	// REPO GUARD: heal a project's own .git/config if a run poisoned it (core.worktree pointing at a worker's
+	// worktree, a fixture's commit identity). Every few seconds, because a poisoned checkout also breaks the
+	// plane's own worktree reconciler (thousands of 'cannot prune; main repo unresolvable' lines) until it is
+	// repaired. It reads one small file per project; the project list is refreshed once a minute.
+	if s.pool != nil {
+		guard := repoguard.NewSweeper(s.pool, s.log)
+		go runOnStartupThenEvery(ctx, 3*time.Second, 5*time.Second, func() { guard.Sweep(ctx) })
+	}
 
 	// SANDBOX SCRATCH SWEEP: a native execution removes its own scratch when it ends, but a conversation has
 	// no end event and a crash skips it, and the scratch can hold a whole podman image store (tens of GB,
