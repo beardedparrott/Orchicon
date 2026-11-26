@@ -231,6 +231,40 @@ func TestBridge_CapabilitiesMatchImplementation(t *testing.T) {
 	}
 }
 
+// TestBridge_LaunchArgvKeepsDefaultCustomizations pins the CONTEXT-FILES decision documented on
+// `additionalDirectories` in launch.go: agy's own `AGENTS.md` / `.agents/` customizations load, because
+// `agy acp --help` defaults `--include-default-customizations` to true. The bridge therefore must NOT pass a
+// flag that turns them off (and must not pin the vendor default into its own argv either), which is the
+// same "parity with claude's CLAUDE.md handling" rule the claude bridge gets by passing no
+// `--setting-sources` override.
+//
+// A UNIT assertion on the argv SOURCE is enough here, and deliberately so: the property is about the shape
+// of the invocation the builder produces, and TestBridge_LaunchArgvHasNoBypassFlag already proves that the
+// argv the bridge actually spawns is that builder's output.
+func TestBridge_LaunchArgvKeepsDefaultCustomizations(t *testing.T) {
+	spec, err := BuildSpawnSpec("agy", SpawnSettings{AuthMethod: "", ShareTelemetry: false}, "", nil)
+	if err != nil {
+		t.Fatalf("BuildSpawnSpec: %v", err)
+	}
+	for _, tok := range spec.Argv {
+		lower := strings.ToLower(strings.TrimSpace(tok))
+		name, value, hasValue := strings.Cut(lower, "=")
+		switch name {
+		case "--no-include-default-customizations", "--disable-default-customizations",
+			"--exclude-default-customizations", "--no-customizations":
+			t.Fatalf("argv contains the customization-DISABLING flag %q — a worker would no longer see its "+
+				"own repo's AGENTS.md/.agents, which is NOT the claude bridge's behaviour for CLAUDE.md. "+
+				"argv = %v", tok, spec.Argv)
+		case "--include-default-customizations":
+			if hasValue && strings.EqualFold(value, "false") {
+				t.Fatalf("argv contains %q, which turns agy's default customizations off. argv = %v", tok, spec.Argv)
+			}
+			t.Fatalf("argv pins the vendor default %q explicitly — agy already defaults it to true, and "+
+				"spelling it here would freeze a default that a later agy may change. argv = %v", tok, spec.Argv)
+		}
+	}
+}
+
 // hasArg reports whether argv contains exactly tok.
 func hasArg(argv []string, tok string) bool {
 	for _, a := range argv {

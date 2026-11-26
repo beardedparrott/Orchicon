@@ -11,6 +11,12 @@ func homedir() (string, error) { return os.UserHomeDir() }
 
 // The rule at its boundaries.
 func TestMachineRootsRefuseEqualityAndContainment(t *testing.T) {
+	// HERMETIC: Roots derives the plane's state root from XDG_DATA_HOME when it is set, so an ambient
+	// value (a worker harness redirects it into its own scratch) makes the derived root stop tracking
+	// `home` and this assertion fails for a reason that has nothing to do with the rule. Cleared here so
+	// the test states the DEFAULT derivation it is written against rather than whatever the calling
+	// environment happens to carry.
+	t.Setenv("XDG_DATA_HOME", "")
 	home := "/home/ops"
 	roots := Roots(home)
 

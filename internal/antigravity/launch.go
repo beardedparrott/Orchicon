@@ -193,6 +193,27 @@ func composeGoalPrompt(m scheduler.ExecutionManifest) string {
 	return out
 }
 
+// CONTEXT FILES: agy's OWN repo customizations LOAD, and that is deliberate parity with claude.
+//
+// The claude bridge launches with no `--setting-sources` override, so claude's own `CLAUDE.md` in the
+// worktree is loaded by the CLI alongside the system prompt Orchicon composes. This bridge does the same
+// thing by NOT DOING ANYTHING: `agy acp --help` lists `--include-default-customizations` with a default of
+// **true**, so agy's own `AGENTS.md` and `.agents/` in the worktree load the way the CLI loads them by
+// default. The flag is NOT passed explicitly — the default is already the behaviour we want, and passing it
+// would pin a vendor default into our argv where a later agy could change it. A worker that finds its own
+// project's `AGENTS.md` should see it, exactly as it sees `CLAUDE.md` on the claude adapter.
+//
+// THE COMPOSED PROMPT DOES NOT RELY ON THAT PATH. The worker prompt, the project context files and the
+// skills travel as `_meta.antigravity.systemPrompt.append` on `session/new`/`session/resume`
+// (see composeGoalPrompt and sessionrun.go), which is the platform's own channel and the one a resume
+// preserves. `AGENTS.md` is therefore ADDRESSED BY BOTH mechanisms — the same overlap claude already
+// has, and preferable to the alternative: suppressing the repo's own customizations would make a worker
+// behave differently under Orchicon than under the CLI for no gain.
+//
+// If a future agy adds a flag that DISABLES them (`--no-include-default-customizations` or a
+// `=false` spelling), it must NOT be added to the launch argv without revisiting this decision —
+// TestBridge_LaunchArgvKeepsDefaultCustomizations asserts the argv carries no such flag.
+
 // additionalDirectories is the `additionalDirectories` list for `session/new` and `session/resume`: the
 // SAME two carve-outs claude passes as --add-dir (workerrestrict.CarveOutDirs), so a worker can write to
 // the scratch dir and its own run metadata and nowhere else.

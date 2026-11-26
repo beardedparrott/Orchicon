@@ -473,16 +473,21 @@ exact drift claude's canonicalisation exists to prevent.
 
 **agy's own repo customizations LOAD, and that is parity with claude.** The
 claude bridge launches with no `--setting-sources` override, so claude's own
-`CLAUDE.md` in the worktree is loaded by the CLI; the agy bridge passes no
-`--include-default-customizations` and no disabling flag, so agy's `AGENTS.md`
-and `.agents/` in the worktree load the same way. The worker's composed prompt
-(worker prompt + project context files + skills) does NOT rely on that path: it
-travels as `_meta.antigravity.systemPrompt.append` on `session/new`
+`CLAUDE.md` in the worktree is loaded by the CLI. The agy bridge does the same
+thing by passing neither `--include-default-customizations` nor anything that
+disables it: `agy acp --help` (verified against 1.5.13) lists
+`--include-default-customizations` with a default of **true**, so agy's
+`AGENTS.md` and `.agents/` in the worktree load the way the CLI loads them.
+Spelling the flag explicitly is deliberately avoided too — it would pin a vendor
+default into our argv where a later agy could change it. The worker's composed
+prompt (worker prompt + project context files + skills) does NOT rely on that
+path: it travels as `_meta.antigravity.systemPrompt.append` on `session/new`
 (`composeGoalPrompt` deliberately omits it from the first turn, so it is not
-double-counted). `internal/antigravity/launch_test.go` asserts no
-customization-disabling flag appears in the argv, and
-`internal/antigravity/mcp_test.go` asserts the bridge writes no `.agents/` state
-of its own.
+double-counted). The decision and its rationale are stated in a code comment in
+`internal/antigravity/launch.go`;
+`TestBridge_LaunchArgvKeepsDefaultCustomizations` asserts the argv carries no
+customization-disabling flag, and `internal/antigravity/mcp_test.go` asserts the
+bridge writes no `.agents/` state of its own.
 
 ### 11.3 Mid-run injection is QUEUED, never preemptive
 
