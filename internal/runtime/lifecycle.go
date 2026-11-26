@@ -281,6 +281,12 @@ func (l *Lifecycle) buildCreateRequest(ctx context.Context, run db.WorkflowRunRo
 				// place, so the NEXT duplicate could be two different sources for one destination, which
 				// the engine resolves by ORDER. dedupeMounts makes the list a set, keeping the first.
 				req.Mounts = dedupeMounts(append(req.Mounts, MountSpec{Source: projectDir, Dest: projectDir}))
+				// The project's OWN .git/config is shared with every worktree and must not be writable from
+				// a container: a stray `git init`/`git config` under the injected GIT_DIR has re-pointed the
+				// operator's checkout at a worker's worktree three times. See repoConfigGuardMount.
+				if m, ok := repoConfigGuardMount(projectDir); ok {
+					req.Mounts = dedupeMounts(append(req.Mounts, m))
+				}
 				req.ProjectDir = projectDir
 			}
 			// Project context files/directories outside project_dir.
