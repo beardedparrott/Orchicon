@@ -1877,11 +1877,10 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
 	}
 	switch msg.Action {
-	// SEQUENCE_ACTION_START and SEQUENCE_ACTION_RESTART are the SAME NUMBER (START is a
-	// deprecated alias), so naming both here is a no-op at the wire level and documentation at
-	// the source level: the operation was always a restart.
-	// START is a deprecated ALIAS of RESTART (same numeric value), so it cannot be named
-	// separately in a Go switch — the single RESTART case below accepts both.
+	// RESTART IS THE OLD START, same wire value (1). The platform's protolint forbids enum
+	// aliases, so there is one name now — which is the better outcome: "start" always meant
+	// restart, and the old name made the destructive gesture sound safe.
+	// One name, one wire value: see the RESTART comment above.
 	case apiv1.SequenceAction_SEQUENCE_ACTION_RESTART,
 		apiv1.SequenceAction_SEQUENCE_ACTION_RESUME,
 		apiv1.SequenceAction_SEQUENCE_ACTION_STOP,

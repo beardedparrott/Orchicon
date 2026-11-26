@@ -365,7 +365,7 @@ func TestControlSequenceRejectsWorkflowlessLeaf(t *testing.T) {
 		leaf := createSequenceItem(t, pool, projID, domain.WorkItemKindTask, "Leaf", nil, nil, nil)
 		_, err := svc.ControlSequence(ctx, connect.NewRequest(&apiv1.ControlSequenceRequest{
 			Id:     leaf.ID,
-			Action: apiv1.SequenceAction_SEQUENCE_ACTION_START,
+			Action: apiv1.SequenceAction_SEQUENCE_ACTION_RESTART,
 		}))
 		if err == nil || connect.CodeOf(err) != connect.CodeInvalidArgument {
 			t.Fatalf("want InvalidArgument for a workflow-less leaf, got %v", err)
@@ -416,7 +416,7 @@ func TestControlSequenceStartRejectsActiveRun(t *testing.T) {
 
 	_, err := svc.ControlSequence(ctx, connect.NewRequest(&apiv1.ControlSequenceRequest{
 		Id:     parent.ID,
-		Action: apiv1.SequenceAction_SEQUENCE_ACTION_START,
+		Action: apiv1.SequenceAction_SEQUENCE_ACTION_RESTART,
 	}))
 	if err == nil || connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("want FailedPrecondition START on running parent, got %v", err)

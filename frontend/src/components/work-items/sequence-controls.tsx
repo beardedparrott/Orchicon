@@ -29,17 +29,6 @@ import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { RUN_CONTROL_META, runControlsFor } from "./run-controls";
 
-const ACTIVE = new Set([
-  WorkItemStatus.RUNNING,
-  WorkItemStatus.CHECKPOINTING,
-  WorkItemStatus.RECOVERING,
-]);
-
-const QUEUED = new Set([WorkItemStatus.READY, WorkItemStatus.ASSIGNED]);
-
-const isActiveRun = (status: WorkItemStatus) => ACTIVE.has(status);
-const isQueued = (status: WorkItemStatus) => QUEUED.has(status);
-
 /**
  * Which gestures to show. THE RULE LIVES IN run-controls.ts so the work item page, the run page
  * and the schedules page cannot drift; this keeps the name the existing callers and tests use.
@@ -100,14 +89,14 @@ export function SequenceControls({
       {
         onSuccess: (updated) => {
           toast.success(
-            action === SequenceAction.START
+            action === SequenceAction.RESTART
               ? `"${updated.title}" is now ${updated.status}.`
               : action === SequenceAction.RESUME
                 ? `"${updated.title}" resumed — now ${updated.status}.`
                 : `"${updated.title}" stopped — now ${updated.status}.`,
             {
               title:
-                action === SequenceAction.START
+                action === SequenceAction.RESTART
                   ? "Started"
                   : action === SequenceAction.RESUME
                     ? "Resumed"
@@ -137,7 +126,7 @@ export function SequenceControls({
       {actions.map((action) => {
         const meta = ACTION_META[action];
         const Icon = meta.icon;
-        const destructive = action === SequenceAction.START || action === SequenceAction.STOP;
+        const destructive = action === SequenceAction.RESTART || action === SequenceAction.STOP;
         return (
           <button
             key={action}

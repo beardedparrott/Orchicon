@@ -39,22 +39,15 @@ export enum SequenceAction {
    * the existing run and its step progress are discarded. On a leaf this creates a
    * NEW run.
    *
-   * Wire-compatible with the old SEQUENCE_ACTION_START (same number, and START
-   * remains as a deprecated alias): "start" was always this operation, it was just
-   * named as though it were not.
+   * THIS IS THE OLD SEQUENCE_ACTION_START, SAME WIRE VALUE (1). "Start" was always
+   * a restart; it was just named as though it were not, so the destructive gesture
+   * wore the reassuring label. The rename is wire-compatible — value 1 still means
+   * exactly what it always did — so no alias is needed, and the platform's protolint
+   * forbids enum aliases in any case.
    *
    * @generated from enum value: SEQUENCE_ACTION_RESTART = 1;
    */
   RESTART = 1,
-
-  /**
-   * Deprecated alias for SEQUENCE_ACTION_RESTART. Kept so existing callers and
-   * clients keep working; both values mean restart.
-   *
-   * @generated from enum value: SEQUENCE_ACTION_START = 1 [deprecated = true];
-   * @deprecated
-   */
-  START = 1,
 
   /**
    * RESUME continues the work that already exists. On a parent, from the first
@@ -88,7 +81,6 @@ export enum SequenceAction {
 proto3.util.setEnumType(SequenceAction, "orchicon.api.v1.SequenceAction", [
   { no: 0, name: "SEQUENCE_ACTION_UNSPECIFIED" },
   { no: 1, name: "SEQUENCE_ACTION_RESTART" },
-  { no: 1, name: "SEQUENCE_ACTION_START" },
   { no: 2, name: "SEQUENCE_ACTION_RESUME" },
   { no: 3, name: "SEQUENCE_ACTION_STOP" },
   { no: 4, name: "SEQUENCE_ACTION_PAUSE" },
