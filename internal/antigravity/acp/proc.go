@@ -282,9 +282,30 @@ func (p *localProc) Close() error {
 			}
 		}
 	})
-	// Drain the pumps so the channels are closed for the conn's reader before we return; the
-	// pipes close on child exit, so this ends.
-	p.wg.Wait()
+	// Drain the pumps so the channels are closed for the conn's reader before we return.
+	//
+	// THE DRAIN IS BOUNDED, and that is load-bearing rather than defensive. A pipe's read end EOFs only when
+	// EVERY holder of its write end is gone — and agy forks helpers (`--process-per-session` workers, an MCP
+	// stdio child) that inherit this process's stdout. So the CHILD can be dead and `p.done` closed while a
+	// grandchild still holds the pipe open, and an unbounded `wg.Wait()` would then block for as long as that
+	// grandchild lives. MEASURED: the model listing's own teardown (internal/antigravity/modellist.go, which
+	// every picker open drives) sat in this `wg.Wait()` past a 45s probe deadline on the real agy 1.5.13, so
+	// the picker RPC never answered at all.
+	//
+	// ABANDONING THE PUMPS IS SAFE. They own nothing but their channels; the conn's reader sees a closed
+	// process, the session ends, and a leaked reader goroutine on a dead child costs one goroutine — against a
+	// caller that hangs forever, that is not a close call.
+	drained := make(chan struct{})
+	go func() {
+		p.wg.Wait()
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(DefaultShutdownGrace):
+		slog.Default().Warn("acp: the agy output pumps did not end after the child exited — abandoning them "+
+			"(a forked helper is still holding the pipe open)", "grace", DefaultShutdownGrace.String())
+	}
 	return nil
 }
 
