@@ -76,7 +76,7 @@ func TestInProcessBashUsesTheScrubbedEnvironment(t *testing.T) {
 		t.Fatalf("bashEnviron() still exposes the plane state:\n%s", joined)
 	}
 	for _, e := range env {
-		if strings.HasPrefix(e, "XDG_DATA_HOME=") && !strings.HasPrefix(e, "XDG_DATA_HOME="+filepath.Join(h.base.ScratchDir, "xdg")) {
+		if strings.HasPrefix(e, "XDG_DATA_HOME=") && !strings.HasPrefix(e, "XDG_DATA_HOME="+filepath.Join(h.scratchSessionDir(), "xdg")) {
 			t.Errorf("XDG_DATA_HOME points somewhere unexpected: %s", e)
 		}
 	}

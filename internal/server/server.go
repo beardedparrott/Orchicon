@@ -48,6 +48,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
 	"github.com/beardedparrott/orchicon/internal/workflow"
+	"github.com/beardedparrott/orchicon/internal/worktree"
 )
 
 // Server owns the running control plane process and its dependencies.
@@ -854,6 +855,16 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		})
 	}()
+
+	// SANDBOX SCRATCH SWEEP: a native execution removes its own scratch when it ends, but a conversation has
+	// no end event and a crash skips it, and the scratch can hold a whole podman image store (tens of GB,
+	// and RAM when /tmp is a tmpfs). Remove sessions idle for worktree.ScratchSessionTTL, and the old shared
+	// layout, at boot and every 10 minutes.
+	go runOnStartupThenEvery(ctx, 30*time.Second, 10*time.Minute, func() {
+		if n := worktree.SweepSessions(worktree.DefaultScratchDir, worktree.ScratchSessionTTL, time.Now(), s.log); n > 0 {
+			s.log.Info("swept idle sandbox scratch", "removed", n)
+		}
+	})
 
 	// MCP stdio stale-child sweep: MCP server subprocesses spawned for sessions carry
 	// ORCHICON_MCP_STDIO=1.

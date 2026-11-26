@@ -35,6 +35,10 @@ type HostTools struct {
 	// pathPolicy, when set, is consulted with every path-like argument of every call BEFORE the call is
 	// dispatched, and its error aborts the call verbatim.
 	pathPolicy func(paths []string) error
+	// scratchID names THIS suite's private scratch under <scratch>/sessions/ (see worktree/scratch.go): its
+	// bash's XDG_DATA_HOME — and so any podman image store a build creates — lives there, and CleanupScratch
+	// removes it. Random per suite unless SetScratchSession names one (an Ask conversation reuses its own).
+	scratchID string
 }
 
 // SetPathPolicy installs the persistent-permission-policy hook (see the
@@ -50,7 +54,7 @@ func NewHostTools(workingDir, projectRoot string) *HostTools {
 		Worktree:    workingDir,
 		ProjectRoot: projectRoot,
 		ScratchDir:  worktree.DefaultScratchDir,
-	}}
+	}, scratchID: worktree.NewSessionID()}
 }
 
 // NewHostToolsUnrestricted builds the host tool suite for the INTERACTIVE (Ask) path: the same
@@ -60,7 +64,30 @@ func NewHostToolsUnrestricted(workingDir string) *HostTools {
 		Worktree:     workingDir,
 		ScratchDir:   worktree.DefaultScratchDir,
 		AllowAnyPath: true,
-	}}
+	}, scratchID: worktree.NewSessionID()}
+}
+
+// SetScratchSession names this suite's private scratch session. An Ask conversation builds a NEW suite for
+// every tool call but must keep ONE scratch (a `podman build` in one call, a `podman run` in the next), so
+// it names the session after its conversation id. A native execution keeps the random default.
+func (h *HostTools) SetScratchSession(id string) {
+	if strings.TrimSpace(id) != "" {
+		h.scratchID = worktree.SanitizeSessionID(id)
+	}
+}
+
+// scratchSessionDir is this suite's private scratch directory.
+func (h *HostTools) scratchSessionDir() string {
+	return worktree.SessionDir(h.base.ScratchDir, h.scratchID)
+}
+
+// CleanupScratch removes this suite's private scratch — including any podman image store its bash created.
+// A native execution calls it when it ends; it is safe to call when nothing was ever created.
+func (h *HostTools) CleanupScratch() error {
+	if h == nil || h.base.ScratchDir == "" || h.scratchID == "" {
+		return nil
+	}
+	return worktree.RemoveSessionDir(h.base.ScratchDir, h.scratchSessionDir())
 }
 
 // NewContainerHostTools is NewHostTools with bash routed into the run's container via execFn
@@ -147,7 +174,7 @@ func (h *HostTools) bashEnviron() []string {
 	if h.envForBash != nil {
 		base = h.envForBash()
 	}
-	return sandboxedBashEnviron(base, h.base.ScratchDir)
+	return sandboxedBashEnviron(base, h.scratchSessionDir())
 }
 
 // SetBashEnviron wires the environment factory for IN-PROCESS bash (cmd.Env).
