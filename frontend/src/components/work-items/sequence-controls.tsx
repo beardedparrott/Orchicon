@@ -27,6 +27,7 @@ import { SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { WorkItemStatus, type WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
+import { RUN_CONTROL_META, runControlsFor } from "./run-controls";
 
 const ACTIVE = new Set([
   WorkItemStatus.RUNNING,
@@ -39,52 +40,41 @@ const QUEUED = new Set([WorkItemStatus.READY, WorkItemStatus.ASSIGNED]);
 const isActiveRun = (status: WorkItemStatus) => ACTIVE.has(status);
 const isQueued = (status: WorkItemStatus) => QUEUED.has(status);
 
-/** Which gestures are available for an item's current status + shape. */
+/**
+ * Which gestures to show. THE RULE LIVES IN run-controls.ts so the work item page, the run page
+ * and the schedules page cannot drift; this keeps the name the existing callers and tests use.
+ */
 export function availableActions(status: WorkItemStatus, hasChildren: boolean): SequenceAction[] {
-  const out: SequenceAction[] = [];
-  if (hasChildren) {
-    // Sequence parent.
-    if (!isActiveRun(status)) out.push(SequenceAction.START);
-    if (status === WorkItemStatus.FAILED || status === WorkItemStatus.PENDING) {
-      out.push(SequenceAction.RESUME);
-    }
-    if (status !== WorkItemStatus.PENDING && status !== WorkItemStatus.SUCCEEDED) {
-      out.push(SequenceAction.STOP);
-    }
-  } else {
-    // Leaf — runs its own bound workflow.
-    if (!isActiveRun(status) && !isQueued(status)) out.push(SequenceAction.START);
-    if (status === WorkItemStatus.FAILED || status === WorkItemStatus.CANCELLED) {
-      out.push(SequenceAction.RESUME);
-    }
-    if (status !== WorkItemStatus.SUCCEEDED && status !== WorkItemStatus.CANCELLED) {
-      out.push(SequenceAction.STOP);
-    }
-  }
-  return out;
+  return runControlsFor(status, hasChildren);
 }
 
 const ACTION_META: Record<
   SequenceAction,
   { label: string; icon: typeof Play; title: string }
 > = {
-  [SequenceAction.START]: {
-    label: "Start",
+  // RESTART IS THE OLD START. It was always a destructive re-fire; the label now says so, and
+  // therefore so does the confirm step.
+  [SequenceAction.RESTART]: {
+    label: RUN_CONTROL_META[SequenceAction.RESTART].label,
     icon: Play,
-    title:
-      "Fire this work item now. For a parent (has children): re-fires the chain from child #1 — destructive, wipes prior successes. For a leaf: starts its bound workflow.",
+    title: RUN_CONTROL_META[SequenceAction.RESTART].title,
   },
   [SequenceAction.RESUME]: {
-    label: "Resume",
+    label: RUN_CONTROL_META[SequenceAction.RESUME].label,
     icon: RotateCcw,
     title:
-      "Re-arm this work item. For a parent: continues from the first non-succeeded child, keeping prior results. For a leaf: re-runs its workflow.",
+      "Continue the work that exists. Parent: from the first non-succeeded child. Leaf: the bound run is resumed in place — succeeded steps stay succeeded and the failed ones carry the previous attempt's notes.",
+  },
+  [SequenceAction.PAUSE]: {
+    label: RUN_CONTROL_META[SequenceAction.PAUSE].label,
+    icon: Pause,
+    title: RUN_CONTROL_META[SequenceAction.PAUSE].title,
   },
   [SequenceAction.STOP]: {
     label: "Stop",
     icon: Pause,
     title:
-      "Halt this work item. For a parent: stops the whole subtree and aborts in-flight runs — confirm to abort running children. For a leaf: stops just this item and aborts its run.",
+      "Halt this work item. For a parent: stops the whole subtree and aborts in-flight runs — confirm to abort running children. For a leaf: prefer Pause, which keeps the worktree and branch; Stop aborts the run.",
   },
   [SequenceAction.UNSPECIFIED]: { label: "", icon: Play, title: "" },
 };
