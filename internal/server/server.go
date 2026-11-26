@@ -84,9 +84,8 @@ type Server struct {
 	askServePool  *opencode.HostServePool
 	// claudeBridge is the claude adapter, held so plane shutdown can retire its Ask sessions.
 	claudeBridge *claude.Bridge
-	// antigravityBridge is the antigravity (agy) adapter. A STUB today (Start refuses with
-	// ErrNotImplemented); held here because the server wiring — registration, the ready adapter row
-	// and the runtime client — must already be correct when children 5/6 give it session behaviour.
+	// antigravityBridge is the antigravity (agy) adapter, held so plane shutdown and the runtime-client
+	// wiring can reach it (the same reason claudeBridge is held).
 	antigravityBridge *antigravity.Bridge
 	// askService is the Ask Orchicon service, held so plane shutdown can close its per-conversation MCP
 	// clients.
@@ -571,13 +570,25 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	})
 	dispatcher.Register(adapter.KindClaude, claudeBridge)
 
-	// Antigravity (agy) bridge (kind "antigravity", provider "google"). The bridge is a STUB today:
-	// Start refuses with ErrNotImplemented. It is registered ANYWAY, and that is the point — an
-	// unregistered kind produces `no ready adapters of kind "antigravity"`, which is the opaque
-	// failure this platform has hit three times (opencode, orchicon, claude). A registered stub
-	// makes the kind discoverable and routable so children 5/6 fill in behaviour behind a boundary
-	// that already exists.
+	// Antigravity (agy) bridge (kind "antigravity", provider "google"). It gets the SAME four wirings the
+	// claude bridge receives — usage recorder, session store, the shared MCP scope resolver and its secret
+	// expander — because those are the seams the platform owns rather than per-adapter decisions. The
+	// dispatcher installs the diff ledger itself (scheduler/dispatcher.go's Register calls SetDiffLedger on
+	// every DiffLedgerSink), so no explicit call is needed here.
 	agyBridge := antigravity.New(log)
+	agyBridge.SetUsageRecorder(usageRecorderFn)
+	agyBridge.SetSessionStore(sessionStoreFn)
+	agyBridge.SetScopeResolver(mcpsettings.NewResolver(pool))
+	agyBridge.SetMCPSecretResolver(func(ctx context.Context, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
+		return mcpsettings.ResolveSecretRefs(ctx, pool, secretsKEK, tenantID, env, headers)
+	})
+	// The tenant's Antigravity spawn settings: the auth method child 4 added, and — for the gemini-api-key
+	// method — the decrypted GEMINI_API_KEY. The resolution mirrors internal/runtime/antigravity_auth.go, but
+	// FAILS ACTIONABLY instead of degrading: a worker launched with a method it cannot authenticate is a run
+	// that burns its whole budget before failing, so the operator is told now.
+	agyBridge.SetSettingsResolver(func(ctx context.Context, tenantID string) (antigravity.SpawnSettings, string, error) {
+		return resolveAntigravitySpawn(ctx, pool, secretsKEK, tenantID)
+	})
 	dispatcher.Register(adapter.KindAntigravity, agyBridge)
 
 	// Per-adapter enable/disable (AC 3): every kind named in ORCHICON_DISABLED_ADAPTER_KINDS is
@@ -656,8 +667,8 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			// The claude adapter routes its streaming session into the run's
 			// container over the daemon's duplex stdio transport.
 			claudeBridge.SetRuntimeClient(rtClient)
-			// The antigravity adapter will route its session into the run's container the same way;
-			// wired now so the stub's replacement inherits a correct server.
+			// The antigravity adapter routes its session into the run's container the same way: `agy acp` over
+			// the daemon's duplex stdio transport (acp.ContainerFactory).
 			agyBridge.SetRuntimeClient(rtClient)
 			// Execution liveness: fail executions orphaned by a plane restart or a lost runtime container so
 			// recovery re-dispatches.

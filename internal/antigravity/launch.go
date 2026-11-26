@@ -1,0 +1,212 @@
+package antigravity
+
+// launch.go — HOW THE `agy acp` CHILD IS INVOKED, and the guard that stops a permission-free launch.
+//
+// TWO THINGS LIVE HERE THAT THE BRIDGE MUST NEVER SHORTCUT:
+//
+//  1. THE INVOCATION COMES FROM BuildSpawnSpec (procspec.go), and nowhere else. That builder is the one
+//     place the tenant's auth method, the GEMINI_API_KEY environment variable and the
+//     --disable-telemetry policy are applied, and it is where the key is kept off argv.
+//
+//  2. THE ARGV IS CHECKED FOR A PERMISSION-BYPASS FLAG BEFORE IT IS SPAWNED. agy accepts
+//     `--dangerously-skip-permissions`, and a worker launched that way would never send a
+//     `session/request_permission` at all — so this adapter's entire policy (permissions.go) would be
+//     silently skipped, and the run would look identical to a gated one in every log line. The claude
+//     bridge has the same guard (permissions.go:194-199, bypassLaunchFlags); the check is repeated here
+//     rather than shared because the flag SPELLINGS differ per CLI, and a shared list would either miss
+//     agy's spelling or carry claude's into agy's argv.
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	goruntime "runtime"
+	"strings"
+
+	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/antigravity/acp"
+	"github.com/beardedparrott/orchicon/internal/guard"
+	"github.com/beardedparrott/orchicon/internal/runtime"
+	"github.com/beardedparrott/orchicon/internal/scheduler"
+)
+
+// antigravityBypassFlags are the agy launch spellings that would discard the permission path.
+//
+// A LITERAL `--dangerously-skip-permissions` IS THE ONE THE RECORDING PROVES agy accepts; the others are
+// the same intent spelled the way other CLIs in this family spell it, listed so a future agy that adopts
+// one is refused rather than silently ungated.
+var antigravityBypassFlags = []string{
+	"--dangerously-skip-permissions",
+	"--dangerously-allow-skip-permissions",
+	"--allow-dangerously-skip-permissions",
+	"--skip-permissions",
+	"--yolo",
+	"--auto-approve",
+	"--always-approve",
+	"--never-ask",
+}
+
+// antigravityBypassModeFlags are the `--flag value` spellings whose VALUE is what bypasses. They are
+// checked as a PAIR because a bare `--approval-mode` is not a bypass — only one of its values is.
+var antigravityBypassModeFlags = map[string][]string{
+	"--approval-mode":   {"yolo", "never", "auto-approve", "bypass", "none"},
+	"--permission-mode": {"bypasspermissions", "yolo", "none"},
+}
+
+// assertNoBypass fails when an argv would launch agy without its permission path.
+//
+// IT PANICS ON NOTHING and it does not sanitise: a spec that reached here with a bypass flag is a bug in
+// the caller, and silently stripping the flag would hide it while leaving the argv shape different from
+// what the builder produced. The launch FAILS and says which token was the problem.
+func assertNoBypass(argv []string) error {
+	for i, tok := range argv {
+		lower := strings.ToLower(strings.TrimSpace(tok))
+		// A `--flag=value` spelling is the same flag; split it so one list covers both.
+		name, value, hasValue := strings.Cut(lower, "=")
+		for _, bad := range antigravityBypassFlags {
+			if name == bad {
+				return fmt.Errorf("antigravity: refusing to launch agy with %q — it disables agy's permission "+
+					"system entirely, so the worker policy could not gate a single tool call", tok)
+			}
+		}
+		if values, ok := antigravityBypassModeFlags[name]; ok {
+			// `--approval-mode yolo` OR `--approval-mode=yolo`.
+			arg := value
+			if !hasValue && i+1 < len(argv) {
+				arg = strings.ToLower(strings.TrimSpace(argv[i+1]))
+			}
+			for _, v := range values {
+				if arg == v {
+					return fmt.Errorf("antigravity: refusing to launch agy with %q — it disables agy's permission "+
+						"system entirely, so the worker policy could not gate a single tool call", strings.Join([]string{tok, arg}, " "))
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// resolveAgyBinary resolves the agy executable.
+//
+// The resolver is adapter.ResolveBinary, the SAME per-OS/PATH lookup every other adapter uses, so an
+// operator's shim and a package install both work. A "" result is a hard failure carrying the shim hint,
+// because launching nothing produces an error that names no cause.
+func resolveAgyBinary() (string, error) {
+	home, _ := os.UserHomeDir()
+	bin := strings.TrimSpace(adapter.ResolveBinary(goruntime.GOOS, home, adapter.KindAntigravity, os.Getenv))
+	if bin == "" {
+		hint := adapter.ShimHint(goruntime.GOOS, home, adapter.KindAntigravity, os.Getenv)
+		if hint != "" {
+			return "", fmt.Errorf("antigravity: the `agy` CLI could not be resolved on this host — %s", hint)
+		}
+		return "", fmt.Errorf("antigravity: the `agy` CLI is not on PATH; install Antigravity or put `agy` on PATH " +
+			"(Orchicon launches the vendor binary and never bundles it)")
+	}
+	return bin, nil
+}
+
+// isContainer reports whether this execution's child belongs inside the run's runtime container.
+//
+// The rule is IDENTICAL to claude's (adapter.go:265-282): a container child needs a wired daemon, a run
+// id to lease the container by, and a run that is not in local mode. A test override forces the local
+// transport, because a fake process cannot live inside a container.
+func (b *Bridge) isContainer(m scheduler.ExecutionManifest) bool {
+	if b.factoryOverride != nil {
+		return false
+	}
+	return b.rt != nil && m.RuntimeWorkflowID != "" && m.ExecutionMode != "local"
+}
+
+// spawnFactory selects the transport: a container child when this execution belongs to a workflow run
+// with a daemon wired and is not local mode, otherwise a host subprocess.
+func (b *Bridge) spawnFactory() acp.ProcFactory {
+	if b.factoryOverride != nil {
+		return b.factoryOverride
+	}
+	if b.rt != nil {
+		return acp.ContainerFactory(b.rt)
+	}
+	return acp.LocalFactory{}.NewProc
+}
+
+// childEnv builds the environment the agy child inherits.
+//
+// THE LOCAL TRANSPORT GETS THE OS-LEVEL GUARD SHIM, exactly as claude's childEnv does: BuildSpawnSpec has
+// already decided the auth-method half of the environment, and this adds the PATH shim so the destructive
+// commands this process could not otherwise intercept are refused by the OS as well as by the policy. A
+// container child takes the same environment WITHOUT the shim — the shim is a host process, and the
+// container's own boundary is the run's.
+func (b *Bridge) childEnv(manifest scheduler.ExecutionManifest) ([]string, func()) {
+	env := os.Environ()
+	cleanup := func() {}
+	if b.isContainer(manifest) {
+		return env, cleanup
+	}
+	g, err := guard.NewExecutionGuard(manifest.ProjectDir)
+	if err != nil {
+		b.log.Warn("antigravity: the OS-level execution guard could not be built for the local transport — "+
+			"the child runs with the ACP policy only", "execution", manifest.ExecutionID, "error", err)
+		return env, cleanup
+	}
+	return g.Apply(env), g.Close
+}
+
+// containerStdioOpener is the daemon surface acp.ContainerFactory needs. *runtime.Client satisfies it
+// directly (acp.StdioOpener); this function exists so the assertion is checked at COMPILE time rather
+// than only where a container spawn happens to be exercised.
+func containerStdioOpener(rt *runtime.Client) acp.StdioOpener {
+	var opener acp.StdioOpener = rt
+	return opener
+}
+
+// executionDir resolves the worker's working directory: the run's worktree when provisioned, else the
+// project dir (the same rule claude and opencode use).
+func executionDir(m scheduler.ExecutionManifest) string {
+	if strings.TrimSpace(m.WorktreePath) != "" {
+		return m.WorktreePath
+	}
+	return m.ProjectDir
+}
+
+// composeGoalPrompt is the FIRST prompt's text.
+//
+// IT CARRIES ONLY THE GOAL AND THE ACCEPTANCE CRITERIA. The system prompt — worker prompt, project
+// context files and skills — already travelled as `_meta.antigravity.systemPrompt.append` on
+// `session/new`, so repeating it here would double every token of it in the model's context and, worse,
+// place it where a slash-command-looking line in the context could be interpreted as one.
+func composeGoalPrompt(m scheduler.ExecutionManifest) string {
+	var b strings.Builder
+	if g := strings.TrimSpace(m.Goal); g != "" {
+		b.WriteString("=== GOAL ===\n")
+		b.WriteString(g)
+		b.WriteString("\n\n")
+	}
+	if a := strings.TrimSpace(m.AcceptanceCriteria); a != "" {
+		b.WriteString("=== ACCEPTANCE CRITERIA ===\n")
+		b.WriteString(a)
+		b.WriteString("\n")
+	}
+	out := b.String()
+	if strings.TrimSpace(out) == "" {
+		return "Proceed with the task."
+	}
+	return out
+}
+
+// additionalDirectories is the `additionalDirectories` list for `session/new` and `session/resume`: the
+// SAME two carve-outs claude passes as --add-dir (workerrestrict.CarveOutDirs), so a worker can write to
+// the scratch dir and its own run metadata and nowhere else.
+//
+// IT IS COMPUTED FROM ProjectDir, NOT FROM THE CWD. The cwd is the worktree; the .orchicon run metadata
+// lives under the PROJECT root, which is the directory both claude and opencode treat as the carve-out
+// source.
+func additionalDirectories(m scheduler.ExecutionManifest) []string {
+	dirs := workerCarveOuts(m.ProjectDir)
+	out := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		if strings.TrimSpace(d) != "" {
+			out = append(out, filepath.Clean(d))
+		}
+	}
+	return out
+}
