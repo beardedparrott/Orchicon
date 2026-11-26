@@ -283,6 +283,12 @@ type Service struct {
 	registry      *orchicon.Registry
 	sourcing      *orchicon.SourcingService
 	resolver      *orchicon.CredentialResolver
+
+	// agyLister is the injected antigravity model lister (see antigravity.go). Guarded because the
+	// plane sets it after construction, once boot has a bridge, while picker RPCs may already be
+	// serving.
+	agyListerMu sync.RWMutex
+	agyLister   AntigravityModelLister
 }
 
 // New constructs the service. kek may be nil/short — the store is then
@@ -1215,8 +1221,20 @@ type ModelsResult struct {
 	Enabled  bool
 }
 
-// ListProviderModels surfaces the sourcing state for one provider.
+// claudeManagedCatalogProvider is the provider whose model list the Claude Code managed catalog covers.
 const claudeManagedCatalogProvider = "anthropic"
+
+// antigravityProvider is the ONE provider id the antigravity adapter kind exposes
+// (internal/adapter/providers.go: AddAdapterKind(KindAntigravity, "google")).
+//
+// IT IS NOT A BUILT-IN orchicon.Profile, AND MUST NOT BECOME ONE. `google` resolves through neither
+// BuiltinProfile nor the vendored catalog, so ListProviderModels' normal path fails at EffectiveProfile
+// with db.ErrNotFound — the literal `[not_found] db: not found` an operator saw when selecting the
+// provider pill. The branch keyed on this id (ListProviderModels, before EffectiveProfile) answers from the
+// `agy acp` handshake instead. A synthetic Profile would be worse than the bug: orchicon.ProfileKind has no
+// ACP kind, ValidateProfile rejects unknown kinds, and opencodeProviderNPM would drop the entry from
+// container provider config while implying an OpenAI-compatible HTTP endpoint that does not exist.
+const antigravityProvider = "google"
 
 // claudeManagedCatalogModels returns the signed Claude Code catalog's models for a provider, or nil
 // for any other provider or on ANY failure.
@@ -1254,6 +1272,14 @@ func (s *Service) claudeManagedCatalogModels(ctx context.Context, providerID str
 const repairBudget = 8 * time.Second
 
 func (s *Service) ListProviderModels(ctx context.Context, tenantID, providerID string) (ModelsResult, error) {
+	// THE ANTIGRAVITY TIER IS BRANCHED BEFORE EffectiveProfile, and it has to be here rather than deeper
+	// in: `google` is neither a built-in orchicon.Profile nor a catalog provider, so EffectiveProfile
+	// returns db.ErrNotFound — which mapErr turns into connect.CodeNotFound and the picker renders as the
+	// literal `[not_found] db: not found`. agy speaks ACP to a child process, not HTTP to a base URL, so
+	// there is no profile to resolve and nothing for the probe path below to ask.
+	if providerID == antigravityProvider {
+		return s.listAntigravityModels(ctx, tenantID)
+	}
 	profile, enabled, err := s.EffectiveProfile(ctx, tenantID, providerID)
 	if err != nil {
 		return ModelsResult{}, err

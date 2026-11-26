@@ -10,6 +10,7 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
@@ -229,6 +230,13 @@ func (h *Handler) mapErr(err error) error {
 	var refErr *ReferencedError
 	if errors.As(err, &refErr) {
 		return connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	// THE ANTIGRAVITY AUTH FAILURE, mapped BEFORE the ErrNotFound check on purpose. A signed-out host is a
+	// PRECONDITION the operator can fix (`agy` sign-in, or a GEMINI_API_KEY), not a missing row — and the
+	// message must reach the GUI as adapter.AntigravityAuthRequiredMessage verbatim, with no `[not_found]`
+	// prefix and no empty list that reads as "agy has no models".
+	if errors.Is(err, ErrAntigravityAuth) {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New(adapter.AntigravityAuthRequiredMessage))
 	}
 	if errors.Is(err, errInvalidArgument) {
 		return connect.NewError(connect.CodeInvalidArgument, err)
