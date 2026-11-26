@@ -449,3 +449,106 @@ The `cancel_midturn` scenario needs the recorder to hold a
 the permission is outstanding; `scripts/record-agy-acp.py` does that via
 `Recorder.defer_permission`, then answers the orphaned request with
 `{"outcome":{"outcome":"cancelled"}}` after the turn has already ended.
+
+## 11. The Orchicon worker bridge (child 5) — decisions
+
+This section records the choices `internal/antigravity` makes on top of the
+protocol above, so a later change reads as a change to a decision rather than a
+surprise. It is the README for the bridge, not a second protocol document.
+
+### 11.1 Tool names: canonical for the callbacks, raw in the transcript
+
+`OnToolCall`, the diff ledger, the todo parser and the execution detail pages are
+adapter-neutral and key on `bash` / `write` / `edit` / `read` / `todowrite`
+(claude's canonicalisation, `internal/claude/parse.go` `canonicalToolName`).
+agy's own names are `run_command`, `write_file`, `edit_file`, `read_file`,
+`grep_search`, `ask_question` and `mcp_<server>_<tool>`. The mapper therefore
+**canonicalises for the callbacks** and keeps the RAW agy spelling beside the
+canonical one in the durable part (`"agy_name"`), so the UI can render either.
+This deviates from the work item's literal "with agy tool names" wording, and is
+deliberate: the alternative is a second parser branch in every reader above, the
+exact drift claude's canonicalisation exists to prevent.
+
+### 11.2 The AGENTS.md / `.agents/` customizations decision
+
+**agy's own repo customizations LOAD, and that is parity with claude.** The
+claude bridge launches with no `--setting-sources` override, so claude's own
+`CLAUDE.md` in the worktree is loaded by the CLI. The agy bridge does the same
+thing by passing neither `--include-default-customizations` nor anything that
+disables it: `agy acp --help` (verified against 1.5.13) lists
+`--include-default-customizations` with a default of **true**, so agy's
+`AGENTS.md` and `.agents/` in the worktree load the way the CLI loads them.
+Spelling the flag explicitly is deliberately avoided too — it would pin a vendor
+default into our argv where a later agy could change it. The worker's composed
+prompt (worker prompt + project context files + skills) does NOT rely on that
+path: it travels as `_meta.antigravity.systemPrompt.append` on `session/new`
+(`composeGoalPrompt` deliberately omits it from the first turn, so it is not
+double-counted). The decision and its rationale are stated in a code comment in
+`internal/antigravity/launch.go`;
+`TestBridge_LaunchArgvKeepsDefaultCustomizations` asserts the argv carries no
+customization-disabling flag, and `internal/antigravity/mcp_test.go` asserts the
+bridge writes no `.agents/` state of its own.
+
+### 11.3 Mid-run injection is QUEUED, never preemptive
+
+`SendExecutionMessage` queues the text and delivers it as the next
+`session/prompt` the instant the in-flight turn reports its `stopReason` —
+agy's own `queuedMessages:"queue"` semantics. The capability is advertised as
+`mid_run_injection` (delivery is guaranteed) with the queuing stated in the code
+and here. Delivery is proven by
+`TestBridge_SendExecutionMessageIsQueuedUntilTheTurnEnds`, which asserts the
+second prompt does NOT exist while the first turn is running.
+
+### 11.4 Permissions: the shared rule set, answered with no human
+
+`session/request_permission` is answered by `PolicyHandler`, which normalises
+agy's tool call into claude's vocabulary and calls **`claude.DecideTool`** — the
+same never-allow class, protected roots, operator policy and project boundary
+the claude worker profile uses — plus the one agy-specific rule (its subagent
+tools `invoke_subagent` / `define_subagent`). Re-implementing the rules here
+would create a second copy that can disagree about whether `rm -rf /` is
+allowed. Every abnormal path answers REJECT. `--dangerously-skip-permissions`
+and its spellings are refused at launch (`assertNoBypass`), because a worker
+launched that way would never send a permission request and the policy would be
+silently skipped.
+
+**Known limitation, stated plainly:** agy 1.5.13's DEFAULT mode can auto-approve
+an edit without ever sending a permission request (§3.3 does not promise it
+will ask). The bridge cannot prevent that, so it DETECTS: the mapper checks
+every tool call against the same boundary and never-allow rules and, on an
+escape, cancels the session and fails the execution (`onMapperViolation`). The
+OS-level guard shim on the local transport refuses the destructive commands
+regardless. `--sandbox` exists but containment was never exercised, so it is
+deliberately NOT enabled.
+
+### 11.5 Compaction, resume and the session store
+
+`/compact` is sent as an ordinary prompt (§3.10) and queued at the FRONT of the
+turn queue; `remainingScope` is logged and otherwise ignored because agy
+compacts its own context. Resume uses `session/resume` (no replay), falling back
+to `session/load` when a build lacks it. The agy session id is persisted through
+`SetSessionStore` as a `session_info` part, which is what recovery and
+`ContinueSession` read. One live writer per agy session id is enforced
+(`Bridge.bindSessionID`).
+
+### 11.6 MCP travels on the wire, never on disk
+
+The resolved owner-scoped union (the same `mcpclient.ScopeResolver` the native
+and claude bridges consume) is rendered as `session/new`'s `mcpServers`, with
+`${SECRET_NAME}` refs expanded by the shared resolver. The platform's own
+`orchicon` sidecar is added unconditionally, so a worker always has
+`orchicon_*`. **No `~/.gemini/config/mcp_config.json` and no
+`.agents/mcp_config.json` is ever written** — `mcp_test.go` runs a full session
+under a temp `HOME` and asserts it is untouched. A remote (`http`) server is
+rendered but its agy support is UNVERIFIED (§3.6 recorded only a stdio server),
+so it is logged as an advisory.
+
+### 11.7 Capabilities advertised
+
+`execution: [cancellation, resume, mid_run_injection, context_compaction]`,
+`telemetry: [tool_calls_streamed, file_diffs, usage]`, plus `context:
+[system_prompt_append, mcp_servers, additional_directories]`. Two values are
+deliberately ABSENT: `transcript_jsonl` (agy advertises no transcript file, and
+the bridge keeps its own durable transcript instead) and `reasoning` (agy never
+streams reasoning text — only `usage.thoughtTokens`; the mapper still handles
+`agent_thought_chunk` for a future agy).
