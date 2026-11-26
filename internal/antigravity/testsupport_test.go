@@ -93,8 +93,17 @@ type fakeACP struct {
 	reqs   chan []byte
 
 	exitOnce sync.Once
-	exited   chan struct{}
-	closed   chan struct{}
+	// closeMu serialises a send on lines/stderr against shutdown's close of those channels.
+	//
+	// WITHOUT IT THE FAKE PANICS INTERMITTENTLY. shutdown() closes stop AND lines; emit() then selects
+	// between "send on lines" and "receive from stop", and Go picks uniformly among READY cases — but a
+	// send on a CLOSED channel is ready-to-panic, not skipped. So half the time the fake chose the panic.
+	// The prompt goroutine (go p.handlePrompt) reaches its final emit exactly while AbortExecution tears
+	// the child down, which is why only the abort tests caught it. shutdown takes the write lock, so the
+	// channels cannot close while an emit is mid-flight.
+	closeMu sync.RWMutex
+	exited  chan struct{}
+	closed  chan struct{}
 
 	mu       sync.Mutex
 	script   script
@@ -166,6 +175,10 @@ func (p *fakeACP) Close() error { p.shutdown(); return nil }
 // shutdown ends the fake child: stdout closes and Wait unblocks.
 func (p *fakeACP) shutdown() {
 	p.exitOnce.Do(func() {
+		// The write lock is what makes the closes safe against a concurrent emit: no send can be
+		// in flight, and every later emit sees the closed stop and returns on its first check.
+		p.closeMu.Lock()
+		defer p.closeMu.Unlock()
 		close(p.stop)
 		close(p.lines)
 		close(p.stderr)
@@ -338,11 +351,13 @@ func (p *fakeACP) handlePrompt(doc c2s) {
 
 	updates := p.updatesFor(idx)
 	for _, u := range updates {
+		// Via emit, never an inline select: the same closed-channel hazard applies to these sends.
 		select {
-		case p.lines <- []byte(u):
 		case <-p.stop:
 			return
+		default:
 		}
+		p.emit(u)
 	}
 	if after != nil {
 		after(idx)
@@ -414,6 +429,15 @@ func (p *fakeACP) sessionResult(sid string) map[string]any {
 
 // emit writes one line to stdout.
 func (p *fakeACP) emit(line string) {
+	p.closeMu.RLock()
+	defer p.closeMu.RUnlock()
+	// Non-blocking check FIRST: if the fake is already down, leave without ever entering the select
+	// below, where a send on a closed channel would be chosen at random.
+	select {
+	case <-p.stop:
+		return
+	default:
+	}
 	select {
 	case p.lines <- []byte(line):
 	case <-p.stop:
