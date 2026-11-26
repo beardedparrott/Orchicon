@@ -1844,6 +1844,35 @@ func upstreamFaultedByInfra(status, verdict string) bool {
 	return verdict == ""
 }
 
+// loopVerdictForFailedStep resolves the judgement a FAILED upstream delivered, from the three places
+// it can live, in order of deliberateness.
+//
+// WHY A HELPER AND NOT THREE INLINE CHECKS. This ordering is used by the loop chain and is the exact
+// thing that was wrong: reading `_verdict` alone treated a worker's own reported `failure` as an
+// infrastructure fault, because `_verdict` is stamped only when the failure is judged to have been
+// CAUSED by a verdict. The decision field is the worker's judgement and is stamped for every report.
+//
+//	1. `_verdict`  the narrow, deliberate signal
+//	2. `_decision` the worker's own report ("failure" from `ORCHICON WORKER SUMMARY: failure`)
+//	3. the work item's `_verdict` — where the recovery engine records it
+//
+// Empty means the step died WITHOUT a judgement (crash, stall, tool error), and recovery still owns
+// those. That is the distinction the whole classifier rests on, so it is made in one place.
+func loopVerdictForFailedStep(decision, verdict string, wiResult map[string]any) string {
+	if verdict != "" {
+		return verdict
+	}
+	if decision != "" {
+		return decision
+	}
+	if wiResult != nil {
+		if v, ok := wiResult["_verdict"].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // stepDeliveredVerdict returns the worker's OWN decision for a failed step, or "" when the failure was
 // not a judgement (a crash, a stall, a tool error, a dispatch fault).
 //
@@ -2208,12 +2237,18 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			// The marker is written on the WORK ITEM's results (that is where the task reconciler records
 			// it), so a FAILED upstream is asked directly. Only on the failure path, so a healthy run pays
 			// no extra query.
-			verdict := upResult.Verdict
+			// A DELIVERED DECISION IS A DELIVERED VERDICT — see loopVerdictForFailedStep.
+			//
+			// Reading `_verdict` alone is what parked run 01M8CSC92YWEZSC2FTRWC2K5A7: QA reported
+			// `_decision: "failure"` with no `_verdict`, the empty verdict was classified as an
+			// infrastructure fault, and the recovery branch spawned an iteration waiting on a
+			// recovery that had already been ruled out upstream.
+			verdict := loopVerdictForFailedStep(upResult.Decision, upResult.Verdict, nil)
 			if verdict == "" && s.Status == domain.StepRunFailed && upResult.WorkItemID != "" {
 				if wi, werr := db.GetWorkItem(ctx, tx, tenantID, upResult.WorkItemID); werr == nil && len(wi.Results) > 0 {
 					var wiResult map[string]any
 					if json.Unmarshal(wi.Results, &wiResult) == nil {
-						verdict, _ = wiResult["_verdict"].(string)
+						verdict = loopVerdictForFailedStep("", "", wiResult)
 					}
 				}
 			}
