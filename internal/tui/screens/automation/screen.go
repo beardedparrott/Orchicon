@@ -843,8 +843,28 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Cmd, bool) {
 			return m.acceptAllIdeas(), true
 		}
 	case "R":
+		// Idea Cloud triage owns A/R on THIS source; the schedule bulk verbs below are scoped to
+		// srcRecurring, so 'R' means "resume the marked schedules" there and "reject all ideas" here.
+		// Two meanings on one key is fine when the SOURCE decides, and confusing when it does not.
 		if src == srcIdeas {
 			return m.rejectAllIdeas(), true
+		}
+	}
+	switch msg.String() {
+	case "P", "R", "S":
+		// BULK RUN CONTROL — the keyboard equivalents of the Schedules page's top-bar buttons.
+		//
+		// Space marks rows (kit2.Base has always done that); these three act on the marked set. They
+		// are checked BEFORE the single-row action bar for the same reason 'x' is: with rows marked,
+		// a key that silently acted on only the focused row is how an operator pauses one schedule
+		// believing they paused six.
+		//
+		// The gestures are the platform's three, and they mean exactly what the GUI's mean:
+		//   P  pause    keep the worktree, branch and every succeeded step
+		//   R  resume   continue the run that exists; failed steps re-run with the previous notes
+		//   S  start/restart  fire now — DISCARDS progress on anything that has already run
+		if src == srcRecurring {
+			return m.bulkControlRecurring(msg.String()), true
 		}
 	case "x":
 		// A MARKED SELECTION IS A BULK DELETE. Checked before the single-row action so 'x' with rows
@@ -1476,4 +1496,75 @@ func (m *Model) finishDatePicker() tea.Cmd {
 		f.Set(field, value)
 	}
 	return nil
+}
+
+// bulkControlRecurring applies one run-control gesture to every MARKED recurring item.
+//
+// WHY IT REFUSES ON AN EMPTY SELECTION rather than acting on the cursor: the same rule 'x' follows.
+// A key that pauses the focused row when you thought you had marked six is worse than a key that
+// says "mark some rows first".
+//
+// PARTIAL FAILURE IS REPORTED, NOT SWALLOWED. Each write goes out in turn; a refusal (the row is
+// already running, nothing to resume) is counted and surfaced, because "paused 4" and "paused 4 of
+// 6" are different facts to an operator.
+func (m *Model) bulkControlRecurring(key string) tea.Cmd {
+	ids := m.Base.MarkedIDs()
+	if len(ids) == 0 {
+		return m.refuseAutomation("mark rows with space first, then " + key + " acts on the marked set")
+	}
+
+	action, verb, detail := apiv1.SequenceAction_SEQUENCE_ACTION_PAUSE, "Pause", "keeps every worktree, branch and succeeded step"
+	confirmNeeded := false
+	switch key {
+	case "R":
+		action, verb, detail = apiv1.SequenceAction_SEQUENCE_ACTION_RESUME, "Resume", "continues each run in place; succeeded steps stay succeeded"
+	case "S":
+		action, verb, detail = apiv1.SequenceAction_SEQUENCE_ACTION_RESTART, "Start/Restart", "DISCARDS progress on anything that has already run"
+		confirmNeeded = true // destructive — the same confirm the GUI button uses
+	}
+
+	apply := func() tea.Cmd { return m.runBulkControl(ids, action) }
+
+	if !confirmNeeded {
+		m.notice = fmt.Sprintf("%s %d item(s) — %s", verb, len(ids), detail)
+		return apply()
+	}
+	d := kit2.Confirm(verb+" marked items",
+		fmt.Sprintf("%s %d item(s)?\n\n%s\n\nThis cannot be undone for the rows that have already run.",
+			verb, len(ids), detail),
+		strings.ToLower(verb))
+	d.Danger = true
+	m.Open = d
+	m.OnDialog = func(choice string) tea.Cmd {
+		m.OnDialog = nil
+		if choice == "" {
+			m.notice = "cancelled"
+			return nil
+		}
+		return apply()
+	}
+	return nil
+}
+
+// runBulkControl performs the gesture on each id, counting refusals.
+func (m *Model) runBulkControl(ids []string, action apiv1.SequenceAction) tea.Cmd {
+	cl := m.cl
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		var failed int
+		var firstErr error
+		for _, id := range ids {
+			if _, err := cl.WorkItems.ControlSequence(ctx, connect.NewRequest(&apiv1.ControlSequenceRequest{
+				Id:     id,
+				Action: action,
+			})); err != nil {
+				failed++
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+		}
+		return recurrenceBulkDoneMsg{deleted: len(ids) - failed, failed: failed, err: firstErr}
+	}
 }
