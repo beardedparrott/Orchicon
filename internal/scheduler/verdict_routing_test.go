@@ -128,15 +128,15 @@ func TestLoopDesiredDownstreamsCoversTheLoopsRemit(t *testing.T) {
 func TestVerdictRoutingWiredAtBothSites(t *testing.T) {
 	src := readWorkflowReconcilerSource(t)
 
-	if !strings.Contains(src, "verdictRoutedLoop(sr.StepID, allSteps, r.stepRunsOf(tenantID, run.ID))") {
+	if !strings.Contains(src, "verdictRoutedLoop(sr.StepID, allSteps, r.stepRunsOf(ctx, tx, tenantID, run.ID))") {
 		t.Error("pollTaskStep no longer asks verdictRoutedLoop before choosing recovery, so a delivered " +
 			"verdict is charged against max_attempts again and the step is resumed until the budget is gone")
 	}
-	if !strings.Contains(src, "loopDesiredDownstreams(steps, r.stepRunsOf(tenantID, runID))") {
+	if !strings.Contains(src, "loopDesiredDownstreams(steps, r.stepRunsOf(ctx, ttx.Tx, tenantID, runID))") {
 		t.Error("the failure sweep no longer spares a live loop's steps, so the loop_decision is marked " +
 			"skipped and the run fails without ever routing the verdict")
 	}
-	if !strings.Contains(src, "!r.loopOwesRouting(tenantID, runID, steps)") {
+	if !strings.Contains(src, "!r.loopOwesRouting(ctx, ttx.Tx, tenantID, runID, steps)") {
 		t.Error("the run can settle to failed while a loop_decision is still owed its routing turn")
 	}
 }

@@ -1042,7 +1042,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		// to failed. The loop never got the turn it was waiting for.
 		//
 		// Runs whose loops have all decided return an empty set here and keep today's behaviour exactly.
-		oweLoop := loopDesiredDownstreams(steps, r.stepRunsOf(tenantID, runID))
+		oweLoop := loopDesiredDownstreams(steps, r.stepRunsOf(ctx, ttx.Tx, tenantID, runID))
 		for _, cur := range nonTerminal {
 			if cur.Status == domain.StepRunRunning {
 				continue
@@ -1119,7 +1119,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunCompleted, run, ""); err != nil {
 			return fmt.Errorf("enqueue run_completed: %w", err)
 		}
-	} else if anyFailed && !anyRunning && !r.loopOwesRouting(tenantID, runID, steps) {
+	} else if anyFailed && !anyRunning && !r.loopOwesRouting(ctx, ttx.Tx, tenantID, runID, steps) {
 		now := time.Now().UTC()
 		// Update the linked work item to failed, carrying the run-level
 		// narrative.
@@ -1882,8 +1882,8 @@ func stepRunWorkItemID(sr db.WorkflowStepRunRow) string {
 // It is the run-settle gate: while a loop is owed its turn, a run must not be declared failed, because
 // failing it is what stops the loop from ever firing. Once every loop has decided, this returns false
 // and a failing run fails exactly as before.
-func (r *WorkflowReconciler) loopOwesRouting(tenantID, runID string, allSteps []workflow.StepWire) bool {
-	runsOf := r.stepRunsOf(tenantID, runID)
+func (r *WorkflowReconciler) loopOwesRouting(ctx context.Context, tx pgx.Tx, tenantID, runID string, allSteps []workflow.StepWire) bool {
+	runsOf := r.stepRunsOf(ctx, tx, tenantID, runID)
 	for _, ld := range allSteps {
 		if loopStillRouting(ld, runsOf) {
 			return true
@@ -1894,10 +1894,12 @@ func (r *WorkflowReconciler) loopOwesRouting(tenantID, runID string, allSteps []
 
 // stepRunsOf returns a lister for every step run of a step id in this run, for the verdict-routing
 // rules. Superseded iterations are included; the rules decide what that means.
-func (r *WorkflowReconciler) stepRunsOf(tenantID, runID string) stepRunsByStepIDFunc {
+// THE TRANSACTION IS REQUIRED, NOT OPTIONAL: db.ListWorkflowStepRuns dereferences it, so passing nil
+// panics on the first call. Every call site below is already inside the reconcile pass's transaction,
+// which is also the only place these rules need to read.
+func (r *WorkflowReconciler) stepRunsOf(ctx context.Context, tx pgx.Tx, tenantID, runID string) stepRunsByStepIDFunc {
 	return func(stepID string) ([]db.WorkflowStepRunRow, error) {
-		ctx := context.Background()
-		return listStepRunsByStepID(ctx, nil, tenantID, runID, stepID)
+		return listStepRunsByStepID(ctx, tx, tenantID, runID, stepID)
 	}
 }
 
@@ -4177,7 +4179,7 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 	// Same predicate the loop's hold gate and the loop chain already use (upstreamFaultedByInfra), so all
 	// three now agree on what "failed" means. Scoped to a step that a live loop_decision will actually
 	// route on; see verdict_routing.go for why that walk is transitive.
-	if routedLoop, ok := verdictRoutedLoop(sr.StepID, allSteps, r.stepRunsOf(tenantID, run.ID)); ok {
+	if routedLoop, ok := verdictRoutedLoop(sr.StepID, allSteps, r.stepRunsOf(ctx, tx, tenantID, run.ID)); ok {
 		if verdict := r.stepDeliveredVerdict(ctx, tx, tenantID, sr); verdict != "" {
 			r.log.Info("task step delivered a verdict — routing to the loop instead of recovering",
 				"run", run.ID, "step", sr.StepID, "work_item", wi.ID,
