@@ -302,6 +302,49 @@ export class TenantSettings extends Message<TenantSettings> {
   outboxRetentionDays = 0;
 
   /**
+   * --- Antigravity (agy) adapter ---
+   *
+   * HOW THE ACP SERVER AUTHENTICATES. agy's ACP server requires an explicit
+   * `authenticate {methodId}` before `session/new`; which method is right is a
+   * PER-OPERATOR decision, so it is a tenant setting and not a product constant:
+   *
+   *   oauth-personal    (DEFAULT) reuse the CLI's cached interactive Google login.
+   *                     The operator accepts Google's Antigravity terms — which
+   *                     restrict using the service with third-party products — by
+   *                     enabling this; see antigravity_tos_notice below.
+   *   oauth-business    Google Workspace / enterprise OAuth.
+   *   gemini-api-key    the ONLY method that works inside a runtime container: the
+   *                     personal credential lives in the host OS keyring and cannot
+   *                     be bind-mounted. Reads the tenant secret GEMINI_API_KEY and
+   *                     passes it to the child as an env var only, never on argv.
+   *   agent-platform    the Google agent-platform credential plane.
+   *
+   * Empty on update = leave unchanged. An unknown value is InvalidArgument.
+   *
+   * @generated from field: string antigravity_auth_method = 40;
+   */
+  antigravityAuthMethod = "";
+
+  /**
+   * Whether Google may receive agy usage telemetry. Default FALSE: the Antigravity
+   * terms treat telemetry as a separate grant, so nothing is shared without an
+   * explicit opt-in. When false, the spawn spec passes `--disable-telemetry`.
+   *
+   * @generated from field: bool antigravity_share_telemetry = 41;
+   */
+  antigravityShareTelemetry = false;
+
+  /**
+   * READ-ONLY. The exact Antigravity terms notice to show wherever oauth-personal is
+   * selected (and in the adapter detail). Filled by the server from the single
+   * exported constant in internal/antigravity/authmethod, so web, TUI and desktop
+   * render the same words; a value sent on update is ignored.
+   *
+   * @generated from field: string antigravity_tos_notice = 42;
+   */
+  antigravityTosNotice = "";
+
+  /**
    * @generated from field: google.protobuf.Timestamp created_at = 100;
    */
   createdAt?: Timestamp;
@@ -349,6 +392,9 @@ export class TenantSettings extends Message<TenantSettings> {
     { no: 37, name: "execution_retention_vacuum", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 38, name: "execution_retention_timeout_seconds", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 39, name: "outbox_retention_days", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
+    { no: 40, name: "antigravity_auth_method", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 41, name: "antigravity_share_telemetry", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+    { no: 42, name: "antigravity_tos_notice", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 100, name: "created_at", kind: "message", T: Timestamp },
     { no: 101, name: "updated_at", kind: "message", T: Timestamp },
   ]);

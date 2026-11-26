@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/antigravity/authmethod"
 
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
@@ -120,6 +121,11 @@ type CreateRequest struct {
 	// AdapterKinds is the run's BOOT PROFILE: the set of adapter kinds its step workers resolve to
 	// (adapter.AdapterKind over each step worker's model_ref), sorted and deduped by the plane.
 	AdapterKinds []string `json:"adapter_kinds"`
+	// AntigravityAuthMethod is the tenant's Antigravity (agy) ACP auth method, sent by the plane
+	// because the container preflight must refuse `oauth-personal` UP FRONT: that credential lives in
+	// the HOST OS keyring and cannot be bind-mounted. Empty (an older client) is treated as the
+	// default — oauth-personal — because that is what such a client would have used anyway.
+	AntigravityAuthMethod string `json:"antigravity_auth_method,omitempty"`
 }
 
 // CreateResponse is returned by POST /v1/runtimes.
@@ -804,10 +810,11 @@ func (d *Daemon) createContainerInner(name string, req CreateRequest) (*CreateRe
 	}
 	// THE SAME FAST PREFLIGHT for antigravity, and STRICTER IN CONTAINER MODE: agy's personal OAuth
 	// credential lives in the HOST OS KEYRING, which cannot be bind-mounted, so a signed-in host is
-	// not enough for a container session — it needs GEMINI_API_KEY. Refused here, ACTIONABLY, rather
-	// than hanging on. (Local/in-process mode has its own host keyring and is not gated here.)
-	if demandsKind(req, adapter.KindAntigravity) && !d.antigravityAuthAvailable(req) {
-		return nil, errors.New(adapter.AntigravityAuthRequiredMessage)
+	// not enough for a container session — and oauth-personal is refused outright. Refused here,
+	// ACTIONABLY, rather than hanging on. (Local/in-process mode has its own host keyring and is not
+	// gated here.)
+	if err := d.antigravityPreflight(req); err != nil {
+		return nil, err
 	}
 	d.createMu.Lock()
 	defer d.createMu.Unlock()
@@ -1252,6 +1259,30 @@ func (d *Daemon) claudeAuthAvailable(req CreateRequest) bool {
 	}
 	_, ok := req.Secrets["ANTHROPIC_API_KEY"]
 	return ok
+}
+
+// antigravityPreflight decides whether an antigravity-demanding container dispatch can
+// authenticate at all. It runs BEFORE anything is created, and it is the only place the
+// container-mode auth policy lives, so it can be unit-tested without an engine.
+//
+// TWO REFUSALS, DELIBERATELY DIFFERENT:
+//
+//   - oauth-personal (the default) is refused with the exact actionable message, because personal
+//     Google sign-in lives in the HOST keyring: no mount, no file, no environment variable can carry
+//     it into a container. Telling the operator to "sign in on the host" would be a lie here.
+//   - every other method needs a usable credential the container can actually see; without one the
+//     shared AntigravityAuthRequiredMessage explains the keyring limit and how to supply a key.
+func (d *Daemon) antigravityPreflight(req CreateRequest) error {
+	if !demandsKind(req, adapter.KindAntigravity) {
+		return nil
+	}
+	if authmethod.Normalize(req.AntigravityAuthMethod) == authmethod.MethodOAuthPersonal {
+		return errors.New(authmethod.ContainerOAuthPersonalRefusal)
+	}
+	if !d.antigravityAuthAvailable(req) {
+		return errors.New(adapter.AntigravityAuthRequiredMessage)
+	}
+	return nil
 }
 
 // antigravityAuthAvailable reports whether a CONTAINER can reach an Antigravity credential.
