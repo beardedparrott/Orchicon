@@ -10,6 +10,7 @@ import (
 	"errors"
 	"strings"
 	"sync/atomic"
+	"time"
 	"testing"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
@@ -173,5 +174,46 @@ func TestListModelRowsKeepsBareIDs(t *testing.T) {
 			t.Errorf("duplicate row id %q", r[0])
 		}
 		seen[r[0]] = true
+	}
+}
+
+// TestListModelsRunsOnTheLocalTransportEvenWithARuntimeClient pins the transport bug that made the live
+// catalogue invisible on a real plane.
+//
+// A listing is a PICKER RPC, not a dispatch: it has no workflow run id, so the container factory refuses it
+// ("no workflow run id for container spawn"). When the listing used spawnFactory() it therefore failed on
+// every picker open on any plane that had a runtime client wired — which is every real plane — and fell back
+// to the vendored snapshot. MEASURED against a local-mode plane: the log carried that exact error and the RPC
+// answered source=snapshot with `agy` 1.5.13 installed and signed in on the host.
+//
+// THE BRIDGE HERE HOLDS A RUNTIME CLIENT DELIBERATELY. Without one the bug is invisible, which is precisely
+// why it survived to a live plane.
+func TestListModelsRunsOnTheLocalTransportEvenWithARuntimeClient(t *testing.T) {
+	b := New(quiet())
+	b.SetBinaryOverride(func() (string, error) { return "/usr/local/bin/agy", nil })
+	b.SetSettingsOverride(func(context.Context, string) (SpawnSettings, string, error) {
+		return SpawnSettings{AuthMethod: "oauth-personal", ShareTelemetry: false}, "", nil
+	})
+	// The assertion is BEHAVIOURAL rather than a comparison of function values: a listing's ProcSpec carries
+	// NO workflow run id (there is no run to lease a container for), and that is the exact spec the container
+	// transport refuses. So hand the selector the picker's real shape and require a real child.
+	fn := b.modelListFactory()
+	if fn == nil {
+		t.Fatal("modelListFactory returned nil")
+	}
+	spec := acp.ProcSpec{Argv: []string{"sh", "-c", "echo ok"}, WorkflowRunID: ""}
+	p, err := fn(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("the model listing's transport refused a spec with no workflow run id: %v — that is the "+
+			"container transport, and every picker open on a plane with a runtime client would fail", err)
+	}
+	defer func() { _ = p.Close() }()
+	select {
+	case line := <-p.Lines():
+		if !strings.Contains(string(line), "ok") {
+			t.Errorf("child output = %q, want it to contain ok", line)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the child produced no output")
 	}
 }

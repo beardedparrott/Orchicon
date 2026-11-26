@@ -182,7 +182,7 @@ func (b *Bridge) fetchModels(ctx context.Context, tenantID string) ([]acp.Model,
 	procSpec.Cwd = os.TempDir()
 
 	client, err := acp.Start(ctx, acp.Config{
-		Factory:    b.spawnFactory(),
+		Factory:    b.modelListFactory(),
 		Launch:     acp.LaunchOptions{Binary: spec.Argv[0]},
 		Spec:       procSpec,
 		AuthMethod: spec.AuthMethod,
@@ -260,4 +260,25 @@ func (b *Bridge) ListModelRows(ctx context.Context, tenantID string) ([][2]strin
 		out = append(out, [2]string{m.ModelID, m.Name})
 	}
 	return out, nil
+}
+
+// modelListFactory picks the transport ONE model listing runs on.
+//
+// IT IS NOT spawnFactory(), AND THAT IS THE WHOLE POINT. spawnFactory() prefers the CONTAINER transport
+// whenever the bridge holds a runtime client, because a WORKER's child must run inside its run's container.
+// A model listing has no run: it is a picker RPC, not a dispatch, so there is no run id to lease a container
+// by and the container factory refuses it outright ("no workflow run id for container spawn"). MEASURED on a
+// local-mode plane with a wired runtime client: every picker open logged that failure and silently fell back
+// to the vendored snapshot, so the operator never saw the live catalogue even though `agy` was installed and
+// signed in. On a plane WITHOUT a runtime client the bug is invisible, which is why it has to be pinned by a
+// test rather than noticed.
+//
+// A listing therefore runs on the LOCAL transport — the host's own `agy`, which is exactly the binary whose
+// catalogue the picker is offering and whose credentials the operator signed in with. An explicit
+// factoryOverride (tests) still wins, so the existing fakes drive this path unchanged.
+func (b *Bridge) modelListFactory() acp.ProcFactory {
+	if b.factoryOverride != nil {
+		return b.factoryOverride
+	}
+	return acp.LocalFactory{}.NewProc
 }
