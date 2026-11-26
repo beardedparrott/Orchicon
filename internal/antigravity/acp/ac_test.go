@@ -1065,3 +1065,45 @@ func waitFor(t *testing.T, d time.Duration, cond func() bool) {
 		time.Sleep(2 * time.Millisecond)
 	}
 }
+
+// TestLocalProcCloseIsBoundedWhenAPipeIsHeldOpen pins the bounded drain in localProc.Close as a REGRESSION
+// test.
+//
+// MEASURED FAILURE THIS REPLACES: `localProc.Close` drained its pump goroutines with an unbounded
+// sync.WaitGroup wait. A pipe's read end EOFs only when every holder of its write end is gone, and agy forks
+// helpers that INHERIT its stdout — so the child could be dead while a grandchild held the pipe, and Close
+// blocked for that grandchild's lifetime. Reached through the provider `google` model tier
+// (internal/antigravity/modellist.go, one handshake per picker open) that is a picker RPC that never answers:
+// an operator selecting the antigravity provider saw the picker hang instead of listing models.
+//
+// THE TEST HOLDS A PIPE OPEN ON PURPOSE: it spawns a shell that leaves a background sleeper inheriting
+// stdout, exits the shell itself, and then requires Close to return inside the grace window.
+func TestLocalProcCloseIsBoundedWhenAPipeIsHeldOpen(t *testing.T) {
+	spec := ProcSpec{Argv: []string{"sh", "-c", "sleep 30 & echo started; exit 0"}}
+	p, err := (LocalFactory{}).NewProc(ctxT(t), spec)
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	// Wait for the shell's own output so we know it ran, and so the background sleeper exists, then close.
+	select {
+	case <-p.Lines():
+	case <-time.After(10 * time.Second):
+		t.Fatal("the child produced no output")
+	}
+
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		_ = p.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(DefaultShutdownGrace + 5*time.Second):
+		t.Fatalf("Close did not return within the grace window: a forked helper holding the pipe open must " +
+			"not block it — this is the hang that made the model picker never answer")
+	}
+	if elapsed := time.Since(start); elapsed > DefaultShutdownGrace+5*time.Second {
+		t.Fatalf("Close took %s, want bounded by the grace window", elapsed)
+	}
+}
