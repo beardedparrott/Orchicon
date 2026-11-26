@@ -314,6 +314,8 @@ const (
 	WorkflowEventRunFailed      = "workflow.run_failed"
 	WorkflowEventRunAborted     = "workflow.run_aborted"
 	WorkflowEventRunRetried     = "workflow.run_retried"
+	WorkflowEventRunPaused      = "workflow.run_paused"
+	WorkflowEventRunResumed     = "workflow.run_resumed"
 	WorkflowEventStepReady      = "workflow.step_ready"
 	WorkflowEventStepStarted    = "workflow.step_started"
 	WorkflowEventStepSucceeded  = "workflow.step_succeeded"

@@ -59,6 +59,7 @@ import {
 import type { WorkflowRun, Workflow as WorkflowProto } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { Project } from "@/api/gen/orchicon/api/v1/project_pb";
 import { Button } from "@/components/ui/button";
+import { SequenceControls } from "@/components/work-items/sequence-controls";
 import {
   Card,
   CardContent,
@@ -899,6 +900,18 @@ function ScheduleCard({
           </CardContent>
         </Card>
       </Link>
+      {/* RUN CONTROL FROM THE SCHEDULE ROW.
+          A schedule's last fire is a real run, and it can be paused, resumed or restarted
+          without navigating away — which is the whole point of having it here. The gestures
+          come from the SAME component the work item page uses, so a schedule row cannot offer
+          a "resume" that means something different from the work item's.
+          Scoped to THIS item: a schedule fires one item per occurrence, so there is no
+          schedule-wide gesture that would mean anything. */}
+      <SequenceControls
+        item={item}
+        hasChildren={isSequenceParent}
+        className="shrink-0"
+      />
       {/* THE ROW-LEVEL REMOVE. The bulk gesture (tick, then the bar button)
           was the ONLY way to remove one schedule — an operator clicking the
           row got a navigation and no delete at all. This is the same

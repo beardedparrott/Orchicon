@@ -1536,8 +1536,21 @@ func (r *TaskReconciler) transitionWorkItemOnResult(ctx context.Context, execID 
 	}
 	// A WORKER VERDICT THAT CAUSED THE FAILURE IS A ROUTING DECISION. Recorded STRUCTURALLY, not as error
 	// text, so the workflow reconciler routes it to a loop's fix branch instead of recovering it.
+	//
+	// THE DECISION FILLS THE VERDICT, BECAUSE THEY ARE THE SAME JUDGEMENT. `verdict` is stamped only
+	// when the failure is judged to have been caused by it, which is a narrower condition than "the
+	// worker finished and reported `failure`". A worker whose report says
+	// `ORCHICON WORKER SUMMARY: failure` delivered that judgement — so when no verdict was derived,
+	// the decision it DID report becomes the verdict.
+	//
+	// Without this, two readers of the same field disagreed: the dispatch path (which reads
+	// `_decision`) routed correctly, while the loop chain (which read only `_verdict`) saw an empty
+	// verdict, called it an infrastructure fault, and parked an iteration on a recovery that would
+	// never arrive. Run 01M8CSC92YWEZSC2FTRWC2K5A7 stalled exactly there.
 	if verdict != "" {
 		results["_verdict"] = verdict
+	} else if d, ok := results["_decision"].(string); ok && d != "" {
+		results["_verdict"] = d
 	}
 	extractIssuesLine(output, results)
 	// Extract list of modified files from diff markers in the output.

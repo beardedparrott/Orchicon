@@ -161,11 +161,21 @@ func TestTheModelRuleNoLongerForbidsPaidModels(t *testing.T) {
 // without the first the worker reaches for a premium model, without the second it burns tokens proving a
 // model works.
 func TestTheModelRuleStatesBothHalves(t *testing.T) {
+	// THE RULE WAS CORRECTED, NOT WEAKENED. It still has both halves, but the second half used to
+	// read "NEVER spend tokens testing a model", which a QA worker correctly read as a prohibition
+	// on the very live runs its acceptance criteria named — so it marked three ACs NOT VERIFIED and
+	// was graded as failing. The correct shape distinguishes "don't burn tokens showing off" from
+	// "do produce the evidence your criteria require":
+	//
+	//	cheapest capable model, ANY adapter (orchicon/opencode/claude/agy), small prompts, few calls
+	//	+ a live run an AC names IS the evidence, and must be performed
+	//	+ NOT VERIFIED only when genuinely out of reach, with the blocker named
 	for _, want := range []string{
 		"Prefer a free model",
 		"LOWEST-COST", // the escalation rule
-		"NEVER spend tokens testing a model",
-		"NOT VERIFIED", // what to do with a criterion only an expensive run could satisfy
+		"cheapest capable model",
+		"WHEN AN ACCEPTANCE CRITERION NAMES A LIVE RUN",
+		"NOT VERIFIED", // what to do with a criterion genuinely beyond reach
 	} {
 		if !strings.Contains(safetyBlock, want) {
 			t.Errorf("safetyBlock does not state %q. The rule has two halves — cheapest model, and never "+
@@ -184,8 +194,8 @@ func TestTheModelRuleStatesBothHalves(t *testing.T) {
 // existing published version). Asserting the rule's text inside the AGENTS.md would be asserting a
 // duplicate the design deliberately does not have — which is what this test originally got wrong.
 func TestEveryWorkerCarriesTheModelRule(t *testing.T) {
-	if !strings.Contains(safetyBlock, "NEVER spend tokens testing a model") {
-		t.Error("safetyBlock does not carry the no-model-testing rule, so no adapter's system prompt does — " +
+	if !strings.Contains(safetyBlock, "DO NOT SPEND TOKENS PROVING A MODEL IS GOOD") {
+		t.Error("safetyBlock does not carry the model-spend rule, so no adapter's system prompt does — " +
 			"the rule reaches every execution ONLY through the stable prompt prefix")
 	}
 	for _, w := range CannedWorkers() {
@@ -290,7 +300,9 @@ func TestTheLocalBlockCarriesTheHostBrowserPath(t *testing.T) {
 		"--no-sandbox",           // the flag that was verified
 		"~/.cache/ms-playwright", // where host browsers actually are
 		"require(",               // names the dead end explicitly
-		"LIVE Orchicon plane",    // the safety half, which remains true
+		"8091",                   // PROD, named so a worker can avoid it
+		"5432",                   // PROD's database, likewise
+		"8080",                   // DEV, reachable and writable from a local run
 	} {
 		if !strings.Contains(block, want) {
 			t.Errorf("the local runtime block does not mention %q. A local run needs the route that "+

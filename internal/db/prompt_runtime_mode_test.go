@@ -26,7 +26,10 @@ func TestRuntimeEnvironmentBlockBranches(t *testing.T) {
 	if strings.Contains(local, "You are running inside") {
 		t.Errorf("local branch must NOT claim container execution, got:\n%s", local)
 	}
-	for _, want := range []string{"IN-PROCESS", "127.0.0.1:5432", "localhost:5432", "/tmp/orchicon"} {
+	// The local branch must name BOTH planes by their real ports: prod (8091/5432) as untouchable
+	// and dev (8080) as the sanctioned target. Asserting only that 5432 appears would let the block
+	// regress to "everything loopback is LIVE", which is what told QA to stand down.
+	for _, want := range []string{"IN-PROCESS", "127.0.0.1:5432", "5432", "8091", "8080", "/tmp/orchicon"} {
 		if !strings.Contains(local, want) {
 			t.Errorf("local branch missing %q, got:\n%s", want, local)
 		}

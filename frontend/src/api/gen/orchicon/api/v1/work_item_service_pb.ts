@@ -20,6 +20,12 @@ import { ContextFiles, ExecutionMode } from "./project_pb.js";
 /**
  * SequenceAction enumerates the manual sequence control gestures.
  *
+ * THE NAMES ARE THE POINT. START and RESUME used to be indistinguishable on a
+ * LEAF work item — both called startWorkflowFn behind the same two guards — so
+ * "Resume" created a brand-new run and never consulted the previous one. Renaming
+ * START to RESTART is not cosmetic: it says out loud that the operation is
+ * destructive, so the non-destructive one can be made to actually resume.
+ *
  * @generated from enum orchicon.api.v1.SequenceAction
  */
 export enum SequenceAction {
@@ -29,32 +35,55 @@ export enum SequenceAction {
   UNSPECIFIED = 0,
 
   /**
-   * re-fire the chain from child #1 (destructive)
+   * RESTART re-fires the chain from child #1 — DESTRUCTIVE: prior child successes,
+   * the existing run and its step progress are discarded. On a leaf this creates a
+   * NEW run.
    *
-   * @generated from enum value: SEQUENCE_ACTION_START = 1;
+   * THIS IS THE OLD SEQUENCE_ACTION_START, SAME WIRE VALUE (1). "Start" was always
+   * a restart; it was just named as though it were not, so the destructive gesture
+   * wore the reassuring label. The rename is wire-compatible — value 1 still means
+   * exactly what it always did — so no alias is needed, and the platform's protolint
+   * forbids enum aliases in any case.
+   *
+   * @generated from enum value: SEQUENCE_ACTION_RESTART = 1;
    */
-  START = 1,
+  RESTART = 1,
 
   /**
-   * continue from the first non-succeeded child
+   * RESUME continues the work that already exists. On a parent, from the first
+   * non-succeeded child. On a leaf, the bound run is resumed IN PLACE: succeeded
+   * steps stay succeeded, only failed/skipped/blocked steps are re-armed, and the
+   * run's worktree/branch is re-attached. It refuses when there is nothing
+   * resumable, and says why.
    *
    * @generated from enum value: SEQUENCE_ACTION_RESUME = 2;
    */
   RESUME = 2,
 
   /**
-   * park the chain (parent → pending, schedule cleared)
+   * STOP parks the chain (parent → pending, schedule cleared). On a leaf it pauses
+   * its run.
    *
    * @generated from enum value: SEQUENCE_ACTION_STOP = 3;
    */
   STOP = 3,
+
+  /**
+   * PAUSE stops the run at a resumable point and KEEPS the worktree, branch and
+   * every succeeded step. This is the non-destructive stop; STOP/ABORT leave the
+   * work parked or over. Refused when the item has no run in flight.
+   *
+   * @generated from enum value: SEQUENCE_ACTION_PAUSE = 4;
+   */
+  PAUSE = 4,
 }
 // Retrieve enum metadata with: proto3.getEnumType(SequenceAction)
 proto3.util.setEnumType(SequenceAction, "orchicon.api.v1.SequenceAction", [
   { no: 0, name: "SEQUENCE_ACTION_UNSPECIFIED" },
-  { no: 1, name: "SEQUENCE_ACTION_START" },
+  { no: 1, name: "SEQUENCE_ACTION_RESTART" },
   { no: 2, name: "SEQUENCE_ACTION_RESUME" },
   { no: 3, name: "SEQUENCE_ACTION_STOP" },
+  { no: 4, name: "SEQUENCE_ACTION_PAUSE" },
 ]);
 
 /**

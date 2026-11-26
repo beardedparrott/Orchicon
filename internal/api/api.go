@@ -214,6 +214,22 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	workItemSvc.SetStopSequenceStarter(func(ctx context.Context, tenantID, parentID string) error {
 		return scheduler.StopSequence(ctx, deps.Pool, deps.Log, tenantID, parentID)
 	})
+	// LEAF run control — the difference between RESUME and RESTART, wired once here.
+	//
+	// Both go through the workflow service's own transactional paths rather than a scheduler
+	// helper, because these operate on ONE run: resume re-arms its failed steps in place,
+	// pause stops it while keeping its worktree. Sharing the service implementations is what
+	// stops the work item page and the run page from disagreeing about what "resume" does.
+	workItemSvc.SetRetryRunResumer(func(ctx context.Context, tenantID, runID string) (int, error) {
+		run, err := workflowSvc.RetryRunInTx(ctx, tenantID, runID)
+		if err != nil {
+			return 0, err
+		}
+		return run, nil
+	})
+	workItemSvc.SetPauseRunStarter(func(ctx context.Context, tenantID, runID, reason string) error {
+		return workflowSvc.PauseRunInTx(ctx, tenantID, runID, reason)
+	})
 	if deps.AbortExecution != nil {
 		scheduler.SetStopAbortHook(deps.AbortExecution)
 	}

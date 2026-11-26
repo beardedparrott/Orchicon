@@ -365,6 +365,45 @@ export function useRetryFailedWorkflowRun() {
   });
 }
 
+// usePauseWorkflowRun stops a run at a resumable point.
+//
+// THE NON-DESTRUCTIVE STOP. Abort was the only stop the run page offered, so "stop this for now"
+// and "throw this away" were the same button. This one keeps the worktree, the branch and every
+// succeeded step, so resume continues instead of restarting.
+export function usePauseWorkflowRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { runId: string; reason?: string }) => {
+      const res = await workflowClient.pauseWorkflowRun(input);
+      return res.run as WorkflowRun;
+    },
+    onSuccess: (run) => {
+      qc.invalidateQueries({ queryKey: workflowKeys.run(run.id) });
+      qc.invalidateQueries({ queryKey: workflowKeys.runs(run.workflowId) });
+      qc.invalidateQueries({ queryKey: workflowKeys.stepRuns(run.id) });
+      qc.invalidateQueries({ queryKey: [...workflowKeys.all, "runs-list"] });
+    },
+  });
+}
+
+// useResumeWorkflowRun continues a PAUSED run in place: back to running on the same worktree and
+// branch, the DAG resuming from the current step. Nothing is replayed.
+export function useResumeWorkflowRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { runId: string }) => {
+      const res = await workflowClient.resumeWorkflowRun({ runId: input.runId });
+      return res.run as WorkflowRun;
+    },
+    onSuccess: (run) => {
+      qc.invalidateQueries({ queryKey: workflowKeys.run(run.id) });
+      qc.invalidateQueries({ queryKey: workflowKeys.runs(run.workflowId) });
+      qc.invalidateQueries({ queryKey: workflowKeys.stepRuns(run.id) });
+      qc.invalidateQueries({ queryKey: [...workflowKeys.all, "runs-list"] });
+    },
+  });
+}
+
 // useGetWorkflowRun fetches a single workflow run by id.
 export function useGetWorkflowRun(id: string) {
   return useQuery({

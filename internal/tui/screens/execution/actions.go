@@ -49,6 +49,10 @@ const cancelReason = "cancelled from the orch TUI"
 // GUI's "user clicked Stop".
 const abortReason = "aborted from the orch TUI"
 
+// pauseReason is recorded on the run's event stream, so a paused run says who stopped it and why
+// rather than looking abandoned.
+const pauseReason = "paused from the orch TUI"
+
 // Write chords (matched by name in handleActionKey).
 const (
 	keyCancel        = "c"
@@ -57,6 +61,10 @@ const (
 	keyForceProgress = "p"
 	// keyAbortRun aborts a LIVE run.
 	keyAbortRun = "S"
+	// Pause/Resume get their own keys: "abort" was the only stop gesture and it is destructive, so
+	// the non-destructive one must not hide behind it.
+	keyPauseRun  = "P"
+	keyResumeRun = "R"
 	keySetModel = "m"
 	// keyBulkSetModel sets the model for EVERY marked worker at once — the TUI's counterpart to the
 	// GUI's BulkChangeWorkerModelDialog.
@@ -230,14 +238,42 @@ func (m *Model) actionsForSelection() []kit2.Action {
 		id := item.ID
 		meta := strings.ToLower(item.Meta)
 		acts := []kit2.Action{}
-		if meta == "failed" {
+		// RESUME/RETRY covers FAILED and ABORTED alike: abort is how an operator stops a run, so
+		// refusing to continue an aborted one made stopping a one-way door.
+		if meta == "failed" || meta == "aborted" {
 			acts = append(acts, kit2.Action{
-				Label: "retry run", Key: keyRetryRun, Source: srcRuns,
-				Confirm: "Retry failed run " + id + "?\n" +
+				Label: "resume run", Key: keyRetryRun, Source: srcRuns,
+				Confirm: "Resume " + meta + " run " + id + "?\n" +
 					"The run resets to PENDING and its failed / skipped / blocked steps are re-armed; " +
-					"steps that already SUCCEEDED stay succeeded — the DAG resumes where it stopped " +
-					"instead of restarting.",
+					"steps that already SUCCEEDED stay succeeded, so the DAG continues where it " +
+					"stopped instead of restarting.\n\n" +
+					"THE RE-ARMED STEPS INHERIT THE PREVIOUS ATTEMPT'S NOTES, so the worker builds on " +
+					"what was established rather than re-deriving it.",
 				Do: func(ctx context.Context) error { return m.rpcRetryFailedRun(ctx, id) },
+			})
+		}
+		// PAUSE — the non-destructive stop. Offered BEFORE abort on a running run, because the
+		// honest default when you want to stop is "keep my work", and abort is what used to be the
+		// only way to say that.
+		if meta == "running" {
+			acts = append(acts, kit2.Action{
+				Label: "pause run", Key: keyPauseRun, Source: srcRuns,
+				Confirm: "Pause run " + id + "?\n" +
+					"The run goes to PAUSED and its in-flight executions are asked to checkpoint. " +
+					"THE WORK IS KEPT: the worktree, the branch and every succeeded step stay, so " +
+					"resume continues from here instead of starting over. Use abort when you want " +
+					"to end the run.",
+				Do: func(ctx context.Context) error { return m.rpcPauseRun(ctx, id) },
+			})
+		}
+		// RESUME — continue a paused run, or re-arm a failed/aborted one in place.
+		if meta == "paused" {
+			acts = append(acts, kit2.Action{
+				Label: "resume run", Key: keyResumeRun, Source: srcRuns,
+				Confirm: "Resume paused run " + id + "?\n" +
+					"The run goes back to RUNNING on the same worktree and branch, and the DAG " +
+					"continues from the current step. Nothing is replayed.",
+				Do: func(ctx context.Context) error { return m.rpcResumeRun(ctx, id) },
 			})
 		}
 		if meta == "running" {
@@ -905,6 +941,27 @@ func (m *Model) defaultDeleteExecution(ctx context.Context, id string) error {
 		return errors.New("no execution client")
 	}
 	_, err := m.cl.Executions.DeleteExecution(ctx, connect.NewRequest(&apiv1.DeleteExecutionRequest{Id: id}))
+	return err
+}
+
+// rpcPauseRun stops a run at a resumable point, KEEPING its worktree, branch and succeeded steps.
+func (m *Model) rpcPauseRun(ctx context.Context, runID string) error {
+	if m.cl == nil || m.cl.Workflows == nil {
+		return errors.New("no workflow client — cannot pause the run")
+	}
+	_, err := m.cl.Workflows.PauseWorkflowRun(ctx, connect.NewRequest(&apiv1.PauseWorkflowRunRequest{
+		RunId:  runID,
+		Reason: pauseReason,
+	}))
+	return err
+}
+
+// rpcResumeRun continues a PAUSED run in place.
+func (m *Model) rpcResumeRun(ctx context.Context, runID string) error {
+	if m.cl == nil || m.cl.Workflows == nil {
+		return errors.New("no workflow client — cannot resume the run")
+	}
+	_, err := m.cl.Workflows.ResumeWorkflowRun(ctx, connect.NewRequest(&apiv1.ResumeWorkflowRunRequest{RunId: runID}))
 	return err
 }
 
