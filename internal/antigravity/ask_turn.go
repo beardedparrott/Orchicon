@@ -558,9 +558,23 @@ func (s *askSession) teardown() {
 		cancel()
 	}
 	if client != nil {
-		closeCtx, c := context.WithTimeout(context.Background(), acp.DefaultShutdownGrace+time.Second)
-		_ = client.Close(closeCtx)
-		c()
+		// BOUNDED ABOVE THE CLIENT'S OWN GRACE, and it must be: CloseAsk is the PLANE'S SHUTDOWN SEAM, so a
+		// child that will not die must cost one conversation a bounded delay rather than the whole plane a
+		// hang. acp.Client.Close is itself bounded; this is the outer guard for anything it cannot account
+		// for (a forked helper holding a pipe, a wedged transport).
+		done := make(chan struct{})
+		go func() {
+			closeCtx, c := context.WithTimeout(context.Background(), acp.DefaultShutdownGrace+time.Second)
+			_ = client.Close(closeCtx)
+			c()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(acp.DefaultShutdownGrace + 2*time.Second):
+			s.log.Warn("antigravity ask: the child did not close inside the shutdown grace — releasing the "+
+				"conversation anyway (a plane shutdown must not hang on one child)", "conversation", s.convID)
+		}
 	}
 	if pumpDone != nil {
 		select {
