@@ -7,7 +7,10 @@ package acp
 // configOptions, modes, tool args/rawInput/rawOutput) — agy adds fields between releases and a
 // client that decodes strictly stops working on the next one.
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"sort"
+)
 
 // ACP method names. Spelled once here so a typo is a compile error rather than a wire bug.
 const (
@@ -67,11 +70,11 @@ type PromptCapabilities struct {
 
 // AgentCapabilities is agy's self-description from `initialize`.
 type AgentCapabilities struct {
-	LoadSession         bool                        `json:"loadSession"`
-	PromptCapabilities  PromptCapabilities          `json:"promptCapabilities"`
-	SessionCapabilities map[string]json.RawMessage  `json:"sessionCapabilities"`
-	Auth                map[string]json.RawMessage  `json:"auth"`
-	Meta                json.RawMessage             `json:"meta"`
+	LoadSession         bool                       `json:"loadSession"`
+	PromptCapabilities  PromptCapabilities         `json:"promptCapabilities"`
+	SessionCapabilities map[string]json.RawMessage `json:"sessionCapabilities"`
+	Auth                map[string]json.RawMessage `json:"auth"`
+	Meta                json.RawMessage            `json:"meta"`
 
 	// Raw is the whole agentCapabilities object, for fields this struct does not model.
 	Raw json.RawMessage `json:"-"`
@@ -115,12 +118,56 @@ type AuthenticateParams struct {
 }
 
 // MCPServer is one MCP server declaration for `session/new`.
+//
+// THE STDIO SHAPE IS THE RECORDED ONE: `{name, command, args}` (mcp_tool_call.jsonl sends exactly
+// that and agy connects). Two fields exist for the shapes the recording did not exercise:
+//
+//   - Env is a JSON value on purpose, because ACP declares a stdio server's environment as a
+//     BEGIN/END list of `{name,value}` entries rather than a map. We render that list; the recording
+//     simply never sent one.
+//   - Type/Headers describe a REMOTE server, which agy 1.5.13 was never recorded accepting. A caller
+//     that renders one should say so (mcp.go logs it) rather than assume it works.
 type MCPServer struct {
 	Name    string          `json:"name"`
 	Command string          `json:"command,omitempty"`
 	Args    []string        `json:"args,omitempty"`
 	Env     json.RawMessage `json:"env,omitempty"`
 	URL     string          `json:"url,omitempty"`
+	// Type selects the transport for a remote server ("http"). Omitted for stdio, so the recorded
+	// shape is byte-identical.
+	Type string `json:"type,omitempty"`
+	// Headers are the remote server's extra request headers, as the same {name,value} list shape as
+	// Env.
+	Headers json.RawMessage `json:"headers,omitempty"`
+}
+
+// EnvEntry is one `{name,value}` pair of an ACP environment/header list.
+type EnvEntry struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// EnvList renders a map as the ACP `{name,value}` list, sorted by name so the wire form is stable
+// (Go map order is not) and a diff of two launches is readable. An empty map returns nil so the key
+// is omitted entirely.
+func EnvList(m map[string]string) json.RawMessage {
+	if len(m) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(m))
+	for k := range m {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	entries := make([]EnvEntry, 0, len(names))
+	for _, k := range names {
+		entries = append(entries, EnvEntry{Name: k, Value: m[k]})
+	}
+	b, err := json.Marshal(entries)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // systemPromptMeta is the `_meta.antigravity.systemPrompt.append` block. agy only accepts a
