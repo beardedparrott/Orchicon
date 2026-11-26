@@ -82,10 +82,14 @@ func TestOpaqueMCPToolsAreActionsInThePolicy(t *testing.T) {
 	if !Allows(Iteration, opaque) {
 		t.Error("iteration may not run an opaque MCP tool — that is the ONE mode that may act")
 	}
-	// The platform's OWN server stays classified by the table: a planner tool is still refused wherever it
-	// already was, and the prefixed spelling now classifies too.
-	if Allows(Iteration, "mcp__orchicon__create_work_item") {
-		t.Error("iteration may run mcp__orchicon__create_work_item — the prefix stripping is what keeps the table honest")
+	// The platform's OWN server stays classified by the table, and the prefixed spelling classifies too: a
+	// work tool is refused where the table refuses it, whichever spelling the model emits.
+	if Allows(Brainstorm, "mcp__orchicon__bash") {
+		t.Error("brainstorm may run mcp__orchicon__bash — the prefix stripping is what keeps the table honest")
+	}
+	// ...and Iteration, which refuses nothing, may author work through the prefixed spelling too.
+	if !Allows(Iteration, "mcp__orchicon__create_work_item") {
+		t.Error("iteration may not run mcp__orchicon__create_work_item — it is the planner as well as the hands")
 	}
 	for _, mode := range []string{Brainstorm, QuickWork} {
 		if !Allows(mode, "mcp__orchicon__create_work_item") {

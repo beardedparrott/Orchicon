@@ -2450,8 +2450,8 @@ function AskOrchiconPage() {
                     This pill read "Brainstorm" on every conversation whatever its real mode — one of three
                     places carrying the same hardcoded single-mode assumption (lib/conversationModes.ts makes
                     the list one thing now). It is worth fixing rather than leaving as a cosmetic oddity: the
-                    mode is ENFORCED by the platform, so in Iteration the planning tools are refused and in
-                    Brainstorm the work tools are, which makes a pill that names the wrong mode a statement
+                    mode is ENFORCED by the platform, so in Brainstorm and Quick Work the work tools are refused
+                    while Iteration refuses nothing, which makes a pill that names the wrong mode a statement
                     about what this conversation can DO, not just a mislabel. */}
                 <span
                   className="shrink-0 inline-flex items-center gap-1 rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-medium text-violet-700 dark:bg-violet-900/30 dark:text-violet-300"

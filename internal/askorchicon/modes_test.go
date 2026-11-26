@@ -110,18 +110,28 @@ func TestEveryModeSharesThePlatformAndToolKnowledge(t *testing.T) {
 	}
 }
 
-// ITERATION NEVER PROPOSES WORK ITEMS OR WORKFLOWS.
-func TestIterationNeverProposesWorkItemsOrWorkflows(t *testing.T) {
+// ITERATION IS THE HANDS AND THE PLANNER: it may author and run work items, and says so.
+func TestIterationMayAuthorAndRunWork(t *testing.T) {
 	p := BuildSystemPrompt(modeIteration, testAgentConfig(), testToolRegistry(), "")
 
-	if !strings.Contains(p, "DO NOT propose creating work items in this mode") {
-		t.Error("iteration does not forbid proposing work items")
+	// The old refusal is GONE: a prompt that still forbids what the gate now allows would have the model
+	// talk itself out of the very action the operator asked this mode to do.
+	for _, gone := range []string{
+		"DO NOT propose creating work items in this mode",
+		"THE PLATFORM ENFORCES THIS: creating or updating a work item",
+		"a work item to run later, a workflow to fire — that is not this mode",
+	} {
+		if strings.Contains(p, gone) {
+			t.Errorf("iteration still carries the old refusal %q", gone)
+		}
 	}
-	// The instruction must not be softened anywhere by the brainstorm drafting rules,
-	// whose first step is to ask which workflow to bind.
-	if strings.Contains(p, "## Workflow & runtime prompt") {
-		t.Error("iteration carries the work-item drafting rules — that contract is about CREATING items, " +
-			"which this mode never does")
+	if !strings.Contains(p, "You can ALSO plan and dispatch from here") {
+		t.Error("iteration does not tell the model it may author and run work")
+	}
+	// It carries the work-item AUTHORING contract (workflow + runtime binding, acceptance criteria, the
+	// links), because it can now create items and an item without it is a malformed one.
+	if !strings.Contains(p, "## Workflow & runtime prompt") {
+		t.Error("iteration can create work items but does not carry the drafting rules")
 	}
 	// And it must not tell the agent to propose a work item FIRST, which is the
 	// brainstorm principle this mode exists in contrast to.
@@ -475,25 +485,34 @@ func TestTheIntegrationMapBlockIsSharedAndThePlacementTailsAreNot(t *testing.T) 
 		}
 	}
 
-	placements := map[string]string{
-		modeBrainstorm: "## The integration map in every work item",
-		modeIteration:  "## Working in the open means showing the map",
-		modeQuickWork:  "## The map travels with the brief",
+	// Iteration carries TWO tails: where the map goes when it does the work (in the reply), and — because it
+	// may now author work items too — the rule for what goes INTO an item. Brainstorm and Quick Work carry
+	// only their own.
+	placements := map[string][]string{
+		modeBrainstorm: {"## The integration map in every work item"},
+		modeIteration:  {"## Working in the open means showing the map", "## The integration map in every work item"},
+		modeQuickWork:  {"## The map travels with the brief"},
 	}
 	for _, mode := range everyMode {
 		p := BuildSystemPrompt(mode, testAgentConfig(), testToolRegistry(), "")
-		want, ok := placements[mode]
+		wants, ok := placements[mode]
 		if !ok {
 			t.Fatalf("%s has no expected placement tail — a mode added later must be added here too", mode)
 		}
-		if !strings.Contains(p, want) {
-			t.Errorf("%s does not carry its own map-placement tail %q", mode, want)
+		own := map[string]bool{}
+		for _, want := range wants {
+			own[want] = true
+			if !strings.Contains(p, want) {
+				t.Errorf("%s does not carry its own map-placement tail %q", mode, want)
+			}
 		}
-		// And no OTHER mode's tail leaked in: the placement rule is mode-specific or it is not a rule.
-		for other, heading := range placements {
-			if other != mode && strings.Contains(p, heading) {
-				t.Errorf("%s carries %s's placement tail %q — the modes' map-placement rules have blurred",
-					mode, other, heading)
+		// And no tail the mode does NOT own leaked in: the placement rule is mode-specific or it is not a rule.
+		for other, headings := range placements {
+			for _, heading := range headings {
+				if other != mode && !own[heading] && strings.Contains(p, heading) {
+					t.Errorf("%s carries %s's placement tail %q — the modes' map-placement rules have blurred",
+						mode, other, heading)
+				}
 			}
 		}
 	}
@@ -533,10 +552,10 @@ func TestIterationShowsTheMapAndClosesItInTheSameSession(t *testing.T) {
 			t.Errorf("iteration is missing %q — this mode must show the map, then close every edge it named", want)
 		}
 	}
-	// The tail must not smuggle in brainstorm's authoring vocabulary: this mode authors no work items, and a
-	// rule about what goes INTO one would be a rule this mode cannot act on.
-	if strings.Contains(p, "The integration map in every work item") {
-		t.Error("iteration carries brainstorm's map-into-the-item rule — Iteration authors no work items")
+	// Iteration may now author work items, so it carries the rule for what goes INTO one as well; the
+	// reply-side tail above is still how it shows the map for the work it does itself.
+	if !strings.Contains(p, "The integration map in every work item") {
+		t.Error("iteration can author work items but lacks the map-into-the-item rule")
 	}
 }
 

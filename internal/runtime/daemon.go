@@ -54,10 +54,19 @@ type Daemon struct {
 	AllowedRootsSource func(ctx context.Context) ([]string, error)
 	// ExePath is the daemon's own executable, bind-mounted read-only into every runtime container at
 	// /usr/local/bin/orchicon so the container can exec `orchicon runtime-supervisor` /.
-	ExePath   string
-	CPUs      string
+	ExePath string
+	CPUs    string
+	// Memory is the per-container memory limit handed to the engine's --memory. "0" or "" means NO LIMIT:
+	// the container uses host memory as it needs it (the default; see unlimitedMemory).
 	Memory    string
 	TmpfsSize string
+	// StoreTmpfsSize sizes the PRIVATE tmpfs mounted at serveDataDir, which holds the container's opencode
+	// session store. It is a mount of its own, not a directory of /tmp, because a worker's scratch (Go test
+	// binaries, build output) shares /tmp's 2 GiB: when that fills, the store cannot write and opencode
+	// reports "Failed to execute statement" for every turn that follows. Measured: with /tmp full, a SQLite
+	// write in the store dir fails ("database or disk is full") when it is part of /tmp and succeeds when it
+	// is its own tmpfs.
+	StoreTmpfsSize string
 	// HomeTmpfsSize sizes the uid-owned tmpfs mounted at the runtime uid's $HOME, and at a private
 	// adapter data home.
 	HomeTmpfsSize string
@@ -1041,14 +1050,35 @@ func (d *Daemon) createFlagArgs(name string, req CreateRequest) []string {
 	args := d.Engine.CreateBaseArgs(name, workflowLabel, instanceID(req.InstanceID))
 	args = append(args, "--user", fmt.Sprintf("%d:%d", d.UserID, d.GroupID))
 	args = append(args, d.Engine.UsernsArgs()...)
+	args = append(args, "--cpus", d.CPUs)
+	args = append(args, memoryArgs(d.Memory)...)
 	args = append(args,
-		"--cpus", d.CPUs,
-		"--memory", d.Memory,
 		// A private tmpfs sized to TmpfsSize, mountable exec.
 		"--tmpfs", fmt.Sprintf("/tmp:rw,size=%s,exec", d.TmpfsSize),
 	)
+	// THE SESSION STORE'S OWN MOUNT, after /tmp's: the engine mounts by path depth, so this nests inside it
+	// and survives /tmp filling up. uid-owned for the same reason the HOME tmpfs is (see tmpfsOwned).
+	if size := strings.TrimSpace(d.StoreTmpfsSize); size != "" && size != "0" {
+		args = append(args, "--tmpfs", d.tmpfsOwned(serveDataDir, size))
+	}
 	args = append(args, d.Engine.PublishArgs(defaultServePort, sandboxPlanePort)...)
 	return args
+}
+
+// unlimitedMemory is the Memory value that means "no limit".
+const unlimitedMemory = "0"
+
+// memoryArgs renders the engine's memory flag. NO LIMIT IS THE DEFAULT, and that is a decision, not an
+// omission: a cap set below what a Go build and its tmpfs need made every run on a large host thrash against
+// its own limit (15,764 memory-limit hits in one run) and then fail. A container's memory is the host's to
+// give; operators who want a ceiling set ORCHICON_RUNTIME_MEMORY (for example 16g). "0" and "" both mean
+// unlimited, and the flag is then OMITTED rather than passed as 0, so no engine has to interpret it.
+func memoryArgs(mem string) []string {
+	m := strings.TrimSpace(mem)
+	if m == "" || m == unlimitedMemory {
+		return nil
+	}
+	return []string{"--memory", m}
 }
 
 // standardHostMountArgs returns the daemon-appended host-home arg block for a create request: the
@@ -1375,8 +1405,20 @@ func supervisorErrorFrom(out []byte) string {
 	return ""
 }
 
+// maxServeConfigBytes is the ceiling for the serve config, which is exec'd as ONE environment string.
+// Linux's MAX_ARG_STRLEN is 131072 including the "NAME=" prefix and the NUL; the margin keeps clear of it.
+const maxServeConfigBytes = 120000
+
 // startServe asks the in-container supervisor to bring up `opencode serve` (idempotent.
 func (d *Daemon) startServe(name, kind string, req CreateRequest) (int, string, bool, error) {
+	// THE CONFIG TRAVELS IN ONE ENV STRING, and Linux refuses to exec a process with a single env string
+	// over MAX_ARG_STRLEN (128 KiB): the failure is "fork/exec …: argument list too long", which names
+	// neither the variable nor its size. Say it here, where the size is known.
+	if len(req.ServeConfig) > maxServeConfigBytes {
+		return 0, "", false, fmt.Errorf("serve config is %d bytes, over the %d-byte limit for one environment string "+
+			"(Linux MAX_ARG_STRLEN): opencode cannot be exec'd with it. Large content (worker prompts) must be "+
+			"referenced as files rather than inlined", len(req.ServeConfig), maxServeConfigBytes)
+	}
 	reqJSON, err := json.Marshal(AgentRequest{
 		Cmd: "serve",
 		// The demanded adapter kind whose serve this starts.

@@ -196,14 +196,15 @@ func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, m
 			b.log.Info("orchicon: follow-up worktree gone — using project dir", "execution", exec.ID, "worktree", manifest.WorktreePath)
 		}
 	}
-	var tools ToolRegistry = NewHostTools(workingDir, manifest.ProjectDir)
+	host := NewHostTools(workingDir, manifest.ProjectDir)
+	var tools ToolRegistry = host
 	b.mu.Lock()
 	rtClient := b.rtClient
 	b.mu.Unlock()
 	// A follow-up NEVER routes to the container (the run is terminal).
 	if !forFollowUp && nativeContainerRouteEnabled(rtClient != nil, manifest) {
 		runID := manifest.RuntimeWorkflowID
-		tools = NewContainerHostTools(workingDir, manifest.ProjectDir,
+		host = NewContainerHostTools(workingDir, manifest.ProjectDir,
 			func(cctx context.Context, command string, env []string, cwd string) (string, string, int, error) {
 				res, err := rtClient.Exec(cctx, runID, runtime.ExecRequest{
 					Command:    command,
@@ -216,8 +217,18 @@ func (b *NativeBridge) buildSession(ctx context.Context, exec db.ExecutionRow, m
 				}
 				return res.Stdout, res.Stderr, res.ExitCode, nil
 			})
+		tools = host
 	}
 	var cleanups []func()
+	// THE EXECUTION'S SANDBOX SCRATCH ENDS WITH THE EXECUTION. Its bash had XDG_DATA_HOME redirected into a
+	// private directory under /tmp/orchicon/sessions, and anything a worker built there (a podman image store
+	// is tens of GB) used to live on, in RAM, for good. Removing it here is the per-execution cleanup; the
+	// server's sweeper is the backstop for a crash that never reaches this line.
+	cleanups = append(cleanups, func() {
+		if err := host.CleanupScratch(); err != nil {
+			b.log.Warn("orchicon: sandbox scratch not fully removed", "execution", exec.ID, "error", err)
+		}
+	})
 	if mt != nil {
 		tools = &combinedRegistry{primary: tools, secondary: mt}
 		cleanups = append(cleanups, func() { _ = mt.Close() })

@@ -46,28 +46,28 @@ func TestTheReadOnlySuiteSurvivesInEveryMode(t *testing.T) {
 	}
 }
 
-// ITERATION MAY NOT AUTHOR OR DISPATCH THE PLAN.
-func TestIterationRefusesThePlanAndTheDispatch(t *testing.T) {
+// ITERATION IS THE HANDS AND THE PLANNER: it may author and dispatch the plan, and it keeps its hands.
+func TestIterationMayPlanAndDispatchAndKeepsItsHands(t *testing.T) {
 	for _, tool := range []string{
 		"create_work_item", "update_work_item",
 		"schedule_work_item", "reorder_work_items", "control_sequence",
 		"force_progress_workflow_run", "retry_failed_workflow_run",
 	} {
-		if ok, _ := modeAllowsTool(modeIteration, tool); ok {
-			t.Errorf("iteration may run %q — writing the plan or firing the pipeline is not this mode's job", tool)
+		if ok, refusal := modeAllowsTool(modeIteration, tool); !ok {
+			t.Errorf("iteration may not run %q: %s — it is the planner as well as the hands, so an operator never "+
+				"has to switch modes just to author or fire work", tool, refusal)
 		}
 	}
-	// AND IT KEEPS ITS HANDS. A gate that stopped Iteration editing code would leave the mode with nothing.
+	// AND IT KEEPS ITS HANDS.
 	for _, tool := range []string{"write", "edit", "batch_write", "bash"} {
 		if ok, refusal := modeAllowsTool(modeIteration, tool); !ok {
 			t.Errorf("iteration may not run %q: %s — that is the ONE thing this mode is for", tool, refusal)
 		}
 	}
-	// LIFECYCLE IS DELIBERATELY ALLOWED, and pinned so the exception is a decision rather than an oversight:
-	// archiving or restoring is hygiene, not authoring or dispatch, and blocking it could strand a mistake.
+	// LIFECYCLE hygiene (archive / restore / delete) is allowed, as it always was.
 	for _, tool := range []string{"archive_work_item", "restore_work_item", "delete_work_item"} {
 		if ok, _ := modeAllowsTool(modeIteration, tool); !ok {
-			t.Errorf("iteration may not run %q — lifecycle hygiene is deliberately outside the boundary", tool)
+			t.Errorf("iteration may not run %q — lifecycle hygiene must stay available", tool)
 		}
 	}
 }
@@ -132,14 +132,11 @@ func TestTheRealToolSurfaceRefusesTheWork(t *testing.T) {
 		t.Fatal("the orchicon_ prefix bypassed the gate — a branch cut went through as Brainstorm")
 	}
 
-	// AND ITERATION, WHOSE REFUSALS ARE THE OTHER SET.
-	iteration := withAskMode(context.Background(), modeIteration)
-	_, err = p.ExecuteAskTool(iteration, "create_work_item", `{"title":"t","project_id":"p"}`)
-	if err == nil {
-		t.Fatal("iteration created a work item — the hard block the operator asked for is not in force")
-	}
-	if !strings.Contains(err.Error(), "Brainstorm") {
-		t.Errorf("iteration's refusal does not name the mode that DOES this: %v", err)
+	// AND ITERATION REFUSES NOTHING. Asserted at the gate rather than by executing the tool: this stub
+	// service has no store, so running create_work_item would panic for reasons that have nothing to do
+	// with the mode.
+	if ok, refusal := modeAllowsTool(modeIteration, "create_work_item"); !ok {
+		t.Errorf("iteration's create_work_item was refused by the mode gate: %s", refusal)
 	}
 }
 
@@ -169,12 +166,9 @@ func TestTheToolSurfaceHidesWhatTheModeRefuses(t *testing.T) {
 		}
 	}
 
-	// ITERATION IS THE MIRROR IMAGE: it keeps the work tools and loses the plan tools.
+	// ITERATION KEEPS BOTH: the work tools AND the plan tools.
 	iteration := names(withAskMode(context.Background(), modeIteration))
-	if iteration["create_work_item"] {
-		t.Error("iteration is OFFERED create_work_item — the hard block the operator asked for is not in force")
-	}
-	for _, kept := range []string{"write", "edit", "bash", "read"} {
+	for _, kept := range []string{"create_work_item", "write", "edit", "bash", "read"} {
 		if !iteration[kept] {
 			t.Errorf("iteration is not offered %q — that is this mode's whole job", kept)
 		}

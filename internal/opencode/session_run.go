@@ -1198,6 +1198,9 @@ func (a *Adapter) recycleContainerServe(runtimeWorkflowID string) bool {
 	if !runtimeContainerRouteEnabled(a.rt != nil, scheduler.ExecutionManifest{RuntimeWorkflowID: runtimeWorkflowID}) {
 		return false
 	}
+	// SAMPLE BEFORE THE KILL: the kill discards the container's /tmp, which is the only place the evidence of
+	// WHY the store failed lives (see container_resources.go). Bounded to 5s and never blocks the recycle.
+	a.logContainerResources(runtimeWorkflowID)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := a.rt.Kill(ctx, runtimeWorkflowID); err != nil {

@@ -42,7 +42,7 @@ const MODE_META: Record<number, Omit<ConversationModeMeta, "value">> = {
   },
   [ConversationMode.ITERATION]: {
     label: "Iteration",
-    blurb: "Does the work: branches, edits, runs the tests and commits.",
+    blurb: "Does the work and plans it: branches, edits, runs the tests, commits, and can author and run work items.",
   },
   [ConversationMode.QUICK_WORK]: {
     label: "Quick Work",

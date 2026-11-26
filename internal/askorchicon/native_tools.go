@@ -204,6 +204,10 @@ func AskFileRoot(ctx context.Context, pool *db.Pool) (string, error) {
 // interactive boundary — any absolute path the operator can reach).
 func askHostToolsForRoot(svc *Service, scope AskFileScope, convID string) *orchicon.HostTools {
 	h := orchicon.NewHostToolsUnrestricted(scope.Dir)
+	// ONE scratch per conversation, not per call: a suite is rebuilt for every tool call, but a `podman build`
+	// in one call must still be there for the next. It is removed by the server's idle sweep (a conversation
+	// has no end event).
+	h.SetScratchSession("ask-" + convID)
 	// The session's WORKTREE is an additional default root alongside the project dir, restored if this
 	// conversation already rebound via set_workdir. ADDITIVE: worktree.Base.ExtraRoots is consulted only
 	// under AllowAnyPath (the interactive path), so the confined worker suite that uses NewHostTools is

@@ -292,7 +292,7 @@ func TestHostSuiteSplitAgreesWithAskmode(t *testing.T) {
 			}
 		}
 	}
-	// Iteration denies the plan tools, which are disjoint from the host suite.
+	// Iteration denies nothing, so every host-suite tool is allowed there.
 	for _, n := range hostSuiteToolNames {
 		if !askmode.Allows(askmode.Iteration, n) {
 			t.Errorf("Iteration mode denies host-suite tool %q — the gate-set and read-set must stay disjoint", n)
