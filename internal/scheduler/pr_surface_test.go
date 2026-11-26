@@ -241,7 +241,7 @@ func runPRStepSuccess(t *testing.T, pool *db.Pool, rc *WorkflowReconciler, runID
 	}
 	var triggers []recoveryTriggerReq
 	terminal, failed, err := rc.pollTaskStep(ctx, ttx.Tx, approvalTestTenant, &run, sr, "",
-		map[string]db.WorkflowStepRunRow{sr.StepID: sr}, &triggers)
+		map[string]db.WorkflowStepRunRow{sr.StepID: sr}, &triggers, nil)
 	if err != nil {
 		t.Fatalf("pollTaskStep: %v", err)
 	}

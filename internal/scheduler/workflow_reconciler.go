@@ -879,7 +879,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 			if s, ok := stepByID[sr.StepID]; ok {
 				stepCfg = s.Config
 			}
-			terminal, failed, err := r.pollTaskStep(ctx, ttx.Tx, tenantID, &run, sr, stepCfg, runByID, &recoveryTriggers)
+			terminal, failed, err := r.pollTaskStep(ctx, ttx.Tx, tenantID, &run, sr, stepCfg, runByID, &recoveryTriggers, steps)
 			if err != nil {
 				return err
 			}
@@ -1034,8 +1034,22 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 	// If the run has failed, skip the not-yet-dispatched steps so the UI accurately reflects the run
 	// state instead of showing them as "pending" forever.
 	if anyFailed {
+		// A LOOP THAT HAS NOT ROUTED YET IS NOT "NOT-YET-DISPATCHED" — IT IS DUE.
+		//
+		// This sweep is what actually killed the loop. Relaxing the hold gate (see
+		// loopDecisionUpstreamFailed) let a verdict-failed upstream through it, but by then this pass had
+		// already marked every pending step run `skipped`, the loop_decision included, and flipped the run
+		// to failed. The loop never got the turn it was waiting for.
+		//
+		// Runs whose loops have all decided return an empty set here and keep today's behaviour exactly.
+		oweLoop := loopDesiredDownstreams(steps, r.stepRunsOf(tenantID, runID))
 		for _, cur := range nonTerminal {
 			if cur.Status == domain.StepRunRunning {
+				continue
+			}
+			if oweLoop[cur.StepID] {
+				r.log.Info("run has a failed step but a loop_decision still has to route it — leaving its steps dispatchable",
+					"run", runID, "step", cur.StepID, "status", cur.Status)
 				continue
 			}
 			now2 := time.Now().UTC()
@@ -1105,7 +1119,7 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		if err := r.enqueueRunEvent(ctx, ttx.Tx, domain.WorkflowEventRunCompleted, run, ""); err != nil {
 			return fmt.Errorf("enqueue run_completed: %w", err)
 		}
-	} else if anyFailed && !anyRunning {
+	} else if anyFailed && !anyRunning && !r.loopOwesRouting(tenantID, runID, steps) {
 		now := time.Now().UTC()
 		// Update the linked work item to failed, carrying the run-level
 		// narrative.
@@ -1821,6 +1835,70 @@ func upstreamFaultedByInfra(status, verdict string) bool {
 		return false
 	}
 	return verdict == ""
+}
+
+// stepDeliveredVerdict returns the worker's OWN decision for a failed step, or "" when the failure was
+// not a judgement (a crash, a stall, a tool error, a dispatch fault).
+//
+// It reads the marker where the task reconciler writes it — on the WORK ITEM's results
+// (`internal/scheduler/reconciler.go`, `results["_verdict"]`) — and falls back to the copy the loop
+// chain leaves on the step run. Sharing ONE reader with loopDecisionUpstreamVerdict would be tidier,
+// but that one keys off the step run's `_work_item_id`; a step run marked terminal in the same pass may
+// not carry it yet, and losing the verdict here is what costs the whole attempt budget.
+func (r *WorkflowReconciler) stepDeliveredVerdict(ctx context.Context, tx pgx.Tx, tenantID string, sr db.WorkflowStepRunRow) string {
+	var stepResult struct {
+		Verdict string `json:"_verdict"`
+	}
+	_ = json.Unmarshal(sr.Result, &stepResult)
+	if stepResult.Verdict != "" {
+		return stepResult.Verdict
+	}
+	if wid := stepRunWorkItemID(sr); wid != "" {
+		if wi, err := db.GetWorkItem(ctx, tx, tenantID, wid); err == nil && len(wi.Results) > 0 {
+			var wiResult map[string]any
+			if json.Unmarshal(wi.Results, &wiResult) == nil {
+				if v, ok := wiResult["_verdict"].(string); ok {
+					return v
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// stepRunWorkItemID reads the bound work item id a step run recorded at dispatch. The step run column
+// set has no work-item field, so the dispatch-time result key is the only place it lives (the same key
+// loopDecisionUpstreamVerdict reads).
+func stepRunWorkItemID(sr db.WorkflowStepRunRow) string {
+	var result struct {
+		WorkItemID string `json:"_work_item_id"`
+	}
+	_ = json.Unmarshal(sr.Result, &result)
+	return result.WorkItemID
+}
+
+// loopOwesRouting reports whether any loop_decision in this run still has to route on a failure.
+//
+// It is the run-settle gate: while a loop is owed its turn, a run must not be declared failed, because
+// failing it is what stops the loop from ever firing. Once every loop has decided, this returns false
+// and a failing run fails exactly as before.
+func (r *WorkflowReconciler) loopOwesRouting(tenantID, runID string, allSteps []workflow.StepWire) bool {
+	runsOf := r.stepRunsOf(tenantID, runID)
+	for _, ld := range allSteps {
+		if loopStillRouting(ld, runsOf) {
+			return true
+		}
+	}
+	return false
+}
+
+// stepRunsOf returns a lister for every step run of a step id in this run, for the verdict-routing
+// rules. Superseded iterations are included; the rules decide what that means.
+func (r *WorkflowReconciler) stepRunsOf(tenantID, runID string) stepRunsByStepIDFunc {
+	return func(stepID string) ([]db.WorkflowStepRunRow, error) {
+		ctx := context.Background()
+		return listStepRunsByStepID(ctx, nil, tenantID, runID, stepID)
+	}
 }
 
 // loopDecisionUpstreamFailed reports whether ANY upstream dependency of a loop_decision step is
@@ -3915,7 +3993,7 @@ func (r *WorkflowReconciler) stepRunResultWithVerdict(ctx context.Context, tx pg
 	return raw, nil
 }
 
-func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenantID string, run *db.WorkflowRunRow, sr db.WorkflowStepRunRow, stepConfig string, runByID map[string]db.WorkflowStepRunRow, recoveryTriggers *[]recoveryTriggerReq) (bool, bool, error) {
+func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenantID string, run *db.WorkflowRunRow, sr db.WorkflowStepRunRow, stepConfig string, runByID map[string]db.WorkflowStepRunRow, recoveryTriggers *[]recoveryTriggerReq, allSteps []workflow.StepWire) (bool, bool, error) {
 	var parsed struct {
 		WorkItemID string `json:"_work_item_id"`
 	}
@@ -4086,6 +4164,25 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 			default:
 				return false, false, nil
 			}
+		}
+	}
+
+	// A DELIVERED VERDICT IS A DECISION, NOT A FAULT — AND THE LOOP MUST GET IT.
+	//
+	// This check sits ABOVE the attempt budget on purpose. The budget below is what charged a QA verdict
+	// against `max_attempts` and, with `summarize_restart`, resumed the same step on the same work item
+	// until it was gone: six executions on run 01M8B2A33SB9, 15 seconds apart, no checkpoint, no
+	// worktree, an identical `Output` each time. The judgement never changed, so no attempt could.
+	//
+	// Same predicate the loop's hold gate and the loop chain already use (upstreamFaultedByInfra), so all
+	// three now agree on what "failed" means. Scoped to a step that a live loop_decision will actually
+	// route on; see verdict_routing.go for why that walk is transitive.
+	if routedLoop, ok := verdictRoutedLoop(sr.StepID, allSteps, r.stepRunsOf(tenantID, run.ID)); ok {
+		if verdict := r.stepDeliveredVerdict(ctx, tx, tenantID, sr); verdict != "" {
+			r.log.Info("task step delivered a verdict — routing to the loop instead of recovering",
+				"run", run.ID, "step", sr.StepID, "work_item", wi.ID,
+				"loop_decision", routedLoop, "verdict", verdict, "attempt", sr.Attempt)
+			return true, true, nil
 		}
 	}
 
