@@ -59,6 +59,7 @@ import {
 import type { WorkflowRun, Workflow as WorkflowProto } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { Project } from "@/api/gen/orchicon/api/v1/project_pb";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toast";
 import { SequenceControls } from "@/components/work-items/sequence-controls";
 import { bulkControlsFor } from "@/components/work-items/run-controls";
 import { SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
@@ -224,6 +225,9 @@ function SchedulesPage() {
   // believes they paused five runs and paused three. Rows whose status makes a gesture illegal keep
   // it disabled, with the eligible count in the title, so the refusal is explainable.
   const controlSequence = useControlSequence();
+  // useToast returns an API object ({success,error,info}), not a callable — the typecheck caught the
+  // misuse, which lint and vitest both let through (lint has no types; vitest transpiles them away).
+  const toast = useToast();
   const handleBulkControl = async (action: SequenceAction) => {
     const ids = Array.from(selected);
     if (ids.length === 0) return;
@@ -241,11 +245,17 @@ function SchedulesPage() {
       action === SequenceAction.PAUSE ? "Paused"
       : action === SequenceAction.RESUME ? "Resumed"
       : "Started";
-    toast(
-      refused === 0
-        ? `${verb} ${ok} item${ok === 1 ? "" : "s"}`
-        : `${verb} ${ok}, refused ${refused} — see each row for the reason`,
-    );
+    const msg = `${verb} ${ok} item${ok === 1 ? "" : "s"}`;
+    if (refused === 0) {
+      toast.success(msg);
+    } else {
+      // PARTIAL FAILURE IS NOT A SUCCESS. Reported through the error channel so a bulk action that
+      // skipped half the selection cannot read as though it covered all of it.
+      toast.error(`${msg}, refused ${refused}`, {
+        title: "Some rows were refused",
+        duration: 7000,
+      });
+    }
   };
 
   const handleRemoveSchedule = (ids: string[] = Array.from(selected)) => {
@@ -405,12 +415,14 @@ function SchedulesPage() {
         </select>
 
         {selected.size > 0 && (() => {
-          // Eligibility for the whole selection. Computed once so the three buttons cannot disagree.
-          const selItems = view === "running"
-            ? items.filter((i) => selected.has(i.id))
-            : view === "upcoming"
-              ? upcomingItems.filter((i) => selected.has(i.id))
-              : [];
+          // ELIGIBILITY FOR THE WHOLE SELECTION, resolved through itemsById rather than through a
+          // per-view list: this page's selection keys are ITEM ids for upcoming/running rows and RUN
+          // ids for history rows (see resolveRowKey), and itemsById already holds every item this
+          // page has. Reaching for a view's local list was the bug — `items`/`upcomingItems` belong
+          // to the CHILD components and are not in scope here, which the typecheck caught.
+          const selItems = Array.from(selected)
+            .map((key) => itemsById.get(resolveRowKey(key)))
+            .filter((i): i is NonNullable<typeof i> => i !== undefined);
           const bulk = bulkControlsFor(selItems.map((i) => i.status));
           return (
           <>
