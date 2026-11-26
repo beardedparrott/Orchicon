@@ -10,6 +10,8 @@ package runtime
 // makes it testable without an engine.
 
 import (
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -79,5 +81,31 @@ func TestAntigravityPreflightIgnoresOtherKinds(t *testing.T) {
 	}
 	if err := d.antigravityPreflight(CreateRequest{}); err != nil {
 		t.Fatalf("preflight refused an empty boot profile: %v", err)
+	}
+}
+
+// AC3, the "fails fast" half: the refusal happens BEFORE the container engine is touched at all.
+// A gate that ran after `engine run` would still fail, but only after creating (or half-creating) a
+// container, which is the difference between an actionable error and a leaked runtime.
+func TestAntigravityPreflightRunsBeforeAnyEngineCall(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "")
+	engineCalls := 0
+	d := &Daemon{
+		Paths: NewPathMapper("linux", ""),
+		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		engineFn: func(args ...string) (string, error) {
+			engineCalls++
+			return "", nil
+		},
+	}
+	_, err := d.createContainerInner("probe", antigravityRequest(authmethod.MethodOAuthPersonal, nil))
+	if err == nil {
+		t.Fatal("createContainerInner created a container for an oauth-personal antigravity run")
+	}
+	if err.Error() != authmethod.ContainerOAuthPersonalRefusal {
+		t.Fatalf("error = %q, want the exact actionable refusal", err.Error())
+	}
+	if engineCalls != 0 {
+		t.Fatalf("the container engine was called %d time(s) before the refusal; the gate must run first", engineCalls)
 	}
 }

@@ -11,6 +11,8 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -170,5 +172,34 @@ func TestSpawnSpecRequiresKeyForAPIKeyMethod(t *testing.T) {
 func TestSpawnSpecRejectsUnknownMethod(t *testing.T) {
 	if _, err := antigravity.BuildSpawnSpec("", antigravity.SpawnSettings{AuthMethod: "personal"}, "", nil); err == nil {
 		t.Fatal("BuildSpawnSpec accepted an unknown auth method")
+	}
+}
+
+// AC2, the log half: a spec logged through a REAL file handler leaves no key value in the file an
+// operator (or a bug report) would hand over.
+func TestSpawnSpecLeavesNoKeyInALogFile(t *testing.T) {
+	spec, err := antigravity.BuildSpawnSpec("", antigravity.SpawnSettings{AuthMethod: authmethod.MethodGeminiAPIKey}, testAPIKey, nil)
+	if err != nil {
+		t.Fatalf("BuildSpawnSpec: %v", err)
+	}
+	logPath := filepath.Join(t.TempDir(), "plane.log")
+	f, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+	log := slog.New(slog.NewJSONHandler(f, nil))
+	log.Info("antigravity spawn", "spec", spec)
+	if err := f.Close(); err != nil {
+		t.Fatalf("close log: %v", err)
+	}
+	logged, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if strings.Contains(string(logged), testAPIKey) {
+		t.Fatalf("the plane log contains the API key: %s", logged)
+	}
+	if !strings.Contains(string(logged), authmethod.APIKeySecretName) {
+		t.Fatalf("the plane log does not even name the env var: %s", logged)
 	}
 }

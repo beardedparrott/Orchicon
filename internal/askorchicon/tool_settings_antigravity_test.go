@@ -71,6 +71,8 @@ func TestSettingsToolAntigravity(t *testing.T) {
 	// AC1: a never-configured tenant reads the shipped defaults, under the literal keys the
 	// acceptance criteria name.
 	settings := readSettings()
+	t.Logf("fresh get_settings: antigravity_auth_method=%v antigravity_share_telemetry=%v tos_notice=%q",
+		settings["antigravity_auth_method"], settings["antigravity_share_telemetry"], settings["antigravity_tos_notice"])
 	if got := settings["antigravity_auth_method"]; got != authmethod.MethodOAuthPersonal {
 		t.Fatalf("fresh antigravity_auth_method = %v, want oauth-personal", got)
 	}
@@ -86,6 +88,8 @@ func TestSettingsToolAntigravity(t *testing.T) {
 		t.Fatalf("toolUpdateSettings(gemini-api-key, telemetry=true): %v", err)
 	}
 	settings = readSettings()
+	t.Logf("after update_settings: antigravity_auth_method=%v antigravity_share_telemetry=%v",
+		settings["antigravity_auth_method"], settings["antigravity_share_telemetry"])
 	if got := settings["antigravity_auth_method"]; got != authmethod.MethodGeminiAPIKey {
 		t.Fatalf("antigravity_auth_method = %v, want gemini-api-key", got)
 	}
