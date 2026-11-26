@@ -54,10 +54,19 @@ type Daemon struct {
 	AllowedRootsSource func(ctx context.Context) ([]string, error)
 	// ExePath is the daemon's own executable, bind-mounted read-only into every runtime container at
 	// /usr/local/bin/orchicon so the container can exec `orchicon runtime-supervisor` /.
-	ExePath   string
-	CPUs      string
+	ExePath string
+	CPUs    string
+	// Memory is the per-container memory limit handed to the engine's --memory. "0" or "" means NO LIMIT:
+	// the container uses host memory as it needs it (the default; see unlimitedMemory).
 	Memory    string
 	TmpfsSize string
+	// StoreTmpfsSize sizes the PRIVATE tmpfs mounted at serveDataDir, which holds the container's opencode
+	// session store. It is a mount of its own, not a directory of /tmp, because a worker's scratch (Go test
+	// binaries, build output) shares /tmp's 2 GiB: when that fills, the store cannot write and opencode
+	// reports "Failed to execute statement" for every turn that follows. Measured: with /tmp full, a SQLite
+	// write in the store dir fails ("database or disk is full") when it is part of /tmp and succeeds when it
+	// is its own tmpfs.
+	StoreTmpfsSize string
 	// HomeTmpfsSize sizes the uid-owned tmpfs mounted at the runtime uid's $HOME, and at a private
 	// adapter data home.
 	HomeTmpfsSize string
@@ -1041,14 +1050,35 @@ func (d *Daemon) createFlagArgs(name string, req CreateRequest) []string {
 	args := d.Engine.CreateBaseArgs(name, workflowLabel, instanceID(req.InstanceID))
 	args = append(args, "--user", fmt.Sprintf("%d:%d", d.UserID, d.GroupID))
 	args = append(args, d.Engine.UsernsArgs()...)
+	args = append(args, "--cpus", d.CPUs)
+	args = append(args, memoryArgs(d.Memory)...)
 	args = append(args,
-		"--cpus", d.CPUs,
-		"--memory", d.Memory,
 		// A private tmpfs sized to TmpfsSize, mountable exec.
 		"--tmpfs", fmt.Sprintf("/tmp:rw,size=%s,exec", d.TmpfsSize),
 	)
+	// THE SESSION STORE'S OWN MOUNT, after /tmp's: the engine mounts by path depth, so this nests inside it
+	// and survives /tmp filling up. uid-owned for the same reason the HOME tmpfs is (see tmpfsOwned).
+	if size := strings.TrimSpace(d.StoreTmpfsSize); size != "" && size != "0" {
+		args = append(args, "--tmpfs", d.tmpfsOwned(serveDataDir, size))
+	}
 	args = append(args, d.Engine.PublishArgs(defaultServePort, sandboxPlanePort)...)
 	return args
+}
+
+// unlimitedMemory is the Memory value that means "no limit".
+const unlimitedMemory = "0"
+
+// memoryArgs renders the engine's memory flag. NO LIMIT IS THE DEFAULT, and that is a decision, not an
+// omission: a cap set below what a Go build and its tmpfs need made every run on a large host thrash against
+// its own limit (15,764 memory-limit hits in one run) and then fail. A container's memory is the host's to
+// give; operators who want a ceiling set ORCHICON_RUNTIME_MEMORY (for example 16g). "0" and "" both mean
+// unlimited, and the flag is then OMITTED rather than passed as 0, so no engine has to interpret it.
+func memoryArgs(mem string) []string {
+	m := strings.TrimSpace(mem)
+	if m == "" || m == unlimitedMemory {
+		return nil
+	}
+	return []string{"--memory", m}
 }
 
 // standardHostMountArgs returns the daemon-appended host-home arg block for a create request: the
