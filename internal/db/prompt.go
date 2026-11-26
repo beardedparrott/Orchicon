@@ -111,7 +111,7 @@ func LocalBrowserBlock() string {
 	sb.WriteString("    ```\n\n")
 	sb.WriteString("- `--no-sandbox` is harmless here and is the flag that was verified; drop it only if a normal launch works for you.\n")
 	sb.WriteString("- **Start the app on the host first** (e.g. `npm run dev`), wait until the port answers, then navigate. Screenshot into `/tmp/orchicon/` and **read the PNG back with your Read tool** — inspecting the pixels is the verification, not the DOM alone. Iterate at a desktop viewport (1280x800) and a mobile one (~375x667).\n")
-	sb.WriteString("- **`localhost:8080`/`:5432` on the host is the LIVE Orchicon plane** (this run is in-process, not sandboxed). Point a browser at the app you started, never at the real plane's data; use a disposable DSN for anything DB-backed.\n")
+	sb.WriteString("- **`localhost:8080` on the host is the DEV Orchicon instance — your test target; `localhost:8091` is PROD and is off limits.** This run is in-process, not sandboxed, so dev is directly reachable: use it for live verification and restart it if a criterion needs that. Never point anything at 8091 or DB 5432.\n")
 	sb.WriteString("- If the page needs a backend, run it locally too, or note the CORS/cross-origin caveat in your report rather than silently skipping the check.\n")
 	return sb.String()
 }
@@ -156,7 +156,8 @@ func localEnvironmentBlock() string {
 	var sb strings.Builder
 	sb.WriteString("\n## Runtime environment\n\n")
 	sb.WriteString("You are running IN-PROCESS on the host — there is NO container for this run (the project is in `local` execution mode). Everything you install or write outside the project directory persists on the host.\n\n")
-	sb.WriteString("- **LIVE plane warning:** `127.0.0.1:5432`, `localhost:5432`, and `172.17.0.1:8080` are the LIVE Orchicon plane. NEVER point `ORCHICON_TEST_DSN` at them and never write test rows there — the dispatcher refuses those DSNs and fails the execution closed. Use a disposable database (or run with no DSN) for DB-backed tests.\n")
+	sb.WriteString("- **PROD is `localhost:8091` with database `127.0.0.1:5432` — NEVER touch either.** No reads that matter, no writes, no migration, no restart. The dispatcher refuses a test DSN naming 5432 and fails the execution closed, which is correct: that is the operator's live data.\n")
+	sb.WriteString("- **DEV is `localhost:8080` with database `localhost:5433` — this is your test target and you may write to it, create in it, and restart it.** Create the work items, workers, projects and runs your task needs there, and DELETE them when you are done. For DB-backed tests prefer a disposable database on the dev cluster (e.g. `orchicon_test_<something>`) so concurrent runs cannot collide.\n")
 	sb.WriteString("- **Scratch directory:** `/tmp/orchicon` is the ONE place outside the project you may read and write. Put ephemeral files there (screenshots, logs, downloaded artifacts you need to inspect). Always save final outputs to the project directory.\n")
 	sb.WriteString("- You run as the host user: do not attempt `sudo`.\n")
 	sb.WriteString("- A display may or may not exist: this host reports DISPLAY=:0 and a live X socket, but do not rely on one — prefer headless/offscreen modes for repeatability (e.g. `QT_QPA_PLATFORM=offscreen`). A toolkit that needs a display fails the moment one is not attached.\n")

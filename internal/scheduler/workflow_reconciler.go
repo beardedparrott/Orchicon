@@ -1852,9 +1852,9 @@ func upstreamFaultedByInfra(status, verdict string) bool {
 // infrastructure fault, because `_verdict` is stamped only when the failure is judged to have been
 // CAUSED by a verdict. The decision field is the worker's judgement and is stamped for every report.
 //
-//	1. `_verdict`  the narrow, deliberate signal
-//	2. `_decision` the worker's own report ("failure" from `ORCHICON WORKER SUMMARY: failure`)
-//	3. the work item's `_verdict` — where the recovery engine records it
+//  1. `_verdict`  the narrow, deliberate signal
+//  2. `_decision` the worker's own report ("failure" from `ORCHICON WORKER SUMMARY: failure`)
+//  3. the work item's `_verdict` — where the recovery engine records it
 //
 // Empty means the step died WITHOUT a judgement (crash, stall, tool error), and recovery still owns
 // those. That is the distinction the whole classifier rests on, so it is made in one place.
