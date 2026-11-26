@@ -100,7 +100,11 @@ func TestDispatchStillHoldsForPendingAndPruned(t *testing.T) {
 
 // THE RETRY PATH must re-provision a FAILED worktree, not leave it failed-with-a-path.
 func TestRetryResetsAFailedWorktreeToPending(t *testing.T) {
-	src, err := os.ReadFile("../workflow/service.go")
+	// The retry core lives in run_control.go now, shared by the run RPC and the work item page.
+	// BOTH files are read: the invariant is "the retry re-provisions a failed worktree", not "the
+	// string appears in a particular file", and asserting it against the wrong file would let it
+	// regress silently.
+	src, err := os.ReadFile("../workflow/run_control.go")
 	if err != nil {
 		t.Fatalf("read source: %v", err)
 	}

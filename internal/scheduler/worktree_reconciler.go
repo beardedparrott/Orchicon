@@ -395,6 +395,11 @@ func (r *WorktreeReconciler) sweepOrphanRun(ctx context.Context, tenantID string
 			return r.clearSweptRunBranch(ctx, tenantID, run)
 		}
 		return nil
+	case domain.WorkflowRunPaused:
+		// A PAUSED RUN IS A KEPT RUN. Nothing is reclaimed: the worktree is the resume point,
+		// and the branch is the work. Pruning here would make "pause" indistinguishable from
+		// abort, which is the defect this status exists to remove.
+		return nil
 	case domain.WorkflowRunFailed, domain.WorkflowRunAborted:
 		if !r.isWorkItemReclaimable(ctx, tenantID, run.WorkItemID) {
 			return nil // retry target — keep
@@ -465,6 +470,9 @@ func (r *WorktreeReconciler) sweepOrphanStepBranch(ctx context.Context, tenantID
 		if !r.branchExists(ctx, projectDir, sr.WorktreeBranch) {
 			return r.clearSweptStepBranch(ctx, tenantID, sr)
 		}
+		return nil
+	case domain.WorkflowRunPaused:
+		// Same rule at step granularity — see the run-level case above.
 		return nil
 	case domain.WorkflowRunFailed, domain.WorkflowRunAborted:
 		if !r.isWorkItemReclaimable(ctx, tenantID, run.WorkItemID) {

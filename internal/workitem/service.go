@@ -50,7 +50,11 @@ type Service struct {
 	sequenceStartFn  StartSequenceStarter
 	sequenceResumeFn ResumeSequenceStarter
 	sequenceStopFn   StopSequenceStarter
-	runtimeImageFn   RuntimeImageResolver
+	// retryRunFn resumes a failed/aborted run IN PLACE — the difference between RESUME and RESTART.
+	retryRunFn RetryRunResumer
+	// pauseRunFn stops a run at a resumable point, keeping its worktree and branch.
+	pauseRunFn     PauseRunStarter
+	runtimeImageFn RuntimeImageResolver
 	// archiveConflictHook is a test-only seam: invoked with the attempt number (1 = initial, 2 = the
 	// one-shot retry) right after ArchiveWorkItem's read+validate for that attempt and before.
 	archiveConflictHook func(attempt int)
@@ -80,6 +84,19 @@ func (s *Service) SetResumeSequenceStarter(fn ResumeSequenceStarter) { s.sequenc
 // SetStopSequenceStarter injects the function that parks a sequence parent (parent → pending,
 // scheduled start cleared).
 func (s *Service) SetStopSequenceStarter(fn StopSequenceStarter) { s.sequenceStopFn = fn }
+
+// RetryRunResumer resumes a failed or aborted workflow run in place: succeeded steps are
+// kept, only failed/skipped/blocked steps are re-armed, and the worktree is re-attached.
+type RetryRunResumer func(ctx context.Context, tenantID, runID string) (resetStepCount int, err error)
+
+// PauseRunStarter stops a run at a resumable point, keeping its worktree and branch.
+type PauseRunStarter func(ctx context.Context, tenantID, runID, reason string) error
+
+// SetRetryRunResumer injects the in-place run resume used by a leaf RESUME.
+func (s *Service) SetRetryRunResumer(fn RetryRunResumer) { s.retryRunFn = fn }
+
+// SetPauseRunStarter injects the run pause used by a PAUSE action.
+func (s *Service) SetPauseRunStarter(fn PauseRunStarter) { s.pauseRunFn = fn }
 
 // SetRuntimeImageResolver injects the function that resolves the base
 // runtime image tag, used to stamp the work item's runtime_image default.
@@ -1860,11 +1877,17 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id must not be empty"))
 	}
 	switch msg.Action {
-	case apiv1.SequenceAction_SEQUENCE_ACTION_START,
+	// SEQUENCE_ACTION_START and SEQUENCE_ACTION_RESTART are the SAME NUMBER (START is a
+	// deprecated alias), so naming both here is a no-op at the wire level and documentation at
+	// the source level: the operation was always a restart.
+	// START is a deprecated ALIAS of RESTART (same numeric value), so it cannot be named
+	// separately in a Go switch — the single RESTART case below accepts both.
+	case apiv1.SequenceAction_SEQUENCE_ACTION_RESTART,
 		apiv1.SequenceAction_SEQUENCE_ACTION_RESUME,
-		apiv1.SequenceAction_SEQUENCE_ACTION_STOP:
+		apiv1.SequenceAction_SEQUENCE_ACTION_STOP,
+		apiv1.SequenceAction_SEQUENCE_ACTION_PAUSE:
 	default:
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("action must be one of START, RESUME, STOP"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("action must be one of RESTART, RESUME, STOP, PAUSE"))
 	}
 
 	// Load the item and determine whether it is a sequence parent (has children) or a leaf (bound to a
@@ -1885,7 +1908,7 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 	isParent := len(children) > 0
 
 	switch msg.Action {
-	case apiv1.SequenceAction_SEQUENCE_ACTION_START:
+	case apiv1.SequenceAction_SEQUENCE_ACTION_RESTART: // includes the deprecated START alias
 		if isParent {
 			// START is destructive (wipes prior child successes).
 			if IsActiveRunStatus(current.Status) {
@@ -1962,20 +1985,46 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 				return nil, connect.NewError(connect.CodeInternal, err)
 			}
 		} else {
-			// Leaf RESUME: re-arm a halted/parked leaf — reset to pending and
-			// fire its bound workflow.
+			// Leaf RESUME RESUMES. THIS IS THE FIX FOR "resume never works properly".
+			//
+			// What used to be here was indistinguishable from START: the same two guards
+			// (refuse when WorkflowRunID != "", refuse when active/ready/assigned) followed by
+			// the same `startWorkflowFn` call. Since the only run it could have resumed is
+			// exactly the one those guards refuse, the leaf branch could never resume anything
+			// — it created a brand-new run and left the old run's progress untouched. Two
+			// buttons, one behaviour, and the gentler label on the destructive one.
+			//
+			// RESUME now continues the work that exists: the bound run is resumed in place, so
+			// succeeded steps stay succeeded and only the failed ones are re-armed.
 			if current.WorkflowID == nil || *current.WorkflowID == "" {
 				return nil, connect.NewError(connect.CodeInvalidArgument,
 					errors.New("cannot RESUME a leaf work item with no workflow bound"))
 			}
-			if current.WorkflowRunID != "" || IsActiveRunStatus(current.Status) ||
-				current.Status == domain.WorkItemReady || current.Status == domain.WorkItemAssigned {
+			// A live run cannot be resumed — but that is now an honest, specific refusal rather
+			// than a blanket one that also covered the resumable case.
+			if IsActiveRunStatus(current.Status) || current.Status == domain.WorkItemReady ||
+				current.Status == domain.WorkItemAssigned {
 				return nil, connect.NewError(connect.CodeFailedPrecondition,
-					errors.New("cannot RESUME a work item that is already running or queued for dispatch"))
+					errors.New("cannot RESUME a work item that is running or queued — use STOP or PAUSE first"))
 			}
-			if s.startWorkflowFn == nil {
-				return nil, connect.NewError(connect.CodeUnavailable, errors.New("workflow starter not wired"))
+			if s.retryRunFn == nil {
+				return nil, connect.NewError(connect.CodeUnavailable, errors.New("run resume not wired"))
 			}
+
+			// Find the run to resume: the bound one, else the item's most recent run.
+			runID, status, err := s.resumableRunFor(ctx, ttx.Tx, tenantID, current)
+			if err != nil {
+				return nil, mapDBError(err)
+			}
+			if runID == "" {
+				return nil, connect.NewError(connect.CodeFailedPrecondition,
+					errors.New("cannot RESUME: this work item has no run to continue — use RESTART to start a new one"))
+			}
+			if status != domain.WorkflowRunFailed && status != domain.WorkflowRunAborted {
+				return nil, connect.NewError(connect.CodeFailedPrecondition,
+					fmt.Errorf("cannot RESUME: the run is %s — only a failed or aborted run can be resumed (use RESTART for a new one)", status))
+			}
+
 			if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.resumed", "work_item", current.ID,
 				audit.SnapshotStatus(current.Status), nil); err != nil {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.resumed: %w", err))
@@ -1983,10 +2032,37 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 			if err := ttx.Commit(ctx); err != nil {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
 			}
-			if err := s.startWorkflowFn(ctx, tenantID, *current.WorkflowID, current.ProjectID, msg.Id); err != nil {
+			reset, err := s.retryRunFn(ctx, tenantID, runID)
+			if err != nil {
 				return nil, connect.NewError(connect.CodeInternal, err)
 			}
+			s.log.Info("work item resumed in place", "work_item", current.ID, "run", runID, "reset_steps", reset)
 		}
+	case apiv1.SequenceAction_SEQUENCE_ACTION_PAUSE:
+		// PAUSE is the NON-DESTRUCTIVE stop: the run stops at a resumable point and keeps its
+		// worktree, branch and every succeeded step. STOP/ABORT end things; PAUSE waits.
+		if s.pauseRunFn == nil {
+			return nil, connect.NewError(connect.CodeUnavailable, errors.New("run pause not wired"))
+		}
+		runID, status, err := s.resumableRunFor(ctx, ttx.Tx, tenantID, current)
+		if err != nil {
+			return nil, mapDBError(err)
+		}
+		if runID == "" || (status != domain.WorkflowRunRunning && status != domain.WorkflowRunPending) {
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				fmt.Errorf("cannot PAUSE: no run in flight (%s)", orNoRun(status)))
+		}
+		if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.paused", "work_item", current.ID,
+			audit.SnapshotStatus(current.Status), nil); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit work_item.paused: %w", err))
+		}
+		if err := ttx.Commit(ctx); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+		}
+		if err := s.pauseRunFn(ctx, tenantID, runID, "paused from the work item"); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		s.log.Info("work item paused", "work_item", current.ID, "run", runID)
 	case apiv1.SequenceAction_SEQUENCE_ACTION_STOP:
 		// STOP halts the item: a parent parks its whole subtree (every descendant → pending, in-flight runs
 		// aborted), a leaf parks just itself and aborts its run.
@@ -2777,4 +2853,44 @@ func contextFilesFromJSONOrEmpty(data []byte) []string {
 		return nil
 	}
 	return paths
+}
+
+// resumableRunFor returns the run a RESUME/PAUSE should act on: the item's bound run when it
+// still exists, otherwise its most recent run.
+//
+// WHY NOT JUST current.WorkflowRunID: a failed run leaves the binding in place, but an item that
+// was stopped and re-filed can carry a stale or cleared id while its history still holds the run
+// worth continuing. Falling back to the latest run is what makes "resume this work" work from the
+// work item page, where the operator is looking at the ITEM, not at a run id.
+func (s *Service) resumableRunFor(ctx context.Context, tx pgx.Tx, tenantID string, wi db.WorkItemRow) (string, string, error) {
+	if wi.WorkflowRunID != "" {
+		if run, err := db.GetWorkflowRun(ctx, tx, tenantID, wi.WorkflowRunID); err == nil {
+			return run.ID, run.Status, nil
+		} else if !errors.Is(err, db.ErrNotFound) {
+			return "", "", err
+		}
+	}
+	runs, err := db.ListWorkflowRuns(ctx, tx, db.ListWorkflowRunsFilter{
+		TenantID:   tenantID,
+		WorkItemID: wi.ID,
+		PageSize:   1,
+		SortBy:     "started_at",
+		SortOrder:  "desc",
+	})
+	if err != nil {
+		return "", "", err
+	}
+	if len(runs) == 0 {
+		return "", "", nil
+	}
+	return runs[0].ID, runs[0].Status, nil
+}
+
+// orNoRun renders the "there is nothing to act on" case without leaking an empty string into an
+// operator-facing sentence.
+func orNoRun(status string) string {
+	if status == "" {
+		return "no run exists for this item"
+	}
+	return "run is " + status
 }

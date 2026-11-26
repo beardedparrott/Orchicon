@@ -17,7 +17,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, CreateWorkflowVersionRequest, CreateWorkflowVersionResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeleteWorkflowRunRequest, DeleteWorkflowRunResponse, DeleteWorkflowVersionRequest, DeleteWorkflowVersionResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, ForceProgressWorkflowRunRequest, ForceProgressWorkflowRunResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunDiagnosisRequest, GetWorkflowRunDiagnosisResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, RetryFailedWorkflowRunRequest, RetryFailedWorkflowRunResponse, RetryStepRunRequest, RetryStepRunResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowRequest, UpdateWorkflowResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
+import { AbortWorkflowRequest, AbortWorkflowResponse, AcquireWorkflowEditLockRequest, AcquireWorkflowEditLockResponse, CreateWorkflowRequest, CreateWorkflowResponse, CreateWorkflowVersionRequest, CreateWorkflowVersionResponse, DeleteWorkflowRequest, DeleteWorkflowResponse, DeleteWorkflowRunRequest, DeleteWorkflowRunResponse, DeleteWorkflowVersionRequest, DeleteWorkflowVersionResponse, DeprecateWorkflowRequest, DeprecateWorkflowResponse, ForceProgressWorkflowRunRequest, ForceProgressWorkflowRunResponse, GetWorkflowEditLockRequest, GetWorkflowEditLockResponse, GetWorkflowRequest, GetWorkflowResponse, GetWorkflowRunDiagnosisRequest, GetWorkflowRunDiagnosisResponse, GetWorkflowRunRequest, GetWorkflowRunResponse, GetWorkflowStepRunsRequest, GetWorkflowStepRunsResponse, ListWorkflowRunsRequest, ListWorkflowRunsResponse, ListWorkflowsRequest, ListWorkflowsResponse, ListWorkflowVersionsRequest, ListWorkflowVersionsResponse, PauseWorkflowRunRequest, PauseWorkflowRunResponse, PublishWorkflowRequest, PublishWorkflowResponse, ReleaseWorkflowEditLockRequest, ReleaseWorkflowEditLockResponse, ResumeWorkflowRunRequest, ResumeWorkflowRunResponse, RetryFailedWorkflowRunRequest, RetryFailedWorkflowRunResponse, RetryStepRunRequest, RetryStepRunResponse, StartWorkflowRequest, StartWorkflowResponse, StreamWorkflowEventsRequest, StreamWorkflowEventsResponse, UpdateWorkflowRequest, UpdateWorkflowResponse, UpdateWorkflowVersionRequest, UpdateWorkflowVersionResponse } from "./workflow_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -164,8 +164,45 @@ export const WorkflowService = {
       kind: MethodKind.Unary,
     },
     /**
+     * PauseWorkflow stops a running WorkflowRun at a resumable point: the run
+     * goes to `paused`, in-flight worker executions are checkpointed, and the
+     * run's worktree and branch are KEPT. ResumeWorkflow continues the same run
+     * from where it stopped.
+     *
+     * WHY THIS EXISTS SEPARATELY FROM ABORT. Abort is terminal, and aborting was
+     * also the only way to stop a run — so "I want to stop this for now" destroyed
+     * the branch and cancelled the work item, and the only way back was a fresh
+     * run from step 1. Pause is the gesture that keeps the work.
+     *
+     * @generated from rpc orchicon.api.v1.WorkflowService.PauseWorkflowRun
+     */
+    pauseWorkflowRun: {
+      name: "PauseWorkflowRun",
+      I: PauseWorkflowRunRequest,
+      O: PauseWorkflowRunResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * ResumeWorkflowRun continues a `paused` WorkflowRun: back to `running`, the
+     * same worktree/branch re-attached, the DAG resumed from the current step.
+     *
+     * @generated from rpc orchicon.api.v1.WorkflowService.ResumeWorkflowRun
+     */
+    resumeWorkflowRun: {
+      name: "ResumeWorkflowRun",
+      I: ResumeWorkflowRunRequest,
+      O: ResumeWorkflowRunResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
      * AbortWorkflow transitions a running WorkflowRun to aborted
      * (docs/02 §2.4). In-flight step runs are cancelled.
+     *
+     * ABORT SAVES THE WORK. It ends the RUN, not the work: the branch and the
+     * delivered commits are kept (so the run is resumable via RetryFailedWorkflowRun,
+     * which accepts aborted), and the bound work item goes to `failed` rather than
+     * `cancelled` so it is not terminal-non-replayable. Use CancelWorkItem when you
+     * actually mean "throw this work away".
      *
      * @generated from rpc orchicon.api.v1.WorkflowService.AbortWorkflow
      */

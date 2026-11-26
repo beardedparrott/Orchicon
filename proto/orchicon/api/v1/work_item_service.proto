@@ -121,11 +121,42 @@ service WorkItemService {
 }
 
 // SequenceAction enumerates the manual sequence control gestures.
+//
+// THE NAMES ARE THE POINT. START and RESUME used to be indistinguishable on a
+// LEAF work item — both called startWorkflowFn behind the same two guards — so
+// "Resume" created a brand-new run and never consulted the previous one. Renaming
+// START to RESTART is not cosmetic: it says out loud that the operation is
+// destructive, so the non-destructive one can be made to actually resume.
 enum SequenceAction {
+  // START is kept as a deprecated alias of RESTART (same number), so this enum
+  // needs proto3 alias support.
+  option allow_alias = true;
+
   SEQUENCE_ACTION_UNSPECIFIED = 0;
-  SEQUENCE_ACTION_START = 1; // re-fire the chain from child #1 (destructive)
-  SEQUENCE_ACTION_RESUME = 2; // continue from the first non-succeeded child
-  SEQUENCE_ACTION_STOP = 3; // park the chain (parent → pending, schedule cleared)
+  // RESTART re-fires the chain from child #1 — DESTRUCTIVE: prior child successes,
+  // the existing run and its step progress are discarded. On a leaf this creates a
+  // NEW run.
+  //
+  // Wire-compatible with the old SEQUENCE_ACTION_START (same number, and START
+  // remains as a deprecated alias): "start" was always this operation, it was just
+  // named as though it were not.
+  SEQUENCE_ACTION_RESTART = 1;
+  // Deprecated alias for SEQUENCE_ACTION_RESTART. Kept so existing callers and
+  // clients keep working; both values mean restart.
+  SEQUENCE_ACTION_START = 1 [deprecated = true];
+  // RESUME continues the work that already exists. On a parent, from the first
+  // non-succeeded child. On a leaf, the bound run is resumed IN PLACE: succeeded
+  // steps stay succeeded, only failed/skipped/blocked steps are re-armed, and the
+  // run's worktree/branch is re-attached. It refuses when there is nothing
+  // resumable, and says why.
+  SEQUENCE_ACTION_RESUME = 2;
+  // STOP parks the chain (parent → pending, schedule cleared). On a leaf it pauses
+  // its run.
+  SEQUENCE_ACTION_STOP = 3;
+  // PAUSE stops the run at a resumable point and KEEPS the worktree, branch and
+  // every succeeded step. This is the non-destructive stop; STOP/ABORT leave the
+  // work parked or over. Refused when the item has no run in flight.
+  SEQUENCE_ACTION_PAUSE = 4;
 }
 
 // RecurringFilter scopes ListWorkItems to recurring vs non-recurring items.

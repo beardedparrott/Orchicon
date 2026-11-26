@@ -414,7 +414,14 @@ func (r *WorkflowReconciler) reconcileRun(ctx context.Context, tenantID, runID s
 		}
 		return fmt.Errorf("get run: %w", err)
 	}
-	// Only progress non-terminal runs.
+	// Only progress non-terminal runs. PAUSED IS NON-TERMINAL BUT NOT PROGRESSABLE: the
+	// operator stopped it deliberately, so the reconciler must leave it exactly where it is —
+	// no dispatch, no recovery, no reaping of the worktree it exists to keep. It returns here
+	// rather than in the branch below, so nothing terminal (run events, work-item failure,
+	// runtime reaping) fires for a run that is merely waiting.
+	if run.Status == domain.WorkflowRunPaused {
+		return nil
+	}
 	if run.Status == domain.WorkflowRunCompleted || run.Status == domain.WorkflowRunFailed || run.Status == domain.WorkflowRunAborted {
 		if r.runtime != nil {
 			if err := r.runtime.ReapForRun(context.Background(), run.ID); err != nil {

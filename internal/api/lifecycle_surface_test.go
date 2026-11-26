@@ -12,7 +12,7 @@ import (
 )
 
 // generatedProcedures is the number of Connect procedures the generated clients declare.
-const generatedProcedures = 241
+const generatedProcedures = 243
 
 // lifecycleName matches a procedure or RPC that would put plane lifecycle control on the API.
 var lifecycleName = regexp.MustCompile(`(?i)(start|stop|restart|shutdown|lifecycle|status).*(plane|instance)|(plane|instance).*(start|stop|restart|shutdown|lifecycle)`)

@@ -32,28 +32,61 @@ const (
 )
 
 // SequenceAction enumerates the manual sequence control gestures.
+//
+// THE NAMES ARE THE POINT. START and RESUME used to be indistinguishable on a
+// LEAF work item — both called startWorkflowFn behind the same two guards — so
+// "Resume" created a brand-new run and never consulted the previous one. Renaming
+// START to RESTART is not cosmetic: it says out loud that the operation is
+// destructive, so the non-destructive one can be made to actually resume.
 type SequenceAction int32
 
 const (
 	SequenceAction_SEQUENCE_ACTION_UNSPECIFIED SequenceAction = 0
-	SequenceAction_SEQUENCE_ACTION_START       SequenceAction = 1 // re-fire the chain from child #1 (destructive)
-	SequenceAction_SEQUENCE_ACTION_RESUME      SequenceAction = 2 // continue from the first non-succeeded child
-	SequenceAction_SEQUENCE_ACTION_STOP        SequenceAction = 3 // park the chain (parent → pending, schedule cleared)
+	// RESTART re-fires the chain from child #1 — DESTRUCTIVE: prior child successes,
+	// the existing run and its step progress are discarded. On a leaf this creates a
+	// NEW run.
+	//
+	// Wire-compatible with the old SEQUENCE_ACTION_START (same number, and START
+	// remains as a deprecated alias): "start" was always this operation, it was just
+	// named as though it were not.
+	SequenceAction_SEQUENCE_ACTION_RESTART SequenceAction = 1
+	// Deprecated alias for SEQUENCE_ACTION_RESTART. Kept so existing callers and
+	// clients keep working; both values mean restart.
+	//
+	// Deprecated: Marked as deprecated in orchicon/api/v1/work_item_service.proto.
+	SequenceAction_SEQUENCE_ACTION_START SequenceAction = 1
+	// RESUME continues the work that already exists. On a parent, from the first
+	// non-succeeded child. On a leaf, the bound run is resumed IN PLACE: succeeded
+	// steps stay succeeded, only failed/skipped/blocked steps are re-armed, and the
+	// run's worktree/branch is re-attached. It refuses when there is nothing
+	// resumable, and says why.
+	SequenceAction_SEQUENCE_ACTION_RESUME SequenceAction = 2
+	// STOP parks the chain (parent → pending, schedule cleared). On a leaf it pauses
+	// its run.
+	SequenceAction_SEQUENCE_ACTION_STOP SequenceAction = 3
+	// PAUSE stops the run at a resumable point and KEEPS the worktree, branch and
+	// every succeeded step. This is the non-destructive stop; STOP/ABORT leave the
+	// work parked or over. Refused when the item has no run in flight.
+	SequenceAction_SEQUENCE_ACTION_PAUSE SequenceAction = 4
 )
 
 // Enum value maps for SequenceAction.
 var (
 	SequenceAction_name = map[int32]string{
 		0: "SEQUENCE_ACTION_UNSPECIFIED",
-		1: "SEQUENCE_ACTION_START",
+		1: "SEQUENCE_ACTION_RESTART",
+		// Duplicate value: 1: "SEQUENCE_ACTION_START",
 		2: "SEQUENCE_ACTION_RESUME",
 		3: "SEQUENCE_ACTION_STOP",
+		4: "SEQUENCE_ACTION_PAUSE",
 	}
 	SequenceAction_value = map[string]int32{
 		"SEQUENCE_ACTION_UNSPECIFIED": 0,
+		"SEQUENCE_ACTION_RESTART":     1,
 		"SEQUENCE_ACTION_START":       1,
 		"SEQUENCE_ACTION_RESUME":      2,
 		"SEQUENCE_ACTION_STOP":        3,
+		"SEQUENCE_ACTION_PAUSE":       4,
 	}
 )
 
@@ -3135,12 +3168,14 @@ const file_orchicon_api_v1_work_item_service_proto_rawDesc = "" +
 	"\x12DismissIdeaRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"M\n" +
 	"\x13DismissIdeaResponse\x126\n" +
-	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem*\x82\x01\n" +
+	"\twork_item\x18\x01 \x01(\v2\x19.orchicon.api.v1.WorkItemR\bworkItem*\xc2\x01\n" +
 	"\x0eSequenceAction\x12\x1f\n" +
-	"\x1bSEQUENCE_ACTION_UNSPECIFIED\x10\x00\x12\x19\n" +
-	"\x15SEQUENCE_ACTION_START\x10\x01\x12\x1a\n" +
+	"\x1bSEQUENCE_ACTION_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17SEQUENCE_ACTION_RESTART\x10\x01\x12\x1d\n" +
+	"\x15SEQUENCE_ACTION_START\x10\x01\x1a\x02\b\x01\x12\x1a\n" +
 	"\x16SEQUENCE_ACTION_RESUME\x10\x02\x12\x18\n" +
-	"\x14SEQUENCE_ACTION_STOP\x10\x03*\x9a\x01\n" +
+	"\x14SEQUENCE_ACTION_STOP\x10\x03\x12\x19\n" +
+	"\x15SEQUENCE_ACTION_PAUSE\x10\x04\x1a\x02\x10\x01*\x9a\x01\n" +
 	"\x0fRecurringFilter\x12 \n" +
 	"\x1cRECURRING_FILTER_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14RECURRING_FILTER_ALL\x10\x01\x12&\n" +

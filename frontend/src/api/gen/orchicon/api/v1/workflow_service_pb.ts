@@ -1243,6 +1243,181 @@ export class AbortWorkflowResponse extends Message<AbortWorkflowResponse> {
 }
 
 /**
+ * @generated from message orchicon.api.v1.PauseWorkflowRunRequest
+ */
+export class PauseWorkflowRunRequest extends Message<PauseWorkflowRunRequest> {
+  /**
+   * @generated from field: string run_id = 1;
+   */
+  runId = "";
+
+  /**
+   * Optional operator note, recorded on the run's event stream.
+   *
+   * @generated from field: string reason = 2;
+   */
+  reason = "";
+
+  constructor(data?: PartialMessage<PauseWorkflowRunRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.PauseWorkflowRunRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PauseWorkflowRunRequest {
+    return new PauseWorkflowRunRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PauseWorkflowRunRequest {
+    return new PauseWorkflowRunRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PauseWorkflowRunRequest {
+    return new PauseWorkflowRunRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PauseWorkflowRunRequest | PlainMessage<PauseWorkflowRunRequest> | undefined, b: PauseWorkflowRunRequest | PlainMessage<PauseWorkflowRunRequest> | undefined): boolean {
+    return proto3.util.equals(PauseWorkflowRunRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.PauseWorkflowRunResponse
+ */
+export class PauseWorkflowRunResponse extends Message<PauseWorkflowRunResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.WorkflowRun run = 1;
+   */
+  run?: WorkflowRun;
+
+  /**
+   * Executions that were asked to checkpoint on the way down. Empty when the
+   * run had nothing in flight.
+   *
+   * @generated from field: repeated string paused_execution_ids = 2;
+   */
+  pausedExecutionIds: string[] = [];
+
+  constructor(data?: PartialMessage<PauseWorkflowRunResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.PauseWorkflowRunResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "run", kind: "message", T: WorkflowRun },
+    { no: 2, name: "paused_execution_ids", kind: "scalar", T: 9 /* ScalarType.STRING */, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): PauseWorkflowRunResponse {
+    return new PauseWorkflowRunResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): PauseWorkflowRunResponse {
+    return new PauseWorkflowRunResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): PauseWorkflowRunResponse {
+    return new PauseWorkflowRunResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: PauseWorkflowRunResponse | PlainMessage<PauseWorkflowRunResponse> | undefined, b: PauseWorkflowRunResponse | PlainMessage<PauseWorkflowRunResponse> | undefined): boolean {
+    return proto3.util.equals(PauseWorkflowRunResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ResumeWorkflowRunRequest
+ */
+export class ResumeWorkflowRunRequest extends Message<ResumeWorkflowRunRequest> {
+  /**
+   * @generated from field: string run_id = 1;
+   */
+  runId = "";
+
+  constructor(data?: PartialMessage<ResumeWorkflowRunRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ResumeWorkflowRunRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "run_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ResumeWorkflowRunRequest {
+    return new ResumeWorkflowRunRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ResumeWorkflowRunRequest {
+    return new ResumeWorkflowRunRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ResumeWorkflowRunRequest {
+    return new ResumeWorkflowRunRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ResumeWorkflowRunRequest | PlainMessage<ResumeWorkflowRunRequest> | undefined, b: ResumeWorkflowRunRequest | PlainMessage<ResumeWorkflowRunRequest> | undefined): boolean {
+    return proto3.util.equals(ResumeWorkflowRunRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.ResumeWorkflowRunResponse
+ */
+export class ResumeWorkflowRunResponse extends Message<ResumeWorkflowRunResponse> {
+  /**
+   * @generated from field: orchicon.api.v1.WorkflowRun run = 1;
+   */
+  run?: WorkflowRun;
+
+  /**
+   * True when the run's worktree survived the pause and was re-attached. False
+   * means it was reclaimed underneath us and the resumed steps start cold (the
+   * prior attempt's summary still travels with them).
+   *
+   * @generated from field: bool worktree_reattached = 2;
+   */
+  worktreeReattached = false;
+
+  constructor(data?: PartialMessage<ResumeWorkflowRunResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.ResumeWorkflowRunResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "run", kind: "message", T: WorkflowRun },
+    { no: 2, name: "worktree_reattached", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ResumeWorkflowRunResponse {
+    return new ResumeWorkflowRunResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ResumeWorkflowRunResponse {
+    return new ResumeWorkflowRunResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ResumeWorkflowRunResponse {
+    return new ResumeWorkflowRunResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ResumeWorkflowRunResponse | PlainMessage<ResumeWorkflowRunResponse> | undefined, b: ResumeWorkflowRunResponse | PlainMessage<ResumeWorkflowRunResponse> | undefined): boolean {
+    return proto3.util.equals(ResumeWorkflowRunResponse, a, b);
+  }
+}
+
+/**
  * @generated from message orchicon.api.v1.GetWorkflowRunRequest
  */
 export class GetWorkflowRunRequest extends Message<GetWorkflowRunRequest> {

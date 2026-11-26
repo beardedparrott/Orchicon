@@ -2,6 +2,7 @@ package workflow_test
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"strconv"
@@ -175,8 +176,24 @@ func TestRetryFailedWorkflowRunDB(t *testing.T) {
 		if sr.WorkerExecutionID != "" {
 			t.Errorf("%s worker_execution_id should be cleared, got %q", name, sr.WorkerExecutionID)
 		}
-		if string(sr.Result) != "{}" {
-			t.Errorf("%s result should be reset to {}, got %q", name, string(sr.Result))
+		// THE RESULT IS NO LONGER BLANKED — IT CARRIES THE DEAD ATTEMPT FORWARD.
+		//
+		// This assertion used to require `{}`, and that blanking was the bug: the recovery
+		// engine's summary lived in this row and was thrown away, so the resumed worker
+		// re-derived conclusions already paid for. The step is re-armed, so what must survive is
+		// the PRIOR context and nothing that looks like a live execution.
+		var carried map[string]any
+		if err := json.Unmarshal(sr.Result, &carried); err != nil {
+			t.Fatalf("%s result is not JSON: %v (%q)", name, err, string(sr.Result))
+		}
+		if carried["_prior_attempt"] == nil {
+			t.Errorf("%s result lost _prior_attempt — the resumed worker starts blind", name)
+		}
+		if carried["_prior_summary"] != "stale result" {
+			t.Errorf("%s _prior_summary = %v, want the previous attempt's summary carried forward", name, carried["_prior_summary"])
+		}
+		if _, live := carried["_worker_execution_id"]; live {
+			t.Errorf("%s promoted an execution identity into the re-armed step", name)
 		}
 		if sr.EndedAt != nil {
 			t.Errorf("%s ended_at should be cleared, got %v", name, sr.EndedAt)
