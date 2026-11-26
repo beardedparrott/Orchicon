@@ -189,7 +189,7 @@ func TestDeferredStepReturnsToReadyInsteadOfRecovering(t *testing.T) {
 	defer ttx.Rollback(ctx)
 
 	var triggers []recoveryTriggerReq
-	terminal, failed, err := rc.pollTaskStep(ctx, ttx.Tx, approvalTestTenant, &run, step, "", map[string]db.WorkflowStepRunRow{}, &triggers)
+	terminal, failed, err := rc.pollTaskStep(ctx, ttx.Tx, approvalTestTenant, &run, step, "", map[string]db.WorkflowStepRunRow{}, &triggers, nil)
 	if err != nil {
 		t.Fatalf("pollTaskStep on a deferred step: %v", err)
 	}
