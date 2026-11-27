@@ -1,0 +1,44 @@
+[
+  {
+    "state": "loading",
+    "surface": "picker",
+    "verdict": "PASS",
+    "observation": "all of: Loading models"
+  },
+  {
+    "state": "not-installed",
+    "surface": "picker",
+    "verdict": "PASS",
+    "observation": "all of: Antigravity CLI (`agy`) not found, install from"
+  },
+  {
+    "state": "auth-error",
+    "surface": "picker",
+    "verdict": "PASS",
+    "observation": "all of: Antigravity is not signed in on the host"
+  },
+  {
+    "state": "stale",
+    "surface": "picker",
+    "verdict": "PASS",
+    "observation": "all of: may be stale, gemini-4-carbon-high"
+  },
+  {
+    "state": "mode-refused",
+    "surface": "conversation",
+    "verdict": "PASS",
+    "observation": "all of: REFUSED BY THE PLATFORM, run_command, read_url_content"
+  },
+  {
+    "state": "live",
+    "surface": "picker",
+    "verdict": "PASS",
+    "observation": "all of: gemini-4-carbon-high, 1.0M"
+  },
+  {
+    "state": "ac4-adapters",
+    "surface": "adapters",
+    "verdict": "PASS",
+    "observation": "adapter card: auth method + ToS notice"
+  }
+]

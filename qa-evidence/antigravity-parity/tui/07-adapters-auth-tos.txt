@@ -1,0 +1,48 @@
+                                   F1·Ask Orchicon   F2·Overview   F3·Work   F4·Execution   F5·Automation   F6·Enforcement   F7·Control
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌─ Adapters ────────────────────────────────────────────────────────────────────────┐┌─ Detail ─────────────────────────────────────────────────────────────────────────┐
+│  orchicon  orchicon v1.0.0 · ready                                                ││Adapter: antigravity                                                              │
+│  antigravity  antigravity v1.5.13 · ready                                         ││  id a-agy                                                                        │
+│1-2/2                                                                              ││  kind antigravity                                                                │
+│                                                                                   ││  version 1.5.13                                                                  │
+│                                                                                   ││  endpoint —                                                                      │
+│                                                                                   ││  status ready                                                                    │
+│                                                                                   ││  dispatch enabled                                                                │
+│                                                                                   ││  actions t: enable/disable (local dispatch filter)                               │
+│                                                                                   ││  binary /usr/bin/agy                                                             │
+│                                                                                   ││  auth method oauth-personal (host keyring: local runs only) · edit in Settings   │
+│                                                                                   ││  telemetry off                                                                   │
+│                                                                                   ││  api key secret not set — needed for gemini-api-key mode and for container runs (│
+│                                                                                   ││  terms notice Antigravity personal sign-in is used through Google's own `agy` bin│
+│                                                                                   ││                                                                                  │
+│                                                                                   ││                                                                                  │
+│                                                                                   ││                                                                                  │
+│                                                                                   ││                                                                                  │
+│                                                                                   ││                                                                                  │
+│                                                                                   ││                                                                                  │
+│                                                                                   ││                                                                                  │
+│                                                                                   ││                                                                                  │
+│                                                                                   ││                                                                                  │
+│                                                                                   ││                                                                                  │
+│                                                                                   ││                                                                                  │
+└───────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────────────────────────────┘
+ New conversation                                                                                                                 [minimize] [continue in conversations]
+ [context: Adapters: antigravity]
+ your message starts a new conversation
+
+
+
+
+
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  ❯                                                                                                                                                                     │
+│                                                                                                                                                                        │
+│                                                                                                                                                                        │
+│  ✓ adapters                                                                                                                                                            │
+│  ctrl+g text · ctrl+d diff · t: enable/disable (local dispatch filter) · ←/→: pane · r: refresh · ctrl+←/→: resize panes · enter send · alt+enter newline              │
+│  · / commands                                                                                                                                                          │
+│                                                                                                                                                          [brainstorm]  │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ ● connected · ○ plane down · http://127.0.0.1:35461 · server 0.0.0-agy-parity-fixture · — esc/ctrl+g content · Mouse Enabled

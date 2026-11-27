@@ -61,6 +61,8 @@ import {
 } from "@/lib/ask-activity-notice";
 import { transcriptPollMs } from "@/lib/ask-transcript-poll";
 import { toolCallsFromMessages, type CountableMessage } from "@/lib/ask-tool-summary";
+import { durableToolRows, toolRowKey } from "@/lib/ask-tool-rows";
+import { ToolCard } from "@/components/chat/ToolCard";
 import { useRailWidth } from "@/lib/diff/useRailWidth";
 import {
   useListConversations,
@@ -3596,6 +3598,15 @@ function MessageBubble({
   const reasoning = ("reasoning" in message ? (message as { reasoning?: string[] }).reasoning : undefined) as string[] | undefined;
   const hasReasoning = Array.isArray(reasoning) && reasoning.length > 0;
 
+  // THE TURN'S RECORDED TOOL CALLS, AS ROWS.
+  //
+  // They were DROPPED here, so a tool row existed only while the SSE stream was live: the moment a turn
+  // finalized and the page was re-read, every call it had made vanished from the transcript. On an
+  // antigravity turn those rows ARE the record of the work (agy reports `run_command`, `view_file`,
+  // `read_url_content` as tool calls), so a reloaded agy conversation showed a reply with no evidence
+  // behind it. See lib/ask-tool-rows.ts and its Go mirror internal/tui/chat/toolrows.go.
+  const toolRows = durableToolRows(message);
+
   // THE CARD COMES FROM ONE PLACE. `askCardOf` owns every rule — which of the message's ask calls
   // to draw (claude announces one twice, and the FIRST is a phantom with an empty result), whether
   // it is answered (a result is not an answer: an empty one and the awaiting marker are both "still
@@ -3628,6 +3639,17 @@ function MessageBubble({
           because nothing failed — the operator chose it. */}
       {message.metadata?.stopped && (
         <p className="mt-1 text-xs text-muted-foreground italic">{message.metadata.stopped}</p>
+      )}
+      {/* THE TURN'S TOOL CALLS, in ledger order, BETWEEN the prose and the card — the same position the
+          TUI draws them in (chat.conversationItems). Each row is the shared ToolCard, so an agy call
+          renders its subject (command, path or URL) from agy's own argument keys rather than a
+          truncated JSON object. */}
+      {toolRows.length > 0 && (
+        <div className="mt-1 space-y-1" data-testid="ask-tool-rows">
+          {toolRows.map((row, i) => (
+            <ToolCard key={toolRowKey(row, i)} tool={row} />
+          ))}
+        </div>
       )}
       {/* THE QUESTION CARD IS THE LAST THING IN THE MESSAGE.
 

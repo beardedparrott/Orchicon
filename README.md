@@ -35,7 +35,7 @@ The documentation lives at the project root:
 - **Event bus**: NATS JetStream
 - **Telemetry**: OpenTelemetry → the telemetry backends (Tempo + Loki + VictoriaMetrics), read by the native Telemetry panes — fully separated infra
 - **Policy**: Rego (Open Policy Agent)
-- **Runtime adapters**: pluggable gRPC sidecars — a **built-in native engine runs by default and needs nothing installed**, plus external adapters such as OpenCode. Adapters are optional and never bundled.
+- **Runtime adapters**: pluggable gRPC sidecars — a **built-in native engine runs by default and needs nothing installed**, plus external adapters (**OpenCode**, **Claude Code**, **Antigravity / `agy`**). Adapters are optional and never bundled.
 - **Frontend**: TypeScript + React + Vite + Connect-ES
 
 ## Last Release Changes
@@ -64,7 +64,7 @@ The installer downloads the binary, then runs `orchicon install` to set up every
 >
 > Every release also publishes `SHA256SUMS`; both installers verify the download against it and refuse a mismatch before anything is installed. To check a manual download by hand: `shasum -a 256 orchicon_<version>_darwin_<arch>.tar.gz` and compare it with that file. See [USERGUIDE.md §1 — macOS: Gatekeeper and verification](USERGUIDE.md#macos-gatekeeper-and-verification).
 
-> **Adapters are optional — the native engine needs nothing installed.** Orchicon ships its own runtime engine and runs sessions inside the control plane, so a fresh install is complete on its own: no adapter CLI, no binary probe, no serve. Install an external adapter (OpenCode, and future ones like Claude Code / Codex) only if you want to run work on that runtime. Orchicon **never bundles or ships** an adapter CLI — your own host install is bind-mounted into the containers at runtime, which keeps the product redistributable regardless of an adapter's licence (Claude Code's terms prohibit bundling).
+> **Adapters are optional — the native engine needs nothing installed.** Orchicon ships its own runtime engine and runs sessions inside the control plane, so a fresh install is complete on its own: no adapter CLI, no binary probe, no serve. Install an external adapter (OpenCode, Claude Code, Antigravity / `agy`) only if you want to run work on that runtime. Orchicon **never bundles or ships** an adapter CLI — your own host install is bind-mounted into the containers at runtime, which keeps the product redistributable regardless of an adapter's licence (Claude Code's terms prohibit bundling).
 >
 > To use OpenCode as a runtime, **install it as your own user — never with `sudo`**:
 >
@@ -75,6 +75,10 @@ The installer downloads the binary, then runs `orchicon install` to set up every
 > That writes `~/.opencode/bin/opencode`, the one location both the plane and its runtime containers can use. `sudo npm i -g` writes to `/usr/local/bin`, which no container mounts — the binary works in your shell and every execution fails to find it. **On Windows, install it as your own user on Windows itself** — the plane is a native Windows process (see [USERGUIDE.md §1](USERGUIDE.md#installing-an-adapter-cli)). Runtime *containers* are provisioned by default, and a workflow that runs inside one also needs the CLI in the Linux substrate the container runs in; that case is covered in the same section. See [USERGUIDE.md §1](USERGUIDE.md#installing-an-adapter-cli) for the full rules.
 >
 > `orchicon install` no longer requires it. A plane whose model refs need no adapter never probes for the binary, never starts a serve, and never mounts it into a container — see [ARCHITECTURE.md](ARCHITECTURE.md).
+>
+> **Antigravity (`agy`)** is Google's own CLI, driven over ACP, and it is **Ask-capable** — you can hold a conversation on it, not only dispatch runs. Install it as your own user from <https://antigravity.google/download> (Orchicon resolves `ORCHICON_AGY_BIN`, then `agy` on `PATH`). Sign-in is a **tenant setting** with four methods: `oauth-personal` (agy's cached login in the **host OS keyring** — local runs only, since a keyring cannot be mounted into a runtime container), `oauth-business`, `gemini-api-key` (the tenant secret `GEMINI_API_KEY`, the container-capable path) and `agent-platform`. With `oauth-personal` selected both clients show Google's Antigravity terms notice, verbatim from one server constant. Telemetry is **off by default** (`--disable-telemetry`) unless you opt in. Full detail: [USERGUIDE.md §11.2.1](USERGUIDE.md#1121-antigravity-agy-adapter).
+>
+> Model references are `adapter/provider/model` — `antigravity/google/gemini-4-neon-low` for agy (`google` is its only provider: agy serves Gemini **and** the `claude-*` models under one Google login).
 
 ```powershell
 # Windows (PowerShell) — NATIVE: installs orchicon.exe + orch.exe, no WSL2 or Docker required

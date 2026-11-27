@@ -46,6 +46,24 @@ import (
 // into connect.CodeFailedPrecondition carrying adapter.AntigravityAuthRequiredMessage.
 var ErrAntigravityAuth = errors.New(adapter.AntigravityAuthRequiredMessage)
 
+// ErrAntigravityNotInstalled is the sentinel for the OTHER "cannot work" precondition: there is no `agy`
+// executable on this host at all.
+//
+// IT IS SEPARATE FROM ErrAntigravityAuth ON PURPOSE. Both used to be the auth sentinel, so a host with no
+// `agy` told the operator to "run `agy` and sign in" — advice they cannot follow on a machine that has no
+// `agy` to run. handler.mapErr turns this one into connect.CodeUnavailable carrying
+// adapter.AntigravityNotInstalledMessage, and the clients render it as the model tier's EMPTY state.
+var ErrAntigravityNotInstalled = errors.New(adapter.AntigravityNotInstalledMessage)
+
+// antigravityNotInstalledError carries the install instruction with no transport prefix.
+type antigravityNotInstalledError struct {
+	cause error
+}
+
+func (e *antigravityNotInstalledError) Error() string { return adapter.AntigravityNotInstalledMessage }
+
+func (e *antigravityNotInstalledError) Unwrap() error { return ErrAntigravityNotInstalled }
+
 // AgyModel is one model an antigravity listing produced. ID is agy's BARE `modelId` (e.g.
 // "gemini-4-carbon-high") — never a 3-segment ref, because the picker composes `antigravity/google/<id>`
 // itself and a full ref here would produce a 4-segment ref
@@ -89,6 +107,10 @@ func (s *Service) listAntigravityModels(ctx context.Context, tenantID string) (M
 	if lister := s.antigravityLister(); lister != nil {
 		models, err := lister(ctx, tenantID)
 		switch {
+		case err != nil && errors.Is(err, ErrAntigravityNotInstalled):
+			// THE INSTALL PRECONDITION, not the sign-in one. It is never answered from the snapshot either: a
+			// model list on a host that cannot run agy at all would be a list the operator cannot use.
+			return ModelsResult{}, &antigravityNotInstalledError{cause: err}
 		case err != nil && errors.Is(err, ErrAntigravityAuth):
 			return ModelsResult{}, &antigravityAuthError{cause: err}
 		case err != nil:

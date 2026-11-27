@@ -1,0 +1,83 @@
+{
+  "_comment": "CROSS-CLIENT CONTRACT. Read verbatim by internal/toolclass/row_subject_test.go (Go) and by the GUI's Vitest suite (frontend/src/lib/tool-row-subject.test.ts). `tool` is the CANONICAL tool name as recorded (internal/antigravity/toolnames.go canonicalises run_command->bash, read_url_content->webfetch, grep_search->grep, view_file->read), `input` is the recorded arguments JSON exactly as the part carries it (agy's OWN key spellings are preserved there: CommandLine, TargetFile, Url, query), and `want` is the EXACT string toolclass.RowSubject(tool, input) returns. A case whose `want` is the empty string asserts that the row shows NO subject rather than a JSON dump or a fabricated one. Do not copy this file: assert against these bytes so the two clients cannot drift.",
+  "cases": [
+    {
+      "name": "agy run_command renders the COMMAND, from agy's CommandLine key",
+      "tool": "bash",
+      "input": "{\"CommandLine\":\"go test ./internal/tui/... -run Antigravity -v\",\"Cwd\":\"/home/op/project\"}",
+      "want": "go test ./internal/tui/... -run Antigravity -v"
+    },
+    {
+      "name": "opencode bash renders the command from its own key — the same row either way",
+      "tool": "bash",
+      "input": "{\"command\":\"make gate\"}",
+      "want": "make gate"
+    },
+    {
+      "name": "a bare-string bash input IS the command",
+      "tool": "bash",
+      "input": "\"ls -la\"",
+      "want": "ls -la"
+    },
+    {
+      "name": "agy write_to_file renders the PATH, from TargetFile",
+      "tool": "write",
+      "input": "{\"TargetFile\":\"/p/probe.txt\",\"CodeContent\":\"ok\\n\"}",
+      "want": "/p/probe.txt"
+    },
+    {
+      "name": "agy replace_file_content renders the PATH",
+      "tool": "edit",
+      "input": "{\"TargetFile\":\"/p/b.go\",\"ReplacementChunk\":\"x\"}",
+      "want": "/p/b.go"
+    },
+    {
+      "name": "agy view_file renders the PATH, from the AbsolutePath spelling",
+      "tool": "read",
+      "input": "{\"AbsolutePath\":\"/p/c.go\"}",
+      "want": "/p/c.go"
+    },
+    {
+      "name": "agy read_url_content renders the URL, not a JSON dump",
+      "tool": "webfetch",
+      "input": "{\"Url\":\"https://antigravity.google/docs\"}",
+      "want": "https://antigravity.google/docs"
+    },
+    {
+      "name": "agy search_web renders the QUERY",
+      "tool": "websearch",
+      "input": "{\"query\":\"agy acp permission\"}",
+      "want": "agy acp permission"
+    },
+    {
+      "name": "agy grep_search with a pattern and no path renders the PATTERN",
+      "tool": "grep",
+      "input": "{\"query\":\"TODO(agy)\"}",
+      "want": "TODO(agy)"
+    },
+    {
+      "name": "agy grep_search with a path renders the PATH, not the pattern",
+      "tool": "grep",
+      "input": "{\"SearchPath\":\"/p/internal\",\"query\":\"func Ask\"}",
+      "want": "/p/internal"
+    },
+    {
+      "name": "agy ask_question (no canonical equivalent) renders its question",
+      "tool": "ask_question",
+      "input": "{\"question\":\"Which colour?\"}",
+      "want": "Which colour?"
+    },
+    {
+      "name": "an empty input renders nothing at all — never a blank JSON scaffold",
+      "tool": "bash",
+      "input": "",
+      "want": ""
+    },
+    {
+      "name": "a JSON object with no scalar value renders nothing rather than flattening a body",
+      "tool": "write",
+      "input": "{\"CodeContent\":{\"nested\":true}}",
+      "want": ""
+    }
+  ]
+}

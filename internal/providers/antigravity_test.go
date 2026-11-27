@@ -390,3 +390,62 @@ func recordedAgyModelIDs(t *testing.T) map[string]bool {
 	t.Fatal("the acp recording carries no session/new availableModels — the snapshot has no measurement to agree with")
 	return nil
 }
+
+// --- the INSTALL precondition (AC: the empty / not-installed state) ----------
+//
+// A host with no `agy` and a host with a signed-out `agy` are two different operator problems with two
+// different fixes. Before this split both travelled as ErrAntigravityAuth, so the picker told an operator
+// to "run `agy` and sign in" on a machine that has no `agy` to run.
+
+// TestListProviderModels_GoogleNotInstalledIsItsOwnPrecondition pins the service layer: the install
+// failure must be distinguishable, and must carry the install sentence rather than the sign-in one.
+func TestListProviderModels_GoogleNotInstalledIsItsOwnPrecondition(t *testing.T) {
+	svc := providers.New(nil, nil, nil)
+	svc.SetAntigravityModelLister(func(context.Context, string) ([]providers.AgyModel, error) {
+		return nil, providers.ErrAntigravityNotInstalled
+	})
+	res, err := svc.ListProviderModels(context.Background(), testTenant, googleProviderID)
+	if err == nil {
+		t.Fatalf("a host with no agy returned %d models and no error — the operator would be shown a "+
+			"catalogue they cannot run", len(res.Models))
+	}
+	if !errors.Is(err, providers.ErrAntigravityNotInstalled) {
+		t.Errorf("error %v does not match providers.ErrAntigravityNotInstalled", err)
+	}
+	if errors.Is(err, providers.ErrAntigravityAuth) {
+		t.Error("the install failure also matched ErrAntigravityAuth — the client would render the sign-in " +
+			"sentence on a host with nothing to sign in to")
+	}
+	if got := err.Error(); got != adapter.AntigravityNotInstalledMessage {
+		t.Errorf("error message = %q, want adapter.AntigravityNotInstalledMessage verbatim", got)
+	}
+}
+
+// TestListProviderModels_GoogleNotInstalledMapsToUnavailable is the RPC half: CodeUnavailable carrying the
+// install sentence, so the GUI's empty state can render it without a Connect-code prefix.
+func TestListProviderModels_GoogleNotInstalledMapsToUnavailable(t *testing.T) {
+	h := newProvidersTestHandler(t)
+	h.Service().SetAntigravityModelLister(func(context.Context, string) ([]providers.AgyModel, error) {
+		return nil, providers.ErrAntigravityNotInstalled
+	})
+	ctx := tenant.WithID(context.Background(), testTenant)
+
+	resp, err := h.ListProviderModels(ctx, connect.NewRequest(&apiv1.ProviderModelsRequest{ProviderId: googleProviderID}))
+	if err == nil {
+		t.Fatalf("a host with no agy returned %d models and no error", len(resp.Msg.GetModels()))
+	}
+	var connErr *connect.Error
+	if !errors.As(err, &connErr) {
+		t.Fatalf("error %v is not a *connect.Error", err)
+	}
+	if connErr.Code() != connect.CodeUnavailable {
+		t.Errorf("code = %v, want CodeUnavailable (an install problem, not a fixable sign-in precondition)",
+			connErr.Code())
+	}
+	if got := connErr.Message(); got != adapter.AntigravityNotInstalledMessage {
+		t.Errorf("message = %q, want adapter.AntigravityNotInstalledMessage verbatim", got)
+	}
+	if strings.Contains(connErr.Message(), "sign in") {
+		t.Errorf("message %q tells the operator to sign in on a host with no agy", connErr.Message())
+	}
+}

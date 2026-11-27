@@ -1,0 +1,44 @@
+                    F1·Ask Orchicon   F2·Overview   F3·Work   F4·Execution   F5·Automation   F6·Enforcement   F7·Control
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+
+
+
+
+
+                               ┌─ Ask model — new conversation ─────────────────────────────────────────────┐
+                               │  ADAPTER  orchicon   antigravity   claude   opencode                       │
+                               │  PROVIDER  Google                                                          │
+                               │────────────────────────────────────────────────────────────────────────────│
+                               │  search: ▏                                                                 │
+                               │  Antigravity CLI (`agy`) not found — install from https://antigravity.googl│
+                               │                                                                            │
+                               │                                                                            │
+                               │                                                                            │
+                               │                                                                            │
+                               │                                                                            │
+                               │                                                                            │
+                               │                                                                            │
+                               │                                                                            │
+                               │                                                                            │
+                               │  0/0 models · antigravity/google/gemini-4-neon-low                         │
+                               │  tab: tier · ↑/↓: move · type: search · enter/space: select · esc: cancel  │
+                               └────────────────────────────────────────────────────────────────────────────┘
+
+                                Ask Orchicon anything. Plan, execute, and govern with real-time clarity and
+                                                               thin control.
+
+
+
+
+
+
+
+
+
+ ● connected · ○ plane down · http://127.0.0.1:35873 · server 0.0.0-agy-parity-fixture · — esc/ctrl+g content · Mouse Enabled

@@ -178,6 +178,19 @@ with its install at `~/.local/share/claude`; both are mounted into runtime
 containers, and the same *as-your-user, never-`sudo`* rule applies. Sign in on the
 host once so the CLI carries your own login.
 
+#### Antigravity (`agy`)
+
+Google's own `agy` CLI, driven over ACP. Install it as your own user from
+<https://antigravity.google/download>; Orchicon resolves it as `ORCHICON_AGY_BIN`, then `agy` on
+`PATH`, then the known install directories. **The CLI's name differs from the adapter kind on purpose**
+(kind `antigravity`, binary `agy`), and a host with no `agy` sees this in both clients rather than an
+empty model list:
+
+> Antigravity CLI (`agy`) not found — install from https://antigravity.google/download
+
+The full section — auth methods, the container limitation, the ToS notice and what agy's permission
+cards do — is [§11.2.1 Antigravity (`agy`) adapter](#1121-antigravity-agy-adapter) below.
+
 ### One-line install (Linux / macOS)
 
 ```bash
@@ -1910,10 +1923,117 @@ control is the **providers** behind an adapter: enable or disable those in
 *Settings → Providers* (§11.3). The dispatcher then routes work to adapters whose
 kind matches the model reference's adapter segment and whose heartbeat is healthy.
 
+**The `antigravity` card is the exception worth knowing.** For `agy` the question
+is not "did it register" but "is the vendor CLI installed here, how does it sign
+in, and what do its terms require me to know" — so that kind's card adds four
+rows the generic card cannot answer: the resolved binary (or the install
+sentence); the **auth method** with the caveat it carries; the **ToS notice**,
+shown on `oauth-personal` and supplied by the server as
+`TenantSettings.antigravity_tos_notice` (never retyped client-side); and the
+**API-key secret as presence only** — set or not set, never a value. The method
+itself is editable in *Settings → Defaults* (§11.3), so there is one write path.
+See [§11.2.1 Antigravity (`agy`) adapter](#1121-antigravity-agy-adapter).
+
 **The model-reference grammar.** A model reference is
 `adapter/provider/model`, and its **first segment selects and routes the
 per-worker adapter**. That one segment is the single source of truth for dispatch —
 there is no separate runtime reference.
+
+### 11.2.1 Antigravity (`agy`) adapter
+
+**What it is.** Google's own `agy` CLI, driven over ACP. Orchicon **runs `agy`** — it never reads,
+stores or proxies your Google credentials. It is the one adapter besides `opencode` and `claude`,
+and unlike them it is **Ask-capable**: you can hold a conversation on it, not only dispatch worker
+runs.
+
+| | |
+|---|---|
+| Adapter kind | `antigravity` |
+| Provider | `google` — the ONLY one (agy serves Gemini **and** the `claude-*` models under one Google login) |
+| Model reference | `antigravity/google/<agy model id>`, e.g. `antigravity/google/gemini-4-neon-low` |
+| Binary | `agy` |
+| Context window | 1M tokens on the current models |
+
+#### Install it
+
+Install as **your own user**, on the host where the plane runs — the same rule every adapter follows
+(never `sudo`, and on Windows not only on the Windows side; see
+[Installing an adapter CLI](#installing-an-adapter-cli)):
+
+```bash
+# Download from Google and install agy: https://antigravity.google/download
+```
+
+**If `agy` is missing**, both clients say exactly this, in the same words (one server constant):
+
+> Antigravity CLI (`agy`) not found — install from https://antigravity.google/download
+
+The model picker shows it in its empty state and Settings → Adapters shows it in the binary row. It is
+deliberately **not** the sign-in message: a host with no `agy` has nothing to sign in to, and telling
+that operator to "run `agy` and sign in" is an instruction they cannot follow.
+
+#### Sign in — and pick an auth method
+
+The method is a **tenant setting**, not a per-run flag, so both clients and every execution agree.
+Change it in **Settings → Defaults → Antigravity (Google agy) → Auth method**, or in the TUI on the
+Control → Settings form. Settings → Adapters shows the current method read-only (one write path, never
+two).
+
+| Method | Where the credential lives | Use it when |
+|---|---|---|
+| `oauth-personal` (default) | the **host** OS keyring, via agy's own cached login | you run `agy` on this machine and signed in there |
+| `oauth-business` | Google Workspace tenancy | your org's Workspace policy applies |
+| `gemini-api-key` | the tenant secret **`GEMINI_API_KEY`** on the plane | you need container runs, or no cached login |
+| `agent-platform` | the agent-platform credential plane | your org uses it |
+
+**The container limitation — read this before choosing `oauth-personal`.** agy's personal OAuth
+credential lives in the **host OS keyring**, and a keyring **cannot be bind-mounted into a runtime
+container**. A runtime container therefore needs `GEMINI_API_KEY` supplied to the plane (or to that
+run's secrets); signing in on the host alone is not enough. The refusal names both fixes:
+
+> personal Google sign-in lives in the host keyring and cannot be used inside a runtime container — set
+the Antigravity auth method to Gemini API key, or run this item locally
+
+Both clients state the caveat next to the selected method, so you can predict that refusal rather than
+discover it in a failed run.
+
+#### The terms notice
+
+With `oauth-personal` selected, **both clients display Google's Antigravity terms notice**, verbatim. It
+is one server-side constant (`authmethod.ToSNotice`), published on the API as
+`TenantSettings.antigravity_tos_notice`, so the web app, the TUI and the desktop shell cannot render
+three paraphrases of it:
+
+> Antigravity personal sign-in is used through Google's own `agy` binary. Google's Antigravity terms
+> restrict using the service with third-party products; review https://antigravity.google/terms before
+> enabling. Orchicon never reads or stores your Google credentials.
+
+The notice is shown on **exactly** the method whose terms it is about — an operator on `gemini-api-key`
+is not signing in with a Google account, so the personal-sign-in notice is not theirs.
+
+#### Telemetry
+
+**Off by default.** Unless you opt in (Settings → Defaults, or the TUI's `antigravity_share_telemetry`
+field), agy is launched with `--disable-telemetry`.
+
+#### What you will see on agy
+
+- **The model picker** lists `antigravity` as an adapter, `google` as its provider, and agy's own model
+  ids, with a 1M context hint and a `reasoning` flag. Switching adapter resets the provider and model
+  tiers, so a model from another adapter's scope is never carried across.
+- **The snapshot fallback.** With no `agy` on the host the server answers the model list from a
+  vendored snapshot rather than failing. The rows stay selectable and both clients say the list **may
+  be stale** — a stale list that looked live would be worse than a short one.
+- **`run_command` is the permission card you will actually see.** Measured on agy 1.5.13, agy asks
+  before a shell command, **not** before a file write; the enforceable write boundary is the
+  conversation's **mode**, not a card. In Brainstorm and Quick Work a write or a command is refused by
+  the platform **before** any card is raised — the refusal appears in the transcript as an error tool
+  result and the model is told why.
+- **Tool rows** show agy's own argument spellings (`CommandLine`, `TargetFile`, `AbsolutePath`, `Url`,
+  `query`) as a one-line subject — the command, the path or the URL — identically in the GUI and the
+  TUI, from one shared fixture (`internal/toolclass/testdata/row_subject_fixture.json`).
+- **Usage and cost** are reported per turn like any other adapter. Plan-quota usage (the personal
+  sign-in) is labelled as included in the plan; API-key usage is priced normally.
 
 ### 11.3 Settings
 

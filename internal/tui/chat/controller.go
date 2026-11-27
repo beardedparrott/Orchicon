@@ -896,6 +896,10 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 			Key:       "m-" + m.GetId(),
 			MessageID: m.GetId(),
 		})
+		// THE TURN'S TOOL CALLS, as rows. They used to be dropped here, which made every recorded tool
+		// call vanish the moment the turn finalized — see toolrows.go. Drawn BEFORE the clarifying card so
+		// the card stays the last thing in the message (it is the thing the operator acts on).
+		items = append(items, toolRowsForMessage(m)...)
 		if ask := parseAskUserCall(m.GetToolCalls(), m.GetToolResults()); ask != nil {
 			items = append(items, ChatItem{
 				Kind: KindAsk,

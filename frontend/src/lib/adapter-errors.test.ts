@@ -16,8 +16,10 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
-import { translateAdapterError } from "./adapter-errors";
+import { ANTIGRAVITY_NOT_INSTALLED_MESSAGE, translateAdapterError } from "./adapter-errors";
 
 /** The real error text, as it reaches the browser. */
 const DISCOVERY_ERR = new Error(
@@ -133,5 +135,68 @@ describe("translateAdapterError — antigravity auth failure", () => {
     // Unclassified path: the message IS the raw text, so nothing is hidden from a
     // bug report either.
     expect(detail).toBe("");
+  });
+});
+
+// --- the antigravity INSTALL precondition (the empty / not-installed state) -------------------------
+//
+// A host with no `agy` and a host with a signed-out `agy` are two operator problems with two fixes. The
+// server classifies them separately (internal/antigravity/modellist.go: ErrModelListNotInstalled vs
+// ErrModelListAuthRequired) and sends adapter.AntigravityNotInstalledMessage for the first. This half
+// pins that the GUI (a) renders that sentence verbatim, and (b) has NOT drifted from the Go constant.
+
+describe("translateAdapterError — antigravity not installed", () => {
+  it("renders the install sentence verbatim for the resolver's own wording", () => {
+    // What connect delivers for the install precondition: CodeUnavailable carrying the sentence.
+    const shapes = [
+      new Error(`ConnectError: [unavailable] ${ANTIGRAVITY_NOT_INSTALLED_MESSAGE}`),
+      new Error(ANTIGRAVITY_NOT_INSTALLED_MESSAGE),
+      ANTIGRAVITY_NOT_INSTALLED_MESSAGE,
+      // And the resolver's raw text, for the case where the classification did not run.
+      new Error("antigravity: the `agy` CLI is not on PATH"),
+    ];
+    for (const tier of ["providers", "models"] as const) {
+      for (const err of shapes) {
+        const { message } = translateAdapterError(err, "antigravity", tier);
+        expect(message).toBe(ANTIGRAVITY_NOT_INSTALLED_MESSAGE);
+        // It must NOT be reworded into the sign-in advice: there is nothing to sign in to.
+        expect(message).not.toContain("run `agy` and sign in");
+        expect(message).not.toContain("opencode CLI");
+        expect(message).not.toContain("ConnectError");
+        expect(message).not.toContain("[unavailable]");
+      }
+    }
+  });
+
+  it("does not steal the opencode CLI advice for an antigravity path error", () => {
+    // The opencode arm matches /install opencode on PATH/ — the antigravity install state must be
+    // recognised FIRST, or an agy-missing failure renders "try the orchicon adapter instead".
+    const { message } = translateAdapterError(
+      new Error("antigravity: the `agy` CLI is not on PATH; install Antigravity"),
+      "antigravity",
+      "models",
+    );
+    expect(message).toBe(ANTIGRAVITY_NOT_INSTALLED_MESSAGE);
+    expect(message).not.toContain("“orchicon” adapter");
+  });
+
+  it("THE DRIFT TEST: the TS constant matches the Go constant byte for byte", () => {
+    // The sentence lives on the server (internal/adapter/antigravity_auth.go) and is mirrored here ONLY
+    // so a client-side empty state has something to render with no RPC error in hand. Reading the Go
+    // source is the point: an import cannot notice the Go side changing, a byte comparison can.
+    const go = readFileSync(resolve(process.cwd(), "../internal/adapter/antigravity_auth.go"), "utf8");
+    // The constant is declared as a concatenation across two lines; join the quoted pieces.
+    const decl = /const AntigravityNotInstalledMessage = ([\s\S]*?)\n\n/.exec(go);
+    expect(decl, "AntigravityNotInstalledMessage not found in internal/adapter/antigravity_auth.go").not.toBeNull();
+    const goValue = [...decl![1].matchAll(/"((?:[^"\\]|\\.)*)"/g)]
+      .map((m) => m[1].replace(/\\"/g, '"').replace(/\\n/g, "\n"))
+      .join("");
+    expect(goValue).toBe(ANTIGRAVITY_NOT_INSTALLED_MESSAGE);
+  });
+
+  it("stays a DIFFERENT sentence from the sign-in one", () => {
+    expect(ANTIGRAVITY_NOT_INSTALLED_MESSAGE).not.toBe(ANTIGRAVITY_AUTH_MESSAGE);
+    expect(ANTIGRAVITY_NOT_INSTALLED_MESSAGE).not.toContain("GEMINI_API_KEY");
+    expect(ANTIGRAVITY_AUTH_MESSAGE).not.toContain("antigravity.google/download");
   });
 });

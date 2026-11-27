@@ -38,6 +38,34 @@ export interface AdapterErrorText {
 /** The adapter kinds whose model tier is discovered by shelling out to the opencode CLI. */
 const OPencodeDiscoveryKinds = ["opencode"];
 
+/**
+ * ANTIGRAVITY_NOT_INSTALLED_MESSAGE — the install sentence, mirroring
+ * `adapter.AntigravityNotInstalledMessage` (internal/adapter/antigravity_auth.go) BYTE FOR BYTE.
+ *
+ * It is a MIRROR, not an independent sentence: the server puts this exact string on the wire
+ * (connect.CodeUnavailable from the `google` model tier), and this constant exists only so a client-side
+ * empty state has something to render when no RPC error is in hand. The two cannot drift — a test reads
+ * the Go source and compares (adapter-errors.test.ts, "the install sentence matches the Go constant").
+ *
+ * WHY IT IS NOT THE AUTH SENTENCE. A signed-out agy and an ABSENT agy are different problems with
+ * different fixes. Collapsing them told an operator with no `agy` to "run `agy` and sign in", which they
+ * cannot do; the install state says what to install and links the download.
+ */
+export const ANTIGRAVITY_NOT_INSTALLED_MESSAGE =
+  "Antigravity CLI (`agy`) not found — install from https://antigravity.google/download";
+
+/**
+ * isAntigravityNotInstalled reports whether a failure says the agy CLI is absent (rather than signed
+ * out). Matched on the message the SERVER sends, plus the resolver's own wording for the same fact.
+ */
+function isAntigravityNotInstalled(raw: string): boolean {
+  return (
+    raw.includes("Antigravity CLI (`agy`) not found") ||
+    /`agy` CLI (is not on PATH|could not be resolved)/i.test(raw) ||
+    /antigravity.*not installed/i.test(raw)
+  );
+}
+
 /** Does this error say model discovery is unavailable? */
 function isDiscoveryUnconfigured(raw: string): boolean {
   return /model discovery is not configured/i.test(raw);
@@ -65,6 +93,13 @@ export function translateAdapterError(
   tier: "providers" | "models",
 ): AdapterErrorText {
   const raw = rawText(error);
+
+  // ANTIGRAVITY, NOT INSTALLED — checked BEFORE the opencode arm (whose "install … on PATH" regex would
+  // otherwise match the resolver's wording) and rendered as the server's own install sentence, so the
+  // picker's error state and its empty state say the same thing in the same words.
+  if (adapter === "antigravity" && isAntigravityNotInstalled(raw)) {
+    return { message: ANTIGRAVITY_NOT_INSTALLED_MESSAGE, detail: "" };
+  }
 
   // THE REPORTED CASE: opencode selected, no binary on the plane.
   if (isDiscoveryUnconfigured(raw) || isOpencodeMissing(raw)) {
