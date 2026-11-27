@@ -624,6 +624,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	lister := func(ctx context.Context, tenantID string) ([]providers.AgyModel, error) {
 		rows, err := agyBridge.ListModelRows(ctx, tenantID)
 		if err != nil {
+			if errors.Is(err, antigravity.ErrModelListNotInstalled) {
+				return nil, providers.ErrAntigravityNotInstalled
+			}
 			if errors.Is(err, antigravity.ErrModelListAuthRequired) {
 				return nil, providers.ErrAntigravityAuth
 			}

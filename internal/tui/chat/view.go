@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/toolclass"
 	"github.com/beardedparrott/orchicon/internal/tui/md"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
@@ -627,8 +628,12 @@ func renderToolRow(t *ParsedTool, maxWidth int) string {
 	}
 	var b strings.Builder
 	b.WriteString(theme.ToolName.Render("⚙ " + t.ToolName))
-	if t.Input != "" {
-		b.WriteString(theme.HintText.Render(" " + firstLine(t.Input)))
+	// THE SUBJECT, not the raw input JSON. toolclass.RowSubject reads BOTH vocabularies (opencode's
+	// `command`/`file_path` AND agy's `CommandLine`/`TargetFile`/`Url`/`query`), so an antigravity tool call
+	// shows its command, path or URL on the row instead of a truncated JSON object — and the GUI draws the
+	// same line from the same fixture, so the two transcripts cannot disagree.
+	if subj := toolclass.CollapseWhitespace(toolclass.RowSubject(t.ToolName, t.Input)); subj != "" {
+		b.WriteString(theme.HintText.Render(" " + firstLine(subj)))
 	}
 	if t.Output != "" {
 		b.WriteString(theme.ToolMeta.Render(" → " + firstLine(t.Output)))

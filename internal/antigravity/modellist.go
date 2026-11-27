@@ -44,8 +44,44 @@ const modelListTimeout = 20 * time.Second
 // adapter.AntigravityAuthRequiredMessage.
 var ErrModelListAuthRequired = errors.New(adapter.AntigravityAuthRequiredMessage)
 
-// AuthRequiredError reports that the model listing could not authenticate: no `agy` on the host, or agy
-// present and signed out.
+// ErrModelListNotInstalled is the sentinel behind every NotInstalledError: there is no `agy` executable on
+// this host at all.
+//
+// WHY IT IS NOT THE AUTH SENTINEL. It used to be. A missing binary was classified as an authentication
+// failure, so the picker told an operator on a host with no `agy` to "run `agy` and sign in" — an
+// instruction they could not carry out. The two are separate preconditions with separate fixes (install
+// versus sign in), and the model tier's EMPTY state now says which one applies.
+var ErrModelListNotInstalled = errors.New(adapter.AntigravityNotInstalledMessage)
+
+// NotInstalledError reports that the model listing found no `agy` executable on the host.
+//
+// Error() returns adapter.AntigravityNotInstalledMessage VERBATIM for the same reason AuthRequiredError
+// does: that string is what the operator reads in the picker's empty state.
+type NotInstalledError struct {
+	// Detail is the resolver's own text (which PATH was searched, a shim hint), for the log.
+	Detail string
+	// Cause is the resolver failure, for errors.Is/As through Unwrap.
+	Cause error
+}
+
+func (e *NotInstalledError) Error() string { return adapter.AntigravityNotInstalledMessage }
+
+func (e *NotInstalledError) Unwrap() error {
+	if e.Cause != nil {
+		return fmt.Errorf("%w: %w", ErrModelListNotInstalled, e.Cause)
+	}
+	return ErrModelListNotInstalled
+}
+
+// notInstalled builds the install instruction, keeping the resolver's text on the wrapped cause.
+func notInstalled(detail string, cause error) *NotInstalledError {
+	if cause != nil && detail == "" {
+		detail = cause.Error()
+	}
+	return &NotInstalledError{Detail: detail, Cause: cause}
+}
+
+// AuthRequiredError reports that the model listing could not authenticate: agy is present and signed out.
 //
 // Error() returns adapter.AntigravityAuthRequiredMessage VERBATIM, because that string reaches the operator
 // through connect.NewError as `[failed_precondition] <message>`. The transport detail lives in Detail, for
@@ -164,9 +200,9 @@ func (b *Bridge) fetchModels(ctx context.Context, tenantID string) ([]acp.Model,
 	}
 	bin, binErr := b.resolveBinary()
 	if binErr != nil {
-		// NO agy ON THIS HOST is the same operator-facing precondition as a signed-out agy: the adapter
-		// cannot work, and the sentence says what to do (install/sign in, or supply GEMINI_API_KEY).
-		return nil, authRequired(binErr.Error(), binErr)
+		// NO agy ON THIS HOST IS NOT A SIGN-IN PROBLEM. It is the install precondition, and it gets its
+		// own sentence: telling an operator to "run `agy`" on a host with no `agy` is unfollowable.
+		return nil, notInstalled(binErr.Error(), binErr)
 	}
 	spec, err := BuildSpawnSpec(bin, settings, apiKey, os.Environ())
 	if err != nil {

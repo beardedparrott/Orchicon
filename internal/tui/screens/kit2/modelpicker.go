@@ -8,8 +8,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
+
+// AntigravityAdapterKind is the agy adapter kind, named here so the empty-state branch reads as a fact
+// about the adapter rather than a bare string literal. It is the SERVER's value (adapter.KindAntigravity),
+// pinned by a test so the two cannot drift.
+const AntigravityAdapterKind = adapter.KindAntigravity
 
 // PickerOption is one selectable entry in a model-picker tier.
 type PickerOption struct {
@@ -626,6 +632,11 @@ func (mp *ModelPicker) layout(innerW, innerH int) ([]string, pickerHits) {
 			msg = "choose a provider above to list its models"
 		case strings.TrimSpace(mp.query) != "":
 			msg = "(no model matches \"" + strings.TrimSpace(mp.query) + "\")"
+		case mp.adapter == AntigravityAdapterKind:
+			// THE EMPTY / NOT-INSTALLED STATE. An antigravity tier with no error and no rows means the host
+			// answered with nothing to select; the actionable text is the shared install sentence, never a
+			// bare "(no models)" that reads as "agy has no models".
+			msg = adapter.AntigravityNotInstalledMessage
 		}
 		rows = append(rows, theme.HintText.Render(Pad("  "+msg, innerW)))
 	}
@@ -740,7 +751,9 @@ func (mp *ModelPicker) summaryLine(innerW int) string {
 			mp.Ref(),
 		}, "  ·  ")
 		if mp.degraded {
-			s += "  ·  probe degraded"
+			// THE SNAPSHOT FALLBACK HAS TO NAME ITSELF. "probe degraded" describes the probe; an operator
+			// looking at a model list needs to know the LIST may be out of date, which is a different fact.
+			s += "  ·  snapshot — may be stale"
 		}
 	case mp.adapter == "":
 		s = "select an adapter"
