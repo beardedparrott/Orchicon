@@ -20,6 +20,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -91,4 +92,38 @@ func resolveAntigravitySpawn(ctx context.Context, pool *db.Pool, secretsKEK []by
 			authmethod.APIKeySecretName, method)
 	}
 	return settings, key, nil
+}
+
+// resolveAntigravityAskProjectDir resolves an Ask conversation's project to its directory.
+//
+// IT IS THE ASK PATH'S CWD, and therefore the boundary the mode gate and the platform's permission rules are
+// judged against — so a wrong answer here is a conversation that appears to work while writing into the
+// wrong tree. That is why it is a resolver the SERVER owns (the adapter has no pool) and why it FAILS LOUD
+// rather than degrading to a temp directory: antigravity.Bridge falls back to the per-conversation ask
+// directory only when the resolver returns "" with no error, i.e. when the conversation genuinely has no
+// project.
+func resolveAntigravityAskProjectDir(ctx context.Context, pool *db.Pool, tenantID, projectID string) (string, error) {
+	if strings.TrimSpace(projectID) == "" {
+		return "", nil // an unassigned conversation: the adapter uses its own ask directory
+	}
+	if pool == nil {
+		return "", errors.New("antigravity ask: the plane has no database pool, so a project directory cannot be resolved")
+	}
+	ttx, err := pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return "", fmt.Errorf("antigravity ask: project %s: %w", projectID, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	proj, err := db.GetProject(ctx, ttx.Tx, tenantID, projectID)
+	if err != nil {
+		return "", fmt.Errorf("antigravity ask: project %s: %w", projectID, err)
+	}
+	dir := strings.TrimSpace(proj.ProjectDir)
+	if dir == "" {
+		// A PROJECT WITH NO DIRECTORY IS NOT AN ERROR THE OPERATOR CANNOT SEE: the adapter logs it and runs in
+		// the ask directory, which is the honest outcome for a project that has not been provisioned yet.
+		return "", nil
+	}
+	return dir, nil
 }

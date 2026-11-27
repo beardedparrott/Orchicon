@@ -8,8 +8,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/tui/theme"
 )
+
+// AntigravityAdapterKind is the agy adapter kind, named here so the empty-state branch reads as a fact
+// about the adapter rather than a bare string literal. It is the SERVER's value (adapter.KindAntigravity),
+// pinned by a test so the two cannot drift.
+const AntigravityAdapterKind = adapter.KindAntigravity
 
 // PickerOption is one selectable entry in a model-picker tier.
 type PickerOption struct {
@@ -626,6 +632,11 @@ func (mp *ModelPicker) layout(innerW, innerH int) ([]string, pickerHits) {
 			msg = "choose a provider above to list its models"
 		case strings.TrimSpace(mp.query) != "":
 			msg = "(no model matches \"" + strings.TrimSpace(mp.query) + "\")"
+		case mp.adapter == AntigravityAdapterKind:
+			// THE EMPTY / NOT-INSTALLED STATE. An antigravity tier with no error and no rows means the host
+			// answered with nothing to select; the actionable text is the shared install sentence, never a
+			// bare "(no models)" that reads as "agy has no models".
+			msg = adapter.AntigravityNotInstalledMessage
 		}
 		rows = append(rows, theme.HintText.Render(Pad("  "+msg, innerW)))
 	}
@@ -724,11 +735,41 @@ func (mp *ModelPicker) statusLines(innerW int) []string {
 		}
 		return out
 	}
-	return []string{mp.summaryLine(innerW)}
+	// THE SUMMARY WRAPS; IT DOES NOT TRUNCATE. Pad() silently cut the tail off it, and the tail is where an
+	// operator is told the list came from the vendored snapshot. wrapCells keeps every word — the same helper
+	// the error area above uses, for the same reason — so nothing in the status is ever dropped.
+	wrapped := wrapCells(mp.summaryText(), innerW, "  ", "  ")
+	out := make([]string, 0, len(wrapped)+1)
+	for _, r := range wrapped {
+		out = append(out, theme.HintText.Render(Pad(r, innerW)))
+	}
+	if note := mp.statusNote(); note != "" {
+		// THE STALE NOTE GETS ITS OWN ROW, and is never folded into the summary. "snapshot — may be stale" is
+		// the fact that stops an operator reading a vendored fallback as a live list; wrapped mid-phrase by a
+		// width in a status line it reads as "snapshot — may be", which says nothing.
+		out = append(out, theme.HintText.Render(Pad("  "+note, innerW)))
+	}
+	return out
 }
 
-// summaryLine is the non-error status: padded to the box so the row paints fully.
+// statusNote is the extra status row, present only when there is something the summary cannot say.
+func (mp *ModelPicker) statusNote() string {
+	if mp.err == "" && mp.tier == TierModel && mp.provider != "" && mp.degraded {
+		// "probe degraded" describes the probe; an operator looking at a model list needs to know the LIST
+		// may be out of date, which is a different fact.
+		return "⚠ snapshot — may be stale"
+	}
+	return ""
+}
+
+// summaryLine is the non-error status on ONE row, padded to the box — kept for callers that have a
+// guaranteed-wide box. Prefer statusLines, which wraps.
 func (mp *ModelPicker) summaryLine(innerW int) string {
+	return theme.HintText.Render(Pad("  "+mp.summaryText(), innerW))
+}
+
+// summaryText is the non-error status without any padding or style.
+func (mp *ModelPicker) summaryText() string {
 	var s string
 	switch {
 	case mp.loading:
@@ -739,15 +780,12 @@ func (mp *ModelPicker) summaryLine(innerW int) string {
 			strconv.Itoa(n) + "/" + strconv.Itoa(total) + " models",
 			mp.Ref(),
 		}, "  ·  ")
-		if mp.degraded {
-			s += "  ·  probe degraded"
-		}
 	case mp.adapter == "":
 		s = "select an adapter"
 	default:
 		s = "select a " + tierName(mp.tier)
 	}
-	return theme.HintText.Render(Pad("  "+s, innerW))
+	return s
 }
 
 func hintLine(innerW int) string {

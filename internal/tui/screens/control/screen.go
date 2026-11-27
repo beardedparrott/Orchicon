@@ -26,6 +26,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -34,6 +36,7 @@ import (
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/antigravity/authmethod"
 	"github.com/beardedparrott/orchicon/internal/providers"
 	"github.com/beardedparrott/orchicon/internal/secrets"
 	"github.com/beardedparrott/orchicon/internal/tui/client"
@@ -902,7 +905,7 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 		if body == "{}" {
 			body = ""
 		}
-		return "Adapter: " + a.GetKind(), []kit2.Field{
+		fields := []kit2.Field{
 			{Key: "id", Value: a.GetId()},
 			{Key: "kind", Value: a.GetKind()},
 			{Key: "version", Value: a.GetVersion()},
@@ -910,7 +913,16 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "status", Value: a.GetStatus()},
 			{Key: "dispatch", Value: state},
 			{Key: "actions", Value: "t: enable/disable (local dispatch filter)"},
-		}, body, nil
+		}
+		// THE ANTIGRAVITY DETAIL ROWS. Settings → Adapters is the surface an operator opens to answer
+		// "is the agy adapter usable, and how does it sign in?"; the picker answers only "what models".
+		// These rows are READ-ONLY pointers to the editable Settings select (a second write path for the
+		// same setting is how two sources of truth appear), and the ToS text comes from the SERVER
+		// (TenantSettings.antigravity_tos_notice), never re-typed here.
+		if a.GetKind() == adapter.KindAntigravity {
+			fields = append(fields, m.antigravityAdapterFields(ctx)...)
+		}
+		return "Adapter: " + a.GetKind(), fields, body, nil
 
 	case "permissions":
 		list, pattern := permissionEntryParts(id)
@@ -2419,6 +2431,79 @@ func authModeOptions() []kit2.Option {
 		// this provider, so the label says which secret appears and that it is automatic.
 		{Value: providers.AuthModeToken, Label: "token (auto-writes CUSTOM_<REF>_API_KEY)"},
 	}
+}
+
+// antigravityAdapterFields is the antigravity adapter's DETAIL block: what Settings → Adapters must show
+// for `agy` that the generic adapter rows do not.
+//
+// THE FOUR FACTS AN OPERATOR NEEDS, in the order they need them:
+//   - which binary was found (so "not installed" is a visible state, not an empty list);
+//   - the auth method, with the one caveat that method carries (host keyring vs tenant secret) — the
+//     same summary the Settings pane renders, so the two panes cannot disagree;
+//   - the ToS notice, SERVER-SUPPLIED, shown exactly when `oauth-personal` is selected (the method whose
+//     terms Google restricts). Never re-typed here: one wording, on the API;
+//   - whether the API-key secret is present — PRESENCE ONLY. The value is never read by this client (the
+//     list API does not return it), and a detail pane that showed it would be the one place a credential
+//     leaks onto an operator's terminal.
+//
+// It takes a ctx because the ToS notice and the telemetry flag live on the tenant settings, which this
+// pane may not have loaded yet (the Settings source is the one that fetches them).
+func (m *Model) antigravityAdapterFields(ctx context.Context) []kit2.Field {
+	s := m.settings
+	if s == nil {
+		resp, err := m.cl.Settings.GetSettings(ctx, connect.NewRequest(&apiv1.GetSettingsRequest{}))
+		if err == nil {
+			s = resp.Msg.GetSettings()
+		}
+	}
+	fields := make([]kit2.Field, 0, 6)
+
+	// THE BINARY. `agy` is the adapter's whole runtime, so "is it on this host" is the first thing this
+	// pane has to answer. The resolver is the same one the bridge launches with.
+	bin := strings.TrimSpace(adapter.ResolveBinary(runtime.GOOS, homeDir(), adapter.KindAntigravity, os.Getenv))
+	if bin == "" {
+		fields = append(fields, kit2.Field{Key: "binary", Value: adapter.AntigravityNotInstalledMessage})
+	} else {
+		fields = append(fields, kit2.Field{Key: "binary", Value: bin})
+	}
+
+	if s == nil {
+		fields = append(fields,
+			kit2.Field{Key: "auth method", Value: "unavailable (tenant settings not loaded — press r)"},
+			kit2.Field{Key: "api key secret", Value: agyAPIKeySecretStatus(m.secretNames)},
+		)
+		return fields
+	}
+
+	fields = append(fields,
+		kit2.Field{Key: "auth method", Value: antigravityMethodSummary(s) + " · edit in Settings"},
+		kit2.Field{Key: "telemetry", Value: fmtBool(s.GetAntigravityShareTelemetry(), "shared with Google", "off")},
+		kit2.Field{Key: "api key secret", Value: agyAPIKeySecretStatus(m.secretNames)},
+	)
+	// THE ToS NOTICE, on exactly the method whose terms it is about.
+	if antigravityMethodInitial(s.GetAntigravityAuthMethod()) == authmethod.MethodOAuthPersonal {
+		notice := s.GetAntigravityTosNotice()
+		if strings.TrimSpace(notice) == "" {
+			notice = authmethod.ToSNotice
+		}
+		fields = append(fields, kit2.Field{Key: "terms notice", Value: notice})
+	}
+	return fields
+}
+
+// agyAPIKeySecretStatus reports PRESENCE of the API-key secret, never its value.
+func agyAPIKeySecretStatus(names map[string]bool) string {
+	if names[authmethod.APIKeySecretName] {
+		return "set (" + authmethod.APIKeySecretName + ")"
+	}
+	return "not set — needed for gemini-api-key mode and for container runs (" + authmethod.APIKeySecretName + ")"
+}
+
+// homeDir is the resolving user's home directory ("" when it cannot be read, which the resolver treats as
+// "no home-relative candidates" rather than an error).
+func homeDir() string {
+	h, _ := os.UserHomeDir()
+	return h
 }
 
 // antigravityMethodInitial maps an unset method onto the server's default so the select always has

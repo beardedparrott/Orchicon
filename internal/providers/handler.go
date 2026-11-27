@@ -231,6 +231,12 @@ func (h *Handler) mapErr(err error) error {
 	if errors.As(err, &refErr) {
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	}
+	// THE ANTIGRAVITY INSTALL FAILURE, before the auth one: a host with no `agy` gets the INSTALL
+	// instruction, because "run `agy` and sign in" cannot be followed on a machine that has no `agy`.
+	// CodeUnavailable (not FailedPrecondition) because nothing the operator can sign in to is at fault.
+	if errors.Is(err, ErrAntigravityNotInstalled) {
+		return connect.NewError(connect.CodeUnavailable, errors.New(adapter.AntigravityNotInstalledMessage))
+	}
 	// THE ANTIGRAVITY AUTH FAILURE, mapped BEFORE the ErrNotFound check on purpose. A signed-out host is a
 	// PRECONDITION the operator can fix (`agy` sign-in, or a GEMINI_API_KEY), not a missing row — and the
 	// message must reach the GUI as adapter.AntigravityAuthRequiredMessage verbatim, with no `[not_found]`

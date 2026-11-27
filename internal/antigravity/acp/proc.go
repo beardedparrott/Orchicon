@@ -81,6 +81,14 @@ type LaunchOptions struct {
 	ProcessPerSession bool
 	Sandbox           bool
 	AppDataDir        string
+	// Settings is a `--settings` JSON document: agy's own "Settings for this session only, never
+	// saved". It is how an Ask mode's denied tools are ALSO refused before agy runs them
+	// (internal/antigravity/modegate.go) — defence in depth behind the in-handler gate that is the
+	// actual authority.
+	//
+	// IT IS ONE ARGV ELEMENT, never shell-quoted into a single string: ProcSpec.Argv is an execve
+	// vector, so the JSON travels as ONE argument exactly as written and nothing re-parses it.
+	Settings string
 }
 
 // Argv renders the child command line. Flag order is fixed so the same options always produce
@@ -90,7 +98,17 @@ func (o LaunchOptions) Argv() []string {
 	if bin == "" {
 		bin = "agy"
 	}
-	argv := []string{bin, "acp"}
+	// `--settings` IS A TOP-LEVEL FLAG AND MUST PRECEDE THE SUBCOMMAND. Verified against agy 1.5.13:
+	//
+	//	agy acp --settings '{"permissions":{"deny":["run_command"]}}'  -> exit 1, prints `agy acp --help`
+	//	agy --settings '{"permissions":{"deny":["run_command"]}}' acp  -> exit 0
+	//
+	// It is absent from `agy acp --help` for exactly that reason: it belongs to the parent command.
+	argv := []string{bin}
+	if o.Settings != "" {
+		argv = append(argv, "--settings", o.Settings)
+	}
+	argv = append(argv, "acp")
 	if o.DisableTelemetry {
 		argv = append(argv, "--disable-telemetry")
 	}
@@ -161,17 +179,50 @@ func newLocalProc(ctx context.Context, spec ProcSpec) (Proc, error) {
 	if err != nil {
 		return nil, fmt.Errorf("acp: stdin pipe: %w", err)
 	}
-	stdout, err := cmd.StdoutPipe()
+	// STDOUT AND STDERR ARE OUR OWN os.Pipe()es, NOT cmd.StdoutPipe()/StderrPipe(), AND THAT IS A
+	// CORRECTNESS FIX rather than a style choice.
+	//
+	// os/exec's documentation is explicit: "Cmd.Wait will close the pipe after seeing the command exit,
+	// so most callers need not close the pipe themselves. It is thus incorrect to call Wait before all
+	// reads from the pipe have completed." This constructor CANNOT honour that — it starts `p.wait()`
+	// (which is `cmd.Wait()`) and the pumps as sibling goroutines, because Wait is also the liveness
+	// signal the whole package reads from (`Wait()`, `Close()`, the conn's teardown). So Wait closing
+	// StdoutPipe's READ end raced the pump's reads.
+	//
+	// MEASURED FAILURE THIS REPLACES: `TestListModelsRunsOnTheLocalTransportEvenWithARuntimeClient`
+	// (internal/antigravity/modellist_test.go) failed on the full gate with "child output = \"\"" — the
+	// model listing's child printed `ok` and exited, and the output was gone before the pump read it,
+	// so the picker's listing came back EMPTY on a fast-racing spawn. Reproduced deterministically
+	// outside this package: a `sh -c 'echo ok'` spawn in exactly this shape (StdoutPipe + concurrent
+	// cmd.Wait, GOMAXPROCS=1) lost the child's output in 5/20000 runs; the same harness with os.Pipe
+	// lost it in 0/20000.
+	//
+	// cmd.Wait only closes the descriptors IT created, so a pipe we create is not touched by it: the
+	// child's write end keeps the read end open until the child exits, and every buffered byte is still
+	// there for the pump. The parent's copy of the write end is closed immediately after Start (below) —
+	// exactly what StdoutPipe arranges internally — so the pump still sees EOF when the child exits.
+	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		return nil, fmt.Errorf("acp: stdout pipe: %w", err)
 	}
-	stderrPipe, err := cmd.StderrPipe()
+	stderrR, stderrW, err := os.Pipe()
 	if err != nil {
+		_ = stdoutR.Close()
+		_ = stdoutW.Close()
 		return nil, fmt.Errorf("acp: stderr pipe: %w", err)
 	}
+	cmd.Stdout = stdoutW
+	cmd.Stderr = stderrW
 	if err := cmd.Start(); err != nil {
+		for _, c := range []io.Closer{stdoutR, stdoutW, stderrR, stderrW} {
+			_ = c.Close()
+		}
 		return nil, fmt.Errorf("acp: start %s: %w", spec.Argv[0], err)
 	}
+	// The child holds its own dup of the write ends now; drop ours so EOF is reachable.
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+	stdout, stderrPipe := stdoutR, stderrR
 	p := &localProc{
 		cmd:    cmd,
 		stdin:  stdin,
@@ -187,6 +238,13 @@ func newLocalProc(ctx context.Context, spec ProcSpec) (Proc, error) {
 }
 
 func (p *localProc) wait() {
+	// THE THIRD wg COUNTER IS THIS GOROUTINE, and it must be released here. It was added by wg.Add(3)
+	// above but never Done()d, so `wg.Wait()` in Close could never be satisfied: every Close waited out
+	// the full DefaultShutdownGrace (3s) and logged "the output pumps did not end" even on a perfectly
+	// clean exit. That is not merely slow — the model picker does one spawn+Close per listing, and the
+	// Ask teardown does it on the plane's shutdown path, so a clean shutdown reported a false alarm
+	// about a forked helper AND paid 3s it did not owe.
+	defer p.wg.Done()
 	werr := p.cmd.Wait()
 	code := 0
 	if p.cmd.ProcessState != nil {
@@ -218,6 +276,11 @@ func (p *localProc) pump(r io.Reader, ch chan []byte) {
 // both terminators and asserts the messages decode identically (AC3).
 func pumpLines(r io.Reader, ch chan []byte, onDrop func()) {
 	defer close(ch)
+	// The read end is OURS now (see newLocalProc), so nobody else will close it: do it here, when the
+	// stream has ended, so a finished child costs no descriptor.
+	if c, ok := r.(io.Closer); ok {
+		defer func() { _ = c.Close() }()
+	}
 	br := bufio.NewReaderSize(r, 64<<10)
 	var buf []byte
 	for {

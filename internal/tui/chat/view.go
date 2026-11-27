@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/toolclass"
 	"github.com/beardedparrott/orchicon/internal/tui/md"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/kit2"
 	"github.com/beardedparrott/orchicon/internal/tui/screens/screenkit"
@@ -621,20 +622,57 @@ func renderNoticeAt(text string, noticeAt int64, maxWidth int) string {
 	return b.String()
 }
 
+// toolRowError is the reason a REFUSED or failed tool row gives, drawn in FULL beneath the row.
+//
+// WHY THE REFUSAL IS NOT LEFT TO THE ONE-LINE `→ output` TAIL. First-line-truncated output is right for a
+// normal result (a command's first line is its gist, and the row has room for one line), and it is WRONG
+// for a refusal: when the platform declines to run a tool, that text IS the whole message — why it did
+// not run, and what the operator must change. Truncated to `REF…` it tells them nothing they can act on.
+// The TUI's own rule for KindError is the same one (renderBubble keeps errors raw and unwrapped), so a
+// refusal body follows the transcript's existing convention rather than inventing a third one.
+//
+// The SECOND return says whether the row's output was already shown by this body, so the row does not print
+// the same words twice.
+func toolRowError(t *ParsedTool, maxWidth int) (string, bool) {
+	if t == nil || !t.Failed {
+		return "", false
+	}
+	reason := strings.TrimSpace(t.Output)
+	if reason == "" {
+		return "", false
+	}
+	body := reason
+	if maxWidth > 0 {
+		body = wrapText(reason, maxWidth)
+	}
+	var b strings.Builder
+	for _, line := range strings.Split(strings.TrimRight(body, "\n"), "\n") {
+		b.WriteString(theme.ErrorText.Render(line) + "\n")
+	}
+	return b.String(), true
+}
+
 func renderToolRow(t *ParsedTool, maxWidth int) string {
 	if t == nil {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString(theme.ToolName.Render("⚙ " + t.ToolName))
-	if t.Input != "" {
-		b.WriteString(theme.HintText.Render(" " + firstLine(t.Input)))
+	// THE SUBJECT, not the raw input JSON. toolclass.RowSubject reads BOTH vocabularies (opencode's
+	// `command`/`file_path` AND agy's `CommandLine`/`TargetFile`/`Url`/`query`), so an antigravity tool call
+	// shows its command, path or URL on the row instead of a truncated JSON object — and the GUI draws the
+	// same line from the same fixture, so the two transcripts cannot disagree.
+	if subj := toolclass.CollapseWhitespace(toolclass.RowSubject(t.ToolName, t.Input)); subj != "" {
+		b.WriteString(theme.HintText.Render(" " + firstLine(subj)))
 	}
-	if t.Output != "" {
+	// A FAILED CALL IS NOT SUMMARISED HERE: its reason is drawn IN FULL on the lines below, and a truncated
+	// `→ REF…` above that would be the same words twice with the meaning cut off.
+	failedBody, hasFailedBody := toolRowError(t, maxWidth)
+	if t.Output != "" && !hasFailedBody {
 		b.WriteString(theme.ToolMeta.Render(" → " + firstLine(t.Output)))
 	}
-	b.WriteString("\n")
-	return truncateLine(b.String(), maxWidth)
+	// ONLY THE HEADER LINE IS LINE-TRUNCATED. The refusal body wraps to its own lines and is never cut.
+	return truncateLine(b.String(), maxWidth) + "\n" + failedBody
 }
 
 // renderAskCard paints a recorded clarifying question as the terminal card: the question and its
@@ -735,8 +773,11 @@ func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
-	if len(s) > 120 {
-		s = s[:117] + "…"
+	// A RUNE BOUNDARY, NOT A BYTE OFFSET. `s[:117]` split a multi-byte glyph in half and left U+FFFD in the
+	// transcript — the replacement characters an operator reads as corruption. 120 is a guard against a
+	// runaway one-liner, not a padding budget, so counting runes is exact enough here.
+	if r := []rune(s); len(r) > 120 {
+		s = string(r[:117]) + "…"
 	}
 	return s
 }
@@ -745,11 +786,12 @@ func truncateRow(s string, w int) string {
 	if w <= 0 {
 		return s
 	}
-	r := []rune(s)
-	if len(r) <= w {
-		return s
-	}
-	return string(r[:w-1]) + "…"
+	// DISPLAY CELLS, NOT RUNES, AND ANSI-AWARE — the same rule truncateCells follows above, and for the
+	// same reason. A row arrives here already carrying theme styles, so slicing `[]rune(s)[:w-1]` can cut an
+	// escape sequence in half; and counting runes rather than cells drifts a column on every wide glyph
+	// (the row's `⚙ ` prefix), which pushed the ellipsis past the pane edge. ansi.Truncate keeps the escapes
+	// and the glyphs intact and places the tail on a cell boundary.
+	return ansi.Truncate(s, w, "…")
 }
 
 func truncateLine(s string, w int) string {
@@ -780,18 +822,44 @@ func wrapText(s string, w int) string {
 			switch {
 			case line == "":
 				line = word
-			case len(line)+1+len(word) <= w:
+			case lipgloss.Width(line)+1+lipgloss.Width(word) <= w:
 				line += " " + word
 			default:
 				out.WriteString(line + "\n")
 				line = word
 			}
-			for len(line) > w { // single long word: hard-split
-				out.WriteString(line[:w] + "\n")
-				line = line[w:]
+			// A SINGLE WORD WIDER THAN THE PANE IS HARD-SPLIT, and the split is on a CELL and RUNE
+			// boundary — never the byte offset this used to take. `line[:w]` cut a multi-byte glyph in half,
+			// which is where the U+FFFD in the refusal body came from, and counting bytes rather than cells
+			// overflowed the pane on every wide glyph.
+			for lipgloss.Width(line) > w {
+				head, tail := splitAtCells(line, w)
+				if head == "" { // a single glyph wider than the whole pane
+					break
+				}
+				out.WriteString(head + "\n")
+				line = tail
 			}
 		}
 		out.WriteString(line + "\n")
 	}
 	return strings.TrimRight(out.String(), "\n")
+}
+
+// splitAtCells splits s at the widest rune boundary that still fits in w DISPLAY CELLS, and returns the
+// head and the remainder. It is the rune-safe counterpart of s[:w]: the tail is what a hard-split wraps
+// onto the next row, so the split must land between glyphs and not inside one.
+func splitAtCells(s string, w int) (string, string) {
+	if w <= 0 {
+		return "", s
+	}
+	cells := 0
+	for i, r := range s {
+		rw := lipgloss.Width(string(r))
+		if cells+rw > w {
+			return s[:i], s[i:]
+		}
+		cells += rw
+	}
+	return s, ""
 }

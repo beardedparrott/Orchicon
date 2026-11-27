@@ -856,6 +856,14 @@ func TestLaunchOptionsArgv(t *testing.T) {
 			AppDataDir: "/tmp/appdata", Sandbox: true,
 		}, []string{"agy-dev", "acp", "--disable-telemetry", "--process-per-session", "--app-data-dir", "/tmp/appdata", "--sandbox"}},
 		{"telemetry only", LaunchOptions{DisableTelemetry: true}, []string{"agy", "acp", "--disable-telemetry"}},
+		// `--settings` is a TOP-LEVEL flag and must sit BETWEEN the binary and the `acp` subcommand.
+		// Verified against agy 1.5.13: `agy acp --settings X` exits 1 with the acp usage text, while
+		// `agy --settings X acp` exits 0. The flag is absent from `agy acp --help` for that reason.
+		{"settings precede the subcommand", LaunchOptions{Settings: `{"permissions":{"deny":["run_command"]}}`},
+			[]string{"agy", "--settings", `{"permissions":{"deny":["run_command"]}}`, "acp"}},
+		{"settings with everything", LaunchOptions{
+			Binary: "agy-dev", DisableTelemetry: true, Settings: `{"permissions":{"deny":["ask_question"]}}`,
+		}, []string{"agy-dev", "--settings", `{"permissions":{"deny":["ask_question"]}}`, "acp", "--disable-telemetry"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1105,5 +1113,68 @@ func TestLocalProcCloseIsBoundedWhenAPipeIsHeldOpen(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > DefaultShutdownGrace+5*time.Second {
 		t.Fatalf("Close took %s, want bounded by the grace window", elapsed)
+	}
+}
+
+// TestLocalProcDoesNotLoseAFastChildsOutput pins the StdoutPipe/exec.Cmd.Wait race as a REGRESSION test.
+//
+// MEASURED FAILURE THIS REPLACES: `newLocalProc` used `cmd.StdoutPipe()`/`cmd.StderrPipe()` and then
+// started `cmd.Wait()` and the pumps as SIBLING goroutines. os/exec documents that combination as
+// incorrect — "Cmd.Wait will close the pipe after seeing the command exit ... it is thus incorrect to
+// call Wait before all reads from the pipe have completed" — because Wait closes the pipes' READ ends.
+// This package cannot avoid it: Wait is also the liveness signal every caller reads (`Wait()`, `Close()`,
+// the conn's teardown). So a child that wrote its output and exited quickly could have that output
+// destroyed before the pump read it.
+//
+// SEEN ON THE REAL GATE, not in theory: `TestListModelsRunsOnTheLocalTransportEvenWithARuntimeClient`
+// (internal/antigravity/modellist_test.go) went red with "child output = \"\"" — a one-line `echo ok`
+// child whose output vanished, which on a live plane is the provider model picker listing NOTHING.
+// Reproduced outside the package in exactly this shape (StdoutPipe + concurrent cmd.Wait, GOMAXPROCS=1):
+// 5/20000 spawns lost the child's output; the same harness against os.Pipe lost 0/20000.
+//
+// THE TEST LOOPS ON PURPOSE. A single spawn passes on the broken code most of the time — the window is
+// a scheduling race — so one iteration would be a test that cannot fail. The assertion is over the
+// AGGREGATE, which is what makes a rare loss visible. MEASURED on the broken code: 45/3000 checkouts
+// lost the line (~1.5%), so 2000 spawns detect it with near-certainty; the whole loop costs well under
+// a second because each child is a single `sh` that exits immediately.
+func TestLocalProcDoesNotLoseAFastChildsOutput(t *testing.T) {
+	const iterations = 2000
+	ctx := ctxT(t)
+
+	lost := 0
+	for i := 0; i < iterations; i++ {
+		p, err := (LocalFactory{}).NewProc(ctx, ProcSpec{Argv: []string{"sh", "-c", "echo ok"}})
+		if err != nil {
+			t.Fatalf("spawn %d: %v", i, err)
+		}
+		// Drain stdout to completion. `echo ok` emits exactly one line then the child exits, which is
+		// precisely the shape that lost output: exit and pump race.
+		var got bool
+		deadline := time.After(10 * time.Second)
+		drained := false
+	drain:
+		for !drained {
+			select {
+			case line, ok := <-p.Lines():
+				if !ok {
+					drained = true
+					break drain
+				}
+				if string(line) == "ok" {
+					got = true
+				}
+			case <-deadline:
+				_ = p.Close()
+				t.Fatalf("iteration %d: the child produced no output within 10s", i)
+			}
+		}
+		_ = p.Close()
+		if !got {
+			lost++
+		}
+	}
+	if lost > 0 {
+		t.Fatalf("%d/%d spawns lost a fast child's stdout — the StdoutPipe/exec.Cmd.Wait race is back: "+
+			"cmd.Wait must not own the pipes the pumps read", lost, iterations)
 	}
 }

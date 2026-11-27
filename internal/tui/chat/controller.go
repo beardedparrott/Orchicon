@@ -54,6 +54,14 @@ type convState struct {
 	// captured together from Heartbeat.server_time_unix_ms.
 	serverTimeMs     int64
 	serverRecvMonoMs int64
+	// turnOver records that the SERVER said this turn is no longer running — a WatchTurnStream dial
+	// returned NotFound — while the slot is still streaming for it.
+	//
+	// THE SLOT IS NOT CLEARED AT THAT MOMENT. A NotFound says the turn is finished; it does not say the
+	// bound client has the finished reply on screen. The durable page is the completion authority (the
+	// same rule the GUI's completion effect follows), so the slot ends when the poll that lands the
+	// reply resolves it (resolveTurnIfOver), never on the dial's error alone.
+	turnOver bool
 }
 
 // askStreamStallTimeout is how long a streaming turn may go with NO event at all before the stream
@@ -631,6 +639,19 @@ type ConsentRepliedMsg struct {
 	// error one — because the message is about the answer the operator gave, not only the server's
 	// verdict.
 	Answer string
+	// AssistantMessageID names the NEW TURN that an MCP-served ask's answer started, and it is what
+	// lets the shell ATTACH to that turn instead of waiting to discover it.
+	//
+	// A live ask (the orchicon adapter) is answered INSIDE the turn that asked it: this client is
+	// already consuming that turn's stream, so the server starts nothing new and this is empty. An
+	// MCP-served ask (claude/opencode/antigravity) is answered by CONTINUING the conversation after
+	// the asking turn has ended, so its reply arrives on a turn THIS CLIENT NEVER OPENED — and every
+	// live paint path (the stream consumer, runTurnPoll) only runs for a turn this client started or
+	// re-attached to. That is the reported symptom: a short reply finished inside the gap between
+	// rail polls, so nothing ever re-attached and the reply stayed invisible until a re-entry.
+	//
+	// Empty on a permission decision and on an expired ask too, which start no turn.
+	AssistantMessageID string
 }
 
 // PermissionGrantsMsg carries the conversation's ACTIVE session grants, as the server holds them.
@@ -717,12 +738,13 @@ func (c *Controller) ReplyPermissionAsk(convID, askID string, choice apiv1.Permi
 			return ConsentRepliedMsg{ConvID: convID, AskID: askID, Err: err.Error(), Answer: answer}
 		}
 		return ConsentRepliedMsg{
-			ConvID:  convID,
-			AskID:   askID,
-			Applied: resp.Msg.GetApplied(),
-			Expired: resp.Msg.GetExpired(),
-			Detail:  resp.Msg.GetDetail(),
-			Answer:  answer,
+			ConvID:             convID,
+			AskID:              askID,
+			Applied:            resp.Msg.GetApplied(),
+			Expired:            resp.Msg.GetExpired(),
+			Detail:             resp.Msg.GetDetail(),
+			Answer:             answer,
+			AssistantMessageID: resp.Msg.GetAssistantMessageId(),
 		}
 	}
 }
@@ -874,6 +896,10 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 			Key:       "m-" + m.GetId(),
 			MessageID: m.GetId(),
 		})
+		// THE TURN'S TOOL CALLS, as rows. They used to be dropped here, which made every recorded tool
+		// call vanish the moment the turn finalized — see toolrows.go. Drawn BEFORE the clarifying card so
+		// the card stays the last thing in the message (it is the thing the operator acts on).
+		items = append(items, toolRowsForMessage(m)...)
 		if ask := parseAskUserCall(m.GetToolCalls(), m.GetToolResults()); ask != nil {
 			items = append(items, ChatItem{
 				Kind: KindAsk,
@@ -937,6 +963,9 @@ func (c *Controller) SendWithAttachments(convID, text, contextPreamble string, f
 	interject := st.streaming
 	st.streaming = true
 	st.reconnecting = false
+	// A NEW TURN IS NOT THE FINISHED ONE: whatever an earlier dial learned about a previous turn must not
+	// end this one.
+	st.turnOver = false
 	st.sentText = text
 	st.optimisticUser = text
 	// THE TURN IS REMEMBERED FOR THE ONE RETRY THAT IS POSSIBLE (see dropStream): a stream the server
@@ -1036,12 +1065,68 @@ func (c *Controller) Watch(convID, assistantMessageID string) tea.Cmd {
 		}))
 		if err != nil {
 			// NotFound (turn over) → poll resolves completion; not fatal.
+			//
+			// AND THE POLL IS ASKED FOR AT ONCE. "The poll will get there" is only true if one is armed:
+			// a slot re-attached from a reply verdict has one (Reattach arms runTurnPoll), but the
+			// answer can arrive before its first tick, and a turn the server has already finished
+			// deserves to end now rather than up to a poll interval later.
+			if c.markTurnOver(convID, assistantMessageID) {
+				c.postChatCmd(c.pollTranscript(convID))
+			}
 			return nil
 		}
 		go c.consume(convID, c.CurrentGen(convID), stream)
 		// The watchdog and the durable poll are NOT armed here — see SendWithAttachments. Arming them at
 		// this point would gate them behind this call returning, which is the failure they exist to cover.
 		return nil
+	}
+}
+
+// markTurnOver records that the SERVER says the turn behind assistantMessageID is finished, and reports
+// whether this client's slot is still that turn's — so a superseded stream can never settle a newer one.
+func (c *Controller) markTurnOver(convID, assistantMessageID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	st := c.state[convID]
+	if st == nil || !st.streaming || st.pendingReplyID != assistantMessageID {
+		return false
+	}
+	st.turnOver = true
+	return true
+}
+
+// resolveTurnIfOver ends a streaming slot whose turn the server has reported finished, once the durable
+// reply has been read. See pollTranscript and Watch for why the two halves are split.
+func (c *Controller) resolveTurnIfOver(convID string) {
+	c.mu.Lock()
+	st := c.state[convID]
+	if st == nil || !st.streaming || !st.turnOver {
+		c.mu.Unlock()
+		return
+	}
+	st.streaming = false
+	st.reconnecting = false
+	st.pendingReplyID = ""
+	st.turnOver = false
+	store := c.store
+	c.mu.Unlock()
+	if store != nil {
+		store.SetReconnecting(convID, false)
+	}
+	// THE SHELL IS TOLD, because the same event clears its composer's stop affordance and its activity
+	// line; it is the message the GUI's completion effect produces.
+	c.postChatCmd(func() tea.Msg { return TurnResolvedMsg{ConvID: convID} })
+}
+
+// postChatCmd hands a follow-up command to the shell's loop WITHOUT blocking. A goroutine may produce one
+// at any time, and a full channel must never wedge the stream it is reporting on.
+func (c *Controller) postChatCmd(cmd tea.Cmd) {
+	if cmd == nil || c.cmds == nil {
+		return
+	}
+	select {
+	case c.cmds <- cmd:
+	default:
 	}
 }
 
@@ -1074,6 +1159,9 @@ func (c *Controller) Reattach(convID, pendingReplyID string) tea.Cmd {
 	st.streaming = true
 	st.reconnecting = true
 	st.pendingReplyID = pendingReplyID
+	// A RE-ATTACHED TURN HAS NOT BEEN PRONOUNCED OVER YET: this dial is what asks the server whether it
+	// is still running.
+	st.turnOver = false
 	st.lastActivity = now()
 	gen := st.gen
 	c.mu.Unlock()
@@ -1086,8 +1174,20 @@ func (c *Controller) Reattach(convID, pendingReplyID string) tea.Cmd {
 
 // pollTranscript re-fetches the durable transcript (completion
 // authority + reconnect refresh).
+//
+// THE DURABLE PAGE IS CONSUMED HERE, NOT ONLY DELIVERED, and the reason is the operator's report. A
+// re-attached turn whose Watch dial returned NotFound (the turn finished before this client dialled —
+// the SHORT-reply case) had NOBODY to end its slot: the dial's error was swallowed, and the poll
+// delivered a transcript the shell painted while the slot stayed streaming. The operator saw a finished
+// reply above an "Orchicon is …" line that never cleared. So the poll resolves the slot the moment the
+// server has told it the turn is over — the reply and the end of the turn land in the same pass.
 func (c *Controller) pollTranscript(convID string) tea.Cmd {
-	return c.OpenConversation(convID)
+	inner := c.OpenConversation(convID)
+	return func() tea.Msg {
+		msg := inner()
+		c.resolveTurnIfOver(convID)
+		return msg
+	}
 }
 
 // Poll is the exported poll hook (shell-side turn resolution).
@@ -1136,6 +1236,7 @@ func (c *Controller) EndStream(convID string, gen uint64) bool {
 		st.streaming = false
 		st.reconnecting = false
 		st.pendingReplyID = ""
+		st.turnOver = false
 		ended = true
 	}
 	c.mu.Unlock()
@@ -1208,6 +1309,8 @@ func (c *Controller) handleEvent(convID string, ev *apiv1.ChatStreamResponse) {
 		if st := c.state[convID]; st != nil {
 			st.pendingReplyID = e.TurnStarted.GetAssistantMessageId()
 			st.reconnecting = false
+			// A turn that ACKED is running, whatever an earlier dial learned about another one.
+			st.turnOver = false
 			st.optimisticUser = "" // the user row is now persisted
 		}
 		c.mu.Unlock()
@@ -1349,9 +1452,22 @@ func (c *Controller) dropStream(convID string, gen uint64, err error) {
 		watch  string
 		retry  tea.Cmd
 		report tea.Cmd
+		poll   tea.Cmd
 	)
 	if st.streaming {
 		switch {
+		case st.pendingReplyID != "" && connect.CodeOf(err) == connect.CodeNotFound:
+			// THE TURN IS OVER, and the server said so on the stream rather than at the dial.
+			//
+			// WatchTurnStream refuses a finished turn with NotFound, but the connection is already open
+			// when the handler decides, so the SAME verdict arrives here as a stream error. Treating it
+			// as a socket drop re-dialled a turn that no longer exists — a loop that never resolved the
+			// slot, so a re-attached reply sat under an activity line claiming the turn was still
+			// running. The durable page is the completion authority (see pollTranscript), so this asks
+			// for it rather than for another dial.
+			st.turnOver = true
+			st.reconnecting = false
+			poll = c.pollTranscript(convID)
 		case st.pendingReplyID != "":
 			// acked turn: the server-side collector keeps running — slot
 			// stays streaming, goes reconnecting, watch re-dials the hub.
@@ -1383,6 +1499,11 @@ func (c *Controller) dropStream(convID string, gen uint64, err error) {
 		if c.cmds != nil {
 			c.cmds <- retry
 		}
+		return
+	}
+	if poll != nil {
+		// THE TURN IS OVER: the durable page is asked for, and reading it resolves the slot.
+		c.postChatCmd(poll)
 		return
 	}
 	if watch != "" && c.cmds != nil {

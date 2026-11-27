@@ -86,6 +86,39 @@ func assertNoBypass(argv []string) error {
 	return nil
 }
 
+// settingsBypassKeys are the `--settings` JSON keys that would weaken or disable agy's permission
+// system from INSIDE the document rather than on argv.
+//
+// assertNoBypass guards the ARGV SPELLINGS (`--dangerously-skip-permissions`, `--approval-mode yolo`); a
+// settings document is a different surface with the same power, and the two must be guarded together or
+// the guard has a hole exactly the width of the feature that added it.
+var settingsBypassKeys = []string{
+	"autoapprove", "auto_approve", "auto-approve",
+	"yolo", "alwaysapprove", "always_approve",
+	"skip_permissions", "skip-permissions", "skippermissions",
+	"dangerously_skip_permissions", "dangerously-skip-permissions",
+	"bypass_permissions", "bypass-permissions", "bypasspermissions",
+}
+
+// assertSettingsNotBypass refuses a `--settings` document that could turn the permission system off.
+//
+// THIS ADAPTER ONLY EVER EMITS A DENY LIST, so a document naming one of these keys did not come from
+// modegate.go — it came from a caller that is trying to widen the gate, and that is a bug worth failing
+// the launch over rather than a preference worth honouring.
+func assertSettingsNotBypass(settings string) error {
+	doc := strings.ToLower(strings.TrimSpace(settings))
+	if doc == "" {
+		return nil
+	}
+	for _, key := range settingsBypassKeys {
+		if strings.Contains(doc, `"`+key+`"`) {
+			return fmt.Errorf("antigravity: refusing a --settings document naming %q — it can disable agy's "+
+				"permission system, so the Ask mode boundary would be a claim rather than an enforcement", key)
+		}
+	}
+	return nil
+}
+
 // resolveAgyBinary resolves the agy executable.
 //
 // The resolver is adapter.ResolveBinary, the SAME per-OS/PATH lookup every other adapter uses, so an
@@ -125,6 +158,29 @@ func (b *Bridge) spawnFactory() acp.ProcFactory {
 	}
 	if b.rt != nil {
 		return acp.ContainerFactory(b.rt)
+	}
+	return acp.LocalFactory{}.NewProc
+}
+
+// askFactory selects the transport for an ASK CONVERSATION's child, and it is NOT spawnFactory().
+//
+// AN ASK CONVERSATION HAS NO WORKFLOW RUN. spawnFactory() prefers the CONTAINER transport whenever the
+// bridge holds a runtime client — correct for a worker, whose child must live in its run's container —
+// but a conversation is not a run: there is no run id to lease a container by, and the container factory
+// refuses such a spec outright ("acp: no workflow run id for container spawn"). Because EVERY real plane
+// wires a runtime client, using spawnFactory() here made every antigravity Ask turn fail on its first
+// spawn with `create conversation session: antigravity ask: spawn: acp: no workflow run id for container
+// spawn` — the conversation was registered Ask-capable and could not answer a single message. MEASURED
+// on a local-mode plane. claude's Ask path has always spawned locally for the same reason
+// (internal/claude/ask.go spawnAsk → newLocalProc).
+//
+// The conversation therefore runs the host's own `agy` — the binary the operator installed and signed
+// in, whose credentials the picker's catalogue came from — with the mode gate, the permission handler
+// and the OS-level guard shim making up the boundary (ask_turn.go). An explicit factoryOverride (tests)
+// still wins, so the fixtures drive this path unchanged.
+func (b *Bridge) askFactory() acp.ProcFactory {
+	if b.factoryOverride != nil {
+		return b.factoryOverride
 	}
 	return acp.LocalFactory{}.NewProc
 }

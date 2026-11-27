@@ -61,6 +61,8 @@ import {
 } from "@/lib/ask-activity-notice";
 import { transcriptPollMs } from "@/lib/ask-transcript-poll";
 import { toolCallsFromMessages, type CountableMessage } from "@/lib/ask-tool-summary";
+import { durableToolRows, toolRowKey } from "@/lib/ask-tool-rows";
+import { ToolCard } from "@/components/chat/ToolCard";
 import { useRailWidth } from "@/lib/diff/useRailWidth";
 import {
   useListConversations,
@@ -143,6 +145,7 @@ import { SessionGrants } from "@/components/ask/SessionGrants";
 import { ConversationScopeDisclosure } from "@/components/ask/ConversationScopeDisclosure";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
 import { DiffSidebar, type DiffTab } from "@/components/diffs/DiffSidebar";
+import { answeredTurnToAttach } from "@/lib/ask-reply-attach";
 import { usePersistentState } from "@/lib/diff/usePersistentState";
 import { RAIL_DEFAULT_WIDTH } from "@/lib/diff/railResize";
 import {
@@ -1089,6 +1092,39 @@ function AskOrchiconPage() {
             // header's Grants disclosure) so it is visible without a reload.
             qc.invalidateQueries({ queryKey: askKeys.grants(convId) });
           }
+          // ATTACH TO THE TURN THIS ANSWER STARTED.
+          //
+          // An MCP-served ask (claude/opencode/antigravity) is answered by CONTINUING the conversation:
+          // the asking turn already ended holding the awaiting marker, so the reply arrives on a turn
+          // THIS CLIENT NEVER OPENED. Nothing here attached to it, and the only paths that would were
+          // the re-attach effect's rail poll (turn_in_flight, 3s) and the transcript query — which is
+          // gated on `turnInFlight`, and with no slot armed the local half was false and the server's
+          // flag is only as fresh as the rail poll. So a reply that finished inside that window never
+          // appeared until the page was reloaded, which is the TUI's "leave the conversation and come
+          // back" reported from the other client.
+          //
+          // `assistantMessageId` is the new turn's acked id, and a live-ask answer (the orchicon
+          // adapter) starts no turn and carries none — that path already streams, so it is left alone.
+          //
+          // The slot is armed HERE and the WATCH is dialled by the existing restored-slot effect below:
+          // that effect exists precisely for a slot this component did not dispatch, and runWatch is
+          // declared after this callback (a TDZ error to name it here).
+          const turnToAttach = answeredTurnToAttach({
+            applied: res.applied,
+            expired: res.expired ?? false,
+            assistantMessageId: res.assistantMessageId ?? "",
+          });
+          if (turnToAttach && convId === activeConvId) {
+            setStream(convId, (prev) => ({
+              ...prev,
+              isStreaming: true,
+              isThinking: true,
+              reconnecting: true,
+              pendingReplyId: turnToAttach,
+              items: [],
+            }));
+            restoredWatchRef.current[convId] = true;
+          }
         } else {
           setStream(convId, (prev) => ({
             ...prev,
@@ -1114,7 +1150,7 @@ function AskOrchiconPage() {
         });
       }
     },
-    [askInFlight, setStream, qc, toast],
+    [askInFlight, setStream, qc, toast, activeConvId],
   );
 
   // The effective model answering this conversation: the conversation's own
@@ -3562,6 +3598,15 @@ function MessageBubble({
   const reasoning = ("reasoning" in message ? (message as { reasoning?: string[] }).reasoning : undefined) as string[] | undefined;
   const hasReasoning = Array.isArray(reasoning) && reasoning.length > 0;
 
+  // THE TURN'S RECORDED TOOL CALLS, AS ROWS.
+  //
+  // They were DROPPED here, so a tool row existed only while the SSE stream was live: the moment a turn
+  // finalized and the page was re-read, every call it had made vanished from the transcript. On an
+  // antigravity turn those rows ARE the record of the work (agy reports `run_command`, `view_file`,
+  // `read_url_content` as tool calls), so a reloaded agy conversation showed a reply with no evidence
+  // behind it. See lib/ask-tool-rows.ts and its Go mirror internal/tui/chat/toolrows.go.
+  const toolRows = durableToolRows(message);
+
   // THE CARD COMES FROM ONE PLACE. `askCardOf` owns every rule — which of the message's ask calls
   // to draw (claude announces one twice, and the FIRST is a phantom with an empty result), whether
   // it is answered (a result is not an answer: an empty one and the awaiting marker are both "still
@@ -3594,6 +3639,17 @@ function MessageBubble({
           because nothing failed — the operator chose it. */}
       {message.metadata?.stopped && (
         <p className="mt-1 text-xs text-muted-foreground italic">{message.metadata.stopped}</p>
+      )}
+      {/* THE TURN'S TOOL CALLS, in ledger order, BETWEEN the prose and the card — the same position the
+          TUI draws them in (chat.conversationItems). Each row is the shared ToolCard, so an agy call
+          renders its subject (command, path or URL) from agy's own argument keys rather than a
+          truncated JSON object. */}
+      {toolRows.length > 0 && (
+        <div className="mt-1 space-y-1" data-testid="ask-tool-rows">
+          {toolRows.map((row, i) => (
+            <ToolCard key={toolRowKey(row, i)} tool={row} />
+          ))}
+        </div>
       )}
       {/* THE QUESTION CARD IS THE LAST THING IN THE MESSAGE.
 

@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import type { AIProvider, OpenCodeModel } from "@/api/gen/orchicon/api/v1/ai_gateway_pb";
 import type { ProviderEntry } from "@/api/gen/orchicon/api/v1/provider_pb";
-import { translateAdapterError } from "@/lib/adapter-errors";
+import { ANTIGRAVITY_NOT_INSTALLED_MESSAGE, translateAdapterError } from "@/lib/adapter-errors";
 import {
   DEFAULT_ADAPTER_KIND,
   ORCHICON_ADAPTER_KIND,
@@ -19,7 +19,7 @@ import {
 // Per-adapter provider scope is no longer static: under legacy CLI
 // adapters the provider pills derive from the live CLI discovery (the old
 // picker's grouping), under the catalog-sourced NATIVE kind from the merged
-// providers service, and under a catalog-sourced non-native kind (claude) from
+// providers service, and under a catalog-sourced non-native kind (claude, antigravity) from
 // its adapter-scoped gateway set.
 //
 // The MODEL tier's source is per adapter too, and the server is its authority:
@@ -126,7 +126,7 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
   //    opencode-CLI discovery.
   //  - PROVIDER tier (usesMergedProviders): only the NATIVE kind uses the
   //    tenant-aware merged view, which GATES its model tier. A catalog-sourced
-  //    NON-native kind (claude) uses its adapter-scoped gateway set
+  //    NON-native kind (claude, antigravity) uses its adapter-scoped gateway set
   //    (["anthropic"], from the ProviderRegistry) — never the merged view, which
   //    would leak openai/openrouter into a claude-only scope. Legacy CLI kinds
   //    keep OPTIONAL FILTER pills derived from the live CLI discovery with an
@@ -198,7 +198,7 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
       ? adapterScopedError
       : legacyModelsQ.error;
   // Model tier — per-adapter data source: a CATALOG-SOURCED kind
-  // (orchicon, claude — from ListAdapterKinds.sourcing_kinds) resolves models
+  // (orchicon, claude, antigravity — from ListAdapterKinds.sourcing_kinds) resolves models
   // from the providers service (vendored catalog ⊕ probe ⊕ manual — the
   // Settings → Adapters sourcing view); every other kind keeps opencode-CLI
   // discovery (whose provider namespace those kinds do not share — filtering
@@ -215,6 +215,11 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
   const models = usesCatalogSourcing ? nativeModelsQ.models : legacyModelsQ.data;
   const modelsLoading = usesCatalogSourcing ? nativeModelsQ.isLoading : legacyModelsQ.isLoading;
   const modelsError = usesCatalogSourcing ? nativeModelsQ.error : legacyModelsQ.error;
+  // DEGRADED = the SERVER answered from a fallback rather than a live listing (for the catalog-sourced
+  // kinds: the vendored snapshot, which may lag agy's own catalogue). The TUI has carried this bit since
+  // modelpick.go; the GUI dropped it, so a stale list looked live here and stale there. A probe failure is
+  // non-fatal, so it is a NOTE on the list, never an error that replaces it.
+  const modelsDegraded = usesCatalogSourcing ? nativeModelsQ.degraded : false;
 
   // Tier 1 order (AC 5): the ORCHICON adapter leads the rendered list AND is
   // the fresh-selection default (the seeding effect below). Both halves are
@@ -229,7 +234,9 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
   // that cannot dispatch — the same rule the seeding effect follows), keep
   // the remaining kinds in their existing server order, and leave the
   // [DEFAULT_ADAPTER_KIND] fallback intact for when the kinds fetch failed.
-  // A declared-but-not-dispatchable kind (claude) is never hoisted.
+  // Only the NATIVE kind is hoisted; a catalog-sourced non-native kind (claude, antigravity) keeps the
+  // server's own order, because hoisting is a claim about the DEFAULT, and only the native kind needs no
+  // external binary.
   const adapterList = useMemo(() => {
     if (!adapterKinds || adapterKinds.length === 0) return [DEFAULT_ADAPTER_KIND];
     if (!adapterKinds.includes(ORCHICON_ADAPTER_KIND)) return adapterKinds;
@@ -589,7 +596,7 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
 
               {/* Tier 2 — provider pills. The catalog-sourced NATIVE kind uses
                   the merged providers service view, which GATES the model
-                  tier. A catalog-sourced non-native kind (claude) lists its
+                  tier. A catalog-sourced non-native kind (claude, antigravity) lists its
                   adapter-scoped gateway set ([anthropic]). Legacy CLI
                   adapters: OPTIONAL FILTERS from the live CLI discovery with
                   an All reset. */}
@@ -666,7 +673,19 @@ export function ModelPicker({ value, onChange, askMode = false, inline = false }
                 )}
                 {!modelsLoading && !modelsError && filtered.length === 0 && (
                   <p className="p-4 text-xs text-muted-foreground text-center">
-                    No models match your search
+                    {/* THE EMPTY / NOT-INSTALLED STATE. An antigravity tier that answered with nothing to
+                        select is the install precondition in practice (no `agy`, or a host agy cannot
+                        serve), so it says what to do instead of "no models match your search" — which
+                        reads as "your search was too narrow" and leaves the operator with no next step.
+                        The sentence is the server's, so the TUI renders the same words. */}
+                    {adapter === "antigravity" && !search.trim()
+                      ? ANTIGRAVITY_NOT_INSTALLED_MESSAGE
+                      : "No models match your search"}
+                  </p>
+                )}
+                {!modelsLoading && !modelsError && modelsDegraded && filtered.length > 0 && (
+                  <p className="border-t px-3 py-1.5 text-[10px] text-muted-foreground">
+                    Model list from the vendored snapshot — it may be stale.
                   </p>
                 )}
                 {!modelsLoading &&

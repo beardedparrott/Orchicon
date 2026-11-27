@@ -407,6 +407,12 @@ type UsageRecord struct {
 	// SessionID carries the Ask Orchicon conversation id for Ask attribution — a chat turn has no
 	// execution/task/project row to attribute through.
 	SessionID string
+	// Billing is the usage regime this sample was charged under: db.BillingPlanQuota for a turn covered
+	// by a subscription plan, "" for a metered per-token call. An adapter that KNOWS its call was not
+	// billed per token sets it so the cost explorer can say "included in plan" instead of "$0.0000".
+	// Left empty by every adapter that does not know — the default is metered, which is what the
+	// pricing resolver then prices from the catalog.
+	Billing string
 }
 
 // UsageRecorderFunc records a usage sample.

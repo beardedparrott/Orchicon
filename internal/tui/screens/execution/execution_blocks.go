@@ -43,6 +43,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
+	"github.com/beardedparrott/orchicon/internal/toolclass"
 	"github.com/beardedparrott/orchicon/internal/tui/chat"
 	"github.com/beardedparrott/orchicon/internal/tui/md"
 	"github.com/beardedparrott/orchicon/internal/tui/mutate"
@@ -180,8 +181,10 @@ func toolSummaryBody(t *chat.ParsedTool) (string, string) {
 		return "(tool)", ""
 	}
 	sum := "⚙ " + t.ToolName
-	if in := firstLine(t.Input); in != "" {
-		sum += " " + in
+	// toolclass.RowSubject reads BOTH argument vocabularies, so an agy call shows its command / path /
+	// URL rather than a truncated JSON object (see internal/toolclass/row_subject.go).
+	if subj := firstLine(toolclass.CollapseWhitespace(toolclass.RowSubject(t.ToolName, t.Input))); subj != "" {
+		sum += " " + subj
 	}
 	if outLine := firstLine(t.Output); outLine != "" {
 		sum += " → " + outLine

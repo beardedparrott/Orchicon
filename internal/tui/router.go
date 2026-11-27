@@ -1164,7 +1164,17 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		// AND THE RAIL IS REFRESHED AT ONCE, so the row marks the conversation it just started.
 		return tea.Batch(m.reloadConversations(), m.waitChat())
 	case chat.TurnResolvedMsg:
-		return m.waitChat()
+		// THE COMPLETION AUTHORITY HAS SPOKEN: a turn this client was streaming — including one it
+		// re-attached to after answering an ask — is over and its durable reply has been read. The
+		// slot is already cleared by the controller, so the composer's stop affordance and the
+		// activity line have to be re-derived and the transcript repainted, or the finished reply
+		// would sit above an "Orchicon is …" line that never clears.
+		m.refreshComposerHint()
+		m.dock.SettleSendingAck()
+		// AND THE RAIL IS RE-READ, because the activity line's other half is the SERVER's turn flag: the
+		// row still says turn_in_flight until it is polled again, and on a re-attached turn nobody else
+		// is going to refresh it (the 5s tick is the only other reader).
+		return tea.Batch(m.onChatWake(), m.chat.LoadConversations(), m.waitChat())
 	case chat.StreamDoneMsg:
 		return tea.Batch(m.onStreamDone(msg), m.waitChat())
 	// NO ConsentAskMsg / ConsentResolvedMsg CASES: an ask and its resolution now reach the store
@@ -1199,7 +1209,7 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 				m.chatStore.settleAskByID(msg.ConvID, msg.AskID, msg.Answer)
 				m.dock.SetNotice("answer sent")
 			}
-			return tea.Batch(m.chat.Poll(msg.ConvID), m.onChatWake(), m.waitChat())
+			return tea.Batch(m.attachAnsweredTurn(msg), m.chat.Poll(msg.ConvID), m.onChatWake(), m.waitChat())
 		}
 		// The SERVER's verdict on a decision we sent.
 		switch {

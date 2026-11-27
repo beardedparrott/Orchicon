@@ -10,8 +10,8 @@ import (
 	"errors"
 	"strings"
 	"sync/atomic"
-	"time"
 	"testing"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/antigravity/acp"
@@ -106,9 +106,11 @@ func TestListModelsAuthFailureIsActionable(t *testing.T) {
 	}
 }
 
-// TestListModelsMissingBinaryIsActionable pins the other "cannot work" precondition: no `agy` on the host is
-// the same operator-facing problem as a signed-out one, so it must not surface as a generic spawn error.
-func TestListModelsMissingBinaryIsActionable(t *testing.T) {
+// TestListModelsMissingBinarySaysToInstall pins the OTHER "cannot work" precondition, and pins that it is
+// NOT the sign-in sentence. A host with no `agy` used to be classified as an auth failure, so the picker told
+// the operator to "run `agy` and sign in" — an instruction they cannot follow on a machine with no `agy`.
+// The install instruction is its own sentence and its own sentinel.
+func TestListModelsMissingBinarySaysToInstall(t *testing.T) {
 	b := New(quiet())
 	b.SetBinaryOverride(func() (string, error) {
 		return "", errors.New("antigravity: the `agy` CLI is not on PATH")
@@ -117,11 +119,18 @@ func TestListModelsMissingBinaryIsActionable(t *testing.T) {
 	if err == nil {
 		t.Fatal("a missing agy binary produced a catalogue")
 	}
-	if !errors.Is(err, ErrModelListAuthRequired) {
-		t.Errorf("error %v does not match ErrModelListAuthRequired", err)
+	if !errors.Is(err, ErrModelListNotInstalled) {
+		t.Errorf("error %v does not match ErrModelListNotInstalled, so the providers tier cannot say 'install it'", err)
 	}
-	if got := err.Error(); got != adapter.AntigravityAuthRequiredMessage {
-		t.Errorf("error message = %q, want the actionable sentence", got)
+	if errors.Is(err, ErrModelListAuthRequired) {
+		t.Errorf("a missing binary also matched ErrModelListAuthRequired — the client would tell the operator "+
+			"to sign in to a CLI that is not installed")
+	}
+	if got := err.Error(); got != adapter.AntigravityNotInstalledMessage {
+		t.Errorf("error message = %q, want adapter.AntigravityNotInstalledMessage verbatim", got)
+	}
+	if strings.Contains(err.Error(), "sign in") {
+		t.Errorf("error %q tells the operator to sign in; there is nothing to sign in to on this host", err.Error())
 	}
 }
 

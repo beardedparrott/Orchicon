@@ -193,20 +193,115 @@ func (s *Session) SetMode(ctx context.Context, modeID string) error {
 // ctx.Err(). Without the grace the caller would lose the turn's usage numbers and, worse, leave a
 // response arriving later for a request nobody is waiting on.
 func (s *Session) Prompt(ctx context.Context, blocks []ContentBlock) (*PromptResult, error) {
+	p, err := s.startPrompt(ctx, blocks, true)
+	if err != nil {
+		return nil, err
+	}
+	return p.Wait()
+}
+
+// errBusyTurn is the refusal StartPrompt returns when the session already has a turn in flight.
+//
+// agy defines no behaviour for a second `session/prompt` while one is outstanding (docs, GAP TABLE), so
+// this is a hard rejection rather than a queue: a caller that wants to wait its turn uses Prompt.
+var errBusyTurn = errors.New("acp: a turn is already running on this session — agy defines no behaviour " +
+	"for a second session/prompt while one is in flight")
+
+// ErrTurnBusy is errBusyTurn exported, so a caller can tell "this session is mid-turn" apart from a
+// transport failure and report it as the operator-visible condition it is.
+var ErrTurnBusy = errBusyTurn
+
+// PendingPrompt is a turn that has been SENT but not yet answered.
+//
+// WHY IT EXISTS: `session/prompt` is one request whose RESPONSE is the end of the turn, but a turn is
+// ACCEPTED the instant the request is on the wire, not when it finishes. Any consumer whose contract is
+// "return once the message is accepted" (scheduler.ChatTurnClient.SendTurnMessage) would otherwise hold
+// its send call open for the WHOLE turn — including every minute it spends parked on a
+// `session/request_permission` card waiting for a human. That is not cosmetic: askorchicon bounds the
+// send with a handshake timer and re-dispatches on expiry, so an antigravity turn parked on a consent
+// card was being cancelled and re-sent every handshake window, and the parked card then expired
+// unanswered at turn end. MEASURED on a local-mode plane: `permissionAsk` for `run_command` was raised
+// promptly, then `permissionAskResolved{outcome:"expired"}` arrived at the handshake boundary followed
+// by `turn_failed`.
+//
+// Wait blocks for the answer exactly as Prompt does. The session's one-turn-at-a-time rule is still
+// enforced: promptMu is held from the send until the answer arrives.
+type PendingPrompt struct {
+	ch   chan rpcMessage
+	done chan struct{}
+
+	mu  sync.Mutex
+	res *PromptResult
+	err error
+}
+
+// Wait blocks until agy answers the turn and reports that answer. Safe to call more than once: the
+// result is recorded, so a second call returns it rather than blocking forever.
+func (p *PendingPrompt) Wait() (*PromptResult, error) {
+	<-p.done
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.res, p.err
+}
+
+// Done reports whether the turn has already been answered.
+func (p *PendingPrompt) Done() bool {
+	select {
+	case <-p.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// StartPrompt sends one turn and returns as soon as the request is ON THE WIRE, without waiting for the
+// turn to finish. The caller drains Events() as usual and calls Wait for the outcome.
+//
+// Cancellation travels through ctx exactly as for Prompt: when ctx ends, `session/cancel` is sent so agy
+// stops generating and answers any outstanding permission request with `cancelled`.
+func (s *Session) StartPrompt(ctx context.Context, blocks []ContentBlock) (*PendingPrompt, error) {
+	return s.startPrompt(ctx, blocks, false)
+}
+
+// startPrompt is the one implementation. waitForSlot chooses what happens when the session already has a
+// turn in flight: Prompt QUEUES behind it (the worker path's long-standing behaviour, where a second
+// prompt is legitimate), while StartPrompt REFUSES (the Ask path's send must either be accepted now or
+// report that the turn is busy — silently blocking would recreate the very stall this type exists to
+// remove).
+func (s *Session) startPrompt(ctx context.Context, blocks []ContentBlock, waitForSlot bool) (*PendingPrompt, error) {
 	if len(blocks) == 0 {
 		return nil, errors.New("acp: session/prompt needs at least one content block")
 	}
 
 	// One turn at a time: agy defines nothing for overlapping prompts.
-	s.promptMu.Lock()
-	defer s.promptMu.Unlock()
+	if waitForSlot {
+		s.promptMu.Lock()
+	} else if !s.promptMu.TryLock() {
+		return nil, errBusyTurn
+	}
 
 	id, ch, err := s.conn.begin(methodSessionPrompt, promptParams{SessionID: s.id, Prompt: blocks})
 	if err != nil {
+		s.promptMu.Unlock()
 		return nil, err
 	}
-	defer s.conn.forget(id)
 
+	p := &PendingPrompt{ch: ch, done: make(chan struct{})}
+	go func() {
+		defer s.conn.forget(id)
+		defer s.promptMu.Unlock()
+		res, err := s.awaitPrompt(ctx, ch)
+		p.mu.Lock()
+		p.res, p.err = res, err
+		p.mu.Unlock()
+		close(p.done)
+	}()
+	return p, nil
+}
+
+// awaitPrompt waits for agy's answer to a prompt already on the wire, sending `session/cancel` and
+// waiting out the grace period when ctx ends.
+func (s *Session) awaitPrompt(ctx context.Context, ch chan rpcMessage) (*PromptResult, error) {
 	select {
 	case msg := <-ch:
 		return promptResultFrom(msg)
@@ -243,20 +338,29 @@ func promptResultFrom(msg rpcMessage) (*PromptResult, error) {
 }
 
 // cancelQuietly sends session/cancel for the session and answers any outstanding permission
-// request with `cancelled`. Failures are ignored on purpose: the turn is already being given up
-// on.
+// request with `cancelled`, in the recording's order (cancel first, answer second). Failures are
+// ignored on purpose: the turn is already being given up on.
 func (s *Session) cancelQuietly() {
-	s.conn.cancelPerms(s.id, errTeardown)
 	if err := s.conn.notify(methodSessionCancel, sessionIDParams{SessionID: s.id}); err != nil {
 		s.conn.logger.Debug("acp: could not send session/cancel", "err", err)
 	}
+	s.conn.cancelPerms(s.id, errTeardown)
 }
 
 // Cancel asks agy to end the current turn (`session/cancel`). The turn then finishes with
 // `stopReason:"cancelled"`, including when a permission request is still outstanding — that
 // outstanding request is answered `cancelled` here, exactly as agy's own recording does.
+//
+// THE ORDER IS THE RECORDING'S: `session/cancel` goes out first, and the outstanding permission is
+// answered second (cancel_midturn.jsonl has exactly that order). cancelPerms then WAITS for that
+// answer to reach the wire, so Cancel returning means the answer was written — without which a
+// caller inspecting the stream right after Prompt returns is racing a write it cannot see. That race
+// is measured: TestReplay_CancelMidturn failed once under a fully loaded gate and never once alone.
 func (s *Session) Cancel() error {
 	if err := s.conn.notify(methodSessionCancel, sessionIDParams{SessionID: s.id}); err != nil {
+		// The child is already gone; the parked permission must STILL be answered, so the
+		// request cannot be left hanging behind a failed notify.
+		s.conn.cancelPerms(s.id, errTeardown)
 		return err
 	}
 	s.conn.cancelPerms(s.id, errTeardown)

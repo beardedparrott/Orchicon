@@ -24,6 +24,15 @@ export interface ParsedTool {
   input: string;
   output: string;
   at: number;
+  /**
+   * failed marks the call's RESULT as an error — a refusal (the mode gate declining a write) or a tool
+   * that ran and returned an error. The transcript draws such a row's reason IN FULL, not behind a
+   * toggle: for a refusal the reason IS the whole message (why it did not run, and what to change), so
+   * collapsing it to a byte count and a `view` link leaves the operator with nothing to act on.
+   *
+   * Mirrors `ParsedTool.Failed` in internal/tui/chat/grouping.go, which draws the same body.
+   */
+  failed?: boolean;
 }
 
 export type ChatItem =

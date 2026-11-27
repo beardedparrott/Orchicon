@@ -51,13 +51,22 @@ func (s *Service) ReplyPermissionAsk(ctx context.Context, req *connect.Request[a
 			if rerr := s.recordPromotedAnswer(ctx, tenantID, msgID, askID, answer); rerr != nil {
 				s.log.Warn("ask orchicon: could not record the answer against its card", "ask", askID, "error", rerr)
 			}
-			if _, _, _, terr := s.startConversationTurn(ctx, tenantID, convID, answer, nil); terr != nil {
+			// THE NEW TURN'S ASSISTANT MESSAGE ID IS THE REPLY'S ADDRESS, and it is the whole reason
+			// this field exists. startConversationTurn's first return value is the acked assistant
+			// message id — the same id TurnStarted carries on that turn's stream — so returning it
+			// lets the client ATTACH to the turn it just caused instead of waiting for a polled rail
+			// row to reveal it. Without it the reply was only ever found by accident: a LONG reply
+			// (still running at the next poll) appeared, a SHORT one (finished between polls) did
+			// not, until the operator left the conversation and re-opened it.
+			turnID, _, _, terr := s.startConversationTurn(ctx, tenantID, convID, answer, nil)
+			if terr != nil {
 				return nil, connect.NewError(connect.CodeInternal,
 					fmt.Errorf("deliver the answer to the asked question: %w", terr))
 			}
 			return connect.NewResponse(&apiv1.ReplyPermissionAskResponse{
-				Applied: true,
-				Detail:  "answer sent as your next message",
+				Applied:            true,
+				Detail:             "answer sent as your next message",
+				AssistantMessageId: turnID,
 			}), nil
 		}
 		return connect.NewResponse(&apiv1.ReplyPermissionAskResponse{

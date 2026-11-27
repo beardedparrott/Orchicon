@@ -120,7 +120,14 @@ func TestTheAwaitingMarkerKeepsTheCardOpen(t *testing.T) {
 // TestTheMCPQualifiedSpellingIsRecognised — the claude half of the report.
 func TestTheMCPQualifiedSpellingIsRecognised(t *testing.T) {
 	args := `{"question":"Pick a colour","options":[{"label":"Blue"}]}`
-	for _, name := range []string{"ask_user", "orchicon_ask_user", "mcp__orchicon__ask_user", "mcp__other__ask_user"} {
+	// `mcp_orchicon_ask_user` is AGY'S spelling (single underscores, `mcp_<server>_<tool>` — measured
+	// against agy 1.5.13, internal/antigravity/agy_tool_spelling_test.go). It was missing here, and the
+	// predicate only tested the DOUBLE-underscore `__ask_user` suffix, so an antigravity Ask
+	// conversation recorded its question and the TUI drew no card for it.
+	for _, name := range []string{
+		"ask_user", "orchicon_ask_user", "mcp__orchicon__ask_user", "mcp__other__ask_user",
+		"mcp_orchicon_ask_user", "MCP_ORCHICON_ASK_USER",
+	} {
 		got := parseAskUserCall([]*apiv1.ToolCall{{
 			Id: "tc-9", FunctionName: name, Arguments: args,
 		}}, nil)

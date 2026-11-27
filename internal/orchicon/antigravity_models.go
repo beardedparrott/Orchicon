@@ -32,6 +32,21 @@ var antigravityModelsFS embed.FS
 // operator-facing.
 const AntigravitySnapshotProvenance = "snapshot"
 
+// AntigravityObservedContextWindow is the context window, in tokens, that agy reports for its models.
+//
+// WHERE THE NUMBER COMES FROM: agy never states a window in its model list — the catalogue carries only
+// `modelId` and `name`. The ONLY place a window appears is the per-turn `usage_update` session update, whose
+// `size` was measured at 1048576 on agy 1.5.13
+// (internal/antigravity/testdata/acp/simple_turn.jsonl:13,17 — `{"sessionUpdate":"usage_update","used":9065,
+// "size":1048576}`), captured 2026-11.
+//
+// IT IS AN OBSERVATION, NOT A CONTRACT, and is stated as one: measured on one account, uniform across the 27
+// models that account offered. The per-session gauge in the mapper (Mapper.ContextGauge, fed by
+// usage_update.size) stays AUTHORITATIVE at run time, because a future agy may size a window per model or
+// vary it by plan. This constant exists so the PICKER can annotate a model and the compaction math has a
+// real starting number before the first turn reports one — not so it can override a live gauge.
+const AntigravityObservedContextWindow = 1048576
+
 // antigravitySnapshotFile is the on-disk shape of antigravity_models.json.
 type antigravitySnapshotFile struct {
 	Meta struct {
@@ -39,10 +54,12 @@ type antigravitySnapshotFile struct {
 		Source      string `json:"source"`
 		Captured    string `json:"captured"`
 		Note        string `json:"note"`
+		Context     string `json:"context"`
 	} `json:"_meta"`
 	Models []struct {
 		ID               string   `json:"id"`
 		Name             string   `json:"name"`
+		Context          int64    `json:"context"`
 		ReasoningEfforts []string `json:"reasoning_efforts"`
 	} `json:"models"`
 }
@@ -95,8 +112,16 @@ func loadAntigravitySnapshot() {
 			if m.ID == "" {
 				continue
 			}
+			// The file carries an explicit `context` per row; a row that omits it falls back to the
+			// measured window so a hand-edited snapshot cannot silently regress the picker to
+			// "context unknown" (which the picker renders as a warning, not as a blank).
+			window := m.Context
+			if window <= 0 {
+				window = AntigravityObservedContextWindow
+			}
 			out = append(out, ModelInfo{
-				ID: m.ID,
+				ID:      m.ID,
+				Context: window,
 				// A reasoning model is one whose id ends in an effort suffix; the snapshot states the
 				// effort it encodes, which is what the picker renders as a capability.
 				ReasoningEfforts: append([]string(nil), m.ReasoningEfforts...),
