@@ -29,6 +29,12 @@ import (
 // after a cancel was sent. A var so a test can shorten it.
 var CancelGrace = 5 * time.Second
 
+// permSettleGrace bounds how long cancelPerms waits for a cancelled permission request's answer to
+// reach the wire. It is generous because the work it waits on is a single JSON write to a pipe, and
+// only a handler that ignores its own cancellation can miss it — the same handler that
+// decidePermission already gives up on.
+var permSettleGrace = 2 * time.Second
+
 // cancelCauseTeardown marks a cancellation that ends the turn from the client side (session
 // cancel, session close, client close). It is distinguished from an ordinary context
 // cancellation because the two want DIFFERENT permission answers: a torn-down turn answers
@@ -123,7 +129,7 @@ type conn struct {
 
 	// perms tracks the cancellable context of each in-flight permission request, per session.
 	permMu sync.Mutex
-	perms  map[string]map[uint64]context.CancelCauseFunc
+	perms  map[string]map[uint64]*inflightPerm
 	permID atomic.Uint64
 
 	serveCtx    context.Context
@@ -152,7 +158,7 @@ func newConn(proc Proc, handler Handler, logger *slog.Logger, stderr *stderrRing
 		pending:     make(map[string]chan rpcMessage),
 		sessions:    make(map[string]*Session),
 		early:       make(map[string][]Update),
-		perms:       make(map[string]map[uint64]context.CancelCauseFunc),
+		perms:       make(map[string]map[uint64]*inflightPerm),
 		serveCtx:    ctx,
 		serveCancel: cancel,
 		done:        make(chan struct{}),
@@ -401,19 +407,25 @@ func (c *conn) serveRequest(msg rpcMessage) {
 		return
 	}
 
-	outcome := c.decidePermission(p, msg.Params)
+	perm := newInflightPerm()
+	outcome := c.decidePermission(p, msg.Params, perm)
 	c.respond(msg.ID, outcome)
+	// THE ANSWER IS ON THE WIRE NOW, so a canceller waiting in cancelPerms may proceed. Closing
+	// here (not inside decidePermission) is what makes "cancel returned" mean "the answer was
+	// written": decidePermission only DECIDES, and a decision no caller can see is not an answer.
+	perm.settle()
 }
 
 // decidePermission asks the handler and resolves the answer, failing CLOSED on every abnormal
 // path. The handler runs on its own goroutine so a handler that ignores its context can still be
 // given up on.
-func (c *conn) decidePermission(p permissionParams, raw json.RawMessage) permissionOutcome {
+func (c *conn) decidePermission(p permissionParams, raw json.RawMessage, perm *inflightPerm) permissionOutcome {
 	ctx, cancel := context.WithCancelCause(c.serveCtx)
 	defer cancel(nil)
 
+	perm.cancel = cancel
 	slot := c.permID.Add(1)
-	c.registerPerm(p.SessionID, slot, cancel)
+	c.registerPerm(p.SessionID, slot, perm)
 	defer c.unregisterPerm(p.SessionID, slot)
 
 	if timeout := permissionTimeout(); timeout > 0 {
@@ -505,15 +517,40 @@ func failClosed(opts []PermissionOption) permissionOutcome {
 	return CancelledPermissionOutcome()
 }
 
-func (c *conn) registerPerm(sessionID string, slot uint64, cancel context.CancelCauseFunc) {
+// inflightPerm is one permission request that has not been answered yet: the cause-cancel that
+// tears its handler down, and a channel closed once the ANSWER HAS BEEN WRITTEN.
+//
+// settled is what makes cancellation deterministic. Cancelling only wakes the handler; the answer
+// is written afterwards, on whichever goroutine the handler happens to be running on. A caller that
+// cancels and then inspects the wire would otherwise be racing that write, which is exactly how
+// TestReplay_CancelMidturn failed once under a fully loaded gate and never on its own.
+type inflightPerm struct {
+	cancel  context.CancelCauseFunc
+	settled chan struct{}
+	once    sync.Once
+}
+
+// newInflightPerm builds a request slot. cancel is attached by decidePermission, once the
+// cancellable handler context exists.
+func newInflightPerm() *inflightPerm {
+	return &inflightPerm{settled: make(chan struct{})}
+}
+
+// settle records that the answer reached the wire. Idempotent, so the error paths that answer
+// without going through decidePermission cannot close the channel twice.
+func (p *inflightPerm) settle() {
+	p.once.Do(func() { close(p.settled) })
+}
+
+func (c *conn) registerPerm(sessionID string, slot uint64, p *inflightPerm) {
 	c.permMu.Lock()
 	defer c.permMu.Unlock()
 	m := c.perms[sessionID]
 	if m == nil {
-		m = make(map[uint64]context.CancelCauseFunc)
+		m = make(map[uint64]*inflightPerm)
 		c.perms[sessionID] = m
 	}
-	m[slot] = cancel
+	m[slot] = p
 }
 
 func (c *conn) unregisterPerm(sessionID string, slot uint64) {
@@ -529,15 +566,38 @@ func (c *conn) unregisterPerm(sessionID string, slot uint64) {
 
 // cancelPerms tears down every in-flight permission request for one session, so an outstanding
 // request is answered `cancelled` rather than left hanging (cancel_midturn.jsonl).
+//
+// IT WAITS FOR THE ANSWERS TO REACH THE WIRE (bounded by permSettleGrace). Cancelling is not
+// answering: the handler wakes on the cancel and the ANSWER is written by the goroutine that owns
+// it, so without this wait cancelPerms returns with the request still unanswered on the stream and
+// every caller that inspects the stream next is racing a write it cannot see. Fail-closed is
+// unaffected — the wait is bounded and a handler that never settles is given up on, exactly as a
+// handler that ignores its context already is.
 func (c *conn) cancelPerms(sessionID string, cause error) {
 	c.permMu.Lock()
-	cancels := make([]context.CancelCauseFunc, 0, len(c.perms[sessionID]))
-	for _, cancel := range c.perms[sessionID] {
-		cancels = append(cancels, cancel)
+	slots := make([]*inflightPerm, 0, len(c.perms[sessionID]))
+	for _, p := range c.perms[sessionID] {
+		slots = append(slots, p)
 	}
 	c.permMu.Unlock()
-	for _, cancel := range cancels {
-		cancel(cause)
+	if len(slots) == 0 {
+		return
+	}
+	for _, p := range slots {
+		p.cancel(cause)
+	}
+	timer := time.NewTimer(permSettleGrace)
+	defer timer.Stop()
+	for _, p := range slots {
+		select {
+		case <-p.settled:
+		case <-timer.C:
+			c.logger.Warn("acp: a cancelled permission request was not answered in time",
+				"session", sessionID, "grace", permSettleGrace)
+			return
+		case <-c.done:
+			return
+		}
 	}
 }
 

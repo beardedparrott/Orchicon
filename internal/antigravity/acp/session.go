@@ -338,20 +338,29 @@ func promptResultFrom(msg rpcMessage) (*PromptResult, error) {
 }
 
 // cancelQuietly sends session/cancel for the session and answers any outstanding permission
-// request with `cancelled`. Failures are ignored on purpose: the turn is already being given up
-// on.
+// request with `cancelled`, in the recording's order (cancel first, answer second). Failures are
+// ignored on purpose: the turn is already being given up on.
 func (s *Session) cancelQuietly() {
-	s.conn.cancelPerms(s.id, errTeardown)
 	if err := s.conn.notify(methodSessionCancel, sessionIDParams{SessionID: s.id}); err != nil {
 		s.conn.logger.Debug("acp: could not send session/cancel", "err", err)
 	}
+	s.conn.cancelPerms(s.id, errTeardown)
 }
 
 // Cancel asks agy to end the current turn (`session/cancel`). The turn then finishes with
 // `stopReason:"cancelled"`, including when a permission request is still outstanding — that
 // outstanding request is answered `cancelled` here, exactly as agy's own recording does.
+//
+// THE ORDER IS THE RECORDING'S: `session/cancel` goes out first, and the outstanding permission is
+// answered second (cancel_midturn.jsonl has exactly that order). cancelPerms then WAITS for that
+// answer to reach the wire, so Cancel returning means the answer was written — without which a
+// caller inspecting the stream right after Prompt returns is racing a write it cannot see. That race
+// is measured: TestReplay_CancelMidturn failed once under a fully loaded gate and never once alone.
 func (s *Session) Cancel() error {
 	if err := s.conn.notify(methodSessionCancel, sessionIDParams{SessionID: s.id}); err != nil {
+		// The child is already gone; the parked permission must STILL be answered, so the
+		// request cannot be left hanging behind a failed notify.
+		s.conn.cancelPerms(s.id, errTeardown)
 		return err
 	}
 	s.conn.cancelPerms(s.id, errTeardown)
