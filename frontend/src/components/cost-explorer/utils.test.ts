@@ -8,9 +8,11 @@ import type {
   WorkflowWorkerCost,
 } from "@/api/gen/orchicon/api/v1/ai_gateway_service_pb";
 import {
+  PlanQuotaLabel,
   filterSummaries,
   filterUsageRecords,
   filterWorkflowAggregates,
+  formatCostCell,
   matchesSearch,
   sortSummaries,
   sortUsageRecords,
@@ -348,5 +350,33 @@ describe("usage table sort keys", () => {
     const keys: UsageSortKey[] = ["worker", "task", "provider", "model", "tokens", "cost", "when"];
     const s: SortState<UsageSortKey> = { key: keys[0], dir: "asc" };
     expect(s.key).toBe("worker");
+  });
+});
+
+// --- Plan-quota formatting (AC5) --------------------------------------------
+
+describe("formatCostCell", () => {
+  it("renders a metered group as a plain dollar figure", () => {
+    expect(formatCostCell(1.2345, 0, 10)).toBe("$1.2345");
+  });
+
+  it("says Included in plan when EVERY record is plan-quota", () => {
+    // The bug this pins: `$0.0000` reads as "this run was free", which is a
+    // different claim from "your subscription already paid for it".
+    expect(formatCostCell(0, 4, 4)).toBe(PlanQuotaLabel);
+    expect(formatCostCell(0, 4, 4)).not.toContain("$");
+  });
+
+  it("shows both parts for a mixed group", () => {
+    expect(formatCostCell(1.5, 2, 5)).toBe("$1.5000 + 2 plan-quota turns");
+  });
+
+  it("singularises a single plan-quota turn", () => {
+    expect(formatCostCell(1.5, 1, 5)).toBe("$1.5000 + 1 plan-quota turn");
+  });
+
+  it("treats a missing plan count as metered (proto default 0)", () => {
+    expect(formatCostCell(0.5, undefined, undefined)).toBe("$0.5000");
+    expect(formatCostCell(undefined, 0n, 0n)).toBe("$0.0000");
   });
 });

@@ -53,6 +53,10 @@ type UsageInput struct {
 	CorrelationID    string
 	TraceID          string
 	WorkflowRunID    string
+	// Billing is the usage regime (db.BillingPlanQuota, or "" for metered). A plan-quota sample is
+	// NEVER repriced from the catalog: its cost is zero because the subscription already paid for it,
+	// and substituting a catalog price would invent a charge the operator did not incur.
+	Billing string
 }
 
 // Record performs the dual-write: inserts a usage_records row in Postgres (in its own transaction —
@@ -80,12 +84,22 @@ func (u *UsageRecorder) Record(ctx context.Context, in UsageInput) (db.UsageReco
 		OccurredAt:       time.Now().UTC(),
 		CreatedAt:        time.Now().UTC(),
 		WorkflowRunID:    in.WorkflowRunID,
+		Billing:          in.Billing,
 	}
 
 	// Cost authority: if a pricing resolver is wired, the catalog price is authoritative — even when it
 	// is $0 (a genuinely free model).
+	//
+	// A PLAN-QUOTA SAMPLE IS EXEMPT. Its zero is a statement about how the turn was paid for, not a
+	// missing price: pricing it from the catalog would fabricate a charge against an operator whose
+	// subscription already covered the call, and would make the cost explorer's "included in plan"
+	// marker disagree with its own total.
 	var resolvedCost *apiv1.ModelCost
-	if u.pricing != nil {
+	if in.Billing == db.BillingPlanQuota {
+		row.CostUSD = 0
+		in.CostUSD = 0
+		u.log.Debug("usage cost skipped for a plan-quota turn", "provider", in.Provider, "model", in.Model)
+	} else if u.pricing != nil {
 		cost, ok := u.pricing(context.WithoutCancel(ctx), in.Provider, in.Model)
 		if ok && cost != nil {
 			if p, ok := usageCostFromCatalog(in, cost); ok {

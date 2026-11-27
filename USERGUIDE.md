@@ -1239,6 +1239,17 @@ spend, cache hit rate).
 > worker cannot trip its token ceiling just by re-reading what it already holds, while
 > the cost figure still accounts for that re-sending.
 
+**"Included in plan" is not the same as free.** A run on a subscription plan — an
+Antigravity run using `oauth-personal` or `oauth-business` sign-in, for instance — has a
+real cost of zero because your plan already paid for it, and `agy` reports no money
+figure at all. The Cost Explorer therefore shows **Included in plan** instead of
+`$0.0000` for those rows (a mixed group shows the metered dollars plus a count of
+plan-quota turns). An Antigravity run on the **Gemini API key** or **agent platform**
+method *is* metered per token and is priced from the vendored catalog; a model with no
+published list price stays unpriced and shows the "billing applies" note rather than a
+number. Token budgets still apply to plan-quota runs — only the *cost* ceiling is
+moot, because spend is genuinely 0.
+
 ---
 
 ## 7. Work domain

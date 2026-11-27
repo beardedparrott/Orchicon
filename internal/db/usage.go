@@ -9,6 +9,14 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+// BillingPlanQuota is the `billing` value for a usage row whose cost is covered by a subscription plan
+// rather than priced per token (an Antigravity turn on `oauth-personal`/`oauth-business`).
+//
+// The vocabulary is closed and enforced by a CHECK constraint (db/migrations/20261127000000_usage_billing.sql):
+// "" is metered, BillingPlanQuota is plan quota. It is a CONSTANT here rather than a bare string at each
+// write site so the DB constraint, the mapper and the UI formatter cannot drift into three spellings.
+const BillingPlanQuota = "plan_quota"
+
 // UsageRecordRow is the in-memory representation of a usage_records row (docs/08 §5.2, docs/09
 // §3.7).
 type UsageRecordRow struct {
@@ -33,13 +41,20 @@ type UsageRecordRow struct {
 	ReasoningTokens  int64
 	TotalTokens      int64
 	CostUSD          float64
-	CorrelationID    string
-	TraceID          string
-	OccurredAt       time.Time
-	CreatedAt        time.Time
-	WorkerName       string // denormalised via LEFT JOIN at query time
-	TaskTitle        string // denormalised via LEFT JOIN at query time
-	WorkflowRunID    string // immutable; survives execution deletion
+	// Billing is the usage regime this row was charged under (BillingPlanQuota or "").
+	//
+	// IT EXISTS SO A ZERO COST IS NOT READ AS A FREE RUN. An Antigravity turn on plan quota draws on
+	// the operator's subscription and agy reports no money at all, so CostUSD is 0 — the same number an
+	// unpriced or genuinely free call would produce. The cost explorer needs to tell those apart, so the
+	// regime travels with the row instead of being inferred from a zero.
+	Billing       string
+	CorrelationID string
+	TraceID       string
+	OccurredAt    time.Time
+	CreatedAt     time.Time
+	WorkerName    string // denormalised via LEFT JOIN at query time
+	TaskTitle     string // denormalised via LEFT JOIN at query time
+	WorkflowRunID string // immutable; survives execution deletion
 }
 
 // CreateUsageRecord inserts a usage record within the given tenant-scoped transaction.
@@ -60,13 +75,13 @@ func CreateUsageRecord(ctx context.Context, tx pgx.Tx, row UsageRecordRow) (Usag
 		(id, tenant_id, project_id, task_id, execution_id, worker_id,
 		 adapter_kind, session_id, provider, model, prompt_tokens, completion_tokens,
 		 total_tokens, cost_usd, correlation_id, trace_id, occurred_at, created_at,
-		 workflow_run_id, cache_read_tokens, cache_write_tokens, reasoning_tokens)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)`
+		 workflow_run_id, cache_read_tokens, cache_write_tokens, reasoning_tokens, billing)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`
 	if _, err := tx.Exec(ctx, q,
 		row.ID, row.TenantID, row.ProjectID, row.TaskID, row.ExecutionID, row.WorkerID,
 		row.AdapterKind, row.SessionID, row.Provider, row.Model, row.PromptTokens, row.CompletionTokens,
 		row.TotalTokens, row.CostUSD, row.CorrelationID, row.TraceID, row.OccurredAt, row.CreatedAt,
-		row.WorkflowRunID, row.CacheReadTokens, row.CacheWriteTokens, row.ReasoningTokens,
+		row.WorkflowRunID, row.CacheReadTokens, row.CacheWriteTokens, row.ReasoningTokens, row.Billing,
 	); err != nil {
 		return UsageRecordRow{}, fmt.Errorf("db: create usage record: %w", err)
 	}
@@ -104,7 +119,7 @@ func ListUsageRecords(ctx context.Context, tx pgx.Tx, f ListUsageRecordsFilter) 
 	const q = `SELECT ur.id, ur.tenant_id, ur.project_id, ur.task_id, ur.execution_id, ur.worker_id,
 		ur.provider, ur.model, ur.session_id, ur.prompt_tokens, ur.completion_tokens, ur.cache_read_tokens,
 		ur.cache_write_tokens, ur.reasoning_tokens, ur.total_tokens,
-		ur.cost_usd, ur.correlation_id, ur.trace_id, ur.occurred_at, ur.created_at,
+		ur.cost_usd, ur.billing, ur.correlation_id, ur.trace_id, ur.occurred_at, ur.created_at,
 		COALESCE(w.name, '') AS worker_name,
 		COALESCE(wi.title, '') AS task_title
 		FROM usage_records ur
@@ -168,6 +183,10 @@ type CostSummaryRow struct {
 	CacheWriteTokens int64
 	ReasoningTokens  int64
 	CostUSD          float64
+	// PlanQuotaRecords counts the group's records whose cost is covered by a plan rather than priced
+	// per token. It is what lets a reader say "included in plan" instead of "$0.0000" — a group whose
+	// records are ALL plan-quota has a real cost of zero that is not the same claim as "free".
+	PlanQuotaRecords int32
 	ExecutionCount   int32
 	RecordCount      int32
 	// FinishedAt is the latest occurred_at among the group's usage records
@@ -215,6 +234,7 @@ func GetCostRollup(ctx context.Context, tx pgx.Tx, tenantID string, level CostRo
 		COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens,
 		COALESCE(SUM(reasoning_tokens), 0) AS reasoning_tokens,
 		COALESCE(SUM(cost_usd), 0) AS cost_usd,
+		COUNT(*) FILTER (WHERE billing = $7) AS plan_quota_records,
 		COUNT(DISTINCT execution_id) AS execution_count,
 		COUNT(*) AS record_count,
 		MAX(occurred_at) AS finished_at
@@ -227,7 +247,7 @@ func GetCostRollup(ctx context.Context, tx pgx.Tx, tenantID string, level CostRo
 		  AND ($6::timestamptz <= 'epoch'::timestamptz OR occurred_at <  $6::timestamptz)
 		GROUP BY %s
 		ORDER BY cost_usd DESC`, groupCol, groupCol)
-	rows, err := tx.Query(ctx, q, tenantID, projectID, taskID, executionID, start, end)
+	rows, err := tx.Query(ctx, q, tenantID, projectID, taskID, executionID, start, end, BillingPlanQuota)
 	if err != nil {
 		return nil, fmt.Errorf("db: cost rollup: %w", err)
 	}
@@ -237,7 +257,7 @@ func GetCostRollup(ctx context.Context, tx pgx.Tx, tenantID string, level CostRo
 		var r CostSummaryRow
 		if err := rows.Scan(&r.GroupKey, &r.TotalTokens, &r.PromptTokens,
 			&r.CompletionTokens, &r.CacheReadTokens, &r.CacheWriteTokens,
-			&r.ReasoningTokens, &r.CostUSD, &r.ExecutionCount, &r.RecordCount,
+			&r.ReasoningTokens, &r.CostUSD, &r.PlanQuotaRecords, &r.ExecutionCount, &r.RecordCount,
 			&r.FinishedAt,
 		); err != nil {
 			return nil, fmt.Errorf("db: scan cost rollup: %w", err)
@@ -256,6 +276,7 @@ func GetCostTotal(ctx context.Context, tx pgx.Tx, tenantID, projectID, taskID, e
 		COALESCE(SUM(cache_write_tokens), 0),
 		COALESCE(SUM(reasoning_tokens), 0),
 		COALESCE(SUM(cost_usd), 0),
+		COUNT(*) FILTER (WHERE billing = $7),
 		COUNT(DISTINCT execution_id),
 		COUNT(*)
 		FROM usage_records
@@ -267,10 +288,10 @@ func GetCostTotal(ctx context.Context, tx pgx.Tx, tenantID, projectID, taskID, e
 		  AND ($6::timestamptz <= 'epoch'::timestamptz OR occurred_at <  $6::timestamptz)`
 	var r CostSummaryRow
 	r.GroupKey = "total"
-	if err := tx.QueryRow(ctx, q, tenantID, projectID, taskID, executionID, start, end).Scan(
+	if err := tx.QueryRow(ctx, q, tenantID, projectID, taskID, executionID, start, end, BillingPlanQuota).Scan(
 		&r.TotalTokens, &r.PromptTokens, &r.CompletionTokens,
 		&r.CacheReadTokens, &r.CacheWriteTokens, &r.ReasoningTokens,
-		&r.CostUSD, &r.ExecutionCount, &r.RecordCount,
+		&r.CostUSD, &r.PlanQuotaRecords, &r.ExecutionCount, &r.RecordCount,
 	); err != nil {
 		return CostSummaryRow{}, fmt.Errorf("db: cost total: %w", err)
 	}
@@ -510,7 +531,7 @@ func scanUsageRecord(ctx context.Context, rows pgx.Rows) (UsageRecordRow, error)
 		&r.ID, &r.TenantID, &r.ProjectID, &r.TaskID, &r.ExecutionID, &r.WorkerID,
 		&r.Provider, &r.Model, &r.SessionID, &r.PromptTokens, &r.CompletionTokens, &r.CacheReadTokens,
 		&r.CacheWriteTokens, &r.ReasoningTokens, &r.TotalTokens,
-		&r.CostUSD, &r.CorrelationID, &r.TraceID, &occurredAt, &createdAt,
+		&r.CostUSD, &r.Billing, &r.CorrelationID, &r.TraceID, &occurredAt, &createdAt,
 		&r.WorkerName, &r.TaskTitle,
 	); err != nil {
 		return UsageRecordRow{}, fmt.Errorf("db: scan usage record: %w", err)

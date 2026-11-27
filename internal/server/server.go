@@ -313,6 +313,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			CorrelationID:    in.CorrelationID,
 			TraceID:          in.TraceID,
 			WorkflowRunID:    in.WorkflowRunID,
+			// Carried through so a plan-quota turn keeps its zero cost: the recorder skips catalog
+			// pricing for it, and the cost explorer can say "included in plan" rather than "$0.0000".
+			Billing: in.Billing,
 		})
 		return err
 	}
@@ -515,6 +518,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			CorrelationID: in.CorrelationID,
 			TraceID:       in.TraceID,
 			WorkflowRunID: in.WorkflowRunID,
+			Billing:       in.Billing,
 		})
 		return err
 	})

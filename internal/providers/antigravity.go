@@ -153,11 +153,18 @@ func antigravityRowsFromLive(models []AgyModel) []ModelRow {
 		seen[id] = true
 		out = append(out, ModelRow{
 			ID: id,
+			// CONTEXT: agy's model list states no window, so the row carries the one window agy is
+			// observed to report — `usage_update.size` (1048576 on agy 1.5.13, simple_turn.jsonl:13,17,
+			// captured 2026-11). The live per-turn gauge (Mapper.ContextGauge) still overrides it at run
+			// time; this is what lets the picker annotate a model and the compaction math start from a
+			// real number instead of "unknown".
+			Context: orchicon.AntigravityObservedContextWindow,
 			// Reasoning is the EFFORT SUFFIX on the id, which is how agy encodes thinking level (there is
 			// no per-model capability field in `models.availableModels`).
-			Reasoning:     agyEffortSuffix(id) != "",
-			Source:        "live",
-			WarnNoContext: true, // agy reports no context window — honest, not zero
+			Reasoning: agyEffortSuffix(id) != "",
+			Source:    "live",
+			// The window is known, so the picker must not warn that it is missing.
+			WarnNoContext: false,
 			Visible:       true,
 		})
 	}
@@ -169,11 +176,19 @@ func antigravityRowsFromLive(models []AgyModel) []ModelRow {
 func antigravityRowsFromSnapshot(models []orchicon.ModelInfo) []ModelRow {
 	out := make([]ModelRow, 0, len(models))
 	for _, m := range models {
+		// The snapshot carries the measured window per row (antigravity_models.go's loader fills it
+		// from the file's `context`, defaulting to AntigravityObservedContextWindow), so a snapshot row
+		// annotates its window exactly as a live row does and does not raise the "context unknown" warn.
+		window := m.Context
+		if window <= 0 {
+			window = orchicon.AntigravityObservedContextWindow
+		}
 		out = append(out, ModelRow{
 			ID:            m.ID,
+			Context:       window,
 			Reasoning:     m.SupportsReasoningEffort(),
 			Source:        orchicon.AntigravitySnapshotProvenance,
-			WarnNoContext: m.Context <= 0,
+			WarnNoContext: false,
 			Visible:       true,
 		})
 	}

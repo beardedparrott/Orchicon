@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/beardedparrott/orchicon/internal/aigateway"
+	"github.com/beardedparrott/orchicon/internal/db"
 )
 
 // GAP 4 on an opencode-free plane: with NO discoverer (no opencode binary), the wired pricing
@@ -55,5 +56,58 @@ func TestUsageRecordPricedFromCatalogWithoutADiscoverer(t *testing.T) {
 	// 0.3 per 1M → (1000*3 + 1000000*0.3 + 1000*15) / 1e6 = 0.318.
 	if math.Abs(row.CostUSD-0.318) > 1e-9 {
 		t.Fatalf("recorded cost = %v, want 0.318 (catalog cache-aware pricing)", row.CostUSD)
+	}
+}
+
+// TestAntigravityUsagePricedByRegime is AC5's cost half at the recorder, which is the ONLY place the two
+// pricing regimes can be told apart: the same tokens, the same model, and the ONLY difference is the
+// billing marker the mapper set from the session's auth method.
+//
+// Plan quota (oauth-personal / oauth-business): the operator's subscription already paid for the turn, so
+// cost is 0 AND catalog pricing must be SKIPPED — pricing it would fabricate a charge. Metered
+// (gemini-api-key / agent-platform): the catalog price applies and must be non-zero, or an API-key run
+// would look free.
+func TestAntigravityUsagePricedByRegime(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	const model = "gemini-4-carbon-high" // $2.00 in / $10.00 out per 1M on Google's pricing page
+	in := aigateway.UsageInput{
+		TenantID:         "tnt",
+		Provider:         "google",
+		Model:            model,
+		PromptTokens:     1_000_000,
+		CompletionTokens: 1_000_000,
+	}
+
+	metered := in
+	metered.Billing = "" // an API-key method: metered
+	rec := aigateway.NewUsageRecorder(nil, log)
+	rec.SetPricingResolver(pricingResolver(nil))
+	row, err := rec.Record(context.Background(), metered)
+	if err != nil {
+		t.Fatalf("Record (metered): %v", err)
+	}
+	// 1M in @ $2.00 + 1M out @ $10.00 = $12.00.
+	if math.Abs(row.CostUSD-12.0) > 1e-9 {
+		t.Fatalf("metered google/%s cost = %v, want 12.0 (from the catalog price) — an API-key run must not "+
+			"look free", model, row.CostUSD)
+	}
+	if row.Billing != "" {
+		t.Errorf("metered row Billing = %q, want \"\"", row.Billing)
+	}
+
+	plan := in
+	plan.Billing = db.BillingPlanQuota // oauth-personal / oauth-business
+	rec2 := aigateway.NewUsageRecorder(nil, log)
+	rec2.SetPricingResolver(pricingResolver(nil))
+	row2, err := rec2.Record(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("Record (plan quota): %v", err)
+	}
+	if row2.CostUSD != 0 {
+		t.Errorf("plan-quota google/%s cost = %v, want 0 — catalog pricing must be SKIPPED for a turn the "+
+			"operator's plan already paid for", model, row2.CostUSD)
+	}
+	if row2.Billing != db.BillingPlanQuota {
+		t.Errorf("plan-quota row Billing = %q, want %q", row2.Billing, db.BillingPlanQuota)
 	}
 }
