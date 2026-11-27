@@ -32,38 +32,66 @@ import (
 // from the package constant) so the test fails if someone changes the wiring rather than the id.
 const googleProviderID = "google"
 
-// TestListProviderModels_GoogleDoesNotReturnNotFound is AC3: with NO provider_settings row for `google` and
-// no lister wired, the call must not surface db.ErrNotFound (the `[not_found] db: not found` the operator
-// saw) and must return a populated list instead.
+// TestListProviderModels_GoogleDoesNotReturnNotFound is AC3/AC8: with NO provider_settings row for `google`
+// and no lister wired, the call must not surface db.ErrNotFound (the `[not_found] db: not found` the
+// operator saw) and must return a populated list instead.
+//
+// IT RUNS IN BOTH SHAPES ON PURPOSE. The `nil-pool` subtest always executes (no ORCHICON_TEST_DSN needed),
+// so the AC9 "remove the branch and the test goes red" demonstration is reproducible in ANY environment —
+// a DB-guarded-only version of this test SKIPPED in a DSN-less environment, which made a removed branch
+// look green. The `db` subtest additionally proves the real path against a live database and a genuinely
+// absent provider_settings row; it skips (never passes vacuously as evidence) when no DSN is configured.
 func TestListProviderModels_GoogleDoesNotReturnNotFound(t *testing.T) {
-	svc, pool := newProvidersTestService(t)
-	ctx := context.Background()
-	ensureTenant(t, pool, testTenant)
+	assertGoogleTierAnswersWithoutNotFound := func(t *testing.T, svc *providers.Service) {
+		t.Helper()
+		// A nil-pool service PANICS (rather than returning ErrNotFound) if the tier ever reaches
+		// EffectiveProfile; converting that into a diagnostic keeps the witness message under our control.
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("ListProviderModels(%q) panicked reaching the database (%v) — the antigravity branch "+
+					"must answer BEFORE EffectiveProfile", googleProviderID, r)
+			}
+		}()
+		res, err := svc.ListProviderModels(context.Background(), testTenant, googleProviderID)
+		if err != nil {
+			if errors.Is(err, db.ErrNotFound) {
+				t.Fatalf("ListProviderModels(%q) returned db.ErrNotFound — this is EXACTLY the `[not_found] db: "+
+					"not found` the operator saw; the branch must run before EffectiveProfile", googleProviderID)
+			}
+			t.Fatalf("ListProviderModels(%q): %v", googleProviderID, err)
+		}
+		if !res.Enabled {
+			t.Errorf("Enabled = false for %q, want true (the tier is available; only its source varies)", googleProviderID)
+		}
+		if len(res.Models) == 0 {
+			t.Fatal("no models listed — an empty list reads as \"agy has no models\", which is the wrong answer")
+		}
+		for _, m := range res.Models {
+			if strings.Contains(m.ID, "/") {
+				t.Errorf("model id %q contains a '/' — ids must be BARE agy modelIds; the picker composes "+
+					"antigravity/google/<id> itself, so a full ref here yields a 4-segment ref", m.ID)
+			}
+		}
+		if res.Models[0].Source != "snapshot" {
+			t.Errorf("Source = %q, want %q (no lister is wired in this test, so the vendored snapshot answers)",
+				res.Models[0].Source, "snapshot")
+		}
+	}
 
-	res, err := svc.ListProviderModels(ctx, testTenant, googleProviderID)
-	if err != nil {
-		if errors.Is(err, db.ErrNotFound) {
-			t.Fatalf("ListProviderModels(%q) returned db.ErrNotFound — this is EXACTLY the `[not_found] db: "+
-				"not found` the operator saw; the branch must run before EffectiveProfile", googleProviderID)
+	// Always runs. This is the subtest the AC9 comment-out demonstration fails.
+	t.Run("nil-pool", func(t *testing.T) {
+		assertGoogleTierAnswersWithoutNotFound(t, providers.New(nil, nil, nil))
+	})
+
+	// The DB-backed shape, skipped (never silently green) when no DSN is configured.
+	t.Run("with-database", func(t *testing.T) {
+		if os.Getenv("ORCHICON_TEST_DSN") == "" {
+			t.Skip("ORCHICON_TEST_DSN not set; the nil-pool subtest above already pins the errno")
 		}
-		t.Fatalf("ListProviderModels(%q): %v", googleProviderID, err)
-	}
-	if !res.Enabled {
-		t.Errorf("Enabled = false for %q, want true (the tier is available; only its source varies)", googleProviderID)
-	}
-	if len(res.Models) == 0 {
-		t.Fatal("no models listed — an empty list reads as \"agy has no models\", which is the wrong answer")
-	}
-	for _, m := range res.Models {
-		if strings.Contains(m.ID, "/") {
-			t.Errorf("model id %q contains a '/' — ids must be BARE agy modelIds; the picker composes "+
-				"antigravity/google/<id> itself, so a full ref here yields a 4-segment ref", m.ID)
-		}
-	}
-	if res.Models[0].Source != "snapshot" {
-		t.Errorf("Source = %q, want %q (no lister is wired in this test, so the vendored snapshot answers)",
-			res.Models[0].Source, "snapshot")
-	}
+		svc, pool := newProvidersTestService(t)
+		ensureTenant(t, pool, testTenant)
+		assertGoogleTierAnswersWithoutNotFound(t, svc)
+	})
 }
 
 // TestListProviderModels_GoogleNeedsNoDatabase pins the structural half of the fix: the `google` tier must
