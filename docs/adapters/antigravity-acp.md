@@ -679,7 +679,21 @@ back. The decision, in three parts:
 
 Agy's spelling of the platform's tools is `mcp_orchicon_orchicon_ask_user` (single underscores, tool keeps its
 own `orchicon_` prefix). `askorchicon.isAskToolName` accepts it and `toolclass.Classify` folds it to the ask card,
-so it neither vanishes from the transcript nor inflates the activity line.
+so it neither vanishes from the transcript nor inflates the activity line. **Verified live on agy 1.5.13**: an
+Iteration turn prompted to use it called `mcp_orchicon_ask_user` (TestAskLive_AskUserToolReachesTheModel).
+
+**The `items` field is load-bearing on this transport, and it was being dropped.** Gemini rejects a tool whose
+array property has no `items`:
+
+	400 INVALID_ARGUMENT ... properties[options].items: missing field
+
+That 400 fails the WHOLE `GenerateContentRequest`, so every agy Ask turn that offered `ask_user` died before
+the model could call anything. The registry's schema was fixed once already and the bug survived, because
+`mcp.AskOrchiconRegistry.List` rebuilt each property from Type and Description only — the field was lost
+between the registry and `tools/list`, invisible to both layers and to every test that did not make a live
+call. `propertySchemaFromAsk` now copies recursively, and `array_items_wire_test.go` drives the same adapter
+the sidecar drives and asserts an array reaches the wire with `items`. **Any new field on `PropertySchema`
+must be carried there too.**
 
 ### 12.7 Streaming, and the honest gap
 
