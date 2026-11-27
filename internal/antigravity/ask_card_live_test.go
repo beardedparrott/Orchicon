@@ -36,6 +36,10 @@ func TestAskLive_AskUserToolReachesTheModel(t *testing.T) {
 		t.Skip("live agy probe: set ORCHICON_ANTIGRAVITY_LIVE=1 to spend model turns")
 	}
 	t.Setenv("ORCHICON_ANTIGRAVITY_CONSENT_WAIT", "120s")
+	// THE SIDECAR MUST BE A REAL `orchicon`. Without this the entry resolves to the TEST binary, which has
+	// no `mcp` subcommand: agy cannot start it, the conversation gets no orchicon_* tools, and this probe
+	// fails for a reason no product change can fix (see asksidecar_test.go).
+	askSidecarBinary(t)
 
 	workspace := t.TempDir()
 	b := New(quiet())

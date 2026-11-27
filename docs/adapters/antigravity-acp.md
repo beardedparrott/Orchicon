@@ -682,6 +682,17 @@ own `orchicon_` prefix). `askorchicon.isAskToolName` accepts it and `toolclass.C
 so it neither vanishes from the transcript nor inflates the activity line. **Verified live on agy 1.5.13**: an
 Iteration turn prompted to use it called `mcp_orchicon_ask_user` (TestAskLive_AskUserToolReachesTheModel).
 
+**The live probe needs a REAL `orchicon` binary for the sidecar, and getting this wrong reads as a product
+failure.** The sidecar command comes from `claude.HookBinaryFor`, which falls back to `os.Executable()`: on the
+plane that is `orchicon`, but inside `go test` it is the TEST binary, which has no `mcp` subcommand. agy then
+cannot start the sidecar, the conversation gets no `orchicon_*` tools at all, and the probe fails with
+`tools seen = []` while the model reports it "cannot call orchicon_ask_user". Measured: the documented command
+gave 0 cards / `tools seen = []`; the same test with the sidecar pointed at a built `./cmd/orchicon` gave
+`tools seen = [mcp_orchicon_ask_user]` and passed in 9.1s. `askSidecarBinary(t)` (`asksidecar_test.go`)
+provisions that binary (honouring `ORCHICON_TEST_BINARY` / `ORCHICON_CLAUDE_HOOK_BIN` if set, else building one
+into a temp dir, else SKIPping rather than blaming the product), and
+`TestAskSidecarCommandIsNotTheTestBinary` pins the invariant without needing agy, a model turn or a database.
+
 **The `items` field is load-bearing on this transport, and it was being dropped.** Gemini rejects a tool whose
 array property has no `items`:
 
