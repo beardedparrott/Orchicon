@@ -17,6 +17,7 @@ package aigateway_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"testing"
@@ -42,6 +43,12 @@ func TestListAdapterKindsIncludesAntigravityAsAskCapable(t *testing.T) {
 	resp, err := svc.ListAdapterKinds(context.Background(), connect.NewRequest(&apiv1.ListAdapterKindsRequest{}))
 	if err != nil {
 		t.Fatalf("ListAdapterKinds: %v", err)
+	}
+
+	// The RPC response itself, verbatim: this is what a client's model picker receives, and it is the
+	// acceptance evidence for "antigravity appears in ask_capable_kinds".
+	if wire, jerr := json.Marshal(resp.Msg); jerr == nil {
+		t.Logf("ListAdapterKinds JSON: %s", wire)
 	}
 
 	contains := func(list []string, want string) bool {
