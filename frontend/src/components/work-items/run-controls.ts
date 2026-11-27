@@ -166,3 +166,56 @@ export function bulkControlsFor(statuses: WorkItemStatus[]): BulkControlAvailabi
     total,
   };
 }
+
+/**
+ * controlLabelFor decides what a row's button actually SAYS, given the item and the action.
+ *
+ * THIS FUNCTION EXISTS BECAUSE THE DECISION SHIPPED WRONG WHILE ITS UNIT TEST PASSED.
+ *
+ * The call site had `hasRun = workflowRunId !== "" || !isFiredOnce(status)` — an inverted negation
+ * — so every never-run `pending` item was labelled "Restart". The test asserted `restartLabel(false)`
+ * and `restartLabel(true)` directly and never asked what the COMPONENT computes, so a green suite
+ * shipped the wrong word onto every row in the tree.
+ *
+ * Keeping the whole decision here, in one pure place, means the test can assert what the component
+ * actually renders rather than what a helper would return in isolation.
+ */
+export function controlLabelFor(
+  action: SequenceAction,
+  status: WorkItemStatus,
+  fallbackLabel: string,
+): string {
+  if (action !== SequenceAction.RESTART) return fallbackLabel;
+  return restartLabel(hasEverRun(status));
+}
+
+/** hasEverRun: status alone. Anything not-yet-started has never run; anything else has. */
+export function hasEverRun(status: WorkItemStatus): boolean {
+  // STATUS ALONE DECIDES, and the operator was explicit about it: "Start is the right word for ANY
+  // work item that has not started yet, pending or otherwise. Restart makes sense logically for
+  // something that is failed, cancelled, or paused."
+  //
+  // A bound run id is deliberately NOT consulted. It was the earlier, more "clever" rule, and it is
+  // both wrong and unreachable in practice: a pending item that has never fired has no run id anyway,
+  // and folding two signals together is what let an inverted negation ship. One input, one reading.
+  return status !== WorkItemStatus.PENDING && status !== WorkItemStatus.UNSPECIFIED;
+}
+
+/**
+ * GESTURES PER SCHEDULES VIEW — the operator's rule, stated once so the three views cannot drift.
+ *
+ *   Upcoming  NOTHING. "Upcoming is simply upcoming. They already have a state." A scheduled item
+ *             that has not fired has no run to pause, resume or restart; putting controls on it was
+ *             clutter that also implied the fire was somehow in progress.
+ *   Running   STOP and PAUSE. It is in flight, so the only honest gestures are the two stops.
+ *   History   RESUME and RESTART. The fire is over, so the useful gestures are the ones that send it
+ *             back to work — and once it IS running again it reappears under Running with the stops.
+ *
+ * That last line is the loop the operator described, and it falls out of the run status rather than
+ * any transition we have to wire: resume/restart flips the item to running, which moves the row.
+ */
+export const SCHEDULE_VIEW_ACTIONS = {
+  upcoming: [] as SequenceAction[],
+  running: [SequenceAction.PAUSE, SequenceAction.STOP] as SequenceAction[],
+  history: [SequenceAction.RESUME, SequenceAction.RESTART] as SequenceAction[],
+} as const;

@@ -29,7 +29,10 @@ func TestRuntimeEnvironmentBlockBranches(t *testing.T) {
 	// The local branch must name BOTH planes by their real ports: prod (8091/5432) as untouchable
 	// and dev (8080) as the sanctioned target. Asserting only that 5432 appears would let the block
 	// regress to "everything loopback is LIVE", which is what told QA to stand down.
-	for _, want := range []string{"IN-PROCESS", "127.0.0.1:5432", "5432", "8091", "8080", "/tmp/orchicon"} {
+	// The local branch names the PLANES by port (8091 prod, 8080 dev) and must NOT name a database
+	// port: the DB a plane is wired to is environment-specific, and asserting "5432" here is what
+	// locked in the wrong mapping that told workers live data was their sandbox.
+	for _, want := range []string{"IN-PROCESS", "8091", "8080", "/tmp/orchicon"} {
 		if !strings.Contains(local, want) {
 			t.Errorf("local branch missing %q, got:\n%s", want, local)
 		}

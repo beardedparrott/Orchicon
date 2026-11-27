@@ -40,9 +40,9 @@ const (
 func TestLocalEnvironmentNamesDevAsTheTestTarget(t *testing.T) {
 	blk := localEnvironmentBlock()
 
-	if !strings.Contains(blk, prodPort) || !strings.Contains(blk, prodDB) {
-		t.Errorf("the local environment block does not name PROD (%s, DB %s) — a worker cannot avoid "+
-			"what it cannot identify", prodPort, prodDB)
+	if !strings.Contains(blk, prodPort) {
+		t.Errorf("the local environment block does not name PROD (%s) — a worker cannot avoid "+
+			"what it cannot identify", prodPort)
 	}
 	if !strings.Contains(blk, devPort) {
 		t.Errorf("the local environment block does not name DEV (%s) as a test target, so a local-mode "+
@@ -60,7 +60,7 @@ func TestLocalEnvironmentNamesDevAsTheTestTarget(t *testing.T) {
 // a prompt that only says "never prod" leaves a worker to guess what it MAY do.
 func TestProdIsStatedAsUntouchable(t *testing.T) {
 	blk := localEnvironmentBlock()
-	for _, want := range []string{"8091", "5432", "NEVER"} {
+	for _, want := range []string{"8091", "NEVER"} {
 		if !strings.Contains(blk, want) {
 			t.Errorf("the prod prohibition is missing %q", want)
 		}
@@ -125,5 +125,41 @@ func TestAllAdaptersPermittedForTesting(t *testing.T) {
 		if !strings.Contains(universal, adapter) {
 			t.Errorf("adapter %q is not named as a permitted test subject", adapter)
 		}
+	}
+}
+
+// TestPromptDoesNotAssertADatabasePort is the regression for a mistake I made and shipped.
+//
+// I wrote "DEV (port 8080, DB 5433)" and "PROD (port 8091, DB 5432)" into every worker's prompt from
+// ASSUMPTION. The live wiring is the reverse: 8080 serves the 911-item database and 8091 serves the
+// 36-item one. So the prompts told workers the operator's real data was their sandbox, and told them
+// production was a quiet dev box.
+//
+// A worker noticed: "the `:8080` plane targets production DB 5432". I read that as a confused worker
+// rather than as my error, twice.
+//
+// The fix is not to write the correct numbers — it is to stop writing numbers. A prompt cannot track
+// an environment-specific wiring, so it names the PLANE PORTS (which are the identity the operator
+// states) and tells the worker to ask the plane for anything else.
+func TestPromptDoesNotAssertADatabasePort(t *testing.T) {
+	for name, blk := range map[string]string{
+		"safetyBlock":         safetyBlock,
+		"sandboxPlaneBlock":   sandboxPlaneBlock,
+		"localEnvironment":    localEnvironmentBlock(),
+	} {
+		for _, dbPort := range []string{"DB 5432", "DB 5433", "database `127.0.0.1:5432`"} {
+			if strings.Contains(blk, dbPort) {
+				t.Errorf("%s names %q. The database a plane is wired to is environment-specific and this "+
+					"prompt cannot track it — naming it is how workers were told live data was a sandbox.", name, dbPort)
+			}
+		}
+	}
+}
+
+// TestPromptWarnsAgainstInferringADatabase: the rule that replaces the ports.
+func TestPromptWarnsAgainstInferringADatabase(t *testing.T) {
+	if !strings.Contains(localEnvironmentBlock(), "DO NOT INFER A DATABASE FROM A PORT") {
+		t.Error("the local block no longer warns against inferring a database from a port — that warning " +
+			"is the whole replacement for the wrong numbers")
 	}
 }

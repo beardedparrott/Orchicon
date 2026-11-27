@@ -99,6 +99,16 @@ type propertySchema struct {
 	Type        string `json:"type"`
 	Description string `json:"description,omitempty"`
 	Default     any    `json:"default,omitempty"`
+	// Items describes an ARRAY's elements. REQUIRED whenever Type is "array": Google's tool-schema
+	// validator rejects an array with no `items` outright —
+	//
+	//	Gemini 400 INVALID_ARGUMENT: ... options: missing field: items
+	//
+	// — and that 400 broke EVERY agy Ask turn that offered `ask_user`, because `options` is an array
+	// of choice objects. The field was absent from this struct, so no schema the platform emitted
+	// could ever carry it, and the failure was invisible to every test that did not make a live call.
+	// A QA worker found it by doing the live run it was told to do.
+	Items *propertySchema `json:"items,omitempty"`
 }
 
 // ToolRegistry is the interface the MCP server needs to list and execute tools.
