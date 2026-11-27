@@ -888,6 +888,17 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 				Key:  "m-" + m.GetId() + "-r" + itoa(int64(j)),
 			})
 		}
+		// THE TURN'S TOOL CALLS, as rows, BEFORE the reply.
+		//
+		// They used to be dropped here, which made every recorded tool call vanish the moment the turn
+		// finalized — see toolrows.go. But they were then drawn AFTER the assistant's prose, and that
+		// inverts the turn: the shape is reason -> act -> reply, and putting the acts below the reply
+		// makes the evidence look like something that happened afterwards. The operator: "All of your
+		// last bash calls are listed below your response to me. I would think they should be above
+		// that and your final message is what should be at the bottom."
+		//
+		// The CARD still comes last — that rule was right, and it is the separate append below.
+		items = append(items, toolRowsForMessage(m)...)
 		// A recorded ask_user call renders as a clarifying-question card.
 		items = append(items, ChatItem{
 			Kind:      kind,
@@ -896,10 +907,6 @@ func conversationItems(msgs []*apiv1.ChatMessage) []ChatItem {
 			Key:       "m-" + m.GetId(),
 			MessageID: m.GetId(),
 		})
-		// THE TURN'S TOOL CALLS, as rows. They used to be dropped here, which made every recorded tool
-		// call vanish the moment the turn finalized — see toolrows.go. Drawn BEFORE the clarifying card so
-		// the card stays the last thing in the message (it is the thing the operator acts on).
-		items = append(items, toolRowsForMessage(m)...)
 		if ask := parseAskUserCall(m.GetToolCalls(), m.GetToolResults()); ask != nil {
 			items = append(items, ChatItem{
 				Kind: KindAsk,
