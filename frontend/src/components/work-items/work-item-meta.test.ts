@@ -9,6 +9,9 @@
 // contrast. These tests pin the split so no `dark:` variant leaks back
 // into the meta and both palettes stay readable.
 
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -403,5 +406,49 @@ describe("statusDomainString", () => {
 
   it("includes paused specifically — the status the operator saw as unknown", () => {
     expect(statusDomainString(WorkItemStatus.PAUSED)).toBe("paused");
+  });
+});
+
+/**
+ * NO HAND-BUILT STATUS MAPS MAY COME BACK.
+ *
+ * The same defect shipped FIVE times, each in a different place, because four separate files each
+ * enumerated statuses by hand:
+ *
+ *   1. STATUS_FILTER_OPTIONS      paused missing  -> the item DISAPPEARED from every view
+ *   2. statusMeta (pill)          paused missing  -> no label, no colour
+ *   3. statusMetaFromString       paused missing  -> string-resolved rows rendered unknown
+ *   4. detail-page telemetry map  paused missing  -> /status reported "unknown"
+ *   5. detail-page Status TILE    paused missing  -> the operator READ "unknown" on screen
+ *
+ * Each fix was correct and each was too narrow, because I patched the map I had edited rather than
+ * finding every map. This test is the general fix: it forbids the PATTERN, so the sixth one cannot
+ * be written. Derive from the enum instead.
+ */
+describe("no hand-built status string maps remain", () => {
+  it("no source file maps WorkItemStatus members to literal strings", () => {
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "gen" || entry.name === "node_modules") continue;
+          walk(full);
+          continue;
+        }
+        if (!/\.(ts|tsx)$/.test(entry.name) || /\.test\.(ts|tsx)$/.test(entry.name)) continue;
+        // The definitional file owns the derived map.
+        if (full.endsWith("work-item-meta.ts")) continue;
+        const src = readFileSync(full, "utf8");
+        // `[WorkItemStatus.X]: "literal"` is the hand-built shape.
+        if (/\[WorkItemStatus\.[A-Z_]+\]:\s*"/.test(src)) offenders.push(full);
+      }
+    };
+    walk("src");
+    expect(
+      offenders,
+      `these files hand-build a status→string map instead of using statusDomainString/statusMeta; ` +
+        `every such map has eventually omitted a status and rendered "unknown": ${offenders.join(", ")}`,
+    ).toEqual([]);
   });
 });

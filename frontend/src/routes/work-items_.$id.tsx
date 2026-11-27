@@ -714,21 +714,17 @@ function WorkItemDetailPage() {
                   <option value={WorkItemStatus.RECOVERING}>recovering</option>
                   <option value={WorkItemStatus.SCHEDULED}>scheduled</option>
                   <option value={WorkItemStatus.RECURRING}>recurring</option>
+                  {/* PAUSED joins the operator-settable options. CANCELLED and SKIPPED were
+                      already here; paused is the same kind of gesture — a deliberate park the
+                      operator may also apply or lift by hand. */}
+                  <option value={WorkItemStatus.PAUSED}>paused</option>
                 </select>
               ) : (
-                ({
-                  [WorkItemStatus.PENDING]: "pending",
-                  [WorkItemStatus.SCHEDULED]: "scheduled",
-                  [WorkItemStatus.READY]: "ready",
-                  [WorkItemStatus.ASSIGNED]: "assigned",
-                  [WorkItemStatus.RUNNING]: "running",
-                  [WorkItemStatus.SUCCEEDED]: "succeeded",
-                  [WorkItemStatus.FAILED]: "failed",
-                  [WorkItemStatus.CANCELLED]: "cancelled",
-                  [WorkItemStatus.SKIPPED]: "skipped",
-                  [WorkItemStatus.RECOVERING]: "recovering",
-                  [WorkItemStatus.RECURRING]: "recurring",
-                } as Record<number, string>)[item.status] ?? "unknown"
+                // DERIVED, NOT LISTED. This was the FIFTH hand-built status map in the app and
+                // the one the operator actually saw: it omitted checkpointing and paused, so the
+                // Status tile on the detail page read "unknown" for a paused item while the list
+                // showed "paused". A derived map cannot omit a status.
+                statusDomainString(item.status)
               )}
             </CardTitle>
           </CardHeader>
