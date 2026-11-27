@@ -177,26 +177,33 @@ export function askIsAnswered(
 }
 
 export function isAskUserToolCall(functionName: string): boolean {
-  // THE MCP-QUALIFIED NAME IS A REAL SPELLING, not a defensive extra.
+  // THE MCP-QUALIFIED NAME IS A REAL SPELLING, not a defensive extra — AND THE SEPARATOR IS NOT OURS
+  // TO ASSUME.
   //
   // REPORTED: "I tried an ask conversation with both opencode and claude adapters. Both say they sent a
-  // card, but no actual card appeared." A tool reached over MCP is recorded under its QUALIFIED name —
-  // `mcp__orchicon__ask_user` — and the claude adapter calls it exactly that way. The predicate listed
-  // only the two bare spellings, so a direct MCP call was invisible here while the native bridge (which
-  // calls it bare) kept working. That is why this used to work and then did not: nothing in this
-  // pipeline changed, the adapters' calling style did.
+  // card, but no actual card appeared." A tool reached over MCP is recorded under its QUALIFIED name,
+  // so a predicate listing only the bare spellings makes a direct MCP call invisible while the native
+  // bridge (which calls it bare) keeps working.
   //
-  // The suffix test covers any server prefix, because the prefix names the SERVER and the tool is what
-  // matters.
-  // THE MCP-QUALIFIED SPELLINGS ARE REAL, not defensive extras. A tool reached over MCP is recorded
-  // under its qualified name (`mcp__orchicon__ask_user`), which is how the claude adapter calls it —
-  // so a predicate listing only the bare names makes a direct MCP call invisible while the native
-  // bridge keeps working. That is why this "used to work" and then did not.
+  // THE SEPARATORS DIFFER BY ADAPTER, and that is the second half of the same bug:
+  //
+  //   claude  mcp__orchicon__ask_user   DOUBLE underscore between server and tool
+  //   agy     mcp_orchicon_ask_user     SINGLE underscore (`mcp_<server>_<tool>`, docs/adapters/
+  //                                     antigravity-acp.md §3.6 — measured against agy 1.5.13)
+  //
+  // This predicate tested `endsWith("__ask_user")`, which is true for claude's form and FALSE for agy's.
+  // An antigravity Ask conversation therefore asked its question, recorded the tool call, and drew no
+  // card at all — the model's text said "please choose using the card above" and there was no card.
+  //
+  // The suffix is the stable part: the prefix names the SERVER, the separator is the adapter's
+  // convention, and the TOOL is what decides. So match any name that ends in `ask_user` after a
+  // separator, plus the bare forms.
+  const n = functionName.trim().toLowerCase();
   return (
-    functionName === "ask_user" ||
-    functionName === "orchicon_ask_user" ||
-    functionName === "mcp__orchicon__ask_user" ||
-    functionName.endsWith("__ask_user")
+    n === "ask_user" ||
+    n === "orchicon_ask_user" ||
+    n.endsWith("_ask_user") ||
+    n.endsWith("-ask_user")
   );
 }
 

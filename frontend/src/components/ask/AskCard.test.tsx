@@ -48,6 +48,24 @@ describe("parseAskUserArgs", () => {
     expect(isAskUserToolCall("orchicon_ask_user")).toBe(true);
     expect(isAskUserToolCall("list_projects")).toBe(false);
   });
+
+  // AGY'S SPELLING, WHICH IS A DIFFERENT SEPARATOR — and was therefore invisible to a predicate that
+  // tested `endsWith("__ask_user")`.
+  //
+  // MEASURED against agy 1.5.13: agy joins an MCP tool as `mcp_<server>_<tool>` with SINGLE underscores
+  // (docs/adapters/antigravity-acp.md §3.6), so the platform's ask tool reaches the transcript as
+  // `mcp_orchicon_ask_user`. The card never rendered for an antigravity conversation.
+  it("recognises agy's single-underscore MCP spelling", () => {
+    expect(isAskUserToolCall("mcp_orchicon_ask_user")).toBe(true);
+    // The prefix names the SERVER, so any server's ask tool is the same card.
+    expect(isAskUserToolCall("mcp_orchicon_orchicon_ask_user")).toBe(true);
+    expect(isAskUserToolCall("mcp_other_ask_user")).toBe(true);
+    // Case is not part of the identity either.
+    expect(isAskUserToolCall("MCP_ORCHICON_ASK_USER")).toBe(true);
+    // …and a tool that merely CONTAINS the word is still not the card.
+    expect(isAskUserToolCall("ask_user_question")).toBe(false);
+    expect(isAskUserToolCall("list_projects")).toBe(false);
+  });
 });
 
 // Source-scan checks (mirrors MCPServersPanel.test.tsx): verify the card and its
