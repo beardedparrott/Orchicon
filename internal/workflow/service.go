@@ -2112,64 +2112,10 @@ func (s *Service) ResumeWorkflowRun(ctx context.Context, req *connect.Request[ap
 			fmt.Errorf("run is in status %s — only a paused run can be resumed this way", current.Status))
 	}
 
-	updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, current.ID, current.Version, db.UpdateWorkflowRunFields{
-		Status: strPtr(domain.WorkflowRunRunning),
-	})
+	updated, err := resumeRunInnerReturning(ctx, ttx.Tx, tenantID, current)
 	if err != nil {
-		return nil, mapDBError(err)
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-
-	// RESUME RE-ARMS THE STEP; IT DOES NOT RESURRECT A DEAD SESSION.
-	//
-	// The previous version flipped the paused execution back to `running` in the database and stopped
-	// there — but pause ended the live session, so that row pointed at a process that no longer
-	// existed. The result was an execution claiming to run with nothing behind it, which the stall
-	// reaper would eventually kill, and the step would then look failed for no reason the operator
-	// could see.
-	//
-	// A session that was checkpointed cannot be continued by writing a status; it has to be
-	// DISPATCHED again, and the bridge resumes the same conversation from the persisted session id.
-	// So: end the dead execution honestly, and return its STEP to pending so the reconciler
-	// re-dispatches it. `Attempt` is untouched, so this is not a retry — it is the same attempt
-	// continuing.
-	var resumedExecs []string
-	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, current.ID)
-	if err != nil {
-		return nil, mapDBError(err)
-	}
-	for _, sr := range stepRuns {
-		if sr.WorkerExecutionID == "" {
-			continue
-		}
-		exec, err := db.GetExecution(ctx, ttx.Tx, tenantID, sr.WorkerExecutionID)
-		if err != nil || exec.Status != domain.ExecutionTerminating {
-			continue
-		}
-		ended := time.Now().UTC()
-		terminated := domain.ExecutionTerminated
-		if _, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
-			Status:       &terminated,
-			EndedAt:      &ended,
-			ErrorMessage: strPtr("paused; re-dispatched on resume"),
-		}); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("end paused execution %s: %w", exec.ID, err))
-		}
-		resumedExecs = append(resumedExecs, exec.ID)
-
-		// Return the STEP to pending so it is dispatched again. Only a step that was interrupted
-		// mid-run: succeeded/pending steps are left exactly as they were.
-		if sr.Status == domain.StepRunRunning || sr.Status == domain.StepRunRecovering {
-			pending := domain.StepRunPending
-			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
-				Status:            &pending,
-				WorkerExecutionID: strPtr(""),
-				ClearEndedAt:      true,
-			}); err != nil {
-				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("re-arm paused step %s: %w", sr.StepID, err))
-			}
-		}
-	}
-
 	if current.WorkItemID != "" {
 		if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, current.WorkItemID); err == nil {
 			status := domain.WorkItemRunning
@@ -2197,7 +2143,7 @@ func (s *Service) ResumeWorkflowRun(ctx context.Context, req *connect.Request[ap
 	// if the BOUND WORK ITEM went terminal by some other route. Report it honestly instead of
 	// letting the UI claim a re-attach that did not happen.
 	reattached := current.WorktreePath != "" && current.WorktreeStatus == domain.WorktreeReady
-	s.log.Info("workflow run resumed", "run", current.ID, "resumed_executions", len(resumedExecs), "worktree_reattached", reattached)
+	s.log.Info("workflow run resumed", "run", current.ID, "worktree_reattached", reattached)
 	return connect.NewResponse(&apiv1.ResumeWorkflowRunResponse{
 		Run:                runRowToProto(updated),
 		WorktreeReattached: reattached,

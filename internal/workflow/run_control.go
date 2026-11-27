@@ -304,3 +304,81 @@ func (s *Service) PauseRunInTx(ctx context.Context, tenantID, runID, reason stri
 	}
 	return ttx.Commit(ctx)
 }
+
+// ResumeRunInTx continues a PAUSED run — the transactional entry point the WORK ITEM service uses
+// for a leaf RESUME, so the work item page and the run page cannot disagree about what resume means.
+func (s *Service) ResumeRunInTx(ctx context.Context, tenantID, runID string) error {
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	defer ttx.Rollback(ctx)
+	if err := resumeRunInner(ctx, ttx.Tx, tenantID, runID); err != nil {
+		return err
+	}
+	return ttx.Commit(ctx)
+}
+
+// resumeRunInner continues a PAUSED run in place. Shared by the run RPC and the work item page so
+// the two cannot disagree about what "resume" means — the divergence that made leaf RESUME a no-op
+// in the first place.
+func resumeRunInner(ctx context.Context, tx pgx.Tx, tenantID, runID string) error {
+	current, err := db.GetWorkflowRun(ctx, tx, tenantID, runID)
+	if err != nil {
+		return err
+	}
+	_, err = resumeRunInnerReturning(ctx, tx, tenantID, current)
+	return err
+}
+
+// resumeRunInnerReturning is resumeRunInner with the pre-read row supplied (the RPC already has it).
+//
+// RESUMING DOES NOT RESURRECT THE PAUSED EXECUTION. Pause ENDED that session, so flipping its row
+// back to `running` points at a process that no longer exists. The interrupted execution is ended
+// honestly and its STEP returns to pending so the reconciler dispatches it again — the same attempt
+// continuing, with the bridge resuming the same conversation from the persisted session id.
+func resumeRunInnerReturning(ctx context.Context, tx pgx.Tx, tenantID string, current db.WorkflowRunRow) (db.WorkflowRunRow, error) {
+	if current.Status != domain.WorkflowRunPaused {
+		return current, fmt.Errorf("run is in status %s — only a paused run can be resumed this way", current.Status)
+	}
+	updated, err := db.UpdateWorkflowRun(ctx, tx, tenantID, current.ID, current.Version, db.UpdateWorkflowRunFields{
+		Status: strPtr(domain.WorkflowRunRunning),
+	})
+	if err != nil {
+		return current, err
+	}
+
+	stepRuns, err := db.ListWorkflowStepRuns(ctx, tx, tenantID, current.ID)
+	if err != nil {
+		return current, err
+	}
+	for _, sr := range stepRuns {
+		if sr.WorkerExecutionID == "" {
+			continue
+		}
+		exec, err := db.GetExecution(ctx, tx, tenantID, sr.WorkerExecutionID)
+		if err != nil || exec.Status != domain.ExecutionTerminating {
+			continue
+		}
+		ended := time.Now().UTC()
+		terminated := domain.ExecutionTerminated
+		if _, err := db.UpdateExecution(ctx, tx, tenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
+			Status:       &terminated,
+			EndedAt:      &ended,
+			ErrorMessage: strPtr("paused; re-dispatched on resume"),
+		}); err != nil {
+			return current, err
+		}
+		if sr.Status == domain.StepRunRunning || sr.Status == domain.StepRunRecovering {
+			pending := domain.StepRunPending
+			if _, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:            &pending,
+				WorkerExecutionID: strPtr(""),
+				ClearEndedAt:      true,
+			}); err != nil {
+				return current, err
+			}
+		}
+	}
+	return updated, nil
+}

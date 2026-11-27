@@ -98,14 +98,15 @@ func TestPauseSignalsTheLiveSession(t *testing.T) {
 // TestResumeReArmsRatherThanResurrects: flipping a dead execution back to `running` points at a
 // process that no longer exists.
 func TestResumeReArmsRatherThanResurrects(t *testing.T) {
-	b, err := os.ReadFile("service.go")
+	// The resume core lives in run_control.go, shared by the run RPC and the work item page.
+	b, err := os.ReadFile("run_control.go")
 	if err != nil {
-		t.Fatalf("read service.go: %v", err)
+		t.Fatalf("read run_control.go: %v", err)
 	}
 	src := strings.ReplaceAll(string(b), "\t", "")
-	i := strings.Index(src, "func (s *Service) ResumeWorkflowRun")
+	i := strings.Index(src, "func resumeRunInnerReturning")
 	if i < 0 {
-		t.Fatal("ResumeWorkflowRun is gone")
+		t.Fatal("resumeRunInnerReturning is gone")
 	}
 	body := src[i:]
 	if end := strings.Index(body, "\nfunc "); end > 0 {
