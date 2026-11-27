@@ -17,8 +17,11 @@ package antigravity
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -225,4 +228,118 @@ loop:
 		t.Error("the card named no tool")
 	}
 	t.Logf("live probe: %d card(s); first tool=%q command=%q targets=%v", len(cards), card.Tool, card.Command, card.Targets)
+}
+
+// TestAskLive_ResumeRecallsContext is AC6 against the real agy: a SECOND Bridge (the "restarted plane") that
+// is handed only the persisted agy session id must RE-ATTACH to it, and the model must recall the first turn's
+// context — which it can only do if the session really was resumed rather than recreated.
+//
+// IT COSTS TWO BOUNDED TURNS. That is the price of the criterion: "prior context recalled" is a property of
+// the live session, and no fixture can assert it. The first turn states a fact and a random nonce; the second
+// asks for it back, and the answer must contain the nonce — a word the second prompt does not contain, so a
+// model that lost the context cannot produce it from the prompt alone.
+//
+//	ORCHICON_ANTIGRAVITY_LIVE=1 go test ./internal/antigravity/ -run TestAskLive_ResumeRecallsContext -v
+func TestAskLive_ResumeRecallsContext(t *testing.T) {
+	if os.Getenv("ORCHICON_ANTIGRAVITY_LIVE") != "1" {
+		t.Skip("live agy probe: set ORCHICON_ANTIGRAVITY_LIVE=1 to spend two model turns (~a few thousand tokens)")
+	}
+	nonce := fmt.Sprintf("zebra%06d", time.Now().UnixNano()%1_000_000)
+	workspace := t.TempDir()
+	root := t.TempDir()
+	model := "antigravity/google/" + liveModel()
+
+	newBridge := func() *Bridge {
+		b := New(quiet())
+		b.SetAskRoot(root)
+		b.SetProjectDirResolver(func(context.Context, string, string) (string, error) { return workspace, nil })
+		b.SetDiffLedger(nil, func(context.Context, string, string, string, string, map[string]any, string) {})
+		return b
+	}
+
+	// --- turn 1: state the fact -------------------------------------------------------------------
+	first := newBridge()
+	t.Cleanup(first.CloseAsk)
+	ctx := askmode.WithMode(context.Background(), askmode.Iteration)
+	ctx = askmode.WithConversationScope(ctx, askmode.ConversationScope{ConversationID: "live_resume", ProjectID: "prj_live"})
+	sid, err := first.CreateConversationSession(ctx, "live_resume", "live")
+	if err != nil {
+		t.Fatalf("CreateConversationSession against the real agy: %v", err)
+	}
+	t.Logf("live agy session id = %s", sid)
+	firstReply, err := liveTurn(t, first, ctx, "live_resume", sid, model,
+		"Remember this fact for my next message: my verification word is "+nonce+". Reply with just OK.")
+	if err != nil {
+		t.Fatalf("turn 1: %v", err)
+	}
+	t.Logf("turn 1 reply: %.200q", firstReply)
+
+	// --- the plane goes away: every agy child is retired, as shutdown does -------------------------
+	first.CloseAsk()
+
+	// --- turn 2: a FRESH bridge, only the persisted id --------------------------------------------
+	second := newBridge()
+	t.Cleanup(second.CloseAsk)
+	secondReply, err := liveTurn(t, second, ctx, "live_resume", sid, model,
+		"What is my verification word? Reply with just the word.")
+	if err != nil {
+		t.Fatalf("turn 2: %v", err)
+	}
+	t.Logf("turn 2 reply: %.200q", secondReply)
+
+	// THE CLAIM: the resumed session recalled the nonce, which never appeared in the second prompt.
+	if !strings.Contains(strings.ToLower(secondReply), nonce) {
+		t.Fatalf("the resumed session did not recall %q — reply was %.300q. Either agy did not resume %s, or "+
+			"the context was lost.", nonce, secondReply, sid)
+	}
+	t.Logf("RESUMED: agy session %s recalled the nonce %q after the first bridge was closed", sid, nonce)
+}
+
+// liveTurn runs one bounded turn on b and returns the assistant text it produced.
+func liveTurn(t *testing.T, b *Bridge, ctx context.Context, convID, sid, model, text string) (string, error) {
+	t.Helper()
+	t.Setenv("ORCHICON_ANTIGRAVITY_CONSENT_WAIT", "120s")
+	sub, err := b.Subscribe(ctx, convID)
+	if err != nil {
+		return "", fmt.Errorf("Subscribe: %w", err)
+	}
+	defer sub.Close()
+
+	done := make(chan error, 1)
+	go func() { done <- b.SendTurnMessage(ctx, convID, sid, "You are a test harness.", model, text) }()
+
+	var reply strings.Builder
+	deadline := time.After(150 * time.Second)
+	for {
+		select {
+		case ev, ok := <-sub.Events():
+			if !ok {
+				return reply.String(), errors.New("the bus closed mid-turn")
+			}
+			switch ev.Kind {
+			case "delta", "text":
+				reply.WriteString(ev.Text)
+			case "permission":
+				// A read-only turn should not card; approving keeps the probe bounded if agy asks anyway.
+				if err := b.ReplyPermissionDecision(ctx, sid, ev.PermissionID, "once"); err != nil {
+					t.Logf("ReplyPermissionDecision: %v", err)
+				}
+			case "idle":
+				goto finished
+			case "error":
+				return reply.String(), fmt.Errorf("live turn failed: %s", ev.Text)
+			}
+		case <-deadline:
+			return reply.String(), errors.New("the live turn did not finish inside 150s")
+		}
+	}
+finished:
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Logf("SendTurnMessage returned: %v (the turn still completed)", err)
+		}
+	case <-time.After(5 * time.Second):
+	}
+	return reply.String(), nil
 }

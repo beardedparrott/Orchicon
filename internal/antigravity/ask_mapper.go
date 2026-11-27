@@ -60,9 +60,9 @@ type askMapper struct {
 	// it has been taken.
 	handledCount atomic.Int64
 
-	mu       sync.Mutex
-	tools    map[string]askToolCall
-	textBuf  strings.Builder // per-turn text, flushed as ONE part at turn end
+	mu        sync.Mutex
+	tools     map[string]askToolCall
+	textBuf   strings.Builder // per-turn text, flushed as ONE part at turn end
 	reasonBuf strings.Builder // per-turn reasoning, flushed as ONE part at turn end
 	// ctxUsed/ctxSize are the last context-window gauge agy reported, for the conversation's meter.
 	ctxUsed int64

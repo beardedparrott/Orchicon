@@ -54,10 +54,10 @@ import (
 // ONE thing that makes `antigravity` appear in Dispatcher.ChatKinds() → AIGatewayService.ListAdapterKinds'
 // AskCapableKinds → askorchicon.SetChatKinds: a pure type assertion, with no registry to update.
 var (
-	_ scheduler.ChatTurnClient     = (*Bridge)(nil)
+	_ scheduler.ChatTurnClient       = (*Bridge)(nil)
 	_ scheduler.SessionQueuesPrompts = (*Bridge)(nil)
-	_ scheduler.ChatToolRestrictor = (*Bridge)(nil)
-	_ scheduler.SessionOwnerKind   = (*Bridge)(nil)
+	_ scheduler.ChatToolRestrictor   = (*Bridge)(nil)
+	_ scheduler.SessionOwnerKind     = (*Bridge)(nil)
 )
 
 // AntigravityAskRootEnv overrides where Ask conversations without a project run.

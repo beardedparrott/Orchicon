@@ -10,8 +10,8 @@ import (
 	"errors"
 	"strings"
 	"sync/atomic"
-	"time"
 	"testing"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/antigravity/acp"

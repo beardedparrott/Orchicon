@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beardedparrott/orchicon/internal/askmode"
 	"github.com/beardedparrott/orchicon/internal/antigravity/acp"
+	"github.com/beardedparrott/orchicon/internal/askmode"
 	"github.com/beardedparrott/orchicon/internal/claude"
 	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
@@ -315,7 +315,7 @@ func (s *askSession) ensureLive(ctx context.Context) error {
 			Cwd:                   dir,
 			MCPServers:            servers,
 			AdditionalDirectories: roots,
-			SystemPromptAppend:   s.pendingSystemPrompt(),
+			SystemPromptAppend:    s.pendingSystemPrompt(),
 		})
 		if err != nil {
 			return fail(fmt.Errorf("antigravity ask: open the conversation: %s", authMessage(err)))

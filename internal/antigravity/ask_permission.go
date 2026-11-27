@@ -53,7 +53,7 @@ import (
 type askPermissionHandler struct {
 	// s is the conversation's session: the bus, the parked waits, the pending notice, and the teardown
 	// signal all live there.
-	s *askSession
+	s   *askSession
 	log *slog.Logger
 }
 
