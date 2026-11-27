@@ -339,3 +339,37 @@ export function sortUsageRecords(
           (usageRecordWhenMs(a) ?? 0) - (usageRecordWhenMs(b) ?? 0);
   });
 }
+
+// --- Plan-quota formatting ---------------------------------------------------
+
+// PlanQuotaLabel is what the cost explorer shows in place of a dollar amount when a
+// group's cost is covered by a subscription plan. It mirrors the backend's
+// "zero is not free" language (orchicon.BillingDisclaimer,
+// internal/orchicon/catalog_data.go): a plan-quota run costs $0 because the
+// operator's plan already paid for it, which is a DIFFERENT claim from "free".
+export const PlanQuotaLabel = "Included in plan";
+
+// formatCostCell renders one cost figure for the cost explorer, honouring the
+// plan-quota marker.
+//
+// THREE CASES, and the third is the one a bare `.toFixed(4)` gets wrong:
+//   - every record is plan-quota  → "Included in plan" (never "$0.0000")
+//   - a mix of plan-quota and metered → "$1.2345 + 2 plan-quota turns"
+//   - no plan-quota records → "$1.2345", exactly as before
+//
+// `planQuotaRecords` is the server's COUNT(*) FILTER (WHERE billing='plan_quota')
+// and `recordCount` is the group's total, so the two together say whether the
+// group is wholly, partly or not at all plan-covered.
+export function formatCostCell(
+  costUsd: number | undefined | null,
+  planQuotaRecords: number | bigint | undefined | null,
+  recordCount: number | bigint | undefined | null,
+): string {
+  const planQuota = toNum(planQuotaRecords);
+  const records = toNum(recordCount);
+  const usd = `$${(costUsd ?? 0).toFixed(4)}`;
+  if (planQuota <= 0) return usd;
+  if (records > 0 && planQuota >= records) return PlanQuotaLabel;
+  const turns = planQuota === 1 ? "turn" : "turns";
+  return `${usd} + ${planQuota} plan-quota ${turns}`;
+}

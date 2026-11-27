@@ -35,6 +35,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/antigravity/acp"
+	"github.com/beardedparrott/orchicon/internal/antigravity/authmethod"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
@@ -59,6 +60,12 @@ type MapperDeps struct {
 	FileEdits FileEditHookFunc
 	// UsageRecorder receives each turn's token accounting.
 	UsageRecorder scheduler.UsageRecorderFunc
+	// AuthMethod is the NORMALIZED agy auth method this session authenticated with (authmethod.Methods()).
+	// It decides the usage row's BILLING REGIME: an OAuth method draws on the operator's plan quota (no
+	// per-token price exists), an API-key method is metered and the usage layer prices it from the
+	// catalog. An empty value is normalized to authmethod.Default, so a caller that has nothing to say
+	// gets the same regime agy itself would have used.
+	AuthMethod string
 	// BindSession claims the agy session id for this execution (the single-writer invariant). nil =
 	// the id is not tracked.
 	BindSession func(ctx context.Context, sid string)
@@ -363,7 +370,14 @@ func (m *Mapper) recordUsage(ctx context.Context, res *acp.PromptResult) {
 		WorkflowRunID:    m.deps.Manifest.RuntimeWorkflowID,
 		// agy reports NO money figure (docs §8 row 8), so cost is left for the usage layer to price
 		// from the tokens. Reporting 0 here is honest; the recorder prices it.
+		//
+		// THE REGIME DECIDES WHETHER THERE IS ANYTHING TO PRICE AT ALL. On plan quota the turn is
+		// already paid for by the operator's subscription and no per-token charge exists — the row is
+		// marked db.BillingPlanQuota so the cost explorer says "included in plan" instead of pricing a
+		// zero as if it were free. On an API-key method the row is metered (Billing "") and the recorder
+		// prices it from the catalog.
 		CostUSD: 0,
+		Billing: m.billingRegime(),
 	}
 	if err := m.deps.UsageRecorder(ctx, rec); err != nil {
 		m.deps.Log.Warn("antigravity: record usage failed", "execution", m.execID, "error", err)
@@ -383,6 +397,35 @@ func (m *Mapper) recordUsage(ctx context.Context, res *acp.PromptResult) {
 			"context_window": map[string]any{"used": used, "size": size},
 		},
 	})
+}
+
+// SetAuthMethod records the NORMALIZED auth method the session authenticated with, which decides the
+// usage rows' billing regime.
+//
+// IT IS A SETTER RATHER THAN A CONSTRUCTOR FIELD because of the ORDER the session runs in: the mapper is
+// built with the session (`newSession`), and the auth method is only known once `run` has resolved tenant
+// settings and built the spawn spec. Setting it at construction would mean resolving settings twice and
+// risking the two answers disagreeing. Until it is set, an empty method normalizes to
+// authmethod.Default — the same regime agy itself would have used.
+func (m *Mapper) SetAuthMethod(method string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deps.AuthMethod = method
+}
+
+// billingRegime maps the session's agy auth method onto the usage row's billing marker.
+//
+// oauth-personal and oauth-business draw on a Google subscription: there is no per-token price to record,
+// so the row is db.BillingPlanQuota. gemini-api-key and agent-platform are metered, so the row is left
+// metered ("") and the usage layer prices it from the catalog. An empty method normalizes to
+// authmethod.Default (plan quota), matching what the spawn spec would have authenticated with.
+func (m *Mapper) billingRegime() string {
+	switch authmethod.Normalize(m.deps.AuthMethod) {
+	case authmethod.MethodOAuthPersonal, authmethod.MethodOAuthBusiness:
+		return db.BillingPlanQuota
+	default:
+		return ""
+	}
 }
 
 // providerModel resolves the BARE model id for the usage record's pricing key.

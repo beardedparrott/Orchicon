@@ -19,9 +19,11 @@ import { SearchInput } from "@/components/cost-explorer/SearchInput";
 import { SortControls } from "@/components/cost-explorer/SortControls";
 import { SortableHeader } from "@/components/cost-explorer/SortableHeader";
 import {
+  PlanQuotaLabel,
   filterSummaries,
   filterUsageRecords,
   filterWorkflowAggregates,
+  formatCostCell,
   sortSummaries,
   sortUsageRecords,
   sortWorkflowAggregates,
@@ -227,7 +229,11 @@ function CostExplorer() {
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-medium">Window total</span>
                     <span className="font-medium">
-                      ${data.total.costUsd?.toFixed(4) ?? "0.0000"} ·{" "}
+                      {formatCostCell(
+                        data.total.costUsd,
+                        data.total.planQuotaRecords,
+                        data.total.recordCount,
+                      )} ·{" "}
                       {fmtSplitHit(
                         toNum(data.total.cacheReadTokens),
                         toNum(data.total.cacheWriteTokens),
@@ -259,7 +265,7 @@ function CostExplorer() {
                     >
                       <span className="text-sm font-medium">{displayName(s)}</span>
                       <span className="text-sm">
-                        ${(s.costUsd ?? 0).toFixed(4)} ·{" "}
+                        {formatCostCell(s.costUsd, s.planQuotaRecords, s.recordCount)} ·{" "}
                         {fmtSplitHit(
                           toNum(s.cacheReadTokens),
                           toNum(s.cacheWriteTokens),
@@ -504,7 +510,11 @@ function UsageRecordsTable({
                     <td className="py-1 pr-3">{r.provider || "—"}</td>
                     <td className="py-1 pr-3 font-mono text-xs">{r.model || "—"}</td>
                     <td className="py-1 pr-3 text-right">{fmtInt(r.totalTokens ?? 0)}</td>
-                    <td className="py-1 pr-3 text-right">${(r.costUsd ?? 0).toFixed(4)}</td>
+                    <td className="py-1 pr-3 text-right">
+                      {r.billing === "plan_quota"
+                        ? PlanQuotaLabel
+                        : `$${(r.costUsd ?? 0).toFixed(4)}`}
+                    </td>
                     <td className="py-1 text-xs text-muted-foreground">
                       {r.occurredAt ? new Date(r.occurredAt.toDate()).toLocaleString() : "—"}
                     </td>

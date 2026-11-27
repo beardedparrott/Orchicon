@@ -595,3 +595,32 @@ func TestCostExplorerShowsTopTenPerGroup(t *testing.T) {
 	m = drive(t, m, m.RequestDetail("cost-explorer", "task:task-ship-tui"))
 	assertContains(t, m.View(), "Cost — task task-ship-tui")
 }
+
+// TestFmtCostWithPlanQuota pins the Cost Explorer's plan-quota rule at the TUI, so the
+// terminal and the web app do not tell an operator two different things about the same
+// number. "$0.00" reads as "this run was free", which is a different claim from
+// "your subscription already paid for it".
+func TestFmtCostWithPlanQuota(t *testing.T) {
+	cases := []struct {
+		name        string
+		usd         float64
+		planQuota   int64
+		recordCount int32
+		want        string
+	}{
+		{name: "metered group", usd: 1.2345, planQuota: 0, recordCount: 10, want: "$1.23"},
+		{name: "all plan quota", usd: 0, planQuota: 4, recordCount: 4, want: planQuotaLabel},
+		{name: "mixed", usd: 1.5, planQuota: 2, recordCount: 5, want: "$1.50 + 2 plan-quota turns"},
+		{name: "mixed singular", usd: 1.5, planQuota: 1, recordCount: 5, want: "$1.50 + 1 plan-quota turn"},
+	}
+	for _, tc := range cases {
+		if got := fmtCostWithPlanQuota(tc.usd, tc.planQuota, tc.recordCount); got != tc.want {
+			t.Errorf("%s: fmtCostWithPlanQuota(%v, %d, %d) = %q, want %q",
+				tc.name, tc.usd, tc.planQuota, tc.recordCount, got, tc.want)
+		}
+	}
+	// The whole point: a fully plan-quota group must never render a dollar sign.
+	if got := fmtCostWithPlanQuota(0, 3, 3); strings.Contains(got, "$") {
+		t.Errorf("an all-plan-quota group rendered %q — a dollar figure reads as \"free\"", got)
+	}
+}

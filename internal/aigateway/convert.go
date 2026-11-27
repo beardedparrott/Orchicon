@@ -74,6 +74,7 @@ func usageRowToProto(r *db.UsageRecordRow) *apiv1.UsageRecord {
 		OccurredAt:       timestamppb.New(r.OccurredAt),
 		WorkerName:       r.WorkerName,
 		TaskTitle:        r.TaskTitle,
+		Billing:          r.Billing,
 	}
 }
 
@@ -92,6 +93,7 @@ func costRowToProto(r *db.CostSummaryRow, groupBy, parentKey string, start, end 
 		CostUsd:          r.CostUSD,
 		ExecutionCount:   r.ExecutionCount,
 		RecordCount:      r.RecordCount,
+		PlanQuotaRecords: int64(r.PlanQuotaRecords),
 		WindowStart:      timestamppb.New(start),
 		WindowEnd:        timestamppb.New(end),
 		FinishedAt:       optTimestamp(r.FinishedAt),

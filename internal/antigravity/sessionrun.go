@@ -41,6 +41,9 @@ func (s *session) run(ctx context.Context) error {
 		return err
 	}
 	s.spec = spec
+	// The auth method decides the usage rows' BILLING REGIME (plan quota vs metered), and it is only
+	// known here — the mapper is built with the session, before tenant settings are resolved.
+	s.mapper.SetAuthMethod(spec.AuthMethod)
 	// THE ARGV GUARD RUNS BEFORE THE SPAWN, NOT AFTER. A bypass flag would defeat the whole policy
 	// silently, so a spec carrying one fails the execution instead of launching an ungated agent.
 	if err := assertNoBypass(spec.Argv); err != nil {

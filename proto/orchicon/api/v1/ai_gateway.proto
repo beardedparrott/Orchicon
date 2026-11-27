@@ -84,6 +84,12 @@ message UsageRecord {
   // and cost: GetUsage filters on it. Populated from the conversation id when
   // the Ask chat path records usage (internal/askorchicon/chat.go).
   string session_id = 20;
+  // billing is the usage regime this record was charged under. "plan_quota"
+  // means the turn was covered by a subscription plan, so cost_usd is zero
+  // because it was already paid for — NOT because it was free. Empty means
+  // metered (the default: a per-token call priced from the catalog). Clients
+  // must render "included in plan" for plan_quota rather than "$0.0000".
+  string billing = 21;
 }
 
 // CostSummary is a roll-up of cost + tokens over a time window, grouped
@@ -116,6 +122,11 @@ message CostSummary {
   // drill-down group last finished activity. Used for the "Finished" sort
   // on the cost explorer rollup tabs (docs/10 §11).
   google.protobuf.Timestamp finished_at = 17;
+  // plan_quota_records counts the group's records whose billing is
+  // "plan_quota". A group where every record is plan-quota has a genuine cost
+  // of zero that is NOT the same claim as "free" — the UI says "Included in
+  // plan" instead of "$0.0000".
+  int64 plan_quota_records = 18;
 }
 
 // OpenCodeModel is a model discovered from the `opencode models --verbose`
