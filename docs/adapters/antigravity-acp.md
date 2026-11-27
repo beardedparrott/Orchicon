@@ -88,10 +88,30 @@ Each bullet from the work item, answered from a recorded line.
 
 ### 3.1 Does `session/update` carry `agent_thought_chunk` (reasoning TEXT)?
 
-**No — not supported by agy 1.5.13.** Reasoning is reported as a *token count*
-(`thoughtTokens`), never as text. A model turn explicitly asked to think step by
-step (`gemini-3.8-flash-high`, "What is 17*23? Think step by step") produced
-`thoughtTokens: 237` and **zero** `agent_thought_chunk` notifications.
+**Yes, in `plan` mode — and NO in the acting modes. Corrected 2026-11-27.**
+
+The original answer here was "no, never", based on a DEFAULT-mode turn that
+produced `thoughtTokens: 237` and zero `agent_thought_chunk` notifications. That
+conclusion was too strong: it is a property of the MODE, not of the binary. A
+fresh probe of all four advertised modes on the same model with the same prompt
+("What is 17*23? Think step by step, then answer") measured:
+
+| mode | `agent_thought_chunk` |
+| --- | --- |
+| `default` | 0 |
+| `accept-edits` | 0 |
+| `auto` | 0 |
+| **`plan`** | **2, with real reasoning text** |
+
+Sample chunk from the `plan` run:
+`{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Request demands a step-by-step mathematical breakdown alongside a planning artifact workflow. Applying that formal procedu…"}}`
+
+**So an Ask conversation in BRAINSTORM shows streamed reasoning**, because
+Brainstorm is the mode the transport puts the agy session into `plan` for
+(`modegate.go`, `agySessionMode`). Iteration and Quick Work emit no reasoning
+text and show none — which is the honest rendering, not a gap.
+
+The original default-mode evidence still stands for its own mode:
 
 Evidence: `thinking_turn.jsonl:26` —
 `{"stopReason": "end_turn", "usage": {"inputTokens": 9080, "outputTokens": 433, …, "thoughtTokens": 237, "totalTokens": 9513}}`
@@ -328,7 +348,7 @@ Every variant agy 1.5.13 was observed to emit, with one example each.
 | `config_option_update` | `{configOptions:[model, thought_level, mode]}` | `simple_turn.jsonl:11` |
 | `current_mode_update` | `{"sessionUpdate":"current_mode_update","currentModeId":"accept-edits"}` | `tool_read_file.jsonl:12` |
 | `session_info_update` | `{"sessionUpdate":"session_info_update","title":"Red Or Blue Choice"}` | `ask_question.jsonl:16` |
-| `agent_thought_chunk` | **never emitted** by agy 1.5.13 | `thinking_turn.jsonl:29` |
+| `agent_thought_chunk` | **only in `plan` mode** (0 in default/accept-edits/auto) | `thinking_turn.jsonl:29` (default); live probe 2026-11-27 (`plan`) |
 
 ## 5. Error codes
 
@@ -402,7 +422,7 @@ and `telemetry: [tool_calls_streamed, file_diffs, transcript_jsonl]` (`:44`).
 | 6 | **model listing** | **supported** — `session/new` returns `models.availableModels` + `currentModelId`, plus `configOptions` (`handshake_auth.jsonl:8`) | 27 models on this account; filter per tier if needed |
 | 7 | **context** (window gauge) | **supported** — `usage_update{used,size}` (`simple_turn.jsonl:17`) | it is a context gauge, not a cost meter; no "compacting" state is announced |
 | 8 | **cost** (token accounting) | **supported** — per-turn `usage{inputTokens,outputTokens,cachedReadTokens,cachedWriteTokens,thoughtTokens,totalTokens}` on the `session/prompt` result (`simple_turn.jsonl:18`) | no money figure; Orchicon must price the tokens itself. Cache reads are separately reported |
-| 9 | **reasoning** | **supported with workaround** — reasoning is **not** streamed; only `thoughtTokens` (`thinking_turn.jsonl:26`) | show a "thinking…" indicator from the token count, never reasoning text. `thought_level` config option also lets you choose low→xhigh |
+| 9 | **reasoning** | **supported in `plan` mode, absent in the acting modes** — `agent_thought_chunk` arrives with real text under `plan` (measured); default/accept-edits/auto report only `thoughtTokens` (`thinking_turn.jsonl:26`) | render the reasoning stream when it arrives and NOTHING when it does not — never synthesise it. Brainstorm (agy `plan`) therefore shows reasoning; Iteration shows the token count. `thought_level` also lets you choose low→xhigh |
 | 10 | **tool calls** | **supported** — `tool_call`/`tool_call_update`, kinds `read|edit|execute|other`, MCP tools named `mcp_<server>_<tool>` (`mcp_tool_call.jsonl:19`) | none |
 | 11 | **GUI/TUI** | **not supported** — `agy acp` is a stdio JSON-RPC server only; there is no GUI or TUI channel in the protocol | Orchicon renders its own UI from `session/update`; the agy TUI is a separate, unrelated surface |
 | 12 | **3 OSes** | **supported with workaround** — the CLI ships for macOS, Linux and Windows. macOS/Linux binary `~/.local/bin/agy`; Windows via the PowerShell/CMD install script. Auth is the OS keyring on all three (Apple Keychain / Secret Service / Credential Manager) | **only Linux was run here**; macOS and Windows are doc-sourced. Windows `auto` mode and the terminal sandbox need **Windows 11 24H2 + the Aug 2026 update** — ship `default` mode where the sandbox is unavailable |
@@ -413,8 +433,9 @@ permission cards, ask cards, skills/context, model listing, context, cost,
 reasoning, tool calls, GUI/TUI, 3 OSes — plus **resume/cancel**. The 3 OSes
 requirement is kept as ONE row; macOS/Windows observations live in section 6.
 
-**Overall: GO**, with two hard limits — no reasoning text ever, and no ACP
-answer channel for `ask_question`.
+**Overall: GO**, with two hard limits — reasoning text exists only in `plan` mode
+(so Brainstorm streams it and the acting modes do not), and no ACP answer channel
+for `ask_question`.
 
 ## 9. License
 
@@ -512,9 +533,15 @@ and its spellings are refused at launch (`assertNoBypass`), because a worker
 launched that way would never send a permission request and the policy would be
 silently skipped.
 
-**Known limitation, stated plainly, and MEASURED several times:** agy 1.5.13's DEFAULT
-mode auto-approves an edit without ever sending a permission request (§3.3 does
-not promise it will ask). `ORCHICON_ANTIGRAVITY_LIVE=1 go test ./internal/antigravity/
+**Known limitation, stated plainly, and MEASURED 12 WAYS on 2026-11-27:** agy 1.5.13
+NEVER sends a permission request for a file edit — in ANY mode or settings
+configuration. The 12 variants probed (each one real turn on `gemini-4-neon-low`)
+were: modes `default`, `accept-edits`, `auto`, `plan`; and `--settings` with
+`permissions.ask`, `permissions.deny:["write_file"]`, `permissions.allow:[]`,
+`permissions.{write_file:"ask"}`, `permissions.{write_file:{mode:"ask"}}`, and a
+mixed ask/allow/rules document. **Every one: 0 cards, and the file was written.**
+`permissions.deny` is inert on this build (the settings key is accepted and ignored),
+and an empty `allow` list does not restore prompting. `ORCHICON_ANTIGRAVITY_LIVE=1 go test ./internal/antigravity/
 -run TestAskLive_OneTurnWithACard` logs `0 card(s), 1 tool result(s)` and then
 `probe.txt = "ok"` — the file is written with the card never raised. A
 `run_command` DOES card (`TestAskLive_RunCommandRaisesACard` logs
@@ -523,7 +550,19 @@ round-trip is proven against the real binary; only the *edit* half of the card
 surface is unreachable, and that is agy's mode rather than this transport. The
 bridge cannot prevent that by declining — it prevents it by **not being in a mode
 that writes**: the Ask path puts the session in `plan` for Brainstorm/Quick Work
-(§12.5), which is the only lever that actually holds. A worker execution still
+(§12.5), which is the only lever that actually holds.
+
+**The one thing that CAN stop an in-flight write, and why it is not a card.** agy
+emits `tool_call write_file status:"in_progress"` roughly 0.9 s BEFORE the file
+lands (measured: at the moment the `tool_call` arrived `os.Stat` on the target was
+false; the `tool_call_update` that follows reports `completed` and the file exists).
+Sending `session/cancel` at that instant makes agy report `status:"failed"` and the
+file is never created — measured, and it is the only lever that stops a write the
+client is never asked about. But a ~1 s window cannot hold a human decision, so this
+is **not** a permission card and the transport does not pretend it is one: there is
+no code path here that turns a write into a card, because a card that the operator
+answers 30 s later would be a card that already allowed the write. Brainstorm's
+boundary is therefore enforced BEFORE the turn (session mode `plan`), not during it. A worker execution still
 DETECTS an escape instead: the mapper checks every tool call against the same
 boundary and never-allow rules and, on a violation, cancels the session and fails
 the execution (`onMapperViolation`). The OS-level guard shim on the local
@@ -713,10 +752,12 @@ must be carried there too.**
 GAUGE; the prompt result's `usage` is the billable accounting, recorded under owner kind `ask_conversation`
 (`SessionID` = the conversation id, with `ExecutionID`/`TaskID`/`WorkerID` empty — a conversation has none).
 
-**Reasoning text does not exist on agy 1.5.13.** It never emits `agent_thought_chunk` (only
-`usage.thoughtTokens`), so an Ask turn shows no reasoning text. The arm is implemented for a future agy and is
-**never fabricated** — the reasoning TOKENS still reach the usage row, and a client that shows an empty
-reasoning block is showing the truth.
+**Reasoning text exists only in `plan` mode.** In `default`/`accept-edits`/`auto` agy emits no
+`agent_thought_chunk` and reports only `usage.thoughtTokens`; under `plan` it emits real reasoning chunks
+(measured 2026-11-27). Since BRAINSTORM is the mode put into `plan`, a Brainstorm transcript streams reasoning
+and an Iteration one does not. The arm is mapped either way and is **never fabricated** — the reasoning TOKENS
+still reach the usage row, and a client showing an empty reasoning block is showing the truth.
+`TestAskThoughtChunkStreamsAsReasoning` / `TestAskNoThoughtChunkMeansNoReasoning` pin both halves.
 
 ### 12.8 The Ask diff ledger
 
