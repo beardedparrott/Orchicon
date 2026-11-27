@@ -66,6 +66,25 @@ const (
 		"The usual recovery instruction not to redo completed work does NOT apply here: what was delivered was examined and refused, so leaving it unchanged will produce the identical rejection. " +
 		"Read the reason above, change the work accordingly, then report."
 
+	// recoveryInterruptedNotRejected is the OPPOSITE correction, and it is the one a LIVENESS failure
+	// needs. A stall, a tool hang, a timeout or a kill says nothing at all about the work: the worker
+	// was stopped for being slow or quiet, and whatever it had already done is still on the branch.
+	//
+	// APPLYING THE "REJECTED - REDO IT" TEXT TO ONE OF THESE IS WHAT MADE EVERY RECOVERY START OVER.
+	// The correction above was emitted on ANY non-empty failure reason, so a `stalled:no_progress`
+	// resume was explicitly told that its work had been refused and that not redoing it would produce
+	// an identical rejection. Auto-commit had already preserved the worktree ("checkpoint: work in
+	// progress preserved (stalled)" on run 01M8FE5CWEZ9WP7QXQREDJDM9D), so the resumed session then
+	// re-ran a build and test sweep FROM SCRATCH on top of work that was already finished: 33.5M then
+	// 3.7M then 16.2M tokens across three attempts at the same step, and the third was still booting a
+	// disposable plane when it was killed.
+	//
+	// A liveness stop is an INTERRUPTION. The resume must CONTINUE, not restart, and must be TOLD which
+	// it is - guessing either way is what costs the work or the tokens.
+	recoveryInterruptedNotRejected = "**The last attempt was INTERRUPTED, not rejected - nothing judged the work.** " +
+		"It was stopped for a LIVENESS reason (it stalled, hung, or ran out of time), which says nothing about whether the work was correct. " +
+		"Do NOT start over, and do NOT redo work that is already done. First establish what is already done - check the branch, the working tree and the todo list - then continue from there and finish only what remains."
+
 	// recoveryTailSectionHeading is the heading of the transcript section inside the seed file.
 	recoveryTailSectionHeading = "## Dead session transcript (tail)"
 
@@ -245,6 +264,48 @@ func recoverySeedFromRow(ctx context.Context, tx pgx.Tx, tenantID, taskID string
 	}
 }
 
+// recoveryLivenessPrefixes are the failure-reason families that describe a LIVENESS stop, matched as
+// LOWERCASED PREFIXES of the recorded error_message. These are exactly the strings the adapters emit:
+// `stalled:no_progress` and `stalled:tool_hang:<tool>` (opencode + native monitors), the completion-probe
+// and nudge-window variants that share the `stalled:` family, and the context terminations
+// `wall_clock_timeout` / `cancelled`. A NEW liveness verdict must be added here, or a resume of that
+// failure will be told its work was rejected and will start over.
+var recoveryLivenessPrefixes = []string{
+	"stalled:",
+	"wall_clock_timeout",
+	"cancelled",
+	"timeout",
+}
+
+// isLivenessFailureReason reports whether a failure reason describes a LIVENESS stop (stalled, hung,
+// timed out, killed) rather than a judgement on the delivered work.
+//
+// The distinction decides what a resume is TOLD to do, so it is a predicate rather than an inlined
+// string match: an interruption must CONTINUE, a rejection must CHANGE THE WORK, and telling a resumed
+// worker the wrong one either throws away finished work or re-produces an identical rejection.
+func isLivenessFailureReason(reason string) bool {
+	low := strings.ToLower(strings.TrimSpace(reason))
+	if low == "" {
+		return false
+	}
+	for _, p := range recoveryLivenessPrefixes {
+		if strings.HasPrefix(low, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// recoveryRedoCorrection returns the correction text that belongs with this failure reason: the
+// "interrupted, continue" note for a liveness stop, and the "rejected, change it" note for anything
+// else that actually judged the work.
+func recoveryRedoCorrection(reason string) string {
+	if isLivenessFailureReason(reason) {
+		return recoveryInterruptedNotRejected
+	}
+	return recoveryRedoSupersedesAlreadyDone
+}
+
 // recoveryFileReferenceBlock is the ## Recovery prompt block that tells a recovery-resumed worker
 // to read the seed file.
 func recoveryFileReferenceBlock(seed *recoverySeed) string {
@@ -259,7 +320,7 @@ func recoveryFileReferenceBlock(seed *recoverySeed) string {
 	if seed != nil && strings.TrimSpace(seed.FailureReason) != "" {
 		sb.WriteString("\n" + recoveryReasonSectionHeading + "\n\n")
 		sb.WriteString(strings.TrimSpace(seed.FailureReason) + "\n\n")
-		sb.WriteString(recoveryRedoSupersedesAlreadyDone + "\n")
+		sb.WriteString(recoveryRedoCorrection(seed.FailureReason) + "\n")
 	} else {
 		// No reason available. Say so, so the agent knows it is resuming BLIND rather than assuming the
 		// silence means nothing was wrong.
@@ -302,7 +363,7 @@ func buildRecoveryFileContent(workerName string, seed *recoverySeed, tail string
 	if strings.TrimSpace(seed.FailureReason) != "" {
 		sb.WriteString(recoveryReasonSectionHeading + "\n\n")
 		sb.WriteString(strings.TrimSpace(seed.FailureReason) + "\n\n")
-		sb.WriteString(recoveryRedoSupersedesAlreadyDone + "\n\n")
+		sb.WriteString(recoveryRedoCorrection(seed.FailureReason) + "\n\n")
 	}
 	sb.WriteString(recoveryDirective + "\n")
 	if tail != "" {

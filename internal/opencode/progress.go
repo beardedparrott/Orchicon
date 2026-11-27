@@ -173,6 +173,10 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 	case "file_diff":
 		m.lastFileDiff = now
 		m.lastMeaningfulAction = now
+		// A LANDED FILE DIFF IS PROGRESS ON THE NO-PROGRESS CLOCK TOO. Same reasoning as a resolved
+		// tool call: the clock no_progress measures must advance on work the model DID, or a long tool
+		// that ends after the window hands the model a deadline that has already passed.
+		m.lastStepFinish = now
 		// File progress is real progress — reset the repetition history.
 		m.sigsErr = make(map[string][]time.Time)
 		m.sigsAll = make(map[string][]time.Time)
@@ -183,6 +187,10 @@ func (m *progressMonitor) observe(eventType string, part map[string]any) {
 		// slot (a new start supersedes the previous one); a resolved part (completed/error) disarms it.
 		if status == "completed" || status == "error" {
 			m.toolInFlight = false
+			// A RESOLVED CALL IS PROGRESS: the model is about to be given a fresh request, so it is owed a
+			// full no-progress window from HERE. Without this the clock it returns to is already past its
+			// deadline and the abort merely moves one tick later.
+			m.lastStepFinish = now
 		} else {
 			if tool, _ := part["tool"].(string); tool != "" {
 				m.toolHangName = tool
@@ -396,8 +404,22 @@ func (m *progressMonitor) check() string {
 	if tool, ok := m.checkToolHangLocked(); ok {
 		return "stalled:tool_hang:" + tool
 	}
-	// no_progress: no step_finish (no token progress) within the window.
-	if m.w.noProgress > 0 && now.Sub(m.lastStepFinish) > m.w.noProgress {
+	// no_progress: no step_finish (no token progress) within the window — BUT ONLY WHILE THE MODEL IS
+	// THE ONE SUPPOSED TO BE TALKING.
+	//
+	// TOOL TIME IS NOT MODEL SILENCE, and treating it as such kills correct work. While a tool call is
+	// in flight the model is waiting on its result rather than stalled: it CANNOT emit a step_finish
+	// until the call returns. A worker running `go test ./...`, a docker build or a plane boot therefore
+	// goes silent by definition for as long as the tool takes, and past the window this fired FATAL and
+	// aborted the session.
+	//
+	// Same defect and same measured case as the native monitor (internal/orchicon/progress.go); the two
+	// engines must agree, or the same work survives on one adapter and dies on the other.
+	//
+	// THE HUNG-TOOL CASE IS STILL BOUNDED by the tool_hang watchdog above — it fires on an in-flight call
+	// with ZERO events and is latched (toolHangFired) so it reports once. Suppressing no_progress here
+	// does not remove the ceiling; it stops two different failures from sharing one verdict.
+	if m.w.noProgress > 0 && !m.toolInFlight && now.Sub(m.lastStepFinish) > m.w.noProgress {
 		m.fired = true
 		return "stalled:no_progress"
 	}
