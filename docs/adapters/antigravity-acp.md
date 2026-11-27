@@ -622,11 +622,35 @@ Every `session/request_permission` goes through `askPermissionHandler.RequestPer
 **Teardown answers reject.** Parked cards are settled before the child goes, and the handlers are given a
 bounded window to write their decision, so a shutdown produces a refusal rather than a call left hanging.
 
-### 12.5 Mode gating, twice
+### 12.5 Mode gating, THREE rungs — and the one that actually holds
 
-The in-handler gate above is the authority (the mode can change between turns while argv is fixed at spawn).
-The mode's denied tools are ALSO passed to agy as `--settings '{"permissions":{"deny":[…]}}'` — session-only,
-never saved — as defence in depth. **The flag is a TOP-LEVEL agy flag and must precede the subcommand**:
+**Read this first, because the naive reading is wrong and cost a real defect.** `permissions.deny` in
+`--settings` is accepted by agy 1.5.13 and **ignored**. Measured: a Brainstorm conversation whose deny document
+named `write_file`/`write_to_file`/`run_command` was asked to create a file, and it **created the file** — no
+permission request (agy never asks about an edit), no refusal, no error, and the model reported success. So the
+in-handler gate below was never reached for the one tool class the mode exists to refuse, and the argv half was
+decoration. A mode boundary that is enforced only where agy chooses to ask is not a boundary.
+
+**The rung that holds is `session/set_mode "plan"`** — agy's own read-only mode. Measured on the same binary:
+with plan mode selected, the same write is refused (`Command intercept rules require halting direct file
+modifications under planning mode`), the file is **not** created, and the model is told to produce a plan
+instead. `agyModeIDForAsk` (modegate.go) maps every mode whose `askmode.MayAct` is false — Brainstorm, Quick
+Work — onto `plan`, and `applyAskMode` issues it on the live conversation **after** the model switch and
+**before the first prompt**, so no tool call can precede it. An acting mode (Iteration) is left on agy's
+`default` and its writes raise cards. A mode agy refuses to enter **fails the turn**: a Brainstorm turn that
+proceeded anyway could write, and a claim the transport cannot back is worse than an error.
+
+Regression tests: `ask_mode_enforce_test.go` (`TestAskModeForcesAgysPlanModeWhenTheModeMayNotAct`,
+`TestAskModeLeavesAnActingModeAlones`, `TestAskModeSetModeHappensBeforeTheFirstPrompt`).
+
+The other two rungs remain, and each covers a real case the plan mode cannot:
+
+1. **The in-handler gate** (ask_permission.go) is the authority for every tool agy DOES ask about, and covers
+   the case where the mode changes between turns while argv is fixed at spawn.
+2. **`--settings '{"permissions":{"deny":[…]}}'`** is defence in depth that today restricts nothing on 1.5.13
+   (see above) but is kept because it costs nothing and a future agy may honour it.
+
+**The flag is a TOP-LEVEL agy flag and must precede the subcommand**:
 `agy --settings '<json>' acp` works; `agy acp --settings '<json>'` exits 1 with the acp usage text (verified on
 1.5.13; it is absent from `agy acp --help` for that reason). `LaunchOptions.Argv()` emits it in the right place and
 `assertSettingsNotBypass` refuses a document naming any auto-approve key, so the feature cannot be turned into a

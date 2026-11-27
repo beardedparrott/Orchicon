@@ -93,6 +93,36 @@ func agyAskModeSettings(mode string) string {
 	return b.String()
 }
 
+// agyModeIDForAsk maps an Ask mode onto AGY'S OWN session mode id, which is the ONE pre-emptive
+// enforcement agy 1.5.13 actually honours.
+//
+// THIS EXISTS BECAUSE `permissions.deny` DOES NOT WORK. Measured on agy 1.5.13 against the real binary:
+// launching a Brainstorm conversation (whose `--settings` document names write_file/write_to_file/
+// run_command under `permissions.deny`) and asking it to create a file WROTE THE FILE — the tool call
+// completed with no permission request and no refusal, and the model reported success. So the deny list is
+// accepted on argv and changes nothing, and the in-handler gate never runs for an edit because agy never
+// asks about one. Without this mapping, "Brainstorm cannot write" was a claim the transport did not enforce.
+//
+// `plan` is agy's own read-only mode — its description in `availableModes` is "Plan carefully before
+// executing a task", and measured behaviour is stronger than that: it refuses a direct file modification
+// ("Command intercept rules require halting direct file modifications under planning mode"), the file is
+// NOT created, and the model is told to produce a plan instead. That is exactly what a mode which may not
+// act (askmode.MayAct == false) needs.
+//
+// ONLY THE ACT-DENIED MODES ARE MAPPED. Iteration is the hands: it may write and run, so it keeps agy's
+// `default` mode and its writes are the operator's to approve. An unrecognised/empty mode keeps the default
+// too, for the same reason askmode.Allows allows it — an unknown mode must not silently lose the ability to
+// act, because the in-handler gate and the boundary still apply.
+func agyModeIDForAsk(mode string) string {
+	if strings.TrimSpace(mode) == "" {
+		return ""
+	}
+	if askmode.MayAct(mode) {
+		return ""
+	}
+	return "plan"
+}
+
 // askModeDenial reports whether the turn's mode refuses this agy tool call, and the refusal to hand back.
 //
 // `projectDir` is the conversation's project ("" when it has none): it is only used to word the refusal

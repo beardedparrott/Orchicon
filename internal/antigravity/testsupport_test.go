@@ -116,6 +116,10 @@ type fakeACP struct {
 	closedIn bool
 	// modelSets records every session/set_model modelId, in order.
 	modelSets []string
+	// modeSets records every session/set_mode modeId the fake received, in order. It is the ONE
+	// pre-emptive enforcement agy 1.5.13 honours (modegate.go: agyModeIDForAsk), so a test that the mode
+	// boundary holds has to read what was actually asked for.
+	modeSets []string
 	// newParams records every session/new params object verbatim, for the MCP assertion.
 	newParams []json.RawMessage
 	// permRequests counts permission requests the fake ASKED.
@@ -301,6 +305,13 @@ func (p *fakeACP) handle(doc c2s) {
 		p.emit(resultDoc(doc.ID, map[string]any{}))
 
 	case "session/set_mode":
+		var prm struct {
+			ModeID string `json:"modeId"`
+		}
+		_ = json.Unmarshal(doc.Params, &prm)
+		p.mu.Lock()
+		p.modeSets = append(p.modeSets, prm.ModeID)
+		p.mu.Unlock()
 		p.emit(resultDoc(doc.ID, map[string]any{}))
 
 	case "session/cancel":
@@ -957,6 +968,13 @@ func (p *fakeACP) release() {
 	}
 }
 
+// modeIdSets returns every modeId the fake received on `session/set_mode`, in order.
+func (p *fakeACP) modeIdSets() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.modeSets...)
+}
+
 // modelIdSets returns every modelId the fake received on `session/set_model`, in order.
 func (p *fakeACP) modelIdSets() []string {
 	p.mu.Lock()
@@ -1030,7 +1048,6 @@ func (h *harness) awaitPrompts(t *testing.T, i, n int) []promptRecord {
 	})
 	return h.procAt(i).promptsSeen()
 }
-
 
 // --- permission requests (AC2) ---------------------------------------------------------------------
 

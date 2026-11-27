@@ -357,6 +357,44 @@ func (s *askSession) ensureLive(ctx context.Context) error {
 	if err := s.prepareTurnModel(liveCtx); err != nil {
 		return fail(err)
 	}
+	// THE MODE BOUNDARY'S ONLY REAL PRE-ENFORCEMENT ON AGY 1.5.13 (modegate.go: agyModeIDForAsk).
+	// It runs AFTER the model switch and BEFORE the first prompt, so no tool call can precede it.
+	if err := s.applyAskMode(liveCtx); err != nil {
+		return fail(err)
+	}
+	return nil
+}
+
+// applyAskMode puts the live conversation into the agy session mode the turn's Ask mode requires.
+//
+// IT IS THE HARD HALF OF THE BOUNDARY AND IT IS NOT OPTIONAL. Measured on agy 1.5.13: a Brainstorm
+// conversation whose `--settings` deny list named write_file still WROTE the file — the deny list is accepted
+// and ignored, and agy never raises a permission request for an edit, so the in-handler gate (ask_permission.go)
+// is never reached for the one class of tool the mode exists to refuse. `session/set_mode "plan"` IS honoured
+// (the write is refused with "Command intercept rules require halting direct file modifications under planning
+// mode"), which is why it is applied here rather than merely rendered into argv.
+//
+// A REFUSED set_mode FAILS THE TURN, deliberately. If agy would not enter plan mode then a Brainstorm turn can
+// write, and a turn that proceeds anyway would be a security claim the transport cannot back — the operator
+// would see a normal answer and never learn the boundary was not in force.
+func (s *askSession) applyAskMode(ctx context.Context) error {
+	s.mu.Lock()
+	conv := s.conv
+	mode := s.mode
+	s.mu.Unlock()
+	if conv == nil {
+		return nil
+	}
+	want := agyModeIDForAsk(mode)
+	if want == "" {
+		// A mode that may act keeps agy's own default mode; nothing to enforce beyond the handler + argv.
+		return nil
+	}
+	if err := conv.SetMode(ctx, want); err != nil {
+		return fmt.Errorf("antigravity ask: agy refused the %q session mode this %s conversation requires, so the "+
+			"mode boundary could not be enforced: %s", want, mode, authMessage(err))
+	}
+	s.log.Info("antigravity ask: session mode applied", "conversation", s.convID, "ask_mode", mode, "agy_mode", want)
 	return nil
 }
 
