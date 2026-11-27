@@ -1981,6 +1981,24 @@ launch:
   reading: Google's Antigravity terms restrict using the service with third-party
   products, and enabling the method is your acceptance of them.
 
+**Antigravity on Linux, macOS and Windows.** The adapter runs the same way on all
+three. In short: it finds `agy` (or `agy.exe` on Windows) through the
+`ORCHICON_AGY_BIN` override, then your `PATH` — including a directory a *just-finished*
+install added, so no restart is needed — then the known install locations
+(`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, and
+`%LOCALAPPDATA%\Programs\agy` on Windows). A `.cmd`/`.bat`/`.ps1` shim is never
+used. It **pins agy's mode to `default`** on every run rather than accepting the
+CLI's own default, because agy's more autonomous modes need the operating
+system's terminal sandbox (macOS `sandbox-exec`, Linux user namespaces, Windows 11
+24H2+) and would therefore behave differently on each platform. `default` asks
+before edits and commands, and every such request is decided by Orchicon's own
+permission policy, so autonomy comes from the worker's profile and never from the
+CLI. agy's `--sandbox` is never passed for the same reason. Windows install paths
+containing spaces are handled, `CRLF`-terminated protocol lines are handled, and
+your configuration under `~/.gemini/antigravity-cli/` is only ever read by agy
+itself — the adapter resolves your home directory through the OS API and writes
+nothing there.
+
 **Providers, in detail.** The Providers tab is the tenant's model-provider
 configuration:
 

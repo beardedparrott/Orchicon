@@ -139,6 +139,16 @@ func OutsideProject(target, projectDir string) (allowed bool, rule string) {
 	}
 	// A glob-style tool input carries a trailing wildcard, not a literal path.
 	t = strings.TrimSuffix(t, "/**")
+
+	// A WINDOWS-SPELLED BOUNDARY TAKES THE WINDOWS ARM, ON ANY HOST. On a real Windows build the
+	// filepath code below already does the right thing, but a Linux build given a `C:\repo` boundary
+	// (a unit test, or a plane classifying a path reported by a remote Windows worker) would treat it
+	// as a RELATIVE name and compare it byte-for-byte. winpath.go implements those rules without a
+	// build tag so the answer is the same everywhere.
+	if looksWindows(projectDir) {
+		return outsideProjectWindows(t, projectDir)
+	}
+
 	p := t
 	if !filepath.IsAbs(p) {
 		if strings.TrimSpace(projectDir) == "" {

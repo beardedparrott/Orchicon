@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -198,10 +199,24 @@ func (p *localProc) wait() {
 	})
 }
 
-// pump reads r line by line into ch, closing ch when the stream ends. An over-long line is
-// dropped with a log rather than being allowed to fail the read.
+// pump reads r line by line into ch, closing ch when the stream ends.
 func (p *localProc) pump(r io.Reader, ch chan []byte) {
 	defer p.wg.Done()
+	pumpLines(r, ch, func() {
+		p.droppedLines++
+		slog.Default().Warn("acp: dropped over-long output line", "limit_bytes", maxLineBytes, "dropped", p.droppedLines)
+	})
+}
+
+// pumpLines reads r line by line into ch, closing ch when the stream ends. An over-long line is
+// dropped (onDrop reports it) rather than being allowed to fail the read.
+//
+// THIS IS THE LINE DECODER, AND IT IS A FREE FUNCTION ON PURPOSE. Line-terminator handling is the
+// one thing about the transport that differs by operating system — agy emits `\r\n`-terminated lines
+// on Windows — and a decoder welded to an exec.Cmd cannot be fed a `bytes.Reader` in a test, so the
+// CRLF case would only ever be reachable on a Windows host. crlf_test.go drives THIS directly with
+// both terminators and asserts the messages decode identically (AC3).
+func pumpLines(r io.Reader, ch chan []byte, onDrop func()) {
 	defer close(ch)
 	br := bufio.NewReaderSize(r, 64<<10)
 	var buf []byte
@@ -215,8 +230,9 @@ func (p *localProc) pump(r io.Reader, ch chan []byte) {
 		}
 		if len(buf)+len(chunk) > maxLineBytes {
 			// Over-long: swallow the remainder of this line and carry on.
-			p.droppedLines++
-			slog.Default().Warn("acp: dropped over-long output line", "limit_bytes", maxLineBytes, "dropped", p.droppedLines)
+			if onDrop != nil {
+				onDrop()
+			}
 			buf = nil
 			for isPrefix {
 				_, more, derr := br.ReadLine()
@@ -414,9 +430,16 @@ func (p *containerProc) Close() error {
 	return nil
 }
 
+// trimTrailingNewline strips ONE line terminator — `\n`, `\r\n`, or a lone trailing `\r`.
+//
+// THE CARRIAGE RETURN IS THE WINDOWS BUG. The container transport hands us a stream of raw chunks,
+// and agy on Windows terminates every JSON-RPC line with `\r\n` (the headless doc's own sample shows
+// `"output":"hello_headless_demo\r\n"`). Stripping only `\n` left the `\r` glued to the end of the
+// JSON object, which some decoders tolerate as trailing whitespace and others do not — and a
+// trailing `\r` inside a *string* value would be a protocol error instead of a formatting one. A
+// lone `\r` is stripped too, because a partial chunk boundary can deliver it alone.
 func trimTrailingNewline(s string) string {
-	if n := len(s); n > 0 && s[n-1] == '\n' {
-		return s[:n-1]
-	}
+	s = strings.TrimSuffix(s, "\n")
+	s = strings.TrimSuffix(s, "\r")
 	return s
 }

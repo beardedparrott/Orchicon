@@ -552,3 +552,120 @@ deliberately ABSENT: `transcript_jsonl` (agy advertises no transcript file, and
 the bridge keeps its own durable transcript instead) and `reasoning` (agy never
 streams reasoning text — only `usage.thoughtTokens`; the mapper still handles
 `agent_thought_chunk` for a future agy).
+
+## 12. Cross-platform behaviour (Linux / macOS / Windows)
+
+Orchicon must run the same worker the same way on all three operating systems. That is not
+free: agy itself is deliberately different on each, so every one of those differences is
+either **pinned** or **normalised** here rather than inherited.
+
+### 12.1 Binary discovery — where `agy` is looked for
+
+Resolution order is the same on every OS: the `ORCHICON_AGY_BIN` override, then `PATH`
+(including directories a just-finished install added — the `freshpath` mechanism, so a
+freshly installed agy is found without restarting the plane), then the known install
+locations. `internal/adapter/adapterpath.go` owns the list; `binaryName` gives the file name.
+
+| OS | Executable | Known locations probed after `PATH` |
+| --- | --- | --- |
+| Linux | `agy` | `~/.local/bin` (Google's documented default), `/usr/local/bin`, `/usr/bin`, `/opt/homebrew/bin` |
+| macOS | `agy` | `~/.local/bin`, `/opt/homebrew/bin` (Apple-silicon Homebrew), `/usr/local/bin`, `/usr/bin` |
+| Windows | **`agy.exe`** | `%LOCALAPPDATA%\Programs\agy`, `%LOCALAPPDATA%\Programs\Antigravity\bin`, `%LOCALAPPDATA%\Microsoft\WinGet\Links` |
+
+Two rules hold on every platform:
+
+- **A shell shim is never resolved.** `agy.cmd`, `agy.bat` and `agy.ps1` are skipped: npm,
+  pnpm and scoop all install one, and spawning a shim instead of the real executable is how
+  the quoted-path failure reaches the spawn. If only shims exist, agy is *not installed*.
+- **The resolved path is absolute, and a space inside it is preserved.** Windows install
+  paths routinely contain one (`C:\Users\a b\AppData\Local\Programs\agy\agy.exe`). The argv
+  is an `exec.Cmd` argument list, not a shell string, so the space stays inside one element
+  and no quoting is added — a quoted path would name a different file.
+
+On this Linux host agy is at `/usr/bin/agy` (distro package), **not** `~/.local/bin/agy`, which
+is why `PATH` is consulted before the documented installer location.
+
+### 12.2 Process control — no POSIX signals anywhere
+
+`internal/antigravity/acp/proc.go` deliberately does **not** copy claude's `Close`, which
+sends a termination signal: `syscall.Kill` does not exist on Windows, and the class of break
+that produces is the one that shipped to `develop` once already. Shutdown is instead:
+
+1. `session/cancel` (cooperative — agy answers the in-flight prompt with `stopReason:"cancelled"`);
+2. close the child's stdin;
+3. wait out `DefaultShutdownGrace`;
+4. `os.Process.Kill`, which is portable.
+
+Spawn goes through `internal/procwin`, so the Windows process-group handling is shared with
+the other adapters. There is no unix-socket dependency in the transport: it is
+newline-delimited JSON-RPC over the child's stdio.
+
+### 12.3 Line endings — CRLF is tolerated
+
+agy terminates every protocol line with `\r\n` on Windows (the headless doc's own sample is
+`"output":"hello_headless_demo\r\n"`). Both readers strip one line terminator of either style:
+
+- the local transport (`pumpLines`, `bufio.Reader.ReadLine`) drops the terminator as it reads;
+- the container transport (`trimTrailingNewline`) strips `\n` **and then** `\r`, so a chunk
+  boundary that splits the pair cannot leave a stray carriage return in the decoder.
+
+Only the *line terminator* is removed. An escaped `\r\n` **inside** a JSON string value is
+payload and survives byte-for-byte — see `internal/antigravity/acp/crlf_test.go`.
+
+### 12.4 Path comparison for permission rules
+
+agy normalises paths when it matches its own permission rules: it strips the drive letter and
+converts `\` to `/` (permissions doc, "Cross-platform command and path matching").
+`workerrestrict.NormalizeAgyPath` is that transform, so an operator reading an agy rule and
+Orchicon reasoning about the same file agree on its form.
+
+Orchicon's *own* boundary (`workerrestrict.OutsideProject`, called from
+`internal/antigravity/permissions.go`) is stricter, and it keeps the volume:
+`C:\repo\src\a.go` and `c:/repo/src/a.go` are the same file and are **inside** `C:\repo`,
+while `D:\other\a.go` and `C:\repo2\a.go` are **outside**. Comparison is case-insensitive
+for both the volume and the path and is separator-bounded, so a shared prefix is not a
+shared directory. `internal/workerrestrict/winpath.go` implements those rules *without* a
+build tag, which is what makes them testable on a Linux CI box — on a Linux build
+`filepath.IsAbs("C:\x")` is false, so a naive implementation resolves a Windows path
+*relative* and puts an external write inside the project.
+
+### 12.5 Config and data directories
+
+`~/.gemini/antigravity-cli/` (`settings.json`, and agy's `--app-data-dir` default) is resolved
+through `os.UserHomeDir()`, never by concatenating `$HOME` — the variable is unset on some
+Windows shells and means something else under sudo. Orchicon **never writes** to that
+directory: `--app-data-dir` is left at agy's own default, and the session's MCP config is
+passed on the wire, not written to `mcp_config.json`.
+
+### 12.6 Sandbox and mode — the same behaviour on every OS, by decision
+
+agy's `auto` mode approves edits and "safe" commands without asking, and it needs the
+operating system's terminal sandbox to do so: macOS `sandbox-exec`, Linux user namespaces,
+and **Windows 11 24H2 or later with the August 2026 update**. That is a three-way
+behavioural split in a single setting — the same tenant and the same prompt would get a
+different amount of autonomy depending on which machine picked up the execution, and on an OS
+without the facility agy degrades the mode silently rather than failing.
+
+Orchicon therefore **pins the mode** on every execution:
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| mode | **`default`** — sent as `session/set_mode` after the session opens and **before the first prompt** | Ask before edits and commands. Every gated tool call then arrives as `session/request_permission` and is decided by Orchicon's `PolicyHandler`, which is the only policy layer allowed to decide. |
+| `--sandbox` | **never passed** | Opting into agy's own sandbox reintroduces exactly the per-OS variance above, and fails to launch on a host without the facility. |
+
+If an agy build does not advertise `default` in `modes.availableModes`, the pin is skipped
+with a warning rather than sent and rejected — the run proceeds in agy's own mode, which is
+the pre-existing behaviour for such a build. If agy is *already* in `default`, no request is
+sent, so "this run chose a mode" stays distinguishable from "this run inherited one".
+
+The consequence to be aware of: `default` asks for every edit and command, so a worker's tool
+calls are gated on our own policy rather than pre-approved by the CLI. That is the intent —
+autonomy comes from the worker's permission profile, never from the CLI's mode.
+
+### 12.7 Regression proof for the other adapters
+
+`claude`, `opencode` and `orchicon` must keep working on all three platforms. The CI
+`platform-tests` job runs the plain `go test` suites on `macos-latest` and `windows-latest`
+for the adapter, antigravity, claude, opencode, runtime, workerrestrict and procwin packages;
+`cross-compile` vets every `_test.go` for every GOOS×GOARCH. `internal/tui` is excluded from
+the *test* matrix because its tests need a pty, but it is still vetted for every platform.

@@ -134,6 +134,62 @@ jobs:
       - name: Compile + typecheck every gated platform (make cross-compile)
         run: make cross-compile
 
+  # RUN THE TESTS ON THE PLATFORMS THIS PRODUCT SHIPS TO, not just compile them.
+  #
+  # `cross-compile` above vets `_test.go` for every GOOS, which catches a test file that will not BUILD
+  # on Windows or macOS. It cannot catch a test that builds and then FAILS there, and that gap is not
+  # theoretical: every platform defect in this repository was found by a human on a real machine or by
+  # reading the code, never by CI — `internal/claude/permissions.go`'s quoted hook path (Windows install
+  # paths contain spaces), the syscall.Kill break that shipped because Windows was not in the build list,
+  # and the antigravity adapter's own CRLF and case-insensitive-path behaviour. A vet-only gate is green
+  # for all three.
+  #
+  # SO THIS JOB EXECUTES THE SUITES on runners that are really Windows and really macOS. The package
+  # list is the cross-platform surface the antigravity adapter touches: its own packages, the three
+  # adapter families it must not regress, the runtime and the path-boundary guard.
+  #
+  # WHAT IS DELIBERATELY NOT HERE:
+  #   - `internal/tui` tests. They need a pty, and the hosted runners do not provide one in the shape
+  #     those tests expect (docs/tui-pty-verification-gate.md). It is still vetted for every GOOS by
+  #     `cross-compile`, which is the part a runner CAN prove.
+  #   - the DB-backed suites. They need Postgres, which is the `go-ci` job's business on Linux.
+  #
+  # EVERY STEP IS `shell: bash`. The steps are bash scripts, and the PowerShell tokeniser
+  # (cmd/orchicon/windows_msi_test.go TestWorkflowPwshStepsParse) reads this file for `$name:` scopes
+  # that only bite in pwsh; keeping these steps out of pwsh keeps that scan meaningful.
+  #
+  # THE WINDOWS LEG IS continue-on-error. These suites have never run on Windows, so the FIRST run may be
+  # red for reasons that predate this job, and a red job that is not this change's fault must not block
+  # the pipeline. It is a SIGNAL until the reds are triaged, then remove the flag: an always-red job that
+  # is permanently allowed to fail is the same as no job, and the comment is the reminder.
+  platform-tests:
+    name: platform tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            experimental: false
+          - os: windows-latest
+            experimental: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Cross-platform test suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./internal/adapter/... ./internal/antigravity/... ./internal/claude/... \
+                   ./internal/opencode/... ./internal/runtime/... ./internal/workerrestrict/... \
+                   ./internal/procwin/...
+
   fe-lint:
     runs-on: ubuntu-latest
     steps:
