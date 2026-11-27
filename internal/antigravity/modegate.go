@@ -31,6 +31,11 @@ package antigravity
 // `--settings` (session-only, never saved: verified against agy 1.5.13's own `--help`). That is defence in
 // depth and NOT the authority: the mode can change between turns while argv is fixed at spawn, so the
 // in-handler gate is what actually holds. See askPermissionHandler.
+//
+// THE `--settings` DENY LIST IS INERT ON agy 1.5.13 AND THE SESSION MODE IS NOT. Measured against the real
+// binary: a `{"permissions":{"deny":["write_file"]}}` document did not stop an edit, while putting the
+// SESSION into `plan` mode did. The deny list is still emitted (it subtracts rights and may work on a later
+// agy) but `session/set_mode` is what holds today — see agySessionMode and prepareTurnMode.
 
 import (
 	"strings"
@@ -92,6 +97,50 @@ func agyAskModeSettings(mode string) string {
 	b.WriteString(`]}}`)
 	return b.String()
 }
+
+// agySessionMode maps an Ask mode onto the agy EXECUTION MODE the live session must be put into with
+// `session/set_mode`, or "" for agy's own default.
+//
+// WHY A SESSION MODE AT ALL, WHEN THERE IS A PERMISSION HANDLER. Because on agy 1.5.13 the handler is never
+// ASKED about a file edit: the default mode writes the file with no `session/request_permission`, so a mode
+// gate that only ran in the handler would refuse nothing and the operator's Brainstorm conversation would
+// edit the project behind a boundary that claims to forbid it. MEASURED against the real binary: a
+// `permissions.deny` list in `--settings` does NOT stop the write — that key is inert on 1.5.13 — while
+// `plan` mode does. `plan` also still ALLOWS reads and still RAISES a `run_command` permission request, so
+// the handler's gate keeps working for shell.
+//
+// THE MODE IS SET ON THE SESSION, NEVER ON ARGV. `agy --mode plan acp` is ACCEPTED (exit 0) and INERT: a
+// free probe of `initialize` + `session/new` reports `modes.currentModeId = "default"` with the flag
+// exactly as without it, and a LIVE turn launched that way still wrote its file. Only `session/set_mode`
+// changes an ACP session's mode, which is why prepareTurnMode issues it at spawn and on every change.
+//
+// SO THE TWO HALVES ARE NOT INTERCHANGEABLE. The session mode is what makes "Brainstorm refrains from
+// writing" TRUE rather than aspirational; the in-handler gate is what handles everything agy does ask about
+// (shell, web, third-party MCP) and what refuses a tool the mode denies even in Iteration.
+//
+// AN UNKNOWN MODE GETS NO RESTRICTION, matching askmode.Allows and claude's gate when its mode file is
+// absent: an empty mode means nobody told us the conversation's mode, and inventing `plan` would silently
+// stop an Iteration conversation from writing.
+func agySessionMode(mode string) string {
+	if strings.TrimSpace(mode) == "" {
+		return ""
+	}
+	if askmode.MayAct(mode) {
+		// The mode may act (Iteration): agy's own default, so nothing needs setting.
+		return ""
+	}
+	// A mode that may NOT act plans instead of acting. This is the only value that prevents the write.
+	return agySessionModePlan
+}
+
+// agySessionModePlan is agy's read-only planning mode: reads work, writes never reach disk.
+const agySessionModePlan = "plan"
+
+// agySessionModeDefault is agy's own mode, spelled for `session/set_mode`. An EMPTY modeId is not a way to
+// say "default" — `session/set_mode` needs a mode agy actually advertises — so releasing a restricted
+// session back to normal sends this explicitly. That is what makes Iteration-after-Brainstorm work rather
+// than leaving the conversation stuck in plan.
+const agySessionModeDefault = "default"
 
 // askModeDenial reports whether the turn's mode refuses this agy tool call, and the refusal to hand back.
 //

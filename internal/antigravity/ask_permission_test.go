@@ -182,11 +182,11 @@ func TestAskPermission_FailClosedOnNoAnswer(t *testing.T) {
 // operator WHAT they are approving.
 func TestAskPermission_AskTargets(t *testing.T) {
 	cases := []struct {
-		name     string
-		tool     string
-		args     map[string]any
+		name      string
+		tool      string
+		args      map[string]any
 		locations []string
-		want     string
+		want      string
 	}{
 		{"write_to_file names its target", "write_to_file", map[string]any{"TargetFile": "/p/a.md"}, nil, "/p/a.md"},
 		{"replace_file_content names its target", "replace_file_content", map[string]any{"TargetFile": "/p/b.go"}, nil, "/p/b.go"},

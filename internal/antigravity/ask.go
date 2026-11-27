@@ -54,10 +54,10 @@ import (
 // ONE thing that makes `antigravity` appear in Dispatcher.ChatKinds() → AIGatewayService.ListAdapterKinds'
 // AskCapableKinds → askorchicon.SetChatKinds: a pure type assertion, with no registry to update.
 var (
-	_ scheduler.ChatTurnClient     = (*Bridge)(nil)
+	_ scheduler.ChatTurnClient       = (*Bridge)(nil)
 	_ scheduler.SessionQueuesPrompts = (*Bridge)(nil)
-	_ scheduler.ChatToolRestrictor = (*Bridge)(nil)
-	_ scheduler.SessionOwnerKind   = (*Bridge)(nil)
+	_ scheduler.ChatToolRestrictor   = (*Bridge)(nil)
+	_ scheduler.SessionOwnerKind     = (*Bridge)(nil)
 )
 
 // AntigravityAskRootEnv overrides where Ask conversations without a project run.
@@ -140,6 +140,9 @@ type askSession struct {
 	// started records the first prompt delivered since spawn, which is when the system prompt preamble must
 	// ride along (it is NOT re-sent on later turns: agy already has it in the conversation).
 	prompted bool
+	// appliedMode is the agy EXECUTION MODE this child is currently running under ("" = agy's default),
+	// so a mid-conversation Mode change is issued ONCE as `session/set_mode` rather than on every turn.
+	appliedMode string
 
 	// guardCloser retires the OS-level execution guard's shim directory (nil when no guard was built).
 	guardCloser func()

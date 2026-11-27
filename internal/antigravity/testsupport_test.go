@@ -116,6 +116,9 @@ type fakeACP struct {
 	closedIn bool
 	// modelSets records every session/set_model modelId, in order.
 	modelSets []string
+	// modeSets records every session/set_mode modeId, in order. It is how a mid-conversation mode switch
+	// is proved to have reached agy rather than merely changed a field.
+	modeSets []string
 	// newParams records every session/new params object verbatim, for the MCP assertion.
 	newParams []json.RawMessage
 	// permRequests counts permission requests the fake ASKED.
@@ -301,6 +304,13 @@ func (p *fakeACP) handle(doc c2s) {
 		p.emit(resultDoc(doc.ID, map[string]any{}))
 
 	case "session/set_mode":
+		var prm struct {
+			ModeID string `json:"modeId"`
+		}
+		_ = json.Unmarshal(doc.Params, &prm)
+		p.mu.Lock()
+		p.modeSets = append(p.modeSets, prm.ModeID)
+		p.mu.Unlock()
 		p.emit(resultDoc(doc.ID, map[string]any{}))
 
 	case "session/cancel":
@@ -964,6 +974,13 @@ func (p *fakeACP) modelIdSets() []string {
 	return append([]string(nil), p.modelSets...)
 }
 
+// modeIdSets returns every modeId the fake received on `session/set_mode`, in order.
+func (p *fakeACP) modeIdSets() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.modeSets...)
+}
+
 // promptsSeen returns every prompt the fake received, in order.
 func (p *fakeACP) promptsSeen() []promptRecord {
 	p.mu.Lock()
@@ -1030,7 +1047,6 @@ func (h *harness) awaitPrompts(t *testing.T, i, n int) []promptRecord {
 	})
 	return h.procAt(i).promptsSeen()
 }
-
 
 // --- permission requests (AC2) ---------------------------------------------------------------------
 

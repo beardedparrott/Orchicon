@@ -1,30 +1,72 @@
-# Antigravity Ask conversations — plan (rev 3)
+# Antigravity Ask conversations — implementation plan (rev 4, SSE merge)
+
+## Rev 4 — what this step changed and why
+The branch's Ask implementation was a SUPERSEDED snapshot. A newer attempt at the same item,
+`…-70nyn6s9mg4eaj3a` (tip `7b4acb9fd`), carries the live-verified fixes this branch was missing, and it is
+also the branch the running DEV plane was built from (`bin/orchicon` vcs.revision `bc5355d41`). This step
+merged it in (`git merge …-70nyn6s9mg4eaj3a`, one conflict in THIS file, resolved here). The merge brings:
+
+- `session/set_mode` mode enforcement (`prepareTurnMode`) — the ONLY lever that holds on agy 1.5.13.
+  `--settings permissions.deny` is INERT (measured: the write lands) and `agy --mode plan acp` is accepted
+  but inert for ACP sessions (`currentModeId` stays `"default"`). Without this, AC3's Brainstorm boundary
+  was real in the handler but unreachable live, because agy never sends `request_permission` for a write.
+- `askFactory()` — Ask spawns on the LOCAL transport, not the container one (a conversation has no workflow
+  run id, so the container factory refused every spawn).
+- Send-accept semantics: `StartPrompt` returns on accept and the turn is driven on its own goroutine, so a
+  card parked on `session/request_permission` is no longer cancelled and re-sent every handshake window.
+- `askSidecarBinary()` — the MCP sidecar is a real `orchicon` binary, not the test binary (which has no
+  `mcp` subcommand, so the conversation got zero `orchicon_*` tools and AC5 could never pass under `go test`).
+- `internal/mcp` `items` on the tools/list wire, `internal/askorchicon` tool ledger fix.
+
+The numbered steps below still apply and were executed against this merged tree; AC4–AC6 remain QA's live work.
+
+# Antigravity Ask conversations — implementation plan (rev 2)
 
 ## Finding
-The branch started at stale `4bacf12a6` with no antigravity code. I ran `git merge --ff-only develop` (develop = 948abf84b, has worker bridge + model list + `TestAskLive` guard), then merged `origin/6-…-wezsc2ftrwc2k5a7`, which holds the full Ask implementation. The merge was clean (commit 8fc9af0ba). `go build ./...` and `go test ./internal/antigravity/... ./internal/toolclass ./internal/aigateway` pass here. The SSE verifies, closes gaps and gathers evidence; it does not rewrite.
+This run's branch started at stale `4bacf12a6` with no antigravity code. `develop` (948abf84b) has the worker bridge (#1032),
+model listing (#1034) and `live_ask_test.go` (#1038, `TestAskLive` schema guard). A prior attempt at THIS item exists on
+`origin/6-antigravity-ask-…-wezsc2ftrwc2k5a7` (HEAD a94256ecb) implementing scope items 1–7.
 
-## Code map (all under internal/antigravity unless noted)
-- `ask.go` registry `askByConv`/`askBySID`, `CloseAsk`, resume (session/load), model switch, cwd resolver.
-- `ask_turn.go` turn = session/prompt; `ask_question` refused → redirect to `orchicon_ask_user`.
-- `ask_permission.go` park request_permission → `permission` bus event; once/always/deny → option ids; teardown → reject.
-- `ask_mapper.go`, `ask_bus.go` streaming, owner kind `ask_conversation`, Ask diff-ledger hook.
-- `modegate.go` Brainstorm/Iteration/Quick Work + `--settings` permissions.deny; agy tool names in `internal/toolclass`.
-- `internal/server/server.go` `antigravityBridge.CloseAsk()` beside claude's.
-- Tests: `ask_permission_test.go` (AC2), `ask_modegate_test.go` (AC3), `internal/aigateway/ask_kinds_antigravity_test.go` (AC1), `live_ask_test.go` (`TestAskLive`), `ask_live_test.go` (opt-in `ORCHICON_ANTIGRAVITY_LIVE=1`).
+**Done by the architect step (committed on this branch):** fast-forwarded to `develop`, then merged that prior branch
+(`git merge origin/…wezsc2ftrwc2k5a7`) — clean, no conflicts. Verified at the merge: `go build ./...`, `go vet` (antigravity, server,
+toolclass, askorchicon, aigateway) and `go test ./internal/antigravity/... ./internal/toolclass ./internal/askorchicon
+./internal/aigateway ./internal/protectedpath` all PASS. The SSE therefore starts from a working tree; its job is verification,
+the gaps below, and the live evidence — not a rewrite.
 
-## Risks
-1. agy 1.5.13 may auto-approve edits (no request_permission) and emits no `agent_thought_chunk` (docs/adapters/antigravity-acp.md). Live AC4 reasoning/write card may be unreachable. Do NOT add an auto-approve key (`assertSettingsNotBypass`). If unreachable, report NOT VERIFIED with the doc line as the blocker.
-2. Three clients: no new field/RPC/setting. Only confirm no client hardcodes the Ask kind list: `grep -rn "askCapableKinds\|ask_capable" frontend/src internal/tui`.
+## What the code contains (proof)
+- `internal/antigravity/ask.go` — registry `askByConv`/`askBySID`, `CloseAsk`, resume (session/resume→session/load), in-place model switch, cwd via `SetProjectDirResolver`.
+- `ask_turn.go` — turn = `session/prompt`; `ask_question` refused with reason redirecting to `orchicon_ask_user` (ACP has no answer channel); Orchicon MCP in Ask scope.
+- `ask_permission.go` — parks `session/request_permission`, emits `permission` bus event, maps once/always/deny to agy option ids, teardown → reject.
+- `ask_mapper.go`, `ask_bus.go` — reasoning/tool/usage streaming, owner kind `ask_conversation`, Ask diff-ledger hook.
+- `modegate.go` — Brainstorm/Iteration/Quick Work, pre-card refusal + `--settings` permissions.deny; `toolclass.go` has agy tool names.
+- `internal/server/server.go:1024,1044` `antigravityBridge.CloseAsk()` beside claude's; `antigravity_settings.go` project-dir resolver.
+- Tests: `ask_permission_test.go` (AC2 `-run AskPermission`), `ask_modegate_test.go` (AC3 `TestAskModeGate`), `ask_session_test.go`, `aigateway/ask_kinds_antigravity_test.go` (AC1), `ask_live_test.go` (`TestAskLive_OneTurnWithACard`, opt-in), `live_ask_test.go` (`TestAskLive`, always-on schema guard).
 
-## Steps for the SSE
-1. `git log --oneline -3` shows the merge; `ls internal/antigravity/ask*.go`.
-2. Run the `.orchicon/verify` gate (build, vet, `go test ./internal/... ./cmd/...`); fix any failure.
-3. `go test ./internal/antigravity/... -run 'AskPermission|AskModeGate' -v`; save output (AC2/AC3).
-4. AC1: `go test ./internal/aigateway -run Antigravity -v`; on DEV :8080 only, rebuild and restart, then call `ListAdapterKinds` and capture the JSON.
-5. Check the Ask launch argv in `launch.go`/`procspec.go`/`modegate.go` for risk 1; add a fixture test if behaviour changes.
-6. Run the clients grep. Ensure the `ask_question` rejection is documented.
-7. Commit; keep `git status --porcelain` clean.
-8. Hand AC4–AC6 to QA (live DEV, cheapest `antigravity/google/<model>`, minimal prompts, clean up). NOT VERIFIED with a precise blocker if agy credentials are absent.
+## Known risks the SSE must check (from prior run + docs/adapters/antigravity-acp.md)
+1. agy 1.5.13 default mode may AUTO-APPROVE file edits with no `request_permission` (doc ~line 515) and never emits `agent_thought_chunk` (doc lines 89–101, 331). So AC4's "card for a write" and "streamed reasoning" may be unreachable live. The doc states the Ask launch passes a settings/mode that forces requests; SSE must confirm in `launch.go`/`procspec.go` that Ask sessions are launched so writes DO request permission (without introducing an auto-approve key — `assertSettingsNotBypass` forbids it). Reasoning: map `thoughtTokens` into the usage/context meter and document that no reasoning text exists; do not fabricate.
+2. Two live tests both named like `TestAskLive*` — confirm no duplicate symbol (build is green now; keep it so).
+3. Three-clients rule: no new field/RPC/setting is added, so no web/TUI/desktop change. Only check that no client hardcodes the Ask kind list: `grep -rn "askCapableKinds\|ask_capable" frontend/src internal/tui` (they consume `AskCapableKinds` from the RPC). Report this in the summary.
+
+## Numbered steps for the SSE
+1. `git log --oneline -3` shows the merge commit; `ls internal/antigravity/ask*.go` lists ask.go, ask_turn.go, ask_permission.go, ask_mapper.go, ask_bus.go.
+2. Run gate: `cat .orchicon/verify`, then execute it (build, vet, `go test ./internal/... ./cmd/...`). Fix any failure it surfaces; none expected.
+3. AC2/AC3 evidence: `go test ./internal/antigravity/... -run 'AskPermission|AskModeGate' -v` (save output).
+4. AC1: `go test ./internal/aigateway -run Antigravity -v` plus, on the DEV plane (:8080, never :8091), call `AIGatewayService.ListAdapterKinds` and capture the JSON containing `antigravity` in `ask_capable_kinds` (requires dev binary rebuilt from this branch; restart dev and say so).
+5. Resolve risk 1: read `launch.go`/`procspec.go`/`modegate.go` argv for Ask; if agy launched in a mode that auto-approves edits, use agy `--settings` `permissions.ask`/mode (non-bypass) so write tools request permission; add a fixture test in `ask_permission_test.go`. Update docs/adapters/antigravity-acp.md if behaviour changes.
+6. Run the three-clients grep (risk 3) and ensure the `ask_question` rejection text is documented (it is, `ask_turn.go` ~471, doc).
+7. Commit any change; `git status --porcelain` clean.
+8. Hand AC4–AC6 (live GUI cards in Iteration/Brainstorm, `orchicon_ask_user` card, plane restart resume + reused-session log line) to QA: these need real `agy` + auth on DEV with a cheapest `antigravity/google/<model>`, one minimal prompt each, cleanup afterwards. Mark NOT VERIFIED with the precise blocker if agy/credentials are absent; never invent a harness (`ORCHICON_ANTIGRAVITY_LIVE=1 go test ./internal/antigravity -run TestAskLive_OneTurnWithACard` exists).
 
 ## Decisions
-- Reuse the prior implementation. `ask_question` gets a documented rejection. No client changes.
+- Reuse prior implementation (green on current develop) rather than rewrite.
+- `ask_question`: documented rejection redirecting to `orchicon_ask_user`.
+- No new settings/RPCs → no client changes.
+
+## Rev 3 (this architect step)
+Branch was again stale (4bacf12a6). Fast-forwarded to `develop` (948abf84b), then merged the latest prior attempt
+`origin/…hbqt40rxe6r6wpdg` (adds live consent-card proof against real agy, MCP-scope test, live resume recall, doc updates;
+supersedes the wezsc2ft merge in rev 2). Verified after merge: `go build ./...`, `go vet` (antigravity, server, toolclass,
+aigateway) and `go test ./internal/antigravity/... ./internal/toolclass ./internal/askorchicon ./internal/aigateway
+./internal/protectedpath ./internal/claude` all PASS. The numbered steps above still apply; the SSE should first read
+`docs/adapters/antigravity-acp.md` for what live agy was proven (and proven NOT to card) before re-running risk 1, then run the full gate.
+>>>>>>> 6-antigravity-ask-conversations-ask-sessions-permission-cards-via-acp-request-permission-ask-cards-mode-gating-brainstorm-iteration-quick-work-reasoning-tool-streaming-70nyn6s9mg4eaj3a

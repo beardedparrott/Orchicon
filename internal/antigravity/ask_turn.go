@@ -20,8 +20,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/beardedparrott/orchicon/internal/askmode"
 	"github.com/beardedparrott/orchicon/internal/antigravity/acp"
+	"github.com/beardedparrott/orchicon/internal/askmode"
 	"github.com/beardedparrott/orchicon/internal/claude"
 	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
@@ -73,6 +73,9 @@ func (b *Bridge) SendTurnMessage(ctx context.Context, conversationID, sessionID,
 	}
 
 	if err := s.prepareTurnModel(ctx); err != nil {
+		return err
+	}
+	if err := s.prepareTurnMode(ctx); err != nil {
 		return err
 	}
 	return s.prompt(ctx, system, text)
@@ -237,8 +240,11 @@ func (s *askSession) ensureLive(ctx context.Context) error {
 	procSpec.Cwd = dir
 
 	// --- 2. THE SPAWN ----------------------------------------------------------------------------
+	// ASK FACTORY, NOT spawnFactory(): a conversation has no workflow run to lease a container by
+	// (see askFactory in launch.go — spawnFactory() here failed EVERY live Ask turn on any plane with a
+	// runtime client wired, which is every real plane).
 	client, err := acp.Start(liveCtx, acp.Config{
-		Factory:       s.b.spawnFactory(),
+		Factory:       s.b.askFactory(),
 		Launch:        acp.LaunchOptions{Binary: spec.Argv[0]},
 		Spec:          procSpec,
 		Handler:       &askPermissionHandler{s: s, log: s.log},
@@ -315,7 +321,7 @@ func (s *askSession) ensureLive(ctx context.Context) error {
 			Cwd:                   dir,
 			MCPServers:            servers,
 			AdditionalDirectories: roots,
-			SystemPromptAppend:   s.pendingSystemPrompt(),
+			SystemPromptAppend:    s.pendingSystemPrompt(),
 		})
 		if err != nil {
 			return fail(fmt.Errorf("antigravity ask: open the conversation: %s", authMessage(err)))
@@ -332,6 +338,10 @@ func (s *askSession) ensureLive(ctx context.Context) error {
 	s.mcpFingerprint = fingerprint
 	s.ready = true
 	s.spawnErr = nil
+	// agy opens EVERY session in its DEFAULT mode: `session/new` reports `currentModeId: "default"` even when
+	// argv carried `--mode plan` (measured free against 1.5.13). That is the baseline, so a mode that may act
+	// needs no call at all and a mode that may not gets one from prepareTurnMode below.
+	s.appliedMode = agySessionModeDefault
 	s.mapper = newAskMapper(s.b, s.convID)
 	s.mu.Unlock()
 	s.b.bindAskSessionID(conv.ID(), s)
@@ -349,6 +359,16 @@ func (s *askSession) ensureLive(ctx context.Context) error {
 			s.handleUpdate(liveCtx, u)
 		}
 	}()
+
+	// THE MODE IS SET AT SPAWN, and this is the load-bearing line for the whole mode boundary. agy never
+	// asks the client about a file edit, so the permission handler cannot refuse one; `--mode plan` in argv
+	// does not reach the session either (measured: currentModeId stays "default"). `session/set_mode` is the
+	// ONLY thing that stops a Brainstorm conversation from writing, and doing it here means the very first
+	// turn is already constrained — a turn that ran before the mode was applied would be a breach that no
+	// later set_mode could undo.
+	if err := s.prepareTurnMode(liveCtx); err != nil {
+		return fail(err)
+	}
 
 	// THE MODEL IS SET AT SPAWN, exactly as the worker session does it (sessionrun.go). Without this a
 	// conversation created eagerly (CreateConversationSession) would run agy's DEFAULT model until the first
@@ -379,11 +399,66 @@ func (s *askSession) prepareTurnModel(ctx context.Context) error {
 	return nil
 }
 
+// prepareTurnMode settles the agy EXECUTION MODE for this turn.
+//
+// ARGV IS FIXED AT SPAWN, SO A MID-CONVERSATION MODE CHANGE MUST BE `session/set_mode`. An operator who drafts
+// in Brainstorm and then switches to Iteration would otherwise be stuck with the planning mode the child was
+// launched under — writes silently never landing, with nothing in the transcript to explain it. The reverse
+// (Iteration → Brainstorm) is worse: the boundary would be a CLAIM, because the child is still in agy's
+// default mode and agy does not ask before editing.
+//
+// IT IS ISSUED ONLY WHEN IT CHANGED. agy defines nothing for a redundant set_mode and the call would cost a
+// round-trip on every turn of the common (unchanged) case.
+//
+// A REFUSED set_mode FAILS THE TURN rather than logging and continuing: continuing means running the turn in a
+// mode the operator did not choose, which on the Iteration → Brainstorm path means the write boundary is not
+// enforced. Failing loudly is the only honest outcome.
+func (s *askSession) prepareTurnMode(ctx context.Context) error {
+	s.mu.Lock()
+	conv := s.conv
+	// THE WIRE SPELLING, not the internal one. `session/set_mode` needs a mode agy ADVERTISES, so the
+	// "agy's own default" case is sent as "default" rather than as an empty id — an empty modeId is not a
+	// mode, and sending one would leave a Brainstorm conversation stuck in `plan` after a switch to
+	// Iteration.
+	want := modeOrDefault(agySessionMode(s.mode))
+	applied := s.appliedMode
+	s.mu.Unlock()
+	if conv == nil || want == applied {
+		return nil
+	}
+	if err := conv.SetMode(ctx, want); err != nil {
+		return fmt.Errorf("antigravity ask: agy refused the mode %q: %s", want, authMessage(err))
+	}
+	s.mu.Lock()
+	s.appliedMode = want
+	s.mu.Unlock()
+	s.log.Info("antigravity ask: mode set", "conversation", s.convID, "mode", want)
+	return nil
+}
+
+// modeOrDefault names agy's own mode for a `session/set_mode` modeId, a log line or an error, where "" would
+// read as a missing value rather than as the mode agy itself chose.
+func modeOrDefault(mode string) string {
+	if strings.TrimSpace(mode) == "" {
+		return agySessionModeDefault
+	}
+	return mode
+}
+
 // prompt delivers one `session/prompt` and closes the turn on its stopReason.
 //
-// THE TURN IS DRIVEN ON THE CALLER'S GOROUTINE, which is what the collector expects: SendTurnMessage
-// returns when the turn has ENDED, and askorchicon dispatches it from its own goroutine while its drain
-// loop reads the bus.
+// IT RETURNS AS SOON AS AGY HAS ACCEPTED THE TURN, NOT WHEN THE TURN ENDS — and that is a contract, not
+// a preference. `scheduler.ChatTurnClient.SendTurnMessage` means "append a user message to a conversation
+// session": every other Ask adapter returns on accept (claude writes the turn to the child and returns;
+// opencode's serve acknowledges the send), and askorchicon's turn loop treats the return as send-accept,
+// bounding it with a handshake timer that RE-DISPATCHES on expiry. Returning only at turn end therefore
+// did two wrong things at once on a turn parked on a consent card: the timer fired while the operator was
+// still deciding, and re-dispatching cancelled the parked turn, so the card expired unanswered and the
+// turn failed with `turn_failed`. MEASURED on a local-mode plane.
+//
+// So the turn is driven on its OWN goroutine and this function returns once the prompt is on the wire.
+// The goroutine still settles the stream, records the turn and emits the terminal `idle`/`error` the
+// collector closes the turn on — none of that is skipped, it just no longer blocks the send.
 func (s *askSession) prompt(ctx context.Context, system, text string) error {
 	s.mu.Lock()
 	conv := s.conv
@@ -402,19 +477,14 @@ func (s *askSession) prompt(ctx context.Context, system, text string) error {
 	if s.liveCtx != nil {
 		turnCtx = s.liveCtx
 	}
-	res, err := conv.Prompt(turnCtx, blocks)
-	// THE TURN IS ONLY OVER ONCE ITS STREAM IS: Prompt returns when agy answered, but the updates
-	// travelled ahead of it through a queue, so recording the turn before they are mapped would report an
-	// empty answer. This is the same barrier the worker session applies.
-	s.settle(conv)
-	s.finishTurn(turnCtx, res)
 
+	pending, err := conv.StartPrompt(turnCtx, blocks)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			// A cancelled turn is a STOP, not a failure: the operator pressed Stop, or the conversation was
-			// retired. It ends with `idle` so the collector closes the turn cleanly.
-			s.busEmit(scheduler.SessionEvent{Kind: "idle"})
-			return nil
+		if errors.Is(err, acp.ErrTurnBusy) {
+			// A second turn was dispatched while one is still running. That is the operator sending again
+			// before the previous turn ended — report it as such rather than as a transport failure, and
+			// leave the running turn alone.
+			return fmt.Errorf("antigravity ask: the conversation is still answering the previous message — %w", err)
 		}
 		msg := authMessage(err)
 		if tail := s.stderrTail(); tail != "" {
@@ -423,14 +493,44 @@ func (s *askSession) prompt(ctx context.Context, system, text string) error {
 		s.busEmit(scheduler.SessionEvent{Kind: "error", Text: msg})
 		return err
 	}
+
+	// THE ACCEPTED TURN IS FINISHED IN THE BACKGROUND. The session's child, bus and mapper all live
+	// longer than this call, so the goroutine cannot outlive anything it writes to; teardown closes the
+	// child, which ends the prompt with a cancellation the goroutine reports as `idle`.
+	go s.awaitTurn(turnCtx, conv, pending)
+	return nil
+}
+
+// awaitTurn waits out an accepted turn, settles its stream and emits the terminal event.
+func (s *askSession) awaitTurn(ctx context.Context, conv *acp.Session, pending *acp.PendingPrompt) {
+	res, err := pending.Wait()
+	// THE TURN IS ONLY OVER ONCE ITS STREAM IS: Wait returns when agy answered, but the updates travelled
+	// ahead of it through a queue, so recording the turn before they are mapped would report an empty
+	// answer. This is the same barrier the worker session applies.
+	s.settle(conv)
+	s.finishTurn(ctx, res)
+
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// A cancelled turn is a STOP, not a failure: the operator pressed Stop, or the conversation was
+			// retired. It ends with `idle` so the collector closes the turn cleanly.
+			s.busEmit(scheduler.SessionEvent{Kind: "idle"})
+			return
+		}
+		msg := authMessage(err)
+		if tail := s.stderrTail(); tail != "" {
+			msg += " — " + tail
+		}
+		s.busEmit(scheduler.SessionEvent{Kind: "error", Text: msg})
+		return
+	}
 	if res != nil {
 		if msg := stopReasonMessage(res.StopReason); msg != "" && res.StopReason != acp.StopReasonCancelled {
 			s.busEmit(scheduler.SessionEvent{Kind: "error", Text: msg})
-			return nil
+			return
 		}
 	}
 	s.busEmit(scheduler.SessionEvent{Kind: "idle"})
-	return nil
 }
 
 // composePromptBlocks is the turn's content.

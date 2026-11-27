@@ -214,8 +214,22 @@ func TestAskModeGate_SpawnArgvCarriesTheSettings(t *testing.T) {
 	if idx < 0 {
 		t.Fatalf("the spawned argv carries no --settings: %v", argv)
 	}
-	if idx+2 >= len(argv) || argv[idx+2] != "acp" {
-		t.Fatalf("--settings is not IMMEDIATELY BEFORE the acp subcommand (agy rejects it after): %v", argv)
+	// THE CONTRACT IS "BEFORE THE SUBCOMMAND", NOT "IMMEDIATELY BEFORE IT". agy 1.5.13 exits 1 with its acp
+	// usage text for `agy acp --settings …` but accepts the flag anywhere ahead of `acp` — verified:
+	// `agy --settings … --mode plan acp` and `agy --mode plan --settings … acp` both exit 0. The mode flag
+	// now shares that prefix, so asserting adjacency would pin an argv order agy never required.
+	acpAt := -1
+	for i, a := range argv {
+		if a == "acp" {
+			acpAt = i
+			break
+		}
+	}
+	if acpAt < 0 {
+		t.Fatalf("the spawned argv carries no acp subcommand: %v", argv)
+	}
+	if idx > acpAt {
+		t.Fatalf("--settings comes AFTER the acp subcommand (agy rejects it there, exit 1): %v", argv)
 	}
 	if !containsFold(argv[idx+1], "run_command") {
 		t.Fatalf("Brainstorm's --settings document names no denied tool: %s", argv[idx+1])
