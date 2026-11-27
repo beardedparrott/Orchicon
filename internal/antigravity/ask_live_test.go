@@ -136,3 +136,93 @@ func liveModel() string {
 	}
 	return "gemini-4-neon-low"
 }
+
+// TestAskLive_RunCommandRaisesACard drives ONE real turn that must run a shell command, and answers the card.
+//
+// WHY A SECOND PROBE EXISTS WHEN THE WRITE ONE ALREADY RUNS. agy 1.5.13's default mode auto-approves FILE
+// EDITS without a `session/request_permission` (measured; docs §3.3, and the write probe above logs "0 card(s)"
+// while `probe.txt` is written). A `run_command`, by contrast, DOES card. So the write probe proves the tool
+// stream and that an approved write lands, and THIS probe proves the consent round-trip against the real
+// binary — the card the operator actually sees, the answer travelling back, and the command running because
+// the operator allowed it. Asserting "a write raises a card" would be asserting agy's mode, not this transport.
+//
+//	ORCHICON_ANTIGRAVITY_LIVE=1 go test ./internal/antigravity/ -run TestAskLive_RunCommandRaisesACard -v
+func TestAskLive_RunCommandRaisesACard(t *testing.T) {
+	if os.Getenv("ORCHICON_ANTIGRAVITY_LIVE") != "1" {
+		t.Skip("live agy probe: set ORCHICON_ANTIGRAVITY_LIVE=1 to spend one model turn (~a few thousand tokens)")
+	}
+	t.Setenv("ORCHICON_ANTIGRAVITY_CONSENT_WAIT", "120s")
+
+	workspace := t.TempDir()
+	b := New(quiet())
+	b.SetAskRoot(t.TempDir())
+	b.SetProjectDirResolver(func(context.Context, string, string) (string, error) { return workspace, nil })
+	b.SetDiffLedger(nil, func(context.Context, string, string, string, string, map[string]any, string) {})
+	t.Cleanup(b.CloseAsk)
+
+	ctx := context.Background()
+	ctx = askmode.WithMode(ctx, askmode.Iteration)
+	ctx = askmode.WithConversationScope(ctx, askmode.ConversationScope{ConversationID: "live_command", ProjectID: "prj_live"})
+
+	sid, err := b.CreateConversationSession(ctx, "live_command", "live")
+	if err != nil {
+		t.Fatalf("CreateConversationSession against the real agy: %v", err)
+	}
+	t.Logf("live agy session id = %s", sid)
+
+	sub, err := b.Subscribe(ctx, "live_command")
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer sub.Close()
+
+	turnDone := make(chan error, 1)
+	go func() {
+		turnDone <- b.SendTurnMessage(ctx, "live_command", sid, "You are a test harness.",
+			"antigravity/google/"+liveModel(), "Run the shell command `echo card-probe-ok` with run_command. Then stop.")
+	}()
+
+	var cards []scheduler.SessionEvent
+	deadline := time.After(150 * time.Second)
+loop:
+	for {
+		select {
+		case ev, ok := <-sub.Events():
+			if !ok {
+				t.Fatal("the bus closed mid-turn")
+			}
+			switch ev.Kind {
+			case "permission":
+				cards = append(cards, ev)
+				t.Logf("CARD: tool=%q command=%q targets=%v input=%s", ev.Tool, ev.Command, ev.Targets, ev.InputJSON)
+				if err := b.ReplyPermissionDecision(ctx, sid, ev.PermissionID, "once"); err != nil {
+					t.Errorf("ReplyPermissionDecision: %v", err)
+				}
+			case "idle":
+				break loop
+			case "error":
+				t.Fatalf("live turn failed: %s", ev.Text)
+			}
+		case <-deadline:
+			t.Fatal("the live turn did not finish inside 150s")
+		}
+	}
+	select {
+	case <-turnDone:
+	case <-time.After(5 * time.Second):
+	}
+
+	// THE STRUCTURAL CLAIM, and it is the one AC2's fixture asserts off the wire: agy asked, the card carried
+	// the tool and (when agy supplies it) the command, and answering "once" let the call through.
+	if len(cards) == 0 {
+		t.Fatal("no permission card arrived for a run_command turn — the consent path is not reaching the real agy")
+	}
+	card := cards[0]
+	if card.PermissionID == "" {
+		t.Error("the card carried no PermissionID, so no client could answer it")
+	}
+	if card.Tool == "" {
+		t.Error("the card named no tool")
+	}
+	t.Logf("live probe: %d card(s); first tool=%q command=%q targets=%v", len(cards), card.Tool, card.Command, card.Targets)
+}

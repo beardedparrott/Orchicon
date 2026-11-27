@@ -512,9 +512,16 @@ and its spellings are refused at launch (`assertNoBypass`), because a worker
 launched that way would never send a permission request and the policy would be
 silently skipped.
 
-**Known limitation, stated plainly:** agy 1.5.13's DEFAULT mode can auto-approve
-an edit without ever sending a permission request (§3.3 does not promise it
-will ask). The bridge cannot prevent that, so it DETECTS: the mapper checks
+**Known limitation, stated plainly, and MEASURED twice:** agy 1.5.13's DEFAULT
+mode auto-approves an edit without ever sending a permission request (§3.3 does
+not promise it will ask). `ORCHICON_ANTIGRAVITY_LIVE=1 go test ./internal/antigravity/
+-run TestAskLive_OneTurnWithACard` logs `0 card(s), 1 tool result(s)` and then
+`probe.txt = "ok"` — the file is written with the card never raised. A
+`run_command` DOES card (`TestAskLive_RunCommandRaisesACard` logs
+`CARD: tool="run_command" command="echo card-probe-ok"`), so the consent
+round-trip is proven against the real binary; only the *edit* half of the card
+surface is unreachable, and that is agy's mode rather than this transport. The
+bridge cannot prevent that, so it DETECTS: the mapper checks
 every tool call against the same boundary and never-allow rules and, on an
 escape, cancels the session and fails the execution (`onMapperViolation`). The
 OS-level guard shim on the local transport refuses the destructive commands
