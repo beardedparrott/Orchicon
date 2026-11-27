@@ -1999,10 +1999,24 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 				return nil, connect.NewError(connect.CodeInvalidArgument,
 					errors.New("cannot RESUME a leaf work item with no workflow bound"))
 			}
-			// A live run cannot be resumed — but that is now an honest, specific refusal rather
-			// than a blanket one that also covered the resumable case.
-			if IsActiveRunStatus(current.Status) || current.Status == domain.WorkItemReady ||
-				current.Status == domain.WorkItemAssigned {
+			// A live run cannot be resumed — but `checkpointing` is NOT a live run when the run it
+			// belongs to is paused, and that distinction is what un-wedges an item.
+			//
+			// `checkpointing` used to be stamped on pause regardless of whether anything was in
+			// flight. Because it is in IsActiveRunStatus, an item paused with nothing running became
+			// permanently "active": RESUME refused it, PAUSE found no run, RESTART thought it was in
+			// flight, and the reconciler ignores a paused run. Nothing could free it.
+			//
+			// So the guard now asks about the RUN, which is the thing that actually decides. The
+			// status is a symptom; the run is the cause.
+			pausedRun := false
+			if current.WorkflowRunID != "" {
+				if run, rerr := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, current.WorkflowRunID); rerr == nil {
+					pausedRun = run.Status == domain.WorkflowRunPaused
+				}
+			}
+			if !pausedRun && (IsActiveRunStatus(current.Status) || current.Status == domain.WorkItemReady ||
+				current.Status == domain.WorkItemAssigned) {
 				return nil, connect.NewError(connect.CodeFailedPrecondition,
 					errors.New("cannot RESUME a work item that is running or queued — use STOP or PAUSE first"))
 			}

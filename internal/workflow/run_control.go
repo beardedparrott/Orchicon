@@ -209,6 +209,7 @@ func pauseRunInner(ctx context.Context, tx pgx.Tx, tenantID, runID, reason strin
 	if err != nil {
 		return err
 	}
+	paused := 0
 	for _, sr := range stepRuns {
 		if sr.Status != domain.StepRunRunning || sr.WorkerExecutionID == "" {
 			continue
@@ -225,11 +226,30 @@ func pauseRunInner(ctx context.Context, tx pgx.Tx, tenantID, runID, reason strin
 		}); err != nil {
 			return err
 		}
+		paused++
 	}
 
+	// THE WORK ITEM'S STATUS MUST MATCH WHAT ACTUALLY HAPPENED.
+	//
+	// This used to stamp `checkpointing` unconditionally, and that deadlocked the item:
+	//
+	//	checkpointing is in IsActiveRunStatus
+	//	  -> ControlSequence RESUME refuses ("cannot RESUME a work item that is running")
+	//	  -> PAUSE refuses (no run in flight) and RESTART refuses (still "in flight")
+	//	  -> the reconciler sees the run is `paused` and returns before touching the item
+	//
+	// Measured on work item 01M84WD1G42BHD1HTCB2YMQ82Z: it sat in `checkpointing` indefinitely with
+	// NOTHING in flight, because QA had already failed 110 minutes earlier. A pause with nothing to
+	// checkpoint is simply a pause, and the item must stay resumable.
+	//
+	// So: `checkpointing` only when we actually asked something to checkpoint. Otherwise `pending`,
+	// which is the honest description of "parked, ready to resume" and is what every gesture expects.
 	if current.WorkItemID != "" {
 		if wi, err := db.GetWorkItem(ctx, tx, tenantID, current.WorkItemID); err == nil {
-			status := domain.WorkItemCheckpointing
+			status := domain.WorkItemPending
+			if paused > 0 {
+				status = domain.WorkItemCheckpointing
+			}
 			_, _ = db.UpdateWorkItem(ctx, tx, tenantID, current.WorkItemID, wi.Version, db.UpdateWorkItemFields{Status: &status})
 		}
 	}
