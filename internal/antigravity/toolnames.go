@@ -74,7 +74,7 @@ var canonicalToolNames = map[string]string{
 func toolKindWrites(kind string) bool { return strings.EqualFold(strings.TrimSpace(kind), "edit") }
 
 // canonicalToolName maps one agy tool name onto the platform's canonical name. An unknown name is
-// returned unchanged (trimmed), so an MCP tool (`mcp_orchicon_orchicon_ask_user`) or a future agy
+// returned unchanged (trimmed), so an MCP tool (`mcp_orchicon_ask_user`) or a future agy
 // built-in still reaches the callbacks and the permission policy as itself.
 func canonicalToolName(name string) string {
 	n := strings.TrimSpace(name)

@@ -80,13 +80,22 @@ type ParsedAsk struct {
 }
 
 // isAskUserCall reports whether a recorded tool call is the clarifying question this client renders
-// (tolerating the orchicon_ MCP-style prefix the model may emit.
+// (tolerating every MCP-qualified spelling an adapter records it under).
+//
+// THE PREFIX NAMES THE SERVER, AND ADAPTERS DISAGREE ABOUT THE SEPARATOR. claude joins with a DOUBLE
+// underscore (`mcp__orchicon__ask_user`) while agy joins with a SINGLE one (`mcp_orchicon_ask_user`,
+// `mcp_<server>_<tool>` per docs/adapters/antigravity-acp.md §3.6). A predicate that knew only the double
+// form rendered the card for claude and silently dropped it for antigravity — the antigravity Ask
+// conversation asked its question, the transcript recorded it, and no card was ever drawn.
+//
+// So the SUFFIX is the stable part: whatever the server prefix and whichever separator it used, a name
+// ending in `ask_user` is the ask tool.
 func isAskUserCall(functionName string) bool {
-	// THE MCP-QUALIFIED NAME IS A REAL SPELLING.
-	if strings.HasSuffix(functionName, "__ask_user") {
+	n := strings.ToLower(strings.TrimSpace(functionName))
+	if n == "ask_user" || n == "orchicon_ask_user" {
 		return true
 	}
-	return functionName == "ask_user" || functionName == "orchicon_ask_user"
+	return strings.HasSuffix(n, "_ask_user") || strings.HasSuffix(n, "-ask_user")
 }
 
 // It NEVER panics or errors outward: a malformed arguments payload yields a card carrying the

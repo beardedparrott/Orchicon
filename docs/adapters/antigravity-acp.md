@@ -88,10 +88,30 @@ Each bullet from the work item, answered from a recorded line.
 
 ### 3.1 Does `session/update` carry `agent_thought_chunk` (reasoning TEXT)?
 
-**No — not supported by agy 1.5.13.** Reasoning is reported as a *token count*
-(`thoughtTokens`), never as text. A model turn explicitly asked to think step by
-step (`gemini-3.8-flash-high`, "What is 17*23? Think step by step") produced
-`thoughtTokens: 237` and **zero** `agent_thought_chunk` notifications.
+**Yes, in `plan` mode — and NO in the acting modes. Corrected 2026-11-27.**
+
+The original answer here was "no, never", based on a DEFAULT-mode turn that
+produced `thoughtTokens: 237` and zero `agent_thought_chunk` notifications. That
+conclusion was too strong: it is a property of the MODE, not of the binary. A
+fresh probe of all four advertised modes on the same model with the same prompt
+("What is 17*23? Think step by step, then answer") measured:
+
+| mode | `agent_thought_chunk` |
+| --- | --- |
+| `default` | 0 |
+| `accept-edits` | 0 |
+| `auto` | 0 |
+| **`plan`** | **2, with real reasoning text** |
+
+Sample chunk from the `plan` run:
+`{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Request demands a step-by-step mathematical breakdown alongside a planning artifact workflow. Applying that formal procedu…"}}`
+
+**So an Ask conversation in BRAINSTORM shows streamed reasoning**, because
+Brainstorm is the mode the transport puts the agy session into `plan` for
+(`modegate.go`, `agySessionMode`). Iteration and Quick Work emit no reasoning
+text and show none — which is the honest rendering, not a gap.
+
+The original default-mode evidence still stands for its own mode:
 
 Evidence: `thinking_turn.jsonl:26` —
 `{"stopReason": "end_turn", "usage": {"inputTokens": 9080, "outputTokens": 433, …, "thoughtTokens": 237, "totalTokens": 9513}}`
@@ -328,7 +348,7 @@ Every variant agy 1.5.13 was observed to emit, with one example each.
 | `config_option_update` | `{configOptions:[model, thought_level, mode]}` | `simple_turn.jsonl:11` |
 | `current_mode_update` | `{"sessionUpdate":"current_mode_update","currentModeId":"accept-edits"}` | `tool_read_file.jsonl:12` |
 | `session_info_update` | `{"sessionUpdate":"session_info_update","title":"Red Or Blue Choice"}` | `ask_question.jsonl:16` |
-| `agent_thought_chunk` | **never emitted** by agy 1.5.13 | `thinking_turn.jsonl:29` |
+| `agent_thought_chunk` | **only in `plan` mode** (0 in default/accept-edits/auto) | `thinking_turn.jsonl:29` (default); live probe 2026-11-27 (`plan`) |
 
 ## 5. Error codes
 
@@ -402,7 +422,7 @@ and `telemetry: [tool_calls_streamed, file_diffs, transcript_jsonl]` (`:44`).
 | 6 | **model listing** | **supported** — `session/new` returns `models.availableModels` + `currentModelId`, plus `configOptions` (`handshake_auth.jsonl:8`) | 27 models on this account; filter per tier if needed |
 | 7 | **context** (window gauge) | **supported** — `usage_update{used,size}` (`simple_turn.jsonl:17`) | it is a context gauge, not a cost meter; no "compacting" state is announced |
 | 8 | **cost** (token accounting) | **supported** — per-turn `usage{inputTokens,outputTokens,cachedReadTokens,cachedWriteTokens,thoughtTokens,totalTokens}` on the `session/prompt` result (`simple_turn.jsonl:18`) | no money figure; Orchicon must price the tokens itself. Cache reads are separately reported |
-| 9 | **reasoning** | **supported with workaround** — reasoning is **not** streamed; only `thoughtTokens` (`thinking_turn.jsonl:26`) | show a "thinking…" indicator from the token count, never reasoning text. `thought_level` config option also lets you choose low→xhigh |
+| 9 | **reasoning** | **supported in `plan` mode, absent in the acting modes** — `agent_thought_chunk` arrives with real text under `plan` (measured); default/accept-edits/auto report only `thoughtTokens` (`thinking_turn.jsonl:26`) | render the reasoning stream when it arrives and NOTHING when it does not — never synthesise it. Brainstorm (agy `plan`) therefore shows reasoning; Iteration shows the token count. `thought_level` also lets you choose low→xhigh |
 | 10 | **tool calls** | **supported** — `tool_call`/`tool_call_update`, kinds `read|edit|execute|other`, MCP tools named `mcp_<server>_<tool>` (`mcp_tool_call.jsonl:19`) | none |
 | 11 | **GUI/TUI** | **not supported** — `agy acp` is a stdio JSON-RPC server only; there is no GUI or TUI channel in the protocol | Orchicon renders its own UI from `session/update`; the agy TUI is a separate, unrelated surface |
 | 12 | **3 OSes** | **supported with workaround** — the CLI ships for macOS, Linux and Windows. macOS/Linux binary `~/.local/bin/agy`; Windows via the PowerShell/CMD install script. Auth is the OS keyring on all three (Apple Keychain / Secret Service / Credential Manager) | **only Linux was run here**; macOS and Windows are doc-sourced. Windows `auto` mode and the terminal sandbox need **Windows 11 24H2 + the Aug 2026 update** — ship `default` mode where the sandbox is unavailable |
@@ -413,8 +433,9 @@ permission cards, ask cards, skills/context, model listing, context, cost,
 reasoning, tool calls, GUI/TUI, 3 OSes — plus **resume/cancel**. The 3 OSes
 requirement is kept as ONE row; macOS/Windows observations live in section 6.
 
-**Overall: GO**, with two hard limits — no reasoning text ever, and no ACP
-answer channel for `ask_question`.
+**Overall: GO**, with two hard limits — reasoning text exists only in `plan` mode
+(so Brainstorm streams it and the acting modes do not), and no ACP answer channel
+for `ask_question`.
 
 ## 9. License
 
@@ -512,14 +533,41 @@ and its spellings are refused at launch (`assertNoBypass`), because a worker
 launched that way would never send a permission request and the policy would be
 silently skipped.
 
-**Known limitation, stated plainly:** agy 1.5.13's DEFAULT mode can auto-approve
-an edit without ever sending a permission request (§3.3 does not promise it
-will ask). The bridge cannot prevent that, so it DETECTS: the mapper checks
-every tool call against the same boundary and never-allow rules and, on an
-escape, cancels the session and fails the execution (`onMapperViolation`). The
-OS-level guard shim on the local transport refuses the destructive commands
-regardless. `--sandbox` exists but containment was never exercised, so it is
-deliberately NOT enabled.
+**Known limitation, stated plainly, and MEASURED 12 WAYS on 2026-11-27:** agy 1.5.13
+NEVER sends a permission request for a file edit — in ANY mode or settings
+configuration. The 12 variants probed (each one real turn on `gemini-4-neon-low`)
+were: modes `default`, `accept-edits`, `auto`, `plan`; and `--settings` with
+`permissions.ask`, `permissions.deny:["write_file"]`, `permissions.allow:[]`,
+`permissions.{write_file:"ask"}`, `permissions.{write_file:{mode:"ask"}}`, and a
+mixed ask/allow/rules document. **Every one: 0 cards, and the file was written.**
+`permissions.deny` is inert on this build (the settings key is accepted and ignored),
+and an empty `allow` list does not restore prompting. `ORCHICON_ANTIGRAVITY_LIVE=1 go test ./internal/antigravity/
+-run TestAskLive_OneTurnWithACard` logs `0 card(s), 1 tool result(s)` and then
+`probe.txt = "ok"` — the file is written with the card never raised. A
+`run_command` DOES card (`TestAskLive_RunCommandRaisesACard` logs
+`CARD: tool="run_command" command="echo card-probe-ok"`), so the consent
+round-trip is proven against the real binary; only the *edit* half of the card
+surface is unreachable, and that is agy's mode rather than this transport. The
+bridge cannot prevent that by declining — it prevents it by **not being in a mode
+that writes**: the Ask path puts the session in `plan` for Brainstorm/Quick Work
+(§12.5), which is the only lever that actually holds.
+
+**The one thing that CAN stop an in-flight write, and why it is not a card.** agy
+emits `tool_call write_file status:"in_progress"` roughly 0.9 s BEFORE the file
+lands (measured: at the moment the `tool_call` arrived `os.Stat` on the target was
+false; the `tool_call_update` that follows reports `completed` and the file exists).
+Sending `session/cancel` at that instant makes agy report `status:"failed"` and the
+file is never created — measured, and it is the only lever that stops a write the
+client is never asked about. But a ~1 s window cannot hold a human decision, so this
+is **not** a permission card and the transport does not pretend it is one: there is
+no code path here that turns a write into a card, because a card that the operator
+answers 30 s later would be a card that already allowed the write. Brainstorm's
+boundary is therefore enforced BEFORE the turn (session mode `plan`), not during it. A worker execution still
+DETECTS an escape instead: the mapper checks every tool call against the same
+boundary and never-allow rules and, on a violation, cancels the session and fails
+the execution (`onMapperViolation`). The OS-level guard shim on the local
+transport refuses the destructive commands regardless. `--sandbox` exists but
+containment was never exercised, so it is deliberately NOT enabled.
 
 ### 11.5 Compaction, resume and the session store
 
@@ -552,3 +600,168 @@ deliberately ABSENT: `transcript_jsonl` (agy advertises no transcript file, and
 the bridge keeps its own durable transcript instead) and `reasoning` (agy never
 streams reasoning text — only `usage.thoughtTokens`; the mapper still handles
 `agent_thought_chunk` for a future agy).
+
+## 12. Ask (interactive) conversations (child 6) — decisions
+
+The same `agy acp` client drives an Ask Orchicon conversation. The transport is a SECOND use of the contract
+above, not a second contract: the bridge implements `scheduler.ChatTurnClient`, which is the only thing
+`Dispatcher.ChatKinds()` reads, so `antigravity` appears in `AIGatewayService.ListAdapterKinds.ask_capable_kinds`
+and in `askorchicon.SetChatKinds` with no registry entry anywhere. `CloseAsk()` in the server's shutdown path
+(beside `claudeBridge.CloseAsk()`) retires the children, which the plane's exit does not reap.
+
+### 12.1 The session id is agy's, so the session is created eagerly
+
+claude's Ask transport CHOOSES its session id (`--session-id`). agy allocates it in `session/new`, so the id
+exists only after spawn + authenticate + session/new. `CreateConversationSession` therefore spawns eagerly and
+returns **agy's own id** — because askorchicon persists whatever it returns, and a placeholder id would make the
+next restart's resume name a conversation agy has never heard of. That is why the "open the session" step is
+separate from "send a turn".
+
+### 12.2 Resume, in place, across a plane restart
+
+`SendTurnMessage` with a session id the bridge is not holding does `session/resume` (which replays nothing),
+falling back to `session/load` (which replays the history as updates the mapper ignores for user chunks) on a
+build without resume. It logs:
+
+	antigravity ask: resumed agy session conversation=<conv> session=<agy session id>
+
+which is the log line a restart's recall is provable from. A model change is `session/set_model` on the LIVE
+conversation, so the context survives; a project change or an MCP-set change respawns the child but resumes the
+same agy session.
+
+### 12.3 cwd is the conversation's project directory
+
+claude's Ask profile runs in `<askRoot>/<convID>` (`Cwd = askDir`). An agy Ask conversation ASSIGNED to a
+project runs **in that project** (`Bridge.SetProjectDirResolver`, wired in the server from `db.GetProject`), with
+the worker carve-outs (`/tmp/orchicon`, `.orchicon/`) as additional readable roots; an unassigned one runs in
+`$ORCHICON_ANTIGRAVITY_ASK_ROOT/<convID>` (default `$TMPDIR/orchicon-agy-ask`). That is what makes "approving a
+write writes the file into the project" true rather than aspirational.
+
+### 12.4 Permission cards, and the order that makes them a boundary
+
+Every `session/request_permission` goes through `askPermissionHandler.RequestPermission`, in this order:
+
+1. **Mode gate** (`modegate.go`). A tool the turn's mode refuses is answered with the reject option and **no
+   card is raised** — the platform has already decided, and a card would invite a per-call override of a
+   decision that is not the operator's to make. Because ACP carries no reason on a rejection, the refusal is
+   ALSO published as an `IsError` `tool_result` (so the operator sees it inline where the call was) and
+   prepended to the next prompt as `[platform] …` (so the model learns the rule instead of retrying).
+2. **Never-allow + boundary**, still without a card: `claude.DecideToolForAsk` runs the never-allow command
+   class, the protected roots, the operator's policy file and the `workerrestrict` boundary — the SAME rules
+   claude's Ask hook runs, called rather than copied.
+3. **Auto-allow** the tools nobody needs to be asked about: agy's reads, greps and lists, and the platform's own
+   MCP tools. The carded set is claude's Ask set translated: `run_command`, the write/edit family, `search_web`,
+   `read_url_content`, and third-party MCP tools.
+4. **The card**, as the identical `permission` bus event the claude path raises (`Kind:"permission"`,
+   `PermissionID`, `Tool` = the raw agy name, `Command` = `CommandLine`, `Targets`, `InputJSON`), blocking with
+   **no timeout by default** (`ORCHICON_ANTIGRAVITY_CONSENT_WAIT` shortens it for tests/an operator who wants a
+   leash). Answers map to the option ids agy actually OFFERED (`allow`/`deny` today), never to literals:
+   `once|allow|approve` → allow, `always|permanent` → allow_always if offered else allow_once,
+   `reject|deny` → reject. **The bridge records no grant** — the grant store lives in askorchicon, exactly as on
+   the claude path.
+
+**Teardown answers reject.** Parked cards are settled before the child goes, and the handlers are given a
+bounded window to write their decision, so a shutdown produces a refusal rather than a call left hanging.
+
+### 12.5 Mode gating, twice
+
+**THE SESSION MODE IS THE ENFORCEMENT, AND IT MUST BE SET ON THE SESSION — argv cannot do it.** This is the
+finding that took a live probe to settle, and getting it wrong is a real boundary breach rather than a
+cosmetic one:
+
+* `agy --mode plan acp` is **ACCEPTED (exit 0) and INERT**. A free probe (`initialize` + `session/new`, no
+  model turn) against 1.5.13 reports `modes.currentModeId = "default"` with the flag exactly as without it
+  (`availableModes` = `default`, `accept-edits`, `auto`, `plan`).
+* A **live** turn launched that way still **wrote its file**, because 1.5.13 does not send
+  `session/request_permission` before an edit — so the permission handler never sees it and cannot refuse it.
+* `session/set_mode {"modeId":"plan"}` on the live session DOES work: reads still succeed, `run_command`
+  still raises a card, and the write never reaches disk.
+
+So `prepareTurnMode` (`ask_turn.go`) issues `session/set_mode` **at spawn, before the first prompt**, and again
+whenever a turn's mode differs from the one the session is running. It sends `plan` for a mode that may not act
+and `default` for one that may — an empty `modeId` is not a mode agy accepts, and sending one would leave a
+conversation switched back to Iteration still stuck in `plan`.
+
+Evidence (`ORCHICON_ANTIGRAVITY_LIVE=1 go test ./internal/antigravity/ -run TestAskLive_BrainstormCannotWrite`):
+the same "create `probe.txt` containing ok" prompt leaves the workspace **empty** in Brainstorm and writes
+`probe.txt = "ok"` in Iteration. The mode, not the transport, decides.
+
+**The in-handler gate is still the authority for everything agy DOES ask about** (shell, web, third-party MCP),
+and refuses a mode-denied tool with no card. The two halves are not interchangeable: the session mode covers the
+tools agy never asks about, the handler covers the ones it does.
+
+**The `--settings` deny list is emitted but is NOT load-bearing.** Measured: a
+`{"permissions":{"deny":["write_file"]}}` document does not stop an edit on 1.5.13 (the key is inert), while
+`plan` mode does. It is kept as rights-subtracting defence in depth that may work on a later agy. **The flag is
+a TOP-LEVEL agy flag and must precede the subcommand**: `agy --settings '<json>' acp` works;
+`agy acp --settings '<json>'` exits 1 with the acp usage text (verified on 1.5.13). `LaunchOptions.Argv()`
+emits it in the right place and `assertSettingsNotBypass` refuses a document naming any auto-approve key, so the
+feature cannot be turned into a bypass.
+
+A mode that may not ACT (Brainstorm, Quick Work) is also not OFFERED a third-party MCP server at all
+(`withholdOpaqueMCP`), which is the offered half of `askmode.MayAct`.
+
+### 12.6 `ask_question` cannot be answered — document it, deny it, route it
+
+agy's native multiple-choice tool is a `tool_call` that agy renders as its own assistant text and then ends the
+turn. There is **no permission request and no answer channel**, so there is no way to send the operator's choice
+back. The decision, in three parts:
+
+* **Deny it** via `--settings` in every mode, so a model that tries it gets a tool error it can see rather than a
+  question that goes nowhere.
+* **Tell the model what to use instead**: the first prompt of every conversation carries `[platform] To ask the
+  user a multiple-choice question, call the Orchicon MCP tool orchicon_ask_user … Do NOT use agy's own
+  ask_question`.
+* **Document it here** (this section). The platform's `orchicon_ask_user` works as it does on any MCP-served
+  adapter: it is a tool on the Orchicon MCP sidecar, registered in `mcpServers` with the CONVERSATION scope.
+  askorchicon intercepts the call and renders the option card; the operator's answer arrives as the next turn.
+
+Agy's spelling of the platform's tools is `mcp_orchicon_orchicon_ask_user` (single underscores, tool keeps its
+own `orchicon_` prefix). `askorchicon.isAskToolName` accepts it and `toolclass.Classify` folds it to the ask card,
+so it neither vanishes from the transcript nor inflates the activity line. **Verified live on agy 1.5.13**: an
+Iteration turn prompted to use it called `mcp_orchicon_ask_user` (TestAskLive_AskUserToolReachesTheModel).
+
+**The live probe needs a REAL `orchicon` binary for the sidecar, and getting this wrong reads as a product
+failure.** The sidecar command comes from `claude.HookBinaryFor`, which falls back to `os.Executable()`: on the
+plane that is `orchicon`, but inside `go test` it is the TEST binary, which has no `mcp` subcommand. agy then
+cannot start the sidecar, the conversation gets no `orchicon_*` tools at all, and the probe fails with
+`tools seen = []` while the model reports it "cannot call orchicon_ask_user". Measured: the documented command
+gave 0 cards / `tools seen = []`; the same test with the sidecar pointed at a built `./cmd/orchicon` gave
+`tools seen = [mcp_orchicon_ask_user]` and passed in 9.1s. `askSidecarBinary(t)` (`asksidecar_test.go`)
+provisions that binary (honouring `ORCHICON_TEST_BINARY` / `ORCHICON_CLAUDE_HOOK_BIN` if set, else building one
+into a temp dir, else SKIPping rather than blaming the product), and
+`TestAskSidecarCommandIsNotTheTestBinary` pins the invariant without needing agy, a model turn or a database.
+
+**The `items` field is load-bearing on this transport, and it was being dropped.** Gemini rejects a tool whose
+array property has no `items`:
+
+	400 INVALID_ARGUMENT ... properties[options].items: missing field
+
+That 400 fails the WHOLE `GenerateContentRequest`, so every agy Ask turn that offered `ask_user` died before
+the model could call anything. The registry's schema was fixed once already and the bug survived, because
+`mcp.AskOrchiconRegistry.List` rebuilt each property from Type and Description only — the field was lost
+between the registry and `tools/list`, invisible to both layers and to every test that did not make a live
+call. `propertySchemaFromAsk` now copies recursively, and `array_items_wire_test.go` drives the same adapter
+the sidecar drives and asserts an array reaches the wire with `items`. **Any new field on `PropertySchema`
+must be carried there too.**
+
+### 12.7 Streaming, and the honest gap
+
+`agent_message_chunk` → `delta{text}`, coalesced into ONE `part{text}` at turn end. `tool_call` →
+`part{tool_use}`; the terminal `tool_call_update` → `tool_result` with its output. `usage_update` is the CONTEXT
+GAUGE; the prompt result's `usage` is the billable accounting, recorded under owner kind `ask_conversation`
+(`SessionID` = the conversation id, with `ExecutionID`/`TaskID`/`WorkerID` empty — a conversation has none).
+
+**Reasoning text exists only in `plan` mode.** In `default`/`accept-edits`/`auto` agy emits no
+`agent_thought_chunk` and reports only `usage.thoughtTokens`; under `plan` it emits real reasoning chunks
+(measured 2026-11-27). Since BRAINSTORM is the mode put into `plan`, a Brainstorm transcript streams reasoning
+and an Iteration one does not. The arm is mapped either way and is **never fabricated** — the reasoning TOKENS
+still reach the usage row, and a client showing an empty reasoning block is showing the truth.
+`TestAskThoughtChunkStreamsAsReasoning` / `TestAskNoThoughtChunkMeansNoReasoning` pin both halves.
+
+### 12.8 The Ask diff ledger
+
+A conversation's file edits go to the ASK ledger (`SetDiffLedger`'s second argument, owner kind
+`ask_conversation`, owner id = the conversation id), never the execution ledger — a conversation has no
+execution to attribute an edit to. The ledger fires on the TERMINAL `tool_call_update`, because the hook diffs
+the file's fresh on-disk state and an `in_progress` call has not written anything yet.
