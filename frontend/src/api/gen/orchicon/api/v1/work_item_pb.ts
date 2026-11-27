@@ -204,6 +204,14 @@ export enum WorkItemStatus {
    * @generated from enum value: WORK_ITEM_STATUS_IDEA = 15;
    */
   IDEA = 15,
+
+  /**
+   * A deliberate operator park (pause a run or a sequence child). Parked and resumable; NOT an
+   * active run status, so no arming path may start work for it until it is resumed.
+   *
+   * @generated from enum value: WORK_ITEM_STATUS_PAUSED = 16;
+   */
+  PAUSED = 16,
 }
 // Retrieve enum metadata with: proto3.getEnumType(WorkItemStatus)
 proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
@@ -223,6 +231,7 @@ proto3.util.setEnumType(WorkItemStatus, "orchicon.api.v1.WorkItemStatus", [
   { no: 13, name: "WORK_ITEM_STATUS_SKIPPED" },
   { no: 14, name: "WORK_ITEM_STATUS_ARCHIVED" },
   { no: 15, name: "WORK_ITEM_STATUS_IDEA" },
+  { no: 16, name: "WORK_ITEM_STATUS_PAUSED" },
 ]);
 
 /**

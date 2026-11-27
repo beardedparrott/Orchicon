@@ -42,8 +42,10 @@ func TestPauseDoesNotStampCheckpointingWhenNothingWasCheckpointed(t *testing.T) 
 			"checkpoint from an idle pause — and a paused-with-nothing-running item gets stamped " +
 			"`checkpointing` and deadlocks")
 	}
-	if !strings.Contains(src, "status := domain.WorkItemPending") {
-		t.Error("the idle-pause branch no longer defaults the work item to pending")
+	// SUPERSEDED: the park status is now `paused`, because `pending` means "on deck" to the sequence
+	// reconciler, which arms it. See pause_parks_test.go.
+	if !strings.Contains(src, "status := domain.WorkItemPaused") {
+		t.Error("pause no longer parks the item as `paused`")
 	}
 	// STRONGER RULE, superseding the "gate it on paused > 0" version: pause NEVER produces a real
 	// checkpoint. It ends the session and resume re-establishes it, so `checkpointing` described a
@@ -59,10 +61,12 @@ func TestPauseDoesNotStampCheckpointingWhenNothingWasCheckpointed(t *testing.T) 
 // TestPauseIsNotPermanentWhenNothingIsInFlight documents the invariant the operator hit.
 func TestPauseIsNotPermanentWhenNothingIsInFlight(t *testing.T) {
 	src := readRunControl(t)
-	// An idle pause must land the item somewhere RESUMABLE, i.e. NOT an active status.
-	if !strings.Contains(src, "WorkItemPending") {
-		t.Fatal("an idle pause leaves the item in an active status; every gesture that could free " +
-			"it will refuse")
+	// An idle pause must land the item somewhere RESUMABLE and NOT auto-armed: `paused` is both.
+	if !strings.Contains(src, "WorkItemPaused") {
+		t.Fatal("an idle pause does not park the item as `paused`")
+	}
+	if strings.Contains(src, "domain.WorkItemCheckpointing") {
+		t.Fatal("pause stamps checkpointing — an ACTIVE status, which locks every gesture out")
 	}
 }
 

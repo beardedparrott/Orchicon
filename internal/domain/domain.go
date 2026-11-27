@@ -133,6 +133,16 @@ const (
 	WorkItemCancelled     = "cancelled"
 	WorkItemRecovering    = "recovering"
 	WorkItemRecurring     = "recurring"
+	// WorkItemPaused is a DELIBERATE park set by the operator (pause a run / pause a sequence child).
+	//
+	// It exists because `pending` could not express it: the sequence engine treats a `pending` child
+	// as "on deck — arm it", so pausing a sequence child parked it in pending and the reconciler
+	// immediately re-fired its workflow. Measured on work item 01M84WD1G42BHD1HTCB2YMQ82Z: two
+	// pauses, two paused runs, and a THIRD run started in the same second as each pause.
+	//
+	// `paused` is NOT an active run status: it is parked, resumable, and every arming path must skip
+	// it until the operator resumes.
+	WorkItemPaused = "paused"
 	// WorkItemBlocked is a system-managed status set by the reconcilers when an armed/on-deck item
 	// cannot dispatch because an upstream dependency (blocks/depends_on edge) is not terminal-success.
 	WorkItemBlocked = "blocked"

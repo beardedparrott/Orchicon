@@ -2009,8 +2009,11 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 			//
 			// So the guard now asks about the RUN, which is the thing that actually decides. The
 			// status is a symptom; the run is the cause.
-			pausedRun := false
-			if current.WorkflowRunID != "" {
+			// A PAUSED ITEM IS RESUMABLE BY DEFINITION, and so is an item whose run is paused —
+			// both were parks we performed, and refusing them would recreate the deadlock the
+			// `checkpointing` status caused.
+			pausedRun := current.Status == domain.WorkItemPaused
+			if !pausedRun && current.WorkflowRunID != "" {
 				if run, rerr := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, current.WorkflowRunID); rerr == nil {
 					pausedRun = run.Status == domain.WorkflowRunPaused
 				}
@@ -2687,6 +2690,8 @@ func statusToProto(status string) apiv1.WorkItemStatus {
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_ASSIGNED
 	case domain.WorkItemRunning:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_RUNNING
+	case domain.WorkItemPaused:
+		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_PAUSED
 	case domain.WorkItemCheckpointing:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_CHECKPOINTING
 	case domain.WorkItemSucceeded:

@@ -254,9 +254,15 @@ func pauseRunInner(ctx context.Context, tx pgx.Tx, tenantID, runID, reason strin
 	//
 	// `pending` + a `paused` run is the truthful pair: the work is parked and resumable. The RUN's
 	// status carries the meaning the operator needs; the item's status only needs to not lie.
+	// PARK IT AS `paused`, NOT `pending`.
+	//
+	// `pending` means "on deck" to the sequence reconciler, which ARMS it: measured on
+	// 01M84WD1G42BHD1HTCB2YMQ82Z, where each of two pauses was followed by a new run in the SAME
+	// SECOND. `paused` is a status the arming paths skip, and it is not an active run status, so it
+	// locks nothing out either.
 	if current.WorkItemID != "" {
 		if wi, err := db.GetWorkItem(ctx, tx, tenantID, current.WorkItemID); err == nil {
-			status := domain.WorkItemPending
+			status := domain.WorkItemPaused
 			_, _ = db.UpdateWorkItem(ctx, tx, tenantID, current.WorkItemID, wi.Version, db.UpdateWorkItemFields{Status: &status})
 		}
 	}

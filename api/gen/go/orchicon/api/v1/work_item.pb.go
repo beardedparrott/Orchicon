@@ -154,6 +154,9 @@ const (
 	// automation-produced item awaiting triage; it is excluded from every
 	// normal work-item view. Never user-assignable.
 	WorkItemStatus_WORK_ITEM_STATUS_IDEA WorkItemStatus = 15
+	// A deliberate operator park (pause a run or a sequence child). Parked and resumable; NOT an
+	// active run status, so no arming path may start work for it until it is resumed.
+	WorkItemStatus_WORK_ITEM_STATUS_PAUSED WorkItemStatus = 16
 )
 
 // Enum value maps for WorkItemStatus.
@@ -175,6 +178,7 @@ var (
 		13: "WORK_ITEM_STATUS_SKIPPED",
 		14: "WORK_ITEM_STATUS_ARCHIVED",
 		15: "WORK_ITEM_STATUS_IDEA",
+		16: "WORK_ITEM_STATUS_PAUSED",
 	}
 	WorkItemStatus_value = map[string]int32{
 		"WORK_ITEM_STATUS_UNSPECIFIED":   0,
@@ -193,6 +197,7 @@ var (
 		"WORK_ITEM_STATUS_SKIPPED":       13,
 		"WORK_ITEM_STATUS_ARCHIVED":      14,
 		"WORK_ITEM_STATUS_IDEA":          15,
+		"WORK_ITEM_STATUS_PAUSED":        16,
 	}
 )
 
@@ -1172,7 +1177,7 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\x1cWORK_ITEM_KIND_RECOVERY_STOP\x10\x05\x12-\n" +
 	")WORK_ITEM_KIND_RECOVERY_SUMMARIZE_RESTART\x10\x06\x12,\n" +
 	"(WORK_ITEM_KIND_RECOVERY_HUMAN_ESCALATION\x10\a\x12#\n" +
-	"\x1fWORK_ITEM_KIND_RECOVERY_RETRY_N\x10\b*\x81\x04\n" +
+	"\x1fWORK_ITEM_KIND_RECOVERY_RETRY_N\x10\b*\x9e\x04\n" +
 	"\x0eWorkItemStatus\x12 \n" +
 	"\x1cWORK_ITEM_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18WORK_ITEM_STATUS_PENDING\x10\x01\x12\x1a\n" +
@@ -1190,7 +1195,8 @@ const file_orchicon_api_v1_work_item_proto_rawDesc = "" +
 	"\x18WORK_ITEM_STATUS_BLOCKED\x10\f\x12\x1c\n" +
 	"\x18WORK_ITEM_STATUS_SKIPPED\x10\r\x12\x1d\n" +
 	"\x19WORK_ITEM_STATUS_ARCHIVED\x10\x0e\x12\x19\n" +
-	"\x15WORK_ITEM_STATUS_IDEA\x10\x0f*\x8d\x01\n" +
+	"\x15WORK_ITEM_STATUS_IDEA\x10\x0f\x12\x1b\n" +
+	"\x17WORK_ITEM_STATUS_PAUSED\x10\x10*\x8d\x01\n" +
 	"\x0eDependencyType\x12\x1f\n" +
 	"\x1bDEPENDENCY_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16DEPENDENCY_TYPE_BLOCKS\x10\x01\x12\x1e\n" +
