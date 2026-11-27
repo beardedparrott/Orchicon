@@ -23,6 +23,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/orchicon"
 	"github.com/beardedparrott/orchicon/internal/providers"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 )
@@ -113,6 +114,56 @@ func TestListProviderModels_GoogleSnapshotMatchesAgyRecording(t *testing.T) {
 	for id := range got {
 		if !want[id] {
 			t.Errorf("the snapshot lists %q, which agy 1.5.13 never offered", id)
+		}
+	}
+}
+
+// TestListProviderModels_GoogleRowsCarryContextWindow is G1/AC1's second half: every row the picker
+// receives must carry the measured context window and must NOT raise the "context unknown" warning.
+//
+// agy states no window in its model list, so the number comes from `usage_update.size` (1048576 on agy
+// 1.5.13, simple_turn.jsonl:13,17). The TUI's window annotation (modelpick.go nativeModelContext) and the
+// GUI's (providers.ts projectPickerModels) both read exactly this field, so a zero here is an operator
+// staring at a model with no window shown.
+func TestListProviderModels_GoogleRowsCarryContextWindow(t *testing.T) {
+	const want = orchicon.AntigravityObservedContextWindow
+	if want != 1048576 {
+		t.Fatalf("AntigravityObservedContextWindow = %d, want 1048576 (the usage_update.size measured in "+
+			"simple_turn.jsonl:13,17)", want)
+	}
+
+	// BOTH row builders: the snapshot path (no lister) and the live path.
+	cases := []struct {
+		name  string
+		svc   *providers.Service
+		apply func(*providers.Service)
+	}{
+		{name: "snapshot", svc: providers.New(nil, nil, nil)},
+		{name: "live", svc: providers.New(nil, nil, nil), apply: func(s *providers.Service) {
+			s.SetAntigravityModelLister(func(context.Context, string) ([]providers.AgyModel, error) {
+				return []providers.AgyModel{{ID: "gemini-4-carbon-high", Name: "Gemini 4 Carbon (High)"}}, nil
+			})
+		}},
+	}
+	for _, tc := range cases {
+		if tc.apply != nil {
+			tc.apply(tc.svc)
+		}
+		res, err := tc.svc.ListProviderModels(context.Background(), testTenant, googleProviderID)
+		if err != nil {
+			t.Fatalf("%s: ListProviderModels(%q): %v", tc.name, googleProviderID, err)
+		}
+		if len(res.Models) == 0 {
+			t.Fatalf("%s: no models", tc.name)
+		}
+		for _, m := range res.Models {
+			if m.Context != want {
+				t.Errorf("%s: model %q Context = %d, want %d", tc.name, m.ID, m.Context, want)
+			}
+			if m.WarnNoContext {
+				t.Errorf("%s: model %q WarnNoContext = true, want false — the window is known, so the "+
+					"picker must not warn that it is missing", tc.name, m.ID)
+			}
 		}
 	}
 }
