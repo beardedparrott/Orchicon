@@ -100,6 +100,22 @@ type Bridge struct {
 	// models is the per-tenant catalogue cache behind ListModels (modellist.go). It is a VALUE, not a
 	// pointer, so a zero Bridge (a test constructing one literally) still has a usable cache.
 	models modelCache
+
+	// --- the Ask (interactive) conversations (ask.go) -------------------------------------------
+	//
+	// A SEPARATE REGISTRY FROM live/bySession ON PURPOSE. The maps above are keyed by EXECUTION identity
+	// and enforce the single-writer invariant between executions; these are keyed by CONVERSATION identity
+	// and carry a much longer lifetime (a conversation lives across many turns, model switches and — via
+	// session/resume — plane restarts). Sharing one map would make the worker's single-writer check refuse
+	// an Ask conversation that happened to reuse an id, and would make a teardown of one kind reach into
+	// the other.
+	askMu     sync.Mutex
+	askByConv map[string]*askSession // conversationID → session
+	askBySID  map[string]*askSession // agy session id → session
+	// askRootOverride is the per-plane Ask directory (the server injects the plane's own root).
+	askRootOverride string
+	// projectDir resolves a conversation's project to its directory. See SetProjectDirResolver.
+	projectDir ProjectDirResolver
 }
 
 // Compile-time assertions: the bridge must satisfy the FULL parity set. An adapter that silently stopped

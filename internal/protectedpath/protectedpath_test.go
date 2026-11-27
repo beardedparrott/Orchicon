@@ -10,6 +10,12 @@ import (
 func homedir() (string, error) { return os.UserHomeDir() }
 
 // The rule at its boundaries.
+//
+// XDG_DATA_HOME IS PINNED EMPTY, and that is a fix rather than tidiness. Roots derives the app-data root from
+// XDG_DATA_HOME when it is set (protectedpath.go), so on a host that exports it — this worker's own runtime
+// does, for its session plane — the expectation below named a path that is, correctly, NOT a root, and the
+// test failed for a reason unrelated to the rule it exists to assert. Pinning it empty measures the documented
+// DEFAULT (home/.local/share/orchicon), which is what this case is about; the override path has its own case.
 func TestMachineRootsRefuseEqualityAndContainment(t *testing.T) {
 	// HERMETIC: Roots derives the plane's state root from XDG_DATA_HOME when it is set, so an ambient
 	// value (a worker harness redirects it into its own scratch) makes the derived root stop tracking
@@ -136,5 +142,23 @@ func TestRefusalNamesBothPathsAndTheNonWaivability(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("the refusal must contain %q: %q", want, got)
 		}
+	}
+}
+
+// TestMachineRootsHonourAnXDGDataHomeOverride is the other half of the pin above: when the plane relocates its
+// app data, the RELOCATED root is the protected one — and the default location is then ordinary work, because
+// nothing of ours lives there.
+func TestMachineRootsHonourAnXDGDataHomeOverride(t *testing.T) {
+	const home = "/home/ops"
+	const xdg = "/var/lib/orchicon-data"
+	t.Setenv("XDG_DATA_HOME", xdg)
+
+	roots := Roots(home)
+	if got := DestroyedBy(filepath.Join(xdg, "orchicon"), roots, nil); got == "" {
+		t.Errorf("DestroyedBy(%q) = \"\" — the RELOCATED app-data root must be refused", filepath.Join(xdg, "orchicon"))
+	}
+	// The DEFAULT location is no longer a root, because nothing of ours is there any more.
+	if got := DestroyedBy(filepath.Join(home, ".local", "share", "orchicon"), roots, nil); got != "" {
+		t.Errorf("DestroyedBy(default app data) = %q, want \"\" (XDG_DATA_HOME relocated it)", got)
 	}
 }

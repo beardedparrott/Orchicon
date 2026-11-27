@@ -86,6 +86,39 @@ func assertNoBypass(argv []string) error {
 	return nil
 }
 
+// settingsBypassKeys are the `--settings` JSON keys that would weaken or disable agy's permission
+// system from INSIDE the document rather than on argv.
+//
+// assertNoBypass guards the ARGV SPELLINGS (`--dangerously-skip-permissions`, `--approval-mode yolo`); a
+// settings document is a different surface with the same power, and the two must be guarded together or
+// the guard has a hole exactly the width of the feature that added it.
+var settingsBypassKeys = []string{
+	"autoapprove", "auto_approve", "auto-approve",
+	"yolo", "alwaysapprove", "always_approve",
+	"skip_permissions", "skip-permissions", "skippermissions",
+	"dangerously_skip_permissions", "dangerously-skip-permissions",
+	"bypass_permissions", "bypass-permissions", "bypasspermissions",
+}
+
+// assertSettingsNotBypass refuses a `--settings` document that could turn the permission system off.
+//
+// THIS ADAPTER ONLY EVER EMITS A DENY LIST, so a document naming one of these keys did not come from
+// modegate.go — it came from a caller that is trying to widen the gate, and that is a bug worth failing
+// the launch over rather than a preference worth honouring.
+func assertSettingsNotBypass(settings string) error {
+	doc := strings.ToLower(strings.TrimSpace(settings))
+	if doc == "" {
+		return nil
+	}
+	for _, key := range settingsBypassKeys {
+		if strings.Contains(doc, `"`+key+`"`) {
+			return fmt.Errorf("antigravity: refusing a --settings document naming %q — it can disable agy's "+
+				"permission system, so the Ask mode boundary would be a claim rather than an enforcement", key)
+		}
+	}
+	return nil
+}
+
 // resolveAgyBinary resolves the agy executable.
 //
 // The resolver is adapter.ResolveBinary, the SAME per-OS/PATH lookup every other adapter uses, so an
