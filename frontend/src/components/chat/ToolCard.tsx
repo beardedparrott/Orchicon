@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { TerminalSquare } from "lucide-react";
 import type { ParsedTool } from "@/components/executions/sessionItems";
+import { collapseWhitespace, isWebTool, rowSubject } from "@/lib/tool-row-subject";
 
 interface ToolCardProps {
   tool: ParsedTool;
@@ -10,6 +11,12 @@ interface ToolCardProps {
 export function ToolCard({ tool, className }: ToolCardProps) {
   const [open, setOpen] = useState(false);
   const hasOutput = tool.output.length > 0;
+  // THE SUBJECT, not the raw input JSON. rowSubject reads BOTH argument vocabularies (opencode's
+  // `command`/`file_path` AND agy's `CommandLine`/`TargetFile`/`Url`/`query`), so an antigravity tool call
+  // shows its command, path or URL on the row instead of a truncated JSON object. The TUI draws the same
+  // line from the same fixture (internal/toolclass/row_subject.go).
+  const subject = collapseWhitespace(rowSubject(tool.toolName, tool.input));
+  const web = isWebTool(tool.toolName);
   const [copyState, setCopyState] = useState<"" | "input" | "output">("");
 
   const copy = (kind: "input" | "output") => {
@@ -30,6 +37,12 @@ export function ToolCard({ tool, className }: ToolCardProps) {
         >
           <TerminalSquare aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
           <span className="font-mono text-sm font-medium">{tool.toolName}</span>
+          {subject && (
+            <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+              {web ? "→ " : ""}
+              {subject}
+            </span>
+          )}
           {hasOutput && (
             <span className="ml-auto shrink-0 rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground">
               {tool.output.length.toLocaleString()} bytes

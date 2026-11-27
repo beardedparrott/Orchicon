@@ -1,6 +1,7 @@
 import { createRoute } from "@tanstack/react-router";
 
 import { useListAdapters } from "@/api/executions";
+import { AntigravityAdapterCard } from "@/components/AntigravityAdapterCard";
 import {
   Card,
   CardContent,
@@ -52,6 +53,16 @@ function AdaptersPage() {
           </CardHeader>
         </Card>
       )}
+
+      {/* THE ANTIGRAVITY DETAIL BLOCK, above the registry grid: for `agy` the question an operator has
+          is not "did it register" but "is the vendor CLI installed here, how does it sign in, and what do
+          its terms require me to know". The version comes from the registered adapter when one exists,
+          and `installed` is left undefined when the plane registered no agy adapter at all — an absent
+          row means "unknown", never a fabricated "not installed". */}
+      <AntigravityAdapterCard
+        version={adapters?.find((a) => a.kind === "antigravity")?.version}
+        installed={adapters?.some((a) => a.kind === "antigravity")}
+      />
 
       {adapters && adapters.length > 0 && (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
