@@ -1,0 +1,46 @@
+                         F1·Ask Orchicon   F2·Overview   F3·Work   F4·Execution   F5·Automation   F6·Enforcement   F7·Control
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+┌─ Detail ─────────────────────────────────────────────────────────────────────────────────────────────────────┐┌─ Conversations · All projects (1) ─┐
+│Conversation: antigravity parity (agy)                                                                        ││ antigrav… proj-agy-parity · 2 ms…  │
+│  id conv-agy-parity                                                                                          ││1-1/1                               │
+│  title antigravity parity (agy)                                                                              ││                                    │
+│  model antigravity/google/gemini-4-neon-low                                                                  ││                                    │
+│  messages 2                                                                                                  ││                                    │
+│  mode conversation_mode_unspecified                                                                          ││                                    │
+│  created —                                                                                                   ││                                    │
+│  updated —                                                                                                   ││                                    │
+│  grants (unavailable on this plane)                                                                          ││                                    │
+│  scroll 1-10/10 · ▼ following                                                                                ││                                    │
+│                                                                                                              ││                                    │
+│ You · 11:59:49 CST ⧉                                       Create probe.txt in the project with the word ok. ││                                    │
+│                                                                                                              ││                                    │
+│                                                                                                              ││                                    │
+│                                                                                                              ││                                    │
+│▾ reasoning · 11:59:50 CST · 128 chars                                                                        ││                                    │
+│  The operator wants a file written. I am in brainstorm mode, so I should check whether writing is permitted  ││                                    │
+│  before attempting it.                                                                                       ││                                    │
+│ 11:59:50 CST I cannot create that file — this conversation is in brainstorm mode, which is read-only for the ││                                    │
+│ filesystem. The platform refused write_file before it ran. This is an Iteration job: switch the              ││                                    │
+│ mode selector to Iteration and I will write it.                                                              ││                                    │
+│                                                                                                              ││                                    │
+│                                                                                                              ││                                    │
+│                                                                                                              ││                                    │
+│                                                                                                              ││                                    │
+│                                                                                                              ││                                    │
+│                                                                                                              ││                                    │
+│                                                                                                              ││                                    │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│                                    │
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│                                    │
+│  ❯                                                                                                           ││                                    │
+│                                                                                                              ││                                    │
+│                                                                                                              ││                                    │
+│  the plane for instance prod is down — /plane-start to start it, or read                                     ││                                    │
+│  /tmp/TestPTYAntigravityParityCaptureModeRefused3571493589/002/.local/share/orchicon-prod/serve/logs/orchic  ││                                    │
+│  ✓ conversations                                                                                             ││                                    │
+│  ctrl+g text · ctrl+d diff · space: mark · ctrl+s: search · ctrl+l: select all (1) · ctrl+n: rename          ││                                    │
+│  · ctrl+t: categorize · ctrl+f: find · home/end: top·bottom · click your message to copy · enter send        ││                                    │
+│  · alt+enter newline · / commands                                                                            ││                                    │
+│  antigravity/google/gemini-4-neon-low                                                          [brainstorm]  ││                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯└────────────────────────────────────┘
+ ● connected · ○ plane down · http://127.0.0.1:35655 · server 0.0.0-agy-parity-fixture · — esc/ctrl+g content · Mouse Enabled

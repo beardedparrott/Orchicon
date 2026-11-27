@@ -1,0 +1,44 @@
+                    F1·Ask Orchicon   F2·Overview   F3·Work   F4·Execution   F5·Automation   F6·Enforcement   F7·Control
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+
+
+
+
+
+
+
+
+
+                               ┌─ Ask model — new conversation ─────────────────────────────────────────────┐
+                               │  ADAPTER  orchicon   antigravity   claude   opencode                       │
+                               │  PROVIDER  Google                                                          │
+                               │────────────────────────────────────────────────────────────────────────────│
+                               │  search: ▏                                                                 │
+                               │  models unavailable — press r to retry                                     │
+                               │                                                                            │
+                               │                                                                            │
+                               │                                                                            │
+                               │                                                                            │
+                               │  ⚠ unavailable: Antigravity is not signed in on the host — run `agy` and   │
+                               │    sign in, or configure a Gemini API key (GEMINI_API_KEY) on the host,    │
+                               │    then re-run. Orchicon never signs in for you and stores no Google       │
+                               │    credential of its own. IN CONTAINER MODE this is stricter than the      │
+                               │    claude adapter: agy's personal OAuth credential lives in the HOST OS    │
+                               │    KEYRING, which cannot be bind-mounted into a runtime container — so a … │
+                               │  tab: tier · ↑/↓: move · type: search · enter/space: select · esc: cancel  │
+                               └────────────────────────────────────────────────────────────────────────────┘
+
+                                Ask Orchicon anything. Plan, execute, and govern with real-time clarity and
+                                                               thin control.
+
+
+
+
+
+
+
+
+
+ ● connected · ○ plane down · http://127.0.0.1:44483 · server 0.0.0-agy-parity-fixture · — esc/ctrl+g content · Mouse Enabled
