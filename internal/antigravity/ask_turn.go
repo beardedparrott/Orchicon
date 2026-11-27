@@ -75,6 +75,9 @@ func (b *Bridge) SendTurnMessage(ctx context.Context, conversationID, sessionID,
 	if err := s.prepareTurnModel(ctx); err != nil {
 		return err
 	}
+	if err := s.prepareTurnMode(ctx); err != nil {
+		return err
+	}
 	return s.prompt(ctx, system, text)
 }
 
@@ -332,6 +335,10 @@ func (s *askSession) ensureLive(ctx context.Context) error {
 	s.mcpFingerprint = fingerprint
 	s.ready = true
 	s.spawnErr = nil
+	// agy opens EVERY session in its DEFAULT mode: `session/new` reports `currentModeId: "default"` even when
+	// argv carried `--mode plan` (measured free against 1.5.13). That is the baseline, so a mode that may act
+	// needs no call at all and a mode that may not gets one from prepareTurnMode below.
+	s.appliedMode = agySessionModeDefault
 	s.mapper = newAskMapper(s.b, s.convID)
 	s.mu.Unlock()
 	s.b.bindAskSessionID(conv.ID(), s)
@@ -349,6 +356,16 @@ func (s *askSession) ensureLive(ctx context.Context) error {
 			s.handleUpdate(liveCtx, u)
 		}
 	}()
+
+	// THE MODE IS SET AT SPAWN, and this is the load-bearing line for the whole mode boundary. agy never
+	// asks the client about a file edit, so the permission handler cannot refuse one; `--mode plan` in argv
+	// does not reach the session either (measured: currentModeId stays "default"). `session/set_mode` is the
+	// ONLY thing that stops a Brainstorm conversation from writing, and doing it here means the very first
+	// turn is already constrained — a turn that ran before the mode was applied would be a breach that no
+	// later set_mode could undo.
+	if err := s.prepareTurnMode(liveCtx); err != nil {
+		return fail(err)
+	}
 
 	// THE MODEL IS SET AT SPAWN, exactly as the worker session does it (sessionrun.go). Without this a
 	// conversation created eagerly (CreateConversationSession) would run agy's DEFAULT model until the first
@@ -377,6 +394,52 @@ func (s *askSession) prepareTurnModel(ctx context.Context) error {
 	}
 	s.log.Info("antigravity ask: model set", "conversation", s.convID, "model", want)
 	return nil
+}
+
+// prepareTurnMode settles the agy EXECUTION MODE for this turn.
+//
+// ARGV IS FIXED AT SPAWN, SO A MID-CONVERSATION MODE CHANGE MUST BE `session/set_mode`. An operator who drafts
+// in Brainstorm and then switches to Iteration would otherwise be stuck with the planning mode the child was
+// launched under — writes silently never landing, with nothing in the transcript to explain it. The reverse
+// (Iteration → Brainstorm) is worse: the boundary would be a CLAIM, because the child is still in agy's
+// default mode and agy does not ask before editing.
+//
+// IT IS ISSUED ONLY WHEN IT CHANGED. agy defines nothing for a redundant set_mode and the call would cost a
+// round-trip on every turn of the common (unchanged) case.
+//
+// A REFUSED set_mode FAILS THE TURN rather than logging and continuing: continuing means running the turn in a
+// mode the operator did not choose, which on the Iteration → Brainstorm path means the write boundary is not
+// enforced. Failing loudly is the only honest outcome.
+func (s *askSession) prepareTurnMode(ctx context.Context) error {
+	s.mu.Lock()
+	conv := s.conv
+	// THE WIRE SPELLING, not the internal one. `session/set_mode` needs a mode agy ADVERTISES, so the
+	// "agy's own default" case is sent as "default" rather than as an empty id — an empty modeId is not a
+	// mode, and sending one would leave a Brainstorm conversation stuck in `plan` after a switch to
+	// Iteration.
+	want := modeOrDefault(agySessionMode(s.mode))
+	applied := s.appliedMode
+	s.mu.Unlock()
+	if conv == nil || want == applied {
+		return nil
+	}
+	if err := conv.SetMode(ctx, want); err != nil {
+		return fmt.Errorf("antigravity ask: agy refused the mode %q: %s", want, authMessage(err))
+	}
+	s.mu.Lock()
+	s.appliedMode = want
+	s.mu.Unlock()
+	s.log.Info("antigravity ask: mode set", "conversation", s.convID, "mode", want)
+	return nil
+}
+
+// modeOrDefault names agy's own mode for a `session/set_mode` modeId, a log line or an error, where "" would
+// read as a missing value rather than as the mode agy itself chose.
+func modeOrDefault(mode string) string {
+	if strings.TrimSpace(mode) == "" {
+		return agySessionModeDefault
+	}
+	return mode
 }
 
 // prompt delivers one `session/prompt` and closes the turn on its stopReason.

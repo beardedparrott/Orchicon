@@ -512,7 +512,7 @@ and its spellings are refused at launch (`assertNoBypass`), because a worker
 launched that way would never send a permission request and the policy would be
 silently skipped.
 
-**Known limitation, stated plainly, and MEASURED twice:** agy 1.5.13's DEFAULT
+**Known limitation, stated plainly, and MEASURED several times:** agy 1.5.13's DEFAULT
 mode auto-approves an edit without ever sending a permission request (§3.3 does
 not promise it will ask). `ORCHICON_ANTIGRAVITY_LIVE=1 go test ./internal/antigravity/
 -run TestAskLive_OneTurnWithACard` logs `0 card(s), 1 tool result(s)` and then
@@ -521,12 +521,14 @@ not promise it will ask). `ORCHICON_ANTIGRAVITY_LIVE=1 go test ./internal/antigr
 `CARD: tool="run_command" command="echo card-probe-ok"`), so the consent
 round-trip is proven against the real binary; only the *edit* half of the card
 surface is unreachable, and that is agy's mode rather than this transport. The
-bridge cannot prevent that, so it DETECTS: the mapper checks
-every tool call against the same boundary and never-allow rules and, on an
-escape, cancels the session and fails the execution (`onMapperViolation`). The
-OS-level guard shim on the local transport refuses the destructive commands
-regardless. `--sandbox` exists but containment was never exercised, so it is
-deliberately NOT enabled.
+bridge cannot prevent that by declining — it prevents it by **not being in a mode
+that writes**: the Ask path puts the session in `plan` for Brainstorm/Quick Work
+(§12.5), which is the only lever that actually holds. A worker execution still
+DETECTS an escape instead: the mapper checks every tool call against the same
+boundary and never-allow rules and, on a violation, cancels the session and fails
+the execution (`onMapperViolation`). The OS-level guard shim on the local
+transport refuses the destructive commands regardless. `--sandbox` exists but
+containment was never exercised, so it is deliberately NOT enabled.
 
 ### 11.5 Compaction, resume and the session store
 
@@ -624,13 +626,38 @@ bounded window to write their decision, so a shutdown produces a refusal rather 
 
 ### 12.5 Mode gating, twice
 
-The in-handler gate above is the authority (the mode can change between turns while argv is fixed at spawn).
-The mode's denied tools are ALSO passed to agy as `--settings '{"permissions":{"deny":[…]}}'` — session-only,
-never saved — as defence in depth. **The flag is a TOP-LEVEL agy flag and must precede the subcommand**:
-`agy --settings '<json>' acp` works; `agy acp --settings '<json>'` exits 1 with the acp usage text (verified on
-1.5.13; it is absent from `agy acp --help` for that reason). `LaunchOptions.Argv()` emits it in the right place and
-`assertSettingsNotBypass` refuses a document naming any auto-approve key, so the feature cannot be turned into a
-bypass.
+**THE SESSION MODE IS THE ENFORCEMENT, AND IT MUST BE SET ON THE SESSION — argv cannot do it.** This is the
+finding that took a live probe to settle, and getting it wrong is a real boundary breach rather than a
+cosmetic one:
+
+* `agy --mode plan acp` is **ACCEPTED (exit 0) and INERT**. A free probe (`initialize` + `session/new`, no
+  model turn) against 1.5.13 reports `modes.currentModeId = "default"` with the flag exactly as without it
+  (`availableModes` = `default`, `accept-edits`, `auto`, `plan`).
+* A **live** turn launched that way still **wrote its file**, because 1.5.13 does not send
+  `session/request_permission` before an edit — so the permission handler never sees it and cannot refuse it.
+* `session/set_mode {"modeId":"plan"}` on the live session DOES work: reads still succeed, `run_command`
+  still raises a card, and the write never reaches disk.
+
+So `prepareTurnMode` (`ask_turn.go`) issues `session/set_mode` **at spawn, before the first prompt**, and again
+whenever a turn's mode differs from the one the session is running. It sends `plan` for a mode that may not act
+and `default` for one that may — an empty `modeId` is not a mode agy accepts, and sending one would leave a
+conversation switched back to Iteration still stuck in `plan`.
+
+Evidence (`ORCHICON_ANTIGRAVITY_LIVE=1 go test ./internal/antigravity/ -run TestAskLive_BrainstormCannotWrite`):
+the same "create `probe.txt` containing ok" prompt leaves the workspace **empty** in Brainstorm and writes
+`probe.txt = "ok"` in Iteration. The mode, not the transport, decides.
+
+**The in-handler gate is still the authority for everything agy DOES ask about** (shell, web, third-party MCP),
+and refuses a mode-denied tool with no card. The two halves are not interchangeable: the session mode covers the
+tools agy never asks about, the handler covers the ones it does.
+
+**The `--settings` deny list is emitted but is NOT load-bearing.** Measured: a
+`{"permissions":{"deny":["write_file"]}}` document does not stop an edit on 1.5.13 (the key is inert), while
+`plan` mode does. It is kept as rights-subtracting defence in depth that may work on a later agy. **The flag is
+a TOP-LEVEL agy flag and must precede the subcommand**: `agy --settings '<json>' acp` works;
+`agy acp --settings '<json>'` exits 1 with the acp usage text (verified on 1.5.13). `LaunchOptions.Argv()`
+emits it in the right place and `assertSettingsNotBypass` refuses a document naming any auto-approve key, so the
+feature cannot be turned into a bypass.
 
 A mode that may not ACT (Brainstorm, Quick Work) is also not OFFERED a third-party MCP server at all
 (`withholdOpaqueMCP`), which is the offered half of `askmode.MayAct`.

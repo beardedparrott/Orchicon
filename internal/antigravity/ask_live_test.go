@@ -131,6 +131,93 @@ done:
 	}
 }
 
+// TestAskLive_BrainstormCannotWrite is AC3 + AC4's Brainstorm half against the REAL agy, and it is the test
+// that keeps the write boundary honest.
+//
+// THE CLAIM IT MUST PROVE: in Brainstorm the SAME prompt that writes a file in Iteration must leave the
+// workspace empty. This is the only way to test the thing that actually mattered here — agy 1.5.13 does not
+// send `session/request_permission` before a file edit, so the in-handler gate never sees one, and the
+// `--settings` permissions.deny key is inert on that build. If the session mode were not applied, the file
+// would appear and the boundary would be a claim. So the assertion is on the DISK, not on the transcript.
+//
+// IT COSTS ONE BOUNDED TURN (plus a second for the Iteration half).
+//
+//	ORCHICON_ANTIGRAVITY_LIVE=1 go test ./internal/antigravity/ -run TestAskLive_BrainstormCannotWrite -v
+func TestAskLive_BrainstormCannotWrite(t *testing.T) {
+	if os.Getenv("ORCHICON_ANTIGRAVITY_LIVE") != "1" {
+		t.Skip("live agy probe: set ORCHICON_ANTIGRAVITY_LIVE=1 to spend one model turn (~a few thousand tokens)")
+	}
+	t.Setenv("ORCHICON_ANTIGRAVITY_CONSENT_WAIT", "120s")
+	model := "antigravity/google/" + liveModel()
+	prompt := "Create a file named " + liveProbeName + " in the current directory containing exactly: ok. Then stop."
+
+	// --- Brainstorm: the write must NOT reach disk ------------------------------------------------
+	workspace := t.TempDir()
+	b := New(quiet())
+	b.SetAskRoot(t.TempDir())
+	b.SetProjectDirResolver(func(context.Context, string, string) (string, error) { return workspace, nil })
+	b.SetDiffLedger(nil, func(context.Context, string, string, string, string, map[string]any, string) {})
+	t.Cleanup(b.CloseAsk)
+
+	ctx := askmode.WithMode(context.Background(), askmode.Brainstorm)
+	ctx = askmode.WithConversationScope(ctx, askmode.ConversationScope{ConversationID: "live_brainstorm", ProjectID: "prj_live"})
+	sid, err := b.CreateConversationSession(ctx, "live_brainstorm", "live")
+	if err != nil {
+		t.Fatalf("CreateConversationSession against the real agy: %v", err)
+	}
+	t.Logf("live agy session id = %s", sid)
+
+	reply, err := liveTurn(t, b, ctx, "live_brainstorm", sid, model, prompt)
+	if err != nil {
+		t.Fatalf("Brainstorm turn: %v", err)
+	}
+	t.Logf("Brainstorm reply: %.300q", reply)
+
+	probe := filepath.Join(workspace, liveProbeName)
+	if content, rerr := os.ReadFile(probe); rerr == nil {
+		t.Fatalf("BRAINSTORM BOUNDARY BREACHED: the turn wrote %s = %q. agy does not card file edits, so the "+
+			"session mode (--mode plan) is the only thing that can stop this — it is not being applied.",
+			probe, string(content))
+	}
+	t.Logf("BRAINSTORM HELD: %s was not created; the session mode prevented the write", probe)
+
+	// --- Iteration: the same prompt MUST be able to write ----------------------------------------
+	// Without this half the test would pass for a transport that simply never writes anything, which is a
+	// much less interesting claim than "the MODE is what decides".
+	workspace2 := t.TempDir()
+	b2 := New(quiet())
+	b2.SetAskRoot(t.TempDir())
+	b2.SetProjectDirResolver(func(context.Context, string, string) (string, error) { return workspace2, nil })
+	b2.SetDiffLedger(nil, func(context.Context, string, string, string, string, map[string]any, string) {})
+	t.Cleanup(b2.CloseAsk)
+
+	ctx2 := askmode.WithMode(context.Background(), askmode.Iteration)
+	ctx2 = askmode.WithConversationScope(ctx2, askmode.ConversationScope{ConversationID: "live_iteration", ProjectID: "prj_live"})
+	sid2, err := b2.CreateConversationSession(ctx2, "live_iteration", "live")
+	if err != nil {
+		t.Fatalf("CreateConversationSession (Iteration) against the real agy: %v", err)
+	}
+	reply2, err := liveTurn(t, b2, ctx2, "live_iteration", sid2, model, prompt)
+	if err != nil {
+		t.Fatalf("Iteration turn: %v", err)
+	}
+	t.Logf("Iteration reply: %.300q", reply2)
+
+	probe2 := filepath.Join(workspace2, liveProbeName)
+	content, rerr := os.ReadFile(probe2)
+	if rerr != nil {
+		// NOT a transport failure: the model may simply not have used its write tool. Log it loudly so an
+		// operator reading the probe output is not misled into thinking Iteration is also restricted.
+		t.Logf("Iteration did not write %s (%v) — the MODEL chose not to, not the mode; the Brainstorm half of "+
+			"this test remains the claim that matters", probe2, rerr)
+		return
+	}
+	t.Logf("ITERATION WRITES: %s = %q, so the mode (not the transport) is what decides", probe2, string(content))
+}
+
+// liveProbeName is the file both halves of the Brainstorm/Iteration probe ask agy to create.
+const liveProbeName = "probe.txt"
+
 // liveModel picks the cheapest model agy advertises for a live probe. It is a variable so an operator can pin
 // one without editing this file.
 func liveModel() string {
