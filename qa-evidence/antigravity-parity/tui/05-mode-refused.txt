@@ -36,11 +36,11 @@
 │                                                                                                              ││                                    │
 │                                                                                                              ││                                    │
 │  the plane for instance prod is down — /plane-start to start it, or read                                     ││                                    │
-│  /tmp/TestPTYAntigravityParityCaptureModeRefused1757265548/002/.local/share/orchicon-prod/serve/logs/orchic  ││                                    │
+│  /tmp/TestPTYAntigravityParityCaptureModeRefused1403874322/002/.local/share/orchicon-prod/serve/logs/orchic  ││                                    │
 │  ✓ conversations                                                                                             ││                                    │
 │  ctrl+g text · ctrl+d diff · space: mark · ctrl+s: search · ctrl+l: select all (1) · ctrl+n: rename          ││                                    │
 │  · ctrl+t: categorize · ctrl+f: find · home/end: top·bottom · click your message to copy · enter send        ││                                    │
 │  · alt+enter newline · / commands                                                                            ││                                    │
 │                                                                                                [brainstorm]  ││                                    │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯└────────────────────────────────────┘
- ● connected · ○ plane down · http://127.0.0.1:40477 · server 0.0.0-agy-parity-fixture · — esc/ctrl+g content · Mouse Enabled
+ ● connected · ○ plane down · http://127.0.0.1:42561 · server 0.0.0-agy-parity-fixture · — esc/ctrl+g content · Mouse Enabled

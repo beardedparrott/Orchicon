@@ -101,6 +101,30 @@ describe("durableToolRows — a recorded turn's tool calls become rows", () => {
     expect(rows[0].output).toBe("/home/op/project");
   });
 
+  it("carries the result's error flag, so a refusal is drawn in full", () => {
+    // THE REFUSED CALL. `failed` is what lets ToolCard show the platform's refusal WITHOUT the operator
+    // opening the row: for a refusal the text IS the message (why the tool did not run and what to
+    // change), so collapsing it behind a `view` toggle and a byte count hides the only actionable part.
+    // Mirrors ParsedTool.Failed in internal/tui/chat/grouping.go.
+    const rows = durableToolRows({ id: "a-agy-1", toolCalls: AGY_CALLS, toolResults: AGY_RESULTS });
+    const refused = rows.find((r) => r.toolName === "write_file");
+    if (!refused) throw new Error("the refused call must still become a row");
+    expect(refused.failed).toBe(true);
+    // AND A NORMAL RESULT IS NOT FLAGGED, or every row would render as an error.
+    for (const ok of rows.filter((r) => r.toolName !== "write_file")) {
+      expect(ok.failed).toBe(false);
+    }
+  });
+
+  it("flags an orphan result's error too, not only an id-paired one", () => {
+    const rows = durableToolRows({
+      id: "a-1",
+      toolCalls: [{ functionName: "run_command", arguments: '{"CommandLine":"pwd"}' }],
+      toolResults: [{ output: "denied", isError: true }],
+    });
+    expect(rows[0].failed).toBe(true);
+  });
+
   it("keys an id-less row by position so two calls cannot collide", () => {
     const a = { id: "", toolName: "run_command", input: "", output: "", at: 0 };
     const b = { id: "", toolName: "run_command", input: "", output: "", at: 0 };

@@ -291,3 +291,59 @@ func TestPTYAntigravityParityCaptureModeRefused(t *testing.T) {
 		t.Errorf("a mode-refused tool must never raise a consent card:\n%s", tailOfPlain(text, 3000))
 	}
 }
+
+// TestPTYAntigravityParityCaptureAdapters is AC4's TUI half: Settings → Adapters, with the antigravity
+// adapter's detail block showing the AUTH METHOD and the ToS NOTICE.
+//
+// WHY IT IS A PTY CAPTURE AND NOT A STRING TEST. The control package already asserts the fields
+// (TestAdaptersShowsTheAntigravityAuthMethodAndItsCaveat), and that assertion cannot see the thing AC4 is
+// actually about: whether the four rows survive the pane's own layout — its width, its scroll position and
+// the field clipper — and reach the operator's terminal. A field list that is built but clipped off the
+// bottom of the detail pane passes the unit test and shows the operator nothing.
+//
+// THE ToS ASSERTION IS ON A PHRASE, NOT THE WHOLE NOTICE. The notice is a paragraph of Google's terms, so
+// the capture asserts its opening words — the same choice the GUI capture makes — plus the method it is
+// shown for, which is the fact that matters: it appears on `oauth-personal` and only there.
+func TestPTYAntigravityParityCaptureAdapters(t *testing.T) {
+	skipInteractivePTY(t)
+	if testing.Short() {
+		t.Skip("real-pty: skipped in -short")
+	}
+	const cols, rows = 170, 48
+	planeURL := startAgyParityPlane(t, antigravityparity.StateLive)
+	bin := orchBinPath(t)
+	home := t.TempDir()
+	writeOrchConfig(t, home, planeURL)
+	s := startOrchPtySized(t, bin, planeURL, home, cols, rows)
+	t.Cleanup(s.close)
+
+	waitForFrame(t, s, cols, rows, 10*time.Second, "❯")
+	time.Sleep(4 * time.Second)
+	// The adapters source is a Control child (/control then the source, as the nav config does it), and
+	// /adapters resolves straight to it.
+	_, _ = s.tty.WriteString("/adapters\r")
+	waitForFrame(t, s, cols, rows, 20*time.Second, "antigravity")
+	// THE SOURCE OPENS ON ITS FIRST ROW (orchicon), and the antigravity block is the AGY adapter's detail.
+	// One step down selects it; the detail pane loads asynchronously, so the frame is waited on for the
+	// rows themselves rather than for the keypress to return.
+	time.Sleep(1500 * time.Millisecond)
+	_, _ = s.tty.WriteString("\x1b[B")
+	scr := waitForFrame(t, s, cols, rows, 20*time.Second, "oauth-personal", "auth method")
+	dumpAgyFrame(t, "07-adapters-auth-tos", scr)
+
+	text := screenText(scr)
+	// The auth-method line, its caveat, and the server's ToS notice — the four facts AC4 names.
+	// The field keys are the detail pane's own lowercase labels (screenkit.Field.Key), not the GUI's
+	// sentence case — the assertion is on what the terminal paints, so it names what the terminal paints.
+	for _, want := range []string{
+		"oauth-personal",
+		"auth method",
+		"terms notice",
+		"Antigravity personal sign-in is used through Google's own",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Settings -> Adapters never painted %q — AC4 says the auth method AND the ToS notice "+
+				"are visible in both clients:\n%s", want, tailOfPlain(text, 5000))
+		}
+	}
+}

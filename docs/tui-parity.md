@@ -270,12 +270,39 @@ matter, and where each is asserted:
 | Tool rows | agy's recorded argument spellings (`CommandLine`, `TargetFile`, `AbsolutePath`, `Url`, `query`) render their SUBJECT, not a JSON dump | `internal/toolclass/row_subject_test.go` + `frontend/src/lib/tool-row-subject.test.ts`, both reading `internal/toolclass/testdata/row_subject_fixture.json` |
 | Consent card | `run_command` shows agy's OWN tool spelling and the command, claims the keys while pending, settles and hands them back | `internal/tui/antigravity_consent_test.go` |
 | Settings → Adapters | auth method + caveat, ToS notice on `oauth-personal`, secret presence only | `control/antigravity_adapter_test.go`, `AntigravityAdapterCard.test.tsx` |
+| Durable tool rows | a FINALIZED turn's recorded calls are rows, not only the live stream's | `internal/tui/chat/toolrows_test.go`, `frontend/src/lib/ask-tool-rows.test.ts` |
+| Refusals | a mode-refused call draws its reason IN FULL, never behind a toggle | `internal/tui/chat/view_test.go` (`toolRowError`), `ToolCard` `data-testid="tool-refusal"` |
+| Stale note | `snapshot — may be stale` gets its OWN row, so no width can split the phrase | `kit2` picker `statusNote()` |
 
 **`run_command` is what agy cards.** Measured on agy 1.5.13: a file write is not presented for approval,
 and the enforceable write boundary is the SESSION MODE, not a card — see
 `docs/adapters/antigravity-acp.md` §11.4/§12.7. The mode gate therefore runs BEFORE any card: a
 tool the turn's mode refuses never asks the operator anything, and the refusal reaches the transcript as
 an error tool result and the model as a queued notice.
+
+### The evidence for the five states, both clients
+
+Ten captures, one per state per client, each ASSERTING the words it claims rather than only that a
+file exists — a capture that cannot fail is not evidence:
+
+| State | GUI (`scripts/e2e/antigravity-parity-gui.py`) | TUI (`internal/tui/antigravity_pty_capture_test.go`) |
+|---|---|---|
+| loading | `qa-evidence/antigravity-parity/gui/gui-loading.png` | `.../tui/01-loading.txt` |
+| empty / not installed | `gui-not-installed.png` | `02-not-installed.txt` |
+| error (auth required) | `gui-auth-error.png` | `03-auth-error.txt` |
+| stale snapshot | `gui-stale.png` | `04-stale-snapshot.txt` |
+| mode-refused | `gui-mode-refused.png` | `05-mode-refused.txt` |
+| live (the contrast) | `gui-live.png` | `06-live-model-list.txt` |
+| AC4 adapters | `gui-ac4-adapters.png` | `07-adapters-auth-tos.txt` |
+
+Verdicts are recorded in `qa-evidence/antigravity-parity/gui/gui-captures.tsv` (a TSV, so a failing
+state is a row an operator can read, not a silent pass).
+
+**`AGY_PARITY_OUT` MUST BE ABSOLUTE.** `go test` runs with its CWD set to the package directory, so a
+relative value writes the frames to `internal/tui/qa-evidence/...` and leaves the committed evidence at
+whatever an earlier run produced — a fixed renderer then still reads as broken in the tree. Use
+`AGY_PARITY_OUT=$PWD/qa-evidence/antigravity-parity/tui`, and note the captures also need
+`ORCH_PTY_SMOKE=1` or the tests self-skip.
 
 ## Session stat strip (this run)
 

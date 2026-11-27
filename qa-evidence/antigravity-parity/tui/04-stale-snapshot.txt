@@ -41,4 +41,4 @@
 
 
 
- ● connected · ○ plane down · http://127.0.0.1:41571 · server 0.0.0-agy-parity-fixture · — esc/ctrl+g content · Mouse Enabled
+ ● connected · ○ plane down · http://127.0.0.1:40591 · server 0.0.0-agy-parity-fixture · — esc/ctrl+g content · Mouse Enabled

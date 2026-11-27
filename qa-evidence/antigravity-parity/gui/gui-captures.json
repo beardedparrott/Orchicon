@@ -26,8 +26,8 @@
   {
     "state": "mode-refused",
     "surface": "conversation",
-    "verdict": "FAIL",
-    "observation": "missing ['REFUSED BY THE PLATFORM']"
+    "verdict": "PASS",
+    "observation": "all of: REFUSED BY THE PLATFORM, run_command, read_url_content"
   },
   {
     "state": "live",
