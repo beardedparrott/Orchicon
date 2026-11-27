@@ -87,7 +87,7 @@ whole areas to "use the web GUI".
 | GUI route | Screen | TUI state | TUI tab | Notes / mutations |
 |---|---|---|---|---|
 | `/webhooks` | Webhooks | **exists** (read-write) | Control | `Webhooks` source + detail (`ListSubscriptions`). Create/edit/delete subscription through the form + Confirm-gated actions (`CreateSubscription` / `UpdateSubscription` / `DeleteSubscription`), `TestSubscription`, and the deliveries log (`ListDeliveries`) rendered in the detail body. |
-| `/adapters` | Adapters | **exists** (read + local toggle) | Control | `Adapters` source + detail (`ListAdapters` + the capability manifest). Enable/disable is a client-side dispatch filter: the public `RuntimeAdapterService` is read-only (adapters self-register over the sidecar gRPC contract), so there is no adapter write RPC to call. |
+| `/adapters` | Adapters | **exists** (read + local toggle) | Control | `Adapters` source + detail (`ListAdapters` + the capability manifest). Enable/disable is a client-side dispatch filter: the public `RuntimeAdapterService` is read-only (adapters self-register over the sidecar gRPC contract), so there is no adapter write RPC to call. **The `antigravity` detail block** (GUI `AntigravityAdapterCard`, TUI `antigravityAdapterFields`) adds the four facts an `agy` operator needs and the generic card cannot answer: the resolved binary or the install sentence; the **auth method** with the caveat that method carries (`oauth-personal` = host keyring, local runs only; `gemini-api-key` = the tenant secret `GEMINI_API_KEY`); the **ToS notice**, server-supplied (`TenantSettings.antigravity_tos_notice` = `authmethod.ToSNotice`) and rendered on exactly `oauth-personal`; the telemetry flag; and the API-key secret as **presence only** (set / not set — never a value). The method is EDITABLE in one place per client (Settings → Defaults) and read-only here, so there is one write path.
 | `/settings` | Settings | **exists** (read-write) | Control | `Settings` source + detail (every field: models, stall knobs, reaper, budgets, backup/log, session TTLs). `e` opens the typed form and saves through `UpdateSettings`; the two model fields open the three-tier picker (see **Model picker** below) and are validated against the pinned grammar before submit. |
 | `/admin` | Admin | **exists** (admin-gated) | Control | `Admin` source: the admin surface inventory plus an EXPLICIT live permission state (probed via an admin-gated read) — a credential without the admin scope sees "permission required", never a silent empty pane. |
 | `/manage-server` | Manage Server | **n/a (desktop-only)** | — | **Desktop shell only.** Plane control and connection state, reached through `internal/planecontrol` — the same mechanism the CLI and the TUI drive (no lifecycle RPC exists). The connection states are `connecting` / `connected` / `offline` / `plane-error`, the last kept distinct from `offline` because a plane that answers is not necessarily the plane we want. **ABSENT from the web nav by decision:** the browser gets no entry, no disabled entry and no notice — a direct hit redirects to `/dashboard`. This is the SECOND structural client divergence (see *Slash commands in the GUI (deliberate difference)*); for an operator the TUI surface for this is `orchicon plane …`, not a pane. |
@@ -155,6 +155,19 @@ The Work tab is now read-WRITE for every Work surface the GUI mutates:
 Budgets / context-window / apt-packages / toolchains / env are JSON — the `Form`'s `json` field
 type validates them before submit.
 
+## Adapter kinds (both clients)
+
+Four kinds are registered by the server and every surface below reads the SERVER's list — no client
+hard-codes one. `sourcing_kinds` (the model-tier data source) and `ask_capable_kinds` (Ask eligibility)
+ride the same `ListAdapterKinds` response, so both clients classify a kind identically.
+
+| Kind | Providers | Model tier source | Ask-capable | Runtime |
+|---|---|---|---|---|
+| `orchicon` | merged Providers view | catalog sourcing (`orchicon` in `sourcing_kinds`) | yes | in-process, nothing installed |
+| `opencode` | live CLI discovery | opencode-CLI discovery | yes | `opencode` CLI on the host |
+| `claude` | `["anthropic"]` | catalog sourcing | no (`claude` implements no `ChatTurnClient`) | `claude` CLI on the host |
+| `antigravity` | `["google"]` | catalog sourcing | yes (ACP `ChatTurnClient`) | Google's `agy` CLI on the host |
+
 ## Model picker (this run)
 
 A `model_ref` is a reference no operator can be expected to type, so every model
@@ -171,11 +184,13 @@ identically:
 - **Provider tier** — under the native kind, the merged Providers view
   (`ProviderService.ListProviders`: ENABLED only, tenant customs badged) — exactly what
   Settings → Adapters edits. Under every other kind, its adapter-scoped gateway set
-  (`AIGatewayService.ListProviders`) — which is what `claude` gets: `["anthropic"]`, from
-  the ProviderRegistry (ADR-0003 D3), NOT the tenant-wide merged view (that would leak
-  every other provider into a claude-only scope).
-- **Model tier** — under a CATALOG-SOURCED kind (`orchicon`, `claude` — the kinds the
-  server publishes in `ListAdapterKinds.sourcing_kinds`, so both pickers read one
+  (`AIGatewayService.ListProviders`) — `claude` gets `["anthropic"]` and `antigravity` gets
+  `["google"]`, both from the ProviderRegistry (ADR-0003 D3), NOT the tenant-wide merged
+  view (that would leak every other provider into a single-provider scope). `google` is
+  agy's ONLY provider because agy serves Gemini **and** the `claude-*` models under one
+  Google login — a second pill would imply a scope that does not exist.
+- **Model tier** — under a CATALOG-SOURCED kind (`orchicon`, `claude`, `antigravity` — the
+  kinds the server publishes in `ListAdapterKinds.sourcing_kinds`, so both pickers read one
   answer), the providers SOURCING view (`ProviderService.ListProviderModels`: vendored
   catalog ⊕ probe ⊕ manual, plus an offline catalog seed when the live probe returns
   nothing, so a catalog-covered provider such as `anthropic` is never blank on a plane
@@ -183,9 +198,25 @@ identically:
   (`AIGatewayService.ListOpenCodeModels`). Hidden models are dropped; a model missing a
   context hint stays SELECTABLE and is ANNOTATED (ADR-0006 D8).
 
+  Under `antigravity` the rows are **agy's own bare model ids** (`gemini-4-carbon-high`),
+  with the effort suffix IN the id rather than a `variants` expansion, and `source`
+  naming its provenance (`live`, or `antigravity-snapshot` for the vendored fallback).
+
   The classification is a MODEL-tier answer only: it never changes Ask capability
-  (`AskCapableKinds` stays the Dispatcher's `ChatKinds`, so `claude` — which implements
-  no `ChatTurnClient` — is still excluded from Ask and still flagged in Ask mode).
+  (`AskCapableKinds` stays the Dispatcher's `ChatKinds` — `claude` implements no
+  `ChatTurnClient` and is still excluded from Ask; `antigravity` DOES implement it and
+  appears in Ask).
+
+The picker's four states, both clients (`antigravity` is where all four are reachable, which is why
+they are written down here rather than left to the component):
+
+| State | GUI (`ModelPicker.tsx`) | TUI (`kit2.ModelPicker` + `internal/tui/modelpick`) |
+|---|---|---|
+| **loading** | the model tier renders its loading row | `loading…` in the status line |
+| **empty / not installed** | the install sentence `adapter.AntigravityNotInstalledMessage` (`ANTIGRAVITY_NOT_INSTALLED_MESSAGE`, byte-mirrored and drift-tested) instead of "No models match your search" when the search box is empty | the same constant in the model list's empty row |
+| **error (auth required)** | `translateAdapterError` returns `AntigravityAuthRequiredMessage` with the actionable next step | `FriendlyErr` → `SetLoadErr`, rendered in the error area with `r` to retry |
+| **partial (snapshot fallback)** | the server's `degraded` bit renders "Model list from the vendored snapshot — it may be stale." under the list | `degraded` renders `snapshot — may be stale` in the summary line |
+| **permission-denied (mode-gated)** | the mode refusal text lands as an error tool result in the transcript | the same refusal, via `emitRefusal` on the shared bus |
 
 Switching adapter RESETS the provider and model tiers — a selection is never
 carried across adapters (ADR-0004 stale-selection guard). The committed value is
@@ -223,6 +254,28 @@ Landed surfaces:
   conversation yet the choice is held in `pendingModel` and passed to `createConversation`,
   since there is no conversation row to write it to; it is cleared once the conversation is
   created, so a later new chat starts from the tenant default rather than inheriting a one-off.
+
+## Antigravity (agy) transport parity (this run)
+
+`antigravity` is the second catalog-sourced non-native adapter kind, and it is the first one that is
+**Ask-capable** — so it exercises both the picker and the conversation surfaces. The differences that
+matter, and where each is asserted:
+
+| Surface | Contract | Pinned by |
+|---|---|---|
+| Adapter tier | `antigravity` appears because the SERVER lists it (`ListAdapterKinds`); nothing in either client is keyed on a kind name | `ModelPicker.antigravity.test.tsx` (`sourcingKinds ?? [ORCHICON_ADAPTER_KIND]`), `modelpick/antigravity_test.go` |
+| Provider tier | exactly `[google]`, from the adapter-scoped gateway set | both suites above |
+| Model tier | agy's bare ids, 1M context, `reasoning` flag; a 3-segment ref round-trips through `adapter.ParseModelRef` | both suites above |
+| Adapter switch | RESETS provider + model (ADR-0004), writes no ref | `ModelPicker.antigravity.test.tsx`, `TestModelPickerAdapterChangeResetsLowerTiers` |
+| Tool rows | agy's recorded argument spellings (`CommandLine`, `TargetFile`, `AbsolutePath`, `Url`, `query`) render their SUBJECT, not a JSON dump | `internal/toolclass/row_subject_test.go` + `frontend/src/lib/tool-row-subject.test.ts`, both reading `internal/toolclass/testdata/row_subject_fixture.json` |
+| Consent card | `run_command` shows agy's OWN tool spelling and the command, claims the keys while pending, settles and hands them back | `internal/tui/antigravity_consent_test.go` |
+| Settings → Adapters | auth method + caveat, ToS notice on `oauth-personal`, secret presence only | `control/antigravity_adapter_test.go`, `AntigravityAdapterCard.test.tsx` |
+
+**`run_command` is what agy cards.** Measured on agy 1.5.13: a file write is not presented for approval,
+and the enforceable write boundary is the SESSION MODE, not a card — see
+`docs/adapters/antigravity-acp.md` §11.4/§12.7. The mode gate therefore runs BEFORE any card: a
+tool the turn's mode refuses never asks the operator anything, and the refusal reaches the transcript as
+an error tool result and the model as a queued notice.
 
 ## Session stat strip (this run)
 
