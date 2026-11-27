@@ -99,6 +99,47 @@ func TestAntigravityAuthFailure(t *testing.T) {
 	}
 }
 
+// TestAntigravityAuthFailureMatchesAgysMissingKeyText is the gap this brief called out in §2: the signal
+// list did not match the exact text agy emits when the gemini-api-key method is chosen with no key
+// configured — `-32602 "GEMINI_API_KEY is not set; pass an API key in _meta.apiKey or set the GEMINI_API_KEY
+// environment variable."` (testdata/acp/auth_required.jsonl:12). That sentence shares no wording with any
+// other signal, so without an entry the one failure whose remedy is literally "set the key" surfaced as a
+// generic error.
+func TestAntigravityAuthFailureMatchesAgysMissingKeyText(t *testing.T) {
+	// The fixture line, verbatim from agy 1.5.13's recording.
+	const fixtureMessage = `GEMINI_API_KEY is not set; pass an API key in _meta.apiKey or set the GEMINI_API_KEY environment variable.`
+	const fixtureEnvelope = `{"jsonrpc":"2.0","error":{"code":-32602,"message":"` + fixtureMessage + `"},"id":4}`
+
+	// The unused fixture line is read so the test fails loudly if the recording is edited out from under
+	// it, rather than silently asserting against a string that no longer exists.
+	raw, err := os.ReadFile(filepath.Join("..", "antigravity", "testdata", "acp", "auth_required.jsonl"))
+	if err != nil {
+		t.Fatalf("read the auth_required recording: %v", err)
+	}
+	if !strings.Contains(string(raw), "GEMINI_API_KEY is not set") {
+		t.Fatal("the auth_required recording no longer carries agy's missing-key text; this test's premise is gone")
+	}
+
+	for _, in := range []string{fixtureMessage, fixtureEnvelope, strings.ToLower(fixtureEnvelope)} {
+		msg, ok := AntigravityAuthFailure(in)
+		if !ok {
+			t.Errorf("AntigravityAuthFailure(%q) = false — agy's missing-key failure must classify as auth", in)
+			continue
+		}
+		if msg != AntigravityAuthRequiredMessage {
+			t.Errorf("AntigravityAuthFailure(%q) returned a message other than AntigravityAuthRequiredMessage", in)
+		}
+	}
+
+	// The other -32602 agy emits is a CLIENT BUG, not a credential problem: an unsupported methodId.
+	// Matching the CODE instead of the message would misclassify it as "sign in", so this is the guard
+	// that keeps the new signal narrow.
+	if msg, ok := AntigravityAuthFailure(`{"jsonrpc":"2.0","error":{"code":-32602,"message":"Unsupported auth method: \"no-such-auth-method\""},"id":3}`); ok {
+		t.Errorf("AntigravityAuthFailure classified an unsupported-methodId -32602 as auth (%q) — -32602 is "+
+			"JSON-RPC 'invalid params' and must not be treated as a credential signal", msg)
+	}
+}
+
 // TestAntigravityBinaryDiscovery is AC 1's discovery half: the env override is named, and the
 // DECLARED install location resolves — the kind's executable is `agy`, not `antigravity`.
 func TestAntigravityBinaryDiscovery(t *testing.T) {
