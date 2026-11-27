@@ -19,11 +19,11 @@ import (
 // reasoning about the same file must agree on it.
 func TestNormalizeAgyPath(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{`C:\Users\a b\x`, `/Users/a b/x`},
+		{`C:\Users\me b\x`, `/Users/me b/x`},
 		{`c:\repo\src\a.go`, `/repo/src/a.go`},
 		{`C:/repo/src/a.go`, `/repo/src/a.go`},
 		{`\\server\share\x`, `/server/share/x`},
-		{`/home/dev/x`, `/home/dev/x`},
+		{`/home/me/x`, `/home/me/x`},
 		{`/tmp/orchicon`, `/tmp/orchicon`},
 		{``, ``},
 	}
@@ -37,7 +37,7 @@ func TestNormalizeAgyPath(t *testing.T) {
 // TestLooksWindowsKeepsPOSIXOutOfTheWindowsArm is the guard on the delegation switch itself: a POSIX
 // boundary must NOT take the Windows branch, or every existing worker's boundary changes meaning.
 func TestLooksWindowsKeepsPOSIXOutOfTheWindowsArm(t *testing.T) {
-	for _, p := range []string{`/home/dev/repo`, `/tmp/orchicon`, ``, `relative/dir`} {
+	for _, p := range []string{`/home/me/repo`, `/tmp/orchicon`, ``, `relative/dir`} {
 		if looksWindows(p) {
 			t.Errorf("looksWindows(%q) = true, want false — a POSIX boundary must keep the filepath comparison", p)
 		}

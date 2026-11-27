@@ -27,7 +27,7 @@ import (
 // looksWindows reports whether a path is spelled in Windows form: a leading drive letter
 // (`C:\...` or `C:/...`) or a UNC share (`\\server\share`). This is the switch that makes the
 // Windows rules reachable from a Linux test, and it is deliberately strict — a POSIX boundary such
-// as `/home/dev/repo` must never take the Windows branch.
+// as `/home/me/repo` must never take the Windows branch.
 func looksWindows(p string) bool {
 	p = strings.TrimSpace(p)
 	if p == "" {
