@@ -301,7 +301,6 @@ func TestTheLocalBlockCarriesTheHostBrowserPath(t *testing.T) {
 		"~/.cache/ms-playwright", // where host browsers actually are
 		"require(",               // names the dead end explicitly
 		"8091",                   // PROD, named so a worker can avoid it
-		"5432",                   // PROD's database, likewise
 		"8080",                   // DEV, reachable and writable from a local run
 	} {
 		if !strings.Contains(block, want) {

@@ -1883,19 +1883,28 @@ func loopVerdictForFailedStep(decision, verdict string, wiResult map[string]any)
 // not carry it yet, and losing the verdict here is what costs the whole attempt budget.
 func (r *WorkflowReconciler) stepDeliveredVerdict(ctx context.Context, tx pgx.Tx, tenantID string, sr db.WorkflowStepRunRow) string {
 	var stepResult struct {
-		Verdict string `json:"_verdict"`
+		Verdict  string `json:"_verdict"`
+		Decision string `json:"_decision"`
 	}
 	_ = json.Unmarshal(sr.Result, &stepResult)
-	if stepResult.Verdict != "" {
-		return stepResult.Verdict
+	// THE SAME RESOLUTION THE LOOP CHAIN USES, and this function was the one that still read only
+	// `_verdict`. That is why the routing gate never fired on run 01M8CSC92YWEZSC2FTRWC2K5A7: QA's
+	// step run carries `_decision: "failure"` and NO `_verdict`, so this returned "" — polling fell
+	// through to the recovery branch, and the run resumed QA on attempt 4 instead of looping to SSE.
+	//
+	// `_verdict` was already fixed on the loop-chain side (loopVerdictForFailedStep, 454c4e818); this
+	// was the other half of the same wire, and fixing one side is what made the bug survive a rebuild.
+	if v := loopVerdictForFailedStep(stepResult.Decision, stepResult.Verdict, nil); v != "" {
+		return v
 	}
 	if wid := stepRunWorkItemID(sr); wid != "" {
 		if wi, err := db.GetWorkItem(ctx, tx, tenantID, wid); err == nil && len(wi.Results) > 0 {
 			var wiResult map[string]any
 			if json.Unmarshal(wi.Results, &wiResult) == nil {
-				if v, ok := wiResult["_verdict"].(string); ok {
-					return v
-				}
+				// The work item may carry either key; the shared resolver handles both.
+				decision, _ := wiResult["_decision"].(string)
+				verdict, _ := wiResult["_verdict"].(string)
+				return loopVerdictForFailedStep(decision, verdict, wiResult)
 			}
 		}
 	}
