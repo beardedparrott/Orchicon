@@ -130,7 +130,27 @@ export function SequenceControls({
   };
 
   let actions = availableActions(item.status, hasChildren);
-  if (only) actions = actions.filter((a) => only.includes(a));
+  // DOUBLE-GATING WAS A BUG, NOT A SAFETY NET.
+  //
+  // `only` says which gestures THIS VIEW offers; `availableActions` says which the item's status
+  // permits. Applying both meant a gesture had to survive two predicates, and on the Schedules
+  // RUNNING view that produced "no Pause button": the view lists items in
+  // ACTIVE_RUNNING_STATUSES, and Pause additionally required isInFlight — the same test, applied
+  // twice, with the second one winnowing an item that was already in flight by construction.
+  //
+  // When a view names its set explicitly, THAT SET IS THE DECISION. It is authored per view by
+  // someone who knows what the view means, and it is already narrow — Running offers only the two
+  // stops, History only the two continuations, Upcoming nothing. Filtering it again by status made
+  // the buttons vanish for exactly the rows the operator wanted them on.
+  //
+  // With no `only`, status decides as before — that path is the work item page and the board.
+  if (only) {
+    actions = only.filter((a) => actions.includes(a));
+    // A view-authored set still cannot offer a gesture the STATUS makes impossible to perform
+    // (e.g. Resume on a run that is not paused), but it must not lose a gesture to a predicate the
+    // view already implies.
+    if (actions.length === 0 && only.length > 0) actions = [...only];
+  }
   if (actions.length === 0) return null;
 
   return (
