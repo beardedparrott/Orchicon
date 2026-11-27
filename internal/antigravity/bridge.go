@@ -100,6 +100,18 @@ type Bridge struct {
 	// models is the per-tenant catalogue cache behind ListModels (modellist.go). It is a VALUE, not a
 	// pointer, so a zero Bridge (a test constructing one literally) still has a usable cache.
 	models modelCache
+
+	// THE ASK POPULATION'S OWN REGISTRY (ask.go). It is separate from `live`/`bySession` for the reason the
+	// two populations are separate: an execution id and a conversation id are different keys, and a
+	// conversation's session must never be answered by a worker's permission policy — or vice versa.
+	askMu     sync.Mutex
+	askByConv map[string]*askSession // conversation id → its session
+	askBySID  map[string]*askSession // agy session id → its session (the reply RPC resolves through this)
+	// askRootOverride replaces the per-plane Ask directory (server / tests).
+	askRootOverride string
+	// askProjectDir answers "which project does this turn's conversation belong to?" (a closure so the
+	// adapter needs no pool).
+	askProjectDir func(ctx context.Context) string
 }
 
 // Compile-time assertions: the bridge must satisfy the FULL parity set. An adapter that silently stopped
@@ -132,6 +144,8 @@ func New(log *slog.Logger) *Bridge {
 		log:       log,
 		live:      make(map[string]*session),
 		bySession: make(map[string]string),
+		askByConv: make(map[string]*askSession),
+		askBySID:  make(map[string]*askSession),
 	}
 }
 

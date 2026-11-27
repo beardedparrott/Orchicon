@@ -17,40 +17,6 @@ import (
 
 // run spawns the child and drives the session to a terminal turn.
 func (s *session) run(ctx context.Context) error {
-	// THE INVOCATION IS BUILT BEFORE ANYTHING IS SPAWNED, in exactly one place, so the auth method, the
-	// telemetry policy and the (key-free) argv cannot be assembled twice and disagree.
-	settings, apiKey, err := s.b.resolveSettings(ctx, s.tenantID)
-	if err != nil {
-		msg := fmt.Sprintf("antigravity: resolve tenant settings: %v", err)
-		s.finish(ctx, false, msg, err)
-		return err
-	}
-	bin, binErr := s.b.resolveBinary()
-	if binErr != nil {
-		s.finish(ctx, false, binErr.Error(), binErr)
-		return binErr
-	}
-	baseEnv, envCleanup := s.b.childEnv(s.manifest)
-	defer envCleanup()
-
-	spec, err := BuildSpawnSpec(bin, settings, apiKey, baseEnv)
-	if err != nil {
-		msg := authMessage(err)
-		s.recordError(msg)
-		s.finish(ctx, false, msg, err)
-		return err
-	}
-	s.spec = spec
-	// THE ARGV GUARD RUNS BEFORE THE SPAWN, NOT AFTER. A bypass flag would defeat the whole policy
-	// silently, so a spec carrying one fails the execution instead of launching an ungated agent.
-	if err := assertNoBypass(spec.Argv); err != nil {
-		s.recordError(err.Error())
-		s.finish(ctx, false, err.Error(), err)
-		return err
-	}
-	s.b.log.Info("antigravity: launching agy", "execution", s.execID, "spec", loggableSpec(spec),
-		"cwd", executionDir(s.manifest), "container", s.b.isContainer(s.manifest))
-
 	// THE MODEL IS RESOLVED BEFORE THE SPAWN so an unusable model_ref fails the execution without paying
 	// for a process, a handshake and a session.
 	modelID, err := modelIDFor(s.manifest)
@@ -61,28 +27,21 @@ func (s *session) run(ctx context.Context) error {
 	}
 	s.model = modelID
 
-	procSpec := spec.ProcSpec()
-	procSpec.ExecID = s.execID
-	procSpec.Cwd = executionDir(s.manifest)
-	procSpec.ProjectDir = s.manifest.ProjectDir
-	procSpec.WorkflowRunID = s.manifest.RuntimeWorkflowID
-
-	client, err := acp.Start(ctx, acp.Config{
-		Factory:       s.b.spawnFactory(),
-		Launch:        acp.LaunchOptions{Binary: spec.Argv[0]},
-		Spec:          procSpec,
-		Handler:       s.policy,
-		AuthMethod:    spec.AuthMethod,
-		ClientName:    "orchicon",
-		ClientVersion: clientVersion,
-		Logger:        s.b.log,
-	})
+	// THE LAUNCH PRELUDE (settings → binary → argv → guard → spawn) is shared with the Ask population; see
+	// spawn.go for why it is one function rather than two similar ones.
+	client, spec, envCleanup, err := s.b.spawnClient(ctx, s.tenantID, s.execID,
+		executionDir(s.manifest), s.manifest.ProjectDir, s.manifest.RuntimeWorkflowID,
+		s.b.isContainer(s.manifest), s.policy)
+	if envCleanup != nil {
+		defer envCleanup()
+	}
 	if err != nil {
-		msg := fmt.Sprintf("antigravity spawn failed: %v", authMessage(err))
+		msg := err.Error()
 		s.recordError(msg)
 		s.finish(ctx, false, msg, err)
 		return err
 	}
+	s.spec = spec
 	s.mu.Lock()
 	s.client = client
 	s.mu.Unlock()

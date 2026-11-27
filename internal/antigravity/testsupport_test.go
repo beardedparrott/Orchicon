@@ -60,6 +60,25 @@ type script struct {
 	// afterUpdates, when set, runs after the updates are emitted but before the result — the hook for an
 	// assertion that must observe the stream mid-turn.
 	afterUpdates func(promptIndex int)
+	// askPermission, when set, makes the child ASK the client for a decision before emitting a turn's
+	// updates, exactly as agy does for a gated tool. It returns the tool call to ask about and the options
+	// offered; the fake BLOCKS on the client's answer (as agy does) and records it.
+	askPermission func(promptIndex int) *permissionAsk
+}
+
+// permissionAsk is one `session/request_permission` a script asks.
+type permissionAsk struct {
+	ToolCall acp.ToolCallInfo
+	Options  []acp.PermissionOption
+}
+
+// defaultPermissionOptions is the pair agy 1.5.13 actually offers for a gated tool (docs §3.3): an allow-once
+// and a reject-once, and nothing else.
+func defaultPermissionOptions() []acp.PermissionOption {
+	return []acp.PermissionOption{
+		{OptionID: "allow", Name: "Allow", Kind: acp.OptionKindAllowOnce},
+		{OptionID: "deny", Name: "Deny", Kind: acp.OptionKindRejectOnce},
+	}
 }
 
 // defaultTurnUsage is the recorded file_edit_diff turn's accounting: it exercises all four buckets.
@@ -116,8 +135,13 @@ type fakeACP struct {
 	modelSets []string
 	// newParams records every session/new params object verbatim, for the MCP assertion.
 	newParams []json.RawMessage
-	// permRequests counts permission requests the fake ASKED.
+	// permAsked records every permission request the fake ASKED, in order.
 	permAsked []acp.ToolCallInfo
+	// permAnswers records the client's answer to each of those, in the same order.
+	permAnswers []acp.PermissionOption
+	permRaw     []json.RawMessage
+	// permSeq makes each permission request's JSON-RPC id unique.
+	permSeq int64
 	// pendingRelease unblocks a hanging prompt. It is closed by session/cancel or by release().
 	pendingRelease chan struct{}
 	// cancelSeen records that a session/cancel arrived, which decides the stopReason of a hanging turn: agy
@@ -217,7 +241,10 @@ func (p *fakeACP) drive() {
 				continue
 			}
 			if doc.Method == "" {
-				// The CLIENT answering a permission request the fake asked: record and carry on.
+				// THE CLIENT ANSWERING A PERMISSION REQUEST the fake asked. Recording it here is what lets a
+				// test assert WHICH option id went on the wire (the AC's whole point: `once` → the allow id,
+				// deny/teardown → the reject id).
+				p.recordPermissionAnswer(doc)
 				continue
 			}
 			p.handle(doc)
@@ -349,6 +376,15 @@ func (p *fakeACP) handlePrompt(doc c2s) {
 		hook(idx)
 	}
 
+	if ask := p.script.askPermission; ask != nil {
+		// THE FAKE BLOCKS HERE, exactly as agy does: a gated tool call waits for the client's decision before
+		// the turn continues. If the client never answers, this test would hang — which is why every ask case
+		// answers (or tears the session down) and the harness t.Main has a timeout.
+		if spec := ask(idx); spec != nil {
+			p.askPermissionFor(spec)
+		}
+	}
+
 	updates := p.updatesFor(idx)
 	for _, u := range updates {
 		// Via emit, never an inline select: the same closed-channel hazard applies to these sends.
@@ -394,6 +430,97 @@ func (p *fakeACP) handlePrompt(doc c2s) {
 		usage = *p.script.usage
 	}
 	p.emit(resultDoc(doc.ID, map[string]any{"stopReason": reason, "usage": usage}))
+}
+
+// askPermissionFor sends one `session/request_permission` and waits for the client's answer.
+//
+// THE ANSWER IS MATCHED BY REQUEST ID, not by arrival order alone: the acp conn answers each request exactly
+// once, and a test that asserted "the last response" would silently pass on a stale one.
+func (p *fakeACP) askPermissionFor(spec *permissionAsk) {
+	p.mu.Lock()
+	p.permSeq++
+	id := p.permSeq
+	p.permAsked = append(p.permAsked, spec.ToolCall)
+	p.mu.Unlock()
+
+	params := map[string]any{
+		"sessionId": harnessSessionID,
+		"toolCall":  spec.ToolCall,
+		"options":   spec.Options,
+	}
+	doc, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"method":  "session/request_permission",
+		"params":  params,
+	})
+	p.emit(string(doc))
+
+	// WAIT FOR THE CLIENT'S RESPONSE, bounded so a broken handler fails the test instead of hanging it.
+	waitPermFor(p.t, p, id)
+}
+
+// recordPermissionAnswer parses a client response to a permission request and records the outcome.
+func (p *fakeACP) recordPermissionAnswer(doc c2s) {
+	if len(doc.Result) == 0 {
+		p.mu.Lock()
+		p.permAnswers = append(p.permAnswers, acp.PermissionOption{OptionID: "<error>"})
+		p.mu.Unlock()
+		return
+	}
+	var res struct {
+		Outcome struct {
+			Outcome  string `json:"outcome"`
+			OptionID string `json:"optionId"`
+		} `json:"outcome"`
+	}
+	if err := json.Unmarshal(doc.Result, &res); err != nil {
+		p.mu.Lock()
+		p.permAnswers = append(p.permAnswers, acp.PermissionOption{OptionID: "<undecodable>"})
+		p.mu.Unlock()
+		return
+	}
+	p.mu.Lock()
+	p.permAnswers = append(p.permAnswers, acp.PermissionOption{
+		OptionID: res.Outcome.OptionID,
+		Kind:     res.Outcome.Outcome,
+	})
+	p.permRaw = append(p.permRaw, append(json.RawMessage(nil), doc.Result...))
+	p.mu.Unlock()
+}
+
+// answeredOptionID returns the option id of the i-th permission answer, or "" when it has not arrived.
+func (p *fakeACP) answeredOptionID(i int) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if i >= len(p.permAnswers) {
+		return ""
+	}
+	return p.permAnswers[i].OptionID
+}
+
+// permissionAskedCount reports how many permission requests the fake sent.
+func (p *fakeACP) permissionAskedCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.permAsked)
+}
+
+// waitPermFor blocks until the client has answered the i-th permission request.
+func waitPermFor(t *testing.T, p *fakeACP, id int64) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		p.mu.Lock()
+		n := len(p.permAnswers)
+		p.mu.Unlock()
+		if n >= int(id) {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("the client never answered permission request %d — a carded ask must be answered or the "+
+		"session torn down; an unanswered one blocks agy forever", id)
 }
 
 // updatesFor returns the update lines for one prompt.

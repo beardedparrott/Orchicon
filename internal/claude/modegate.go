@@ -127,7 +127,7 @@ func askModeDenial(path, tool string) (bool, string) {
 		if st.MayAct {
 			return false, ""
 		}
-		return true, askModeRefusal(tool, st.Mode)
+		return true, AskModeRefusal(tool, st.Mode)
 	}
 
 	name := claudeToolToPolicyName(tool)
@@ -144,11 +144,16 @@ func askModeDenial(path, tool string) (bool, string) {
 	if !denied {
 		return false, ""
 	}
-	return true, askModeRefusal(tool, st.Mode)
+	return true, AskModeRefusal(tool, st.Mode)
 }
 
-// askModeRefusal builds the refusal both denial kinds hand back.
-func askModeRefusal(tool, mode string) string {
+// AskModeRefusal builds the refusal both denial kinds hand back.
+//
+// IT IS EXPORTED because a SECOND adapter now has the same boundary to enforce against a DIFFERENT tool
+// vocabulary (antigravity's ACP permission handler, internal/antigravity/askmodegate.go). Duplicating the
+// wording there would let the two adapters tell the operator different things about the same rule, and the
+// refusal text is the operator's only explanation of why a tool did not run.
+func AskModeRefusal(tool, mode string) string {
 	p, _ := askmode.PolicyFor(mode)
 	why := strings.TrimSpace(p.Why)
 	if why == "" {

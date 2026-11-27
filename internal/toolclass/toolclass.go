@@ -29,19 +29,43 @@ var (
 		// because nothing about it runs a shell, and it must not be Ignore — a ledger that omitted it
 		// would report a session whose writes went somewhere with no record of why they moved.
 		"set_workdir": true,
+		// ANTIGRAVITY'S SPELLINGS. agy ships both a recorded set (write_file/edit_file/read_file) and the
+		// ACP-documented set (write_to_file/replace_file_content/view_file/…), and the antigravity adapter
+		// emits the RAW agy tool name on an Ask permission event (the AC that pins `Tool:"run_command"`).
+		// A name this package did not know would classify Other, and Other is REAL WORK counted as neither
+		// a write nor a read — the activity line would report an agy session that edited files as if it had
+		// done something unclassifiable.
+		"write_to_file": true, "replace_file_content": true, "multi_replace_file_content": true,
+		"write_file": true, "edit_file": true, "create_file": true, "apply_patch": true,
 	}
 	readTools = map[string]bool{
 		"read": true, "batch_read": true, "grep": true, "batch_grep": true,
 		"list": true, "glob": true, "todoread": true,
+		// ANTIGRAVITY'S SPELLINGS, same reason as modifyTools.
+		"view_file": true, "read_file": true, "open_file": true, "grep_search": true,
+		"list_dir": true, "list_directory": true, "find_by_name": true,
+		"read_url_content": true, "search_web": true, "web_search": true, "web_fetch": true,
 	}
 	bashTools = map[string]bool{
 		"bash": true, "shell": true,
+		// ANTIGRAVITY'S SPELLING.
+		"run_command": true,
 	}
 )
 
 // orchiconPrefix is the MCP-style prefix the Ask prompt advertises and the real name on the
 // opencode host (askmode.NormalizeToolName strips the same one).
 const orchiconPrefix = "orchicon_"
+
+// agyOrchiconPrefix is how ANTIGRAVITY spells the platform's own MCP server: `mcp_orchicon_<tool>`
+// (mcp_tool_call.jsonl records `mcp_echo_echo` for an operator server). claude spells the same server
+// `mcp__orchicon__<tool>`, which already reaches Other via the generic MCP branch — but an agy ask card for
+// `mcp_orchicon_orchicon_ask_user` would otherwise classify Other and put an ask card on the activity line
+// as if it were work.
+const (
+	agyOrchiconPrefix    = "mcp_orchicon_"
+	claudeOrchiconPrefix = "mcp__orchicon__"
+)
 
 // permissionPrefix marks the synthetic records toolLedger.recordPermission appends for every
 // consent decision (internal/askorchicon/tool_ledger.go:74: FunctionName is "permission."+verdict.
@@ -54,7 +78,13 @@ func Classify(toolName string) Class {
 	if strings.HasPrefix(n, permissionPrefix) {
 		return Ignore
 	}
-	// `orchicon_` is a spelling of the same name, not a different tool.
+	// `orchicon_` is a spelling of the same name, not a different tool — and so is the MCP-qualified form
+	// BOTH adapters use for the platform's own sidecar (`mcp_orchicon_<tool>` on agy,
+	// `mcp__orchicon__<tool>` on claude). Stripping the prefix is what makes `mcp_orchicon_orchicon_ask_user`
+	// classify as the ask card it is rather than as unclassifiable work.
+	n = strings.TrimPrefix(n, orchiconPrefix)
+	n = strings.TrimPrefix(n, agyOrchiconPrefix)
+	n = strings.TrimPrefix(n, claudeOrchiconPrefix)
 	n = strings.TrimPrefix(n, orchiconPrefix)
 	// ask_user is a CARD, not work — all three spellings the clients use.
 	if n == "ask_user" || n == "askuser" || n == "ask_user_question" {

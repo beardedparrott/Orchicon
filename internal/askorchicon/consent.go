@@ -73,6 +73,11 @@ func isWebTool(tool string) bool {
 	switch strings.ToLower(strings.TrimSpace(tool)) {
 	case "webfetch", "websearch", "web_fetch", "web_search":
 		return true
+	// ANTIGRAVITY'S SPELLINGS. agy names the same two actions `read_url_content` and `search_web`, and the
+	// adapter emits the raw name. Without these, a web target would be treated as a filesystem path — the
+	// exact fabrication the comment above this function documents.
+	case "read_url_content", "search_web":
+		return true
 	}
 	return false
 }
@@ -236,9 +241,16 @@ func truncateArg(s string) string {
 }
 
 // isBashAsk reports whether a tool name is a shell-command ask.
+//
+// `run_command` IS HERE BECAUSE THE ANTIGRAVITY ADAPTER EMITS IT. The antigravity Ask path sends the RAW agy
+// tool name on its `permission` event (the AC pins `Tool:"run_command"`), and every command rule downstream
+// keys on this predicate: the never-allow class (binaryClassRefusal), `commandInvokesScopedBinary`, the
+// path-extraction arm, and the card's intent verb. A `run_command` that is not recognised as a shell ask
+// would skip ALL of them — `rm -rf /` through agy would reach the operator as an ordinary directory-write
+// consent, which is a security regression rather than a cosmetic gap.
 func isBashAsk(tool string) bool {
 	t := strings.ToLower(strings.TrimSpace(tool))
-	return t == "bash" || t == "shell" || t == "sh" || strings.Contains(t, "bash")
+	return t == "bash" || t == "shell" || t == "sh" || t == "run_command" || strings.Contains(t, "bash")
 }
 
 // detailString returns the first non-empty string among the candidate keys.
@@ -837,7 +849,9 @@ func toolIntentVerb(tool string) string {
 	case isBashAsk(t):
 		return "run a shell command"
 	case strings.Contains(t, "write"), strings.Contains(t, "edit"),
-		strings.Contains(t, "patch"), strings.Contains(t, "create"):
+		strings.Contains(t, "patch"), strings.Contains(t, "create"),
+		// agy's in-place edit spelling names neither.
+		strings.Contains(t, "replace"):
 		return "modify"
 	case strings.Contains(t, "delete"), strings.Contains(t, "remove"), t == "rm":
 		return "delete"

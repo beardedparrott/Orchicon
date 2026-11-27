@@ -25,7 +25,6 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/antigravity/acp"
-	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/scheduler"
 )
@@ -137,18 +136,10 @@ func (b *Bridge) spawnFactory() acp.ProcFactory {
 // container child takes the same environment WITHOUT the shim — the shim is a host process, and the
 // container's own boundary is the run's.
 func (b *Bridge) childEnv(manifest scheduler.ExecutionManifest) ([]string, func()) {
-	env := os.Environ()
-	cleanup := func() {}
-	if b.isContainer(manifest) {
-		return env, cleanup
-	}
-	g, err := guard.NewExecutionGuard(manifest.ProjectDir)
-	if err != nil {
-		b.log.Warn("antigravity: the OS-level execution guard could not be built for the local transport — "+
-			"the child runs with the ACP policy only", "execution", manifest.ExecutionID, "error", err)
-		return env, cleanup
-	}
-	return g.Apply(env), g.Close
+	// THE BODY LIVES IN spawn.go's childEnvFor, because the Ask population builds the SAME environment from
+	// two facts instead of a manifest. This stays as the manifest-shaped entry point so the worker path reads
+	// unchanged.
+	return b.childEnvFor(manifest.ProjectDir, b.isContainer(manifest), manifest.ExecutionID)
 }
 
 // containerStdioOpener is the daemon surface acp.ContainerFactory needs. *runtime.Client satisfies it
