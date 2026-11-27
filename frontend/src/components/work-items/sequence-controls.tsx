@@ -189,7 +189,17 @@ export function SequenceControls({
             ) : (
               <Icon aria-hidden="true" className="h-3 w-3" />
             )}
-            {confirming === action ? (action === SequenceAction.STOP ? "Abort running children?" : "Confirm?") : meta.label}
+            {/* THE VISIBLE TEXT IS `label`, NOT `meta.label`.
+                This rendered meta.label — the static ACTION_META word, which is "Restart" — while the
+                computed `label` went only to aria-label. So Start/Restart was correct in the
+                accessibility tree and wrong on screen, and a helper-level test could not see it: the
+                component computed the right value and then did not use it.
+                One source for both, so a screen reader and the pixels cannot disagree. */}
+            {confirming === action
+              ? action === SequenceAction.STOP
+                ? "Abort running children?"
+                : "Confirm?"
+              : label}
           </button>
         );
       })}
