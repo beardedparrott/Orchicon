@@ -244,15 +244,23 @@ func pauseRunInner(ctx context.Context, tx pgx.Tx, tenantID, runID, reason strin
 	//
 	// So: `checkpointing` only when we actually asked something to checkpoint. Otherwise `pending`,
 	// which is the honest description of "parked, ready to resume" and is what every gesture expects.
+	// THE ITEM IS PARKED, NOT "CHECKPOINTING".
+	//
+	// `checkpointing` describes a checkpoint IN PROGRESS, and pause does not produce one: it ends the
+	// session and the resume re-establishes it. Stamping `checkpointing` therefore described a state
+	// that never existed — and because `checkpointing` is in IsActiveRunStatus, it locked every
+	// gesture out. Measured twice on work item 01M84WD1G42BHD1HTCB2YMQ82Z, which sat in it for hours
+	// with nothing in flight the first time and an orphaned `terminating` row the second.
+	//
+	// `pending` + a `paused` run is the truthful pair: the work is parked and resumable. The RUN's
+	// status carries the meaning the operator needs; the item's status only needs to not lie.
 	if current.WorkItemID != "" {
 		if wi, err := db.GetWorkItem(ctx, tx, tenantID, current.WorkItemID); err == nil {
 			status := domain.WorkItemPending
-			if paused > 0 {
-				status = domain.WorkItemCheckpointing
-			}
 			_, _ = db.UpdateWorkItem(ctx, tx, tenantID, current.WorkItemID, wi.Version, db.UpdateWorkItemFields{Status: &status})
 		}
 	}
+	_ = paused // counted for the log line; deliberately NOT a status input
 	return nil
 }
 

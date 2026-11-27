@@ -2059,6 +2059,26 @@ func (s *Service) PauseWorkflowRun(ctx context.Context, req *connect.Request[api
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	// TELL THE WORKER TO STOP. Setting the row is not stopping anything.
+	//
+	// This is the defect the operator hit: the execution was flipped to `terminating` in the
+	// database and the live worker was never signalled, so it kept running and the row said
+	// "terminating" forever. AbortWorkflow has always done this (s.abortSession below its
+	// transaction); pause had no equivalent, which made Pause a status change that stopped nothing.
+	//
+	// WHY THE ABORT HOOK RATHER THAN A CHECKPOINT CALL: the adapters expose exactly one live-session
+	// stop — AbortExecution — and a checkpoint that never reaches the model is not a checkpoint. The
+	// session is ended here and RE-ESTABLISHED on resume from the persisted session id (the storer
+	// the bridges already use), which is what gives "start from where you left off" without needing
+	// a new adapter capability.
+	if s.abortSession != nil {
+		for _, eid := range pausedExecs {
+			if aerr := s.abortSession(ctx, eid, "workflow run paused"); aerr != nil {
+				// Best-effort: a session that has already gone does not make the pause fail.
+				s.log.Warn("pause: abort live session", "execution", eid, "error", aerr)
+			}
+		}
+	}
 	s.log.Info("workflow run paused", "run", updated.ID, "paused_executions", len(pausedExecs))
 	return connect.NewResponse(&apiv1.PauseWorkflowRunResponse{
 		Run:                runRowToProto(updated),
@@ -2099,8 +2119,19 @@ func (s *Service) ResumeWorkflowRun(ctx context.Context, req *connect.Request[ap
 		return nil, mapDBError(err)
 	}
 
-	// Put the checkpointed executions back to work. A pause that stopped nothing needs no
-	// restart, and saying so is more useful than a silent success.
+	// RESUME RE-ARMS THE STEP; IT DOES NOT RESURRECT A DEAD SESSION.
+	//
+	// The previous version flipped the paused execution back to `running` in the database and stopped
+	// there — but pause ended the live session, so that row pointed at a process that no longer
+	// existed. The result was an execution claiming to run with nothing behind it, which the stall
+	// reaper would eventually kill, and the step would then look failed for no reason the operator
+	// could see.
+	//
+	// A session that was checkpointed cannot be continued by writing a status; it has to be
+	// DISPATCHED again, and the bridge resumes the same conversation from the persisted session id.
+	// So: end the dead execution honestly, and return its STEP to pending so the reconciler
+	// re-dispatches it. `Attempt` is untouched, so this is not a retry — it is the same attempt
+	// continuing.
 	var resumedExecs []string
 	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, current.ID)
 	if err != nil {
@@ -2114,15 +2145,29 @@ func (s *Service) ResumeWorkflowRun(ctx context.Context, req *connect.Request[ap
 		if err != nil || exec.Status != domain.ExecutionTerminating {
 			continue
 		}
-		running := domain.ExecutionRunning
-		healthy := domain.HealthHealthy
+		ended := time.Now().UTC()
+		terminated := domain.ExecutionTerminated
 		if _, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
-			Status:      &running,
-			HealthState: &healthy,
+			Status:       &terminated,
+			EndedAt:      &ended,
+			ErrorMessage: strPtr("paused; re-dispatched on resume"),
 		}); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resume execution %s: %w", exec.ID, err))
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("end paused execution %s: %w", exec.ID, err))
 		}
 		resumedExecs = append(resumedExecs, exec.ID)
+
+		// Return the STEP to pending so it is dispatched again. Only a step that was interrupted
+		// mid-run: succeeded/pending steps are left exactly as they were.
+		if sr.Status == domain.StepRunRunning || sr.Status == domain.StepRunRecovering {
+			pending := domain.StepRunPending
+			if _, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:            &pending,
+				WorkerExecutionID: strPtr(""),
+				ClearEndedAt:      true,
+			}); err != nil {
+				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("re-arm paused step %s: %w", sr.StepID, err))
+			}
+		}
 	}
 
 	if current.WorkItemID != "" {

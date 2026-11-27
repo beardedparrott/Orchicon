@@ -45,12 +45,14 @@ func TestPauseDoesNotStampCheckpointingWhenNothingWasCheckpointed(t *testing.T) 
 	if !strings.Contains(src, "status := domain.WorkItemPending") {
 		t.Error("the idle-pause branch no longer defaults the work item to pending")
 	}
-	// The old unconditional stamp must be gone: checkpointing may only be set when paused > 0.
-	if strings.Contains(src, "status := domain.WorkItemCheckpointing\n\t\t\t_, _ = db.UpdateWorkItem") {
-		t.Error("the work item is stamped `checkpointing` unconditionally again — that is the deadlock")
-	}
-	if !strings.Contains(src, "if paused > 0 {") {
-		t.Error("`checkpointing` is not gated on there having been something to checkpoint")
+	// STRONGER RULE, superseding the "gate it on paused > 0" version: pause NEVER produces a real
+	// checkpoint. It ends the session and resume re-establishes it, so `checkpointing` described a
+	// state that never existed — and because that status is in IsActiveRunStatus, it locked every
+	// gesture out. Twice: once with nothing in flight, once with an orphaned `terminating` row.
+	if strings.Contains(src, "domain.WorkItemCheckpointing") {
+		t.Error("pause stamps `checkpointing` again. Pause does not checkpoint: it ends the session " +
+			"and resume re-dispatches. `checkpointing` is an active status, so stamping it makes the " +
+			"item look busy forever and every gesture that could free it refuses.")
 	}
 }
 
@@ -61,5 +63,56 @@ func TestPauseIsNotPermanentWhenNothingIsInFlight(t *testing.T) {
 	if !strings.Contains(src, "WorkItemPending") {
 		t.Fatal("an idle pause leaves the item in an active status; every gesture that could free " +
 			"it will refuse")
+	}
+}
+
+// TestPauseSignalsTheLiveSession is the defect the operator actually hit the second time.
+//
+// The execution row was flipped to `terminating` and the LIVE WORKER WAS NEVER TOLD, so it kept
+// running while the row claimed to be stopping — indefinitely. AbortWorkflow had always called the
+// abort hook; pause had no equivalent, which made Pause a status change that stopped nothing.
+func TestPauseSignalsTheLiveSession(t *testing.T) {
+	b, err := os.ReadFile("service.go")
+	if err != nil {
+		t.Fatalf("read service.go: %v", err)
+	}
+	src := strings.ReplaceAll(string(b), "\t", "")
+	i := strings.Index(src, "func (s *Service) PauseWorkflowRun")
+	if i < 0 {
+		t.Fatal("PauseWorkflowRun is gone")
+	}
+	body := src[i:]
+	if end := strings.Index(body, "\nfunc "); end > 0 {
+		body = body[:end]
+	}
+	if !strings.Contains(body, "s.abortSession != nil") || !strings.Contains(body, "s.abortSession(ctx, eid") {
+		t.Error("PauseWorkflowRun does not call the live-session abort hook. Setting the row to " +
+			"`terminating` stops nothing: the worker keeps running and the row says terminating forever.")
+	}
+}
+
+// TestResumeReArmsRatherThanResurrects: flipping a dead execution back to `running` points at a
+// process that no longer exists.
+func TestResumeReArmsRatherThanResurrects(t *testing.T) {
+	b, err := os.ReadFile("service.go")
+	if err != nil {
+		t.Fatalf("read service.go: %v", err)
+	}
+	src := strings.ReplaceAll(string(b), "\t", "")
+	i := strings.Index(src, "func (s *Service) ResumeWorkflowRun")
+	if i < 0 {
+		t.Fatal("ResumeWorkflowRun is gone")
+	}
+	body := src[i:]
+	if end := strings.Index(body, "\nfunc "); end > 0 {
+		body = body[:end]
+	}
+	if !strings.Contains(body, "StepRunPending") {
+		t.Error("resume does not re-arm the interrupted step, so nothing is dispatched again and the " +
+			"session it claims to continue does not exist")
+	}
+	if strings.Contains(body, "running := domain.ExecutionRunning") {
+		t.Error("resume resurrects the paused execution by writing `running` — that row points at a " +
+			"session pause already ended")
 	}
 }
