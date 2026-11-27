@@ -143,6 +143,7 @@ import { SessionGrants } from "@/components/ask/SessionGrants";
 import { ConversationScopeDisclosure } from "@/components/ask/ConversationScopeDisclosure";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
 import { DiffSidebar, type DiffTab } from "@/components/diffs/DiffSidebar";
+import { answeredTurnToAttach } from "@/lib/ask-reply-attach";
 import { usePersistentState } from "@/lib/diff/usePersistentState";
 import { RAIL_DEFAULT_WIDTH } from "@/lib/diff/railResize";
 import {
@@ -1089,6 +1090,39 @@ function AskOrchiconPage() {
             // header's Grants disclosure) so it is visible without a reload.
             qc.invalidateQueries({ queryKey: askKeys.grants(convId) });
           }
+          // ATTACH TO THE TURN THIS ANSWER STARTED.
+          //
+          // An MCP-served ask (claude/opencode/antigravity) is answered by CONTINUING the conversation:
+          // the asking turn already ended holding the awaiting marker, so the reply arrives on a turn
+          // THIS CLIENT NEVER OPENED. Nothing here attached to it, and the only paths that would were
+          // the re-attach effect's rail poll (turn_in_flight, 3s) and the transcript query — which is
+          // gated on `turnInFlight`, and with no slot armed the local half was false and the server's
+          // flag is only as fresh as the rail poll. So a reply that finished inside that window never
+          // appeared until the page was reloaded, which is the TUI's "leave the conversation and come
+          // back" reported from the other client.
+          //
+          // `assistantMessageId` is the new turn's acked id, and a live-ask answer (the orchicon
+          // adapter) starts no turn and carries none — that path already streams, so it is left alone.
+          //
+          // The slot is armed HERE and the WATCH is dialled by the existing restored-slot effect below:
+          // that effect exists precisely for a slot this component did not dispatch, and runWatch is
+          // declared after this callback (a TDZ error to name it here).
+          const turnToAttach = answeredTurnToAttach({
+            applied: res.applied,
+            expired: res.expired ?? false,
+            assistantMessageId: res.assistantMessageId ?? "",
+          });
+          if (turnToAttach && convId === activeConvId) {
+            setStream(convId, (prev) => ({
+              ...prev,
+              isStreaming: true,
+              isThinking: true,
+              reconnecting: true,
+              pendingReplyId: turnToAttach,
+              items: [],
+            }));
+            restoredWatchRef.current[convId] = true;
+          }
         } else {
           setStream(convId, (prev) => ({
             ...prev,
@@ -1114,7 +1148,7 @@ function AskOrchiconPage() {
         });
       }
     },
-    [askInFlight, setStream, qc, toast],
+    [askInFlight, setStream, qc, toast, activeConvId],
   );
 
   // The effective model answering this conversation: the conversation's own

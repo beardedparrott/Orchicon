@@ -1689,6 +1689,46 @@ func (m *App) OpenAskConversation(id string) tea.Cmd {
 	return tea.Batch(m.chat.OpenConversation(id), m.refreshMetrics(), re)
 }
 
+// attachAnsweredTurn attaches this client to the NEW TURN an answered ask started, so the model's reply
+// to that answer streams in instead of waiting to be discovered.
+//
+// THE REPORTED SYMPTOM. Answering an "Orchicon asks" card on the claude adapter (an MCP-served ask) is
+// answered on the server by CONTINUING the conversation — the asking turn had already ended with the
+// awaiting marker, so the reply arrives on a turn THIS CLIENT NEVER OPENED. A live ask (the orchicon
+// adapter) is answered inside the turn that asked it, so the same click was always instant there; that
+// path must not regress, and it is why this is gated on the server naming a turn at all.
+//
+// Every live paint path — the stream consumer, runTurnPoll — only exists for a turn this client started
+// (SendWithAttachments) or re-attached to (Reattach). So the reply was only ever found by ACCIDENT:
+// the 5s rail reload re-attaches when the row still reports turn_in_flight, which means a LONG reply
+// (still running at the next tick) appeared up to 5s late, while a SHORT reply (finished inside the gap)
+// appeared never — until the operator left the conversation and came back, because OpenConversation was
+// the only other thing that re-read the transcript.
+//
+// Reattach is exactly the conversation-open behaviour (it arms runLivenessWatch + runTurnPoll and dials
+// WatchTurnStream), so the reply streams in on the same call rather than through the rail. And if the
+// turn is ALREADY over, the Watch dial returns NotFound and the controller's poll resolves the finished
+// turn — the reply lands and the activity line clears, without a re-entry (see Controller.pollTranscript).
+//
+// Nil when the server named no turn (a live-ask answer, a permission decision, an expired ask), so
+// nothing spurious is dialled.
+func (m *App) attachAnsweredTurn(msg chat.ConsentRepliedMsg) tea.Cmd {
+	if m.chat == nil || msg.AssistantMessageID == "" || !msg.Applied || msg.Expired || msg.ConvID == "" {
+		return nil
+	}
+	if msg.ConvID != m.chatConvID {
+		// The answer was given on a conversation this shell is no longer showing: there is no transcript
+		// slot to stream into, and the rail's own re-attach covers it when the operator returns.
+		return nil
+	}
+	// Reattach flips the slot SYNCHRONOUSLY (before returning its Watch command), which is what the
+	// composer repaint below reads — so the stop affordance and the "reply in flight" hint appear on the
+	// same frame the answer lands, exactly as they do for a send.
+	cmd := m.chat.Reattach(msg.ConvID, msg.AssistantMessageID)
+	m.refreshComposerHint()
+	return cmd
+}
+
 // reattachRunningTurn restores the stream slot for a conversation whose turn the server still
 // reports as running, when this client has no live stream for it.
 func (m *App) reattachRunningTurn(convID string) tea.Cmd {

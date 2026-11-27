@@ -3100,9 +3100,24 @@ type ReplyPermissionAskResponse struct {
 	// superseded, or another reply won) — never a silent success.
 	Expired bool `protobuf:"varint,2,opt,name=expired,proto3" json:"expired,omitempty"`
 	// detail explains the outcome in one line.
-	Detail        string `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Detail string `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
+	// assistant_message_id names the NEW TURN this reply started, and it exists so a client can ATTACH
+	// to that turn instead of waiting to discover it.
+	//
+	// A live ask (the orchicon adapter) is answered inside the turn that asked it, so the client is
+	// already consuming that turn's stream and there is nothing new to observe: this field is empty
+	// there. An ask served over MCP (the claude/opencode/antigravity adapters) is answered by
+	// CONTINUING the conversation after the asking turn has ended — `applied` alone says "your answer
+	// was sent as your next message", with no way to name the message it produced. A client could then
+	// only find the reply by accident: it re-attached when a polled rail row still reported a turn in
+	// flight, so a LONG reply (still running at the next poll) appeared and a SHORT one (finished
+	// between polls) did not, until the operator left the conversation and re-opened it.
+	//
+	// Empty on every path that starts no turn: a live question answer, a permission decision, and an
+	// expired ask.
+	AssistantMessageId string `protobuf:"bytes,4,opt,name=assistant_message_id,json=assistantMessageId,proto3" json:"assistant_message_id,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *ReplyPermissionAskResponse) Reset() {
@@ -3152,6 +3167,13 @@ func (x *ReplyPermissionAskResponse) GetExpired() bool {
 func (x *ReplyPermissionAskResponse) GetDetail() string {
 	if x != nil {
 		return x.Detail
+	}
+	return ""
+}
+
+func (x *ReplyPermissionAskResponse) GetAssistantMessageId() string {
+	if x != nil {
+		return x.AssistantMessageId
 	}
 	return ""
 }
@@ -3335,11 +3357,12 @@ const file_orchicon_api_v1_ask_orchicon_service_proto_rawDesc = "" +
 	"\x0fconversation_id\x18\x01 \x01(\tR\x0econversationId\x12\x15\n" +
 	"\x06ask_id\x18\x02 \x01(\tR\x05askId\x129\n" +
 	"\x06choice\x18\x03 \x01(\x0e2!.orchicon.api.v1.PermissionChoiceR\x06choice\x12\x16\n" +
-	"\x06answer\x18\x04 \x01(\tR\x06answer\"h\n" +
+	"\x06answer\x18\x04 \x01(\tR\x06answer\"\x9a\x01\n" +
 	"\x1aReplyPermissionAskResponse\x12\x18\n" +
 	"\aapplied\x18\x01 \x01(\bR\aapplied\x12\x18\n" +
 	"\aexpired\x18\x02 \x01(\bR\aexpired\x12\x16\n" +
-	"\x06detail\x18\x03 \x01(\tR\x06detail*}\n" +
+	"\x06detail\x18\x03 \x01(\tR\x06detail\x120\n" +
+	"\x14assistant_message_id\x18\x04 \x01(\tR\x12assistantMessageId*}\n" +
 	"\x11MessageDeleteMode\x12#\n" +
 	"\x1fMESSAGE_DELETE_MODE_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18MESSAGE_DELETE_MODE_ONLY\x10\x01\x12%\n" +

@@ -2556,6 +2556,26 @@ export class ReplyPermissionAskResponse extends Message<ReplyPermissionAskRespon
    */
   detail = "";
 
+  /**
+   * assistant_message_id names the NEW TURN this reply started, and it exists so a client can ATTACH
+   * to that turn instead of waiting to discover it.
+   *
+   * A live ask (the orchicon adapter) is answered inside the turn that asked it, so the client is
+   * already consuming that turn's stream and there is nothing new to observe: this field is empty
+   * there. An ask served over MCP (the claude/opencode/antigravity adapters) is answered by
+   * CONTINUING the conversation after the asking turn has ended — `applied` alone says "your answer
+   * was sent as your next message", with no way to name the message it produced. A client could then
+   * only find the reply by accident: it re-attached when a polled rail row still reported a turn in
+   * flight, so a LONG reply (still running at the next poll) appeared and a SHORT one (finished
+   * between polls) did not, until the operator left the conversation and re-opened it.
+   *
+   * Empty on every path that starts no turn: a live question answer, a permission decision, and an
+   * expired ask.
+   *
+   * @generated from field: string assistant_message_id = 4;
+   */
+  assistantMessageId = "";
+
   constructor(data?: PartialMessage<ReplyPermissionAskResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -2567,6 +2587,7 @@ export class ReplyPermissionAskResponse extends Message<ReplyPermissionAskRespon
     { no: 1, name: "applied", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 2, name: "expired", kind: "scalar", T: 8 /* ScalarType.BOOL */ },
     { no: 3, name: "detail", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "assistant_message_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ReplyPermissionAskResponse {
