@@ -86,6 +86,57 @@ type recoverySeed struct {
 	// FailureReason is WHY the dead execution failed, verbatim from its execution row's error_message —
 	// the one thing the resumed agent needs in order to behave differently this time.
 	FailureReason string
+	// Resumed marks a seed that came from a RETRY-RESUMED run rather than a recovery: there is no
+	// failed execution to gate on, and no recovery file is written. The summary still travels.
+	Resumed bool
+}
+
+// resumeCarriedSeed turns a RETRY-RESUMED step run's carried context into a seed.
+//
+// THE GAP THIS CLOSES. A resumed RUN (RetryFailedWorkflowRun) re-arms the failed step with the dead
+// attempt's summary under `_prior_*` keys — but the recovery-seed path only ever looked for
+// `_recovery_*`, which the recovery ENGINE writes during an in-flight recovery. A retried run has no
+// recovery row, so the carried summary sat in the row unread and the step restarted blind: the exact
+// waste the carry was meant to stop.
+//
+// A retry resume is not a recovery resume, so the two identifiers a recovery read REQUIRES (failed
+// execution id + worker id) are deliberately empty here. Consumers treat means "inform, do not
+// gate" — the summary is stated, and no recovery gate is implied.
+func resumeCarriedSeed(runResult, wiResults []byte) *recoverySeed {
+	read := func(raw []byte) *recoverySeed {
+		var m map[string]any
+		if len(raw) == 0 || json.Unmarshal(raw, &m) != nil {
+			return nil
+		}
+		summary, _ := m["_prior_recovery_summary"].(string)
+		if summary == "" {
+			summary, _ = m["_prior_summary"].(string)
+		}
+		output, _ := m["_prior_output"].(string)
+		if summary == "" && output == "" {
+			return nil
+		}
+		if summary == "" {
+			// A previous attempt that reported but left no summary: the report itself is the thing to
+			// read, trimmed so it cannot swallow the prompt.
+			summary = trimForSeed(output)
+		}
+		return &recoverySeed{Summary: summary, Resumed: true}
+	}
+	if seed := read(runResult); seed != nil {
+		return seed
+	}
+	return read(wiResults)
+}
+
+// trimForSeed caps a carried report at a size that informs without dominating the prompt.
+func trimForSeed(s string) string {
+	const cap = 4000
+	s = strings.TrimSpace(s)
+	if len(s) <= cap {
+		return s
+	}
+	return s[:cap] + "\n\n(truncated; the full prior report is on the work item)"
 }
 
 // recoverySeedFor returns the recovery seed for a dispatch, or nil when this dispatch is NOT a
@@ -156,6 +207,11 @@ func recoveryIdentityFromResult(runResult, wiResults []byte) (failedExecID strin
 // (recoveryDispatchReady) and the TaskReconciler's file writer.
 func resolveRecoverySeed(ctx context.Context, tx pgx.Tx, tenantID, taskID string, runResult, wiResults []byte, workerID string) *recoverySeed {
 	if seed := recoverySeedFor(runResult, wiResults, workerID); seed != nil {
+		return seed
+	}
+	// A RETRY-RESUMED step has no recovery row and no failed-execution identity, but it DOES have a
+	// prior attempt's account of itself. Without this, the carried summary never reaches the prompt.
+	if seed := resumeCarriedSeed(runResult, wiResults); seed != nil {
 		return seed
 	}
 	return recoverySeedFromRow(ctx, tx, tenantID, taskID, runResult, wiResults, workerID)
@@ -279,6 +335,22 @@ func (r *TaskReconciler) seedRecoveryFile(ctx context.Context, exec db.Execution
 	}
 	if seed == nil {
 		return systemPrompt, nil
+	}
+
+	// A RETRY-RESUMED seed has NO dead execution to read and writes NO recovery file: it exists to
+	// state what the previous attempt learned. Reaching the file-writing path with empty identifiers
+	// would write a file pointing at nothing and gate the dispatch on it, so it stops here.
+	if seed.Resumed {
+		var sb strings.Builder
+		sb.WriteString(systemPrompt)
+		if systemPrompt != "" && !strings.HasSuffix(systemPrompt, "\n") {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n## Resumed attempt\n\n")
+		sb.WriteString("This step has been attempted before and the run was resumed. This is NOT the first attempt at this work. " +
+			"Prior conclusions are stated below — treat them as settled unless you can prove otherwise, and do not re-derive them.\n\n")
+		sb.WriteString(seed.Summary + "\n")
+		return sb.String(), nil
 	}
 
 	// Fetch the failed worker's display name (header) + the dead session's transcript tail, all in one

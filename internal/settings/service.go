@@ -12,6 +12,7 @@ import (
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
 	"github.com/beardedparrott/orchicon/internal/adapter"
+	"github.com/beardedparrott/orchicon/internal/antigravity/authmethod"
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/backup"
@@ -103,6 +104,9 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 		if err := validateSessionTTLs(ts.SessionAccessTokenTtlSeconds, ts.SessionRefreshTokenTtlSeconds); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
+		if err := validateAntigravitySettings(ts); err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		}
 		if err := s.validateModelRef(ts.DefaultWorkerModel); err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument,
 				fmt.Errorf("default_worker_model: %w", err))
@@ -127,6 +131,14 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	}
 	inRow := settingsProtoToRow(req.Msg.Settings)
 	inRow.Budget = cur.Budget
+	// The Antigravity auth method follows the same "empty means leave unchanged" rule as the
+	// other CASE-guarded columns, so an old client cannot silently move a tenant off the method
+	// it selected. Telemetry has no such guard: it is a plain bool and FALSE IS THE SAFE VALUE
+	// (nothing is shared), so a client that omits it may only ever reduce sharing, never enable
+	// it — both shipped clients send the whole form and therefore the stored value.
+	if inRow.AntigravityAuthMethod == "" {
+		inRow.AntigravityAuthMethod = cur.AntigravityAuthMethod
+	}
 	// Same partial-update semantics for the compaction/memory policy (D4).
 	inRow.ContextCompactionEnabled = cur.ContextCompactionEnabled
 	inRow.ContextCompactionPressureFrac = cur.ContextCompactionPressureFrac
@@ -235,11 +247,18 @@ func settingsRowToProto(r *db.TenantSettingsRow) *apiv1.TenantSettings {
 		ExecutionRetentionVacuum:         r.ExecutionRetentionVacuum,
 		ExecutionRetentionTimeoutSeconds: r.ExecutionRetentionTimeoutSeconds,
 		OutboxRetentionDays:              r.OutboxRetentionDays,
-		MaxConcurrentRuns:                &maxConcurrentRuns,
-		SessionAccessTokenTtlSeconds:     r.SessionAccessTokenTtlSeconds,
-		SessionRefreshTokenTtlSeconds:    r.SessionRefreshTokenTtlSeconds,
-		CreatedAt:                        timestamppb.New(r.CreatedAt),
-		UpdatedAt:                        timestamppb.New(r.UpdatedAt),
+		// The method is a stored value that must never read as "" to a client ("" means
+		// "unchanged" on WRITE and would render as an empty select), and the ToS notice is
+		// READ-ONLY, filled from the single exported constant so all three clients show the
+		// same legal text.
+		AntigravityAuthMethod:         authmethod.Normalize(r.AntigravityAuthMethod),
+		AntigravityShareTelemetry:     r.AntigravityShareTelemetry,
+		AntigravityTosNotice:          authmethod.ToSNotice,
+		MaxConcurrentRuns:             &maxConcurrentRuns,
+		SessionAccessTokenTtlSeconds:  r.SessionAccessTokenTtlSeconds,
+		SessionRefreshTokenTtlSeconds: r.SessionRefreshTokenTtlSeconds,
+		CreatedAt:                     timestamppb.New(r.CreatedAt),
+		UpdatedAt:                     timestamppb.New(r.UpdatedAt),
 	}
 }
 
@@ -337,6 +356,8 @@ func settingsProtoToRow(s *apiv1.TenantSettings) db.TenantSettingsRow {
 		ExecutionRetentionVacuum:         s.ExecutionRetentionVacuum,
 		ExecutionRetentionTimeoutSeconds: s.ExecutionRetentionTimeoutSeconds,
 		OutboxRetentionDays:              s.OutboxRetentionDays,
+		AntigravityAuthMethod:            s.AntigravityAuthMethod,
+		AntigravityShareTelemetry:        s.AntigravityShareTelemetry,
 		MaxConcurrentRuns:                maxConcurrentRuns,
 		MaxConcurrentRunsSet:             maxConcurrentRunsSet,
 		SessionAccessTokenTtlSeconds:     s.SessionAccessTokenTtlSeconds,
@@ -471,6 +492,15 @@ func validateStallSettings(ts *apiv1.TenantSettings) error {
 		}
 	}
 	return nil
+}
+
+// validateAntigravitySettings rejects an auth method that is not one of the four the ACP server
+// accepts. "" is VALID here (it means "leave unchanged"); the DB layer normalizes it on INSERT.
+func validateAntigravitySettings(ts *apiv1.TenantSettings) error {
+	if ts == nil {
+		return nil
+	}
+	return authmethod.Validate(ts.AntigravityAuthMethod)
 }
 
 // Session TTL validation constants.

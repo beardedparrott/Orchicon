@@ -1174,6 +1174,33 @@ func (m *App) appMsg(msg tea.Msg) tea.Cmd {
 		// refreshed list in BOTH cases, so this client never keeps its own copy to drift.
 		return tea.Batch(m.applyConsentGrants(msg), m.waitChat())
 	case chat.ConsentRepliedMsg:
+		// A RECORDED CLARIFYING-QUESTION CARD IS SETTLED FROM THE REPLY ITSELF.
+		//
+		// Its state is DERIVED from the transcript (ParsedAsk.Answered), and the transcript is only
+		// re-read on open and while a turn is STREAMING. A recorded ask's turn has ENDED by the time the
+		// operator answers, so nothing re-read it and the card stayed drawn open and clickable until the
+		// operator left the conversation and came back — the reported symptom. The server's verdict on
+		// the reply is the authority on what was answered; settling here, and polling the durable
+		// transcript in the same batch, lets the answer and the model's continuation land without a
+		// re-entry.
+		if m.chatStore.askExistsByID(msg.ConvID, msg.AskID) {
+			switch {
+			case msg.Err != "":
+				// THE CARD STAYS ANSWERABLE. A reply that failed answered nothing, and settling on a
+				// transport error would close a question the operator still has to answer.
+				m.dock.SetNotice("answer failed: " + msg.Err)
+				return tea.Batch(m.onChatWake(), m.waitChat())
+			case msg.Expired || !msg.Applied:
+				// NO LONGER ANSWERABLE — and the card is settled so it stops offering rows the server
+				// will refuse.
+				m.chatStore.settleAskByID(msg.ConvID, msg.AskID, "")
+				m.dock.SetNotice("that question is no longer open — nothing was sent")
+			default:
+				m.chatStore.settleAskByID(msg.ConvID, msg.AskID, msg.Answer)
+				m.dock.SetNotice("answer sent")
+			}
+			return tea.Batch(m.chat.Poll(msg.ConvID), m.onChatWake(), m.waitChat())
+		}
 		// The SERVER's verdict on a decision we sent.
 		switch {
 		case msg.Err != "":

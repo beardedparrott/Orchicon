@@ -74,7 +74,7 @@ func TestSeedState(t *testing.T) {
 		{name: "edited body, marker dropped", override: editedDroppedMarker, wantPri: false, wantCur: false},
 		{name: "content after marker", override: appendedAfterMarker, wantPri: false, wantCur: false},
 		{name: "no marker", override: string(content), wantPri: false, wantCur: false},
-		{name: "empty", override: "", wantPri: false, wantCur: false},
+		{name: "empty (follows the shipped template)", override: "", wantPri: true, wantCur: true},
 	}
 	for _, c := range cases {
 		pri, cur := seedState(c.override, content)
@@ -98,11 +98,24 @@ func TestStockImageCurrent(t *testing.T) {
 		want    bool
 	}{
 		{name: "missing image", info: runtime.ImageInfo{}, variant: base, want: false},
-		{name: "release base label", info: runtime.ImageInfo{RuntimeVersion: app}, variant: base, want: true},
-		{name: "local base label", info: runtime.ImageInfo{RuntimeVersion: app + "-" + baseSha}, variant: base, want: true},
-		{name: "release gui label", info: runtime.ImageInfo{RuntimeVersion: app + "-gui"}, variant: gui, want: true},
-		{name: "local gui label", info: runtime.ImageInfo{RuntimeVersion: app + "-" + baseSha + "-" + guiSha}, variant: gui, want: true},
-		{name: "stale label", info: runtime.ImageInfo{RuntimeVersion: "v0.0.0-deadbeef"}, variant: base, want: false},
+
+		// CONTENT-ONLY LABELS, the current convention.
+		{name: "content base label", info: runtime.ImageInfo{RuntimeVersion: baseSha}, variant: base, want: true},
+		{name: "content gui label", info: runtime.ImageInfo{RuntimeVersion: baseSha + "-" + guiSha}, variant: gui, want: true},
+		{name: "content dev label", info: runtime.ImageInfo{RuntimeVersion: baseSha + "-" + sha12Of(stockVariants[2].File)}, variant: stockVariants[2], want: true},
+
+		// A RELEASE TAG ALONE IS NOT CONTENT. This is the case that used to force a 12.7 GB rebuild of a
+		// byte-identical image, and it must now say "not current" so a plain version bump does not.
+		{name: "version alone says nothing about content", info: runtime.ImageInfo{RuntimeVersion: app}, variant: base, want: false},
+		{name: "version plus variant name says nothing about content", info: runtime.ImageInfo{RuntimeVersion: app + "-gui"}, variant: gui, want: false},
+
+		// LEGACY BRIDGE: images built under the pre-split convention whose CONTENT matches are accepted, so
+		// adopting the new label does not itself rebuild every image on every host.
+		{name: "legacy base label with matching content", info: runtime.ImageInfo{RuntimeVersion: app + "-" + baseSha}, variant: base, want: true},
+		{name: "legacy gui label with matching content", info: runtime.ImageInfo{RuntimeVersion: app + "-" + baseSha + "-" + guiSha}, variant: gui, want: true},
+		{name: "legacy label with WRONG content", info: runtime.ImageInfo{RuntimeVersion: app + "-deadbeefdead"}, variant: base, want: false},
+
+		{name: "stale label", info: runtime.ImageInfo{RuntimeVersion: "deadbeefdead"}, variant: base, want: false},
 		{name: "tenant build (spec-version only)", info: runtime.ImageInfo{SpecVersion: "7"}, variant: base, want: false},
 	}
 	for _, c := range cases {

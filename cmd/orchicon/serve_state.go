@@ -18,15 +18,45 @@ import (
 )
 
 // serveStateDir returns the detached serve's state root.
+//
+// A DATA DIR THAT DOES NOT BELONG TO THE NAMED INSTANCE OUTRANKS THE INSTANCE NAME, and that ordering is
+// the fix for a real leak. A worker's sandbox plane sets ORCHICON_DATA_DIR to its own throwaway root but
+// inherits ORCHICON_INSTANCE=prod, so the instance name used to win and the sandbox wrote its log and
+// PID file into the OPERATOR'S PRODUCTION state directory:
+//
+//	observed: cwd .orchicon-worktrees/<run>/, ORCHICON_DATA_DIR=/tmp/orchicon/qa/data,
+//	          ORCHICON_INSTANCE=prod
+//	          -> ORCHICON_SERVE_LOG_FILE=~/.local/share/orchicon-prod/serve/logs/orchicon.log
+//
+// The orphaned plane then spent eight hours appending `127.0.0.1:55432 connection refused` into the
+// production log — a foreign process's failures in the operator's evidence, and a sandbox that looks
+// like prod to anything reading that file.
+//
+// The precedence is narrow on purpose: a data dir that IS the named instance's own still yields to the
+// instance (the original collision this guarded), and only a FOREIGN data dir overrides it.
 func serveStateDir() string {
-	// THE INSTANCE DECIDES, NOT THE SHELL.
-	if inst := strings.TrimSpace(os.Getenv("ORCHICON_INSTANCE")); inst != "" {
-		return hostDataDirFor(inst) + "/serve"
+	inst := strings.TrimSpace(os.Getenv("ORCHICON_INSTANCE"))
+	dataDir := strings.TrimSpace(os.Getenv("ORCHICON_DATA_DIR"))
+	if inst != "" {
+		own := filepath.Clean(hostDataDirFor(inst))
+		if dataDir != "" && !samePathDir(dataDir, own) {
+			// A sandbox pinned to somewhere else: its own state root, never the operator's.
+			return filepath.Clean(dataDir) + "/serve"
+		}
+		return own + "/serve"
 	}
-	if d := os.Getenv(serveStateDirEnv); d != "" {
+	if d := strings.TrimSpace(os.Getenv(serveStateDirEnv)); d != "" {
 		return d
 	}
+	if dataDir != "" {
+		return filepath.Clean(dataDir) + "/serve"
+	}
 	return ".dev"
+}
+
+// samePathDir reports whether two paths name the same directory.
+func samePathDir(a, b string) bool {
+	return filepath.Clean(a) == filepath.Clean(b)
 }
 
 // servePIDFile / serveLogFile locate the detached `serve --detach` state.
@@ -49,7 +79,6 @@ func procRunning(pidFile string) (string, bool) {
 	}
 	return pid, pidAlive(p)
 }
-
 
 // compressibleExt lists the asset types worth compressing. Images and fonts are already compressed, so
 // re-encoding them spends CPU to add bytes.

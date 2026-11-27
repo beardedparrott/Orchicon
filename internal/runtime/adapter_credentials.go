@@ -19,6 +19,12 @@ func openCodeAuthPath(home string) string {
 	return underStoreDir(OpenCodeStoreDir(home), "auth.json")
 }
 
+// openCodeAuthPathForHome is auth.json for EXACTLY `home`, ignoring the process environment — the
+// write-safe counterpart of openCodeAuthPath, for the same reason openCodeDBPathForHome exists.
+func openCodeAuthPathForHome(home string) string {
+	return underStoreDir(openCodeStoreDirFor(goruntime.GOOS, home), "auth.json")
+}
+
 // underStoreDir joins a file onto a store dir, and returns "" when the dir is unknown.
 func underStoreDir(dir, name string) string {
 	if strings.TrimSpace(dir) == "" {
@@ -53,6 +59,45 @@ func openCodeStoreDir(goos, home string, getenv func(string) string) string {
 	// NONE EXISTS: return the primary candidate so callers can still REPORT where they
 	// looked (the serve logs this path when it warns that a store was never found).
 	return candidates[0]
+}
+
+// openCodeStoreDirFor resolves the store for EXACTLY `home`, ignoring the process environment.
+//
+// WHY THIS EXISTS, AND WHY IT IS NOT JUST A TEST HELPER. openCodeStoreDir prefers a candidate from the
+// ambient XDG_DATA_HOME and then returns whichever store was MOST RECENTLY WRITTEN — correct for the
+// running plane (which must find the operator's real store) and catastrophic for anything that then
+// WRITES to the result without meaning to.
+//
+// That is what destroyed the production stores: TestCredentialDBOverridesStaleAuthJSON built a home with
+// t.TempDir(), called openCodeDBPath(home), and got back the AMBIENT store because the ambient one was
+// newer. The test then ran CREATE TABLE against it, and its "corrupt database" case wrote
+//
+//	this is not a sqlite database
+//
+// over a live 39 MB database. The 29-byte stub beside an 8 MB WAL is that write, and every opencode
+// serve since has died on it.
+//
+// A caller that supplies a home and intends to WRITE must resolve against that home alone.
+func openCodeStoreDirFor(goos, home string) string {
+	if strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".local", "share", "opencode")
+}
+
+// storePathUnderStateRoot reports whether a resolved store path actually sits inside the state root the
+// caller believes it is using. A WRITE guarded by this cannot reach the operator's real store, whatever
+// the ambient environment says.
+func storePathUnderStateRoot(path, root string) bool {
+	p := filepath.Clean(path)
+	r := filepath.Clean(root)
+	if r == "" {
+		return false
+	}
+	if p == r {
+		return true
+	}
+	return strings.HasPrefix(p, r+string(filepath.Separator))
 }
 
 // openCodeStoreCandidates is every directory an opencode install may have used for its data dir,
@@ -192,6 +237,14 @@ func adapterCredentialEnv(home string, kinds ...string) (env []string, unusable 
 	}
 	// BOTH STORES, MERGED WITH THE DATABASE WINNING — see openCodeDBPath for why
 	// auth.json alone is not enough on a 2.x install.
+	//
+	// THIS PATH RESOLVES THE STORE FOR `home` ALONE. It used to call openCodeDBPath(home), which is the
+	// AMBIENT resolver: it consults XDG_DATA_HOME and returns whichever store was most recently
+	// written, so reading a test home could return the operator's real store. Reading there is harmless;
+	// the danger was that the same resolver was used to obtain a path a TEST then WRITES — and one test
+	// overwrote four real stores, three of them with opencode.log evidence of live WALs being appended
+	// to a stubbed main file. A read that resolves the caller's own home cannot be misused that way,
+	// and a home that holds no store correctly falls through to auth.json.
 	keys := map[string]credEntry{}
 	bad := map[string]struct{}{}
 	if b, err := os.ReadFile(openCodeAuthPath(home)); err == nil {
@@ -209,7 +262,7 @@ func adapterCredentialEnv(home string, kinds ...string) (env []string, unusable 
 			}
 		}
 	}
-	for id, e := range credentialTableEntries(openCodeDBPath(home)) {
+	for id, e := range credentialTableEntries(openCodeDBPathForHome(home)) {
 		norm := strings.ToLower(strings.TrimSpace(id))
 		if strings.TrimSpace(e.key) == "" {
 			continue
@@ -268,6 +321,13 @@ func adapterCredentialEnv(home string, kinds ...string) (env []string, unusable 
 // the providers the operator most recently configured — and it fails at the model
 // call as an Unauthorized, far from the cause. Hence: read both, and let the
 // database win, because where the two disagree the database is the live store.
+// openCodeDBPathForHome is the database path for EXACTLY `home`, ignoring the process environment.
+// Use this wherever the caller supplied a home; use openCodeDBPath only to DISCOVER the operator's
+// real store on the running plane.
+func openCodeDBPathForHome(home string) string {
+	return underStoreDir(openCodeStoreDirFor(goruntime.GOOS, home), "opencode.db")
+}
+
 func openCodeDBPath(home string) string {
 	return underStoreDir(OpenCodeStoreDir(home), "opencode.db")
 }

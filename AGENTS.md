@@ -108,3 +108,40 @@ of any kind. The GitHub release body comes from `RELEASE_HIGHLIGHTS.md` via
 compact digest of the same story via `--sync-readme`, so it is never hand-edited.
 `site/` and the install scripts stage on `develop` and only reach orchicon.dev
 when the release PR merges to `main` (CloudFlare Pages is pinned to `main`).
+
+### Run these in order, and expect the `[NoDevBump]` trap
+
+1. **Merge your work to `develop` through a PR.** Direct pushes to `develop` are
+   refused; branch protection also blocks a plain `gh pr merge` — use `--admin`
+   once checks are green.
+2. **Write the highlights heading BEFORE the release PR.** Add a `## vX.Y.Z`
+   section to `RELEASE_HIGHLIGHTS.md` (newest-first, above the previous one).
+   `scripts/release.sh` refuses a version with no section, so doing this last
+   means a second round trip through `develop` and `main`.
+3. **Merge `develop` → `main`** via a PR.
+4. **Run `scripts/release.sh patch`** (or an explicit `vX.Y.Z`) from `main`, on a
+   clean tree. A bump now SKIPS every tag already in use — see below.
+
+**THE TRAP, WHICH COSTS A ROUND TRIP EVERY TIME.** `develop-bump.yml` mints a
+`vX.Y.Z` tag on **every** merge to `develop` — including docs-only PRs. So the
+act of opening a PR to name the release *burns the number you just named*, and
+`release.sh` then reports the heading is missing for a version that is now a
+bump tag. Put **`[NoDevBump]` at the FRONT of the PR title** for any merge that
+must not mint a tag — every highlights/docs PR, and the `develop` → `main`
+release PR itself. The marker makes the merge share the current tag instead of
+advancing it. Without it, naming a release consumes its version.
+
+**A bump skips taken numbers now.** `patch` from published `v0.6.17` with bump
+tags `v0.6.18`–`v0.6.20` already on origin lands on `v0.6.21`, printing what it
+skipped. An EXPLICIT `vX.Y.Z` is still refused when taken — you named it, so it
+will not be silently renumbered. If you are unsure which number is free:
+
+```bash
+git fetch --tags --force origin
+git tag --list 'v[0-9]*.*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -3
+```
+
+**Verify after publishing**: `gh release view vX.Y.Z` should show **13 assets**,
+and the binary names must carry the real version — a `dev` version stamp means
+the ldflags did not apply. The release workflow's guard rejects any tag not
+reachable from `main`, so a develop bump tag can never publish by accident.

@@ -76,6 +76,11 @@ func TestTenantSettingsRoundTrip(t *testing.T) {
 		BackupRetentionDays:           9,
 		MaxConcurrentRuns:             7,
 		MaxConcurrentRunsSet:          true,
+
+		// The Antigravity adapter knobs. Both are NON-default here so a swapped column (or a
+		// dropped one) cannot pass by coincidence: the default is oauth-personal / telemetry off.
+		AntigravityAuthMethod:     "gemini-api-key",
+		AntigravityShareTelemetry: true,
 	}
 
 	tx, err := pool.BeginTenantTx(ctx, tenant)
@@ -113,6 +118,34 @@ func TestTenantSettingsRoundTrip(t *testing.T) {
 	}
 	if got.OutboxRetentionDays != want.OutboxRetentionDays {
 		t.Errorf("outbox_retention_days = %d, want %d", got.OutboxRetentionDays, want.OutboxRetentionDays)
+	}
+
+	// --- the Antigravity knobs ---
+	if got.AntigravityAuthMethod != want.AntigravityAuthMethod {
+		t.Errorf("antigravity_auth_method = %q, want %q", got.AntigravityAuthMethod, want.AntigravityAuthMethod)
+	}
+	if got.AntigravityShareTelemetry != want.AntigravityShareTelemetry {
+		t.Errorf("antigravity_share_telemetry = %v, want %v", got.AntigravityShareTelemetry, want.AntigravityShareTelemetry)
+	}
+
+	// A NEVER-CONFIGURED tenant must get the shipped defaults: personal OAuth (the method the
+	// operator most likely already has working) with telemetry OFF (ToS section 5 is an explicit
+	// grant, so nothing is shared without an opt-in).
+	fresh := "tnt_fresh_" + db.NewID()
+	freshTx, err := pool.BeginTenantTx(ctx, fresh)
+	if err != nil {
+		t.Fatalf("begin fresh tx: %v", err)
+	}
+	defer freshTx.Rollback(ctx)
+	freshRow, err := db.GetTenantSettings(ctx, freshTx.Tx, fresh)
+	if err != nil {
+		t.Fatalf("get fresh tenant settings: %v", err)
+	}
+	if freshRow.AntigravityAuthMethod != "oauth-personal" {
+		t.Errorf("fresh tenant antigravity_auth_method = %q, want oauth-personal", freshRow.AntigravityAuthMethod)
+	}
+	if freshRow.AntigravityShareTelemetry {
+		t.Error("fresh tenant antigravity_share_telemetry = true, want false (telemetry ships OFF)")
 	}
 
 	// --- and the neighbours, which is where a positional mistake actually shows up ---

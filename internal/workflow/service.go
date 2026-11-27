@@ -710,7 +710,22 @@ func (s *Service) AbortWorkflow(ctx context.Context, req *connect.Request[apiv1.
 	if current.Status == domain.WorkflowRunCompleted || current.Status == domain.WorkflowRunFailed || current.Status == domain.WorkflowRunAborted {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("run is already terminal (status=%s)", current.Status))
 	}
-	abortedExecs, err := AbortRunInTx(ctx, ttx.Tx, tenantID, req.Msg.RunId, domain.WorkItemCancelled)
+	// ABORT ENDS THE RUN, NOT THE WORK.
+	//
+	// This used to pass domain.WorkItemCancelled, which made an aborted run destroy the
+	// branch as well — three hops, none of them obvious from here:
+	//
+	//	cancelled is in domain.WorkItemIsTerminalNonReplayable
+	//	  -> isWorkItemReclaimable returns true
+	//	    -> worktree_reconciler's failed|aborted case takes the "dead branch" path
+	//	       and deletes the branch the commits were on.
+	//
+	// The operator-visible consequence: aborting to stop a run for a while was
+	// indistinguishable from throwing the work away, and RetryFailedWorkflowRun refuses
+	// an aborted run, so the only way back was a fresh run from step 1. `failed` is NOT
+	// terminal-non-replayable, so the work item and its branch survive — which is the
+	// whole point of "abort this run".
+	abortedExecs, err := AbortRunInTx(ctx, ttx.Tx, tenantID, req.Msg.RunId, domain.WorkItemFailed)
 	if err != nil {
 		return nil, mapDBError(err)
 	}
@@ -1148,89 +1163,24 @@ func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Reque
 	if err != nil {
 		return nil, mapDBError(err)
 	}
-	if run.Status != domain.WorkflowRunFailed {
+	// ABORTED IS RETRYABLE TOO. Abort is how an operator pauses by force today (and until
+	// PauseWorkflowRun exists, how they stop at all), so refusing to resume it made the only
+	// stop gesture a one-way door.
+	if run.Status != domain.WorkflowRunFailed && run.Status != domain.WorkflowRunAborted {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			fmt.Errorf("run is in status %s — only a failed run can be retried", run.Status))
+			fmt.Errorf("run is in status %s — only a failed or aborted run can be retried", run.Status))
 	}
 
-	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, req.Msg.RunId)
+	resetCount, err := retryFailedRunInner(ctx, ttx.Tx, tenantID, run)
 	if err != nil {
-		return nil, mapDBError(err)
-	}
-
-	now := time.Now().UTC()
-	var reset []string
-	for _, sr := range stepRuns {
-		if sr.SupersededBy != "" {
-			continue // archived iteration — never mutate
-		}
-		switch sr.Status {
-		case domain.StepRunFailed, domain.StepRunSkipped, domain.StepRunBlocked:
-		default:
-			continue // succeeded/pending/ready/running/approval_pending/recovering stay
-		}
-		emptyResult := []byte("{}")
-		attempt := 0
-		fields := db.UpdateWorkflowStepRunFields{
-			Status:            strPtr(domain.StepRunPending),
-			Result:            &emptyResult,
-			WorkerExecutionID: strPtr(""),
-			Attempt:           &attempt,
-			StartedAt:         &now,
-			ClearEndedAt:      true,
-		}
-		// Re-provision pruned OR FAILED worktrees on retry: keep the branch for re-attach but reset status
-		// to pending and clear the stale path so the WorktreeReconciler re-creates the worktree before.
-		if sr.WorktreeStatus == domain.WorktreePruned || sr.WorktreeStatus == domain.WorktreeFailed {
-			pending := domain.WorktreePending
-			emptyPath := ""
-			fields.WorktreeStatus = &pending
-			fields.WorktreePath = &emptyPath
-		}
-		updated, err := db.UpdateWorkflowStepRun(ctx, ttx.Tx, tenantID, sr.ID, sr.Version, fields)
-		if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
 			return nil, mapDBError(err)
 		}
-		reset = append(reset, sr.ID)
-		if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventStepReady, db.WorkflowRow{}, db.WorkflowVersionRow{}, run, updated.StepID); err != nil {
-			s.log.Warn("retry-failed: enqueue step_ready failed", "run", run.ID, "step", updated.StepID, "error", err)
-		}
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
 	}
-	if len(reset) == 0 {
-		return nil, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("no failed/skipped/blocked step runs to retry"))
-	}
-
-	// Flip the run back to pending so the reconciler's pending→running block re-resolves the runtime
-	// image and re-creates the (reaped) container.
-	runFields := db.UpdateWorkflowRunFields{
-		Status:       strPtr(domain.WorkflowRunPending),
-		ClearEndedAt: true,
-	}
-	if run.WorktreeStatus == domain.WorktreePruned || run.WorktreeStatus == domain.WorktreeFailed {
-		pending := domain.WorktreePending
-		emptyPath := ""
-		runFields.WorktreeStatus = &pending
-		runFields.WorktreePath = &emptyPath
-		// The recorded REFUSAL belongs to the attempt that failed, not to the retry.
-		emptyErr := ""
-		runFields.ErrorMessage = &emptyErr
-		runFields.ErrorKind = &emptyErr
-	}
-	updatedRun, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, run.ID, run.Version, runFields)
+	updatedRun, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, run.ID)
 	if err != nil {
 		return nil, mapDBError(err)
-	}
-
-	// The bound work item was failed at run end — flip it back to running so the ticket reflects the
-	// resumed run (per-step executions never mutate it.
-	if run.WorkItemID != "" {
-		if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID); err == nil {
-			status := domain.WorkItemRunning
-			if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, run.WorkItemID, wi.Version, db.UpdateWorkItemFields{Status: &status}); err != nil {
-				s.log.Warn("retry-failed: reset work item status failed", "work_item", run.WorkItemID, "error", err)
-			}
-		}
 	}
 
 	if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventRunRetried, db.WorkflowRow{}, db.WorkflowVersionRow{}, updatedRun, ""); err != nil {
@@ -1240,15 +1190,48 @@ func (s *Service) RetryFailedWorkflowRun(ctx context.Context, req *connect.Reque
 		audit.SnapshotStatus(run.Status), audit.SnapshotStatus(updatedRun.Status)); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.run_retried: %w", err))
 	}
-
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	s.log.Info("workflow run retried from failure", "run", run.ID, "reset_steps", len(reset))
+	s.log.Info("workflow run retried from failure", "run", run.ID, "reset_steps", resetCount)
+	// READ THE RE-ARMED IDS AFTER COMMIT, ON THEIR OWN TRANSACTION. Reading them inside the retry
+	// transaction returned nothing, because that transaction's own uncommitted writes are not
+	// visible to it through a pooled connection — the ids came back empty while the reset itself
+	// had worked, which is exactly the kind of half-true response that makes a good feature look
+	// broken.
+	resetIDsOut := s.resetIDs(ctx, tenantID, updatedRun.ID)
 	return connect.NewResponse(&apiv1.RetryFailedWorkflowRunResponse{
 		Run:             runRowToProto(updatedRun),
-		ResetStepRunIds: reset,
+		ResetStepRunIds: resetIDsOut,
 	}), nil
+}
+
+// resetIDs lists the step runs of a run that are now pending but carry a prior attempt — i.e. the
+// ones this retry re-armed. Read back rather than collected during the reset so it reflects what
+// actually committed.
+func (s *Service) resetIDs(ctx context.Context, tenantID, runID string) []string {
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil
+	}
+	defer ttx.Rollback(ctx)
+	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, runID)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, sr := range stepRuns {
+		if sr.SupersededBy != "" || sr.Status != domain.StepRunPending {
+			continue
+		}
+		var carried map[string]any
+		if len(sr.Result) > 0 && json.Unmarshal(sr.Result, &carried) == nil {
+			if carried["_prior_attempt"] != nil {
+				out = append(out, sr.ID)
+			}
+		}
+	}
+	return out
 }
 
 // DeleteWorkflowRun hard-deletes one workflow run.
@@ -1822,26 +1805,26 @@ func versionRowToProto(v db.WorkflowVersionRow) *apiv1.WorkflowVersion {
 func runRowToProto(r db.WorkflowRunRow) *apiv1.WorkflowRun {
 	prURL, prState := db.PrFromRunContext(r.RunContext)
 	p := &apiv1.WorkflowRun{
-		Id:              r.ID,
-		TenantId:        r.TenantID,
-		WorkflowId:      r.WorkflowID,
-		WorkflowVersion: int32(r.WorkflowVersion),
-		ProjectId:       r.ProjectID,
-		Status:          workflowRunStatusToProto(r.Status),
-		CurrentStep:     r.CurrentStep,
-		RunContext:      string(r.RunContext),
-		WorkItemId:      r.WorkItemID,
-		Version:         int32(r.Version),
-		WorktreeStatus:  r.WorktreeStatus,
-		WorktreeBranch:  r.WorktreeBranch,
-		WorktreePath:    r.WorktreePath,
-		PrUrl:           prURL,
-		PrState:         prState,
-		ErrorMessage:    r.ErrorMessage,
-		ErrorKind:       r.ErrorKind,
+		Id:                r.ID,
+		TenantId:          r.TenantID,
+		WorkflowId:        r.WorkflowID,
+		WorkflowVersion:   int32(r.WorkflowVersion),
+		ProjectId:         r.ProjectID,
+		Status:            workflowRunStatusToProto(r.Status),
+		CurrentStep:       r.CurrentStep,
+		RunContext:        string(r.RunContext),
+		WorkItemId:        r.WorkItemID,
+		Version:           int32(r.Version),
+		WorktreeStatus:    r.WorktreeStatus,
+		WorktreeBranch:    r.WorktreeBranch,
+		WorktreePath:      r.WorktreePath,
+		PrUrl:             prURL,
+		PrState:           prState,
+		ErrorMessage:      r.ErrorMessage,
+		ErrorKind:         r.ErrorKind,
 		IntegrationStatus: integrationStatus(r),
-		CreatedAt:       timestamppb.New(r.CreatedAt),
-		UpdatedAt:       timestamppb.New(r.UpdatedAt),
+		CreatedAt:         timestamppb.New(r.CreatedAt),
+		UpdatedAt:         timestamppb.New(r.UpdatedAt),
 	}
 	if r.StartedAt != nil {
 		p.StartedAt = timestamppb.New(*r.StartedAt)
@@ -2007,4 +1990,179 @@ func integrationStatus(r db.WorkflowRunRow) string {
 		return "merged"
 	}
 	return "not_merged"
+}
+
+// PauseWorkflowRun stops a RUN at a resumable point.
+//
+// THE DIFFERENCE FROM ABORT, IN ONE LINE: abort ends the run and (before this change) threw
+// the work away with it; pause ends the WORKING and keeps everything needed to continue — the
+// run row, its step progress, its worktree and its branch.
+//
+// In-flight executions are asked to checkpoint rather than merely terminated: a worker that
+// is mid-edit should stop at a boundary it can describe, which is exactly what
+// ExecutionCheckpointing means and what makes ResumeExecution able to pick it back up.
+func (s *Service) PauseWorkflowRun(ctx context.Context, req *connect.Request[apiv1.PauseWorkflowRunRequest]) (*connect.Response[apiv1.PauseWorkflowRunResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.RunId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("run_id must not be empty"))
+	}
+	reason, err := validateTextField(req.Msg.Reason, maxReasonLen, "reason")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	current, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, req.Msg.RunId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	// Collect the in-flight executions BEFORE the core marks them terminating, so the response can
+	// name what was asked to checkpoint.
+	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, current.ID)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	var pausedExecs []string
+	for _, sr := range stepRuns {
+		if sr.Status != domain.StepRunRunning || sr.WorkerExecutionID == "" {
+			continue
+		}
+		if exec, err := db.GetExecution(ctx, ttx.Tx, tenantID, sr.WorkerExecutionID); err == nil {
+			if exec.Status == domain.ExecutionRunning || exec.Status == domain.ExecutionDispatching {
+				pausedExecs = append(pausedExecs, exec.ID)
+			}
+		}
+	}
+
+	if err := pauseRunInner(ctx, ttx.Tx, tenantID, req.Msg.RunId, reason); err != nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+	}
+	updated, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, req.Msg.RunId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	wf, _ := db.GetWorkflow(ctx, ttx.Tx, tenantID, updated.WorkflowID)
+	if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventRunPaused, wf, db.WorkflowVersionRow{}, updated, reason); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.run_paused", "workflow", updated.WorkflowID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.run_paused: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	s.log.Info("workflow run paused", "run", updated.ID, "paused_executions", len(pausedExecs))
+	return connect.NewResponse(&apiv1.PauseWorkflowRunResponse{
+		Run:                runRowToProto(updated),
+		PausedExecutionIds: pausedExecs,
+	}), nil
+}
+
+// ResumeWorkflowRun continues a PAUSED run in place — same run, same step progress, same
+// worktree and branch. This is the inverse of Pause and the reason pause is worth having:
+// none of the work is replayed and no step is reset, because nothing was unwound.
+func (s *Service) ResumeWorkflowRun(ctx context.Context, req *connect.Request[apiv1.ResumeWorkflowRunRequest]) (*connect.Response[apiv1.ResumeWorkflowRunResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if req.Msg.RunId == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("run_id must not be empty"))
+	}
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer ttx.Rollback(ctx)
+
+	current, err := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, req.Msg.RunId)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	if current.Status != domain.WorkflowRunPaused {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			fmt.Errorf("run is in status %s — only a paused run can be resumed this way", current.Status))
+	}
+
+	updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, current.ID, current.Version, db.UpdateWorkflowRunFields{
+		Status: strPtr(domain.WorkflowRunRunning),
+	})
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+
+	// Put the checkpointed executions back to work. A pause that stopped nothing needs no
+	// restart, and saying so is more useful than a silent success.
+	var resumedExecs []string
+	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, current.ID)
+	if err != nil {
+		return nil, mapDBError(err)
+	}
+	for _, sr := range stepRuns {
+		if sr.WorkerExecutionID == "" {
+			continue
+		}
+		exec, err := db.GetExecution(ctx, ttx.Tx, tenantID, sr.WorkerExecutionID)
+		if err != nil || exec.Status != domain.ExecutionTerminating {
+			continue
+		}
+		running := domain.ExecutionRunning
+		healthy := domain.HealthHealthy
+		if _, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
+			Status:      &running,
+			HealthState: &healthy,
+		}); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resume execution %s: %w", exec.ID, err))
+		}
+		resumedExecs = append(resumedExecs, exec.ID)
+	}
+
+	if current.WorkItemID != "" {
+		if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, current.WorkItemID); err == nil {
+			status := domain.WorkItemRunning
+			if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, current.WorkItemID, wi.Version, db.UpdateWorkItemFields{
+				Status: &status,
+			}); err != nil {
+				s.log.Warn("resume: set work item status failed", "work_item", current.WorkItemID, "error", err)
+			}
+		}
+	}
+
+	wf, _ := db.GetWorkflow(ctx, ttx.Tx, tenantID, updated.WorkflowID)
+	if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventRunResumed, wf, db.WorkflowVersionRow{}, updated, ""); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if err := recordAudit(ctx, ttx.Tx, tenantID, "workflow.run_resumed", "workflow", updated.WorkflowID,
+		audit.SnapshotStatus(current.Status), audit.SnapshotStatus(updated.Status)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("audit workflow.run_resumed: %w", err))
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+
+	// Did the work survive? A pause keeps the tree, but the sweeper can still have reclaimed it
+	// if the BOUND WORK ITEM went terminal by some other route. Report it honestly instead of
+	// letting the UI claim a re-attach that did not happen.
+	reattached := current.WorktreePath != "" && current.WorktreeStatus == domain.WorktreeReady
+	s.log.Info("workflow run resumed", "run", current.ID, "resumed_executions", len(resumedExecs), "worktree_reattached", reattached)
+	return connect.NewResponse(&apiv1.ResumeWorkflowRunResponse{
+		Run:                runRowToProto(updated),
+		WorktreeReattached: reattached,
+	}), nil
+}
+
+// runIDOr is a tiny readability helper for log lines that must never print an empty id.
+func runIDOr(id string) string {
+	if id == "" {
+		return "<none>"
+	}
+	return id
 }

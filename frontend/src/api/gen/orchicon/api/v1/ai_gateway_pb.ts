@@ -403,6 +403,17 @@ export class UsageRecord extends Message<UsageRecord> {
    */
   sessionId = "";
 
+  /**
+   * billing is the usage regime this record was charged under. "plan_quota"
+   * means the turn was covered by a subscription plan, so cost_usd is zero
+   * because it was already paid for — NOT because it was free. Empty means
+   * metered (the default: a per-token call priced from the catalog). Clients
+   * must render "included in plan" for plan_quota rather than "$0.0000".
+   *
+   * @generated from field: string billing = 21;
+   */
+  billing = "";
+
   constructor(data?: PartialMessage<UsageRecord>) {
     super();
     proto3.util.initPartial(data, this);
@@ -431,6 +442,7 @@ export class UsageRecord extends Message<UsageRecord> {
     { no: 18, name: "cache_write_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 19, name: "reasoning_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 20, name: "session_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 21, name: "billing", kind: "scalar", T: 9 /* ScalarType.STRING */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): UsageRecord {
@@ -567,6 +579,16 @@ export class CostSummary extends Message<CostSummary> {
    */
   finishedAt?: Timestamp;
 
+  /**
+   * plan_quota_records counts the group's records whose billing is
+   * "plan_quota". A group where every record is plan-quota has a genuine cost
+   * of zero that is NOT the same claim as "free" — the UI says "Included in
+   * plan" instead of "$0.0000".
+   *
+   * @generated from field: int64 plan_quota_records = 18;
+   */
+  planQuotaRecords = protoInt64.zero;
+
   constructor(data?: PartialMessage<CostSummary>) {
     super();
     proto3.util.initPartial(data, this);
@@ -592,6 +614,7 @@ export class CostSummary extends Message<CostSummary> {
     { no: 15, name: "cache_write_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 16, name: "reasoning_tokens", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 17, name: "finished_at", kind: "message", T: Timestamp },
+    { no: 18, name: "plan_quota_records", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): CostSummary {

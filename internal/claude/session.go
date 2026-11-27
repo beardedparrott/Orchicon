@@ -3,6 +3,7 @@ package claude
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/beardedparrott/orchicon/internal/checkpoint"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/guard"
 	"github.com/beardedparrott/orchicon/internal/mcpclient"
@@ -41,7 +43,7 @@ type session struct {
 
 	// stderrRing holds the LAST stderr lines the CLI emitted.
 	stderrRing *stderrRing
-	proc     ProcSession
+	proc       ProcSession
 
 	// mapper owns the whole stream-event → ExecutionCallbacks fan-out plus
 	// the durable transcript / ledger / todo side effects (parse.go).
@@ -148,10 +150,17 @@ func (s *session) run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			s.finish(ctx, false, "execution cancelled", ctx.Err())
+			// A DEADLINE AND A CANCEL ARE DIFFERENT REASONS, and a wall-clock deadline that reports
+			// itself as "execution cancelled" is indistinguishable from a human stopping the run.
+			reason := claudeEndReason(ctx)
+			s.checkpointOnAbort(ctx, reason)
+			s.finish(ctx, false, reason, ctx.Err())
 			return ctx.Err()
 		case <-tick.C:
 			if reason := s.mapper.Tick(ctx, time.Now()); reason != "" {
+				// COMMIT BEFORE KILLING THE CHILD. A stall is a liveness judgement about the model, not
+				// a verdict on the work: whatever the worker already wrote must survive the abort.
+				s.checkpointOnAbort(ctx, "stalled:"+reason)
 				s.abort()
 				msg := fmt.Sprintf("claude session stalled: %s", reason)
 				s.finish(ctx, false, msg, fmt.Errorf("%s", msg))
@@ -588,4 +597,42 @@ func marshalAny(v map[string]any) []byte {
 		return nil
 	}
 	return out
+}
+
+// claudeEndReason names WHY the session context ended. A deadline and a cancellation both land on
+// ctx.Done(), but they mean opposite things to whoever reads the execution: one is "the platform ran
+// out of the time it allowed you", the other is "somebody stopped this". Reporting a deadline as
+// "execution cancelled" hid a per-worker wall-clock gate that was killing runs mid-deliverable.
+func claudeEndReason(ctx context.Context) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "wall_clock_timeout"
+	}
+	return "execution cancelled"
+}
+
+// checkpointOnAbort commits the run's worktree when a session ends WITHOUT a success verdict, so the
+// work survives the abort. BEST-EFFORT AND NEVER FATAL: the caller is already failing the execution
+// and the reason it reports must stay the real cause, so every outcome is logged and nothing is
+// returned.
+//
+// It is a NO-OP when the run has no worktree of its own — execDir falls back to the project dir, and
+// committing into the operator's checkout on a failure is not ours to do.
+func (s *session) checkpointOnAbort(ctx context.Context, reason string) {
+	if s.manifest.WorktreePath == "" {
+		return
+	}
+	res, err := checkpoint.CheckpointWorktree(ctx, s.manifest.WorktreePath, s.manifest.ProjectDir, reason)
+	if err != nil {
+		s.b.log.Warn("checkpoint on abort: could not preserve the worktree",
+			"execution", s.execID, "reason", reason, "worktree", s.manifest.WorktreePath, "error", err)
+		return
+	}
+	switch {
+	case res.Committed:
+		s.b.log.Warn("checkpoint on abort: committed the worker's in-progress work so it survives",
+			"execution", s.execID, "reason", reason)
+	case res.Skipped != "":
+		s.b.log.Info("checkpoint on abort: nothing to preserve",
+			"execution", s.execID, "reason", reason, "why", res.Skipped)
+	}
 }

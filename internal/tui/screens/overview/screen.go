@@ -368,7 +368,8 @@ func (m *Model) fetchCost(ctx context.Context, _ string) ([]kit2.Item, string, e
 		items = append(items, kit2.Item{
 			ID:    "total",
 			Title: "TOTAL",
-			Meta: fmtCost(total.GetCostUsd()) + " · " + fmtTokens(total.GetTotalTokens()) + " tok · " +
+			Meta: fmtCostWithPlanQuota(total.GetCostUsd(), total.GetPlanQuotaRecords(), total.GetRecordCount()) +
+				" · " + fmtTokens(total.GetTotalTokens()) + " tok · " +
 				screenkit.FmtInt(int(total.GetExecutionCount())) + " exec",
 		})
 	}
@@ -403,7 +404,8 @@ func (m *Model) fetchCost(ctx context.Context, _ string) ([]kit2.Item, string, e
 			items = append(items, kit2.Item{
 				ID:    lvl.label + ":" + s.GetGroupKey(),
 				Title: name,
-				Meta: fmtCost(s.GetCostUsd()) + " · " + fmtTokens(s.GetTotalTokens()) + " tok · " +
+				Meta: fmtCostWithPlanQuota(s.GetCostUsd(), s.GetPlanQuotaRecords(), s.GetRecordCount()) + " · " +
+					fmtTokens(s.GetTotalTokens()) + " tok · " +
 					screenkit.FmtInt(int(s.GetExecutionCount())) + " exec",
 			})
 		}
@@ -725,6 +727,33 @@ func enumWord(e interface{ String() string }) string {
 }
 
 func fmtCost(usd float64) string { return fmt.Sprintf("$%.2f", usd) }
+
+// planQuotaLabel is what the Cost Explorer shows in place of a dollar amount for a
+// group whose cost is covered by a subscription plan. It mirrors the web app's
+// PlanQuotaLabel (frontend/src/components/cost-explorer/utils.ts) and the backend's
+// "zero is not free" language (orchicon.BillingDisclaimer): a plan-quota run costs $0
+// because the operator's plan already paid for it, which is a DIFFERENT claim from
+// "free" — and "$0.00" reads as the latter.
+const planQuotaLabel = "Included in plan"
+
+// fmtCostWithPlanQuota renders one cost figure, honouring the plan-quota marker the
+// server now reports alongside it (CostSummary.plan_quota_records / record_count).
+//
+// The three cases are the same three the web app renders, so the TUI and the SPA do
+// not tell an operator two different things about the same number.
+func fmtCostWithPlanQuota(usd float64, planQuotaRecords int64, recordCount int32) string {
+	if planQuotaRecords <= 0 {
+		return fmtCost(usd)
+	}
+	if recordCount > 0 && planQuotaRecords >= int64(recordCount) {
+		return planQuotaLabel
+	}
+	turns := "turns"
+	if planQuotaRecords == 1 {
+		turns = "turn"
+	}
+	return fmt.Sprintf("%s + %d plan-quota %s", fmtCost(usd), planQuotaRecords, turns)
+}
 
 func fmtTokens(n int64) string {
 	switch {

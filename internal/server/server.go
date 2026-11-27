@@ -15,6 +15,7 @@ import (
 
 	"github.com/beardedparrott/orchicon/internal/adapter"
 	"github.com/beardedparrott/orchicon/internal/aigateway"
+	"github.com/beardedparrott/orchicon/internal/antigravity"
 	"github.com/beardedparrott/orchicon/internal/api"
 	"github.com/beardedparrott/orchicon/internal/askorchicon"
 	"github.com/beardedparrott/orchicon/internal/auth"
@@ -35,8 +36,10 @@ import (
 	"github.com/beardedparrott/orchicon/internal/outbox"
 	"github.com/beardedparrott/orchicon/internal/policy"
 	"github.com/beardedparrott/orchicon/internal/project"
+	"github.com/beardedparrott/orchicon/internal/providers"
 	"github.com/beardedparrott/orchicon/internal/reconciler"
 	"github.com/beardedparrott/orchicon/internal/recovery"
+	"github.com/beardedparrott/orchicon/internal/repoguard"
 	"github.com/beardedparrott/orchicon/internal/retention"
 	"github.com/beardedparrott/orchicon/internal/runtime"
 	"github.com/beardedparrott/orchicon/internal/runtimeimage"
@@ -47,6 +50,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/version"
 	"github.com/beardedparrott/orchicon/internal/webhook"
 	"github.com/beardedparrott/orchicon/internal/workflow"
+	"github.com/beardedparrott/orchicon/internal/worktree"
 )
 
 // Server owns the running control plane process and its dependencies.
@@ -81,6 +85,9 @@ type Server struct {
 	askServePool  *opencode.HostServePool
 	// claudeBridge is the claude adapter, held so plane shutdown can retire its Ask sessions.
 	claudeBridge *claude.Bridge
+	// antigravityBridge is the antigravity (agy) adapter, held so plane shutdown and the runtime-client
+	// wiring can reach it (the same reason claudeBridge is held).
+	antigravityBridge *antigravity.Bridge
 	// askService is the Ask Orchicon service, held so plane shutdown can close its per-conversation MCP
 	// clients.
 	askService *askorchicon.Service
@@ -306,6 +313,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			CorrelationID:    in.CorrelationID,
 			TraceID:          in.TraceID,
 			WorkflowRunID:    in.WorkflowRunID,
+			// Carried through so a plan-quota turn keeps its zero cost: the recorder skips catalog
+			// pricing for it, and the cost explorer can say "included in plan" rather than "$0.0000".
+			Billing: in.Billing,
 		})
 		return err
 	}
@@ -508,6 +518,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			CorrelationID: in.CorrelationID,
 			TraceID:       in.TraceID,
 			WorkflowRunID: in.WorkflowRunID,
+			Billing:       in.Billing,
 		})
 		return err
 	})
@@ -564,6 +575,73 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 	})
 	dispatcher.Register(adapter.KindClaude, claudeBridge)
 
+	// Antigravity (agy) bridge (kind "antigravity", provider "google"), now Ask-capable as well as
+	// execution-capable: its bridge implements scheduler.ChatTurnClient, which is the ONLY thing
+	// Dispatcher.ChatKinds() reads, so no separate registry entry adds it to Ask. It gets the SAME four
+	// wirings the
+	// claude bridge receives — usage recorder, session store, the shared MCP scope resolver and its secret
+	// expander — because those are the seams the platform owns rather than per-adapter decisions. The
+	// dispatcher installs the diff ledger itself (scheduler/dispatcher.go's Register calls SetDiffLedger on
+	// every DiffLedgerSink), so no explicit call is needed here.
+	agyBridge := antigravity.New(log)
+	agyBridge.SetUsageRecorder(usageRecorderFn)
+	agyBridge.SetSessionStore(sessionStoreFn)
+	agyBridge.SetScopeResolver(mcpsettings.NewResolver(pool))
+	agyBridge.SetMCPSecretResolver(func(ctx context.Context, tenantID string, env, headers map[string]string) (map[string]string, map[string]string, error) {
+		return mcpsettings.ResolveSecretRefs(ctx, pool, secretsKEK, tenantID, env, headers)
+	})
+	// The tenant's Antigravity spawn settings: the auth method child 4 added, and — for the gemini-api-key
+	// method — the decrypted GEMINI_API_KEY. The resolution mirrors internal/runtime/antigravity_auth.go, but
+	// FAILS ACTIONABLY instead of degrading: a worker launched with a method it cannot authenticate is a run
+	// that burns its whole budget before failing, so the operator is told now.
+	agyBridge.SetSettingsResolver(func(ctx context.Context, tenantID string) (antigravity.SpawnSettings, string, error) {
+		return resolveAntigravitySpawn(ctx, pool, secretsKEK, tenantID)
+	})
+	// THE CONVERSATION'S PROJECT DIRECTORY, which is what makes an Ask conversation run IN the project it is
+	// about — and therefore what makes an approved write land there. It is a closure over the pool so the
+	// adapter never opens a transaction of its own, and it FAILS LOUD: a conversation that silently ran
+	// somewhere else would look fine and report work it did in the wrong tree.
+	agyBridge.SetProjectDirResolver(func(ctx context.Context, tenantID, projectID string) (string, error) {
+		return resolveAntigravityAskProjectDir(ctx, pool, tenantID, projectID)
+	})
+	dispatcher.Register(adapter.KindAntigravity, agyBridge)
+
+	// PROVIDER `google`'s MODEL TIER. Selecting the antigravity provider pill in either picker calls
+	// ProviderService.ListProviderModels(provider_id="google"), which cannot resolve through a profile (there
+	// is no `google` built-in and no catalog rows) — it must come from agy itself. This closure is the only
+	// place the two halves meet, because internal/providers cannot import internal/antigravity.
+	//
+	// THE AUTH CLASSIFICATION IS HERE ON PURPOSE: only this closure can recognise *acp.AuthError and the
+	// missing-binary failure, and it maps both onto providers.ErrAntigravityAuth, which is the sentinel
+	// handler.mapErr turns into CodeFailedPrecondition carrying AntigravityAuthRequiredMessage. Any OTHER
+	// failure stays a plain error, so the service falls back to its vendored snapshot instead of telling the
+	// operator to sign in when the real problem is a wedged child.
+	//
+	// IT IS SET WITH A LATE SETTER, NOT THROUGH api.Dependencies, because of the BOOT ORDER: api.Mount ran
+	// above (it is what CONSTRUCTS the providers service, exposing it as deps.ProvidersService), and the agy
+	// bridge cannot exist before the dispatcher and the tenant-secret resolver do. A value placed in
+	// api.Dependencies here would be read by a Mount that has already returned.
+	lister := func(ctx context.Context, tenantID string) ([]providers.AgyModel, error) {
+		rows, err := agyBridge.ListModelRows(ctx, tenantID)
+		if err != nil {
+			if errors.Is(err, antigravity.ErrModelListAuthRequired) {
+				return nil, providers.ErrAntigravityAuth
+			}
+			return nil, err
+		}
+		out := make([]providers.AgyModel, 0, len(rows))
+		for _, r := range rows {
+			out = append(out, providers.AgyModel{ID: r[0], Name: r[1]})
+		}
+		return out, nil
+	}
+	if deps.ProvidersService != nil {
+		deps.ProvidersService.SetAntigravityModelLister(lister)
+	} else {
+		log.Warn("antigravity: the providers service was not constructed — the `google` model tier lists its " +
+			"vendored snapshot only")
+	}
+
 	// Per-adapter enable/disable (AC 3): every kind named in ORCHICON_DISABLED_ADAPTER_KINDS is
 	// switched OFF for this plane.
 	for _, kind := range strings.Split(os.Getenv("ORCHICON_DISABLED_ADAPTER_KINDS"), ",") {
@@ -590,7 +668,7 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 		blobs: blobs, authH: authHandler, webhookD: webhookDisp, logWriter: logWriter,
 		hostServe: hostServe, askHostServe: askServe,
 		hostServePool: hostServePool, askServePool: askServePool,
-		claudeBridge: claudeBridge}
+		claudeBridge: claudeBridge, antigravityBridge: agyBridge}
 	if deps.AskService != nil {
 		// The Ask service holds the per-conversation MCP clients, so it is the
 		// object plane shutdown must reach; keep the reference.
@@ -640,6 +718,9 @@ func New(cfg config.Config, log *slog.Logger, logWriter *logging.RotatingWriter)
 			// The claude adapter routes its streaming session into the run's
 			// container over the daemon's duplex stdio transport.
 			claudeBridge.SetRuntimeClient(rtClient)
+			// The antigravity adapter routes its session into the run's container the same way: `agy acp` over
+			// the daemon's duplex stdio transport (acp.ContainerFactory).
+			agyBridge.SetRuntimeClient(rtClient)
 			// Execution liveness: fail executions orphaned by a plane restart or a lost runtime container so
 			// recovery re-dispatches.
 			s.reaper = scheduler.NewExecutionReaper(pool, activeProbe(dispatcher, pool, log), taskRec.FailLostExecution, log)
@@ -838,6 +919,25 @@ func (s *Server) Run(ctx context.Context) error {
 		})
 	}()
 
+	// REPO GUARD: heal a project's own .git/config if a run poisoned it (core.worktree pointing at a worker's
+	// worktree, a fixture's commit identity). Every few seconds, because a poisoned checkout also breaks the
+	// plane's own worktree reconciler (thousands of 'cannot prune; main repo unresolvable' lines) until it is
+	// repaired. It reads one small file per project; the project list is refreshed once a minute.
+	if s.pool != nil {
+		guard := repoguard.NewSweeper(s.pool, s.log)
+		go runOnStartupThenEvery(ctx, 3*time.Second, 5*time.Second, func() { guard.Sweep(ctx) })
+	}
+
+	// SANDBOX SCRATCH SWEEP: a native execution removes its own scratch when it ends, but a conversation has
+	// no end event and a crash skips it, and the scratch can hold a whole podman image store (tens of GB,
+	// and RAM when /tmp is a tmpfs). Remove sessions idle for worktree.ScratchSessionTTL, and the old shared
+	// layout, at boot and every 10 minutes.
+	go runOnStartupThenEvery(ctx, 30*time.Second, 10*time.Minute, func() {
+		if n := worktree.SweepSessions(worktree.DefaultScratchDir, worktree.ScratchSessionTTL, time.Now(), s.log); n > 0 {
+			s.log.Info("swept idle sandbox scratch", "removed", n)
+		}
+	})
+
 	// MCP stdio stale-child sweep: MCP server subprocesses spawned for sessions carry
 	// ORCHICON_MCP_STDIO=1.
 	go runOnStartupThenEvery(ctx, 1*time.Second, 30*time.Second, func() {
@@ -921,6 +1021,12 @@ func (s *Server) Run(ctx context.Context) error {
 		if s.claudeBridge != nil {
 			s.claudeBridge.CloseAsk()
 		}
+		// AND THE ANTIGRAVITY ASK CHILDREN, for exactly the same reason: an `agy acp` child is a host
+		// process the plane's exit does not reap, so without this a restart leaves every conversation's child
+		// running, holding its session and its stdin — and the next `session/resume` would race a live writer.
+		if s.antigravityBridge != nil {
+			s.antigravityBridge.CloseAsk()
+		}
 		// Ask Orchicon's per-conversation MCP clients: their stdio children are host children too, so a
 		// plane restart must close them here beside the claude Ask sessions.
 		if s.askService != nil {
@@ -935,6 +1041,11 @@ func (s *Server) Run(ctx context.Context) error {
 		s.authH.CloseEmbeddedOP()
 		if s.claudeBridge != nil {
 			s.claudeBridge.CloseAsk()
+		}
+		// BESIDE THE CLAUDE ASK SESSIONS, and for the same reason: an unclosed `agy acp` child survives the
+		// plane's exit.
+		if s.antigravityBridge != nil {
+			s.antigravityBridge.CloseAsk()
 		}
 		// Ask Orchicon's per-conversation MCP clients: their stdio children are host children too, so a
 		// plane restart must close them here beside the claude Ask sessions.
@@ -1176,6 +1287,7 @@ func devAdapterSeeds() []devAdapterSeed {
 		{"adp_opencode_dev", adapter.KindOpencode, opencode.BuildCapabilitiesJSON},
 		{"adp_orchicon_dev", adapter.KindOrchicon, orchicon.BuildCapabilitiesJSON},
 		{"adp_claude_dev", adapter.KindClaude, claude.BuildCapabilitiesJSON},
+		{"adp_antigravity_dev", adapter.KindAntigravity, antigravity.BuildCapabilitiesJSON},
 	}
 }
 
@@ -1236,35 +1348,73 @@ func seedDevAdapterKind(ctx context.Context, pool *db.Pool, log *slog.Logger, ad
 }
 
 // activeProbe returns the execution-reaper liveness probe for the dispatcher.
+// adapterIDOf renders the execution's adapter id for a log field.
+func adapterIDOf(exec db.ExecutionRow) string {
+	if exec.AdapterID == nil {
+		return ""
+	}
+	return *exec.AdapterID
+}
+
 func activeProbe(dispatcher *scheduler.Dispatcher, pool *db.Pool, log *slog.Logger) func(exec db.ExecutionRow) bool {
 	return func(exec db.ExecutionRow) bool {
 		ctx := context.Background()
 		tx, err := pool.BeginTenantTx(ctx, "tnt_dev")
 		if err != nil {
-			log.Warn("liveness probe: begin tx failed", "execution", exec.ID, "error", err)
-			return false
+			log.Warn("liveness probe: begin tx failed — verdict UNKNOWN, not dead", "execution", exec.ID, "error", err)
+			// UNKNOWN IS NOT DEAD. Only a bridge that positively says "I do not have this execution" may
+			// authorize a kill; a database hiccup or an unregistered bridge must not.
+			return true
 		}
 		defer tx.Rollback(ctx)
-		ver, err := db.GetLatestWorkerVersion(ctx, tx.Tx, "tnt_dev", exec.WorkerID, true)
-		if err != nil {
-			log.Warn("liveness probe: worker version lookup failed", "execution", exec.ID, "error", err)
-			return false
+		// PROBE THE BRIDGE THE EXECUTION ACTUALLY RAN ON — NOT THE ONE ITS WORKER IS PINNED TO NOW.
+		//
+		// This used to resolve the kind from the worker's CURRENT published model_ref and probe that
+		// bridge. The two can differ, and when they do the probe asks the WRONG bridge whether an
+		// execution is alive: that bridge has never heard of it, answers "not active", and the reaper
+		// kills a run that is working perfectly.
+		//
+		// MEASURED (prod run 01M87T2BG0TV1XZ6HSEYEC9KCB, 22:18): execution 01M87T75ZX ran on
+		// adp_orchicon_dev and the worker's model_ref was opencode/... , so the probe asked the OPENCODE
+		// bridge, which returned false. The reaper failed the execution as "execution lost: control plane
+		// restarted or runtime container gone" — 217 seconds in, while that session went on to log
+		// StopLength continuation turns at 22:32 and 22:38. It was alive the whole time.
+		//
+		// The execution row records the adapter it was dispatched against. That is the authority.
+		kind := ""
+		if exec.AdapterID != nil && *exec.AdapterID != "" {
+			if arow, aerr := db.GetAdapter(ctx, tx.Tx, "tnt_dev", *exec.AdapterID); aerr == nil && arow.Kind != "" {
+				kind = arow.Kind
+			} else if aerr != nil {
+				// A missing adapter row is not automatically "not alive": fall through to the worker's
+				// pinned kind rather than reaping on a bookkeeping gap.
+				log.Warn("liveness probe: execution adapter row unavailable — falling back to the worker's kind",
+					"execution", exec.ID, "adapter_id", *exec.AdapterID, "error", aerr)
+			}
 		}
-		kind := adapter.AdapterKind(ver.ModelRef)
 		if kind == "" {
-			// Same fallback the reconciler applies at dispatch time: an empty/malformed model_ref dispatches
-			// under the legacy default kind.
-			kind = adapter.DefaultAdapterKind
+			ver, err := db.GetLatestWorkerVersion(ctx, tx.Tx, "tnt_dev", exec.WorkerID, true)
+			if err != nil {
+				log.Warn("liveness probe: worker version lookup failed", "execution", exec.ID, "error", err)
+				// NOT ALIVE IS NOT THE SAME AS UNKNOWN. A bookkeeping failure must not authorize a kill.
+				return true
+			}
+			kind = adapter.AdapterKind(ver.ModelRef)
+			if kind == "" {
+				kind = adapter.DefaultAdapterKind
+			}
 		}
 		bridge, err := dispatcher.Resolve(kind)
 		if err != nil {
-			log.Warn("liveness probe: no bridge for kind", "execution", exec.ID, "kind", kind, "error", err)
-			return false
+			log.Warn("liveness probe: no bridge for kind — verdict UNKNOWN, not dead",
+				"execution", exec.ID, "kind", kind, "adapter_id", adapterIDOf(exec), "error", err)
+			return true
 		}
 		rep, ok := bridge.(scheduler.LivenessReporter)
 		if !ok {
-			log.Warn("liveness probe: bridge does not support liveness", "execution", exec.ID, "kind", kind)
-			return false
+			log.Warn("liveness probe: bridge does not support liveness — verdict UNKNOWN, not dead",
+				"execution", exec.ID, "kind", kind)
+			return true
 		}
 		return rep.IsExecutionActive(exec.ID)
 	}

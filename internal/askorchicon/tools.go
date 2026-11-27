@@ -17,6 +17,10 @@ type ToolFn func(ctx context.Context, pool *db.Pool, args json.RawMessage) (json
 type PropertySchema struct {
 	Type        string `json:"type"`
 	Description string `json:"description,omitempty"`
+	// Items describes an ARRAY's elements. Needed by any `type: "array"` property: the shipped schema
+	// carried an array with no element description (`ask_user.options`), which Gemini rejects with
+	// 400 INVALID_ARGUMENT and which therefore broke every agy Ask turn that offered ask_user.
+	Items *PropertySchema `json:"items,omitempty"`
 }
 
 // ToolDefinition describes a tool available to the agent.
@@ -232,7 +236,15 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Fn:       toolAskUser,
 			Properties: map[string]PropertySchema{
 				"question":    {Type: "string", Description: "The clarifying question to put to the user, in one or two sentences."},
-				"options":     {Type: "array", Description: "Two or more choice options. Each is either an object {label, description?} or a plain string label. Omit only for a free-text-only question (then set allow_other=true)."},
+				"options": {
+					Type: "array",
+					Description: "Two or more choice options. Each is either an object {label, description?} or " +
+						"a plain string label. Omit only for a free-text-only question (then set allow_other=true).",
+					// AN ARRAY MUST DESCRIBE ITS ELEMENTS. Without this, Gemini rejects the whole
+					// tool schema with 400 INVALID_ARGUMENT and every agy Ask turn offering ask_user
+					// fails — which is exactly what live QA reported.
+					Items: &PropertySchema{Type: "string", Description: "A choice: either a plain label or an object with label and optional description."},
+				},
 				"allow_other": {Type: "boolean", Description: "Also accept a free-text answer in addition to the options. SET THIS TRUE ON EVERY OPTION CARD: your options are a shortcut, not the whole set of answers, and without this an operator whose answer is not listed can only pick something untrue or abandon the card. Required true when options is empty (a free-text-only question)."},
 			},
 			Required: []string{"question"},
@@ -314,7 +326,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"scheduled_start_at":  {Type: "string", Description: "Scheduled start time (ISO 8601 or 'N minutes from now'). Setting this marks the item scheduled."},
 				"auto_start_workflow": {Type: "boolean", Description: "Start the bound workflow immediately on save (opt-in, default false). Only applies when workflow_id is set and no scheduled_start_at is given; conflicts with a schedule."},
 				"runtime_image":       {Type: "string", Description: "Runtime container image tag; empty = base image"},
-				"context_files":       {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files)"},
+				"context_files":       {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files)",
+					Items: &PropertySchema{Type: "string", Description: "One element."}},
 				"ephemeral":           {Type: "boolean", Description: "Mark the item machine-managed and transient (Quick Work): hidden from every human view and meant to be hard-deleted when the job ends. Default false. Top-level only — rejected with a parent_id."},
 				"recurrence":          {Type: "object", Description: recurrenceToolDescription},
 				"execution_mode":      {Type: "string", Description: "Where this item's runs execute: local (in-process on the host, the default) or runtime (inside a container). Omit to inherit the project's mode. THIS APPLIES TO RECURRING ITEMS TOO — a recurring item set to local fires locally every time. Set it explicitly when the operator asks for a local run."},
@@ -347,7 +360,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"auto_start_workflow":  {Type: "boolean", Description: "Start the bound workflow immediately on save. true with no scheduled_start_at clears any existing schedule."},
 				"workflow_run_id":      {Type: "string", Description: "The workflow run ID this item is bound to; empty string allows re-scheduling"},
 				"runtime_image":        {Type: "string", Description: "Runtime container image tag; empty string resets to the base image"},
-				"context_files":        {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files); an empty list clears the selection"},
+				"context_files":        {Type: "array", Description: "Absolute file or directory paths to include as worker context (same model as project context files); an empty list clears the selection",
+					Items: &PropertySchema{Type: "string", Description: "One element."}},
 				"kind":                 {Type: "string", Description: "New kind (epic, feature, task, subtask). The parent/child hierarchy is resolved automatically (see description)."},
 			},
 			Required: []string{"id"},
@@ -384,7 +398,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Properties: map[string]PropertySchema{
 				"project_id": {Type: "string", Description: "Project ID"},
 				"parent_id":  {Type: "string", Description: "Parent work item ID (empty = top level)"},
-				"child_ids":  {Type: "array", Description: "Direct child work item IDs in the new order"},
+				"child_ids":  {Type: "array", Description: "Direct child work item IDs in the new order",
+					Items: &PropertySchema{Type: "string", Description: "One element."}},
 			},
 			Required: []string{"project_id", "child_ids"},
 		},
@@ -564,7 +579,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Fn:          toolCreateWorkflow,
 			Properties: map[string]PropertySchema{
 				"name":         {Type: "string", Description: "Workflow name"},
-				"steps":        {Type: "array", Description: "Optional JSON array of step objects ({id, name, kind, ref, worker_version, depends_on, config, position_x, position_y}) seeded as draft version 1"},
+				"steps":        {Type: "array", Description: "Optional JSON array of step objects ({id, name, kind, ref, worker_version, depends_on, config, position_x, position_y}) seeded as draft version 1",
+					Items: &PropertySchema{Type: "object", Description: "One step object."}},
 				"description":  {Type: "string", Description: "Optional description; stored as the draft version-1 version_note when version_note is empty"},
 				"version_note": {Type: "string", Description: "Optional note describing draft version 1"},
 				"type":         {Type: "string", Description: "Optional workflow type: one_shot or template"},
@@ -754,7 +770,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Description: "Reorder categories within a target_type set. ordered_ids must be a permutation of existing ids.",
 			Mutating:    true,
 			Fn:          toolReorderCategories,
-			Properties:  map[string]PropertySchema{"target_type": {Type: "string", Description: "Target type"}, "ordered_ids": {Type: "array", Description: "Category IDs in new order"}},
+			Properties:  map[string]PropertySchema{"target_type": {Type: "string", Description: "Target type"}, "ordered_ids": {Type: "array", Description: "Category IDs in new order",
+					Items: &PropertySchema{Type: "string", Description: "One element."}}},
 			Required:    []string{"target_type", "ordered_ids"},
 		},
 		// --- Runtime Images ---
@@ -777,7 +794,9 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Description: "Create a new runtime image spec (draft status) with a name, slug, and optional apt packages + toolchain lines. The image is built later via the UI. Accepts optional env (JSON object string) and dockerfile_override.",
 			Mutating:    true,
 			Fn:          toolCreateRuntimeImage,
-			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Image name"}, "slug": {Type: "string", Description: "Image slug (lowercase words with hyphens)"}, "description": {Type: "string", Description: "Optional description"}, "apt_packages": {Type: "array", Description: "Optional list of apt package names"}, "toolchains": {Type: "array", Description: "Optional toolchain install lines (pip/npm/mise/curl)"}, "env": {Type: "string", Description: "Optional env as JSON object string (e.g. \"{\\\"PLAYWRIGHT_BROWSERS_PATH\\\":\\\"/ms-playwright\\\"}\")"}, "dockerfile_override": {Type: "string", Description: "Optional raw Dockerfile text (empty = generate from structured fields)"}, "tag": {Type: "string", Description: "Optional tag; defaults to \"<slug>:latest\""}},
+			Properties:  map[string]PropertySchema{"name": {Type: "string", Description: "Image name"}, "slug": {Type: "string", Description: "Image slug (lowercase words with hyphens)"}, "description": {Type: "string", Description: "Optional description"}, "apt_packages": {Type: "array", Description: "Optional list of apt package names",
+					Items: &PropertySchema{Type: "string", Description: "One element."}}, "toolchains": {Type: "array", Description: "Optional toolchain install lines (pip/npm/mise/curl)",
+					Items: &PropertySchema{Type: "string", Description: "One element."}}, "env": {Type: "string", Description: "Optional env as JSON object string (e.g. \"{\\\"PLAYWRIGHT_BROWSERS_PATH\\\":\\\"/ms-playwright\\\"}\")"}, "dockerfile_override": {Type: "string", Description: "Optional raw Dockerfile text (empty = generate from structured fields)"}, "tag": {Type: "string", Description: "Optional tag; defaults to \"<slug>:latest\""}},
 			Required:    []string{"name", "slug"},
 		},
 		{
@@ -785,7 +804,9 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Description: "Update a runtime image spec (draft/failed; ready reverts to draft). Requires id + version (optimistic concurrency). Optionally updates name, slug, description, apt_packages, toolchains, env (JSON object string), dockerfile_override, tag.",
 			Mutating:    true,
 			Fn:          toolUpdateRuntimeImage,
-			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Runtime image ID"}, "version": {Type: "number", Description: "Current spec version (optimistic concurrency)"}, "name": {Type: "string", Description: "New name"}, "slug": {Type: "string", Description: "New slug"}, "description": {Type: "string", Description: "New description"}, "apt_packages": {Type: "array", Description: "New apt packages"}, "toolchains": {Type: "array", Description: "New toolchain lines"}, "env": {Type: "string", Description: "New env as JSON object string"}, "dockerfile_override": {Type: "string", Description: "New Dockerfile override"}, "tag": {Type: "string", Description: "New tag"}},
+			Properties:  map[string]PropertySchema{"id": {Type: "string", Description: "Runtime image ID"}, "version": {Type: "number", Description: "Current spec version (optimistic concurrency)"}, "name": {Type: "string", Description: "New name"}, "slug": {Type: "string", Description: "New slug"}, "description": {Type: "string", Description: "New description"}, "apt_packages": {Type: "array", Description: "New apt packages",
+					Items: &PropertySchema{Type: "string", Description: "One element."}}, "toolchains": {Type: "array", Description: "New toolchain lines",
+					Items: &PropertySchema{Type: "string", Description: "One element."}}, "env": {Type: "string", Description: "New env as JSON object string"}, "dockerfile_override": {Type: "string", Description: "New Dockerfile override"}, "tag": {Type: "string", Description: "New tag"}},
 			Required:    []string{"id", "version"},
 		},
 		{
@@ -848,7 +869,7 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 		// --- Settings ---
 		{
 			Name:        "get_settings",
-			Description: "Get the current tenant settings (default models, stall parameters).",
+			Description: "Get the current tenant settings (default models, stall parameters, Antigravity auth method + ToS notice). antigravity_tos_notice is read-only text to show wherever oauth-personal is selected.",
 			Mutating:    false,
 			Fn:          toolGetSettings,
 		},
@@ -872,6 +893,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"default_budget_overrides":            {Type: "string", Description: "JSON object of default execution-budget gates. An OMITTED gate means NO LIMIT — there are no built-in ceilings, so each one exists only because an operator set it. Example: {\"cost_usd\":10,\"wall_clock_seconds\":7200,\"compact_max_turns\":30}. Empty string = leave unchanged."},
 				"execution_reap_grace_seconds":        {Type: "number", Description: "Liveness reaper grace before a stuck running execution is reaped (0 = leave unchanged)"},
 				"execution_reap_consecutive_failures": {Type: "number", Description: "Liveness probe failures before the reaper acts (0 = leave unchanged)"},
+				"antigravity_auth_method":             {Type: "string", Description: "Antigravity (agy) ACP auth method: oauth-personal (default) | oauth-business | gemini-api-key | agent-platform. gemini-api-key is the only method that works inside a runtime container (it reads the tenant secret GEMINI_API_KEY; the personal credential lives in the host keyring). Empty = leave unchanged. In a container, oauth-personal is refused up front."},
+				"antigravity_share_telemetry":         {Type: "boolean", Description: "Whether Google may receive agy usage telemetry (default false). Omitted = leave unchanged."},
 			},
 		},
 
@@ -903,7 +926,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"name":            {Type: "string", Description: "Entry name (immutable after create)"},
 				"transport":       {Type: "string", Description: "'stdio' or 'streamable-http' (default stdio)"},
 				"command":         {Type: "string", Description: "stdio: executable"},
-				"args":            {Type: "array", Description: "stdio: argv array"},
+				"args":            {Type: "array", Description: "stdio: argv array",
+					Items: &PropertySchema{Type: "string", Description: "One element."}},
 				"env":             {Type: "object", Description: "stdio: env map; values may be ${SECRET_NAME} references"},
 				"url":             {Type: "string", Description: "streamable-http: endpoint URL"},
 				"headers":         {Type: "object", Description: "streamable-http: headers; values may be ${SECRET_NAME} references"},
@@ -923,7 +947,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"id":              {Type: "string", Description: "MCP server ID"},
 				"transport":       {Type: "string", Description: "'stdio' or 'streamable-http'"},
 				"command":         {Type: "string", Description: "stdio: executable"},
-				"args":            {Type: "array", Description: "stdio: argv array"},
+				"args":            {Type: "array", Description: "stdio: argv array",
+					Items: &PropertySchema{Type: "string", Description: "One element."}},
 				"replace_args":    {Type: "boolean", Description: "Replace args entirely (default merges nothing; args only replace when true)"},
 				"env":             {Type: "object", Description: "stdio: env map; values may be ${SECRET_NAME}"},
 				"replace_env":     {Type: "boolean", Description: "Replace env entirely instead of merging"},

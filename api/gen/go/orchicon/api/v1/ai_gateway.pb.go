@@ -382,7 +382,13 @@ type UsageRecord struct {
 	// linkage that lets a chat client read back its OWN session's tokens, cache
 	// and cost: GetUsage filters on it. Populated from the conversation id when
 	// the Ask chat path records usage (internal/askorchicon/chat.go).
-	SessionId     string `protobuf:"bytes,20,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	SessionId string `protobuf:"bytes,20,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// billing is the usage regime this record was charged under. "plan_quota"
+	// means the turn was covered by a subscription plan, so cost_usd is zero
+	// because it was already paid for — NOT because it was free. Empty means
+	// metered (the default: a per-token call priced from the catalog). Clients
+	// must render "included in plan" for plan_quota rather than "$0.0000".
+	Billing       string `protobuf:"bytes,21,opt,name=billing,proto3" json:"billing,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -557,6 +563,13 @@ func (x *UsageRecord) GetSessionId() string {
 	return ""
 }
 
+func (x *UsageRecord) GetBilling() string {
+	if x != nil {
+		return x.Billing
+	}
+	return ""
+}
+
 // CostSummary is a roll-up of cost + tokens over a time window, grouped
 // at a drill-down level (docs/10 §11 cost explorer).
 type CostSummary struct {
@@ -587,9 +600,14 @@ type CostSummary struct {
 	// The latest occurred_at among the group's usage records — the time the
 	// drill-down group last finished activity. Used for the "Finished" sort
 	// on the cost explorer rollup tabs (docs/10 §11).
-	FinishedAt    *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	FinishedAt *timestamppb.Timestamp `protobuf:"bytes,17,opt,name=finished_at,json=finishedAt,proto3" json:"finished_at,omitempty"`
+	// plan_quota_records counts the group's records whose billing is
+	// "plan_quota". A group where every record is plan-quota has a genuine cost
+	// of zero that is NOT the same claim as "free" — the UI says "Included in
+	// plan" instead of "$0.0000".
+	PlanQuotaRecords int64 `protobuf:"varint,18,opt,name=plan_quota_records,json=planQuotaRecords,proto3" json:"plan_quota_records,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *CostSummary) Reset() {
@@ -739,6 +757,13 @@ func (x *CostSummary) GetFinishedAt() *timestamppb.Timestamp {
 		return x.FinishedAt
 	}
 	return nil
+}
+
+func (x *CostSummary) GetPlanQuotaRecords() int64 {
+	if x != nil {
+		return x.PlanQuotaRecords
+	}
+	return 0
 }
 
 // OpenCodeModel is a model discovered from the `opencode models --verbose`
@@ -1223,7 +1248,7 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
 	"\aenabled\x18\x03 \x01(\bR\aenabled\x12\x16\n" +
 	"\x06models\x18\x04 \x03(\tR\x06models\x12\x16\n" +
-	"\x06custom\x18\x05 \x01(\bR\x06custom\"\xbc\x05\n" +
+	"\x06custom\x18\x05 \x01(\bR\x06custom\"\xd6\x05\n" +
 	"\vUsageRecord\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1b\n" +
 	"\ttenant_id\x18\x02 \x01(\tR\btenantId\x12\x1d\n" +
@@ -1250,7 +1275,8 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"\x12cache_write_tokens\x18\x12 \x01(\x03R\x10cacheWriteTokens\x12)\n" +
 	"\x10reasoning_tokens\x18\x13 \x01(\x03R\x0freasoningTokens\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x14 \x01(\tR\tsessionId\"\xd9\x05\n" +
+	"session_id\x18\x14 \x01(\tR\tsessionId\x12\x18\n" +
+	"\abilling\x18\x15 \x01(\tR\abilling\"\x87\x06\n" +
 	"\vCostSummary\x12\x19\n" +
 	"\bgroup_by\x18\x01 \x01(\tR\agroupBy\x12\x1b\n" +
 	"\tgroup_key\x18\x02 \x01(\tR\bgroupKey\x12\x1d\n" +
@@ -1272,7 +1298,8 @@ const file_orchicon_api_v1_ai_gateway_proto_rawDesc = "" +
 	"\x12cache_write_tokens\x18\x0f \x01(\x03R\x10cacheWriteTokens\x12)\n" +
 	"\x10reasoning_tokens\x18\x10 \x01(\x03R\x0freasoningTokens\x12;\n" +
 	"\vfinished_at\x18\x11 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"finishedAt\"\x8e\x03\n" +
+	"finishedAt\x12,\n" +
+	"\x12plan_quota_records\x18\x12 \x01(\x03R\x10planQuotaRecords\"\x8e\x03\n" +
 	"\rOpenCodeModel\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vprovider_id\x18\x02 \x01(\tR\n" +

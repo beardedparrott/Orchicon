@@ -5,7 +5,9 @@
 //   - skipped  / failed → neutral "Runs in place" in-place state, no branch
 //     (the non-repo fallback; provisioning failure falls back the same way)
 //   - pending  → status only, provisioning in progress
-//   - pruned   → status only, the worktree was reaped
+//   - pruned   → the CHECKOUT was reaped; the branch is reported separately and
+//     survives. "Pruned" on its own read as data loss when only a disposable
+//     checkout had gone.
 //   - empty/other → render nothing; no branch is ever shown unless the
 //     worktree status is "ready".
 export type WorktreeTile = { label: string; value: string };
@@ -28,7 +30,22 @@ export function worktreeTileItems(
     case "pending":
       return [{ label: "Worktree", value: "Pending" }];
     case "pruned":
-      return [{ label: "Worktree", value: "Pruned" }];
+      // "Pruned" READ AS DATA LOSS AND IS THE OPPOSITE.
+      //
+      // Two different things share this status and the operator cannot tell them apart:
+      //   - the WORKTREE (a disposable checkout) was reaped — a few seconds to rebuild
+      //   - the BRANCH (the commits, the actual work) was deleted — unrecoverable
+      // On abort, only the first is true: abort keeps the branch and reaps the checkout. Saying
+      // "Pruned" flatly implied the work was gone when the branch was sitting on origin.
+      //
+      // So the tile names WHICH thing went and states the durable half. A branch that survives is
+      // reported by name, because it is the thing an operator would resume or merge.
+      return [
+        { label: "Worktree", value: "Reaped (checkout removed)" },
+        ...(worktreeBranch
+          ? [{ label: "Branch", value: worktreeBranch + " — kept" }]
+          : [{ label: "Branch", value: "None recorded" }]),
+      ];
     default:
       return [];
   }

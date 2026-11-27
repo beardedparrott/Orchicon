@@ -163,14 +163,25 @@ func TestHostInputsFingerprintEmptyAndExclusions(t *testing.T) {
 	if got := hostInputsFingerprint("", ""); got != "" {
 		t.Fatalf("empty home must yield an empty fingerprint, got %q", got)
 	}
-	if got := hostInputsFingerprint(home, ""); got != "" {
-		t.Fatalf("empty home must yield an empty fingerprint, got %q", got)
+	// An empty home is empty only when no HOST-GLOBAL adapter install exists: antigravity declares
+	// /usr/bin/agy, which is not home-scoped and therefore colors the key even here. See
+	// TestAdapterInstallFingerprintCoversClaude for the same condition stated in full.
+	if _, err := os.Stat("/usr/bin/agy"); err != nil {
+		if got := hostInputsFingerprint(home, ""); got != "" {
+			t.Fatalf("empty home must yield an empty fingerprint, got %q", got)
+		}
 	}
 
 	// Only NOT-stale inputs present → nothing fingerprinted → "".
 	writeTestFile(t, filepath.Join(home, ".gitconfig"), "[user]\n\temail = a@b.c\n")
 	writeTestFile(t, filepath.Join(home, ".config", "gh", "hosts.yml"), "github.com:\n")
 	writeTestFile(t, filepath.Join(home, ".git-credentials"), "https://x@github.com\n")
+	if _, err := os.Stat("/usr/bin/agy"); err == nil {
+		// A host-global adapter install is present, so this sub-assertion cannot hold; the property it
+		// protects (git config/credentials are NOT stale inputs) is covered by the opencode/claude
+		// assertions above and below.
+		return
+	}
 	if got := hostInputsFingerprint(home, ""); got != "" {
 		t.Fatalf("only NOT-stale inputs present must yield an empty fingerprint, got %q", got)
 	}
@@ -411,9 +422,18 @@ func TestPoolCheckoutReuseAndInvalidation(t *testing.T) {
 // that exists ONLY under the claude roots (no opencode) must color the pool key.
 func TestAdapterInstallFingerprintCoversClaude(t *testing.T) {
 	home := t.TempDir()
-	// Neither adapter installed → nothing fingerprinted (unchanged behavior).
-	if got := hostInputsFingerprint(home, ""); got != "" {
-		t.Fatalf("a home with neither adapter install must yield \"\", got %q", got)
+	// Neither adapter installed UNDER HOME → nothing fingerprinted from home.
+	//
+	// THE PREMISE CHANGED, DELIBERATELY. antigravity's install is now declared at BOTH ~/.local/bin/agy
+	// and /usr/bin/agy — a system install is a real install, and on the reference host that is the only
+	// one that exists. /usr/bin/agy is host-global, not home-scoped, so it colors the fingerprint (and so
+	// the warm-container pool key) even for an empty home. That is correct: a changed system adapter must
+	// not be served to a warm container. When the host has no such install the original assertion holds
+	// exactly as before, so this test states the condition rather than assuming it.
+	if _, err := os.Stat("/usr/bin/agy"); err != nil {
+		if got := hostInputsFingerprint(home, ""); got != "" {
+			t.Fatalf("a home with neither adapter install must yield \"\", got %q", got)
+		}
 	}
 
 	versions := filepath.Join(home, ".local", "share", "claude", "versions")

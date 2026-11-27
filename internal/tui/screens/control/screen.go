@@ -995,6 +995,8 @@ func (m *Model) detail(ctx context.Context, src, id string) (string, []kit2.Fiel
 			{Key: "log retention", Value: screenkit.FmtInt(int(s.GetLogRetentionDays())) + "d"},
 			{Key: "execution retention", Value: execRetentionSummary(s)},
 			{Key: "outbox retention", Value: screenkit.FmtInt(int(s.GetOutboxRetentionDays())) + "d"},
+			{Key: "antigravity auth", Value: antigravityMethodSummary(s)},
+			{Key: "antigravity telemetry", Value: fmtBool(s.GetAntigravityShareTelemetry(), "shared with Google", "off")},
 			{Key: "session token ttl", Value: screenkit.FmtInt64(s.GetSessionAccessTokenTtlSeconds()) + "s"},
 			{Key: "session refresh ttl", Value: screenkit.FmtInt64(s.GetSessionRefreshTokenTtlSeconds()) + "s"},
 			{Key: "actions", Value: "e: edit & save"},
@@ -1513,6 +1515,17 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "compact_recent_turns", Label: "Compaction keeps recent turns", Kind: kit2.KNumber, Initial: bi("compact_recent_turns", ""), Placeholder: "how many recent turns survive the collapse"},
 		kit2.FieldSpec{Name: "memory_enabled", Label: "Memory enabled", Kind: kit2.KCheckbox, Initial: bi("memory_enabled", "")},
 		kit2.FieldSpec{Name: "memory_digest_entries", Label: "Memory digest entries", Kind: kit2.KNumber, Initial: bi("memory_digest_entries", ""), Placeholder: "how many digest entries are carried"},
+		// --- Antigravity (agy) ---
+		// The METHOD is an operator choice, not a constant: personal sign-in reuses the CLI's cached
+		// Google login (and cannot work inside a runtime container), while gemini-api-key is the
+		// container-capable path and reads the tenant secret GEMINI_API_KEY. The ToS notice is shown
+		// on the row summary because the form has no room for a paragraph; it is the same text every
+		// other client renders (the server sends it read-only on the settings message).
+		kit2.FieldSpec{Name: "antigravity_auth_method", Label: "Antigravity auth method", Kind: kit2.KSelect, Initial: antigravityMethodInitial(s.GetAntigravityAuthMethod()), Options: []kit2.Option{
+			{Value: "oauth-personal", Label: "oauth-personal"}, {Value: "oauth-business", Label: "oauth-business"},
+			{Value: "gemini-api-key", Label: "gemini-api-key"}, {Value: "agent-platform", Label: "agent-platform"},
+		}},
+		kit2.FieldSpec{Name: "antigravity_share_telemetry", Label: "Share agy telemetry with Google", Kind: kit2.KCheckbox, Initial: fmtBool(s.GetAntigravityShareTelemetry(), "true", "false")},
 		kit2.FieldSpec{Name: "backup_schedule", Label: "Backup schedule (cron)", Kind: kit2.KText, Initial: s.GetBackupSchedule()},
 		kit2.FieldSpec{Name: "backup_retention_days", Label: "Backup retention (days)", Kind: kit2.KNumber, Initial: i32(s.GetBackupRetentionDays())},
 		kit2.FieldSpec{Name: "backup_directory", Label: "Backup directory", Kind: kit2.KText, Initial: s.GetBackupDirectory()},
@@ -1564,6 +1577,10 @@ func (m *Model) settingsForm() *kit2.Form {
 		out.ExecutionRetentionVacuum = v["execution_retention_vacuum"] == "true"
 		out.ExecutionRetentionTimeoutSeconds = int32(i64Of0(v["execution_retention_timeout_seconds"]))
 		out.OutboxRetentionDays = int32(i64Of0(v["outbox_retention_days"]))
+		// Sent on every save: the telemetry column is written unconditionally server-side, so an
+		// omitted value would silently reset it to false.
+		out.AntigravityAuthMethod = v["antigravity_auth_method"]
+		out.AntigravityShareTelemetry = v["antigravity_share_telemetry"] == "true"
 		// A BLANK FIELD MUST STAY NIL so the column stores NULL and the built-in default (150)
 		// applies. Parsing it to 0 would mean "keep nothing" — the opposite of the operator's
 		// intent when they simply left the box empty.
@@ -2402,4 +2419,36 @@ func authModeOptions() []kit2.Option {
 		// this provider, so the label says which secret appears and that it is automatic.
 		{Value: providers.AuthModeToken, Label: "token (auto-writes CUSTOM_<REF>_API_KEY)"},
 	}
+}
+
+// antigravityMethodInitial maps an unset method onto the server's default so the select always has
+// a selected option (an empty select reads as "no method").
+func antigravityMethodInitial(method string) string {
+	if method == "" {
+		return "oauth-personal"
+	}
+	return method
+}
+
+// antigravityMethodSummary renders the selected method plus the one fact an operator needs while
+// looking at the row: that the personal path keeps its credential in the HOST keyring, so a runtime
+// container cannot use it.
+func antigravityMethodSummary(s *apiv1.TenantSettings) string {
+	m := antigravityMethodInitial(s.GetAntigravityAuthMethod())
+	switch m {
+	case "oauth-personal":
+		return m + " (host keyring: local runs only)"
+	case "gemini-api-key":
+		return m + " (tenant secret GEMINI_API_KEY)"
+	default:
+		return m
+	}
+}
+
+// fmtBool renders a boolean as one of two labels.
+func fmtBool(v bool, on, off string) string {
+	if v {
+		return on
+	}
+	return off
 }

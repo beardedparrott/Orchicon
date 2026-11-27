@@ -347,7 +347,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 	}
 	if _, err := ttx.Exec(ctx,
 		`UPDATE worker_versions
-		    SET agents_md = replace(agents_md, 'orchicon.safety=v24', 'orchicon.safety=v0')
+		    SET agents_md = replace(agents_md, 'orchicon.safety=v28', 'orchicon.safety=v0')
 		  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`, userID); err != nil {
 		t.Fatalf("stale marker: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestSeedKeepsSyncingAdoptedWorker(t *testing.T) {
 		userID).Scan(&agents); err != nil {
 		t.Fatalf("query adopted agents: %v", err)
 	}
-	if !strings.Contains(agents, "orchicon.safety=v24") {
+	if !strings.Contains(agents, "orchicon.safety=v28") {
 		t.Errorf("adopted worker should have been rolled forward to the current marker, got %q", agents[len(agents)-40:])
 	}
 }
@@ -411,7 +411,7 @@ func TestSeedBaseQACarriesPlaywright(t *testing.T) {
 	for _, want := range []string{
 		"Browser automation (Playwright) — VISUAL verification",
 		"read the screenshot back with your Read tool",
-		"orchicon.safety=v24",
+		"orchicon.safety=v28",
 	} {
 		if !strings.Contains(agents, want) {
 			t.Errorf("base QA agents_md missing %q", want)
@@ -493,8 +493,8 @@ func TestSeedCannedWorkersCarrySandboxPlaneGuard(t *testing.T) {
 			t.Errorf("canned worker must not carry prod/dev instance wording (contains %q)", forbid)
 		}
 	}
-	if !strings.Contains(agents, "orchicon.safety=v24") {
-		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v24)")
+	if !strings.Contains(agents, "orchicon.safety=v28") {
+		t.Errorf("canned worker must carry the current safety marker (orchicon.safety=v28)")
 	}
 }
 
@@ -511,19 +511,21 @@ func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 		box    string
 		budget string
 	}{
-		// ONLY THE WORKHORSES CARRY THE BUDGET SECTION. pr_reviewer and qa_engineer are deliberately not
-		// time-boxed — they run to a verdict, not to a clock — so they assert their wall-clock budget and no
-		// content marker. An empty box means "assert the budget only".
-		"w_se_principal_architect":      {"## Your time and how to spend it", "1500"},
-		"w_se_senior_software_engineer": {"## Your time and how to spend it", "3600"},
-		"w_se_pr_reviewer":              {"", "2400"},
-		"w_se_qa_engineer":              {"", "2400"},
+		// NO canned worker carries a wall-clock budget. A per-worker ceiling guillotined runs that were
+		// still making progress (a 1h gate marked a run "cancelled" mid-deliverable, three times over),
+		// so the seed leaves the gate to the tenant default — or to nothing at all when the tenant sets
+		// none. The workhorses still carry the budget SECTION as prose; the gate itself is empty.
+		// An empty budget means "assert that no worker-level gate exists".
+		"w_se_principal_architect":      {"## Your time and how to spend it", ""},
+		"w_se_senior_software_engineer": {"## Your time and how to spend it", ""},
+		"w_se_pr_reviewer":              {"", ""},
+		"w_se_qa_engineer":              {"", ""},
 	}
 	for id, tc := range want {
 		resetWorker(t, pool, id)
 		var agents, budget string
 		if err := pool.QueryRow(ctx,
-			`SELECT agents_md, budget_overrides->>'wall_clock_seconds' FROM worker_versions
+			`SELECT agents_md, COALESCE(budget_overrides->>'wall_clock_seconds', '') FROM worker_versions
 			  WHERE worker_id = $1 AND tenant_id = 'tnt_dev' AND version = 1`,
 			id).Scan(&agents, &budget); err != nil {
 			t.Fatalf("query %s: %v", id, err)
@@ -531,7 +533,7 @@ func TestSeedSDLCWorkersAreTimeBoxedWorkhorses(t *testing.T) {
 		if tc.box != "" && !strings.Contains(agents, tc.box) {
 			t.Errorf("%s agents_md missing %q", id, tc.box)
 		}
-		if !strings.Contains(agents, "orchicon.safety=v24") {
+		if !strings.Contains(agents, "orchicon.safety=v28") {
 			t.Errorf("%s agents_md missing the safety marker", id)
 		}
 		if budget != tc.budget {
@@ -680,7 +682,7 @@ func TestSeedDesignApproverCarriesDesignReviewContract(t *testing.T) {
 		t.Fatalf("query canned Design Approver agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v24",
+		"orchicon.safety=v28",
 		"review the design/architecture PLAN only",
 		"plan is sound and complete; implementation may begin",
 		"plan does not meet the bar",
@@ -720,7 +722,7 @@ func TestSeedCodeApproverCarriesCodeReviewContract(t *testing.T) {
 		t.Fatalf("query canned Code Approver agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v24",
+		"orchicon.safety=v28",
 		"review the completed IMPLEMENTATION",
 		"do not re-review it",
 		"implementation is done and meets the acceptance criteria",
@@ -758,7 +760,7 @@ func TestSeedDevOpsCarriesMergeConflictResolutionContract(t *testing.T) {
 		t.Fatalf("query canned DevOps agents: %v", err)
 	}
 	checks := []string{
-		"orchicon.safety=v24",
+		"orchicon.safety=v28",
 		"Merge conflicts — detect AND resolve",
 		"git merge origin/develop",
 		"git add",
@@ -846,7 +848,7 @@ func TestSeedRollForwardPreservesModelRef(t *testing.T) {
 		     labels, published_at, created_at)
 		 SELECT $1, 'tnt_dev', worker_id, 2, 'user version', 'published',
 		        'google/gemini-2.5-pro', role, skills, behavior,
-		        replace(agents_md, 'orchicon.safety=v24', 'orchicon.safety=v0'),
+		        replace(agents_md, 'orchicon.safety=v28', 'orchicon.safety=v0'),
 		        context_sources, permissions, gated_tools, budget_overrides,
 		        execution_policy_ref, concurrency_limit, recovery_workflow_ref,
 		        labels, now(), now()
@@ -940,7 +942,7 @@ func TestSeedAutomationResearchTrioSeededWithRoleAndGenericPurposes(t *testing.T
 		if modelRef != "" {
 			t.Errorf("%s model_ref = %q, want empty (runtime_ref retired; dispatch kind derives at run time)", tc.slug, modelRef)
 		}
-		if !strings.Contains(agents, "Sandbox vs plane") || !strings.Contains(agents, "orchicon.safety=v24") {
+		if !strings.Contains(agents, "Sandbox vs plane") || !strings.Contains(agents, "orchicon.safety=v28") {
 			t.Errorf("%s agents_md missing seed markers", tc.slug)
 		}
 		if !strings.Contains(agents, "Worktree hygiene") {
@@ -1079,5 +1081,79 @@ func TestGateWorkersDoNotShareAMarker(t *testing.T) {
 	}
 	if db.ReviewerVerdictMarker == db.SDLCWorkhorseMarker || db.QAVerifierMarker == db.SDLCWorkhorseMarker {
 		t.Fatal("a gate marker must not collide with the shared work-budget marker")
+	}
+}
+
+// TestSeedClearsAStoredWallClockBudget is the regression test for the guillotine: a stored
+// per-worker wall_clock_seconds must be CLEARED by the seeder.
+//
+// The failure it pins down is subtle and was live in production. Deleting the BudgetOverrides
+// literal from the seed is not enough to remove the gate: the roll-forward INSERT copied the
+// stored value forward with COALESCE(NULLIF($8::jsonb,'null'::jsonb), budget_overrides) — a NULL
+// seed budget meant "keep what is stored" — and the fingerprint did not cover the budget, so a
+// budget-only change never even triggered a re-sync. A worker seeded with the old 3600s override
+// kept it forever, and every run died at exactly one hour, labelled "cancelled".
+func TestSeedClearsAStoredWallClockBudget(t *testing.T) {
+	pool := seedTestPool(t)
+	ctx := context.Background()
+
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Stand in for a worker provisioned by the OLD seed: it carries a 3600s gate and the current
+	// content marker (so only the budget is stale — exactly the state production was in).
+	ttx, err := pool.BeginTenantTx(ctx, "tnt_dev")
+	if err != nil {
+		t.Fatalf("begin tx: %v", err)
+	}
+	if _, err := ttx.Exec(ctx,
+		`UPDATE worker_versions
+		    SET budget_overrides = '{"wall_clock_seconds":3600}'::jsonb
+		  WHERE worker_id = 'w_se_senior_software_engineer' AND tenant_id = 'tnt_dev' AND version = 1`); err != nil {
+		t.Fatalf("plant budget: %v", err)
+	}
+	if err := ttx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	if err := db.SeedDevWorkers(ctx, pool, seedTenant); err != nil {
+		t.Fatalf("re-seed: %v", err)
+	}
+
+	// The canonical (v1) path must have rewritten the budget.
+	var v1 string
+	if err := pool.QueryRow(ctx,
+		`SELECT COALESCE(budget_overrides->>'wall_clock_seconds', '') FROM worker_versions
+		  WHERE worker_id = 'w_se_senior_software_engineer' AND tenant_id = 'tnt_dev' AND version = 1`,
+	).Scan(&v1); err != nil {
+		t.Fatalf("query v1: %v", err)
+	}
+	if v1 != "" {
+		t.Errorf("v1 still carries wall_clock_seconds=%s, want it cleared", v1)
+	}
+
+	// And nothing above v1 may resurrect it — that is what the roll-forward path did.
+	var above int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM worker_versions
+		  WHERE worker_id = 'w_se_senior_software_engineer' AND tenant_id = 'tnt_dev'
+		    AND budget_overrides ? 'wall_clock_seconds'`,
+	).Scan(&above); err != nil {
+		t.Fatalf("query above-v1: %v", err)
+	}
+	if above != 0 {
+		t.Errorf("%d worker_versions rows still carry a wall-clock gate, want 0", above)
+	}
+}
+
+// TestNoCannedWorkerCarriesABudget pins the invariant at the source: the seed never sets a
+// per-worker budget. A future canned worker that needs one is an operator decision, made in the
+// UI, not a prompt-authoring default.
+func TestNoCannedWorkerCarriesABudget(t *testing.T) {
+	for _, w := range db.CannedWorkers() {
+		if len(w.BudgetOverrides) > 0 {
+			t.Errorf("canned worker %s carries budget_overrides %s; no canned worker may pin a budget", w.ID, w.BudgetOverrides)
+		}
 	}
 }

@@ -80,6 +80,12 @@ const (
 	// WorkflowServiceStartWorkflowProcedure is the fully-qualified name of the WorkflowService's
 	// StartWorkflow RPC.
 	WorkflowServiceStartWorkflowProcedure = "/orchicon.api.v1.WorkflowService/StartWorkflow"
+	// WorkflowServicePauseWorkflowRunProcedure is the fully-qualified name of the WorkflowService's
+	// PauseWorkflowRun RPC.
+	WorkflowServicePauseWorkflowRunProcedure = "/orchicon.api.v1.WorkflowService/PauseWorkflowRun"
+	// WorkflowServiceResumeWorkflowRunProcedure is the fully-qualified name of the WorkflowService's
+	// ResumeWorkflowRun RPC.
+	WorkflowServiceResumeWorkflowRunProcedure = "/orchicon.api.v1.WorkflowService/ResumeWorkflowRun"
 	// WorkflowServiceAbortWorkflowProcedure is the fully-qualified name of the WorkflowService's
 	// AbortWorkflow RPC.
 	WorkflowServiceAbortWorkflowProcedure = "/orchicon.api.v1.WorkflowService/AbortWorkflow"
@@ -164,8 +170,27 @@ type WorkflowServiceClient interface {
 	// StartWorkflow creates a WorkflowRun from a published version and
 	// hands it to the WorkflowReconciler (docs/02 §2.4, docs/03 §2).
 	StartWorkflow(context.Context, *connect.Request[v1.StartWorkflowRequest]) (*connect.Response[v1.StartWorkflowResponse], error)
+	// PauseWorkflow stops a running WorkflowRun at a resumable point: the run
+	// goes to `paused`, in-flight worker executions are checkpointed, and the
+	// run's worktree and branch are KEPT. ResumeWorkflow continues the same run
+	// from where it stopped.
+	//
+	// WHY THIS EXISTS SEPARATELY FROM ABORT. Abort is terminal, and aborting was
+	// also the only way to stop a run — so "I want to stop this for now" destroyed
+	// the branch and cancelled the work item, and the only way back was a fresh
+	// run from step 1. Pause is the gesture that keeps the work.
+	PauseWorkflowRun(context.Context, *connect.Request[v1.PauseWorkflowRunRequest]) (*connect.Response[v1.PauseWorkflowRunResponse], error)
+	// ResumeWorkflowRun continues a `paused` WorkflowRun: back to `running`, the
+	// same worktree/branch re-attached, the DAG resumed from the current step.
+	ResumeWorkflowRun(context.Context, *connect.Request[v1.ResumeWorkflowRunRequest]) (*connect.Response[v1.ResumeWorkflowRunResponse], error)
 	// AbortWorkflow transitions a running WorkflowRun to aborted
 	// (docs/02 §2.4). In-flight step runs are cancelled.
+	//
+	// ABORT SAVES THE WORK. It ends the RUN, not the work: the branch and the
+	// delivered commits are kept (so the run is resumable via RetryFailedWorkflowRun,
+	// which accepts aborted), and the bound work item goes to `failed` rather than
+	// `cancelled` so it is not terminal-non-replayable. Use CancelWorkItem when you
+	// actually mean "throw this work away".
 	AbortWorkflow(context.Context, *connect.Request[v1.AbortWorkflowRequest]) (*connect.Response[v1.AbortWorkflowResponse], error)
 	// GetWorkflowRun returns a single WorkflowRun by id.
 	GetWorkflowRun(context.Context, *connect.Request[v1.GetWorkflowRunRequest]) (*connect.Response[v1.GetWorkflowRunResponse], error)
@@ -335,6 +360,18 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("StartWorkflow")),
 			connect.WithClientOptions(opts...),
 		),
+		pauseWorkflowRun: connect.NewClient[v1.PauseWorkflowRunRequest, v1.PauseWorkflowRunResponse](
+			httpClient,
+			baseURL+WorkflowServicePauseWorkflowRunProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("PauseWorkflowRun")),
+			connect.WithClientOptions(opts...),
+		),
+		resumeWorkflowRun: connect.NewClient[v1.ResumeWorkflowRunRequest, v1.ResumeWorkflowRunResponse](
+			httpClient,
+			baseURL+WorkflowServiceResumeWorkflowRunProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("ResumeWorkflowRun")),
+			connect.WithClientOptions(opts...),
+		),
 		abortWorkflow: connect.NewClient[v1.AbortWorkflowRequest, v1.AbortWorkflowResponse](
 			httpClient,
 			baseURL+WorkflowServiceAbortWorkflowProcedure,
@@ -435,6 +472,8 @@ type workflowServiceClient struct {
 	deleteWorkflowVersion    *connect.Client[v1.DeleteWorkflowVersionRequest, v1.DeleteWorkflowVersionResponse]
 	updateWorkflowVersion    *connect.Client[v1.UpdateWorkflowVersionRequest, v1.UpdateWorkflowVersionResponse]
 	startWorkflow            *connect.Client[v1.StartWorkflowRequest, v1.StartWorkflowResponse]
+	pauseWorkflowRun         *connect.Client[v1.PauseWorkflowRunRequest, v1.PauseWorkflowRunResponse]
+	resumeWorkflowRun        *connect.Client[v1.ResumeWorkflowRunRequest, v1.ResumeWorkflowRunResponse]
 	abortWorkflow            *connect.Client[v1.AbortWorkflowRequest, v1.AbortWorkflowResponse]
 	getWorkflowRun           *connect.Client[v1.GetWorkflowRunRequest, v1.GetWorkflowRunResponse]
 	listWorkflowRuns         *connect.Client[v1.ListWorkflowRunsRequest, v1.ListWorkflowRunsResponse]
@@ -504,6 +543,16 @@ func (c *workflowServiceClient) UpdateWorkflowVersion(ctx context.Context, req *
 // StartWorkflow calls orchicon.api.v1.WorkflowService.StartWorkflow.
 func (c *workflowServiceClient) StartWorkflow(ctx context.Context, req *connect.Request[v1.StartWorkflowRequest]) (*connect.Response[v1.StartWorkflowResponse], error) {
 	return c.startWorkflow.CallUnary(ctx, req)
+}
+
+// PauseWorkflowRun calls orchicon.api.v1.WorkflowService.PauseWorkflowRun.
+func (c *workflowServiceClient) PauseWorkflowRun(ctx context.Context, req *connect.Request[v1.PauseWorkflowRunRequest]) (*connect.Response[v1.PauseWorkflowRunResponse], error) {
+	return c.pauseWorkflowRun.CallUnary(ctx, req)
+}
+
+// ResumeWorkflowRun calls orchicon.api.v1.WorkflowService.ResumeWorkflowRun.
+func (c *workflowServiceClient) ResumeWorkflowRun(ctx context.Context, req *connect.Request[v1.ResumeWorkflowRunRequest]) (*connect.Response[v1.ResumeWorkflowRunResponse], error) {
+	return c.resumeWorkflowRun.CallUnary(ctx, req)
 }
 
 // AbortWorkflow calls orchicon.api.v1.WorkflowService.AbortWorkflow.
@@ -616,8 +665,27 @@ type WorkflowServiceHandler interface {
 	// StartWorkflow creates a WorkflowRun from a published version and
 	// hands it to the WorkflowReconciler (docs/02 §2.4, docs/03 §2).
 	StartWorkflow(context.Context, *connect.Request[v1.StartWorkflowRequest]) (*connect.Response[v1.StartWorkflowResponse], error)
+	// PauseWorkflow stops a running WorkflowRun at a resumable point: the run
+	// goes to `paused`, in-flight worker executions are checkpointed, and the
+	// run's worktree and branch are KEPT. ResumeWorkflow continues the same run
+	// from where it stopped.
+	//
+	// WHY THIS EXISTS SEPARATELY FROM ABORT. Abort is terminal, and aborting was
+	// also the only way to stop a run — so "I want to stop this for now" destroyed
+	// the branch and cancelled the work item, and the only way back was a fresh
+	// run from step 1. Pause is the gesture that keeps the work.
+	PauseWorkflowRun(context.Context, *connect.Request[v1.PauseWorkflowRunRequest]) (*connect.Response[v1.PauseWorkflowRunResponse], error)
+	// ResumeWorkflowRun continues a `paused` WorkflowRun: back to `running`, the
+	// same worktree/branch re-attached, the DAG resumed from the current step.
+	ResumeWorkflowRun(context.Context, *connect.Request[v1.ResumeWorkflowRunRequest]) (*connect.Response[v1.ResumeWorkflowRunResponse], error)
 	// AbortWorkflow transitions a running WorkflowRun to aborted
 	// (docs/02 §2.4). In-flight step runs are cancelled.
+	//
+	// ABORT SAVES THE WORK. It ends the RUN, not the work: the branch and the
+	// delivered commits are kept (so the run is resumable via RetryFailedWorkflowRun,
+	// which accepts aborted), and the bound work item goes to `failed` rather than
+	// `cancelled` so it is not terminal-non-replayable. Use CancelWorkItem when you
+	// actually mean "throw this work away".
 	AbortWorkflow(context.Context, *connect.Request[v1.AbortWorkflowRequest]) (*connect.Response[v1.AbortWorkflowResponse], error)
 	// GetWorkflowRun returns a single WorkflowRun by id.
 	GetWorkflowRun(context.Context, *connect.Request[v1.GetWorkflowRunRequest]) (*connect.Response[v1.GetWorkflowRunResponse], error)
@@ -783,6 +851,18 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("StartWorkflow")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServicePauseWorkflowRunHandler := connect.NewUnaryHandler(
+		WorkflowServicePauseWorkflowRunProcedure,
+		svc.PauseWorkflowRun,
+		connect.WithSchema(workflowServiceMethods.ByName("PauseWorkflowRun")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceResumeWorkflowRunHandler := connect.NewUnaryHandler(
+		WorkflowServiceResumeWorkflowRunProcedure,
+		svc.ResumeWorkflowRun,
+		connect.WithSchema(workflowServiceMethods.ByName("ResumeWorkflowRun")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceAbortWorkflowHandler := connect.NewUnaryHandler(
 		WorkflowServiceAbortWorkflowProcedure,
 		svc.AbortWorkflow,
@@ -891,6 +971,10 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceUpdateWorkflowVersionHandler.ServeHTTP(w, r)
 		case WorkflowServiceStartWorkflowProcedure:
 			workflowServiceStartWorkflowHandler.ServeHTTP(w, r)
+		case WorkflowServicePauseWorkflowRunProcedure:
+			workflowServicePauseWorkflowRunHandler.ServeHTTP(w, r)
+		case WorkflowServiceResumeWorkflowRunProcedure:
+			workflowServiceResumeWorkflowRunHandler.ServeHTTP(w, r)
 		case WorkflowServiceAbortWorkflowProcedure:
 			workflowServiceAbortWorkflowHandler.ServeHTTP(w, r)
 		case WorkflowServiceGetWorkflowRunProcedure:
@@ -970,6 +1054,14 @@ func (UnimplementedWorkflowServiceHandler) UpdateWorkflowVersion(context.Context
 
 func (UnimplementedWorkflowServiceHandler) StartWorkflow(context.Context, *connect.Request[v1.StartWorkflowRequest]) (*connect.Response[v1.StartWorkflowResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.StartWorkflow is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) PauseWorkflowRun(context.Context, *connect.Request[v1.PauseWorkflowRunRequest]) (*connect.Response[v1.PauseWorkflowRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.PauseWorkflowRun is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) ResumeWorkflowRun(context.Context, *connect.Request[v1.ResumeWorkflowRunRequest]) (*connect.Response[v1.ResumeWorkflowRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.WorkflowService.ResumeWorkflowRun is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) AbortWorkflow(context.Context, *connect.Request[v1.AbortWorkflowRequest]) (*connect.Response[v1.AbortWorkflowResponse], error) {

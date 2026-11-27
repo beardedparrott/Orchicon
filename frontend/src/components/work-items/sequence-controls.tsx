@@ -27,78 +27,69 @@ import { SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { WorkItemStatus, type WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
+import { RUN_CONTROL_META, controlLabelFor, hasEverRun, restartTitle, runControlsFor } from "./run-controls";
 
-const ACTIVE = new Set([
-  WorkItemStatus.RUNNING,
-  WorkItemStatus.CHECKPOINTING,
-  WorkItemStatus.RECOVERING,
-]);
-
-const QUEUED = new Set([WorkItemStatus.READY, WorkItemStatus.ASSIGNED]);
-
-const isActiveRun = (status: WorkItemStatus) => ACTIVE.has(status);
-const isQueued = (status: WorkItemStatus) => QUEUED.has(status);
-
-/** Which gestures are available for an item's current status + shape. */
+/**
+ * Which gestures to show. THE RULE LIVES IN run-controls.ts so the work item page, the run page
+ * and the schedules page cannot drift; this keeps the name the existing callers and tests use.
+ */
 export function availableActions(status: WorkItemStatus, hasChildren: boolean): SequenceAction[] {
-  const out: SequenceAction[] = [];
-  if (hasChildren) {
-    // Sequence parent.
-    if (!isActiveRun(status)) out.push(SequenceAction.START);
-    if (status === WorkItemStatus.FAILED || status === WorkItemStatus.PENDING) {
-      out.push(SequenceAction.RESUME);
-    }
-    if (status !== WorkItemStatus.PENDING && status !== WorkItemStatus.SUCCEEDED) {
-      out.push(SequenceAction.STOP);
-    }
-  } else {
-    // Leaf — runs its own bound workflow.
-    if (!isActiveRun(status) && !isQueued(status)) out.push(SequenceAction.START);
-    if (status === WorkItemStatus.FAILED || status === WorkItemStatus.CANCELLED) {
-      out.push(SequenceAction.RESUME);
-    }
-    if (status !== WorkItemStatus.SUCCEEDED && status !== WorkItemStatus.CANCELLED) {
-      out.push(SequenceAction.STOP);
-    }
-  }
-  return out;
+  return runControlsFor(status, hasChildren);
 }
 
 const ACTION_META: Record<
   SequenceAction,
   { label: string; icon: typeof Play; title: string }
 > = {
-  [SequenceAction.START]: {
-    label: "Start",
+  // RESTART IS THE OLD START. It was always a destructive re-fire; the label now says so, and
+  // therefore so does the confirm step.
+  [SequenceAction.RESTART]: {
+    label: RUN_CONTROL_META[SequenceAction.RESTART].label,
     icon: Play,
-    title:
-      "Fire this work item now. For a parent (has children): re-fires the chain from child #1 — destructive, wipes prior successes. For a leaf: starts its bound workflow.",
+    title: RUN_CONTROL_META[SequenceAction.RESTART].title,
   },
   [SequenceAction.RESUME]: {
-    label: "Resume",
+    label: RUN_CONTROL_META[SequenceAction.RESUME].label,
     icon: RotateCcw,
     title:
-      "Re-arm this work item. For a parent: continues from the first non-succeeded child, keeping prior results. For a leaf: re-runs its workflow.",
+      "Continue the work that exists. Parent: from the first non-succeeded child. Leaf: the bound run is resumed in place — succeeded steps stay succeeded and the failed ones carry the previous attempt's notes.",
+  },
+  [SequenceAction.PAUSE]: {
+    label: RUN_CONTROL_META[SequenceAction.PAUSE].label,
+    icon: Pause,
+    title: RUN_CONTROL_META[SequenceAction.PAUSE].title,
   },
   [SequenceAction.STOP]: {
     label: "Stop",
     icon: Pause,
     title:
-      "Halt this work item. For a parent: stops the whole subtree and aborts in-flight runs — confirm to abort running children. For a leaf: stops just this item and aborts its run.",
+      "Halt this work item. For a parent: stops the whole subtree and aborts in-flight runs — confirm to abort running children. For a leaf: prefer Pause, which keeps the worktree and branch; Stop aborts the run.",
   },
   [SequenceAction.UNSPECIFIED]: { label: "", icon: Play, title: "" },
 };
+
+
 
 export function SequenceControls({
   item,
   hasChildren,
   className,
+  only,
 }: {
   /** the work item to control (parent or leaf) */
   item: WorkItem;
   /** whether the item has children — the sequence-parent determinant */
   hasChildren: boolean;
   className?: string;
+  /**
+   * Restrict the rendered gestures to this set. Used by the Schedules views, where which gestures
+   * make sense is decided by the VIEW rather than the item's status: Running offers the two stops,
+   * History offers the two continuations, Upcoming offers nothing at all.
+   *
+   * Enforcing it here rather than filtering at each call site means a view cannot accidentally
+   * render a gesture its own rule excludes.
+   */
+  only?: readonly SequenceAction[];
 }) {
   const { mutate, isPending } = useControlSequence();
   const toast = useToast();
@@ -110,14 +101,14 @@ export function SequenceControls({
       {
         onSuccess: (updated) => {
           toast.success(
-            action === SequenceAction.START
+            action === SequenceAction.RESTART
               ? `"${updated.title}" is now ${updated.status}.`
               : action === SequenceAction.RESUME
                 ? `"${updated.title}" resumed — now ${updated.status}.`
                 : `"${updated.title}" stopped — now ${updated.status}.`,
             {
               title:
-                action === SequenceAction.START
+                action === SequenceAction.RESTART
                   ? "Started"
                   : action === SequenceAction.RESUME
                     ? "Resumed"
@@ -134,7 +125,8 @@ export function SequenceControls({
     );
   };
 
-  const actions = availableActions(item.status, hasChildren);
+  let actions = availableActions(item.status, hasChildren);
+  if (only) actions = actions.filter((a) => only.includes(a));
   if (actions.length === 0) return null;
 
   return (
@@ -146,15 +138,30 @@ export function SequenceControls({
     >
       {actions.map((action) => {
         const meta = ACTION_META[action];
+        // START VS RESTART: the same call, but the honest word depends on whether anything has run.
+        // An item that has never been dispatched has nothing to restart and nothing to discard.
+        //
+        // THE `!` HERE WAS INVERTED and shipped: `!isFiredOnce(status)` is true for a PENDING item,
+        // so every never-run item was labelled "Restart". The unit test called restartLabel(false)
+        // directly and never exercised this wiring — which is why a green suite showed the wrong
+        // word on every row. Fixed to the plain reading: has run if it has a run id OR has ever been
+        // dispatched.
+        // ONE PURE DECISION, in run-controls.ts, so a test can assert what this row RENDERS. The
+        // previous inline version had an inverted negation that no helper-level test could see.
+        const label = controlLabelFor(action, item.status, meta.label);
+        const titleText =
+          action === SequenceAction.RESTART
+            ? restartTitle(hasEverRun(item.status))
+            : meta.title;
         const Icon = meta.icon;
-        const destructive = action === SequenceAction.START || action === SequenceAction.STOP;
+        const destructive = action === SequenceAction.RESTART || action === SequenceAction.STOP;
         return (
           <button
             key={action}
             type="button"
             disabled={isPending}
-            aria-label={`${meta.label} "${item.title}"`}
-            title={meta.title}
+            aria-label={`${label} "${item.title}"`}
+            title={titleText}
             onClick={() => {
               if (destructive) {
                 if (confirming === action) {
@@ -182,7 +189,17 @@ export function SequenceControls({
             ) : (
               <Icon aria-hidden="true" className="h-3 w-3" />
             )}
-            {confirming === action ? (action === SequenceAction.STOP ? "Abort running children?" : "Confirm?") : meta.label}
+            {/* THE VISIBLE TEXT IS `label`, NOT `meta.label`.
+                This rendered meta.label — the static ACTION_META word, which is "Restart" — while the
+                computed `label` went only to aria-label. So Start/Restart was correct in the
+                accessibility tree and wrong on screen, and a helper-level test could not see it: the
+                component computed the right value and then did not use it.
+                One source for both, so a screen reader and the pixels cannot disagree. */}
+            {confirming === action
+              ? action === SequenceAction.STOP
+                ? "Abort running children?"
+                : "Confirm?"
+              : label}
           </button>
         );
       })}

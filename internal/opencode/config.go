@@ -1,6 +1,8 @@
 package opencode
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/beardedparrott/orchicon/internal/runtime"
@@ -379,6 +381,12 @@ type ConfigOptions struct {
 	// V2 ONLY, and empty for a v1 serve — on 1.x the same prompt rides the prompt body's `system` field
 	// per message, which is why this list has no v1 meaning.
 	Workers []adapter.WorkerAgent
+	// AgentFilesDir, when set, makes each step worker's prompt travel as a FILE under this directory and
+	// the config carry only a `{file:<path>}` reference, instead of the prompt text. The config is handed
+	// to opencode in ONE environment variable, and Linux refuses to exec a process whose single env
+	// string exceeds 128 KiB (MAX_ARG_STRLEN) — five full worker prompts exceeded it ("fork/exec
+	// opencode: argument list too long"). The directory must be readable by opencode at the SAME path.
+	AgentFilesDir string
 	// WorkflowRunID is the RUN's id, threaded to the worktree MCP sidecar so it can derive the
 	// run-state directory <projectDir>/.orchicon/<runID>/ its todo snapshot is written into.
 	WorkflowRunID string
@@ -414,7 +422,7 @@ func BuildConfigContent(o ConfigOptions) string {
 				if _, dup := agents[w.Name]; dup {
 					continue
 				}
-				agents[w.Name] = v2AgentEntry(w.Prompt, w.Model)
+				agents[w.Name] = v2AgentEntry(agentPromptRef(o.AgentFilesDir, w), w.Model)
 			}
 			cfg["agents"] = agents
 		} else {
@@ -601,6 +609,43 @@ func mcpEntryFromSpec(s mcpclient.ServerSpec) map[string]any {
 		e["environment"] = s.Env
 	}
 	return e
+}
+
+// agentPromptRef returns what an agent's `system` field should hold for a step worker: the prompt text
+// itself, or — when dir is set — a `{file:<path>}` reference to a file this call has just written.
+//
+// THE FILE NAME CARRIES A CONTENT HASH, and that is load-bearing: the runtime pool keys a warm container
+// on the config text (internal/runtime/pool.go), so a reference whose text never changed would let an
+// EDITED prompt reuse a container whose opencode loaded the old one.
+//
+// A file's contents are NOT re-expanded by opencode, whereas inline text is: `{env:X}` and `{file:X}`
+// inside an inline prompt are substituted (a dangling `{file:…}` fails the whole config), so a prompt
+// that merely mentions those tokens is delivered intact only through a file.
+//
+// Any failure to write falls back to inline text and says so: a prompt that arrives is better than a
+// worker that does not start, and the size guard in the daemon still catches the oversize case loudly.
+func agentPromptRef(dir string, w adapter.WorkerAgent) string {
+	if dir == "" {
+		return w.Prompt
+	}
+	sum := sha256.Sum256([]byte(w.Prompt))
+	name := sanitiseSkillName(w.Name)
+	if name == "" {
+		name = "agent"
+	}
+	path := filepath.Join(dir, name+"-"+hex.EncodeToString(sum[:])[:12]+".md")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		slog.Default().Warn("opencode: agent prompt dir not created — inlining the prompt", "dir", dir, "error", err)
+		return w.Prompt
+	}
+	// Content-addressed: an existing file of this name already holds exactly this prompt.
+	if _, err := os.Stat(path); err != nil {
+		if werr := os.WriteFile(path, []byte(w.Prompt), 0o644); werr != nil {
+			slog.Default().Warn("opencode: agent prompt not written — inlining the prompt", "path", path, "error", werr)
+			return w.Prompt
+		}
+	}
+	return "{file:" + path + "}"
 }
 
 // runSkillInstructions renders the RUN's skill-file union into opencode `instructions` paths.

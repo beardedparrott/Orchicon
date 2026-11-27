@@ -86,5 +86,90 @@
     "context": 262144, "max_output": 8192, "tools": true,
     "pricing": null,
     "visible": true
+  },
+  "google/gemini-4-neon-high": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 3.0, "output_per_m": 15.0, "cache_read_per_m": 0.15, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $3.00 in / $15.00 out / $0.15 cached per 1M tokens"},
+    "visible": false
+  },
+  "google/gemini-4-neon-xhigh": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 3.0, "output_per_m": 15.0, "cache_read_per_m": 0.15, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $3.00 in / $15.00 out / $0.15 cached per 1M tokens"},
+    "visible": false
+  },
+  "google/gemini-4-neon-medium": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 3.0, "output_per_m": 15.0, "cache_read_per_m": 0.15, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $3.00 in / $15.00 out / $0.15 cached per 1M tokens"},
+    "visible": false
+  },
+  "google/gemini-4-neon-low": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 3.0, "output_per_m": 15.0, "cache_read_per_m": 0.15, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $3.00 in / $15.00 out / $0.15 cached per 1M tokens"},
+    "visible": false
+  },
+  "google/gemini-4-carbon-medium": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 2.0, "output_per_m": 10.0, "cache_read_per_m": 0.1, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $2.00 in / $10.00 out / $0.10 cached per 1M tokens through 2026-11-30; rises to $4.00 / $20.00 / $0.20 on 2026-12-01"},
+    "visible": false
+  },
+  "google/gemini-4-carbon-high": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 2.0, "output_per_m": 10.0, "cache_read_per_m": 0.1, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $2.00 in / $10.00 out / $0.10 cached per 1M tokens through 2026-11-30; rises to $4.00 / $20.00 / $0.20 on 2026-12-01"},
+    "visible": false
+  },
+  "google/gemini-4-carbon-low": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 2.0, "output_per_m": 10.0, "cache_read_per_m": 0.1, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $2.00 in / $10.00 out / $0.10 cached per 1M tokens through 2026-11-30; rises to $4.00 / $20.00 / $0.20 on 2026-12-01"},
+    "visible": false
+  },
+  "google/gemini-4-argon-medium": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 2.0, "output_per_m": 10.0, "cache_read_per_m": 0.1, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $2.00 in / $10.00 out / $0.10 cached per 1M tokens through 2026-11-30; rises to $4.00 / $20.00 / $0.20 on 2026-12-01"},
+    "visible": false
+  },
+  "google/gemini-4-argon-high": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 2.0, "output_per_m": 10.0, "cache_read_per_m": 0.1, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $2.00 in / $10.00 out / $0.10 cached per 1M tokens through 2026-11-30; rises to $4.00 / $20.00 / $0.20 on 2026-12-01"},
+    "visible": false
+  },
+  "google/gemini-4-argon-low": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 2.0, "output_per_m": 10.0, "cache_read_per_m": 0.1, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $2.00 in / $10.00 out / $0.10 cached per 1M tokens through 2026-11-30; rises to $4.00 / $20.00 / $0.20 on 2026-12-01"},
+    "visible": false
+  },
+  "google/gemini-4-hydrogen-high": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 1.5, "output_per_m": 7.5, "cache_read_per_m": 0.075, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $1.50 in / $7.50 out / $0.075 cached per 1M tokens"},
+    "visible": false
+  },
+  "google/gemini-4-hydrogen-xhigh": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 1.5, "output_per_m": 7.5, "cache_read_per_m": 0.075, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $1.50 in / $7.50 out / $0.075 cached per 1M tokens"},
+    "visible": false
+  },
+  "google/gemini-4-hydrogen-medium": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 1.5, "output_per_m": 7.5, "cache_read_per_m": 0.075, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $1.50 in / $7.50 out / $0.075 cached per 1M tokens"},
+    "visible": false
+  },
+  "google/gemini-4-hydrogen-low": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 1.5, "output_per_m": 7.5, "cache_read_per_m": 0.075, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $1.50 in / $7.50 out / $0.075 cached per 1M tokens"},
+    "visible": false
+  },
+  "google/gemini-3.8-flash-high": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 0.75, "output_per_m": 3.75, "cache_read_per_m": 0.075, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $0.75 in / $3.75 out / $0.075 cached per 1M tokens through 2026-12-31; rises to $1.50 / $7.50 on 2027-01-01"},
+    "visible": false
+  },
+  "google/gemini-3.8-flash-medium": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 0.75, "output_per_m": 3.75, "cache_read_per_m": 0.075, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $0.75 in / $3.75 out / $0.075 cached per 1M tokens through 2026-12-31; rises to $1.50 / $7.50 on 2027-01-01"},
+    "visible": false
+  },
+  "google/gemini-3.8-flash-low": {
+    "context": 1048576,
+    "pricing": {"input_per_m": 0.75, "output_per_m": 3.75, "cache_read_per_m": 0.075, "currency": "USD", "source": "https://ai.google.dev/gemini-api/docs/pricing fetched 2026-11-27 — Standard tier, $0.75 in / $3.75 out / $0.075 cached per 1M tokens through 2026-12-31; rises to $1.50 / $7.50 on 2027-01-01"},
+    "visible": false
   }
 }

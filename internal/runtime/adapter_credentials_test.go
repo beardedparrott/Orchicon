@@ -10,7 +10,12 @@ import (
 // writeAuthStore writes an opencode credential store into a temp home.
 func writeAuthStore(t *testing.T, home, body string) {
 	t.Helper()
-	p := openCodeAuthPath(home)
+	// HOME-SCOPED, and guarded: the ambient resolver here once wrote a test's auth.json into the
+	// operator's real store — the same defect that put a 29-byte stub over four live databases.
+	p := openCodeAuthPathForHome(home)
+	if !storePathUnderStateRoot(p, home) {
+		t.Fatalf("refusing to write auth.json to %q: not inside this test's home %q", p, home)
+	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)
 	}

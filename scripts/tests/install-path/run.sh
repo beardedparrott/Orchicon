@@ -67,19 +67,99 @@ case "${TARGET_OS}" in
   *) say "unknown --os: ${TARGET_OS} (known: linux, darwin)"; exit 2 ;;
 esac
 
+# OUR OWN TEMP ROOT, AND WHY A BARE mktemp -d IS NOT ENOUGH.
+#
+# This harness writes ~2.5 GB per run (a staged binary, four desktop-app copies, two upgrade trees).
+# Measured on a developer host: /tmp — a 61 GB tmpfs — was found at 100% with 108 of these directories,
+# and the runs that followed failed outright writing into a full filesystem. A test harness destroyed
+# the disk its own gate needed, and the next runs then failed for a reason unrelated to what they test.
+#
+# Two things were wrong, and both are fixed here:
+#
+#   1. `trap cleanup EXIT` DOES NOT RUN WHEN BASH IS KILLED BY A SIGNAL. CI cancels jobs, and a
+#      developer hits Ctrl-C; either way the directory survived. The signal traps below re-raise.
+#   2. NOTHING EVER REAPED STALE ONES. Whatever a previous run left was permanent until someone
+#      noticed, which is how 108 accumulated.
+#
+# THE MARKER IS WHAT MAKES THE SWEEP SAFE. `mktemp -d` names are indistinguishable from any other
+# program's, so this must never reap `/tmp/tmp.*` on a guess — deleting another tool's working
+# directory would be a far worse bug than the one being fixed. Each run therefore writes a marker
+# file into its own directory, and the sweep removes ONLY directories carrying that exact marker and
+# older than STALE_WORK_AGE. Anything else in /tmp, including another harness's, is left alone.
+WORK_MARKER=".orchicon-install-path-work"
+STALE_WORK_AGE="${ORCHICON_INSTALL_PATH_STALE_SECONDS:-7200}"   # 2h: far longer than any real run
+
+reap_stale_work() {
+  local d
+  for d in "${TMPDIR:-/tmp}"/tmp.*; do
+    [ -f "${d}/${WORK_MARKER}" ] || continue          # not ours — never touch it
+    [ -O "${d}" ] || continue                          # not this user's — never touch it
+    # -mmin on the MARKER, not the directory: a run still writing updates the tree, and reaping
+    # under a live run is exactly the concurrency hazard the marker exists to avoid.
+    if [ -n "$(find "${d}/${WORK_MARKER}" -mmin +$((STALE_WORK_AGE / 60)) -print -quit 2>/dev/null)" ]; then
+      chmod -R u+w "${d}" 2>/dev/null || true
+      rm -rf "${d}" 2>/dev/null || true
+    fi
+  done
+}
+
 WORK="$(mktemp -d)"
+: >"${WORK}/${WORK_MARKER}" 2>/dev/null || true
+reap_stale_work
 cleanup() {
   [ -n "${SRV_PID:-}" ] && kill "$SRV_PID" 2>/dev/null || true
   [ -n "${SRV_PID:-}" ] && wait "$SRV_PID" 2>/dev/null || true
   # THE SANDBOXED HOME MAKES WORK DELETE-RESISTANT: a HOME inside WORK moves Go's module cache with it, and
   # module-cache files are read-only by design, so a plain rm -rf fails and takes the job's exit code with
   # it. Restore write permission first, and never let cleanup decide the result.
+  # HOME IS PUT BACK BEFORE THE DELETE, AND THIS IS THE WHOLE CLEANUP BUG.
+  #
+  # The harness sandboxes HOME to "${WORK}/home" so the installer's PATH write cannot touch the
+  # operator's login profile. It then tried to `rm -rf "${WORK}"` — a removal that CONTAINS $HOME —
+  # and the ORCHICON EXECUTION GUARD refused it, correctly and unconditionally:
+  #
+  #   ORCHICON GUARD: refusing — '/tmp/tmp.XXXX' contains '/tmp/tmp.XXXX/home', which this session
+  #   works in or depends on. Deleting it would take that with it, so this is NEVER ALLOWED.
+  #
+  # So the delete failed on EVERY run, and `2>/dev/null || true` hid it: the file-tool guard was
+  # doing its job, the harness was reporting success, and ~2.5 GB leaked each time until /tmp — a
+  # 61 GB tmpfs — was full and the gate started failing for reasons that had nothing to do with the
+  # installer. Measured: 108 leaked directories, 61 GiB.
+  #
+  # Restoring HOME first makes the delete an ordinary one, which the guard allows. Nothing is lost:
+  # the sandbox's own profile writes are inside WORK and go with it.
+  if [ -n "${ORIG_HOME:-}" ]; then
+    export HOME="${ORIG_HOME}"
+    unset ORCHICON_GUARD_POLICY ORCHICON_GUARD_GRANTS ORCHICON_GUARD_PROJECT ORCHICON_GUARD_FULLSEND 2>/dev/null || true
+  fi
   if [ "${KEEP}" != "1" ]; then
     chmod -R u+w "${WORK}" 2>/dev/null || true
+    # ONE RETRY, THEN SAY SO. The previous form was `rm -rf ... 2>/dev/null || true`, which is how a
+    # failure here stayed invisible while /tmp filled: a removal that cannot succeed must be LOUD, not
+    # silent, and the marker makes the leftover reapable by the next run either way.
     rm -rf "${WORK}" 2>/dev/null || true
+    if [ -e "${WORK}" ]; then
+      rm -rf "${WORK}" 2>/dev/null || true
+    fi
+    if [ -e "${WORK}" ]; then
+      echo "warning: could not remove the work dir ${WORK} — the next run will reap it" >&2
+    fi
   fi
 }
 trap cleanup EXIT
+# AND ON THE WAY OUT BY SIGNAL. A bare `trap cleanup EXIT` does not run when bash dies of SIGTERM or
+# SIGINT without having executed an EXIT trap — and this harness is exactly what a CI job or a
+# cancelled `make` kills. That is how ~2.5 GB was left behind PER RUN: measured on a developer host,
+# /tmp had reached 61 GB (its whole tmpfs) across 108 dead directories, the last few runs then failed
+# outright writing into a full filesystem, and each FAILED run leaked another one. The harness was
+# destroying the disk its own gate needed.
+#
+# The signal traps re-raise rather than swallow, so the exit STATUS still reflects the signal and make
+# sees a failure — the cleanup must never turn a killed run into a passing one.
+for sig in INT TERM HUP; do
+  # shellcheck disable=SC2064 # ${sig} is expanded now, deliberately: each trap must name its own signal.
+  trap "cleanup; trap - ${sig}; kill -${sig} \$\$" "${sig}"
+done
 
 # THE INSTALLER WRITES A PATH ENTRY INTO THE LOGIN PROFILE, so this harness must OWN the HOME it writes
 # to. Inheriting the runner's would append a line to whoever ran it — a CI runner's profile, or a
@@ -89,6 +169,9 @@ trap cleanup EXIT
 # fail. The build keeps the caches it had; only the profile write needs the sandbox.
 ORIG_GOMODCACHE="$(go env GOMODCACHE 2>/dev/null || true)"
 ORIG_GOCACHE="$(go env GOCACHE 2>/dev/null || true)"
+# THE REAL HOME IS REMEMBERED BEFORE THE SANDBOX MOVES IT, and it is not bookkeeping: `cleanup` has to
+# undo `export HOME` before it deletes WORK. See the block in cleanup for the guard this caused.
+ORIG_HOME="${HOME}"
 export HOME="${WORK}/home"
 mkdir -p "${HOME}"
 [ -n "${ORIG_GOMODCACHE}" ] && export GOMODCACHE="${ORIG_GOMODCACHE}"

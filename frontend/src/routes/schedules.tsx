@@ -59,6 +59,12 @@ import {
 import type { WorkflowRun, Workflow as WorkflowProto } from "@/api/gen/orchicon/api/v1/workflow_pb";
 import type { Project } from "@/api/gen/orchicon/api/v1/project_pb";
 import { Button } from "@/components/ui/button";
+import { useToast } from "@/components/ui/toast";
+import { SequenceControls } from "@/components/work-items/sequence-controls";
+import { SCHEDULE_VIEW_ACTIONS } from "@/components/work-items/run-controls";
+import { bulkControlsFor } from "@/components/work-items/run-controls";
+import { SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
+import { useControlSequence } from "@/api/workItems";
 import {
   Card,
   CardContent,
@@ -213,6 +219,46 @@ function SchedulesPage() {
   // AND BOTH, when the run's item is still scheduled: deleting the run alone would let a recurring item fire
   // again and recreate the row, which looks identical to "delete didn't work". So a run whose item still has a
   // live schedule has that schedule cleared in the same action, and the confirmation says both.
+  // BULK RUN CONTROL — the top-bar verbs the operator asked for, acting on the SELECTION.
+  //
+  // Each gesture is offered only when EVERY selected row supports it (bulkControlsFor), because a
+  // bulk button that silently skips half the selection is worse than no button: the operator
+  // believes they paused five runs and paused three. Rows whose status makes a gesture illegal keep
+  // it disabled, with the eligible count in the title, so the refusal is explainable.
+  const controlSequence = useControlSequence();
+  // useToast returns an API object ({success,error,info}), not a callable — the typecheck caught the
+  // misuse, which lint and vitest both let through (lint has no types; vitest transpiles them away).
+  const toast = useToast();
+  const handleBulkControl = async (action: SequenceAction) => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    let ok = 0;
+    let refused = 0;
+    for (const id of ids) {
+      try {
+        await controlSequence.mutateAsync({ id, action });
+        ok++;
+      } catch {
+        refused++;
+      }
+    }
+    const verb =
+      action === SequenceAction.PAUSE ? "Paused"
+      : action === SequenceAction.RESUME ? "Resumed"
+      : "Started";
+    const msg = `${verb} ${ok} item${ok === 1 ? "" : "s"}`;
+    if (refused === 0) {
+      toast.success(msg);
+    } else {
+      // PARTIAL FAILURE IS NOT A SUCCESS. Reported through the error channel so a bulk action that
+      // skipped half the selection cannot read as though it covered all of it.
+      toast.error(`${msg}, refused ${refused}`, {
+        title: "Some rows were refused",
+        duration: 7000,
+      });
+    }
+  };
+
   const handleRemoveSchedule = (ids: string[] = Array.from(selected)) => {
     if (ids.length === 0) return;
     const { runIds: runKeys, itemIds: itemKeys, stillScheduledItemIds: stillScheduled } =
@@ -369,7 +415,17 @@ function SchedulesPage() {
           <option value="desc">Desc</option>
         </select>
 
-        {selected.size > 0 && (
+        {selected.size > 0 && (() => {
+          // ELIGIBILITY FOR THE WHOLE SELECTION, resolved through itemsById rather than through a
+          // per-view list: this page's selection keys are ITEM ids for upcoming/running rows and RUN
+          // ids for history rows (see resolveRowKey), and itemsById already holds every item this
+          // page has. Reaching for a view's local list was the bug — `items`/`upcomingItems` belong
+          // to the CHILD components and are not in scope here, which the typecheck caught.
+          const selItems = Array.from(selected)
+            .map((key) => itemsById.get(resolveRowKey(key)))
+            .filter((i): i is NonNullable<typeof i> => i !== undefined);
+          const bulk = bulkControlsFor(selItems.map((i) => i.status));
+          return (
           <>
             {/* Upcoming and History rows carry a schedule; Running rows are
                 in flight, where the destructive act is the cancel. */}
@@ -395,8 +451,56 @@ function SchedulesPage() {
                 Cancel {selected.size} selected
               </Button>
             )}
+            {/* RUN CONTROL FOR THE SELECTION. Pause only when every selected row is in flight;
+                Resume only when every row has failed/cancelled work to continue; Start/Restart only
+                when nothing is in flight, so a bulk click cannot collide with a live run.
+                Each button names how many rows it would actually act on. */}
+            {view !== "history" && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleBulkControl(SequenceAction.PAUSE)}
+                  disabled={!bulk.canPause || controlSequence.isPending}
+                  title={
+                    bulk.canPause
+                      ? `Pause all ${selected.size} selected — keeps every worktree, branch and succeeded step`
+                      : `Pause needs every selected row to be running (${bulk.eligible.pause} of ${bulk.total} are)`
+                  }
+                >
+                  Pause {bulk.eligible.pause}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleBulkControl(SequenceAction.RESUME)}
+                  disabled={!bulk.canResume || controlSequence.isPending}
+                  title={
+                    bulk.canResume
+                      ? `Resume all ${selected.size} selected in place — succeeded steps stay succeeded`
+                      : `Resume needs failed or cancelled rows (${bulk.eligible.resume} of ${bulk.total} qualify)`
+                  }
+                >
+                  Resume {bulk.eligible.resume}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleBulkControl(SequenceAction.RESTART)}
+                  disabled={!bulk.canFire || controlSequence.isPending}
+                  title={
+                    bulk.canFire
+                      ? `Fire all ${selected.size} selected now. Rows that have already run will DISCARD their progress.`
+                      : `Cannot fire while any selected row is in flight (${bulk.eligible.fire} of ${bulk.total} are idle)`
+                  }
+                >
+                  Start/Restart {bulk.eligible.fire}
+                </Button>
+              </>
+            )}
           </>
-        )}
+          );
+        })()}
       </div>
 
       {!hasProjects && (
@@ -899,6 +1003,18 @@ function ScheduleCard({
           </CardContent>
         </Card>
       </Link>
+      {/* RUN CONTROL FROM THE SCHEDULE ROW.
+          A schedule's last fire is a real run, and it can be paused, resumed or restarted
+          without navigating away — which is the whole point of having it here. The gestures
+          come from the SAME component the work item page uses, so a schedule row cannot offer
+          a "resume" that means something different from the work item's.
+          Scoped to THIS item: a schedule fires one item per occurrence, so there is no
+          schedule-wide gesture that would mean anything. */}
+      <SequenceControls
+        item={item}
+        hasChildren={isSequenceParent}
+        className="shrink-0"
+      />
       {/* THE ROW-LEVEL REMOVE. The bulk gesture (tick, then the bar button)
           was the ONLY way to remove one schedule — an operator clicking the
           row got a navigation and no delete at all. This is the same
@@ -1129,6 +1245,15 @@ function RunningCard({
           </CardContent>
         </Card>
       </Link>
+      {/* THE TWO STOPS, on the only view where stopping means anything. Pause keeps the worktree,
+          branch and succeeded steps; Stop ends the run. Either way the row leaves Running, which is
+          correct — a paused or stopped run is not running. */}
+      <SequenceControls
+        item={item}
+        hasChildren={isSequenceParent}
+        only={SCHEDULE_VIEW_ACTIONS.running}
+        className="shrink-0"
+      />
     </div>
   );
 }
@@ -1394,6 +1519,21 @@ function HistoryCard({
           </CardContent>
         </Card>
       </Link>
+      {/* RUN CONTROL FROM A HISTORY ROW.
+          A history row IS a run, which is exactly the thing these three gestures act on — so this
+          is where they belong, and where the operator expected them.
+          The earlier change put them on the UPCOMING card only, so this page — the one an operator
+          lands on after a fire — showed no controls at all.
+          Offered against the row's bound ITEM: the actions are work-item gestures, and the run id
+          identifies the row while the item identifies the run it should act on. */}
+      {item && (
+        <SequenceControls
+          item={item}
+          hasChildren={false}
+          only={SCHEDULE_VIEW_ACTIONS.history}
+          className="shrink-0"
+        />
+      )}
       {/* THE ROW IS A RUN, SO DELETE REMOVES THE RUN — and the button is always available.
        *
        * It used to target the WORK ITEM's schedule, which on a past run is already consumed: the click cleared

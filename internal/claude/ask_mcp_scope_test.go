@@ -119,20 +119,20 @@ func TestClaudeAskConversationEnvOmitsAnAbsentProject(t *testing.T) {
 // The mode file ROUND-TRIPS MayAct, written from the SAME table.
 func TestAskModeFileCarriesMayAct(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "c1.mode.json")
+	// Iteration denies nothing and may act, so it leaves NO file — and an absent file reads as "may act".
 	if err := writeAskModeFile(path, askmode.Iteration); err != nil {
 		t.Fatalf("write iteration: %v", err)
 	}
-	st, ok := readAskModeFile(path)
-	if !ok {
-		t.Fatal("the iteration mode file did not read back")
+	if _, ok := readAskModeFile(path); ok {
+		t.Fatal("iteration wrote a mode file — a mode that denies nothing and may act must leave none")
 	}
-	if !st.MayAct {
-		t.Error("iteration's mode file says MayAct=false — it is the ONE mode that may act")
+	if denied, _ := askModeDenial(path, "mcp__github__create_issue"); denied {
+		t.Error("an absent mode file refused an opaque MCP tool — absence must mean the mode may act")
 	}
 	if err := writeAskModeFile(path, askmode.Brainstorm); err != nil {
 		t.Fatalf("write brainstorm: %v", err)
 	}
-	st, ok = readAskModeFile(path)
+	st, ok := readAskModeFile(path)
 	if !ok {
 		t.Fatal("the brainstorm mode file did not read back")
 	}
@@ -170,18 +170,18 @@ func TestAskModeDenialRefusesOpaqueMCPOutsideAModeThatActs(t *testing.T) {
 	}
 }
 
-// The platform's OWN server stays classified by the table: `mcp__orchicon__create_work_item` is a
-// PLANNER tool, denied in Iteration (which may not author the plan).
+// The platform's OWN server stays classified by the table: `mcp__orchicon__bash` maps to the bare `bash`,
+// a WORK tool denied in Brainstorm, so the prefix cannot be a way around the gate.
 func TestAskModeDenialClassifiesThePlatformsOwnServer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "c1.mode.json")
-	if err := writeAskModeFile(path, askmode.Iteration); err != nil {
+	if err := writeAskModeFile(path, askmode.Brainstorm); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	denied, reason := askModeDenial(path, "mcp__orchicon__create_work_item")
+	denied, reason := askModeDenial(path, "mcp__orchicon__bash")
 	if !denied {
-		t.Fatal("iteration did not refuse the platform's create_work_item — the bare-name classification through the prefix is missing")
+		t.Fatal("brainstorm did not refuse the platform's bash — the bare-name classification through the prefix is missing")
 	}
-	if !strings.Contains(strings.ToUpper(reason), "BRAINSTORM") {
+	if !strings.Contains(strings.ToUpper(reason), "ITERATION") {
 		t.Errorf("the refusal does not name the mode to switch to: %s", reason)
 	}
 }

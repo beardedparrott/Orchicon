@@ -42,6 +42,7 @@ export interface UseStreamOptions<
   // The Connect-ES server-stream method (from a generated client).
   stream: (
     request: PartialMessage<Req>,
+    options?: { signal?: AbortSignal },
   ) => AsyncIterable<Resp>;
   // The request message (without from_sequence — managed internally).
   request: PartialMessage<Req>;
@@ -98,6 +99,18 @@ export function useStream<
   const reconnectAttempt = useRef(0);
   const cancelledRef = useRef(false);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // abortRef is what actually CLOSES the HTTP connection (see the cleanup note below). Held in a ref so
+  // both the effect cleanup and reconnect() can reach the CURRENT subscription's controller.
+  const abortRef = useRef<AbortController | null>(null);
+  // hiddenRef gates the subscription on TAB VISIBILITY. A background tab must not keep holding an
+  // HTTP/1.1 socket: the plane serves cleartext (no h2c in internal/server), and a browser allows only
+  // ~6 connections per origin, so N tabs each holding one stream starve the 7th — which is why opening
+  // another tab gave a white screen that only cleared when the execution page was closed. Only the
+  // visible tab(s) subscribe now; a hidden tab releases its socket and reattaches on show, resuming
+  // from lastSequence (the protocol already supports it, so nothing is missed).
+  const hiddenRef = useRef<boolean>(
+    typeof document !== "undefined" ? document.visibilityState === "hidden" : false,
+  );
 
   const pushEvent = useCallback(
     (resp: Resp) => {
@@ -133,6 +146,18 @@ export function useStream<
 
   const connect = useCallback(async () => {
     if (cancelledRef.current) return;
+    // A hidden tab does not subscribe: it would spend one of the origin's ~6 sockets on a stream
+    // nobody is reading, and starve the tabs the operator is looking at.
+    if (hiddenRef.current) {
+      setStatus("idle");
+      return;
+    }
+
+    // ONE subscription at a time. A reconnect must close the previous connection, or a flapping stream
+    // leaks one held connection per attempt until the browser's per-origin cap is gone.
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
 
     setStatus(reconnectAttempt.current > 0 ? "reconnecting" : "connecting");
 
@@ -145,7 +170,7 @@ export function useStream<
             : undefined,
       };
 
-      const iter = stream(req);
+      const iter = stream(req, { signal: ac.signal });
 
       setStatus("open");
       setError(null);
@@ -176,6 +201,11 @@ export function useStream<
 
   scheduleReconnectRef.current = useCallback(() => {
     if (cancelledRef.current) return;
+    if (hiddenRef.current) {
+      // Park instead of backing off: the visibility handler reconnects on show.
+      setStatus("idle");
+      return;
+    }
     reconnectAttempt.current += 1;
     const attempt = reconnectAttempt.current;
     const delay = Math.min(
@@ -191,6 +221,8 @@ export function useStream<
   const reconnect = useCallback(() => {
     reconnectAttempt.current = 0;
     if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+    // connect() aborts the in-flight subscription itself, so this reuses one code path rather than
+    // opening a second connection beside the first.
     connect();
   }, [connect]);
 
@@ -207,11 +239,50 @@ export function useStream<
     connect();
 
     return () => {
+      // THE FLAG ALONE DOES NOT CLOSE THE CONNECTION, and that was the bug. `for await` only sees
+      // cancelledRef when the server sends ANOTHER event; a quiet stream parks in the iterator holding
+      // its HTTP/1.1 connection open indefinitely. Each route is a separate tab that holds one, the
+      // plane serves no HTTP/2 (no h2c in internal/server), so a browser's ~6 connections per origin
+      // are exhausted after a handful of tabs and every later navigation hangs on a white screen —
+      // which "recovered" only once the execution was closed, because that finally released its socket.
+      // Aborting the request is the only thing that actually frees it.
       cancelledRef.current = true;
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+      abortRef.current?.abort();
+      abortRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, name]);
+
+  // TAB VISIBILITY: subscribe only while this tab is visible, and reattach (from lastSequence) when it
+  // becomes visible again. This is what bounds the number of held sockets to the number of tabs the
+  // operator is actually LOOKING AT rather than the number of tabs open — a browser's ~6 connections
+  // per origin against a cleartext, HTTP/1.1-only plane is what gave a white screen to every tab past
+  // the sixth, and it cleared only when the streaming page was closed.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onVisibility = () => {
+      const hidden = document.visibilityState === "hidden";
+      if (hidden === hiddenRef.current) return;
+      hiddenRef.current = hidden;
+      if (cancelledRef.current) return;
+      if (hidden) {
+        // RELEASE THE SOCKET, not just a flag: `for await` parks until the server sends another event,
+        // so only aborting the request closes the connection.
+        if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+        abortRef.current?.abort();
+        abortRef.current = null;
+        setStatus("idle");
+        return;
+      }
+      if (enabled) {
+        reconnectAttempt.current = 0;
+        connect();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [connect, enabled]);
 
   return { events, status, lastSequence, error, reconnect };
 }

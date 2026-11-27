@@ -625,6 +625,12 @@ type ConsentRepliedMsg struct {
 	Expired bool
 	Detail  string
 	Err     string
+	// Answer is what the operator actually sent, carried back with the verdict so the shell can settle
+	// a RECORDED clarifying-question card from the reply itself rather than waiting for a transcript
+	// re-read that an ended turn will never trigger. It is set on EVERY return path — including the
+	// error one — because the message is about the answer the operator gave, not only the server's
+	// verdict.
+	Answer string
 }
 
 // PermissionGrantsMsg carries the conversation's ACTIVE session grants, as the server holds them.
@@ -708,7 +714,7 @@ func (c *Controller) ReplyPermissionAsk(convID, askID string, choice apiv1.Permi
 			Answer:         answer,
 		}))
 		if err != nil {
-			return ConsentRepliedMsg{ConvID: convID, AskID: askID, Err: err.Error()}
+			return ConsentRepliedMsg{ConvID: convID, AskID: askID, Err: err.Error(), Answer: answer}
 		}
 		return ConsentRepliedMsg{
 			ConvID:  convID,
@@ -716,6 +722,7 @@ func (c *Controller) ReplyPermissionAsk(convID, askID string, choice apiv1.Permi
 			Applied: resp.Msg.GetApplied(),
 			Expired: resp.Msg.GetExpired(),
 			Detail:  resp.Msg.GetDetail(),
+			Answer:  answer,
 		}
 	}
 }

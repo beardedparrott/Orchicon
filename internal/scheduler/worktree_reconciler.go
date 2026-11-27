@@ -25,6 +25,7 @@ import (
 	"github.com/beardedparrott/orchicon/internal/workflow"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/beardedparrott/orchicon/internal/gitenv"
 	"github.com/beardedparrott/orchicon/internal/procwin"
 )
 
@@ -394,6 +395,11 @@ func (r *WorktreeReconciler) sweepOrphanRun(ctx context.Context, tenantID string
 			return r.clearSweptRunBranch(ctx, tenantID, run)
 		}
 		return nil
+	case domain.WorkflowRunPaused:
+		// A PAUSED RUN IS A KEPT RUN. Nothing is reclaimed: the worktree is the resume point,
+		// and the branch is the work. Pruning here would make "pause" indistinguishable from
+		// abort, which is the defect this status exists to remove.
+		return nil
 	case domain.WorkflowRunFailed, domain.WorkflowRunAborted:
 		if !r.isWorkItemReclaimable(ctx, tenantID, run.WorkItemID) {
 			return nil // retry target — keep
@@ -464,6 +470,9 @@ func (r *WorktreeReconciler) sweepOrphanStepBranch(ctx context.Context, tenantID
 		if !r.branchExists(ctx, projectDir, sr.WorktreeBranch) {
 			return r.clearSweptStepBranch(ctx, tenantID, sr)
 		}
+		return nil
+	case domain.WorkflowRunPaused:
+		// Same rule at step granularity — see the run-level case above.
 		return nil
 	case domain.WorkflowRunFailed, domain.WorkflowRunAborted:
 		if !r.isWorkItemReclaimable(ctx, tenantID, run.WorkItemID) {
@@ -1379,6 +1388,10 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitCmdTimeout)
 	defer cancel()
 	cmd := procwin.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	// NEVER INHERIT A REPOSITORY POINTER. -C names the target; GIT_DIR/GIT_WORK_TREE would silently
+	// override it, and this function runs `reset --hard` and `clean -fd` (restoreWorkTree) — the most
+	// destructive git in the codebase. Redirected, they run against the wrong tree.
+	cmd.Env = gitenv.Clean(os.Environ())
 	// CombinedOutput is the point: git writes the sentence that names a fatal failure — `fatal: invalid
 	// reference`, `fatal: not a git repository`, an auth prompt rejected — to stderr.
 	out, err := cmd.CombinedOutput()
@@ -1996,7 +2009,7 @@ func (r *WorktreeReconciler) addWorktreeOrFreeStale(ctx context.Context, project
 	if err == nil {
 		return nil
 	}
-	if !strings.Contains(err.Error(), "is already used by worktree") {
+	if !branchClaimRefusal(err) {
 		return err
 	}
 	r.log.Warn("worktree: the branch is claimed by a stale registration — pruning and retrying once",
@@ -2009,6 +2022,24 @@ func (r *WorktreeReconciler) addWorktreeOrFreeStale(ctx context.Context, project
 		return rerr
 	}
 	return nil
+}
+
+// branchClaimRefusal reports whether a `git worktree add <path> -b <branch>` was refused because the
+// BRANCH IS ALREADY CHECKED OUT SOMEWHERE, which is the one refusal the stale-registration recovery
+// can act on.
+//
+// TWO WORDINGS, ONE CONDITION, and matching only one of them is a silent regression: git changed this
+// message at 2.39 ("is already used by worktree" → "is already checked out at"), so a single literal
+// made the recovery dead code on every newer git while the refusal itself kept happening. The symptom
+// is a branch that can never be reclaimed and a worktree that never provisions, with no error naming
+// the reason. Both spellings are matched for exactly that reason.
+func branchClaimRefusal(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "is already used by worktree") ||
+		strings.Contains(msg, "is already checked out at")
 }
 
 // isAlreadyTrackedErr reports whether a worktree-add failure is the
