@@ -230,6 +230,13 @@ func Mount(mux *http.ServeMux, deps *Dependencies) http.Handler {
 	workItemSvc.SetPauseRunStarter(func(ctx context.Context, tenantID, runID, reason string) error {
 		return workflowSvc.PauseRunInTx(ctx, tenantID, runID, reason)
 	})
+	// THE INVERSE. Pause had a seam here and resume did not, so leaf RESUME fell back to the RETRY
+	// path — which only accepts a failed/aborted run. Resuming a paused item therefore failed with
+	// "the run is paused — only a failed or aborted run can be resumed", refusing the one state
+	// RESUME exists for.
+	workItemSvc.SetResumePausedRunStarter(func(ctx context.Context, tenantID, runID string) error {
+		return workflowSvc.ResumeRunInTx(ctx, tenantID, runID)
+	})
 	if deps.AbortExecution != nil {
 		scheduler.SetStopAbortHook(deps.AbortExecution)
 	}

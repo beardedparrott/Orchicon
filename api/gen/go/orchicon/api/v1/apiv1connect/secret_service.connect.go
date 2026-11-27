@@ -48,6 +48,9 @@ const (
 	// SecretsServiceDeleteSecretProcedure is the fully-qualified name of the SecretsService's
 	// DeleteSecret RPC.
 	SecretsServiceDeleteSecretProcedure = "/orchicon.api.v1.SecretsService/DeleteSecret"
+	// SecretsServiceGetSecretValueProcedure is the fully-qualified name of the SecretsService's
+	// GetSecretValue RPC.
+	SecretsServiceGetSecretValueProcedure = "/orchicon.api.v1.SecretsService/GetSecretValue"
 )
 
 // SecretsServiceClient is a client for the orchicon.api.v1.SecretsService service.
@@ -57,6 +60,24 @@ type SecretsServiceClient interface {
 	CreateSecret(context.Context, *connect.Request[v1.CreateSecretRequest]) (*connect.Response[v1.CreateSecretResponse], error)
 	UpdateSecret(context.Context, *connect.Request[v1.UpdateSecretRequest]) (*connect.Response[v1.UpdateSecretResponse], error)
 	DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error)
+	// GetSecretValue returns the PLAINTEXT VALUE of a tenant secret, by NAME.
+	//
+	// IT IS A PLAIN GET, and that is deliberate. Reading a secret is reading a value in the caller's
+	// own tenant; it needs the caller's ordinary credential and nothing else. An earlier version of
+	// this door required a workflow-run id and authenticated with the execution's minted plane token —
+	// which made reading a DEV secret depend on a PROD role binding, because the platform only mints
+	// that token for a worker with a role_ref. Two unrelated entitlements, coupled by accident.
+	//
+	// WHAT PROTECTS IT:
+	//   - ordinary tenant authorisation: the caller must be entitled to read this tenant (no anonymous,
+	//     no cross-tenant)
+	//   - every successful read writes a `secret.read` audit row naming the secret and the caller
+	//   - the value is never returned on an error, and the platform never logs it
+	//
+	// THE HONEST LIMIT: anyone who can read a secret can print it. This door does not prevent that. It
+	// keeps values out of environments and files where they leak SILENTLY, and makes every read visible
+	// afterwards.
+	GetSecretValue(context.Context, *connect.Request[v1.GetSecretValueRequest]) (*connect.Response[v1.GetSecretValueResponse], error)
 }
 
 // NewSecretsServiceClient constructs a client for the orchicon.api.v1.SecretsService service. By
@@ -100,16 +121,23 @@ func NewSecretsServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(secretsServiceMethods.ByName("DeleteSecret")),
 			connect.WithClientOptions(opts...),
 		),
+		getSecretValue: connect.NewClient[v1.GetSecretValueRequest, v1.GetSecretValueResponse](
+			httpClient,
+			baseURL+SecretsServiceGetSecretValueProcedure,
+			connect.WithSchema(secretsServiceMethods.ByName("GetSecretValue")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // secretsServiceClient implements SecretsServiceClient.
 type secretsServiceClient struct {
-	listSecrets  *connect.Client[v1.ListSecretsRequest, v1.ListSecretsResponse]
-	getSecret    *connect.Client[v1.GetSecretRequest, v1.GetSecretResponse]
-	createSecret *connect.Client[v1.CreateSecretRequest, v1.CreateSecretResponse]
-	updateSecret *connect.Client[v1.UpdateSecretRequest, v1.UpdateSecretResponse]
-	deleteSecret *connect.Client[v1.DeleteSecretRequest, v1.DeleteSecretResponse]
+	listSecrets    *connect.Client[v1.ListSecretsRequest, v1.ListSecretsResponse]
+	getSecret      *connect.Client[v1.GetSecretRequest, v1.GetSecretResponse]
+	createSecret   *connect.Client[v1.CreateSecretRequest, v1.CreateSecretResponse]
+	updateSecret   *connect.Client[v1.UpdateSecretRequest, v1.UpdateSecretResponse]
+	deleteSecret   *connect.Client[v1.DeleteSecretRequest, v1.DeleteSecretResponse]
+	getSecretValue *connect.Client[v1.GetSecretValueRequest, v1.GetSecretValueResponse]
 }
 
 // ListSecrets calls orchicon.api.v1.SecretsService.ListSecrets.
@@ -137,6 +165,11 @@ func (c *secretsServiceClient) DeleteSecret(ctx context.Context, req *connect.Re
 	return c.deleteSecret.CallUnary(ctx, req)
 }
 
+// GetSecretValue calls orchicon.api.v1.SecretsService.GetSecretValue.
+func (c *secretsServiceClient) GetSecretValue(ctx context.Context, req *connect.Request[v1.GetSecretValueRequest]) (*connect.Response[v1.GetSecretValueResponse], error) {
+	return c.getSecretValue.CallUnary(ctx, req)
+}
+
 // SecretsServiceHandler is an implementation of the orchicon.api.v1.SecretsService service.
 type SecretsServiceHandler interface {
 	ListSecrets(context.Context, *connect.Request[v1.ListSecretsRequest]) (*connect.Response[v1.ListSecretsResponse], error)
@@ -144,6 +177,24 @@ type SecretsServiceHandler interface {
 	CreateSecret(context.Context, *connect.Request[v1.CreateSecretRequest]) (*connect.Response[v1.CreateSecretResponse], error)
 	UpdateSecret(context.Context, *connect.Request[v1.UpdateSecretRequest]) (*connect.Response[v1.UpdateSecretResponse], error)
 	DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error)
+	// GetSecretValue returns the PLAINTEXT VALUE of a tenant secret, by NAME.
+	//
+	// IT IS A PLAIN GET, and that is deliberate. Reading a secret is reading a value in the caller's
+	// own tenant; it needs the caller's ordinary credential and nothing else. An earlier version of
+	// this door required a workflow-run id and authenticated with the execution's minted plane token —
+	// which made reading a DEV secret depend on a PROD role binding, because the platform only mints
+	// that token for a worker with a role_ref. Two unrelated entitlements, coupled by accident.
+	//
+	// WHAT PROTECTS IT:
+	//   - ordinary tenant authorisation: the caller must be entitled to read this tenant (no anonymous,
+	//     no cross-tenant)
+	//   - every successful read writes a `secret.read` audit row naming the secret and the caller
+	//   - the value is never returned on an error, and the platform never logs it
+	//
+	// THE HONEST LIMIT: anyone who can read a secret can print it. This door does not prevent that. It
+	// keeps values out of environments and files where they leak SILENTLY, and makes every read visible
+	// afterwards.
+	GetSecretValue(context.Context, *connect.Request[v1.GetSecretValueRequest]) (*connect.Response[v1.GetSecretValueResponse], error)
 }
 
 // NewSecretsServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -183,6 +234,12 @@ func NewSecretsServiceHandler(svc SecretsServiceHandler, opts ...connect.Handler
 		connect.WithSchema(secretsServiceMethods.ByName("DeleteSecret")),
 		connect.WithHandlerOptions(opts...),
 	)
+	secretsServiceGetSecretValueHandler := connect.NewUnaryHandler(
+		SecretsServiceGetSecretValueProcedure,
+		svc.GetSecretValue,
+		connect.WithSchema(secretsServiceMethods.ByName("GetSecretValue")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.SecretsService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case SecretsServiceListSecretsProcedure:
@@ -195,6 +252,8 @@ func NewSecretsServiceHandler(svc SecretsServiceHandler, opts ...connect.Handler
 			secretsServiceUpdateSecretHandler.ServeHTTP(w, r)
 		case SecretsServiceDeleteSecretProcedure:
 			secretsServiceDeleteSecretHandler.ServeHTTP(w, r)
+		case SecretsServiceGetSecretValueProcedure:
+			secretsServiceGetSecretValueHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -222,4 +281,8 @@ func (UnimplementedSecretsServiceHandler) UpdateSecret(context.Context, *connect
 
 func (UnimplementedSecretsServiceHandler) DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.SecretsService.DeleteSecret is not implemented"))
+}
+
+func (UnimplementedSecretsServiceHandler) GetSecretValue(context.Context, *connect.Request[v1.GetSecretValueRequest]) (*connect.Response[v1.GetSecretValueResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.SecretsService.GetSecretValue is not implemented"))
 }

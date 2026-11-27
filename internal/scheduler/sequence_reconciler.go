@@ -214,7 +214,12 @@ func (r *SequenceReconciler) checkStalledParents(ctx context.Context, tenantID s
 		hasBlocked := false
 		for _, c := range children {
 			switch c.Status {
-			case domain.WorkItemRunning, domain.WorkItemAssigned, domain.WorkItemReady, domain.WorkItemCheckpointing, domain.WorkItemRecovering, domain.WorkItemScheduled, domain.WorkItemRecurring:
+			case domain.WorkItemRunning, domain.WorkItemAssigned, domain.WorkItemReady, domain.WorkItemCheckpointing, domain.WorkItemRecovering, domain.WorkItemScheduled, domain.WorkItemRecurring,
+				// A PAUSED CHILD IS PARKED ON PURPOSE. Without this the reconciler reads `pending`
+				// as "arm it" and re-fires the workflow the operator just paused — measured on
+				// 01M84WD1G42BHD1HTCB2YMQ82Z, where a third run started in the same second as each
+				// of two pauses.
+				domain.WorkItemPaused:
 				hasInFlight = true
 			case domain.WorkItemBlocked:
 				hasBlocked = true
@@ -393,7 +398,7 @@ func reconcileParent(ctx context.Context, tx pgx.Tx, tenantID, parentID string, 
 			continue // past
 		case domain.WorkItemRunning, domain.WorkItemAssigned, domain.WorkItemReady,
 			domain.WorkItemCheckpointing, domain.WorkItemRecovering, domain.WorkItemScheduled,
-			domain.WorkItemRecurring:
+			domain.WorkItemRecurring, domain.WorkItemPaused:
 			// In flight (or human-managed): wait for the current child.
 			continue
 		case domain.WorkItemPending, domain.WorkItemBlocked:
@@ -558,7 +563,7 @@ func resetSubtree(ctx context.Context, tx pgx.Tx, tenantID, parentID string) err
 	for _, c := range children {
 		switch c.Status {
 		case domain.WorkItemPending:
-		case domain.WorkItemRunning, domain.WorkItemCheckpointing, domain.WorkItemRecovering:
+		case domain.WorkItemRunning, domain.WorkItemCheckpointing, domain.WorkItemRecovering, domain.WorkItemPaused:
 			continue // in-flight bound run — leave it and its subtree
 		case domain.WorkItemSucceeded, domain.WorkItemSkipped:
 			// Terminal-success descendants are always kept — never reset to

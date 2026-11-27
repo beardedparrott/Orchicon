@@ -196,6 +196,8 @@ func validateStatus(status apiv1.WorkItemStatus) string {
 		return domain.WorkItemArchived
 	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_IDEA:
 		return domain.WorkItemIdea
+	case apiv1.WorkItemStatus_WORK_ITEM_STATUS_PAUSED:
+		return domain.WorkItemPaused
 	default:
 		return domain.WorkItemPending
 	}
@@ -209,10 +211,13 @@ func ValidateStatus(status string) (string, error) {
 	case domain.WorkItemPending, domain.WorkItemScheduled, domain.WorkItemReady,
 		domain.WorkItemAssigned, domain.WorkItemRunning, domain.WorkItemCheckpointing,
 		domain.WorkItemSucceeded, domain.WorkItemFailed, domain.WorkItemCancelled,
-		domain.WorkItemRecovering, domain.WorkItemRecurring, domain.WorkItemSkipped:
+		domain.WorkItemRecovering, domain.WorkItemRecurring, domain.WorkItemSkipped,
+		// paused and archived are operator-initiated, so they are settable. blocked/idea are
+		// system-managed and stay rejected — widening this to them was a mistake.
+		domain.WorkItemPaused, domain.WorkItemArchived:
 		return status, nil
 	default:
-		return "", fmt.Errorf("status must be one of pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering, recurring, skipped")
+		return "", fmt.Errorf("status must be one of pending, scheduled, ready, assigned, running, checkpointing, succeeded, failed, cancelled, recovering, recurring, skipped, paused, archived")
 	}
 }
 
@@ -220,6 +225,9 @@ func ValidateStatus(status string) (string, error) {
 // (running / checkpointing / recovering).
 func IsActiveRunStatus(status string) bool {
 	switch status {
+	// NOTE: paused is deliberately ABSENT. A paused item is parked and resumable; counting it as
+	// active is what locked every gesture out of the work item during the two checkpointing
+	// deadlocks, and the same mistake here would be worse because it would be intentional.
 	case domain.WorkItemRunning, domain.WorkItemCheckpointing, domain.WorkItemRecovering:
 		return true
 	default:

@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -165,4 +166,37 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// GetSecretValue serves a secret's plaintext to an ordinary, authorised caller.
+//
+// NO IDENTITY GYMNASTICS: `requireTenant` has already established that the caller may act in this
+// tenant, and that is the whole authorisation. The earlier version demanded a workflow-run id and a
+// `run:` subject, which coupled this to the plane-credential mint (and therefore to a worker's role
+// binding on its own instance) — the coupling the operator identified.
+//
+// THE ERROR PATHS CARRY NO VALUE, and this handler logs nothing: a secret read is recorded on the
+// AUDIT TRAIL inside ReadSecretByName, which is the one place it should appear. Logging here would
+// put plaintext in the plane's log file, which is exactly the silent leak the design avoids.
+func (h *Handler) GetSecretValue(ctx context.Context, req *connect.Request[apiv1.GetSecretValueRequest]) (*connect.Response[apiv1.GetSecretValueResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnauthenticated, err)
+	}
+	// The caller identity is for the AUDIT ROW only, never for authorisation decisions here.
+	callerID := ""
+	if ident, ok := auth.FromContext(ctx); ok {
+		callerID = ident.IdentityID
+	}
+	value, err := h.svc.ReadSecretByName(ctx, tenantID, callerID, req.Msg.Name)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, err)
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&apiv1.GetSecretValueResponse{
+		Name:  req.Msg.Name,
+		Value: value,
+	}), nil
 }

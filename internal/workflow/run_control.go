@@ -209,6 +209,7 @@ func pauseRunInner(ctx context.Context, tx pgx.Tx, tenantID, runID, reason strin
 	if err != nil {
 		return err
 	}
+	paused := 0
 	for _, sr := range stepRuns {
 		if sr.Status != domain.StepRunRunning || sr.WorkerExecutionID == "" {
 			continue
@@ -225,14 +226,47 @@ func pauseRunInner(ctx context.Context, tx pgx.Tx, tenantID, runID, reason strin
 		}); err != nil {
 			return err
 		}
+		paused++
 	}
 
+	// THE WORK ITEM'S STATUS MUST MATCH WHAT ACTUALLY HAPPENED.
+	//
+	// This used to stamp `checkpointing` unconditionally, and that deadlocked the item:
+	//
+	//	checkpointing is in IsActiveRunStatus
+	//	  -> ControlSequence RESUME refuses ("cannot RESUME a work item that is running")
+	//	  -> PAUSE refuses (no run in flight) and RESTART refuses (still "in flight")
+	//	  -> the reconciler sees the run is `paused` and returns before touching the item
+	//
+	// Measured on work item 01M84WD1G42BHD1HTCB2YMQ82Z: it sat in `checkpointing` indefinitely with
+	// NOTHING in flight, because QA had already failed 110 minutes earlier. A pause with nothing to
+	// checkpoint is simply a pause, and the item must stay resumable.
+	//
+	// So: `checkpointing` only when we actually asked something to checkpoint. Otherwise `pending`,
+	// which is the honest description of "parked, ready to resume" and is what every gesture expects.
+	// THE ITEM IS PARKED, NOT "CHECKPOINTING".
+	//
+	// `checkpointing` describes a checkpoint IN PROGRESS, and pause does not produce one: it ends the
+	// session and the resume re-establishes it. Stamping `checkpointing` therefore described a state
+	// that never existed — and because `checkpointing` is in IsActiveRunStatus, it locked every
+	// gesture out. Measured twice on work item 01M84WD1G42BHD1HTCB2YMQ82Z, which sat in it for hours
+	// with nothing in flight the first time and an orphaned `terminating` row the second.
+	//
+	// `pending` + a `paused` run is the truthful pair: the work is parked and resumable. The RUN's
+	// status carries the meaning the operator needs; the item's status only needs to not lie.
+	// PARK IT AS `paused`, NOT `pending`.
+	//
+	// `pending` means "on deck" to the sequence reconciler, which ARMS it: measured on
+	// 01M84WD1G42BHD1HTCB2YMQ82Z, where each of two pauses was followed by a new run in the SAME
+	// SECOND. `paused` is a status the arming paths skip, and it is not an active run status, so it
+	// locks nothing out either.
 	if current.WorkItemID != "" {
 		if wi, err := db.GetWorkItem(ctx, tx, tenantID, current.WorkItemID); err == nil {
-			status := domain.WorkItemCheckpointing
+			status := domain.WorkItemPaused
 			_, _ = db.UpdateWorkItem(ctx, tx, tenantID, current.WorkItemID, wi.Version, db.UpdateWorkItemFields{Status: &status})
 		}
 	}
+	_ = paused // counted for the log line; deliberately NOT a status input
 	return nil
 }
 
@@ -269,4 +303,113 @@ func (s *Service) PauseRunInTx(ctx context.Context, tenantID, runID, reason stri
 		return err
 	}
 	return ttx.Commit(ctx)
+}
+
+// ResumeRunInTx continues a PAUSED run — the transactional entry point the WORK ITEM service uses
+// for a leaf RESUME, so the work item page and the run page cannot disagree about what resume means.
+func (s *Service) ResumeRunInTx(ctx context.Context, tenantID, runID string) error {
+	ttx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	defer ttx.Rollback(ctx)
+	if err := resumeRunInner(ctx, ttx.Tx, tenantID, runID); err != nil {
+		return err
+	}
+	return ttx.Commit(ctx)
+}
+
+// resumeRunInner continues a PAUSED run in place. Shared by the run RPC and the work item page so
+// the two cannot disagree about what "resume" means — the divergence that made leaf RESUME a no-op
+// in the first place.
+func resumeRunInner(ctx context.Context, tx pgx.Tx, tenantID, runID string) error {
+	current, err := db.GetWorkflowRun(ctx, tx, tenantID, runID)
+	if err != nil {
+		return err
+	}
+	_, err = resumeRunInnerReturning(ctx, tx, tenantID, current)
+	return err
+}
+
+// resumeRunInnerReturning is resumeRunInner with the pre-read row supplied (the RPC already has it).
+//
+// RESUMING DOES NOT RESURRECT THE PAUSED EXECUTION. Pause ENDED that session, so flipping its row
+// back to `running` points at a process that no longer exists. The interrupted execution is ended
+// honestly and its STEP returns to pending so the reconciler dispatches it again — the same attempt
+// continuing, with the bridge resuming the same conversation from the persisted session id.
+func resumeRunInnerReturning(ctx context.Context, tx pgx.Tx, tenantID string, current db.WorkflowRunRow) (db.WorkflowRunRow, error) {
+	if current.Status != domain.WorkflowRunPaused {
+		return current, fmt.Errorf("run is in status %s — only a paused run can be resumed this way", current.Status)
+	}
+	updated, err := db.UpdateWorkflowRun(ctx, tx, tenantID, current.ID, current.Version, db.UpdateWorkflowRunFields{
+		Status: strPtr(domain.WorkflowRunRunning),
+	})
+	if err != nil {
+		return current, err
+	}
+
+	stepRuns, err := db.ListWorkflowStepRuns(ctx, tx, tenantID, current.ID)
+	if err != nil {
+		return current, err
+	}
+	for _, sr := range stepRuns {
+		if sr.WorkerExecutionID == "" {
+			continue
+		}
+		exec, err := db.GetExecution(ctx, tx, tenantID, sr.WorkerExecutionID)
+		if err != nil || exec.Status != domain.ExecutionTerminating {
+			continue
+		}
+		ended := time.Now().UTC()
+		terminated := domain.ExecutionTerminated
+		if _, err := db.UpdateExecution(ctx, tx, tenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
+			Status:       &terminated,
+			EndedAt:      &ended,
+			ErrorMessage: strPtr("paused; re-dispatched on resume"),
+		}); err != nil {
+			return current, err
+		}
+		// WHICH STEPS RE-ARM ON RESUME, AND WHY IT MATTERS.
+		//
+		//   running / recovering   were interrupted mid-work -> re-dispatch so they continue
+		//   failed                 the run was PAUSED WHILE A STEP HAD FAILED (the loop had not yet
+		//                          routed it). The operator's rule: "If you pause during a failure,
+		//                          hitting resume starts from the failed step and retries from that
+		//                          point." Leaving it failed stranded the run — running, with a
+		//                          failed step and nothing to dispatch.
+		//   succeeded / pending    untouched. Succeeded work is never replayed, and pending steps
+		//                          are already queued for the reconciler.
+		//
+		// `Attempt` is deliberately NOT reset on a re-armed failed step: this is the same attempt
+		// continuing from where it stopped, not a fresh try. A genuine retry is RetryRunInTx.
+		switch sr.Status {
+		case domain.StepRunRunning, domain.StepRunRecovering, domain.StepRunFailed:
+			pending := domain.StepRunPending
+			if _, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
+				Status:            &pending,
+				WorkerExecutionID: strPtr(""),
+				ClearEndedAt:      true,
+			}); err != nil {
+				return current, err
+			}
+		}
+	}
+	// THE WORK ITEM MOVES WITH THE RUN. This lived only in the RPC wrapper, so the WORK ITEM page's
+	// resume left the item `paused` while the run was already `running` — the operator saw "kicked it
+	// off" and then an item that had not moved, and a second click failed because the RUN was now
+	// running while the ITEM still said paused. Two surfaces, two answers, again.
+	//
+	// It belongs in the shared core precisely because it is not optional: a resumed run whose item
+	// still reads `paused` is a state no gesture can reconcile.
+	if current.WorkItemID != "" {
+		if wi, err := db.GetWorkItem(ctx, tx, tenantID, current.WorkItemID); err == nil {
+			runningItem := domain.WorkItemRunning
+			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, current.WorkItemID, wi.Version, db.UpdateWorkItemFields{
+				Status: &runningItem,
+			}); err != nil {
+				return current, fmt.Errorf("set work item running: %w", err)
+			}
+		}
+	}
+	return updated, nil
 }

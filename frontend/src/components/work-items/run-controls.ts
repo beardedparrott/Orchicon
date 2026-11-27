@@ -26,13 +26,21 @@ const ACTIVE = new Set([
 
 const QUEUED = new Set([WorkItemStatus.READY, WorkItemStatus.ASSIGNED]);
 
-/** A run is in flight: pausing is meaningful, and restarting would collide with it. */
+/**
+ * A run is in flight: pausing is meaningful, and restarting would collide with it.
+ *
+ * PAUSED IS NOT IN FLIGHT. It is a deliberate park, so the gestures that matter are Resume and
+ * Restart — offering Pause on an already-paused item would be a no-op, and treating it as in flight
+ * would hide the very buttons that free it.
+ */
 export const isInFlight = (status: WorkItemStatus) =>
   ACTIVE.has(status) || QUEUED.has(status);
 
-/** There is finished-with-a-failure work worth continuing. */
+/** There is work worth continuing: a failure to fix, or a park we made and can lift. */
 export const hasResumableWork = (status: WorkItemStatus) =>
-  status === WorkItemStatus.FAILED || status === WorkItemStatus.CANCELLED;
+  status === WorkItemStatus.FAILED ||
+  status === WorkItemStatus.CANCELLED ||
+  status === WorkItemStatus.PAUSED;
 
 export interface RunControlMeta {
   label: string;

@@ -3622,6 +3622,18 @@ function MessageBubble({
       )}
       {/* A running turn's mirrored partial row can hold reasoning but no text
           yet (the model is still thinking) — skip the empty bubble shell. */}
+      {/* THE TURN'S TOOL CALLS, in ledger order, BEFORE the reply.
+          They were drawn AFTER the prose, which inverts the turn: the shape is reason -> act -> reply,
+          and acts below the reply read as something that happened afterwards. The operator: "All of
+          your last bash calls are listed below your response to me. I would think they should be above
+          that and your final message is what should be at the bottom." The CARD still comes last. */}
+      {toolRows.length > 0 && (
+        <div className="mt-1 space-y-1" data-testid="ask-tool-rows">
+          {toolRows.map((row, i) => (
+            <ToolCard key={toolRowKey(row, i)} tool={row} />
+          ))}
+        </div>
+      )}
       {message.content && !proseLifted && (
         // THE ROW'S OWN TIME. AssistantBubble has always been able to draw `at` (AssistantBubble.tsx) and
         // this call never passed it, so the model's replies were the only blocks in the transcript with no
@@ -3639,17 +3651,6 @@ function MessageBubble({
           because nothing failed — the operator chose it. */}
       {message.metadata?.stopped && (
         <p className="mt-1 text-xs text-muted-foreground italic">{message.metadata.stopped}</p>
-      )}
-      {/* THE TURN'S TOOL CALLS, in ledger order, BETWEEN the prose and the card — the same position the
-          TUI draws them in (chat.conversationItems). Each row is the shared ToolCard, so an agy call
-          renders its subject (command, path or URL) from agy's own argument keys rather than a
-          truncated JSON object. */}
-      {toolRows.length > 0 && (
-        <div className="mt-1 space-y-1" data-testid="ask-tool-rows">
-          {toolRows.map((row, i) => (
-            <ToolCard key={toolRowKey(row, i)} tool={row} />
-          ))}
-        </div>
       )}
       {/* THE QUESTION CARD IS THE LAST THING IN THE MESSAGE.
 

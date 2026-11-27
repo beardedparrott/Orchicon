@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -287,3 +288,55 @@ func (s *Service) BatchGetForValidation(ctx context.Context, tenantID string, id
 }
 
 var _ = pgx.Tx(nil)
+
+// ReadSecretByName returns a secret's PLAINTEXT to an ordinary, authorised caller.
+//
+// IT IS A PLAIN GET, and that is the correction. The first version required a workflow-run id and
+// compared the caller's Subject to `run:<id>`, which meant a worker could only read a secret when the
+// platform had minted it a plane credential — and that mint requires a role_ref on the worker's OWN
+// instance. So fetching a DEV secret depended on a PROD role binding: two unrelated entitlements,
+// coupled by accident, and the operator said so plainly.
+//
+// A secret is a value in the caller's tenant. Reading it needs the caller's ordinary credential
+// (`requireTenant` has already run) and nothing more. What makes the door defensible is not the
+// identity gymnastics — it is that the value is never stored where it leaks silently, and that every
+// read is audited with who read it and when.
+func (s *Service) ReadSecretByName(ctx context.Context, tenantID, callerIdentityID, name string) (string, error) {
+	if err := s.requireKEK(); err != nil {
+		return "", err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("a secret name is required")
+	}
+	tx, err := s.pool.BeginTenantTx(ctx, tenantID)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	row, err := db.GetSecretByName(ctx, tx.Tx, tenantID, name)
+	if err != nil {
+		return "", fmt.Errorf("no secret named %q in this tenant", name)
+	}
+	pt, err := secretcrypto.Decrypt(row.Ciphertext, s.kek)
+	if err != nil {
+		return "", fmt.Errorf("decrypt %q failed", name)
+	}
+
+	// AUDIT EVERY READ — the control that makes this defensible.
+	after := map[string]any{"name": name}
+	if callerIdentityID != "" {
+		after["caller_identity_id"] = callerIdentityID
+	}
+	_ = audit.Record(ctx, tx.Tx, audit.Entry{
+		TenantID:   tenantID,
+		Action:     "secret.read",
+		TargetType: "secret",
+		TargetID:   row.ID,
+		After:      audit.Snapshot(after),
+	})
+
+	_ = tx.Commit(ctx)
+	return string(pt), nil
+}

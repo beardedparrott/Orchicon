@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { CreateSecretRequest, CreateSecretResponse, DeleteSecretRequest, DeleteSecretResponse, GetSecretRequest, GetSecretResponse, ListSecretsRequest, ListSecretsResponse, UpdateSecretRequest, UpdateSecretResponse } from "./secret_service_pb.js";
+import { CreateSecretRequest, CreateSecretResponse, DeleteSecretRequest, DeleteSecretResponse, GetSecretRequest, GetSecretResponse, GetSecretValueRequest, GetSecretValueResponse, ListSecretsRequest, ListSecretsResponse, UpdateSecretRequest, UpdateSecretResponse } from "./secret_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -55,6 +55,33 @@ export const SecretsService = {
       name: "DeleteSecret",
       I: DeleteSecretRequest,
       O: DeleteSecretResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetSecretValue returns the PLAINTEXT VALUE of a tenant secret, by NAME.
+     *
+     * IT IS A PLAIN GET, and that is deliberate. Reading a secret is reading a value in the caller's
+     * own tenant; it needs the caller's ordinary credential and nothing else. An earlier version of
+     * this door required a workflow-run id and authenticated with the execution's minted plane token —
+     * which made reading a DEV secret depend on a PROD role binding, because the platform only mints
+     * that token for a worker with a role_ref. Two unrelated entitlements, coupled by accident.
+     *
+     * WHAT PROTECTS IT:
+     *   - ordinary tenant authorisation: the caller must be entitled to read this tenant (no anonymous,
+     *     no cross-tenant)
+     *   - every successful read writes a `secret.read` audit row naming the secret and the caller
+     *   - the value is never returned on an error, and the platform never logs it
+     *
+     * THE HONEST LIMIT: anyone who can read a secret can print it. This door does not prevent that. It
+     * keeps values out of environments and files where they leak SILENTLY, and makes every read visible
+     * afterwards.
+     *
+     * @generated from rpc orchicon.api.v1.SecretsService.GetSecretValue
+     */
+    getSecretValue: {
+      name: "GetSecretValue",
+      I: GetSecretValueRequest,
+      O: GetSecretValueResponse,
       kind: MethodKind.Unary,
     },
   }

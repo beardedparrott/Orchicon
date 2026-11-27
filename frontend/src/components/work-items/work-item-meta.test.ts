@@ -9,6 +9,9 @@
 // contrast. These tests pin the split so no `dark:` variant leaks back
 // into the meta and both palettes stay readable.
 
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -28,6 +31,8 @@ import {
   showRecurringBadge,
   MANUALLY_UNMOVABLE_STATUSES,
   STATUS_FILTER_OPTIONS,
+  STATUSES_NOT_FILTERABLE,
+  statusDomainString,
   ALL_STATUS_VALUES,
   ALL_KIND_VALUES,
 } from "@/components/work-items/work-item-meta";
@@ -310,5 +315,140 @@ describe("archived status is in the filter vocabulary", () => {
       ALL_STATUS_VALUES,
     );
     expect(matched).toHaveLength(1);
+  });
+});
+
+/**
+ * EVERY STATUS THE SERVER CAN WRITE MUST BE A FILTER OPTION.
+ *
+ * The filter's default selection is ALL_STATUS_VALUES, which derives from STATUS_FILTER_OPTIONS,
+ * and filtering is `statuses.includes(i.status)`. So a status missing from the options list matches
+ * NOTHING and the row silently disappears from every view.
+ *
+ * That happened when `paused` shipped: the operator paused a work item, pause worked, and the item
+ * vanished. ARCHIVED had the same defect before it. This test enumerates the full wire enum rather
+ * than a hand-written list, so a status added later fails here instead of disappearing from the UI.
+ */
+describe("STATUS_FILTER_OPTIONS covers the whole wire enum", () => {
+  it("includes every WorkItemStatus value the proto can carry", () => {
+    // Numeric values from the proto enum, excluding UNSPECIFIED (0) which is never stored.
+    const wireValues = Object.entries(WorkItemStatus)
+      .filter(([k, v]) => typeof v === "number" && k !== "UNSPECIFIED" && v !== 0)
+      .map(([, v]) => v as number);
+
+    const options = new Set(STATUS_FILTER_OPTIONS.map((o) => o.value));
+    const excluded = new Set(STATUSES_NOT_FILTERABLE);
+    const missing = wireValues.filter((v) => !options.has(v) && !excluded.has(v));
+
+    expect(
+      missing,
+      `statuses present on the wire but absent from the filter dropdown (they will disappear from ` +
+        `every view because the default filter is ALL_STATUS_VALUES): ${missing
+          .map((v) => WorkItemStatus[v])
+          .join(", ")}`,
+    ).toEqual([]);
+  });
+
+  it("offers Paused specifically — the status that vanished", () => {
+    expect(STATUS_FILTER_OPTIONS.some((o) => o.value === WorkItemStatus.PAUSED)).toBe(true);
+  });
+
+  it("has a pill and a board column home for a paused item", () => {
+    // No statusMeta entry means no label and no colour; no column mapping means no board column.
+    expect(statusMeta(WorkItemStatus.PAUSED).label).toBe("paused");
+    expect(columnForStatus(WorkItemStatus.PAUSED)).toBe(WorkItemStatus.RUNNING);
+  });
+});
+
+/**
+ * THE STATUS ROUND TRIP, FOR EVERY VALUE.
+ *
+ * The work item detail page carried its OWN inline status→string map. It omitted checkpointing,
+ * blocked, skipped and archived, and then `paused` when that was added — so opening a paused item
+ * reported status "unknown" while the list view correctly showed "paused". Two maps, two answers.
+ *
+ * The shared map is derived from the enum, and this test proves the derivation is correct for EVERY
+ * value rather than trusting that lowercasing a proto name always yields the domain string.
+ */
+describe("statusDomainString", () => {
+  it("returns the lowercase domain string for every known status", () => {
+    const known: Array<[number, string]> = [
+      [WorkItemStatus.PENDING, "pending"],
+      [WorkItemStatus.SCHEDULED, "scheduled"],
+      [WorkItemStatus.READY, "ready"],
+      [WorkItemStatus.ASSIGNED, "assigned"],
+      [WorkItemStatus.RUNNING, "running"],
+      [WorkItemStatus.CHECKPOINTING, "checkpointing"],
+      [WorkItemStatus.SUCCEEDED, "succeeded"],
+      [WorkItemStatus.FAILED, "failed"],
+      [WorkItemStatus.CANCELLED, "cancelled"],
+      [WorkItemStatus.RECOVERING, "recovering"],
+      [WorkItemStatus.RECURRING, "recurring"],
+      [WorkItemStatus.BLOCKED, "blocked"],
+      [WorkItemStatus.SKIPPED, "skipped"],
+      [WorkItemStatus.ARCHIVED, "archived"],
+      [WorkItemStatus.PAUSED, "paused"],
+      [WorkItemStatus.IDEA, "idea"],
+    ];
+    for (const [status, want] of known) {
+      expect(statusDomainString(status), `${WorkItemStatus[status]} must map to "${want}"`).toBe(want);
+    }
+  });
+
+  it("never returns 'unknown' for a value the proto defines", () => {
+    const defined = Object.entries(WorkItemStatus)
+      .filter(([k, v]) => typeof v === "number" && k !== "UNSPECIFIED")
+      .map(([, v]) => v as number);
+    for (const s of defined) {
+      expect(statusDomainString(s), `${WorkItemStatus[s]} reported "unknown"`).not.toBe("unknown");
+    }
+  });
+
+  it("includes paused specifically — the status the operator saw as unknown", () => {
+    expect(statusDomainString(WorkItemStatus.PAUSED)).toBe("paused");
+  });
+});
+
+/**
+ * NO HAND-BUILT STATUS MAPS MAY COME BACK.
+ *
+ * The same defect shipped FIVE times, each in a different place, because four separate files each
+ * enumerated statuses by hand:
+ *
+ *   1. STATUS_FILTER_OPTIONS      paused missing  -> the item DISAPPEARED from every view
+ *   2. statusMeta (pill)          paused missing  -> no label, no colour
+ *   3. statusMetaFromString       paused missing  -> string-resolved rows rendered unknown
+ *   4. detail-page telemetry map  paused missing  -> /status reported "unknown"
+ *   5. detail-page Status TILE    paused missing  -> the operator READ "unknown" on screen
+ *
+ * Each fix was correct and each was too narrow, because I patched the map I had edited rather than
+ * finding every map. This test is the general fix: it forbids the PATTERN, so the sixth one cannot
+ * be written. Derive from the enum instead.
+ */
+describe("no hand-built status string maps remain", () => {
+  it("no source file maps WorkItemStatus members to literal strings", () => {
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "gen" || entry.name === "node_modules") continue;
+          walk(full);
+          continue;
+        }
+        if (!/\.(ts|tsx)$/.test(entry.name) || /\.test\.(ts|tsx)$/.test(entry.name)) continue;
+        // The definitional file owns the derived map.
+        if (full.endsWith("work-item-meta.ts")) continue;
+        const src = readFileSync(full, "utf8");
+        // `[WorkItemStatus.X]: "literal"` is the hand-built shape.
+        if (/\[WorkItemStatus\.[A-Z_]+\]:\s*"/.test(src)) offenders.push(full);
+      }
+    };
+    walk("src");
+    expect(
+      offenders,
+      `these files hand-build a status→string map instead of using statusDomainString/statusMeta; ` +
+        `every such map has eventually omitted a status and rendered "unknown": ${offenders.join(", ")}`,
+    ).toEqual([]);
   });
 });

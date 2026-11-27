@@ -262,6 +262,9 @@ enum WorkItemStatus {
   // automation-produced item awaiting triage; it is excluded from every
   // normal work-item view. Never user-assignable.
   WORK_ITEM_STATUS_IDEA = 15;
+  // A deliberate operator park (pause a run or a sequence child). Parked and resumable; NOT an
+  // active run status, so no arming path may start work for it until it is resumed.
+  WORK_ITEM_STATUS_PAUSED = 16;
 }
 
 // WorkItemDependency is an edge in the work DAG. The scheduler treats

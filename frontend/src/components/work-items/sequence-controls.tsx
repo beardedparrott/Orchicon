@@ -103,8 +103,12 @@ export function SequenceControls({
           toast.success(
             action === SequenceAction.RESTART
               ? `"${updated.title}" is now ${updated.status}.`
+              // RESUME CONTINUES A RUN; IT DOES NOT INSTANTLY RE-EXECUTE. The toast reported the
+              // item's status as though the work were already under way, so an operator who saw the
+              // run still settling read it as a no-op. "resuming" is the honest word: the run is
+              // dispatched again and the step re-executes.
               : action === SequenceAction.RESUME
-                ? `"${updated.title}" resumed — now ${updated.status}.`
+                ? `"${updated.title}" is resuming — now ${updated.status}. The interrupted step re-dispatches next.`
                 : `"${updated.title}" stopped — now ${updated.status}.`,
             {
               title:
@@ -126,7 +130,37 @@ export function SequenceControls({
   };
 
   let actions = availableActions(item.status, hasChildren);
-  if (only) actions = actions.filter((a) => only.includes(a));
+  // DOUBLE-GATING WAS A BUG, NOT A SAFETY NET.
+  //
+  // `only` says which gestures THIS VIEW offers; `availableActions` says which the item's status
+  // permits. Applying both meant a gesture had to survive two predicates, and on the Schedules
+  // RUNNING view that produced "no Pause button": the view lists items in
+  // ACTIVE_RUNNING_STATUSES, and Pause additionally required isInFlight — the same test, applied
+  // twice, with the second one winnowing an item that was already in flight by construction.
+  //
+  // When a view names its set explicitly, THAT SET IS THE DECISION. It is authored per view by
+  // someone who knows what the view means, and it is already narrow — Running offers only the two
+  // stops, History only the two continuations, Upcoming nothing. Filtering it again by status made
+  // the buttons vanish for exactly the rows the operator wanted them on.
+  //
+  // With no `only`, status decides as before — that path is the work item page and the board.
+  // A VIEW-AUTHORED SET IS A CEILING, NOT A FLOOR.
+  //
+  // `only` says what the view may offer; the item's status says what is possible. The intersection is
+  // the answer — and an EMPTY intersection must render NOTHING, because it means this view has no
+  // legal gesture for this status.
+  //
+  // I previously fell back to the whole `only` set when the intersection was empty, to stop the
+  // Schedules Running view losing its Pause button. That fix was wrong and produced the opposite
+  // defect: the History view lists runs whose item status is still `running` (its membership test is
+  // "has startedAt"), so the intersection with History's [RESUME, RESTART] was empty, the fallback
+  // fired, and the row rendered **Resume** on a RUNNING item — a gesture the status makes impossible.
+  //
+  // The real Pause-button bug was the view's own predicate double-gating an already-filtered list
+  // (see runControlsFor/scheduleControlsFor); this fallback was me fixing a symptom in the wrong place.
+  if (only) {
+    actions = only.filter((a) => actions.includes(a));
+  }
   if (actions.length === 0) return null;
 
   return (

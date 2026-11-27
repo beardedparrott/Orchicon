@@ -63,7 +63,8 @@ func ResolveKindSwitch(ctx context.Context, tx pgx.Tx, tenantID string, current 
 
 	// Preconditions: a running item or an active run must not be re-typed.
 	switch current.Status {
-	case domain.WorkItemRunning, domain.WorkItemCheckpointing, domain.WorkItemRecovering:
+	case domain.WorkItemRunning, domain.WorkItemCheckpointing, domain.WorkItemRecovering,
+		domain.WorkItemPaused:
 		return nil, ErrKindSwitchRunning
 	}
 	active, err := workflowRunActive(ctx, tx, tenantID, current.WorkflowRunID)

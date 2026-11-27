@@ -2059,6 +2059,26 @@ func (s *Service) PauseWorkflowRun(ctx context.Context, req *connect.Request[api
 	if err := ttx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	// TELL THE WORKER TO STOP. Setting the row is not stopping anything.
+	//
+	// This is the defect the operator hit: the execution was flipped to `terminating` in the
+	// database and the live worker was never signalled, so it kept running and the row said
+	// "terminating" forever. AbortWorkflow has always done this (s.abortSession below its
+	// transaction); pause had no equivalent, which made Pause a status change that stopped nothing.
+	//
+	// WHY THE ABORT HOOK RATHER THAN A CHECKPOINT CALL: the adapters expose exactly one live-session
+	// stop — AbortExecution — and a checkpoint that never reaches the model is not a checkpoint. The
+	// session is ended here and RE-ESTABLISHED on resume from the persisted session id (the storer
+	// the bridges already use), which is what gives "start from where you left off" without needing
+	// a new adapter capability.
+	if s.abortSession != nil {
+		for _, eid := range pausedExecs {
+			if aerr := s.abortSession(ctx, eid, "workflow run paused"); aerr != nil {
+				// Best-effort: a session that has already gone does not make the pause fail.
+				s.log.Warn("pause: abort live session", "execution", eid, "error", aerr)
+			}
+		}
+	}
 	s.log.Info("workflow run paused", "run", updated.ID, "paused_executions", len(pausedExecs))
 	return connect.NewResponse(&apiv1.PauseWorkflowRunResponse{
 		Run:                runRowToProto(updated),
@@ -2092,50 +2112,13 @@ func (s *Service) ResumeWorkflowRun(ctx context.Context, req *connect.Request[ap
 			fmt.Errorf("run is in status %s — only a paused run can be resumed this way", current.Status))
 	}
 
-	updated, err := db.UpdateWorkflowRun(ctx, ttx.Tx, tenantID, current.ID, current.Version, db.UpdateWorkflowRunFields{
-		Status: strPtr(domain.WorkflowRunRunning),
-	})
+	updated, err := resumeRunInnerReturning(ctx, ttx.Tx, tenantID, current)
 	if err != nil {
-		return nil, mapDBError(err)
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-
-	// Put the checkpointed executions back to work. A pause that stopped nothing needs no
-	// restart, and saying so is more useful than a silent success.
-	var resumedExecs []string
-	stepRuns, err := db.ListWorkflowStepRuns(ctx, ttx.Tx, tenantID, current.ID)
-	if err != nil {
-		return nil, mapDBError(err)
-	}
-	for _, sr := range stepRuns {
-		if sr.WorkerExecutionID == "" {
-			continue
-		}
-		exec, err := db.GetExecution(ctx, ttx.Tx, tenantID, sr.WorkerExecutionID)
-		if err != nil || exec.Status != domain.ExecutionTerminating {
-			continue
-		}
-		running := domain.ExecutionRunning
-		healthy := domain.HealthHealthy
-		if _, err := db.UpdateExecution(ctx, ttx.Tx, tenantID, exec.ID, exec.Version, db.UpdateExecutionFields{
-			Status:      &running,
-			HealthState: &healthy,
-		}); err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resume execution %s: %w", exec.ID, err))
-		}
-		resumedExecs = append(resumedExecs, exec.ID)
-	}
-
-	if current.WorkItemID != "" {
-		if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, current.WorkItemID); err == nil {
-			status := domain.WorkItemRunning
-			if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, current.WorkItemID, wi.Version, db.UpdateWorkItemFields{
-				Status: &status,
-			}); err != nil {
-				s.log.Warn("resume: set work item status failed", "work_item", current.WorkItemID, "error", err)
-			}
-		}
-	}
-
+	// (The work item is moved to `running` inside resumeRunInnerReturning, so BOTH the run page and
+	// the work item page do it — it used to live here only, which is why the work item page's resume
+	// left the item paused.)
 	wf, _ := db.GetWorkflow(ctx, ttx.Tx, tenantID, updated.WorkflowID)
 	if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventRunResumed, wf, db.WorkflowVersionRow{}, updated, ""); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -2152,7 +2135,7 @@ func (s *Service) ResumeWorkflowRun(ctx context.Context, req *connect.Request[ap
 	// if the BOUND WORK ITEM went terminal by some other route. Report it honestly instead of
 	// letting the UI claim a re-attach that did not happen.
 	reattached := current.WorktreePath != "" && current.WorktreeStatus == domain.WorktreeReady
-	s.log.Info("workflow run resumed", "run", current.ID, "resumed_executions", len(resumedExecs), "worktree_reattached", reattached)
+	s.log.Info("workflow run resumed", "run", current.ID, "worktree_reattached", reattached)
 	return connect.NewResponse(&apiv1.ResumeWorkflowRunResponse{
 		Run:                runRowToProto(updated),
 		WorktreeReattached: reattached,

@@ -21,6 +21,212 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type GetSecretValueRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The secret NAME (e.g. DEV_PLANE_KEY), not an id.
+	Name          string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSecretValueRequest) Reset() {
+	*x = GetSecretValueRequest{}
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSecretValueRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSecretValueRequest) ProtoMessage() {}
+
+func (x *GetSecretValueRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSecretValueRequest.ProtoReflect.Descriptor instead.
+func (*GetSecretValueRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *GetSecretValueRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+type GetSecretValueResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// The plaintext value. Present ONLY on success.
+	Value         string `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSecretValueResponse) Reset() {
+	*x = GetSecretValueResponse{}
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSecretValueResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSecretValueResponse) ProtoMessage() {}
+
+func (x *GetSecretValueResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSecretValueResponse.ProtoReflect.Descriptor instead.
+func (*GetSecretValueResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *GetSecretValueResponse) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *GetSecretValueResponse) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+// --- the superseded execution-scoped shape, kept only so old callers fail cleanly ---
+type GetExecutionSecretRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The workflow run the caller claims to be. Must match the caller's own `run:` subject.
+	WorkflowRunId string `protobuf:"bytes,1,opt,name=workflow_run_id,json=workflowRunId,proto3" json:"workflow_run_id,omitempty"`
+	// The secret NAME (e.g. DEV_PLANE_TOKEN), not an id.
+	Name          string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetExecutionSecretRequest) Reset() {
+	*x = GetExecutionSecretRequest{}
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetExecutionSecretRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetExecutionSecretRequest) ProtoMessage() {}
+
+func (x *GetExecutionSecretRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetExecutionSecretRequest.ProtoReflect.Descriptor instead.
+func (*GetExecutionSecretRequest) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *GetExecutionSecretRequest) GetWorkflowRunId() string {
+	if x != nil {
+		return x.WorkflowRunId
+	}
+	return ""
+}
+
+func (x *GetExecutionSecretRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+type GetExecutionSecretResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// The plaintext value. Present ONLY on success.
+	Value         string `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetExecutionSecretResponse) Reset() {
+	*x = GetExecutionSecretResponse{}
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetExecutionSecretResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetExecutionSecretResponse) ProtoMessage() {}
+
+func (x *GetExecutionSecretResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetExecutionSecretResponse.ProtoReflect.Descriptor instead.
+func (*GetExecutionSecretResponse) Descriptor() ([]byte, []int) {
+	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *GetExecutionSecretResponse) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *GetExecutionSecretResponse) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
 type ListSecretsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Search        string                 `protobuf:"bytes,1,opt,name=search,proto3" json:"search,omitempty"`
@@ -32,7 +238,7 @@ type ListSecretsRequest struct {
 
 func (x *ListSecretsRequest) Reset() {
 	*x = ListSecretsRequest{}
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[0]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -44,7 +250,7 @@ func (x *ListSecretsRequest) String() string {
 func (*ListSecretsRequest) ProtoMessage() {}
 
 func (x *ListSecretsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[0]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -57,7 +263,7 @@ func (x *ListSecretsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecretsRequest.ProtoReflect.Descriptor instead.
 func (*ListSecretsRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{0}
+	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ListSecretsRequest) GetSearch() string {
@@ -91,7 +297,7 @@ type ListSecretsResponse struct {
 
 func (x *ListSecretsResponse) Reset() {
 	*x = ListSecretsResponse{}
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[1]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -103,7 +309,7 @@ func (x *ListSecretsResponse) String() string {
 func (*ListSecretsResponse) ProtoMessage() {}
 
 func (x *ListSecretsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[1]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -116,7 +322,7 @@ func (x *ListSecretsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSecretsResponse.ProtoReflect.Descriptor instead.
 func (*ListSecretsResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{1}
+	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ListSecretsResponse) GetSecrets() []*TenantSecret {
@@ -142,7 +348,7 @@ type GetSecretRequest struct {
 
 func (x *GetSecretRequest) Reset() {
 	*x = GetSecretRequest{}
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[2]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -154,7 +360,7 @@ func (x *GetSecretRequest) String() string {
 func (*GetSecretRequest) ProtoMessage() {}
 
 func (x *GetSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[2]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -167,7 +373,7 @@ func (x *GetSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSecretRequest.ProtoReflect.Descriptor instead.
 func (*GetSecretRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{2}
+	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *GetSecretRequest) GetId() string {
@@ -186,7 +392,7 @@ type GetSecretResponse struct {
 
 func (x *GetSecretResponse) Reset() {
 	*x = GetSecretResponse{}
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[3]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -198,7 +404,7 @@ func (x *GetSecretResponse) String() string {
 func (*GetSecretResponse) ProtoMessage() {}
 
 func (x *GetSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[3]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -211,7 +417,7 @@ func (x *GetSecretResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSecretResponse.ProtoReflect.Descriptor instead.
 func (*GetSecretResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{3}
+	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GetSecretResponse) GetSecret() *TenantSecret {
@@ -232,7 +438,7 @@ type CreateSecretRequest struct {
 
 func (x *CreateSecretRequest) Reset() {
 	*x = CreateSecretRequest{}
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[4]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -244,7 +450,7 @@ func (x *CreateSecretRequest) String() string {
 func (*CreateSecretRequest) ProtoMessage() {}
 
 func (x *CreateSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[4]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -257,7 +463,7 @@ func (x *CreateSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSecretRequest.ProtoReflect.Descriptor instead.
 func (*CreateSecretRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{4}
+	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *CreateSecretRequest) GetName() string {
@@ -290,7 +496,7 @@ type CreateSecretResponse struct {
 
 func (x *CreateSecretResponse) Reset() {
 	*x = CreateSecretResponse{}
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[5]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -302,7 +508,7 @@ func (x *CreateSecretResponse) String() string {
 func (*CreateSecretResponse) ProtoMessage() {}
 
 func (x *CreateSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[5]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -315,7 +521,7 @@ func (x *CreateSecretResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSecretResponse.ProtoReflect.Descriptor instead.
 func (*CreateSecretResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{5}
+	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *CreateSecretResponse) GetSecret() *TenantSecret {
@@ -336,7 +542,7 @@ type UpdateSecretRequest struct {
 
 func (x *UpdateSecretRequest) Reset() {
 	*x = UpdateSecretRequest{}
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[6]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -348,7 +554,7 @@ func (x *UpdateSecretRequest) String() string {
 func (*UpdateSecretRequest) ProtoMessage() {}
 
 func (x *UpdateSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[6]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -361,7 +567,7 @@ func (x *UpdateSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateSecretRequest.ProtoReflect.Descriptor instead.
 func (*UpdateSecretRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{6}
+	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *UpdateSecretRequest) GetId() string {
@@ -394,7 +600,7 @@ type UpdateSecretResponse struct {
 
 func (x *UpdateSecretResponse) Reset() {
 	*x = UpdateSecretResponse{}
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[7]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -406,7 +612,7 @@ func (x *UpdateSecretResponse) String() string {
 func (*UpdateSecretResponse) ProtoMessage() {}
 
 func (x *UpdateSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[7]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -419,7 +625,7 @@ func (x *UpdateSecretResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateSecretResponse.ProtoReflect.Descriptor instead.
 func (*UpdateSecretResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{7}
+	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *UpdateSecretResponse) GetSecret() *TenantSecret {
@@ -438,7 +644,7 @@ type DeleteSecretRequest struct {
 
 func (x *DeleteSecretRequest) Reset() {
 	*x = DeleteSecretRequest{}
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[8]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -450,7 +656,7 @@ func (x *DeleteSecretRequest) String() string {
 func (*DeleteSecretRequest) ProtoMessage() {}
 
 func (x *DeleteSecretRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[8]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -463,7 +669,7 @@ func (x *DeleteSecretRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSecretRequest.ProtoReflect.Descriptor instead.
 func (*DeleteSecretRequest) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{8}
+	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *DeleteSecretRequest) GetId() string {
@@ -481,7 +687,7 @@ type DeleteSecretResponse struct {
 
 func (x *DeleteSecretResponse) Reset() {
 	*x = DeleteSecretResponse{}
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[9]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -493,7 +699,7 @@ func (x *DeleteSecretResponse) String() string {
 func (*DeleteSecretResponse) ProtoMessage() {}
 
 func (x *DeleteSecretResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[9]
+	mi := &file_orchicon_api_v1_secret_service_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -506,14 +712,25 @@ func (x *DeleteSecretResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteSecretResponse.ProtoReflect.Descriptor instead.
 func (*DeleteSecretResponse) Descriptor() ([]byte, []int) {
-	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{9}
+	return file_orchicon_api_v1_secret_service_proto_rawDescGZIP(), []int{13}
 }
 
 var File_orchicon_api_v1_secret_service_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_secret_service_proto_rawDesc = "" +
 	"\n" +
-	"$orchicon/api/v1/secret_service.proto\x12\x0forchicon.api.v1\x1a\x1corchicon/api/v1/secret.proto\"h\n" +
+	"$orchicon/api/v1/secret_service.proto\x12\x0forchicon.api.v1\x1a\x1corchicon/api/v1/secret.proto\"+\n" +
+	"\x15GetSecretValueRequest\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\"B\n" +
+	"\x16GetSecretValueResponse\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value\"W\n" +
+	"\x19GetExecutionSecretRequest\x12&\n" +
+	"\x0fworkflow_run_id\x18\x01 \x01(\tR\rworkflowRunId\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\"F\n" +
+	"\x1aGetExecutionSecretResponse\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value\"h\n" +
 	"\x12ListSecretsRequest\x12\x16\n" +
 	"\x06search\x18\x01 \x01(\tR\x06search\x12\x1b\n" +
 	"\tpage_size\x18\x02 \x01(\x05R\bpageSize\x12\x1d\n" +
@@ -542,13 +759,14 @@ const file_orchicon_api_v1_secret_service_proto_rawDesc = "" +
 	"\x06secret\x18\x01 \x01(\v2\x1d.orchicon.api.v1.TenantSecretR\x06secret\"%\n" +
 	"\x13DeleteSecretRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"\x16\n" +
-	"\x14DeleteSecretResponse2\xd5\x03\n" +
+	"\x14DeleteSecretResponse2\xb8\x04\n" +
 	"\x0eSecretsService\x12X\n" +
 	"\vListSecrets\x12#.orchicon.api.v1.ListSecretsRequest\x1a$.orchicon.api.v1.ListSecretsResponse\x12R\n" +
 	"\tGetSecret\x12!.orchicon.api.v1.GetSecretRequest\x1a\".orchicon.api.v1.GetSecretResponse\x12[\n" +
 	"\fCreateSecret\x12$.orchicon.api.v1.CreateSecretRequest\x1a%.orchicon.api.v1.CreateSecretResponse\x12[\n" +
 	"\fUpdateSecret\x12$.orchicon.api.v1.UpdateSecretRequest\x1a%.orchicon.api.v1.UpdateSecretResponse\x12[\n" +
-	"\fDeleteSecret\x12$.orchicon.api.v1.DeleteSecretRequest\x1a%.orchicon.api.v1.DeleteSecretResponseB\xcc\x01\n" +
+	"\fDeleteSecret\x12$.orchicon.api.v1.DeleteSecretRequest\x1a%.orchicon.api.v1.DeleteSecretResponse\x12a\n" +
+	"\x0eGetSecretValue\x12&.orchicon.api.v1.GetSecretValueRequest\x1a'.orchicon.api.v1.GetSecretValueResponseB\xcc\x01\n" +
 	"\x13com.orchicon.api.v1B\x12SecretServiceProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"
 
 var (
@@ -563,37 +781,43 @@ func file_orchicon_api_v1_secret_service_proto_rawDescGZIP() []byte {
 	return file_orchicon_api_v1_secret_service_proto_rawDescData
 }
 
-var file_orchicon_api_v1_secret_service_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_orchicon_api_v1_secret_service_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_orchicon_api_v1_secret_service_proto_goTypes = []any{
-	(*ListSecretsRequest)(nil),   // 0: orchicon.api.v1.ListSecretsRequest
-	(*ListSecretsResponse)(nil),  // 1: orchicon.api.v1.ListSecretsResponse
-	(*GetSecretRequest)(nil),     // 2: orchicon.api.v1.GetSecretRequest
-	(*GetSecretResponse)(nil),    // 3: orchicon.api.v1.GetSecretResponse
-	(*CreateSecretRequest)(nil),  // 4: orchicon.api.v1.CreateSecretRequest
-	(*CreateSecretResponse)(nil), // 5: orchicon.api.v1.CreateSecretResponse
-	(*UpdateSecretRequest)(nil),  // 6: orchicon.api.v1.UpdateSecretRequest
-	(*UpdateSecretResponse)(nil), // 7: orchicon.api.v1.UpdateSecretResponse
-	(*DeleteSecretRequest)(nil),  // 8: orchicon.api.v1.DeleteSecretRequest
-	(*DeleteSecretResponse)(nil), // 9: orchicon.api.v1.DeleteSecretResponse
-	(*TenantSecret)(nil),         // 10: orchicon.api.v1.TenantSecret
+	(*GetSecretValueRequest)(nil),      // 0: orchicon.api.v1.GetSecretValueRequest
+	(*GetSecretValueResponse)(nil),     // 1: orchicon.api.v1.GetSecretValueResponse
+	(*GetExecutionSecretRequest)(nil),  // 2: orchicon.api.v1.GetExecutionSecretRequest
+	(*GetExecutionSecretResponse)(nil), // 3: orchicon.api.v1.GetExecutionSecretResponse
+	(*ListSecretsRequest)(nil),         // 4: orchicon.api.v1.ListSecretsRequest
+	(*ListSecretsResponse)(nil),        // 5: orchicon.api.v1.ListSecretsResponse
+	(*GetSecretRequest)(nil),           // 6: orchicon.api.v1.GetSecretRequest
+	(*GetSecretResponse)(nil),          // 7: orchicon.api.v1.GetSecretResponse
+	(*CreateSecretRequest)(nil),        // 8: orchicon.api.v1.CreateSecretRequest
+	(*CreateSecretResponse)(nil),       // 9: orchicon.api.v1.CreateSecretResponse
+	(*UpdateSecretRequest)(nil),        // 10: orchicon.api.v1.UpdateSecretRequest
+	(*UpdateSecretResponse)(nil),       // 11: orchicon.api.v1.UpdateSecretResponse
+	(*DeleteSecretRequest)(nil),        // 12: orchicon.api.v1.DeleteSecretRequest
+	(*DeleteSecretResponse)(nil),       // 13: orchicon.api.v1.DeleteSecretResponse
+	(*TenantSecret)(nil),               // 14: orchicon.api.v1.TenantSecret
 }
 var file_orchicon_api_v1_secret_service_proto_depIdxs = []int32{
-	10, // 0: orchicon.api.v1.ListSecretsResponse.secrets:type_name -> orchicon.api.v1.TenantSecret
-	10, // 1: orchicon.api.v1.GetSecretResponse.secret:type_name -> orchicon.api.v1.TenantSecret
-	10, // 2: orchicon.api.v1.CreateSecretResponse.secret:type_name -> orchicon.api.v1.TenantSecret
-	10, // 3: orchicon.api.v1.UpdateSecretResponse.secret:type_name -> orchicon.api.v1.TenantSecret
-	0,  // 4: orchicon.api.v1.SecretsService.ListSecrets:input_type -> orchicon.api.v1.ListSecretsRequest
-	2,  // 5: orchicon.api.v1.SecretsService.GetSecret:input_type -> orchicon.api.v1.GetSecretRequest
-	4,  // 6: orchicon.api.v1.SecretsService.CreateSecret:input_type -> orchicon.api.v1.CreateSecretRequest
-	6,  // 7: orchicon.api.v1.SecretsService.UpdateSecret:input_type -> orchicon.api.v1.UpdateSecretRequest
-	8,  // 8: orchicon.api.v1.SecretsService.DeleteSecret:input_type -> orchicon.api.v1.DeleteSecretRequest
-	1,  // 9: orchicon.api.v1.SecretsService.ListSecrets:output_type -> orchicon.api.v1.ListSecretsResponse
-	3,  // 10: orchicon.api.v1.SecretsService.GetSecret:output_type -> orchicon.api.v1.GetSecretResponse
-	5,  // 11: orchicon.api.v1.SecretsService.CreateSecret:output_type -> orchicon.api.v1.CreateSecretResponse
-	7,  // 12: orchicon.api.v1.SecretsService.UpdateSecret:output_type -> orchicon.api.v1.UpdateSecretResponse
-	9,  // 13: orchicon.api.v1.SecretsService.DeleteSecret:output_type -> orchicon.api.v1.DeleteSecretResponse
-	9,  // [9:14] is the sub-list for method output_type
-	4,  // [4:9] is the sub-list for method input_type
+	14, // 0: orchicon.api.v1.ListSecretsResponse.secrets:type_name -> orchicon.api.v1.TenantSecret
+	14, // 1: orchicon.api.v1.GetSecretResponse.secret:type_name -> orchicon.api.v1.TenantSecret
+	14, // 2: orchicon.api.v1.CreateSecretResponse.secret:type_name -> orchicon.api.v1.TenantSecret
+	14, // 3: orchicon.api.v1.UpdateSecretResponse.secret:type_name -> orchicon.api.v1.TenantSecret
+	4,  // 4: orchicon.api.v1.SecretsService.ListSecrets:input_type -> orchicon.api.v1.ListSecretsRequest
+	6,  // 5: orchicon.api.v1.SecretsService.GetSecret:input_type -> orchicon.api.v1.GetSecretRequest
+	8,  // 6: orchicon.api.v1.SecretsService.CreateSecret:input_type -> orchicon.api.v1.CreateSecretRequest
+	10, // 7: orchicon.api.v1.SecretsService.UpdateSecret:input_type -> orchicon.api.v1.UpdateSecretRequest
+	12, // 8: orchicon.api.v1.SecretsService.DeleteSecret:input_type -> orchicon.api.v1.DeleteSecretRequest
+	0,  // 9: orchicon.api.v1.SecretsService.GetSecretValue:input_type -> orchicon.api.v1.GetSecretValueRequest
+	5,  // 10: orchicon.api.v1.SecretsService.ListSecrets:output_type -> orchicon.api.v1.ListSecretsResponse
+	7,  // 11: orchicon.api.v1.SecretsService.GetSecret:output_type -> orchicon.api.v1.GetSecretResponse
+	9,  // 12: orchicon.api.v1.SecretsService.CreateSecret:output_type -> orchicon.api.v1.CreateSecretResponse
+	11, // 13: orchicon.api.v1.SecretsService.UpdateSecret:output_type -> orchicon.api.v1.UpdateSecretResponse
+	13, // 14: orchicon.api.v1.SecretsService.DeleteSecret:output_type -> orchicon.api.v1.DeleteSecretResponse
+	1,  // 15: orchicon.api.v1.SecretsService.GetSecretValue:output_type -> orchicon.api.v1.GetSecretValueResponse
+	10, // [10:16] is the sub-list for method output_type
+	4,  // [4:10] is the sub-list for method input_type
 	4,  // [4:4] is the sub-list for extension type_name
 	4,  // [4:4] is the sub-list for extension extendee
 	0,  // [0:4] is the sub-list for field type_name
@@ -605,14 +829,14 @@ func file_orchicon_api_v1_secret_service_proto_init() {
 		return
 	}
 	file_orchicon_api_v1_secret_proto_init()
-	file_orchicon_api_v1_secret_service_proto_msgTypes[6].OneofWrappers = []any{}
+	file_orchicon_api_v1_secret_service_proto_msgTypes[10].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_orchicon_api_v1_secret_service_proto_rawDesc), len(file_orchicon_api_v1_secret_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

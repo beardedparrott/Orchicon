@@ -53,8 +53,11 @@ type Service struct {
 	// retryRunFn resumes a failed/aborted run IN PLACE — the difference between RESUME and RESTART.
 	retryRunFn RetryRunResumer
 	// pauseRunFn stops a run at a resumable point, keeping its worktree and branch.
-	pauseRunFn     PauseRunStarter
-	runtimeImageFn RuntimeImageResolver
+	pauseRunFn PauseRunStarter
+	// resumePausedRunFn continues a PAUSED run — the inverse of pauseRunFn, and NOT the same
+	// operation as retryRunFn (which re-arms a terminal run's failed steps).
+	resumePausedRunFn ResumePausedRunStarter
+	runtimeImageFn    RuntimeImageResolver
 	// archiveConflictHook is a test-only seam: invoked with the attempt number (1 = initial, 2 = the
 	// one-shot retry) right after ArchiveWorkItem's read+validate for that attempt and before.
 	archiveConflictHook func(attempt int)
@@ -97,6 +100,17 @@ func (s *Service) SetRetryRunResumer(fn RetryRunResumer) { s.retryRunFn = fn }
 
 // SetPauseRunStarter injects the run pause used by a PAUSE action.
 func (s *Service) SetPauseRunStarter(fn PauseRunStarter) { s.pauseRunFn = fn }
+
+// ResumePausedRunStarter continues a PAUSED run in place — the inverse of PauseRunStarter.
+//
+// IT IS A SEPARATE SEAM FROM RetryRunResumer because the two are different operations on different
+// RUN STATES: retry re-arms failed steps of a terminal run, resume continues a parked one. Leaf
+// RESUME used to call the retry path unconditionally, which is why resuming a paused item failed
+// with "the run is paused — only a failed or aborted run can be resumed".
+type ResumePausedRunStarter func(ctx context.Context, tenantID, runID string) error
+
+// SetResumePausedRunStarter injects the paused-run continuation used by a leaf RESUME.
+func (s *Service) SetResumePausedRunStarter(fn ResumePausedRunStarter) { s.resumePausedRunFn = fn }
 
 // SetRuntimeImageResolver injects the function that resolves the base
 // runtime image tag, used to stamp the work item's runtime_image default.
@@ -1999,10 +2013,27 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 				return nil, connect.NewError(connect.CodeInvalidArgument,
 					errors.New("cannot RESUME a leaf work item with no workflow bound"))
 			}
-			// A live run cannot be resumed — but that is now an honest, specific refusal rather
-			// than a blanket one that also covered the resumable case.
-			if IsActiveRunStatus(current.Status) || current.Status == domain.WorkItemReady ||
-				current.Status == domain.WorkItemAssigned {
+			// A live run cannot be resumed — but `checkpointing` is NOT a live run when the run it
+			// belongs to is paused, and that distinction is what un-wedges an item.
+			//
+			// `checkpointing` used to be stamped on pause regardless of whether anything was in
+			// flight. Because it is in IsActiveRunStatus, an item paused with nothing running became
+			// permanently "active": RESUME refused it, PAUSE found no run, RESTART thought it was in
+			// flight, and the reconciler ignores a paused run. Nothing could free it.
+			//
+			// So the guard now asks about the RUN, which is the thing that actually decides. The
+			// status is a symptom; the run is the cause.
+			// A PAUSED ITEM IS RESUMABLE BY DEFINITION, and so is an item whose run is paused —
+			// both were parks we performed, and refusing them would recreate the deadlock the
+			// `checkpointing` status caused.
+			pausedRun := current.Status == domain.WorkItemPaused
+			if !pausedRun && current.WorkflowRunID != "" {
+				if run, rerr := db.GetWorkflowRun(ctx, ttx.Tx, tenantID, current.WorkflowRunID); rerr == nil {
+					pausedRun = run.Status == domain.WorkflowRunPaused
+				}
+			}
+			if !pausedRun && (IsActiveRunStatus(current.Status) || current.Status == domain.WorkItemReady ||
+				current.Status == domain.WorkItemAssigned) {
 				return nil, connect.NewError(connect.CodeFailedPrecondition,
 					errors.New("cannot RESUME a work item that is running or queued — use STOP or PAUSE first"))
 			}
@@ -2019,9 +2050,29 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 				return nil, connect.NewError(connect.CodeFailedPrecondition,
 					errors.New("cannot RESUME: this work item has no run to continue — use RESTART to start a new one"))
 			}
-			if status != domain.WorkflowRunFailed && status != domain.WorkflowRunAborted {
+			// RESUME MEANS TWO DIFFERENT THINGS, AND THE RUN'S STATE DECIDES WHICH.
+			//
+			//   paused                  -> CONTINUE the parked run (resume the session, re-dispatch
+			//                              the interrupted step). This is what the operator means
+			//                              after pressing Pause.
+			//   failed / aborted        -> RE-ARM the terminal run in place (keep succeeded steps,
+			//                              reset the failed ones).
+			//
+			// The original code called the retry path unconditionally, so resuming a paused item
+			// failed with "the run is paused — only a failed or aborted run can be resumed": the one
+			// state RESUME exists for was the one it refused.
+			switch status {
+			case domain.WorkflowRunPaused:
+				if s.resumePausedRunFn == nil {
+					return nil, connect.NewError(connect.CodeUnavailable, errors.New("run resume not wired"))
+				}
+			case domain.WorkflowRunFailed, domain.WorkflowRunAborted:
+				if s.retryRunFn == nil {
+					return nil, connect.NewError(connect.CodeUnavailable, errors.New("run resume not wired"))
+				}
+			default:
 				return nil, connect.NewError(connect.CodeFailedPrecondition,
-					fmt.Errorf("cannot RESUME: the run is %s — only a failed or aborted run can be resumed (use RESTART for a new one)", status))
+					fmt.Errorf("cannot RESUME: the run is %s — a paused run is continued and a failed or aborted run is re-armed; for anything else use RESTART", status))
 			}
 
 			if err := recordAudit(ctx, ttx.Tx, tenantID, "work_item.resumed", "work_item", current.ID,
@@ -2030,6 +2081,13 @@ func (s *Service) ControlSequence(ctx context.Context, req *connect.Request[apiv
 			}
 			if err := ttx.Commit(ctx); err != nil {
 				return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("commit: %w", err))
+			}
+			if status == domain.WorkflowRunPaused {
+				if err := s.resumePausedRunFn(ctx, tenantID, runID); err != nil {
+					return nil, connect.NewError(connect.CodeInternal, err)
+				}
+				s.log.Info("work item resumed a paused run", "work_item", current.ID, "run", runID)
+				break
 			}
 			reset, err := s.retryRunFn(ctx, tenantID, runID)
 			if err != nil {
@@ -2673,6 +2731,8 @@ func statusToProto(status string) apiv1.WorkItemStatus {
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_ASSIGNED
 	case domain.WorkItemRunning:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_RUNNING
+	case domain.WorkItemPaused:
+		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_PAUSED
 	case domain.WorkItemCheckpointing:
 		return apiv1.WorkItemStatus_WORK_ITEM_STATUS_CHECKPOINTING
 	case domain.WorkItemSucceeded:
