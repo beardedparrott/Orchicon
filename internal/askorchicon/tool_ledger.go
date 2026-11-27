@@ -183,14 +183,22 @@ func (l *toolLedger) setResultOutput(callID, output string) {
 }
 
 // isAskToolName matches every spelling the ask tool is recorded under, including the MCP-qualified
-// one.
+// ones.
+//
+// AGY'S SPELLING IS A THIRD SHAPE AND IT IS NOT A DECORATION: `mcp_<server>_<tool>` with SINGLE underscores,
+// and the tool keeps its own `orchicon_` prefix — so the card arrives as `mcp_orchicon_orchicon_ask_user`.
+// That matches neither claude's `mcp__orchicon__ask_user` nor the bare `orchicon_ask_user`, and without this
+// arm an antigravity conversation's ask card would be recorded as an ordinary tool call and never rendered.
 func isAskToolName(name string) bool {
 	switch name {
-	case "ask_user", "orchicon_ask_user", "mcp__orchicon__ask_user":
+	case "ask_user", "orchicon_ask_user", "mcp__orchicon__ask_user", "mcp_orchicon_orchicon_ask_user":
 		return true
 	}
 	// A server may also qualify it with a different separator; the suffix is the stable part.
-	return strings.HasSuffix(name, "__ask_user") || name == "ask_user"
+	if strings.HasSuffix(name, "__ask_user") || strings.HasSuffix(name, "_ask_user") {
+		return true
+	}
+	return name == "ask_user"
 }
 
 // recordStart logs a tool call ISSUED but not yet resolved (the tool_part signal: Text carries only

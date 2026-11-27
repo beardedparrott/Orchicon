@@ -38,6 +38,15 @@ type SpawnSettings struct {
 	AuthMethod string
 	// ShareTelemetry true OMITS --disable-telemetry (the tenant opted in).
 	ShareTelemetry bool
+	// AskMode is the Ask MODE this child is being launched for ("" for a worker execution, which has no
+	// mode). It only affects the sessionSettings half below; the worker path never sets it, so a worker's
+	// argv stays byte-identical to what it was before Ask existed.
+	AskMode string
+	// SessionSettings is the raw `--settings` JSON document (session-only, never saved). The Ask path sets
+	// it from the mode's denied tools (modegate.go) so a refused tool cannot even reach a permission
+	// request. It is applied verbatim: agy rejects an unknown key and the operator's own settings file is
+	// never touched.
+	SessionSettings string
 }
 
 // SpawnSpec is a fully-resolved `agy acp` invocation: the argv, the complete child
@@ -65,7 +74,19 @@ func BuildSpawnSpec(bin string, s SpawnSettings, apiKey string, baseEnv []string
 	}
 
 	// THE ONE PLACE THE FLAGS ARE SPELLED: acp owns the argv shape, this owns the policy.
-	argv := acp.LaunchOptions{Binary: bin, DisableTelemetry: !s.ShareTelemetry}.Argv()
+	argv := acp.LaunchOptions{
+		Binary:           bin,
+		DisableTelemetry: !s.ShareTelemetry,
+		// THE SESSION-ONLY SETTINGS (Ask modes only; "" on the worker path, which adds no argv element).
+		Settings: s.SessionSettings,
+	}.Argv()
+
+	// A `--settings` DOCUMENT THAT DISABLES THE PERMISSION SYSTEM IS A BYPASS, and assertNoBypass is about
+	// argv spellings rather than JSON. The deny list this adapter emits only ever SUBTRACTS capability, so
+	// the guard is that the document must not name an allow/auto-approve key at all.
+	if err := assertSettingsNotBypass(s.SessionSettings); err != nil {
+		return SpawnSpec{}, err
+	}
 
 	// Strip any inherited key FIRST, then add it back only for the method that uses one.
 	// Order matters: appending without stripping would leave two values for one name, and

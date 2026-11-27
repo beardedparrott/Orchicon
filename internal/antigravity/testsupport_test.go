@@ -17,7 +17,9 @@ package antigravity
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -120,6 +122,10 @@ type fakeACP struct {
 	permAsked []acp.ToolCallInfo
 	// pendingRelease unblocks a hanging prompt. It is closed by session/cancel or by release().
 	pendingRelease chan struct{}
+	// permAnswers records every permission ANSWER the client wrote back, keyed by the request id the fake
+	// used, and permSeq mints those ids.
+	permAnswers map[string]json.RawMessage
+	permSeq     int64
 	// cancelSeen records that a session/cancel arrived, which decides the stopReason of a hanging turn: agy
 	// ends it `cancelled` only when it was actually cancelled (cancel_midturn.jsonl), and `end_turn` otherwise.
 	cancelSeen bool
@@ -139,6 +145,8 @@ func newFakeACP(t *testing.T, sc script) *fakeACP {
 		closed: make(chan struct{}),
 		script: sc,
 		stop:   make(chan struct{}),
+
+		permAnswers: make(map[string]json.RawMessage),
 	}
 	go p.drive()
 	return p
@@ -217,7 +225,9 @@ func (p *fakeACP) drive() {
 				continue
 			}
 			if doc.Method == "" {
-				// The CLIENT answering a permission request the fake asked: record and carry on.
+				// The CLIENT ANSWERING a permission request the fake asked: record it, keyed by the request id,
+				// so a test can assert on the exact optionId agy was handed back (AC2).
+				p.recordPermAnswer(doc.ID, doc.Result)
 				continue
 			}
 			p.handle(doc)
@@ -1019,4 +1029,125 @@ func (h *harness) awaitPrompts(t *testing.T, i, n int) []promptRecord {
 		return p != nil && len(p.promptsSeen()) >= n
 	})
 	return h.procAt(i).promptsSeen()
+}
+
+
+// --- permission requests (AC2) ---------------------------------------------------------------------
+
+// recordPermAnswer stores the client's answer to one permission request.
+func (p *fakeACP) recordPermAnswer(id json.RawMessage, result json.RawMessage) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// THE KEY IS THE LITERAL JSON, quotes included: the client echoes the request's `id` verbatim, so an
+	// unquoted key would never match and every test would wait out its timeout.
+	p.permAnswers[string(id)] = append(json.RawMessage(nil), result...)
+}
+
+// askPermission emits one `session/request_permission` and returns the request id it used, WITHOUT waiting
+// for the answer. A test that wants the answer calls awaitPermAnswer; a test that wants to observe the
+// in-flight state emits and then asserts on the bus before answering.
+func (p *fakeACP) askPermission(t *testing.T, toolName string, args map[string]any, locations ...string) string {
+	t.Helper()
+	p.mu.Lock()
+	p.permSeq++
+	id := fmt.Sprintf("perm-%d", p.permSeq)
+	p.permAsked = append(p.permAsked, acp.ToolCallInfo{Name: toolName})
+	p.mu.Unlock()
+
+	call := map[string]any{
+		"sessionUpdate": "tool_call",
+		"toolCallId":    "call_" + id,
+		"name":          toolName,
+		"kind":          "execute",
+		"status":        "pending",
+		"title":         toolName,
+		"args":          args,
+		"rawInput":      args,
+	}
+	if len(locations) > 0 {
+		locs := make([]map[string]any, 0, len(locations))
+		for _, l := range locations {
+			locs = append(locs, map[string]any{"path": l})
+		}
+		call["locations"] = locs
+	}
+	p.emit(requestDoc(json.RawMessage(strconv.Quote(id)), "session/request_permission", map[string]any{
+		"sessionId": harnessSessionID,
+		"toolCall":  call,
+		// THE RECORDED PAIR: agy 1.5.13 offers allow_once + reject_once with ids `allow` / `deny`.
+		"options": []map[string]any{
+			{"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+			{"optionId": "deny", "name": "Deny", "kind": "reject_once"},
+		},
+	}))
+	return id
+}
+
+// awaitPermAnswer blocks until the client answered the request `id`, and returns the decoded outcome.
+func (p *fakeACP) awaitPermAnswer(t *testing.T, id string) permissionOutcomeDoc {
+	t.Helper()
+	var got permissionOutcomeDoc
+	key := strconv.Quote(id)
+	waitFor(t, "the client to answer the permission request", func() bool {
+		p.mu.Lock()
+		raw, ok := p.permAnswers[key]
+		p.mu.Unlock()
+		if !ok {
+			return false
+		}
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("permission answer did not decode: %v (%s)", err, raw)
+		}
+		return true
+	})
+	return got
+}
+
+// awaitPermAnswerAsync is awaitPermAnswer on a goroutine, for a test that must do something else first
+// (close the session, abort the turn) and only then read the answer.
+func (p *fakeACP) awaitPermAnswerAsync(t *testing.T, id string) <-chan permissionOutcomeDoc {
+	ch := make(chan permissionOutcomeDoc, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				close(ch)
+			}
+		}()
+		ch <- p.awaitPermAnswer(t, id)
+	}()
+	return ch
+}
+
+// permissionOutcomeDoc is the decoded `{"outcome":{"outcome":…,"optionId":…}}` the client writes back.
+type permissionOutcomeDoc struct {
+	Outcome struct {
+		Outcome  string `json:"outcome"`
+		OptionID string `json:"optionId"`
+	} `json:"outcome"`
+}
+
+// permAskedCount reports how many permission requests the fake asked.
+func (p *fakeACP) permAskedCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return len(p.permAsked)
+}
+
+// requestDoc renders a JSON-RPC REQUEST (the agent asking the client something).
+func requestDoc(id json.RawMessage, method string, params any) string {
+	b, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      json.RawMessage(id),
+		"method":  method,
+		"params":  params,
+	})
+	return string(b)
+}
+
+// sessionNewCalls reports how many `session/new` requests the fake answered — the count that distinguishes
+// "opened a new conversation" from "resumed the existing one".
+func (p *fakeACP) sessionNewCalls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.newCalls
 }

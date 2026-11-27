@@ -103,3 +103,59 @@ func TestClassifyUnknownIsCountedAsOther(t *testing.T) {
 		t.Error("Classify(\"Write\") must be Modify: the classifier folds case")
 	}
 }
+
+// TestClassifyAntigravityToolNames pins the agy (Antigravity) spellings to the SAME classes their
+// canonical equivalents get. The names come from internal/antigravity/toolnames.go's
+// canonicalToolNames table, which is the ONE place the two vocabularies are related — a spelling that
+// table knows but this one does not is a tool call the activity line silently drops into Other.
+func TestClassifyAntigravityToolNames(t *testing.T) {
+	for _, n := range []string{
+		"run_command",
+		"bash",
+	} {
+		if c := Classify(n); c != Bash {
+			t.Errorf("Classify(%q) = %v, want Bash (agy's shell tool)", n, c)
+		}
+	}
+	for _, n := range []string{
+		"write_file", "write_to_file", "create_file", "edit_file",
+		"replace_file_content", "multi_replace_file_content", "apply_patch",
+	} {
+		if c := Classify(n); c != Modify {
+			t.Errorf("Classify(%q) = %v, want Modify (agy's write/edit tool)", n, c)
+		}
+	}
+	for _, n := range []string{
+		"read_file", "view_file", "open_file", "grep_search",
+		"list_dir", "list_directory", "find_by_name",
+	} {
+		if c := Classify(n); c != Read {
+			t.Errorf("Classify(%q) = %v, want Read (agy's read tool)", n, c)
+		}
+	}
+}
+
+// TestClassifyAntigravityOrchiconMCPAskIsNotWork is the ask-card arm of the same rule: agy spells the
+// platform's own MCP tools `mcp_orchicon_<tool>` (single underscores, tool keeps its `orchicon_`
+// prefix), so the ask card arrives as `mcp_orchicon_orchicon_ask_user`. Counting it as work would put
+// a question on every antigravity Ask turn's activity line.
+func TestClassifyAntigravityOrchiconMCPAskIsNotWork(t *testing.T) {
+	for _, n := range []string{
+		"mcp_orchicon_orchicon_ask_user",
+		"mcp_orchicon_ask_user",
+		"mcp_orchicon_orchicon_askuser",
+	} {
+		if c := Classify(n); c != Ignore {
+			t.Errorf("Classify(%q) = %v, want Ignore: an ask card is not work", n, c)
+		}
+	}
+	// A server OTHER than the platform's own keeps its agy spelling and stays real work, so the new arm
+	// cannot be read as "any mcp_ name is the ask card".
+	for _, n := range []string{
+		"mcp_echo_echo", "mcp_orchicon_create_work_item", "mcp_github_create_issue",
+	} {
+		if c := Classify(n); c != Other {
+			t.Errorf("Classify(%q) = %v, want Other: a non-ask MCP tool is real work", n, c)
+		}
+	}
+}
