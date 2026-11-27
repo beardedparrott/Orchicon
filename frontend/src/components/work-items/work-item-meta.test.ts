@@ -28,6 +28,7 @@ import {
   showRecurringBadge,
   MANUALLY_UNMOVABLE_STATUSES,
   STATUS_FILTER_OPTIONS,
+  STATUSES_NOT_FILTERABLE,
   ALL_STATUS_VALUES,
   ALL_KIND_VALUES,
 } from "@/components/work-items/work-item-meta";
@@ -310,5 +311,47 @@ describe("archived status is in the filter vocabulary", () => {
       ALL_STATUS_VALUES,
     );
     expect(matched).toHaveLength(1);
+  });
+});
+
+/**
+ * EVERY STATUS THE SERVER CAN WRITE MUST BE A FILTER OPTION.
+ *
+ * The filter's default selection is ALL_STATUS_VALUES, which derives from STATUS_FILTER_OPTIONS,
+ * and filtering is `statuses.includes(i.status)`. So a status missing from the options list matches
+ * NOTHING and the row silently disappears from every view.
+ *
+ * That happened when `paused` shipped: the operator paused a work item, pause worked, and the item
+ * vanished. ARCHIVED had the same defect before it. This test enumerates the full wire enum rather
+ * than a hand-written list, so a status added later fails here instead of disappearing from the UI.
+ */
+describe("STATUS_FILTER_OPTIONS covers the whole wire enum", () => {
+  it("includes every WorkItemStatus value the proto can carry", () => {
+    // Numeric values from the proto enum, excluding UNSPECIFIED (0) which is never stored.
+    const wireValues = Object.entries(WorkItemStatus)
+      .filter(([k, v]) => typeof v === "number" && k !== "UNSPECIFIED" && v !== 0)
+      .map(([, v]) => v as number);
+
+    const options = new Set(STATUS_FILTER_OPTIONS.map((o) => o.value));
+    const excluded = new Set(STATUSES_NOT_FILTERABLE);
+    const missing = wireValues.filter((v) => !options.has(v) && !excluded.has(v));
+
+    expect(
+      missing,
+      `statuses present on the wire but absent from the filter dropdown (they will disappear from ` +
+        `every view because the default filter is ALL_STATUS_VALUES): ${missing
+          .map((v) => WorkItemStatus[v])
+          .join(", ")}`,
+    ).toEqual([]);
+  });
+
+  it("offers Paused specifically — the status that vanished", () => {
+    expect(STATUS_FILTER_OPTIONS.some((o) => o.value === WorkItemStatus.PAUSED)).toBe(true);
+  });
+
+  it("has a pill and a board column home for a paused item", () => {
+    // No statusMeta entry means no label and no colour; no column mapping means no board column.
+    expect(statusMeta(WorkItemStatus.PAUSED).label).toBe("paused");
+    expect(columnForStatus(WorkItemStatus.PAUSED)).toBe(WorkItemStatus.RUNNING);
   });
 });

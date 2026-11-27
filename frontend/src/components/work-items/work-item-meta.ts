@@ -202,6 +202,15 @@ const STATUS_META: Record<number, StatusMeta> = {
     pillDark: "bg-sky-500/15 text-sky-300",
     dot: "bg-sky-500",
   },
+  // PAUSED: an operator park, not a fault and not progress. Amber, because it is a deliberate
+  // wait — visually distinct from checkpointing's blue (in-flight) and from failure's red.
+  [WorkItemStatus.PAUSED]: {
+    label: "paused",
+    titleLabel: "Paused",
+    pill: "bg-amber-500/15 text-amber-800",
+    pillDark: "bg-amber-500/15 text-amber-300",
+    dot: "bg-amber-500",
+  },
   [WorkItemStatus.SUCCEEDED]: {
     label: "succeeded",
     titleLabel: "Succeeded",
@@ -324,6 +333,8 @@ export function statusMetaFromString(status: string): StatusMeta {
       return statusMeta(WorkItemStatus.RUNNING);
     case "checkpointing":
       return statusMeta(WorkItemStatus.CHECKPOINTING);
+    case "paused":
+      return statusMeta(WorkItemStatus.PAUSED);
     case "succeeded":
       return statusMeta(WorkItemStatus.SUCCEEDED);
     case "failed":
@@ -355,6 +366,12 @@ export const STATUS_FILTER_OPTIONS = [
   { value: WorkItemStatus.ASSIGNED, label: "Assigned" },
   { value: WorkItemStatus.RUNNING, label: "Running" },
   { value: WorkItemStatus.CHECKPOINTING, label: "Checkpointing" },
+  // PAUSED IS A REAL STATUS THE SERVER WRITES. Leaving it out of this list is not a cosmetic
+  // omission: ALL_STATUS_VALUES derives from these options, the DEFAULT filter selects every
+  // option, and filterItemsByKindStatus is `statuses.includes(i.status)`. A paused row therefore
+  // matched nothing and simply disappeared from every view — reported the moment pause started
+  // working. Same defect class as ARCHIVED below, which is already documented here.
+  { value: WorkItemStatus.PAUSED, label: "Paused" },
   { value: WorkItemStatus.SUCCEEDED, label: "Succeeded" },
   { value: WorkItemStatus.FAILED, label: "Failed" },
   { value: WorkItemStatus.CANCELLED, label: "Cancelled" },
@@ -382,6 +399,23 @@ export const STATUS_FILTER_OPTIONS = [
  *  selection (all selected = "show everything"; an empty selection =
  *  show nothing). Checkpointing is included so transient workflow items
  *  stay visible by default and are filterable. */
+/**
+ * STATUSES DELIBERATELY ABSENT FROM THE FILTER, with the reason.
+ *
+ * A status the server can write but the filter cannot select is invisible: the default filter
+ * selects every option, and filtering is `statuses.includes(i.status)`. `paused` shipped that way
+ * and the operator's paused item vanished. `archived` shipped that way once too.
+ *
+ * IDEA is different and stays out ON PURPOSE, for a reason the item list does not depend on: idea
+ * items are excluded from the normal Work Items scope entirely (they are system-managed and only
+ * become queryable there via promote_idea). Offering a filter that can never match would be its own
+ * small lie.
+ *
+ * A status added in future must land in STATUS_FILTER_OPTIONS or here — the test in
+ * work-item-meta.test.ts enumerates the whole wire enum, so silence is not an option.
+ */
+export const STATUSES_NOT_FILTERABLE: readonly number[] = [WorkItemStatus.IDEA];
+
 export const ALL_STATUS_VALUES = STATUS_FILTER_OPTIONS.map((o) => o.value);
 
 // ---------------------------------------------------------------------------
@@ -430,6 +464,11 @@ export const BOARD_COLUMNS: BoardColumn[] = [
 export function columnForStatus(status: number): number {
   if (status === WorkItemStatus.CHECKPOINTING) return WorkItemStatus.RUNNING;
   if (status === WorkItemStatus.RECOVERING) return WorkItemStatus.RUNNING;
+  // PAUSED has no column of its own. It sits under RUNNING because that is where the work was and
+  // where Resume will put it back; its amber pill still says "paused", so the column does not
+  // misrepresent it. Without this it falls through to a status that has no column and the card
+  // vanishes from the board entirely.
+  if (status === WorkItemStatus.PAUSED) return WorkItemStatus.RUNNING;
   if (status === WorkItemStatus.SCHEDULED) return WorkItemStatus.PENDING;
   if (status === WorkItemStatus.RECURRING) return WorkItemStatus.PENDING;
   if (status === WorkItemStatus.BLOCKED) return WorkItemStatus.PENDING;
