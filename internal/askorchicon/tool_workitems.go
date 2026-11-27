@@ -198,6 +198,11 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		AutoStartWorkflow  bool     `json:"auto_start_workflow"`
 		RuntimeImage       string   `json:"runtime_image"`
 		ContextFiles       []string `json:"context_files"`
+		// SecretIds selects tenant secrets to inject into this item's runs. THE FIELD WAS MISSING,
+		// so an agent creating a work item could not grant its worker any secret — which meant the
+		// operator had to remember to add them afterwards, every time. The operator asked for it to be
+		// part of the creation question instead of a step that gets forgotten.
+		SecretIds []string `json:"secret_ids"`
 		// run_context is the calling workflow run's run_context JSONB (feature 4.1, AC2): a recurring fire
 		// writes the provenance block into it.
 		RunContext string `json:"run_context"`
@@ -355,6 +360,21 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 	if executionMode != "" {
 		executionModePtr = &executionMode
 	}
+	// SECRETS THE WORKER MAY RECEIVE. Validated by the SAME rule the RPC uses (max 10, no empty,
+	// no duplicates) so an agent cannot create an item the UI would refuse — and so the allow-list
+	// behind `orchicon secret get` is a shape the platform already understands.
+	secretIDsJSON := []byte("[]")
+	if len(params.SecretIds) > 0 {
+		if err := workitem.ValidateSecretIDs(params.SecretIds); err != nil {
+			return nil, err
+		}
+		b, err := json.Marshal(params.SecretIds)
+		if err != nil {
+			return nil, fmt.Errorf("secret_ids: %w", err)
+		}
+		secretIDsJSON = b
+	}
+
 	row := db.WorkItemRow{
 		ID:                 db.NewID(),
 		TenantID:           tenantID,
@@ -373,6 +393,7 @@ func toolCreateWorkItem(ctx context.Context, pool *db.Pool, args json.RawMessage
 		AutoStartWorkflow:  autoStart,
 		RuntimeImage:       runtimeImage,
 		ContextFiles:       contextFiles,
+		SecretIDs:          secretIDsJSON,
 		Ephemeral:          params.Ephemeral,
 		ExecutionMode:      executionModePtr,
 		RecurringSchedule:  recurringScheduleJSON,

@@ -1058,6 +1058,12 @@ func (s *Service) startConversationTurnOpts(ctx context.Context, tenantID, convI
 	// AND WHICH ONE THIS CHAT IS IN, which is a different statement from the list below: the operator's
 	// "we should add context to all three modes to know which chat belongs to which project folder".
 	convProject := s.conversationProjectContext(ctx, tenantID, conv)
+	// AND THE PROJECT'S CONTEXT FILES, inlined. The worker path has always done this; Ask named the
+	// directory and shipped — so a context file explaining how to reach the dev plane reached every
+	// worker and NO Ask conversation. Same renderer, so the two cannot drift.
+	if ctxFiles := s.projectContextFilesSection(ctx, tenantID, conv); ctxFiles != "" {
+		convProject = convProject + "\n" + ctxFiles
+	}
 	// AND THIS CONVERSATION'S SKILLS — the SELECTABLE skill artifacts, rendered by the ONE shared
 	// platform renderer (contextfiles.RenderManifest) over the union of the conversation's skill_files.
 	skillsSection := s.skillManifestSection(ctx, tenantID, conv)
@@ -2630,6 +2636,40 @@ func (s *Service) skillManifestSection(ctx context.Context, tenantID string, con
 	// ManifestPolicySkill, NOT the default: a skill is the operator's instruction set, so its CONTENTS
 	// are inlined regardless of size.
 	return contextfiles.RenderManifestWithPolicy("# Skills", union, projectDir, contextfiles.ManifestPolicySkill)
+}
+
+// projectContextFilesSection inlines the project's CONTEXT FILES into an Ask turn.
+//
+// THE WORKER SIDE HAS ALWAYS DONE THIS — buildCompositePrompt calls readProjectContextFiles, which
+// renders the project's context_files as "# Project context". Ask did NOT: conversationProjectContext
+// NAMES the project directory, and skillManifestSection inlines skill_files, but a project's
+// context_files were never inlined anywhere in an Ask turn.
+//
+// The consequence was exactly what the operator hit: a context file written so that workers know how
+// to reach the dev plane was invisible to Ask, even though the same file is in every worker's prompt.
+// One project, two populations, one of them blind to half the project's context.
+//
+// The SAME shared renderer as the worker path (contextfiles.RenderManifest) so the two cannot drift.
+func (s *Service) projectContextFilesSection(ctx context.Context, tenantID string, conv db.ConversationRow) string {
+	if conv.ProjectID == "" {
+		return ""
+	}
+	p, err := conversationProjectRow(ctx, s.pool, tenantID, conv.ProjectID)
+	if err != nil || len(p.ContextFiles) == 0 {
+		return ""
+	}
+	var files []string
+	if err := json.Unmarshal(p.ContextFiles, &files); err != nil || len(files) == 0 {
+		return ""
+	}
+	// Out-of-project paths are dropped by the same rule the worker path and skill section use — a
+	// context file is project context, and one pointing outside the project is not.
+	if err := contextfiles.ValidateWithin(files, p.ProjectDir); err != nil {
+		s.log.Info("dropping out-of-project context files from the Ask system prompt",
+			"conversation", conv.ID, "error", err.Error())
+		return ""
+	}
+	return contextfiles.RenderManifest("# Project context", files, p.ProjectDir)
 }
 
 func (s *Service) conversationProjectContext(ctx context.Context, tenantID string, conv db.ConversationRow) string {
