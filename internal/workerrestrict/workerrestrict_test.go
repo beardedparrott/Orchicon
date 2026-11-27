@@ -1,11 +1,24 @@
 package workerrestrict
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/beardedparrott/orchicon/internal/neverallow"
 )
+
+// sameRoot reports whether p names the filesystem root whose separator is sep. It is the OS-neutral
+// form of `p == "/"`: on Windows the root is `\` (and a drive root `C:\\` is produced by volume-aware
+// callers, so both spellings are accepted), on POSIX it is `/`.
+func sameRoot(p, sep string) bool {
+	if p == sep {
+		return true
+	}
+	// A bare drive root, e.g. `C:\\`, is also a filesystem root on Windows.
+	trimmed := strings.TrimRight(p, "\\/")
+	return len(trimmed) == 2 && trimmed[1] == ':'
+}
 
 func TestMatchCommandTable(t *testing.T) {
 	cases := []struct {
@@ -107,8 +120,12 @@ func TestCarveOutDirs(t *testing.T) {
 	if len(got) != 2 || got[0] != ScratchDir {
 		t.Fatalf("CarveOutDirs = %v, want [%s <project>/.orchicon]", got, ScratchDir)
 	}
-	if !strings.HasSuffix(got[1], "/.orchicon") {
-		t.Fatalf("CarveOutDirs[1] = %q, want a path ending in /.orchicon", got[1])
+	// THE SEPARATOR IS THE OS'S, NOT '/' LITERALLY. On Windows the carve-out is `<project>\\
+	// .orchicon`, so asserting a hardcoded `/.orchicon` suffix fails there for a CORRECT value — the
+	// red seen on windows-latest. filepath.Join builds the expectation the same way the code does.
+	want := filepath.Join(project, ".orchicon")
+	if !strings.EqualFold(filepath.Clean(got[1]), filepath.Clean(want)) {
+		t.Fatalf("CarveOutDirs[1] = %q, want %q", got[1], want)
 	}
 	if len(CarveOutDirs("")) != 1 {
 		t.Fatal("CarveOutDirs with no project dir must yield only the scratch carve-out")
@@ -118,8 +135,12 @@ func TestCarveOutDirs(t *testing.T) {
 func TestProtectedRoots(t *testing.T) {
 	project := t.TempDir()
 	machine, scope := ProtectedRoots(project, nil)
-	if len(machine) == 0 || machine[0] != "/" {
-		t.Fatalf("machine roots = %v, want the filesystem root first", machine)
+	// THE FIRST ROOT IS THE FILESYSTEM ROOT OF THE OS THIS TEST RUNS ON. On Windows that is the
+	// volume root `\`, not `/`, so a hardcoded "/" asserts a POSIX machine on a Windows one and went
+	// red on windows-latest against a correct list ([\ C:\\Users\\... ...]). Compare against what
+	// filepath considers the root here.
+	if len(machine) == 0 || !sameRoot(machine[0], string(filepath.Separator)) {
+		t.Fatalf("machine roots = %v, want the filesystem root (%q) first", machine, string(filepath.Separator))
 	}
 	found := false
 	for _, s := range scope {

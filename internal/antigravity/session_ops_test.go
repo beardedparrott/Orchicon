@@ -197,10 +197,31 @@ func TestBridge_ContinueSessionResumesWithTheStoredSessionID(t *testing.T) {
 
 	// A SECOND CHILD is spawned for the follow-up (this one re-attaches), and it must use `session/resume`
 	// with the stored id rather than opening a fresh conversation.
+	//
+	// AWAIT THE RESUME, NOT JUST THE SPAWN. `awaitProc` only proves the child PROCESS exists; the
+	// `session/resume` frame reaches the fake on the session goroutine, one scheduling hop later. On a
+	// loaded runner (proved on macos-latest, where this raced) the process can appear well before the
+	// frame does, so a bare awaitProc+read is a flaky test rather than a broken product. Waiting for the
+	// resumed id is also the STRONGER assertion: it fails on absence, where the old form merely reported
+	// an empty slice.
 	h.awaitProc(t, 2)
+	waitFor(t, "the follow-up child to issue session/resume with the stored id", func() bool {
+		for i := 0; i < 2; i++ {
+			if p := h.procAtOrNil(i); p != nil {
+				for _, id := range p.resumedIDs() {
+					if id == stored {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	})
 	var resumed []string
 	for i := 0; i < 2; i++ {
-		resumed = append(resumed, h.procAt(i).resumedIDs()...)
+		if p := h.procAtOrNil(i); p != nil {
+			resumed = append(resumed, p.resumedIDs()...)
+		}
 	}
 	if len(resumed) == 0 || resumed[0] != stored {
 		t.Fatalf("session/resume calls = %v, want the stored id %q — opening a FRESH conversation would lose "+

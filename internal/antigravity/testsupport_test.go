@@ -62,6 +62,9 @@ type script struct {
 	// afterUpdates, when set, runs after the updates are emitted but before the result — the hook for an
 	// assertion that must observe the stream mid-turn.
 	afterUpdates func(promptIndex int)
+	// modes overrides the `modes` object session/new replies with. Nil means agy's recorded catalogue
+	// (default/accept-edits/auto/plan, current `default`), which is what a real 1.5.13 advertises.
+	modes *sessionModes
 }
 
 // defaultTurnUsage is the recorded file_edit_diff turn's accounting: it exercises all four buckets.
@@ -116,9 +119,14 @@ type fakeACP struct {
 	closedIn bool
 	// modelSets records every session/set_model modelId, in order.
 	modelSets []string
-	// modeSets records every session/set_mode modeId, in order. It is how a mid-conversation mode switch
-	// is proved to have reached agy rather than merely changed a field.
+	// modeSets records every session/set_mode modeId, in order. The mode pin asserts on this: an
+	// unpinned session sends NOTHING here, which is exactly the defect modepin.go closes. It is also how
+	// a mid-conversation mode switch is proved to have reached agy rather than merely changed a field.
 	modeSets []string
+	// order records the session/ method names in the order the fake RECEIVED them, so a test can prove
+	// ORDERING rather than mere presence — a mode pinned AFTER the first prompt leaves that prompt's
+	// tool calls in agy's own mode, which is the half-fixed state a presence check cannot see.
+	order []string
 	// newParams records every session/new params object verbatim, for the MCP assertion.
 	newParams []json.RawMessage
 	// permRequests counts permission requests the fake ASKED.
@@ -310,6 +318,7 @@ func (p *fakeACP) handle(doc c2s) {
 		_ = json.Unmarshal(doc.Params, &prm)
 		p.mu.Lock()
 		p.modeSets = append(p.modeSets, prm.ModeID)
+		p.order = append(p.order, "session/set_mode")
 		p.mu.Unlock()
 		p.emit(resultDoc(doc.ID, map[string]any{}))
 
@@ -357,6 +366,7 @@ func (p *fakeACP) handlePrompt(doc c2s) {
 	p.mu.Lock()
 	idx := len(p.prompts)
 	p.prompts = append(p.prompts, promptRecord{Text: text.String(), Index: idx})
+	p.order = append(p.order, "session/prompt")
 	hook := p.script.onPrompt
 	after := p.script.afterUpdates
 	release := make(chan struct{})
@@ -430,6 +440,41 @@ func (p *fakeACP) updatesFor(idx int) []string {
 	return []string{updateMessage("ok")}
 }
 
+// modesResult renders the `modes` object session/new replies with — agy 1.5.13's recorded catalogue
+// unless the script overrode it. It is a MODE LIST rather than a bare `currentModeId` because the pin
+// only sends `session/set_mode` for an id agy actually advertised, so a fixture without
+// `availableModes` could not exercise it at all.
+func (p *fakeACP) modesResult() map[string]any {
+	m := sessionModes{
+		CurrentModeID: "default",
+		AvailableModes: []modeOption{
+			{ID: "default", Name: "Default"},
+			{ID: "accept-edits", Name: "Accept edits"},
+			{ID: "auto", Name: "Auto"},
+			{ID: "plan", Name: "Plan"},
+		},
+	}
+	if p.script.modes != nil {
+		m = *p.script.modes
+	}
+	out := map[string]any{"currentModeId": m.CurrentModeID}
+	modes := make([]map[string]any, 0, len(m.AvailableModes))
+	for _, a := range m.AvailableModes {
+		modes = append(modes, map[string]any{"id": a.ID, "name": a.Name})
+	}
+	if len(modes) > 0 {
+		out["availableModes"] = modes
+	}
+	return out
+}
+
+// modesSetSeen returns every session/set_mode modeId the fake received, in order.
+func (p *fakeACP) modesSetSeen() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.modeSets...)
+}
+
 // sessionResult renders a session/new|resume|load result with the harness model catalogue.
 func (p *fakeACP) sessionResult(sid string) map[string]any {
 	return map[string]any{
@@ -442,7 +487,7 @@ func (p *fakeACP) sessionResult(sid string) map[string]any {
 			},
 			"currentModelId": "gemini-4-neon-high",
 		},
-		"modes": map[string]any{"currentModeId": "default"},
+		"modes": p.modesResult(),
 		"_meta": map[string]any{"antigravity": map[string]any{"tier": map[string]any{"name": "Google AI Pro"}}},
 	}
 }
@@ -972,6 +1017,14 @@ func (p *fakeACP) modelIdSets() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]string(nil), p.modelSets...)
+}
+
+// methodsSeen returns the session/ methods the fake RECEIVED, in arrival order. It exists so a test can
+// assert that a request preceded another one, which a per-method counter cannot express.
+func (p *fakeACP) methodsSeen() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.order...)
 }
 
 // modeIdSets returns every modeId the fake received on `session/set_mode`, in order.

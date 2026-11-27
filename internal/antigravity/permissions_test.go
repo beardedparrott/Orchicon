@@ -311,3 +311,77 @@ func TestBridge_PolicyDefaultPathHonoursEnv(t *testing.T) {
 		t.Fatalf("DefaultPolicyPath() = %q, want the %s override", got, permpolicy.PolicyEnv)
 	}
 }
+
+// TestBridge_PermissionWindowsPaths is AC4 through the ADAPTER: the same inside/outside question asked
+// with Windows-spelled paths, decided by the handler the worker actually runs.
+//
+// WHY THE HANDLER AND NOT JUST workerrestrict. `OutsideProject` is the boundary primitive, but a worker
+// is gated by `PolicyHandler.Decide`, which first translates agy's tool name into claude's vocabulary and
+// only then asks the boundary. A Windows worker whose edit tool translates to `Edit` takes the claude
+// path rule FIRST, so proving the primitive alone would leave the composed decision unproven. These rows
+// run the composed decision.
+//
+// THE BOUNDARY IS SPELLED LIKE A WINDOWS HOST (`C:\repo`), which is what routes `OutsideProject` into its
+// Windows arm on this Linux test runner. That is the whole point: `filepath.IsAbs("C:\repo\src\a.go")` is
+// false here, so without that arm a Windows path resolves RELATIVE and an external write reads as inside.
+func TestBridge_PermissionWindowsPaths(t *testing.T) {
+	const projectDir = `C:\repo`
+	h := &PolicyHandler{ProjectDir: projectDir, Log: quiet()}
+
+	// A permission policy file that does not exist, so the decision is the WORKER PROFILE's, which is
+	// the rule set under test.
+	h.PolicyPath = filepath.Join(t.TempDir(), "nonexistent-policy.json")
+
+	cases := []struct {
+		name    string
+		call    acp.ToolCallInfo
+		allow   bool
+		comment string
+	}{
+		{
+			name:    "inside: a windows-spelled edit",
+			call:    call("edit_file", "edit", map[string]any{"Path": `C:\repo\src\a.go`, "Target": "a", "Replacement": "b"}),
+			allow:   true,
+			comment: "the plain Windows spelling of a file in the project",
+		},
+		{
+			name:    "inside: the same edit with forward slashes and a lower-case drive",
+			call:    call("edit_file", "edit", map[string]any{"Path": `c:/repo/src/a.go`, "Target": "a", "Replacement": "b"}),
+			allow:   true,
+			comment: "case-insensitive volume, `\\` and `/` treated alike — the SAME file as the row above",
+		},
+		{
+			name:    "outside: a system path",
+			call:    call("write_file", "edit", map[string]any{"Path": `C:\Windows\system32\x.dll`, "Content": "x"}),
+			allow:   false,
+			comment: "on a Windows worker this is the classic external write",
+		},
+		{
+			name:  "outside: a different volume with the same tail",
+			call:  call("edit_file", "edit", map[string]any{"Path": `D:\repo\src\a.go`, "Target": "a", "Replacement": "b"}),
+			allow: false,
+			comment: "a different volume is a different root, even when the remaining path matches the " +
+				"project's exactly — stripping the drive letter for comparison would wrongly allow this",
+		},
+		{
+			name:    "outside: a sibling directory sharing the prefix",
+			call:    call("edit_file", "edit", map[string]any{"Path": `C:\repo2\src\a.go`, "Target": "a", "Replacement": "b"}),
+			allow:   false,
+			comment: "separator-bounded: C:\\repo2 is not inside C:\\repo",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := h.Decide(tc.call)
+			if got.Allow != tc.allow {
+				t.Fatalf("Decide(%s) = allow=%v rule=%q, want allow=%v (%s)", tc.name, got.Allow, got.Rule,
+					tc.allow, tc.comment)
+			}
+			if !tc.allow && strings.TrimSpace(got.Reason) == "" {
+				t.Errorf("Decide(%s) refused with no reason — a refusal an operator cannot read is a refusal "+
+					"they cannot act on", tc.name)
+			}
+		})
+	}
+}

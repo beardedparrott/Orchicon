@@ -14,7 +14,9 @@ package antigravity
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,6 +147,34 @@ func TestAskSession_ModelSwitchInPlace(t *testing.T) {
 	<-second
 }
 
+// paramsNameDir reports whether a recorded session/new params object NAMES dir as its cwd.
+//
+// WHY NOT A SUBSTRING MATCH ON THE RAW JSON. The params are JSON, so a Windows cwd is written
+// `C:\\Users\\a b\\...` — every backslash DOUBLED — and a raw substring check for the path can therefore
+// never match, whatever the code does. That false red appeared on windows-latest while the params were
+// in fact correct (`"cwd":"C:\\Users\\..."` for the wanted `C:\\Users\\...`). Decoding the object and
+// comparing the cwd FIELD is the only form that means what the test claims: "the request names this
+// project directory". Comparison is case-insensitive because Windows volumes and paths are.
+func paramsNameDir(t *testing.T, params []json.RawMessage, dir string) bool {
+	t.Helper()
+	want := filepath.Clean(dir)
+	for _, raw := range params {
+		var got struct {
+			Cwd string `json:"cwd"`
+		}
+		if err := json.Unmarshal(raw, &got); err != nil {
+			continue
+		}
+		if got.Cwd == "" {
+			continue
+		}
+		if strings.EqualFold(filepath.Clean(got.Cwd), want) {
+			return true
+		}
+	}
+	return false
+}
+
 // TestAskSession_CwdIsTheProjectDir is AC4's precondition: an Ask conversation assigned to a project runs IN
 // that project, which is what makes an approved write land in it.
 func TestAskSession_CwdIsTheProjectDir(t *testing.T) {
@@ -159,7 +189,7 @@ func TestAskSession_CwdIsTheProjectDir(t *testing.T) {
 	if len(params) == 0 {
 		t.Fatal("no session/new params were recorded")
 	}
-	if !containsFold(string(params[0]), h.dir) {
+	if !paramsNameDir(t, params, h.dir) {
 		t.Fatalf("session/new params do not name the project dir %q: %s", h.dir, params[0])
 	}
 }

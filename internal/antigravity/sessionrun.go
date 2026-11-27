@@ -188,6 +188,19 @@ func (s *session) run(ctx context.Context) error {
 		s.mapper.BindSessionID(ctx, conv.ID())
 	}
 
+	// --- mode ------------------------------------------------------------------------------------
+	// PINNED BEFORE THE MODEL AND BEFORE THE FIRST PROMPT. agy's own default varies by OS (its `auto`
+	// mode needs the terminal sandbox: macOS sandbox-exec, Linux user namespaces, Win11 24H2+), so an
+	// unpinned session behaves DIFFERENTLY on each platform for the same tenant and the same prompt.
+	// Pinning `default` means every gated tool call comes back as a permission request our policy
+	// decides, which is the only way a run is the same everywhere. See modepin.go.
+	if err := s.pinMode(ctx, conv, state); err != nil {
+		msg := fmt.Sprintf("antigravity: could not pin agy's mode to %q: %v", agyPinnedMode, authMessage(err))
+		s.recordError(msg)
+		s.finish(ctx, false, msg, err)
+		return err
+	}
+
 	// --- model -----------------------------------------------------------------------------------
 	// AN UNKNOWN MODEL FAILS LOUD; IT NEVER FALLS BACK. The tenant chose it, and silently running a
 	// different model is a claim about the run that is not true. agy itself refuses an unknown id with

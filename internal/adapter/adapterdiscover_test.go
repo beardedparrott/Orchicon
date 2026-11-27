@@ -125,8 +125,15 @@ func TestTwoInstallsAreSurfacedNotChosen(t *testing.T) {
 	withPathDirs(t, discovered)
 
 	// A SECOND install, in the known-install shape for the fake home.
+	//
+	// THE FILE NAME MUST CARRY THE HOST'S EXECUTABLE SUFFIX. The branch below used to write a bare
+	// `claude` regardless of OS, so on windows-latest the fixture created `claude` while the
+	// resolver — correctly — probes `claude.exe` via binaryName(goos, kind). Only the PATH-discovered
+	// install was then returned and the test failed claiming "want BOTH installs", which is a FIXTURE
+	// defect rather than the ambiguity bug it exists to catch. binaryName makes the fixture agree with
+	// the code under every GOOS.
 	home := t.TempDir()
-	declared := filepath.Join(home, ".local", "bin", "claude")
+	declared := filepath.Join(home, ".local", "bin", binaryName(runtime.GOOS, "claude"))
 	if err := os.MkdirAll(filepath.Dir(declared), 0o755); err != nil {
 		t.Fatal(err)
 	}
