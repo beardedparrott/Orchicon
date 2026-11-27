@@ -42,6 +42,12 @@ const (
 	StateAuthError State = "auth-error"
 	// StateStale — the vendored snapshot answered: rows PLUS the server's degraded bit.
 	StateStale State = "stale"
+	// StateLoading — the model tier has been ASKED and has not answered yet. agy is launched and its
+	// listing takes real time (it is a CLI handshake, not a database read), so "loading" is the state a
+	// real operator sits in and not a transient a capture can skip past. The fixture holds the answer
+	// open for far longer than any capture waits, so the loading frame is a state that cannot be raced
+	// into a loaded one.
+	StateLoading State = "loading"
 	// StateModeRefused — a Brainstorm turn refused a write: the transcript carries the refusal as an
 	// error tool result (the mode gate, which runs before any card).
 	StateModeRefused State = "mode-refused"
@@ -93,12 +99,17 @@ func (h *ProviderServiceHandler) ListProviders(_ context.Context, _ *connect.Req
 }
 
 // ListProviderModels is THE model tier for a catalog-sourced adapter kind.
-func (h *ProviderServiceHandler) ListProviderModels(_ context.Context, req *connect.Request[v1.ProviderModelsRequest]) (*connect.Response[v1.ProviderModelsResponse], error) {
+func (h *ProviderServiceHandler) ListProviderModels(ctx context.Context, req *connect.Request[v1.ProviderModelsRequest]) (*connect.Response[v1.ProviderModelsResponse], error) {
 	id := req.Msg.GetProviderId()
 	if id != "google" {
 		return connect.NewResponse(&v1.ProviderModelsResponse{}), nil
 	}
 	switch h.p.state {
+	case StateLoading:
+		// HOLD, do not answer. The test's own deadline (or the client's cancellation) is what ends this,
+		// so the picker paints its loading row for as long as the capture needs it.
+		<-ctx.Done()
+		return nil, connect.NewError(connect.CodeCanceled, ctx.Err())
 	case StateNotInstalled:
 		// NO rows, NO error: the install precondition, not a failure. This is the shape that makes the
 		// empty state speak.

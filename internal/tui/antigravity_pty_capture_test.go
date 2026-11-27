@@ -101,8 +101,9 @@ func agyPickerFrame(t *testing.T, s *ptySession, cols, rows int, want ...string)
 	return scr
 }
 
-// TestPTYAntigravityParityCaptureLive is state 1 of 5: the picker on a LIVE agy listing — the adapter
-// pills, `google` as its only provider, and agy's own model ids with their 1M window.
+// TestPTYAntigravityParityCaptureLive is the SIXTH capture — not one of the five required states, but the
+// happy path they are all contrasted against: the picker on a LIVE agy listing, with the adapter pills,
+// `google` as its only provider, and agy's own model ids with their 1M window.
 func TestPTYAntigravityParityCaptureLive(t *testing.T) {
 	skipInteractivePTY(t)
 	if testing.Short() {
@@ -113,7 +114,7 @@ func TestPTYAntigravityParityCaptureLive(t *testing.T) {
 	s := openAgyModelsPicker(t, planeURL, cols, rows)
 
 	scr := agyPickerFrame(t, s, cols, rows, "gemini-4-carbon-high")
-	dumpAgyFrame(t, "01-live-model-list", scr)
+	dumpAgyFrame(t, "06-live-model-list", scr)
 
 	text := screenText(scr)
 	for _, want := range []string{"antigravity", "ADAPTER", "PROVIDER", "Google",
@@ -126,6 +127,39 @@ func TestPTYAntigravityParityCaptureLive(t *testing.T) {
 	}
 	if strings.Contains(text, "may be stale") {
 		t.Errorf("a LIVE listing must not claim it may be stale:\n%s", tailOfPlain(text, 2000))
+	}
+}
+
+// TestPTYAntigravityParityCaptureLoading is state 1 of 5: the picker while agy's listing is still in
+// flight. Nothing else is on screen yet, so the LOADING row is the only thing that can speak — and what
+// it must not do is show an empty tier or the install sentence while a signed-in host is merely slow.
+//
+// The fixture HOLDS this answer open (StateLoading), so the frame is a state and not a race.
+func TestPTYAntigravityParityCaptureLoading(t *testing.T) {
+	skipInteractivePTY(t)
+	if testing.Short() {
+		t.Skip("real-pty: skipped in -short")
+	}
+	const cols, rows = 140, 44
+	planeURL := startAgyParityPlane(t, antigravityparity.StateLoading)
+	s := openAgyModelsPicker(t, planeURL, cols, rows)
+
+	scr := agyPickerFrame(t, s, cols, rows, "loading")
+	dumpAgyFrame(t, "01-loading", scr)
+
+	text := screenText(scr)
+	// THE LOADING ROW, in the model tier's own words.
+	if !strings.Contains(text, "loading models") && !strings.Contains(text, "loading…") {
+		t.Fatalf("an in-flight model listing must paint a loading row — an empty tier would read as \"agy "+
+			"has no models\":\n%s", tailOfPlain(text, 3000))
+	}
+	// AND IT MUST NOT LIE. Neither of the two settled-but-wrong states may appear while we are waiting:
+	// the install sentence (agy IS installed here) and the stale note (nothing has come back yet).
+	for _, mustNot := range []string{"Antigravity CLI (`agy`) not found", "may be stale"} {
+		if strings.Contains(text, mustNot) {
+			t.Errorf("the loading frame must not paint %q — it is a settled state we have not reached:\n%s",
+				mustNot, tailOfPlain(text, 3000))
+		}
 	}
 }
 
