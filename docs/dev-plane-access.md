@@ -28,25 +28,36 @@ use. Errors go to stderr.
 Then call dev directly:
 
 ```bash
-curl -s -H "Authorization: Bearer $KEY" http://localhost:8080/orchicon.api.v1.WorkItemService/ListWorkItems
+# Connect endpoints are POST with a JSON body — a bare GET returns 405 and looks like a broken plane.
+curl -s -X POST \
+  -H "Authorization: Bearer $KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"page_size": 5}' \
+  http://localhost:8080/orchicon.api.v1.WorkItemService/ListWorkItems
 ```
 
-Use `:$DEV_PLANE_PORT` style variables in scripts rather than hardcoding, so a moved instance does not
-silently point you somewhere else.
+Dev is on `:8080` today. If a call fails to connect, check the port rather than assuming the instance
+moved — and say so in your summary instead of guessing another one.
 
 ## If the fetch fails
 
-`orchicon secret get DEV_PLANE_KEY` can fail for three reasons, and the message tells you which:
+`orchicon secret get` is a plain get: it resolves the plane and your credential the same way `orch`
+does (`ORCHICON_URL`/`ORCHICON_TOKEN`, or the saved profile), reads any secret the tenant holds, and
+needs nothing from your execution. The three failures are about the *caller* and the *name*:
 
 | Message | Meaning | What to do |
 |---|---|---|
-| `not running inside a worker execution (missing …)` | you are not in a dispatched run, or the worker has no role binding on its own instance | say so in your summary — this is a platform-side grant |
-| `not available to this run` | the secret exists but was **not selected** on your work item | say so; do not look for the key elsewhere |
-| `run … is completed/failed/aborted` | the run is over and cannot fetch | not recoverable mid-run |
+| `no plane URL — set ORCHICON_URL …` | this shell has no plane configured | say so in your summary; do not guess a URL |
+| `no credential for <url> — set ORCHICON_TOKEN …` | no credential resolved for that plane | say so; the operator has to grant you access |
+| `no secret named "<NAME>" in this tenant` | the name is wrong, or the secret does not exist | check the spelling with the operator before retrying |
 
-**Do not improvise around a refusal.** Do not read a keyring, a dotfile, another worker's environment,
-or a checked-in token. A refusal means the operator did not grant that secret to this work item, and
-the correct report is a NOT VERIFIED criterion naming the missing grant.
+There is **no** run-scoped refusal any more: the fetch does not depend on a work item's `secret_ids`,
+on your execution, or on your worker having a role. If the secret exists in the tenant and your
+credential is valid there, the read succeeds — and it is audited.
+
+**Do not improvise around a failure.** Do not read a keyring, a dotfile, another worker's environment,
+or a checked-in token. A missing secret or a missing credential is a grant the operator has to make;
+the correct report is a NOT VERIFIED criterion naming what was missing.
 
 ## Every read is audited
 
