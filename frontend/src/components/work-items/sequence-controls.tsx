@@ -74,12 +74,22 @@ export function SequenceControls({
   item,
   hasChildren,
   className,
+  only,
 }: {
   /** the work item to control (parent or leaf) */
   item: WorkItem;
   /** whether the item has children — the sequence-parent determinant */
   hasChildren: boolean;
   className?: string;
+  /**
+   * Restrict the rendered gestures to this set. Used by the Schedules views, where which gestures
+   * make sense is decided by the VIEW rather than the item's status: Running offers the two stops,
+   * History offers the two continuations, Upcoming offers nothing at all.
+   *
+   * Enforcing it here rather than filtering at each call site means a view cannot accidentally
+   * render a gesture its own rule excludes.
+   */
+  only?: readonly SequenceAction[];
 }) {
   const { mutate, isPending } = useControlSequence();
   const toast = useToast();
@@ -115,7 +125,8 @@ export function SequenceControls({
     );
   };
 
-  const actions = availableActions(item.status, hasChildren);
+  let actions = availableActions(item.status, hasChildren);
+  if (only) actions = actions.filter((a) => only.includes(a));
   if (actions.length === 0) return null;
 
   return (
@@ -137,10 +148,10 @@ export function SequenceControls({
         // dispatched.
         // ONE PURE DECISION, in run-controls.ts, so a test can assert what this row RENDERS. The
         // previous inline version had an inverted negation that no helper-level test could see.
-        const label = controlLabelFor(action, item.status, item.workflowRunId, meta.label);
+        const label = controlLabelFor(action, item.status, meta.label);
         const titleText =
           action === SequenceAction.RESTART
-            ? restartTitle(hasEverRun(item.status, item.workflowRunId))
+            ? restartTitle(hasEverRun(item.status))
             : meta.title;
         const Icon = meta.icon;
         const destructive = action === SequenceAction.RESTART || action === SequenceAction.STOP;

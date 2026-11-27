@@ -61,6 +61,7 @@ import type { Project } from "@/api/gen/orchicon/api/v1/project_pb";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
 import { SequenceControls } from "@/components/work-items/sequence-controls";
+import { SCHEDULE_VIEW_ACTIONS } from "@/components/work-items/run-controls";
 import { bulkControlsFor } from "@/components/work-items/run-controls";
 import { SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { useControlSequence } from "@/api/workItems";
@@ -1244,6 +1245,15 @@ function RunningCard({
           </CardContent>
         </Card>
       </Link>
+      {/* THE TWO STOPS, on the only view where stopping means anything. Pause keeps the worktree,
+          branch and succeeded steps; Stop ends the run. Either way the row leaves Running, which is
+          correct — a paused or stopped run is not running. */}
+      <SequenceControls
+        item={item}
+        hasChildren={isSequenceParent}
+        only={SCHEDULE_VIEW_ACTIONS.running}
+        className="shrink-0"
+      />
     </div>
   );
 }
@@ -1520,6 +1530,7 @@ function HistoryCard({
         <SequenceControls
           item={item}
           hasChildren={false}
+          only={SCHEDULE_VIEW_ACTIONS.history}
           className="shrink-0"
         />
       )}

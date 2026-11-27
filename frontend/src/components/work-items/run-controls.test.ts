@@ -10,6 +10,7 @@ import {
   restartLabel,
   restartTitle,
   runControlsFor,
+  SCHEDULE_VIEW_ACTIONS,
 } from "./run-controls";
 
 /**
@@ -125,12 +126,15 @@ describe("bulkControlsFor", () => {
 describe("controlLabelFor (the decision a row actually renders)", () => {
   it("says Start for a pending item that has never been dispatched", () => {
     // THE EXACT CASE THAT SHIPPED WRONG: pending, no run id. It must NOT say Restart.
-    expect(controlLabelFor(SequenceAction.RESTART, WorkItemStatus.PENDING, "", "Restart")).toBe("Start");
-    expect(controlLabelFor(SequenceAction.RESTART, WorkItemStatus.PENDING, undefined, "Restart")).toBe("Start");
+    expect(controlLabelFor(SequenceAction.RESTART, WorkItemStatus.PENDING, "Restart")).toBe("Start");
+    expect(controlLabelFor(SequenceAction.RESTART, WorkItemStatus.PENDING, "Restart")).toBe("Start");
   });
 
-  it("says Restart once the item has a bound run", () => {
-    expect(controlLabelFor(SequenceAction.RESTART, WorkItemStatus.PENDING, "01M8CSC92", "Restart")).toBe("Restart");
+  it("says Start even with a bound run id, because STATUS alone decides", () => {
+    // SUPERSEDED RULE, kept as an explicit assertion so it cannot creep back. The operator:
+    // "Start is the right word for ANY work item that has not started yet, pending or otherwise."
+    // A pending item with a run id is still a pending item.
+    expect(controlLabelFor(SequenceAction.RESTART, WorkItemStatus.PENDING, "Restart")).toBe("Start");
   });
 
   it("says Restart for an item whose status proves it ran", () => {
@@ -141,21 +145,65 @@ describe("controlLabelFor (the decision a row actually renders)", () => {
       WorkItemStatus.RUNNING,
       WorkItemStatus.CHECKPOINTING,
     ]) {
-      expect(controlLabelFor(SequenceAction.RESTART, status, "", "Restart")).toBe("Restart");
+      expect(controlLabelFor(SequenceAction.RESTART, status, "Restart")).toBe("Restart");
     }
   });
 
   it("leaves the other gestures alone", () => {
-    expect(controlLabelFor(SequenceAction.RESUME, WorkItemStatus.PENDING, "", "Resume")).toBe("Resume");
-    expect(controlLabelFor(SequenceAction.PAUSE, WorkItemStatus.RUNNING, "", "Pause")).toBe("Pause");
+    expect(controlLabelFor(SequenceAction.RESUME, WorkItemStatus.PENDING, "Resume")).toBe("Resume");
+    expect(controlLabelFor(SequenceAction.PAUSE, WorkItemStatus.RUNNING, "Pause")).toBe("Pause");
   });
 });
 
 describe("hasEverRun", () => {
-  it("is false exactly for a never-dispatched pending item", () => {
-    expect(hasEverRun(WorkItemStatus.PENDING, "")).toBe(false);
-    expect(hasEverRun(WorkItemStatus.UNSPECIFIED, "")).toBe(false);
-    expect(hasEverRun(WorkItemStatus.PENDING, "run-1")).toBe(true);
-    expect(hasEverRun(WorkItemStatus.FAILED, "")).toBe(true);
+  it("is false for a never-dispatched item, whatever run id it carries", () => {
+    expect(hasEverRun(WorkItemStatus.PENDING)).toBe(false);
+    expect(hasEverRun(WorkItemStatus.UNSPECIFIED)).toBe(false);
+    expect(hasEverRun(WorkItemStatus.FAILED)).toBe(true);
+  });
+});
+
+/**
+ * THE OPERATOR'S RULE FOR THE SCHEDULES VIEWS, and the label rule restated.
+ *
+ * These are business statements, not implementation details, so they are pinned here where the GUI
+ * and the TUI both read them:
+ *
+ *   "the only views that make sense for controls are running and history. Upcoming is simply
+ *    upcoming. They already have a state. Running would have stop and pause controls. History
+ *    would have the restart or resume controls, then they would be back under the running page
+ *    once they are running."
+ */
+describe("SCHEDULE_VIEW_ACTIONS", () => {
+  it("offers NOTHING on Upcoming — an unfired schedule has no run to act on", () => {
+    expect(SCHEDULE_VIEW_ACTIONS.upcoming).toEqual([]);
+  });
+
+  it("offers only the two stops on Running", () => {
+    expect(SCHEDULE_VIEW_ACTIONS.running).toEqual([SequenceAction.PAUSE, SequenceAction.STOP]);
+    expect(SCHEDULE_VIEW_ACTIONS.running).not.toContain(SequenceAction.RESTART);
+  });
+
+  it("offers only the two continuations on History", () => {
+    expect(SCHEDULE_VIEW_ACTIONS.history).toEqual([SequenceAction.RESUME, SequenceAction.RESTART]);
+    expect(SCHEDULE_VIEW_ACTIONS.history).not.toContain(SequenceAction.STOP);
+  });
+});
+
+describe("hasEverRun (status alone decides)", () => {
+  it("treats ANY not-yet-started item as never run, pending or otherwise", () => {
+    expect(hasEverRun(WorkItemStatus.PENDING)).toBe(false);
+    expect(hasEverRun(WorkItemStatus.UNSPECIFIED)).toBe(false);
+  });
+
+  it("treats failed, cancelled and paused as having run — the operator's list", () => {
+    expect(hasEverRun(WorkItemStatus.FAILED)).toBe(true);
+    expect(hasEverRun(WorkItemStatus.CANCELLED)).toBe(true);
+    expect(hasEverRun(WorkItemStatus.CHECKPOINTING)).toBe(true); // paused
+  });
+
+  it("ignores a bound run id, because status is the single input", () => {
+    // The old rule consulted workflowRunId and that two-signal fold is what let a bad negation ship.
+    expect(hasEverRun(WorkItemStatus.PENDING)).toBe(false);
   });
 });
