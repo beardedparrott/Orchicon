@@ -581,3 +581,29 @@ export function relativeAge(createdAt?: WorkItem["createdAt"], now = Date.now())
   if (months < 12) return `${months}mo ago`;
   return `${Math.floor(months / 12)}y ago`;
 }
+
+/**
+ * STATUS_DOMAIN_STRINGS maps a wire enum value to the domain string the SERVER stores.
+ *
+ * IT EXISTS BECAUSE THREE PLACES HAND-BUILT THIS MAP AND EACH MISSED STATUSES.
+ *
+ * The work item detail page's telemetry payload carried its own inline Record that omitted
+ * checkpointing, blocked, skipped, archived — and, when `paused` was added, paused too. The result
+ * was the operator opening a paused item and being told its status was "unknown" while the list view
+ * showed "paused" correctly: two maps, two answers.
+ *
+ * Derived from the enum by lowercasing the key, so a status added to the proto is covered here
+ * automatically. The explicit list is the one exception: WorkItemStatus keys are the proto names,
+ * and the domain strings are the same words lowercased — verified by the test in
+ * work-item-meta.test.ts, which asserts the round trip for EVERY value.
+ */
+export const STATUS_DOMAIN_STRINGS: Record<number, string> = Object.fromEntries(
+  Object.entries(WorkItemStatus)
+    .filter(([k, v]) => typeof v === "number" && k !== "UNSPECIFIED")
+    .map(([k, v]) => [v as number, k.toLowerCase()]),
+);
+
+/** statusDomainString is the domain string for a wire status, never "unknown" for a known value. */
+export function statusDomainString(status: number): string {
+  return STATUS_DOMAIN_STRINGS[status] ?? "unknown";
+}

@@ -29,6 +29,7 @@ import {
   MANUALLY_UNMOVABLE_STATUSES,
   STATUS_FILTER_OPTIONS,
   STATUSES_NOT_FILTERABLE,
+  statusDomainString,
   ALL_STATUS_VALUES,
   ALL_KIND_VALUES,
 } from "@/components/work-items/work-item-meta";
@@ -353,5 +354,54 @@ describe("STATUS_FILTER_OPTIONS covers the whole wire enum", () => {
     // No statusMeta entry means no label and no colour; no column mapping means no board column.
     expect(statusMeta(WorkItemStatus.PAUSED).label).toBe("paused");
     expect(columnForStatus(WorkItemStatus.PAUSED)).toBe(WorkItemStatus.RUNNING);
+  });
+});
+
+/**
+ * THE STATUS ROUND TRIP, FOR EVERY VALUE.
+ *
+ * The work item detail page carried its OWN inline status→string map. It omitted checkpointing,
+ * blocked, skipped and archived, and then `paused` when that was added — so opening a paused item
+ * reported status "unknown" while the list view correctly showed "paused". Two maps, two answers.
+ *
+ * The shared map is derived from the enum, and this test proves the derivation is correct for EVERY
+ * value rather than trusting that lowercasing a proto name always yields the domain string.
+ */
+describe("statusDomainString", () => {
+  it("returns the lowercase domain string for every known status", () => {
+    const known: Array<[number, string]> = [
+      [WorkItemStatus.PENDING, "pending"],
+      [WorkItemStatus.SCHEDULED, "scheduled"],
+      [WorkItemStatus.READY, "ready"],
+      [WorkItemStatus.ASSIGNED, "assigned"],
+      [WorkItemStatus.RUNNING, "running"],
+      [WorkItemStatus.CHECKPOINTING, "checkpointing"],
+      [WorkItemStatus.SUCCEEDED, "succeeded"],
+      [WorkItemStatus.FAILED, "failed"],
+      [WorkItemStatus.CANCELLED, "cancelled"],
+      [WorkItemStatus.RECOVERING, "recovering"],
+      [WorkItemStatus.RECURRING, "recurring"],
+      [WorkItemStatus.BLOCKED, "blocked"],
+      [WorkItemStatus.SKIPPED, "skipped"],
+      [WorkItemStatus.ARCHIVED, "archived"],
+      [WorkItemStatus.PAUSED, "paused"],
+      [WorkItemStatus.IDEA, "idea"],
+    ];
+    for (const [status, want] of known) {
+      expect(statusDomainString(status), `${WorkItemStatus[status]} must map to "${want}"`).toBe(want);
+    }
+  });
+
+  it("never returns 'unknown' for a value the proto defines", () => {
+    const defined = Object.entries(WorkItemStatus)
+      .filter(([k, v]) => typeof v === "number" && k !== "UNSPECIFIED")
+      .map(([, v]) => v as number);
+    for (const s of defined) {
+      expect(statusDomainString(s), `${WorkItemStatus[s]} reported "unknown"`).not.toBe("unknown");
+    }
+  });
+
+  it("includes paused specifically — the status the operator saw as unknown", () => {
+    expect(statusDomainString(WorkItemStatus.PAUSED)).toBe("paused");
   });
 });

@@ -46,7 +46,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { KindPill, PositionBadge, RecurringBadge } from "@/components/work-items/work-item-badges";
 import { WorkItemParentSelect } from "@/components/work-items/work-item-parent-select";
 import { computeSequencePositions } from "@/components/work-items/sequence-utils";
-import { kindLabel, kindMeta, statusMeta, isTerminal, showRecurringBadge, MANUALLY_UNMOVABLE_STATUSES } from "@/components/work-items/work-item-meta";
+import { kindLabel, kindMeta, statusMeta, statusDomainString, isTerminal, showRecurringBadge, MANUALLY_UNMOVABLE_STATUSES } from "@/components/work-items/work-item-meta";
 import { cn } from "@/lib/utils";
 import { Timestamp } from "@bufbuild/protobuf";
 import { RecurringSchedule, WorkItemKind, WorkItemStatus } from "@/api/gen/orchicon/api/v1/work_item_pb";
@@ -515,18 +515,11 @@ function WorkItemDetailPage() {
             } as Record<number, string>)[item.kind] ?? "unknown",
             project_id: item.projectId,
             parent_id: item.parentId || undefined,
-            status: ({
-              [WorkItemStatus.PENDING]: "pending",
-              [WorkItemStatus.SCHEDULED]: "scheduled",
-              [WorkItemStatus.READY]: "ready",
-              [WorkItemStatus.ASSIGNED]: "assigned",
-              [WorkItemStatus.RUNNING]: "running",
-              [WorkItemStatus.SUCCEEDED]: "succeeded",
-              [WorkItemStatus.FAILED]: "failed",
-              [WorkItemStatus.CANCELLED]: "cancelled",
-              [WorkItemStatus.RECOVERING]: "recovering",
-              [WorkItemStatus.RECURRING]: "recurring",
-            } as Record<number, string>)[item.status] ?? "unknown",
+            // THE SHARED MAP, not a fourth hand-built copy. This inline Record omitted
+            // checkpointing, blocked, skipped and archived — and `paused` when it was added — so a
+            // paused item reported status "unknown" here while the list showed "paused". Derived
+            // from the enum so a new status is covered without anyone remembering to edit it.
+            status: statusDomainString(item.status),
             priority: item.priority,
             description: item.description || undefined,
             acceptance_criteria: item.acceptanceCriteria || undefined,
