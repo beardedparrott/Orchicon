@@ -39,3 +39,11 @@ the gaps below, and the live evidence — not a rewrite.
 - Reuse prior implementation (green on current develop) rather than rewrite.
 - `ask_question`: documented rejection redirecting to `orchicon_ask_user`.
 - No new settings/RPCs → no client changes.
+
+## Rev 3 (this architect step)
+Branch was again stale (4bacf12a6). Fast-forwarded to `develop` (948abf84b), then merged the latest prior attempt
+`origin/…hbqt40rxe6r6wpdg` (adds live consent-card proof against real agy, MCP-scope test, live resume recall, doc updates;
+supersedes the wezsc2ft merge in rev 2). Verified after merge: `go build ./...`, `go vet` (antigravity, server, toolclass,
+aigateway) and `go test ./internal/antigravity/... ./internal/toolclass ./internal/askorchicon ./internal/aigateway
+./internal/protectedpath ./internal/claude` all PASS. The numbered steps above still apply; the SSE should first read
+`docs/adapters/antigravity-acp.md` for what live agy was proven (and proven NOT to card) before re-running risk 1, then run the full gate.
