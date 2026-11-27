@@ -2383,7 +2383,10 @@ func (r *WorkflowReconciler) dispatchStep(ctx context.Context, tx pgx.Tx, tenant
 			}
 			r.log.Info("loop_decision: rejected, looping back",
 				"run", run.ID, "step", step.ID, "loop_branch", cfg.LoopBranch, "iteration", currentIter)
-			if err := r.loopDecisionReenter(ctx, tx, tenantID, run, sr, step, runs, cfg.LoopBranch, currentIter, now, allSteps); err != nil {
+			// CARRY THE REJECTION INTO THE RE-ARMED STEPS. Without this the loop fires and the
+			// engineer re-derives the same work — see loopFeedback.
+			feedback := loopFeedbackFrom(runs, step, currentIter)
+			if err := r.loopDecisionReenter(ctx, tx, tenantID, run, sr, step, runs, cfg.LoopBranch, currentIter, now, allSteps, feedback); err != nil {
 				return err
 			}
 
@@ -2883,6 +2886,46 @@ func (r *WorkflowReconciler) buildCompositePrompt(ctx context.Context, tx pgx.Tx
 	// Iteration context: tell the worker if this is a re-do (loop-back).
 	if currentRun, ok := runs[wi.WorkflowStepID]; ok && currentRun.Iteration > 0 {
 		fmt.Fprintf(&sb, "This is iteration %d of this step. You may have done this work before — review your previous output and the feedback from downstream steps before repeating yourself.\n\n", currentRun.Iteration)
+
+		// THE REJECTION, IN THE WORKER'S OWN PROMPT.
+		//
+		// Telling a step "this is iteration 2" without saying WHY is what made the loop useless: it
+		// re-derived the same work and produced the same defect. The rejecting step's own summary is
+		// the single most valuable thing the next attempt can be given, and it was sitting in a row
+		// that nothing read.
+		//
+		// Stated as a hard constraint rather than context, because a fixer that treats feedback as
+		// optional background will fix the easy part and ship the reported defect again.
+		var fb struct {
+			FromStep  string   `json:"_loop_feedback_from"`
+			Summary   string   `json:"_loop_feedback_summary"`
+			Issues    []string `json:"_loop_feedback_issues"`
+			Decision  string   `json:"_loop_feedback_decision"`
+			Iteration int      `json:"_loop_feedback_iteration"`
+		}
+		if len(currentRun.Result) > 0 && json.Unmarshal(currentRun.Result, &fb) == nil && (fb.Summary != "" || len(fb.Issues) > 0) {
+			sb.WriteString("### Why this is being re-run\n\n")
+			if fb.FromStep != "" {
+				fmt.Fprintf(&sb, "The step `%s` rejected the previous iteration", fb.FromStep)
+				if fb.Decision != "" {
+					fmt.Fprintf(&sb, " (its decision was `%s`)", fb.Decision)
+				}
+				sb.WriteString(". Its own account of what is wrong:\n\n")
+			}
+			if fb.Summary != "" {
+				sb.WriteString("> " + strings.ReplaceAll(fb.Summary, "\n", "\n> ") + "\n\n")
+			}
+			if len(fb.Issues) > 0 {
+				sb.WriteString("Blocking issues it named:\n\n")
+				for _, iss := range fb.Issues {
+					sb.WriteString("- " + iss + "\n")
+				}
+				sb.WriteString("\n")
+			}
+			sb.WriteString("**Do not re-derive this.** Address the blockers above directly. If you believe the " +
+				"rejection is wrong, say so in your summary with the evidence — but do not simply repeat the " +
+				"work that was rejected, because it will be rejected again.\n\n")
+		}
 	}
 
 	// Git/branch guidance: keyed on the run's worktree_status AND effective git strategy so a non-repo
@@ -4559,7 +4602,9 @@ func (r *WorkflowReconciler) approvalReenter(ctx context.Context, tx pgx.Tx, ten
 	nextIter := currentIter + 1
 
 	chainIDs := chainStepIDs(allSteps, loopBranch, step.ID)
-	if err := r.createChainRuns(ctx, tx, tenantID, run.ID, chainIDs, nextIter, allSteps); err != nil {
+	// nil: an approval re-entry follows a HUMAN decision, which carries its own reason on the approval
+	// row. Threading a reviewer summary here would be inventing one.
+	if err := r.createChainRuns(ctx, tx, tenantID, run.ID, chainIDs, nextIter, allSteps, nil); err != nil {
 		return fmt.Errorf("approval step %q: create chain runs: %w", step.Name, err)
 	}
 
@@ -4759,13 +4804,13 @@ func (r *WorkflowReconciler) createLoopDecisionIteration(ctx context.Context, tx
 
 // loopDecisionReenter creates a new step run for the loop branch target, then marks the loop
 // decision as RUNNING.
-func (r *WorkflowReconciler) loopDecisionReenter(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow, loopBranch string, currentIter int, now time.Time, allSteps []workflow.StepWire) error {
+func (r *WorkflowReconciler) loopDecisionReenter(ctx context.Context, tx pgx.Tx, tenantID string, run db.WorkflowRunRow, sr db.WorkflowStepRunRow, step workflow.StepWire, runs map[string]db.WorkflowStepRunRow, loopBranch string, currentIter int, now time.Time, allSteps []workflow.StepWire, feedback *loopFeedback) error {
 	nextIter := currentIter + 1
 
 	// Create new step runs for every step between the loop target and this loop decision (inclusive of
 	// target, exclusive of decision) so the whole chain re-executes.
 	chainIDs := chainStepIDs(allSteps, loopBranch, step.ID)
-	if err := r.createChainRuns(ctx, tx, tenantID, run.ID, chainIDs, nextIter, allSteps); err != nil {
+	if err := r.createChainRuns(ctx, tx, tenantID, run.ID, chainIDs, nextIter, allSteps, feedback); err != nil {
 		return fmt.Errorf("loop_decision step %q: create chain runs: %w", step.Name, err)
 	}
 
@@ -4849,7 +4894,7 @@ func chainStepIDs(allSteps []workflow.StepWire, fromID, toID string) []string {
 
 // createChainRuns supersedes existing step runs for each step in the given list and creates new
 // PENDING iterations.
-func (r *WorkflowReconciler) createChainRuns(ctx context.Context, tx pgx.Tx, tenantID, runID string, stepIDs []string, iteration int, allSteps []workflow.StepWire) error {
+func (r *WorkflowReconciler) createChainRuns(ctx context.Context, tx pgx.Tx, tenantID, runID string, stepIDs []string, iteration int, allSteps []workflow.StepWire, feedback *loopFeedback) error {
 	// Build a stepKind lookup from the workflow version.
 	kindByID := make(map[string]string, len(allSteps))
 	for _, s := range allSteps {
@@ -4889,6 +4934,21 @@ func (r *WorkflowReconciler) createChainRuns(ctx context.Context, tx pgx.Tx, ten
 			StepKind:      kind,
 			Status:        domain.StepRunPending,
 			Iteration:     iteration,
+		}
+		// THE WHOLE POINT OF LOOPING: THE FIXER MUST KNOW WHAT WAS WRONG.
+		//
+		// These runs used to be created with NO Result at all, so SSE re-entered knowing only "this is
+		// iteration 2" and nothing about why. It re-derived the same work, produced the same defect,
+		// and the loop burned its iterations on a message-free round trip — which is how "route the
+		// verdict to SSE" produced no visible improvement.
+		//
+		// The reviewer's own diagnosis rides on every step in the chain, not just the first: an
+		// intermediate reviewer needs it too, and suppressing it there would recreate the blind spot
+		// one step later.
+		if feedback != nil {
+			if payload, err := feedback.resultJSON(); err == nil {
+				newRun.Result = payload
+			}
 		}
 		if _, err := db.CreateWorkflowStepRun(ctx, tx, newRun); err != nil {
 			return fmt.Errorf("create chain step run %s: %w", sid, err)
@@ -5080,4 +5140,71 @@ func imageForRun(resolved string, needsServe bool) string {
 		return db.RuntimeBaseImage()
 	}
 	return strings.TrimSpace(resolved)
+}
+
+// loopFeedback is what a loop-back hands to the steps it re-arms.
+//
+// THE DEFECT THIS CLOSES. Looping a rejected step back to the engineer only helps if the engineer
+// learns WHY. These chain runs were created with no Result at all, so SSE re-entered knowing only
+// "this is iteration N" — it re-derived the same work, produced the same defect, and the loop spent
+// its iterations on a round trip that carried no information. Fixing the ROUTING without this made
+// the loop fire and changed nothing about the outcome.
+//
+// What travels is the rejecting step's own account of itself: its summary (which is where a QA or
+// reviewer explains the failure), its issues list, and its decision. Deliberately NOT the full
+// output — the summary is the reviewer's distilled judgement, and the raw stream would bury it.
+type loopFeedback struct {
+	// FromStep names the step whose judgement this is, so the fixer can tell "QA rejected this" from
+	// "the PR reviewer rejected this".
+	FromStep string   `json:"_loop_feedback_from"`
+	Summary  string   `json:"_loop_feedback_summary,omitempty"`
+	Issues   []string `json:"_loop_feedback_issues,omitempty"`
+	Decision string   `json:"_loop_feedback_decision,omitempty"`
+	// Iteration is the loop generation, so a third pass can see it is the third.
+	Iteration int `json:"_loop_feedback_iteration"`
+}
+
+func (f *loopFeedback) resultJSON() ([]byte, error) { return json.Marshal(f) }
+
+// loopFeedbackFrom collects the rejecting step's judgement from the runs of the steps that feed the
+// loop decision. It reads the FIRST upstream that carries a failure verdict, because that is the
+// step that rejected the work.
+func loopFeedbackFrom(runs map[string]db.WorkflowStepRunRow, step workflow.StepWire, iteration int) *loopFeedback {
+	for _, dep := range step.DependsOn {
+		up, ok := runs[dep]
+		if !ok || len(up.Result) == 0 {
+			continue
+		}
+		var r struct {
+			Summary  string   `json:"_summary"`
+			Output   string   `json:"_output"`
+			Issues   []string `json:"_issues"`
+			Decision string   `json:"_decision"`
+			Verdict  string   `json:"_verdict"`
+		}
+		if err := json.Unmarshal(up.Result, &r); err != nil {
+			continue
+		}
+		summary := strings.TrimSpace(r.Summary)
+		if summary == "" {
+			// A step that reported a decision but no separate summary keeps its judgement in the
+			// output; trim it so one verbose report cannot swallow the next attempt's prompt.
+			summary = trimForSeed(r.Output)
+		}
+		if summary == "" && len(r.Issues) == 0 {
+			continue
+		}
+		decision := r.Decision
+		if decision == "" {
+			decision = r.Verdict
+		}
+		return &loopFeedback{
+			FromStep:  up.StepID,
+			Summary:   summary,
+			Issues:    r.Issues,
+			Decision:  decision,
+			Iteration: iteration + 1,
+		}
+	}
+	return nil
 }
