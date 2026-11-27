@@ -26,7 +26,7 @@ func TestSafetyBlockTeachesTheSecretDoor(t *testing.T) {
 	for _, want := range []string{
 		"orchicon secret get",
 		"stdout",
-		"secret_ids",
+		"orchicon secret get",
 		"audited",
 	} {
 		if !strings.Contains(safetyBlock, want) {
@@ -38,9 +38,9 @@ func TestSafetyBlockTeachesTheSecretDoor(t *testing.T) {
 
 // TestSecretDoorNamesTheDoNotImproviseRule — the failure mode a grant refusal must not trigger.
 func TestSecretDoorNamesTheDoNotImproviseRule(t *testing.T) {
-	if !strings.Contains(safetyBlock, "not available to this run") {
-		t.Error("safetyBlock does not name the grant-refusal message, so a worker that hits it has no " +
-			"instruction and may improvise by reading a file or a keyring")
+	if !strings.Contains(safetyBlock, "Do NOT improvise") {
+		t.Error("safetyBlock does not forbid improvising around a failed fetch, so a worker that hits " +
+			"one may go hunting a keyring or another worker's environment")
 	}
 	if !strings.Contains(safetyBlock, "never print the value") {
 		t.Error("safetyBlock does not forbid printing the value — the audit trail records the read, " +
@@ -51,7 +51,7 @@ func TestSecretDoorNamesTheDoNotImproviseRule(t *testing.T) {
 // TestEveryWorkerCarriesTheSecretDoor: the rule reaches workers ONLY through the stable prompt
 // prefix (safetyBlock), never through a per-worker AGENTS.md duplicate.
 func TestEveryWorkerCarriesTheSecretDoor(t *testing.T) {
-	if !strings.Contains(safetyBlock, "CREDENTIALS: USE THE SECRET DOOR") {
+	if !strings.Contains(safetyBlock, "CREDENTIALS: FETCH THEM WITH") {
 		t.Fatal("the secret door is not in safetyBlock, so no adapter's system prompt carries it")
 	}
 	for _, w := range CannedWorkers() {

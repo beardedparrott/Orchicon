@@ -2,16 +2,15 @@ package secrets
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/beardedparrott/orchicon/internal/audit"
 	"github.com/beardedparrott/orchicon/internal/db"
-	"github.com/beardedparrott/orchicon/internal/domain"
 	"github.com/beardedparrott/orchicon/internal/secretcrypto"
 )
 
@@ -290,89 +289,52 @@ func (s *Service) BatchGetForValidation(ctx context.Context, tenantID string, id
 
 var _ = pgx.Tx(nil)
 
-// ReadForExecution returns a secret's PLAINTEXT to the worker execution that was granted it.
+// ReadSecretByName returns a secret's PLAINTEXT to an ordinary, authorised caller.
 //
-// THE AUTHORISATION IS THE FEATURE. Every check below is load-bearing, and each one fails CLOSED:
+// IT IS A PLAIN GET, and that is the correction. The first version required a workflow-run id and
+// compared the caller's Subject to `run:<id>`, which meant a worker could only read a secret when the
+// platform had minted it a plane credential — and that mint requires a role_ref on the worker's OWN
+// instance. So fetching a DEV secret depended on a PROD role binding: two unrelated entitlements,
+// coupled by accident, and the operator said so plainly.
 //
-//  1. subject     the caller's resolved identity must be `run:<workflowRunID>` — an id it was minted
-//     for. Holding an execution or run id it was not minted for reads nothing.
-//  2. live        the run must still be live. A completed/failed/aborted run cannot fetch, so a
-//     credential cannot be pulled by a session that is already over.
-//  3. granted     the secret must be SELECTED on that run's bound work item (`secret_ids`). The
-//     operator's selection IS the grant; there is no ambient tenant-wide read.
-//  4. audited     a successful read writes `secret.read` naming the run and the secret.
-//
-// The value never appears in an error, and this function never logs it.
-func (s *Service) ReadForExecution(ctx context.Context, tenantID, callerSubject, workflowRunID, name string) (string, error) {
+// A secret is a value in the caller's tenant. Reading it needs the caller's ordinary credential
+// (`requireTenant` has already run) and nothing more. What makes the door defensible is not the
+// identity gymnastics — it is that the value is never stored where it leaks silently, and that every
+// read is audited with who read it and when.
+func (s *Service) ReadSecretByName(ctx context.Context, tenantID, callerIdentityID, name string) (string, error) {
 	if err := s.requireKEK(); err != nil {
 		return "", err
 	}
-	if workflowRunID == "" || name == "" {
-		return "", fmt.Errorf("workflow_run_id and name are required")
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("a secret name is required")
 	}
-	// (1) THE CALLER MUST BE THIS RUN. Not "an authenticated worker" — THIS run's identity.
-	if callerSubject != "run:"+workflowRunID {
-		return "", fmt.Errorf("not authorised for run %s", workflowRunID)
-	}
-
 	tx, err := s.pool.BeginTenantTx(ctx, tenantID)
 	if err != nil {
 		return "", err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	run, err := db.GetWorkflowRun(ctx, tx.Tx, tenantID, workflowRunID)
-	if err != nil {
-		return "", fmt.Errorf("run not found")
-	}
-	// (2) LIVE ONLY. A finished run has no worker to serve.
-	switch run.Status {
-	case domain.WorkflowRunCompleted, domain.WorkflowRunFailed, domain.WorkflowRunAborted:
-		return "", fmt.Errorf("run %s is %s — a finished run cannot fetch secrets", workflowRunID, run.Status)
-	}
-	if run.WorkItemID == "" {
-		return "", fmt.Errorf("run %s is not bound to a work item", workflowRunID)
-	}
-
-	wi, err := db.GetWorkItem(ctx, tx.Tx, tenantID, run.WorkItemID)
-	if err != nil {
-		return "", fmt.Errorf("work item not found")
-	}
-	// (3) THE GRANT IS THE OPERATOR'S SELECTION on the work item.
-	var granted []string
-	if len(wi.SecretIDs) > 0 {
-		_ = json.Unmarshal(wi.SecretIDs, &granted)
-	}
 	row, err := db.GetSecretByName(ctx, tx.Tx, tenantID, name)
 	if err != nil {
-		// Deliberately the same message for "no such secret" and "not granted": a worker must not be
-		// able to enumerate the tenant's secret names by reading error text.
-		return "", fmt.Errorf("secret %q is not available to this run", name)
+		return "", fmt.Errorf("no secret named %q in this tenant", name)
 	}
-	found := false
-	for _, id := range granted {
-		if id == row.ID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return "", fmt.Errorf("secret %q is not available to this run", name)
-	}
-
 	pt, err := secretcrypto.Decrypt(row.Ciphertext, s.kek)
 	if err != nil {
 		return "", fmt.Errorf("decrypt %q failed", name)
 	}
 
-	// (4) AUDIT EVERY READ. This is the control that makes the door defensible: the secret is never
-	// stored where it leaks silently, and every use is recorded with who and when.
+	// AUDIT EVERY READ — the control that makes this defensible.
+	after := map[string]any{"name": name}
+	if callerIdentityID != "" {
+		after["caller_identity_id"] = callerIdentityID
+	}
 	_ = audit.Record(ctx, tx.Tx, audit.Entry{
 		TenantID:   tenantID,
 		Action:     "secret.read",
 		TargetType: "secret",
 		TargetID:   row.ID,
-		After:      audit.Snapshot(map[string]any{"workflow_run_id": workflowRunID, "work_item_id": run.WorkItemID, "name": name}),
+		After:      audit.Snapshot(after),
 	})
 
 	_ = tx.Commit(ctx)

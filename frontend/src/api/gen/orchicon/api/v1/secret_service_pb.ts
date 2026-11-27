@@ -8,6 +8,92 @@ import { Message, proto3 } from "@bufbuild/protobuf";
 import { TenantSecret } from "./secret_pb.js";
 
 /**
+ * @generated from message orchicon.api.v1.GetSecretValueRequest
+ */
+export class GetSecretValueRequest extends Message<GetSecretValueRequest> {
+  /**
+   * The secret NAME (e.g. DEV_PLANE_KEY), not an id.
+   *
+   * @generated from field: string name = 1;
+   */
+  name = "";
+
+  constructor(data?: PartialMessage<GetSecretValueRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetSecretValueRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetSecretValueRequest {
+    return new GetSecretValueRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetSecretValueRequest {
+    return new GetSecretValueRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetSecretValueRequest {
+    return new GetSecretValueRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetSecretValueRequest | PlainMessage<GetSecretValueRequest> | undefined, b: GetSecretValueRequest | PlainMessage<GetSecretValueRequest> | undefined): boolean {
+    return proto3.util.equals(GetSecretValueRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message orchicon.api.v1.GetSecretValueResponse
+ */
+export class GetSecretValueResponse extends Message<GetSecretValueResponse> {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name = "";
+
+  /**
+   * The plaintext value. Present ONLY on success.
+   *
+   * @generated from field: string value = 2;
+   */
+  value = "";
+
+  constructor(data?: PartialMessage<GetSecretValueResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "orchicon.api.v1.GetSecretValueResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "name", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "value", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetSecretValueResponse {
+    return new GetSecretValueResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetSecretValueResponse {
+    return new GetSecretValueResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetSecretValueResponse {
+    return new GetSecretValueResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetSecretValueResponse | PlainMessage<GetSecretValueResponse> | undefined, b: GetSecretValueResponse | PlainMessage<GetSecretValueResponse> | undefined): boolean {
+    return proto3.util.equals(GetSecretValueResponse, a, b);
+  }
+}
+
+/**
+ * --- the superseded execution-scoped shape, kept only so old callers fail cleanly ---
+ *
  * @generated from message orchicon.api.v1.GetExecutionSecretRequest
  */
 export class GetExecutionSecretRequest extends Message<GetExecutionSecretRequest> {

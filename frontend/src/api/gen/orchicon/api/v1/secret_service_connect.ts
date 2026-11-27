@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { CreateSecretRequest, CreateSecretResponse, DeleteSecretRequest, DeleteSecretResponse, GetExecutionSecretRequest, GetExecutionSecretResponse, GetSecretRequest, GetSecretResponse, ListSecretsRequest, ListSecretsResponse, UpdateSecretRequest, UpdateSecretResponse } from "./secret_service_pb.js";
+import { CreateSecretRequest, CreateSecretResponse, DeleteSecretRequest, DeleteSecretResponse, GetSecretRequest, GetSecretResponse, GetSecretValueRequest, GetSecretValueResponse, ListSecretsRequest, ListSecretsResponse, UpdateSecretRequest, UpdateSecretResponse } from "./secret_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -58,34 +58,30 @@ export const SecretsService = {
       kind: MethodKind.Unary,
     },
     /**
-     * GetExecutionSecret returns the PLAINTEXT VALUE of a tenant secret to the WORKER EXECUTION that
-     * was granted it, and to nobody else.
+     * GetSecretValue returns the PLAINTEXT VALUE of a tenant secret, by NAME.
      *
-     * WHY THIS EXISTS. A local-mode execution has no container to inject environment into, so a worker
-     * had no way to obtain a credential at all — the only injection path is the container request. This
-     * is the fetch-on-demand door: the value is never materialised in the environment, never written to
-     * disk, and every read is audited.
+     * IT IS A PLAIN GET, and that is deliberate. Reading a secret is reading a value in the caller's
+     * own tenant; it needs the caller's ordinary credential and nothing else. An earlier version of
+     * this door required a workflow-run id and authenticated with the execution's minted plane token —
+     * which made reading a DEV secret depend on a PROD role binding, because the platform only mints
+     * that token for a worker with a role_ref. Two unrelated entitlements, coupled by accident.
      *
-     * THE AUTHORISATION IS THE WHOLE FEATURE, and it is deliberately narrow:
-     *   - the caller's resolved identity SUBJECT must be `run:<workflow_run_id>`; a worker holding an
-     *     execution id it was not minted for cannot read anything
-     *   - the workflow run must still be LIVE (not completed/failed/aborted) — a dead run cannot fetch
-     *   - the secret must be SELECTED on that run's bound work item (`secret_ids`) — the operator's
-     *     selection IS the grant
-     *   - every successful read writes a `secret.read` audit row naming the run and the secret
+     * WHAT PROTECTS IT:
+     *   - ordinary tenant authorisation: the caller must be entitled to read this tenant (no anonymous,
+     *     no cross-tenant)
+     *   - every successful read writes a `secret.read` audit row naming the secret and the caller
+     *   - the value is never returned on an error, and the platform never logs it
      *
-     * IT DOES NOT RETURN THE VALUE ON AN ERROR, and the platform never logs it.
+     * THE HONEST LIMIT: anyone who can read a secret can print it. This door does not prevent that. It
+     * keeps values out of environments and files where they leak SILENTLY, and makes every read visible
+     * afterwards.
      *
-     * NOTE: a worker that can fetch a secret and has a shell can also print it. This door does not
-     * prevent that; it prevents the secret from being stored somewhere it leaks SILENTLY, and it makes
-     * every use visible afterwards.
-     *
-     * @generated from rpc orchicon.api.v1.SecretsService.GetExecutionSecret
+     * @generated from rpc orchicon.api.v1.SecretsService.GetSecretValue
      */
-    getExecutionSecret: {
-      name: "GetExecutionSecret",
-      I: GetExecutionSecretRequest,
-      O: GetExecutionSecretResponse,
+    getSecretValue: {
+      name: "GetSecretValue",
+      I: GetSecretValueRequest,
+      O: GetSecretValueResponse,
       kind: MethodKind.Unary,
     },
   }

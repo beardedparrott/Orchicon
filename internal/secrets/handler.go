@@ -168,31 +168,34 @@ func contains(s, sub string) bool {
 	return false
 }
 
-// GetExecutionSecret serves a secret's plaintext to the worker execution granted it.
+// GetSecretValue serves a secret's plaintext to an ordinary, authorised caller.
 //
-// THE ERROR PATHS CARRY NO VALUE, and this handler deliberately does not log the request or the
-// response — a secret read is recorded on the AUDIT TRAIL (inside ReadForExecution, after the
-// authorisation succeeds), which is the one place it should appear. Logging here would put plaintext
-// in the plane's log file, which is exactly the silent leak the design exists to avoid.
-func (h *Handler) GetExecutionSecret(ctx context.Context, req *connect.Request[apiv1.GetExecutionSecretRequest]) (*connect.Response[apiv1.GetExecutionSecretResponse], error) {
+// NO IDENTITY GYMNASTICS: `requireTenant` has already established that the caller may act in this
+// tenant, and that is the whole authorisation. The earlier version demanded a workflow-run id and a
+// `run:` subject, which coupled this to the plane-credential mint (and therefore to a worker's role
+// binding on its own instance) — the coupling the operator identified.
+//
+// THE ERROR PATHS CARRY NO VALUE, and this handler logs nothing: a secret read is recorded on the
+// AUDIT TRAIL inside ReadSecretByName, which is the one place it should appear. Logging here would
+// put plaintext in the plane's log file, which is exactly the silent leak the design avoids.
+func (h *Handler) GetSecretValue(ctx context.Context, req *connect.Request[apiv1.GetSecretValueRequest]) (*connect.Response[apiv1.GetSecretValueResponse], error) {
 	tenantID, err := requireTenant(ctx)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnauthenticated, err)
 	}
-	// WHO IS ASKING. The resolved identity's Subject is `run:<id>` for an execution and anything else
-	// for a human/API caller — so a human cannot use this door to read a secret's plaintext, and a
-	// worker cannot read a run it was not minted for.
-	ident, ok := auth.FromContext(ctx)
-	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("no authenticated identity"))
+	// The caller identity is for the AUDIT ROW only, never for authorisation decisions here.
+	callerID := ""
+	if ident, ok := auth.FromContext(ctx); ok {
+		callerID = ident.IdentityID
 	}
-	value, err := h.svc.ReadForExecution(ctx, tenantID, ident.Subject, req.Msg.WorkflowRunId, req.Msg.Name)
+	value, err := h.svc.ReadSecretByName(ctx, tenantID, callerID, req.Msg.Name)
 	if err != nil {
-		// DELIBERATELY OPAQUE. "not available" covers both "no such secret" and "not granted": a
-		// worker must not be able to enumerate the tenant's secret names through error text.
-		return nil, connect.NewError(connect.CodePermissionDenied, err)
+		if errors.Is(err, db.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, err)
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	return connect.NewResponse(&apiv1.GetExecutionSecretResponse{
+	return connect.NewResponse(&apiv1.GetSecretValueResponse{
 		Name:  req.Msg.Name,
 		Value: value,
 	}), nil
