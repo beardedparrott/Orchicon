@@ -162,6 +162,29 @@ func (b *Bridge) spawnFactory() acp.ProcFactory {
 	return acp.LocalFactory{}.NewProc
 }
 
+// askFactory selects the transport for an ASK CONVERSATION's child, and it is NOT spawnFactory().
+//
+// AN ASK CONVERSATION HAS NO WORKFLOW RUN. spawnFactory() prefers the CONTAINER transport whenever the
+// bridge holds a runtime client — correct for a worker, whose child must live in its run's container —
+// but a conversation is not a run: there is no run id to lease a container by, and the container factory
+// refuses such a spec outright ("acp: no workflow run id for container spawn"). Because EVERY real plane
+// wires a runtime client, using spawnFactory() here made every antigravity Ask turn fail on its first
+// spawn with `create conversation session: antigravity ask: spawn: acp: no workflow run id for container
+// spawn` — the conversation was registered Ask-capable and could not answer a single message. MEASURED
+// on a local-mode plane. claude's Ask path has always spawned locally for the same reason
+// (internal/claude/ask.go spawnAsk → newLocalProc).
+//
+// The conversation therefore runs the host's own `agy` — the binary the operator installed and signed
+// in, whose credentials the picker's catalogue came from — with the mode gate, the permission handler
+// and the OS-level guard shim making up the boundary (ask_turn.go). An explicit factoryOverride (tests)
+// still wins, so the fixtures drive this path unchanged.
+func (b *Bridge) askFactory() acp.ProcFactory {
+	if b.factoryOverride != nil {
+		return b.factoryOverride
+	}
+	return acp.LocalFactory{}.NewProc
+}
+
 // childEnv builds the environment the agy child inherits.
 //
 // THE LOCAL TRANSPORT GETS THE OS-LEVEL GUARD SHIM, exactly as claude's childEnv does: BuildSpawnSpec has
