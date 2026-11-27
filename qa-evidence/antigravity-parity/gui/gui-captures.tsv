@@ -1,0 +1,8 @@
+state	surface	verdict	observation
+loading	picker	PASS	all of: Loading models
+not-installed	picker	PASS	all of: Antigravity CLI (`agy`) not found, install from
+auth-error	picker	PASS	all of: Antigravity is not signed in on the host
+stale	picker	PASS	all of: may be stale, gemini-4-carbon-high
+mode-refused	conversation	FAIL	missing ['REFUSED BY THE PLATFORM']
+live	picker	PASS	all of: gemini-4-carbon-high, 1.0M
+ac4-adapters	adapters	PASS	adapter card: auth method + ToS notice

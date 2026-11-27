@@ -25,8 +25,8 @@
                                │                                                                            │
                                │                                                                            │
                                │                                                                            │
-                               │                                                                            │
-                               │  2/2 models  ·  antigravity/google/gemini-4-neon-low  ·  snapshot — may be │
+                               │  2/2 models · antigravity/google/gemini-4-neon-low                         │
+                               │  ⚠ snapshot — may be stale                                                 │
                                │  tab: tier · ↑/↓: move · type: search · enter/space: select · esc: cancel  │
                                └────────────────────────────────────────────────────────────────────────────┘
 
@@ -41,4 +41,4 @@
 
 
 
- ● connected · ○ plane down · http://127.0.0.1:43323 · server 0.0.0-agy-parity-fixture · — esc/ctrl+g content · Mouse Enabled
+ ● connected · ○ plane down · http://127.0.0.1:41571 · server 0.0.0-agy-parity-fixture · — esc/ctrl+g content · Mouse Enabled

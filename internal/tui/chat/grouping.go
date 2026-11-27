@@ -40,6 +40,11 @@ type ParsedTool struct {
 	Input    string
 	Output   string
 	At       int64 // ms since epoch (matches the TS Date.now() usage)
+	// Failed reports that the call's RESULT is an error — a refusal (the mode gate declining a write) or a
+	// tool that ran and returned an error. The transcript draws its reason IN FULL rather than truncating it
+	// to one line: for a refusal the reason IS the message, and `REF…` is not something an operator can act
+	// on. See toolRowError in view.go.
+	Failed bool
 }
 
 // AskOption is one choice on a clarifying-question card.

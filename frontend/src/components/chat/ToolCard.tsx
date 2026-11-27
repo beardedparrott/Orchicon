@@ -11,6 +11,14 @@ interface ToolCardProps {
 export function ToolCard({ tool, className }: ToolCardProps) {
   const [open, setOpen] = useState(false);
   const hasOutput = tool.output.length > 0;
+  // A FAILED CALL'S REASON IS DRAWN IN FULL, OUTSIDE THE TOGGLE. Truncating output to a byte count and a
+  // `view` link is right for a normal result (the row is a summary; the detail is one click away), and it
+  // is wrong for a refusal: when the platform declines to run a tool, that text IS the message — why it
+  // did not run and what the operator must change. Collapsed, the transcript says "write_file" and shows
+  // the operator nothing they can act on. The TUI's renderToolRow/toolRowError draws the same body for the
+  // same reason (internal/tui/chat/view.go).
+  const refusal = tool.failed ? tool.output.trim() : "";
+  const hasRefusal = refusal.length > 0;
   // THE SUBJECT, not the raw input JSON. rowSubject reads BOTH argument vocabularies (opencode's
   // `command`/`file_path` AND agy's `CommandLine`/`TargetFile`/`Url`/`query`), so an antigravity tool call
   // shows its command, path or URL on the row instead of a truncated JSON object. The TUI draws the same
@@ -52,6 +60,18 @@ export function ToolCard({ tool, className }: ToolCardProps) {
             {open ? "hide" : "view"}
           </span>
         </button>
+        {/* THE REFUSAL, IN FULL AND ALWAYS VISIBLE. It is the row's meaning, not its detail, so it is not
+            behind the toggle: an operator reading the transcript has to be able to see that the call was
+            declined and why without clicking. Styled with the destructive token the transcript already
+            uses for an error (ErrorBubble), so a refused row reads as one of the same family. */}
+        {hasRefusal && (
+          <div
+            data-testid="tool-refusal"
+            className="whitespace-pre-wrap break-words border-t border-destructive/40 bg-destructive/10 px-3 py-2 font-mono text-xs leading-relaxed text-destructive"
+          >
+            {refusal}
+          </div>
+        )}
         {open && (
           <div className="space-y-2 border-t border-border/50 p-3">
             <div>
@@ -71,7 +91,7 @@ export function ToolCard({ tool, className }: ToolCardProps) {
                 {tool.input || "—"}
               </pre>
             </div>
-            {hasOutput && (
+            {hasOutput && !hasRefusal && (
               <div>
                 <div className="mb-1 flex items-center gap-2">
                   <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">

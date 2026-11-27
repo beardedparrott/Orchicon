@@ -735,11 +735,41 @@ func (mp *ModelPicker) statusLines(innerW int) []string {
 		}
 		return out
 	}
-	return []string{mp.summaryLine(innerW)}
+	// THE SUMMARY WRAPS; IT DOES NOT TRUNCATE. Pad() silently cut the tail off it, and the tail is where an
+	// operator is told the list came from the vendored snapshot. wrapCells keeps every word — the same helper
+	// the error area above uses, for the same reason — so nothing in the status is ever dropped.
+	wrapped := wrapCells(mp.summaryText(), innerW, "  ", "  ")
+	out := make([]string, 0, len(wrapped)+1)
+	for _, r := range wrapped {
+		out = append(out, theme.HintText.Render(Pad(r, innerW)))
+	}
+	if note := mp.statusNote(); note != "" {
+		// THE STALE NOTE GETS ITS OWN ROW, and is never folded into the summary. "snapshot — may be stale" is
+		// the fact that stops an operator reading a vendored fallback as a live list; wrapped mid-phrase by a
+		// width in a status line it reads as "snapshot — may be", which says nothing.
+		out = append(out, theme.HintText.Render(Pad("  "+note, innerW)))
+	}
+	return out
 }
 
-// summaryLine is the non-error status: padded to the box so the row paints fully.
+// statusNote is the extra status row, present only when there is something the summary cannot say.
+func (mp *ModelPicker) statusNote() string {
+	if mp.err == "" && mp.tier == TierModel && mp.provider != "" && mp.degraded {
+		// "probe degraded" describes the probe; an operator looking at a model list needs to know the LIST
+		// may be out of date, which is a different fact.
+		return "⚠ snapshot — may be stale"
+	}
+	return ""
+}
+
+// summaryLine is the non-error status on ONE row, padded to the box — kept for callers that have a
+// guaranteed-wide box. Prefer statusLines, which wraps.
 func (mp *ModelPicker) summaryLine(innerW int) string {
+	return theme.HintText.Render(Pad("  "+mp.summaryText(), innerW))
+}
+
+// summaryText is the non-error status without any padding or style.
+func (mp *ModelPicker) summaryText() string {
 	var s string
 	switch {
 	case mp.loading:
@@ -750,17 +780,12 @@ func (mp *ModelPicker) summaryLine(innerW int) string {
 			strconv.Itoa(n) + "/" + strconv.Itoa(total) + " models",
 			mp.Ref(),
 		}, "  ·  ")
-		if mp.degraded {
-			// THE SNAPSHOT FALLBACK HAS TO NAME ITSELF. "probe degraded" describes the probe; an operator
-			// looking at a model list needs to know the LIST may be out of date, which is a different fact.
-			s += "  ·  snapshot — may be stale"
-		}
 	case mp.adapter == "":
 		s = "select an adapter"
 	default:
 		s = "select a " + tierName(mp.tier)
 	}
-	return theme.HintText.Render(Pad("  "+s, innerW))
+	return s
 }
 
 func hintLine(innerW int) string {
