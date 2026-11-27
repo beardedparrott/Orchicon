@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	assets "github.com/beardedparrott/orchicon"
 	"github.com/beardedparrott/orchicon/internal/db"
+	"github.com/beardedparrott/orchicon/internal/migrate"
 )
 
 func TestUsageBillingColumnRoundTripsAndRollsUp(t *testing.T) {
@@ -27,6 +29,14 @@ func TestUsageBillingColumnRoundTripsAndRollsUp(t *testing.T) {
 		t.Fatalf("open test pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
+	// SCHEMA BOOTSTRAP, and it is not optional here. Every DB-backed suite in this package either
+	// applies the migrations itself (internal/db/credentials_test.go:32) or assumes a plane already
+	// migrated the database it points at. A DISPOSABLE database — the sanctioned way to run these
+	// (README §Testing: a separate database nothing serves) — has no tables at all, so without this
+	// the test failed with `relation "tenants" does not exist` instead of proving the column.
+	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
 
 	const tnt = "tnt_usage_billing_test"
 	if err := db.SeedDevTenant(ctx, pool, tnt); err != nil {
@@ -123,6 +133,14 @@ func TestUsageBillingCheckConstraintRejectsUnknownRegimes(t *testing.T) {
 		t.Fatalf("open test pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
+	// SCHEMA BOOTSTRAP, and it is not optional here. Every DB-backed suite in this package either
+	// applies the migrations itself (internal/db/credentials_test.go:32) or assumes a plane already
+	// migrated the database it points at. A DISPOSABLE database — the sanctioned way to run these
+	// (README §Testing: a separate database nothing serves) — has no tables at all, so without this
+	// the test failed with `relation "tenants" does not exist` instead of proving the column.
+	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
 	const tnt = "tnt_usage_billing_check_test"
 	if err := db.SeedDevTenant(ctx, pool, tnt); err != nil {
 		t.Fatalf("seed tenant: %v", err)

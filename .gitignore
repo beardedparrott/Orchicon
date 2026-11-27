@@ -166,3 +166,6 @@ frontend/wailsjs/
 # Reports the e2e harness writes into the cwd. They are RUN OUTPUT, not source: one was swept into a commit
 # by a broad `git add` and had to be removed.
 orchicon-e2e-*.md
+
+# Throwaway probe programs (AC evidence scratch) are never deliverable code.
+_probe/
