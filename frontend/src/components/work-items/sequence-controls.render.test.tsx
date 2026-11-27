@@ -24,6 +24,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { SequenceAction } from "@/api/gen/orchicon/api/v1/work_item_service_pb";
 import { WorkItemStatus, type WorkItem } from "@/api/gen/orchicon/api/v1/work_item_pb";
 import { SequenceControls } from "./sequence-controls";
 
@@ -75,5 +76,45 @@ describe("SequenceControls visible text", () => {
 
   it("renders Restart for a succeeded item", () => {
     expect(textOf(render(WorkItemStatus.SUCCEEDED))).toContain("Restart");
+  });
+});
+
+/**
+ * THE RENDERED GUARD FOR THE RESUME-ON-RUNNING BUG.
+ *
+ * The operator's screenshot: a `running` item in Schedules History whose row offered "Resume" and
+ * "Restart". The view's set is a CEILING — intersect it with the status, and an empty intersection
+ * renders NOTHING. A fallback that substituted the whole view set when the intersection was empty is
+ * what produced the wrong buttons, and this test fails if it comes back.
+ */
+describe("a view set cannot offer a gesture the status forbids", () => {
+  it("renders NO controls for a RUNNING item restricted to the History set", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={qc}>
+        <SequenceControls
+          item={item(WorkItemStatus.RUNNING)}
+          hasChildren={false}
+          only={[SequenceAction.RESUME, SequenceAction.RESTART]}
+        />
+      </QueryClientProvider>,
+    );
+    const text = html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    expect(text, "a RUNNING item must never render Resume/Restart in a History-set row").toBe("");
+  });
+
+  it("DOES render Pause for a RUNNING item restricted to the Running set", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={qc}>
+        <SequenceControls
+          item={item(WorkItemStatus.RUNNING)}
+          hasChildren={false}
+          only={[SequenceAction.PAUSE, SequenceAction.STOP]}
+        />
+      </QueryClientProvider>,
+    );
+    const text = html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    expect(text).toContain("Pause");
   });
 });

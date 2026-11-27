@@ -207,3 +207,38 @@ describe("hasEverRun (status alone decides)", () => {
     expect(hasEverRun(WorkItemStatus.PENDING)).toBe(false);
   });
 });
+
+/**
+ * A VIEW'S SET IS A CEILING — the defect the operator caught.
+ *
+ * `9. Cross-platform` was `running` and its Schedules HISTORY row offered "Resume" and "Restart".
+ * Cause: History's set is [RESUME, RESTART], the item's status allowed [PAUSE, STOP], the
+ * intersection was EMPTY, and a fallback I had added rendered the whole History set instead.
+ *
+ * History legitimately lists in-flight runs — its membership test is "the run has startedAt", which
+ * an in-flight run does, deliberately (see isHistoryRun's comment: re-armed runs must stay visible).
+ * So the view is right and the RENDER was wrong.
+ */
+describe("view sets intersect with status, never override it", () => {
+  it("offers NOTHING when the view set and the status have no gesture in common", () => {
+    // History set ∩ a running item's gestures = ∅. The row must render no controls at all.
+    const viewSet = SCHEDULE_VIEW_ACTIONS.history;          // [RESUME, RESTART]
+    const allowed = runControlsFor(WorkItemStatus.RUNNING, false); // [PAUSE, ...]
+    const intersection = viewSet.filter((a) => allowed.includes(a));
+    expect(intersection).toEqual([]);
+    // And the view set must NOT be a substitute for that empty intersection.
+    expect(viewSet).not.toContain(SequenceAction.PAUSE);
+  });
+
+  it("offers Resume on a PAUSED item in History — the case the set exists for", () => {
+    const viewSet = SCHEDULE_VIEW_ACTIONS.history;
+    const allowed = runControlsFor(WorkItemStatus.PAUSED, false);
+    expect(viewSet.filter((a) => allowed.includes(a))).toContain(SequenceAction.RESUME);
+  });
+
+  it("offers Pause on a RUNNING item in the Running view", () => {
+    const viewSet = SCHEDULE_VIEW_ACTIONS.running;           // [PAUSE, STOP]
+    const allowed = runControlsFor(WorkItemStatus.RUNNING, false);
+    expect(viewSet.filter((a) => allowed.includes(a))).toContain(SequenceAction.PAUSE);
+  });
+});

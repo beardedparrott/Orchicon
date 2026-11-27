@@ -144,12 +144,22 @@ export function SequenceControls({
   // the buttons vanish for exactly the rows the operator wanted them on.
   //
   // With no `only`, status decides as before — that path is the work item page and the board.
+  // A VIEW-AUTHORED SET IS A CEILING, NOT A FLOOR.
+  //
+  // `only` says what the view may offer; the item's status says what is possible. The intersection is
+  // the answer — and an EMPTY intersection must render NOTHING, because it means this view has no
+  // legal gesture for this status.
+  //
+  // I previously fell back to the whole `only` set when the intersection was empty, to stop the
+  // Schedules Running view losing its Pause button. That fix was wrong and produced the opposite
+  // defect: the History view lists runs whose item status is still `running` (its membership test is
+  // "has startedAt"), so the intersection with History's [RESUME, RESTART] was empty, the fallback
+  // fired, and the row rendered **Resume** on a RUNNING item — a gesture the status makes impossible.
+  //
+  // The real Pause-button bug was the view's own predicate double-gating an already-filtered list
+  // (see runControlsFor/scheduleControlsFor); this fallback was me fixing a symptom in the wrong place.
   if (only) {
     actions = only.filter((a) => actions.includes(a));
-    // A view-authored set still cannot offer a gesture the STATUS makes impossible to perform
-    // (e.g. Resume on a run that is not paused), but it must not lose a gesture to a predicate the
-    // view already implies.
-    if (actions.length === 0 && only.length > 0) actions = [...only];
   }
   if (actions.length === 0) return null;
 
