@@ -70,3 +70,30 @@ aigateway) and `go test ./internal/antigravity/... ./internal/toolclass ./intern
 ./internal/protectedpath ./internal/claude` all PASS. The numbered steps above still apply; the SSE should first read
 `docs/adapters/antigravity-acp.md` for what live agy was proven (and proven NOT to card) before re-running risk 1, then run the full gate.
 >>>>>>> 6-antigravity-ask-conversations-ask-sessions-permission-cards-via-acp-request-permission-ask-cards-mode-gating-brainstorm-iteration-quick-work-reasoning-tool-streaming-70nyn6s9mg4eaj3a
+
+## Rev 5 — SSE measured results (agy 1.5.13, this host, live)
+
+The architecture step's risk 1 said AC4's "streamed reasoning" was probably unreachable because "agy emits no
+`agent_thought_chunk`". **That is wrong for the mode AC4 actually runs in**, and it was measured here:
+
+| claim | verdict | evidence |
+| --- | --- | --- |
+| Brainstorm streams reasoning | **YES, live** | `TestAskLive_BrainstormStreamsReasoning` (new, this rev): 3 reasoning events, 1672 bytes of real thought text. Brainstorm puts the agy session in `plan` mode, and `plan` is the one mode that emits thought chunks (doc §3.1 / §12.7). |
+| Iteration streams reasoning | **NO, live** | Same mode table: `default`/`accept-edits`/`auto` emit none. Not a bridge bug and must not be fabricated (§12.7). |
+| A `run_command` raises a card | **YES, live** | `TestAskLive_RunCommandRaisesACard`: card `tool="run_command" command="echo card-probe-ok"`, answering `once` let it through. |
+| A `write_to_file` raises a card | **NO — measured limit** | 12 variants over 4 modes and `permissions.ask`/`deny`/`allow:[]`: the write lands with zero `session/request_permission`. |
+| Brainstorm refuses writes | **YES, live** | `TestAskLive_BrainstormCannotWrite`: no `probe.txt` in Brainstorm; the same prompt in Iteration wrote `"ok"`. The SESSION MODE is the enforceable boundary, not a card. |
+| Resume across a plane restart | **YES, live** | `TestAskLive_ResumeRecallsContext`: session `075cf87d-…` recalled nonce `zebra845176` after the first bridge closed. |
+| Model reaches `orchicon_ask_user` | **YES, live** | `TestAskLive_AskUserToolReachesTheModel`: tools seen `[mcp_orchicon_ask_user]`, 15.8s. The CARD and the ANSWER are raised/delivered by the `internal/askorchicon` MCP sidecar, not over ACP — see the header of `ask_card_live_test.go`. |
+
+### The one criterion that is genuinely unreachable
+AC4 as worded wants **both** streamed reasoning **and** a permission card for a WRITE in ONE Iteration
+conversation. That pairing cannot exist on agy 1.5.13: reasoning text requires `plan` mode, and `plan` mode is
+what makes a write not happen at all. In Iteration there is a write and no reasoning text; in Brainstorm there
+is reasoning text and no write. The two halves are each proven live (above), in different modes.
+
+### Where the card/answer half of AC5 lives
+`orchicon_ask_user` is an MCP tool on the Orchicon sidecar. The card render, the option UI and the answer
+delivery are `internal/askorchicon`'s work and are adapter-agnostic (`ask_card_claude_test.go`,
+`ask_user_loop_test.go`, `tool_ask_user_test.go`) — served over MCP, so they are exercised once for every
+MCP-served adapter. This adapter's own link in the chain is "the model can reach the tool", which is live-proven.
