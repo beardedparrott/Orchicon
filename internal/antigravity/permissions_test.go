@@ -357,9 +357,9 @@ func TestBridge_PermissionWindowsPaths(t *testing.T) {
 			comment: "on a Windows worker this is the classic external write",
 		},
 		{
-			name:    "outside: a different volume with the same tail",
-			call:    call("edit_file", "edit", map[string]any{"Path": `D:\repo\src\a.go`, "Target": "a", "Replacement": "b"}),
-			allow:   false,
+			name:  "outside: a different volume with the same tail",
+			call:  call("edit_file", "edit", map[string]any{"Path": `D:\repo\src\a.go`, "Target": "a", "Replacement": "b"}),
+			allow: false,
 			comment: "a different volume is a different root, even when the remaining path matches the " +
 				"project's exactly — stripping the drive letter for comparison would wrongly allow this",
 		},
