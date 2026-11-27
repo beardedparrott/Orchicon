@@ -71,8 +71,9 @@ func Classify(toolName string) Class {
 	}
 	// `orchicon_` is a spelling of the same name, not a different tool.
 	n = strings.TrimPrefix(n, orchiconPrefix)
-	// AGY'S MCP SPELLING IS A PREFIX TOO, and it is a DIFFERENT shape: `mcp_orchicon_orchicon_ask_user`
-	// (single underscores, and the tool keeps its own `orchicon_` prefix). Without this arm the platform's
+	// AGY'S MCP SPELLING IS A PREFIX TOO, and it is a DIFFERENT shape: `mcp_orchicon_ask_user`
+	// (single underscores, `mcp_<server>_<tool>` — measured against agy 1.5.13, which serves the server
+	// `orchicon` with the tool `ask_user`, NOT a doubled `orchicon_orchicon`). Without this arm the platform's
 	// own ask card classifies as `Other` — real work it is not — and every antigravity Ask turn would show
 	// an activity line counting the questions it asked.
 	if rest, ok := strings.CutPrefix(n, "mcp_orchicon_"); ok {

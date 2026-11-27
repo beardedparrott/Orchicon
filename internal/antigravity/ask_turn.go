@@ -575,9 +575,18 @@ func (s *askSession) composePromptBlocks(system, text string, prompted bool, not
 // told to use it. The native tool is also denied via `--settings` (modegate.go), so this is the
 // instruction half of a two-part rule: the model is told what to do, and prevented from doing the thing
 // that does not work.
+//
+// THE NAME HERE IS THE ONE AGY ACTUALLY OFFERS. agy's MCP spelling is `mcp_<server>_<tool>` with SINGLE
+// underscores; the server is registered as `orchicon` and the tool it serves is `ask_user`, so the name on
+// the wire is `mcp_orchicon_ask_user` (measured twice against agy 1.5.13 — TestAskLive_AskUserToolReachesTheModel
+// logs `tools seen = [mcp_orchicon_ask_user]`, and a GUI conversation asked to list its tools returns the
+// same). The preamble previously said `mcp_orchicon_orchicon_ask_user`, doubling the prefix: that names NO
+// tool, so a model following it called nothing and fell back to writing the question as prose — the model
+// said "using the card above" while the transcript held no tool call, and no card was raised. The wire name
+// is the one thing this instruction must not get wrong, so agy_tool_spelling_test.go pins it.
 func agyAskPromptPreamble() string {
 	return "\n[platform] To ask the user a multiple-choice question, call the Orchicon MCP tool " +
-		"`orchicon_ask_user` (agy spells it `mcp_orchicon_orchicon_ask_user`). Do NOT use agy's own " +
+		"`mcp_orchicon_ask_user` (it is the platform's `orchicon_ask_user`). Do NOT use agy's own " +
 		"`ask_question` tool: its answer cannot be returned to you on this transport, so it is refused. " +
 		"Ask, then stop and wait.\n\n"
 }

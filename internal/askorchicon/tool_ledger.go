@@ -185,13 +185,18 @@ func (l *toolLedger) setResultOutput(callID, output string) {
 // isAskToolName matches every spelling the ask tool is recorded under, including the MCP-qualified
 // ones.
 //
-// AGY'S SPELLING IS A THIRD SHAPE AND IT IS NOT A DECORATION: `mcp_<server>_<tool>` with SINGLE underscores,
-// and the tool keeps its own `orchicon_` prefix — so the card arrives as `mcp_orchicon_orchicon_ask_user`.
-// That matches neither claude's `mcp__orchicon__ask_user` nor the bare `orchicon_ask_user`, and without this
-// arm an antigravity conversation's ask card would be recorded as an ordinary tool call and never rendered.
+// AGY'S SPELLING IS A THIRD SHAPE AND IT IS NOT A DECORATION: `mcp_<server>_<tool>` with SINGLE underscores —
+// the server is `orchicon` and the tool is `ask_user`, so the card arrives as `mcp_orchicon_ask_user`
+// (measured against agy 1.5.13; see internal/antigravity/agy_tool_spelling_test.go). That matches neither
+// claude's `mcp__orchicon__ask_user` nor the bare `orchicon_ask_user`, and without this arm an antigravity
+// conversation's ask card would be recorded as an ordinary tool call and never rendered.
 func isAskToolName(name string) bool {
 	switch name {
-	case "ask_user", "orchicon_ask_user", "mcp__orchicon__ask_user", "mcp_orchicon_orchicon_ask_user":
+	case "ask_user", "orchicon_ask_user", "mcp__orchicon__ask_user", "mcp_orchicon_ask_user",
+		// The doubled-prefix spelling is kept as a DEFENSIVE arm: it is not what agy 1.5.13 sends, but an
+		// adapter or a future agy build that qualifies the tool with its own server-side `orchicon_`
+		// prefix must still render a card rather than swallow it as an ordinary tool call.
+		"mcp_orchicon_orchicon_ask_user":
 		return true
 	}
 	// A server may also qualify it with a different separator; the suffix is the stable part.
