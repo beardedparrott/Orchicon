@@ -369,7 +369,21 @@ func resumeRunInnerReturning(ctx context.Context, tx pgx.Tx, tenantID string, cu
 		}); err != nil {
 			return current, err
 		}
-		if sr.Status == domain.StepRunRunning || sr.Status == domain.StepRunRecovering {
+		// WHICH STEPS RE-ARM ON RESUME, AND WHY IT MATTERS.
+		//
+		//   running / recovering   were interrupted mid-work -> re-dispatch so they continue
+		//   failed                 the run was PAUSED WHILE A STEP HAD FAILED (the loop had not yet
+		//                          routed it). The operator's rule: "If you pause during a failure,
+		//                          hitting resume starts from the failed step and retries from that
+		//                          point." Leaving it failed stranded the run — running, with a
+		//                          failed step and nothing to dispatch.
+		//   succeeded / pending    untouched. Succeeded work is never replayed, and pending steps
+		//                          are already queued for the reconciler.
+		//
+		// `Attempt` is deliberately NOT reset on a re-armed failed step: this is the same attempt
+		// continuing from where it stopped, not a fresh try. A genuine retry is RetryRunInTx.
+		switch sr.Status {
+		case domain.StepRunRunning, domain.StepRunRecovering, domain.StepRunFailed:
 			pending := domain.StepRunPending
 			if _, err := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, db.UpdateWorkflowStepRunFields{
 				Status:            &pending,
@@ -377,6 +391,23 @@ func resumeRunInnerReturning(ctx context.Context, tx pgx.Tx, tenantID string, cu
 				ClearEndedAt:      true,
 			}); err != nil {
 				return current, err
+			}
+		}
+	}
+	// THE WORK ITEM MOVES WITH THE RUN. This lived only in the RPC wrapper, so the WORK ITEM page's
+	// resume left the item `paused` while the run was already `running` — the operator saw "kicked it
+	// off" and then an item that had not moved, and a second click failed because the RUN was now
+	// running while the ITEM still said paused. Two surfaces, two answers, again.
+	//
+	// It belongs in the shared core precisely because it is not optional: a resumed run whose item
+	// still reads `paused` is a state no gesture can reconcile.
+	if current.WorkItemID != "" {
+		if wi, err := db.GetWorkItem(ctx, tx, tenantID, current.WorkItemID); err == nil {
+			runningItem := domain.WorkItemRunning
+			if _, err := db.UpdateWorkItem(ctx, tx, tenantID, current.WorkItemID, wi.Version, db.UpdateWorkItemFields{
+				Status: &runningItem,
+			}); err != nil {
+				return current, fmt.Errorf("set work item running: %w", err)
 			}
 		}
 	}

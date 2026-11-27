@@ -2116,17 +2116,9 @@ func (s *Service) ResumeWorkflowRun(ctx context.Context, req *connect.Request[ap
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	if current.WorkItemID != "" {
-		if wi, err := db.GetWorkItem(ctx, ttx.Tx, tenantID, current.WorkItemID); err == nil {
-			status := domain.WorkItemRunning
-			if _, err := db.UpdateWorkItem(ctx, ttx.Tx, tenantID, current.WorkItemID, wi.Version, db.UpdateWorkItemFields{
-				Status: &status,
-			}); err != nil {
-				s.log.Warn("resume: set work item status failed", "work_item", current.WorkItemID, "error", err)
-			}
-		}
-	}
-
+	// (The work item is moved to `running` inside resumeRunInnerReturning, so BOTH the run page and
+	// the work item page do it — it used to live here only, which is why the work item page's resume
+	// left the item paused.)
 	wf, _ := db.GetWorkflow(ctx, ttx.Tx, tenantID, updated.WorkflowID)
 	if err := enqueueWorkflowEvent(ctx, ttx.Tx, domain.WorkflowEventRunResumed, wf, db.WorkflowVersionRow{}, updated, ""); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)

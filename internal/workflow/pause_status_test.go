@@ -121,3 +121,90 @@ func TestResumeReArmsRatherThanResurrects(t *testing.T) {
 			"session pause already ended")
 	}
 }
+
+// TestResumeCoreMovesTheWorkItem is the bug the operator hit: the item stayed `paused` while the run
+// was already `running`.
+//
+// The status update lived in the ResumeWorkflowRun RPC WRAPPER, not in the shared core — so the run
+// page moved the item and the WORK ITEM page did not. The operator saw "kicked it off", then an item
+// that had not moved, then a second click that failed because the RUN was running while the ITEM
+// still said paused. Two surfaces, two answers — the same divergence that made leaf RESUME a no-op.
+//
+// It belongs in the core because it is not optional: a resumed run whose item still reads `paused`
+// is a state no gesture can reconcile.
+func TestResumeCoreMovesTheWorkItem(t *testing.T) {
+	src := readRunControl(t)
+
+	i := strings.Index(src, "func resumeRunInnerReturning")
+	if i < 0 {
+		t.Fatal("resumeRunInnerReturning is gone")
+	}
+	body := src[i:]
+	if end := strings.Index(body, "\nfunc "); end > 0 {
+		body = body[:end]
+	}
+	if !strings.Contains(body, "domain.WorkItemRunning") {
+		t.Error("the shared resume core does not move the work item to running. It lives only in the " +
+			"RPC wrapper, so resuming from the WORK ITEM page leaves the item `paused` while the run " +
+			"is already running — and every subsequent gesture disagrees with the run.")
+	}
+	if !strings.Contains(body, "UpdateWorkItem") {
+		t.Error("the shared resume core never writes the work item")
+	}
+}
+
+// TestResumeRPCWrapperHasNoSecondCopy: one implementation, or the two drift again.
+func TestResumeRPCWrapperHasNoSecondCopy(t *testing.T) {
+	b, err := os.ReadFile("service.go")
+	if err != nil {
+		t.Fatalf("read service.go: %v", err)
+	}
+	src := strings.ReplaceAll(string(b), "\t", "")
+	i := strings.Index(src, "func (s *Service) ResumeWorkflowRun")
+	if i < 0 {
+		t.Fatal("ResumeWorkflowRun is gone")
+	}
+	body := src[i:]
+	if end := strings.Index(body, "\nfunc "); end > 0 {
+		body = body[:end]
+	}
+	if strings.Contains(body, "status := domain.WorkItemRunning") {
+		t.Error("the RPC wrapper sets the work item status itself again — that duplicate is what let " +
+			"the work item page diverge from the run page. It belongs in the shared core only.")
+	}
+}
+
+// TestResumeReArmsAFailedStepInsideAPausedRun — the operator's rule.
+//
+// "If you pause during a failure, hitting resume starts from the failed step and retries from that
+// point."
+//
+// Resume previously re-armed only `running` and `recovering` steps. A run paused WHILE a step had
+// failed (the loop had not yet routed it) therefore resumed with that step still `failed` and nothing
+// for the reconciler to dispatch: running, with a dead step, forever.
+func TestResumeReArmsAFailedStepInsideAPausedRun(t *testing.T) {
+	src := readRunControl(t)
+	i := strings.Index(src, "func resumeRunInnerReturning")
+	if i < 0 {
+		t.Fatal("resumeRunInnerReturning is gone")
+	}
+	body := src[i:]
+	if end := strings.Index(body, "\nfunc "); end > 0 {
+		body = body[:end]
+	}
+
+	if !strings.Contains(body, "domain.StepRunFailed") {
+		t.Fatal("resume does not re-arm a FAILED step, so a run paused during a failure resumes with " +
+			"nothing to dispatch — the exact state the operator hit")
+	}
+	// It must be in the re-arm switch alongside running/recovering, not somewhere unrelated.
+	if !strings.Contains(body, "case domain.StepRunRunning, domain.StepRunRecovering, domain.StepRunFailed:") {
+		t.Error("failed is not in the re-arm switch with running/recovering")
+	}
+	// And attempted count must survive: this is the same attempt continuing.
+	if strings.Contains(body, "Attempt:") {
+		t.Error("resume resets Attempt. A pause/resume is the same attempt continuing; only a genuine " +
+			"retry (RetryRunInTx) resets it, and giving a resumed step a fresh budget is how a loop " +
+			"burns its attempts unnoticed.")
+	}
+}

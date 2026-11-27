@@ -103,8 +103,12 @@ export function SequenceControls({
           toast.success(
             action === SequenceAction.RESTART
               ? `"${updated.title}" is now ${updated.status}.`
+              // RESUME CONTINUES A RUN; IT DOES NOT INSTANTLY RE-EXECUTE. The toast reported the
+              // item's status as though the work were already under way, so an operator who saw the
+              // run still settling read it as a no-op. "resuming" is the honest word: the run is
+              // dispatched again and the step re-executes.
               : action === SequenceAction.RESUME
-                ? `"${updated.title}" resumed — now ${updated.status}.`
+                ? `"${updated.title}" is resuming — now ${updated.status}. The interrupted step re-dispatches next.`
                 : `"${updated.title}" stopped — now ${updated.status}.`,
             {
               title:
