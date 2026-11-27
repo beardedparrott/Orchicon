@@ -48,6 +48,9 @@ const (
 	// SecretsServiceDeleteSecretProcedure is the fully-qualified name of the SecretsService's
 	// DeleteSecret RPC.
 	SecretsServiceDeleteSecretProcedure = "/orchicon.api.v1.SecretsService/DeleteSecret"
+	// SecretsServiceGetExecutionSecretProcedure is the fully-qualified name of the SecretsService's
+	// GetExecutionSecret RPC.
+	SecretsServiceGetExecutionSecretProcedure = "/orchicon.api.v1.SecretsService/GetExecutionSecret"
 )
 
 // SecretsServiceClient is a client for the orchicon.api.v1.SecretsService service.
@@ -57,6 +60,28 @@ type SecretsServiceClient interface {
 	CreateSecret(context.Context, *connect.Request[v1.CreateSecretRequest]) (*connect.Response[v1.CreateSecretResponse], error)
 	UpdateSecret(context.Context, *connect.Request[v1.UpdateSecretRequest]) (*connect.Response[v1.UpdateSecretResponse], error)
 	DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error)
+	// GetExecutionSecret returns the PLAINTEXT VALUE of a tenant secret to the WORKER EXECUTION that
+	// was granted it, and to nobody else.
+	//
+	// WHY THIS EXISTS. A local-mode execution has no container to inject environment into, so a worker
+	// had no way to obtain a credential at all — the only injection path is the container request. This
+	// is the fetch-on-demand door: the value is never materialised in the environment, never written to
+	// disk, and every read is audited.
+	//
+	// THE AUTHORISATION IS THE WHOLE FEATURE, and it is deliberately narrow:
+	//   - the caller's resolved identity SUBJECT must be `run:<workflow_run_id>`; a worker holding an
+	//     execution id it was not minted for cannot read anything
+	//   - the workflow run must still be LIVE (not completed/failed/aborted) — a dead run cannot fetch
+	//   - the secret must be SELECTED on that run's bound work item (`secret_ids`) — the operator's
+	//     selection IS the grant
+	//   - every successful read writes a `secret.read` audit row naming the run and the secret
+	//
+	// IT DOES NOT RETURN THE VALUE ON AN ERROR, and the platform never logs it.
+	//
+	// NOTE: a worker that can fetch a secret and has a shell can also print it. This door does not
+	// prevent that; it prevents the secret from being stored somewhere it leaks SILENTLY, and it makes
+	// every use visible afterwards.
+	GetExecutionSecret(context.Context, *connect.Request[v1.GetExecutionSecretRequest]) (*connect.Response[v1.GetExecutionSecretResponse], error)
 }
 
 // NewSecretsServiceClient constructs a client for the orchicon.api.v1.SecretsService service. By
@@ -100,16 +125,23 @@ func NewSecretsServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(secretsServiceMethods.ByName("DeleteSecret")),
 			connect.WithClientOptions(opts...),
 		),
+		getExecutionSecret: connect.NewClient[v1.GetExecutionSecretRequest, v1.GetExecutionSecretResponse](
+			httpClient,
+			baseURL+SecretsServiceGetExecutionSecretProcedure,
+			connect.WithSchema(secretsServiceMethods.ByName("GetExecutionSecret")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // secretsServiceClient implements SecretsServiceClient.
 type secretsServiceClient struct {
-	listSecrets  *connect.Client[v1.ListSecretsRequest, v1.ListSecretsResponse]
-	getSecret    *connect.Client[v1.GetSecretRequest, v1.GetSecretResponse]
-	createSecret *connect.Client[v1.CreateSecretRequest, v1.CreateSecretResponse]
-	updateSecret *connect.Client[v1.UpdateSecretRequest, v1.UpdateSecretResponse]
-	deleteSecret *connect.Client[v1.DeleteSecretRequest, v1.DeleteSecretResponse]
+	listSecrets        *connect.Client[v1.ListSecretsRequest, v1.ListSecretsResponse]
+	getSecret          *connect.Client[v1.GetSecretRequest, v1.GetSecretResponse]
+	createSecret       *connect.Client[v1.CreateSecretRequest, v1.CreateSecretResponse]
+	updateSecret       *connect.Client[v1.UpdateSecretRequest, v1.UpdateSecretResponse]
+	deleteSecret       *connect.Client[v1.DeleteSecretRequest, v1.DeleteSecretResponse]
+	getExecutionSecret *connect.Client[v1.GetExecutionSecretRequest, v1.GetExecutionSecretResponse]
 }
 
 // ListSecrets calls orchicon.api.v1.SecretsService.ListSecrets.
@@ -137,6 +169,11 @@ func (c *secretsServiceClient) DeleteSecret(ctx context.Context, req *connect.Re
 	return c.deleteSecret.CallUnary(ctx, req)
 }
 
+// GetExecutionSecret calls orchicon.api.v1.SecretsService.GetExecutionSecret.
+func (c *secretsServiceClient) GetExecutionSecret(ctx context.Context, req *connect.Request[v1.GetExecutionSecretRequest]) (*connect.Response[v1.GetExecutionSecretResponse], error) {
+	return c.getExecutionSecret.CallUnary(ctx, req)
+}
+
 // SecretsServiceHandler is an implementation of the orchicon.api.v1.SecretsService service.
 type SecretsServiceHandler interface {
 	ListSecrets(context.Context, *connect.Request[v1.ListSecretsRequest]) (*connect.Response[v1.ListSecretsResponse], error)
@@ -144,6 +181,28 @@ type SecretsServiceHandler interface {
 	CreateSecret(context.Context, *connect.Request[v1.CreateSecretRequest]) (*connect.Response[v1.CreateSecretResponse], error)
 	UpdateSecret(context.Context, *connect.Request[v1.UpdateSecretRequest]) (*connect.Response[v1.UpdateSecretResponse], error)
 	DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error)
+	// GetExecutionSecret returns the PLAINTEXT VALUE of a tenant secret to the WORKER EXECUTION that
+	// was granted it, and to nobody else.
+	//
+	// WHY THIS EXISTS. A local-mode execution has no container to inject environment into, so a worker
+	// had no way to obtain a credential at all — the only injection path is the container request. This
+	// is the fetch-on-demand door: the value is never materialised in the environment, never written to
+	// disk, and every read is audited.
+	//
+	// THE AUTHORISATION IS THE WHOLE FEATURE, and it is deliberately narrow:
+	//   - the caller's resolved identity SUBJECT must be `run:<workflow_run_id>`; a worker holding an
+	//     execution id it was not minted for cannot read anything
+	//   - the workflow run must still be LIVE (not completed/failed/aborted) — a dead run cannot fetch
+	//   - the secret must be SELECTED on that run's bound work item (`secret_ids`) — the operator's
+	//     selection IS the grant
+	//   - every successful read writes a `secret.read` audit row naming the run and the secret
+	//
+	// IT DOES NOT RETURN THE VALUE ON AN ERROR, and the platform never logs it.
+	//
+	// NOTE: a worker that can fetch a secret and has a shell can also print it. This door does not
+	// prevent that; it prevents the secret from being stored somewhere it leaks SILENTLY, and it makes
+	// every use visible afterwards.
+	GetExecutionSecret(context.Context, *connect.Request[v1.GetExecutionSecretRequest]) (*connect.Response[v1.GetExecutionSecretResponse], error)
 }
 
 // NewSecretsServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -183,6 +242,12 @@ func NewSecretsServiceHandler(svc SecretsServiceHandler, opts ...connect.Handler
 		connect.WithSchema(secretsServiceMethods.ByName("DeleteSecret")),
 		connect.WithHandlerOptions(opts...),
 	)
+	secretsServiceGetExecutionSecretHandler := connect.NewUnaryHandler(
+		SecretsServiceGetExecutionSecretProcedure,
+		svc.GetExecutionSecret,
+		connect.WithSchema(secretsServiceMethods.ByName("GetExecutionSecret")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/orchicon.api.v1.SecretsService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case SecretsServiceListSecretsProcedure:
@@ -195,6 +260,8 @@ func NewSecretsServiceHandler(svc SecretsServiceHandler, opts ...connect.Handler
 			secretsServiceUpdateSecretHandler.ServeHTTP(w, r)
 		case SecretsServiceDeleteSecretProcedure:
 			secretsServiceDeleteSecretHandler.ServeHTTP(w, r)
+		case SecretsServiceGetExecutionSecretProcedure:
+			secretsServiceGetExecutionSecretHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -222,4 +289,8 @@ func (UnimplementedSecretsServiceHandler) UpdateSecret(context.Context, *connect
 
 func (UnimplementedSecretsServiceHandler) DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.SecretsService.DeleteSecret is not implemented"))
+}
+
+func (UnimplementedSecretsServiceHandler) GetExecutionSecret(context.Context, *connect.Request[v1.GetExecutionSecretRequest]) (*connect.Response[v1.GetExecutionSecretResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("orchicon.api.v1.SecretsService.GetExecutionSecret is not implemented"))
 }

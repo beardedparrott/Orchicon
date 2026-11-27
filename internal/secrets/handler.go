@@ -9,6 +9,7 @@ import (
 	"connectrpc.com/connect"
 	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 	apiv1connect "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1/apiv1connect"
+	"github.com/beardedparrott/orchicon/internal/auth"
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/tenant"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -165,4 +166,34 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// GetExecutionSecret serves a secret's plaintext to the worker execution granted it.
+//
+// THE ERROR PATHS CARRY NO VALUE, and this handler deliberately does not log the request or the
+// response — a secret read is recorded on the AUDIT TRAIL (inside ReadForExecution, after the
+// authorisation succeeds), which is the one place it should appear. Logging here would put plaintext
+// in the plane's log file, which is exactly the silent leak the design exists to avoid.
+func (h *Handler) GetExecutionSecret(ctx context.Context, req *connect.Request[apiv1.GetExecutionSecretRequest]) (*connect.Response[apiv1.GetExecutionSecretResponse], error) {
+	tenantID, err := requireTenant(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnauthenticated, err)
+	}
+	// WHO IS ASKING. The resolved identity's Subject is `run:<id>` for an execution and anything else
+	// for a human/API caller — so a human cannot use this door to read a secret's plaintext, and a
+	// worker cannot read a run it was not minted for.
+	ident, ok := auth.FromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("no authenticated identity"))
+	}
+	value, err := h.svc.ReadForExecution(ctx, tenantID, ident.Subject, req.Msg.WorkflowRunId, req.Msg.Name)
+	if err != nil {
+		// DELIBERATELY OPAQUE. "not available" covers both "no such secret" and "not granted": a
+		// worker must not be able to enumerate the tenant's secret names through error text.
+		return nil, connect.NewError(connect.CodePermissionDenied, err)
+	}
+	return connect.NewResponse(&apiv1.GetExecutionSecretResponse{
+		Name:  req.Msg.Name,
+		Value: value,
+	}), nil
 }

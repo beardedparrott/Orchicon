@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { CreateSecretRequest, CreateSecretResponse, DeleteSecretRequest, DeleteSecretResponse, GetSecretRequest, GetSecretResponse, ListSecretsRequest, ListSecretsResponse, UpdateSecretRequest, UpdateSecretResponse } from "./secret_service_pb.js";
+import { CreateSecretRequest, CreateSecretResponse, DeleteSecretRequest, DeleteSecretResponse, GetExecutionSecretRequest, GetExecutionSecretResponse, GetSecretRequest, GetSecretResponse, ListSecretsRequest, ListSecretsResponse, UpdateSecretRequest, UpdateSecretResponse } from "./secret_service_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -55,6 +55,37 @@ export const SecretsService = {
       name: "DeleteSecret",
       I: DeleteSecretRequest,
       O: DeleteSecretResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * GetExecutionSecret returns the PLAINTEXT VALUE of a tenant secret to the WORKER EXECUTION that
+     * was granted it, and to nobody else.
+     *
+     * WHY THIS EXISTS. A local-mode execution has no container to inject environment into, so a worker
+     * had no way to obtain a credential at all — the only injection path is the container request. This
+     * is the fetch-on-demand door: the value is never materialised in the environment, never written to
+     * disk, and every read is audited.
+     *
+     * THE AUTHORISATION IS THE WHOLE FEATURE, and it is deliberately narrow:
+     *   - the caller's resolved identity SUBJECT must be `run:<workflow_run_id>`; a worker holding an
+     *     execution id it was not minted for cannot read anything
+     *   - the workflow run must still be LIVE (not completed/failed/aborted) — a dead run cannot fetch
+     *   - the secret must be SELECTED on that run's bound work item (`secret_ids`) — the operator's
+     *     selection IS the grant
+     *   - every successful read writes a `secret.read` audit row naming the run and the secret
+     *
+     * IT DOES NOT RETURN THE VALUE ON AN ERROR, and the platform never logs it.
+     *
+     * NOTE: a worker that can fetch a secret and has a shell can also print it. This door does not
+     * prevent that; it prevents the secret from being stored somewhere it leaks SILENTLY, and it makes
+     * every use visible afterwards.
+     *
+     * @generated from rpc orchicon.api.v1.SecretsService.GetExecutionSecret
+     */
+    getExecutionSecret: {
+      name: "GetExecutionSecret",
+      I: GetExecutionSecretRequest,
+      O: GetExecutionSecretResponse,
       kind: MethodKind.Unary,
     },
   }

@@ -66,6 +66,10 @@ func main() {
 			os.Exit(runClaudeHook(os.Stdin, os.Stdout))
 		case "run-context":
 			os.Exit(runRunContext(os.Args[2:], log))
+		case "secret":
+			// `orchicon secret get <NAME>` — the worker's fetch-on-demand credential door. See secret.go
+			// for why this is a command and not an environment variable.
+			os.Exit(runSecret(os.Args[2:], os.Stdout, os.Stderr))
 		case "runtime-daemon":
 			os.Exit(exitOnErr(runRuntimeDaemon(os.Args[2:], log)))
 		case "runtime-supervisor":
@@ -381,6 +385,7 @@ func printHelp() {
 		{cmd: bin + " backfill-pr", desc: []string{"Backfill real PR URLs for completed git-backed runs"}},
 		{cmd: bin + " prune-executions", desc: []string{"Report (or with --apply, delete) executions older than the newest N"}},
 		{cmd: bin + " run-context", desc: []string{"Print a run's .orchicon archive (steps/summary) for context-by-reference"}},
+		{cmd: bin + " secret get", desc: []string{"Print a tenant secret granted to THIS execution (audited; for workers, not humans)"}},
 
 		{section: "Integration helpers (invoked by the runtime, not usually by hand):"},
 		{cmd: bin + " mcp", desc: []string{"Run the MCP stdio server (for opencode tool integration)"}},
