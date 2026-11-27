@@ -183,14 +183,27 @@ func (l *toolLedger) setResultOutput(callID, output string) {
 }
 
 // isAskToolName matches every spelling the ask tool is recorded under, including the MCP-qualified
-// one.
+// ones.
+//
+// AGY'S SPELLING IS A THIRD SHAPE AND IT IS NOT A DECORATION: `mcp_<server>_<tool>` with SINGLE underscores —
+// the server is `orchicon` and the tool is `ask_user`, so the card arrives as `mcp_orchicon_ask_user`
+// (measured against agy 1.5.13; see internal/antigravity/agy_tool_spelling_test.go). That matches neither
+// claude's `mcp__orchicon__ask_user` nor the bare `orchicon_ask_user`, and without this arm an antigravity
+// conversation's ask card would be recorded as an ordinary tool call and never rendered.
 func isAskToolName(name string) bool {
 	switch name {
-	case "ask_user", "orchicon_ask_user", "mcp__orchicon__ask_user":
+	case "ask_user", "orchicon_ask_user", "mcp__orchicon__ask_user", "mcp_orchicon_ask_user",
+		// The doubled-prefix spelling is kept as a DEFENSIVE arm: it is not what agy 1.5.13 sends, but an
+		// adapter or a future agy build that qualifies the tool with its own server-side `orchicon_`
+		// prefix must still render a card rather than swallow it as an ordinary tool call.
+		"mcp_orchicon_orchicon_ask_user":
 		return true
 	}
 	// A server may also qualify it with a different separator; the suffix is the stable part.
-	return strings.HasSuffix(name, "__ask_user") || name == "ask_user"
+	if strings.HasSuffix(name, "__ask_user") || strings.HasSuffix(name, "_ask_user") {
+		return true
+	}
+	return name == "ask_user"
 }
 
 // recordStart logs a tool call ISSUED but not yet resolved (the tool_part signal: Text carries only
@@ -225,9 +238,22 @@ func (l *toolLedger) recordResolve(part map[string]any) {
 	argsJSON := truncateLedgerString(marshalLedgerValue(state["input"]), 4000)
 	output := truncateLedgerString(stringifyLedgerOutput(state["output"]), 8000)
 
-	// AN ASK THAT RETURNED NOTHING IS NOT AN ANSWERED ASK.
+	// AN ASK THAT RETURNED NOTHING IS NOT AN ANSWERED ASK — BUT IT IS STILL AN ASK, AND IT MUST KEEP
+	// ITS CARD. The rule used to be `return`, which threw away the CALL along with the empty output.
+	//
+	// agy makes that the COMMON case, not an edge case: an MCP tool's result travels agy → MCP server →
+	// model and never onto the ACP wire, so EVERY antigravity ask completes with an empty output
+	// (docs/adapters/antigravity-acp.md §3.6; testdata/acp/mcp_tool_call.jsonl has no `rawOutput` at
+	// all). Dropping the call meant an antigravity conversation's question never reached the transcript
+	// at all — measured on conversation 01M8EAS38RC58SDK7RFYBFGMT8, where the model echoed
+	// `{"recorded":true,"question":"Which colour do you prefer?"}` (the tool ran and returned) while
+	// the row's tool_calls was null, so no client had anything to draw a card from.
+	//
+	// The INTENT — an empty output must never read as `answered with nothing` — is preserved by
+	// recording the AWAITING MARKER instead of an empty string, which is exactly what
+	// promoteRecordedAsk does for a recorded ask and what the clients already read as "still open".
 	if isAskToolName(tool) && strings.TrimSpace(output) == "" {
-		return
+		output = AskAwaitingAnswerMarker
 	}
 
 	l.mu.Lock()
@@ -262,6 +288,7 @@ func (l *toolLedger) recordResolve(part map[string]any) {
 		IsError:    status == "error",
 	})
 	l.promoteRecordedAsk(callID, output)
+	l.collapseAwaitingAsks()
 }
 
 // recordToolResolution backfills a resolved call's arguments and appends its result, from the TYPED
@@ -271,9 +298,11 @@ func (l *toolLedger) recordToolResolution(tool, argsJSON, output string, isErr b
 		return
 	}
 	// AN ASK THAT RETURNED NOTHING IS NOT AN ANSWERED ASK — the typed-transport twin of the rule in
-	// recordResolve, and the one claude actually takes.
+	// recordResolve, and the one claude actually takes. It keeps the CALL and records the awaiting
+	// marker, because an empty output is agy's only shape for an MCP tool result and discarding the
+	// call is what left an antigravity question with no card at all.
 	if isAskToolName(tool) && strings.TrimSpace(output) == "" {
-		return
+		output = AskAwaitingAnswerMarker
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -308,6 +337,7 @@ func (l *toolLedger) recordToolResolution(tool, argsJSON, output string, isErr b
 		IsError:    isErr,
 	})
 	l.promoteRecordedAsk(callID, output)
+	l.collapseAwaitingAsks()
 }
 
 // snapshot returns the ledger as (tool_calls, tool_results) JSON documents ready for the message
@@ -381,4 +411,112 @@ func truncateLedgerString(s string, max int) string {
 		return s[:max] + "…(truncated)"
 	}
 	return s
+}
+
+// collapseAwaitingAsks enforces ONE QUESTION = ONE CARD, however many times the transport announced it.
+//
+// THE PROBLEM IT SOLVES IS CREATED BY ALLOWING AN EMPTY ASK TO SURVIVE. An ask that completes with no
+// output is now RECORDED (it used to be dropped, which is what left agy conversations with no card at
+// all — see recordToolResolution). But a transport that announces the same ask more than once — claude
+// sends a tool_part and then its completion; agy sends a tool_call and then a tool_call_update — would
+// otherwise leave TWO awaiting calls holding the SAME question, and the clients draw one card per
+// awaiting call. The operator would see the question twice and answering one would leave the other open
+// for ever.
+//
+// So when several ask calls are awaiting and their arguments are the same question, only ONE is kept:
+// the one that carries real arguments (not the `{}` placeholder recordStart writes), and among those the
+// OLDEST, because its call id is the one a client has already been shown. The dropped duplicate's
+// result is removed with it — a result without a call is repaired at turn end as "tool call aborted",
+// which is precisely the message that killed cards before.
+//
+// THE CALLER MUST HOLD l.mu.
+func (l *toolLedger) collapseAwaitingAsks() {
+	awaiting := map[int]string{}
+	question := map[string]bool{}
+	for i := range l.calls {
+		if !isAskToolName(l.calls[i].FunctionName) {
+			continue
+		}
+		out, ok := l.outputFor(l.calls[i].ID)
+		if !ok || !IsAwaitingAnswer(out) {
+			continue
+		}
+		q := questionFingerprint(l.calls[i].Arguments)
+		awaiting[i] = q
+		question[q] = true
+	}
+	for q := range question {
+		keep := -1
+		for i, qq := range awaiting {
+			if qq != q {
+				continue
+			}
+			if keep == -1 {
+				keep = i
+				continue
+			}
+			// Prefer real arguments over the recordStart `{}` placeholder, then the OLDEST.
+			cur, prev := l.calls[i].Arguments, l.calls[keep].Arguments
+			if placeholderArgs(prev) && !placeholderArgs(cur) {
+				keep = i
+			}
+		}
+		for i, qq := range awaiting {
+			if qq != q || i == keep {
+				continue
+			}
+			l.dropCall(i)
+		}
+	}
+}
+
+// outputFor returns the recorded output of a call's result. THE CALLER MUST HOLD l.mu.
+func (l *toolLedger) outputFor(callID string) (string, bool) {
+	for i := range l.results {
+		if l.results[i].ToolCallID == callID {
+			return l.results[i].Output, true
+		}
+	}
+	return "", false
+}
+
+// dropCall removes a call AND every result pointing at it, so no dangling tool_call_id is left for the
+// turn-end repair to write off as aborted. THE CALLER MUST HOLD l.mu.
+func (l *toolLedger) dropCall(idx int) {
+	if idx < 0 || idx >= len(l.calls) {
+		return
+	}
+	id := l.calls[idx].ID
+	l.calls = append(l.calls[:idx], l.calls[idx+1:]...)
+	kept := l.results[:0]
+	for _, r := range l.results {
+		if r.ToolCallID == id {
+			continue
+		}
+		kept = append(kept, r)
+	}
+	l.results = kept
+}
+
+// questionFingerprint is the identity of the QUESTION an ask call carries, so two announcements of the
+// same ask collapse while two genuinely different questions do not. It reads `question` out of the
+// arguments; an unreadable or absent payload falls back to its own trimmed text, which keeps distinct
+// calls distinct (never merging two questions the ledger could not read).
+func questionFingerprint(argsJSON string) string {
+	var in struct {
+		Question string `json:"question"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(argsJSON)), &in); err == nil {
+		if q := strings.TrimSpace(in.Question); q != "" {
+			return q
+		}
+	}
+	return "raw:" + strings.TrimSpace(argsJSON)
+}
+
+// placeholderArgs reports whether a call's arguments are still the `{}` recordStart writes, i.e. the
+// call was announced without its payload.
+func placeholderArgs(argsJSON string) bool {
+	s := strings.TrimSpace(argsJSON)
+	return s == "" || s == "{}" || s == "null"
 }
