@@ -321,6 +321,15 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			s.usageSink(ctx, usage)
 		}
 
+		// CONTEXT EDITING FIRST, COMPACTION SECOND - and the order is the point.
+		//
+		// Clearing drops consumed tool payloads: deterministic, free, and it never touches what the model
+		// decided. Compaction summarizes the conversation: a model call, lossy, and - as this loop's own
+		// notes record - repeatedly interrupting workers mid-flight. Running clearing FIRST means the bulk
+		// of the growth is reclaimed before compaction is ever considered, so compaction fires far later and
+		// far less often, and the two do not fight over the same turn.
+		s.clearConsumedToolResults(ctx)
+
 		// Guarded compaction at the quiet turn boundary (D1): fires only on true context-window pressure
 		// (live hint), the budget gate, or the turn-count hygiene gate (compact_max_turns.
 		if res := s.maybeCompact(ctx, steps, usage); strings.HasPrefix(res, "budget_abort:") {
