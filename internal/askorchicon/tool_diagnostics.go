@@ -265,7 +265,6 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		StallNudgeReplyWindowSeconds     *int64  `json:"stall_nudge_reply_window_seconds"`
 		StallNudgeCooldownSeconds        *int64  `json:"stall_nudge_cooldown_seconds"`
 		StallToolHangSeconds             *int64  `json:"stall_tool_hang_seconds"`
-		MaxToolOutputBytes               *int64  `json:"max_tool_output_bytes"`
 		DefaultBudgetOverrides           *string `json:"default_budget_overrides"`
 		ExecutionReapGraceSeconds        int64   `json:"execution_reap_grace_seconds"`
 		ExecutionReapConsecutiveFailures int32   `json:"execution_reap_consecutive_failures"`
@@ -323,7 +322,6 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 		StallNudgeReplyWindowSeconds:     params.StallNudgeReplyWindowSeconds,
 		StallNudgeCooldownSeconds:        params.StallNudgeCooldownSeconds,
 		StallToolHangSeconds:             params.StallToolHangSeconds,
-		MaxToolOutputBytes:               params.MaxToolOutputBytes,
 		DefaultBudgetOverrides:           budget,
 		ExecutionReapGraceSeconds:        params.ExecutionReapGraceSeconds,
 		ExecutionReapConsecutiveFailures: params.ExecutionReapConsecutiveFailures,
@@ -375,9 +373,6 @@ func toolUpdateSettings(ctx context.Context, pool *db.Pool, args json.RawMessage
 	}
 	if params.StallToolHangSeconds == nil {
 		inRow.StallToolHangSeconds = cur.StallToolHangSeconds
-	}
-	if params.MaxToolOutputBytes == nil {
-		inRow.MaxToolOutputBytes = cur.MaxToolOutputBytes
 	}
 	if err := inRow.ApplyBudgetJSON(budget); err != nil {
 		return nil, fmt.Errorf("invalid default_budget_overrides: %w", err)

@@ -1497,6 +1497,7 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "budget_wall_clock_seconds", Label: "Budget - wall clock (s, blank = none)", Kind: kit2.KNumber, Initial: bi("budget_wall_clock_seconds", ""), Placeholder: "max runtime before the run is aborted"},
 		kit2.FieldSpec{Name: "budget_tool_call_count", Label: "Budget - tool calls (blank = no limit)", Kind: kit2.KNumber, Initial: bi("budget_tool_call_count", ""), Placeholder: "how many tool calls before abort"},
 		kit2.FieldSpec{Name: "budget_compact_max_turns", Label: "Budget - compact at turns (blank = never)", Kind: kit2.KNumber, Initial: bi("budget_compact_max_turns", ""), Placeholder: "turns before a context compaction is forced"},
+		kit2.FieldSpec{Name: "budget_max_tool_output_bytes", Label: "Budget - tool output cap (bytes)", Kind: kit2.KNumber, Initial: bi("budget_max_tool_output_bytes", ""), Placeholder: "blank = 131072 (128 KiB); every byte kept is re-sent every later turn"},
 		// The LADDER: each dimension goes warn, escalate, final and then ABORTS.
 		// A fraction is OF THE GATE ABOVE (0.5 = half of it).
 		kit2.FieldSpec{Name: "warn_frac_tokens", Label: "Ladder - tokens: warn,escalate,final", Kind: kit2.KText, Initial: bi("warn_frac_tokens", ""), Placeholder: "0.25,0.5,0.75", Validate: validFractionTriple},
@@ -1534,10 +1535,6 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "clear_keep_recent", Label: "Clear: keep newest tool results", Kind: kit2.KNumber, Initial: bi("clear_keep_recent", ""), Placeholder: "8 = the newest 8 are NEVER cleared (the model is reasoning about them)"},
 		kit2.FieldSpec{Name: "clear_min_bytes", Label: "Clear: minimum bytes reclaimed", Kind: kit2.KNumber, Initial: bi("clear_min_bytes", ""), Placeholder: "skip a clear smaller than this (a cache write must be worth it)"},
 		kit2.FieldSpec{Name: "clear_band_width", Label: "Clear: band width (window frac)", Kind: kit2.KNumber, Initial: bi("clear_band_width", ""), Placeholder: "0.1 = at most one clear per further 10% of the window"},
-		// --- Tool-output cap ---
-		// Every byte kept here is re-sent on EVERY subsequent turn, so this is the single largest lever on
-		// per-turn context cost. Oversized output is truncated head+tail and offloaded to disk.
-		kit2.FieldSpec{Name: "max_tool_output_bytes", Label: "Tool output cap (bytes)", Kind: kit2.KNumber, Initial: bi("max_tool_output_bytes", ""), Placeholder: "blank = 131072 (128 KiB); head+tail kept, full output on disk"},
 		kit2.FieldSpec{Name: "memory_enabled", Label: "Memory enabled", Kind: kit2.KCheckbox, Initial: bi("memory_enabled", "")},
 		kit2.FieldSpec{Name: "memory_digest_entries", Label: "Memory digest entries", Kind: kit2.KNumber, Initial: bi("memory_digest_entries", ""), Placeholder: "how many digest entries are carried"},
 		// --- Antigravity (agy) ---
@@ -1587,7 +1584,6 @@ func (m *Model) settingsForm() *kit2.Form {
 		out.StallNudgeReplyWindowSeconds = optI64(v["stall_nudge_reply_window_seconds"])
 		out.StallNudgeCooldownSeconds = optI64(v["stall_nudge_cooldown_seconds"])
 		out.StallToolHangSeconds = optI64(v["stall_tool_hang_seconds"])
-		out.MaxToolOutputBytes = optI64(v["max_tool_output_bytes"])
 		out.ExecutionReapGraceSeconds = i64Of0(v["execution_reap_grace_seconds"])
 		out.ExecutionReapConsecutiveFailures = int32(i64Of0(v["execution_reap_consecutive_failures"]))
 		// The individual fields are composed back into the transport JSON the server merges into its typed
@@ -2084,6 +2080,7 @@ func budgetInitials(blob string) map[string]string {
 		WallClockSecs     *float64 `json:"wall_clock_seconds"`
 		ToolCallCount     *float64 `json:"tool_call_count"`
 		CompactMaxTurns   *float64 `json:"compact_max_turns"`
+		MaxToolOutputBytes *float64 `json:"max_tool_output_bytes"`
 		CompactTiers      []bool   `json:"compact_tiers"`
 		ContextCompaction *struct {
 			Enabled      *bool    `json:"enabled"`
@@ -2152,6 +2149,7 @@ func budgetInitials(blob string) map[string]string {
 	out["budget_wall_clock_seconds"] = f(raw.WallClockSecs)
 	out["budget_tool_call_count"] = f(raw.ToolCallCount)
 	out["budget_compact_max_turns"] = f(raw.CompactMaxTurns)
+	out["budget_max_tool_output_bytes"] = f(raw.MaxToolOutputBytes)
 
 	fracFor := func(key string) string {
 		t, ok := raw.Warnings.Fractions[key]
@@ -2254,6 +2252,8 @@ func buildBudgetJSON(v map[string]string) string {
 	gate("wall_clock_seconds", "budget_wall_clock_seconds")
 	gate("tool_call_count", "budget_tool_call_count")
 	gate("compact_max_turns", "budget_compact_max_turns")
+	// The per-tool-result cap rides the budget document with its sibling tuning knobs.
+	gate("max_tool_output_bytes", "budget_max_tool_output_bytes")
 
 	fractions := map[string]any{}
 	for key, field := range map[string]string{

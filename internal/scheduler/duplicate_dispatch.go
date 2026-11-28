@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/beardedparrott/orchicon/internal/db"
 	"github.com/beardedparrott/orchicon/internal/domain"
@@ -92,4 +93,29 @@ func liveExecutionForStep(ctx context.Context, tx pgx.Tx, tenantID, runID, stepI
 		}
 	}
 	return "", nil
+}
+
+// budgetNumber reads one numeric key out of a merged budget document.
+//
+// It exists so a knob that lives in the budget JSON can reach the manifest without a column: the budget
+// document is a flat bag of settings (tokens, cost_usd, tool_call_count, wall_clock_seconds,
+// compact_max_turns, ...) and a per-tool-result cap belongs with those, not in a table of its own.
+// An absent or unparseable key reports ok=false, which callers read as "unset" — never as zero.
+func budgetNumber(budgets []byte, key string) (float64, bool) {
+	if len(budgets) == 0 {
+		return 0, false
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(budgets, &m); err != nil {
+		return 0, false
+	}
+	raw, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	var n float64
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return 0, false
+	}
+	return n, true
 }

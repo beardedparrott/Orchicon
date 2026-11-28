@@ -51,6 +51,7 @@ export interface BudgetDefaultsForm {
   wallClockSeconds: string;
   toolCallCount: string;
   compactMaxTurns: string;
+  maxToolOutputBytes: string;
   compactTiers: CompactTiers;
   warnings: BudgetWarnings;
   // Context editing (clearing consumed tool results) — separate from compaction.
@@ -80,6 +81,7 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
     wallClockSeconds: "",
     toolCallCount: "",
     compactMaxTurns: "",
+    maxToolOutputBytes: "",
     compactTiers: defaultCompactTiers,
     warnings: emptyWarnings,
     clearEnabled: false,
@@ -129,6 +131,7 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
       wallClockSeconds: m.wall_clock_seconds != null ? String(m.wall_clock_seconds) : "",
       toolCallCount: m.tool_call_count != null ? String(m.tool_call_count) : "",
       compactMaxTurns: m.compact_max_turns != null ? String(m.compact_max_turns) : "",
+      maxToolOutputBytes: m.max_tool_output_bytes != null ? String(m.max_tool_output_bytes) : "",
       compactTiers,
       warnings: {
         tokens: read("tokens"),
@@ -165,6 +168,7 @@ export function buildBudgetDefaults(
   wallClockSeconds: string,
   toolCallCount: string,
   compactMaxTurns: string,
+  maxToolOutputBytes: string,
   compactTiers: CompactTiers,
   warnings: BudgetWarnings,
   /** The raw document the form was seeded from — unmodeled keys are carried forward from it. */
@@ -178,6 +182,7 @@ export function buildBudgetDefaults(
   if (wallClockSeconds !== "") out.wall_clock_seconds = Number(wallClockSeconds);
   if (toolCallCount !== "") out.tool_call_count = Number(toolCallCount);
   if (compactMaxTurns !== "") out.compact_max_turns = Number(compactMaxTurns);
+  if (maxToolOutputBytes !== "") out.max_tool_output_bytes = Number(maxToolOutputBytes);
   out.compact_tiers = [...compactTiers];
 
   const fracs: Record<string, number[]> = {};

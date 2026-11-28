@@ -932,7 +932,6 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	var stallNudgeMax *int32
 	var stallNudgeReplyWindow, stallNudgeCooldown *int64
 	var stallToolHang *int64
-	var maxToolOutput *int64
 	var defaultBudgetOverrides []byte
 	{
 		settingsCtx := context.Background()
@@ -950,7 +949,6 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				stallNudgeReplyWindow = s.StallNudgeReplyWindowSeconds
 				stallNudgeCooldown = s.StallNudgeCooldownSeconds
 				stallToolHang = s.StallToolHangSeconds
-				maxToolOutput = s.MaxToolOutputBytes
 				defaultBudgetOverrides = s.BudgetJSON()
 			}
 			stx.Rollback(settingsCtx)
@@ -960,6 +958,16 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// Merge the tenant-level default budget (base) with the worker's own budget_overrides (override) so
 	// a worker's explicit field always wins per-field over the tenant default.
 	budgetsJSON := mergeBudgets(defaultBudgetOverrides, version.BudgetOverrides)
+
+	// The per-tool-result cap rides the SAME budget document as its sibling knobs (compact_max_turns,
+	// tokens, cost_usd) rather than getting a column of its own: it is a context/cost tuning value, and the
+	// budget document is where those live and where an operator changes them. Absent = unset, so the
+	// adapter falls back to ORCHICON_MAX_TOOL_OUTPUT_BYTES and then the built-in default.
+	var maxToolOutput *int64
+	if n, ok := budgetNumber(budgetsJSON, "max_tool_output_bytes"); ok {
+		v := int64(n)
+		maxToolOutput = &v
+	}
 
 	manifest := ExecutionManifest{
 		ExecutionID:                  exec.ID,

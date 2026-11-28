@@ -63,3 +63,25 @@ func TestLiveExecutionScopingRules(t *testing.T) {
 		t.Fatalf("a step with no run/step identity must resolve to no live execution (got %q, %v)", live, err)
 	}
 }
+
+// TestBudgetNumberReadsTuningKnobs pins the JSON path a budget-resident knob uses to reach the manifest —
+// the alternative to a schema column. An ABSENT key must report unset, never zero: zero is a meaningful
+// cap value and must be distinguishable from "the operator did not set one".
+func TestBudgetNumberReadsTuningKnobs(t *testing.T) {
+	if n, ok := budgetNumber([]byte(`{"max_tool_output_bytes":32768}`), "max_tool_output_bytes"); !ok || n != 32768 {
+		t.Fatalf("got %v,%v want 32768,true", n, ok)
+	}
+	// Explicit zero IS a value, not unset.
+	if n, ok := budgetNumber([]byte(`{"max_tool_output_bytes":0}`), "max_tool_output_bytes"); !ok || n != 0 {
+		t.Fatalf("an explicit 0 must read as set, got %v,%v", n, ok)
+	}
+	// Absent key = unset, so the env var / default apply.
+	if _, ok := budgetNumber([]byte(`{"tokens":100}`), "max_tool_output_bytes"); ok {
+		t.Fatal("an absent key must read as unset, not as zero")
+	}
+	for _, raw := range [][]byte{nil, {}, []byte("not json")} {
+		if _, ok := budgetNumber(raw, "max_tool_output_bytes"); ok {
+			t.Errorf("unparseable/empty budgets (%q) must report unset", raw)
+		}
+	}
+}
