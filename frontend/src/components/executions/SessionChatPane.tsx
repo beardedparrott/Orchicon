@@ -767,12 +767,36 @@ export function SessionChatPane({
       const msg = text.trim();
       if (!msg) return;
       if (isRunning) {
+        // A LIVE execution gets the same immediate bubble the follow-up path below gets, and for the
+        // same reason: the operator pressed send, so the message must appear NOW.
+        //
+        // WITHOUT THIS THE MESSAGE WAS INVISIBLE, and it looked exactly like the platform dropping it.
+        // The live path used to only fire the mutation: the text entered the transcript at the
+        // server's next part flush, and the pane's own poll is on a 2s tick — so for up to two seconds
+        // nothing happened at all. Worse, a nudge injected into a session that is mid-tool is QUEUED
+        // until the tool round returns (native) or answered as its own turn (opencode): the part can
+        // be minutes away, or never arrive at all if the execution goes terminal first — in which case
+        // there is no reply and no bubble to show for it. "I send a message and never see it in the
+        // execution" was precisely that.
+        //
+        // The pending bubble is dropped once the durable transcript carries this text, so the echo and
+        // the stored part can never both render (see the pending-merge below).
+        const liveBubbleKey = `pending-${pendingSeq.current++}`;
+        setPending((prev) => [...prev, { key: liveBubbleKey, text: msg, at: Date.now() }]);
         sendMsg.mutate(
           { executionId, message: msg },
           {
             onSuccess: () => {
               setDraft("");
               setComposerOpen(false);
+              // Don't wait the full 2s tick for the server-side part to land.
+              void refetchTranscript();
+            },
+            onError: () => {
+              // The send was refused (no live session, adapter not injectable): drop the optimistic
+              // bubble — the composer text is restored by the error path, and a bubble for a message
+              // that never reached the worker would be the lie this change exists to stop.
+              setPending((prev) => prev.filter((p) => p.key !== liveBubbleKey));
             },
           },
         );
