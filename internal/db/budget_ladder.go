@@ -48,6 +48,20 @@ type BudgetLadder struct {
 	WarnMsgTime     string
 	EscMsgTime      string
 	FinalMsgTime    string
+
+	// ContextEditingKeepToolCalls is the context-editing knob: how many of the newest tool results stay
+	// verbatim before older ones are stubbed. nil = unset (disabled).
+	//
+	// IT MUST LIVE ON THE LADDER because BudgetJSON() is an ALLOWLIST: it rebuilds the document from known
+	// fields, so a key with no field is silently DROPPED on every save. That is precisely what happened —
+	// the GUI wrote context_editing, the row stored the blob, and the next read emitted a document without
+	// it, so the field appeared blank immediately after saving.
+	ContextEditingKeepToolCalls *int
+
+	// MaxToolOutputBytes is the per-tool-result cap (bytes). nil = unset (fall back to the env var, then
+	// the built-in default). Same allowlist requirement as above: without a field here, BudgetJSON() drops
+	// it on every read and a saved value appears to vanish.
+	MaxToolOutputBytes *float64
 }
 
 // budgetIsZero reports whether a BudgetLadder carries no meaningful values — every gate nil, all
@@ -155,6 +169,14 @@ func (r *TenantSettingsRow) BudgetJSON() []byte {
 		"enabled":        r.MemoryEnabled,
 		"digest_entries": r.MemoryDigestEntries,
 	}
+	if r.Budget.MaxToolOutputBytes != nil && *r.Budget.MaxToolOutputBytes > 0 {
+		out["max_tool_output_bytes"] = *r.Budget.MaxToolOutputBytes
+	}
+	// Context editing. EMITTED whenever set — this is the line whose absence made the setting vanish on
+	// save, because the document is rebuilt from this function rather than echoed back from the request.
+	if r.Budget.ContextEditingKeepToolCalls != nil && *r.Budget.ContextEditingKeepToolCalls > 0 {
+		out["context_editing"] = map[string]any{"keep_tool_calls": *r.Budget.ContextEditingKeepToolCalls}
+	}
 	b, err := json.Marshal(out)
 	if err != nil {
 		// Marshal of a flat map of numbers/strings cannot fail.
@@ -176,11 +198,16 @@ func (r *TenantSettingsRow) ApplyBudgetJSON(budgets []byte) error {
 		WallClockSecs     *float64 `json:"wall_clock_seconds"`
 		CompactMaxTurns   *float64 `json:"compact_max_turns"`
 		CompactTiers      []bool   `json:"compact_tiers"`
+
 		ContextCompaction *struct {
 			Enabled      *bool    `json:"enabled"`
 			PressureFrac *float64 `json:"pressure_frac"`
 			RecentTurns  *int     `json:"recent_turns"`
 		} `json:"context_compaction"`
+		ContextEditing *struct {
+			KeepToolCalls *int `json:"keep_tool_calls"`
+		} `json:"context_editing"`
+		MaxToolOutputBytes *float64 `json:"max_tool_output_bytes"`
 		Memory *struct {
 			Enabled       *bool `json:"enabled"`
 			DigestEntries *int  `json:"digest_entries"`
@@ -221,6 +248,15 @@ func (r *TenantSettingsRow) ApplyBudgetJSON(budgets []byte) error {
 		r.Budget.CompactWarnTier = raw.CompactTiers[0]
 		r.Budget.CompactEscalTier = raw.CompactTiers[1]
 		r.Budget.CompactFinalTier = raw.CompactTiers[2]
+	}
+	if raw.MaxToolOutputBytes != nil && *raw.MaxToolOutputBytes > 0 {
+		v := *raw.MaxToolOutputBytes
+		r.Budget.MaxToolOutputBytes = &v
+	}
+	// Context editing: a positive count enables it; 0 or absent means off.
+	if ce := raw.ContextEditing; ce != nil && ce.KeepToolCalls != nil && *ce.KeepToolCalls > 0 {
+		v := *ce.KeepToolCalls
+		r.Budget.ContextEditingKeepToolCalls = &v
 	}
 
 	// Compaction + memory policy (D4): present sub-keys are ingested (with the same validation
