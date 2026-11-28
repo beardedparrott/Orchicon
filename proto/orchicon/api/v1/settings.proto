@@ -90,6 +90,14 @@ message TenantSettings {
   // "disabled" and is now rejected — see the section comment above.
   optional int64 stall_tool_hang_seconds = 34;
 
+  // --- Tool-output cap ---
+  // The per-tool-result cap in BYTES: how much of a single tool's output is kept in model context.
+  // This is the single largest lever on per-turn cost, because every byte kept is re-sent on every
+  // subsequent turn of the session. Oversized output is truncated head+tail and the full payload is
+  // offloaded to .orchicon/outputs/<execution>/ so the worker keeps a cheap handle on it.
+  // Blank/NULL = fall back to ORCHICON_MAX_TOOL_OUTPUT_BYTES, then the built-in default (131072).
+  optional int64 max_tool_output_bytes = 43;
+
   // --- Execution liveness reaper ---
   // The liveness reaper fails executions whose runtime process is gone
   // (control-plane restart, lost runtime container). The liveness probe

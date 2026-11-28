@@ -30,7 +30,7 @@ func TestMaxToolOutputBytesIsTunable(t *testing.T) {
 }
 
 func TestCapToolOutputShortIsUntouched(t *testing.T) {
-	got := capToolOutput("small output", t.TempDir(), "exec1", "call1")
+	got := capToolOutput("small output", t.TempDir(), "exec1", "call1", 0)
 	if got != "small output" {
 		t.Fatalf("a result under the cap must pass through unchanged, got %q", got)
 	}
@@ -47,7 +47,7 @@ func TestCapToolOutputKeepsHeadAndTail(t *testing.T) {
 	body := strings.Repeat("filler line of build output\n", 5000)
 	full := head + body + tail
 
-	got := capToolOutput(full, dir, "exec1", "call1")
+	got := capToolOutput(full, dir, "exec1", "call1", 0)
 	if len(got) > 4096 {
 		t.Fatalf("capped output is %d bytes, over the 4096 cap", len(got))
 	}
@@ -69,7 +69,7 @@ func TestCapToolOutputOffloadsFullPayload(t *testing.T) {
 	dir := t.TempDir()
 	full := strings.Repeat("a line of output that must not be lost\n", 5000)
 
-	got := capToolOutput(full, dir, "exec1", "call1")
+	got := capToolOutput(full, dir, "exec1", "call1", 0)
 	if !strings.Contains(got, "offloaded to") {
 		t.Fatalf("an oversized payload must be offloaded with a reference in the transcript:\n%q", got)
 	}
@@ -94,7 +94,7 @@ func TestCapToolOutputOffloadsFullPayload(t *testing.T) {
 func TestCapToolOutputWithoutProjectDirStillCaps(t *testing.T) {
 	t.Setenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES", "4096")
 	full := strings.Repeat("x", 20000)
-	got := capToolOutput(full, "", "exec1", "call1")
+	got := capToolOutput(full, "", "exec1", "call1", 0)
 	if len(got) > 4096 {
 		t.Fatalf("capped output is %d bytes, over the cap", len(got))
 	}
@@ -108,7 +108,7 @@ func TestCapToolOutputSanitizesCallIDPath(t *testing.T) {
 	t.Setenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES", "4096")
 	dir := t.TempDir()
 	full := strings.Repeat("y", 20000)
-	_ = capToolOutput(full, dir, "exec1", "../../etc/passwd")
+	_ = capToolOutput(full, dir, "exec1", "../../etc/passwd", 0)
 
 	entries, err := os.ReadDir(filepath.Join(dir, ".orchicon", "outputs", "exec1"))
 	if err != nil {
@@ -125,5 +125,35 @@ func TestCapToolOutputSanitizesCallIDPath(t *testing.T) {
 	// Nothing may be written OUTSIDE the offload dir.
 	if _, err := os.Stat(filepath.Join(dir, "etc", "passwd.out")); err == nil {
 		t.Fatalf("a traversal call id escaped the offload directory")
+	}
+}
+
+// TestMaxToolOutputBytesSettingWinsOverEnv pins the precedence the manifest threading exists for: the
+// operator's Settings value must beat the process env var, so settings and behaviour cannot disagree.
+func TestMaxToolOutputBytesSettingWinsOverEnv(t *testing.T) {
+	t.Setenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES", "999999")
+	s := &Session{maxToolOutputVal: 2048}
+	if got := s.maxToolOutputBytes(); got != 2048 {
+		t.Fatalf("session cap = %d, want the operator's setting 2048 (env must not win)", got)
+	}
+	// An unset setting falls back to the env var.
+	plain := &Session{}
+	if got := plain.maxToolOutputBytes(); got != 999999 {
+		t.Fatalf("unset setting should fall back to the env var, got %d", got)
+	}
+	// ...and then to the built-in default.
+	t.Setenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES", "")
+	if got := plain.maxToolOutputBytes(); got != maxToolOutputBytesDefault {
+		t.Fatalf("no setting, no env: got %d, want default %d", got, maxToolOutputBytesDefault)
+	}
+}
+
+// TestCapToolOutputHonoursExplicitLimit: the resolved limit must actually bind, not just be plumbed.
+func TestCapToolOutputHonoursExplicitLimit(t *testing.T) {
+	t.Setenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES", "")
+	big := strings.Repeat("q", 20000)
+	got := capToolOutput(big, t.TempDir(), "exec1", "c1", 2000)
+	if len(got) > 2000 {
+		t.Fatalf("output is %d bytes, over the explicit 2000-byte limit", len(got))
 	}
 }

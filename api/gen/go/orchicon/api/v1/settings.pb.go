@@ -76,6 +76,13 @@ type TenantSettings struct {
 	// Blank = default 180s; 0 disables. Negative is the OLD spelling of
 	// "disabled" and is now rejected — see the section comment above.
 	StallToolHangSeconds *int64 `protobuf:"varint,34,opt,name=stall_tool_hang_seconds,json=stallToolHangSeconds,proto3,oneof" json:"stall_tool_hang_seconds,omitempty"`
+	// --- Tool-output cap ---
+	// The per-tool-result cap in BYTES: how much of a single tool's output is kept in model context.
+	// This is the single largest lever on per-turn cost, because every byte kept is re-sent on every
+	// subsequent turn of the session. Oversized output is truncated head+tail and the full payload is
+	// offloaded to .orchicon/outputs/<execution>/ so the worker keeps a cheap handle on it.
+	// Blank/NULL = fall back to ORCHICON_MAX_TOOL_OUTPUT_BYTES, then the built-in default (131072).
+	MaxToolOutputBytes *int64 `protobuf:"varint,43,opt,name=max_tool_output_bytes,json=maxToolOutputBytes,proto3,oneof" json:"max_tool_output_bytes,omitempty"`
 	// How long an execution must have been running before it becomes
 	// eligible for reaping (skips the fresh-dispatch race). Seconds.
 	// Default 60.
@@ -307,6 +314,13 @@ func (x *TenantSettings) GetStallToolHangSeconds() int64 {
 	return 0
 }
 
+func (x *TenantSettings) GetMaxToolOutputBytes() int64 {
+	if x != nil && x.MaxToolOutputBytes != nil {
+		return *x.MaxToolOutputBytes
+	}
+	return 0
+}
+
 func (x *TenantSettings) GetExecutionReapGraceSeconds() int64 {
 	if x != nil {
 		return x.ExecutionReapGraceSeconds
@@ -479,7 +493,7 @@ var File_orchicon_api_v1_settings_proto protoreflect.FileDescriptor
 
 const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\n" +
-	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x90\x13\n" +
+	"\x1eorchicon/api/v1/settings.proto\x12\x0forchicon.api.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe2\x13\n" +
 	"\x0eTenantSettings\x120\n" +
 	"\x14default_worker_model\x18\x01 \x01(\tR\x12defaultWorkerModel\x12;\n" +
 	"\x1adefault_ask_orchicon_model\x18\x02 \x01(\tR\x17defaultAskOrchiconModel\x12K\n" +
@@ -492,7 +506,8 @@ const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\x0fstall_nudge_max\x18\x1f \x01(\x05H\x05R\rstallNudgeMax\x88\x01\x01\x12K\n" +
 	" stall_nudge_reply_window_seconds\x18  \x01(\x03H\x06R\x1cstallNudgeReplyWindowSeconds\x88\x01\x01\x12D\n" +
 	"\x1cstall_nudge_cooldown_seconds\x18! \x01(\x03H\aR\x19stallNudgeCooldownSeconds\x88\x01\x01\x12:\n" +
-	"\x17stall_tool_hang_seconds\x18\" \x01(\x03H\bR\x14stallToolHangSeconds\x88\x01\x01\x12?\n" +
+	"\x17stall_tool_hang_seconds\x18\" \x01(\x03H\bR\x14stallToolHangSeconds\x88\x01\x01\x126\n" +
+	"\x15max_tool_output_bytes\x18+ \x01(\x03H\tR\x12maxToolOutputBytes\x88\x01\x01\x12?\n" +
 	"\x1cexecution_reap_grace_seconds\x18\x0f \x01(\x03R\x19executionReapGraceSeconds\x12M\n" +
 	"#execution_reap_consecutive_failures\x18\x10 \x01(\x05R executionReapConsecutiveFailures\x128\n" +
 	"\x18default_budget_overrides\x18\x13 \x01(\tR\x16defaultBudgetOverrides\x12'\n" +
@@ -504,12 +519,12 @@ const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\x17log_roll_interval_hours\x18\x19 \x01(\x03R\x14logRollIntervalHours\x12,\n" +
 	"\x12log_retention_days\x18\x1a \x01(\x05R\x10logRetentionDays\x12\"\n" +
 	"\rlog_max_files\x18\x1b \x01(\x05R\vlogMaxFiles\x123\n" +
-	"\x13max_concurrent_runs\x18\x1c \x01(\x05H\tR\x11maxConcurrentRuns\x88\x01\x01\x12F\n" +
+	"\x13max_concurrent_runs\x18\x1c \x01(\x05H\n" +
+	"R\x11maxConcurrentRuns\x88\x01\x01\x12F\n" +
 	" session_access_token_ttl_seconds\x18\x1d \x01(\x03R\x1csessionAccessTokenTtlSeconds\x12H\n" +
 	"!session_refresh_token_ttl_seconds\x18\x1e \x01(\x03R\x1dsessionRefreshTokenTtlSeconds\x12>\n" +
 	"\x1bexecution_retention_enabled\x18# \x01(\bR\x19executionRetentionEnabled\x12=\n" +
-	"\x18execution_retention_keep\x18$ \x01(\x03H\n" +
-	"R\x16executionRetentionKeep\x88\x01\x01\x12<\n" +
+	"\x18execution_retention_keep\x18$ \x01(\x03H\vR\x16executionRetentionKeep\x88\x01\x01\x12<\n" +
 	"\x1aexecution_retention_vacuum\x18% \x01(\bR\x18executionRetentionVacuum\x12M\n" +
 	"#execution_retention_timeout_seconds\x18& \x01(\x05R executionRetentionTimeoutSeconds\x122\n" +
 	"\x15outbox_retention_days\x18' \x01(\x05R\x13outboxRetentionDays\x126\n" +
@@ -528,7 +543,8 @@ const file_orchicon_api_v1_settings_proto_rawDesc = "" +
 	"\x10_stall_nudge_maxB#\n" +
 	"!_stall_nudge_reply_window_secondsB\x1f\n" +
 	"\x1d_stall_nudge_cooldown_secondsB\x1a\n" +
-	"\x18_stall_tool_hang_secondsB\x16\n" +
+	"\x18_stall_tool_hang_secondsB\x18\n" +
+	"\x16_max_tool_output_bytesB\x16\n" +
 	"\x14_max_concurrent_runsB\x1b\n" +
 	"\x19_execution_retention_keepB\xc7\x01\n" +
 	"\x13com.orchicon.api.v1B\rSettingsProtoP\x01ZCgithub.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1;apiv1\xa2\x02\x03OAX\xaa\x02\x0fOrchicon.Api.V1\xca\x02\x0fOrchicon\\Api\\V1\xe2\x02\x1bOrchicon\\Api\\V1\\GPBMetadata\xea\x02\x11Orchicon::Api::V1b\x06proto3"

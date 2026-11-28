@@ -119,6 +119,18 @@ export class TenantSettings extends Message<TenantSettings> {
   stallToolHangSeconds?: bigint;
 
   /**
+   * --- Tool-output cap ---
+   * The per-tool-result cap in BYTES: how much of a single tool's output is kept in model context.
+   * This is the single largest lever on per-turn cost, because every byte kept is re-sent on every
+   * subsequent turn of the session. Oversized output is truncated head+tail and the full payload is
+   * offloaded to .orchicon/outputs/<execution>/ so the worker keeps a cheap handle on it.
+   * Blank/NULL = fall back to ORCHICON_MAX_TOOL_OUTPUT_BYTES, then the built-in default (131072).
+   *
+   * @generated from field: optional int64 max_tool_output_bytes = 43;
+   */
+  maxToolOutputBytes?: bigint;
+
+  /**
    * How long an execution must have been running before it becomes
    * eligible for reaping (skips the fresh-dispatch race). Seconds.
    * Default 60.
@@ -373,6 +385,7 @@ export class TenantSettings extends Message<TenantSettings> {
     { no: 32, name: "stall_nudge_reply_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
     { no: 33, name: "stall_nudge_cooldown_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
     { no: 34, name: "stall_tool_hang_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
+    { no: 43, name: "max_tool_output_bytes", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
     { no: 15, name: "execution_reap_grace_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 16, name: "execution_reap_consecutive_failures", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 19, name: "default_budget_overrides", kind: "scalar", T: 9 /* ScalarType.STRING */ },

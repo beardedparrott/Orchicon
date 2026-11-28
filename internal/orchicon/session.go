@@ -122,6 +122,9 @@ type Session struct {
 	cp CompactPolicy
 	// cs is the guarded-compaction latch + shared budget state (D1).
 	cs compactState
+	// maxToolOutputVal is the operator's per-tool-result cap (manifest → tenant settings), or 0 when unset
+	// (then the env var / built-in default apply). Resolved once at construction.
+	maxToolOutputVal int
 	// cep is the context-editing (tool-result clearing) policy, parsed from the merged settings JSON.
 	// Clearing is SEPARATE from compaction: it reclaims BYTES deterministically and never rewrites the
 	// model's decisions, so it is safe to run routinely while compaction stays the last resort.
@@ -295,6 +298,9 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 	if len(cfg.Manifest.Budgets) > 0 {
 		s.cp, s.mp = policyFromSettings(cfg.Manifest.Budgets)
 		s.cep = contextEditPolicyFromSettings(cfg.Manifest.Budgets)
+		if m := cfg.Manifest.MaxToolOutputBytes; m != nil && *m > 0 {
+			s.maxToolOutputVal = int(*m)
+		}
 		s.cs.budget = opencode.ParseBudgetLadder(cfg.Manifest.Budgets)
 		s.cs.spend = opencode.NewBudgetSpend()
 	}

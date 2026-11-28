@@ -1534,6 +1534,10 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "clear_keep_recent", Label: "Clear: keep newest tool results", Kind: kit2.KNumber, Initial: bi("clear_keep_recent", ""), Placeholder: "8 = the newest 8 are NEVER cleared (the model is reasoning about them)"},
 		kit2.FieldSpec{Name: "clear_min_bytes", Label: "Clear: minimum bytes reclaimed", Kind: kit2.KNumber, Initial: bi("clear_min_bytes", ""), Placeholder: "skip a clear smaller than this (a cache write must be worth it)"},
 		kit2.FieldSpec{Name: "clear_band_width", Label: "Clear: band width (window frac)", Kind: kit2.KNumber, Initial: bi("clear_band_width", ""), Placeholder: "0.1 = at most one clear per further 10% of the window"},
+		// --- Tool-output cap ---
+		// Every byte kept here is re-sent on EVERY subsequent turn, so this is the single largest lever on
+		// per-turn context cost. Oversized output is truncated head+tail and offloaded to disk.
+		kit2.FieldSpec{Name: "max_tool_output_bytes", Label: "Tool output cap (bytes)", Kind: kit2.KNumber, Initial: bi("max_tool_output_bytes", ""), Placeholder: "blank = 131072 (128 KiB); head+tail kept, full output on disk"},
 		kit2.FieldSpec{Name: "memory_enabled", Label: "Memory enabled", Kind: kit2.KCheckbox, Initial: bi("memory_enabled", "")},
 		kit2.FieldSpec{Name: "memory_digest_entries", Label: "Memory digest entries", Kind: kit2.KNumber, Initial: bi("memory_digest_entries", ""), Placeholder: "how many digest entries are carried"},
 		// --- Antigravity (agy) ---
@@ -1583,6 +1587,7 @@ func (m *Model) settingsForm() *kit2.Form {
 		out.StallNudgeReplyWindowSeconds = optI64(v["stall_nudge_reply_window_seconds"])
 		out.StallNudgeCooldownSeconds = optI64(v["stall_nudge_cooldown_seconds"])
 		out.StallToolHangSeconds = optI64(v["stall_tool_hang_seconds"])
+		out.MaxToolOutputBytes = optI64(v["max_tool_output_bytes"])
 		out.ExecutionReapGraceSeconds = i64Of0(v["execution_reap_grace_seconds"])
 		out.ExecutionReapConsecutiveFailures = int32(i64Of0(v["execution_reap_consecutive_failures"]))
 		// The individual fields are composed back into the transport JSON the server merges into its typed

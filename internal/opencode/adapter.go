@@ -795,7 +795,7 @@ func (a *Adapter) parseEvent(ctx context.Context, execRow db.ExecutionRow, manif
 
 		// Cap tool OUTPUT before it is streamed to the UI / persisted into the durable transcript (which a
 		// follow-up or a recovery-resumed session re-seeds as context).
-		outStr = capToolOutput(outStr, executionDir(manifest), execID, callID)
+		outStr = capToolOutput(outStr, executionDir(manifest), execID, callID, resolveMaxToolOutputBytes(manifest))
 
 		// Diff pipeline: record the file edits this tool made BEFORE any early-break branch below — notably
 		// the `write` artifact path.
@@ -1143,6 +1143,18 @@ const maxToolOutputBytesDefault = 128 * 1024 // 128 KiB ≈ ~30k tokens
 // (cap - marker) * ratio / (ratio+1) bytes.
 const toolOutputOffloadRatio = 2 // head:tail = 2:1 — the decision part outweighs the error tail
 
+// resolveMaxToolOutputBytes applies the precedence: the OPERATOR'S SETTING (manifest → tenant settings)
+// first, then the env var, then the built-in default. The manifest wins so the Settings value and both
+// engines agree — the value is delivered per execution rather than read from the environment at the call
+// site, which is what keeps settings and behaviour in step.
+func resolveMaxToolOutputBytes(m scheduler.ExecutionManifest) int {
+	if m.MaxToolOutputBytes != nil && *m.MaxToolOutputBytes > 0 {
+		return int(*m.MaxToolOutputBytes)
+	}
+	return maxToolOutputBytes()
+}
+
+// maxToolOutputBytes is the env/default fallback, used when no manifest value was resolved.
 func maxToolOutputBytes() int {
 	if v := os.Getenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -1189,8 +1201,10 @@ func offloadToolOutput(projectDir, execID, callID string, full string) string {
 
 // capToolOutput truncates a tool output to maxToolOutputBytes (128k default), keeping the HEAD (the
 // decision/summary part) + a truncation marker + the TAIL (the error/stack part.
-func capToolOutput(s, projectDir, execID, callID string) string {
-	limit := maxToolOutputBytes()
+func capToolOutput(s, projectDir, execID, callID string, limit int) string {
+	if limit <= 0 {
+		limit = maxToolOutputBytes()
+	}
 	if limit < 1 || len(s) <= limit {
 		return s
 	}
@@ -1239,7 +1253,7 @@ func (a *Adapter) capPartOutput(part any, execID, projectDir string) any {
 		return part
 	}
 	callID, _ := m["callID"].(string)
-	capped := capToolOutput(out, projectDir, execID, callID)
+	capped := capToolOutput(out, projectDir, execID, callID, maxToolOutputBytes())
 	if capped == out {
 		return part
 	}

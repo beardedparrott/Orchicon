@@ -24,6 +24,9 @@ type TenantSettingsRow struct {
 	StallNudgeReplyWindowSeconds     *int64
 	StallNudgeCooldownSeconds        *int64
 	StallToolHangSeconds             *int64
+	// MaxToolOutputBytes is the per-tool-result cap (bytes) before a result re-enters model context.
+	// NULL = unset (fall back to the env var, then the built-in default).
+	MaxToolOutputBytes *int64
 	DefaultBudgetOverrides           []byte       // jsonb: default budget JSON transport (see BudgetLadder for the typed source of truth); a worker's budget_overrides overrides these
 	Budget                           BudgetLadder // typed budget ladder + gates (authoritative; the jsonb BudgetLadder... is the wire transport)
 	ExecutionReapGraceSeconds        int64        // liveness reaper: min age before an execution is reaping-eligible
@@ -89,7 +92,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
-		stall_tool_hang_seconds,
+		stall_tool_hang_seconds, max_tool_output_bytes,
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
 		execution_retention_enabled, execution_retention_keep,
@@ -132,7 +135,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
-		stall_tool_hang_seconds,
+		stall_tool_hang_seconds, max_tool_output_bytes,
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
 		execution_retention_enabled, execution_retention_keep,
@@ -207,7 +210,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		budget_warn_msg_tool_call_count, budget_escalate_msg_tool_call_count, budget_final_msg_tool_call_count,
 		budget_warn_msg_wall_clock_seconds, budget_escalate_msg_wall_clock_seconds, budget_final_msg_wall_clock_seconds,
 		budget_compact_warn_tier, budget_compact_escalate_tier, budget_compact_final_tier,
-		stall_tool_hang_seconds,
+		stall_tool_hang_seconds, max_tool_output_bytes,
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
 		execution_retention_enabled, execution_retention_keep,
@@ -274,6 +277,9 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		budget_compact_escalate_tier = $57,
 		budget_compact_final_tier = $58,
 		stall_tool_hang_seconds = $59::bigint,
+		-- NULL = unset (fall back to the env var, then the built-in default). Unlike the '' sentinel used
+		-- for text fields, an absent/null here is meaningful: it means "no operator override".
+		max_tool_output_bytes = $72::bigint,
 		context_compaction_enabled = $60,
 		context_compaction_pressure_frac = $61,
 		context_recent_turns = $62,
@@ -312,7 +318,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
-		stall_tool_hang_seconds,
+		stall_tool_hang_seconds, max_tool_output_bytes,
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
 		execution_retention_enabled, execution_retention_keep,
@@ -345,6 +351,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		in.Budget.WarnMsgTime, in.Budget.EscMsgTime, in.Budget.FinalMsgTime,
 		in.Budget.CompactWarnTier, in.Budget.CompactEscalTier, in.Budget.CompactFinalTier,
 		in.StallToolHangSeconds,
+		in.MaxToolOutputBytes,
 		in.ContextCompactionEnabled, in.ContextCompactionPressureFrac,
 		in.ContextRecentTurns, in.MemoryEnabled, in.MemoryDigestEntries,
 		in.ExecutionRetentionEnabled, in.ExecutionRetentionKeep,
@@ -397,7 +404,7 @@ func scanTenantSettings(row pgx.Rows) (TenantSettingsRow, error) {
 		&r.LogRetentionDays, &r.LogMaxFiles,
 		&r.MaxConcurrentRuns,
 		&r.SessionAccessTokenTtlSeconds, &r.SessionRefreshTokenTtlSeconds,
-		&r.StallToolHangSeconds,
+		&r.StallToolHangSeconds, &r.MaxToolOutputBytes,
 		&r.ContextCompactionEnabled, &r.ContextCompactionPressureFrac,
 		&r.ContextRecentTurns, &r.MemoryEnabled, &r.MemoryDigestEntries,
 		&r.ExecutionRetentionEnabled, &r.ExecutionRetentionKeep,
@@ -431,6 +438,7 @@ func (r TenantSettingsRow) AuditFields() map[string]any {
 		"stall_nudge_reply_window_seconds":  r.StallNudgeReplyWindowSeconds,
 		"stall_nudge_cooldown_seconds":      r.StallNudgeCooldownSeconds,
 		"stall_tool_hang_seconds":           r.StallToolHangSeconds,
+		"max_tool_output_bytes":             r.MaxToolOutputBytes,
 
 		"execution_reap_grace_seconds":        r.ExecutionReapGraceSeconds,
 		"execution_reap_consecutive_failures": r.ExecutionReapConsecutiveFailures,

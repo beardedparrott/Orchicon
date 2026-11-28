@@ -481,6 +481,9 @@ function DefaultsTab() {
   const [draftNudgeReplyWindow, setDraftNudgeReplyWindow] = useState("");
   const [draftNudgeCooldown, setDraftNudgeCooldown] = useState("");
   const [draftToolHang, setDraftToolHang] = useState("");
+  // Per-tool-result cap. Every byte kept is re-sent on EVERY subsequent turn, so this is the single
+  // largest lever on per-turn context cost.
+  const [draftMaxToolOutputBytes, setDraftMaxToolOutputBytes] = useState("");
   const [draftBudgetTokens, setDraftBudgetTokens] = useState("");
   const [draftBudgetCost, setDraftBudgetCost] = useState("");
   const [draftBudgetWallClock, setDraftBudgetWallClock] = useState("");
@@ -532,6 +535,7 @@ function DefaultsTab() {
       setDraftNudgeReplyWindow(String(settings.stallNudgeReplyWindowSeconds ?? ""));
       setDraftNudgeCooldown(String(settings.stallNudgeCooldownSeconds ?? ""));
       setDraftToolHang(String(settings.stallToolHangSeconds ?? ""));
+      setDraftMaxToolOutputBytes(String(settings.maxToolOutputBytes ?? ""));
       const budget = parseBudgetDefaults(settings.defaultBudgetOverrides);
       setDraftBudgetTokens(budget.tokens);
       setDraftBudgetCost(budget.costUsd);
@@ -587,6 +591,12 @@ function DefaultsTab() {
         stallNudgeReplyWindowSeconds: BigInt(parseInt(draftNudgeReplyWindow) || 0),
         stallNudgeCooldownSeconds: BigInt(parseInt(draftNudgeCooldown) || 0),
         stallToolHangSeconds: BigInt(parseInt(draftToolHang) || 0),
+        // Blank means "no operator override" — NULL, so the env var / built-in default apply. Sending 0
+        // would be read as an explicit cap of zero.
+        maxToolOutputBytes:
+          draftMaxToolOutputBytes.trim() === ""
+            ? undefined
+            : BigInt(parseInt(draftMaxToolOutputBytes) || 0),
         defaultBudgetOverrides: buildBudgetDefaults(
           draftBudgetTokens,
           draftBudgetCost,
@@ -750,6 +760,13 @@ function DefaultsTab() {
                 value={draftToolHang}
                 onChange={setDraftToolHang}
                 placeholder="180"
+              />
+              <StallField
+                label="Tool output cap (bytes)"
+                description="How much of a single tool's output stays in context. Every byte kept here is re-sent on every later turn, so this is the biggest lever on per-turn cost. Oversized output is truncated head+tail and the full payload is written to .orchicon/outputs/<execution>/ so the worker can read the rest instead of re-running. Blank = 131072 (128 KiB)."
+                value={draftMaxToolOutputBytes}
+                onChange={setDraftMaxToolOutputBytes}
+                placeholder="131072"
               />
             </div>
           </CardContent>

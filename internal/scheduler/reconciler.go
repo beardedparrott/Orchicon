@@ -932,6 +932,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	var stallNudgeMax *int32
 	var stallNudgeReplyWindow, stallNudgeCooldown *int64
 	var stallToolHang *int64
+	var maxToolOutput *int64
 	var defaultBudgetOverrides []byte
 	{
 		settingsCtx := context.Background()
@@ -949,6 +950,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				stallNudgeReplyWindow = s.StallNudgeReplyWindowSeconds
 				stallNudgeCooldown = s.StallNudgeCooldownSeconds
 				stallToolHang = s.StallToolHangSeconds
+				maxToolOutput = s.MaxToolOutputBytes
 				defaultBudgetOverrides = s.BudgetJSON()
 			}
 			stx.Rollback(settingsCtx)
@@ -990,6 +992,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		StallNudgeReplyWindowSeconds: stallNudgeReplyWindow,
 		StallNudgeCooldownSeconds:    stallNudgeCooldown,
 		StallToolHangSeconds:         stallToolHang,
+		MaxToolOutputBytes:           maxToolOutput,
 	}
 	if r.dispatcher == nil {
 		err := fmt.Errorf("no adapter dispatcher configured — the server must register at least one adapter bridge")

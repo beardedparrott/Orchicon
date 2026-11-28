@@ -833,7 +833,7 @@ func (s *Session) executeTools(ctx context.Context, callbacks scheduler.Executio
 				}
 				s.fileEdits(ctx, s.id, s.identity.TenantID, s.execDir, c.Name, inputMap, out)
 			}
-			capped := capToolOutput(out, s.execDir, s.id, c.ToolCallID)
+			capped := capToolOutput(out, s.execDir, s.id, c.ToolCallID, s.maxToolOutputBytes())
 			results[i] = toolResult{ToolCall: c, Output: capped}
 			// OnToolCall parity (output capped).
 			callbacks.OnToolCall(ctx, s.id, c.Name, []byte(c.ArgsJSON), []byte(capped))
@@ -1095,13 +1095,25 @@ const toolOutputHeadTailMarker = "\n…[output truncated by Orchicon — head+ta
 // outweighs the error tail.
 const toolOutputOffloadRatio = 2
 
-// maxToolOutputBytes resolves the per-tool-result cap.
+// maxToolOutputBytes resolves the per-tool-result cap, in precedence order:
 //
-// IT IS NOW ENV-SETTABLE, THROUGH THE SAME KNOB THE OPENCODE ADAPTER USES. This was a hardcoded const
-// while opencode's identical cap answered to ORCHICON_MAX_TOOL_OUTPUT_BYTES, so the same work drained
-// context faster on the native transport than on opencode with no way to tune it. This is the single
-// largest lever on per-turn context: every byte kept here is re-sent on EVERY subsequent turn.
-func maxToolOutputBytes() int {
+//	1. the OPERATOR'S SETTING (tenant settings → ExecutionManifest.MaxToolOutputBytes), delivered per
+//	   execution in the manifest;
+//	2. the ORCHICON_MAX_TOOL_OUTPUT_BYTES env var (dev / air-gapped override);
+//	3. the built-in default.
+//
+// The manifest comes FIRST so the Settings value and the adapters cannot disagree — both engines resolve
+// from the same field. This is the single largest lever on per-turn context: every byte kept here is
+// re-sent on EVERY subsequent turn.
+func (s *Session) maxToolOutputBytes() int {
+	if s != nil && s.maxToolOutputVal > 0 {
+		return s.maxToolOutputVal
+	}
+	return maxToolOutputBytesFromEnv()
+}
+
+// maxToolOutputBytesFromEnv is the env/default half, used when no manifest value was resolved.
+func maxToolOutputBytesFromEnv() int {
 	if v := os.Getenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
@@ -1109,6 +1121,9 @@ func maxToolOutputBytes() int {
 	}
 	return maxToolOutputBytesDefault
 }
+
+// maxToolOutputBytes is the package-level fallback (no session in scope).
+func maxToolOutputBytes() int { return maxToolOutputBytesFromEnv() }
 
 // capToolOutput truncates one tool result, keeping the HEAD (the decision/summary part) AND the TAIL
 // (the error/stack part), and offloading the full payload to disk.
@@ -1118,8 +1133,10 @@ func maxToolOutputBytes() int {
 // of a log - could not see it, so it re-ran the command. That paid for the whole output a second time AND
 // left both attempts in the context. Offloading to .orchicon/outputs/<execution>/ hands the worker a
 // cheap targeted handle instead of a re-run, at zero context cost.
-func capToolOutput(s, projectDir, execID, callID string) string {
-	limit := maxToolOutputBytes()
+func capToolOutput(s, projectDir, execID, callID string, limit int) string {
+	if limit <= 0 {
+		limit = maxToolOutputBytesFromEnv()
+	}
 	if limit < 1 || len(s) <= limit {
 		return s
 	}
