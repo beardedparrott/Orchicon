@@ -535,7 +535,6 @@ function DefaultsTab() {
       setDraftBudgetWallClock(budget.wallClockSeconds);
       setDraftBudgetToolCalls(budget.toolCallCount);
       setDraftCompactMaxTurns(budget.compactMaxTurns);
-      setDraftMaxToolOutputBytes(budget.maxToolOutputBytes);
       setDraftKeepToolCalls(String(settings.contextEditingKeepToolCalls ?? ""));
       setDraftMaxToolOutputBytes(String(settings.maxToolOutputBytes ?? ""));
       setDraftCompactTiers(budget.compactTiers);
@@ -611,6 +610,14 @@ function DefaultsTab() {
         executionRetentionKeep:
           draftRetentionKeep.trim() === "" ? undefined : BigInt(parseInt(draftRetentionKeep) || 0),
         executionRetentionVacuum: draftRetentionVacuum,
+        // Typed tenant settings, carried like executionRetentionKeep: blank = undefined = "leave as
+        // stored" (NULL means the env/built-in default); a typed number, 0 included, is the value.
+        maxToolOutputBytes:
+          draftMaxToolOutputBytes.trim() === ""
+            ? undefined
+            : BigInt(parseInt(draftMaxToolOutputBytes) || 0),
+        contextEditingKeepToolCalls:
+          draftKeepToolCalls.trim() === "" ? undefined : parseInt(draftKeepToolCalls) || 0,
         executionRetentionTimeoutSeconds: parseInt(draftRetentionTimeout) || 0,
         outboxRetentionDays: parseInt(draftOutboxRetentionDays) || 0,
         antigravityAuthMethod: draftAntigravityAuthMethod,
