@@ -1497,6 +1497,7 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "budget_wall_clock_seconds", Label: "Budget - wall clock (s, blank = none)", Kind: kit2.KNumber, Initial: bi("budget_wall_clock_seconds", ""), Placeholder: "max runtime before the run is aborted"},
 		kit2.FieldSpec{Name: "budget_tool_call_count", Label: "Budget - tool calls (blank = no limit)", Kind: kit2.KNumber, Initial: bi("budget_tool_call_count", ""), Placeholder: "how many tool calls before abort"},
 		kit2.FieldSpec{Name: "budget_compact_max_turns", Label: "Budget - compact at turns (blank = never)", Kind: kit2.KNumber, Initial: bi("budget_compact_max_turns", ""), Placeholder: "turns before a context compaction is forced"},
+		kit2.FieldSpec{Name: "budget_max_tool_output_bytes", Label: "Budget - tool output cap (bytes)", Kind: kit2.KNumber, Initial: bi("budget_max_tool_output_bytes", ""), Placeholder: "blank = 131072 (128 KiB); every byte kept is re-sent every later turn"},
 		// The LADDER: each dimension goes warn, escalate, final and then ABORTS.
 		// A fraction is OF THE GATE ABOVE (0.5 = half of it).
 		kit2.FieldSpec{Name: "warn_frac_tokens", Label: "Ladder - tokens: warn,escalate,final", Kind: kit2.KText, Initial: bi("warn_frac_tokens", ""), Placeholder: "0.25,0.5,0.75", Validate: validFractionTriple},
@@ -1525,6 +1526,11 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "compact_enabled", Label: "Context compaction enabled", Kind: kit2.KCheckbox, Initial: bi("compact_enabled", "")},
 		kit2.FieldSpec{Name: "compact_pressure_frac", Label: "Compaction pressure fraction", Kind: kit2.KNumber, Initial: bi("compact_pressure_frac", ""), Placeholder: "0.9 = compact at 90% of the window"},
 		kit2.FieldSpec{Name: "compact_recent_turns", Label: "Compaction keeps recent turns", Kind: kit2.KNumber, Initial: bi("compact_recent_turns", ""), Placeholder: "how many recent turns survive the collapse"},
+		// --- Context hygiene ---
+		// Both are typed columns, like every other setting on this screen: a JSON-only key has nothing to
+		// rehydrate it on read, so a saved value came back blank.
+		kit2.FieldSpec{Name: "context_editing_keep_tool_calls", Label: "Context editing - keep last N tool results", Kind: kit2.KNumber, Initial: dimInitial32(s.ContextEditingKeepToolCalls), Placeholder: "blank = off; 20 = keep the newest 20, stub the rest"},
+		kit2.FieldSpec{Name: "max_tool_output_bytes", Label: "Tool output cap (bytes)", Kind: kit2.KNumber, Initial: stallDimInitial(s.MaxToolOutputBytes), Placeholder: "blank = 131072 (128 KiB); head+tail kept, full output on disk"},
 		kit2.FieldSpec{Name: "memory_enabled", Label: "Memory enabled", Kind: kit2.KCheckbox, Initial: bi("memory_enabled", "")},
 		kit2.FieldSpec{Name: "memory_digest_entries", Label: "Memory digest entries", Kind: kit2.KNumber, Initial: bi("memory_digest_entries", ""), Placeholder: "how many digest entries are carried"},
 		// --- Antigravity (agy) ---
@@ -1574,6 +1580,8 @@ func (m *Model) settingsForm() *kit2.Form {
 		out.StallNudgeReplyWindowSeconds = optI64(v["stall_nudge_reply_window_seconds"])
 		out.StallNudgeCooldownSeconds = optI64(v["stall_nudge_cooldown_seconds"])
 		out.StallToolHangSeconds = optI64(v["stall_tool_hang_seconds"])
+		out.MaxToolOutputBytes = optI64(v["max_tool_output_bytes"])
+		out.ContextEditingKeepToolCalls = optI32(v["context_editing_keep_tool_calls"])
 		out.ExecutionReapGraceSeconds = i64Of0(v["execution_reap_grace_seconds"])
 		out.ExecutionReapConsecutiveFailures = int32(i64Of0(v["execution_reap_consecutive_failures"]))
 		// The individual fields are composed back into the transport JSON the server merges into its typed
@@ -2070,6 +2078,7 @@ func budgetInitials(blob string) map[string]string {
 		WallClockSecs     *float64 `json:"wall_clock_seconds"`
 		ToolCallCount     *float64 `json:"tool_call_count"`
 		CompactMaxTurns   *float64 `json:"compact_max_turns"`
+		MaxToolOutputBytes *float64 `json:"max_tool_output_bytes"`
 		CompactTiers      []bool   `json:"compact_tiers"`
 		ContextCompaction *struct {
 			Enabled      *bool    `json:"enabled"`
@@ -2080,6 +2089,9 @@ func budgetInitials(blob string) map[string]string {
 			Enabled       *bool `json:"enabled"`
 			DigestEntries *int  `json:"digest_entries"`
 		} `json:"memory"`
+		ContextEditing *struct {
+			KeepToolCalls *int `json:"keep_tool_calls"`
+		} `json:"context_editing"`
 		Warnings struct {
 			Fractions map[string][3]float64 `json:"fractions"`
 			Messages  map[string][3]string  `json:"messages"`
@@ -2087,6 +2099,22 @@ func budgetInitials(blob string) map[string]string {
 	}
 	if strings.TrimSpace(blob) != "" {
 		_ = json.Unmarshal([]byte(blob), &raw)
+	}
+	// Context editing (modeled): seed the controls so the block round-trips through a Save.
+
+
+	// PRESERVE THE BLOCKS THIS FORM DOES NOT MODEL, verbatim, so buildBudgetJSON can carry them back.
+	// Read from a generic map rather than the typed struct because the point is to keep keys this form
+	// knows nothing about — a typed field would have to be added per key and would silently lose the rest.
+	if strings.TrimSpace(blob) != "" {
+		var generic map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(blob), &generic); err == nil {
+			for _, key := range unmodeledBudgetKeys {
+				if rawVal, ok := generic[key]; ok {
+					out[preservedKeyField(key)] = string(rawVal)
+				}
+			}
+		}
 	}
 	f := func(v *float64) string {
 		if v == nil {
@@ -2099,6 +2127,7 @@ func budgetInitials(blob string) map[string]string {
 	out["budget_wall_clock_seconds"] = f(raw.WallClockSecs)
 	out["budget_tool_call_count"] = f(raw.ToolCallCount)
 	out["budget_compact_max_turns"] = f(raw.CompactMaxTurns)
+	out["budget_max_tool_output_bytes"] = f(raw.MaxToolOutputBytes)
 
 	fracFor := func(key string) string {
 		t, ok := raw.Warnings.Fractions[key]
@@ -2166,6 +2195,23 @@ func budgetInitials(blob string) map[string]string {
 	}
 	return out
 }
+// unmodeledBudgetKeys are top-level budget-document keys this form does NOT render but must PRESERVE.
+//
+// THE BUG THIS PREVENTS. buildBudgetJSON rebuilds the whole document from its own fields, so any key it
+// does not know is dropped on the next save. Everything in this document is an operator decision that
+// costs money or changes what a worker sees, and a form silently deleting one is the worst kind of
+// failure: nothing errors, the setting simply stops applying, and the next run behaves differently for
+// no visible reason. `context_editing` is exactly such a key (it is configured by an agent through
+// update_settings, has no TUI control, and would have been wiped by the next Save in this very screen).
+//
+// PRESERVED GENERICALLY, NOT ONE-BY-ONE: both this list and the generic carry below are driven off the
+// SAME set, so adding a key is one line and forgetting to add it is a failing test rather than a silent
+// data loss.
+// EMPTY BY DESIGN RIGHT NOW, and it must stay a list rather than being deleted: context_editing used to
+// live here, and the next unrendered block belongs here too. The test that reads this list fails if it is
+// emptied while a known-unrendered key exists, so this is a place to add, not a thing to remove.
+var unmodeledBudgetKeys = []string{}
+
 func buildBudgetJSON(v map[string]string) string {
 	out := map[string]any{}
 	gate := func(key, field string) {
@@ -2184,6 +2230,8 @@ func buildBudgetJSON(v map[string]string) string {
 	gate("wall_clock_seconds", "budget_wall_clock_seconds")
 	gate("tool_call_count", "budget_tool_call_count")
 	gate("compact_max_turns", "budget_compact_max_turns")
+	// The per-tool-result cap rides the budget document with its sibling tuning knobs.
+	gate("max_tool_output_bytes", "budget_max_tool_output_bytes")
 
 	fractions := map[string]any{}
 	for key, field := range map[string]string{
@@ -2252,12 +2300,40 @@ func buildBudgetJSON(v map[string]string) string {
 	}
 	out["memory"] = mem
 
+	// CARRY THE UNMODELED BLOCKS FORWARD, read from the document this form was seeded with.
+	for _, key := range unmodeledBudgetKeys {
+		if raw, ok := v[preservedKeyField(key)]; ok && strings.TrimSpace(raw) != "" && strings.TrimSpace(raw) != "null" {
+			var preserved any
+			if err := json.Unmarshal([]byte(raw), &preserved); err == nil && preserved != nil {
+				out[key] = preserved
+			}
+		}
+	}
+
 	b, err := json.Marshal(out)
 	if err != nil {
 		return "{}"
 	}
 	return string(b)
 }
+
+// preservedKeyField is the form-field name under which a preserved (unrendered) budget block travels.
+func preservedKeyField(key string) string { return "preserve_" + key }
+
+// contextEditingJSON builds the context_editing block, or nil when the operator has not set it (so an
+// untouched tenant does not get a block written and the built-in "off" applies).
+func contextEditingJSON(v map[string]string) map[string]any {
+	raw := strings.TrimSpace(v["clear_keep_tool_calls"])
+	if raw == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return nil
+	}
+	return map[string]any{"keep_tool_calls": n}
+}
+
 
 // parseFractionTriple reads "a,b,c" into the [warn, escalate, final] triple an adapter expects.
 func parseFractionTriple(raw string) ([3]float64, bool) {
@@ -2368,6 +2444,14 @@ func optI32(s string) *int32 {
 
 // stallDimInitial renders a stall window into its form field: BLANK for "the tenant left this
 // unset" (which the server stores as NULL and the adapters read as the built-in default).
+// dimInitial32 is stallDimInitial for the *int32 typed settings.
+func dimInitial32(v *int32) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *v)
+}
+
 func stallDimInitial(v *int64) string {
 	if v == nil {
 		return ""

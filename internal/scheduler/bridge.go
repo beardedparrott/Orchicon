@@ -62,6 +62,18 @@ type ExecutionManifest struct {
 	// StallToolHangSeconds is the in-flight tool-hang watchdog window (D6): a tool call with no events
 	// for longer than this is cancelled natively (synthesized `cancelled:` tool result +.
 	StallToolHangSeconds *int64
+	// MaxToolOutputBytes is the per-tool-result cap (bytes) applied before a result re-enters context —
+	// the single largest lever on per-turn context, because every byte kept is re-sent on every
+	// subsequent turn.
+	//
+	// It travels in the manifest rather than being read from the environment at the call site so the
+	// operator's Settings value and the adapters cannot disagree: both engines (opencode + native) resolve
+	// it from here. nil = fall back to ORCHICON_MAX_TOOL_OUTPUT_BYTES, then the built-in default.
+	MaxToolOutputBytes *int64
+	// ContextEditingKeepToolCalls is how many of the newest tool results stay verbatim before older ones are
+	// stubbed. nil/0 = disabled. Resolved from the tenant COLUMN, so the operator's Settings value and the
+	// adapters cannot disagree.
+	ContextEditingKeepToolCalls *int32
 
 	// SequenceContinue (opt-in, DEFAULT OFF) marks this execution as part of a sequence chain.
 	SequenceContinue      bool

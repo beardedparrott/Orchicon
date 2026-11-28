@@ -122,6 +122,15 @@ type Session struct {
 	cp CompactPolicy
 	// cs is the guarded-compaction latch + shared budget state (D1).
 	cs compactState
+	// maxToolOutputVal is the operator's per-tool-result cap (manifest → tenant settings), or 0 when unset
+	// (then the env var / built-in default apply). Resolved once at construction.
+	maxToolOutputVal int
+	// cep is the context-editing (tool-result clearing) policy, parsed from the merged settings JSON.
+	// Clearing is SEPARATE from compaction: it reclaims BYTES deterministically and never rewrites the
+	// model's decisions, so it is safe to run routinely while compaction stays the last resort.
+	cep contextEditPolicy
+	// ces is the clearing latch (reclaimed totals + the pressure band last cleared at).
+	ces contextEditState
 	// startedAt anchors the wall-clock dimension of the budget ladder.
 	startedAt time.Time
 	// toolUses counts emitted tool calls (live, for the budget ladder's tool_call_count dimension —
@@ -288,6 +297,16 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 	// the existing budget transport — D4).
 	if len(cfg.Manifest.Budgets) > 0 {
 		s.cp, s.mp = policyFromSettings(cfg.Manifest.Budgets)
+		// Prefer the operator's typed setting (manifest <- tenant column). Fall back to the budget document
+		// only for a worker-level override, which is the one place a JSON value legitimately beats the tenant
+		// default.
+		s.cep = contextEditPolicyFromSettings(cfg.Manifest.Budgets)
+		if m := cfg.Manifest.ContextEditingKeepToolCalls; m != nil && *m > 0 {
+			s.cep.KeepToolCalls = int(*m)
+		}
+		if m := cfg.Manifest.MaxToolOutputBytes; m != nil && *m > 0 {
+			s.maxToolOutputVal = int(*m)
+		}
 		s.cs.budget = opencode.ParseBudgetLadder(cfg.Manifest.Budgets)
 		s.cs.spend = opencode.NewBudgetSpend()
 	}

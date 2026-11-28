@@ -515,6 +515,28 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		}
 	}
 
+	// SINGLE-LIVE-EXECUTION INVARIANT — asked of the executions table, before anything is created.
+	//
+	// Runs above the adapter/project gates on purpose: those gates bound CONCURRENCY (how many may run
+	// at once across a project) and are allowed to defer work; this one forbids DUPLICATION (one step,
+	// two workers on one worktree) and must never be satisfied by waiting, because waiting is what
+	// produced the second execution.
+	//
+	// The step run alone cannot answer this: dispatchStep commits it `running` with
+	// worker_execution_id = "" and the link lands in a later transaction, so "running and unlinked" is
+	// unknowable and pollTaskStep resolves it with a 15s stopwatch. Measured cost of that stopwatch on
+	// run 01M8FE5CWEZ9WP7QXQREDJDM9D: two sessions, 66 minutes, one worktree.
+	if stepRun != nil {
+		if live, lerr := liveExecutionForStep(ctx, ttx.Tx, tenantID, stepRun.WorkflowRunID, stepRun.StepID); lerr != nil {
+			return fmt.Errorf("check live execution for step: %w", lerr)
+		} else if live != "" {
+			r.log.Info("dispatch refused: step already has a live execution",
+				"task", task.ID, "step_run", stepRun.ID, "step", stepRun.StepID,
+				"live_execution", live)
+			return nil
+		}
+	}
+
 	// Select an Adapter (docs/03 §4.2).
 	adapter, err := r.selectAdapter(ctx, ttx.Tx, tenantID, resolveAdapterRowKind(version.ModelRef))
 	if err != nil {
@@ -910,6 +932,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	var stallNudgeMax *int32
 	var stallNudgeReplyWindow, stallNudgeCooldown *int64
 	var stallToolHang *int64
+	var tenantSettingsRow db.TenantSettingsRow
 	var defaultBudgetOverrides []byte
 	{
 		settingsCtx := context.Background()
@@ -927,6 +950,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				stallNudgeReplyWindow = s.StallNudgeReplyWindowSeconds
 				stallNudgeCooldown = s.StallNudgeCooldownSeconds
 				stallToolHang = s.StallToolHangSeconds
+				tenantSettingsRow = s
 				defaultBudgetOverrides = s.BudgetJSON()
 			}
 			stx.Rollback(settingsCtx)
@@ -936,6 +960,16 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// Merge the tenant-level default budget (base) with the worker's own budget_overrides (override) so
 	// a worker's explicit field always wins per-field over the tenant default.
 	budgetsJSON := mergeBudgets(defaultBudgetOverrides, version.BudgetOverrides)
+
+	// The per-tool-result cap rides the SAME budget document as its sibling knobs (compact_max_turns,
+	// tokens, cost_usd) rather than getting a column of its own: it is a context/cost tuning value, and the
+	// budget document is where those live and where an operator changes them. Absent = unset, so the
+	// adapter falls back to ORCHICON_MAX_TOOL_OUTPUT_BYTES and then the built-in default.
+	// Read from the typed COLUMN, like every other tenant setting. It used to be parsed out of the budget
+	// JSON, which is derived from the ladder by an allowlist — a key with no column had nothing to
+	// rehydrate it on read, so a saved value was invisible on the next GetSettings.
+	maxToolOutput := tenantSettingsRow.MaxToolOutputBytes
+	keepToolCalls := tenantSettingsRow.ContextEditingKeepToolCalls
 
 	manifest := ExecutionManifest{
 		ExecutionID:                  exec.ID,
@@ -968,6 +1002,8 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		StallNudgeReplyWindowSeconds: stallNudgeReplyWindow,
 		StallNudgeCooldownSeconds:    stallNudgeCooldown,
 		StallToolHangSeconds:         stallToolHang,
+		MaxToolOutputBytes:           maxToolOutput,
+		ContextEditingKeepToolCalls:  keepToolCalls,
 	}
 	if r.dispatcher == nil {
 		err := fmt.Errorf("no adapter dispatcher configured — the server must register at least one adapter bridge")

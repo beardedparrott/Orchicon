@@ -119,6 +119,28 @@ export class TenantSettings extends Message<TenantSettings> {
   stallToolHangSeconds?: bigint;
 
   /**
+   * --- Context hygiene: how many tool results stay verbatim ---
+   * Context editing keeps the newest N tool results and replaces older ones with a stub that names the
+   * tool and its arguments, so the agent still knows the call happened without paying for its output on
+   * every later turn. A tool-call count rather than a share of the window, because cost is driven by the
+   * ABSOLUTE tokens re-sent per turn.
+   * Blank/NULL = disabled. A positive value enables it (e.g. 20).
+   *
+   * @generated from field: optional int32 context_editing_keep_tool_calls = 44;
+   */
+  contextEditingKeepToolCalls?: number;
+
+  /**
+   * The per-tool-result cap in BYTES: how much of one tool's output stays in model context. The single
+   * largest lever on per-turn cost, since every byte kept is re-sent on every later turn. Oversized output
+   * is truncated head+tail and the full payload offloaded to .orchicon/outputs/<execution>/.
+   * Blank/NULL = fall back to ORCHICON_MAX_TOOL_OUTPUT_BYTES, then 131072.
+   *
+   * @generated from field: optional int64 max_tool_output_bytes = 43;
+   */
+  maxToolOutputBytes?: bigint;
+
+  /**
    * How long an execution must have been running before it becomes
    * eligible for reaping (skips the fresh-dispatch race). Seconds.
    * Default 60.
@@ -373,6 +395,8 @@ export class TenantSettings extends Message<TenantSettings> {
     { no: 32, name: "stall_nudge_reply_window_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
     { no: 33, name: "stall_nudge_cooldown_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
     { no: 34, name: "stall_tool_hang_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
+    { no: 44, name: "context_editing_keep_tool_calls", kind: "scalar", T: 5 /* ScalarType.INT32 */, opt: true },
+    { no: 43, name: "max_tool_output_bytes", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
     { no: 15, name: "execution_reap_grace_seconds", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
     { no: 16, name: "execution_reap_consecutive_failures", kind: "scalar", T: 5 /* ScalarType.INT32 */ },
     { no: 19, name: "default_budget_overrides", kind: "scalar", T: 9 /* ScalarType.STRING */ },

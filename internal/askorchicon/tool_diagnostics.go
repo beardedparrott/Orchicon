@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/beardedparrott/orchicon/internal/antigravity/authmethod"
 	"github.com/beardedparrott/orchicon/internal/audit"
@@ -111,12 +112,29 @@ func toolDiagnoseFailure(ctx context.Context, pool *db.Pool, args json.RawMessag
 	return json.Marshal(diagnosis)
 }
 
+// toolGetUsage reads token/cost usage.
+//
+// IT COULD NOT BE SCOPED TO THE THING A CALLER ACTUALLY ASKS ABOUT. The db filter has carried
+// ExecutionID / TaskID / SessionID / time bounds all along, but this tool exposed only
+// project/provider/model — so "how many tokens did execution X use, and what did it cost?" had no
+// answer from here, and the honest-looking reply was a page of the tenant's most recent usage rows
+// that happened to be a DIFFERENT execution's. That reads as "the tool reports 0 / wrong numbers"
+// from the outside, because the number it returns is not about the thing that was asked about.
+//
+// A SUMMARY is returned alongside the page so a scoped call needs no client-side arithmetic: the
+// per-execution figure the executions page shows is SUM(total_tokens) over exactly these rows, and
+// the whole point of this tool is to agree with it.
 func toolGetUsage(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {
 	var params struct {
-		ProjectID string `json:"project_id"`
-		Provider  string `json:"provider"`
-		Model     string `json:"model"`
-		PageToken string `json:"page_token"`
+		ProjectID   string `json:"project_id"`
+		TaskID      string `json:"task_id"`
+		ExecutionID string `json:"execution_id"`
+		SessionID   string `json:"session_id"`
+		Provider    string `json:"provider"`
+		Model       string `json:"model"`
+		StartTime   string `json:"start_time"`
+		EndTime     string `json:"end_time"`
+		PageToken   string `json:"page_token"`
 	}
 	if len(args) > 0 && string(args) != "null" {
 		json.Unmarshal(args, &params)
@@ -127,14 +145,31 @@ func toolGetUsage(ctx context.Context, pool *db.Pool, args json.RawMessage) (jso
 		return nil, err
 	}
 	defer ttx.Rollback(ctx)
-	rows, err := db.ListUsageRecords(ctx, ttx.Tx, db.ListUsageRecordsFilter{
-		TenantID:  tenantID,
-		ProjectID: params.ProjectID,
-		Provider:  params.Provider,
-		Model:     params.Model,
-		AfterID:   params.PageToken,
-		PageSize:  int32(listCap + 1),
-	})
+
+	parseTime := func(s string) time.Time {
+		if s == "" {
+			return time.Time{}
+		}
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			return t
+		}
+		return time.Time{}
+	}
+
+	filter := db.ListUsageRecordsFilter{
+		TenantID:    tenantID,
+		ProjectID:   params.ProjectID,
+		TaskID:      params.TaskID,
+		ExecutionID: params.ExecutionID,
+		SessionID:   params.SessionID,
+		Provider:    params.Provider,
+		Model:       params.Model,
+		StartTime:   parseTime(params.StartTime),
+		EndTime:     parseTime(params.EndTime),
+		AfterID:     params.PageToken,
+		PageSize:    int32(listCap + 1),
+	}
+	rows, err := db.ListUsageRecords(ctx, ttx.Tx, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +181,49 @@ func toolGetUsage(ctx context.Context, pool *db.Pool, args json.RawMessage) (jso
 	if len(rows) > listCap {
 		env.setNextPage(rows[listCap-1].ID)
 	}
-	return json.Marshal(env)
+
+	// The SUMMARY is computed over the WHOLE filter, not the page: paging must not change the total,
+	// or a long execution's cost would appear to shrink as you page through it.
+	summary := map[string]any{}
+	scoped := filter
+	scoped.AfterID = ""
+	scoped.PageSize = 1000
+	var tokens int64
+	var cost float64
+	var records int
+	for {
+		page, perr := db.ListUsageRecords(ctx, ttx.Tx, scoped)
+		if perr != nil {
+			return nil, perr
+		}
+		for _, r := range page {
+			tokens += r.TotalTokens
+			cost += r.CostUSD
+			records++
+		}
+		if len(page) < 1000 {
+			break
+		}
+		scoped.AfterID = page[len(page)-1].ID
+	}
+	summary["total_tokens"] = tokens
+	summary["cost_usd"] = cost
+	summary["record_count"] = records
+	// State the scope back explicitly: an empty result is then unambiguous ("no rows for THIS
+	// execution") instead of being mistaken for "the filter was ignored".
+	summary["scope"] = map[string]string{
+		"project_id": params.ProjectID, "task_id": params.TaskID,
+		"execution_id": params.ExecutionID, "session_id": params.SessionID,
+		"provider": params.Provider, "model": params.Model,
+	}
+	b, err := json.Marshal(struct {
+		compactList
+		Summary map[string]any `json:"summary"`
+	}{compactList: env, Summary: summary})
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
 func toolGetSettings(ctx context.Context, pool *db.Pool, args json.RawMessage) (json.RawMessage, error) {

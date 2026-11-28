@@ -486,6 +486,10 @@ function DefaultsTab() {
   const [draftBudgetWallClock, setDraftBudgetWallClock] = useState("");
   const [draftBudgetToolCalls, setDraftBudgetToolCalls] = useState("");
   const [draftCompactMaxTurns, setDraftCompactMaxTurns] = useState("");
+  // Context hygiene: typed tenant settings (not budget-JSON keys), same as every other field here.
+  // Context editing drops BYTES (free, deterministic) where compaction rewrites MEANING (a model call).
+  const [draftKeepToolCalls, setDraftKeepToolCalls] = useState("");
+  const [draftMaxToolOutputBytes, setDraftMaxToolOutputBytes] = useState("");
   const [draftCompactTiers, setDraftCompactTiers] = useState<CompactTiers>(defaultCompactTiers);
   const [draftWarn, setDraftWarn] = useState<BudgetWarnings>(emptyWarnings);
   const [draftReapGrace, setDraftReapGrace] = useState("");
@@ -531,6 +535,8 @@ function DefaultsTab() {
       setDraftBudgetWallClock(budget.wallClockSeconds);
       setDraftBudgetToolCalls(budget.toolCallCount);
       setDraftCompactMaxTurns(budget.compactMaxTurns);
+      setDraftKeepToolCalls(String(settings.contextEditingKeepToolCalls ?? ""));
+      setDraftMaxToolOutputBytes(String(settings.maxToolOutputBytes ?? ""));
       setDraftCompactTiers(budget.compactTiers);
       setDraftWarn(budget.warnings);
       setDraftReapGrace(String(settings.executionReapGraceSeconds ?? ""));
@@ -581,8 +587,14 @@ function DefaultsTab() {
           draftBudgetWallClock,
           draftBudgetToolCalls,
           draftCompactMaxTurns,
+          "", // maxToolOutputBytes is a typed tenant setting now, not a budget-document key
           draftCompactTiers,
           draftWarn,
+          // The document this form was seeded from, so blocks it does not render survive a Save instead
+          // of being silently deleted by the rebuild. `settings` is optional at this point in the render
+          // (the form only exists once it has loaded), so this is guarded rather than non-null asserted:
+          // an unseeded form has nothing to preserve and must not crash the save.
+          settings?.defaultBudgetOverrides,
         ),
         executionReapGraceSeconds: BigInt(parseInt(draftReapGrace) || 0),
         executionReapConsecutiveFailures: parseInt(draftReapFailures) || 0,
@@ -598,6 +610,14 @@ function DefaultsTab() {
         executionRetentionKeep:
           draftRetentionKeep.trim() === "" ? undefined : BigInt(parseInt(draftRetentionKeep) || 0),
         executionRetentionVacuum: draftRetentionVacuum,
+        // Typed tenant settings, carried like executionRetentionKeep: blank = undefined = "leave as
+        // stored" (NULL means the env/built-in default); a typed number, 0 included, is the value.
+        maxToolOutputBytes:
+          draftMaxToolOutputBytes.trim() === ""
+            ? undefined
+            : BigInt(parseInt(draftMaxToolOutputBytes) || 0),
+        contextEditingKeepToolCalls:
+          draftKeepToolCalls.trim() === "" ? undefined : parseInt(draftKeepToolCalls) || 0,
         executionRetentionTimeoutSeconds: parseInt(draftRetentionTimeout) || 0,
         outboxRetentionDays: parseInt(draftOutboxRetentionDays) || 0,
         antigravityAuthMethod: draftAntigravityAuthMethod,
@@ -782,7 +802,22 @@ function DefaultsTab() {
                 onChange={setDraftCompactMaxTurns}
                 placeholder="never"
               />
+              <StallField
+                label="Tool output cap (bytes)"
+                description="How much of a single tool's output stays in context. Every byte kept here is re-sent on every later turn, so this is the biggest lever on per-turn cost. Oversized output is truncated head+tail and the full payload is written to .orchicon/outputs/<execution>/ so the worker can read the rest instead of re-running. Empty = 131072 (128 KiB)."
+                value={draftMaxToolOutputBytes}
+                onChange={setDraftMaxToolOutputBytes}
+                placeholder="131072"
+              />
             </div>
+
+            <StallField
+              label="Keep last N tool results"
+              description="Context editing: only the newest N tool results stay verbatim; older ones are replaced by a stub naming the tool and its arguments, so the agent still knows the call happened without paying for its output every turn. This is a tool-call count rather than a share of the window on purpose — cost is driven by the absolute number of tokens re-sent per turn, so a percentage-of-window trigger never fires on a large-window model. Errors are never stubbed. Empty = off."
+              value={draftKeepToolCalls}
+              onChange={setDraftKeepToolCalls}
+              placeholder="off (e.g. 20)"
+            />
 
             <BudgetWarningsEditor
               value={draftWarn}

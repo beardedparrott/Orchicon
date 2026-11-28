@@ -84,11 +84,11 @@ func TestCapToolOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	small := strings.Repeat("a", 512)
-	if got := capToolOutput(small, "", "", ""); got != small {
+	if got := capToolOutput(small, "", "", "", 0); got != small {
 		t.Fatalf("under-cap output was altered")
 	}
 	big := strings.Repeat("b", 8192)
-	got := capToolOutput(big, "", "", "")
+	got := capToolOutput(big, "", "", "", 0)
 	if len(got) >= len(big) {
 		t.Fatalf("over-cap output not truncated: in=%d out=%d", len(big), len(got))
 	}
@@ -100,7 +100,7 @@ func TestCapToolOutput(t *testing.T) {
 	if err := os.Setenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES", "0"); err != nil {
 		t.Fatal(err)
 	}
-	if got := capToolOutput(big, "", "", ""); got != big {
+	if got := capToolOutput(big, "", "", "", 0); got != big {
 		t.Fatalf("disabled cap altered output")
 	}
 }

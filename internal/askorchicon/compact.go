@@ -24,21 +24,30 @@ type compactList struct {
 }
 
 // newCompactList wraps rows in the compact envelope, capping at listCap.
+// newCompactList trims a row slice to listCap.
+//
+// CALLERS MUST FETCH listCap+1 ROWS, and the note states WHICH case they are in, because a note that
+// can only say one thing is not evidence. It used to assume the +1 probe row was always there and
+// always print "%d more item(s) not shown" — so a filter matching 60 rows and one matching 26 returned
+// the SAME count (25) and the SAME note ("1 more item(s) not shown"), and a reader could not tell
+// whether a filter had narrowed anything. That is what made an unfiltered and a filtered call look
+// identical when checking whether a filter was wired.
+//
+// Two distinct notes now:
+//   - the probe row was returned: there IS more, and the count is exact;
+//   - no probe row: exactly listCap matched, and the note says so rather than implying more.
 func newCompactList(rows []any, detailTool string) compactList {
-	out := compactList{Count: len(rows), Items: rows}
-	if len(rows) > listCap {
-		out = compactList{
-			Count:     listCap,
-			Truncated: true,
-			Items:     rows[:listCap],
-		}
-		if detailTool != "" {
-			out.Note = fmt.Sprintf("%d more item(s) not shown — narrow with search/status filters or use %s for full detail", len(rows)-listCap, detailTool)
-		} else {
-			out.Note = fmt.Sprintf("%d more item(s) not shown — narrow with the search/status/project filters", len(rows)-listCap)
-		}
+	if len(rows) <= listCap {
+		return compactList{Count: len(rows), Items: rows}
 	}
-	return out
+	more := len(rows) - listCap
+	note := ""
+	if detailTool != "" {
+		note = fmt.Sprintf("%d more item(s) not shown — narrow with search/status filters or use %s for full detail", more, detailTool)
+	} else {
+		note = fmt.Sprintf("%d more item(s) not shown — narrow with the search/status/project filters", more)
+	}
+	return compactList{Count: listCap, Truncated: true, Items: rows[:listCap], Note: note}
 }
 
 // setNextPage records the cursor for the next page (the last shown row's ID) and appends a paging
@@ -132,11 +141,21 @@ func compactRuntimeImage(r db.RuntimeImageRow) map[string]any {
 	}
 }
 
+// compactUsage trims a usage record for the compact list.
+//
+// IT NOW CARRIES THE ATTRIBUTION KEYS (ExecutionID, TaskID, WorkflowRunID, SessionID). Without them a
+// reader that received a page of rows had NO WAY to say which execution a row belonged to, so an agent
+// asked "how many tokens did execution X use?" could only see a flat recent-activity feed and sum or
+// eyeball it. That is how a per-execution question gets answered with an unrelated number.
 func compactUsage(r db.UsageRecordRow) map[string]any {
 	return map[string]any{
 		"ID": r.ID, "OccurredAt": r.OccurredAt, "Model": r.Model,
 		"Provider": r.Provider, "TotalTokens": r.TotalTokens,
 		"CostUSD": r.CostUSD, "TaskTitle": r.TaskTitle,
 		"WorkerName": r.WorkerName, "ProjectID": r.ProjectID,
+		// Attribution: the keys that let a row be tied to the thing it paid for.
+		"ExecutionID": r.ExecutionID, "TaskID": r.TaskID,
+		"WorkflowRunID": r.WorkflowRunID, "SessionID": r.SessionID,
+		"AdapterKind": r.AdapterKind, "Billing": r.Billing,
 	}
 }

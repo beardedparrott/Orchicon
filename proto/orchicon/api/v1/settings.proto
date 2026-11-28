@@ -90,6 +90,20 @@ message TenantSettings {
   // "disabled" and is now rejected — see the section comment above.
   optional int64 stall_tool_hang_seconds = 34;
 
+  // --- Context hygiene: how many tool results stay verbatim ---
+  // Context editing keeps the newest N tool results and replaces older ones with a stub that names the
+  // tool and its arguments, so the agent still knows the call happened without paying for its output on
+  // every later turn. A tool-call count rather than a share of the window, because cost is driven by the
+  // ABSOLUTE tokens re-sent per turn.
+  // Blank/NULL = disabled. A positive value enables it (e.g. 20).
+  optional int32 context_editing_keep_tool_calls = 44;
+
+  // The per-tool-result cap in BYTES: how much of one tool's output stays in model context. The single
+  // largest lever on per-turn cost, since every byte kept is re-sent on every later turn. Oversized output
+  // is truncated head+tail and the full payload offloaded to .orchicon/outputs/<execution>/.
+  // Blank/NULL = fall back to ORCHICON_MAX_TOOL_OUTPUT_BYTES, then 131072.
+  optional int64 max_tool_output_bytes = 43;
+
   // --- Execution liveness reaper ---
   // The liveness reaper fails executions whose runtime process is gone
   // (control-plane restart, lost runtime container). The liveness probe

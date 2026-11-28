@@ -154,6 +154,13 @@ func (m *progressMonitor) observeToolCall(name, argsJSON string, isError bool) {
 	defer m.mu.Unlock()
 	now := m.now()
 	m.lastMeaningfulAction = now
+	// A RESOLVED TOOL IS PROGRESS ON THE NO-PROGRESS CLOCK, not just on the meaningful-action clock.
+	// lastStepFinish is what no_progress measures, and it is otherwise only refreshed by model text —
+	// so a tool that ran longer than the window would return to a clock that is ALREADY past its
+	// deadline and fire FATAL on the very next tick. That is the trap that makes a bare "suppress while
+	// in flight" rule useless: it only moves the abort one tick later. The loop is about to send a
+	// fresh provider request, so the model is owed a full window from here.
+	m.lastStepFinish = now
 	// The in-flight slot is disarmed — the call resolved within the turn.
 	m.toolInFlight = false
 	sig := toolCallSignature(name, argsJSON, isError)
@@ -254,8 +261,27 @@ func (m *progressMonitor) check() string {
 		}
 		return "stalled:tool_hang:" + name
 	}
-	// no_progress: no token progress within the window. FATAL.
-	if m.w.noProgress > 0 && now.Sub(m.lastStepFinish) > m.w.noProgress {
+	// no_progress: no token progress within the window. FATAL — BUT ONLY WHILE THE MODEL IS THE ONE
+	// SUPPOSED TO BE TALKING.
+	//
+	// TOOL TIME IS NOT MODEL SILENCE, and treating it as such killed correct work. This window is
+	// measured from the last text/step event, and NO event of any kind can arrive while a tool call is
+	// executing: the loop is blocked inside executeTools until it returns. So a worker running a
+	// legitimate long tool — `go test ./...`, a docker build, booting a plane — goes silent by
+	// definition for as long as the tool takes, and past the window this fired FATAL, aborted the
+	// session, and threw away everything the tool was about to produce.
+	//
+	// Measured on run 01M8FE5CWEZ9WP7QXQREDJDM9D (workflow step-sse): three executions in a row died
+	// with `stalled:no_progress`, each mid-way through a long build or test sweep ("Binary built from my
+	// branch HEAD. Now booting the disposable plane."), 33.5M / 3.7M / 16.2M tokens spent. Nothing was
+	// stuck; the model simply had nothing to say while its tool worked.
+	//
+	// THE HUNG-TOOL CASE IS STILL BOUNDED, and deliberately not by this signal: the tool_hang watchdog
+	// above is the detector for an in-flight call that produces zero events, it is checked on every
+	// tick, and the nudge reply-window escalates its latch to a fatal stall. So a genuinely wedged tool
+	// dies on that path while a working one is left alone. Suppressing no_progress here does not remove
+	// the ceiling — it stops two different failures from sharing one verdict.
+	if m.w.noProgress > 0 && !m.toolInFlight && now.Sub(m.lastStepFinish) > m.w.noProgress {
 		m.fired = true
 		return "stalled:no_progress"
 	}

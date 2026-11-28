@@ -143,6 +143,11 @@ type askSession struct {
 
 	// alive reports whether the read loop is still running for `proc`.
 	alive bool
+	// spawning is closed when a spawn that is already in progress finishes. ensureRunning must release s.mu
+	// around the spawn (it starts a process and opens a listener), so s.proc is nil for a window AFTER a
+	// turn has decided to spawn. A sender that ran in that window saw nil and failed with "no live child to
+	// write to" — the check-then-write race behind the flaky TestAskDoesNotReuseAnExitedChild.
+	spawning chan struct{}
 
 	// --- the consent socket (consent_hook.go) -------------------------------------------------
 	//
@@ -463,15 +468,37 @@ func (b *Bridge) SetMCPSecretResolver(r MCPSecretResolver) { b.mcpSecretResolver
 
 // --- lifecycle --------------------------------------------------------------
 
+// signalSpawnDoneLocked closes the spawn-in-progress signal and clears it. Caller holds s.mu.
+func (s *askSession) signalSpawnDoneLocked() {
+	if s.spawning != nil {
+		close(s.spawning)
+		s.spawning = nil
+	}
+}
+
 // ensureRunning spawns the conversation's child if it is not already live.
-func (s *askSession) ensureRunning(_ context.Context) error {
+func (s *askSession) ensureRunning(ctx context.Context) error {
 	s.mu.Lock()
 	if s.alive && s.proc != nil {
 		s.mu.Unlock()
 		return nil // a live child serves this turn
 	}
+	// A SPAWN IS ALREADY IN FLIGHT. Do not start a second one and do not return with proc still nil: wait
+	// for the one running, then re-evaluate. Returning early here is what produced
+	// "no live child to write to" for a turn that arrived mid-spawn.
+	if s.spawning != nil {
+		wait := s.spawning
+		s.mu.Unlock()
+		select {
+		case <-wait:
+			return s.ensureRunning(ctx)
+		case <-ctx.Done():
+			return fmt.Errorf("claude ask: waiting for the session child to spawn: %w", ctx.Err())
+		}
+	}
 	// NOT ALIVE: reap whatever is left and spawn fresh. See the `alive` field for
 	// why proc != nil alone is not a reuse signal.
+	s.spawning = make(chan struct{})
 	stale := s.proc
 	s.proc = nil
 	if s.liveCtx == nil {
@@ -493,6 +520,9 @@ func (s *askSession) ensureRunning(_ context.Context) error {
 	s.b.bindAskSessionID(sid, s)
 
 	if err := os.MkdirAll(s.askDir, 0o755); err != nil {
+		s.mu.Lock()
+		s.signalSpawnDoneLocked()
+		s.mu.Unlock()
 		return fmt.Errorf("claude ask: create the ask directory: %w", err)
 	}
 
@@ -519,12 +549,16 @@ func (s *askSession) ensureRunning(_ context.Context) error {
 
 	proc, err := s.b.spawnAsk(liveCtx, spec)
 	if err != nil {
+		s.mu.Lock()
+		s.signalSpawnDoneLocked()
+		s.mu.Unlock()
 		return fmt.Errorf("claude ask: spawn: %w", err)
 	}
 
 	s.mu.Lock()
 	s.proc = proc
 	s.alive = true
+	s.signalSpawnDoneLocked()
 	s.mu.Unlock()
 
 	// LOGGED, because the ABSENCE of any line here is what made the operator's "thinking…" hang

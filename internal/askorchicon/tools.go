@@ -688,11 +688,27 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Properties:  map[string]PropertySchema{"execution_id": {Type: "string", Description: "Execution ID to diagnose"}, "workflow_run_id": {Type: "string", Description: "Workflow run ID to diagnose"}},
 		},
 		{
-			Name:        "get_usage",
-			Description: "Get token usage and cost data. Optionally filter by project, provider, or model. Returns a bounded, compact list ({count, truncated, note, items}) — pass next_page_token to page through the rest.",
-			Mutating:    false,
-			Fn:          toolGetUsage,
-			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "provider": {Type: "string", Description: "Optional provider filter"}, "model": {Type: "string", Description: "Optional model filter"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}},
+			Name: "get_usage",
+			Description: "Get token usage and cost data. SCOPE IT TO WHAT YOU ARE ASKING ABOUT — pass execution_id for a per-execution figure " +
+				"(this is SUM(total_tokens) over that execution's rows, the same number the executions page shows), task_id for a work item, " +
+				"workflow_run_id is NOT a filter here so scope by execution_id or task_id, or session_id for one Ask conversation. " +
+				"Returns {count, truncated, note, items, summary}: `items` is a bounded page of individual turn records, and `summary` " +
+				"carries the total_tokens / cost_usd / record_count over the WHOLE scope (not just the page) plus the scope that was applied. " +
+				"An empty items list with a non-zero summary means the scope matched but paging started past it; an empty result with " +
+				"record_count 0 means nothing matched THAT scope.",
+			Mutating: false,
+			Fn:       toolGetUsage,
+			Properties: map[string]PropertySchema{
+				"project_id":   {Type: "string", Description: "Optional project ID filter"},
+				"task_id":      {Type: "string", Description: "Optional work item ID filter"},
+				"execution_id": {Type: "string", Description: "Optional execution ID filter — use this for per-execution token/cost totals"},
+				"session_id":   {Type: "string", Description: "Optional Ask Orchicon conversation ID filter"},
+				"provider":     {Type: "string", Description: "Optional provider filter"},
+				"model":        {Type: "string", Description: "Optional model filter"},
+				"start_time":   {Type: "string", Description: "Optional RFC3339 lower bound on occurred_at"},
+				"end_time":     {Type: "string", Description: "Optional RFC3339 upper bound on occurred_at"},
+				"page_token":   {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"},
+			},
 		},
 
 		// --- Policies ---
@@ -895,7 +911,8 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 				"stall_nudge_reply_window_seconds":    {Type: "number", Description: "Seconds a probe is awaited before the execution is considered unresponsive (0 = leave unchanged)"},
 				"stall_nudge_cooldown_seconds":        {Type: "number", Description: "Seconds between consecutive probes (0 = leave unchanged)"},
 				"stall_tool_hang_seconds":             {Type: "number", Description: "Seconds a tool call with no events is allowed before it is cancelled natively and a course-correcting redirect is injected (0 = leave unchanged; negative = disabled)"},
-				"default_budget_overrides":            {Type: "string", Description: "JSON object of default execution-budget gates. An OMITTED gate means NO LIMIT — there are no built-in ceilings, so each one exists only because an operator set it. Example: {\"cost_usd\":10,\"wall_clock_seconds\":7200,\"compact_max_turns\":30}. Empty string = leave unchanged."},
+					"max_tool_output_bytes":           {Type: "number", Description: "Per-tool-result cap in BYTES, set inside default_budget_overrides (same document as compact_max_turns). How much of one tool's output stays in model context — every byte kept is re-sent on every later turn, so it is the biggest lever on per-turn cost. Oversized output is truncated head+tail and the full payload is offloaded to .orchicon/outputs/<execution>/ so the worker can read the rest instead of re-running. Omit = fall back to ORCHICON_MAX_TOOL_OUTPUT_BYTES then 131072 (128 KiB)."},
+				"default_budget_overrides":            {Type: "string", Description: "JSON object of default execution-budget gates. An OMITTED gate means NO LIMIT — there are no built-in ceilings, so each one exists only because an operator set it. Example: {\"cost_usd\":10,\"wall_clock_seconds\":7200,\"compact_max_turns\":30,\"max_tool_output_bytes\":32768}. Empty string = leave unchanged."},
 				"execution_reap_grace_seconds":        {Type: "number", Description: "Liveness reaper grace before a stuck running execution is reaped (0 = leave unchanged)"},
 				"execution_reap_consecutive_failures": {Type: "number", Description: "Liveness probe failures before the reaper acts (0 = leave unchanged)"},
 				"antigravity_auth_method":             {Type: "string", Description: "Antigravity (agy) ACP auth method: oauth-personal (default) | oauth-business | gemini-api-key | agent-platform. gemini-api-key is the only method that works inside a runtime container (it reads the tenant secret GEMINI_API_KEY; the personal credential lives in the host keyring). Empty = leave unchanged. In a container, oauth-personal is refused up front."},

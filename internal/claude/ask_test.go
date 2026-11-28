@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -716,5 +717,66 @@ func TestAskAttachmentBlocksAreWellFormed(t *testing.T) {
 	}
 	if len(content) != 1 || content[0]["type"] != "text" {
 		t.Fatalf("an empty turn produced %+v, want one text block so content is never an empty array", content)
+	}
+}
+
+// TestConcurrentTurnWaitsForInFlightSpawn pins the CHECK-THEN-WRITE race behind a real CI failure:
+//
+//	TestAskDoesNotReuseAnExitedChild: SendTurnMessage (turn 2): claude ask: no live child to write to
+//
+// ensureRunning must release s.mu around the spawn (it starts a process and opens a listener), so s.proc is
+// nil for a window AFTER a turn has decided to spawn. A second sender that ran in that window saw nil and
+// failed. Under `make test` the packages run in parallel, the window widens, and the sibling test tripped it.
+//
+// The spawn here is held open deliberately, so the window is guaranteed rather than hoped for.
+func TestConcurrentTurnWaitsForInFlightSpawn(t *testing.T) {
+	spawnStarted := make(chan struct{}, 1)
+	releaseSpawn := make(chan struct{})
+	var once sync.Once
+
+	h := newHarness(t, func() *fakeProc {
+		// This factory runs INSIDE the spawn override, so blocking here holds the spawn window open.
+		once.Do(func() { spawnStarted <- struct{}{} })
+		<-releaseSpawn
+		return newFakeProc()
+	})
+	h.b.SetAskRoot(t.TempDir())
+	ctx := context.Background()
+	sid, err := h.b.CreateConversationSession(ctx, "conv-race", "t")
+	if err != nil {
+		t.Fatalf("CreateConversationSession: %v", err)
+	}
+
+	// Turn 1 enters the spawn and parks inside it: s.proc is nil right now.
+	turn1 := make(chan error, 1)
+	go func() {
+		turn1 <- h.b.SendTurnMessage(ctx, "conv-race", sid, "", "claude/anthropic/claude-sonnet-4", "hello")
+	}()
+	<-spawnStarted
+
+	// Turn 2 arrives WHILE the spawn is in flight. Before the fix this returned
+	// "no live child to write to" immediately.
+	turn2 := make(chan error, 1)
+	go func() {
+		turn2 <- h.b.SendTurnMessage(ctx, "conv-race", sid, "", "claude/anthropic/claude-sonnet-4", "second")
+	}()
+
+	// Give turn 2 time to reach the wait (if it is going to fail, it fails here and not later).
+	select {
+	case err := <-turn2:
+		if err != nil {
+			t.Fatalf("a turn arriving mid-spawn must WAIT for the child, not fail: %v", err)
+		}
+	case <-time.After(50 * time.Millisecond):
+		// Expected: it is waiting for the spawn to finish.
+	}
+
+	close(releaseSpawn)
+
+	if err := <-turn1; err != nil {
+		t.Fatalf("turn 1: %v", err)
+	}
+	if err := <-turn2; err != nil {
+		t.Fatalf("turn 2 must succeed once the spawn completes: %v", err)
 	}
 }

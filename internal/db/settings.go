@@ -24,6 +24,11 @@ type TenantSettingsRow struct {
 	StallNudgeReplyWindowSeconds     *int64
 	StallNudgeCooldownSeconds        *int64
 	StallToolHangSeconds             *int64
+	// MaxToolOutputBytes is the per-tool-result cap (bytes); nil = unset.
+	MaxToolOutputBytes *int64
+	// ContextEditingKeepToolCalls is how many of the newest tool results stay verbatim before older
+	// ones are stubbed; nil = unset (disabled).
+	ContextEditingKeepToolCalls *int32
 	DefaultBudgetOverrides           []byte       // jsonb: default budget JSON transport (see BudgetLadder for the typed source of truth); a worker's budget_overrides overrides these
 	Budget                           BudgetLadder // typed budget ladder + gates (authoritative; the jsonb BudgetLadder... is the wire transport)
 	ExecutionReapGraceSeconds        int64        // liveness reaper: min age before an execution is reaping-eligible
@@ -89,7 +94,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
-		stall_tool_hang_seconds,
+		stall_tool_hang_seconds, max_tool_output_bytes, context_editing_keep_tool_calls,
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
 		execution_retention_enabled, execution_retention_keep,
@@ -132,7 +137,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
-		stall_tool_hang_seconds,
+		stall_tool_hang_seconds, max_tool_output_bytes, context_editing_keep_tool_calls,
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
 		execution_retention_enabled, execution_retention_keep,
@@ -214,8 +219,12 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		execution_retention_vacuum, execution_retention_timeout_seconds,
 		outbox_retention_days,
 		antigravity_auth_method, antigravity_share_telemetry,
+		-- POSITION MATTERS: these pair with $72/$73 at the END of the VALUES list. Putting the
+		-- columns mid-list while their placeholders stayed at the end shifted every value after
+		-- them by two, which surfaced as a type error on execution_retention_timeout_seconds.
+		max_tool_output_bytes, context_editing_keep_tool_calls,
 		updated_at
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, COALESCE(NULLIF($70, ''), 'oauth-personal'), $71, now())
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, COALESCE(NULLIF($70, ''), 'oauth-personal'), $71, $72, $73, now())
 	ON CONFLICT (tenant_id) DO UPDATE SET
 		default_worker_model = CASE WHEN $2 <> '' THEN $2 ELSE tenant_settings.default_worker_model END,
 		default_ask_orchicon_model = CASE WHEN $3 <> '' THEN $3 ELSE tenant_settings.default_ask_orchicon_model END,
@@ -274,6 +283,9 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		budget_compact_escalate_tier = $57,
 		budget_compact_final_tier = $58,
 		stall_tool_hang_seconds = $59::bigint,
+		-- NULL = unset (fall back to env / built-in default); 0 is an explicit operator value.
+		max_tool_output_bytes = $72::bigint,
+		context_editing_keep_tool_calls = $73::integer,
 		context_compaction_enabled = $60,
 		context_compaction_pressure_frac = $61,
 		context_recent_turns = $62,
@@ -312,7 +324,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
-		stall_tool_hang_seconds,
+		stall_tool_hang_seconds, max_tool_output_bytes, context_editing_keep_tool_calls,
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
 		execution_retention_enabled, execution_retention_keep,
@@ -351,6 +363,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		in.ExecutionRetentionVacuum, in.ExecutionRetentionTimeoutSeconds,
 		in.OutboxRetentionDays,
 		in.AntigravityAuthMethod, in.AntigravityShareTelemetry,
+		in.MaxToolOutputBytes, in.ContextEditingKeepToolCalls,
 	)
 	if err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: update tenant settings: %w", err)
@@ -397,7 +410,7 @@ func scanTenantSettings(row pgx.Rows) (TenantSettingsRow, error) {
 		&r.LogRetentionDays, &r.LogMaxFiles,
 		&r.MaxConcurrentRuns,
 		&r.SessionAccessTokenTtlSeconds, &r.SessionRefreshTokenTtlSeconds,
-		&r.StallToolHangSeconds,
+		&r.StallToolHangSeconds, &r.MaxToolOutputBytes, &r.ContextEditingKeepToolCalls,
 		&r.ContextCompactionEnabled, &r.ContextCompactionPressureFrac,
 		&r.ContextRecentTurns, &r.MemoryEnabled, &r.MemoryDigestEntries,
 		&r.ExecutionRetentionEnabled, &r.ExecutionRetentionKeep,
@@ -431,6 +444,8 @@ func (r TenantSettingsRow) AuditFields() map[string]any {
 		"stall_nudge_reply_window_seconds":  r.StallNudgeReplyWindowSeconds,
 		"stall_nudge_cooldown_seconds":      r.StallNudgeCooldownSeconds,
 		"stall_tool_hang_seconds":           r.StallToolHangSeconds,
+		"max_tool_output_bytes":             r.MaxToolOutputBytes,
+		"context_editing_keep_tool_calls":   r.ContextEditingKeepToolCalls,
 
 		"execution_reap_grace_seconds":        r.ExecutionReapGraceSeconds,
 		"execution_reap_consecutive_failures": r.ExecutionReapConsecutiveFailures,

@@ -30,6 +30,11 @@ const (
 	// TransCompaction records that the platform COLLAPSED the session's context mid-run: which trigger
 	// fired, how many messages went in and came out, and how many tool rounds were evicted.
 	TransCompaction = "compaction"
+	// TransContextEdit records that the platform CLEARED consumed tool payloads from the resident
+	// context to reclaim window space. It is distinct from TransCompaction on purpose: clearing drops
+	// BYTES (deterministic, no model call, the model's own reasoning untouched), while compaction rewrites
+	// MEANING (a summarizing model call). A reader debugging a session needs to tell those apart.
+	TransContextEdit = "context_edit"
 	// TransError is a surfaced error (stream error, tool failure, panic).
 	TransError = "error"
 	// TransState is a lifecycle marker: started / cancelled / failed / done.

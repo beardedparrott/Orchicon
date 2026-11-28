@@ -118,3 +118,83 @@ func TestUpdateSettingsPartialSaveKeepsStallWindows(t *testing.T) {
 		t.Fatalf("an explicit 0 (DISABLED) did not take effect (got %v) — the merge must not swallow a value the client sent", after.StallNoProgressWindowSeconds)
 	}
 }
+
+// TestUpdateSettingsRoundTripsContextEditing is the reported bug, end to end, through the real Service:
+//
+//	"set Keep last N tool results to 20, hit Save, and it shows blank immediately / after a reload."
+//
+// The two knobs are TYPED columns carried by typed proto fields, like every other setting that round-trips.
+// This drives exactly what the GUI sends and reads back through GetSettings — the RPC the page loads from —
+// so a broken INSERT, a broken RETURNING list or a broken scan all fail here, not in the operator's browser.
+func TestUpdateSettingsRoundTripsContextEditing(t *testing.T) {
+	dsn := os.Getenv("ORCHICON_TEST_DSN")
+	if dsn == "" {
+		t.Skip("ORCHICON_TEST_DSN not set; skipping the DB-backed settings round-trip test")
+	}
+	ctx := context.Background()
+	pool, err := db.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	const probeTenant = "tnt_settings_context_editing_probe"
+	t.Cleanup(func() {
+		cctx := context.Background()
+		ttx, err := pool.BeginTenantTx(cctx, probeTenant)
+		if err != nil {
+			return
+		}
+		_, _ = ttx.Exec(cctx, `DELETE FROM audit_events WHERE tenant_id=$1`, probeTenant)
+		_, _ = ttx.Exec(cctx, `DELETE FROM tenant_settings WHERE tenant_id=$1`, probeTenant)
+		_ = ttx.Commit(cctx)
+	})
+
+	svc := New(pool, slog.Default(), dsn)
+	tctx := tenant.WithID(ctx, probeTenant)
+
+	save := func(name string, s *apiv1.TenantSettings) {
+		t.Helper()
+		if _, err := svc.UpdateSettings(tctx, connect.NewRequest(&apiv1.UpdateSettingsRequest{Settings: s})); err != nil {
+			t.Fatalf("%s: save: %v", name, err)
+		}
+	}
+	load := func(name string) *apiv1.TenantSettings {
+		t.Helper()
+		resp, err := svc.GetSettings(tctx, connect.NewRequest(&apiv1.GetSettingsRequest{}))
+		if err != nil {
+			t.Fatalf("%s: GetSettings: %v", name, err)
+		}
+		return resp.Msg.Settings
+	}
+	check := func(name string, got *apiv1.TenantSettings, bytes int64, keep int32) {
+		t.Helper()
+		if got.MaxToolOutputBytes == nil || *got.MaxToolOutputBytes != bytes {
+			t.Errorf("%s: max_tool_output_bytes = %v, want %d", name, got.MaxToolOutputBytes, bytes)
+		}
+		if got.ContextEditingKeepToolCalls == nil || *got.ContextEditingKeepToolCalls != keep {
+			t.Errorf("%s: context_editing_keep_tool_calls = %v, want %d", name, got.ContextEditingKeepToolCalls, keep)
+		}
+	}
+	i64 := func(v int64) *int64 { return &v }
+	i32 := func(v int32) *int32 { return &v }
+
+	// 1. First save on a fresh tenant takes the INSERT branch.
+	save("insert", &apiv1.TenantSettings{MaxToolOutputBytes: i64(32768), ContextEditingKeepToolCalls: i32(20)})
+	check("insert", load("insert"), 32768, 20)
+
+	// 2. A second save takes the ON CONFLICT branch.
+	save("update", &apiv1.TenantSettings{MaxToolOutputBytes: i64(65536), ContextEditingKeepToolCalls: i32(5)})
+	check("update", load("update"), 65536, 5)
+
+	// 3. A save that omits them (an old client, or another field edited) leaves them unchanged.
+	save("omitted", &apiv1.TenantSettings{DefaultWorkerModel: ""})
+	check("omitted", load("omitted"), 65536, 5)
+
+	// 4. Zero is an explicit operator value, not "unset".
+	save("zero", &apiv1.TenantSettings{MaxToolOutputBytes: i64(0), ContextEditingKeepToolCalls: i32(0)})
+	check("zero", load("zero"), 0, 0)
+}

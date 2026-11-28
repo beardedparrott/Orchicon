@@ -51,8 +51,18 @@ export interface BudgetDefaultsForm {
   wallClockSeconds: string;
   toolCallCount: string;
   compactMaxTurns: string;
+  maxToolOutputBytes: string;
   compactTiers: CompactTiers;
   warnings: BudgetWarnings;
+  // Context editing (clearing consumed tool results) — separate from compaction.
+  // ONE knob: how many of the newest tool results stay verbatim. Empty/0 = disabled.
+  keepToolCalls: string;
+}
+
+/** The `context_editing` block as the form carries it. */
+export interface ContextEditingDraft {
+  /** How many of the newest tool results stay verbatim. Empty/0 = disabled. */
+  keepToolCalls: string;
 }
 
 // Parse the tenant default_budget_overrides JSON into form strings + warning
@@ -65,8 +75,10 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
     wallClockSeconds: "",
     toolCallCount: "",
     compactMaxTurns: "",
+    maxToolOutputBytes: "",
     compactTiers: defaultCompactTiers,
     warnings: emptyWarnings,
+    keepToolCalls: "",
   };
   if (!raw) return empty;
   try {
@@ -96,12 +108,15 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
       Array.isArray(ct) && ct.length === 3
         ? [Boolean(ct[0]), Boolean(ct[1]), Boolean(ct[2])]
         : defaultCompactTiers;
+    const ce = m.context_editing ?? {};
     return {
+      keepToolCalls: ce.keep_tool_calls != null ? String(ce.keep_tool_calls) : "",
       tokens: m.tokens != null ? String(m.tokens) : "",
       costUsd: m.cost_usd != null ? String(m.cost_usd) : "",
       wallClockSeconds: m.wall_clock_seconds != null ? String(m.wall_clock_seconds) : "",
       toolCallCount: m.tool_call_count != null ? String(m.tool_call_count) : "",
       compactMaxTurns: m.compact_max_turns != null ? String(m.compact_max_turns) : "",
+      maxToolOutputBytes: m.max_tool_output_bytes != null ? String(m.max_tool_output_bytes) : "",
       compactTiers,
       warnings: {
         tokens: read("tokens"),
@@ -118,14 +133,33 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
 // Build the default_budget_overrides JSON from the form fields. Empty fields
 // are omitted, and an omitted ceiling is NO ceiling — there is no built-in
 // fallback for any of them, so the operator's silence means "unlimited".
+/**
+ * Top-level budget-document keys this form does NOT render but must PRESERVE across a save.
+ *
+ * buildBudgetDefaults rebuilds the whole document from its own fields, so any key it does not know is
+ * dropped the moment an operator presses Save. Every key in this document is a decision that costs money
+ * or changes what a worker sees, so a form silently deleting one is the worst failure shape available:
+ * nothing errors, the setting just stops applying, and the next run behaves differently for no visible
+ * reason. `context_editing` is exactly that case (an agent configures it through update_settings; nothing
+ * in this form renders it).
+ *
+ * Exported so a test can assert parse -> build round-trips every key, rather than trusting this comment.
+ */
+export const UNMODELED_BUDGET_KEYS = ["context_editing"] as const;
+
 export function buildBudgetDefaults(
   tokens: string,
   costUsd: string,
   wallClockSeconds: string,
   toolCallCount: string,
   compactMaxTurns: string,
+  maxToolOutputBytes: string,
   compactTiers: CompactTiers,
   warnings: BudgetWarnings,
+  /** The raw document the form was seeded from — unmodeled keys are carried forward from it. */
+  preserveSource?: string,
+  /** Context editing (clearing). Omitted = the block is not written at all. */
+  clearing?: ContextEditingDraft,
 ): string {
   const out: Record<string, number | object> = {};
   if (tokens !== "") out.tokens = Number(tokens);
@@ -133,6 +167,7 @@ export function buildBudgetDefaults(
   if (wallClockSeconds !== "") out.wall_clock_seconds = Number(wallClockSeconds);
   if (toolCallCount !== "") out.tool_call_count = Number(toolCallCount);
   if (compactMaxTurns !== "") out.compact_max_turns = Number(compactMaxTurns);
+  if (maxToolOutputBytes !== "") out.max_tool_output_bytes = Number(maxToolOutputBytes);
   out.compact_tiers = [...compactTiers];
 
   const fracs: Record<string, number[]> = {};
@@ -158,6 +193,28 @@ export function buildBudgetDefaults(
     if (Object.keys(fracs).length) warningsObj.fractions = fracs;
     if (Object.keys(msgs).length) warningsObj.messages = msgs;
     out.warnings = warningsObj;
+  }
+
+  // CONTEXT EDITING. One knob: keep the newest N tool results, stub the rest. Written only when set, so
+  // an untouched tenant keeps a clean document and the built-in "off" applies.
+  if (clearing) {
+    const n = Number(clearing.keepToolCalls);
+    if (clearing.keepToolCalls.trim() !== "" && Number.isFinite(n) && n > 0) {
+      out.context_editing = { keep_tool_calls: n };
+    }
+  }
+
+  // CARRY UNMODELED BLOCKS FORWARD. An unparseable source is not fatal: the form's own fields are still
+  // saved, and losing an unreadable blob is no worse than the state it was in.
+  if (preserveSource) {
+    try {
+      const src = JSON.parse(preserveSource);
+      for (const key of UNMODELED_BUDGET_KEYS) {
+        if (src?.[key] != null) out[key] = src[key];
+      }
+    } catch {
+      /* leave the preserved blocks out rather than refusing the save */
+    }
   }
   return JSON.stringify(out);
 }
