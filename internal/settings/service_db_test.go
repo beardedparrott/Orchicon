@@ -15,7 +15,6 @@ package settings
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"os"
 	"testing"
@@ -124,11 +123,9 @@ func TestUpdateSettingsPartialSaveKeepsStallWindows(t *testing.T) {
 //
 //	"set Keep last N tool results to 20, hit Save, and it shows blank immediately / after a reload."
 //
-// It failed because UpdateSettings reset the ladder to a zero value before overlaying the client's
-// document — and BudgetJSON() is an allowlist, so every key it could not carry was dropped from the row.
-// The setting was accepted, stored without itself, and read back missing.
-//
-// This asserts the FULL round trip: save, read the row, and re-derive the document the UI is seeded from.
+// The two knobs are TYPED columns carried by typed proto fields, like every other setting that round-trips.
+// This drives exactly what the GUI sends and reads back through GetSettings — the RPC the page loads from —
+// so a broken INSERT, a broken RETURNING list or a broken scan all fail here, not in the operator's browser.
 func TestUpdateSettingsRoundTripsContextEditing(t *testing.T) {
 	dsn := os.Getenv("ORCHICON_TEST_DSN")
 	if dsn == "" {
@@ -159,38 +156,45 @@ func TestUpdateSettingsRoundTripsContextEditing(t *testing.T) {
 	svc := New(pool, slog.Default(), dsn)
 	tctx := tenant.WithID(ctx, probeTenant)
 
-	// Exactly what the GUI sends: the whole budget document with the knob set.
-	const sent = `{"max_tool_output_bytes":32768,"context_editing":{"keep_tool_calls":20}}`
-	if _, err := svc.UpdateSettings(tctx, connect.NewRequest(&apiv1.UpdateSettingsRequest{
-		Settings: &apiv1.TenantSettings{DefaultBudgetOverrides: sent},
-	})); err != nil {
-		t.Fatalf("save: %v", err)
+	save := func(name string, s *apiv1.TenantSettings) {
+		t.Helper()
+		if _, err := svc.UpdateSettings(tctx, connect.NewRequest(&apiv1.UpdateSettingsRequest{Settings: s})); err != nil {
+			t.Fatalf("%s: save: %v", name, err)
+		}
 	}
+	load := func(name string) *apiv1.TenantSettings {
+		t.Helper()
+		resp, err := svc.GetSettings(tctx, connect.NewRequest(&apiv1.GetSettingsRequest{}))
+		if err != nil {
+			t.Fatalf("%s: GetSettings: %v", name, err)
+		}
+		return resp.Msg.Settings
+	}
+	check := func(name string, got *apiv1.TenantSettings, bytes int64, keep int32) {
+		t.Helper()
+		if got.MaxToolOutputBytes == nil || *got.MaxToolOutputBytes != bytes {
+			t.Errorf("%s: max_tool_output_bytes = %v, want %d", name, got.MaxToolOutputBytes, bytes)
+		}
+		if got.ContextEditingKeepToolCalls == nil || *got.ContextEditingKeepToolCalls != keep {
+			t.Errorf("%s: context_editing_keep_tool_calls = %v, want %d", name, got.ContextEditingKeepToolCalls, keep)
+		}
+	}
+	i64 := func(v int64) *int64 { return &v }
+	i32 := func(v int32) *int32 { return &v }
 
-	read, err := pool.BeginTenantTx(ctx, probeTenant)
-	if err != nil {
-		t.Fatalf("begin read: %v", err)
-	}
-	defer read.Rollback(ctx)
-	got, err := db.GetTenantSettings(ctx, read.Tx, probeTenant)
-	if err != nil {
-		t.Fatalf("read settings: %v", err)
-	}
+	// 1. First save on a fresh tenant takes the INSERT branch.
+	save("insert", &apiv1.TenantSettings{MaxToolOutputBytes: i64(32768), ContextEditingKeepToolCalls: i32(20)})
+	check("insert", load("insert"), 32768, 20)
 
-	// The document the UI is SEEDED FROM is BudgetJSON(), not the stored blob — assert on that, because
-	// that is the thing the page reads.
-	var doc map[string]any
-	if err := json.Unmarshal(got.BudgetJSON(), &doc); err != nil {
-		t.Fatalf("BudgetJSON: %v", err)
-	}
-	ce, ok := doc["context_editing"].(map[string]any)
-	if !ok {
-		t.Fatalf("context_editing is MISSING from the document the UI reloads (blob=%s) — a save appears to do nothing", got.DefaultBudgetOverrides)
-	}
-	if n, _ := ce["keep_tool_calls"].(float64); n != 20 {
-		t.Errorf("keep_tool_calls = %v, want 20", ce["keep_tool_calls"])
-	}
-	if n, _ := doc["max_tool_output_bytes"].(float64); n != 32768 {
-		t.Errorf("max_tool_output_bytes = %v, want 32768", doc["max_tool_output_bytes"])
-	}
+	// 2. A second save takes the ON CONFLICT branch.
+	save("update", &apiv1.TenantSettings{MaxToolOutputBytes: i64(65536), ContextEditingKeepToolCalls: i32(5)})
+	check("update", load("update"), 65536, 5)
+
+	// 3. A save that omits them (an old client, or another field edited) leaves them unchanged.
+	save("omitted", &apiv1.TenantSettings{DefaultWorkerModel: ""})
+	check("omitted", load("omitted"), 65536, 5)
+
+	// 4. Zero is an explicit operator value, not "unset".
+	save("zero", &apiv1.TenantSettings{MaxToolOutputBytes: i64(0), ContextEditingKeepToolCalls: i32(0)})
+	check("zero", load("zero"), 0, 0)
 }

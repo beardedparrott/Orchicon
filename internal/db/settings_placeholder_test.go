@@ -3,24 +3,24 @@ package db
 import (
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// THE BUG THIS PINS. The tenant-settings upsert is ONE positional statement: the INSERT column list and
-// the VALUES placeholder list must line up index-for-index. Nothing in the type system enforces it, so a
-// missing or displaced placeholder silently shifts every value after it — which surfaced to the operator as
+// THE BUG THIS PINS. The tenant-settings upsert is ONE positional statement: column i of the INSERT list
+// takes VALUES expression i, and that expression's $N takes bind argument N. Nothing in the type system
+// enforces either pairing, and both have broken:
 //
-//	db: update tenant settings: ERROR: column "execution_retention_timeout_seconds"
-//	    is of type integer but expression is of type text (SQLSTATE 42804)
+//   - columns placed mid-list while their placeholders sat at the end shifted every value after them
+//     ("column execution_retention_timeout_seconds is of type integer but expression is of type text");
+//   - a placeholder used ONLY by the ON CONFLICT clause ($24, MaxConcurrentRunsSet) was added to VALUES on
+//     the false belief that the sequence must be contiguous ("INSERT has more expressions than target
+//     columns").
 //
-// because a text value landed in an integer column. The statement had also been shipping with `$24` missing
-// entirely, which shifted everything from position 24 onward by one — a latent corruption that only became
-// visible once a save path was exercised end to end.
-//
-// A save touches EVERY column, so this must hold exactly; an approximate check is worthless.
+// So the check is not "the numbers are 1,2,3,…" — VALUES legitimately skips SET-only arguments. It is:
+// the lists are the same length, and each column is fed by the bind argument that NAMES that column.
 
-// statements extracts the three positional lists of the upsert from settings.go.
 func settingsUpsertText(t *testing.T) string {
 	t.Helper()
 	raw, err := os.ReadFile("settings.go")
@@ -55,79 +55,88 @@ func splitTopLevel(s string) []string {
 	return out
 }
 
+var sqlComment = regexp.MustCompile(`--[^\n]*`)
+
+// norm reduces a column name or a Go bind expression to comparable letters:
+// "session_access_token_ttl_seconds" and "in.SessionAccessTokenTtlSeconds" both become
+// "sessionaccesstokenttlseconds".
+func norm(s string) string {
+	s = strings.TrimPrefix(strings.TrimSpace(s), "in.")
+	return strings.ToLower(strings.NewReplacer("_", "", ".", "").Replace(s))
+}
+
 func TestTenantSettingsInsertPlaceholdersAlign(t *testing.T) {
 	src := settingsUpsertText(t)
 
-	// Locate the INSERT column list and its VALUES list.
-	startIdx := strings.Index(src, "const q = `INSERT INTO tenant_settings (")
-	if startIdx < 0 {
+	fi := strings.Index(src, "func UpdateTenantSettings(")
+	if fi < 0 {
+		t.Fatal("could not find UpdateTenantSettings")
+	}
+	body := src[fi:]
+	qi := strings.Index(body, "const q = `INSERT INTO tenant_settings (")
+	if qi < 0 {
 		t.Fatal("could not find the tenant_settings INSERT statement")
 	}
-	body := src[startIdx:]
-	valsIdx := strings.Index(body, ") VALUES (")
-	if valsIdx < 0 {
-		t.Fatal("could not find the VALUES list")
-	}
-	// The column list begins after the opening paren of the INSERT's column list.
-	colOpen := strings.Index(body, "(")
-	colPart := body[colOpen+1 : valsIdx]
-	// The VALUES list ends at the closing paren that precedes ON CONFLICT.
+	stmt := body[qi:]
+	colOpen := strings.Index(stmt, "(")
+	valsIdx := strings.Index(stmt, ") VALUES (")
 	valsStart := valsIdx + len(") VALUES (")
-	valsEnd := strings.Index(body[valsStart:], ")\n\tON CONFLICT")
-	if valsEnd < 0 {
-		t.Fatal("could not find the end of the VALUES list")
+	valsEnd := strings.Index(stmt[valsStart:], ")\n\tON CONFLICT")
+	if valsIdx < 0 || valsEnd < 0 {
+		t.Fatal("could not delimit the column and VALUES lists")
 	}
-	valsPart := body[valsStart : valsStart+valsEnd]
+	cols := splitTopLevel(strings.Join(strings.Fields(sqlComment.ReplaceAllString(stmt[colOpen+1:valsIdx], "")), " "))
+	vals := splitTopLevel(strings.Join(strings.Fields(stmt[valsStart:valsStart+valsEnd]), " "))
 
-	cols := splitTopLevel(strings.ReplaceAll(colPart, "\n", " "))
-	vals := splitTopLevel(strings.ReplaceAll(valsPart, "\n", " "))
-
-	if len(cols) == 0 || len(vals) == 0 {
-		t.Fatalf("parsed nothing: %d columns, %d values", len(cols), len(vals))
+	// The bind arguments: tx.Query(ctx, q, <args>).
+	ai := strings.Index(body, "tx.Query(ctx, q,")
+	if ai < 0 {
+		t.Fatal("could not find the upsert's bind arguments")
 	}
+	argText := body[ai+len("tx.Query(ctx, q,"):]
+	argText = argText[:strings.Index(argText, "\n\t)")]
+	args := splitTopLevel(strings.Join(strings.Fields(argText), " "))
 
-	// Build the expected placeholder index for each column POSITION, in order.
-	//
-	// The lists are not required to be the same LENGTH — a column can be fed by an expression such as
-	// COALESCE(NULLIF($70,''),'oauth-personal') or now() — so the check is on the ORDER of the placeholder
-	// NUMBERS that appear, which must be 1,2,3,… with none skipped and none repeated. A skipped number is
-	// exactly the `$24` bug; a displaced one is what produced the type error.
-	seen := map[int]bool{}
-	last := 0
-	re := regexp.MustCompile(`\$(\d+)`)
-	var numbers []int
-	for _, v := range vals {
-		if m := re.FindStringSubmatch(v); m != nil {
-			n := 0
-			for _, c := range m[1] {
-				n = n*10 + int(c-'0')
-			}
-			numbers = append(numbers, n)
-			if seen[n] {
-				t.Errorf("placeholder $%d appears twice in VALUES", n)
-			}
-			seen[n] = true
-			if n != last+1 {
-				t.Errorf("placeholder sequence jumps from $%d to $%d — every value after a gap shifts by one", last, n)
-			}
-			last = n
-		}
+	if len(cols) != len(vals) {
+		t.Fatalf("INSERT names %d columns but VALUES has %d expressions", len(cols), len(vals))
 	}
 
-	// Every column must be present in the column list exactly once.
-	colSeen := map[string]bool{}
+	// Every bind argument whose name matches a column must feed THAT column. A shift moves an argument
+	// onto a neighbouring column, which this catches by name.
+	colByNorm := map[string]string{}
 	for _, c := range cols {
-		base := c
-		if i := strings.Index(base, "("); i > 0 {
-			base = strings.TrimSpace(base[:i])
+		colByNorm[norm(c)] = c
+	}
+	re := regexp.MustCompile(`\$(\d+)`)
+	checked := 0
+	for i, v := range vals {
+		m := re.FindStringSubmatch(v)
+		if m == nil {
+			continue // now() and similar
 		}
-		base = strings.TrimSpace(strings.SplitN(base, " ", 2)[0])
-		if base == "" {
+		n, _ := strconv.Atoi(m[1])
+		if n < 1 || n > len(args) {
+			t.Errorf("column %q uses $%d but there are only %d bind arguments", cols[i], n, len(args))
 			continue
 		}
-		if colSeen[base] {
-			t.Errorf("column %q appears twice in the INSERT list", base)
+		arg := args[n-1]
+		if want, ok := colByNorm[norm(arg)]; ok {
+			checked++
+			if want != cols[i] {
+				t.Errorf("column %q is fed $%d = %s, which belongs to column %q", cols[i], n, arg, want)
+			}
 		}
-		colSeen[base] = true
+	}
+	// Guard the guard: most columns have a same-named argument, so a near-zero count means the parse broke.
+	if checked < 30 {
+		t.Fatalf("only %d column/argument pairs matched by name — the parse is broken, not the statement", checked)
+	}
+
+	colSeen := map[string]bool{}
+	for _, c := range cols {
+		if colSeen[c] {
+			t.Errorf("column %q appears twice in the INSERT list", c)
+		}
+		colSeen[c] = true
 	}
 }
