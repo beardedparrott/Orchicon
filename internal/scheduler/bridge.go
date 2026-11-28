@@ -70,6 +70,10 @@ type ExecutionManifest struct {
 	// operator's Settings value and the adapters cannot disagree: both engines (opencode + native) resolve
 	// it from here. nil = fall back to ORCHICON_MAX_TOOL_OUTPUT_BYTES, then the built-in default.
 	MaxToolOutputBytes *int64
+	// ContextEditingKeepToolCalls is how many of the newest tool results stay verbatim before older ones are
+	// stubbed. nil/0 = disabled. Resolved from the tenant COLUMN, so the operator's Settings value and the
+	// adapters cannot disagree.
+	ContextEditingKeepToolCalls *int32
 
 	// SequenceContinue (opt-in, DEFAULT OFF) marks this execution as part of a sequence chain.
 	SequenceContinue      bool

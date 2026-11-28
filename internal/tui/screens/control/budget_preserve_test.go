@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	apiv1 "github.com/beardedparrott/orchicon/api/gen/go/orchicon/api/v1"
 )
 
 // The bug these pin: buildBudgetJSON rebuilds the whole budget document from the fields this form
@@ -48,35 +50,36 @@ func TestBudgetSavePreservesUnmodeledBlock(t *testing.T) {
 	}
 }
 
-// TestContextEditingIsModeledNow: context_editing moved from "preserved" to "rendered". This pins that it
-// is never BOTH unrendered and unpreserved — the state that silently loses the setting on save.
-func TestContextEditingIsModeledNow(t *testing.T) {
-	for _, k := range unmodeledBudgetKeys {
-		if k == "context_editing" {
-			t.Fatal("context_editing is rendered by this form now; listing it as unmodeled would keep a stale copy")
-		}
+// TestContextHygieneIsTypedNotDynamic pins the reason this setting kept vanishing: it was carried only in the
+// budget JSON DOCUMENT, which db.BudgetJSON derives from the typed ladder by an allowlist — a key with no
+// column had nothing to rehydrate it on read, so a saved value came back blank. Both knobs are TYPED
+// tenant_settings columns now, exactly like every other field on this screen, and must NOT be written into
+// the budget document at all.
+func TestContextHygieneIsTypedNotDynamic(t *testing.T) {
+	// The form writes them as typed proto fields, and must not smuggle them into the document.
+	out := buildBudgetJSON(map[string]string{
+		"budget_tokens":                   "1000",
+		"context_editing_keep_tool_calls": "20",
+		"max_tool_output_bytes":           "32768",
+	})
+	if strings.Contains(out, "context_editing") {
+		t.Fatalf("context_editing must not be written into the budget document — it is a typed column now: %s", out)
 	}
-	blob := `{"context_editing":{"keep_tool_calls":20}}`
-	initials := budgetInitials(blob)
-	if initials["clear_keep_tool_calls"] != "20" {
-		t.Errorf("keep_tool_calls not seeded from the document: %q", initials["clear_keep_tool_calls"])
+	if strings.Contains(out, "max_tool_output_bytes") {
+		t.Fatalf("max_tool_output_bytes must not be written into the budget document — it is a typed column: %s", out)
 	}
-	out := buildBudgetJSON(initials)
-	if !strings.Contains(out, `"context_editing"`) {
-		t.Fatalf("the modeled block was not written back: %s", out)
-	}
-	if !strings.Contains(out, `"keep_tool_calls":20`) {
-		t.Errorf("round-trip lost keep_tool_calls: %s", out)
-	}
-}
 
-// TestContextEditingLegacyBlockReadsAsOff: the old five-knob block is gone. A document still carrying it
-// must NOT be silently reinterpreted — with no keep_tool_calls the feature reads as off, and the next save
-// rewrites the block in the new shape.
-func TestContextEditingLegacyBlockReadsAsOff(t *testing.T) {
-	initials := budgetInitials(`{"context_editing":{"enabled":true,"trigger_frac":0.6,"keep_recent":12}}`)
-	if initials["clear_keep_tool_calls"] != "" {
-		t.Errorf("a legacy block must read as off, got keep=%q", initials["clear_keep_tool_calls"])
+	// And the typed fields must be populated from the row for the form.
+	row := &apiv1.TenantSettings{}
+	keep := int32(20)
+	capBytes := int64(32768)
+	row.ContextEditingKeepToolCalls = &keep
+	row.MaxToolOutputBytes = &capBytes
+	if got := row.GetContextEditingKeepToolCalls(); got != 20 {
+		t.Errorf("typed keep_tool_calls = %d, want 20", got)
+	}
+	if got := row.GetMaxToolOutputBytes(); got != 32768 {
+		t.Errorf("typed max_tool_output_bytes = %d, want 32768", got)
 	}
 }
 

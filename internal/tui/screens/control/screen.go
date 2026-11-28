@@ -1526,12 +1526,11 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "compact_enabled", Label: "Context compaction enabled", Kind: kit2.KCheckbox, Initial: bi("compact_enabled", "")},
 		kit2.FieldSpec{Name: "compact_pressure_frac", Label: "Compaction pressure fraction", Kind: kit2.KNumber, Initial: bi("compact_pressure_frac", ""), Placeholder: "0.9 = compact at 90% of the window"},
 		kit2.FieldSpec{Name: "compact_recent_turns", Label: "Compaction keeps recent turns", Kind: kit2.KNumber, Initial: bi("compact_recent_turns", ""), Placeholder: "how many recent turns survive the collapse"},
-		// --- Context editing: keep the last N tool results ---
-		// ONE knob by design. It is a tool-call count, not a token budget, because cost is driven by the
-		// absolute number of tokens re-sent per turn - a fraction-of-window trigger never fires on a
-		// large-window model even while it re-sends 100k tokens a turn. Old results are replaced by a stub
-		// naming the tool and its arguments, so the agent still knows the call happened.
-		kit2.FieldSpec{Name: "clear_keep_tool_calls", Label: "Context editing - keep last N tool results", Kind: kit2.KNumber, Initial: bi("clear_keep_tool_calls", ""), Placeholder: "blank = off; 20 = keep the newest 20, stub the rest"},
+		// --- Context hygiene ---
+		// Both are typed columns, like every other setting on this screen: a JSON-only key has nothing to
+		// rehydrate it on read, so a saved value came back blank.
+		kit2.FieldSpec{Name: "context_editing_keep_tool_calls", Label: "Context editing - keep last N tool results", Kind: kit2.KNumber, Initial: dimInitial32(s.ContextEditingKeepToolCalls), Placeholder: "blank = off; 20 = keep the newest 20, stub the rest"},
+		kit2.FieldSpec{Name: "max_tool_output_bytes", Label: "Tool output cap (bytes)", Kind: kit2.KNumber, Initial: stallDimInitial(s.MaxToolOutputBytes), Placeholder: "blank = 131072 (128 KiB); head+tail kept, full output on disk"},
 		kit2.FieldSpec{Name: "memory_enabled", Label: "Memory enabled", Kind: kit2.KCheckbox, Initial: bi("memory_enabled", "")},
 		kit2.FieldSpec{Name: "memory_digest_entries", Label: "Memory digest entries", Kind: kit2.KNumber, Initial: bi("memory_digest_entries", ""), Placeholder: "how many digest entries are carried"},
 		// --- Antigravity (agy) ---
@@ -1581,6 +1580,8 @@ func (m *Model) settingsForm() *kit2.Form {
 		out.StallNudgeReplyWindowSeconds = optI64(v["stall_nudge_reply_window_seconds"])
 		out.StallNudgeCooldownSeconds = optI64(v["stall_nudge_cooldown_seconds"])
 		out.StallToolHangSeconds = optI64(v["stall_tool_hang_seconds"])
+		out.MaxToolOutputBytes = optI64(v["max_tool_output_bytes"])
+		out.ContextEditingKeepToolCalls = optI32(v["context_editing_keep_tool_calls"])
 		out.ExecutionReapGraceSeconds = i64Of0(v["execution_reap_grace_seconds"])
 		out.ExecutionReapConsecutiveFailures = int32(i64Of0(v["execution_reap_consecutive_failures"]))
 		// The individual fields are composed back into the transport JSON the server merges into its typed
@@ -2100,9 +2101,7 @@ func budgetInitials(blob string) map[string]string {
 		_ = json.Unmarshal([]byte(blob), &raw)
 	}
 	// Context editing (modeled): seed the controls so the block round-trips through a Save.
-	if ce := raw.ContextEditing; ce != nil && ce.KeepToolCalls != nil {
-		out["clear_keep_tool_calls"] = strconv.Itoa(*ce.KeepToolCalls)
-	}
+
 
 	// PRESERVE THE BLOCKS THIS FORM DOES NOT MODEL, verbatim, so buildBudgetJSON can carry them back.
 	// Read from a generic map rather than the typed struct because the point is to keep keys this form
@@ -2293,12 +2292,6 @@ func buildBudgetJSON(v map[string]string) string {
 	}
 	out["context_compaction"] = cc
 
-	// Context editing: written only when the operator has enabled it OR a value is present, so a tenant
-	// that never touched it keeps its document clean (and the built-in "off" default applies).
-	if ce := contextEditingJSON(v); ce != nil {
-		out["context_editing"] = ce
-	}
-
 	mem := map[string]any{"enabled": v["memory_enabled"] == "true"}
 	if raw := strings.TrimSpace(v["memory_digest_entries"]); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil {
@@ -2451,6 +2444,14 @@ func optI32(s string) *int32 {
 
 // stallDimInitial renders a stall window into its form field: BLANK for "the tenant left this
 // unset" (which the server stores as NULL and the adapters read as the built-in default).
+// dimInitial32 is stallDimInitial for the *int32 typed settings.
+func dimInitial32(v *int32) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *v)
+}
+
 func stallDimInitial(v *int64) string {
 	if v == nil {
 		return ""

@@ -486,10 +486,10 @@ function DefaultsTab() {
   const [draftBudgetWallClock, setDraftBudgetWallClock] = useState("");
   const [draftBudgetToolCalls, setDraftBudgetToolCalls] = useState("");
   const [draftCompactMaxTurns, setDraftCompactMaxTurns] = useState("");
-  const [draftMaxToolOutputBytes, setDraftMaxToolOutputBytes] = useState("");
-  // Context editing (clearing consumed tool results). SEPARATE from compaction: clearing drops BYTES
-  // (free, deterministic) while compaction rewrites MEANING (a model call, lossy).
+  // Context hygiene: typed tenant settings (not budget-JSON keys), same as every other field here.
+  // Context editing drops BYTES (free, deterministic) where compaction rewrites MEANING (a model call).
   const [draftKeepToolCalls, setDraftKeepToolCalls] = useState("");
+  const [draftMaxToolOutputBytes, setDraftMaxToolOutputBytes] = useState("");
   const [draftCompactTiers, setDraftCompactTiers] = useState<CompactTiers>(defaultCompactTiers);
   const [draftWarn, setDraftWarn] = useState<BudgetWarnings>(emptyWarnings);
   const [draftReapGrace, setDraftReapGrace] = useState("");
@@ -536,7 +536,8 @@ function DefaultsTab() {
       setDraftBudgetToolCalls(budget.toolCallCount);
       setDraftCompactMaxTurns(budget.compactMaxTurns);
       setDraftMaxToolOutputBytes(budget.maxToolOutputBytes);
-      setDraftKeepToolCalls(budget.keepToolCalls);
+      setDraftKeepToolCalls(String(settings.contextEditingKeepToolCalls ?? ""));
+      setDraftMaxToolOutputBytes(String(settings.maxToolOutputBytes ?? ""));
       setDraftCompactTiers(budget.compactTiers);
       setDraftWarn(budget.warnings);
       setDraftReapGrace(String(settings.executionReapGraceSeconds ?? ""));
@@ -587,7 +588,7 @@ function DefaultsTab() {
           draftBudgetWallClock,
           draftBudgetToolCalls,
           draftCompactMaxTurns,
-          draftMaxToolOutputBytes,
+          "", // maxToolOutputBytes is a typed tenant setting now, not a budget-document key
           draftCompactTiers,
           draftWarn,
           // The document this form was seeded from, so blocks it does not render survive a Save instead
@@ -595,7 +596,6 @@ function DefaultsTab() {
           // (the form only exists once it has loaded), so this is guarded rather than non-null asserted:
           // an unseeded form has nothing to preserve and must not crash the save.
           settings?.defaultBudgetOverrides,
-          { keepToolCalls: draftKeepToolCalls },
         ),
         executionReapGraceSeconds: BigInt(parseInt(draftReapGrace) || 0),
         executionReapConsecutiveFailures: parseInt(draftReapFailures) || 0,

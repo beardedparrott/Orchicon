@@ -297,7 +297,13 @@ func NewSession(cfg SessionConfig) (*Session, error) {
 	// the existing budget transport — D4).
 	if len(cfg.Manifest.Budgets) > 0 {
 		s.cp, s.mp = policyFromSettings(cfg.Manifest.Budgets)
+		// Prefer the operator's typed setting (manifest <- tenant column). Fall back to the budget document
+		// only for a worker-level override, which is the one place a JSON value legitimately beats the tenant
+		// default.
 		s.cep = contextEditPolicyFromSettings(cfg.Manifest.Budgets)
+		if m := cfg.Manifest.ContextEditingKeepToolCalls; m != nil && *m > 0 {
+			s.cep.KeepToolCalls = int(*m)
+		}
 		if m := cfg.Manifest.MaxToolOutputBytes; m != nil && *m > 0 {
 			s.maxToolOutputVal = int(*m)
 		}

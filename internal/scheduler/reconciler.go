@@ -932,6 +932,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	var stallNudgeMax *int32
 	var stallNudgeReplyWindow, stallNudgeCooldown *int64
 	var stallToolHang *int64
+	var tenantSettingsRow db.TenantSettingsRow
 	var defaultBudgetOverrides []byte
 	{
 		settingsCtx := context.Background()
@@ -949,6 +950,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 				stallNudgeReplyWindow = s.StallNudgeReplyWindowSeconds
 				stallNudgeCooldown = s.StallNudgeCooldownSeconds
 				stallToolHang = s.StallToolHangSeconds
+				tenantSettingsRow = s
 				defaultBudgetOverrides = s.BudgetJSON()
 			}
 			stx.Rollback(settingsCtx)
@@ -963,11 +965,11 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 	// tokens, cost_usd) rather than getting a column of its own: it is a context/cost tuning value, and the
 	// budget document is where those live and where an operator changes them. Absent = unset, so the
 	// adapter falls back to ORCHICON_MAX_TOOL_OUTPUT_BYTES and then the built-in default.
-	var maxToolOutput *int64
-	if n, ok := budgetNumber(budgetsJSON, "max_tool_output_bytes"); ok {
-		v := int64(n)
-		maxToolOutput = &v
-	}
+	// Read from the typed COLUMN, like every other tenant setting. It used to be parsed out of the budget
+	// JSON, which is derived from the ladder by an allowlist — a key with no column had nothing to
+	// rehydrate it on read, so a saved value was invisible on the next GetSettings.
+	maxToolOutput := tenantSettingsRow.MaxToolOutputBytes
+	keepToolCalls := tenantSettingsRow.ContextEditingKeepToolCalls
 
 	manifest := ExecutionManifest{
 		ExecutionID:                  exec.ID,
@@ -1001,6 +1003,7 @@ func (r *TaskReconciler) startExecution(ctx context.Context, exec db.ExecutionRo
 		StallNudgeCooldownSeconds:    stallNudgeCooldown,
 		StallToolHangSeconds:         stallToolHang,
 		MaxToolOutputBytes:           maxToolOutput,
+		ContextEditingKeepToolCalls:  keepToolCalls,
 	}
 	if r.dispatcher == nil {
 		err := fmt.Errorf("no adapter dispatcher configured — the server must register at least one adapter bridge")

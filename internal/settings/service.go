@@ -230,6 +230,8 @@ func settingsRowToProto(r *db.TenantSettingsRow) *apiv1.TenantSettings {
 		StallNudgeReplyWindowSeconds:     r.StallNudgeReplyWindowSeconds,
 		StallNudgeCooldownSeconds:        r.StallNudgeCooldownSeconds,
 		StallToolHangSeconds:             r.StallToolHangSeconds,
+		MaxToolOutputBytes:               r.MaxToolOutputBytes,
+		ContextEditingKeepToolCalls:      r.ContextEditingKeepToolCalls,
 		DefaultBudgetOverrides:           string(r.BudgetJSON()),
 		ExecutionReapGraceSeconds:        r.ExecutionReapGraceSeconds,
 		ExecutionReapConsecutiveFailures: r.ExecutionReapConsecutiveFailures,
@@ -306,6 +308,12 @@ func mergeStallSettingsFromCurrent(inRow *db.TenantSettingsRow, want *apiv1.Tena
 	if want.StallToolHangSeconds == nil {
 		inRow.StallToolHangSeconds = cur.StallToolHangSeconds
 	}
+	if want.MaxToolOutputBytes == nil {
+		inRow.MaxToolOutputBytes = cur.MaxToolOutputBytes
+	}
+	if want.ContextEditingKeepToolCalls == nil {
+		inRow.ContextEditingKeepToolCalls = cur.ContextEditingKeepToolCalls
+	}
 }
 
 // applyBudgetOverridesFromCurrent seeds the typed budget ladder from the CURRENT row and then overlays the
@@ -355,6 +363,8 @@ func settingsProtoToRow(s *apiv1.TenantSettings) db.TenantSettingsRow {
 		StallNudgeReplyWindowSeconds:     s.StallNudgeReplyWindowSeconds,
 		StallNudgeCooldownSeconds:        s.StallNudgeCooldownSeconds,
 		StallToolHangSeconds:             s.StallToolHangSeconds,
+		MaxToolOutputBytes:               s.MaxToolOutputBytes,
+		ContextEditingKeepToolCalls:      s.ContextEditingKeepToolCalls,
 		DefaultBudgetOverrides:           []byte(budget),
 		ExecutionReapGraceSeconds:        s.ExecutionReapGraceSeconds,
 		ExecutionReapConsecutiveFailures: s.ExecutionReapConsecutiveFailures,
@@ -490,6 +500,7 @@ func validateStallSettings(ts *apiv1.TenantSettings) error {
 		{"stall_nudge_reply_window_seconds", ts.StallNudgeReplyWindowSeconds},
 		{"stall_nudge_cooldown_seconds", ts.StallNudgeCooldownSeconds},
 		{"stall_tool_hang_seconds", ts.StallToolHangSeconds},
+		{"max_tool_output_bytes", ts.MaxToolOutputBytes},
 	}
 	for _, f := range seconds {
 		if f.v != nil && *f.v < 0 {
