@@ -78,6 +78,7 @@ describe("buildBudgetDefaults", () => {
       form.wallClockSeconds,
       form.toolCallCount,
       form.compactMaxTurns,
+      form.maxToolOutputBytes,
       form.compactTiers,
       form.warnings,
     );
@@ -91,8 +92,29 @@ describe("buildBudgetDefaults", () => {
     expect(parsed2.warnings.tokens.msgs).toEqual(["w", "e", "f"]);
   });
 
+  // The tool-output cap rides the budget document with its sibling tuning knobs, so it must survive a
+  // parse -> build round trip exactly like compact_max_turns does.
+  it("round-trips max_tool_output_bytes", () => {
+    const form = parseBudgetDefaults(JSON.stringify({ max_tool_output_bytes: 32768 }));
+    expect(form.maxToolOutputBytes).toBe("32768");
+    const rebuilt = buildBudgetDefaults(
+      "", "", "", "", "",   // tokens, cost, wall clock, tool calls, compact turns
+      form.maxToolOutputBytes,
+      defaultCompactTiers,
+      emptyWarnings,
+    );
+    expect(JSON.parse(rebuilt).max_tool_output_bytes).toBe(32768);
+  });
+
+  // An ABSENT cap must not be written at all: absent means "fall back to the env var / built-in
+  // default", which is a different state from a stored 0 (an explicit zero-byte cap).
+  it("omits max_tool_output_bytes when unset", () => {
+    const out = JSON.parse(buildBudgetDefaults("", "", "", "", "", "", defaultCompactTiers, emptyWarnings));
+    expect(out.max_tool_output_bytes).toBeUndefined();
+  });
+
   it("always emits compact_tiers (policy has no 'unset' — it is a stable choice)", () => {
-    const out = JSON.parse(buildBudgetDefaults("", "", "", "", "", defaultCompactTiers, emptyWarnings));
+    const out = JSON.parse(buildBudgetDefaults("", "", "", "", "", "", defaultCompactTiers, emptyWarnings));
     expect(out.compact_tiers).toEqual([false, true, true]);
     // The warnings block is still omitted when all thresholds/messages are blank.
     expect(out.warnings).toBeUndefined();

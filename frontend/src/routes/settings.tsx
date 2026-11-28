@@ -598,9 +598,11 @@ function DefaultsTab() {
           draftMaxToolOutputBytes,
           draftCompactTiers,
           draftWarn,
-          // The document this form was seeded from, so blocks it does not render (e.g. context_editing)
-          // survive a Save instead of being silently deleted by the rebuild.
-          settings.defaultBudgetOverrides,
+          // The document this form was seeded from, so blocks it does not render survive a Save instead
+          // of being silently deleted by the rebuild. `settings` is optional at this point in the render
+          // (the form only exists once it has loaded), so this is guarded rather than non-null asserted:
+          // an unseeded form has nothing to preserve and must not crash the save.
+          settings?.defaultBudgetOverrides,
           {
             enabled: draftClearEnabled,
             triggerFrac: draftClearTriggerFrac,
