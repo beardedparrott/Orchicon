@@ -1525,6 +1525,15 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "compact_enabled", Label: "Context compaction enabled", Kind: kit2.KCheckbox, Initial: bi("compact_enabled", "")},
 		kit2.FieldSpec{Name: "compact_pressure_frac", Label: "Compaction pressure fraction", Kind: kit2.KNumber, Initial: bi("compact_pressure_frac", ""), Placeholder: "0.9 = compact at 90% of the window"},
 		kit2.FieldSpec{Name: "compact_recent_turns", Label: "Compaction keeps recent turns", Kind: kit2.KNumber, Initial: bi("compact_recent_turns", ""), Placeholder: "how many recent turns survive the collapse"},
+		// --- Context editing (clearing consumed tool results) ---
+		// SEPARATE from compaction and listed next to it, because they are the two halves of one job:
+		// compaction summarizes MEANING (a model call, lossy); clearing drops BYTES (free, deterministic).
+		// Clearing OFF is the built-in default, so an operator turns this on deliberately.
+		kit2.FieldSpec{Name: "clear_enabled", Label: "Context editing: clear consumed tool results", Kind: kit2.KCheckbox, Initial: bi("clear_enabled", ""), Placeholder: "reclaims window by dropping tool output the model has already read"},
+		kit2.FieldSpec{Name: "clear_trigger_frac", Label: "Clear at window fraction", Kind: kit2.KNumber, Initial: bi("clear_trigger_frac", ""), Placeholder: "0.5 = start clearing at 50% of the window"},
+		kit2.FieldSpec{Name: "clear_keep_recent", Label: "Clear: keep newest tool results", Kind: kit2.KNumber, Initial: bi("clear_keep_recent", ""), Placeholder: "8 = the newest 8 are NEVER cleared (the model is reasoning about them)"},
+		kit2.FieldSpec{Name: "clear_min_bytes", Label: "Clear: minimum bytes reclaimed", Kind: kit2.KNumber, Initial: bi("clear_min_bytes", ""), Placeholder: "skip a clear smaller than this (a cache write must be worth it)"},
+		kit2.FieldSpec{Name: "clear_band_width", Label: "Clear: band width (window frac)", Kind: kit2.KNumber, Initial: bi("clear_band_width", ""), Placeholder: "0.1 = at most one clear per further 10% of the window"},
 		kit2.FieldSpec{Name: "memory_enabled", Label: "Memory enabled", Kind: kit2.KCheckbox, Initial: bi("memory_enabled", "")},
 		kit2.FieldSpec{Name: "memory_digest_entries", Label: "Memory digest entries", Kind: kit2.KNumber, Initial: bi("memory_digest_entries", ""), Placeholder: "how many digest entries are carried"},
 		// --- Antigravity (agy) ---
@@ -2080,6 +2089,13 @@ func budgetInitials(blob string) map[string]string {
 			Enabled       *bool `json:"enabled"`
 			DigestEntries *int  `json:"digest_entries"`
 		} `json:"memory"`
+		ContextEditing *struct {
+			Enabled     *bool    `json:"enabled"`
+			TriggerFrac *float64 `json:"trigger_frac"`
+			KeepRecent  *int     `json:"keep_recent"`
+			MinBytes    *int     `json:"min_bytes"`
+			BandWidth   *float64 `json:"band_width"`
+		} `json:"context_editing"`
 		Warnings struct {
 			Fractions map[string][3]float64 `json:"fractions"`
 			Messages  map[string][3]string  `json:"messages"`
@@ -2087,6 +2103,38 @@ func budgetInitials(blob string) map[string]string {
 	}
 	if strings.TrimSpace(blob) != "" {
 		_ = json.Unmarshal([]byte(blob), &raw)
+	}
+	// Context editing (modeled): seed the controls so the block round-trips through a Save.
+	if ce := raw.ContextEditing; ce != nil {
+		if ce.Enabled != nil {
+			out["clear_enabled"] = boolStr(*ce.Enabled)
+		}
+		if ce.TriggerFrac != nil {
+			out["clear_trigger_frac"] = fmtFrac(*ce.TriggerFrac)
+		}
+		if ce.KeepRecent != nil {
+			out["clear_keep_recent"] = strconv.Itoa(*ce.KeepRecent)
+		}
+		if ce.MinBytes != nil {
+			out["clear_min_bytes"] = strconv.Itoa(*ce.MinBytes)
+		}
+		if ce.BandWidth != nil {
+			out["clear_band_width"] = fmtFrac(*ce.BandWidth)
+		}
+	}
+
+	// PRESERVE THE BLOCKS THIS FORM DOES NOT MODEL, verbatim, so buildBudgetJSON can carry them back.
+	// Read from a generic map rather than the typed struct because the point is to keep keys this form
+	// knows nothing about — a typed field would have to be added per key and would silently lose the rest.
+	if strings.TrimSpace(blob) != "" {
+		var generic map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(blob), &generic); err == nil {
+			for _, key := range unmodeledBudgetKeys {
+				if rawVal, ok := generic[key]; ok {
+					out[preservedKeyField(key)] = string(rawVal)
+				}
+			}
+		}
 	}
 	f := func(v *float64) string {
 		if v == nil {
@@ -2166,6 +2214,23 @@ func budgetInitials(blob string) map[string]string {
 	}
 	return out
 }
+// unmodeledBudgetKeys are top-level budget-document keys this form does NOT render but must PRESERVE.
+//
+// THE BUG THIS PREVENTS. buildBudgetJSON rebuilds the whole document from its own fields, so any key it
+// does not know is dropped on the next save. Everything in this document is an operator decision that
+// costs money or changes what a worker sees, and a form silently deleting one is the worst kind of
+// failure: nothing errors, the setting simply stops applying, and the next run behaves differently for
+// no visible reason. `context_editing` is exactly such a key (it is configured by an agent through
+// update_settings, has no TUI control, and would have been wiped by the next Save in this very screen).
+//
+// PRESERVED GENERICALLY, NOT ONE-BY-ONE: both this list and the generic carry below are driven off the
+// SAME set, so adding a key is one line and forgetting to add it is a failing test rather than a silent
+// data loss.
+// EMPTY BY DESIGN RIGHT NOW, and it must stay a list rather than being deleted: context_editing used to
+// live here, and the next unrendered block belongs here too. The test that reads this list fails if it is
+// emptied while a known-unrendered key exists, so this is a place to add, not a thing to remove.
+var unmodeledBudgetKeys = []string{}
+
 func buildBudgetJSON(v map[string]string) string {
 	out := map[string]any{}
 	gate := func(key, field string) {
@@ -2244,6 +2309,12 @@ func buildBudgetJSON(v map[string]string) string {
 	}
 	out["context_compaction"] = cc
 
+	// Context editing: written only when the operator has enabled it OR a value is present, so a tenant
+	// that never touched it keeps its document clean (and the built-in "off" default applies).
+	if ce := contextEditingJSON(v); ce != nil {
+		out["context_editing"] = ce
+	}
+
 	mem := map[string]any{"enabled": v["memory_enabled"] == "true"}
 	if raw := strings.TrimSpace(v["memory_digest_entries"]); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil {
@@ -2252,11 +2323,62 @@ func buildBudgetJSON(v map[string]string) string {
 	}
 	out["memory"] = mem
 
+	// CARRY THE UNMODELED BLOCKS FORWARD, read from the document this form was seeded with.
+	for _, key := range unmodeledBudgetKeys {
+		if raw, ok := v[preservedKeyField(key)]; ok && strings.TrimSpace(raw) != "" && strings.TrimSpace(raw) != "null" {
+			var preserved any
+			if err := json.Unmarshal([]byte(raw), &preserved); err == nil && preserved != nil {
+				out[key] = preserved
+			}
+		}
+	}
+
 	b, err := json.Marshal(out)
 	if err != nil {
 		return "{}"
 	}
 	return string(b)
+}
+
+// preservedKeyField is the form-field name under which a preserved (unrendered) budget block travels.
+func preservedKeyField(key string) string { return "preserve_" + key }
+
+// contextEditingJSON builds the context_editing block from the form, or nil when the operator has not
+// engaged with it (so an untouched tenant does not get a block written into its document).
+func contextEditingJSON(v map[string]string) map[string]any {
+	num := func(field string) (float64, bool) {
+		raw := strings.TrimSpace(v[field])
+		if raw == "" {
+			return 0, false
+		}
+		f, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return 0, false
+		}
+		return f, true
+	}
+	out := map[string]any{"enabled": v["clear_enabled"] == "true"}
+	engaged := v["clear_enabled"] == "true"
+	if f, ok := num("clear_trigger_frac"); ok {
+		out["trigger_frac"] = f
+		engaged = true
+	}
+	if f, ok := num("clear_keep_recent"); ok {
+		out["keep_recent"] = int(f)
+		engaged = true
+	}
+	if f, ok := num("clear_min_bytes"); ok {
+		out["min_bytes"] = int(f)
+		engaged = true
+	}
+	if f, ok := num("clear_band_width"); ok {
+		out["band_width"] = f
+		engaged = true
+	}
+	if !engaged {
+		return nil
+	}
+	return out
 }
 
 // parseFractionTriple reads "a,b,c" into the [warn, escalate, final] triple an adapter expects.

@@ -53,6 +53,21 @@ export interface BudgetDefaultsForm {
   compactMaxTurns: string;
   compactTiers: CompactTiers;
   warnings: BudgetWarnings;
+  // Context editing (clearing consumed tool results) — separate from compaction.
+  clearEnabled: boolean;
+  clearTriggerFrac: string;
+  clearKeepRecent: string;
+  clearMinBytes: string;
+  clearBandWidth: string;
+}
+
+/** The `context_editing` block as the form carries it. */
+export interface ContextEditingDraft {
+  enabled: boolean;
+  triggerFrac: string;
+  keepRecent: string;
+  minBytes: string;
+  bandWidth: string;
 }
 
 // Parse the tenant default_budget_overrides JSON into form strings + warning
@@ -67,6 +82,11 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
     compactMaxTurns: "",
     compactTiers: defaultCompactTiers,
     warnings: emptyWarnings,
+    clearEnabled: false,
+    clearTriggerFrac: "",
+    clearKeepRecent: "",
+    clearMinBytes: "",
+    clearBandWidth: "",
   };
   if (!raw) return empty;
   try {
@@ -96,7 +116,14 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
       Array.isArray(ct) && ct.length === 3
         ? [Boolean(ct[0]), Boolean(ct[1]), Boolean(ct[2])]
         : defaultCompactTiers;
+    const ce = m.context_editing ?? {};
+    const numStr = (v: unknown) => (v != null ? String(v) : "");
     return {
+      clearEnabled: ce.enabled === true,
+      clearTriggerFrac: numStr(ce.trigger_frac),
+      clearKeepRecent: numStr(ce.keep_recent),
+      clearMinBytes: numStr(ce.min_bytes),
+      clearBandWidth: numStr(ce.band_width),
       tokens: m.tokens != null ? String(m.tokens) : "",
       costUsd: m.cost_usd != null ? String(m.cost_usd) : "",
       wallClockSeconds: m.wall_clock_seconds != null ? String(m.wall_clock_seconds) : "",
@@ -118,6 +145,20 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
 // Build the default_budget_overrides JSON from the form fields. Empty fields
 // are omitted, and an omitted ceiling is NO ceiling — there is no built-in
 // fallback for any of them, so the operator's silence means "unlimited".
+/**
+ * Top-level budget-document keys this form does NOT render but must PRESERVE across a save.
+ *
+ * buildBudgetDefaults rebuilds the whole document from its own fields, so any key it does not know is
+ * dropped the moment an operator presses Save. Every key in this document is a decision that costs money
+ * or changes what a worker sees, so a form silently deleting one is the worst failure shape available:
+ * nothing errors, the setting just stops applying, and the next run behaves differently for no visible
+ * reason. `context_editing` is exactly that case (an agent configures it through update_settings; nothing
+ * in this form renders it).
+ *
+ * Exported so a test can assert parse -> build round-trips every key, rather than trusting this comment.
+ */
+export const UNMODELED_BUDGET_KEYS = ["context_editing"] as const;
+
 export function buildBudgetDefaults(
   tokens: string,
   costUsd: string,
@@ -126,6 +167,10 @@ export function buildBudgetDefaults(
   compactMaxTurns: string,
   compactTiers: CompactTiers,
   warnings: BudgetWarnings,
+  /** The raw document the form was seeded from — unmodeled keys are carried forward from it. */
+  preserveSource?: string,
+  /** Context editing (clearing). Omitted = the block is not written at all. */
+  clearing?: ContextEditingDraft,
 ): string {
   const out: Record<string, number | object> = {};
   if (tokens !== "") out.tokens = Number(tokens);
@@ -158,6 +203,45 @@ export function buildBudgetDefaults(
     if (Object.keys(fracs).length) warningsObj.fractions = fracs;
     if (Object.keys(msgs).length) warningsObj.messages = msgs;
     out.warnings = warningsObj;
+  }
+
+  // CONTEXT EDITING. Written only when the operator has engaged with it, so an untouched tenant keeps a
+  // clean document and the built-in "off" default applies.
+  if (clearing) {
+    const engaged =
+      clearing.enabled ||
+      [clearing.triggerFrac, clearing.keepRecent, clearing.minBytes, clearing.bandWidth].some(
+        (v) => v.trim() !== "",
+      );
+    if (engaged) {
+      const ce: Record<string, number | boolean> = { enabled: clearing.enabled };
+      const num = (v: string) => {
+        const n = Number(v);
+        return v.trim() !== "" && Number.isFinite(n) ? n : undefined;
+      };
+      const tf = num(clearing.triggerFrac);
+      if (tf !== undefined) ce.trigger_frac = tf;
+      const kr = num(clearing.keepRecent);
+      if (kr !== undefined) ce.keep_recent = kr;
+      const mb = num(clearing.minBytes);
+      if (mb !== undefined) ce.min_bytes = mb;
+      const bw = num(clearing.bandWidth);
+      if (bw !== undefined) ce.band_width = bw;
+      out.context_editing = ce;
+    }
+  }
+
+  // CARRY UNMODELED BLOCKS FORWARD. An unparseable source is not fatal: the form's own fields are still
+  // saved, and losing an unreadable blob is no worse than the state it was in.
+  if (preserveSource) {
+    try {
+      const src = JSON.parse(preserveSource);
+      for (const key of UNMODELED_BUDGET_KEYS) {
+        if (src?.[key] != null) out[key] = src[key];
+      }
+    } catch {
+      /* leave the preserved blocks out rather than refusing the save */
+    }
   }
   return JSON.stringify(out);
 }
