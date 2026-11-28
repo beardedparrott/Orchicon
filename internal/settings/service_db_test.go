@@ -15,6 +15,7 @@ package settings
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"os"
 	"testing"
@@ -116,5 +117,80 @@ func TestUpdateSettingsPartialSaveKeepsStallWindows(t *testing.T) {
 	}
 	if after.StallNoProgressWindowSeconds == nil || *after.StallNoProgressWindowSeconds != 0 {
 		t.Fatalf("an explicit 0 (DISABLED) did not take effect (got %v) — the merge must not swallow a value the client sent", after.StallNoProgressWindowSeconds)
+	}
+}
+
+// TestUpdateSettingsRoundTripsContextEditing is the reported bug, end to end, through the real Service:
+//
+//	"set Keep last N tool results to 20, hit Save, and it shows blank immediately / after a reload."
+//
+// It failed because UpdateSettings reset the ladder to a zero value before overlaying the client's
+// document — and BudgetJSON() is an allowlist, so every key it could not carry was dropped from the row.
+// The setting was accepted, stored without itself, and read back missing.
+//
+// This asserts the FULL round trip: save, read the row, and re-derive the document the UI is seeded from.
+func TestUpdateSettingsRoundTripsContextEditing(t *testing.T) {
+	dsn := os.Getenv("ORCHICON_TEST_DSN")
+	if dsn == "" {
+		t.Skip("ORCHICON_TEST_DSN not set; skipping the DB-backed settings round-trip test")
+	}
+	ctx := context.Background()
+	pool, err := db.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open test pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if err := migrate.Run(ctx, pool, assets.MigrationsFS, assets.MigrationsDir); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+
+	const probeTenant = "tnt_settings_context_editing_probe"
+	t.Cleanup(func() {
+		cctx := context.Background()
+		ttx, err := pool.BeginTenantTx(cctx, probeTenant)
+		if err != nil {
+			return
+		}
+		_, _ = ttx.Exec(cctx, `DELETE FROM audit_events WHERE tenant_id=$1`, probeTenant)
+		_, _ = ttx.Exec(cctx, `DELETE FROM tenant_settings WHERE tenant_id=$1`, probeTenant)
+		_ = ttx.Commit(cctx)
+	})
+
+	svc := New(pool, slog.Default(), dsn)
+	tctx := tenant.WithID(ctx, probeTenant)
+
+	// Exactly what the GUI sends: the whole budget document with the knob set.
+	const sent = `{"max_tool_output_bytes":32768,"context_editing":{"keep_tool_calls":20}}`
+	if _, err := svc.UpdateSettings(tctx, connect.NewRequest(&apiv1.UpdateSettingsRequest{
+		Settings: &apiv1.TenantSettings{DefaultBudgetOverrides: sent},
+	})); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	read, err := pool.BeginTenantTx(ctx, probeTenant)
+	if err != nil {
+		t.Fatalf("begin read: %v", err)
+	}
+	defer read.Rollback(ctx)
+	got, err := db.GetTenantSettings(ctx, read.Tx, probeTenant)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+
+	// The document the UI is SEEDED FROM is BudgetJSON(), not the stored blob — assert on that, because
+	// that is the thing the page reads.
+	var doc map[string]any
+	if err := json.Unmarshal(got.BudgetJSON(), &doc); err != nil {
+		t.Fatalf("BudgetJSON: %v", err)
+	}
+	ce, ok := doc["context_editing"].(map[string]any)
+	if !ok {
+		t.Fatalf("context_editing is MISSING from the document the UI reloads (blob=%s) — a save appears to do nothing", got.DefaultBudgetOverrides)
+	}
+	if n, _ := ce["keep_tool_calls"].(float64); n != 20 {
+		t.Errorf("keep_tool_calls = %v, want 20", ce["keep_tool_calls"])
+	}
+	if n, _ := doc["max_tool_output_bytes"].(float64); n != 32768 {
+		t.Errorf("max_tool_output_bytes = %v, want 32768", doc["max_tool_output_bytes"])
 	}
 }

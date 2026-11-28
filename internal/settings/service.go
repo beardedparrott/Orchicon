@@ -130,7 +130,6 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("settings: get current for budget merge: %w", err))
 	}
 	inRow := settingsProtoToRow(req.Msg.Settings)
-	inRow.Budget = cur.Budget
 	// The Antigravity auth method follows the same "empty means leave unchanged" rule as the
 	// other CASE-guarded columns, so an old client cannot silently move a tenant off the method
 	// it selected. Telemetry has no such guard: it is a plain bool and FALSE IS THE SAFE VALUE
@@ -149,7 +148,7 @@ func (s *Service) UpdateSettings(ctx context.Context, req *connect.Request[apiv1
 	// THE STALL THRESHOLDS ARE MERGED TOO, and this is the fix for "I have it set to 600 seconds" still
 	// producing a two-minute stall.
 	mergeStallSettingsFromCurrent(&inRow, req.Msg.Settings, cur)
-	if err := inRow.ApplyBudgetJSON(inRow.DefaultBudgetOverrides); err != nil {
+	if err := applyBudgetOverridesFromCurrent(&inRow, cur); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("settings: invalid default_budget_overrides: %w", err))
 	}
 
@@ -307,6 +306,24 @@ func mergeStallSettingsFromCurrent(inRow *db.TenantSettingsRow, want *apiv1.Tena
 	if want.StallToolHangSeconds == nil {
 		inRow.StallToolHangSeconds = cur.StallToolHangSeconds
 	}
+}
+
+// applyBudgetOverridesFromCurrent seeds the typed budget ladder from the CURRENT row and then overlays the
+// client's default_budget_overrides on top.
+//
+// WHY IT SEEDS FROM CURRENT RATHER THAN FROM ZERO. db.BudgetJSON() is an ALLOWLIST: it rebuilds the
+// document from the ladder's known fields, so whatever the ladder cannot represent is DROPPED from the
+// document written back to the row. Starting from a zero Budget therefore deleted every key the ladder did
+// not model — the request was accepted, the row was stored without those keys, and the next read returned a
+// document in which they no longer existed, so the settings form came back BLANK after a save.
+//
+// This is the same defect as the client-side forms rebuilding a document they only partly model; it simply
+// lived in the service. Seeding from the current ladder fixes it structurally: the overlay can only add or
+// replace keys, never remove one the client did not mention. It also keeps a partial update from clearing a
+// gate that the request never named, matching every other field's merge semantics in this function.
+func applyBudgetOverridesFromCurrent(inRow *db.TenantSettingsRow, cur db.TenantSettingsRow) error {
+	inRow.Budget = cur.Budget
+	return inRow.ApplyBudgetJSON(inRow.DefaultBudgetOverrides)
 }
 
 func settingsProtoToRow(s *apiv1.TenantSettings) db.TenantSettingsRow {
