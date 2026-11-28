@@ -1526,15 +1526,12 @@ func (m *Model) settingsForm() *kit2.Form {
 		kit2.FieldSpec{Name: "compact_enabled", Label: "Context compaction enabled", Kind: kit2.KCheckbox, Initial: bi("compact_enabled", "")},
 		kit2.FieldSpec{Name: "compact_pressure_frac", Label: "Compaction pressure fraction", Kind: kit2.KNumber, Initial: bi("compact_pressure_frac", ""), Placeholder: "0.9 = compact at 90% of the window"},
 		kit2.FieldSpec{Name: "compact_recent_turns", Label: "Compaction keeps recent turns", Kind: kit2.KNumber, Initial: bi("compact_recent_turns", ""), Placeholder: "how many recent turns survive the collapse"},
-		// --- Context editing (clearing consumed tool results) ---
-		// SEPARATE from compaction and listed next to it, because they are the two halves of one job:
-		// compaction summarizes MEANING (a model call, lossy); clearing drops BYTES (free, deterministic).
-		// Clearing OFF is the built-in default, so an operator turns this on deliberately.
-		kit2.FieldSpec{Name: "clear_enabled", Label: "Context editing: clear consumed tool results", Kind: kit2.KCheckbox, Initial: bi("clear_enabled", ""), Placeholder: "reclaims window by dropping tool output the model has already read"},
-		kit2.FieldSpec{Name: "clear_trigger_frac", Label: "Clear at window fraction", Kind: kit2.KNumber, Initial: bi("clear_trigger_frac", ""), Placeholder: "0.5 = start clearing at 50% of the window"},
-		kit2.FieldSpec{Name: "clear_keep_recent", Label: "Clear: keep newest tool results", Kind: kit2.KNumber, Initial: bi("clear_keep_recent", ""), Placeholder: "8 = the newest 8 are NEVER cleared (the model is reasoning about them)"},
-		kit2.FieldSpec{Name: "clear_min_bytes", Label: "Clear: minimum bytes reclaimed", Kind: kit2.KNumber, Initial: bi("clear_min_bytes", ""), Placeholder: "skip a clear smaller than this (a cache write must be worth it)"},
-		kit2.FieldSpec{Name: "clear_band_width", Label: "Clear: band width (window frac)", Kind: kit2.KNumber, Initial: bi("clear_band_width", ""), Placeholder: "0.1 = at most one clear per further 10% of the window"},
+		// --- Context editing: keep the last N tool results ---
+		// ONE knob by design. It is a tool-call count, not a token budget, because cost is driven by the
+		// absolute number of tokens re-sent per turn - a fraction-of-window trigger never fires on a
+		// large-window model even while it re-sends 100k tokens a turn. Old results are replaced by a stub
+		// naming the tool and its arguments, so the agent still knows the call happened.
+		kit2.FieldSpec{Name: "clear_keep_tool_calls", Label: "Context editing - keep last N tool results", Kind: kit2.KNumber, Initial: bi("clear_keep_tool_calls", ""), Placeholder: "blank = off; 20 = keep the newest 20, stub the rest"},
 		kit2.FieldSpec{Name: "memory_enabled", Label: "Memory enabled", Kind: kit2.KCheckbox, Initial: bi("memory_enabled", "")},
 		kit2.FieldSpec{Name: "memory_digest_entries", Label: "Memory digest entries", Kind: kit2.KNumber, Initial: bi("memory_digest_entries", ""), Placeholder: "how many digest entries are carried"},
 		// --- Antigravity (agy) ---
@@ -2092,11 +2089,7 @@ func budgetInitials(blob string) map[string]string {
 			DigestEntries *int  `json:"digest_entries"`
 		} `json:"memory"`
 		ContextEditing *struct {
-			Enabled     *bool    `json:"enabled"`
-			TriggerFrac *float64 `json:"trigger_frac"`
-			KeepRecent  *int     `json:"keep_recent"`
-			MinBytes    *int     `json:"min_bytes"`
-			BandWidth   *float64 `json:"band_width"`
+			KeepToolCalls *int `json:"keep_tool_calls"`
 		} `json:"context_editing"`
 		Warnings struct {
 			Fractions map[string][3]float64 `json:"fractions"`
@@ -2107,22 +2100,8 @@ func budgetInitials(blob string) map[string]string {
 		_ = json.Unmarshal([]byte(blob), &raw)
 	}
 	// Context editing (modeled): seed the controls so the block round-trips through a Save.
-	if ce := raw.ContextEditing; ce != nil {
-		if ce.Enabled != nil {
-			out["clear_enabled"] = boolStr(*ce.Enabled)
-		}
-		if ce.TriggerFrac != nil {
-			out["clear_trigger_frac"] = fmtFrac(*ce.TriggerFrac)
-		}
-		if ce.KeepRecent != nil {
-			out["clear_keep_recent"] = strconv.Itoa(*ce.KeepRecent)
-		}
-		if ce.MinBytes != nil {
-			out["clear_min_bytes"] = strconv.Itoa(*ce.MinBytes)
-		}
-		if ce.BandWidth != nil {
-			out["clear_band_width"] = fmtFrac(*ce.BandWidth)
-		}
+	if ce := raw.ContextEditing; ce != nil && ce.KeepToolCalls != nil {
+		out["clear_keep_tool_calls"] = strconv.Itoa(*ce.KeepToolCalls)
 	}
 
 	// PRESERVE THE BLOCKS THIS FORM DOES NOT MODEL, verbatim, so buildBudgetJSON can carry them back.
@@ -2348,43 +2327,20 @@ func buildBudgetJSON(v map[string]string) string {
 // preservedKeyField is the form-field name under which a preserved (unrendered) budget block travels.
 func preservedKeyField(key string) string { return "preserve_" + key }
 
-// contextEditingJSON builds the context_editing block from the form, or nil when the operator has not
-// engaged with it (so an untouched tenant does not get a block written into its document).
+// contextEditingJSON builds the context_editing block, or nil when the operator has not set it (so an
+// untouched tenant does not get a block written and the built-in "off" applies).
 func contextEditingJSON(v map[string]string) map[string]any {
-	num := func(field string) (float64, bool) {
-		raw := strings.TrimSpace(v[field])
-		if raw == "" {
-			return 0, false
-		}
-		f, err := strconv.ParseFloat(raw, 64)
-		if err != nil {
-			return 0, false
-		}
-		return f, true
-	}
-	out := map[string]any{"enabled": v["clear_enabled"] == "true"}
-	engaged := v["clear_enabled"] == "true"
-	if f, ok := num("clear_trigger_frac"); ok {
-		out["trigger_frac"] = f
-		engaged = true
-	}
-	if f, ok := num("clear_keep_recent"); ok {
-		out["keep_recent"] = int(f)
-		engaged = true
-	}
-	if f, ok := num("clear_min_bytes"); ok {
-		out["min_bytes"] = int(f)
-		engaged = true
-	}
-	if f, ok := num("clear_band_width"); ok {
-		out["band_width"] = f
-		engaged = true
-	}
-	if !engaged {
+	raw := strings.TrimSpace(v["clear_keep_tool_calls"])
+	if raw == "" {
 		return nil
 	}
-	return out
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return nil
+	}
+	return map[string]any{"keep_tool_calls": n}
 }
+
 
 // parseFractionTriple reads "a,b,c" into the [warn, escalate, final] triple an adapter expects.
 func parseFractionTriple(raw string) ([3]float64, bool) {

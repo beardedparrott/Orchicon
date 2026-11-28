@@ -56,20 +56,27 @@ func TestContextEditingIsModeledNow(t *testing.T) {
 			t.Fatal("context_editing is rendered by this form now; listing it as unmodeled would keep a stale copy")
 		}
 	}
-	blob := `{"context_editing":{"enabled":true,"trigger_frac":0.6,"keep_recent":12,"min_bytes":4096,"band_width":0.2}}`
+	blob := `{"context_editing":{"keep_tool_calls":20}}`
 	initials := budgetInitials(blob)
-	if initials["clear_enabled"] != "true" {
-		t.Errorf("clear_enabled not seeded from the document: %q", initials["clear_enabled"])
-	}
-	if initials["clear_keep_recent"] != "12" {
-		t.Errorf("clear_keep_recent = %q, want 12", initials["clear_keep_recent"])
+	if initials["clear_keep_tool_calls"] != "20" {
+		t.Errorf("keep_tool_calls not seeded from the document: %q", initials["clear_keep_tool_calls"])
 	}
 	out := buildBudgetJSON(initials)
 	if !strings.Contains(out, `"context_editing"`) {
 		t.Fatalf("the modeled block was not written back: %s", out)
 	}
-	if !strings.Contains(out, `"keep_recent":12`) {
-		t.Errorf("round-trip lost keep_recent: %s", out)
+	if !strings.Contains(out, `"keep_tool_calls":20`) {
+		t.Errorf("round-trip lost keep_tool_calls: %s", out)
+	}
+}
+
+// TestContextEditingLegacyBlockReadsAsOff: the old five-knob block is gone. A document still carrying it
+// must NOT be silently reinterpreted — with no keep_tool_calls the feature reads as off, and the next save
+// rewrites the block in the new shape.
+func TestContextEditingLegacyBlockReadsAsOff(t *testing.T) {
+	initials := budgetInitials(`{"context_editing":{"enabled":true,"trigger_frac":0.6,"keep_recent":12}}`)
+	if initials["clear_keep_tool_calls"] != "" {
+		t.Errorf("a legacy block must read as off, got keep=%q", initials["clear_keep_tool_calls"])
 	}
 }
 

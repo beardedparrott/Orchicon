@@ -321,15 +321,6 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 			s.usageSink(ctx, usage)
 		}
 
-		// CONTEXT EDITING FIRST, COMPACTION SECOND - and the order is the point.
-		//
-		// Clearing drops consumed tool payloads: deterministic, free, and it never touches what the model
-		// decided. Compaction summarizes the conversation: a model call, lossy, and - as this loop's own
-		// notes record - repeatedly interrupting workers mid-flight. Running clearing FIRST means the bulk
-		// of the growth is reclaimed before compaction is ever considered, so compaction fires far later and
-		// far less often, and the two do not fight over the same turn.
-		s.clearConsumedToolResults(ctx)
-
 		// Guarded compaction at the quiet turn boundary (D1): fires only on true context-window pressure
 		// (live hint), the budget gate, or the turn-count hygiene gate (compact_max_turns.
 		if res := s.maybeCompact(ctx, steps, usage); strings.HasPrefix(res, "budget_abort:") {
@@ -392,6 +383,15 @@ func (s *Session) Run(ctx context.Context, callbacks scheduler.ExecutionCallback
 				}
 				s.appendToolResults(results)
 			}
+			// KEEP THE LAST N TOOL RESULTS VERBATIM, STUB THE REST.
+			//
+			// This runs at the TOOL-ROUND boundary rather than on a context-pressure check because the knob
+			// is a tool-call count, not a token budget: "keep the last 20 calls" is answerable from the
+			// settings and has a steady state, where "clear at 50% of the window" left a large-window model
+			// re-sending 100k tokens a turn and never clearing. Placing it here means the window holds a
+			// bounded number of payloads, and each round replaces at most the calls that just aged out.
+			s.clearConsumedToolResults(ctx)
+
 			// Injection drain between tool rounds: a queued user turn becomes the next user message; the reply
 			// streams back into the same session.
 			if msgs := s.drainInjectedAll(ctx); len(msgs) > 0 {

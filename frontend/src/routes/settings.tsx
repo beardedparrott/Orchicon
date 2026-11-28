@@ -489,11 +489,7 @@ function DefaultsTab() {
   const [draftMaxToolOutputBytes, setDraftMaxToolOutputBytes] = useState("");
   // Context editing (clearing consumed tool results). SEPARATE from compaction: clearing drops BYTES
   // (free, deterministic) while compaction rewrites MEANING (a model call, lossy).
-  const [draftClearEnabled, setDraftClearEnabled] = useState(false);
-  const [draftClearTriggerFrac, setDraftClearTriggerFrac] = useState("");
-  const [draftClearKeepRecent, setDraftClearKeepRecent] = useState("");
-  const [draftClearMinBytes, setDraftClearMinBytes] = useState("");
-  const [draftClearBandWidth, setDraftClearBandWidth] = useState("");
+  const [draftKeepToolCalls, setDraftKeepToolCalls] = useState("");
   const [draftCompactTiers, setDraftCompactTiers] = useState<CompactTiers>(defaultCompactTiers);
   const [draftWarn, setDraftWarn] = useState<BudgetWarnings>(emptyWarnings);
   const [draftReapGrace, setDraftReapGrace] = useState("");
@@ -540,11 +536,7 @@ function DefaultsTab() {
       setDraftBudgetToolCalls(budget.toolCallCount);
       setDraftCompactMaxTurns(budget.compactMaxTurns);
       setDraftMaxToolOutputBytes(budget.maxToolOutputBytes);
-      setDraftClearEnabled(budget.clearEnabled);
-      setDraftClearTriggerFrac(budget.clearTriggerFrac);
-      setDraftClearKeepRecent(budget.clearKeepRecent);
-      setDraftClearMinBytes(budget.clearMinBytes);
-      setDraftClearBandWidth(budget.clearBandWidth);
+      setDraftKeepToolCalls(budget.keepToolCalls);
       setDraftCompactTiers(budget.compactTiers);
       setDraftWarn(budget.warnings);
       setDraftReapGrace(String(settings.executionReapGraceSeconds ?? ""));
@@ -603,13 +595,7 @@ function DefaultsTab() {
           // (the form only exists once it has loaded), so this is guarded rather than non-null asserted:
           // an unseeded form has nothing to preserve and must not crash the save.
           settings?.defaultBudgetOverrides,
-          {
-            enabled: draftClearEnabled,
-            triggerFrac: draftClearTriggerFrac,
-            keepRecent: draftClearKeepRecent,
-            minBytes: draftClearMinBytes,
-            bandWidth: draftClearBandWidth,
-          },
+          { keepToolCalls: draftKeepToolCalls },
         ),
         executionReapGraceSeconds: BigInt(parseInt(draftReapGrace) || 0),
         executionReapConsecutiveFailures: parseInt(draftReapFailures) || 0,
@@ -818,49 +804,12 @@ function DefaultsTab() {
               />
             </div>
 
-            <div className="sm:col-span-2 mt-2">
-              <label className="flex items-center gap-2 text-sm font-medium">
-                <input
-                  type="checkbox"
-                  checked={draftClearEnabled}
-                  onChange={(e) => setDraftClearEnabled(e.target.checked)}
-                />
-                Clear consumed tool results from context
-              </label>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Reclaims window by replacing tool output the model has already read with a short
-                placeholder. Unlike compaction this is free, deterministic, and never rewrites the
-                model&apos;s own reasoning — the full output is still kept in the execution transcript.
-                The newest results are never cleared, and errors are never cleared.
-              </p>
-            </div>
             <StallField
-              label="Clear at window fraction"
-              description="Start clearing once this fraction of the model's context window is in use. 0.5 = half full. Empty = 0.5."
-              value={draftClearTriggerFrac}
-              onChange={setDraftClearTriggerFrac}
-              placeholder="0.5"
-            />
-            <StallField
-              label="Clear: keep newest results"
-              description="The newest N tool results are never cleared — they are what the model is still reasoning about. Clearing one it needs makes it re-run the command. Empty = 8."
-              value={draftClearKeepRecent}
-              onChange={setDraftClearKeepRecent}
-              placeholder="8"
-            />
-            <StallField
-              label="Clear: minimum bytes reclaimed"
-              description="Skip a clear smaller than this. Clearing invalidates the cached prompt prefix, so a tiny reclaim costs more than it saves. Empty = 16384."
-              value={draftClearMinBytes}
-              onChange={setDraftClearMinBytes}
-              placeholder="16384"
-            />
-            <StallField
-              label="Clear: band width"
-              description="At most one clear per this much further window growth, so clearing happens in large, rare steps rather than every turn. Empty = 0.1."
-              value={draftClearBandWidth}
-              onChange={setDraftClearBandWidth}
-              placeholder="0.1"
+              label="Keep last N tool results"
+              description="Context editing: only the newest N tool results stay verbatim; older ones are replaced by a stub naming the tool and its arguments, so the agent still knows the call happened without paying for its output every turn. This is a tool-call count rather than a share of the window on purpose — cost is driven by the absolute number of tokens re-sent per turn, so a percentage-of-window trigger never fires on a large-window model. Errors are never stubbed. Empty = off."
+              value={draftKeepToolCalls}
+              onChange={setDraftKeepToolCalls}
+              placeholder="off (e.g. 20)"
             />
 
             <BudgetWarningsEditor

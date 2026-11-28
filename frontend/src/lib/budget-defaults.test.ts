@@ -108,6 +108,30 @@ describe("buildBudgetDefaults", () => {
 
   // An ABSENT cap must not be written at all: absent means "fall back to the env var / built-in
   // default", which is a different state from a stored 0 (an explicit zero-byte cap).
+  // Context editing is ONE knob: keep the newest N tool results. It must round-trip, and an empty value
+  // must write NOTHING — absence means "off", which is a different state from a stored 0.
+  it("round-trips context_editing.keep_tool_calls", () => {
+    const form = parseBudgetDefaults(JSON.stringify({ context_editing: { keep_tool_calls: 20 } }));
+    expect(form.keepToolCalls).toBe("20");
+    const rebuilt = buildBudgetDefaults(
+      "", "", "", "", "", "", defaultCompactTiers, emptyWarnings,
+      undefined,
+      { keepToolCalls: form.keepToolCalls },
+    );
+    expect(JSON.parse(rebuilt).context_editing).toEqual({ keep_tool_calls: 20 });
+  });
+
+  it("omits context_editing entirely when unset or invalid", () => {
+    for (const val of ["", "0", "not-a-number"]) {
+      const out = JSON.parse(
+        buildBudgetDefaults("", "", "", "", "", "", defaultCompactTiers, emptyWarnings, undefined, {
+          keepToolCalls: val,
+        }),
+      );
+      expect(out.context_editing).toBeUndefined();
+    }
+  });
+
   it("omits max_tool_output_bytes when unset", () => {
     const out = JSON.parse(buildBudgetDefaults("", "", "", "", "", "", defaultCompactTiers, emptyWarnings));
     expect(out.max_tool_output_bytes).toBeUndefined();

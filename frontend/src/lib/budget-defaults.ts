@@ -55,20 +55,14 @@ export interface BudgetDefaultsForm {
   compactTiers: CompactTiers;
   warnings: BudgetWarnings;
   // Context editing (clearing consumed tool results) — separate from compaction.
-  clearEnabled: boolean;
-  clearTriggerFrac: string;
-  clearKeepRecent: string;
-  clearMinBytes: string;
-  clearBandWidth: string;
+  // ONE knob: how many of the newest tool results stay verbatim. Empty/0 = disabled.
+  keepToolCalls: string;
 }
 
 /** The `context_editing` block as the form carries it. */
 export interface ContextEditingDraft {
-  enabled: boolean;
-  triggerFrac: string;
-  keepRecent: string;
-  minBytes: string;
-  bandWidth: string;
+  /** How many of the newest tool results stay verbatim. Empty/0 = disabled. */
+  keepToolCalls: string;
 }
 
 // Parse the tenant default_budget_overrides JSON into form strings + warning
@@ -84,11 +78,7 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
     maxToolOutputBytes: "",
     compactTiers: defaultCompactTiers,
     warnings: emptyWarnings,
-    clearEnabled: false,
-    clearTriggerFrac: "",
-    clearKeepRecent: "",
-    clearMinBytes: "",
-    clearBandWidth: "",
+    keepToolCalls: "",
   };
   if (!raw) return empty;
   try {
@@ -119,13 +109,8 @@ export function parseBudgetDefaults(raw?: string): BudgetDefaultsForm {
         ? [Boolean(ct[0]), Boolean(ct[1]), Boolean(ct[2])]
         : defaultCompactTiers;
     const ce = m.context_editing ?? {};
-    const numStr = (v: unknown) => (v != null ? String(v) : "");
     return {
-      clearEnabled: ce.enabled === true,
-      clearTriggerFrac: numStr(ce.trigger_frac),
-      clearKeepRecent: numStr(ce.keep_recent),
-      clearMinBytes: numStr(ce.min_bytes),
-      clearBandWidth: numStr(ce.band_width),
+      keepToolCalls: ce.keep_tool_calls != null ? String(ce.keep_tool_calls) : "",
       tokens: m.tokens != null ? String(m.tokens) : "",
       costUsd: m.cost_usd != null ? String(m.cost_usd) : "",
       wallClockSeconds: m.wall_clock_seconds != null ? String(m.wall_clock_seconds) : "",
@@ -210,29 +195,12 @@ export function buildBudgetDefaults(
     out.warnings = warningsObj;
   }
 
-  // CONTEXT EDITING. Written only when the operator has engaged with it, so an untouched tenant keeps a
-  // clean document and the built-in "off" default applies.
+  // CONTEXT EDITING. One knob: keep the newest N tool results, stub the rest. Written only when set, so
+  // an untouched tenant keeps a clean document and the built-in "off" applies.
   if (clearing) {
-    const engaged =
-      clearing.enabled ||
-      [clearing.triggerFrac, clearing.keepRecent, clearing.minBytes, clearing.bandWidth].some(
-        (v) => v.trim() !== "",
-      );
-    if (engaged) {
-      const ce: Record<string, number | boolean> = { enabled: clearing.enabled };
-      const num = (v: string) => {
-        const n = Number(v);
-        return v.trim() !== "" && Number.isFinite(n) ? n : undefined;
-      };
-      const tf = num(clearing.triggerFrac);
-      if (tf !== undefined) ce.trigger_frac = tf;
-      const kr = num(clearing.keepRecent);
-      if (kr !== undefined) ce.keep_recent = kr;
-      const mb = num(clearing.minBytes);
-      if (mb !== undefined) ce.min_bytes = mb;
-      const bw = num(clearing.bandWidth);
-      if (bw !== undefined) ce.band_width = bw;
-      out.context_editing = ce;
+    const n = Number(clearing.keepToolCalls);
+    if (clearing.keepToolCalls.trim() !== "" && Number.isFinite(n) && n > 0) {
+      out.context_editing = { keep_tool_calls: n };
     }
   }
 
