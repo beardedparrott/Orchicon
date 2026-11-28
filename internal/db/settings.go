@@ -94,7 +94,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
-		stall_tool_hang_seconds, max_tool_output_bytes, context_editing_keep_tool_calls,
+		stall_tool_hang_seconds,
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
 		execution_retention_enabled, execution_retention_keep,
@@ -137,7 +137,7 @@ func GetTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string) (TenantS
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
-		stall_tool_hang_seconds, max_tool_output_bytes, context_editing_keep_tool_calls,
+		stall_tool_hang_seconds,
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
 		execution_retention_enabled, execution_retention_keep,
@@ -212,15 +212,19 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		budget_warn_msg_tool_call_count, budget_escalate_msg_tool_call_count, budget_final_msg_tool_call_count,
 		budget_warn_msg_wall_clock_seconds, budget_escalate_msg_wall_clock_seconds, budget_final_msg_wall_clock_seconds,
 		budget_compact_warn_tier, budget_compact_escalate_tier, budget_compact_final_tier,
-		stall_tool_hang_seconds, max_tool_output_bytes, context_editing_keep_tool_calls,
+		stall_tool_hang_seconds,
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
 		execution_retention_enabled, execution_retention_keep,
 		execution_retention_vacuum, execution_retention_timeout_seconds,
 		outbox_retention_days,
 		antigravity_auth_method, antigravity_share_telemetry,
+		-- POSITION MATTERS: these pair with $72/$73 at the END of the VALUES list. Putting the
+		-- columns mid-list while their placeholders stayed at the end shifted every value after
+		-- them by two, which surfaced as a type error on execution_retention_timeout_seconds.
+		max_tool_output_bytes, context_editing_keep_tool_calls,
 		updated_at
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, COALESCE(NULLIF($70, ''), 'oauth-personal'), $71, $72, $73, now())
+	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69, COALESCE(NULLIF($70, ''), 'oauth-personal'), $71, $72, $73, now())
 	ON CONFLICT (tenant_id) DO UPDATE SET
 		default_worker_model = CASE WHEN $2 <> '' THEN $2 ELSE tenant_settings.default_worker_model END,
 		default_ask_orchicon_model = CASE WHEN $3 <> '' THEN $3 ELSE tenant_settings.default_ask_orchicon_model END,
@@ -320,7 +324,7 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		COALESCE(log_retention_days, 0), COALESCE(log_max_files, 0),
 		max_concurrent_runs,
 		session_access_token_ttl_seconds, session_refresh_token_ttl_seconds,
-		stall_tool_hang_seconds, max_tool_output_bytes, context_editing_keep_tool_calls,
+		stall_tool_hang_seconds,
 		context_compaction_enabled, context_compaction_pressure_frac,
 		context_recent_turns, memory_enabled, memory_digest_entries,
 		execution_retention_enabled, execution_retention_keep,
@@ -353,13 +357,13 @@ func UpdateTenantSettings(ctx context.Context, tx pgx.Tx, tenantID string, in Te
 		in.Budget.WarnMsgTime, in.Budget.EscMsgTime, in.Budget.FinalMsgTime,
 		in.Budget.CompactWarnTier, in.Budget.CompactEscalTier, in.Budget.CompactFinalTier,
 		in.StallToolHangSeconds,
-		in.MaxToolOutputBytes, in.ContextEditingKeepToolCalls,
 		in.ContextCompactionEnabled, in.ContextCompactionPressureFrac,
 		in.ContextRecentTurns, in.MemoryEnabled, in.MemoryDigestEntries,
 		in.ExecutionRetentionEnabled, in.ExecutionRetentionKeep,
 		in.ExecutionRetentionVacuum, in.ExecutionRetentionTimeoutSeconds,
 		in.OutboxRetentionDays,
 		in.AntigravityAuthMethod, in.AntigravityShareTelemetry,
+		in.MaxToolOutputBytes, in.ContextEditingKeepToolCalls,
 	)
 	if err != nil {
 		return TenantSettingsRow{}, fmt.Errorf("db: update tenant settings: %w", err)
