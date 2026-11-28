@@ -515,6 +515,28 @@ func (r *TaskReconciler) reconcileOne(ctx context.Context, taskID, stepRunID str
 		}
 	}
 
+	// SINGLE-LIVE-EXECUTION INVARIANT — asked of the executions table, before anything is created.
+	//
+	// Runs above the adapter/project gates on purpose: those gates bound CONCURRENCY (how many may run
+	// at once across a project) and are allowed to defer work; this one forbids DUPLICATION (one step,
+	// two workers on one worktree) and must never be satisfied by waiting, because waiting is what
+	// produced the second execution.
+	//
+	// The step run alone cannot answer this: dispatchStep commits it `running` with
+	// worker_execution_id = "" and the link lands in a later transaction, so "running and unlinked" is
+	// unknowable and pollTaskStep resolves it with a 15s stopwatch. Measured cost of that stopwatch on
+	// run 01M8FE5CWEZ9WP7QXQREDJDM9D: two sessions, 66 minutes, one worktree.
+	if stepRun != nil {
+		if live, lerr := liveExecutionForStep(ctx, ttx.Tx, tenantID, stepRun.WorkflowRunID, stepRun.StepID); lerr != nil {
+			return fmt.Errorf("check live execution for step: %w", lerr)
+		} else if live != "" {
+			r.log.Info("dispatch refused: step already has a live execution",
+				"task", task.ID, "step_run", stepRun.ID, "step", stepRun.StepID,
+				"live_execution", live)
+			return nil
+		}
+	}
+
 	// Select an Adapter (docs/03 §4.2).
 	adapter, err := r.selectAdapter(ctx, ttx.Tx, tenantID, resolveAdapterRowKind(version.ModelRef))
 	if err != nil {

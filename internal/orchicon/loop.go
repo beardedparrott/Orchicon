@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -28,7 +29,7 @@ const (
 	textStreamingChunkDelay = 60 * time.Millisecond
 	// maxToolOutputBytes caps one tool result before it re-enters history
 	// (parity with the opencode adapter's context-amplifier guard).
-	maxToolOutputBytes = 128 * 1024 // 128 KiB ≈ ~30k tokens
+	maxToolOutputBytesDefault = 128 * 1024 // 128 KiB ≈ ~30k tokens
 	// toolOutputTruncatedMarker marks a capped tool result.
 	toolOutputTruncatedMarker = "\n…[output truncated by Orchicon — use a targeted read/grep on the host or project disk for the full tail]\n"
 	// toolResultGrace is the bounded grace for finishing an in-flight tool
@@ -823,7 +824,7 @@ func (s *Session) executeTools(ctx context.Context, callbacks scheduler.Executio
 				}
 				s.fileEdits(ctx, s.id, s.identity.TenantID, s.execDir, c.Name, inputMap, out)
 			}
-			capped := capToolOutput(out)
+			capped := capToolOutput(out, s.execDir, s.id, c.ToolCallID)
 			results[i] = toolResult{ToolCall: c, Output: capped}
 			// OnToolCall parity (output capped).
 			callbacks.OnToolCall(ctx, s.id, c.Name, []byte(c.ArgsJSON), []byte(capped))
@@ -1078,9 +1079,93 @@ func mustJSON(v any) string {
 	return string(b)
 }
 
-// capToolOutput truncates a tool result to maxToolOutputBytes keeping the
-// head + truncation marker (parity with opencode's capToolOutput).
-func capToolOutput(s string) string { return capToolOutputAt(s, maxToolOutputBytes) }
+// toolOutputHeadTailMarker is the head+tail truncation marker (opencode parity).
+const toolOutputHeadTailMarker = "\n…[output truncated by Orchicon — head+tail shown, full payload on disk]\n"
+
+// toolOutputOffloadRatio is the head:tail split of the cap (opencode parity): the decision part
+// outweighs the error tail.
+const toolOutputOffloadRatio = 2
+
+// maxToolOutputBytes resolves the per-tool-result cap.
+//
+// IT IS NOW ENV-SETTABLE, THROUGH THE SAME KNOB THE OPENCODE ADAPTER USES. This was a hardcoded const
+// while opencode's identical cap answered to ORCHICON_MAX_TOOL_OUTPUT_BYTES, so the same work drained
+// context faster on the native transport than on opencode with no way to tune it. This is the single
+// largest lever on per-turn context: every byte kept here is re-sent on EVERY subsequent turn.
+func maxToolOutputBytes() int {
+	if v := os.Getenv("ORCHICON_MAX_TOOL_OUTPUT_BYTES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return maxToolOutputBytesDefault
+}
+
+// capToolOutput truncates one tool result, keeping the HEAD (the decision/summary part) AND the TAIL
+// (the error/stack part), and offloading the full payload to disk.
+//
+// WHY TAIL PLUS AN OFFLOAD, where this used to keep the head only and DISCARD the rest. A worker whose
+// evidence sat at the END of a command's output - a stack trace, a trailing test failure, the last lines
+// of a log - could not see it, so it re-ran the command. That paid for the whole output a second time AND
+// left both attempts in the context. Offloading to .orchicon/outputs/<execution>/ hands the worker a
+// cheap targeted handle instead of a re-run, at zero context cost.
+func capToolOutput(s, projectDir, execID, callID string) string {
+	limit := maxToolOutputBytes()
+	if limit < 1 || len(s) <= limit {
+		return s
+	}
+	offloadRef := offloadToolOutput(projectDir, execID, callID, s)
+	avail := limit - len(toolOutputHeadTailMarker)
+	if avail < 4 {
+		avail = 4
+	}
+	head := avail * toolOutputOffloadRatio / (toolOutputOffloadRatio + 1)
+	tail := avail - head
+	if head < 1 {
+		head = 1
+	}
+	if tail < 1 {
+		tail = 1
+	}
+	for len(toolOutputHeadTailMarker)+len(offloadRef)+head+tail > limit {
+		if head > 1 {
+			head--
+		} else if tail > 1 {
+			tail--
+		} else {
+			break
+		}
+	}
+	return s[:head] + toolOutputHeadTailMarker + offloadRef + s[len(s)-tail:]
+}
+
+// offloadToolOutput writes the full oversized payload to
+// <project_dir>/.orchicon/outputs/<execution_id>/ and returns a short reference the transcript carries
+// in its place.
+func offloadToolOutput(projectDir, execID, callID, full string) string {
+	if projectDir == "" || execID == "" {
+		return ""
+	}
+	dir := filepath.Join(projectDir, ".orchicon", "outputs", execID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ""
+	}
+	name := callID
+	if name == "" {
+		name = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	// A callID can carry path separators from a provider; keep the file inside dir.
+	name = strings.ReplaceAll(strings.ReplaceAll(name, "/", "_"), "\\", "_")
+	p := filepath.Join(dir, name+".out")
+	if err := os.WriteFile(p, []byte(full), 0o644); err != nil {
+		return ""
+	}
+	rel, err := filepath.Rel(projectDir, p)
+	if err != nil {
+		rel = p
+	}
+	return fmt.Sprintf(" (full output offloaded to %s)", rel)
+}
 
 // replayToolOutputCap is the per-tool-result cap applied when a prior session's transcript is
 // REPLAYED into a follow-up (bounded-replay fix, 2026-09-09).

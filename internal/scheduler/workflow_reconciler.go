@@ -4110,6 +4110,33 @@ func (r *WorkflowReconciler) pollTaskStep(ctx context.Context, tx pgx.Tx, tenant
 
 	// Task AND worker-backed approval steps complete on their OWN execution's terminal state.
 	if sr.WorkerExecutionID == "" {
+		// AN UNLINKED STEP IS JUDGED BY THE EXECUTIONS TABLE, NOT BY A STOPWATCH.
+		//
+		// Dispatch is two writes in two transactions: dispatchStep commits the step run `running` with
+		// worker_execution_id = "", and the real id is linked later. That gap used to be resolved by
+		// elapsed time alone (dispatchLinkGrace = 15s), so a dispatch whose LINK was slow — not whose
+		// execution was missing — was declared lost and returned to `ready`. Dispatch then created a
+		// second execution on the same step and the same worktree.
+		//
+		// Measured on run 01M8FE5CWEZ9WP7QXQREDJDM9D: 01M8FE6PF… (15:22:25→16:29:57) and
+		// 01M8FE85YG… (15:23:14→15:59:45) overlapped for 66 minutes on step-sse. The second started
+		// 49s after the first, i.e. past the grace, while the first was alive and working.
+		//
+		// The authoritative question is "does a non-terminal execution exist for this step", which the
+		// executions table can answer at any age. Only when NOTHING non-terminal exists is the link
+		// genuinely lost — and that is the only case that returns the step to ready.
+		if live, lerr := liveExecutionForStep(ctx, tx, tenantID, run.ID, sr.StepID); lerr == nil && live != "" {
+			// A live execution exists but the link has not landed yet. ADOPT it rather than re-dispatch:
+			// this is the write dispatch's own second transaction would have made, and doing it here
+			// converges the step instead of racing it.
+			fields := db.UpdateWorkflowStepRunFields{WorkerExecutionID: &live}
+			if updated, uerr := db.UpdateWorkflowStepRun(ctx, tx, tenantID, sr.ID, sr.Version, fields); uerr == nil {
+				runByID[sr.StepID] = updated
+				r.log.Info("task step was running unlinked — adopted its live execution instead of re-dispatching",
+					"run", run.ID, "step", sr.StepID, "execution", live)
+			}
+			return false, false, nil
+		}
 		// A task step with NO execution link has not FAILED — nothing was ever attempted.
 		if !(sr.StartedAt != nil && time.Since(*sr.StartedAt) < dispatchLinkGrace) {
 			reason := "no execution was created for the step — re-dispatching"
