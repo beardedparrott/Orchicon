@@ -688,11 +688,27 @@ func allTools(pool *db.Pool, log *slog.Logger, secretsKEK []byte) []ToolDefiniti
 			Properties:  map[string]PropertySchema{"execution_id": {Type: "string", Description: "Execution ID to diagnose"}, "workflow_run_id": {Type: "string", Description: "Workflow run ID to diagnose"}},
 		},
 		{
-			Name:        "get_usage",
-			Description: "Get token usage and cost data. Optionally filter by project, provider, or model. Returns a bounded, compact list ({count, truncated, note, items}) — pass next_page_token to page through the rest.",
-			Mutating:    false,
-			Fn:          toolGetUsage,
-			Properties:  map[string]PropertySchema{"project_id": {Type: "string", Description: "Optional project ID filter"}, "provider": {Type: "string", Description: "Optional provider filter"}, "model": {Type: "string", Description: "Optional model filter"}, "page_token": {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"}},
+			Name: "get_usage",
+			Description: "Get token usage and cost data. SCOPE IT TO WHAT YOU ARE ASKING ABOUT — pass execution_id for a per-execution figure " +
+				"(this is SUM(total_tokens) over that execution's rows, the same number the executions page shows), task_id for a work item, " +
+				"workflow_run_id is NOT a filter here so scope by execution_id or task_id, or session_id for one Ask conversation. " +
+				"Returns {count, truncated, note, items, summary}: `items` is a bounded page of individual turn records, and `summary` " +
+				"carries the total_tokens / cost_usd / record_count over the WHOLE scope (not just the page) plus the scope that was applied. " +
+				"An empty items list with a non-zero summary means the scope matched but paging started past it; an empty result with " +
+				"record_count 0 means nothing matched THAT scope.",
+			Mutating: false,
+			Fn:       toolGetUsage,
+			Properties: map[string]PropertySchema{
+				"project_id":   {Type: "string", Description: "Optional project ID filter"},
+				"task_id":      {Type: "string", Description: "Optional work item ID filter"},
+				"execution_id": {Type: "string", Description: "Optional execution ID filter — use this for per-execution token/cost totals"},
+				"session_id":   {Type: "string", Description: "Optional Ask Orchicon conversation ID filter"},
+				"provider":     {Type: "string", Description: "Optional provider filter"},
+				"model":        {Type: "string", Description: "Optional model filter"},
+				"start_time":   {Type: "string", Description: "Optional RFC3339 lower bound on occurred_at"},
+				"end_time":     {Type: "string", Description: "Optional RFC3339 upper bound on occurred_at"},
+				"page_token":   {Type: "string", Description: "Cursor for the next page — pass the previous response's next_page_token (default: first page)"},
+			},
 		},
 
 		// --- Policies ---
